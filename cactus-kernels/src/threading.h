@@ -10,6 +10,7 @@
 #include <sys/auxv.h>
 #include <asm/hwcap.h>
 #include <sched.h>
+#include <cstdlib>
 #include <fstream>
 #endif
 #include <algorithm>
@@ -312,11 +313,21 @@ namespace CactusThreading {
 
             workers.reserve(num_workers_);
             for (size_t i = 0; i < num_workers_; ++i) {
-                workers.emplace_back([this]() {
+                workers.emplace_back([this, i]() {
+                    (void)i;
 #if defined(__ANDROID__)
                     auto& perf = CoreTopology::get().performance_cores;
                     if (!perf.empty()) {
-                        pin_current_thread_to_cores(perf);
+                        const char* max_only = std::getenv("CACTUS_THREADPOOL_PIN_MAX_PERF_ONLY");
+                        const char* round_robin = std::getenv("CACTUS_THREADPOOL_PIN_ROUND_ROBIN");
+                        if (max_only && std::string(max_only) == "1") {
+                            int core = *std::max_element(perf.begin(), perf.end());
+                            pin_current_thread_to_cores({core});
+                        } else if (round_robin && std::string(round_robin) == "1") {
+                            pin_current_thread_to_cores({perf[i % perf.size()]});
+                        } else {
+                            pin_current_thread_to_cores(perf);
+                        }
                     }
 #endif
                     worker_thread();

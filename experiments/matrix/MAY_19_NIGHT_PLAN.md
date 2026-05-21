@@ -27,9 +27,11 @@ This plan now has an explicit execution order. The current decode investigation 
    - Commit and push results immediately after validation.
    - Commit only updates to the primary single-thread CSVs, not scratch/intermediate/new one-off CSVs generated during the run.
 3. Start the full-core prefill-only investigation.
+   - Status: mechanism found and benchmark fix validated. Pixel full-core Cactus prefill needs max-performance-core-only worker pinning plus benchmark/control-thread CPU7 pinning; naive all-performance-core use on Pixel is slower because equal work lands on mid cores.
    - Treat the old decode kernel-copying work as historical mechanism evidence, not the next active research path.
    - Begin with fresh full-core prefill baselines and profiles before kernel changes.
 4. After full-core prefill is fixed or precisely blocked, rerun full-core prefill benchmarks through context 4096.
+   - Status: completed for Cactus rows. Gemma, LFM, and Qwen were rerun through 4096 and patched into `experiments/matrix/results/matrix_pixel_10a_full_core.csv`; Qwen rows are thermal-status 1 and may need cooled repeats for final acceptance.
    - Explicit scope: Gemma 4 E2B, LFM 2.5 VL 1.6B, and Qwen3 VL 2B.
    - Commit and push results immediately after validation.
    - Commit only updates to the primary full-core CSVs, not scratch/intermediate/new one-off CSVs generated during the run.

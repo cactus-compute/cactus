@@ -6,9 +6,11 @@
 #include "wav.h"
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <iostream>
 #include <memory>
 #include <vector>
 
@@ -21,6 +23,20 @@ namespace {
 
 std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema);
 std::vector<std::string> extract_schema_required(const std::string& schema);
+
+void maybe_pin_benchmark_main_to_max_perf_core() {
+#if defined(__ANDROID__)
+    const char* enabled = std::getenv("CACTUS_BENCH_PIN_MAIN_MAX_PERF");
+    if (!enabled || std::string(enabled) != "1") return;
+
+    (void)CactusThreading::get_thread_pool();
+    const auto& cores = CactusThreading::CoreTopology::get().performance_cores;
+    if (cores.empty()) return;
+    int core = *std::max_element(cores.begin(), cores.end());
+    bool ok = CactusThreading::pin_current_thread_to_cores({core});
+    std::cerr << "CACTUS_BENCH_PIN_MAIN_MAX_PERF cpu=" << core << " ok=" << (ok ? 1 : 0) << "\n";
+#endif
+}
 
 std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
@@ -1147,6 +1163,7 @@ int cactus_benchmark_tokens(
             peak_ram_usage_mb = std::max(peak_ram_usage_mb, get_ram_usage_mb());
         };
         handle->model->reset_cache();
+        maybe_pin_benchmark_main_to_max_perf_core();
         if (decode_token_len == 0) {
             handle->model->prefill(prompt, handle->model->get_prefill_chunk_size(), "", false);
         } else if (prompt.size() > 1) {

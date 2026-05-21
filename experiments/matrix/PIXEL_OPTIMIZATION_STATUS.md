@@ -1,6 +1,6 @@
 # Pixel Optimization Status
 
-Active goal: finish the primary single-thread CSV/docs commit, then root-cause and fix the remaining full-core prefill slowdown on Pixel 10a.
+Active goal: commit and push the fixed Pixel full-core prefill rows/docs, then decide whether Qwen needs cooled acceptance repeats.
 
 ## Current State
 
@@ -9,11 +9,12 @@ Active goal: finish the primary single-thread CSV/docs commit, then root-cause a
 - H67 guardrails passed: Samsung strict Gemma 512 sidecar improved 13.86 -> 20.46 tok/s, and Pixel strict Gemma 1024 sidecar improved 5.56 -> 8.64 tok/s. No repeated sidecar loads, no runtime cache builds, thermal status 0.
 - H68 integrated model-local sidecar discovery passed: with no model-local sidecar, Pixel Gemma 512 stayed at decode 5.57 tok/s and prefill 28.13 tok/s; with `token_embeddings.lmhead_qd8_qc8.cache` next to the weight file and no env vars, Pixel Gemma 512 reached decode 8.96 tok/s and prefill 37.52 tok/s.
 - Optimized single-thread trajectory regeneration is complete for Gemma, LFM, and Qwen. The H72 LFM/Qwen rows were manually patched into `experiments/matrix/results/matrix_pixel_10a_single_thread.csv` immediately after `experiments/matrix/results/matrix_pixel_10a_cactus_lfm_qwen_optimized.csv` landed.
+- Full-core prefill root cause is identified and fixed for the benchmark harness: old no-affinity rows put equal work on Pixel's heterogeneous mid/big cores and did not keep the control thread on CPU7. Max-performance-core-only worker pinning plus main-thread CPU7 pinning moves Gemma 512 full-core-prefill from the old 10 tok/s class to about 61-65 tok/s through `run_matrix.py`.
 - Fresh H66-post no-change Pixel Tier 1/Tier 2 baselines are stable: 5.56 and 5.55 tok/s decode, 28.21 and 27.69 tok/s prefill, thermal status 0, RAM 2452.35-2452.90 MB.
 - H65 first proved the LM-head mechanism: env-gated native rowwise-int8/qd8 LM-head replacement gave 8.75 and 8.64 tok/s repeats, but it was not production-shaped because TTFT rose to 146-150 s from two on-device cache builds, prefill collapsed to 3.4-3.5 tok/s, RAM rose to about 2.84 GB, and correctness was only sampled.
 - Single-core prefill wrong-core placement is considered solved, pending integration validation.
-- Do not rerun the single-thread trajectory matrix again unless acceptance needs cooled repeats. The primary single-thread CSV/docs update is ready to commit and push.
-- The next research target after that regeneration is full-core prefill. Decode history remains evidence, but new full-core prefill work must start from full-core prefill baselines/profiles rather than inherited decode assumptions.
+- Do not rerun the single-thread trajectory matrix again unless acceptance needs cooled repeats.
+- The full-core Cactus prefill rows have been regenerated through context 4096 for Gemma, LFM, and Qwen and patched into `experiments/matrix/results/matrix_pixel_10a_full_core.csv`.
 - Same-device LiteRT-LM CPU comparison at Gemma 512 is now 9.88 tok/s decode and 46.23 tok/s prefill under strict Pixel CPU7 one-thread settings, so the target is realistic on Pixel CPU with the right artifact/runtime contract.
 - Historical decode findings that led to H66:
   - Orthogonal path: Pixel is slow on FP16-to-FP32 `fcvtl/fcvtl2`; the locally rebuilt FP32-activation diagnostic moved Pixel decode 5.56 -> 5.93 tok/s.
@@ -77,8 +78,10 @@ Active goal: finish the primary single-thread CSV/docs commit, then root-cause a
    - Commit and push results immediately after validation.
    - Commit only updates to the primary single-thread CSVs, not scratch/intermediate/new one-off CSVs generated during the run.
 3. Start the full-core prefill-only investigation.
+   - Status: mechanism found and benchmark fix validated.
    - Use fresh full-core prefill baselines/profiles and the tier ladder in `MAY_19_NIGHT_PLAN.md`.
 4. After full-core prefill is fixed or precisely blocked, rerun full-core prefill benchmarks through context 4096 for Gemma 4 E2B, LFM 2.5 VL 1.6B, and Qwen3 VL 2B, then commit and push only updates to the primary full-core CSVs.
+   - Status: completed for Cactus rows. Qwen was thermally caveated (`thermal_status=1`), so cooled repeats may be needed only for final acceptance.
 
 ## Next Experiment Record
 
@@ -94,6 +97,9 @@ Active goal: finish the primary single-thread CSV/docs commit, then root-cause a
 - Result: `experiments/matrix/results/matrix_pixel_10a_cactus_gemma_fast.csv` was regenerated on Pixel strict CPU7 with the integrated model-local sidecar path active. Gemma rows are 256 prefill/decode 26.12/9.03 tok/s, 512 34.78/8.66 tok/s, 1024 38.18/7.78 tok/s, 2048 36.71/6.87 tok/s, and 4096 prefill 38.58 tok/s. This validates the integrated optimized Gemma path for trajectory regeneration, but the full single-thread regeneration still requires adapting and rerunning LFM 2.5 VL 1.6B and Qwen3 VL 2B under equivalent optimized output-head paths.
 - H71 transfer result: LFM and Qwen token embeddings are also CQ4 one-group orthogonal LM heads. The sidecar builder, loader discovery, and runtime hook were generalized beyond Gemma's shape. Generated sidecars are LFM `(N=65536,K=2048)`, 129 MB, and Qwen `(N=151936,K=2048)`, 298 MB. Pixel strict CPU7 512 scouts with sidecars active reached LFM prefill/decode 33.80/17.49 tok/s and Qwen 21.99/10.91 tok/s, proving the optimization direction transfers. Full optimized LFM/Qwen trajectories are still required.
 - H72 result: full optimized LFM/Qwen trajectories completed and were manually patched into `experiments/matrix/results/matrix_pixel_10a_single_thread.csv`. LFM rows are 256 prefill/decode 24.73/16.28 tok/s, 512 24.53/11.81 tok/s, 1024 28.56/13.63 tok/s, 2048 29.27/14.11 tok/s, and 4096 prefill 27.92 tok/s. Qwen rows are 256 prefill/decode 12.21/8.28 tok/s, 512 16.33/7.85 tok/s, 1024 18.14/6.88 tok/s, 2048 18.26/7.12 tok/s, and 4096 prefill 19.48 tok/s. Qwen 512+ rows recorded `thermal_status=1`, so cooled repeats may be needed for final acceptance, but the requested primary CSV patch is complete.
+- H73-H76 full-core mechanism: direct Gemma 512 prefill-only was 8.74 tok/s with old no-affinity scheduling, 63.67 tok/s with CPU7 taskset, 15.02 tok/s with CPUs 4-7, 17.43 tok/s with round-robin worker pinning across 4-7, and 67.71 tok/s with max-performance-core-only workers plus main-thread CPU7 pin and no taskset. This proves the old full-core rows were dominated by heterogeneous-core work placement, not an unavoidable prefill kernel limit.
+- H79 implementation validation: main-thread pinning was moved into tracked `cactus_benchmark_tokens`; Gemma 512 no-taskset full-core smoke with the same env policy reached 62.74 tok/s.
+- H78 full-core result: `experiments/matrix/results/matrix_pixel_10a_cactus_full_core_maxperf.csv` was regenerated and the Cactus rows were patched into `experiments/matrix/results/matrix_pixel_10a_full_core.csv`. Gemma rows are 256/512/1024/2048/4096 = 69.03/61.35/52.57/41.35/37.67 tok/s. LFM rows are 43.00/41.43/38.19/34.35/28.28 tok/s. Qwen rows are 29.31/27.68/23.65/20.93/19.78 tok/s, but recorded `thermal_status=1`.
 
 ## Active Ledger
 
@@ -726,8 +732,8 @@ The ledger below is chronological. Older entries may contain `Next Experiment Re
 
 ### P0: full-core prefill slowdown
 
-- Status: `pending_after_decode_and_single_thread_regen`
+- Status: `mechanism_found_benchmark_fix_validated`
 - Observed gap/target: fresh full-core Cactus LFM/Qwen c128 prefill was `5.17x-9.14x` slower on Pixel than Samsung, while other backends were usually `1.1x-1.7x` Samsung/Pixel.
 - Scope: full-core prefill only. Do not import decode assumptions unless full-core prefill profiling proves shared code matters.
-- Next action after gate: start Tier 0/Tier 1 from `MAY_19_NIGHT_PLAN.md`, define harness/acceptance, then collect fresh full-core prefill baselines before profiling or coding.
-- H70 starting hypothesis: existing Pixel full-core prefill is slower than Pixel CPU7 single-thread prefill, so first separate harness/scheduler behavior from kernel scaling. `run_matrix.py` full-core mode exports thread env vars, but `tests/android/cactus_llm_bench.cpp` does not consume `CACTUS_MATRIX_BENCH_THREADS`; it only removes CPU affinity. Cheapest test is direct Gemma 512 prefill-only no-affinity versus CPU7-pinned runs with the same binary/input.
+- Result: fixed Cactus full-core rows are patched into `matrix_pixel_10a_full_core.csv`; Qwen thermal-status 1 is the only remaining acceptance caveat.
+- Decision: promote max-performance-core worker pinning plus main-thread CPU7 pinning for Pixel/Tensor benchmark execution. Do not promote naive all-performance-core use on Pixel without weighted work partitioning, because CPUs 4-7 under equal static work remained far slower than CPU7-only.
