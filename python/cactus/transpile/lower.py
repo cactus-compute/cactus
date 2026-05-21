@@ -2761,9 +2761,7 @@ def _ensure_fp16_tensor(g: Graph, tensor: Tensor) -> Tensor:
 
 
 def _ensure_scalar_math_tensor(g: Graph, tensor: Tensor) -> Tensor:
-    if tensor.dtype == Graph.FP16:
-        return tensor
-    return g.precision_cast(tensor, Graph.FP16)
+    return tensor
 
 
 def _ensure_tensor_dtype(g: Graph, tensor: Tensor, dtype: int) -> Tensor:

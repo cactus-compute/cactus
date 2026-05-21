@@ -700,6 +700,11 @@ private:
     bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                 const std::vector<std::string>& image_paths,
                                 const std::vector<float>& audio_features);
+    bool build_lm_encoder_outputs_dynamic_gemma4(
+        const std::vector<uint32_t>& tokens,
+        std::map<std::string, std::vector<uint8_t>>& store_bytes,
+        std::map<std::string, Precision>& store_prec,
+        std::map<std::string, std::vector<size_t>>& store_shape);
 
     std::string bundle_dir_;
     std::map<std::string, Component> components_;
@@ -874,6 +879,16 @@ struct Lfm2VlImagePreprocessed {
 };
 
 Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, const Config& config);
+
+struct Qwen3VlImagePreprocessed {
+    std::vector<float> pixel_values;
+    size_t grid_t = 1;
+    size_t grid_h = 0;
+    size_t grid_w = 0;
+    size_t patch_dim = 0;
+};
+
+Qwen3VlImagePreprocessed preprocess_qwen3_vl_image(const std::string& image_path, const Config& config);
 
 
 struct SpectrogramConfig {

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import inspect
+import math
 import struct
 import os
 from pathlib import Path
@@ -732,7 +733,15 @@ def _gemma4_pool_vision_hidden_native_like(
         else:
             valid_bins = torch.logical_not((weights == 0).all(dim=0))
             pooled_batches.append(pooled_full[valid_bins])
-    return torch.cat(pooled_batches, dim=0)
+    pooled_hidden = pooled_batches[0] if len(pooled_batches) == 1 else torch.cat(pooled_batches, dim=0)
+    hidden_size = int(_module_or_config_attr(vision_tower, "hidden_size", pooled_hidden.shape[-1]) or pooled_hidden.shape[-1])
+    pooled_hidden = pooled_hidden * math.sqrt(float(hidden_size))
+    if bool(_module_or_config_attr(vision_tower, "standardize", False)):
+        std_bias = getattr(vision_tower, "std_bias", None)
+        std_scale = getattr(vision_tower, "std_scale", None)
+        if std_bias is not None and std_scale is not None:
+            pooled_hidden = (pooled_hidden - std_bias) * std_scale
+    return pooled_hidden
 
 
 def _gemma4_vision_encoder_hidden_states(
@@ -857,6 +866,9 @@ def _gemma4_compute_native_like_image_features(
     projection = getattr(embed_vision, "embedding_projection", None)
     if not isinstance(projection, torch.nn.Linear):
         raise TypeError("Gemma4 vision embedder is missing embedding_projection")
+    pre_projection_norm = getattr(embed_vision, "embedding_pre_projection_norm", None)
+    if isinstance(pre_projection_norm, torch.nn.Module):
+        pooled_hidden = pre_projection_norm(pooled_hidden)
     pooled_hidden = pooled_hidden.to(dtype=projection.weight.dtype)
     projected = F.linear(
         pooled_hidden,
@@ -869,7 +881,7 @@ def _gemma4_compute_native_like_image_features(
             post_proj_norm_weight,
             eps=_gemma4_layer_norm_eps(multimodal_backbone),
         )
-    return _gemma4_rms_norm_no_scale(projected, eps=float(getattr(embed_vision, "eps", 1e-6)))
+    return projected
 
 
 def _gemma4_compute_native_like_audio_features(

@@ -104,6 +104,33 @@ void dispatch_binary_op_f16(OpType op, const __fp16* lhs, const __fp16* rhs, __f
     }
 }
 
+static float apply_binary_op_f32(OpType op, float lhs, float rhs) {
+    switch (op) {
+        case OpType::ADD:
+        case OpType::ADD_CLIPPED:
+            return lhs + rhs;
+        case OpType::SUBTRACT:
+            return lhs - rhs;
+        case OpType::MULTIPLY:
+            return lhs * rhs;
+        case OpType::DIVIDE:
+            return lhs / rhs;
+        case OpType::NOT_EQUAL:
+            return lhs != rhs ? 1.0f : 0.0f;
+        default:
+            return lhs;
+    }
+}
+
+void dispatch_binary_op_f32(OpType op, const float* lhs, const float* rhs, float* output, size_t count) {
+    CactusThreading::parallel_for(count, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t start_idx, size_t end_idx) {
+            for (size_t i = start_idx; i < end_idx; ++i) {
+                output[i] = apply_binary_op_f32(op, lhs[i], rhs[i]);
+            }
+        });
+}
+
 void dispatch_unary_op_f16(OpType op, const __fp16* input, __fp16* output, size_t count, float param) {
     ScalarOpType scalar_op;
     switch (op) {
@@ -154,13 +181,42 @@ void compute_binary_op_node(GraphNode& node, const std::vector<std::unique_ptr<G
     const auto& lhs = get_input(node, 0, nodes, node_index_map);
     const auto& rhs = get_input(node, 1, nodes, node_index_map);
 
-    if (lhs.precision != Precision::FP16) {
-        throw std::runtime_error("Binary operations only support FP16 precision (got " + std::to_string(static_cast<int>(lhs.precision)) + ")");
+    if (lhs.precision != rhs.precision) {
+        throw std::runtime_error("Binary operations require matching precision");
+    }
+    if (lhs.precision != Precision::FP16 && lhs.precision != Precision::FP32) {
+        throw std::runtime_error("Binary operations only support FP16/FP32 precision");
     }
 
     if (node.params.broadcast_info.needs_broadcasting) {
         std::vector<size_t> lhs_strides = compute_strides(lhs.shape, node.params.broadcast_info.output_shape);
         std::vector<size_t> rhs_strides = compute_strides(rhs.shape, node.params.broadcast_info.output_shape);
+        const auto& output_shape = node.params.broadcast_info.output_shape;
+        size_t total_elements = 1;
+        for (size_t dim : output_shape) {
+            total_elements *= dim;
+        }
+        if (lhs.precision == Precision::FP32) {
+            const float* lhs_data = lhs.data_as<float>();
+            const float* rhs_data = rhs.data_as<float>();
+            float* out_data = node.output_buffer.data_as<float>();
+            CactusThreading::parallel_for(total_elements, CactusThreading::Thresholds::ELEMENT_WISE,
+                [&](size_t start_idx, size_t end_idx) {
+                    std::vector<size_t> coords(output_shape.size());
+                    size_t tmp = start_idx;
+                    for (int axis = static_cast<int>(output_shape.size()) - 1; axis >= 0; --axis) {
+                        coords[static_cast<size_t>(axis)] = tmp % output_shape[static_cast<size_t>(axis)];
+                        tmp /= output_shape[static_cast<size_t>(axis)];
+                    }
+                    for (size_t linear_idx = start_idx; linear_idx < end_idx; ++linear_idx) {
+                        size_t lhs_idx = broadcast_linear_index(coords, lhs_strides);
+                        size_t rhs_idx = broadcast_linear_index(coords, rhs_strides);
+                        out_data[linear_idx] = apply_binary_op_f32(node.op_type, lhs_data[lhs_idx], rhs_data[rhs_idx]);
+                        increment_broadcast_coords(coords, output_shape);
+                    }
+                });
+            return;
+        }
 
         switch (node.op_type) {
             case OpType::ADD:
@@ -196,11 +252,6 @@ void compute_binary_op_node(GraphNode& node, const std::vector<std::unique_ptr<G
                 const __fp16* lhs_data = lhs.data_as<__fp16>();
                 const __fp16* rhs_data = rhs.data_as<__fp16>();
                 __fp16* out_data = node.output_buffer.data_as<__fp16>();
-                const auto& output_shape = node.params.broadcast_info.output_shape;
-                size_t total_elements = 1;
-                for (size_t dim : output_shape) {
-                    total_elements *= dim;
-                }
                 CactusThreading::parallel_for(total_elements, CactusThreading::Thresholds::ELEMENT_WISE,
                     [&](size_t start_idx, size_t end_idx) {
                         std::vector<size_t> coords(output_shape.size());
@@ -222,9 +273,15 @@ void compute_binary_op_node(GraphNode& node, const std::vector<std::unique_ptr<G
             default: break;
         }
     } else {
-        dispatch_binary_op_f16(node.op_type, lhs.data_as<__fp16>(),
-                               rhs.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
-                               node.output_buffer.total_size);
+        if (lhs.precision == Precision::FP16) {
+            dispatch_binary_op_f16(node.op_type, lhs.data_as<__fp16>(),
+                                   rhs.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
+                                   node.output_buffer.total_size);
+        } else {
+            dispatch_binary_op_f32(node.op_type, lhs.data_as<float>(),
+                                   rhs.data_as<float>(), node.output_buffer.data_as<float>(),
+                                   node.output_buffer.total_size);
+        }
     }
 }
 
@@ -329,8 +386,8 @@ void compute_reduce_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     int axis = node.params.axis;
 
-    if (input_buffer.precision != Precision::FP16) {
-        throw std::runtime_error("Reduction operations only support FP16 precision");
+    if (input_buffer.precision != Precision::FP16 && input_buffer.precision != Precision::FP32) {
+        throw std::runtime_error("Reduction operations only support FP16/FP32 precision");
     }
 
     if (node.op_type == OpType::CUMSUM) {
@@ -339,6 +396,22 @@ void compute_reduce_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         }
 
         auto dims = AxisDims::from_shape(input_buffer.shape, static_cast<size_t>(axis));
+        if (input_buffer.precision == Precision::FP32) {
+            const float* input = input_buffer.data_as<float>();
+            float* output = node.output_buffer.data_as<float>();
+            for (size_t outer = 0; outer < dims.outer; ++outer) {
+                for (size_t inner = 0; inner < dims.inner; ++inner) {
+                    float running = 0.0f;
+                    for (size_t axis_index = 0; axis_index < dims.axis_size; ++axis_index) {
+                        size_t flat_index = ((outer * dims.axis_size) + axis_index) * dims.inner + inner;
+                        running += input[flat_index];
+                        output[flat_index] = running;
+                    }
+                }
+            }
+            return;
+        }
+
         const __fp16* input = input_buffer.data_as<__fp16>();
         __fp16* output = node.output_buffer.data_as<__fp16>();
 
@@ -352,6 +425,103 @@ void compute_reduce_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
                 }
             }
         }
+        return;
+    }
+
+    if (input_buffer.precision == Precision::FP32) {
+        const float* input = input_buffer.data_as<float>();
+        float* output = node.output_buffer.data_as<float>();
+        if (axis == -1) {
+            float result = 0.0f;
+            switch (node.op_type) {
+                case OpType::SUM:
+                case OpType::MEAN:
+                    for (size_t i = 0; i < input_buffer.total_size; ++i) result += input[i];
+                    if (node.op_type == OpType::MEAN && input_buffer.total_size > 0) {
+                        result /= static_cast<float>(input_buffer.total_size);
+                    }
+                    output[0] = result;
+                    break;
+                case OpType::VARIANCE: {
+                    float mean = 0.0f;
+                    for (size_t i = 0; i < input_buffer.total_size; ++i) mean += input[i];
+                    mean /= static_cast<float>(std::max<size_t>(input_buffer.total_size, 1));
+                    float variance = 0.0f;
+                    for (size_t i = 0; i < input_buffer.total_size; ++i) {
+                        float diff = input[i] - mean;
+                        variance += diff * diff;
+                    }
+                    output[0] = variance / static_cast<float>(std::max<size_t>(input_buffer.total_size, 1));
+                    break;
+                }
+                case OpType::MIN:
+                    result = input_buffer.total_size == 0 ? 0.0f : input[0];
+                    for (size_t i = 1; i < input_buffer.total_size; ++i) result = std::min(result, input[i]);
+                    output[0] = result;
+                    break;
+                case OpType::MAX:
+                    result = input_buffer.total_size == 0 ? 0.0f : input[0];
+                    for (size_t i = 1; i < input_buffer.total_size; ++i) result = std::max(result, input[i]);
+                    output[0] = result;
+                    break;
+                default:
+                    break;
+            }
+            return;
+        }
+
+        auto dims = AxisDims::from_shape(input_buffer.shape, static_cast<size_t>(axis));
+        CactusThreading::parallel_for(dims.outer * dims.inner, CactusThreading::Thresholds::ELEMENT_WISE,
+            [&](size_t start_idx, size_t end_idx) {
+                for (size_t out_idx = start_idx; out_idx < end_idx; ++out_idx) {
+                    size_t outer = out_idx / dims.inner;
+                    size_t inner = out_idx % dims.inner;
+                    size_t base = outer * dims.axis_size * dims.inner + inner;
+                    float result = 0.0f;
+                    switch (node.op_type) {
+                        case OpType::SUM:
+                        case OpType::MEAN:
+                            for (size_t axis_index = 0; axis_index < dims.axis_size; ++axis_index) {
+                                result += input[base + axis_index * dims.inner];
+                            }
+                            if (node.op_type == OpType::MEAN && dims.axis_size > 0) {
+                                result /= static_cast<float>(dims.axis_size);
+                            }
+                            output[out_idx] = result;
+                            break;
+                        case OpType::VARIANCE: {
+                            float mean = 0.0f;
+                            for (size_t axis_index = 0; axis_index < dims.axis_size; ++axis_index) {
+                                mean += input[base + axis_index * dims.inner];
+                            }
+                            mean /= static_cast<float>(std::max<size_t>(dims.axis_size, 1));
+                            float variance = 0.0f;
+                            for (size_t axis_index = 0; axis_index < dims.axis_size; ++axis_index) {
+                                float diff = input[base + axis_index * dims.inner] - mean;
+                                variance += diff * diff;
+                            }
+                            output[out_idx] = variance / static_cast<float>(std::max<size_t>(dims.axis_size, 1));
+                            break;
+                        }
+                        case OpType::MIN:
+                            result = dims.axis_size == 0 ? 0.0f : input[base];
+                            for (size_t axis_index = 1; axis_index < dims.axis_size; ++axis_index) {
+                                result = std::min(result, input[base + axis_index * dims.inner]);
+                            }
+                            output[out_idx] = result;
+                            break;
+                        case OpType::MAX:
+                            result = dims.axis_size == 0 ? 0.0f : input[base];
+                            for (size_t axis_index = 1; axis_index < dims.axis_size; ++axis_index) {
+                                result = std::max(result, input[base + axis_index * dims.inner]);
+                            }
+                            output[out_idx] = result;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            });
         return;
     }
 
