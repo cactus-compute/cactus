@@ -793,6 +793,8 @@ size_t Model::component_output_tokens(const Component& comp, const std::string& 
 size_t Model::run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position, size_t chunk_size, bool prepare_decode) {
     if (decode_route_ != DecodeRoute::CACHED_STEP || !encoder_ || !decoder_ || !decoder_prefill_) return 0;
     if (start_position != 0) return 0;
+    if (!load_component_graph(*decoder_prefill_)) return 0;
+    if (prefill_encoder_ && !load_component_graph(*prefill_encoder_)) return 0;
     if (!cache_states_compatible(*decoder_prefill_, *decoder_)) return 0;
     size_t component_tokens = component_chunk_tokens(*decoder_prefill_, "inputs_embeds");
     if (component_tokens <= 1) return 0;
@@ -950,82 +952,121 @@ void Model::run_vision_encoder(const std::string& image_path) {
     unload_component_graph(*vision_encoder_);
 }
 
-void Model::run_audio_encoder(const std::vector<float>& audio_features) {
+void Model::run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message) {
     if (!audio_encoder_) return;
+    if (audio_features_per_message.empty()) return;
     if (!load_component_graph(*audio_encoder_)) {
         throw std::runtime_error("failed to load audio_encoder");
     }
-    std::vector<std::string> candidate_input_names = {"input_features", "audio_features"};
-    bool wrote = false;
-    int feature_idx = -1;
-    for (const auto& name : candidate_input_names) {
-        int idx = input_index(*audio_encoder_, name);
-        if (idx < 0) continue;
-        size_t node_id = static_cast<size_t>(audio_encoder_->runtime_input_node_ids[idx]);
-        const auto& desc = audio_encoder_->graph->get_output_buffer(node_id);
-        auto& buf = audio_encoder_->input_buffers[idx];
-        if (desc.precision == Precision::FP32) {
-            size_t n = std::min(audio_features.size() * sizeof(float), buf.size());
-            std::memcpy(buf.data(), audio_features.data(), n);
-            if (n < buf.size()) std::memset(buf.data() + n, 0, buf.size() - n);
-        } else if (desc.precision == Precision::FP16) {
-            size_t n_elems = std::min(audio_features.size(), buf.size() / sizeof(__fp16));
-            __fp16* dst = reinterpret_cast<__fp16*>(buf.data());
-            for (size_t i = 0; i < n_elems; ++i) dst[i] = static_cast<__fp16>(audio_features[i]);
-            if (n_elems * sizeof(__fp16) < buf.size()) {
-                std::memset(buf.data() + n_elems * sizeof(__fp16), 0, buf.size() - n_elems * sizeof(__fp16));
-            }
-        } else {
-            size_t n_elems = std::min(audio_features.size(), buf.size());
-            int8_t* dst = reinterpret_cast<int8_t*>(buf.data());
-            for (size_t i = 0; i < n_elems; ++i) dst[i] = static_cast<int8_t>(audio_features[i]);
-            if (n_elems < buf.size()) std::memset(buf.data() + n_elems, 0, buf.size() - n_elems);
-        }
-        wrote = true;
-        feature_idx = idx;
-        break;
+    for (const std::string& logical : audio_encoder_->logical_outputs) {
+        media_features_.erase(logical);
+        media_feature_shapes_.erase(logical);
+        media_feature_precisions_.erase(logical);
     }
-    if (!wrote) {
-        CACTUS_LOG_WARN("model", "audio_encoder has no input named input_features/audio_features; skipping");
-        return;
-    }
-    int mask_idx = input_index(*audio_encoder_, "input_features_mask");
-    if (mask_idx >= 0) {
-        auto& mb = audio_encoder_->input_buffers[mask_idx];
-        size_t feature_node = static_cast<size_t>(audio_encoder_->runtime_input_node_ids[feature_idx]);
-        const auto& feature_desc = audio_encoder_->graph->get_output_buffer(feature_node);
-        size_t expected_mels = feature_desc.shape.size() >= 3 ? feature_desc.shape[2] : config_.audio_input_feat_size;
-        size_t valid_frames = expected_mels > 0 ? audio_features.size() / expected_mels : 0;
-        size_t mask_node = static_cast<size_t>(audio_encoder_->runtime_input_node_ids[mask_idx]);
-        const auto& mask_desc = audio_encoder_->graph->get_output_buffer(mask_node);
-        const size_t elem = PrecisionTraits::size_of(mask_desc.precision);
-        const size_t cap = elem ? mb.size() / elem : 0;
-        const size_t n = std::min(cap, valid_frames);
-        for (size_t i = 0; i < n; ++i) {
-            switch (mask_desc.precision) {
-                case Precision::FP32: reinterpret_cast<float*>(mb.data())[i] = 1.0f; break;
-                case Precision::FP16: reinterpret_cast<__fp16*>(mb.data())[i] = static_cast<__fp16>(1.0f); break;
-                case Precision::INT8: reinterpret_cast<int8_t*>(mb.data())[i] = 1; break;
-                default: reinterpret_cast<int8_t*>(mb.data())[i] = 1; break;
-            }
-        }
-        if (n < cap) std::memset(mb.data() + n * elem, 0, (cap - n) * elem);
-    }
-    audio_encoder_->graph->execute();
-    for (size_t i = 0; i < audio_encoder_->output_node_ids.size() && i < audio_encoder_->logical_outputs.size(); ++i) {
-        const std::string& name = audio_encoder_->logical_outputs[i];
-        size_t node_id = static_cast<size_t>(audio_encoder_->output_node_ids[i]);
-        const auto& desc = audio_encoder_->graph->get_output_buffer(node_id);
-        void* ptr = audio_encoder_->graph->get_output(node_id);
-        auto& slot = media_features_[name];
-        slot.assign(desc.byte_size, 0);
-        std::memcpy(slot.data(), ptr, desc.byte_size);
-        media_feature_shapes_[name] = desc.shape;
-        media_feature_precisions_[name] = desc.precision;
+    for (const auto& mel : audio_features_per_message) {
+        if (mel.empty()) continue;
+        run_audio_encoder(mel);
     }
     audio_encoder_->graph->release_runtime_buffers();
     audio_encoder_->graph->release_all_weight_pages();
     unload_component_graph(*audio_encoder_);
+}
+
+void Model::run_audio_encoder(const std::vector<float>& audio_features) {
+    if (!audio_encoder_) return;
+    const std::vector<std::string> candidate_input_names = {"input_features", "audio_features"};
+    int feature_idx = -1;
+    for (const auto& name : candidate_input_names) {
+        int idx = input_index(*audio_encoder_, name);
+        if (idx >= 0) { feature_idx = idx; break; }
+    }
+    if (feature_idx < 0) {
+        CACTUS_LOG_WARN("model", "audio_encoder has no input named input_features/audio_features; skipping");
+        return;
+    }
+    const size_t feature_node = static_cast<size_t>(audio_encoder_->runtime_input_node_ids[feature_idx]);
+    const auto& feature_desc = audio_encoder_->graph->get_output_buffer(feature_node);
+    const size_t mel_bins = feature_desc.shape.size() >= 3
+        ? feature_desc.shape[2]
+        : static_cast<size_t>(config_.audio_input_feat_size);
+    const size_t max_frames_per_chunk = feature_desc.shape.size() >= 2 ? feature_desc.shape[1] : 0;
+    if (max_frames_per_chunk == 0 || mel_bins == 0) {
+        CACTUS_LOG_WARN("model", "audio_encoder feature input has unexpected shape; skipping");
+        return;
+    }
+    const size_t total_frames = audio_features.size() / mel_bins;
+    const size_t num_chunks = total_frames == 0
+        ? 1
+        : (total_frames + max_frames_per_chunk - 1) / max_frames_per_chunk;
+
+    const int mask_idx = input_index(*audio_encoder_, "input_features_mask");
+
+    for (size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        const size_t frame_start = chunk_idx * max_frames_per_chunk;
+        const size_t frames_in_chunk = frame_start >= total_frames
+            ? 0
+            : std::min(max_frames_per_chunk, total_frames - frame_start);
+        const size_t chunk_feature_elems = frames_in_chunk * mel_bins;
+        const float* chunk_src = audio_features.data() + frame_start * mel_bins;
+
+        auto& buf = audio_encoder_->input_buffers[feature_idx];
+        if (feature_desc.precision == Precision::FP32) {
+            const size_t n_bytes = std::min(chunk_feature_elems * sizeof(float), buf.size());
+            std::memcpy(buf.data(), chunk_src, n_bytes);
+            if (n_bytes < buf.size()) std::memset(buf.data() + n_bytes, 0, buf.size() - n_bytes);
+        } else if (feature_desc.precision == Precision::FP16) {
+            const size_t cap_elems = buf.size() / sizeof(__fp16);
+            const size_t n_elems = std::min(chunk_feature_elems, cap_elems);
+            __fp16* dst = reinterpret_cast<__fp16*>(buf.data());
+            for (size_t i = 0; i < n_elems; ++i) dst[i] = static_cast<__fp16>(chunk_src[i]);
+            if (n_elems < cap_elems) {
+                std::memset(buf.data() + n_elems * sizeof(__fp16), 0, (cap_elems - n_elems) * sizeof(__fp16));
+            }
+        } else {
+            const size_t n_elems = std::min(chunk_feature_elems, buf.size());
+            int8_t* dst = reinterpret_cast<int8_t*>(buf.data());
+            for (size_t i = 0; i < n_elems; ++i) dst[i] = static_cast<int8_t>(chunk_src[i]);
+            if (n_elems < buf.size()) std::memset(buf.data() + n_elems, 0, buf.size() - n_elems);
+        }
+
+        if (mask_idx >= 0) {
+            auto& mb = audio_encoder_->input_buffers[mask_idx];
+            const size_t mask_node = static_cast<size_t>(audio_encoder_->runtime_input_node_ids[mask_idx]);
+            const auto& mask_desc = audio_encoder_->graph->get_output_buffer(mask_node);
+            const size_t elem = PrecisionTraits::size_of(mask_desc.precision);
+            const size_t cap = elem ? mb.size() / elem : 0;
+            const size_t n = std::min(cap, frames_in_chunk);
+            for (size_t i = 0; i < n; ++i) {
+                switch (mask_desc.precision) {
+                    case Precision::FP32: reinterpret_cast<float*>(mb.data())[i] = 1.0f; break;
+                    case Precision::FP16: reinterpret_cast<__fp16*>(mb.data())[i] = static_cast<__fp16>(1.0f); break;
+                    case Precision::INT8: reinterpret_cast<int8_t*>(mb.data())[i] = 1; break;
+                    default: reinterpret_cast<int8_t*>(mb.data())[i] = 1; break;
+                }
+            }
+            if (n < cap) std::memset(mb.data() + n * elem, 0, (cap - n) * elem);
+        }
+
+        audio_encoder_->graph->execute();
+
+        for (size_t i = 0; i < audio_encoder_->output_node_ids.size() && i < audio_encoder_->logical_outputs.size(); ++i) {
+            const std::string& name = audio_encoder_->logical_outputs[i];
+            const size_t node_id = static_cast<size_t>(audio_encoder_->output_node_ids[i]);
+            const auto& desc = audio_encoder_->graph->get_output_buffer(node_id);
+            void* ptr = audio_encoder_->graph->get_output(node_id);
+            auto& slot = media_features_[name];
+            const size_t prev_bytes = slot.size();
+            slot.resize(prev_bytes + desc.byte_size);
+            std::memcpy(slot.data() + prev_bytes, ptr, desc.byte_size);
+            auto shape_it = media_feature_shapes_.find(name);
+            if (shape_it == media_feature_shapes_.end() || shape_it->second.empty()) {
+                media_feature_shapes_[name] = desc.shape;
+            } else if (desc.shape.size() >= 2 && shape_it->second.size() == desc.shape.size()) {
+                shape_it->second[shape_it->second.size() - 2] += desc.shape[desc.shape.size() - 2];
+            }
+            media_feature_precisions_[name] = desc.precision;
+        }
+    }
 }
 
 uint32_t Model::argmax_last_logits() {
@@ -1076,9 +1117,9 @@ void Model::prefill_with_images(const std::vector<uint32_t>& tokens,
 }
 
 void Model::prefill_with_audio(const std::vector<uint32_t>& tokens,
-                               const std::vector<float>& audio_features,
+                               const std::vector<std::vector<float>>& audio_features_per_message,
                                const std::string& profile_file) {
-    prefill_with_media(tokens, {}, audio_features, profile_file);
+    prefill_with_media(tokens, {}, audio_features_per_message, profile_file);
 }
 
 namespace {
@@ -1373,14 +1414,21 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
 
 bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                    const std::vector<std::string>& image_paths,
-                                   const std::vector<float>& audio_features) {
+                                   const std::vector<std::vector<float>>& audio_features_per_message) {
     const bool have_images = !image_paths.empty() && vision_encoder_ != nullptr;
-    const bool have_audio = !audio_features.empty() && audio_encoder_ != nullptr;
+    bool any_audio = false;
+    for (const auto& mel : audio_features_per_message) { if (!mel.empty()) { any_audio = true; break; } }
+    const bool have_audio = any_audio && audio_encoder_ != nullptr;
     std::vector<Qwen3VlImagePreprocessed> qwen_images;
 
     if (have_images) {
         if (!load_component_graph(*vision_encoder_)) {
             throw std::runtime_error("failed to load vision_encoder");
+        }
+        for (const std::string& logical : vision_encoder_->logical_outputs) {
+            media_features_.erase(logical);
+            media_feature_shapes_.erase(logical);
+            media_feature_precisions_.erase(logical);
         }
         for (const auto& path : image_paths) {
             if (family_ == "lfm2_vl") {
@@ -1471,9 +1519,15 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                 const auto& desc = vision_encoder_->graph->get_output_buffer(node_id);
                 void* ptr = vision_encoder_->graph->get_output(node_id);
                 auto& slot = media_features_[name];
-                slot.assign(desc.byte_size, 0);
-                std::memcpy(slot.data(), ptr, desc.byte_size);
-                media_feature_shapes_[name] = desc.shape;
+                const size_t prev_bytes = slot.size();
+                slot.resize(prev_bytes + desc.byte_size);
+                std::memcpy(slot.data() + prev_bytes, ptr, desc.byte_size);
+                auto shape_it = media_feature_shapes_.find(name);
+                if (shape_it == media_feature_shapes_.end() || shape_it->second.empty()) {
+                    media_feature_shapes_[name] = desc.shape;
+                } else if (desc.shape.size() >= 2 && shape_it->second.size() == desc.shape.size()) {
+                    shape_it->second[shape_it->second.size() - 2] += desc.shape[desc.shape.size() - 2];
+                }
                 media_feature_precisions_[name] = desc.precision;
             }
             vision_encoder_->graph->release_runtime_buffers();
@@ -1483,7 +1537,7 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
     }
 
     if (have_audio) {
-        run_audio_encoder(audio_features);
+        run_audio_encoder_messages(audio_features_per_message);
     }
 
     std::map<std::string, std::vector<uint8_t>> store_bytes;
@@ -1660,17 +1714,19 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
 
 void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
                                const std::vector<std::string>& image_paths,
-                               const std::vector<float>& audio_features,
+                               const std::vector<std::vector<float>>& audio_features_per_message,
                                const std::string& profile_file) {
     if (tokens.empty()) return;
     if (!image_paths.empty() && vision_encoder_ == nullptr) {
         throw std::runtime_error("Model bundle does not include a vision_encoder for image input");
     }
-    if (!audio_features.empty() && audio_encoder_ == nullptr) {
+    bool any_audio = false;
+    for (const auto& mel : audio_features_per_message) { if (!mel.empty()) { any_audio = true; break; } }
+    if (any_audio && audio_encoder_ == nullptr) {
         throw std::runtime_error("Model bundle does not include an audio_encoder for audio input");
     }
     const bool have_images = !image_paths.empty();
-    const bool have_audio = !audio_features.empty();
+    const bool have_audio = any_audio;
     if (!have_images && !have_audio) {
         prefill(tokens, get_prefill_chunk_size(), profile_file);
         return;
@@ -1680,7 +1736,7 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
         lm_encoder_ != nullptr && decoder_prefill_chunk_ != nullptr &&
         (vision_encoder_ != nullptr || audio_encoder_ != nullptr);
     if (can_chunk_prefill) {
-        if (run_chunk_prefill_path(tokens, image_paths, audio_features)) {
+        if (run_chunk_prefill_path(tokens, image_paths, audio_features_per_message)) {
             (void)profile_file;
             return;
         }
@@ -1697,7 +1753,7 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
         }
     }
     if (have_audio) {
-        run_audio_encoder(audio_features);
+        run_audio_encoder_messages(audio_features_per_message);
     }
 
     std::string image_feature_name;
@@ -1806,7 +1862,8 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
     return result;
 }
 
-uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& /*mel_bins*/,
+uint32_t Model::decode_with_audio(const std::vector<uint32_t>& tokens,
+                                  const std::vector<std::vector<float>>& /*audio_features_per_message*/,
                                   float temperature, float top_p, size_t top_k, const std::string& profile_file,
                                   float* out_entropy, float min_p, float repetition_penalty,
                                   float* /*out_token_time_start*/, float* /*out_token_time_end*/) {

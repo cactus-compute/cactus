@@ -929,7 +929,9 @@ int run_gemma_first_token(const Args& args) {
     if (tokens.empty()) throw std::runtime_error("first token probe produced empty prompt");
     std::vector<uint32_t> prefill_tokens(tokens.begin(), tokens.end() - 1);
     if (!prefill_tokens.empty()) {
-        model->prefill_with_media(prefill_tokens, args.image.empty() ? std::vector<std::string>{} : std::vector<std::string>{args.image}, audio_features);
+        std::vector<std::vector<float>> audio_messages;
+        if (!audio_features.empty()) audio_messages.push_back(std::move(audio_features));
+        model->prefill_with_media(prefill_tokens, args.image.empty() ? std::vector<std::string>{} : std::vector<std::string>{args.image}, audio_messages);
     }
     uint32_t first = model->decode({tokens.back()}, 0.0f, 1.0f, 1);
     std::string text = tokenizer->decode({first});
