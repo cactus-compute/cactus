@@ -83,12 +83,12 @@ extra_css:
 nav:
   - Home: index.md
   - Quickstart: docs/quickstart.md
-  - Choose Your SDK: docs/choose-sdk.md
-  - SDKs:
+  - Choose Your Binding: docs/choose-bindings.md
+  - Bindings:
     - React Native: react-native/README.md
     - Python: python/README.md
-    - Swift: apple/README.md
-    - Kotlin / Android: android/README.md
+    - Swift: swift/README.md
+    - Kotlin: kotlin/README.md
     - Flutter: flutter/README.md
     - Rust: rust/README.md
   - Core APIs (C++):
