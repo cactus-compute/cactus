@@ -80,8 +80,11 @@ inline const __fp16* get_fp16_data(const BufferDesc& buf) {
 }
 
 inline bool use_fp16_kv_cache() {
-    const char* value = std::getenv("CACTUS_KV_CACHE_FP16");
-    return value != nullptr && std::strcmp(value, "1") == 0;
+    static const bool cached = [] {
+        const char* value = std::getenv("CACTUS_KV_CACHE_FP16");
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    }();
+    return cached;
 }
 
 } // namespace

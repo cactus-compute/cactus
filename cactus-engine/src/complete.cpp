@@ -677,14 +677,6 @@ int cactus_complete(
 
         bool has_images = prompt.has_images();
         bool has_audio = prompt.has_audio();
-        const bool has_gemma4_mixed_media = prompt.model_type == Config::ModelType::GEMMA4 && has_images && has_audio;
-        auto decode_gemma4_mixed_media = [&](const std::vector<uint32_t>& tokens, float* out_entropy) -> uint32_t {
-            (void)tokens;
-            (void)out_entropy;
-            throw std::runtime_error(
-                "Gemma4 mixed-media native decode is not present in this build. "
-                "Use cactus run-transpiled for transpiled graph bundles.");
-        };
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
 
@@ -694,7 +686,7 @@ int cactus_complete(
         uint32_t next_token;
         size_t prompt_tokens;
 
-        if ((has_gemma4_mixed_media || has_audio) && !handle->processed_tokens.empty()) {
+        if (has_audio && !handle->processed_tokens.empty()) {
             auto& cache = handle->processed_tokens;
             size_t common = 0;
             size_t limit = std::min(cache.size(), prompt.tokens.size());
@@ -710,14 +702,9 @@ int cactus_complete(
             }
         }
 
-        if (has_gemma4_mixed_media) {
-            prompt_tokens = prompt.tokens.size();
-            next_token = decode_gemma4_mixed_media(prompt.tokens, &first_token_entropy);
-        } else {
-            auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
-            prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
-            next_token = generate_first_token(handle, prefill_result, prompt, &first_token_entropy);
-        }
+        auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
+        prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
+        next_token = generate_first_token(handle, prefill_result, prompt, &first_token_entropy);
 
         handle->processed_tokens = prompt.tokens;
         handle->processed_images = prompt.images;
@@ -785,11 +772,10 @@ int cactus_complete(
                 if (handle->should_stop) break;
 
                 float token_entropy = 0.0f;
-                if (has_gemma4_mixed_media) {
-                    next_token = decode_gemma4_mixed_media(handle->processed_tokens, &token_entropy);
-                } else if (has_audio) {
+                if (has_audio) {
+                    uint32_t last_token = handle->processed_tokens.empty() ? next_token : handle->processed_tokens.back();
                     next_token = handle->model->decode_with_audio(
-                        handle->processed_tokens, prompt.audio_features,
+                        {last_token}, prompt.audio_features,
                         prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
                         "", &token_entropy,
                         prompt.options.min_p, prompt.options.repetition_penalty);

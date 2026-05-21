@@ -136,6 +136,13 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
     const float* indices_ptr;
     if (indices_buffer.precision == Precision::FP32) {
         indices_ptr = indices_buffer.data_as<float>();
+    } else if (indices_buffer.precision == Precision::FP16) {
+        indices_float.resize(num_indices);
+        const __fp16* half_indices = indices_buffer.data_as<__fp16>();
+        for (size_t i = 0; i < num_indices; i++) {
+            indices_float[i] = static_cast<float>(half_indices[i]);
+        }
+        indices_ptr = indices_float.data();
     } else {
         indices_float.resize(num_indices);
         const int8_t* int_indices = indices_buffer.data_as<int8_t>();
