@@ -6,6 +6,15 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <cstdlib>
+#include <cstdio>
+#include <chrono>
+#include <fstream>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -463,6 +472,564 @@ static bool cactus_quant_valid_common(const CactusQuantMatrix* W, const void* A,
     return true;
 }
 
+static bool cactus_quant_env_enabled(const char* name) {
+    const char* value = std::getenv(name);
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+static uint64_t cactus_quant_now_ns() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+static inline uint32_t cactus_lmhead_extract_idx(const uint8_t* packed, uint32_t k, uint32_t bits) {
+    if (bits == 4) return (packed[k / 2] >> ((k & 1) * 4)) & 0xF;
+    if (bits == 2) return (packed[k / 4] >> ((k & 3) * 2)) & 0x3;
+    if (bits == 1) return (packed[k / 8] >> (k & 7)) & 0x1;
+    const uint32_t bit_pos = k * 3;
+    const uint32_t byte_idx = bit_pos / 8;
+    const uint32_t bit_idx = bit_pos & 7;
+    uint32_t val = static_cast<uint32_t>(packed[byte_idx]) >> bit_idx;
+    if (bit_idx > 5) val |= static_cast<uint32_t>(packed[byte_idx + 1]) << (8 - bit_idx);
+    return val & 0x7;
+}
+
+static bool cactus_quant_lmhead_diag_shape(const CactusQuantMatrix* W, uint32_t M) {
+    return W != nullptr && M == 1 && W->bits == 4
+        && W->K > 0 && W->N > 0
+        && (W->K % 16) == 0 && (W->N % 4) == 0
+        && W->group_size == W->K && W->num_groups == 1
+        && (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0;
+}
+
+static void cactus_quant_lmhead_diag_capture(const CactusQuantMatrix* W, const __fp16* A, uint32_t M) {
+    if (!cactus_quant_env_enabled("CACTUS_LMHEAD_SAMPLE_DIAG")) return;
+    if (!cactus_quant_lmhead_diag_shape(W, M) || A == nullptr) return;
+
+    const char* path_env = std::getenv("CACTUS_LMHEAD_SAMPLE_PATH");
+    const char* path = (path_env && path_env[0] != '\0')
+        ? path_env
+        : "/data/local/tmp/cactus_matrix/lmhead_hidden_samples_f16.bin";
+    const char* count_env = std::getenv("CACTUS_LMHEAD_SAMPLE_COUNT");
+    const uint32_t max_samples = count_env ? static_cast<uint32_t>(std::max(0, std::atoi(count_env))) : 8u;
+    if (max_samples == 0) return;
+
+    static std::mutex mutex;
+    static uint32_t samples = 0;
+    static bool wrote_header = false;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (samples >= max_samples) return;
+
+    std::ofstream out(path, std::ios::binary | std::ios::app);
+    if (!out) return;
+    if (!wrote_header) {
+        const char magic[4] = {'C', 'L', 'H', 'S'};
+        out.write(magic, sizeof(magic));
+        out.write(reinterpret_cast<const char*>(&W->K), sizeof(W->K));
+        wrote_header = true;
+    }
+    const uint32_t record_index = samples;
+    out.write(reinterpret_cast<const char*>(&record_index), sizeof(record_index));
+    out.write(reinterpret_cast<const char*>(A), static_cast<std::streamsize>(W->K * sizeof(__fp16)));
+    samples++;
+}
+
+static void cactus_quant_lmhead_diag_log(const CactusQuantMatrix* W, uint32_t M, uint64_t elapsed_ns) {
+    if (!cactus_quant_env_enabled("CACTUS_LMHEAD_SHARE_DIAG")) return;
+    if (!cactus_quant_lmhead_diag_shape(W, M)) return;
+
+    static std::mutex mutex;
+    static uint64_t calls = 0;
+    static uint64_t total_ns = 0;
+    std::lock_guard<std::mutex> lock(mutex);
+    calls++;
+    total_ns += elapsed_ns;
+    std::fprintf(stderr,
+        "CACTUS_LMHEAD_SHARE_DIAG call=%llu K=%u N=%u M=%u elapsed_ns=%llu total_ns=%llu avg_ns=%llu\n",
+        static_cast<unsigned long long>(calls), W->K, W->N, M,
+        static_cast<unsigned long long>(elapsed_ns),
+        static_cast<unsigned long long>(total_ns),
+        static_cast<unsigned long long>(total_ns / calls));
+}
+
+struct CactusLmheadQd8Qc8Key {
+    const uint8_t* packed = nullptr;
+    const __fp16* codebook = nullptr;
+    const __fp16* norms = nullptr;
+    const __fp16* input_scale_recip = nullptr;
+    const __fp16* rotation = nullptr;
+    uint32_t K = 0;
+    uint32_t N = 0;
+
+    bool operator==(const CactusLmheadQd8Qc8Key& other) const {
+        return packed == other.packed
+            && codebook == other.codebook
+            && norms == other.norms
+            && input_scale_recip == other.input_scale_recip
+            && rotation == other.rotation
+            && K == other.K
+            && N == other.N;
+    }
+};
+
+struct CactusLmheadQd8Qc8Cache {
+    CactusLmheadQd8Qc8Key key;
+    std::vector<int8_t> weights;
+    std::vector<float> scales;
+    std::vector<int32_t> row_sums;
+    std::string sidecar_path;
+    bool sidecar = false;
+    bool ready = false;
+};
+
+static CactusLmheadQd8Qc8Cache& cactus_lmhead_qd8_qc8_cache() {
+    static CactusLmheadQd8Qc8Cache cache;
+    return cache;
+}
+
+static std::mutex& cactus_lmhead_qd8_qc8_cache_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+static bool cactus_lmhead_qd8_qc8_read_u32(std::ifstream& in, uint32_t& value) {
+    in.read(reinterpret_cast<char*>(&value), sizeof(value));
+    return static_cast<bool>(in);
+}
+
+static bool cactus_lmhead_qd8_qc8_read_u64(std::ifstream& in, uint64_t& value) {
+    in.read(reinterpret_cast<char*>(&value), sizeof(value));
+    return static_cast<bool>(in);
+}
+
+static bool cactus_lmhead_qd8_qc8_load_sidecar(
+    const char* path,
+    uint32_t K,
+    uint32_t N,
+    CactusLmheadQd8Qc8Cache& cache) {
+    if (path == nullptr || path[0] == '\0') return false;
+    if (cache.ready && cache.sidecar && cache.sidecar_path == path
+        && cache.key.K == K && cache.key.N == N) {
+        return true;
+    }
+
+    const uint64_t start_ns = cactus_quant_now_ns();
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        std::fprintf(stderr, "CACTUS_LMHEAD_QD8_QC8_DIAG sidecar_open_failed path=%s\n", path);
+        return false;
+    }
+
+    char magic[4] = {};
+    uint32_t version = 0;
+    uint32_t file_K = 0;
+    uint32_t file_N = 0;
+    uint32_t layout = 0;
+    uint64_t scales_bytes = 0;
+    uint64_t row_sums_bytes = 0;
+    uint64_t weights_bytes = 0;
+    in.read(magic, sizeof(magic));
+    if (!in
+        || std::memcmp(magic, "CLM8", 4) != 0
+        || !cactus_lmhead_qd8_qc8_read_u32(in, version)
+        || !cactus_lmhead_qd8_qc8_read_u32(in, file_K)
+        || !cactus_lmhead_qd8_qc8_read_u32(in, file_N)
+        || !cactus_lmhead_qd8_qc8_read_u32(in, layout)
+        || !cactus_lmhead_qd8_qc8_read_u64(in, scales_bytes)
+        || !cactus_lmhead_qd8_qc8_read_u64(in, row_sums_bytes)
+        || !cactus_lmhead_qd8_qc8_read_u64(in, weights_bytes)) {
+        std::fprintf(stderr, "CACTUS_LMHEAD_QD8_QC8_DIAG sidecar_header_failed path=%s\n", path);
+        return false;
+    }
+
+    const uint64_t expected_scales = static_cast<uint64_t>(N) * sizeof(float);
+    const uint64_t expected_row_sums = static_cast<uint64_t>(N) * sizeof(int32_t);
+    const uint64_t expected_weights = static_cast<uint64_t>(N) * K * sizeof(int8_t);
+    if (version != 1 || file_K != K || file_N != N || layout != 1
+        || scales_bytes != expected_scales
+        || row_sums_bytes != expected_row_sums
+        || weights_bytes != expected_weights) {
+        std::fprintf(stderr,
+            "CACTUS_LMHEAD_QD8_QC8_DIAG sidecar_shape_failed path=%s version=%u K=%u N=%u layout=%u scales=%llu rowsums=%llu weights=%llu\n",
+            path, version, file_K, file_N, layout,
+            static_cast<unsigned long long>(scales_bytes),
+            static_cast<unsigned long long>(row_sums_bytes),
+            static_cast<unsigned long long>(weights_bytes));
+        return false;
+    }
+
+    cache.scales.assign(N, 1.0f);
+    cache.row_sums.assign(N, 0);
+    cache.weights.assign(static_cast<size_t>(N) * K, int8_t{0});
+    in.read(reinterpret_cast<char*>(cache.scales.data()), static_cast<std::streamsize>(scales_bytes));
+    in.read(reinterpret_cast<char*>(cache.row_sums.data()), static_cast<std::streamsize>(row_sums_bytes));
+    in.read(reinterpret_cast<char*>(cache.weights.data()), static_cast<std::streamsize>(weights_bytes));
+    if (!in) {
+        std::fprintf(stderr, "CACTUS_LMHEAD_QD8_QC8_DIAG sidecar_read_failed path=%s\n", path);
+        cache.ready = false;
+        return false;
+    }
+
+    cache.key = {};
+    cache.key.K = K;
+    cache.key.N = N;
+    cache.sidecar_path = path;
+    cache.sidecar = true;
+    cache.ready = true;
+    std::fprintf(stderr,
+        "CACTUS_LMHEAD_QD8_QC8_DIAG sidecar_loaded path=%s K=%u N=%u weight_bytes=%zu load_ms=%.3f\n",
+        path, K, N, cache.weights.size(),
+        static_cast<double>(cactus_quant_now_ns() - start_ns) / 1.0e6);
+    return true;
+}
+
+static bool cactus_lmhead_qd8_qc8_build_cache(const CactusQuantMatrix* W, CactusLmheadQd8Qc8Cache& cache) {
+    if (!W || !cactus_quant_lmhead_diag_shape(W, 1)) return false;
+    if (!W->rotation || !W->packed_indices || !W->codebook || !W->norms) return false;
+    const uint32_t K = W->K;
+    const uint32_t N = W->N;
+    if ((K % 16) != 0 || (N % 4) != 0) return false;
+
+    const char* sidecar_path = std::getenv("CACTUS_LMHEAD_QD8_QC8_CACHE_PATH");
+    if (sidecar_path == nullptr || sidecar_path[0] == '\0') {
+        sidecar_path = W->lmhead_qd8_qc8_path;
+    }
+    if (sidecar_path != nullptr && sidecar_path[0] != '\0') {
+        if (!cactus_lmhead_qd8_qc8_load_sidecar(sidecar_path, K, N, cache)) {
+            return false;
+        }
+        return true;
+    }
+
+    const CactusLmheadQd8Qc8Key key{
+        W->packed_indices,
+        W->codebook,
+        W->norms,
+        W->input_scale_recip,
+        W->rotation,
+        K,
+        N,
+    };
+    if (cache.ready && cache.key == key) return true;
+
+    const uint64_t start_ns = cactus_quant_now_ns();
+    const uint32_t pgb = cactus_quant_packed_group_bytes(W->bits, K);
+    cache.key = key;
+    cache.weights.assign(static_cast<size_t>(N) * K, int8_t{0});
+    cache.scales.assign(N, 1.0f);
+    cache.row_sums.assign(N, 0);
+    cache.sidecar_path.clear();
+    cache.sidecar = false;
+
+    std::vector<float> dq(K);
+    std::vector<float> row(K);
+    for (uint32_t n = 0; n < N; ++n) {
+        const uint8_t* packed = W->packed_indices + static_cast<size_t>(n) * pgb;
+        for (uint32_t i = 0; i < K; ++i) {
+            dq[i] = static_cast<float>(W->codebook[cactus_lmhead_extract_idx(packed, i, W->bits)]);
+        }
+
+        const float norm_n = static_cast<float>(W->norms[n]);
+        float max_abs = 0.0f;
+        for (uint32_t k = 0; k < K; ++k) {
+            const __fp16* r = W->rotation + static_cast<size_t>(k) * K;
+            float32x4_t acc0 = vdupq_n_f32(0.0f);
+            float32x4_t acc1 = vdupq_n_f32(0.0f);
+            uint32_t i = 0;
+            for (; i + 8 <= K; i += 8) {
+                const float32x4_t dq0 = vld1q_f32(dq.data() + i);
+                const float32x4_t dq1 = vld1q_f32(dq.data() + i + 4);
+                const float16x8_t rv = vld1q_f16(r + i);
+                acc0 = vfmaq_f32(acc0, dq0, vcvt_f32_f16(vget_low_f16(rv)));
+                acc1 = vfmaq_f32(acc1, dq1, vcvt_f32_f16(vget_high_f16(rv)));
+            }
+            float v = vaddvq_f32(vaddq_f32(acc0, acc1));
+            for (; i < K; ++i) v += dq[i] * static_cast<float>(r[i]);
+            v *= norm_n;
+            if (W->input_scale_recip) v *= static_cast<float>(W->input_scale_recip[k]);
+            row[k] = v;
+            max_abs = std::max(max_abs, std::abs(v));
+        }
+
+        const float scale = max_abs > 0.0f ? max_abs / 127.0f : 1.0f;
+        const float inv_scale = 1.0f / scale;
+        cache.scales[n] = scale;
+        int32_t sum = 0;
+        const uint32_t lane = n & 3u;
+        int8_t* dst = cache.weights.data() + static_cast<size_t>(n / 4) * K * 4 + lane;
+        for (uint32_t k = 0; k < K; ++k) {
+            int q = static_cast<int>(std::lrintf(row[k] * inv_scale));
+            q = std::max(-127, std::min(127, q));
+            dst[static_cast<size_t>(k) * 4] = static_cast<int8_t>(q);
+            sum += q;
+        }
+        cache.row_sums[n] = sum;
+    }
+
+    cache.ready = true;
+    std::fprintf(stderr,
+        "CACTUS_LMHEAD_QD8_QC8_DIAG cache_built K=%u N=%u weight_bytes=%zu build_ms=%.3f\n",
+        K,
+        N,
+        cache.weights.size(),
+        static_cast<double>(cactus_quant_now_ns() - start_ns) / 1.0e6);
+    return true;
+}
+
+static bool cactus_lmhead_qd8_qc8_matmul(const CactusQuantMatrix* W, const __fp16* A, uint32_t M, __fp16* C) {
+    if (!W || !A || !C || M != 1) return false;
+    if (!cactus_quant_lmhead_diag_shape(W, M)) return false;
+
+    CactusLmheadQd8Qc8Cache* cache_ptr = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(cactus_lmhead_qd8_qc8_cache_mutex());
+        CactusLmheadQd8Qc8Cache& cache = cactus_lmhead_qd8_qc8_cache();
+        if (!cactus_lmhead_qd8_qc8_build_cache(W, cache)) return false;
+        cache_ptr = &cache;
+    }
+    const CactusLmheadQd8Qc8Cache& cache = *cache_ptr;
+    const uint32_t K = W->K;
+    const uint32_t N = W->N;
+
+    thread_local std::vector<int8_t> a_q;
+    if (a_q.size() < K) a_q.resize(K);
+
+    float a_min = static_cast<float>(A[0]);
+    float a_max = a_min;
+    for (uint32_t k = 1; k < K; ++k) {
+        const float v = static_cast<float>(A[k]);
+        a_min = std::min(a_min, v);
+        a_max = std::max(a_max, v);
+    }
+    const float a_scale = a_max > a_min ? (a_max - a_min) / 255.0f : 1.0f;
+    int32_t a_zp = static_cast<int32_t>(std::lrintf(-128.0f - a_min / a_scale));
+    a_zp = std::max<int32_t>(-128, std::min<int32_t>(127, a_zp));
+    const float inv_a_scale = 1.0f / a_scale;
+    for (uint32_t k = 0; k < K; ++k) {
+        int q = static_cast<int>(std::lrintf(static_cast<float>(A[k]) * inv_a_scale)) + a_zp;
+        q = std::max(-128, std::min(127, q));
+        a_q[k] = static_cast<int8_t>(q);
+    }
+
+    const uint64_t run_start_ns = cactus_quant_now_ns();
+    const int8_t* a = a_q.data();
+    for (uint32_t n = 0; n < N; n += 4) {
+#if defined(__ARM_FEATURE_MATMUL_INT8)
+        const int8_t* w = cache.weights.data() + static_cast<size_t>(n / 4) * K * 4;
+        int32x4_t acc_01 = vdupq_n_s32(0);
+        int32x4_t acc_23 = vdupq_n_s32(0);
+        for (uint32_t k = 0; k < K; k += 8) {
+            const int32x4_t chunk0 = vreinterpretq_s32_s8(vld1q_s8(w + static_cast<size_t>(k) * 4));
+            const int32x4_t chunk1 = vreinterpretq_s32_s8(vld1q_s8(w + static_cast<size_t>(k) * 4 + 16));
+            const int8x16_t b01 = vreinterpretq_s8_s32(vzip1q_s32(chunk0, chunk1));
+            const int8x16_t b23 = vreinterpretq_s8_s32(vzip2q_s32(chunk0, chunk1));
+            const int8x8_t a8 = vld1_s8(a + k);
+            const int8x16_t a_dup = vcombine_s8(a8, a8);
+            acc_01 = vmmlaq_s32(acc_01, a_dup, b01);
+            acc_23 = vmmlaq_s32(acc_23, a_dup, b23);
+        }
+        const int32_t s0 = vgetq_lane_s32(acc_01, 0) - a_zp * cache.row_sums[n + 0];
+        const int32_t s1 = vgetq_lane_s32(acc_01, 1) - a_zp * cache.row_sums[n + 1];
+        const int32_t s2 = vgetq_lane_s32(acc_23, 0) - a_zp * cache.row_sums[n + 2];
+        const int32_t s3 = vgetq_lane_s32(acc_23, 1) - a_zp * cache.row_sums[n + 3];
+        C[n + 0] = static_cast<__fp16>(static_cast<float>(s0) * a_scale * cache.scales[n + 0]);
+        C[n + 1] = static_cast<__fp16>(static_cast<float>(s1) * a_scale * cache.scales[n + 1]);
+        C[n + 2] = static_cast<__fp16>(static_cast<float>(s2) * a_scale * cache.scales[n + 2]);
+        C[n + 3] = static_cast<__fp16>(static_cast<float>(s3) * a_scale * cache.scales[n + 3]);
+#else
+        (void)a;
+        return false;
+#endif
+    }
+
+    static uint64_t calls = 0;
+    ++calls;
+    if (calls <= 5 || (calls % 25) == 0) {
+        std::fprintf(stderr,
+            "CACTUS_LMHEAD_QD8_QC8_DIAG call=%llu K=%u N=%u run_ms=%.3f a_scale=%.9g a_zp=%d\n",
+            static_cast<unsigned long long>(calls),
+            K,
+            N,
+            static_cast<double>(cactus_quant_now_ns() - run_start_ns) / 1.0e6,
+            a_scale,
+            static_cast<int>(a_zp));
+    }
+    return true;
+}
+
+static bool cactus_lmhead_qd8_qc8_available(const CactusQuantMatrix* W) {
+    if (W == nullptr || !cactus_quant_lmhead_diag_shape(W, 1)) return false;
+    if (cactus_quant_env_enabled("CACTUS_LMHEAD_QD8_QC8_DIAG")) return true;
+    return W->lmhead_qd8_qc8_path != nullptr && W->lmhead_qd8_qc8_path[0] != '\0';
+}
+
+struct CactusSameLayoutCopyKey {
+    uint32_t bits = 0;
+    uint32_t K = 0;
+    uint32_t N = 0;
+    uint32_t group_size = 0;
+    uint32_t num_groups = 0;
+    uint32_t flags = 0;
+    const uint8_t* packed = nullptr;
+    const __fp16* norms = nullptr;
+
+    bool operator==(const CactusSameLayoutCopyKey& other) const {
+        return bits == other.bits
+            && K == other.K
+            && N == other.N
+            && group_size == other.group_size
+            && num_groups == other.num_groups
+            && flags == other.flags
+            && packed == other.packed
+            && norms == other.norms;
+    }
+};
+
+struct CactusSameLayoutCopyKeyHash {
+    size_t operator()(const CactusSameLayoutCopyKey& key) const {
+        size_t h = reinterpret_cast<size_t>(key.packed) ^ (reinterpret_cast<size_t>(key.norms) << 1);
+        h ^= static_cast<size_t>(key.bits) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= static_cast<size_t>(key.K) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= static_cast<size_t>(key.N) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= static_cast<size_t>(key.group_size) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= static_cast<size_t>(key.num_groups) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        h ^= static_cast<size_t>(key.flags) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct CactusSameLayoutCopyCache {
+    std::vector<uint8_t> packed;
+    std::vector<__fp16> norms;
+};
+
+struct CactusPairLayoutCache {
+    std::vector<uint8_t> packed;
+    std::vector<__fp16> norms;
+};
+
+static void cactus_quant_madvise_inner_pages(const void* ptr, size_t bytes) {
+    if (ptr == nullptr || bytes == 0) return;
+    const long page_long = sysconf(_SC_PAGESIZE);
+    if (page_long <= 0) return;
+    const uintptr_t page = static_cast<uintptr_t>(page_long);
+    const uintptr_t begin = reinterpret_cast<uintptr_t>(ptr);
+    const uintptr_t end = begin + bytes;
+    const uintptr_t inner_begin = (begin + page - 1) & ~(page - 1);
+    const uintptr_t inner_end = end & ~(page - 1);
+    if (inner_begin < inner_end) {
+        madvise(reinterpret_cast<void*>(inner_begin), inner_end - inner_begin, MADV_DONTNEED);
+    }
+}
+
+static bool cactus_quant_same_layout_copy(
+    const CactusQuantMatrix* W,
+    const uint8_t*& packed,
+    const __fp16*& norms) {
+    if (W == nullptr || W->N % 4 != 0 || W->bits == 0 || W->bits > 4) return false;
+
+    const uint32_t pgb = cactus_quant_packed_group_bytes(W->bits, W->group_size);
+    if (pgb == 0) return false;
+    const size_t n_blocks = W->N / 4;
+    const size_t packed_bytes = n_blocks * static_cast<size_t>(W->num_groups) * 4 * pgb;
+    const size_t norms_count = n_blocks * static_cast<size_t>(W->num_groups) * 4;
+    const CactusSameLayoutCopyKey key{
+        W->bits,
+        W->K,
+        W->N,
+        W->group_size,
+        W->num_groups,
+        W->flags,
+        W->packed_indices,
+        W->norms,
+    };
+
+    static std::mutex mutex;
+    static std::unordered_map<CactusSameLayoutCopyKey, CactusSameLayoutCopyCache, CactusSameLayoutCopyKeyHash> caches;
+    static size_t build_count = 0;
+    static size_t copied_bytes = 0;
+
+    std::lock_guard<std::mutex> lock(mutex);
+    CactusSameLayoutCopyCache& cache = caches[key];
+    if (cache.packed.empty() || cache.norms.empty()) {
+        cache.packed.resize(packed_bytes);
+        cache.norms.resize(norms_count);
+        std::memcpy(cache.packed.data(), W->packed_indices, packed_bytes);
+        std::memcpy(cache.norms.data(), W->norms, norms_count * sizeof(__fp16));
+        build_count++;
+        copied_bytes += packed_bytes + norms_count * sizeof(__fp16);
+        if (cactus_quant_env_enabled("CACTUS_GENERIC_ANON_COPY_LOG")) {
+            std::fprintf(stderr,
+                "CACTUS_GENERIC_ANON_COPY_LOG build=%zu bits=%u K=%u N=%u gs=%u groups=%u bytes=%zu total_bytes=%zu\n",
+                build_count, W->bits, W->K, W->N, W->group_size, W->num_groups,
+                packed_bytes + norms_count * sizeof(__fp16), copied_bytes);
+        }
+    }
+
+    packed = cache.packed.data();
+    norms = cache.norms.data();
+    return true;
+}
+
+static bool cactus_quant_pair_layout_copy(
+    const CactusQuantMatrix* W,
+    const uint8_t*& packed,
+    const __fp16*& norms) {
+    if (W == nullptr || W->bits != 4 || W->N % 4 != 0) return false;
+
+    const uint32_t pgb = cactus_quant_packed_group_bytes(W->bits, W->group_size);
+    if (pgb == 0) return false;
+    const size_t n_blocks = W->N / 4;
+    const size_t pair_count = (n_blocks + 1) / 2;
+    const size_t panel_bytes = static_cast<size_t>(4) * pgb;
+    const size_t packed_bytes = pair_count * static_cast<size_t>(W->num_groups) * 2 * panel_bytes;
+    const size_t norms_count = pair_count * static_cast<size_t>(W->num_groups) * 2 * 4;
+    const CactusSameLayoutCopyKey key{
+        W->bits,
+        W->K,
+        W->N,
+        W->group_size,
+        W->num_groups,
+        W->flags,
+        W->packed_indices,
+        W->norms,
+    };
+
+    static std::mutex mutex;
+    static std::unordered_map<CactusSameLayoutCopyKey, CactusPairLayoutCache, CactusSameLayoutCopyKeyHash> caches;
+
+    std::lock_guard<std::mutex> lock(mutex);
+    CactusPairLayoutCache& cache = caches[key];
+    if (cache.packed.empty() || cache.norms.empty()) {
+        cache.packed.assign(packed_bytes, 0);
+        cache.norms.assign(norms_count, static_cast<__fp16>(0));
+        for (size_t pair = 0; pair < pair_count; ++pair) {
+            for (uint32_t g = 0; g < W->num_groups; ++g) {
+                for (size_t lane = 0; lane < 2; ++lane) {
+                    const size_t nb = pair * 2 + lane;
+                    if (nb >= n_blocks) continue;
+                    const size_t src_panel = (nb * W->num_groups + g) * panel_bytes;
+                    const size_t dst_panel = ((pair * W->num_groups + g) * 2 + lane) * panel_bytes;
+                    std::memcpy(cache.packed.data() + dst_panel, W->packed_indices + src_panel, panel_bytes);
+
+                    const size_t src_norm = (nb * W->num_groups + g) * 4;
+                    const size_t dst_norm = ((pair * W->num_groups + g) * 2 + lane) * 4;
+                    std::memcpy(cache.norms.data() + dst_norm, W->norms + src_norm, 4 * sizeof(__fp16));
+                }
+            }
+        }
+        if (cactus_quant_env_enabled("CACTUS_GENERIC_PAIR_REPACK_MADVISE_INNER")) {
+            cactus_quant_madvise_inner_pages(W->packed_indices, n_blocks * static_cast<size_t>(W->num_groups) * panel_bytes);
+            cactus_quant_madvise_inner_pages(W->norms, n_blocks * static_cast<size_t>(W->num_groups) * 4 * sizeof(__fp16));
+        }
+    }
+
+    packed = cache.packed.data();
+    norms = cache.norms.data();
+    return true;
+}
+
 }  // namespace
 
 static void cactus_quant_dispatch_group_gemm(
@@ -478,6 +1045,13 @@ static void cactus_quant_dispatch_group_gemm(
         default: return;
     }
 }
+
+static void cactus_quant_4bit_gemv_pair_layout(
+    const CactusQuantMatrix* W,
+    const uint8_t* packed_pair,
+    const __fp16* norms_pair,
+    const __fp16* x,
+    __fp16* y);
 
 static void cactus_matmul_f16_worker(
     const __fp16* a,
@@ -1520,20 +2094,30 @@ void cactus_quant_matmul(
     }
     if (W != nullptr && M == 1
         && (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0) {
+        const uint8_t* packed = W->packed_indices;
+        const __fp16* norms = W->norms;
+        if (W->bits == 4 && cactus_quant_env_enabled("CACTUS_GENERIC_PAIR_REPACK_DIAG")
+            && cactus_quant_pair_layout_copy(W, packed, norms)) {
+            cactus_quant_4bit_gemv_pair_layout(W, packed, norms, A, C);
+            return;
+        }
+        if (cactus_quant_env_enabled("CACTUS_GENERIC_ANON_COPY_DIAG")) {
+            cactus_quant_same_layout_copy(W, packed, norms);
+        }
         if (W->bits == 4) {
-            cactus_quant_4bit_gemv_interleaved(W, W->packed_indices, W->norms, A, C);
+            cactus_quant_4bit_gemv_interleaved(W, packed, norms, A, C);
             return;
         }
         if (W->bits == 3) {
-            cactus_quant_3bit_gemv_interleaved(W, W->packed_indices, W->norms, A, C);
+            cactus_quant_3bit_gemv_interleaved(W, packed, norms, A, C);
             return;
         }
         if (W->bits == 2) {
-            cactus_quant_2bit_gemv_interleaved(W, W->packed_indices, W->norms, A, C);
+            cactus_quant_2bit_gemv_interleaved(W, packed, norms, A, C);
             return;
         }
         if (W->bits == 1) {
-            cactus_quant_1bit_gemv_interleaved(W, W->packed_indices, W->norms, A, C);
+            cactus_quant_1bit_gemv_interleaved(W, packed, norms, A, C);
             return;
         }
     }
@@ -1941,6 +2525,20 @@ void cactus_quant_orthogonal_matmul(
     const uint32_t N    = W->N;
     const uint32_t bits = W->bits;
     const uint32_t pgb  = cactus_quant_packed_group_bytes(bits, K);
+    const bool lmhead_diag = cactus_quant_lmhead_diag_shape(W, M)
+        && (cactus_quant_env_enabled("CACTUS_LMHEAD_SHARE_DIAG")
+            || cactus_quant_env_enabled("CACTUS_LMHEAD_SAMPLE_DIAG"));
+    const uint64_t lmhead_start_ns = lmhead_diag ? cactus_quant_now_ns() : 0;
+    if (lmhead_diag) cactus_quant_lmhead_diag_capture(W, A, M);
+    auto finish_lmhead_diag = [&]() {
+        if (lmhead_diag) cactus_quant_lmhead_diag_log(W, M, cactus_quant_now_ns() - lmhead_start_ns);
+    };
+
+    if (cactus_lmhead_qd8_qc8_available(W)
+        && cactus_lmhead_qd8_qc8_matmul(W, A, M, C)) {
+        finish_lmhead_diag();
+        return;
+    }
 
     const uint32_t n_cb = 1u << bits;
 
@@ -1981,6 +2579,51 @@ void cactus_quant_orthogonal_matmul(
         }
         uint8x16_t cb_lo_tbl = vld1q_u8(cb_lo_arr);
         uint8x16_t cb_hi_tbl = vld1q_u8(cb_hi_arr);
+
+        if (cactus_quant_env_enabled("CACTUS_ORTHO_F32_AR_DIAG")) {
+            CactusThreading::parallel_for(
+                static_cast<size_t>(N),
+                CactusThreading::ParallelConfig{64, 1},
+                [&](size_t n_start, size_t n_end) {
+                    for (size_t n = n_start; n < n_end; ++n) {
+                        const uint8_t* packed = W->packed_indices + n * pgb;
+                        float norm_n = static_cast<float>(W->norms[n]);
+                        for (uint32_t m = 0; m < M; ++m) {
+                            const float* ar = A_rot.data() + static_cast<size_t>(m) * K;
+                            float32x4_t acc0 = vdupq_n_f32(0.f);
+                            float32x4_t acc1 = vdupq_n_f32(0.f);
+                            float32x4_t acc2 = vdupq_n_f32(0.f);
+                            float32x4_t acc3 = vdupq_n_f32(0.f);
+
+                            for (uint32_t i = 0; i < K; i += 16) {
+                                uint8x8_t raw8 = vld1_u8(packed + i / 2);
+                                uint8x8_t lo_nibs = vand_u8(raw8, vdup_n_u8(0x0F));
+                                uint8x8_t hi_nibs = vshr_n_u8(raw8, 4);
+                                uint8x8x2_t zipped = vzip_u8(lo_nibs, hi_nibs);
+                                uint8x16_t indices16 = vcombine_u8(zipped.val[0], zipped.val[1]);
+
+                                uint8x16_t lo_bytes = vqtbl1q_u8(cb_lo_tbl, indices16);
+                                uint8x16_t hi_bytes = vqtbl1q_u8(cb_hi_tbl, indices16);
+
+                                uint8x16x2_t fp16_bytes = vzipq_u8(lo_bytes, hi_bytes);
+                                float16x8_t cb_lo = vreinterpretq_f16_u8(fp16_bytes.val[0]);
+                                float16x8_t cb_hi = vreinterpretq_f16_u8(fp16_bytes.val[1]);
+
+                                acc0 = vfmaq_f32(acc0, vcvt_f32_f16(vget_low_f16(cb_lo)),  vld1q_f32(ar + i));
+                                acc1 = vfmaq_f32(acc1, vcvt_f32_f16(vget_high_f16(cb_lo)), vld1q_f32(ar + i + 4));
+                                acc2 = vfmaq_f32(acc2, vcvt_f32_f16(vget_low_f16(cb_hi)),  vld1q_f32(ar + i + 8));
+                                acc3 = vfmaq_f32(acc3, vcvt_f32_f16(vget_high_f16(cb_hi)), vld1q_f32(ar + i + 12));
+                            }
+
+                            float acc = vaddvq_f32(vaddq_f32(vaddq_f32(acc0, acc1),
+                                                              vaddq_f32(acc2, acc3)));
+                            C[static_cast<size_t>(m) * N + n] = static_cast<__fp16>(acc * norm_n);
+                        }
+                    }
+                });
+            finish_lmhead_diag();
+            return;
+        }
 
         std::vector<__fp16> A_rot_f16;
         A_rot_f16.resize(static_cast<size_t>(M) * K);
@@ -2043,6 +2686,7 @@ void cactus_quant_orthogonal_matmul(
                     }
                 }
             });
+        finish_lmhead_diag();
         return;
     }
 
@@ -2064,6 +2708,7 @@ void cactus_quant_orthogonal_matmul(
                 }
             }
         });
+    finish_lmhead_diag();
 }
 
 void cactus_quant_4bit_gemv_interleaved(
@@ -2108,6 +2753,7 @@ void cactus_quant_4bit_gemv_interleaved(
     const size_t N_tiles_4 = N_blocks / 4;       // groups of 4 n_blocks = 16 outputs
 
     const uint8x16_t lo_mask = vdupq_n_u8(0x0F);
+    const bool split_panels_diag = cactus_quant_env_enabled("CACTUS_GENERIC_SPLIT_PANELS_DIAG");
 
     cactus_quant_parallel_ranges(N_blocks, 64, [&](size_t block_start, size_t block_end) {
         size_t nb = block_start;
@@ -2126,28 +2772,39 @@ void cactus_quant_4bit_gemv_interleaved(
                 int32x4_t d0a = vdupq_n_s32(0), d0b = vdupq_n_s32(0);
                 int32x4_t d1a = vdupq_n_s32(0), d1b = vdupq_n_s32(0);
 
-                for (uint32_t kb = 0; kb < gs; kb += 16) {
-                    int8x16_t a_v = vld1q_s8(a_grp + kb);
+                #define PROC_PANEL(P, DA, DB) do { \
+                    const uint8_t* c0 = (P) + (kb / 8 + 0) * 16; \
+                    const uint8_t* c1 = (P) + (kb / 8 + 1) * 16; \
+                    uint8x16_t b0 = vld1q_u8(c0); \
+                    int8x16_t wl0 = vqtbl1q_s8(cb_lut, vandq_u8(b0, lo_mask)); \
+                    int8x16_t wh0 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b0, 4)); \
+                    DA = vdotq_laneq_s32(DA, wl0, a_v, 0); \
+                    DB = vdotq_laneq_s32(DB, wh0, a_v, 1); \
+                    uint8x16_t b1 = vld1q_u8(c1); \
+                    int8x16_t wl1 = vqtbl1q_s8(cb_lut, vandq_u8(b1, lo_mask)); \
+                    int8x16_t wh1 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b1, 4)); \
+                    DA = vdotq_laneq_s32(DA, wl1, a_v, 2); \
+                    DB = vdotq_laneq_s32(DB, wh1, a_v, 3); \
+                } while (0)
 
-                    #define PROC_PANEL(P, DA, DB) do { \
-                        const uint8_t* c0 = (P) + (kb / 8 + 0) * 16; \
-                        const uint8_t* c1 = (P) + (kb / 8 + 1) * 16; \
-                        uint8x16_t b0 = vld1q_u8(c0); \
-                        int8x16_t wl0 = vqtbl1q_s8(cb_lut, vandq_u8(b0, lo_mask)); \
-                        int8x16_t wh0 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b0, 4)); \
-                        DA = vdotq_laneq_s32(DA, wl0, a_v, 0); \
-                        DB = vdotq_laneq_s32(DB, wh0, a_v, 1); \
-                        uint8x16_t b1 = vld1q_u8(c1); \
-                        int8x16_t wl1 = vqtbl1q_s8(cb_lut, vandq_u8(b1, lo_mask)); \
-                        int8x16_t wh1 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b1, 4)); \
-                        DA = vdotq_laneq_s32(DA, wl1, a_v, 2); \
-                        DB = vdotq_laneq_s32(DB, wh1, a_v, 3); \
-                    } while (0)
+                if (split_panels_diag) {
+                    for (uint32_t kb = 0; kb < gs; kb += 16) {
+                        int8x16_t a_v = vld1q_s8(a_grp + kb);
+                        PROC_PANEL(p0, d0a, d0b);
+                    }
+                    for (uint32_t kb = 0; kb < gs; kb += 16) {
+                        int8x16_t a_v = vld1q_s8(a_grp + kb);
+                        PROC_PANEL(p1, d1a, d1b);
+                    }
+                } else {
+                    for (uint32_t kb = 0; kb < gs; kb += 16) {
+                        int8x16_t a_v = vld1q_s8(a_grp + kb);
 
-                    PROC_PANEL(p0, d0a, d0b);
-                    PROC_PANEL(p1, d1a, d1b);
-                    #undef PROC_PANEL
+                        PROC_PANEL(p0, d0a, d0b);
+                        PROC_PANEL(p1, d1a, d1b);
+                    }
                 }
+                #undef PROC_PANEL
 
                 int32x4_t dot0 = vaddq_s32(d0a, d0b);
                 int32x4_t dot1 = vaddq_s32(d1a, d1b);
@@ -2196,6 +2853,102 @@ void cactus_quant_4bit_gemv_interleaved(
         }
     });
     (void)N_tiles_4;
+}
+
+static void cactus_quant_4bit_gemv_pair_layout(
+    const CactusQuantMatrix* W,
+    const uint8_t* packed_pair,
+    const __fp16* norms_pair,
+    const __fp16* x,
+    __fp16* y) {
+    if (!cactus_quant_valid_common(W, x, y)) return;
+    if (W->bits != 4 || W->N % 4 != 0 || (W->group_size % 32) != 0 || W->group_size > 256) return;
+
+    const uint32_t gs = W->group_size;
+    const uint32_t pgb = cactus_quant_packed_group_bytes(4, gs);
+    const uint32_t num_groups = W->num_groups;
+    const size_t panel_bytes = static_cast<size_t>(4) * pgb;
+    const size_t n_blocks = W->N / 4;
+    const size_t pair_count = (n_blocks + 1) / 2;
+
+    thread_local std::vector<__fp16> code_basis_buf;
+    if (code_basis_buf.size() < W->K) code_basis_buf.resize(W->K);
+    cactus_quant_transform_hadamard_activations(*W, x, 1, code_basis_buf.data());
+    const __fp16* code_basis = code_basis_buf.data();
+
+    thread_local std::vector<int8_t> act_i8_buf;
+    thread_local std::vector<float> act_scales_buf;
+    if (act_i8_buf.size() < W->K) act_i8_buf.resize(W->K);
+    if (act_scales_buf.size() < num_groups) act_scales_buf.resize(num_groups);
+    for (uint32_t g = 0; g < num_groups; ++g) {
+        act_scales_buf[g] = tq_quantize_group_i8(
+            code_basis + static_cast<size_t>(g) * gs,
+            act_i8_buf.data() + static_cast<size_t>(g) * gs, gs);
+    }
+    const int8_t* act_i8 = act_i8_buf.data();
+    const float* act_scales = act_scales_buf.data();
+
+    int8_t cb_i8[16] = {};
+    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 16);
+    const int8x16_t cb_lut = vld1q_s8(cb_i8);
+    const uint8x16_t lo_mask = vdupq_n_u8(0x0F);
+
+    cactus_quant_parallel_ranges(pair_count, 64, [&](size_t pair_start, size_t pair_end) {
+        for (size_t pair = pair_start; pair < pair_end; ++pair) {
+            const size_t nb0 = pair * 2;
+            const size_t nb1 = nb0 + 1;
+            float32x4_t acc0 = vdupq_n_f32(0.f);
+            float32x4_t acc1 = vdupq_n_f32(0.f);
+
+            for (uint32_t g = 0; g < num_groups; ++g) {
+                const uint8_t* p0 = packed_pair + ((pair * num_groups + g) * 2) * panel_bytes;
+                const uint8_t* p1 = p0 + panel_bytes;
+                const int8_t* a_grp = act_i8 + static_cast<size_t>(g) * gs;
+                const float a_sc = act_scales[g];
+
+                int32x4_t d0a = vdupq_n_s32(0), d0b = vdupq_n_s32(0);
+                int32x4_t d1a = vdupq_n_s32(0), d1b = vdupq_n_s32(0);
+
+                for (uint32_t kb = 0; kb < gs; kb += 16) {
+                    int8x16_t a_v = vld1q_s8(a_grp + kb);
+
+                    #define PROC_PANEL(P, DA, DB) do { \
+                        const uint8_t* c0 = (P) + (kb / 8 + 0) * 16; \
+                        const uint8_t* c1 = (P) + (kb / 8 + 1) * 16; \
+                        uint8x16_t b0 = vld1q_u8(c0); \
+                        int8x16_t wl0 = vqtbl1q_s8(cb_lut, vandq_u8(b0, lo_mask)); \
+                        int8x16_t wh0 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b0, 4)); \
+                        DA = vdotq_laneq_s32(DA, wl0, a_v, 0); \
+                        DB = vdotq_laneq_s32(DB, wh0, a_v, 1); \
+                        uint8x16_t b1 = vld1q_u8(c1); \
+                        int8x16_t wl1 = vqtbl1q_s8(cb_lut, vandq_u8(b1, lo_mask)); \
+                        int8x16_t wh1 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b1, 4)); \
+                        DA = vdotq_laneq_s32(DA, wl1, a_v, 2); \
+                        DB = vdotq_laneq_s32(DB, wh1, a_v, 3); \
+                    } while (0)
+
+                    PROC_PANEL(p0, d0a, d0b);
+                    if (nb1 < n_blocks) {
+                        PROC_PANEL(p1, d1a, d1b);
+                    }
+                    #undef PROC_PANEL
+                }
+
+                const float scale_grp = cb_scale * a_sc;
+                float32x4_t n0 = vcvt_f32_f16(vld1_f16(norms_pair + ((pair * num_groups + g) * 2) * 4));
+                acc0 = vfmaq_f32(acc0, vcvtq_f32_s32(vaddq_s32(d0a, d0b)), vmulq_n_f32(n0, scale_grp));
+                if (nb1 < n_blocks) {
+                    float32x4_t n1 = vcvt_f32_f16(vld1_f16(norms_pair + (((pair * num_groups + g) * 2) + 1) * 4));
+                    acc1 = vfmaq_f32(acc1, vcvtq_f32_s32(vaddq_s32(d1a, d1b)), vmulq_n_f32(n1, scale_grp));
+                }
+            }
+
+            vst1_f16(y + nb0 * 4, vcvt_f16_f32(acc0));
+            if (nb1 < n_blocks) {
+                vst1_f16(y + nb1 * 4, vcvt_f16_f32(acc1));
+            }
+        }
+    });
 }
 
 void cactus_quant_3bit_gemv_interleaved(

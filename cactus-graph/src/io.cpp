@@ -52,6 +52,31 @@ namespace {
         return filename;
     }
 
+    std::string resolve_lmhead_qd8_qc8_sidecar(const std::string& filename) {
+        constexpr const char* suffix = ".weights";
+        if (filename.size() <= std::strlen(suffix) ||
+            filename.compare(filename.size() - std::strlen(suffix), std::strlen(suffix), suffix) != 0) {
+            return "";
+        }
+        const std::string stem = filename.substr(0, filename.size() - std::strlen(suffix));
+        const std::string path = stem + ".lmhead_qd8_qc8.cache";
+        return std::filesystem::exists(path) ? path : "";
+    }
+
+    void maybe_attach_lmhead_qd8_qc8_sidecar(
+        BufferDesc& buffer,
+        const std::string& resolved_filename,
+        const std::vector<size_t>& shape,
+        const GraphFile::MappedFile& mapped_file) {
+        if (shape.size() != 2 || (shape[0] % 4) != 0 || (shape[1] % 16) != 0) return;
+        if (!PrecisionTraits::is_cq(mapped_file.precision())) return;
+        if (PrecisionTraits::cq_bits(mapped_file.precision()) != 4) return;
+        if (mapped_file.group_size() != shape[1] || mapped_file.num_groups() != 1) return;
+        if (!mapped_file.is_orthogonal_rotation()) return;
+
+        buffer.cq_lmhead_qd8_qc8_path = resolve_lmhead_qd8_qc8_sidecar(resolved_filename);
+    }
+
     inline void write_u32(std::ostream& out, uint32_t v) {
       out.write(reinterpret_cast<const char*>(&v), sizeof(v));
     }
@@ -417,6 +442,7 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
         if (mapped_file->is_interleaved_4row()) {
             buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
         }
+        maybe_attach_lmhead_qd8_qc8_sidecar(buffer, resolved_filename, shape, *mapped_file);
     } else if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
         buffer.group_size = mapped_file->group_size();
         buffer.num_groups = mapped_file->num_groups();
@@ -482,6 +508,7 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
         if (mapped_file->is_interleaved_4row()) {
             buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
         }
+        maybe_attach_lmhead_qd8_qc8_sidecar(buffer, resolved_filename, shape, *mapped_file);
     }
 
     size_t file_idx = mapped_files_.size();
@@ -529,6 +556,7 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
     buffer.cq_permutation = nullptr;
     buffer.cq_rotation = nullptr;
     buffer.cq_flags = 0;
+    buffer.cq_lmhead_qd8_qc8_path.clear();
 
     if (PrecisionTraits::is_cq(precision) && mapped_file->group_size() > 0) {
         buffer.group_size = mapped_file->group_size();
@@ -565,6 +593,7 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
         if (mapped_file->is_interleaved_4row()) {
             buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
         }
+        maybe_attach_lmhead_qd8_qc8_sidecar(buffer, resolved_filename, shape, *mapped_file);
     } else if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
         buffer.group_size = mapped_file->group_size();
         buffer.num_groups = mapped_file->num_groups();

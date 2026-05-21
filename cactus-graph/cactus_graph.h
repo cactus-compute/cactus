@@ -261,6 +261,7 @@ struct BufferDesc {
     const uint32_t* cq_permutation = nullptr;
     const __fp16* cq_rotation = nullptr;
     uint32_t cq_flags = 0;
+    std::string cq_lmhead_qd8_qc8_path;
 
     CactusQuantMatrix to_cq_matrix() const {
         return CactusQuantMatrix{
@@ -281,6 +282,7 @@ struct BufferDesc {
             .rotation = cq_rotation,
             .expanded = nullptr,
             .norm_f32 = nullptr,
+            .lmhead_qd8_qc8_path = cq_lmhead_qd8_qc8_path.empty() ? nullptr : cq_lmhead_qd8_qc8_path.c_str(),
         };
     }
 
