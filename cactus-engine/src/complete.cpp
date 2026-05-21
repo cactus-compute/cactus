@@ -544,14 +544,11 @@ PrefillResult do_prefill(
 
         auto slice_delta_audio = [&]() -> std::vector<std::vector<float>> {
             if (!result.was_prefix) return prompt.audio_features;
-            const size_t cached_user_messages = handle->processed_images.size();
+            const size_t cached_msg_count = handle->processed_images.size();
             size_t cached_audio_count = 0;
-            size_t seen_user = 0;
-            for (const auto& msg : prompt.messages) {
-                if (msg.role != "user") continue;
-                if (seen_user >= cached_user_messages) break;
-                if (!msg.audio.empty()) cached_audio_count++;
-                seen_user++;
+            for (size_t i = 0; i < cached_msg_count && i < prompt.messages.size(); ++i) {
+                const auto& msg = prompt.messages[i];
+                if (msg.role == "user" && !msg.audio.empty()) cached_audio_count++;
             }
             cached_audio_count = std::min(cached_audio_count, prompt.audio_features.size());
             return std::vector<std::vector<float>>(
