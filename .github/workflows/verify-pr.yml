@@ -78,7 +78,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "python_changed=false" >> $GITHUB_OUTPUT
           else
-            CHANGED=$(gh pr diff ${{ github.event.pull_request.number }} --name-only | grep -cE '^python/(src/|requirements\.txt)' || true)
+            CHANGED=$(gh pr diff ${{ github.event.pull_request.number }} --name-only | grep -cE '^python/(cactus/|requirements\.txt|pyproject\.toml)' || true)
             echo "python_changed=$([[ $CHANGED -gt 0 ]] && echo true || echo false)" >> $GITHUB_OUTPUT
           fi
 
@@ -132,7 +132,7 @@ jobs:
 
       - name: Build tests
         run: |
-          cd tests
+          cd cactus-engine/tests
           rm -rf build && mkdir -p build && cd build
           cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF
           make -j$(nproc)
@@ -153,7 +153,7 @@ jobs:
           FAILED=0
           for test in test_graph test_kernel test_kv_cache test_index test_model_loading; do
             echo "=== Running $test ==="
-            if ! ./tests/build/$test; then
+            if ! ./cactus-engine/tests/build/$test; then
               FAILED=$((FAILED + 1))
             fi
           done
@@ -215,11 +215,8 @@ jobs:
           CACTUS_NO_CLOUD_TELE: "1"
         run: |
           export ${{ matrix.env_var }}="${{ github.workspace }}/weights/${{ matrix.model_dir }}"
-          export CACTUS_TEST_ASSETS="${{ github.workspace }}/tests/assets"
-          export CACTUS_TEST_GOLDEN_FILE="${{ github.workspace }}/tests/golden/golden.json"
+          export CACTUS_TEST_ASSETS="${{ github.workspace }}/cactus-engine/tests/assets"
+          export CACTUS_TEST_GOLDEN_FILE="${{ github.workspace }}/cactus-engine/tests/golden/golden.json"
           export CACTUS_TEST_GOLDEN_FAMILY="${{ matrix.family }}"
           export CACTUS_TEST_GOLDEN_PRECISION="${{ matrix.precision }}"
-          if [ "${{ matrix.family }}" = "whisper" ] || [ "${{ matrix.family }}" = "moonshine" ]; then
-            export CACTUS_TEST_VAD_MODEL="${{ github.workspace }}/weights/silero-vad"
-          fi
-          ./tests/build/test_exhaustive
+          ./cactus-engine/tests/build/test_exhaustive

@@ -1,14 +1,20 @@
+name: C++ CI
+
 on:
   pull_request:
     paths:
       - cactus/**
-      - tests/**
+      - cactus-engine/**
+      - cactus-graph/**
+      - cactus-kernels/**
       - .github/workflows/cpp.yml
   push:
     branches: [main]
     paths:
       - cactus/**
-      - tests/**
+      - cactus-engine/**
+      - cactus-graph/**
+      - cactus-kernels/**
       - .github/workflows/cpp.yml
   workflow_dispatch:
 
@@ -33,14 +39,14 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ matrix.os }}-${{ github.ref_name }}-${{ hashFiles('cactus/CMakeLists.txt', 'tests/CMakeLists.txt', '.github/workflows/cpp.yml') }}
+          key: ccache-${{ matrix.os }}-${{ github.ref_name }}-${{ hashFiles('cactus/CMakeLists.txt', 'cactus-engine/tests/CMakeLists.txt', '.github/workflows/cpp.yml') }}
           restore-keys: |
             ccache-${{ matrix.os }}-${{ github.ref_name }}-
             ccache-${{ matrix.os }}-
       - run: ccache --zero-stats || true
       - run: cmake -G Ninja -S cactus -B cactus/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-      - run: cmake --build cactus/build --target cactus_ffi --parallel 4
-      - run: cmake -G Ninja -S tests -B tests/build-ci -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-      - run: cmake --build tests/build-ci --target test_stt --parallel 4
-      - run: ./tests/build-ci/test_stt
+      - run: cmake --build cactus/build --target cactus --parallel 4
+      - run: cmake -G Ninja -S cactus-engine/tests -B cactus-engine/tests/build-ci -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - run: cmake --build cactus-engine/tests/build-ci --target test_stt --parallel 4
+      - run: ./cactus-engine/tests/build-ci/test_stt
       - run: ccache --show-stats || true

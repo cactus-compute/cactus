@@ -2,6 +2,7 @@
 #include "threading.h"
 #include <arm_neon.h>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 void cactus_lstm_cell_f16(

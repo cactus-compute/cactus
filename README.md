@@ -180,9 +180,6 @@ cactus build               # default static lib
 | nvidia/parakeet-ctc-0.6b | 600M | 201.77 | 201.44 | 5214285 | yes | 0.0101 | 0.0930 |
 | nvidia/parakeet-tdt-0.6b-v3 | 600M | 718.91 | 718.82 | 3583333 | yes | 0.0359 | 0.0465 |
 | nvidia/parakeet-ctc-1.1b | 1.1B | 279.03 | 278.92 | 4562500 | yes | 0.0139 | 0.1628 |
-| snakers4/silero-vad | - | - | - | - | - | - | - |
-| pyannote/segmentation-3.0 | - | - | - | - | - | - | - |
-| pyannote/wespeaker-voxceleb-resnet34-LM | - | - | - | - | - | - | - |
 
 ## Supported LLMs
 
@@ -194,12 +191,10 @@ cactus build               # default static lib
 | google/gemma-3-270m-it | completion |
 | google/functiongemma-270m-it | tools |
 | google/gemma-3-1b-it | completion, gated |
-| google/gemma-4-E2B-it | completion, tools, embed, vision, speech|
-| google/gemma-3n-E2B-it | completion, tools |
-| google/gemma-4-E4B-it | completion, tools, embed, vision, speech|
-| google/gemma-3n-E4B-it | completion, tools |
 | google/gemma-4-E2B-it | vision, audio, completion, tools, Apple NPU |
 | google/gemma-4-E4B-it | vision, audio, completion, tools, Apple NPU |
+| google/gemma-3n-E2B-it | completion, tools |
+| google/gemma-3n-E4B-it | completion, tools |
 | Qwen/Qwen3-0.6B | completion, tools, embed | 
 | Qwen/Qwen3-Embedding-0.6B | embed | 
 | Qwen/Qwen3.5-0.8B | vision, completion, tools, embed |
@@ -255,9 +250,10 @@ cactus build               # default static lib
 │    --status                          show key status                         │
 │    --clear                           remove saved key                        │
 │                                                                              │
-│  cactus run <model>                  opens playground (auto downloads)       │
-│    --token <token>                   HF token (gated models)                 │
-│    --reconvert                       force reconversion from source          │
+│  cactus run <bundle_dir>             runs a transpiled Cactus bundle         │
+│    --system <prompt>                 system prompt                           │
+│    --prompt <text>                   initial prompt                          │
+│    --thinking                        enable thinking/reasoning mode          │
 │                                                                              │
 │  cactus transcribe [model]           live mic transcription (parakeet-tdt-0.6b-v3) │
 │    --file <audio.wav>                transcribe file instead of mic          │
@@ -279,12 +275,12 @@ cactus build               # default static lib
 │    --python                          shared lib for Python FFI               │
 │                                                                              │
 │  cactus test                         run unit tests and benchmarks           │
-│    --model <model>                   default: LFM2-VL-450M                   │
-│    --transcribe_model <model>        default: moonshine-base                 │
-│    --benchmark                       use larger models                       │
+│    --model <model>                   default: google/gemma-4-E2B-it          │
 │    --reconvert                       force reconversion from source          │
-│    --no-rebuild                      skip building library                   │
-│    --llm / --stt / --performance     run specific test suite                 │
+│    --llm / --vlm / --stt / --embed   run specific test suite                 │
+│    --rag / --graph / --index         run specific test suite                 │
+│    --kernel / --kv_cache             run specific test suite                 │
+│    --performance                     run performance benchmarks              │
 │    --ios                             run on connected iPhone                 │
 │    --android                         run on connected Android                │
 │                                                                              │
