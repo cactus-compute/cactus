@@ -1,5 +1,4 @@
 import ctypes
-from os import wait
 import numpy as np
 
 from .cactus import _err, _lib, cactus_node_t, cactus_tensor_info_t
@@ -13,7 +12,6 @@ class Graph:
     CQ2 = 4
     CQ3 = 5
     CQ4 = 6
-    INT4 = CQ1
     CPU = 0
     NPU = 1
     ACT_SILU = 0
@@ -362,21 +360,19 @@ class Graph:
         a = self._ensure_tensor(a)
         b = self._ensure_tensor(b)
         out = cactus_node_t()
-        target_dtype = int(a.dtype if output_dtype is None else output_dtype)
         rc = _lib.cactus_graph_matmul(
             self.h,
             cactus_node_t(a.id),
             cactus_node_t(b.id),
             ctypes.c_bool(bool(pretransposed_rhs)),
             ctypes.c_int32(int(backend)),
-            ctypes.c_int32(target_dtype),
             ctypes.byref(out),
         )
         if rc != 0:
             raise RuntimeError(_err("graph_matmul failed"))
         return self._tensor_from_node(out.value)
 
-    def gather(self, tensor, indices, axis=0):
+    def gather(self, tensor, indices):
         tensor = self._ensure_tensor(tensor)
         indices = self._ensure_tensor(indices)
         out = cactus_node_t()
@@ -384,7 +380,6 @@ class Graph:
             self.h,
             cactus_node_t(tensor.id),
             cactus_node_t(indices.id),
-            ctypes.c_int32(int(axis)),
             ctypes.byref(out),
         )
         if rc != 0:
@@ -1182,7 +1177,7 @@ class Graph:
             arr = np.ascontiguousarray(arr, dtype=np.float16)
         elif precision == self.FP32:
             arr = np.ascontiguousarray(arr, dtype=np.float32)
-        elif precision in (self.INT4, self.CQ2, self.CQ3, self.CQ4):
+        elif precision in (self.CQ1, self.CQ2, self.CQ3, self.CQ4):
             arr = np.ascontiguousarray(arr, dtype=np.uint8)
         else:
             raise RuntimeError("unsupported precision")
@@ -1385,7 +1380,7 @@ class Tensor:
             arr = np.ctypeslib.as_array((ctypes.c_float * num_elements).from_address(out_ptr.value))
         elif precision == Graph.INT8:
             arr = np.ctypeslib.as_array((ctypes.c_int8 * num_elements).from_address(out_ptr.value))
-        elif precision in (Graph.INT4, Graph.CQ2, Graph.CQ3, Graph.CQ4):
+        elif precision in (Graph.CQ1, Graph.CQ2, Graph.CQ3, Graph.CQ4):
             arr = np.ctypeslib.as_array((ctypes.c_uint8 * int(info.byte_size)).from_address(out_ptr.value))
             return arr.copy()
         else:
