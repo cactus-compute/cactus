@@ -51,9 +51,15 @@ def _add_tdt_derived_aliases(state_dict: dict[str, torch.Tensor]) -> None:
     for index in range(4):
         alias(f"decoder.prediction.dec_rnn.lstm.{index}.Wx", f"decoder.lstm.weight_ih_l{index}")
         alias(f"decoder.prediction.dec_rnn.lstm.{index}.Wh", f"decoder.lstm.weight_hh_l{index}")
+        alias(f"decoder.prediction.dec_rnn.lstm.{index}.Wx", f"decoder.prediction.dec_rnn.lstm.weight_ih_l{index}")
+        alias(f"decoder.prediction.dec_rnn.lstm.{index}.Wh", f"decoder.prediction.dec_rnn.lstm.weight_hh_l{index}")
         bias_key = f"decoder.prediction.dec_rnn.lstm.{index}.bias"
         bias_ih = state_dict.get(f"decoder.lstm.bias_ih_l{index}")
         bias_hh = state_dict.get(f"decoder.lstm.bias_hh_l{index}")
+        if bias_ih is None:
+            bias_ih = state_dict.get(f"decoder.prediction.dec_rnn.lstm.bias_ih_l{index}")
+        if bias_hh is None:
+            bias_hh = state_dict.get(f"decoder.prediction.dec_rnn.lstm.bias_hh_l{index}")
         if bias_key not in state_dict and bias_ih is not None and bias_hh is not None:
             state_dict[bias_key] = bias_ih + bias_hh
 
@@ -412,10 +418,18 @@ def _relative_position_bias(query: torch.Tensor, relative_key: torch.Tensor, *, 
 class ParakeetTDTFeedForward(nn.Module):
     def __init__(self, config: ParakeetTDTConfig, prefix: str, state_dict: dict[str, torch.Tensor]):
         super().__init__()
-        self.linear1 = nn.Linear(config.hidden_dim, config.ff_intermediate_dim, bias=False)
-        self.linear2 = nn.Linear(config.ff_intermediate_dim, config.hidden_dim, bias=False)
-        _copy_linear_weight(self.linear1, state_dict[f"{prefix}.linear1.weight"])
-        _copy_linear_weight(self.linear2, state_dict[f"{prefix}.linear2.weight"])
+        self.linear1 = nn.Linear(config.hidden_dim, config.ff_intermediate_dim, bias=f"{prefix}.linear1.bias" in state_dict)
+        self.linear2 = nn.Linear(config.ff_intermediate_dim, config.hidden_dim, bias=f"{prefix}.linear2.bias" in state_dict)
+        _copy_linear_weight(
+            self.linear1,
+            state_dict[f"{prefix}.linear1.weight"],
+            bias=state_dict.get(f"{prefix}.linear1.bias"),
+        )
+        _copy_linear_weight(
+            self.linear2,
+            state_dict[f"{prefix}.linear2.weight"],
+            bias=state_dict.get(f"{prefix}.linear2.bias"),
+        )
 
     def forward(self, x: torch.Tensor, *, activation: str) -> torch.Tensor:
         return self.linear2(_apply_activation(self.linear1(x), activation))
@@ -424,15 +438,19 @@ class ParakeetTDTFeedForward(nn.Module):
 class ParakeetTDTSelfAttention(nn.Module):
     def __init__(self, config: ParakeetTDTConfig, prefix: str, state_dict: dict[str, torch.Tensor]):
         super().__init__()
-        self.linear_q = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
-        self.linear_k = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
-        self.linear_v = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
-        self.linear_out = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
+        self.linear_q = nn.Linear(config.hidden_dim, config.hidden_dim, bias=f"{prefix}.linear_q.bias" in state_dict)
+        self.linear_k = nn.Linear(config.hidden_dim, config.hidden_dim, bias=f"{prefix}.linear_k.bias" in state_dict)
+        self.linear_v = nn.Linear(config.hidden_dim, config.hidden_dim, bias=f"{prefix}.linear_v.bias" in state_dict)
+        self.linear_out = nn.Linear(config.hidden_dim, config.hidden_dim, bias=f"{prefix}.linear_out.bias" in state_dict)
         self.linear_pos = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
-        _copy_linear_weight(self.linear_q, state_dict[f"{prefix}.linear_q.weight"])
-        _copy_linear_weight(self.linear_k, state_dict[f"{prefix}.linear_k.weight"])
-        _copy_linear_weight(self.linear_v, state_dict[f"{prefix}.linear_v.weight"])
-        _copy_linear_weight(self.linear_out, state_dict[f"{prefix}.linear_out.weight"])
+        _copy_linear_weight(self.linear_q, state_dict[f"{prefix}.linear_q.weight"], bias=state_dict.get(f"{prefix}.linear_q.bias"))
+        _copy_linear_weight(self.linear_k, state_dict[f"{prefix}.linear_k.weight"], bias=state_dict.get(f"{prefix}.linear_k.bias"))
+        _copy_linear_weight(self.linear_v, state_dict[f"{prefix}.linear_v.weight"], bias=state_dict.get(f"{prefix}.linear_v.bias"))
+        _copy_linear_weight(
+            self.linear_out,
+            state_dict[f"{prefix}.linear_out.weight"],
+            bias=state_dict.get(f"{prefix}.linear_out.bias"),
+        )
         _copy_linear_weight(self.linear_pos, state_dict[f"{prefix}.linear_pos.weight"])
         self.pos_bias_u = nn.Parameter(state_dict[f"{prefix}.pos_bias_u"].clone())
         self.pos_bias_v = nn.Parameter(state_dict[f"{prefix}.pos_bias_v"].clone())
@@ -486,20 +504,42 @@ class ParakeetTDTConformerConv(nn.Module):
         super().__init__()
         hidden_dim = config.hidden_dim
         kernel = config.conv_kernel_size
-        self.pointwise_conv1 = nn.Conv1d(hidden_dim, hidden_dim * 2, kernel_size=1, bias=False)
+        self.pointwise_conv1 = nn.Conv1d(
+            hidden_dim,
+            hidden_dim * 2,
+            kernel_size=1,
+            bias=f"{prefix}.pointwise_conv1.bias" in state_dict,
+        )
         self.depthwise_conv = nn.Conv1d(
             hidden_dim,
             hidden_dim,
             kernel_size=kernel,
             padding=kernel // 2,
             groups=hidden_dim,
-            bias=False,
+            bias=f"{prefix}.depthwise_conv.bias" in state_dict,
         )
         self.batch_norm = nn.BatchNorm1d(hidden_dim, eps=1e-5, affine=True, track_running_stats=True)
-        self.pointwise_conv2 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=1, bias=False)
-        _copy_conv1d_weight(self.pointwise_conv1, state_dict[f"{prefix}.pointwise_conv1.weight"])
-        _copy_conv1d_weight(self.depthwise_conv, state_dict[f"{prefix}.depthwise_conv.weight"])
-        _copy_conv1d_weight(self.pointwise_conv2, state_dict[f"{prefix}.pointwise_conv2.weight"])
+        self.pointwise_conv2 = nn.Conv1d(
+            hidden_dim,
+            hidden_dim,
+            kernel_size=1,
+            bias=f"{prefix}.pointwise_conv2.bias" in state_dict,
+        )
+        _copy_conv1d_weight(
+            self.pointwise_conv1,
+            state_dict[f"{prefix}.pointwise_conv1.weight"],
+            bias=state_dict.get(f"{prefix}.pointwise_conv1.bias"),
+        )
+        _copy_conv1d_weight(
+            self.depthwise_conv,
+            state_dict[f"{prefix}.depthwise_conv.weight"],
+            bias=state_dict.get(f"{prefix}.depthwise_conv.bias"),
+        )
+        _copy_conv1d_weight(
+            self.pointwise_conv2,
+            state_dict[f"{prefix}.pointwise_conv2.weight"],
+            bias=state_dict.get(f"{prefix}.pointwise_conv2.bias"),
+        )
         self.batch_norm.weight.data.copy_(state_dict[f"{prefix}.batch_norm.weight"].to(dtype=self.batch_norm.weight.dtype))
         self.batch_norm.bias.data.copy_(state_dict[f"{prefix}.batch_norm.bias"].to(dtype=self.batch_norm.bias.dtype))
         self.batch_norm.running_mean.data.copy_(
