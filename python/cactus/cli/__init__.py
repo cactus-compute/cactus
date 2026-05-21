@@ -12,7 +12,7 @@ from .transcribe import cmd_transcribe, DEFAULT_ASR_MODEL_ID
 from .test import cmd_test
 from .convert import cmd_convert
 from .eval import cmd_eval
-from .misc import cmd_auth, cmd_clean, cmd_list
+from .misc import cmd_auth, cmd_clean
 
 
 def create_parser():
@@ -116,11 +116,6 @@ def create_parser():
     --performance                      run only performance benchmarks
     --ios                              run on connected iPhone
     --android                          run on connected Android
-
-  -----------------------------------------------------------------
-
-  cactus list                          list all supported models
-                                       shows download status
 
   -----------------------------------------------------------------
 
@@ -270,9 +265,6 @@ def create_parser():
 
     clean_parser = subparsers.add_parser('clean', help='Remove all build artifacts')
 
-    list_parser = subparsers.add_parser('list', help='List supported models')
-    list_parser.add_argument('--downloaded', action='store_true',
-                             help='Only show downloaded models')
 
     convert_parser = subparsers.add_parser('convert', help='Convert HuggingFace model to CQ format')
     convert_parser.add_argument('model_name', help='HuggingFace model name')
@@ -345,8 +337,6 @@ def main():
         sys.exit(cmd_auth(args))
     elif args.command == 'clean':
         sys.exit(cmd_clean(args))
-    elif args.command == 'list':
-        sys.exit(cmd_list(args))
     elif args.command == 'convert':
         sys.exit(cmd_convert(args))
     else:
