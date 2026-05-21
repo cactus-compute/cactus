@@ -15,7 +15,7 @@ def cmd_convert(args):
             bits=args.bits or 4,
             token=args.token,
             cache_dir=args.cache_dir,
-            reconvert=True,
+            reconvert=args.reconvert,
             output_dir=output_dir,
             transpile=TranspileOptions(
                 task=args.task or "auto",

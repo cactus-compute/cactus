@@ -3,7 +3,6 @@ import subprocess
 
 from .common import (
     PROJECT_ROOT,
-    DEFAULT_TEST_MODEL_ID,
     print_color,
     RED, YELLOW, BLUE,
 )

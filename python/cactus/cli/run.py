@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .common import print_color, RED, GREEN
+from .common import PROJECT_ROOT, print_color, RED, GREEN
 
 
 def _resolve_bundle_dir(model_id):
@@ -20,17 +20,13 @@ def _resolve_bundle_dir(model_id):
 
 
 def cmd_run(args):
-    """Run a model -- auto-downloads, converts, builds if needed."""
+    """Run a model — auto-converts if needed."""
     from .model import resolve_model_id, ensure_bundle
-    from .runtime import ensure_chat_binary
 
     if args.no_cloud_tele:
         os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
 
-    # 1. Already a local bundle? Use it directly.
     bundle_dir = _resolve_bundle_dir(args.model_id)
-
-    # 2. Not a bundle -> auto-resolve: download -> convert -> transpile
     if bundle_dir is None:
         model_id = resolve_model_id(args.model_id)
         try:
@@ -44,14 +40,11 @@ def cmd_run(args):
             print_color(RED, str(e))
             return 1
 
-    # 3. Ensure chat binary exists (auto-builds if needed)
-    try:
-        chat = ensure_chat_binary()
-    except RuntimeError as e:
-        print_color(RED, str(e))
+    chat = PROJECT_ROOT / "cactus-engine" / "tests" / "build" / "chat"
+    if not chat.exists():
+        print_color(RED, "Chat binary not found. Run `cactus build` first.")
         return 1
 
-    # 4. Launch chat
     cmd = [str(chat), str(bundle_dir)]
     for flag, value in (
         ("--system", args.system),

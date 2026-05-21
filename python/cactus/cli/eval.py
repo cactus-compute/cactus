@@ -4,7 +4,6 @@ import subprocess
 
 from .common import (
     PROJECT_ROOT,
-    DEFAULT_MODEL_ID,
     print_color,
     RED, BLUE,
 )

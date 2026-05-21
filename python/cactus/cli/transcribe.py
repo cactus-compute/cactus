@@ -6,14 +6,12 @@ from pathlib import Path
 
 from .common import (
     PROJECT_ROOT,
-    DEFAULT_TEST_MODEL_ID,
+    DEFAULT_ASR_MODEL_ID,
     check_command,
     run_command,
     print_color,
-    RED, GREEN, YELLOW, BLUE,
+    RED, GREEN, BLUE,
 )
-
-DEFAULT_ASR_MODEL_ID = DEFAULT_TEST_MODEL_ID
 
 
 def _pick_android_device_id(preferred_device=None):
@@ -184,9 +182,8 @@ def _cmd_transcribe_ios(weights_dir, audio_file, args):
 
 
 def cmd_transcribe(args):
-    """Download ASR model if needed and start transcription."""
+    """Convert ASR model if needed and start transcription."""
     from .model import resolve_model_id, ensure_weights
-    from .runtime import ensure_asr_binary
     from .config_utils import CactusConfig
     from .common import prompt_for_api_key
 
@@ -212,7 +209,7 @@ def cmd_transcribe(args):
         audio_file = model_id
         model_id = DEFAULT_ASR_MODEL_ID
 
-    # Get weights (auto-downloads if needed)
+    # Get converted weights (auto-converts if needed)
     local_path = Path(model_id)
     if local_path.exists() and (local_path / "config.txt").exists():
         weights_dir = local_path
@@ -238,11 +235,10 @@ def cmd_transcribe(args):
     if args.ios:
         return _cmd_transcribe_ios(weights_dir, audio_file, args)
 
-    # Desktop: ensure asr binary (auto-builds if needed)
-    try:
-        asr_binary = ensure_asr_binary()
-    except RuntimeError as e:
-        print_color(RED, str(e))
+    # Desktop: find asr binary (must be pre-built via `cactus build`)
+    asr_binary = PROJECT_ROOT / "cactus-engine" / "tests" / "build" / "asr"
+    if not asr_binary.exists():
+        print_color(RED, "ASR binary not found. Run `cactus build` first.")
         return 1
 
     if sys.stdout.isatty():

@@ -1,6 +1,6 @@
 """Cactus — on-device AI inference."""
 
-__version__ = "1.14.0"
+__version__ = "2.0.0"
 
 from .cli.download import ensure_model, get_weights_dir, get_model_dir_name
 

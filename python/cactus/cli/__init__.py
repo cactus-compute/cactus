@@ -4,15 +4,17 @@ import argparse
 from .common import (
     DEFAULT_MODEL_ID,
     DEFAULT_TEST_MODEL_ID,
+    DEFAULT_ASR_MODEL_ID,
 )
 from .download import cmd_download
 from .compile import cmd_build
 from .run import cmd_run
-from .transcribe import cmd_transcribe, DEFAULT_ASR_MODEL_ID
+from .transcribe import cmd_transcribe
 from .test import cmd_test
 from .convert import cmd_convert
 from .eval import cmd_eval
-from .misc import cmd_auth, cmd_clean
+from .auth import cmd_auth
+from .clean import cmd_clean
 
 
 # ── Shared parent parsers ─────────────────────────────────────────────
@@ -28,7 +30,7 @@ def _model_parent():
     p.add_argument("--cache-dir", help="Cache directory for HuggingFace models")
     p.add_argument("--token", help="HuggingFace API token")
     p.add_argument("--reconvert", action="store_true",
-                   help="Force conversion from source (skip CQ download)")
+                   help="Force conversion from source")
     return p
 
 
@@ -90,22 +92,21 @@ def create_parser():
 
    -----------------------------------------------------------------
 
-  cactus download <model>              downloads CQ model files
-                                       auto-resolves Cactus-Compute CQ repo
+  cactus download <model>              downloads model from HuggingFace
 
     Optional flags:
-    --bits 1|2|3|4                     CQ quantization bits (default: 4)
     --token <token>                    HuggingFace API token
-    --reconvert                        force FP16 conversion from source
 
   -----------------------------------------------------------------
 
   cactus convert <model> [output_dir]  converts HuggingFace model to CQ format
-                                       and transpiles the graph into the same folder
+                                       downloads pre-converted from Cactus-Compute
+                                       if available, otherwise converts locally
 
     Optional flags:
     --bits 1|2|3|4                     CQ quantization bits (default: 4)
     --token <token>                    HuggingFace API token
+    --reconvert                        force local conversion
 
   -----------------------------------------------------------------
 
@@ -180,8 +181,11 @@ def create_parser():
     parser._action_groups = []
 
     # ── download ──────────────────────────────────────────────────────
-    subparsers.add_parser("download", help="Download CQ model files",
-                          parents=[_model_parent()])
+    download_parser = subparsers.add_parser("download", help="Download model from HuggingFace")
+    download_parser.add_argument("model_id", nargs="?", default=DEFAULT_MODEL_ID,
+                                 help=f"HuggingFace model ID (default: {DEFAULT_MODEL_ID})")
+    download_parser.add_argument("--cache-dir", help="Cache directory for HuggingFace models")
+    download_parser.add_argument("--token", help="HuggingFace API token")
 
     # ── build ─────────────────────────────────────────────────────────
     build_parser = subparsers.add_parser("build", help="Build the chat application")
@@ -311,6 +315,8 @@ def create_parser():
                                 help="Allow HF remote code during the transpile phase")
     convert_parser.add_argument("--local-files-only", action="store_true",
                                 help="Require HF model/processor files to already be local during transpile")
+    convert_parser.add_argument("--reconvert", action="store_true",
+                                help="Force conversion from source")
 
     return parser
 

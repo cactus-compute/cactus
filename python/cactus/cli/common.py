@@ -3,7 +3,6 @@ import sys
 import os
 import subprocess
 import shutil
-import platform
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -38,6 +37,7 @@ def _resolve_project_root():
 PROJECT_ROOT = _resolve_project_root()
 DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_TEST_MODEL_ID = "google/gemma-4-E2B-it"
+DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 
 
 RED = '\033[0;31m'

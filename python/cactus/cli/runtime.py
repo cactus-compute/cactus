@@ -1,17 +1,11 @@
-"""Build-system helpers for ensuring C++ runtime artifacts exist.
-
-Every function is idempotent — it checks if the output exists and is
-up-to-date before building.  CLI commands call these instead of
-erroring with "run cactus build first".
-"""
+"""Build-system helpers for the C++ runtime."""
 from __future__ import annotations
 
 import platform
 import shutil
 import subprocess
-from pathlib import Path
 
-from .common import PROJECT_ROOT, RED, YELLOW, print_color
+from .common import PROJECT_ROOT, YELLOW, print_color
 
 
 # ── Static library ────────────────────────────────────────────────────
@@ -146,33 +140,3 @@ def ensure_python_runtime_library():
         static_lib = ensure_library()
     _link_python_runtime_library(static_lib=static_lib, library_path=library_path)
     return library_path
-
-
-# ── Chat / ASR binaries ──────────────────────────────────────────────
-
-_TESTS_BUILD_DIR = PROJECT_ROOT / "cactus-engine" / "tests" / "build"
-
-
-def _ensure_binary(name):
-    """Build a binary (chat or asr) if it doesn't exist. Return its path."""
-    binary = _TESTS_BUILD_DIR / name
-    if binary.exists():
-        return binary
-
-    from .compile import build_binary
-
-    lib = ensure_library()
-    rc = build_binary(name, lib)
-    if rc != 0:
-        raise RuntimeError(f"Failed to build {name} binary. Run `cactus build`.")
-    return binary
-
-
-def ensure_chat_binary():
-    """Build the chat binary if it doesn't exist. Return its path."""
-    return _ensure_binary("chat")
-
-
-def ensure_asr_binary():
-    """Build the asr binary if it doesn't exist. Return its path."""
-    return _ensure_binary("asr")
