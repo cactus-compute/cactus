@@ -472,93 +472,29 @@ def download_legacy_fp16_zip(model_id: str, weights_dir: Path) -> bool:
 def ensure_model(model_id: str) -> Path:
     """Return the weights directory, downloading CQ weights if necessary.
 
-    Tries CQ first, falls back to legacy FP16 zip.
-    Raises ``RuntimeError`` if the model cannot be obtained.
+    Public API — re-exported by ``cactus/__init__.py``.
     """
-    weights_dir = get_weights_dir(model_id)
-    if (weights_dir / "config.txt").exists():
-        return weights_dir
-
-    try:
-        cq_repo = suggested_cq_repo(model_id)
-        archives = list_hf_cq_archives(cq_repo)
-        if archives:
-            resolution = resolve_archive(cq_repo, default_local_name(model_id), archives, {"L": 4})
-            download_cq_archive(resolution, weights_dir)
-            return weights_dir
-    except Exception:
-        pass
-
-    if not download_legacy_fp16_zip(model_id, weights_dir):
-        raise RuntimeError(f"Could not download model {model_id}")
-    return weights_dir
+    from .model import ensure_weights
+    return ensure_weights(model_id)
 
 
 def cmd_download(args):
     """Download CQ model weights from Cactus-Compute."""
-    from .common import print_color, RED, GREEN, YELLOW, get_effective_weights_dir
+    from .model import resolve_model_id, ensure_weights
+    from .common import print_color, RED
 
-    model_id = args.model_id
-    weights_dir = get_effective_weights_dir(model_id, args)
-    reconvert = getattr(args, 'reconvert', False)
-    token = getattr(args, 'token', None)
-    cache_dir = getattr(args, 'cache_dir', None)
-
-    if reconvert and weights_dir.exists():
-        print_color(YELLOW, f"Removing cached weights for reconversion...")
-        shutil.rmtree(weights_dir)
-
-    if weights_dir.exists() and (weights_dir / "config.txt").exists():
-        print_color(GREEN, f"Model weights found at {weights_dir}")
-        return 0
-
-    print()
-    print_color(YELLOW, f"Model weights not found. Downloading {model_id}...")
-    print("=" * 45)
-
-    if not reconvert:
-        cq_repo_id = model_id if (model_id.lower().endswith('-cq') and '/' in model_id) else suggested_cq_repo(model_id)
-        bits = getattr(args, 'bits', 4) or 4
-        requested = {"L": bits}
-
-        try:
-            archives = list_hf_cq_archives(cq_repo_id, token=token)
-            if archives:
-                local_name = get_model_dir_name(model_id)
-                resolution = resolve_archive(cq_repo_id, local_name, archives, requested)
-                for warning in resolution.warnings:
-                    print_color(YELLOW, f"  {warning}")
-                size_text = f" ({resolution.archive.size / (1024 * 1024):.1f} MiB)" if resolution.archive.size else ""
-                print(f"  Downloading {resolution.archive.filename} [{combo_label(resolution.archive.combo)}]{size_text}")
-                download_cq_archive(resolution, weights_dir, token=token, cache_dir=cache_dir)
-                print_color(GREEN, f"CQ model ready at {weights_dir}")
-                return 0
-        except Exception as cq_exc:
-            print(f"  CQ weights not available ({cq_exc})")
-
-        print_color(RED, f"No CQ weights found for {model_id}")
-        print()
-        print("To convert from HuggingFace, re-run with --reconvert:")
-        print(f"  cactus download {model_id} --reconvert")
-        print()
-        print("Or convert directly:")
-        print(f"  cactus convert {model_id}")
-        return 1
-
-    print_color(YELLOW, f"Converting {model_id} using CQ pipeline...")
+    model_id = resolve_model_id(args.model_id)
     try:
-        from ..convert.cli import main as convert_main
-        bits = getattr(args, 'bits', 4) or 4
-        convert_args = ['convert', '--model', model_id, '--out', str(weights_dir), '--bits', str(bits), '--force']
-        if token:
-            convert_args.extend(['--token', token])
-        if cache_dir:
-            convert_args.extend(['--cache-dir', cache_dir])
-        convert_main(convert_args)
-        print_color(GREEN, f"Model converted and ready at {weights_dir}")
+        ensure_weights(
+            model_id,
+            bits=args.bits or 4,
+            token=args.token,
+            cache_dir=args.cache_dir,
+            reconvert=args.reconvert,
+        )
         return 0
     except SystemExit as e:
         return e.code if e.code else 0
-    except Exception as e:
-        print_color(RED, f"Conversion failed: {e}")
+    except RuntimeError as e:
+        print_color(RED, str(e))
         return 1

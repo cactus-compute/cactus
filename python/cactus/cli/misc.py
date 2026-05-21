@@ -4,7 +4,6 @@ from pathlib import Path
 
 from .common import (
     PROJECT_ROOT,
-    get_weights_dir,
     print_color,
     RED, GREEN, YELLOW, BLUE, NC,
 )
