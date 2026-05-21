@@ -389,32 +389,48 @@ bool Model::setup_tokenizer() {
 bool Model::load_components(const std::unordered_set<std::string>& required_components) {
     for (auto& [name, comp] : components_) {
         if (!required_components.empty() && !required_components.count(name)) continue;
-        if (comp.graph_path.empty()) continue;
-        fs::path full = fs::path(bundle_dir_) / comp.graph_path;
-        try {
-            comp.graph = std::make_unique<CactusGraph>(CactusGraph::load(full.string()));
-        } catch (const std::exception& e) {
-            CACTUS_LOG_ERROR("model", "load " << comp.graph_path << ": " << e.what());
-            return false;
-        }
-        for (const auto& b : comp.bindings) {
-            if (b.node_id < 0) continue;
-            try {
-                fs::path weight_path(b.path);
-                if (weight_path.is_absolute()) {
-                    fs::path local = fs::path(bundle_dir_) / weight_path.filename();
-                    if (fs::exists(local)) weight_path = local;
-                } else {
-                    weight_path = fs::path(bundle_dir_) / weight_path;
-                }
-                comp.graph->bind_mmap_weights(static_cast<size_t>(b.node_id), weight_path.string());
-            } catch (const std::exception& e) {
-                CACTUS_LOG_ERROR("model", "bind " << b.path << ": " << e.what());
-                return false;
-            }
-        }
+        if (!load_component_graph(comp)) return false;
     }
     return true;
+}
+
+bool Model::load_component_graph(Component& comp) {
+    if (comp.graph) return true;
+    if (comp.graph_path.empty()) return true;
+    fs::path full = fs::path(bundle_dir_) / comp.graph_path;
+    try {
+        comp.graph = std::make_unique<CactusGraph>(CactusGraph::load(full.string()));
+        comp.graph->retain_outputs(comp.output_node_ids);
+    } catch (const std::exception& e) {
+        CACTUS_LOG_ERROR("model", "load " << comp.graph_path << ": " << e.what());
+        return false;
+    }
+    for (const auto& b : comp.bindings) {
+        if (b.node_id < 0) continue;
+        try {
+            fs::path weight_path(b.path);
+            if (weight_path.is_absolute()) {
+                fs::path local = fs::path(bundle_dir_) / weight_path.filename();
+                if (fs::exists(local)) weight_path = local;
+            } else {
+                weight_path = fs::path(bundle_dir_) / weight_path;
+            }
+            comp.graph->bind_mmap_weights(static_cast<size_t>(b.node_id), weight_path.string());
+        } catch (const std::exception& e) {
+            CACTUS_LOG_ERROR("model", "bind " << b.path << ": " << e.what());
+            return false;
+        }
+    }
+    return bind_runtime_buffers(comp);
+}
+
+void Model::unload_component_graph(Component& comp) {
+    if (comp.graph) {
+        comp.graph->release_runtime_buffers();
+        comp.graph->release_all_weight_pages();
+    }
+    comp.input_buffers.clear();
+    comp.graph.reset();
 }
 
 bool Model::bind_runtime_buffers(Component& comp) {
@@ -909,6 +925,9 @@ void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t f
 
 void Model::run_vision_encoder(const std::string& image_path) {
     if (!vision_encoder_) return;
+    if (!load_component_graph(*vision_encoder_)) {
+        throw std::runtime_error("failed to load vision_encoder");
+    }
     Gemma4ImagePreprocessed prep = preprocess_gemma4_image(image_path, config_);
     write_bytes_input(*vision_encoder_, "pixel_values", prep.pixel_values.data(),
                       prep.pixel_values.size() * sizeof(float));
@@ -926,10 +945,16 @@ void Model::run_vision_encoder(const std::string& image_path) {
         media_feature_shapes_[name] = desc.shape;
         media_feature_precisions_[name] = desc.precision;
     }
+    vision_encoder_->graph->release_runtime_buffers();
+    vision_encoder_->graph->release_all_weight_pages();
+    unload_component_graph(*vision_encoder_);
 }
 
 void Model::run_audio_encoder(const std::vector<float>& audio_features) {
     if (!audio_encoder_) return;
+    if (!load_component_graph(*audio_encoder_)) {
+        throw std::runtime_error("failed to load audio_encoder");
+    }
     std::vector<std::string> candidate_input_names = {"input_features", "audio_features"};
     bool wrote = false;
     int feature_idx = -1;
@@ -998,6 +1023,9 @@ void Model::run_audio_encoder(const std::vector<float>& audio_features) {
         media_feature_shapes_[name] = desc.shape;
         media_feature_precisions_[name] = desc.precision;
     }
+    audio_encoder_->graph->release_runtime_buffers();
+    audio_encoder_->graph->release_all_weight_pages();
+    unload_component_graph(*audio_encoder_);
 }
 
 uint32_t Model::argmax_last_logits() {
@@ -1336,7 +1364,10 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
             const void* ptr = component->graph->get_output(node_id);
             std::memcpy(store_bytes[info.name].data() + pos * info.per_token_bytes, ptr, info.per_token_bytes);
         }
+        component->graph->release_runtime_buffers();
     }
+    encoder_->graph->release_all_weight_pages();
+    lm_encoder_media_step_->graph->release_all_weight_pages();
     return true;
 }
 
@@ -1348,6 +1379,9 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
     std::vector<Qwen3VlImagePreprocessed> qwen_images;
 
     if (have_images) {
+        if (!load_component_graph(*vision_encoder_)) {
+            throw std::runtime_error("failed to load vision_encoder");
+        }
         for (const auto& path : image_paths) {
             if (family_ == "lfm2_vl") {
                 Lfm2VlImagePreprocessed prep = preprocess_lfm2_vl_image(path, config_);
@@ -1442,7 +1476,10 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                 media_feature_shapes_[name] = desc.shape;
                 media_feature_precisions_[name] = desc.precision;
             }
+            vision_encoder_->graph->release_runtime_buffers();
+            vision_encoder_->graph->release_all_weight_pages();
         }
+        unload_component_graph(*vision_encoder_);
     }
 
     if (have_audio) {
@@ -1452,13 +1489,16 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
     std::map<std::string, std::vector<uint8_t>> store_bytes;
     std::map<std::string, Precision> store_prec;
     std::map<std::string, std::vector<size_t>> store_shape;
-    const bool needs_dynamic_walk = family_ == "gemma4" && have_audio && lm_encoder_media_step_ != nullptr;
+    const bool needs_dynamic_walk = family_ == "gemma4" && (have_images || have_audio) && lm_encoder_media_step_ != nullptr;
 
     if (needs_dynamic_walk) {
         if (!build_lm_encoder_outputs_dynamic_gemma4(tokens, store_bytes, store_prec, store_shape)) {
             return false;
         }
     } else {
+        if (!load_component_graph(*lm_encoder_)) {
+            throw std::runtime_error("failed to load lm_encoder");
+        }
         int ids_idx = input_index(*lm_encoder_, "input_ids");
         if (ids_idx >= 0) {
             auto& ids_buf = lm_encoder_->input_buffers[ids_idx];
@@ -1512,6 +1552,9 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             store_prec[name] = desc.precision;
             store_shape[name] = desc.shape;
         }
+        lm_encoder_->graph->release_runtime_buffers();
+        lm_encoder_->graph->release_all_weight_pages();
+        unload_component_graph(*lm_encoder_);
     }
 
     auto embeds_shape_it = store_shape.find("inputs_embeds");
@@ -1528,6 +1571,9 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
 
     size_t chunk_seq = 0;
     {
+        if (!load_component_graph(*decoder_prefill_chunk_)) {
+            throw std::runtime_error("failed to load decoder_prefill_chunk");
+        }
         int idx = input_index(*decoder_prefill_chunk_, "inputs_embeds");
         if (idx < 0) return false;
         size_t node_id = static_cast<size_t>(decoder_prefill_chunk_->runtime_input_node_ids[idx]);
@@ -1590,6 +1636,8 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
     }
     if (whole_chunks_end > 0 && decoder_ != nullptr) {
         copy_cache_states(*decoder_prefill_chunk_, *decoder_);
+        decoder_prefill_chunk_->graph->release_runtime_buffers();
+        unload_component_graph(*decoder_prefill_chunk_);
     }
     for (size_t pos = whole_chunks_end; pos < valid_seq; ++pos) {
         for (const auto& kv : store_bytes) {

@@ -672,6 +672,8 @@ private:
     bool load_manifest();
     bool setup_tokenizer();
     bool load_components(const std::unordered_set<std::string>& required_components);
+    bool load_component_graph(Component& comp);
+    void unload_component_graph(Component& comp);
     bool bind_runtime_buffers(Component& comp);
     void run_step(uint32_t token_id, size_t position, bool read_logits);
     void run_encoder_step(uint32_t token_id, size_t position);
