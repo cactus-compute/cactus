@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
     std::cout << "Model loaded.\n";
 
     std::ostringstream opts;
-    opts << "{\"language\":\"" << language << "\",\"telemetry_enabled\":false}";
+    opts << "{\"language\":\"" << language << "\",\"telemetry_enabled\":false,\"auto_handoff\":false,\"max_tokens\":512}";
 
     constexpr size_t kBufSize = 1 << 16;
     std::string response(kBufSize, '\0');

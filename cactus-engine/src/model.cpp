@@ -1415,6 +1415,7 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
 bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                    const std::vector<std::string>& image_paths,
                                    const std::vector<std::vector<float>>& audio_features_per_message) {
+    if (cache_total_seq_len_ > 0) return false;
     const bool have_images = !image_paths.empty() && vision_encoder_ != nullptr;
     bool any_audio = false;
     for (const auto& mel : audio_features_per_message) { if (!mel.empty()) { any_audio = true; break; } }
