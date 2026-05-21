@@ -7,21 +7,30 @@ from pathlib import Path
 
 TokenCallback = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_void_p)
 
-_DIR = Path(__file__).parent.parent.parent.parent
-_OVERRIDE_LIB_PATH = os.environ.get("CACTUS_LIB_PATH")
-if _OVERRIDE_LIB_PATH:
-    _LIB_PATH = Path(_OVERRIDE_LIB_PATH).expanduser().resolve()
-elif platform.system() == "Darwin":
-    _LIB_PATH = _DIR / "cactus" / "build" / "libcactus.dylib"
-else:
-    _LIB_PATH = _DIR / "cactus" / "build" / "libcactus.so"
+_LIB_NAME = "libcactus.dylib" if platform.system() == "Darwin" else "libcactus.so"
 
-if not _LIB_PATH.exists():
+
+def _find_library():
+    override = os.environ.get("CACTUS_LIB_PATH")
+    if override:
+        return Path(override).expanduser().resolve()
+
+    bundled = Path(__file__).parent / "lib" / _LIB_NAME
+    if bundled.exists():
+        return bundled
+
+    dev_build = Path(__file__).parent.parent.parent.parent / "cactus" / "build" / _LIB_NAME
+    if dev_build.exists():
+        return dev_build
+
     raise RuntimeError(
-        f"Cactus library not found at {_LIB_PATH}\n"
-        f"Please build first: cactus build --python"
+        f"Cactus library ({_LIB_NAME}) not found.\n"
+        f"Install with: pip install cactus-compute\n"
+        f"Or build from source: cactus build --python"
     )
 
+
+_LIB_PATH = _find_library()
 _lib = ctypes.CDLL(str(_LIB_PATH))
 
 

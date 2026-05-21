@@ -1,6 +1,6 @@
 [project]
 name = "cactus-compute"
-version = "2.0.0"
+dynamic = ["version"]
 description = "On-device AI inference — LLM, vision, speech, embeddings, and RAG"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,15 +12,20 @@ keywords = [
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: Other/Proprietary License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
 ]
 dependencies = [
     "torch>=2.8.0,<3",
@@ -43,12 +48,18 @@ Documentation = "https://docs.cactuscompute.com"
 cactus = "cactus.cli:main"
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "cactus.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cactus*"]
+
+[tool.setuptools.package-data]
+"cactus.bindings" = ["lib/*.dylib", "lib/*.so"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

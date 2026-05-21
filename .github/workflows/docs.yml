@@ -16,6 +16,11 @@ on:
       - bindings/flutter/README.md
       - bindings/rust/README.md
       - README.md
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: false
   workflow_dispatch:
 
 jobs:
@@ -40,9 +45,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          TAG=$(cat CACTUS_VERSION | tr -d '[:space:]')
+          TAG="${{ inputs.version || '' }}"
+          [ -z "$TAG" ] && TAG=$(cat CACTUS_VERSION | tr -d '[:space:]')
           bash .github/assemble-docs.sh "$TAG"
           mike deploy "$TAG" latest --update-aliases --push
+          mike set-default latest --push
 
           git checkout gh-pages
           echo "docs.cactuscompute.com" > CNAME

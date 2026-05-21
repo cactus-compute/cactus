@@ -373,8 +373,8 @@ class TestPackageMetadata:
     def test_package_name(self):
         assert self.project["name"] == "cactus-compute"
 
-    def test_version_is_v2(self):
-        assert self.project["version"] == "2.0.0"
+    def test_version_is_dynamic(self):
+        assert "version" in self.project.get("dynamic", [])
 
     def test_has_description(self):
         assert len(self.project["description"]) > 10
