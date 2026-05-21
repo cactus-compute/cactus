@@ -47,9 +47,3 @@ vision_activations.json
 gemma-4-eap-extras/
 .githooks/
 ruy
-
-# Local integration/investigation outputs
-local_integration_tests/.tmp/
-local_integration_tests/__pycache__/
-local_investigations/**/__pycache__/
-local_investigations/**/artifacts/
