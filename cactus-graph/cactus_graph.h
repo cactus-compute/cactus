@@ -299,6 +299,7 @@ struct BufferDesc {
     void allocate();
     void allocate_from_pool(BufferPool& pool);
     void release_to_pool(BufferPool& pool);
+    void release_memory(BufferPool& pool);
     void set_external(void* ptr);
 };
 
@@ -676,6 +677,9 @@ public:
     void release_weight_pages(size_t node_id);
     void prefetch_weight_pages(size_t node_id);
     void release_all_weight_pages();
+    void release_runtime_buffers();
+    void clear_buffer_pool();
+    void retain_outputs(const std::vector<int>& node_ids);
 
     size_t persistent(size_t source_node);
     bool is_populated(size_t persistent_node_id) const;
@@ -715,6 +719,7 @@ private:
     std::unordered_set<size_t> persistent_node_ids_;
     std::unordered_set<size_t> populated_node_ids_;
     std::unordered_set<size_t> embedded_input_node_ids_;
+    std::unordered_set<size_t> retained_output_node_ids_;
 };
 
 namespace GraphFile {
