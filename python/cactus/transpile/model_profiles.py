@@ -166,7 +166,7 @@ WHISPER_PROFILE = ModelProfile(
 
 QWEN_PROFILE = ModelProfile(
     family="qwen",
-    model_types=("qwen", "qwen2", "qwen3", "qwen3_5", "qwen3.5"),
+    model_types=("qwen", "qwen2", "qwen3", "qwen3_5", "qwen3.5", "qwen3_vl"),
     multimodal_context_tokens=512,
     input_combinations=((), ("image",)),
     model_id_aliases=(
@@ -177,16 +177,25 @@ QWEN_PROFILE = ModelProfile(
         ("qwen3", "Qwen/Qwen3-1.7B"),
     ),
     model_id_markers=("qwen",),
-    family_aliases=("qwen2", "qwen3", "qwen3_5", "qwen3.5"),
+    family_aliases=("qwen2", "qwen3", "qwen3_5", "qwen3.5", "qwen3_vl"),
     stop_tokens=("<|im_end|>",),
     avoid_native_loader=True,
-    cached_step_components=("decoder_step",),
+    cached_step_components=("decoder_media_step",),
     cached_step_skip_components=("decoder",),
-    fp16_kv_cache_components=("decoder_step",),
+    fp16_kv_cache_components=("decoder_prefill_chunk", "decoder_media_step", "decoder_step"),
     prompt_style="qwen_chat",
     multimodal_preprocessor="qwen3_5",
     default_task="multimodal_causal_lm_logits",
-    default_components=("vision_encoder", "lm_encoder", "decoder", "lm_encoder_step", "decoder_media_step", "decoder_step"),
+    default_components=(
+        "vision_encoder",
+        "lm_encoder",
+        "decoder",
+        "lm_encoder_text_chunk",
+        "decoder_prefill_chunk",
+        "lm_encoder_step",
+        "decoder_media_step",
+        "decoder_step",
+    ),
     needs_image=True,
     force_component_pipeline=True,
 )

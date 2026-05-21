@@ -19,6 +19,115 @@
 namespace cactus {
 namespace engine {
 
+namespace {
+
+constexpr int kPillowResizePrecisionBits = 22;
+
+static unsigned char pillow_clip8(int64_t value) {
+    int shifted = static_cast<int>(value >> kPillowResizePrecisionBits);
+    if (shifted < 0) return 0;
+    if (shifted > 255) return 255;
+    return static_cast<unsigned char>(shifted);
+}
+
+static void precompute_pillow_bilinear_coeffs(int in_size, int out_size,
+                                              std::vector<int>& bounds,
+                                              std::vector<int32_t>& coeffs,
+                                              int& ksize) {
+    const double scale = static_cast<double>(in_size) / static_cast<double>(out_size);
+    const double filterscale = std::max(scale, 1.0);
+    const double support = filterscale;
+    const double inv_filterscale = 1.0 / filterscale;
+    ksize = static_cast<int>(std::ceil(support)) * 2 + 1;
+    bounds.assign(static_cast<size_t>(out_size) * 2, 0);
+    coeffs.assign(static_cast<size_t>(out_size) * ksize, 0);
+
+    for (int out = 0; out < out_size; ++out) {
+        const double center = (static_cast<double>(out) + 0.5) * scale;
+        int xmin = static_cast<int>(center - support + 0.5);
+        if (xmin < 0) xmin = 0;
+        int xmax = static_cast<int>(center + support + 0.5);
+        if (xmax > in_size) xmax = in_size;
+        xmax -= xmin;
+
+        bounds[static_cast<size_t>(out) * 2] = xmin;
+        bounds[static_cast<size_t>(out) * 2 + 1] = xmax;
+
+        std::vector<double> weights(static_cast<size_t>(ksize), 0.0);
+        double total = 0.0;
+        for (int i = 0; i < xmax; ++i) {
+            double x = (static_cast<double>(i + xmin) - center + 0.5) * inv_filterscale;
+            if (x < 0.0) x = -x;
+            double weight = x < 1.0 ? 1.0 - x : 0.0;
+            weights[static_cast<size_t>(i)] = weight;
+            total += weight;
+        }
+        for (int i = 0; i < ksize; ++i) {
+            double weight = total != 0.0 ? weights[static_cast<size_t>(i)] / total : 0.0;
+            coeffs[static_cast<size_t>(out) * ksize + i] = static_cast<int32_t>(
+                weight < 0.0
+                    ? -0.5 + weight * static_cast<double>(1 << kPillowResizePrecisionBits)
+                    : 0.5 + weight * static_cast<double>(1 << kPillowResizePrecisionBits));
+        }
+    }
+}
+
+static std::vector<unsigned char> resize_rgb_uint8_pillow_bilinear(const unsigned char* src,
+                                                                   int src_w,
+                                                                   int src_h,
+                                                                   int dst_w,
+                                                                   int dst_h) {
+    std::vector<int> x_bounds;
+    std::vector<int> y_bounds;
+    std::vector<int32_t> x_coeffs;
+    std::vector<int32_t> y_coeffs;
+    int x_ksize = 0;
+    int y_ksize = 0;
+    precompute_pillow_bilinear_coeffs(src_w, dst_w, x_bounds, x_coeffs, x_ksize);
+    precompute_pillow_bilinear_coeffs(src_h, dst_h, y_bounds, y_coeffs, y_ksize);
+
+    const int y_first = y_bounds[0];
+    const int y_last = y_bounds[static_cast<size_t>(dst_h - 1) * 2] +
+                       y_bounds[static_cast<size_t>(dst_h - 1) * 2 + 1];
+    const int temp_h = y_last - y_first;
+    std::vector<unsigned char> temp(static_cast<size_t>(dst_w) * temp_h * 3);
+
+    for (int ty = 0; ty < temp_h; ++ty) {
+        const int sy = y_first + ty;
+        for (int dx = 0; dx < dst_w; ++dx) {
+            const int xmin = x_bounds[static_cast<size_t>(dx) * 2];
+            const int count = x_bounds[static_cast<size_t>(dx) * 2 + 1];
+            const int32_t* k = x_coeffs.data() + static_cast<size_t>(dx) * x_ksize;
+            for (int c = 0; c < 3; ++c) {
+                int64_t sum = static_cast<int64_t>(1) << (kPillowResizePrecisionBits - 1);
+                for (int x = 0; x < count; ++x) {
+                    sum += static_cast<int64_t>(src[(static_cast<size_t>(sy) * src_w + xmin + x) * 3 + c]) * k[x];
+                }
+                temp[(static_cast<size_t>(ty) * dst_w + dx) * 3 + c] = pillow_clip8(sum);
+            }
+        }
+    }
+
+    std::vector<unsigned char> dst(static_cast<size_t>(dst_w) * dst_h * 3);
+    for (int dy = 0; dy < dst_h; ++dy) {
+        const int ymin = y_bounds[static_cast<size_t>(dy) * 2] - y_first;
+        const int count = y_bounds[static_cast<size_t>(dy) * 2 + 1];
+        const int32_t* k = y_coeffs.data() + static_cast<size_t>(dy) * y_ksize;
+        for (int dx = 0; dx < dst_w; ++dx) {
+            for (int c = 0; c < 3; ++c) {
+                int64_t sum = static_cast<int64_t>(1) << (kPillowResizePrecisionBits - 1);
+                for (int y = 0; y < count; ++y) {
+                    sum += static_cast<int64_t>(temp[(static_cast<size_t>(ymin + y) * dst_w + dx) * 3 + c]) * k[y];
+                }
+                dst[(static_cast<size_t>(dy) * dst_w + dx) * 3 + c] = pillow_clip8(sum);
+            }
+        }
+    }
+    return dst;
+}
+
+} // namespace
+
 Siglip2Preprocessor::PreprocessedImage::~PreprocessedImage() {
     pixel_values.clear();
     pixel_attention_mask.clear();
@@ -634,16 +743,9 @@ Gemma4ImagePreprocessed preprocess_gemma4_image(const std::string& image_path, c
             resized[i] = static_cast<float>(raw[i]);
         }
     } else {
-        std::vector<float> src_float(static_cast<size_t>(width) * height * 3);
-        for (size_t i = 0; i < src_float.size(); ++i) {
-            src_float[i] = static_cast<float>(raw[i]);
-        }
-        if (!stbir_resize_float_linear(
-                src_float.data(), width, height, 0,
-                resized.data(), target_w, target_h, 0,
-                STBIR_RGB)) {
-            stbi_image_free(raw);
-            throw std::runtime_error("Failed to resize image: " + image_path);
+        std::vector<unsigned char> resized_u8 = resize_rgb_uint8_pillow_bilinear(raw, width, height, target_w, target_h);
+        for (size_t i = 0; i < resized.size(); ++i) {
+            resized[i] = static_cast<float>(resized_u8[i]);
         }
     }
     stbi_image_free(raw);
@@ -696,6 +798,99 @@ Gemma4ImagePreprocessed preprocess_gemma4_image(const std::string& image_path, c
 
     result.num_patches = num_patches;
     result.max_patches = max_patches;
+    result.patch_dim = patch_dim;
+    return result;
+}
+
+Qwen3VlImagePreprocessed preprocess_qwen3_vl_image(const std::string& image_path, const Config& config) {
+    Qwen3VlImagePreprocessed result;
+    const int patch_size = static_cast<int>(config.vision_patch_size ? config.vision_patch_size : 16);
+    const int temporal_patch_size = 2;
+    const int merge_size = 2;
+    const size_t image_tokens = config.image_seq_len ? static_cast<size_t>(config.image_seq_len) : 64;
+    const size_t merged_patches = image_tokens * static_cast<size_t>(merge_size * merge_size);
+    const int grid_side = static_cast<int>(std::sqrt(static_cast<double>(merged_patches)));
+    if (patch_size <= 0 || grid_side <= 0 || static_cast<size_t>(grid_side * grid_side) != merged_patches) {
+        throw std::runtime_error("Qwen3-VL native image preprocessing requires a square static image grid");
+    }
+
+    int width = 0, height = 0, channels = 0;
+    unsigned char* raw = stbi_load(image_path.c_str(), &width, &height, &channels, 3);
+    if (!raw) {
+        throw std::runtime_error("Failed to load image: " + image_path + " - " + std::string(stbi_failure_reason()));
+    }
+    if (width <= 0 || height <= 0) {
+        stbi_image_free(raw);
+        throw std::runtime_error("Loaded image has invalid dimensions: " + image_path);
+    }
+
+    const int target_h = grid_side * patch_size;
+    const int target_w = grid_side * patch_size;
+    std::vector<float> resized(static_cast<size_t>(target_w) * target_h * 3);
+    if (target_w == width && target_h == height) {
+        for (size_t i = 0; i < resized.size(); ++i) {
+            resized[i] = static_cast<float>(raw[i]);
+        }
+    } else {
+        std::vector<float> src_float(static_cast<size_t>(width) * height * 3);
+        for (size_t i = 0; i < src_float.size(); ++i) {
+            src_float[i] = static_cast<float>(raw[i]);
+        }
+        if (!stbir_resize_float_linear(
+                src_float.data(), width, height, 0,
+                resized.data(), target_w, target_h, 0,
+                STBIR_RGB)) {
+            stbi_image_free(raw);
+            throw std::runtime_error("Failed to resize image: " + image_path);
+        }
+    }
+    stbi_image_free(raw);
+
+    const float rescale_factor = config.rescale_factor > 0.0f ? config.rescale_factor : (1.0f / 255.0f);
+    const float mean_v = config.image_mean;
+    const float std_v = config.image_std != 0.0f ? config.image_std : 1.0f;
+    for (float& v : resized) {
+        v = (v * rescale_factor - mean_v) / std_v;
+    }
+
+    const size_t channel = 3;
+    const size_t grid_t = 1;
+    const size_t grid_h = static_cast<size_t>(grid_side);
+    const size_t grid_w = static_cast<size_t>(grid_side);
+    const size_t patch_dim = channel * static_cast<size_t>(temporal_patch_size) * patch_size * patch_size;
+    result.pixel_values.assign(grid_t * grid_h * grid_w * patch_dim, 0.0f);
+
+    for (size_t gh_major = 0; gh_major < grid_h / merge_size; ++gh_major) {
+        for (size_t gw_major = 0; gw_major < grid_w / merge_size; ++gw_major) {
+            for (size_t mh = 0; mh < static_cast<size_t>(merge_size); ++mh) {
+                for (size_t mw = 0; mw < static_cast<size_t>(merge_size); ++mw) {
+                    const size_t patch_y = gh_major * merge_size + mh;
+                    const size_t patch_x = gw_major * merge_size + mw;
+                    const size_t patch_index =
+                        (((gh_major * (grid_w / merge_size) + gw_major) * merge_size + mh) * merge_size + mw);
+                    float* dst = result.pixel_values.data() + patch_index * patch_dim;
+                    size_t dst_i = 0;
+                    for (size_t c = 0; c < channel; ++c) {
+                        for (size_t t = 0; t < static_cast<size_t>(temporal_patch_size); ++t) {
+                            (void)t;
+                            for (int y = 0; y < patch_size; ++y) {
+                                const size_t img_y = patch_y * patch_size + static_cast<size_t>(y);
+                                for (int x = 0; x < patch_size; ++x) {
+                                    const size_t img_x = patch_x * patch_size + static_cast<size_t>(x);
+                                    const size_t src_off = (img_y * static_cast<size_t>(target_w) + img_x) * channel + c;
+                                    dst[dst_i++] = resized[src_off];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result.grid_t = grid_t;
+    result.grid_h = grid_h;
+    result.grid_w = grid_w;
     result.patch_dim = patch_dim;
     return result;
 }

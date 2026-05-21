@@ -244,6 +244,12 @@ def cmd_convert(args):
             extra_args.append("--trust-remote-code")
         if getattr(args, "local_files_only", False):
             extra_args.append("--local-files-only")
+        if getattr(args, "npu", False):
+            extra_args.append("--npu")
+            extra_args.extend(["--npu-chunk-size", str(getattr(args, "npu_chunk_size", 256))])
+            npu_q = getattr(args, "npu_quantize", None)
+            if npu_q is not None:
+                extra_args.extend(["--npu-quantize", str(int(npu_q))])
 
         transpile_args = argparse.Namespace(
             model_id=model_id,

@@ -163,6 +163,32 @@ bool test_kv_cache_append_eviction() {
     return true;
 }
 
+bool test_kv_cache_append_full_window_eviction() {
+    CactusGraph g;
+
+    const size_t kv_heads = 1, head_dim = 16;
+    const size_t window = 8, sink = 2;
+
+    size_t cache_node = g.kv_cache_state(window, kv_heads, head_dim, window, sink);
+
+    for (int pass = 0; pass < 2; pass++) {
+        if (pass > 0) g.soft_reset();
+        const size_t tokens = window;
+        const size_t elements = tokens * kv_heads * head_dim;
+        size_t kv_input = g.input({elements}, Precision::FP16);
+        std::vector<__fp16> data(elements, static_cast<__fp16>(static_cast<float>(pass + 1)));
+        g.set_input(kv_input, data.data(), Precision::FP16);
+        g.kv_cache_append(kv_input, cache_node, window, sink);
+        g.execute();
+
+        auto* raw = static_cast<uint8_t*>(g.get_output(cache_node));
+        uint64_t seq = *reinterpret_cast<uint64_t*>(raw);
+        if (seq != window) return false;
+    }
+
+    return true;
+}
+
 bool test_attention_cached_basic() {
     const size_t b = 1, s = 1, h = 2, kv = 2, d = 16;
     const size_t max_seq = 64;
@@ -493,6 +519,7 @@ int main() {
     runner.run_test("KV Cache Append Basic", test_kv_cache_append_basic());
     runner.run_test("KV Cache Append Multiple", test_kv_cache_append_multiple());
     runner.run_test("KV Cache Append Eviction", test_kv_cache_append_eviction());
+    runner.run_test("KV Cache Append Full Window Eviction", test_kv_cache_append_full_window_eviction());
     runner.run_test("Attention Cached Basic", test_attention_cached_basic());
     runner.run_test("Attention Cached Multistep", test_attention_cached_multistep());
     runner.run_test("KV Cache Invalidate", test_kv_cache_invalidate());

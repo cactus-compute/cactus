@@ -297,6 +297,12 @@ def create_parser():
                                 help='Allow HF remote code during the transpile phase')
     convert_parser.add_argument('--local-files-only', action='store_true',
                                 help='Require HF model/processor files to already be local during transpile')
+    convert_parser.add_argument('--npu', action='store_true',
+                                help='Also emit a CoreML .mlpackage for NPU (Apple Neural Engine) prefill')
+    convert_parser.add_argument('--npu-chunk-size', type=int, default=256,
+                                help='Prefill chunk size for the emitted .mlpackage (default: 256)')
+    convert_parser.add_argument('--npu-quantize', type=int, choices=[0, 4, 8], default=4,
+                                help='Quantize .mlpackage weights (0=off, 4=int4 default, 8=int8). Smaller weights = faster on ANE + fits saved .mlpackage in less disk.')
 
     return parser
 

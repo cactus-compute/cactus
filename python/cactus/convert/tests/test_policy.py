@@ -38,7 +38,7 @@ def test_gemma4_adapter_disables_gptq_for_unhookable_tensors():
 
     vision_proj = cactus_name_for_tensor("model.embed_vision.embedding_projection.weight", "gemma4", 35)
     vision_policy = adapter.policy(vision_proj, (1536, 1152), 4)
-    assert vision_policy.precision == "CQ4"
+    assert vision_policy.precision == "FP16"
     assert not vision_policy.use_gptq
 
     vision_tower = cactus_name_for_tensor("model.vision_tower.encoder.layers.0.mlp.down_proj.linear.weight", "gemma4", 35)
@@ -56,11 +56,11 @@ def test_policy_audio_no_gptq():
     assert not p.use_gptq
 
 
-def test_policy_bias_int8():
+def test_policy_gemma4_audio_bias_fp16():
     match = cactus_name_for_tensor("model.audio_tower.output_proj.bias", "gemma4", 1)
     p = policy_for_tensor(match, (1536,), 4, "gemma4")
-    assert p.precision == "INT8"
-    assert p.bits == 8
+    assert p.precision == "FP16"
+    assert p.bits is None
 
 
 def test_policy_position_embedding_fp16():

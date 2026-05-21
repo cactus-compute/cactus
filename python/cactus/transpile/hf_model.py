@@ -295,6 +295,7 @@ def _write_component_bundle(
     transpiled_component_graphs: dict[str, TranspiledGraph] | None = None,
     component_io_signatures: dict[str, dict[str, tuple[str, ...]]] | None = None,
     graph_filename: str = "graph.cactus",
+    npu_prefill_mlpackage: str | None = None,
 ) -> Path:
     bundle_dir = artifact_dir / "components"
     component_order = [
@@ -303,6 +304,7 @@ def _write_component_bundle(
             "audio_encoder",
             "vision_encoder",
             "lm_encoder",
+            "lm_encoder_text_chunk",
             "decoder_prefill_chunk",
             "decoder",
             "lm_encoder_step",
@@ -397,18 +399,18 @@ def _write_component_bundle(
         )
 
     manifest_path = bundle_dir / "manifest.json"
-    _write_json(
-        manifest_path,
-        {
-            "model_id": model_id,
-            "model_source": model_source,
-            "task": task,
-            "family": family,
-            "component_order": component_order,
-            "inputs": _serialize_json_compatible(inputs_metadata),
-            "components": manifest_components,
-        },
-    )
+    manifest_payload: dict[str, object] = {
+        "model_id": model_id,
+        "model_source": model_source,
+        "task": task,
+        "family": family,
+        "component_order": component_order,
+        "inputs": _serialize_json_compatible(inputs_metadata),
+        "components": manifest_components,
+    }
+    if npu_prefill_mlpackage:
+        manifest_payload["npu_prefill"] = npu_prefill_mlpackage
+    _write_json(manifest_path, manifest_payload)
     return manifest_path
 
 
@@ -665,6 +667,15 @@ def _run_component_pipeline_transpile(
                 f"saved_optimized_component_ir_{component}="
                 f"{artifact_dir / _component_artifact_name('optimized_ir', component)}"
             )
+        from .npu import run_prefill_pipeline
+        npu_prefill_filename = run_prefill_pipeline(
+            model,
+            artifact_dir,
+            chunk_size=int(getattr(args, "npu_chunk_size", 256)),
+            enabled=bool(getattr(args, "npu", False)),
+            quantize_bits=getattr(args, "npu_quantize", None),
+        )
+
         component_manifest_path = _write_component_bundle(
             artifact_dir=artifact_dir,
             model_id=args.model_id,
@@ -677,6 +688,7 @@ def _run_component_pipeline_transpile(
             transpiled_component_graphs=transpiled_component_graphs,
             component_io_signatures=component_io_signatures,
             graph_filename=args.graph_filename,
+            npu_prefill_mlpackage=npu_prefill_filename,
         )
         print(f"saved_component_bundle_manifest={component_manifest_path}")
         for component in transpiled_component_graphs:
@@ -2471,6 +2483,14 @@ def _load_transformers_bundle(
 ):
     config = _load_config_json(model_id)
     config_model_type = str(config.get("model_type", "") or "").lower()
+    if not config_model_type:
+        normalized_model_id = model_id.lower().replace("_", "-")
+        if "qwen3-vl" in normalized_model_id:
+            config_model_type = "qwen3_vl"
+        elif "lfm2.5-vl" in normalized_model_id or "lfm2-vl" in normalized_model_id:
+            config_model_type = "lfm2_vl"
+        if config_model_type:
+            config = {"model_type": config_model_type}
     external_transformers_site_packages = _ensure_transformers_supports_model_type(config_model_type)
     patch_note = _patch_transformers_torchvision_probe()
     if patch_note:
@@ -2524,7 +2544,7 @@ def _load_transformers_bundle(
                 f"Could not load tokenizer for {model_id}:\n"
                 + "\n".join(tokenizer_errors)
             )
-        if config_model_type in {"lfm2_vl", "qwen3_5"}:
+        if config_model_type in {"lfm2_vl", "qwen3_5", "qwen3_vl"}:
             model = AutoModelForImageTextToText.from_pretrained(
                 model_source,
                 dtype=torch_dtype,
@@ -2535,7 +2555,7 @@ def _load_transformers_bundle(
             tie_note = _tie_lfm2_vl_lm_head_if_needed(model)
             if tie_note:
                 print(f"note={tie_note}")
-        elif config_model_type == "qwen3_5" and isinstance(config.get("text_config"), dict):
+        elif config_model_type in {"qwen3_5", "qwen3_vl"} and isinstance(config.get("text_config"), dict):
             model = AutoModelForImageTextToText.from_pretrained(
                 model_source,
                 dtype=torch_dtype,
@@ -2584,7 +2604,7 @@ def _load_transformers_bundle(
                 + processor_config_hint
             )
 
-        if config_model_type in {"lfm2_vl", "qwen3_5"}:
+        if config_model_type in {"lfm2_vl", "qwen3_5", "qwen3_vl"}:
             model = AutoModelForImageTextToText.from_pretrained(
                 model_source,
                 dtype=torch_dtype,
@@ -2918,6 +2938,24 @@ def main() -> int:
             "(for example: vision_encoder,audio_encoder,lm_encoder,decoder)."
         ),
     )
+    parser.add_argument(
+        "--npu",
+        action="store_true",
+        help="Also emit a CoreML .mlpackage for Apple Neural Engine prefill.",
+    )
+    parser.add_argument(
+        "--npu-chunk-size",
+        type=int,
+        default=256,
+        help="Prefill chunk size baked into the emitted .mlpackage (default: 256).",
+    )
+    parser.add_argument(
+        "--npu-quantize",
+        type=int,
+        default=4,
+        choices=[0, 4, 8],
+        help="Post-conversion weight quantization for the .mlpackage (0=off, 4=int4 default, 8=int8). Smaller weights = faster on ANE and smaller .mlpackage on disk.",
+    )
     parser.add_argument("--no-fuse-gated-deltanet", action="store_true")
     parser.add_argument("--no-fuse-rms-norm", action="store_true")
     parser.add_argument("--no-fuse-rope", action="store_true")
@@ -3017,7 +3055,7 @@ def main() -> int:
                 system_prompt=args.system_prompt,
                 enable_thinking_if_supported=args.enable_thinking,
             )
-        elif config_model_type == "qwen3_5":
+        elif config_model_type in {"qwen3_5", "qwen3_vl"}:
             prepared = _prepare_qwen3_5_multimodal_inputs(
                 processor_or_tokenizer,
                 prompt=args.prompt,
@@ -3310,6 +3348,15 @@ def main() -> int:
                 f"saved_optimized_component_ir_{component}="
                 f"{artifact_dir / _component_artifact_name('optimized_ir', component)}"
             )
+        from .npu import run_prefill_pipeline
+        npu_prefill_filename = run_prefill_pipeline(
+            model,
+            artifact_dir,
+            chunk_size=int(getattr(args, "npu_chunk_size", 256)),
+            enabled=bool(getattr(args, "npu", False)),
+            quantize_bits=getattr(args, "npu_quantize", None),
+        )
+
         component_manifest_path = _write_component_bundle(
             artifact_dir=artifact_dir,
             model_id=args.model_id,
@@ -3321,6 +3368,7 @@ def main() -> int:
             optimized_component_graphs=optimized_component_graphs,
             transpiled_component_graphs=transpiled_component_graphs,
             graph_filename=args.graph_filename,
+            npu_prefill_mlpackage=npu_prefill_filename,
         )
         print(f"saved_component_bundle_manifest={component_manifest_path}")
         for component in optimized_component_graphs:

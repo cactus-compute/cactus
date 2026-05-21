@@ -23,6 +23,16 @@ from cactus.transpile.weight_binding import WeightBinding
 
 
 _DYNAMIC_KV_POSITION_OFFSET = (1 << 64) - 1
+_DYNAMIC_KV_QUERY_POSITION_OFFSET = (1 << 64) - 2
+_KV_CACHE_TRANSPARENT_OPS = {
+    "expand",
+    "precision_cast",
+    "reshape",
+    "slice",
+    "transpose",
+    "unsqueeze",
+    "view",
+}
 
 
 @dataclass
@@ -254,6 +264,13 @@ def _lower_attention_with_internal_kv_cache(
     sink_size = int(ir.meta.get("cache_sink_size", 4) or 4)
     g.kv_cache_append(key, k_cache, window_size=window_size, sink_size=sink_size)
     g.kv_cache_append(value, v_cache, window_size=window_size, sink_size=sink_size)
+    kv_input_cache_states: dict[tuple[str, str], tuple[Tensor, Tensor, int, int]] = env.setdefault(
+        "__internal_kv_cache_by_kv_inputs",
+        {},
+    )  # type: ignore[assignment]
+    cache_entry = (k_cache, v_cache, window_size, int(value_shape[3]))
+    kv_input_cache_states[(node.inputs[1], node.inputs[2])] = cache_entry
+    kv_input_cache_states[_canonical_kv_cache_input_key(ir, node)] = cache_entry
     out = g.attention_cached(
         query,
         key,
@@ -268,6 +285,66 @@ def _lower_attention_with_internal_kv_cache(
     if output_layout == "bthd":
         return [out]
     return [g.permute(out, (0, 2, 1, 3))]
+
+
+def _lower_attention_with_shared_internal_kv_cache(
+    g: Graph,
+    ir: IRGraph,
+    env: dict[str, Any],
+    node: IRNode,
+    *,
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    output_layout: str,
+) -> list[Tensor] | None:
+    kv_input_cache_states: dict[tuple[str, str], tuple[Tensor, Tensor, int, int]] = env.get(
+        "__internal_kv_cache_by_kv_inputs",
+        {},
+    )
+    cache_state = kv_input_cache_states.get((node.inputs[1], node.inputs[2]))
+    if cache_state is None:
+        cache_state = kv_input_cache_states.get(_canonical_kv_cache_input_key(ir, node))
+    if cache_state is None:
+        return None
+    k_cache, v_cache, window_size, v_head_dim = cache_state
+    out = g.attention_cached(
+        query,
+        key,
+        value,
+        k_cache,
+        v_cache,
+        scale=_resolve_attention_scale(node, query),
+        position_offset=_DYNAMIC_KV_QUERY_POSITION_OFFSET,
+        window_size=window_size,
+        v_head_dim=v_head_dim,
+    )
+    if output_layout == "bthd":
+        return [out]
+    return [g.permute(out, (0, 2, 1, 3))]
+
+
+def _canonical_kv_cache_input_key(ir: IRGraph, node: IRNode) -> tuple[str, str]:
+    return (
+        _canonical_kv_cache_value_id(ir, node.inputs[1]),
+        _canonical_kv_cache_value_id(ir, node.inputs[2]),
+    )
+
+
+def _canonical_kv_cache_value_id(ir: IRGraph, value_id: str) -> str:
+    current = value_id
+    seen: set[str] = set()
+    while current not in seen:
+        seen.add(current)
+        value = ir.values.get(current)
+        producer_id = None if value is None else value.producer
+        if producer_id is None:
+            break
+        producer = ir.nodes.get(producer_id)
+        if producer is None or producer.op not in _KV_CACHE_TRANSPARENT_OPS or len(producer.inputs) != 1:
+            break
+        current = producer.inputs[0]
+    return current
 
 
 def _should_lower_conv1d_with_internal_conv_cache(ir: IRGraph, node: IRNode, x: Tensor, weight: Tensor) -> bool:
@@ -1090,6 +1167,18 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         if mask_tensor is not None:
             mask_tensor = _ensure_fp16_tensor(g, mask_tensor)
             mask_tensor = _normalize_attention_mask_for_cactus(g, mask_tensor, query)
+        shared_cached = _lower_attention_with_shared_internal_kv_cache(
+            g,
+            ir,
+            env,
+            node,
+            query=query,
+            key=key,
+            value=value,
+            output_layout=output_layout,
+        )
+        if shared_cached is not None:
+            return shared_cached
         if _should_lower_attention_with_internal_kv_cache(ir, node):
             return _lower_attention_with_internal_kv_cache(
                 g,
@@ -2672,9 +2761,7 @@ def _ensure_fp16_tensor(g: Graph, tensor: Tensor) -> Tensor:
 
 
 def _ensure_scalar_math_tensor(g: Graph, tensor: Tensor) -> Tensor:
-    if tensor.dtype == Graph.FP16:
-        return tensor
-    return g.precision_cast(tensor, Graph.FP16)
+    return tensor
 
 
 def _ensure_tensor_dtype(g: Graph, tensor: Tensor, dtype: int) -> Tensor:

@@ -359,6 +359,57 @@ void CactusGraph::execute(const std::string& profile_file) {
         }
     };
 
+    auto can_release_node = [&](size_t node_idx) {
+        const auto& node = nodes_[node_idx];
+        if (node->op_type == OpType::INPUT) return false;
+        if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) return false;
+        if (persistent_node_ids_.count(node->id)) return false;
+        if (retained_output_node_ids_.count(node->id)) return false;
+        return true;
+    };
+
+    auto may_alias_input = [](const GraphNode& node) {
+        return (node.op_type == OpType::SLICE && node.params.axis == 0) ||
+               (node.op_type == OpType::INDEX && node.params.axis == 0);
+    };
+
+    auto preallocates_output = [](const GraphNode& node) {
+        return !((node.op_type == OpType::SLICE && node.params.axis == 0) ||
+                 (node.op_type == OpType::INDEX && node.params.axis == 0));
+    };
+
+    std::vector<size_t> last_use(n, 0);
+    std::vector<size_t> use_count(n, 0);
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t input_id : nodes_[i]->input_ids) {
+            auto it = node_index_map_.find(input_id);
+            if (it != node_index_map_.end()) {
+                last_use[it->second] = std::max(last_use[it->second], i);
+                ++use_count[it->second];
+            }
+        }
+    }
+
+    std::vector<bool> keep_until_graph_cleanup(n, false);
+    for (size_t i = 0; i < n; ++i) {
+        const auto& node = *nodes_[i];
+        if (!may_alias_input(node) || node.input_ids.empty()) continue;
+        auto it = node_index_map_.find(node.input_ids[0]);
+        if (it == node_index_map_.end()) continue;
+        size_t base_idx = it->second;
+        if (use_count[i] == 0) {
+            keep_until_graph_cleanup[base_idx] = true;
+        } else {
+            last_use[base_idx] = std::max(last_use[base_idx], last_use[i]);
+        }
+    }
+
+    std::vector<std::vector<size_t>> release_after(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (!can_release_node(i) || use_count[i] == 0 || keep_until_graph_cleanup[i]) continue;
+        release_after[last_use[i]].push_back(i);
+    }
+
     if (!need_debug) {
         for (size_t i = 0; i < n; ++i) {
             auto& node = nodes_[i];
@@ -366,26 +417,24 @@ void CactusGraph::execute(const std::string& profile_file) {
             if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) {
                 dispatch_node(*node, nodes_, node_index_map_);
                 populated_node_ids_.insert(node->id);
+                for (size_t release_idx : release_after[i]) {
+                    nodes_[release_idx]->output_buffer.release_memory(pool);
+                }
                 continue;
             }
-            node->output_buffer.allocate_from_pool(pool);
+            if (preallocates_output(*node)) {
+                node->output_buffer.allocate_from_pool(pool);
+            }
             dispatch_node(*node, nodes_, node_index_map_);
             trace_nonfinite(i, *node);
             if (node->op_type == OpType::PERSISTENT) {
                 populated_node_ids_.insert(node->id);
             }
-        }
-        return;
-    }
-
-    std::vector<size_t> last_use(n, 0);
-    for (size_t i = 0; i < n; ++i) {
-        for (size_t input_id : nodes_[i]->input_ids) {
-            auto it = node_index_map_.find(input_id);
-            if (it != node_index_map_.end()) {
-                last_use[it->second] = std::max(last_use[it->second], i);
+            for (size_t release_idx : release_after[i]) {
+                nodes_[release_idx]->output_buffer.release_memory(pool);
             }
         }
+        return;
     }
 
     auto get_env_str = [](const char* name) -> std::string {

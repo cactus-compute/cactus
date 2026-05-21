@@ -30,7 +30,7 @@ def _gemma4_multimodal_extra_args(model_dir: Path, artifact_dir: Path) -> list[s
         "--task",
         "multimodal_causal_lm_logits",
         "--max-new-tokens",
-        "32",
+        "512",
         "--component-pipeline",
         "on",
         "--prompt",
@@ -198,14 +198,24 @@ def test_cmd_convert_supplies_default_audio_for_whisper(monkeypatch, tmp_path: P
     assert "--audio-file" in extra_args
 
 
-def test_cmd_convert_infers_text_tasks_for_qwen_and_lfm(monkeypatch, tmp_path: Path) -> None:
+def test_cmd_convert_infers_profile_defaults_for_qwen_and_lfm(monkeypatch, tmp_path: Path) -> None:
     parser = cli.create_parser()
 
     import cactus.convert.cli as cq_cli
 
-    for alias, model_type, arch in (
-        ("qwen", "qwen3", "Qwen3ForCausalLM"),
-        ("lfm", "lfm2_vl", "Lfm2VlForConditionalGeneration"),
+    for alias, model_type, arch, expected_components in (
+        (
+            "qwen",
+            "qwen3",
+            "Qwen3ForCausalLM",
+            "vision_encoder,lm_encoder,decoder,lm_encoder_text_chunk,decoder_prefill_chunk,lm_encoder_step,decoder_media_step,decoder_step",
+        ),
+        (
+            "lfm",
+            "lfm2_vl",
+            "Lfm2VlForConditionalGeneration",
+            "vision_encoder,lm_encoder,decoder",
+        ),
     ):
         output_dir = tmp_path / alias
         args = parser.parse_args(["convert", alias, str(output_dir)])
@@ -230,7 +240,10 @@ def test_cmd_convert_infers_text_tasks_for_qwen_and_lfm(monkeypatch, tmp_path: P
 
         assert rc == 0
         extra_args = transpile_calls[0].extra_args
-        assert extra_args[extra_args.index("--task") + 1] == "causal_lm_logits"
+        assert extra_args[extra_args.index("--task") + 1] == "multimodal_causal_lm_logits"
+        assert extra_args[extra_args.index("--component-pipeline") + 1] == "on"
+        assert extra_args[extra_args.index("--components") + 1] == expected_components
+        assert "--image-file" in extra_args
         assert "--audio-file" not in extra_args
 
 
