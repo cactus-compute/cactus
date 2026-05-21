@@ -4,7 +4,7 @@
 
 - Last completed command: H72 optimized LFM/Qwen single-thread trajectory regeneration on Pixel 10a:
   `source ./venv/bin/activate && cactus build && python experiments/matrix/run_matrix.py --config experiments/matrix/matrix.yaml --device pixel_10a --runtime cactus --model lfm_2_5_vl_1_6b --model qwen3_vl_2b --operation prefill --operation decode --seqlen 256 --seqlen 512 --seqlen 1024 --seqlen 2048 --seqlen 4096 --warmup-runs 1 --measurement-runs 3 --out experiments/matrix/results/matrix_pixel_10a_cactus_lfm_qwen_optimized.csv`.
-- Immediate next action: commit and push the updated full-core CSV/docs, then decide whether Qwen needs a cooled acceptance repeat. The current target is competitive full-core prefill numbers without losing the H66/H68 decode win.
+- Immediate next action: commit and push the updated full-core CSV/docs. The current target is competitive full-core prefill numbers without losing the H66/H68 decode win.
 - Optimized single-thread trajectory regeneration is complete for Gemma, LFM, and Qwen. The H72 LFM/Qwen rows were manually patched into `experiments/matrix/results/matrix_pixel_10a_single_thread.csv` immediately after the CSV landed.
 - Full-core prefill root cause is now narrowed: Pixel's old no-affinity full-core path sent equal work to heterogeneous mid/big cores and left the benchmark/control thread off CPU7. The validated benchmark policy is max-performance-core worker pinning plus main-thread CPU7 pinning.
 - H66 stored LM-head sidecar completed in `experiments/matrix/results/h66_stored_lmhead_i8mm_sidecar_20260521/`: strict Pixel Gemma 512 CPU7 sidecar + I8MM reached decode 9.06 tok/s, prefill 37.85 tok/s, TTFT 13.53 s, peak RAM 2447.54 MB; adjacent no-env was decode 5.55 tok/s, prefill 27.97 tok/s, TTFT 18.30 s.
@@ -41,7 +41,7 @@
 3. Investigate full-core prefill using the tiered plan in `MAY_19_NIGHT_PLAN.md`.
    - Status: mechanism found and benchmark fix validated. The fixed full-core Cactus rows have been patched into `experiments/matrix/results/matrix_pixel_10a_full_core.csv`.
 4. Rerun full-core prefill benchmarks through context 4096 for Gemma 4 E2B, LFM 2.5 VL 1.6B, and Qwen3 VL 2B after the fix/blocker, then commit and push only updates to the primary full-core CSVs.
-   - Status: completed for Cactus rows; Qwen rows were collected under thermal status 1 and may need cooled acceptance repeats if exact Qwen medians are critical.
+   - Status: completed for Cactus rows. Qwen was rerun after cooldown; rows through 2048 are thermal status 0, while 4096 remains thermal status 1.
 
 The H50-H66 records below are chronological history. Any `Next Experiment Record` heading inside that history is superseded unless it is restated in the Current Run State, Active Work Queue, or Planned H67 section above.
 
@@ -189,9 +189,9 @@ The H50-H66 records below are chronological history. Any `Next Experiment Record
 - Pixel Cactus full-core-prefill rows with max-performance-core worker policy and main-thread CPU7 pin:
   - Gemma: 256 69.03, 512 61.35, 1024 52.57, 2048 41.35, 4096 37.67 tok/s.
   - LFM: 256 43.00, 512 41.43, 1024 38.19, 2048 34.35, 4096 28.28 tok/s.
-  - Qwen: 256 29.31, 512 27.68, 1024 23.65, 2048 20.93, 4096 19.78 tok/s.
+  - Qwen cooled repeat: 256 33.77, 512 30.20, 1024 25.49, 2048 22.56, 4096 19.93 tok/s.
 - Manual primary CSV patch completed: 15 matching Cactus prefill rows were replaced in `experiments/matrix/results/matrix_pixel_10a_full_core.csv`. Local helper CSVs `matrix_pixel_10a_full_core_prefill_4096.csv` and `matrix_pixel_10a_full_core_prefill_upto2048.csv` were also patched.
-- Device note: Gemma and LFM rows recorded thermal status 0. Qwen rows recorded thermal status 1 and post-run CPU7 frequency was observed at 700 MHz, so cooled Qwen repeats are the remaining acceptance risk.
+- Device note: Gemma and LFM rows recorded thermal status 0. The Qwen cooled repeat recorded thermal status 0 through 2048; only Qwen 4096 remains thermal status 1.
 - Decision: full-core prefill is now competitive/reasonable versus the prior Pixel Cactus rows. The remaining production choice is whether to make the max-performance-core/main-thread policy default on Tensor-class Android devices or keep it benchmark-gated.
 
 ## Completed H50 Record

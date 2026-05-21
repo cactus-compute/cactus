@@ -81,7 +81,7 @@ Active goal: commit and push the fixed Pixel full-core prefill rows/docs, then d
    - Status: mechanism found and benchmark fix validated.
    - Use fresh full-core prefill baselines/profiles and the tier ladder in `MAY_19_NIGHT_PLAN.md`.
 4. After full-core prefill is fixed or precisely blocked, rerun full-core prefill benchmarks through context 4096 for Gemma 4 E2B, LFM 2.5 VL 1.6B, and Qwen3 VL 2B, then commit and push only updates to the primary full-core CSVs.
-   - Status: completed for Cactus rows. Qwen was thermally caveated (`thermal_status=1`), so cooled repeats may be needed only for final acceptance.
+   - Status: completed for Cactus rows. Qwen was rerun after cooldown; rows through 2048 are thermal status 0, while 4096 remains thermal status 1.
 
 ## Next Experiment Record
 
@@ -99,7 +99,7 @@ Active goal: commit and push the fixed Pixel full-core prefill rows/docs, then d
 - H72 result: full optimized LFM/Qwen trajectories completed and were manually patched into `experiments/matrix/results/matrix_pixel_10a_single_thread.csv`. LFM rows are 256 prefill/decode 24.73/16.28 tok/s, 512 24.53/11.81 tok/s, 1024 28.56/13.63 tok/s, 2048 29.27/14.11 tok/s, and 4096 prefill 27.92 tok/s. Qwen rows are 256 prefill/decode 12.21/8.28 tok/s, 512 16.33/7.85 tok/s, 1024 18.14/6.88 tok/s, 2048 18.26/7.12 tok/s, and 4096 prefill 19.48 tok/s. Qwen 512+ rows recorded `thermal_status=1`, so cooled repeats may be needed for final acceptance, but the requested primary CSV patch is complete.
 - H73-H76 full-core mechanism: direct Gemma 512 prefill-only was 8.74 tok/s with old no-affinity scheduling, 63.67 tok/s with CPU7 taskset, 15.02 tok/s with CPUs 4-7, 17.43 tok/s with round-robin worker pinning across 4-7, and 67.71 tok/s with max-performance-core-only workers plus main-thread CPU7 pin and no taskset. This proves the old full-core rows were dominated by heterogeneous-core work placement, not an unavoidable prefill kernel limit.
 - H79 implementation validation: main-thread pinning was moved into tracked `cactus_benchmark_tokens`; Gemma 512 no-taskset full-core smoke with the same env policy reached 62.74 tok/s.
-- H78 full-core result: `experiments/matrix/results/matrix_pixel_10a_cactus_full_core_maxperf.csv` was regenerated and the Cactus rows were patched into `experiments/matrix/results/matrix_pixel_10a_full_core.csv`. Gemma rows are 256/512/1024/2048/4096 = 69.03/61.35/52.57/41.35/37.67 tok/s. LFM rows are 43.00/41.43/38.19/34.35/28.28 tok/s. Qwen rows are 29.31/27.68/23.65/20.93/19.78 tok/s, but recorded `thermal_status=1`.
+- H78 full-core result: `experiments/matrix/results/matrix_pixel_10a_cactus_full_core_maxperf.csv` was regenerated and the Cactus rows were patched into `experiments/matrix/results/matrix_pixel_10a_full_core.csv`. Gemma rows are 256/512/1024/2048/4096 = 69.03/61.35/52.57/41.35/37.67 tok/s. LFM rows are 43.00/41.43/38.19/34.35/28.28 tok/s. Qwen cooled-repeat rows are 33.77/30.20/25.49/22.56/19.93 tok/s; Qwen 4096 remains `thermal_status=1`.
 
 ## Active Ledger
 
@@ -735,5 +735,5 @@ The ledger below is chronological. Older entries may contain `Next Experiment Re
 - Status: `mechanism_found_benchmark_fix_validated`
 - Observed gap/target: fresh full-core Cactus LFM/Qwen c128 prefill was `5.17x-9.14x` slower on Pixel than Samsung, while other backends were usually `1.1x-1.7x` Samsung/Pixel.
 - Scope: full-core prefill only. Do not import decode assumptions unless full-core prefill profiling proves shared code matters.
-- Result: fixed Cactus full-core rows are patched into `matrix_pixel_10a_full_core.csv`; Qwen thermal-status 1 is the only remaining acceptance caveat.
+- Result: fixed Cactus full-core rows are patched into `matrix_pixel_10a_full_core.csv`; Qwen 4096 thermal-status 1 is the only remaining acceptance caveat.
 - Decision: promote max-performance-core worker pinning plus main-thread CPU7 pinning for Pixel/Tensor benchmark execution. Do not promote naive all-performance-core use on Pixel without weighted work partitioning, because CPUs 4-7 under equal static work remained far slower than CPU7-only.
