@@ -233,31 +233,31 @@ def _patch_graph_runtime(graph_module, cactus_module) -> None:
         return orig_permute(self, _ensure_scalar_tensor(self, x), permutation, backend=backend)
 
     def scalar_add(self, x, value):
-        return orig_scalar_add(self, _ensure_scalar_tensor(self, x), value)
+        return orig_scalar_add(self, self._ensure_tensor(x), value)
 
     def scalar_subtract(self, x, value):
-        return orig_scalar_subtract(self, _ensure_scalar_tensor(self, x), value)
+        return orig_scalar_subtract(self, self._ensure_tensor(x), value)
 
     def scalar_multiply(self, x, value):
-        return orig_scalar_multiply(self, _ensure_scalar_tensor(self, x), value)
+        return orig_scalar_multiply(self, self._ensure_tensor(x), value)
 
     def scalar_divide(self, x, value):
-        return orig_scalar_divide(self, _ensure_scalar_tensor(self, x), value)
+        return orig_scalar_divide(self, self._ensure_tensor(x), value)
 
     def scalar_exp(self, x):
-        return orig_scalar_exp(self, _ensure_scalar_tensor(self, x))
+        return orig_scalar_exp(self, self._ensure_tensor(x))
 
     def scalar_sqrt(self, x):
-        return orig_scalar_sqrt(self, _ensure_scalar_tensor(self, x))
+        return orig_scalar_sqrt(self, self._ensure_tensor(x))
 
     def scalar_cos(self, x):
-        return orig_scalar_cos(self, _ensure_scalar_tensor(self, x))
+        return orig_scalar_cos(self, self._ensure_tensor(x))
 
     def scalar_sin(self, x):
-        return orig_scalar_sin(self, _ensure_scalar_tensor(self, x))
+        return orig_scalar_sin(self, self._ensure_tensor(x))
 
     def scalar_log(self, x):
-        return orig_scalar_log(self, _ensure_scalar_tensor(self, x))
+        return orig_scalar_log(self, self._ensure_tensor(x))
 
     def clamp(self, x, lo, hi):
         if orig_clamp is None:
@@ -284,10 +284,10 @@ def _patch_graph_runtime(graph_module, cactus_module) -> None:
         return orig_cat(self, legalized, axis=axis)
 
     def abs(self, x):
-        return orig_abs(self, _ensure_scalar_tensor(self, x))
+        return orig_abs(self, self._ensure_tensor(x))
 
     def pow(self, x, exponent):
-        return orig_pow(self, _ensure_scalar_tensor(self, x), exponent)
+        return orig_pow(self, self._ensure_tensor(x), exponent)
 
     def expand(self, x, shape):
         x = self._ensure_tensor(x)

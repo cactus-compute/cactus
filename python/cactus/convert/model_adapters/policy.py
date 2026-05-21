@@ -25,7 +25,7 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
     if "norm" in out.lower():
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "norm tensor")
     if family == "gemma4" and name == "model.embed_vision.embedding_projection.weight":
-        return TensorPolicy("convert", f"CQ{user_bits}", user_bits, component, False, "hadamard", "vision embedding projection has no stable Hessian target")
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "vision embedding projection scale-sensitive")
     if family in {"parakeet", "parakeet_tdt"} and out.endswith(".bias") and (
         "conv_" in out or out.startswith("subsampling_") or out.startswith("ctc_head_")
     ):
@@ -45,7 +45,7 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
     if family == "whisper" and out.startswith("encoder.layer_"):
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "whisper encoder tensor")
     if family == "gemma4" and component == "audio" and (name.endswith(".bias") or out.endswith(".bias") or ".bias." in out):
-        return TensorPolicy("fallback", "INT8", 8, component, False, "none", "bias tensor")
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "audio bias tensor")
     if name.endswith(".bias") or out.endswith(".bias") or ".bias." in out:
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "bias tensor")
     if len(shape) != 2:
