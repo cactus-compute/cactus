@@ -389,24 +389,25 @@ class ParakeetTDTAdapter(ParakeetAdapter):
     def normalize_state_dict(self, state_dict: dict[str, Any]) -> NormalizedState:
         augmented = dict(state_dict)
         provenance: dict[str, TensorProvenance] = {}
-        i = 0
-        while True:
-            ih_key = f"decoder.lstm.bias_ih_l{i}"
-            hh_key = f"decoder.lstm.bias_hh_l{i}"
-            out_key = f"decoder.lstm.bias_l{i}"
-            if ih_key not in state_dict and hh_key not in state_dict:
-                break
-            sources = [k for k in (ih_key, hh_key) if k in state_dict]
-            if ih_key in state_dict and hh_key in state_dict:
-                augmented[out_key] = state_dict[ih_key] + state_dict[hh_key]
-            elif ih_key in state_dict:
-                augmented[out_key] = state_dict[ih_key]
-            else:
-                augmented[out_key] = state_dict[hh_key]
-            augmented.pop(ih_key, None)
-            augmented.pop(hh_key, None)
-            provenance[out_key] = TensorProvenance(sources, "parakeet_tdt_lstm_bias_sum", "hf_key")
-            i += 1
+        for prefix in ("decoder.lstm", "decoder.prediction.dec_rnn.lstm"):
+            i = 0
+            while True:
+                ih_key = f"{prefix}.bias_ih_l{i}"
+                hh_key = f"{prefix}.bias_hh_l{i}"
+                out_key = f"{prefix}.bias_l{i}"
+                if ih_key not in state_dict and hh_key not in state_dict:
+                    break
+                sources = [k for k in (ih_key, hh_key) if k in state_dict]
+                if ih_key in state_dict and hh_key in state_dict:
+                    augmented[out_key] = state_dict[ih_key] + state_dict[hh_key]
+                elif ih_key in state_dict:
+                    augmented[out_key] = state_dict[ih_key]
+                else:
+                    augmented[out_key] = state_dict[hh_key]
+                augmented.pop(ih_key, None)
+                augmented.pop(hh_key, None)
+                provenance[out_key] = TensorProvenance(sources, "parakeet_tdt_lstm_bias_sum", "hf_key")
+                i += 1
         return NormalizedState(augmented, provenance)
 
 

@@ -73,6 +73,7 @@ int cactus_preprocess_audio_features(
             cactus::audio::trim_mel_frames(features, bins, valid_frames);
             frames = features.size() / bins;
         } else {
+            cactus::audio::pad_or_trim_whisper_waveform(audio_samples);
             auto cfg = cactus::audio::get_whisper_spectrogram_config();
             const bool is_whisper_v3 = bins > 80;
             if (is_whisper_v3) cactus::audio::apply_whisper_v3_overrides(cfg);
@@ -192,6 +193,7 @@ int cactus_transcribe(
             handle_error_response("No audio input provided", response_buffer, buffer_size);
             return -1;
         }
+        const size_t original_audio_sample_count = audio_samples.size();
 
         const size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
         std::vector<float> audio_features;
@@ -207,6 +209,7 @@ int cactus_transcribe(
             if (valid_frames == 0) valid_frames = 1;
             cactus::audio::trim_mel_frames(audio_features, mel_bins, valid_frames);
         } else {
+            cactus::audio::pad_or_trim_whisper_waveform(audio_samples);
             auto cfg = cactus::audio::get_whisper_spectrogram_config();
             const bool is_whisper_v3 = mel_bins > 80;
             if (is_whisper_v3) cactus::audio::apply_whisper_v3_overrides(cfg);
@@ -253,7 +256,7 @@ int cactus_transcribe(
         append_exact_stop_sequence("<pad>");
 
         const float audio_length_sec =
-            static_cast<float>(audio_samples.size()) / static_cast<float>(cactus::audio::WHISPER_SAMPLE_RATE);
+            static_cast<float>(original_audio_sample_count) / static_cast<float>(cactus::audio::WHISPER_SAMPLE_RATE);
         if (options.max_tokens == 100 && (!options_json || std::string(options_json).find("\"max_tokens\"") == std::string::npos)) {
             options.max_tokens = std::max<size_t>(100, static_cast<size_t>(audio_length_sec * (is_parakeet ? 30.0f : 20.0f)));
         }
@@ -282,13 +285,35 @@ int cactus_transcribe(
                     callback(piece.c_str(), tok, user_data);
                 }
             }
+        } else if (is_whisper) {
+            generated_tokens = handle->model->transcribe_whisper_seq2seq(
+                audio_features,
+                tokens,
+                options.max_tokens,
+                stop_token_sequences,
+                &handle->should_stop);
+            auto t_first = std::chrono::high_resolution_clock::now();
+            time_to_first_token =
+                std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
+            for (const auto& stop_seq : stop_token_sequences) {
+                if (stop_seq.empty() || generated_tokens.size() < stop_seq.size()) continue;
+                if (std::equal(stop_seq.rbegin(), stop_seq.rend(), generated_tokens.rbegin())) {
+                    generated_tokens.resize(generated_tokens.size() - stop_seq.size());
+                    break;
+                }
+            }
+            final_text = tokenizer->decode(generated_tokens);
+            if (callback) {
+                for (uint32_t tok : generated_tokens) {
+                    std::string piece = tokenizer->decode({tok});
+                    callback(piece.c_str(), tok, user_data);
+                }
+            }
         } else {
             for (size_t i = 0; i < options.max_tokens; ++i) {
                 if (handle->should_stop) break;
 
                 float token_entropy = 0.0f;
-                float tok_time_start = 0.0f;
-                float tok_time_end = 0.0f;
                 uint32_t next_token = handle->model->decode_with_audio(
                     tokens, audio_features,
                     options.temperature, options.top_p, options.top_k,

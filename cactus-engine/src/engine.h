@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <memory>
 #include <cstdint>
+#include <atomic>
 
 #include "cactus_graph.h"
 
@@ -605,6 +606,11 @@ public:
                                float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
 
     std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features);
+    std::vector<uint32_t> transcribe_whisper_seq2seq(const std::vector<float>& audio_features,
+                                                     const std::vector<uint32_t>& decoder_prompt_tokens,
+                                                     size_t max_tokens,
+                                                     const std::vector<std::vector<uint32_t>>& stop_token_sequences,
+                                                     const std::atomic<bool>* should_stop = nullptr);
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
                                        bool normalize = false, const std::string& profile_file = "");
@@ -669,6 +675,7 @@ private:
     };
 
     void copy_cache_state(const Component& src, Component& dst);
+    void reset_component_cache_states(Component& comp);
 
     bool load_manifest();
     bool setup_tokenizer();
@@ -688,6 +695,11 @@ private:
     bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                 const std::vector<std::string>& image_paths,
                                 const std::vector<float>& audio_features);
+    bool build_lm_encoder_outputs_dynamic_gemma4(
+        const std::vector<uint32_t>& tokens,
+        std::map<std::string, std::vector<uint8_t>>& store_bytes,
+        std::map<std::string, Precision>& store_prec,
+        std::map<std::string, std::vector<size_t>>& store_shape);
 
     std::string bundle_dir_;
     std::map<std::string, Component> components_;
@@ -698,6 +710,8 @@ private:
     Component* lm_encoder_media_step_ = nullptr;
     Component* decoder_prefill_chunk_ = nullptr;
     Component* lm_encoder_ = nullptr;
+    Component* lm_encoder_text_chunk_ = nullptr;
+    Component* lm_encoder_media_chunk_ = nullptr;
 
     std::string family_;
 
