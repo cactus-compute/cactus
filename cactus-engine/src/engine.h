@@ -7,6 +7,7 @@
 #include <unordered_set>
 #include <memory>
 #include <cstdint>
+#include <atomic>
 
 #include "cactus_graph.h"
 
@@ -605,6 +606,11 @@ public:
                                float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
 
     std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features);
+    std::vector<uint32_t> transcribe_whisper_seq2seq(const std::vector<float>& audio_features,
+                                                     const std::vector<uint32_t>& decoder_prompt_tokens,
+                                                     size_t max_tokens,
+                                                     const std::vector<std::vector<uint32_t>>& stop_token_sequences,
+                                                     const std::atomic<bool>* should_stop = nullptr);
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
                                        bool normalize = false, const std::string& profile_file = "");
@@ -669,6 +675,7 @@ private:
     };
 
     void copy_cache_state(const Component& src, Component& dst);
+    void reset_component_cache_states(Component& comp);
 
     bool load_manifest();
     bool setup_tokenizer();

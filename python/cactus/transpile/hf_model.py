@@ -24,6 +24,7 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from cactus.transpile.runtime_compat import Graph
+from cactus.convert.model_adapters.nemo import ensure_parakeet_tdt_nemo_source
 from cactus.transpile.audio_preprocess import generic_log_mel_features as _generic_log_mel_features
 from cactus.transpile.audio_preprocess import load_audio_waveform as _load_audio_waveform
 from cactus.transpile.audio_preprocess import prepare_cactus_audio_features
@@ -75,6 +76,9 @@ def _ensure_transformers_supports_model_type(model_type: str) -> str | None:
 def _resolve_local_snapshot(model_id_or_path: str) -> str | None:
     explicit = Path(model_id_or_path)
     if explicit.exists():
+        nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path)
+        if nemo_export is not None:
+            return nemo_export
         return str(explicit)
 
     snapshots_dir = (
@@ -90,7 +94,11 @@ def _resolve_local_snapshot(model_id_or_path: str) -> str | None:
     snapshots = sorted(path for path in snapshots_dir.iterdir() if path.is_dir())
     if not snapshots:
         return None
-    return str(snapshots[-1])
+    snapshot = str(snapshots[-1])
+    nemo_export = ensure_parakeet_tdt_nemo_source(snapshot)
+    if nemo_export is not None:
+        return nemo_export
+    return snapshot
 
 
 def _snapshot_has_model_weights(path: str | Path) -> bool:
