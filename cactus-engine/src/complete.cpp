@@ -326,7 +326,7 @@ struct PreparedPrompt {
     size_t context_token_count = 0;
     std::vector<std::vector<CactusModelHandle::ProcessedImage>> images;
 
-    std::vector<float> audio_features;
+    std::vector<std::vector<float>> audio_features;
     size_t audio_num_frames = 0;
 
     bool has_images() const {
@@ -335,7 +335,8 @@ struct PreparedPrompt {
     }
 
     bool has_audio() const {
-        return !audio_features.empty();
+        return std::any_of(audio_features.begin(), audio_features.end(),
+            [](const auto& mel) { return !mel.empty(); });
     }
 };
 
@@ -458,38 +459,36 @@ PreparedPrompt prepare_prompt(
     }
 
     if (prompt.model_type == Config::ModelType::GEMMA4) {
-        std::vector<float> audio_samples;
-        if (pcm_buffer != nullptr && pcm_buffer_size > 1) {
-            auto waveform_fp32 = cactus::audio::pcm_buffer_to_float_samples(pcm_buffer, pcm_buffer_size);
-            audio_samples = resample_to_16k_fp32(waveform_fp32, 16000);
-        } else if (!prompt.audio_paths.empty()) {
-            for (auto it = prompt.messages.rbegin(); it != prompt.messages.rend(); ++it) {
-                if (!it->audio.empty()) {
-                    const std::string& audio_path = it->audio.back();
-                    AudioFP32 wav = load_wav(audio_path);
-                    audio_samples = resample_to_16k_fp32(wav.samples, wav.sample_rate);
-                    break;
-                }
-            }
-        }
         std::vector<size_t> user_indices;
         for (size_t i = 0; i < prompt.messages.size(); i++) {
             if (prompt.messages[i].role == "user") user_indices.push_back(i);
         }
         auto& counts = handle->user_audio_counts;
-        for (size_t u = 0; u + 1 < user_indices.size(); u++) {
-            if (u < counts.size() && counts[u] > 0) {
-                prompt.messages[user_indices[u]].audio_soft_token_count = counts[u];
+        if (counts.size() < user_indices.size()) counts.resize(user_indices.size(), 0);
+
+        if (pcm_buffer != nullptr && pcm_buffer_size > 1 && !user_indices.empty()) {
+            auto waveform_fp32 = cactus::audio::pcm_buffer_to_float_samples(pcm_buffer, pcm_buffer_size);
+            auto samples_16k = resample_to_16k_fp32(waveform_fp32, 16000);
+            if (!samples_16k.empty()) {
+                auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(samples_16k, handle->model->get_config());
+                prompt.audio_features.push_back(std::move(audio_prep.features));
+                size_t u = user_indices.size() - 1;
+                prompt.messages[user_indices[u]].audio_soft_token_count = audio_prep.num_soft_tokens;
+                counts[u] = audio_prep.num_soft_tokens;
             }
-        }
-        if (!audio_samples.empty() && !user_indices.empty()) {
-            auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(audio_samples, handle->model->get_config());
-            prompt.audio_features = std::move(audio_prep.features);
-            prompt.audio_num_frames = audio_prep.num_frames;
-            size_t u = user_indices.size() - 1;
-            prompt.messages[user_indices[u]].audio_soft_token_count = audio_prep.num_soft_tokens;
-            if (counts.size() <= u) counts.resize(u + 1, 0);
-            counts[u] = audio_prep.num_soft_tokens;
+        } else if (!prompt.audio_paths.empty()) {
+            for (size_t u = 0; u < user_indices.size(); u++) {
+                const auto& msg = prompt.messages[user_indices[u]];
+                if (msg.audio.empty()) continue;
+                const std::string& audio_path = msg.audio.back();
+                AudioFP32 wav = load_wav(audio_path);
+                auto samples_16k = resample_to_16k_fp32(wav.samples, wav.sample_rate);
+                if (samples_16k.empty()) continue;
+                auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(samples_16k, handle->model->get_config());
+                prompt.audio_features.push_back(std::move(audio_prep.features));
+                prompt.messages[user_indices[u]].audio_soft_token_count = audio_prep.num_soft_tokens;
+                counts[u] = audio_prep.num_soft_tokens;
+            }
         }
     }
 
@@ -543,6 +542,24 @@ PrefillResult do_prefill(
     if (tokens_to_process.size() > 1) {
         std::vector<uint32_t> prefill_tokens(tokens_to_process.begin(), tokens_to_process.end() - 1);
         result.prefilled_count = prefill_tokens.size();
+
+        auto slice_delta_audio = [&]() -> std::vector<std::vector<float>> {
+            if (!result.was_prefix) return prompt.audio_features;
+            const size_t cached_user_messages = handle->processed_images.size();
+            size_t cached_audio_count = 0;
+            size_t seen_user = 0;
+            for (const auto& msg : prompt.messages) {
+                if (msg.role != "user") continue;
+                if (seen_user >= cached_user_messages) break;
+                if (!msg.audio.empty()) cached_audio_count++;
+                seen_user++;
+            }
+            cached_audio_count = std::min(cached_audio_count, prompt.audio_features.size());
+            return std::vector<std::vector<float>>(
+                prompt.audio_features.begin() + cached_audio_count,
+                prompt.audio_features.end());
+        };
+
         if (has_images && has_audio) {
             std::vector<std::string> delta_image_paths;
             if (result.was_prefix) {
@@ -557,7 +574,7 @@ PrefillResult do_prefill(
             } else {
                 delta_image_paths = prompt.image_paths;
             }
-            handle->model->prefill_with_media(prefill_tokens, delta_image_paths, prompt.audio_features);
+            handle->model->prefill_with_media(prefill_tokens, delta_image_paths, slice_delta_audio());
         } else if (has_images) {
             std::vector<std::string> delta_image_paths;
             if (result.was_prefix) {
@@ -574,7 +591,7 @@ PrefillResult do_prefill(
             }
             handle->model->prefill_with_images(prefill_tokens, delta_image_paths);
         } else if (has_audio) {
-            handle->model->prefill_with_audio(prefill_tokens, prompt.audio_features);
+            handle->model->prefill_with_audio(prefill_tokens, slice_delta_audio());
         } else {
             handle->model->prefill(prefill_tokens, handle->model->get_prefill_chunk_size());
         }
@@ -693,12 +710,8 @@ int cactus_complete(
             while (common < limit && cache[common] == prompt.tokens[common]) common++;
             if (common < cache.size()) {
                 CACTUS_LOG_WARN("complete", "KV cache diverges from new prompt at position " << common
-                    << "/" << cache.size() << "; trimming and re-prefilling the divergent suffix");
-                size_t kv_len = handle->model->get_cache_size();
-                if (kv_len > common) {
-                    handle->model->remove_thinking_tokens({{common, kv_len - common}});
-                }
-                cache.resize(common);
+                    << "/" << cache.size() << "; resetting cache for clean audio re-prefill");
+                reset_cache(handle);
             }
         }
 
