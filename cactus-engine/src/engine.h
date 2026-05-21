@@ -586,12 +586,13 @@ public:
     void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                              const std::string& profile_file = "");
 
-    void prefill_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+    void prefill_with_audio(const std::vector<uint32_t>& tokens,
+                            const std::vector<std::vector<float>>& audio_features_per_message,
                             const std::string& profile_file = "");
 
     void prefill_with_media(const std::vector<uint32_t>& tokens,
                             const std::vector<std::string>& image_paths,
-                            const std::vector<float>& audio_features,
+                            const std::vector<std::vector<float>>& audio_features_per_message,
                             const std::string& profile_file = "");
 
     uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
@@ -599,7 +600,8 @@ public:
                                 size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                                 float min_p = 0.15f, float repetition_penalty = 1.1f);
 
-    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens,
+                               const std::vector<std::vector<float>>& audio_features_per_message,
                                float temperature = 0.0f, float top_p = 0.0f,
                                size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                                float min_p = 0.15f, float repetition_penalty = 1.1f,
@@ -699,9 +701,10 @@ private:
     uint32_t argmax_last_logits();
     void run_vision_encoder(const std::string& image_path);
     void run_audio_encoder(const std::vector<float>& audio_features);
+    void run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message);
     bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                 const std::vector<std::string>& image_paths,
-                                const std::vector<float>& audio_features);
+                                const std::vector<std::vector<float>>& audio_features_per_message);
     bool build_lm_encoder_outputs_dynamic_gemma4(
         const std::vector<uint32_t>& tokens,
         std::map<std::string, std::vector<uint8_t>>& store_bytes,
