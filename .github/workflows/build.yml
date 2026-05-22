@@ -33,12 +33,12 @@ jobs:
       - uses: actions/checkout@v4
       - run: bash cactus/build.sh
       - run: BUILD_STATIC=true BUILD_XCFRAMEWORK=false bash apple/build.sh
+      - run: bash android/build.sh
 
-  linux-android:
+  linux:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y cmake build-essential libcurl4-openssl-dev
       - run: bash cactus/build.sh
-      - run: bash android/build.sh
