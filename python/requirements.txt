@@ -4,3 +4,4 @@ transformers==5.5.4
 numpy==2.4.6
 pillow==11.3.0
 huggingface_hub==1.15.0
+scipy==1.17.1

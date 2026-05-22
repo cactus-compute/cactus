@@ -3,20 +3,19 @@ import sys
 import os
 import subprocess
 import shutil
-import platform
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
-def _looks_like_project_root(path: Path) -> bool:
+def _looks_like_project_root(path):
     return (
         (path / "python" / "cactus" / "cli").is_dir()
         and (path / "cactus-kernels").is_dir()
     )
 
 
-def _resolve_project_root() -> Path:
+def _resolve_project_root():
     env_root = os.getenv("CACTUS_PROJECT_ROOT", "").strip()
     if env_root:
         candidate = Path(env_root).expanduser().resolve()
@@ -32,13 +31,13 @@ def _resolve_project_root() -> Path:
         if _looks_like_project_root(candidate):
             return candidate
 
-    # Final fallback for unusual layouts.
     return module_root
 
 
 PROJECT_ROOT = _resolve_project_root()
 DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_TEST_MODEL_ID = "google/gemma-4-E2B-it"
+DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 
 
 RED = '\033[0;31m'
@@ -53,36 +52,13 @@ def print_color(color, message):
     print(f"{color}{message}{NC}")
 
 
-from .download import (
-    combo_label,
-    download_cq_archive,
-    get_model_dir_name,
-    get_weights_dir,
-    list_hf_cq_archives,
-    resolve_archive,
-    suggested_cq_repo,
-)
-
-
-def get_effective_weights_dir(model_id, args=None):
-    return get_weights_dir(model_id)
-
-
-
 def check_command(cmd):
     """Check if a command is available in PATH."""
     return shutil.which(cmd) is not None
 
 
 def run_command(cmd, cwd=None, check=True):
-    """Run a script or command and optionally exit on failure.
-
-    Args:
-        cmd: Script path (str) or command list. String paths are executed
-             directly without shell interpretation to handle spaces safely.
-        cwd: Working directory for the command.
-        check: If True, exit on non-zero return code.
-    """
+    """Run a script or command and optionally exit on failure."""
     if isinstance(cmd, str):
         cmd = [cmd]
     result = subprocess.run(cmd, cwd=cwd)
@@ -92,7 +68,7 @@ def run_command(cmd, cwd=None, check=True):
 
 
 def prompt_for_api_key(config):
-    """Prompt user to set Cactus Cloud API key if not already configured. Returns the key or empty string."""
+    """Prompt user to set Cactus Cloud API key if not already configured."""
     api_key = config.get_api_key()
     if api_key:
         return api_key

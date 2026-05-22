@@ -5,6 +5,7 @@ from pathlib import Path
 
 from cactus import cli
 from cactus.cli import convert as convert_cli
+import cactus.cli.model as model_mod
 
 
 def _write_gemma4_multimodal_config(output_dir: Path) -> None:
@@ -21,7 +22,8 @@ def _write_gemma4_multimodal_config(output_dir: Path) -> None:
 
 
 def _gemma4_multimodal_extra_args(model_dir: Path, artifact_dir: Path) -> list[str]:
-    assets_dir = convert_cli.PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
+    from cactus.cli.common import PROJECT_ROOT
+    assets_dir = PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
     return [
         "--weights-dir",
         str(model_dir),
@@ -34,7 +36,7 @@ def _gemma4_multimodal_extra_args(model_dir: Path, artifact_dir: Path) -> list[s
         "--component-pipeline",
         "on",
         "--prompt",
-        convert_cli._DEFAULT_MULTIMODAL_PROMPT,
+        model_mod._DEFAULT_MULTIMODAL_PROMPT,
         "--components",
         "vision_encoder,audio_encoder,lm_encoder,decoder",
         "--image-file",
@@ -47,7 +49,7 @@ def _gemma4_multimodal_extra_args(model_dir: Path, artifact_dir: Path) -> list[s
 
 def test_cmd_convert_transpiles_into_same_weights_folder(monkeypatch, tmp_path: Path) -> None:
     parser = cli.create_parser()
-    args = parser.parse_args(["convert", "gemma4"])
+    args = parser.parse_args(["convert", "gemma4", "--reconvert"])
 
     model_dir = tmp_path / "weights" / "gemma-4-e2b-it"
     calls: list[tuple[str, object]] = []
@@ -65,10 +67,11 @@ def test_cmd_convert_transpiles_into_same_weights_folder(monkeypatch, tmp_path: 
         return 0
 
     monkeypatch.setattr(convert_cli, "get_weights_dir", lambda model_id: model_dir)
-    monkeypatch.setattr(convert_cli, "cmd_transpile", _fake_cmd_transpile)
+
+    import cactus.cli.transpile as transpile_mod
+    monkeypatch.setattr(transpile_mod, "cmd_transpile", _fake_cmd_transpile)
 
     import cactus.convert.cli as cq_cli
-
     monkeypatch.setattr(cq_cli, "main", _fake_cq_main)
 
     rc = convert_cli.cmd_convert(args)
@@ -93,7 +96,7 @@ def test_cmd_convert_transpiles_into_same_weights_folder(monkeypatch, tmp_path: 
 def test_cmd_convert_honors_explicit_output_dir(monkeypatch, tmp_path: Path) -> None:
     parser = cli.create_parser()
     output_dir = tmp_path / "custom"
-    args = parser.parse_args(["convert", "google/gemma-4-E2B-it", str(output_dir)])
+    args = parser.parse_args(["convert", "google/gemma-4-E2B-it", str(output_dir), "--reconvert"])
 
     cq_calls: list[list[str]] = []
 
@@ -108,10 +111,10 @@ def test_cmd_convert_honors_explicit_output_dir(monkeypatch, tmp_path: Path) -> 
         transpile_calls.append(transpile_args)
         return 0
 
-    monkeypatch.setattr(convert_cli, "cmd_transpile", _fake_cmd_transpile)
+    import cactus.cli.transpile as transpile_mod
+    monkeypatch.setattr(transpile_mod, "cmd_transpile", _fake_cmd_transpile)
 
     import cactus.convert.cli as cq_cli
-
     monkeypatch.setattr(cq_cli, "main", _fake_cq_main)
 
     rc = convert_cli.cmd_convert(args)
@@ -150,10 +153,10 @@ def test_cmd_convert_supplies_default_audio_for_parakeet(monkeypatch, tmp_path: 
         transpile_calls.append(transpile_args)
         return 0
 
-    monkeypatch.setattr(convert_cli, "cmd_transpile", _fake_cmd_transpile)
+    import cactus.cli.transpile as transpile_mod
+    monkeypatch.setattr(transpile_mod, "cmd_transpile", _fake_cmd_transpile)
 
     import cactus.convert.cli as cq_cli
-
     monkeypatch.setattr(cq_cli, "main", _fake_cq_main)
 
     rc = convert_cli.cmd_convert(args)
@@ -184,10 +187,10 @@ def test_cmd_convert_supplies_default_audio_for_whisper(monkeypatch, tmp_path: P
         transpile_calls.append(transpile_args)
         return 0
 
-    monkeypatch.setattr(convert_cli, "cmd_transpile", _fake_cmd_transpile)
+    import cactus.cli.transpile as transpile_mod
+    monkeypatch.setattr(transpile_mod, "cmd_transpile", _fake_cmd_transpile)
 
     import cactus.convert.cli as cq_cli
-
     monkeypatch.setattr(cq_cli, "main", _fake_cq_main)
 
     rc = convert_cli.cmd_convert(args)
@@ -197,28 +200,73 @@ def test_cmd_convert_supplies_default_audio_for_whisper(monkeypatch, tmp_path: P
     assert extra_args[extra_args.index("--task") + 1] == "seq2seq_transcription"
     assert "--audio-file" in extra_args
 
-
-def test_cmd_convert_infers_profile_defaults_for_qwen_and_lfm(monkeypatch, tmp_path: Path) -> None:
+def test_cmd_convert_infers_multimodal_for_qwen_and_lfm(monkeypatch, tmp_path: Path) -> None:
+    """Qwen/LFM models WITH vision_config get multimodal task."""
     parser = cli.create_parser()
 
     import cactus.convert.cli as cq_cli
+    import cactus.cli.transpile as transpile_mod
 
-    for alias, model_type, arch, expected_components in (
+    for alias, model_type, arch, vision, expected_components in (
         (
             "qwen",
             "qwen3",
             "Qwen3ForCausalLM",
+            "qwen3_vision",
             "vision_encoder,lm_encoder,decoder,lm_encoder_text_chunk,decoder_prefill_chunk,lm_encoder_step,decoder_media_step,decoder_step",
         ),
         (
             "lfm",
             "lfm2_vl",
             "Lfm2VlForConditionalGeneration",
+            "siglip2_vision_model",
             "vision_encoder,lm_encoder,decoder",
         ),
     ):
+        output_dir = tmp_path / (alias + "_mm")
+        args = parser.parse_args(["convert", alias, str(output_dir), "--reconvert"])
+        transpile_calls: list[Namespace] = []
+
+        def _fake_cq_main(command, *, output_dir=output_dir, model_type=model_type, arch=arch, vision=vision):
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "hf_config.json").write_text(
+                f'{{"model_type":"{model_type}","architectures":["{arch}"],'
+                f'"vision_config":{{"model_type":"{vision}"}}}}',
+                encoding="utf-8",
+            )
+            return 0
+
+        def _fake_cmd_transpile(transpile_args):
+            transpile_calls.append(transpile_args)
+            return 0
+
+        monkeypatch.setattr(transpile_mod, "cmd_transpile", _fake_cmd_transpile)
+        monkeypatch.setattr(cq_cli, "main", _fake_cq_main)
+
+        rc = convert_cli.cmd_convert(args)
+
+        assert rc == 0
+        extra_args = transpile_calls[0].extra_args
+        assert extra_args[extra_args.index("--task") + 1] == "multimodal_causal_lm_logits"
+        assert extra_args[extra_args.index("--component-pipeline") + 1] == "on"
+        assert extra_args[extra_args.index("--components") + 1] == expected_components
+        assert "--image-file" in extra_args
+        assert "--audio-file" not in extra_args
+
+
+def test_cmd_convert_infers_causal_lm_for_qwen_and_lfm_without_vision(monkeypatch, tmp_path: Path) -> None:
+    """Qwen/LFM models WITHOUT vision_config get causal_lm_logits."""
+    parser = cli.create_parser()
+
+    import cactus.convert.cli as cq_cli
+    import cactus.cli.transpile as transpile_mod
+
+    for alias, model_type, arch in (
+        ("qwen", "qwen3", "Qwen3ForCausalLM"),
+        ("lfm", "lfm2_vl", "Lfm2VlForConditionalGeneration"),
+    ):
         output_dir = tmp_path / alias
-        args = parser.parse_args(["convert", alias, str(output_dir)])
+        args = parser.parse_args(["convert", alias, str(output_dir), "--reconvert"])
         transpile_calls: list[Namespace] = []
 
         def _fake_cq_main(command, *, output_dir=output_dir, model_type=model_type, arch=arch):
@@ -233,18 +281,14 @@ def test_cmd_convert_infers_profile_defaults_for_qwen_and_lfm(monkeypatch, tmp_p
             transpile_calls.append(transpile_args)
             return 0
 
-        monkeypatch.setattr(convert_cli, "cmd_transpile", _fake_cmd_transpile)
+        monkeypatch.setattr(transpile_mod, "cmd_transpile", _fake_cmd_transpile)
         monkeypatch.setattr(cq_cli, "main", _fake_cq_main)
 
         rc = convert_cli.cmd_convert(args)
 
         assert rc == 0
         extra_args = transpile_calls[0].extra_args
-        assert extra_args[extra_args.index("--task") + 1] == "multimodal_causal_lm_logits"
-        assert extra_args[extra_args.index("--component-pipeline") + 1] == "on"
-        assert extra_args[extra_args.index("--components") + 1] == expected_components
-        assert "--image-file" in extra_args
-        assert "--audio-file" not in extra_args
+        assert extra_args[extra_args.index("--task") + 1] == "causal_lm_logits"
 
 
 def test_cmd_convert_infers_multimodal_components_from_vision_config(monkeypatch, tmp_path: Path) -> None:
@@ -270,10 +314,10 @@ def test_cmd_convert_infers_multimodal_components_from_vision_config(monkeypatch
         transpile_calls.append(transpile_args)
         return 0
 
-    monkeypatch.setattr(convert_cli, "cmd_transpile", _fake_cmd_transpile)
+    import cactus.cli.transpile as transpile_mod
+    monkeypatch.setattr(transpile_mod, "cmd_transpile", _fake_cmd_transpile)
 
     import cactus.convert.cli as cq_cli
-
     monkeypatch.setattr(cq_cli, "main", _fake_cq_main)
 
     rc = convert_cli.cmd_convert(args)

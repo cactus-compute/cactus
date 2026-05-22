@@ -494,11 +494,15 @@ class Graph:
             raise ValueError("cat requires at least one tensor")
         if len(tensors) == 1:
             return tensors[0]
-
-        result = tensors[0]
-        for tensor in tensors[1:]:
-            result = self.concat(result, tensor, axis=axis)
-        return result
+        ids = (cactus_node_t * len(tensors))(*(cactus_node_t(t.id) for t in tensors))
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_cat(
+            self.h, ids, ctypes.c_size_t(len(tensors)),
+            ctypes.c_int32(int(axis)), ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError("graph_cat failed")
+        return self._tensor_from_node(out.value)
 
     def groupnorm(self, x, weight, bias, num_groups, eps=1e-5):
         x = self._ensure_tensor(x)
@@ -1127,6 +1131,108 @@ class Graph:
         rc = _lib.cactus_graph_invalidate_persistent(self.h, cactus_node_t(persistent_node.id))
         if rc != 0:
             raise RuntimeError("graph_invalidate_persistent failed")
+
+    # ── Audio / signal processing ───────────────────────────────────
+
+    def rfft(self, x):
+        """Real-to-complex FFT."""
+        x = self._ensure_tensor(x)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_rfft(self.h, cactus_node_t(x.id), ctypes.byref(out))
+        if rc != 0:
+            raise RuntimeError("graph_rfft failed")
+        return self._tensor_from_node(out.value)
+
+    def irfft(self, x, output_length):
+        """Complex-to-real inverse FFT."""
+        x = self._ensure_tensor(x)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_irfft(
+            self.h, cactus_node_t(x.id),
+            ctypes.c_size_t(int(output_length)), ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError("graph_irfft failed")
+        return self._tensor_from_node(out.value)
+
+    def mel_filter_bank(self, num_frequency_bins, num_mel_filters,
+                        min_frequency, max_frequency, sampling_rate,
+                        norm_type=0, scale_type=0):
+        """Generate a mel-scale filter bank tensor."""
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_mel_filter_bank(
+            self.h,
+            ctypes.c_size_t(int(num_frequency_bins)),
+            ctypes.c_size_t(int(num_mel_filters)),
+            ctypes.c_float(float(min_frequency)),
+            ctypes.c_float(float(max_frequency)),
+            ctypes.c_size_t(int(sampling_rate)),
+            ctypes.c_int(int(norm_type)),
+            ctypes.c_int(int(scale_type)),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError("graph_mel_filter_bank failed")
+        return self._tensor_from_node(out.value)
+
+    def spectrogram(self, waveform, mel_filters, frame_length, hop_length,
+                    fft_length, power=2.0, center=True, pad_mode=0,
+                    mel_floor=1e-10, log_mel_mode=0, dither=0.0,
+                    preemphasis=0.0, remove_dc_offset=False):
+        """Compute a spectrogram from a waveform tensor."""
+        waveform = self._ensure_tensor(waveform)
+        mel_filters = self._ensure_tensor(mel_filters)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_spectrogram(
+            self.h,
+            cactus_node_t(waveform.id),
+            cactus_node_t(mel_filters.id),
+            ctypes.c_size_t(int(frame_length)),
+            ctypes.c_size_t(int(hop_length)),
+            ctypes.c_size_t(int(fft_length)),
+            ctypes.c_float(float(power)),
+            ctypes.c_bool(bool(center)),
+            ctypes.c_int(int(pad_mode)),
+            ctypes.c_float(float(mel_floor)),
+            ctypes.c_int(int(log_mel_mode)),
+            ctypes.c_float(float(dither)),
+            ctypes.c_float(float(preemphasis)),
+            ctypes.c_bool(bool(remove_dc_offset)),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError("graph_spectrogram failed")
+        return self._tensor_from_node(out.value)
+
+    # ── Image processing ─────────────────────────────────────────────
+
+    def image_preprocess(self, pixel_input, src_width, src_height,
+                         target_width, target_height, patch_size, channels,
+                         rescale_factor, mean, std_dev):
+        """Resize, normalize, and patch an image tensor.
+
+        *mean* and *std_dev* are per-channel float sequences (length = channels).
+        """
+        pixel_input = self._ensure_tensor(pixel_input)
+        mean_arr = (ctypes.c_float * len(mean))(*[float(v) for v in mean])
+        std_arr = (ctypes.c_float * len(std_dev))(*[float(v) for v in std_dev])
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_image_preprocess(
+            self.h, cactus_node_t(pixel_input.id),
+            ctypes.c_int(int(src_width)),
+            ctypes.c_int(int(src_height)),
+            ctypes.c_int(int(target_width)),
+            ctypes.c_int(int(target_height)),
+            ctypes.c_int(int(patch_size)),
+            ctypes.c_int(int(channels)),
+            ctypes.c_float(float(rescale_factor)),
+            mean_arr, std_arr, ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError("graph_image_preprocess failed")
+        return self._tensor_from_node(out.value)
+
+    # ── Introspection ────────────────────────────────────────────────
 
     def output_info(self, x):
         x = self._ensure_tensor(x)

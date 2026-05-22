@@ -1,0 +1,83 @@
+name: PyPI Publish
+
+on:
+  workflow_call:
+
+jobs:
+  wheels:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            lib: libcactus.dylib
+            plat: macosx_14_0_arm64
+          - os: ubuntu-24.04-arm
+            lib: libcactus.so
+            plat: manylinux_2_17_aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update && sudo apt-get install -y cmake build-essential libcurl4-openssl-dev
+          fi
+
+      - name: Build libcactus
+        run: bash cactus/build.sh
+
+      - name: Bundle library into package
+        run: |
+          mkdir -p python/cactus/bindings/lib
+          cp cactus/build/${{ matrix.lib }} python/cactus/bindings/lib/
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel
+        run: |
+          pip install build wheel
+          cd python
+          python -m build --wheel -C="--build-option=--plat-name=${{ matrix.plat }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}
+          path: python/dist/*.whl
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist
+        run: |
+          pip install build
+          cd python
+          python -m build --sdist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: python/dist/*.tar.gz
+
+  publish:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

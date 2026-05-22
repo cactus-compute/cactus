@@ -8,6 +8,8 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
+import com.facebook.react.modules.core.DeviceEventManagerModule
+import com.cactus.CactusTokenCallback
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -117,23 +119,41 @@ class CactusModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
     }
 
     @ReactMethod
+    private fun emitToken(token: String, tokenId: Int) {
+        reactApplicationContext
+            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+            .emit("onToken", Arguments.createMap().apply {
+                putString("token", token)
+                putInt("tokenId", tokenId)
+            })
+    }
+
+    @ReactMethod
+    fun addListener(@Suppress("UNUSED_PARAMETER") eventName: String) {}
+
+    @ReactMethod
+    fun removeListeners(@Suppress("UNUSED_PARAMETER") count: Int) {}
+
+    @ReactMethod
     fun complete(
         handle: String,
         messagesJson: String,
         optionsJson: String?,
         toolsJson: String?,
         pcmDataBase64: String?,
+        streamTokens: Boolean,
         promise: Promise,
     ) {
         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
         val nativeHandle = parseHandle(handle, promise) ?: return
+        val callback = if (streamTokens) CactusTokenCallback { token, tokenId -> emitToken(token, tokenId) } else null
         val rc = CactusJNI.nativeComplete(
             nativeHandle,
             messagesJson,
             buffer,
             optionsJson,
             toolsJson,
-            null,
+            callback,
             decodeBase64OrNull(pcmDataBase64),
         )
         if (rc < 0) {
@@ -255,58 +275,6 @@ class CactusModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
             result.pushDouble(buffer[i].toDouble())
         }
         promise.resolve(result)
-    }
-
-    @ReactMethod
-    fun vad(handle: String, audioPath: String?, optionsJson: String?, pcmDataBase64: String?, promise: Promise) {
-        val nativeHandle = parseHandle(handle, promise) ?: return
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        val rc = CactusJNI.nativeVad(nativeHandle, audioPath, buffer, optionsJson, decodeBase64OrNull(pcmDataBase64))
-        if (rc < 0) {
-            fail(promise, "VAD failed")
-            return
-        }
-        promise.resolve(decodeNullTerminatedUtf8(buffer))
-    }
-
-    @ReactMethod
-    fun diarize(handle: String, audioPath: String?, optionsJson: String?, pcmDataBase64: String?, promise: Promise) {
-        val nativeHandle = parseHandle(handle, promise) ?: return
-        val buffer = ByteArray(LARGE_BUFFER_SIZE)
-        val rc = CactusJNI.nativeDiarize(nativeHandle, audioPath, buffer, optionsJson, decodeBase64OrNull(pcmDataBase64))
-        if (rc < 0) {
-            fail(promise, "Diarize failed")
-            return
-        }
-        promise.resolve(decodeNullTerminatedUtf8(buffer))
-    }
-
-    @ReactMethod
-    fun embedSpeaker(
-        handle: String,
-        audioPath: String?,
-        optionsJson: String?,
-        pcmDataBase64: String?,
-        maskWeights: ReadableArray?,
-        promise: Promise,
-    ) {
-        val nativeHandle = parseHandle(handle, promise) ?: return
-        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-        val mask = maskWeights?.let { readableArrayToFloatArray(it) }
-        val rc = CactusJNI.nativeEmbedSpeaker(
-            nativeHandle,
-            audioPath,
-            buffer,
-            optionsJson,
-            decodeBase64OrNull(pcmDataBase64),
-            mask,
-            mask?.size?.toLong() ?: 0L,
-        )
-        if (rc < 0) {
-            fail(promise, "EmbedSpeaker failed")
-            return
-        }
-        promise.resolve(decodeNullTerminatedUtf8(buffer))
     }
 
     @ReactMethod

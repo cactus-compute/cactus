@@ -1,0 +1,36 @@
+name: Python Tests
+
+on:
+  pull_request:
+    paths:
+      - "python/**"
+      - ".github/workflows/python.yml"
+  push:
+    branches: [main]
+    paths:
+      - "python/**"
+      - ".github/workflows/python.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libcurl4-openssl-dev
+
+      - name: Build libcactus
+        run: bash cactus/build.sh
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e "python/[dev]"
+
+      - name: Run tests
+        run: |
+          cd python
+          pytest tests/ -v --ignore=tests/test_model.py
