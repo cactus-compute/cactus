@@ -1088,6 +1088,10 @@ int run_transcribe(const Args& args, bool pcm) {
 
 int main(int argc, char** argv) {
     try {
+        const char* level_env = std::getenv("CACTUS_LOG_LEVEL");
+        if (level_env && level_env[0]) {
+            cactus_log_set_level(std::atoi(level_env));
+        }
         Args args = parse_args(argc, argv);
         if (args.command == "e002-tokens") return run_e002_tokens(args);
         if (args.command == "e002-preprocess") return run_e002_preprocess(args);

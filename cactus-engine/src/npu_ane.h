@@ -77,10 +77,9 @@ public:
     int get_num_kv_heads() const override;
     int get_head_dim() const override;
 
-    NPUPrefillDirectResult prefill_chunk_direct(
-        const std::vector<__fp16>& embeddings,
-        int position_offset = 0,
-        const std::string& input_name = "x") override;
+    NPUPrefillDirectResult prefill_chunk_tokens(
+        const std::vector<int32_t>& input_ids,
+        const std::vector<int32_t>& position_ids) override;
 
 private:
     void* impl_;
@@ -140,10 +139,9 @@ public:
     int get_num_kv_heads() const override { return 0; }
     int get_head_dim() const override { return 0; }
 
-    NPUPrefillDirectResult prefill_chunk_direct(
-        const std::vector<__fp16>&,
-        int = 0,
-        const std::string& = "x") override { return {}; }
+    NPUPrefillDirectResult prefill_chunk_tokens(
+        const std::vector<int32_t>&,
+        const std::vector<int32_t>&) override { return {}; }
 };
 
 #endif // CACTUS_HAS_ANE

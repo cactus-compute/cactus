@@ -296,6 +296,7 @@ def _write_component_bundle(
     component_io_signatures: dict[str, dict[str, tuple[str, ...]]] | None = None,
     graph_filename: str = "graph.cactus",
     npu_prefill_mlpackage: str | None = None,
+    npu_encoder_mlpackages: dict[str, str] | None = None,
 ) -> Path:
     bundle_dir = artifact_dir / "components"
     component_order = [
@@ -410,6 +411,9 @@ def _write_component_bundle(
     }
     if npu_prefill_mlpackage:
         manifest_payload["npu_prefill"] = npu_prefill_mlpackage
+    for manifest_key, mlpackage_path in (npu_encoder_mlpackages or {}).items():
+        if mlpackage_path:
+            manifest_payload[manifest_key] = mlpackage_path
     _write_json(manifest_path, manifest_payload)
     return manifest_path
 
@@ -667,13 +671,21 @@ def _run_component_pipeline_transpile(
                 f"saved_optimized_component_ir_{component}="
                 f"{artifact_dir / _component_artifact_name('optimized_ir', component)}"
             )
-        from .npu import run_prefill_pipeline
+        from .npu import run_encoder_pipeline, run_prefill_pipeline
+        npu_enabled = bool(getattr(args, "npu", False))
+        npu_quantize = getattr(args, "npu_quantize", None)
         npu_prefill_filename = run_prefill_pipeline(
             model,
             artifact_dir,
             chunk_size=int(getattr(args, "npu_chunk_size", 256)),
-            enabled=bool(getattr(args, "npu", False)),
-            quantize_bits=getattr(args, "npu_quantize", None),
+            enabled=npu_enabled,
+            quantize_bits=npu_quantize,
+        )
+        npu_encoder_mlpackages = run_encoder_pipeline(
+            component_specs,
+            artifact_dir,
+            enabled=npu_enabled,
+            quantize_bits=npu_quantize,
         )
 
         component_manifest_path = _write_component_bundle(
@@ -689,6 +701,7 @@ def _run_component_pipeline_transpile(
             component_io_signatures=component_io_signatures,
             graph_filename=args.graph_filename,
             npu_prefill_mlpackage=npu_prefill_filename,
+            npu_encoder_mlpackages=npu_encoder_mlpackages,
         )
         print(f"saved_component_bundle_manifest={component_manifest_path}")
         for component in transpiled_component_graphs:

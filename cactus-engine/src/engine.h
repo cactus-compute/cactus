@@ -70,10 +70,9 @@ public:
     virtual int get_num_layers() const = 0;
     virtual int get_num_kv_heads() const = 0;
     virtual int get_head_dim() const = 0;
-    virtual NPUPrefillDirectResult prefill_chunk_direct(
-        const std::vector<__fp16>& embeddings,
-        int position_offset = 0,
-        const std::string& input_name = "x") = 0;
+    virtual NPUPrefillDirectResult prefill_chunk_tokens(
+        const std::vector<int32_t>& input_ids,
+        const std::vector<int32_t>& position_ids) = 0;
 };
 
 std::unique_ptr<NPUPrefill> create_prefill();
@@ -634,6 +633,12 @@ public:
     bool has_npu_prefill() const { return npu_prefill_ != nullptr; }
     size_t get_prefill_chunk_size() const { return 128; }
 
+    bool load_npu_audio_encoder(const std::string& model_path);
+    bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
+
+    bool load_npu_vision_encoder(const std::string& model_path);
+    bool has_npu_vision_encoder() const { return npu_vision_encoder_ != nullptr; }
+
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
 
@@ -729,11 +734,17 @@ private:
 
     std::string family_;
     std::string npu_prefill_mlpackage_;
+    std::string npu_audio_encoder_mlpackage_;
+    std::string npu_vision_encoder_mlpackage_;
 
     std::unique_ptr<npu::NPUPrefill> npu_prefill_;
+    std::unique_ptr<npu::NPUEncoder> npu_audio_encoder_;
+    std::unique_ptr<npu::NPUEncoder> npu_vision_encoder_;
 
     bool prefill_via_npu(const std::vector<uint32_t>& tokens);
     void write_npu_kv_to_cache(const npu::NPUPrefillDirectResult& result, size_t prefill_len);
+    bool audio_encode_via_npu(const std::vector<float>& audio_features);
+    bool vision_encode_via_npu(const std::vector<float>& pixel_values);
 
     std::map<std::string, std::vector<uint8_t>> media_features_;
     std::map<std::string, std::vector<size_t>> media_feature_shapes_;

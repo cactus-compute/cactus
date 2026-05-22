@@ -961,17 +961,19 @@ bool is_npu_available() {
 @property (nonatomic, assign) int numKvHeads;
 @property (nonatomic, assign) int headDim;
 
-@property (nonatomic, strong) MLMultiArray* cachedInputArray;
-@property (nonatomic, strong) MLMultiArray* cachedOffsetArray;
+@property (nonatomic, strong) MLMultiArray* cachedInputIdsArray;
+@property (nonatomic, strong) MLMultiArray* cachedPositionIdsArray;
+@property (nonatomic, strong) NSString* inputIdsName;
+@property (nonatomic, strong) NSString* positionIdsName;
 @property (nonatomic, strong) NSMutableDictionary<NSString*, MLMultiArray*>* cachedOutputArrays;
 @property (nonatomic, strong) MLPredictionOptions* predictionOptions;
 @property (nonatomic, assign) BOOL hasOutputBackings;
 
 - (instancetype)initWithModelPath:(NSString*)path;
 - (void)preallocateBuffers;
-- (BOOL)predictDirectWithInput:(NSString*)inputName
-                          data:(const __fp16*)data
-                        offset:(int)offset;
+- (BOOL)predictWithInputIds:(const int32_t*)inputIds
+                positionIds:(const int32_t*)positionIds
+                      count:(NSUInteger)count;
 - (MLMultiArray*)getOutputArray:(NSString*)name;
 @end
 
@@ -1006,13 +1008,34 @@ bool is_npu_available() {
 - (void)inferModelDimensions {
     if (!_modelDescription) return;
 
-    NSString* inputName = _modelDescription.inputDescriptionsByName.allKeys.firstObject;
-    MLFeatureDescription* inputDesc = _modelDescription.inputDescriptionsByName[inputName];
-    if (inputDesc && inputDesc.type == MLFeatureTypeMultiArray) {
-        NSArray<NSNumber*>* shape = inputDesc.multiArrayConstraint.shape;
+    // Token-based interface: look for input_ids (chunk size) and position_ids.
+    NSDictionary<NSString*, MLFeatureDescription*>* inputs = _modelDescription.inputDescriptionsByName;
+    for (NSString* candidate in @[@"input_ids", @"tokens", @"ids"]) {
+        if (inputs[candidate]) { _inputIdsName = candidate; break; }
+    }
+    for (NSString* candidate in @[@"position_ids", @"positions", @"pos_ids"]) {
+        if (inputs[candidate]) { _positionIdsName = candidate; break; }
+    }
+    if (!_inputIdsName) {
+        _inputIdsName = inputs.allKeys.firstObject;
+    }
+    MLFeatureDescription* idsDesc = inputs[_inputIdsName];
+    if (idsDesc && idsDesc.type == MLFeatureTypeMultiArray) {
+        NSArray<NSNumber*>* shape = idsDesc.multiArrayConstraint.shape;
+        // expected shape: [1, chunk_size] or [chunk_size]
         if (shape.count >= 2) {
+            _chunkSize = [shape[shape.count - 1] intValue];
+        } else if (shape.count == 1) {
             _chunkSize = [shape[0] intValue];
-            _hiddenDim = [shape[1] intValue];
+        }
+    }
+
+    // hidden_dim from the "hidden" output (last dim).
+    MLFeatureDescription* hiddenDesc = _modelDescription.outputDescriptionsByName[@"hidden"];
+    if (hiddenDesc && hiddenDesc.type == MLFeatureTypeMultiArray) {
+        NSArray<NSNumber*>* shape = hiddenDesc.multiArrayConstraint.shape;
+        if (shape.count >= 1) {
+            _hiddenDim = [shape[shape.count - 1] intValue];
         }
     }
 
@@ -1025,7 +1048,20 @@ bool is_npu_available() {
             MLFeatureDescription* outputDesc = _modelDescription.outputDescriptionsByName[outputName];
             if (outputDesc && outputDesc.type == MLFeatureTypeMultiArray) {
                 NSArray<NSNumber*>* shape = outputDesc.multiArrayConstraint.shape;
-                if (shape.count >= 3) {
+                // expected K/V shape: [batch, seq, num_kv_heads, head_dim] or [batch, num_kv_heads, seq, head_dim]
+                if (shape.count >= 4) {
+                    NSInteger d2 = [shape[2] intValue];
+                    NSInteger d3 = [shape[3] intValue];
+                    if (d2 == _chunkSize) {
+                        // [b, num_kv_heads, seq, head_dim]
+                        _numKvHeads = [shape[1] intValue];
+                        _headDim = (int)d3;
+                    } else {
+                        // assume [b, seq, num_kv_heads, head_dim]
+                        _numKvHeads = (int)d2;
+                        _headDim = (int)d3;
+                    }
+                } else if (shape.count == 3) {
                     _numKvHeads = [shape[1] intValue];
                     _headDim = [shape[2] intValue];
                 }
@@ -1036,25 +1072,33 @@ bool is_npu_available() {
 }
 
 - (void)preallocateBuffers {
-    if (!_model || !_modelDescription || _chunkSize == 0 || _hiddenDim == 0) return;
+    if (!_model || !_modelDescription || _chunkSize == 0) return;
 
     NSError* error = nil;
 
-    NSArray<NSNumber*>* inputShape = @[@(_chunkSize), @(_hiddenDim)];
-    _cachedInputArray = [[MLMultiArray alloc] initWithShape:inputShape
-                                                  dataType:MLMultiArrayDataTypeFloat16
-                                                     error:&error];
+    NSArray<NSNumber*>* tokenShape = @[@1, @(_chunkSize)];
+    MLMultiArrayDataType tokenDtype = MLMultiArrayDataTypeInt32;
+    MLFeatureDescription* idsDesc = _modelDescription.inputDescriptionsByName[_inputIdsName];
+    if (idsDesc) {
+        tokenDtype = idsDesc.multiArrayConstraint.dataType;
+        tokenShape = idsDesc.multiArrayConstraint.shape;
+    }
+    _cachedInputIdsArray = [[MLMultiArray alloc] initWithShape:tokenShape
+                                                      dataType:tokenDtype
+                                                         error:&error];
     if (error) {
-        _cachedInputArray = nil;
+        _cachedInputIdsArray = nil;
         return;
     }
-
-    if (_modelDescription.inputDescriptionsByName[@"offset"] != nil) {
-        _cachedOffsetArray = [[MLMultiArray alloc] initWithShape:@[@1]
-                                                       dataType:MLMultiArrayDataTypeFloat16
-                                                           error:&error];
+    if (_positionIdsName) {
+        MLFeatureDescription* posDesc = _modelDescription.inputDescriptionsByName[_positionIdsName];
+        NSArray<NSNumber*>* posShape = posDesc ? posDesc.multiArrayConstraint.shape : tokenShape;
+        MLMultiArrayDataType posDtype = posDesc ? posDesc.multiArrayConstraint.dataType : tokenDtype;
+        _cachedPositionIdsArray = [[MLMultiArray alloc] initWithShape:posShape
+                                                             dataType:posDtype
+                                                                error:&error];
         if (error) {
-            _cachedOffsetArray = nil;
+            _cachedPositionIdsArray = nil;
         }
     }
 
@@ -1084,24 +1128,37 @@ bool is_npu_available() {
     }
 }
 
-- (BOOL)predictDirectWithInput:(NSString*)inputName
-                          data:(const __fp16*)data
-                        offset:(int)offset {
-    if (!_model || !_cachedInputArray) return NO;
-
+- (BOOL)predictWithInputIds:(const int32_t*)inputIds
+                positionIds:(const int32_t*)positionIds
+                      count:(NSUInteger)count {
+    if (!_model || !_cachedInputIdsArray) return NO;
     NSError* error = nil;
 
-    NSUInteger totalElements = (NSUInteger)(_chunkSize * _hiddenDim);
-    __fp16* inputPtr = (__fp16*)_cachedInputArray.dataPointer;
-    memcpy(inputPtr, data, totalElements * sizeof(__fp16));
+    NSUInteger cap = (NSUInteger)_chunkSize;
+    NSUInteger n = MIN(count, cap);
+    auto writeInts = [&](MLMultiArray* arr, const int32_t* src) {
+        if (arr.dataType == MLMultiArrayDataTypeInt32) {
+            int32_t* dst = (int32_t*)arr.dataPointer;
+            memcpy(dst, src, n * sizeof(int32_t));
+            if (n < cap) memset(dst + n, 0, (cap - n) * sizeof(int32_t));
+        } else {
+            // fall back to per-element write for non-int32
+            for (NSUInteger i = 0; i < cap; ++i) {
+                NSNumber* v = (i < n) ? @(src[i]) : @0;
+                arr[i] = v;
+            }
+        }
+    };
+    writeInts(_cachedInputIdsArray, inputIds);
+    if (_cachedPositionIdsArray && positionIds) {
+        writeInts(_cachedPositionIdsArray, positionIds);
+    }
 
-    MLFeatureValue* inputFeature = [MLFeatureValue featureValueWithMultiArray:_cachedInputArray];
-    NSMutableDictionary* inputDict = [NSMutableDictionary dictionaryWithObject:inputFeature forKey:inputName];
-
-    if (_cachedOffsetArray) {
-        ((__fp16*)_cachedOffsetArray.dataPointer)[0] = (__fp16)offset;
-        MLFeatureValue* offsetFeature = [MLFeatureValue featureValueWithMultiArray:_cachedOffsetArray];
-        inputDict[@"offset"] = offsetFeature;
+    MLFeatureValue* idsFeature = [MLFeatureValue featureValueWithMultiArray:_cachedInputIdsArray];
+    NSMutableDictionary* inputDict = [NSMutableDictionary dictionaryWithObject:idsFeature forKey:_inputIdsName];
+    if (_cachedPositionIdsArray && _positionIdsName) {
+        MLFeatureValue* posFeature = [MLFeatureValue featureValueWithMultiArray:_cachedPositionIdsArray];
+        inputDict[_positionIdsName] = posFeature;
     }
 
     id<MLFeatureProvider> inputProvider = [[MLDictionaryFeatureProvider alloc]
@@ -1118,15 +1175,12 @@ bool is_npu_available() {
         for (NSString* outputName in _cachedOutputArrays) {
             MLFeatureValue* outFeature = [outputProvider featureValueForName:outputName];
             if (!outFeature || !outFeature.multiArrayValue) return NO;
-
             MLMultiArray* dst = _cachedOutputArrays[outputName];
             if (!dst) return NO;
-
             size_t copied = copyMLArrayToFP16(outFeature.multiArrayValue, (__fp16*)dst.dataPointer);
             if (copied == 0) return NO;
         }
     }
-
     return YES;
 }
 
@@ -1210,10 +1264,9 @@ int ANEPrefill::get_num_layers() const { return num_layers_; }
 int ANEPrefill::get_num_kv_heads() const { return num_kv_heads_; }
 int ANEPrefill::get_head_dim() const { return head_dim_; }
 
-NPUPrefillDirectResult ANEPrefill::prefill_chunk_direct(
-    const std::vector<__fp16>& embeddings,
-    int position_offset,
-    const std::string& input_name) {
+NPUPrefillDirectResult ANEPrefill::prefill_chunk_tokens(
+    const std::vector<int32_t>& input_ids,
+    const std::vector<int32_t>& position_ids) {
 
     NPUPrefillDirectResult result;
     result.valid = false;
@@ -1226,11 +1279,9 @@ NPUPrefillDirectResult ANEPrefill::prefill_chunk_direct(
     @autoreleasepool {
         CactusANEPrefillImpl* impl = (__bridge CactusANEPrefillImpl*)impl_;
 
-        NSString* inName = [NSString stringWithUTF8String:input_name.c_str()];
-
-        BOOL success = [impl predictDirectWithInput:inName
-                                               data:embeddings.data()
-                                             offset:position_offset];
+        BOOL success = [impl predictWithInputIds:input_ids.data()
+                                     positionIds:position_ids.empty() ? nullptr : position_ids.data()
+                                           count:input_ids.size()];
 
         if (!success) return result;
 
