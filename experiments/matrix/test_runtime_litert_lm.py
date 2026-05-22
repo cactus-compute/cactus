@@ -345,7 +345,7 @@ class LiteRTLMRuntimeTest(unittest.TestCase):
 
         self.assertIn("--max_num_tokens=4096", command)
 
-    def test_benchmark_command_allows_exact_context_limit_for_prefill_only(self) -> None:
+    def test_benchmark_command_reserves_one_token_at_context_limit_for_prefill_only(self) -> None:
         request = paired_litert_lm_requests([llm_operations()[1]])[0]
 
         command = _litert_lm_benchmark_command(
@@ -355,6 +355,8 @@ class LiteRTLMRuntimeTest(unittest.TestCase):
             request,
         )
 
+        self.assertIn("--benchmark_prefill_tokens=4095", command)
+        self.assertIn("--prefill_batch_sizes=4095", command)
         self.assertIn("--max_num_tokens=4096", command)
 
     def test_benchmark_command_reserves_decode_token_limit(self) -> None:

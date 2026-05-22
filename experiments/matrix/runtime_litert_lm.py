@@ -612,6 +612,12 @@ def _request_notes(config: dict[str, Any], device: str, artifact_config: dict[st
         f"thread_count={matrix_thread_count(config)}",
         "quantization=int4_per_output_channel",
     ]
+    command_max_num_tokens = _command_max_num_tokens(config, device, artifact_config, request)
+    benchmark_prefill_tokens = _benchmark_prefill_tokens(command_max_num_tokens, request)
+    if benchmark_prefill_tokens != request.context_tokens:
+        notes.append(f"requested_context={request.context_tokens}")
+        notes.append(f"litert_lm_prefill_tokens={benchmark_prefill_tokens}")
+        notes.append(f"max_num_tokens={command_max_num_tokens}")
     notes.extend(android_core_affinity_notes(config, device))
     if request.prefill is not None and request.decode is not None:
         notes.insert(1, "paired_prefill_decode=true")
@@ -744,8 +750,8 @@ def _run_android_litert_lm_once(
             _adb_push_if_needed(serial, shared_lib, f"{lib_dir}/{shared_lib.name}")
 
     backend = str(artifact_config.get("android_backend") or artifact_config.get("backend") or "cpu")
-    max_num_tokens = int(artifact_config.get("android_max_num_tokens") or artifact_config.get("max_num_tokens") or 4096)
-    max_num_tokens = max(max_num_tokens, _minimum_max_num_tokens(request))
+    max_num_tokens = _command_max_num_tokens(config, device, artifact_config, request)
+    benchmark_prefill_tokens = _benchmark_prefill_tokens(max_num_tokens, request)
     prompt = str(artifact_config.get("android_input_prompt") or artifact_config.get("input_prompt") or "Hello")
     threads = matrix_thread_count(config)
     affinity_command = ""
@@ -761,10 +767,10 @@ def _run_android_litert_lm_once(
         f"--model_path={shlex.quote(model_device)} "
         f"--input_prompt={shlex.quote(prompt)} "
         "--benchmark=true "
-        f"--benchmark_prefill_tokens={request.context_tokens} "
+        f"--benchmark_prefill_tokens={benchmark_prefill_tokens} "
         f"--benchmark_decode_tokens={request.generated_tokens} "
         f"--max_num_tokens={max_num_tokens} "
-        f"--prefill_batch_sizes={request.context_tokens} "
+        f"--prefill_batch_sizes={benchmark_prefill_tokens} "
         "--async=false "
         f"--num_cpu_threads={threads} "
         "--report_peak_memory_footprint=true"
@@ -772,8 +778,7 @@ def _run_android_litert_lm_once(
     completed = _adb(serial, "shell", command, cwd=repo_root)
     text = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
     if completed.returncode != 0:
-        detail = text.strip().splitlines()
-        raise LiteRTLMError(detail[-1] if detail else f"adb runner exited {completed.returncode}")
+        raise LiteRTLMError(_litert_lm_failure_message(text, completed.returncode))
     return _parse_litert_lm_metrics(text)
 
 
@@ -814,13 +819,15 @@ def _litert_lm_benchmark_command(
         or artifact_config.get("litert_lm_backend")
         or "cpu"
     )
+    max_num_tokens = _native_max_num_tokens(artifact_config, request)
+    benchmark_prefill_tokens = _benchmark_prefill_tokens(max_num_tokens, request)
     if _uses_litert_lm_cli(runner):
         command = [
             *runner,
             "benchmark",
             str(artifact_path),
             "--prefill-tokens",
-            str(request.context_tokens),
+            str(benchmark_prefill_tokens),
             "--decode-tokens",
             str(request.generated_tokens),
             "--backend",
@@ -828,12 +835,11 @@ def _litert_lm_benchmark_command(
             "--enable-speculative-decoding",
             str(artifact_config.get("enable_speculative_decoding") or "auto"),
         ]
-        max_num_tokens = artifact_config.get("max_num_tokens")
-        if max_num_tokens is not None:
+        if artifact_config.get("max_num_tokens") is not None:
             command.extend(
                 [
                     "--max-num-tokens",
-                    str(max(int(max_num_tokens), _minimum_max_num_tokens(request))),
+                    str(max_num_tokens),
                 ]
             )
         if artifact_config.get("verbose"):
@@ -845,10 +851,10 @@ def _litert_lm_benchmark_command(
         f"--model_path={artifact_path}",
         f"--backend={backend}",
         "--benchmark=true",
-        f"--benchmark_prefill_tokens={request.context_tokens}",
+        f"--benchmark_prefill_tokens={benchmark_prefill_tokens}",
         f"--benchmark_decode_tokens={request.generated_tokens}",
-        f"--max_num_tokens={_native_max_num_tokens(artifact_config, request)}",
-        f"--prefill_batch_sizes={request.context_tokens}",
+        f"--max_num_tokens={max_num_tokens}",
+        f"--prefill_batch_sizes={benchmark_prefill_tokens}",
         "--async=false",
         "--num_iterations=1",
     ]
@@ -874,6 +880,24 @@ def _native_max_num_tokens(artifact_config: dict[str, Any], request: LiteRTLMPai
 
 def _minimum_max_num_tokens(request: LiteRTLMPairedRequest) -> int:
     return request.context_tokens + request.generated_tokens
+
+
+def _command_max_num_tokens(
+    config: dict[str, Any],
+    device: str,
+    artifact_config: dict[str, Any],
+    request: LiteRTLMPairedRequest,
+) -> int:
+    if config["devices"][device].get("kind") == "android":
+        configured = int(artifact_config.get("android_max_num_tokens") or artifact_config.get("max_num_tokens") or 4096)
+        return max(configured, _minimum_max_num_tokens(request))
+    return _native_max_num_tokens(artifact_config, request)
+
+
+def _benchmark_prefill_tokens(max_num_tokens: int, request: LiteRTLMPairedRequest) -> int:
+    if request.generated_tokens == 0 and request.context_tokens >= max_num_tokens:
+        return max(1, max_num_tokens - 1)
+    return request.context_tokens
 
 
 def _combined_output(completed: Any) -> str:
