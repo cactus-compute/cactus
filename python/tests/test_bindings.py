@@ -359,5 +359,154 @@ class TestCliParser:
 
 
 
+# ── Index API tests ────────────────────────────────────────────────
+
+
+class TestIndexApi:
+    """Test the vector index API (no model weights needed)."""
+
+    def setup_method(self):
+        import tempfile
+        from cactus.bindings.cactus import (
+            cactus_index_init, cactus_index_add, cactus_index_query,
+            cactus_index_get, cactus_index_delete, cactus_index_compact,
+            cactus_index_destroy,
+        )
+        self.tmpdir = tempfile.mkdtemp()
+        self.init = cactus_index_init
+        self.add = cactus_index_add
+        self.query = cactus_index_query
+        self.get = cactus_index_get
+        self.delete = cactus_index_delete
+        self.compact = cactus_index_compact
+        self.destroy = cactus_index_destroy
+
+    def teardown_method(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_init_destroy(self):
+        idx = self.init(self.tmpdir, 4)
+        assert idx is not None
+        self.destroy(idx)
+
+    def test_add_and_query(self):
+        idx = self.init(self.tmpdir, 4)
+        self.add(idx, [0, 1, 2], ["doc a", "doc b", "doc c"],
+                 embeddings=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]])
+        result = self.query(idx, [1, 0, 0, 0], {"n_results": 2})
+        assert len(result["results"]) >= 1
+        assert result["results"][0]["id"] == 0  # nearest neighbor
+        self.destroy(idx)
+
+    def test_get_by_id(self):
+        idx = self.init(self.tmpdir, 3)
+        self.add(idx, [42], ["hello world"], embeddings=[[1, 0, 0]])
+        result = self.get(idx, [42])
+        assert result["results"][0]["document"] == "hello world"
+        self.destroy(idx)
+
+    def test_delete(self):
+        idx = self.init(self.tmpdir, 3)
+        self.add(idx, [0, 1], ["a", "b"], embeddings=[[1, 0, 0], [0, 1, 0]])
+        self.delete(idx, [0])
+        result = self.query(idx, [1, 0, 0], {"n_results": 10})
+        ids = [r["id"] for r in result["results"]]
+        assert 0 not in ids
+        self.destroy(idx)
+
+    def test_compact(self):
+        idx = self.init(self.tmpdir, 3)
+        self.add(idx, [0], ["x"], embeddings=[[1, 0, 0]])
+        self.compact(idx)
+        result = self.query(idx, [1, 0, 0], {"n_results": 1})
+        assert len(result["results"]) == 1
+        self.destroy(idx)
+
+    def test_persistence(self):
+        idx = self.init(self.tmpdir, 3)
+        self.add(idx, [0], ["persistent"], embeddings=[[1, 0, 0]])
+        self.destroy(idx)
+        idx2 = self.init(self.tmpdir, 3)
+        result = self.get(idx2, [0])
+        assert result["results"][0]["document"] == "persistent"
+        self.destroy(idx2)
+
+
+# ── Streaming callback tests ──────────────────────────────────────
+
+
+class TestStreamingCallbacks:
+    """Test the token callback wrapper (no model weights needed)."""
+
+    def setup_method(self):
+        from cactus.bindings.cactus import _make_token_callback, TokenCallback
+        self.make_cb = _make_token_callback
+        self.TokenCallback = TokenCallback
+
+    def test_none_returns_valid_callback(self):
+        cb = self.make_cb(None)
+        assert cb is not None
+
+    def test_false_returns_valid_callback(self):
+        cb = self.make_cb(False)
+        assert cb is not None
+
+    def test_callable_returns_valid_callback(self):
+        cb = self.make_cb(lambda text, tid: None)
+        assert cb is not None
+
+    def test_callback_is_correct_ctypes_type(self):
+        cb = self.make_cb(lambda text, tid: None)
+        assert isinstance(cb, self.TokenCallback)
+
+    def test_multiple_callbacks_independent(self):
+        results_a = []
+        results_b = []
+        cb_a = self.make_cb(lambda t, i: results_a.append(t))
+        cb_b = self.make_cb(lambda t, i: results_b.append(t))
+        assert cb_a is not cb_b
+
+
+# ── Error path tests ──────────────────────────────────────────────
+
+
+class TestErrorPaths:
+    """Test error handling (no model weights needed)."""
+
+    def test_init_bad_path_raises(self):
+        from cactus.bindings.cactus import cactus_init
+        with pytest.raises(RuntimeError):
+            cactus_init("/nonexistent/path/to/model")
+
+    def test_init_empty_path_raises(self):
+        from cactus.bindings.cactus import cactus_init
+        with pytest.raises(RuntimeError):
+            cactus_init("")
+
+    def test_get_last_error_returns_string(self):
+        from cactus.bindings.cactus import cactus_init, cactus_get_last_error
+        try:
+            cactus_init("/nonexistent")
+        except RuntimeError:
+            pass
+        err = cactus_get_last_error()
+        assert isinstance(err, str)
+        assert len(err) > 0
+
+    def test_index_init_invalid_dim(self):
+        import tempfile, shutil
+        from cactus.bindings.cactus import cactus_index_init, cactus_index_destroy
+        tmpdir = tempfile.mkdtemp()
+        try:
+            idx = cactus_index_init(tmpdir, 0)
+            if idx:
+                cactus_index_destroy(idx)
+        except RuntimeError:
+            pass
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
