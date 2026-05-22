@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <filesystem>
@@ -53,6 +54,9 @@ namespace {
     }
 
     std::string resolve_lmhead_qd8_qc8_sidecar(const std::string& filename) {
+        const char* auto_sidecar = std::getenv("CACTUS_LMHEAD_QD8_QC8_AUTO_SIDECAR");
+        if (auto_sidecar == nullptr || std::strcmp(auto_sidecar, "1") != 0) return "";
+
         constexpr const char* suffix = ".weights";
         if (filename.size() <= std::strlen(suffix) ||
             filename.compare(filename.size() - std::strlen(suffix), std::strlen(suffix), suffix) != 0) {

@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cactus.cli.download import (
+from cactus.cli.utils import (
     archives_from_repo_files,
     combo_label,
     parse_combo,

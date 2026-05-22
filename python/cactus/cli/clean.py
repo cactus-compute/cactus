@@ -4,42 +4,9 @@ from pathlib import Path
 
 from .common import (
     PROJECT_ROOT,
-    get_weights_dir,
     print_color,
-    RED, GREEN, YELLOW, BLUE, NC,
+    GREEN, YELLOW, BLUE,
 )
-
-
-def cmd_auth(args):
-    """Manage Cactus Cloud API key."""
-    from .config_utils import CactusConfig
-
-    config = CactusConfig()
-
-    if args.clear:
-        config.clear_api_key()
-        print_color(GREEN, "API key cleared.")
-        return 0
-
-    api_key = config.get_api_key()
-
-    if api_key:
-        masked = api_key[:4] + "..." + api_key[-4:]
-        print(f"Current API key: {masked}")
-    else:
-        print("No API key set.")
-
-    if args.status:
-        return 0
-
-    print()
-    print("Get your cloud key at \033[1;36mhttps://www.cactuscompute.com/dashboard/api-keys\033[0m")
-    new_key = input("Enter new API key (press Enter to skip): ").strip()
-    if new_key:
-        config.set_api_key(new_key)
-        masked = new_key[:4] + "..." + new_key[-4:]
-        print_color(GREEN, f"API key saved: {masked}")
-    return 0
 
 
 def cmd_clean(args):
@@ -69,7 +36,6 @@ def cmd_clean(args):
 
     remove_if_exists(PROJECT_ROOT / "weights")
 
-    # Clean telemetry cache
     telemetry_cache = Path.home() / "Library" / "Caches" / "cactus" / "telemetry"
     if telemetry_cache.exists():
         print(f"Removing telemetry cache: {telemetry_cache}")
@@ -77,7 +43,6 @@ def cmd_clean(args):
     else:
         print(f"Telemetry cache not found: {telemetry_cache}")
 
-    # Re-cache API key from config so users don't need to run `cactus auth` again
     from .config_utils import CactusConfig
     config = CactusConfig()
     saved_key = config.load_config().get("api_key", "")
@@ -95,7 +60,7 @@ def cmd_clean(args):
         PROJECT_ROOT / "libs" / "mbedtls",
     ]
 
-    def should_preserve_artifact(path: Path) -> bool:
+    def should_preserve_artifact(path):
         try:
             resolved = path.resolve()
         except FileNotFoundError:
@@ -159,7 +124,6 @@ def cmd_clean(args):
     print("All build artifacts have been removed.")
     print()
 
-    # Re-run setup automatically
     print_color(BLUE, "Re-running setup...")
     setup_script = PROJECT_ROOT / "setup"
     result = subprocess.run(

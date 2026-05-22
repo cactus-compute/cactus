@@ -1,5 +1,13 @@
 package com.cactus
 
+fun interface CactusTokenCallback {
+    fun onToken(token: String, tokenId: Int)
+}
+
+fun interface CactusLogCallback {
+    fun onLog(level: Int, component: String, message: String)
+}
+
 expect fun cactusInit(modelPath: String, corpusDir: String?, cacheIndex: Boolean): Long
 expect fun cactusDestroy(handle: Long)
 expect fun cactusReset(handle: Long)
@@ -12,9 +20,6 @@ expect fun cactusTranscribe(handle: Long, audioPath: String?, prompt: String, op
 expect fun cactusEmbed(handle: Long, text: String, normalize: Boolean): FloatArray
 expect fun cactusImageEmbed(handle: Long, imagePath: String): FloatArray
 expect fun cactusAudioEmbed(handle: Long, audioPath: String): FloatArray
-expect fun cactusVad(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
-expect fun cactusDiarize(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String
-expect fun cactusEmbedSpeaker(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?, maskWeights: FloatArray?, maskNumFrames: Long): String
 expect fun cactusRagQuery(handle: Long, query: String, topK: Long): String
 expect fun cactusIndexInit(indexDir: String, embeddingDim: Long): Long
 expect fun cactusIndexAdd(handle: Long, ids: IntArray, documents: Array<String>, metadatas: Array<String>?, embeddings: Array<FloatArray>, embeddingDim: Long): Int

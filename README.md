@@ -120,7 +120,7 @@ graph.hard_reset();
 
 | Reference | Language | Description |
 |-----------|----------|-------------|
-| Engine API | C | Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, VAD, vector index, cloud handoff |
+| Engine API | C | Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, vector index, cloud handoff |
 | Graph API | C++ | Tensor operations, matrix multiplication, attention, normalization, activation functions |
 | [Python Package](/python/) | Python | Python package and CLI |
 

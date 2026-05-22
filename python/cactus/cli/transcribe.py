@@ -1,20 +1,17 @@
 import os
-import subprocess
 import platform
+import subprocess
+import sys
 from pathlib import Path
 
 from .common import (
     PROJECT_ROOT,
-    DEFAULT_TEST_MODEL_ID,
+    DEFAULT_ASR_MODEL_ID,
     check_command,
     run_command,
-    get_weights_dir,
     print_color,
-    RED, GREEN, YELLOW, BLUE,
+    RED, GREEN, BLUE,
 )
-from .download import cmd_download
-
-DEFAULT_ASR_MODEL_ID = DEFAULT_TEST_MODEL_ID
 
 
 def _pick_android_device_id(preferred_device=None):
@@ -179,13 +176,14 @@ def _cmd_transcribe_ios(weights_dir, audio_file, args):
     env["CACTUS_ASR_AUDIO_SOURCE"] = str(audio_path)
     env["CACTUS_ASR_AUDIO_FILE"] = audio_path.name
 
-    cmd = [str(ios_script), transcribe_model_id, transcribe_model_id, "snakers4/silero-vad"]
+    cmd = [str(ios_script), transcribe_model_id, transcribe_model_id]
     print_color(BLUE, "Running iOS transcription...")
     return subprocess.run(cmd, cwd=PROJECT_ROOT / "tests" / "ios", env=env).returncode
 
 
 def cmd_transcribe(args):
-    """Download ASR model if needed and start transcription."""
+    """Convert ASR model if needed and start transcription."""
+    from .model import resolve_model_id, ensure_weights
     from .config_utils import CactusConfig
     from .common import prompt_for_api_key
 
@@ -195,54 +193,65 @@ def cmd_transcribe(args):
     if api_key:
         os.environ["CACTUS_CLOUD_KEY"] = api_key
 
-    model_id = getattr(args, 'model_id', DEFAULT_ASR_MODEL_ID)
-    audio_file = getattr(args, 'audio_file', None)
+    model_id = resolve_model_id(args.model_id)
+    audio_file = args.audio_file
 
-    if getattr(args, 'no_cloud_tele', False):
+    if args.no_cloud_tele:
         os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
 
-    if getattr(args, 'force_handoff', False):
+    if args.force_handoff:
         os.environ["CACTUS_FORCE_HANDOFF"] = "1"
     else:
         os.environ.pop("CACTUS_FORCE_HANDOFF", None)
 
-    audio_extensions = ('.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac')
+    audio_extensions = (".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac")
     if model_id and model_id.lower().endswith(audio_extensions):
         audio_file = model_id
         model_id = DEFAULT_ASR_MODEL_ID
-        args.model_id = model_id
 
+    # Get converted weights (auto-converts if needed)
     local_path = Path(model_id)
     if local_path.exists() and (local_path / "config.txt").exists():
         weights_dir = local_path
         print_color(GREEN, f"Using local model: {weights_dir}")
     else:
-        download_result = cmd_download(args)
-        if download_result != 0:
-            return download_result
-        weights_dir = get_weights_dir(model_id)
+        try:
+            weights_dir = ensure_weights(
+                model_id,
+                token=args.token,
+                cache_dir=args.cache_dir,
+                reconvert=args.reconvert,
+            )
+        except RuntimeError as e:
+            print_color(RED, str(e))
+            return 1
 
-    if getattr(args, 'android', False) and getattr(args, 'ios', False):
+    # Platform dispatch
+    if args.android and args.ios:
         print_color(RED, "Error: choose only one of --android or --ios")
         return 1
-    if getattr(args, 'android', False):
+    if args.android:
         return _cmd_transcribe_android(weights_dir, audio_file, args)
-    if getattr(args, 'ios', False):
+    if args.ios:
         return _cmd_transcribe_ios(weights_dir, audio_file, args)
 
+    # Desktop: find asr binary (must be pre-built via `cactus build`)
     asr_binary = PROJECT_ROOT / "cactus-engine" / "tests" / "build" / "asr"
     if not asr_binary.exists():
-        print_color(RED, "Error: ASR binary not built. Run 'cactus build' first.")
+        print_color(RED, "ASR binary not found. Run `cactus build` first.")
         return 1
 
-    os.system('clear' if platform.system() != 'Windows' else 'cls')
+    if sys.stdout.isatty():
+        subprocess.run(["clear" if platform.system() != "Windows" else "cls"],
+                       shell=False, check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print_color(GREEN, f"Starting Cactus ASR with model: {model_id}")
     print()
 
     cmd_args = [str(asr_binary), str(weights_dir)]
     if audio_file:
         cmd_args.append(audio_file)
-    if hasattr(args, 'language') and args.language:
-        cmd_args.extend(['--language', args.language])
+    if args.language:
+        cmd_args.extend(["--language", args.language])
 
     os.execv(str(asr_binary), cmd_args)
