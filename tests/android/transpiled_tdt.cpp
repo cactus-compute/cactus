@@ -203,14 +203,8 @@ int argmax_logits(const void* logits, Precision precision, int count) {
 }
 
 int effective_blank_id(const Config& cfg, int token_class_count, size_t vocab_size) {
-    if (vocab_size > 0 && cfg.blank_id == static_cast<int>(vocab_size - 1) && token_class_count == static_cast<int>(vocab_size + 1)) {
-        return token_class_count - 1;
-    }
     if (cfg.blank_id >= 0 && cfg.blank_id < token_class_count) {
         return cfg.blank_id;
-    }
-    if (vocab_size > 0 && token_class_count == static_cast<int>(vocab_size + 1)) {
-        return token_class_count - 1;
     }
     return std::max(0, token_class_count - 1);
 }
@@ -384,7 +378,19 @@ int main(int argc, char** argv) {
         bind_component(decoder, bindings, "decoder", bundle_root);
 
         GraphFile::MappedFile input_features(input_features_path);
-        encoder.set_external_input(1, input_features.data(), input_features.precision());
+        const auto& input_features_buf = encoder.get_output_buffer(1);
+        std::vector<uint8_t> input_features_storage(input_features_buf.byte_size);
+        copy_tensor_converting(
+            input_features_storage.data(),
+            input_features_buf.precision,
+            input_features.data(),
+            input_features.precision(),
+            std::min(
+                input_features_buf.total_size,
+                input_features.byte_size() / PrecisionTraits::size_of(input_features.precision())
+            )
+        );
+        encoder.set_external_input(1, input_features_storage.data(), input_features_buf.precision);
 
         Times times;
         auto encoder_start = std::chrono::steady_clock::now();

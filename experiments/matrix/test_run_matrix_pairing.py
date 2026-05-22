@@ -175,6 +175,53 @@ class RunMatrixPairingTest(unittest.TestCase):
         self.assertIn("runner=native_transcribe_json", row["notes"])
         self.assertIn("timing_source=wrapper_elapsed_seconds", row["notes"])
 
+    def test_android_cactus_parakeet_uses_native_json_engine_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / "parakeet-tdt-0.6b-v3-transpiled"
+            artifact.mkdir()
+            audio = root / "audio.wav"
+            audio.write_bytes(b"RIFF")
+            reference = root / "reference.txt"
+            reference.write_text("hello world", encoding="utf-8")
+            cfg = {
+                "devices": {"pixel_10a": {"kind": "android"}},
+                "runtimes": {"cactus": {"version": "repo test"}},
+                "models": {
+                    "parakeet_tdt_v3": {
+                        "type": "asr",
+                        "artifacts": {"cactus": {"path": str(artifact)}},
+                    }
+                },
+                "operations": {
+                    "parakeet": {
+                        "warmup_runs": 0,
+                        "measurement_runs": 1,
+                        "audio_seconds": 1,
+                    }
+                },
+            }
+            operation = {
+                "operation": "parakeet_transcribe",
+                "input_path": str(audio),
+                "reference_path": str(reference),
+            }
+
+            with mock.patch.object(run_matrix, "run_android_transpiled_parakeet") as transpiled:
+                with mock.patch.object(run_matrix, "run_android_native_cactus_parakeet", return_value={"status": "ok"}) as native:
+                    row = run_matrix.run_cactus_parakeet(
+                        cfg,
+                        "pixel_10a",
+                        "cactus",
+                        "parakeet_tdt_v3",
+                        operation,
+                        None,
+                    )
+
+        self.assertEqual(row, {"status": "ok"})
+        native.assert_called_once()
+        transpiled.assert_not_called()
+
     def test_asr_rtf_uses_elapsed_seconds_not_runner_total_ms(self) -> None:
         rtfs = run_matrix.asr_rtfs_from_elapsed(
             [{"elapsed_seconds": 2.0, "total_ms": 100.0}],

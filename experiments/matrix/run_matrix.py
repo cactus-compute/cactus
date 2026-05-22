@@ -1213,7 +1213,7 @@ def run_cactus_parakeet(
     audio_seconds = float(runs["audio_seconds"])
 
     if config["devices"][device].get("kind") == "android":
-        return run_android_transpiled_parakeet(
+        return run_android_native_cactus_parakeet(
             config,
             device,
             runtime,
@@ -1284,6 +1284,75 @@ def run_cactus_parakeet(
         notes.append("peak RAM unavailable until memory collector is wired")
     notes.append(f"transcript={transcript}")
     row["notes"] = "; ".join(notes)
+    return row
+
+
+def run_android_native_cactus_parakeet(
+    config: dict[str, Any],
+    device: str,
+    runtime: str,
+    model: str,
+    operation: dict[str, Any],
+    artifact_root: Path,
+    audio_path: Path,
+    reference_path: Path,
+    audio_seconds: float,
+    sizes: tuple[float, float] | None,
+) -> dict[str, Any]:
+    if not audio_path.exists():
+        return error_row(device, runtime, model, operation, f"audio fixture does not exist: {audio_path}", sizes=sizes)
+    if not reference_path.exists():
+        return error_row(device, runtime, model, operation, f"reference transcript does not exist: {reference_path}", sizes=sizes)
+
+    try:
+        serial = select_android_serial_for_device(config, device)
+        device_info = android_device_info(serial)
+        runner = android_native_transcribe_runner()
+        prepared = prepare_android_native_transcribe(
+            serial=serial,
+            artifact_root=artifact_root,
+            runner=runner,
+            audio_path=audio_path,
+        )
+        runs = config["operations"]["parakeet"]
+        _, affinity_mask = android_core_affinity(config, device)
+        for run_index in range(int(runs["warmup_runs"])):
+            run_android_native_transcribe_once(serial, prepared, f"warmup_native_transcribe_{run_index}", affinity_mask)
+        measurements = [
+            run_android_native_transcribe_once(serial, prepared, f"measure_native_transcribe_{run_index}", affinity_mask)
+            for run_index in range(int(runs["measurement_runs"]))
+        ]
+    except (MatrixRunError, OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
+        return error_row(device, runtime, model, operation, str(exc), sizes=sizes, peak_ram_mb=getattr(exc, "peak_process_memory_mb", 0.0))
+
+    rtfs = asr_rtfs_from_elapsed(measurements, audio_seconds)
+    ram_values = [
+        float(result.get("peak_process_memory_mb") or result.get("peak_pss_mb") or result.get("ram_usage_mb") or 0.0)
+        for result in measurements
+    ]
+    ram_values = [value for value in ram_values if value > 0.0]
+    transcript = normalize_text(str(measurements[-1].get("response") or ""))
+    reference = reference_path.read_text(encoding="utf-8")
+    wer = word_error_rate(reference, transcript)
+
+    row = base_row(device, runtime, model, operation)
+    row["throughput_tok_per_s"] = f"{statistics.median(rtfs):.6f}"
+    if ram_values:
+        row["peak_ram_mb"] = f"{max(ram_values):.3f}"
+    fill_artifact_sizes(row, sizes)
+    row["status"] = "ok"
+    row["notes"] = "; ".join(
+        [
+            f"WER={wer:.6f}",
+            "runner=android_native_transcribe_json",
+            f"timing_source={ASR_TIMING_SOURCE}",
+            *android_core_affinity_notes(config, device),
+            f"serial={serial}",
+            f"android={device_info['android_release']}",
+            f"thermal_status={device_info['thermal_status']}",
+            f"transcript={transcript}",
+        ]
+    )
     return row
 
 
@@ -2365,6 +2434,28 @@ def android_transpiled_tdt_runner() -> Path:
     return binary
 
 
+def android_native_transcribe_runner() -> Path:
+    binary = REPO_ROOT / "android" / "build" / "native_transcribe_json"
+    inputs = [
+        REPO_ROOT / "android" / "CMakeLists.txt",
+        REPO_ROOT / "experiments" / "matrix" / "native_transcribe_json.cpp",
+        REPO_ROOT / "cactus-engine" / "cactus_engine.h",
+        REPO_ROOT / "cactus-engine" / "src" / "transcribe.cpp",
+        REPO_ROOT / "cactus-engine" / "src" / "model.cpp",
+        REPO_ROOT / "cactus-engine" / "src" / "engine.h",
+    ]
+    if binary.exists() and all(path.exists() and binary.stat().st_mtime >= path.stat().st_mtime for path in inputs):
+        return binary
+    subprocess.run(
+        ["cmake", "--build", str(binary.parent), "--target", "native_transcribe_json", "-j", str(os.cpu_count() or 4)],
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    if not binary.exists():
+        raise RuntimeError(f"Android native transcribe runner was not built: {binary}")
+    return binary
+
+
 def android_cactus_llm_runner() -> Path:
     binary = REPO_ROOT / "android" / "build" / "cactus_llm_bench"
     inputs = [
@@ -2649,6 +2740,28 @@ def prepare_android_transpiled_tdt(*, serial: str, artifact_root: Path, runner: 
     }
 
 
+def prepare_android_native_transcribe(*, serial: str, artifact_root: Path, runner: Path, audio_path: Path) -> dict[str, str]:
+    device_root = "/data/local/tmp/cactus_matrix"
+    device_bin = f"{device_root}/bin/native_transcribe_json"
+    device_model_root = f"{device_root}/models"
+    device_model = f"{device_model_root}/{artifact_root.name}"
+    device_inputs = f"{device_root}/asr_inputs"
+    device_logs = f"{device_root}/logs"
+    device_audio = f"{device_inputs}/{audio_path.name}"
+    adb_checked(serial, "shell", f"mkdir -p {shlex.quote(device_root)}/bin {shlex.quote(device_model_root)} {shlex.quote(device_inputs)} {shlex.quote(device_logs)}")
+    adb_checked(serial, "push", str(runner), device_bin)
+    adb_checked(serial, "shell", f"chmod +x {shlex.quote(device_bin)}")
+    if adb_checked(serial, "shell", f"test -f {shlex.quote(device_model)}/.cactus_matrix_deployed", check=False).returncode != 0:
+        adb_push_directory_dereferenced(serial, artifact_root, device_model_root)
+    adb_push_if_needed(serial, audio_path, device_audio)
+    return {
+        "runner": device_bin,
+        "model": device_model,
+        "audio": device_audio,
+        "logs": device_logs,
+    }
+
+
 def prepare_android_cactus_llm(*, serial: str, artifact_root: Path, runner: Path, operation: dict[str, Any]) -> dict[str, str]:
     device_root = "/data/local/tmp/cactus_matrix"
     device_bin = f"{device_root}/bin/cactus_llm_bench"
@@ -2877,6 +2990,17 @@ def adb_push_if_needed(serial: str, source: Path, destination: str) -> None:
 def run_android_transpiled_tdt_once(serial: str, prepared: dict[str, str], run_name: str, affinity_mask: str) -> dict[str, Any]:
     log_path = f"{prepared['logs']}/{run_name}.log"
     invocation = f"{shlex.quote(prepared['runner'])} {shlex.quote(prepared['model'])} {shlex.quote(prepared['features'])} {shlex.quote(prepared['bindings'])}"
+    invocation = android_taskset_invocation(invocation, affinity_mask)
+    return run_android_logged_json_once(serial, invocation, log_path)
+
+
+def run_android_native_transcribe_once(serial: str, prepared: dict[str, str], run_name: str, affinity_mask: str) -> dict[str, Any]:
+    log_path = f"{prepared['logs']}/{run_name}.log"
+    options = '{"max_tokens":500,"telemetry_enabled":false,"auto_handoff":false}'
+    invocation = (
+        f"{shlex.quote(prepared['runner'])} {shlex.quote(prepared['model'])} "
+        f"{shlex.quote(prepared['audio'])} {shlex.quote(options)}"
+    )
     invocation = android_taskset_invocation(invocation, affinity_mask)
     return run_android_logged_json_once(serial, invocation, log_path)
 
