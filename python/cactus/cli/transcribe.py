@@ -176,7 +176,7 @@ def _cmd_transcribe_ios(weights_dir, audio_file, args):
     env["CACTUS_ASR_AUDIO_SOURCE"] = str(audio_path)
     env["CACTUS_ASR_AUDIO_FILE"] = audio_path.name
 
-    cmd = [str(ios_script), transcribe_model_id, transcribe_model_id, "snakers4/silero-vad"]
+    cmd = [str(ios_script), transcribe_model_id, transcribe_model_id]
     print_color(BLUE, "Running iOS transcription...")
     return subprocess.run(cmd, cwd=PROJECT_ROOT / "tests" / "ios", env=env).returncode
 

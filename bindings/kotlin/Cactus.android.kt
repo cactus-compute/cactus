@@ -66,24 +66,6 @@ actual fun cactusAudioEmbed(handle: Long, audioPath: String): FloatArray {
     return buffer.copyOf(outDim[0].toInt())
 }
 
-actual fun cactusVad(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String {
-    val buffer = ByteArray(1024 * 1024)
-    check(CactusJNI.nativeVad(handle, audioPath, buffer, optionsJson, pcmData))
-    return buffer.decodeToString().trimEnd('\u0000')
-}
-
-actual fun cactusDiarize(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String {
-    val buffer = ByteArray(1024 * 1024)
-    check(CactusJNI.nativeDiarize(handle, audioPath, buffer, optionsJson, pcmData))
-    return buffer.decodeToString().trimEnd('\u0000')
-}
-
-actual fun cactusEmbedSpeaker(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?, maskWeights: FloatArray?, maskNumFrames: Long): String {
-    val buffer = ByteArray(1024 * 1024)
-    check(CactusJNI.nativeEmbedSpeaker(handle, audioPath, buffer, optionsJson, pcmData, maskWeights, maskNumFrames))
-    return buffer.decodeToString().trimEnd('\u0000')
-}
-
 actual fun cactusRagQuery(handle: Long, query: String, topK: Long): String {
     val buffer = ByteArray(1024 * 1024)
     check(CactusJNI.nativeRagQuery(handle, query, buffer, topK))

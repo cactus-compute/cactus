@@ -1,13 +1,5 @@
 package com.cactus
 
-fun interface CactusTokenCallback {
-    fun onToken(token: String, tokenId: Int)
-}
-
-fun interface CactusLogCallback {
-    fun onLog(level: Int, component: String, message: String)
-}
-
 object CactusJNI {
     init {
         System.loadLibrary("cactus")
@@ -25,9 +17,6 @@ object CactusJNI {
     @JvmStatic external fun nativeEmbed(handle: Long, text: String, embeddingsBuffer: FloatArray, outEmbeddingDim: LongArray, normalize: Boolean): Int
     @JvmStatic external fun nativeImageEmbed(handle: Long, imagePath: String, embeddingsBuffer: FloatArray, outEmbeddingDim: LongArray): Int
     @JvmStatic external fun nativeAudioEmbed(handle: Long, audioPath: String, embeddingsBuffer: FloatArray, outEmbeddingDim: LongArray): Int
-    @JvmStatic external fun nativeVad(handle: Long, audioPath: String?, responseBuffer: ByteArray, optionsJson: String?, pcmData: ByteArray?): Int
-    @JvmStatic external fun nativeDiarize(handle: Long, audioPath: String?, responseBuffer: ByteArray, optionsJson: String?, pcmData: ByteArray?): Int
-    @JvmStatic external fun nativeEmbedSpeaker(handle: Long, audioPath: String?, responseBuffer: ByteArray, optionsJson: String?, pcmData: ByteArray?, maskWeights: FloatArray?, maskNumFrames: Long): Int
     @JvmStatic external fun nativeRagQuery(handle: Long, query: String, responseBuffer: ByteArray, topK: Long): Int
     @JvmStatic external fun nativeIndexInit(indexDir: String, embeddingDim: Long): Long
     @JvmStatic external fun nativeIndexAdd(handle: Long, ids: IntArray, documents: Array<String>, metadatas: Array<String>?, embeddings: Array<FloatArray>, embeddingDim: Long): Int

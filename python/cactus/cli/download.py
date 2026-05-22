@@ -12,8 +12,6 @@ def get_model_dir_name(model_id):
 
 def get_weights_dir(model_id):
     """Return ``<project>/weights/<model_name>``."""
-    if "silero-vad" in model_id.lower():
-        return _PROJECT_ROOT / "weights" / "silero-vad"
     return _PROJECT_ROOT / "weights" / get_model_dir_name(model_id)
 
 
