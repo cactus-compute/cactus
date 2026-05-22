@@ -5,6 +5,8 @@ import importlib
 import sys
 from typing import Any
 
+import numpy as np
+
 
 class _MissingFFIFunction:
     _cactus_missing_symbol = True
@@ -108,6 +110,7 @@ def _patch_graph_runtime(graph_module, cactus_module) -> None:
     orig_cat = Graph.cat
     orig_abs = Graph.abs
     orig_pow = Graph.pow
+    orig_expand = Graph.expand
 
     def matmul(self, a, b, pretransposed_rhs=False, backend=Graph.CPU, output_dtype=None):
         a = _ensure_fp16_activation(self, a)
@@ -286,6 +289,33 @@ def _patch_graph_runtime(graph_module, cactus_module) -> None:
     def pow(self, x, exponent):
         return orig_pow(self, _ensure_scalar_tensor(self, x), exponent)
 
+    def expand(self, x, shape):
+        x = self._ensure_tensor(x)
+        shape = tuple(int(v) for v in shape)
+        if tuple(int(dim) for dim in x.shape) == shape:
+            return x
+        if _has_symbol("cactus_graph_expand"):
+            return orig_expand(self, x, shape)
+
+        # v2 builds do not always expose the generic expand symbol. For
+        # broadcast-only expands, adding an embedded zero tensor with the target
+        # shape gives the same logical result while staying inside existing
+        # Cactus graph ops.
+        dtype_map = {
+            int(Graph.FP16): np.float16,
+            int(Graph.FP32): np.float32,
+        }
+        x_dtype = int(x.dtype)
+        if x_dtype not in dtype_map:
+            raise NotImplementedError(
+                "expand fallback only supports floating-point tensors; "
+                f"got dtype={x_dtype} shape={tuple(int(dim) for dim in x.shape)} -> {shape}"
+            )
+        zero = self.input(shape, dtype=x_dtype)
+        self.set_input(zero, np.zeros(shape, dtype=dtype_map[x_dtype]), dtype=x_dtype)
+        self.mark_embedded_input(zero)
+        return self.add(x, zero)
+
     Graph.matmul = matmul
     Graph.gather = gather
     Graph.conv2d = conv2d
@@ -311,6 +341,7 @@ def _patch_graph_runtime(graph_module, cactus_module) -> None:
     Graph.cat = cat
     Graph.abs = abs
     Graph.pow = pow
+    Graph.expand = expand
     Graph._transpile_runtime_compat_patched = True
 
 

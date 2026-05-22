@@ -1,5 +1,6 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 
@@ -53,6 +54,25 @@ static std::vector<size_t> compute_strides(const std::vector<size_t>& shape, con
     return strides;
 }
 
+static size_t broadcast_linear_index(const std::vector<size_t>& coords, const std::vector<size_t>& strides) {
+    size_t index = 0;
+    for (size_t i = 0; i < coords.size(); ++i) {
+        index += coords[i] * strides[i];
+    }
+    return index;
+}
+
+static void increment_broadcast_coords(std::vector<size_t>& coords, const std::vector<size_t>& shape) {
+    for (int axis = static_cast<int>(coords.size()) - 1; axis >= 0; --axis) {
+        size_t idx = static_cast<size_t>(axis);
+        coords[idx]++;
+        if (coords[idx] < shape[idx]) {
+            break;
+        }
+        coords[idx] = 0;
+    }
+}
+
 void dispatch_binary_op_f16(OpType op, const __fp16* lhs, const __fp16* rhs, __fp16* output, size_t count) {
     switch (op) {
         case OpType::ADD:
@@ -69,6 +89,15 @@ void dispatch_binary_op_f16(OpType op, const __fp16* lhs, const __fp16* rhs, __f
             break;
         case OpType::DIVIDE:
             cactus_divide_f16(lhs, rhs, output, count);
+            break;
+        case OpType::NOT_EQUAL:
+            CactusThreading::parallel_for(count, CactusThreading::Thresholds::ELEMENT_WISE,
+                [&](size_t start_idx, size_t end_idx) {
+                    for (size_t i = start_idx; i < end_idx; ++i) {
+                        output[i] = static_cast<__fp16>(
+                            static_cast<float>(lhs[i]) != static_cast<float>(rhs[i]) ? 1.0f : 0.0f);
+                    }
+                });
             break;
         default:
             break;
@@ -93,6 +122,32 @@ void dispatch_unary_op_f16(OpType op, const __fp16* input, __fp16* output, size_
     }
 
     cactus_scalar_op_f16(input, output, count, param, scalar_op);
+}
+
+static float apply_scalar_op_f32(OpType op, float value, float param) {
+    switch (op) {
+        case OpType::SCALAR_ADD: return value + param;
+        case OpType::SCALAR_SUBTRACT: return value - param;
+        case OpType::SCALAR_MULTIPLY: return value * param;
+        case OpType::SCALAR_DIVIDE: return value / param;
+        case OpType::SCALAR_EXP: return std::exp(value);
+        case OpType::SCALAR_SQRT: return std::sqrt(value);
+        case OpType::SCALAR_COS: return std::cos(value);
+        case OpType::SCALAR_SIN: return std::sin(value);
+        case OpType::SCALAR_LOG: return std::log(value);
+        case OpType::ABS: return std::fabs(value);
+        case OpType::POW: return std::pow(value, param);
+        default: return value;
+    }
+}
+
+void dispatch_unary_op_f32(OpType op, const float* input, float* output, size_t count, float param) {
+    CactusThreading::parallel_for(count, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t start_idx, size_t end_idx) {
+            for (size_t i = start_idx; i < end_idx; ++i) {
+                output[i] = apply_scalar_op_f32(op, input[i], param);
+            }
+        });
 }
 
 void compute_binary_op_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -137,6 +192,33 @@ void compute_binary_op_node(GraphNode& node, const std::vector<std::unique_ptr<G
                                             node.params.broadcast_info.output_shape.data(),
                                             node.params.broadcast_info.output_shape.size());
                 break;
+            case OpType::NOT_EQUAL: {
+                const __fp16* lhs_data = lhs.data_as<__fp16>();
+                const __fp16* rhs_data = rhs.data_as<__fp16>();
+                __fp16* out_data = node.output_buffer.data_as<__fp16>();
+                const auto& output_shape = node.params.broadcast_info.output_shape;
+                size_t total_elements = 1;
+                for (size_t dim : output_shape) {
+                    total_elements *= dim;
+                }
+                CactusThreading::parallel_for(total_elements, CactusThreading::Thresholds::ELEMENT_WISE,
+                    [&](size_t start_idx, size_t end_idx) {
+                        std::vector<size_t> coords(output_shape.size());
+                        size_t tmp = start_idx;
+                        for (int axis = static_cast<int>(output_shape.size()) - 1; axis >= 0; --axis) {
+                            coords[static_cast<size_t>(axis)] = tmp % output_shape[static_cast<size_t>(axis)];
+                            tmp /= output_shape[static_cast<size_t>(axis)];
+                        }
+                        for (size_t linear_idx = start_idx; linear_idx < end_idx; ++linear_idx) {
+                            size_t lhs_idx = broadcast_linear_index(coords, lhs_strides);
+                            size_t rhs_idx = broadcast_linear_index(coords, rhs_strides);
+                            out_data[linear_idx] = static_cast<__fp16>(
+                                static_cast<float>(lhs_data[lhs_idx]) != static_cast<float>(rhs_data[rhs_idx]) ? 1.0f : 0.0f);
+                            increment_broadcast_coords(coords, output_shape);
+                        }
+                    });
+                break;
+            }
             default: break;
         }
     } else {
@@ -149,13 +231,44 @@ void compute_binary_op_node(GraphNode& node, const std::vector<std::unique_ptr<G
 void compute_unary_op_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input = get_input(node, 0, nodes, node_index_map);
 
-    if (input.precision != Precision::FP16) {
-        throw std::runtime_error("Scalar operations only support FP16 precision");
+    if (input.precision != Precision::FP16 && input.precision != Precision::FP32) {
+        throw std::runtime_error("Scalar operations only support FP16/FP32 precision");
     }
 
-    dispatch_unary_op_f16(node.op_type, input.data_as<__fp16>(),
-                          node.output_buffer.data_as<__fp16>(),
-                          node.output_buffer.total_size, node.params.scalar);
+    if (node.op_type == OpType::SCALAR_NOT_EQUAL) {
+        const float scalar = node.params.scalar;
+        if (input.precision == Precision::FP16) {
+            const __fp16* input_data = input.data_as<__fp16>();
+            __fp16* output_data = node.output_buffer.data_as<__fp16>();
+            CactusThreading::parallel_for(node.output_buffer.total_size, CactusThreading::Thresholds::ELEMENT_WISE,
+                [&](size_t start_idx, size_t end_idx) {
+                    for (size_t i = start_idx; i < end_idx; ++i) {
+                        output_data[i] = static_cast<__fp16>(
+                            static_cast<float>(input_data[i]) != scalar ? 1.0f : 0.0f);
+                    }
+                });
+        } else {
+            const float* input_data = input.data_as<float>();
+            float* output_data = node.output_buffer.data_as<float>();
+            CactusThreading::parallel_for(node.output_buffer.total_size, CactusThreading::Thresholds::ELEMENT_WISE,
+                [&](size_t start_idx, size_t end_idx) {
+                    for (size_t i = start_idx; i < end_idx; ++i) {
+                        output_data[i] = input_data[i] != scalar ? 1.0f : 0.0f;
+                    }
+                });
+        }
+        return;
+    }
+
+    if (input.precision == Precision::FP16) {
+        dispatch_unary_op_f16(node.op_type, input.data_as<__fp16>(),
+                              node.output_buffer.data_as<__fp16>(),
+                              node.output_buffer.total_size, node.params.scalar);
+    } else {
+        dispatch_unary_op_f32(node.op_type, input.data_as<float>(),
+                              node.output_buffer.data_as<float>(),
+                              node.output_buffer.total_size, node.params.scalar);
+    }
 }
 
 void compute_activation_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {

@@ -32,6 +32,12 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "lstm recurrent tensor")
     if family == "parakeet_tdt" and out.startswith("tdt_"):
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "tdt decoder tensor")
+    if family in {"parakeet", "parakeet_tdt"} and "self_attn_bias_" in out:
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "relative attention bias tensor")
+    if family in {"parakeet", "parakeet_tdt"} and "conv_pointwise" in out and len(shape) == 3 and shape[2] == 1:
+        return TensorPolicy("fallback", "INT8", 8, component, False, "none", "pointwise conv tensor")
+    if "conv_depthwise.weights" in out and len(shape) == 3 and shape[1] == 1:
+        return TensorPolicy("fallback", "INT8", 8, component, False, "none", "depthwise conv tensor")
     if family in {"parakeet", "parakeet_tdt"} and out.startswith("layer_") and (
         "conv_pointwise" in out or "conv_depthwise" in out
     ):
@@ -40,16 +46,14 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "whisper encoder tensor")
     if name.endswith(".bias") or out.endswith(".bias") or ".bias." in out:
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "bias tensor")
-    if family in {"parakeet", "parakeet_tdt"} and "conv_pointwise" in out and len(shape) == 3 and shape[2] == 1:
-        return TensorPolicy("fallback", "INT8", 8, component, False, "none", "pointwise conv tensor")
-    if "conv_depthwise.weights" in out and len(shape) == 3 and shape[1] == 1:
-        return TensorPolicy("fallback", "INT8", 8, component, False, "none", "depthwise conv tensor")
     if len(shape) != 2:
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "non-2d tensor")
     if "position_embedding" in out.lower() or "pos_embed" in out.lower() or "embed_positions" in out.lower():
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "position embedding tensor")
     if family == "gemma4" and name == "model.language_model.embed_tokens_per_layer.weight":
-        return TensorPolicy("convert", "CQ2", 2, component, False, "hadamard")
+        return TensorPolicy("convert", f"CQ{user_bits}", user_bits, component, False, "hadamard")
+    if family == "gemma4" and component in {"audio", "vision"}:
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "gemma4 media tower accuracy")
     if component == "embedding" or out in {"token_embeddings.weights", "output_weight.weights"}:
         return TensorPolicy("convert", "CQ4", 4, component, False, "orthogonal")
     if component == "audio" or component == "transcription":

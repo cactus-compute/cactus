@@ -84,7 +84,7 @@ DECLARE_COMPUTE(compute_spectrogram_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::DENSE_MLP_TQ_FUSED) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::SCALAR_NOT_EQUAL) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -94,10 +94,12 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::SUBTRACT)] = compute_binary_op_node;
     dispatch_flat[static_cast<int>(OpType::MULTIPLY)] = compute_binary_op_node;
     dispatch_flat[static_cast<int>(OpType::DIVIDE)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::NOT_EQUAL)] = compute_binary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_ADD)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_SUBTRACT)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_MULTIPLY)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_DIVIDE)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_NOT_EQUAL)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_EXP)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_SQRT)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_COS)] = compute_unary_op_node;
@@ -221,7 +223,8 @@ static const char* op_type_names[] = {
     "KV_CACHE_STATE", "KV_CACHE_APPEND", "ATTENTION_CACHED",
     "CONV_CACHE_STATE", "CONV_CACHE_APPEND",
     "RFFT", "IRFFT", "MEL_FILTER_BANK", "SPECTROGRAM",
-    "IMAGE_PREPROCESS", "CLAMP", "DENSE_MLP_TQ_FUSED"
+    "IMAGE_PREPROCESS", "CLAMP", "DENSE_MLP_TQ_FUSED",
+    "NOT_EQUAL", "SCALAR_NOT_EQUAL"
 };
 
 static const char* get_op_name(OpType op) {
@@ -268,6 +271,7 @@ void CactusGraph::set_external_input(size_t node_id, void* data, Precision) {
     }
 
     node.output_buffer.set_external(data);
+    embedded_input_node_ids_.erase(node_id);
 }
 
 void* CactusGraph::get_output(size_t node_id) {

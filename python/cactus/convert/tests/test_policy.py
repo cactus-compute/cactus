@@ -20,11 +20,13 @@ def test_adapter_registry_preserves_family_names():
     assert adapter_for_family("lfm2").family == "lfm2"
 
 
-def test_policy_gemma4_pli_cq2():
+def test_policy_gemma4_pli_honors_requested_bits():
     name = "model.language_model.embed_tokens_per_layer.weight"
     match = cactus_name_for_tensor(name, "gemma4", 1)
     p = policy_for_tensor(match, (10, 128), 4, "gemma4")
-    assert p.precision == "CQ2"
+    assert p.precision == "CQ4"
+    assert p.bits == 4
+    assert p.rotation == "hadamard"
 
 
 def test_gemma4_adapter_disables_gptq_for_unhookable_tensors():
@@ -41,8 +43,8 @@ def test_gemma4_adapter_disables_gptq_for_unhookable_tensors():
 
     vision_tower = cactus_name_for_tensor("model.vision_tower.encoder.layers.0.mlp.down_proj.linear.weight", "gemma4", 35)
     vision_tower_policy = adapter.policy(vision_tower, (1152, 4304), 4)
-    assert vision_tower_policy.precision == "CQ4"
-    assert vision_tower_policy.use_gptq
+    assert vision_tower_policy.precision == "FP16"
+    assert not vision_tower_policy.use_gptq
     assert adapter.module_target_name("model.vision_tower.encoder.layers.0.mlp.down_proj.linear.weight", None) == "model.vision_tower.encoder.layers.0.mlp.down_proj.linear"
 
 
@@ -50,6 +52,7 @@ def test_policy_audio_no_gptq():
     match = cactus_name_for_tensor("model.audio_tower.output_proj.weight", "gemma4", 1)
     p = policy_for_tensor(match, (128, 128), 4, "gemma4")
     assert p.component == "audio"
+    assert p.precision == "FP16"
     assert not p.use_gptq
 
 

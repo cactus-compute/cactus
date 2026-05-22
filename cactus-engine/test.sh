@@ -4,14 +4,26 @@ set -e
 cd "$(dirname "$0")"
 
 PROJECT_ROOT="$(pwd)/.."
-MODEL_DIR="${CACTUS_TEST_MODEL:-$PROJECT_ROOT/weights/gemma-4-e2b-it}"
 ASSETS_DIR="$(pwd)/tests/assets"
 ONLY_TEST=""
 NO_REBUILD=0
 
-while [ $# -gt 0 ]; do
-    case "$1" in
+IOS_MODE=false
+ANDROID_MODE=false
+MODEL_ARG=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --ios)
+            IOS_MODE=true
+            shift
+            ;;
+        --android)
+            ANDROID_MODE=true
+            shift
+            ;;
         --only)
+            [ -z "${2:-}" ] && echo "Error: --only requires an argument" && exit 1
             ONLY_TEST="$2"
             shift 2
             ;;
@@ -19,11 +31,28 @@ while [ $# -gt 0 ]; do
             NO_REBUILD=1
             shift
             ;;
+        --model)
+            [ -z "${2:-}" ] && echo "Error: --model requires an argument" && exit 1
+            MODEL_ARG="$2"
+            shift 2
+            ;;
         *)
             shift
             ;;
     esac
 done
+
+MODEL_DIR="${CACTUS_TEST_MODEL:-${MODEL_ARG:-$PROJECT_ROOT/weights/gemma-4-e2b-it}}"
+
+if [ "$IOS_MODE" = true ]; then
+    export CACTUS_TEST_ONLY="$ONLY_TEST"
+    exec "$(pwd)/tests/ios/run.sh" "$MODEL_DIR"
+fi
+
+if [ "$ANDROID_MODE" = true ]; then
+    export CACTUS_TEST_ONLY="$ONLY_TEST"
+    exec "$(pwd)/tests/android/run.sh" "$MODEL_DIR"
+fi
 
 if [ ! -d "$MODEL_DIR" ]; then
     echo "Model weights not found at $MODEL_DIR"

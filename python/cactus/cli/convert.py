@@ -77,6 +77,16 @@ def _transpile_spec_for_convert(*, task: str, plan) -> _ConvertTranspileSpec:
     )
 
 
+def _default_max_new_tokens_for_task(task: str) -> int:
+    if task == "seq2seq_transcription":
+        return 128
+    if task == "multimodal_causal_lm_logits":
+        return 512
+    if task == "causal_lm_logits":
+        return 128
+    return 32
+
+
 def _remove_stale_transpile_artifacts(output_dir: str | Path) -> None:
     root = Path(output_dir)
     for relative in (
@@ -202,6 +212,9 @@ def cmd_convert(args):
             return 1
 
         artifact_dir = Path(output_dir)
+        max_new_tokens = getattr(args, "max_new_tokens", None)
+        if max_new_tokens is None:
+            max_new_tokens = _default_max_new_tokens_for_task(spec.task)
 
         extra_args = [
             "--weights-dir",
@@ -211,7 +224,7 @@ def cmd_convert(args):
             "--task",
             spec.task,
             "--max-new-tokens",
-            str(getattr(args, "max_new_tokens", 32) or 32),
+            str(max_new_tokens or _default_max_new_tokens_for_task(spec.task)),
             "--component-pipeline",
             component_pipeline,
         ]

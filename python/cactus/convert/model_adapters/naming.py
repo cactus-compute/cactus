@@ -243,6 +243,10 @@ def _parakeet_tdt_predictor_match(name: str) -> str | None:
     if new:
         suffix = {"weight_ih": "weight_ih.weights", "weight_hh": "weight_hh.weights", "bias": "bias.weights"}[new.group(1)]
         return f"tdt_predictor_lstm_{int(new.group(2))}_{suffix}"
+    nemo = re.fullmatch(r"decoder\.prediction\.dec_rnn\.lstm\.(weight_ih|weight_hh|bias)_l(\d+)", name)
+    if nemo:
+        suffix = {"weight_ih": "weight_ih.weights", "weight_hh": "weight_hh.weights", "bias": "bias.weights"}[nemo.group(1)]
+        return f"tdt_predictor_lstm_{int(nemo.group(2))}_{suffix}"
     return None
 
 

@@ -13,7 +13,7 @@ A low-latency AI engine for mobile devices & wearables. Main features:
 
 - **Fast:** fastest inference on ARM CPU
 - **Low RAM:** zero-copy memory mapping ensures 10x lower RAM use than other engines
-- **Multimodal:** one SDK for speech, vision, and language models
+- **Multimodal:** one engine for speech, vision, and language models
 - **Cloud fallback:** automatically route requests to cloud models if needed
 - **Energy-efficient:** NPU-accelerated prefill
 
@@ -116,18 +116,31 @@ void* output_data = graph.get_output(result);
 graph.hard_reset(); 
 ```
 
-## API & SDK References
+## APIs
 
 | Reference | Language | Description |
 |-----------|----------|-------------|
-| [Engine API](docs/cactus_engine.md) | C | Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, VAD, vector index, cloud handoff |
-| [Graph API](docs/cactus_graph.md) | C++ | Tensor operations, matrix multiplication, attention, normalization, activation functions |
-| [Python SDK](/python/) | Python | Mac, Linux |
-| [Swift SDK](/apple/) | Swift | iOS, macOS, tvOS, watchOS, Android |
-| [Kotlin SDK](/android/) | Kotlin | Android, iOS (via KMP) |
-| [Flutter SDK](/flutter/) | Dart | iOS, macOS, Android |
-| [Rust SDK](/rust/) | Rust | Mac, Linux |
-| [React Native](https://github.com/cactus-compute/cactus-react-native) | JavaScript | iOS, Android |
+| Engine API | C | Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, VAD, vector index, cloud handoff |
+| Graph API | C++ | Tensor operations, matrix multiplication, attention, normalization, activation functions |
+| [Python Package](/python/) | Python | Python package and CLI |
+
+## Build
+
+```bash
+cactus build --apple       # iOS/macOS
+cactus build --android     # Android
+cactus build --python      # Python
+cactus build               # default static lib
+```
+
+## Bindings
+
+- [Swift](/bindings/swift/)
+- [Kotlin](/bindings/kotlin/)
+- [Flutter](/bindings/flutter/)
+- [React Native](/bindings/react-native/)
+- [Python](/bindings/python/)
+- [Rust](/bindings/rust/)
 
 > **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
 
@@ -167,9 +180,6 @@ graph.hard_reset();
 | nvidia/parakeet-ctc-0.6b | 600M | 201.77 | 201.44 | 5214285 | yes | 0.0101 | 0.0930 |
 | nvidia/parakeet-tdt-0.6b-v3 | 600M | 718.91 | 718.82 | 3583333 | yes | 0.0359 | 0.0465 |
 | nvidia/parakeet-ctc-1.1b | 1.1B | 279.03 | 278.92 | 4562500 | yes | 0.0139 | 0.1628 |
-| snakers4/silero-vad | - | - | - | - | - | - | - |
-| pyannote/segmentation-3.0 | - | - | - | - | - | - | - |
-| pyannote/wespeaker-voxceleb-resnet34-LM | - | - | - | - | - | - | - |
 
 ## Supported LLMs
 
@@ -181,12 +191,10 @@ graph.hard_reset();
 | google/gemma-3-270m-it | completion |
 | google/functiongemma-270m-it | tools |
 | google/gemma-3-1b-it | completion, gated |
-| google/gemma-4-E2B-it | completion, tools, embed, vision, speech|
-| google/gemma-3n-E2B-it | completion, tools |
-| google/gemma-4-E4B-it | completion, tools, embed, vision, speech|
-| google/gemma-3n-E4B-it | completion, tools |
 | google/gemma-4-E2B-it | vision, audio, completion, tools, Apple NPU |
 | google/gemma-4-E4B-it | vision, audio, completion, tools, Apple NPU |
+| google/gemma-3n-E2B-it | completion, tools |
+| google/gemma-3n-E4B-it | completion, tools |
 | Qwen/Qwen3-0.6B | completion, tools, embed | 
 | Qwen/Qwen3-Embedding-0.6B | embed | 
 | Qwen/Qwen3.5-0.8B | vision, completion, tools, embed |
@@ -242,41 +250,37 @@ graph.hard_reset();
 │    --status                          show key status                         │
 │    --clear                           remove saved key                        │
 │                                                                              │
-│  cactus run <model>                  opens playground (auto downloads)       │
-│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
-│    --token <token>                   HF token (gated models)                 │
-│    --reconvert                       force reconversion from source          │
+│  cactus run <bundle_dir>             runs a transpiled Cactus bundle         │
+│    --system <prompt>                 system prompt                           │
+│    --prompt <text>                   initial prompt                          │
+│    --thinking                        enable thinking/reasoning mode          │
 │                                                                              │
 │  cactus transcribe [model]           live mic transcription (parakeet-tdt-0.6b-v3) │
 │    --file <audio.wav>                transcribe file instead of mic          │
-│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
 │    --token <token>                   HF token (gated models)                 │
 │    --reconvert                       force reconversion from source          │
 │                                                                              │
 │  cactus download <model>             downloads model to ./weights            │
-│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)            │
 │    --token <token>                   HuggingFace API token                   │
 │    --reconvert                       force reconversion from source          │
 │                                                                              │
-│  cactus convert <model> [dir]        convert model, supports LoRA merge      │
-│    --precision INT4|INT8|FP16        quantization (default: INT4)            │
-│    --lora <path>                     LoRA adapter to merge                   │
+│  cactus convert <model> [dir]        convert model to CQ format              │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)            │
 │    --token <token>                   HuggingFace API token                   │
 │                                                                              │
 │  cactus build                        build for ARM → build/libcactus.a       │
 │    --apple                           Apple (iOS/macOS)                       │
 │    --android                         Android                                 │
-│    --flutter                         Flutter (all platforms)                 │
 │    --python                          shared lib for Python FFI               │
 │                                                                              │
 │  cactus test                         run unit tests and benchmarks           │
-│    --model <model>                   default: LFM2-VL-450M                   │
-│    --transcribe_model <model>        default: moonshine-base                 │
-│    --benchmark                       use larger models                       │
-│    --precision INT4|INT8|FP16        regenerate weights with precision       │
+│    --model <model>                   default: google/gemma-4-E2B-it          │
 │    --reconvert                       force reconversion from source          │
-│    --no-rebuild                      skip building library                   │
-│    --llm / --stt / --performance     run specific test suite                 │
+│    --llm / --vlm / --stt / --embed   run specific test suite                 │
+│    --rag / --graph / --index         run specific test suite                 │
+│    --kernel / --kv_cache             run specific test suite                 │
+│    --performance                     run performance benchmarks              │
 │    --ios                             run on connected iPhone                 │
 │    --android                         run on connected Android                │
 │                                                                              │

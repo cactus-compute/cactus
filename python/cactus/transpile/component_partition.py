@@ -7,6 +7,7 @@ from cactus.transpile.graph_ir import IRGraph
 from cactus.transpile.graph_ir import IRNode
 from cactus.transpile.graph_ir import IRValue
 from cactus.transpile.graph_ir import verify_ir
+from cactus.transpile.model_profiles import profile_for_family
 
 
 COMPONENT_AUDIO_ENCODER = "audio_encoder"
@@ -139,7 +140,8 @@ def _task_default_component(*, family: str, task: str) -> str:
         return COMPONENT_DECODER
     if task in {"ctc_logits", "encoder_hidden_states"}:
         return COMPONENT_AUDIO_ENCODER
-    if family == "parakeet_tdt":
+    profile = profile_for_family(family)
+    if profile is not None and profile.default_task == "tdt_transcription":
         return COMPONENT_AUDIO_ENCODER
     return COMPONENT_UNSPECIFIED
 
