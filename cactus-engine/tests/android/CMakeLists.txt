@@ -11,7 +11,7 @@ set(CACTUS_GRAPH_DIR ${PROJECT_ROOT}/cactus-graph)
 set(CACTUS_KERNELS_DIR ${PROJECT_ROOT}/cactus-kernels)
 
 set(ANDROID_BUILD_DIR ${PROJECT_ROOT}/android/build)
-set(CACTUS_LIB ${ANDROID_BUILD_DIR}/lib/libcactus_static.a)
+set(CACTUS_LIB ${ANDROID_BUILD_DIR}/cactus/libcactus.a)
 
 set(CACTUS_CURL_ROOT "$ENV{CACTUS_CURL_ROOT}")
 if(NOT CACTUS_CURL_ROOT)
@@ -76,6 +76,7 @@ foreach(TEST_FILE ${TEST_SOURCES})
         ${CACTUS_ENGINE_DIR}
         ${CACTUS_GRAPH_DIR}
         ${CACTUS_KERNELS_DIR}
+        ${CACTUS_KERNELS_DIR}/src
     )
     message(STATUS "Added Android test: ${TEST_NAME}")
 endforeach()

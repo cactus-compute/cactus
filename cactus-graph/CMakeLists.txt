@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(CactusGraph LANGUAGES CXX)
 
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 if(NOT TARGET cactus_kernels)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../cactus-kernels ${CMAKE_CURRENT_BINARY_DIR}/cactus-kernels)
 endif()
@@ -22,11 +25,7 @@ add_library(cactus_graph STATIC
     src/ops_image.cpp
 )
 
-set_target_properties(cactus_graph PROPERTIES
-    CXX_STANDARD 20
-    CXX_STANDARD_REQUIRED ON
-    POSITION_INDEPENDENT_CODE ON
-)
+set_target_properties(cactus_graph PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(cactus_graph
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}

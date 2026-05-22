@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(CactusKernels LANGUAGES CXX)
 
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 add_library(cactus_kernels STATIC
     src/attention.cpp
     src/attention_hybrid.cpp
@@ -19,16 +22,12 @@ add_library(cactus_kernels STATIC
     src/scalar.cpp
 )
 
-set_target_properties(cactus_kernels PROPERTIES
-    CXX_STANDARD 20
-    CXX_STANDARD_REQUIRED ON
-    POSITION_INDEPENDENT_CODE ON
-)
+set_target_properties(cactus_kernels PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(cactus_kernels
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-            ${CMAKE_CURRENT_SOURCE_DIR}/libs
+           ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libs
 )
 
 target_compile_options(cactus_kernels PUBLIC
@@ -50,7 +49,6 @@ target_compile_options(cactus_kernels PRIVATE
 
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
-    target_compile_options(cactus_kernels PUBLIC -arch arm64)
     target_compile_definitions(cactus_kernels PUBLIC ACCELERATE_NEW_LAPACK)
     find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
     target_link_libraries(cactus_kernels PUBLIC ${ACCELERATE_FRAMEWORK})

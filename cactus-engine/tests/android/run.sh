@@ -212,16 +212,16 @@ cmake -DCMAKE_TOOLCHAIN_FILE="$cmake_toolchain" \
       -S "$PROJECT_ROOT/android" \
       -B "$android_lib_build_dir" >/dev/null
 
-if ! cmake --build "$android_lib_build_dir" --target cactus_static -j "$n_jobs" >/dev/null; then
+if ! cmake --build "$android_lib_build_dir" --target cactus -j "$n_jobs" >/dev/null; then
     echo "Failed to build Cactus static library"
     exit 1
 fi
 
-if [ ! -f "$android_lib_build_dir/lib/libcactus_static.a" ]; then
-    echo "Static library not found at $android_lib_build_dir/lib/libcactus_static.a"
+if [ ! -f "$android_lib_build_dir/cactus/libcactus.a" ]; then
+    echo "Static library not found at $android_lib_build_dir/cactus/libcactus.a"
     exit 1
 fi
-echo "Static library built: $android_lib_build_dir/lib/libcactus_static.a"
+echo "Static library built: $android_lib_build_dir/cactus/libcactus.a"
 
 echo ""
 echo "Step 3: Building Android tests..."

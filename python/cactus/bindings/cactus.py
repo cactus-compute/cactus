@@ -676,33 +676,6 @@ try:
 except AttributeError:
     pass
 
-_bind_optional(
-    "cactus_vad",
-    [
-        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
-        ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
-    ],
-    ctypes.c_int,
-)
-
-_bind_optional(
-    "cactus_diarize",
-    [
-        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
-        ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
-    ],
-    ctypes.c_int,
-)
-
-_bind_optional(
-    "cactus_embed_speaker",
-    [
-        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t,
-        ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
-        ctypes.POINTER(ctypes.c_float), ctypes.c_size_t,
-    ],
-    ctypes.c_int,
-)
 
 _lib.cactus_reset.argtypes = [ctypes.c_void_p]
 _lib.cactus_reset.restype = None
@@ -1046,62 +1019,6 @@ def cactus_detect_language(model, audio_path, options=None, pcm_data=None):
     )
     if rc < 0:
         raise RuntimeError(_err("Detect language failed"))
-    return _from_json(buf)
-
-
-def cactus_vad(model, audio_path, options=None, pcm_data=None):
-    """Run voice activity detection.
-
-    Returns:
-        A dict with speech segment timestamps.
-    """
-    buf = ctypes.create_string_buffer(65536)
-    pcm_ptr, pcm_size = _prepare_pcm(pcm_data)
-    rc = _lib.cactus_vad(
-        model, _enc(audio_path), buf, len(buf), _to_json(options), pcm_ptr, pcm_size,
-    )
-    if rc < 0:
-        raise RuntimeError(_err("VAD failed"))
-    return _from_json(buf)
-
-
-def cactus_diarize(model, audio_path, options=None, pcm_data=None):
-    """Run speaker diarization.
-
-    Returns:
-        A dict with per-speaker segments.
-    """
-    buf = ctypes.create_string_buffer(1 << 20)
-    pcm_ptr, pcm_size = _prepare_pcm(pcm_data)
-    rc = _lib.cactus_diarize(
-        model, _enc(audio_path), buf, len(buf), _to_json(options), pcm_ptr, pcm_size,
-    )
-    if rc < 0:
-        raise RuntimeError(_err("Diarize failed"))
-    return _from_json(buf)
-
-
-def cactus_embed_speaker(model, audio_path, options=None, pcm_data=None, mask_weights=None):
-    """Extract a speaker embedding from audio.
-
-    Returns:
-        A dict with the speaker embedding vector.
-    """
-    buf = ctypes.create_string_buffer(65536)
-    pcm_ptr, pcm_size = _prepare_pcm(pcm_data)
-    if mask_weights is not None:
-        mask_arr = (ctypes.c_float * len(mask_weights))(*mask_weights)
-        mask_ptr = ctypes.cast(mask_arr, ctypes.POINTER(ctypes.c_float))
-        mask_size = len(mask_weights)
-    else:
-        mask_ptr = None
-        mask_size = 0
-    rc = _lib.cactus_embed_speaker(
-        model, _enc(audio_path), buf, len(buf), _to_json(options),
-        pcm_ptr, pcm_size, mask_ptr, mask_size,
-    )
-    if rc < 0:
-        raise RuntimeError(_err("Speaker embedding failed"))
     return _from_json(buf)
 
 

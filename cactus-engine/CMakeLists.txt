@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(CactusEngine LANGUAGES CXX)
 
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 if(NOT TARGET cactus_graph)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../cactus-graph ${CMAKE_CURRENT_BINARY_DIR}/cactus-graph)
 endif()
@@ -71,8 +74,6 @@ endif()
 add_library(cactus_engine STATIC ${ENGINE_SOURCES})
 
 set_target_properties(cactus_engine PROPERTIES
-    CXX_STANDARD 20
-    CXX_STANDARD_REQUIRED ON
     POSITION_INDEPENDENT_CODE ON
 )
 
@@ -89,10 +90,10 @@ target_link_libraries(cactus_engine PUBLIC cactus_graph)
 # --- curl linking ---
 if(CACTUS_HAS_CURL)
     if(APPLE OR ANDROID)
-        target_link_libraries(cactus_engine PUBLIC "${CACTUS_CURL_LIBRARY}")
-        target_include_directories(cactus_engine PUBLIC "${CACTUS_CURL_INCLUDE_DIR}")
+        target_link_libraries(cactus_engine PRIVATE "${CACTUS_CURL_LIBRARY}")
+        target_include_directories(cactus_engine PRIVATE "${CACTUS_CURL_INCLUDE_DIR}")
     else()
-        target_link_libraries(cactus_engine PUBLIC ${CURL_LIBRARIES})
+        target_link_libraries(cactus_engine PRIVATE ${CURL_LIBRARIES})
         target_include_directories(cactus_engine PRIVATE ${CURL_INCLUDE_DIRS})
     endif()
     target_compile_definitions(cactus_engine PRIVATE CACTUS_USE_CURL=1)
