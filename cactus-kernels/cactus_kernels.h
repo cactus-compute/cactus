@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <arm_neon.h>
 
-#include "src/threading.h"
+#include "threading.h"
 
 enum class Precision {
     INT8,

@@ -173,27 +173,6 @@ inline cactus::engine::SpectrogramConfig get_gemma4_audio_spectrogram_config(
     return cfg;
 }
 
-inline cactus::engine::SpectrogramConfig get_wespeaker_spectrogram_config() {
-    cactus::engine::SpectrogramConfig cfg{};
-    cfg.n_fft            = 512;
-    cfg.frame_length     = 400;
-    cfg.hop_length       = 160;
-    cfg.power            = 2.0f;
-    cfg.center           = false;
-    cfg.pad_mode         = "constant";
-    cfg.onesided         = true;
-    cfg.dither           = 0.0f;
-    cfg.mel_floor        = 1.1754944e-38f;
-    cfg.log_mel          = "log";
-    cfg.reference        = 1.0f;
-    cfg.min_value        = 1.1754944e-38f;
-    cfg.remove_dc_offset = true;
-    cfg.preemphasis      = 0.97f;
-    cfg.hann_periodic    = false;
-    cfg.window_a0        = 0.54f;
-    return cfg;
-}
-
 // Whisper v1/v2: 80 mel bins, HTK. Whisper v3: 128 mel bins, Slaney, 512-FFT, no DC removal.
 inline void apply_whisper_v3_overrides(cactus::engine::SpectrogramConfig& cfg) {
     cfg.fft_override = 512;

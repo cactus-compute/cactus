@@ -2,36 +2,10 @@ cmake_minimum_required(VERSION 3.10)
 project(CactusEngine LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release)
-endif()
-
-if(APPLE)
-    set(CMAKE_OSX_ARCHITECTURES "arm64")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
-    add_compile_definitions(
-        __ARM_NEON=1
-        __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
-        __ARM_FEATURE_DOTPROD=1
-        __ARM_FEATURE_MATMUL_INT8=1
-        ACCELERATE_NEW_LAPACK
-    )
-else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -Wall -Wextra -pedantic -O3 -Wno-missing-field-initializers")
-    add_compile_definitions(
-        __ARM_NEON=1
-        __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
-        __ARM_FEATURE_DOTPROD=1
-        __ARM_FEATURE_MATMUL_INT8=1
-    )
-endif()
-
-# --- Depend on cactus-graph (which depends on cactus-kernels) ---
-set(CACTUS_GRAPH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../cactus-graph")
 if(NOT TARGET cactus_graph)
-    add_subdirectory(${CACTUS_GRAPH_DIR} ${CMAKE_CURRENT_BINARY_DIR}/cactus-graph)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../cactus-graph ${CMAKE_CURRENT_BINARY_DIR}/cactus-graph)
 endif()
 
 # --- libcurl ---
@@ -68,7 +42,7 @@ else()
     set(CACTUS_HAS_CURL ${CURL_FOUND})
 endif()
 
-# --- Engine sources ---
+# --- Sources ---
 set(ENGINE_SOURCES
     src/bpe.cpp
     src/sp.cpp
@@ -98,30 +72,34 @@ else()
 endif()
 
 add_library(cactus_engine STATIC ${ENGINE_SOURCES})
-set(CACTUS_KERNELS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../cactus-kernels")
+
+set_target_properties(cactus_engine PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
+
 target_include_directories(cactus_engine
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
             ${CMAKE_CURRENT_SOURCE_DIR}/libs
-            ${CACTUS_KERNELS_DIR}/src
-            ${CACTUS_KERNELS_DIR}/libs
+            ${CMAKE_CURRENT_SOURCE_DIR}/../cactus-kernels/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/../cactus-kernels/libs
 )
-target_link_libraries(cactus_engine PUBLIC cactus_graph)
-set_target_properties(cactus_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-# curl
+target_link_libraries(cactus_engine PUBLIC cactus_graph)
+
+# --- curl linking ---
 if(CACTUS_HAS_CURL)
     if(APPLE OR ANDROID)
-        target_link_libraries(cactus_engine PUBLIC "${CACTUS_CURL_LIBRARY}")
-        target_include_directories(cactus_engine PUBLIC "${CACTUS_CURL_INCLUDE_DIR}")
+        target_link_libraries(cactus_engine PRIVATE "${CACTUS_CURL_LIBRARY}")
+        target_include_directories(cactus_engine PRIVATE "${CACTUS_CURL_INCLUDE_DIR}")
     else()
-        target_link_libraries(cactus_engine PUBLIC ${CURL_LIBRARIES})
+        target_link_libraries(cactus_engine PRIVATE ${CURL_LIBRARIES})
         target_include_directories(cactus_engine PRIVATE ${CURL_INCLUDE_DIRS})
     endif()
     target_compile_definitions(cactus_engine PRIVATE CACTUS_USE_CURL=1)
 endif()
 
-# Apple frameworks
+# --- Apple frameworks ---
 if(APPLE)
     find_library(COREML_FRAMEWORK CoreML REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
@@ -129,15 +107,12 @@ if(APPLE)
     find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
     find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
     target_link_libraries(cactus_engine PUBLIC
-        ${COREML_FRAMEWORK}
-        ${FOUNDATION_FRAMEWORK}
-        ${SECURITY_FRAMEWORK}
-        ${SYSTEMCONFIGURATION_FRAMEWORK}
-        ${CFNETWORK_FRAMEWORK}
+        ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK}
+        ${SECURITY_FRAMEWORK} ${SYSTEMCONFIGURATION_FRAMEWORK} ${CFNETWORK_FRAMEWORK}
     )
 endif()
 
-# Version
+# --- Version ---
 set(_CACTUS_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../CACTUS_VERSION")
 if(EXISTS "${_CACTUS_VERSION_FILE}")
     file(READ "${_CACTUS_VERSION_FILE}" _CACTUS_VERSION_CONTENT)
@@ -145,8 +120,8 @@ if(EXISTS "${_CACTUS_VERSION_FILE}")
     target_compile_definitions(cactus_engine PRIVATE CACTUS_COMPILE_TIME_VERSION="${CACTUS_VERSION_STR}")
 endif()
 
-if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    target_compile_options(cactus_engine PRIVATE -Wno-c99-extensions)
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    target_compile_options(cactus_engine PRIVATE -Wno-pedantic)
-endif()
+target_compile_options(cactus_engine PRIVATE
+    -Wall -Wextra -pedantic -Wno-missing-field-initializers
+    $<$<CXX_COMPILER_ID:AppleClang,Clang>:-Wno-c99-extensions>
+    $<$<CXX_COMPILER_ID:GNU>:-Wno-pedantic>
+)

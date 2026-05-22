@@ -168,54 +168,6 @@ actual fun cactusAudioEmbed(handle: Long, audioPath: String): FloatArray {
 }
 
 @OptIn(ExperimentalForeignApi::class)
-actual fun cactusVad(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String {
-    memScoped {
-        val buffer = allocArray<ByteVar>(1048576)
-        val pcmPtr = pcmData?.refTo(0)?.getPointer(this)
-        val result = cactus_vad(
-            handle.toCPointer(), audioPath, buffer, 1048576u, optionsJson,
-            pcmPtr?.reinterpret(), pcmData?.size?.toULong() ?: 0u
-        )
-        if (result < 0) throw RuntimeException(cactus_get_last_error()?.toKString() ?: "Unknown error")
-        return buffer.toKString()
-    }
-}
-
-@OptIn(ExperimentalForeignApi::class)
-actual fun cactusDiarize(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?): String {
-    memScoped {
-        val buffer = allocArray<ByteVar>(1048576)
-        val pcmPtr = pcmData?.refTo(0)?.getPointer(this)
-        val result = cactus_diarize(
-            handle.toCPointer(), audioPath, buffer, 1048576u, optionsJson,
-            pcmPtr?.reinterpret(), pcmData?.size?.toULong() ?: 0u
-        )
-        if (result < 0) throw RuntimeException(cactus_get_last_error()?.toKString() ?: "Unknown error")
-        return buffer.toKString()
-    }
-}
-
-@OptIn(ExperimentalForeignApi::class)
-actual fun cactusEmbedSpeaker(handle: Long, audioPath: String?, optionsJson: String?, pcmData: ByteArray?, maskWeights: FloatArray?, maskNumFrames: Long): String {
-    memScoped {
-        val buffer = allocArray<ByteVar>(1048576)
-        val pcmPtr = pcmData?.refTo(0)?.getPointer(this)
-        val maskPtr = maskWeights?.let {
-            val arr = allocArray<FloatVar>(it.size)
-            it.forEachIndexed { i, v -> arr[i] = v }
-            arr
-        }
-        val result = cactus_embed_speaker(
-            handle.toCPointer(), audioPath, buffer, 1048576u, optionsJson,
-            pcmPtr?.reinterpret(), pcmData?.size?.toULong() ?: 0u,
-            maskPtr, maskNumFrames.toULong()
-        )
-        if (result < 0) throw RuntimeException(cactus_get_last_error()?.toKString() ?: "Unknown error")
-        return buffer.toKString()
-    }
-}
-
-@OptIn(ExperimentalForeignApi::class)
 actual fun cactusRagQuery(handle: Long, query: String, topK: Long): String {
     memScoped {
         val buffer = allocArray<ByteVar>(1048576)

@@ -3,75 +3,64 @@ import subprocess
 
 from .common import (
     PROJECT_ROOT,
-    DEFAULT_TEST_MODEL_ID,
-    get_weights_dir,
     print_color,
     RED, YELLOW, BLUE,
 )
-from .download import cmd_download
+
+LAYERS = {
+    "kernel": PROJECT_ROOT / "cactus-kernels",
+    "graph":  PROJECT_ROOT / "cactus-graph",
+}
+
+ENGINE_DIR = PROJECT_ROOT / "cactus-engine"
+
+
+def discover_suites():
+    suites = []
+    for name, path in LAYERS.items():
+        if (path / "test.sh").exists():
+            suites.append(name)
+    for f in sorted((ENGINE_DIR / "tests").glob("test_*.cpp")):
+        name = f.stem.removeprefix("test_")
+        if name != "utils":
+            suites.append(name)
+    return suites
 
 
 def cmd_test(args):
-    """Run the Cactus test suite."""
+    from .model import ensure_weights
+
     print_color(BLUE, "Running test suite...")
-    print("=" * 20)
 
-    model_id = getattr(args, 'model', DEFAULT_TEST_MODEL_ID)
+    if args.ios and not args.reconvert:
+        print_color(YELLOW, "Warning: iOS tests without --reconvert may use stale weights.")
 
-    if getattr(args, 'ios', False) and not getattr(args, 'reconvert', False):
-        print_color(
-            YELLOW,
-            "Warning: iOS tests without --reconvert may use stale or inconsistent local weights. "
-            "If tests fail unexpectedly, rerun with --reconvert."
-        )
-
-    from types import SimpleNamespace
-    dl_args = SimpleNamespace(
-        model_id=model_id,
-        reconvert=getattr(args, 'reconvert', False),
-        cache_dir=None,
-        token=getattr(args, 'token', None),
-    )
-    if cmd_download(dl_args) != 0:
-        print_color(RED, "Failed to download model weights")
+    try:
+        weights_dir = ensure_weights(args.model, token=args.token, reconvert=args.reconvert)
+    except RuntimeError as e:
+        print_color(RED, f"Failed to download model weights: {e}")
         return 1
 
-    test_filter = getattr(args, 'only', None)
-    for _test_name in ['llm', 'vlm', 'stt', 'embed', 'rag', 'graph', 'index', 'kernel', 'kv_cache', 'performance']:
-        if getattr(args, _test_name, False):
-            test_filter = _test_name
-            break
-
-    if test_filter == "kernel":
-        test_script = PROJECT_ROOT / "cactus-kernels" / "test.sh"
-        test_cwd = PROJECT_ROOT / "cactus-kernels"
-    elif test_filter in ("graph", "kv_cache"):
-        test_script = PROJECT_ROOT / "cactus-graph" / "test.sh"
-        test_cwd = PROJECT_ROOT / "cactus-graph"
-    else:
-        test_script = PROJECT_ROOT / "cactus-engine" / "test.sh"
-        test_cwd = PROJECT_ROOT / "cactus-engine"
+    suite = args.suite
+    test_cwd = LAYERS.get(suite, ENGINE_DIR)
+    test_script = test_cwd / "test.sh"
 
     if not test_script.exists():
-        print_color(RED, f"Error: Test script not found at {test_script}")
+        print_color(RED, f"Test script not found: {test_script}")
         return 1
 
-    cmd = [str(test_script)]
-
-    weights_dir = get_weights_dir(model_id)
-    cmd.extend(["--model", str(weights_dir)])
-
+    cmd = [str(test_script), "--model", str(weights_dir)]
     if args.android:
         cmd.append("--android")
     if args.ios:
         cmd.append("--ios")
-    if test_filter:
-        cmd.extend(["--only", test_filter])
+    if suite:
+        cmd.extend(["--only", suite])
+
     env = os.environ.copy()
-    if getattr(args, 'enable_telemetry', False):
+    if args.enable_telemetry:
         env.pop("CACTUS_NO_CLOUD_TELE", None)
     else:
         env["CACTUS_NO_CLOUD_TELE"] = "1"
 
-    result = subprocess.run(cmd, cwd=test_cwd, env=env)
-    return result.returncode
+    return subprocess.run(cmd, cwd=test_cwd, env=env).returncode

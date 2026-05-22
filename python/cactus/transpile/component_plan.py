@@ -19,9 +19,20 @@ class ComponentPlan:
     force_component_pipeline: bool = False
 
 
-def _plan_from_profile(profile: ModelProfile) -> ComponentPlan | None:
+def _plan_from_profile(
+    profile: ModelProfile,
+    config: Mapping[str, object] | None = None,
+) -> ComponentPlan | None:
     if profile.default_task is None or not profile.default_components:
         return None
+    if config is not None and profile.needs_image:
+        has_vision = _has_dict_config(config, "vision_config", "visual_config", "image_config")
+        if not has_vision:
+            return ComponentPlan(
+                task="causal_lm_logits",
+                components=("decoder",) + tuple(profile.cached_step_components or ()),
+                force_component_pipeline=bool(profile.cached_step_components),
+            )
     return ComponentPlan(
         task=profile.default_task,
         components=profile.default_components,
@@ -131,7 +142,7 @@ def infer_component_plan_from_config(
     lowered_id = model_id.lower()
     architectures = _lowered_architectures(config, config_txt)
     profile = profile_for_model_type(model_type) or profile_for_model_id(model_id)
-    profile_plan = _plan_from_profile(profile) if profile is not None else None
+    profile_plan = _plan_from_profile(profile, config) if profile is not None else None
     if profile_plan is not None:
         return profile_plan
 

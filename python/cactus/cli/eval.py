@@ -4,79 +4,55 @@ import subprocess
 
 from .common import (
     PROJECT_ROOT,
-    DEFAULT_MODEL_ID,
-    get_effective_weights_dir,
     print_color,
     RED, BLUE,
 )
-from .download import cmd_download
 
 
 def cmd_eval(args):
-    model_id = getattr(args, 'model_id', DEFAULT_MODEL_ID)
+    """Run evaluation scripts from the companion evals repo."""
+    from .model import ensure_weights
 
-    if PROJECT_ROOT.parent.name != 'evals':
+    model_id = args.model_id
+
+    if PROJECT_ROOT.parent.name != "evals":
         print_color(RED, "Skipping internal eval checks: companion repo not found.")
         return 1
 
-    # Check if cactus library exists
     lib_path = PROJECT_ROOT / "cactus" / "build" / "libcactus.a"
     if not lib_path.exists():
         print_color(RED, "Error: Cactus library not built. Run 'cactus build' first.")
         return 1
 
-    class DownloadArgs:
-        pass
-
-    dlargs = DownloadArgs()
-    dlargs.model_id = model_id
-    dlargs.cache_dir = getattr(args, 'cache_dir', None)
-    dlargs.token = getattr(args, 'token', None)
-    dlargs.reconvert = getattr(args, 'reconvert', False)
-
-    download_result = cmd_download(dlargs)
-    if download_result != 0:
-        return download_result
-
-    weights_dir = get_effective_weights_dir(model_id, args)
-    extra = getattr(args, 'extra_args', None) or []
-
-    def extra_has_flag(flag: str) -> bool:
-        for a in extra:
-            if a == flag or a.startswith(flag + "="):
-                return True
-        return False
-
-    mode_flags = []
-    if getattr(args, 'tools', False): mode_flags.append('tools')
-    if getattr(args, 'llm', False):   mode_flags.append('llm')
-    if getattr(args, 'stt', False):   mode_flags.append('stt')
-    if getattr(args, 'vlm', False):   mode_flags.append('vlm')
-    if getattr(args, 'embed', False): mode_flags.append('embed')
-
-    if len(mode_flags) > 1:
-        print_color(RED, f"Error: choose only one eval mode flag, got: {' '.join(mode_flags)}")
+    try:
+        weights_dir = ensure_weights(
+            model_id,
+            token=args.token,
+            cache_dir=args.cache_dir,
+            reconvert=args.reconvert,
+        )
+    except RuntimeError as e:
+        print_color(RED, str(e))
         return 1
 
-    mode = mode_flags[0] if mode_flags else "tools"
-    repo_root = PROJECT_ROOT.parent  # evals/
-    cwd = repo_root
+    extra = getattr(args, "extra_args", None) or []
 
-    if mode == "tools":
-        eval_runner = repo_root / "tool-evals" / "run_eval_berk.py"
-    elif mode == "stt":
-        eval_runner = repo_root / "speech-evals" / "speech_eval.py"
-    elif mode == "llm":
-        eval_runner = repo_root / "text-evals" / "perplexity_eval.py"
-    elif mode == "vlm":
-        eval_runner = repo_root / "video-evals" / "run_benchmarks.py"
-    elif mode == "embed":
-        print_color(RED, f"Error: eval mode '{mode}' is not supported in this repo layout")
-        return 1
-    else:
-        print_color(RED, f"Error: unknown eval mode '{mode}'")
-        return 1
+    def extra_has_flag(flag):
+        return any(a == flag or a.startswith(flag + "=") for a in extra)
 
+    mode = args.suite
+    repo_root = PROJECT_ROOT.parent
+
+    eval_runners = {
+        "tools": repo_root / "tool-evals" / "run_eval_berk.py",
+        "stt":   repo_root / "speech-evals" / "speech_eval.py",
+        "llm":   repo_root / "text-evals" / "perplexity_eval.py",
+        "vlm":   repo_root / "video-evals" / "run_benchmarks.py",
+    }
+    eval_runner = eval_runners.get(mode)
+    if eval_runner is None:
+        print_color(RED, f"Error: eval mode '{mode}' is not supported")
+        return 1
     if not eval_runner.exists():
         print_color(RED, f"Eval runner not found at {eval_runner}")
         return 1
@@ -96,20 +72,15 @@ def cmd_eval(args):
         cmd += ["--model-id", str(model_id)]
 
     if mode == "stt" and not extra_has_flag("--dataset-path"):
-        default_dataset_path = repo_root / "speech-evals" / "dataset-retrieval"
-        cmd += ["--dataset-path", str(default_dataset_path)]
+        cmd += ["--dataset-path", str(repo_root / "speech-evals" / "dataset-retrieval")]
 
-    if not extra_has_flag("--output-dir"):
-        if mode == "tools":
-            default_out = repo_root / "tool-evals" / "results"
-        elif mode == "stt":
-            default_out = repo_root / "speech-evals" / "results"
-        elif mode == "llm":
-            default_out = repo_root / "text-evals" / "results"
-        else:
-            default_out = None
-        if default_out is not None:
-            cmd += ["--output-dir", str(default_out)]
+    default_output_dirs = {
+        "tools": repo_root / "tool-evals" / "results",
+        "stt":   repo_root / "speech-evals" / "results",
+        "llm":   repo_root / "text-evals" / "results",
+    }
+    if not extra_has_flag("--output-dir") and mode in default_output_dirs:
+        cmd += ["--output-dir", str(default_output_dirs[mode])]
 
     cmd += extra
 
@@ -117,12 +88,11 @@ def cmd_eval(args):
     print(" ".join(cmd))
 
     env = os.environ.copy()
-    if getattr(args, 'no_cloud_tele', False):
+    if args.no_cloud_tele:
         env["CACTUS_NO_CLOUD_TELE"] = "1"
     if mode == "vlm":
         ffi_dir = str(repo_root / "cactus" / "tools" / "src")
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = ffi_dir if not existing else (ffi_dir + os.pathsep + existing)
 
-    r = subprocess.run(cmd, cwd=str(cwd), env=env)
-    return r.returncode
+    return subprocess.run(cmd, cwd=str(repo_root), env=env).returncode

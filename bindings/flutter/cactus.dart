@@ -195,68 +195,6 @@ final cactusAudioEmbed =
     _lib.lookupFunction<_CactusAudioEmbedN, _CactusAudioEmbedD>(
         'cactus_audio_embed');
 
-typedef _CactusVadN = Int32 Function(
-    Pointer<Void> model,
-    Pointer<Utf8> audioFilePath,
-    Pointer<Utf8> responseBuffer,
-    IntPtr bufferSize,
-    Pointer<Utf8> optionsJson,
-    Pointer<Uint8> pcmBuffer,
-    IntPtr pcmBufferSize);
-typedef _CactusVadD = int Function(
-    Pointer<Void> model,
-    Pointer<Utf8> audioFilePath,
-    Pointer<Utf8> responseBuffer,
-    int bufferSize,
-    Pointer<Utf8> optionsJson,
-    Pointer<Uint8> pcmBuffer,
-    int pcmBufferSize);
-final cactusVad =
-    _lib.lookupFunction<_CactusVadN, _CactusVadD>('cactus_vad');
-
-typedef _CactusDiarizeN = Int32 Function(
-    Pointer<Void> model,
-    Pointer<Utf8> audioFilePath,
-    Pointer<Utf8> responseBuffer,
-    IntPtr bufferSize,
-    Pointer<Utf8> optionsJson,
-    Pointer<Uint8> pcmBuffer,
-    IntPtr pcmBufferSize);
-typedef _CactusDiarizeD = int Function(
-    Pointer<Void> model,
-    Pointer<Utf8> audioFilePath,
-    Pointer<Utf8> responseBuffer,
-    int bufferSize,
-    Pointer<Utf8> optionsJson,
-    Pointer<Uint8> pcmBuffer,
-    int pcmBufferSize);
-final cactusDiarize =
-    _lib.lookupFunction<_CactusDiarizeN, _CactusDiarizeD>('cactus_diarize');
-
-typedef _CactusEmbedSpeakerN = Int32 Function(
-    Pointer<Void> model,
-    Pointer<Utf8> audioFilePath,
-    Pointer<Utf8> responseBuffer,
-    IntPtr bufferSize,
-    Pointer<Utf8> optionsJson,
-    Pointer<Uint8> pcmBuffer,
-    IntPtr pcmBufferSize,
-    Pointer<Float> maskWeights,
-    IntPtr maskNumFrames);
-typedef _CactusEmbedSpeakerD = int Function(
-    Pointer<Void> model,
-    Pointer<Utf8> audioFilePath,
-    Pointer<Utf8> responseBuffer,
-    int bufferSize,
-    Pointer<Utf8> optionsJson,
-    Pointer<Uint8> pcmBuffer,
-    int pcmBufferSize,
-    Pointer<Float> maskWeights,
-    int maskNumFrames);
-final cactusEmbedSpeaker =
-    _lib.lookupFunction<_CactusEmbedSpeakerN, _CactusEmbedSpeakerD>(
-        'cactus_embed_speaker');
-
 typedef _CactusRagQueryN = Int32 Function(
     Pointer<Void> model,
     Pointer<Utf8> query,
