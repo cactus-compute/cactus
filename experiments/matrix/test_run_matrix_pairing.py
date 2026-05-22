@@ -342,6 +342,36 @@ class RunMatrixPairingTest(unittest.TestCase):
 
         self.assertEqual(command[command.index("--max-new-tokens") + 1], "0")
 
+    def test_android_delegated_llm_runtime_rows_get_device_metadata(self) -> None:
+        cfg = config()
+        cfg["runtimes"]["onnxruntime"] = {"version": "test"}
+        cfg["models"]["lfm_2_5_vl_1_6b"]["artifacts"]["onnxruntime"] = {"path": "."}
+        row = run_matrix.base_row("pixel_10a", "onnxruntime", "lfm_2_5_vl_1_6b", prefill(256))
+        row["status"] = "ok"
+        row["notes"] = "runner=onnxruntime_llm_bench"
+
+        with mock.patch.object(run_matrix.runtime_onnxruntime, "unsupported_reason", return_value=None):
+            with mock.patch.object(run_matrix.runtime_onnxruntime, "run_llm_operations", return_value=[row]):
+                with mock.patch.object(run_matrix, "select_android_serial_for_device", return_value="SERIAL"):
+                    with mock.patch.object(
+                        run_matrix,
+                        "android_device_info",
+                        return_value={"android_release": "15", "thermal_status": "0"},
+                    ):
+                        rows = run_matrix.run_llm_operations(
+                            cfg,
+                            "pixel_10a",
+                            "onnxruntime",
+                            "lfm_2_5_vl_1_6b",
+                            [prefill(256)],
+                            Path("out.csv"),
+                            None,
+                        )
+
+        self.assertIn("serial=SERIAL", rows[0]["notes"])
+        self.assertIn("android=15", rows[0]["notes"])
+        self.assertIn("thermal_status=0", rows[0]["notes"])
+
     def test_full_core_prefill_android_invocation_omits_taskset(self) -> None:
         prepared = {
             "runner": "/data/local/tmp/cactus_matrix/bin/cactus_llm_bench",

@@ -1176,12 +1176,15 @@ def run_llm_operations(
     if runtime == "llama_cpp":
         return run_llama_cpp_llm_operations(config, device, runtime, model, operations, sizes)
     if runtime == "onnxruntime":
-        return runtime_onnxruntime.run_llm_operations(config, device, runtime, model, operations, sizes)
+        metadata = delegated_android_runtime_metadata(config, device, runtime, model)
+        rows = runtime_onnxruntime.run_llm_operations(config, device, runtime, model, operations, sizes)
+        return append_delegated_android_metadata(rows, metadata)
     if runtime == "executorch":
+        metadata = delegated_android_runtime_metadata(config, device, runtime, model)
         rows = runtime_executorch.rows_for_operations(config, device, model, operations)
         for row in rows:
             fill_artifact_sizes(row, sizes)
-        return rows
+        return append_delegated_android_metadata(rows, metadata)
     if runtime == "litert_lm":
         return runtime_litert_lm.run_litert_lm_llm_operations(config, device, runtime, model, operations, sizes)
     return [
@@ -1195,6 +1198,35 @@ def run_llm_operations(
         )
         for operation in operations
     ]
+
+
+def delegated_android_runtime_metadata(config: dict[str, Any], device: str, runtime: str, model: str) -> dict[str, str] | None:
+    if config["devices"][device].get("kind") != "android":
+        return None
+    if runtime == "onnxruntime" and runtime_onnxruntime.unsupported_reason(config, device, model) is not None:
+        return None
+    if runtime == "executorch" and runtime_executorch.unsupported_reason(config, device, model) is not None:
+        return None
+    serial = select_android_serial_for_device(config, device)
+    return {"serial": serial, **android_device_info(serial)}
+
+
+def append_delegated_android_metadata(rows: list[dict[str, Any]], metadata: dict[str, str] | None) -> list[dict[str, Any]]:
+    if metadata is None:
+        return rows
+    note_items = [
+        ("serial=", f"serial={metadata['serial']}"),
+        ("android=", f"android={metadata['android_release']}"),
+        ("thermal_status=", f"thermal_status={metadata['thermal_status']}"),
+    ]
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+        notes = str(row.get("notes") or "")
+        additions = [item for marker, item in note_items if marker not in notes]
+        if additions:
+            row["notes"] = "; ".join([part for part in [notes, *additions] if part])
+    return rows
 
 
 def run_cactus_parakeet(
