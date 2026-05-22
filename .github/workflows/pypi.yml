@@ -1,20 +1,17 @@
-name: Build Wheels
+name: PyPI Publish
 
 on:
   workflow_call:
-  workflow_dispatch:
 
 jobs:
-  build:
+  wheels:
     strategy:
       matrix:
         include:
           - os: macos-14
-            arch: arm64
             lib: libcactus.dylib
             plat: macosx_14_0_arm64
           - os: ubuntu-24.04-arm
-            arch: arm64
             lib: libcactus.so
             plat: manylinux_2_17_aarch64
     runs-on: ${{ matrix.os }}
@@ -47,7 +44,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.os }}-${{ matrix.arch }}
+          name: wheel-${{ matrix.os }}
           path: python/dist/*.whl
 
   sdist:
@@ -69,3 +66,18 @@ jobs:
         with:
           name: sdist
           path: python/dist/*.tar.gz
+
+  publish:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

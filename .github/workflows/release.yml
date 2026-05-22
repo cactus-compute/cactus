@@ -5,26 +5,11 @@ on:
     types: [published]
 
 jobs:
-  wheels:
-    uses: ./.github/workflows/wheels.yml
-
-  publish:
-    needs: wheels
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: dist
+  pypi:
+    uses: ./.github/workflows/pypi.yml
 
   homebrew:
-    needs: publish
+    needs: pypi
     runs-on: ubuntu-latest
     steps:
       - uses: actions/setup-python@v5
