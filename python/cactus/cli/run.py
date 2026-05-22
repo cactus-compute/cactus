@@ -43,13 +43,20 @@ def cmd_run(args):
     if chat is None:
         return 1
 
+    image_file = next((image for image in getattr(args, 'image_file', []) if image), None)
+
     cmd = [str(chat), str(bundle_dir)]
     for flag, value in (("--system", getattr(args, 'system', None)),
                          ("--prompt", getattr(args, 'prompt', None)),
-                         ("--image", getattr(args, 'image', None)),
+                         ("--image", getattr(args, 'image', None) or image_file),
                          ("--audio", getattr(args, 'audio', None) or getattr(args, 'audio_file', None))):
         if value:
             cmd.extend([flag, str(Path(value).expanduser().resolve()) if flag in ("--image", "--audio") else str(value)])
+    for flag, value in (("--input-ids", getattr(args, 'input_ids', None)),
+                         ("--max-new-tokens", getattr(args, 'max_new_tokens', None)),
+                         ("--result-json", getattr(args, 'result_json', None))):
+        if value is not None:
+            cmd.extend([flag, str(value)])
     if getattr(args, 'thinking', False):
         cmd.append("--thinking")
 
