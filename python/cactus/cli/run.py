@@ -44,11 +44,13 @@ def cmd_run(args):
     if chat is None:
         return 1
 
+    image_file = next((image for image in getattr(args, "image_file", []) if image), None)
+
     cmd = [str(chat), str(bundle_dir)]
     for flag, value in (
         ("--system", getattr(args, "system", None)),
         ("--prompt", getattr(args, "prompt", None)),
-        ("--image", getattr(args, "image", None)),
+        ("--image", getattr(args, "image", None) or image_file),
         ("--audio", getattr(args, "audio", None) or getattr(args, "audio_file", None)),
     ):
         if value:

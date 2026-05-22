@@ -93,3 +93,36 @@ target_link_options(cactus_llm_bench PRIVATE -Wl,-z,max-page-size=16384)
 set_target_properties(cactus_llm_bench PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
+
+add_executable(cq4_kernel_probe
+    ${PROJECT_ROOT}/tests/android/cq4_kernel_probe.cpp
+)
+target_compile_options(cq4_kernel_probe PRIVATE -O3 -march=armv8.2-a+fp16+simd+dotprod+i8mm)
+target_link_options(cq4_kernel_probe PRIVATE -Wl,-z,max-page-size=16384)
+set_target_properties(cq4_kernel_probe PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+set(EXECUTORCH_ANDROID_BUILD "${PROJECT_ROOT}/../third_party/executorch/cmake-out-android-arm64-v8a")
+if(EXISTS "${EXECUTORCH_ANDROID_BUILD}/include/xnnpack.h")
+    add_executable(xnnpack_qc4_probe
+        ${PROJECT_ROOT}/tests/android/xnnpack_qc4_probe.cpp
+    )
+    target_include_directories(xnnpack_qc4_probe PRIVATE
+        ${EXECUTORCH_ANDROID_BUILD}/include
+    )
+    target_compile_options(xnnpack_qc4_probe PRIVATE -O3 -march=armv8.2-a+fp16+simd+dotprod+i8mm)
+    target_link_libraries(xnnpack_qc4_probe PRIVATE
+        ${EXECUTORCH_ANDROID_BUILD}/lib/libXNNPACK.a
+        ${EXECUTORCH_ANDROID_BUILD}/lib/libxnnpack-microkernels-prod.a
+        ${EXECUTORCH_ANDROID_BUILD}/lib/libkleidiai.a
+        ${EXECUTORCH_ANDROID_BUILD}/lib/libpthreadpool.a
+        ${EXECUTORCH_ANDROID_BUILD}/lib/libcpuinfo.a
+        ${LOG_LIB}
+        android
+    )
+    target_link_options(xnnpack_qc4_probe PRIVATE -Wl,-z,max-page-size=16384)
+    set_target_properties(xnnpack_qc4_probe PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+endif()

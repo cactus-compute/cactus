@@ -1175,16 +1175,31 @@ int cactus_benchmark_tokens(
         };
         handle->model->reset_cache();
         maybe_pin_benchmark_main_to_max_perf_core();
+        auto prefill_start_time = std::chrono::high_resolution_clock::now();
+        size_t cache_prime_tokens = 0;
+        uint32_t next_token = 0;
+        bool first_token_from_prefill = false;
         if (decode_token_len == 0) {
             handle->model->prefill(prompt, handle->model->get_prefill_chunk_size(), "", false);
-        } else if (prompt.size() > 1) {
-            handle->model->prefill(
-                std::vector<uint32_t>(prompt.begin(), prompt.end() - 1),
-                handle->model->get_prefill_chunk_size()
-            );
+            cache_prime_tokens = prompt.size();
+        } else {
+            first_token_from_prefill = handle->model->prefill_and_sample_first_token(prompt, next_token);
+            if (first_token_from_prefill) {
+                cache_prime_tokens = prompt.size();
+            } else if (prompt.size() > 1) {
+                handle->model->prefill(
+                    std::vector<uint32_t>(prompt.begin(), prompt.end() - 1),
+                    handle->model->get_prefill_chunk_size()
+                );
+                cache_prime_tokens = prompt.size() - 1;
+            }
         }
+        auto prefill_end_time = std::chrono::high_resolution_clock::now();
         sample_peak_ram();
-        uint32_t next_token = decode_token_len > 0 ? handle->model->decode({prompt.back()}, 0.0f, 1.0f, 1) : 0;
+        auto first_decode_start_time = std::chrono::high_resolution_clock::now();
+        if (decode_token_len > 0 && !first_token_from_prefill) {
+            next_token = handle->model->decode({prompt.back()}, 0.0f, 1.0f, 1);
+        }
         sample_peak_ram();
         auto first_token_time = std::chrono::high_resolution_clock::now();
 
@@ -1198,8 +1213,18 @@ int cactus_benchmark_tokens(
         auto end_time = std::chrono::high_resolution_clock::now();
         double ttft_ms = std::chrono::duration_cast<std::chrono::microseconds>(first_token_time - start_time).count() / 1000.0;
         double total_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
+        double cache_prime_ms = std::chrono::duration_cast<std::chrono::microseconds>(prefill_end_time - prefill_start_time).count() / 1000.0;
+        double first_decode_ms = std::chrono::duration_cast<std::chrono::microseconds>(first_token_time - first_decode_start_time).count() / 1000.0;
+        double cache_state_copy_ms = handle->model->last_prefill_cache_copy_ms();
+        double cache_prime_compute_ms = std::max(0.0, cache_prime_ms - cache_state_copy_ms);
         double decode_ms = std::max(0.0, total_ms - ttft_ms);
-        double prefill_tps = ttft_ms > 0.0 ? (static_cast<double>(prompt_token_len) * 1000.0) / ttft_ms : 0.0;
+        double prefill_prepare_tps = (cache_prime_tokens > 0 && cache_prime_ms > 0.0)
+            ? (static_cast<double>(cache_prime_tokens) * 1000.0) / cache_prime_ms
+            : 0.0;
+        double prefill_tps = (cache_prime_tokens > 0 && cache_prime_compute_ms > 0.0)
+            ? (static_cast<double>(cache_prime_tokens) * 1000.0) / cache_prime_compute_ms
+            : 0.0;
+        double ttft_prompt_tps = ttft_ms > 0.0 ? (static_cast<double>(prompt_token_len) * 1000.0) / ttft_ms : 0.0;
         double decode_tps = (generated > 1 && decode_ms > 0.0) ? (static_cast<double>(generated - 1) * 1000.0) / decode_ms : 0.0;
 
         std::ostringstream oss;
@@ -1208,6 +1233,17 @@ int cactus_benchmark_tokens(
             << "\"time_to_first_token_ms\":" << std::fixed << std::setprecision(2) << ttft_ms << ","
             << "\"total_time_ms\":" << std::fixed << std::setprecision(2) << total_ms << ","
             << "\"prefill_tps\":" << std::fixed << std::setprecision(2) << prefill_tps << ","
+            << "\"prefill_compute_tps\":" << std::fixed << std::setprecision(2) << prefill_tps << ","
+            << "\"prefill_prepare_tps\":" << std::fixed << std::setprecision(2) << prefill_prepare_tps << ","
+            << "\"ttft_prompt_tps\":" << std::fixed << std::setprecision(2) << ttft_prompt_tps << ","
+            << "\"cache_prime_ms\":" << std::fixed << std::setprecision(2) << cache_prime_ms << ","
+            << "\"cache_prime_compute_ms\":" << std::fixed << std::setprecision(2) << cache_prime_compute_ms << ","
+            << "\"cache_state_copy_ms\":" << std::fixed << std::setprecision(2) << cache_state_copy_ms << ","
+            << "\"cache_prime_tokens\":" << cache_prime_tokens << ","
+            << "\"first_decode_ms\":" << std::fixed << std::setprecision(2) << first_decode_ms << ","
+            << "\"first_token_from_prefill\":" << (first_token_from_prefill ? "true" : "false") << ","
+            << "\"prefill_padding_tokens\":" << handle->model->last_prefill_padding_tokens() << ","
+            << "\"prefill_scalar_tail_tokens\":" << handle->model->last_prefill_scalar_tail_tokens() << ","
             << "\"decode_tps\":" << std::fixed << std::setprecision(2) << decode_tps << ","
             << "\"prompt_tokens\":" << prompt_token_len << ","
             << "\"completion_tokens\":" << generated << ","
