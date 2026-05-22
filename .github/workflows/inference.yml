@@ -1,0 +1,115 @@
+name: Inference Tests
+
+on:
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      approved: ${{ steps.check.outputs.approved }}
+    steps:
+      - id: check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "approved=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.review.state }}" = "approved" ]; then
+            echo "approved=true" >> $GITHUB_OUTPUT
+          else
+            echo "approved=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.approved == 'true'
+    runs-on: [self-hosted, linux, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+
+      - name: Setup Python environment
+        run: |
+          if [ ! -f venv/bin/activate ]; then
+            source ./setup
+          fi
+
+      - name: Convert models
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          source venv/bin/activate
+          convert() {
+            local id=$1 dir=$2 bits=$3
+            [ -f "weights/$dir/config.txt" ] && return
+            python3 -m cactus convert "$id" --bits "$bits" ${HF_TOKEN:+--token "$HF_TOKEN"} || true
+          }
+          convert "Qwen/Qwen3-0.6B" "qwen3-0.6b" "4"
+          convert "google/gemma-3-270m-it" "gemma-3-270m-it" "4"
+          convert "openai/whisper-small" "whisper-small" "4"
+          convert "nvidia/parakeet-tdt-0.6b-v3" "parakeet-tdt-0.6b-v3" "4"
+
+      - name: Build
+        run: |
+          bash cactus/build.sh
+          cd cactus-engine/tests
+          rm -rf build && mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+
+  unit-tests:
+    needs: build
+    runs-on: [self-hosted, linux, arm64]
+    env:
+      CACTUS_INDEX_PATH: /tmp/cactus_test_index
+      CACTUS_NO_CLOUD_TELE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Run unit tests
+        run: |
+          mkdir -p "$CACTUS_INDEX_PATH"
+          cd cactus-engine/tests/build
+          ./test_index
+          ./test_model_loading
+          ./test_telemetry
+
+      - name: Run kernel tests
+        run: bash cactus-kernels/test.sh
+
+      - name: Run graph tests
+        run: bash cactus-graph/test.sh
+
+  inference-tests:
+    needs: build
+    runs-on: [self-hosted, linux, arm64]
+    env:
+      CACTUS_TEST_ASSETS: ${{ github.workspace }}/cactus-engine/tests/assets
+      CACTUS_NO_CLOUD_TELE: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - test: test_llm
+            model_dir: qwen3-0.6b
+          - test: test_llm
+            model_dir: gemma-3-270m-it
+          - test: test_stt
+            model_dir: whisper-small
+          - test: test_stt
+            model_dir: parakeet-tdt-0.6b-v3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+      - name: Run ${{ matrix.test }} (${{ matrix.model_dir }})
+        env:
+          CACTUS_TEST_MODEL: ${{ github.workspace }}/weights/${{ matrix.model_dir }}
+          CACTUS_TEST_TRANSCRIBE_MODEL: ${{ github.workspace }}/weights/${{ matrix.model_dir }}
+        run: ./cactus-engine/tests/build/${{ matrix.test }}
