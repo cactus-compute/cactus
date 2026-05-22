@@ -145,7 +145,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
 
     encoder_ = components_.count("lm_encoder_step") ? &components_.at("lm_encoder_step") : nullptr;
     decoder_ = components_.count("decoder_step") ? &components_.at("decoder_step") : nullptr;
-    const bool is_lm = (encoder_ != nullptr && decoder_ != nullptr);
+    const bool is_lm = (decoder_ != nullptr);
     const bool is_whisper_transcription =
         config_.model_type == Config::ModelType::WHISPER &&
         components_.count("audio_encoder") &&
@@ -367,10 +367,15 @@ void Model::copy_encoder_outputs_to_decoder(const Component& enc) {
 }
 
 void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/) {
-    write_int_input(*encoder_, "input_ids", static_cast<int64_t>(token_id));
-    write_int_input(*encoder_, "position_ids", static_cast<int64_t>(position));
-    encoder_->graph->execute();
-    copy_encoder_outputs_to_decoder(*encoder_);
+    if (encoder_) {
+        write_int_input(*encoder_, "input_ids", static_cast<int64_t>(token_id));
+        write_int_input(*encoder_, "position_ids", static_cast<int64_t>(position));
+        encoder_->graph->execute();
+        copy_encoder_outputs_to_decoder(*encoder_);
+    } else {
+        write_int_input(*decoder_, "input_ids", static_cast<int64_t>(token_id));
+        write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
+    }
     decoder_->graph->execute();
 }
 

@@ -1,25 +1,66 @@
 [project]
-name = "cactus"
-version = "1.14.0"
-description = "Cactus Python tools"
+name = "cactus-compute"
+dynamic = ["version"]
+description = "On-device AI inference — LLM, vision, speech, embeddings, and RAG"
+readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "Cactus Compute License"}
+authors = [{name = "Cactus Compute"}]
+keywords = [
+    "ai", "inference", "on-device", "llm", "embeddings",
+    "transcription", "rag", "quantization", "edge-ai",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: Other/Proprietary License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
 dependencies = [
     "torch>=2.8.0,<3",
-    "transformers>=5.5.4,<6",
+    "transformers==5.5.4",
     "numpy>=1.26.0,<3",
     "huggingface-hub>=1.5.0,<2.0",
 ]
 
 [project.optional-dependencies]
 vlm = ["Pillow>=11.0.0,<12", "torchvision>=0.23.0,<1"]
+dev = ["pytest>=8.0", "scipy>=1.13"]
+
+[project.urls]
+Homepage = "https://cactuscompute.com"
+Repository = "https://github.com/cactus-compute/cactus"
+Documentation = "https://docs.cactuscompute.com"
+"Bug Tracker" = "https://github.com/cactus-compute/cactus/issues"
 
 [project.scripts]
 cactus = "cactus.cli:main"
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "cactus.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cactus*"]
+
+[tool.setuptools.package-data]
+"cactus.bindings" = ["lib/*.dylib", "lib/*.so"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,4 +1,4 @@
-import {NativeModules} from 'react-native';
+import {NativeModules, NativeEventEmitter} from 'react-native';
 
 export interface CactusNativeModule {
   init(modelPath: string, corpusDir: string | null, cacheIndex: boolean): Promise<string>;
@@ -18,6 +18,7 @@ export interface CactusNativeModule {
     optionsJson: string | null,
     toolsJson: string | null,
     pcmDataBase64: string | null,
+    streamTokens: boolean,
   ): Promise<string>;
   tokenize(handle: string, text: string): Promise<number[]>;
   scoreWindow(
@@ -37,25 +38,6 @@ export interface CactusNativeModule {
   embed(handle: string, text: string, normalize: boolean): Promise<number[]>;
   imageEmbed(handle: string, imagePath: string): Promise<number[]>;
   audioEmbed(handle: string, audioPath: string): Promise<number[]>;
-  vad(
-    handle: string,
-    audioPath: string | null,
-    optionsJson: string | null,
-    pcmDataBase64: string | null,
-  ): Promise<string>;
-  diarize(
-    handle: string,
-    audioPath: string | null,
-    optionsJson: string | null,
-    pcmDataBase64: string | null,
-  ): Promise<string>;
-  embedSpeaker(
-    handle: string,
-    audioPath: string | null,
-    optionsJson: string | null,
-    pcmDataBase64: string | null,
-    maskWeights: number[] | null,
-  ): Promise<string>;
   ragQuery(handle: string, query: string, topK: number): Promise<string>;
   indexInit(indexDir: string, embeddingDim: number): Promise<string>;
   indexAdd(
@@ -93,5 +75,9 @@ if (!nativeModule) {
 }
 
 export const Cactus = nativeModule;
+
+export const CactusEvents = new NativeEventEmitter(NativeModules.Cactus);
+
+export type TokenEvent = {token: string; tokenId: number};
 
 export default Cactus;

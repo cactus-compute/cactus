@@ -839,8 +839,8 @@ def _gemma4_compute_native_like_image_features(
         raise TypeError("Gemma4 vision embedder is missing embedding_projection")
     projected = F.linear(
         pooled_hidden,
-        projection.weight,
-        projection.bias,
+        projection.weight.float(),
+        None if projection.bias is None else projection.bias.float(),
     )
     if post_proj_norm_weight is not None and post_proj_norm_weight.numel() > 0:
         return _gemma4_rms_norm(
