@@ -22,8 +22,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    timeout-minutes: 45
+  build:
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -40,13 +40,17 @@ jobs:
         with:
           path: ~/.ccache
           key: ccache-${{ matrix.os }}-${{ github.ref_name }}-${{ hashFiles('cactus/CMakeLists.txt', 'cactus-engine/tests/CMakeLists.txt', '.github/workflows/cpp.yml') }}
-          restore-keys: |
-            ccache-${{ matrix.os }}-${{ github.ref_name }}-
-            ccache-${{ matrix.os }}-
+          restore-keys: ccache-${{ matrix.os }}-
       - run: ccache --zero-stats || true
-      - run: cmake -G Ninja -S cactus -B cactus/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-      - run: cmake --build cactus/build --target cactus --parallel 4
-      - run: cmake -G Ninja -S cactus-engine/tests -B cactus-engine/tests/build-ci -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-      - run: cmake --build cactus-engine/tests/build-ci --target test_stt --parallel 4
-      - run: ./cactus-engine/tests/build-ci/test_stt
-      - run: ccache --show-stats || true
+
+      - name: Build libcactus
+        run: |
+          cmake -G Ninja -S cactus -B cactus/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build cactus/build --parallel 4
+
+      - name: Build and run tests
+        run: |
+          cmake -G Ninja -S cactus-engine/tests -B cactus-engine/tests/build-ci -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build cactus-engine/tests/build-ci --parallel 4
+          cactus-engine/tests/build-ci/test_index
+          cactus-engine/tests/build-ci/test_model_loading

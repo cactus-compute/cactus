@@ -40,18 +40,7 @@ def cmd_eval(args):
     def extra_has_flag(flag):
         return any(a == flag or a.startswith(flag + "=") for a in extra)
 
-    mode_flags = []
-    if args.tools: mode_flags.append("tools")
-    if args.llm:   mode_flags.append("llm")
-    if args.stt:   mode_flags.append("stt")
-    if args.vlm:   mode_flags.append("vlm")
-    if args.embed: mode_flags.append("embed")
-
-    if len(mode_flags) > 1:
-        print_color(RED, f"Error: choose only one eval mode flag, got: {' '.join(mode_flags)}")
-        return 1
-
-    mode = mode_flags[0] if mode_flags else "tools"
+    mode = args.suite
     repo_root = PROJECT_ROOT.parent
 
     eval_runners = {

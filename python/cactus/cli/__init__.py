@@ -133,16 +133,7 @@ def create_parser():
     --whisper_model <model>            default: openai/whisper-small (language detection)
     --benchmark                        use larger models (LFM2.5-VL-1.6B + nvidia/parakeet-ctc-1.1b)
     --reconvert                        force model weights reconversion from source
-    --llm                              run only LLM tests
-    --vlm                              run only VLM tests
-    --stt                              run only speech-to-text tests
-    --embed                            run only embedding tests
-    --rag                              run only RAG tests
-    --graph                            run only graph tests
-    --index                            run only index tests
-    --kernel                           run only kernel tests
-    --kv_cache                         run only KV cache tests
-    --performance                      run only performance benchmarks
+    --suite <name>                     run a specific test suite (auto-detected)
     --ios                              run on connected iPhone
     --android                          run on connected Android
 
@@ -249,11 +240,8 @@ def create_parser():
     # ── eval ──────────────────────────────────────────────────────────
     eval_parser = subparsers.add_parser("eval", help="Run evaluation scripts outside the cactus submodule",
                                         parents=[_model_parent(), _telemetry_parent()])
-    eval_parser.add_argument("--tools", action="store_true", help="Run tools evals (default)")
-    eval_parser.add_argument("--vlm", action="store_true", help="Run VLM-specific evals")
-    eval_parser.add_argument("--stt", action="store_true", help="Run speech-to-text evals")
-    eval_parser.add_argument("--llm", action="store_true", help="Run LLM evals")
-    eval_parser.add_argument("--embed", action="store_true", help="Run embedding evals")
+    eval_parser.add_argument("--suite", choices=["tools", "llm", "vlm", "stt"],
+                             default="tools", help="Eval suite to run (default: tools)")
 
     # ── test ──────────────────────────────────────────────────────────
     test_parser = subparsers.add_parser("test", help="Run the test suite")
@@ -264,10 +252,9 @@ def create_parser():
                              help="Run tests on Android")
     test_parser.add_argument("--ios", action="store_true",
                              help="Run tests on iOS")
-    test_parser.add_argument("--only", help="(deprecated, use --<test_name> instead) Only run the specified test")
-    for _test_name in ["llm", "vlm", "stt", "embed", "rag", "graph", "index", "kernel", "kv_cache", "performance"]:
-        test_parser.add_argument(f"--{_test_name}", action="store_true",
-                                 help=f"Only run the {_test_name} tests")
+    from .test import discover_suites
+    test_parser.add_argument("--suite", choices=discover_suites(),
+                             help="Run a specific test suite")
     test_parser.add_argument("--enable-telemetry", action="store_true",
                              help="Enable cloud telemetry (disabled by default in tests)")
     test_parser.add_argument("--reconvert", action="store_true",
