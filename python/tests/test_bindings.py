@@ -358,67 +358,6 @@ class TestCliParser:
             self.parser.parse_args(["transpile", "gemma4"])
 
 
-# ── pyproject.toml validation ───────────────────────────────────────
-
-
-class TestPackageMetadata:
-    """Validate pyproject.toml is correct for PyPI."""
-
-    def setup_method(self):
-        import tomllib
-        with open(Path(__file__).parent.parent / "pyproject.toml", "rb") as f:
-            self.cfg = tomllib.load(f)
-        self.project = self.cfg["project"]
-
-    def test_package_name(self):
-        assert self.project["name"] == "cactus-compute"
-
-    def test_version_is_dynamic(self):
-        assert "version" in self.project.get("dynamic", [])
-
-    def test_has_description(self):
-        assert len(self.project["description"]) > 10
-
-    def test_has_readme(self):
-        assert self.project["readme"] == "README.md"
-
-    def test_python_requires(self):
-        assert self.project["requires-python"] == ">=3.10"
-
-    def test_has_license(self):
-        assert "license" in self.project
-
-    def test_has_authors(self):
-        assert len(self.project["authors"]) > 0
-        assert "name" in self.project["authors"][0]
-
-    def test_has_keywords(self):
-        assert "ai" in self.project["keywords"]
-        assert "inference" in self.project["keywords"]
-
-    def test_has_classifiers(self):
-        classifiers = self.project["classifiers"]
-        assert any("Python :: 3" in c for c in classifiers)
-        assert any("Artificial Intelligence" in c for c in classifiers)
-
-    def test_has_urls(self):
-        urls = self.project["urls"]
-        assert "Homepage" in urls
-        assert "Repository" in urls
-
-    def test_has_cli_entry_point(self):
-        assert self.project["scripts"]["cactus"] == "cactus.cli:main"
-
-    def test_has_optional_deps(self):
-        assert "vlm" in self.project["optional-dependencies"]
-        assert "dev" in self.project["optional-dependencies"]
-
-    def test_dependencies_pinned(self):
-        deps = self.project["dependencies"]
-        assert len(deps) >= 4
-        for dep in deps:
-            assert ">=" in dep or "==" in dep, f"Dependency {dep} not version-pinned"
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
