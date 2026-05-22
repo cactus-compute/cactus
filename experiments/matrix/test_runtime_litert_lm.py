@@ -426,6 +426,21 @@ class LiteRTLMRuntimeTest(unittest.TestCase):
         self.assertIn("android=16", row["notes"])
         self.assertIn("thermal_status=0", row["notes"])
 
+    def test_android_device_info_parses_thermal_status_heading(self) -> None:
+        def fake_adb(_serial: str, _shell: str, command: str, cwd: Path | None = None) -> mock.Mock:
+            if command == "dumpsys thermalservice":
+                return mock.Mock(stdout="Thermal Status: 0\n")
+            if command == "getprop ro.build.version.release":
+                return mock.Mock(stdout="16\n")
+            raise AssertionError(command)
+
+        with mock.patch.object(litert_lm_module, "_adb", side_effect=fake_adb):
+            info = litert_lm_module._android_device_info("SERIAL", Path("/tmp/repo"))
+
+        self.assertEqual(info["serial"], "SERIAL")
+        self.assertEqual(info["android_release"], "16")
+        self.assertEqual(info["thermal_status"], "0")
+
     def test_native_failure_message_keeps_litert_error_context(self) -> None:
         message = litert_lm_module._litert_lm_failure_message(
             """

@@ -818,7 +818,7 @@ def _android_device_info(serial: str, repo_root: Path) -> dict[str, str]:
     thermal_status = ""
     for line in thermal.splitlines():
         stripped = line.strip()
-        if stripped.lower().startswith("status:"):
+        if stripped.lower().startswith(("status:", "thermal status:")):
             thermal_status = stripped.split(":", 1)[1].strip()
             break
     return {
