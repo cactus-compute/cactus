@@ -779,7 +779,9 @@ def _run_android_litert_lm_once(
     text = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
     if completed.returncode != 0:
         raise LiteRTLMError(_litert_lm_failure_message(text, completed.returncode))
-    return _parse_litert_lm_metrics(text)
+    payload = _parse_litert_lm_metrics(text)
+    payload.update(_android_device_info(serial, repo_root))
+    return payload
 
 
 def _adb(serial: str, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -805,6 +807,25 @@ def _adb_push_if_needed(serial: str, source: Path, destination: str) -> None:
     pushed = _adb(serial, "push", str(source), destination)
     if pushed.returncode != 0:
         raise LiteRTLMError(pushed.stderr.strip() or pushed.stdout.strip() or "adb push failed")
+
+
+def _android_device_info(serial: str, repo_root: Path) -> dict[str, str]:
+    def shell_output(command: str) -> str:
+        completed = _adb(serial, "shell", command, cwd=repo_root)
+        return completed.stdout.strip()
+
+    thermal = shell_output("dumpsys thermalservice")
+    thermal_status = ""
+    for line in thermal.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("status:"):
+            thermal_status = stripped.split(":", 1)[1].strip()
+            break
+    return {
+        "serial": serial,
+        "android_release": shell_output("getprop ro.build.version.release"),
+        "thermal_status": thermal_status or "unknown",
+    }
 
 
 def _litert_lm_benchmark_command(
@@ -1210,6 +1231,12 @@ def _row_from_measurements(
         row["peak_ram_mb"] = f"{max(ram_values):.3f}"
     _fill_sizes(row, sizes)
     notes = [f"warmup_runs={runs['warmup_runs']},measurement_runs={runs['measurement_runs']}", *extra_notes]
+    for field, label in (("serial", "serial"), ("android_release", "android"), ("thermal_status", "thermal_status")):
+        values = sorted({str(measurement.get(field) or "") for measurement in measurements if measurement.get(field)})
+        if len(values) == 1:
+            notes.append(f"{label}={values[0]}")
+        elif values:
+            notes.append(f"{label}={','.join(values)}")
     if not throughputs or any(value <= 0.0 for value in throughputs):
         row["status"] = "error"
         notes.append(f"LiteRT-LM runner did not report positive {operation.operation} throughput")

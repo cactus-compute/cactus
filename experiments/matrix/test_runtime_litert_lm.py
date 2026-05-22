@@ -399,6 +399,33 @@ class LiteRTLMRuntimeTest(unittest.TestCase):
         self.assertEqual(measurements, [{"run": 2}, {"run": 3}, {"run": 4}])
         self.assertEqual(run_once.call_count, 5)
 
+    def test_android_row_notes_include_device_thermal_metadata(self) -> None:
+        request = paired_litert_lm_requests([llm_operations()[0]])[0]
+        config = android_matrix_config({"path": "/tmp/model.litertlm"})
+        row = litert_lm_module._row_from_measurements(
+            config,
+            "pixel_10a",
+            "litert_lm",
+            "gemma",
+            request.prefill,
+            [
+                {
+                    "prefill_tps": 12.0,
+                    "peak_ram_usage_mb": 34.0,
+                    "serial": "SERIAL",
+                    "android_release": "16",
+                    "thermal_status": "0",
+                }
+            ],
+            (1.0, 0.5),
+            [],
+        )
+
+        self.assertEqual(row["status"], "ok")
+        self.assertIn("serial=SERIAL", row["notes"])
+        self.assertIn("android=16", row["notes"])
+        self.assertIn("thermal_status=0", row["notes"])
+
     def test_native_failure_message_keeps_litert_error_context(self) -> None:
         message = litert_lm_module._litert_lm_failure_message(
             """
