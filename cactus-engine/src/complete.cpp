@@ -711,9 +711,20 @@ int cactus_complete(
             }
         }
 
-        auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
-        prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
-        next_token = generate_first_token(handle, prefill_result, prompt, &first_token_entropy);
+        bool first_token_from_prefill = false;
+        if (!has_images && !has_audio && handle->processed_tokens.empty()) {
+            reset_cache(handle);
+            first_token_from_prefill = handle->model->prefill_and_sample_first_token(prompt.tokens, next_token);
+            if (first_token_from_prefill) {
+                prompt_tokens = prompt.tokens.size();
+                first_token_entropy = 0.0f;
+            }
+        }
+        if (!first_token_from_prefill) {
+            auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
+            prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
+            next_token = generate_first_token(handle, prefill_result, prompt, &first_token_entropy);
+        }
 
         handle->processed_tokens = prompt.tokens;
         handle->processed_images = prompt.images;

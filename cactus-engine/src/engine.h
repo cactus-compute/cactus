@@ -8,6 +8,7 @@
 #include <memory>
 #include <cstdint>
 #include <atomic>
+#include <limits>
 
 #include "cactus_graph.h"
 
@@ -580,6 +581,7 @@ public:
     uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
                     size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                     float min_p = 0.15f, float repetition_penalty = 1.1f);
+    bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token);
 
     void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 128, const std::string& profile_file = "",
                  bool prepare_decode = true);
@@ -639,6 +641,9 @@ public:
     bool load_npu_prefill(const std::string& model_path);
     bool has_npu_prefill() const { return false; }
     size_t get_prefill_chunk_size() const { return 128; }
+    double last_prefill_cache_copy_ms() const { return last_prefill_cache_copy_ms_; }
+    size_t last_prefill_padding_tokens() const { return last_prefill_padding_tokens_; }
+    size_t last_prefill_scalar_tail_tokens() const { return last_prefill_scalar_tail_tokens_; }
 
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
@@ -679,6 +684,14 @@ private:
 
     void copy_cache_state(const Component& src, Component& dst);
 
+    struct ChunkedPrefillResult {
+        size_t logical_tokens = 0;
+        size_t executed_tokens = 0;
+        size_t padding_tokens = 0;
+        size_t scalar_tail_tokens = 0;
+        size_t last_logit_row = 0;
+    };
+
     bool load_manifest();
     bool setup_tokenizer();
     bool load_components(const std::unordered_set<std::string>& required_components);
@@ -694,13 +707,14 @@ private:
     void copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index);
     void copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target, size_t token_offset);
     bool cache_states_compatible(const Component& source, const Component& target) const;
-    void copy_cache_states(const Component& source, Component& target);
+    void copy_cache_states(const Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
     void reset_component_cache_states(Component& comp);
     size_t component_chunk_tokens(const Component& comp, const std::string& input_name) const;
     size_t component_output_tokens(const Component& comp, const std::string& output_name) const;
-    size_t run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position, size_t chunk_size,
-                               bool prepare_decode);
+    ChunkedPrefillResult run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position,
+                                             size_t chunk_size, bool prepare_decode);
     void run_full_context_text();
+    uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max());
     void write_int_input(Component& comp, const std::string& name, int64_t value);
     void write_int_input_at(Component& comp, const std::string& name, size_t index, int64_t value);
     void write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size);
@@ -747,6 +761,9 @@ private:
     size_t cache_total_seq_len_ = 0;
     size_t cache_max_seq_len_ = 4096;
     size_t last_logit_position_ = 0;
+    double last_prefill_cache_copy_ms_ = 0.0;
+    size_t last_prefill_padding_tokens_ = 0;
+    size_t last_prefill_scalar_tail_tokens_ = 0;
     std::vector<uint32_t> context_tokens_;
 
     static constexpr size_t MAX_TOKEN_HISTORY = 128;
