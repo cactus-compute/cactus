@@ -7,7 +7,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CACTUS_ENGINE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(CACTUS_PROJECT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
-# --- libcurl ---
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch arm64 -pthread -Wall -Wextra -pedantic -O3")
@@ -22,13 +21,11 @@ else()
     find_package(CURL)
 endif()
 
-# --- Find the pre-built cactus library ---
 set(CACTUS_LIB "${CACTUS_PROJECT_ROOT}/cactus/build/libcactus.a")
 if(NOT EXISTS "${CACTUS_LIB}")
     message(FATAL_ERROR "Missing ${CACTUS_LIB}; build the top-level cactus target first")
 endif()
 
-# --- Platform libraries ---
 if(NOT APPLE)
     find_library(MMAN_LIB mman)
 else()
@@ -40,40 +37,59 @@ else()
     find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
 endif()
 
-# --- Test executables ---
+function(cactus_link_target target_name)
+    target_link_libraries(${target_name} PRIVATE ${CACTUS_LIB})
+    target_include_directories(${target_name} PRIVATE
+        ${CACTUS_ENGINE_ROOT}
+        ${CACTUS_PROJECT_ROOT}/cactus-graph
+        ${CACTUS_PROJECT_ROOT}/cactus-kernels
+        ${CACTUS_PROJECT_ROOT}/cactus-kernels/src
+    )
+    if(MMAN_LIB)
+        target_link_libraries(${target_name} PRIVATE ${MMAN_LIB})
+    endif()
+    if(APPLE)
+        target_link_libraries(${target_name} PRIVATE
+            ${ACCELERATE_FRAMEWORK} ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK}
+            ${SECURITY_FRAMEWORK} ${SYSTEMCONFIGURATION_FRAMEWORK} ${CFNETWORK_FRAMEWORK}
+        )
+        if(CACTUS_CURL_LIBRARY_MACOS)
+            target_link_libraries(${target_name} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
+            target_include_directories(${target_name} PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
+        endif()
+    elseif(CURL_FOUND)
+        target_link_libraries(${target_name} PRIVATE ${CURL_LIBRARIES})
+        target_include_directories(${target_name} PRIVATE ${CURL_INCLUDE_DIRS})
+    endif()
+endfunction()
+
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS "test_*.cpp")
 list(REMOVE_ITEM TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/test_utils.cpp")
 
 foreach(TEST_FILE ${TEST_SOURCES})
     get_filename_component(TEST_NAME ${TEST_FILE} NAME_WE)
     add_executable(${TEST_NAME} ${TEST_FILE} test_utils.cpp)
-    target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_LIB})
-
-    target_include_directories(${TEST_NAME} PRIVATE
-        ${CACTUS_ENGINE_ROOT}
-        ${CACTUS_PROJECT_ROOT}/cactus-graph
-        ${CACTUS_PROJECT_ROOT}/cactus-kernels
-    )
-
-    if(MMAN_LIB)
-        target_link_libraries(${TEST_NAME} PRIVATE ${MMAN_LIB})
-    endif()
-
-    if(APPLE)
-        target_link_libraries(${TEST_NAME} PRIVATE
-            ${ACCELERATE_FRAMEWORK}
-            ${COREML_FRAMEWORK}
-            ${FOUNDATION_FRAMEWORK}
-            ${SECURITY_FRAMEWORK}
-            ${SYSTEMCONFIGURATION_FRAMEWORK}
-            ${CFNETWORK_FRAMEWORK}
-        )
-        if(CACTUS_CURL_LIBRARY_MACOS)
-            target_link_libraries(${TEST_NAME} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
-            target_include_directories(${TEST_NAME} PRIVATE ${CACTUS_CURL_INCLUDE_DIR})
-        endif()
-    elseif(CURL_FOUND)
-        target_link_libraries(${TEST_NAME} PRIVATE ${CURL_LIBRARIES})
-        target_include_directories(${TEST_NAME} PRIVATE ${CURL_INCLUDE_DIRS})
-    endif()
+    cactus_link_target(${TEST_NAME})
 endforeach()
+
+find_package(SDL2 QUIET CONFIG)
+if(NOT SDL2_FOUND)
+    find_library(SDL2_LIBRARY NAMES SDL2 PATHS /opt/homebrew/lib /usr/local/lib)
+    find_path(SDL2_INCLUDE_DIR SDL.h PATHS /opt/homebrew/include/SDL2 /usr/local/include/SDL2)
+    if(SDL2_LIBRARY AND SDL2_INCLUDE_DIR)
+        set(SDL2_FOUND TRUE)
+    endif()
+endif()
+if(SDL2_FOUND)
+    add_executable(chat chat.cpp test_utils.cpp)
+    cactus_link_target(chat)
+    if(TARGET SDL2::SDL2)
+        target_link_libraries(chat PRIVATE SDL2::SDL2)
+    else()
+        target_link_libraries(chat PRIVATE ${SDL2_LIBRARY})
+        target_include_directories(chat PRIVATE ${SDL2_INCLUDE_DIR})
+    endif()
+endif()
+
+add_executable(asr asr.cpp)
+cactus_link_target(asr)

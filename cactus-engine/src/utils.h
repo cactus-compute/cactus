@@ -2,7 +2,7 @@
 #define CACTUS_UTILS_H
 
 #include "engine.h"
-#include "../models/model.h"
+#include "cactus_kernels.h"
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -98,6 +98,15 @@ namespace audio {
 
 static constexpr size_t WHISPER_TARGET_FRAMES = 3000;
 static constexpr int WHISPER_SAMPLE_RATE = 16000;
+static constexpr size_t WHISPER_TARGET_SAMPLES = WHISPER_SAMPLE_RATE * 30;
+
+inline void pad_or_trim_whisper_waveform(std::vector<float>& samples) {
+    if (samples.size() > WHISPER_TARGET_SAMPLES) {
+        samples.resize(WHISPER_TARGET_SAMPLES);
+    } else if (samples.size() < WHISPER_TARGET_SAMPLES) {
+        samples.resize(WHISPER_TARGET_SAMPLES, 0.0f);
+    }
+}
 
 inline cactus::engine::SpectrogramConfig get_whisper_spectrogram_config() {
     cactus::engine::SpectrogramConfig cfg{};
@@ -113,7 +122,7 @@ inline cactus::engine::SpectrogramConfig get_whisper_spectrogram_config() {
     cfg.log_mel      = "log10";
     cfg.reference    = 1.0f;
     cfg.min_value    = 1e-10f;
-    cfg.remove_dc_offset = true;
+    cfg.remove_dc_offset = false;
     return cfg;
 }
 
@@ -161,27 +170,6 @@ inline cactus::engine::SpectrogramConfig get_gemma4_audio_spectrogram_config(
     auto cfg = get_htk_spectrogram_config();
     cfg.fft_override = model_config.audio_fft_length;
     cfg.mel_floor_additive = true;
-    return cfg;
-}
-
-inline cactus::engine::SpectrogramConfig get_wespeaker_spectrogram_config() {
-    cactus::engine::SpectrogramConfig cfg{};
-    cfg.n_fft            = 512;
-    cfg.frame_length     = 400;
-    cfg.hop_length       = 160;
-    cfg.power            = 2.0f;
-    cfg.center           = false;
-    cfg.pad_mode         = "constant";
-    cfg.onesided         = true;
-    cfg.dither           = 0.0f;
-    cfg.mel_floor        = 1.1754944e-38f;
-    cfg.log_mel          = "log";
-    cfg.reference        = 1.0f;
-    cfg.min_value        = 1.1754944e-38f;
-    cfg.remove_dc_offset = true;
-    cfg.preemphasis      = 0.97f;
-    cfg.hann_periodic    = false;
-    cfg.window_a0        = 0.54f;
     return cfg;
 }
 
@@ -240,11 +228,89 @@ inline std::vector<float> compute_spectrogram_graph(
     return result;
 }
 
+inline std::vector<float> compute_gemma4_audio_spectrogram(
+    const std::vector<float>& waveform,
+    const cactus::engine::SpectrogramConfig& cfg,
+    size_t mel_bins,
+    float min_freq,
+    float max_freq,
+    size_t sampling_rate) {
+
+    size_t fft_len = cfg.fft_override > 0 ? cfg.fft_override : cfg.n_fft;
+    size_t num_freq_bins = fft_len / 2 + 1;
+    std::vector<float> mel_filters(mel_bins * num_freq_bins);
+    cactus_generate_mel_filter_bank(
+        mel_filters.data(),
+        static_cast<int>(num_freq_bins),
+        static_cast<int>(mel_bins),
+        min_freq,
+        max_freq,
+        static_cast<int>(sampling_rate),
+        nullptr,
+        "htk",
+        false);
+
+    // Gemma4's HF feature extractor unfolds 321 samples for frame validity but
+    // applies a 320-sample periodic Hann window and implicitly zeroes sample 321
+    // before the 512-point FFT. Keep that exact split while still using Cactus
+    // DSP kernels for the frontend.
+    const size_t analysis_frame_length = cfg.n_fft;
+    const size_t windowed_frame_length = cfg.frame_length;
+    std::vector<float> window(analysis_frame_length, 0.0f);
+    for (size_t i = 0; i < std::min(windowed_frame_length, analysis_frame_length); ++i) {
+        window[i] = 0.5f * (1.0f - std::cos(2.0f * static_cast<float>(M_PI) * i /
+                                           static_cast<float>(windowed_frame_length)));
+    }
+
+    if (waveform.size() < analysis_frame_length) return {};
+    size_t num_frames = 1 + (waveform.size() - analysis_frame_length) / cfg.hop_length;
+    std::vector<float> result(mel_bins * num_frames);
+    cactus_compute_spectrogram_f32(
+        waveform.data(),
+        waveform.size(),
+        window.data(),
+        window.size(),
+        analysis_frame_length,
+        cfg.hop_length,
+        &fft_len,
+        result.data(),
+        cfg.power,
+        cfg.center,
+        "constant",
+        true,
+        cfg.dither,
+        nullptr,
+        mel_filters.data(),
+        mel_filters.size(),
+        0.0f,
+        nullptr,
+        cfg.reference,
+        cfg.min_value,
+        nullptr,
+        cfg.remove_dc_offset);
+
+    for (float& value : result) {
+        value = std::log(value + cfg.mel_floor);
+    }
+    return result;
+}
+
 // use_mel_floor_padding=true pads short audio with the normalized mel floor (required for v3).
 inline std::vector<float> normalize_whisper_mel(std::vector<float>& mel, size_t n_mels,
                                                 bool use_mel_floor_padding = false) {
     if (mel.empty() || n_mels == 0) return mel;
     size_t n_frames = mel.size() / n_mels;
+
+    if (n_frames > WHISPER_TARGET_FRAMES) {
+        std::vector<float> trimmed(n_mels * WHISPER_TARGET_FRAMES);
+        for (size_t m = 0; m < n_mels; ++m) {
+            const float* src = &mel[m * n_frames];
+            float* dst = &trimmed[m * WHISPER_TARGET_FRAMES];
+            std::copy(src, src + WHISPER_TARGET_FRAMES, dst);
+        }
+        mel = std::move(trimmed);
+        n_frames = WHISPER_TARGET_FRAMES;
+    }
 
     float max_val = -std::numeric_limits<float>::infinity();
     for (float v : mel) if (v > max_val) max_val = v;
@@ -369,8 +435,8 @@ inline AudioPreprocessResult preprocess_audio_for_gemma4(
     size_t semicausal_pad = cfg.frame_length / 2;
     audio_samples.insert(audio_samples.begin(), semicausal_pad, 0.0f);
 
-    std::vector<float> mel = compute_spectrogram_graph(
-        audio_samples, cfg, mel_bins, 0.0f, 8000.0f, 16000, 0, 0);
+    std::vector<float> mel = compute_gemma4_audio_spectrogram(
+        audio_samples, cfg, mel_bins, 0.0f, 8000.0f, 16000);
 
     result.num_frames = mel.size() / mel_bins;
     result.features = transpose_mel_to_frame_major(mel, mel_bins, result.num_frames);

@@ -2,10 +2,12 @@
 
 #include <vector>
 #include <string>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <memory>
 #include <cstdint>
+#include <atomic>
 
 #include "cactus_graph.h"
 
@@ -168,7 +170,7 @@ struct Config {
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
 
-    enum class ModelType {GEMMA4 = 15};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, NEEDLE = 18};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
@@ -202,14 +204,16 @@ struct Config {
 
     uint32_t altup_num_inputs = 4;
     uint32_t laurel_rank = 64;
-    uint32_t hidden_size_per_layer_input = 256;
-    uint32_t num_kv_shared_layers = 0;
-    uint32_t sliding_window = 512;
-    float rope_local_base_freq = 10000.0f;
-    float final_logit_softcapping = 0.0f;
-    float global_partial_rotary_factor = 1.0f;
+    static constexpr uint32_t UNSET_U32 = UINT32_MAX;
+    static constexpr float UNSET_F32 = -1e30f;
+    uint32_t hidden_size_per_layer_input = UNSET_U32;
+    uint32_t num_kv_shared_layers = UNSET_U32;
+    uint32_t sliding_window = UNSET_U32;
+    float rope_local_base_freq = UNSET_F32;
+    float final_logit_softcapping = UNSET_F32;
+    float global_partial_rotary_factor = UNSET_F32;
     uint32_t expert_intermediate_size = 0;
-    uint32_t global_head_dim = 0;
+    uint32_t global_head_dim = UNSET_U32;
     uint32_t num_global_kv_heads = 0;
     bool attention_k_eq_v = false;
     bool enable_moe_block = false;
@@ -249,7 +253,7 @@ struct Config {
     uint32_t channel_close_token_id = 101;
 
     static bool is_gemma_family(ModelType t) {
-        return t == ModelType::GEMMA4;
+        return t == ModelType::GEMMA || t == ModelType::GEMMA3N || t == ModelType::GEMMA4;
     }
 
     bool from_json(const std::string& json_path);
@@ -351,8 +355,11 @@ public:
     uint32_t get_fake_token_id() const { return fake_token_id_; }
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
 
+    void set_image_soft_token_count(size_t n) { image_soft_token_count_ = n; }
+    size_t get_image_soft_token_count() const { return image_soft_token_count_; }
+
 protected:
-    enum class ModelType { UNKNOWN, GEMMA4 };
+    enum class ModelType { UNKNOWN, GEMMA4, QWEN, LFM2 };
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -368,11 +375,14 @@ protected:
     uint32_t vision_pooling_kernel_size_ = 3;
     uint32_t vision_default_output_length_ = 280;
     uint32_t vision_image_size_ = 768;
+    size_t image_soft_token_count_ = 0;
     TokenizerRuntimeConfig runtime_config_;
 
     void detect_model_type(const std::string& config_path);
     void load_chat_template(const std::string& template_file);
     std::string format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
+    std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
 class BPETokenizer : public Tokenizer {
@@ -558,43 +568,58 @@ public:
 
     Model();
     explicit Model(const Config& config);
-    virtual ~Model();
+    ~Model();
 
     const Config& get_config() const { return config_; }
     Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
     const std::vector<DebugNode>& get_debug_nodes() const;
 
-    virtual bool init(const std::string& model_folder, size_t context_size, const std::string& system_prompt = "", bool do_warmup = true);
-    
-    virtual bool init(CactusGraph* external_graph, const std::string& model_folder, size_t context_size,
+    bool init(const std::string& bundle_dir, size_t context_size,
               const std::string& system_prompt = "", bool do_warmup = true);
 
-    virtual uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
-                      size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
-                      float min_p = 0.15f, float repetition_penalty = 1.1f);
+    uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
+                    size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                    float min_p = 0.15f, float repetition_penalty = 1.1f);
 
-    virtual void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "");
+    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "");
 
-    virtual void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
-                                     const std::string& profile_file = "");
+    void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
+                             const std::string& profile_file = "");
 
-    virtual uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
-                                          float temperature = -1.0f, float top_p = -1.0f,
-                                          size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
-                                          float min_p = 0.15f, float repetition_penalty = 1.1f);
+    void prefill_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+                            const std::string& profile_file = "");
 
-    virtual uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features, float temperature = 0.0f, float top_p = 0.0f,
-                      size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
-                      float min_p = 0.15f, float repetition_penalty = 1.1f,
-                      float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
+    void prefill_with_media(const std::vector<uint32_t>& tokens,
+                            const std::vector<std::string>& image_paths,
+                            const std::vector<float>& audio_features,
+                            const std::string& profile_file = "");
 
-    std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true, bool normalize = false, const std::string& profile_file = "");
-    
-    virtual std::vector<float> get_image_embeddings(const std::string& image_path);
-    
-    virtual std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features);
+    uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
+                                float temperature = -1.0f, float top_p = -1.0f,
+                                size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                                float min_p = 0.15f, float repetition_penalty = 1.1f);
 
-    virtual void reset_cache();
+    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+                               float temperature = 0.0f, float top_p = 0.0f,
+                               size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                               float min_p = 0.15f, float repetition_penalty = 1.1f,
+                               float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
+
+    std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features);
+    std::vector<uint32_t> transcribe_whisper_seq2seq(const std::vector<float>& audio_features,
+                                                     const std::vector<uint32_t>& decoder_prompt_tokens,
+                                                     size_t max_tokens,
+                                                     const std::vector<std::vector<uint32_t>>& stop_token_sequences,
+                                                     const std::atomic<bool>* should_stop = nullptr);
+
+    std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
+                                       bool normalize = false, const std::string& profile_file = "");
+
+    std::vector<float> get_image_embeddings(const std::string& image_path);
+
+    std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features);
+
+    void reset_cache();
     void record_sampled_token(uint32_t token) {
         if (token_history_.size() >= MAX_TOKEN_HISTORY) {
             token_history_.erase(token_history_.begin(), token_history_.begin() + (MAX_TOKEN_HISTORY / 2));
@@ -602,123 +627,249 @@ public:
         token_history_.push_back(token);
     }
 
-    virtual double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored);
-    virtual double score_tokens_cached_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end, size_t context, size_t* tokens_scored,
-                                                std::vector<float>* per_pos_logprob = nullptr,
-                                                std::vector<uint32_t>* per_pos_argmax = nullptr);
-
-
+    double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end,
+                                        size_t context, size_t* tokens_scored);
 
     void set_cache_window(size_t window_size, size_t sink_size = 4);
-    size_t get_cache_size() const;
+    size_t get_cache_size() const { return cache_total_seq_len_; }
 
     bool load_npu_prefill(const std::string& model_path);
-    bool has_npu_prefill() const;
-    size_t get_prefill_chunk_size() const;
+    bool has_npu_prefill() const { return false; }
+    size_t get_prefill_chunk_size() const { return 256; }
 
-    virtual void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
-    virtual void compact_kv_cache() {}
+    void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
+    void compact_kv_cache() {}
 
-    virtual void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
-    virtual void clear_tool_constraints();
-    virtual void update_tool_constraints(uint32_t token_id);
+    void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
+    void clear_tool_constraints();
+    void update_tool_constraints(uint32_t token_id);
 
-    void* graph_handle_;
-
-    void set_vocab_bias(const std::unordered_map<uint32_t, float>& bias) {
-        vocab_bias_ = bias;
-    }
-
-    void clear_vocab_bias() {
-        vocab_bias_.clear();
-    }
-
-    bool has_vocab_bias() const {
-        return !vocab_bias_.empty();
-    }
-
-    const std::unordered_map<uint32_t, float>& get_vocab_bias() const {
-        return vocab_bias_;
-    }
-
-protected:
-    size_t sample_token(CactusGraph* gb, size_t logits_node_id, float temperature, float top_p, size_t top_k,
-                        float min_p, float repetition_penalty,
-                        const std::unordered_map<uint32_t, float>* extra_bias = nullptr) const;
-
-    static void compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_entropy);
-
-    virtual size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) = 0;
-    
-    virtual size_t forward(const std::vector<float>& audio_features, const std::vector<uint32_t>& tokens, bool use_cache = false);
-    
-    virtual void load_weights_to_graph(CactusGraph* gb) = 0;
-    
-    virtual size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
-                          ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;
-    
-                          virtual size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
-                    ComputeBackend backend) const = 0;
-    virtual size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
-                                  ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) = 0;
-    virtual std::vector<size_t> get_kv_layer_dims() const {
-        return std::vector<size_t>(config_.num_layers, config_.attention_head_dim);
-    }
-    virtual std::vector<size_t> get_kv_layer_heads() const {
-        return std::vector<size_t>(config_.num_layers, config_.attention_kv_heads);
-    }
-    virtual std::vector<size_t> get_kv_layer_windows() const {
-        return std::vector<size_t>(config_.num_layers, 0);
-    }
-    virtual void post_init() {}
-    virtual void post_execute_updates(CactusGraph*, size_t) {}
-    Config config_;
-    std::unique_ptr<Tokenizer> tokenizer_;
-
-    bool initialized_;
-    float attention_scale_;
-
-protected:
-    std::vector<size_t> graph_cache_k_nodes_;
-    std::vector<size_t> graph_cache_v_nodes_;
-    size_t cache_total_seq_len_ = 0;
-    size_t cache_window_size_ = 0;
-    size_t cache_sink_size_ = 4;
-    size_t cache_max_seq_len_ = 2048;
-    size_t cache_tq_angle_bits_ = 8;
-    size_t cache_tq_k_bits_ = 8;
-    size_t cache_tq_v_bits_ = 8;
-    size_t cache_tq_seed_ = 42;
-    void init_graph_cache(CactusGraph* gb);
-    void invalidate_graph_cache(CactusGraph* gb);
-
-    std::string embedding_file_path_;
-    size_t embedding_node_id_;
-    std::string model_folder_path_;
-    size_t output_weight_node_id_;
-
-    mutable std::vector<DebugNode> debug_nodes_;
-
-    void capture_debug_node(uint32_t layer_idx, const std::string& name, size_t node_id) const;
-    void clear_debug_nodes();
-
-    bool init_internal(CactusGraph* gb, const std::string& model_folder, size_t context_size,
-                       const std::string& system_prompt, bool do_warmup);
-    bool owns_graph_;
-
-    std::unique_ptr<npu::NPUPrefill> npu_prefill_;
-    void prefill_npu(const std::vector<uint32_t>& tokens);
-    virtual std::vector<__fp16> get_token_embeddings(const std::vector<uint32_t>& tokens);
-
-    static constexpr size_t MAX_TOKEN_HISTORY = 128;
-    ToolCallConstrainer tool_constrainer_;
-    std::vector<uint32_t> token_history_;
+    void set_vocab_bias(const std::unordered_map<uint32_t, float>& bias) { vocab_bias_ = bias; }
+    void clear_vocab_bias() { vocab_bias_.clear(); }
+    bool has_vocab_bias() const { return !vocab_bias_.empty(); }
+    const std::unordered_map<uint32_t, float>& get_vocab_bias() const { return vocab_bias_; }
 
 private:
+    struct Binding {
+        int node_id = -1;
+        std::string path;
+    };
+
+    struct CacheStateEntry {
+        std::string layer_key;
+        int key_node_id = -1;
+        int value_node_id = -1;
+    };
+
+    struct Component {
+        std::string name;
+        std::string graph_path;
+        std::vector<int> runtime_input_node_ids;
+        std::vector<std::string> logical_inputs;
+        std::vector<int> output_node_ids;
+        std::vector<std::string> logical_outputs;
+        std::vector<Binding> bindings;
+        std::unique_ptr<CactusGraph> graph;
+        std::vector<std::vector<uint8_t>> input_buffers;
+        std::vector<CacheStateEntry> cache_states;
+    };
+
+    void copy_cache_state(const Component& src, Component& dst);
+    void reset_component_cache_states(Component& comp);
+
+    bool load_manifest();
+    bool setup_tokenizer();
+    bool load_components();
+    bool bind_runtime_buffers(Component& comp);
+    void run_step(uint32_t token_id, size_t position, bool read_logits);
+    void run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
+                        Precision feature_precision);
+    void copy_encoder_outputs_to_decoder(const Component& enc);
+    void write_int_input(Component& comp, const std::string& name, int64_t value);
+    void write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size);
+    int input_index(const Component& comp, const std::string& name) const;
+    int output_index(const Component& comp, const std::string& name) const;
+    uint32_t argmax_last_logits();
+    void run_vision_encoder(const std::string& image_path);
+    void run_audio_encoder(const std::vector<float>& audio_features);
+    bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
+                                const std::vector<std::string>& image_paths,
+                                const std::vector<float>& audio_features);
+    bool build_lm_encoder_outputs_dynamic_gemma4(
+        const std::vector<uint32_t>& tokens,
+        std::map<std::string, std::vector<uint8_t>>& store_bytes,
+        std::map<std::string, Precision>& store_prec,
+        std::map<std::string, std::vector<size_t>>& store_shape);
+
+    std::string bundle_dir_;
+    std::map<std::string, Component> components_;
+    Component* encoder_ = nullptr;
+    Component* decoder_ = nullptr;
+    Component* vision_encoder_ = nullptr;
+    Component* audio_encoder_ = nullptr;
+    Component* lm_encoder_media_step_ = nullptr;
+    Component* decoder_prefill_chunk_ = nullptr;
+    Component* lm_encoder_ = nullptr;
+    Component* lm_encoder_text_chunk_ = nullptr;
+    Component* lm_encoder_media_chunk_ = nullptr;
+
+    std::string family_;
+
+    std::map<std::string, std::vector<uint8_t>> media_features_;
+    std::map<std::string, std::vector<size_t>> media_feature_shapes_;
+    std::map<std::string, Precision> media_feature_precisions_;
+
+    Config config_;
+    std::unique_ptr<Tokenizer> tokenizer_;
+    bool initialized_ = false;
+    size_t cache_total_seq_len_ = 0;
+    size_t cache_max_seq_len_ = 4096;
+
+    static constexpr size_t MAX_TOKEN_HISTORY = 128;
+    std::vector<uint32_t> token_history_;
+
+    ToolCallConstrainer tool_constrainer_;
     std::unordered_map<uint32_t, float> vocab_bias_;
+
+    mutable std::vector<DebugNode> debug_nodes_;
+};
+
+class ConvCache {
+public:
+    struct CircularView {
+        const void* ptr1;
+        size_t len1;
+        const void* ptr2;
+        size_t len2;
+        size_t total_len;
+    };
+
+    void init(size_t layers, size_t hidden_dim, size_t window_len, Precision model_precision);
+    CircularView get_window(size_t layer) const;
+    void update(CactusGraph* gb, size_t layer, const size_t latest_token);
+    void reset();
+
+    bool is_empty() const { return num_layers == 0; }
+
+    size_t num_layers = 0;
+    size_t hidden_size = 0;
+    size_t window_size = 0;
+    Precision precision = Precision::FP32;
+    size_t element_size = 4;
+
+private:
+    struct LayerState {
+        std::vector<uint8_t> data;
+        size_t head = 0;
+        size_t count = 0;
+    };
+
+    std::vector<LayerState> layer_states;
+};
+
+class Siglip2Preprocessor {
+public:
+    struct Config {
+        int patch_size = 16;
+        int downsample_factor = 2;
+        int min_tiles = 2;
+        int max_tiles = 10;
+        bool use_thumbnail = true;
+        int min_image_tokens = 64;
+        int max_image_tokens = 256;
+        int max_num_patches = 1024;
+        int tile_size = 512;
+        float max_pixels_tolerance = 2.0f;
+        bool do_resize = true;
+        bool do_rescale = true;
+        bool do_normalize = true;
+        bool do_convert_rgb = true;
+        bool do_image_splitting = true;
+        float rescale_factor = 1.0f / 255.0f;
+        float image_mean[3] = {0.5f, 0.5f, 0.5f};
+        float image_std[3] = {0.5f, 0.5f, 0.5f};
+    };
+
+    struct PreprocessedImage {
+        std::vector<float> pixel_values;
+        std::vector<int> pixel_attention_mask;
+        std::vector<std::pair<int, int>> spatial_shapes;
+        std::vector<size_t> pixel_values_shape;
+        std::vector<size_t> pixel_attention_mask_shape;
+        std::vector<size_t> spatial_shapes_shape;
+        int num_patches_height;
+        int num_patches_width;
+        int actual_num_patches;
+        int num_tiles;
+        int patch_dim;
+        int max_patches_per_tile;
+        int image_rows;
+        int image_cols;
+        int image_height;
+        int image_width;
+        int tokens_per_tile;
+        int thumbnail_tokens;
+
+        ~PreprocessedImage();
+    };
+
+    struct SpatialShapeResult {
+        std::vector<std::pair<int, int>> shapes;
+        int grid_rows;
+        int grid_cols;
+    };
+
+    explicit Siglip2Preprocessor(const Config& config);
+    Siglip2Preprocessor();
+    ~Siglip2Preprocessor();
+
+    PreprocessedImage preprocess_from_file(const std::string& image_path);
+    PreprocessedImage preprocess_from_memory(const unsigned char* img_data, int width, int height, int channels);
+    SpatialShapeResult compute_spatial_shapes(int height, int width);
+
+private:
+    Config config_;
+
+    std::pair<int64_t, int64_t> compute_pixel_limits() const;
+    std::vector<unsigned char> convert_to_rgb(const unsigned char* img_data, int width, int height, int channels);
+    std::pair<int, int> smart_resize(int height, int width);
+    bool is_image_too_large(int height, int width);
+    std::pair<int, int> get_grid_layout(int height, int width);
+    std::pair<int, int> find_closest_aspect_ratio(float aspect_ratio, int width, int height);
+    std::vector<float> resize_image(const unsigned char* img_data, int src_width, int src_height,
+                                    int dst_width, int dst_height, int channels);
+    std::vector<float> normalize_image(const float* img_data, int width, int height, int channels);
+    std::vector<std::vector<float>> convert_image_to_patches(
+        const std::vector<float>& image, int width, int height, int channels, int patch_size);
+    PreprocessedImage pad_patches(const std::vector<std::vector<float>>& tile_patches,
+                                  const std::vector<std::pair<int, int>>& spatial_shapes,
+                                  int patch_dim,
+                                  int max_patches_per_tile);
+    int round_by_factor(int number, int factor);
 };
 
 std::unique_ptr<Model> create_model(const std::string& model_folder);
+
+struct Gemma4ImagePreprocessed {
+    std::vector<float> pixel_values;
+    std::vector<int64_t> pixel_position_ids;
+    size_t num_patches = 0;
+    size_t max_patches = 0;
+    size_t patch_dim = 0;
+};
+
+Gemma4ImagePreprocessed preprocess_gemma4_image(const std::string& image_path, const Config& config);
+
+struct Lfm2VlImagePreprocessed {
+    std::vector<float> pixel_values;
+    std::vector<int64_t> pixel_attention_mask;
+    std::pair<int, int> spatial_shape{0, 0};
+    size_t num_patches = 0;
+    size_t patch_dim = 0;
+    size_t max_num_patches = 0;
+};
+
+Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, const Config& config);
 
 
 struct SpectrogramConfig {

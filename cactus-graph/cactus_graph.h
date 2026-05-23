@@ -91,7 +91,7 @@ enum class OpType {
     ABS, POW, FLATTEN, VIEW,
     MATMUL, TRANSPOSE, RESHAPE, SLICE, GATHER, EMBEDDING,
     BILINEAR_INTERPOLATION,
-    SUM, MEAN, VARIANCE, MIN, MAX,
+    SUM, MEAN, VARIANCE, MIN, MAX, CUMSUM,
     RMS_NORM, ROPE, ROPE_GPTJ, SOFTMAX,
     ATTENTION, ATTENTION_INT8_HYBRID, REL_POS_BIAS,
     CONV1D_CAUSAL, CONV1D_K3, CONV1D_K7S3, CONV1D,
@@ -114,7 +114,9 @@ enum class OpType {
     RFFT, IRFFT, MEL_FILTER_BANK, SPECTROGRAM,
     IMAGE_PREPROCESS,
     CLAMP,
-    DENSE_MLP_TQ_FUSED
+    DENSE_MLP_TQ_FUSED,
+    NOT_EQUAL,
+    SCALAR_NOT_EQUAL
 };
 
 struct PrecisionTraits {
@@ -469,12 +471,14 @@ public:
     size_t subtract(size_t input1, size_t input2);
     size_t multiply(size_t input1, size_t input2);
     size_t divide(size_t input1, size_t input2);
+    size_t not_equal(size_t input1, size_t input2);
 
 
     size_t scalar_add(size_t input, float value);
     size_t scalar_subtract(size_t input, float value);
     size_t scalar_multiply(size_t input, float value);
     size_t scalar_divide(size_t input, float value);
+    size_t scalar_not_equal(size_t input, float value);
     size_t scalar_exp(size_t input);
     size_t scalar_sqrt(size_t input);
     size_t scalar_cos(size_t input);
@@ -501,6 +505,7 @@ public:
     size_t variance(size_t input, int axis);
     size_t min(size_t input, int axis);
     size_t max(size_t input, int axis);
+    size_t cumsum(size_t input, int axis);
     size_t softmax(size_t input, int axis = -1);
     size_t topk(size_t input, size_t k);
 
@@ -678,7 +683,7 @@ public:
         size_t num_experts, size_t num_experts_per_tok,
         bool normalize_routing, float epsilon, float routed_scaling_factor,
         Activation activation);
-    size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight);
+    size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale = 1.0f);
     size_t stats_pool(size_t input);
     size_t weighted_stats_pool(size_t input, size_t weights);
 
@@ -695,6 +700,9 @@ public:
     size_t embedding(size_t embedding_tensor, size_t indices);
     size_t mmap_embeddings(const std::string& filename);
     size_t mmap_weights(const std::string& filename);
+    void bind_mmap_weights(size_t node_id, const std::string& filename);
+    void mark_embedded_input(size_t node_id);
+    bool is_embedded_input(size_t node_id) const;
     void release_weight_pages(size_t node_id);
     void prefetch_weight_pages(size_t node_id);
     void release_all_weight_pages();
@@ -736,6 +744,7 @@ private:
     bool prefill_mode_ = false;
     std::unordered_set<size_t> persistent_node_ids_;
     std::unordered_set<size_t> populated_node_ids_;
+    std::unordered_set<size_t> embedded_input_node_ids_;
 };
 
 namespace GraphFile {
@@ -753,6 +762,8 @@ namespace GraphFile {
         std::vector<size_t> output_shape;
         Precision precision;
         OpParams params;
+        bool has_embedded_data = false;
+        std::vector<uint8_t> embedded_data;
     };
 
     struct SerializedGraph {
@@ -781,8 +792,8 @@ namespace GraphFile {
         size_t group_size() const { return group_size_; }
         size_t num_groups() const { return num_groups_; }
         const void* scales_data() const;
-        bool is_interleaved() const { return is_interleaved_; }
         bool is_orthogonal_rotation() const { return is_orthogonal_rotation_; }
+        bool is_interleaved_4row() const { return is_interleaved_4row_; }
         size_t original_N() const { return original_N_; }
         void* data();
         const void* data() const;
@@ -802,8 +813,8 @@ namespace GraphFile {
         size_t scales_offset_ = 0;
         size_t scales_bytes_ = 0;
         uint32_t alignment_ = 32;
-        bool is_interleaved_ = false;
         bool is_orthogonal_rotation_ = false;
+        bool is_interleaved_4row_ = false;
         size_t original_N_ = 0;
 
         void parse_header();

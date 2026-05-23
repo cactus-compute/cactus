@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <limits>
 #include <atomic>
+#include <iostream>
 
 namespace {
     thread_local std::vector<__fp16> transpose_buffer_fp16;
@@ -344,12 +345,94 @@ void compute_dense_mlp_tq_fused_node(GraphNode& node, const std::vector<std::uni
     CactusQuantMatrix gate_mat = gate_buffer.to_cq_matrix();
     CactusQuantMatrix up_mat = up_buffer.to_cq_matrix();
     CactusQuantMatrix down_mat = down_buffer.to_cq_matrix();
+    const bool use_safe_product_scale = node.params.scalar != 0.0f && node.params.scalar != 1.0f;
+    const bool trace_dense_mlp = std::getenv("CACTUS_TRACE_DENSE_MLP") != nullptr;
 
     cactus_quant_matmul(&gate_mat, hidden, static_cast<uint32_t>(M), gate);
     cactus_gelu_f16(gate, gate, inter_size);
+    float max_gate_abs = 0.0f;
+    size_t gate_nonfinite = 0;
+    if (use_safe_product_scale) {
+        const __fp16 scale = static_cast<__fp16>(node.params.scalar);
+        for (size_t i = 0; i < inter_size; ++i) {
+            float value = static_cast<float>(gate[i]);
+            if (!std::isfinite(value)) {
+                gate_nonfinite += 1;
+                value = std::copysign(65504.0f, value);
+            }
+            value *= static_cast<float>(scale);
+            max_gate_abs = std::max(max_gate_abs, std::abs(value));
+            gate[i] = static_cast<__fp16>(value);
+        }
+    }
     cactus_quant_matmul(&up_mat, hidden, static_cast<uint32_t>(M), up);
+    float max_up_abs = 0.0f;
+    size_t up_nonfinite = 0;
+    if (use_safe_product_scale) {
+        for (size_t i = 0; i < inter_size; ++i) {
+            float value = static_cast<float>(up[i]);
+            if (!std::isfinite(value)) {
+                up_nonfinite += 1;
+                value = std::copysign(65504.0f, value);
+            }
+            max_up_abs = std::max(max_up_abs, std::abs(value));
+            up[i] = static_cast<__fp16>(value);
+        }
+        const float product_bound = max_gate_abs * max_up_abs;
+        constexpr float kSafeHadamardProductBound = 1024.0f;
+        if (std::isfinite(product_bound) && product_bound > kSafeHadamardProductBound) {
+            const __fp16 extra_scale = static_cast<__fp16>(kSafeHadamardProductBound / product_bound);
+            for (size_t i = 0; i < inter_size; ++i) {
+                gate[i] = static_cast<__fp16>(gate[i] * extra_scale);
+            }
+            max_gate_abs *= static_cast<float>(extra_scale);
+        }
+    }
     cactus_multiply_f16(gate, up, prod, inter_size);
+    if (trace_dense_mlp) {
+        size_t prod_nonfinite = 0;
+        float max_prod_abs = 0.0f;
+        for (size_t i = 0; i < inter_size; ++i) {
+            float value = static_cast<float>(prod[i]);
+            if (!std::isfinite(value)) {
+                prod_nonfinite += 1;
+                continue;
+            }
+            max_prod_abs = std::max(max_prod_abs, std::abs(value));
+        }
+        std::cerr << "[cactus:dense_mlp] id=" << node.id
+                  << " scale=" << node.params.scalar
+                  << " gate_nonfinite=" << gate_nonfinite
+                  << " up_nonfinite=" << up_nonfinite
+                  << " prod_nonfinite=" << prod_nonfinite
+                  << " max_gate=" << max_gate_abs
+                  << " max_up=" << max_up_abs
+                  << " max_prod=" << max_prod_abs
+                  << " shape=[";
+        for (size_t i = 0; i < node.output_buffer.shape.size(); ++i) {
+            if (i) std::cerr << ",";
+            std::cerr << node.output_buffer.shape[i];
+        }
+        std::cerr << "]" << std::endl;
+    }
     cactus_quant_matmul(&down_mat, prod, static_cast<uint32_t>(M), output);
+    if (trace_dense_mlp) {
+        size_t output_nonfinite = 0;
+        float max_output_abs = 0.0f;
+        const size_t output_count = node.output_buffer.total_size;
+        for (size_t i = 0; i < output_count; ++i) {
+            float value = static_cast<float>(output[i]);
+            if (!std::isfinite(value)) {
+                output_nonfinite += 1;
+                continue;
+            }
+            max_output_abs = std::max(max_output_abs, std::abs(value));
+        }
+        std::cerr << "[cactus:dense_mlp_out] id=" << node.id
+                  << " output_nonfinite=" << output_nonfinite
+                  << " max_output=" << max_output_abs
+                  << std::endl;
+    }
 }
 
 void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -845,12 +928,6 @@ void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
         }
     }
 }
-
-
-
-
-
-
 
 
 

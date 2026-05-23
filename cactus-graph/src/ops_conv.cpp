@@ -5,6 +5,42 @@
 #include <stdexcept>
 #include <cmath>
 #include <algorithm>
+#include <string>
+
+namespace {
+std::vector<__fp16> dequantize_int8_weights_to_fp16(
+    const BufferDesc& W,
+    size_t rows,
+    size_t cols,
+    const char* op_name) {
+    const int8_t* W_int8 = W.data_as<int8_t>();
+    std::vector<__fp16> W_fp16(rows * cols);
+
+    if (W.group_size == 0 || W.activation_scales_data == nullptr) {
+        for (size_t i = 0; i < W_fp16.size(); ++i) {
+            W_fp16[i] = static_cast<__fp16>(W_int8[i]);
+        }
+        return W_fp16;
+    }
+
+    const size_t group_size = W.group_size;
+    if ((cols % group_size) != 0) {
+        throw std::runtime_error(std::string(op_name) + " grouped INT8 weight columns must be divisible by group size");
+    }
+
+    const __fp16* scales = reinterpret_cast<const __fp16*>(W.activation_scales_data);
+    const size_t num_groups = cols / group_size;
+    for (size_t row = 0; row < rows; ++row) {
+        for (size_t col = 0; col < cols; ++col) {
+            const size_t idx = row * cols + col;
+            const size_t group_idx = col / group_size;
+            const float scale = static_cast<float>(scales[row * num_groups + group_idx]);
+            W_fp16[idx] = static_cast<__fp16>(W_int8[idx] * scale);
+        }
+    }
+    return W_fp16;
+}
+}
 
 void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     if (node.params.backend == ComputeBackend::NPU) {
@@ -56,7 +92,17 @@ void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_p
     };
 
     if (W.precision == Precision::INT8) {
-        throw std::runtime_error("Conv requires FP16 weights");
+        auto W_fp16 = dequantize_int8_weights_to_fp16(W, W0, K, "conv1d_causal");
+        if (transposed_layout && !standard_layout) {
+            auto fixed = transpose_depthwise_weights_fp16(W_fp16.data());
+            cactus_conv1d_causal_depthwise_f16(
+                X.data_as<__fp16>(), fixed.data(), Y.data_as<__fp16>(),
+                N, L, C_in, K, dil);
+        } else {
+            cactus_conv1d_causal_depthwise_f16(
+                X.data_as<__fp16>(), W_fp16.data(), Y.data_as<__fp16>(),
+                N, L, C_in, K, dil);
+        }
     } else if (W.precision == Precision::FP16) {
         if (transposed_layout && !standard_layout) {
             auto fixed = transpose_depthwise_weights_fp16(W.data_as<__fp16>());
@@ -108,7 +154,13 @@ void compute_conv1d_k3_node(GraphNode& node, const std::vector<std::unique_ptr<G
     }
 
     if (W.precision == Precision::INT8) {
-        throw std::runtime_error("Conv requires FP16 weights");
+        auto W_fp16 = dequantize_int8_weights_to_fp16(W, C_out, C_in * K, "conv1d_k3");
+        cactus_conv1d_f16_k3(
+            X.data_as<__fp16>(),
+            W_fp16.data(),
+            Y.data_as<__fp16>(),
+            N, L, C_in, C_out, stride
+        );
     } else if (W.precision == Precision::FP16) {
         cactus_conv1d_f16_k3(
             X.data_as<__fp16>(),
@@ -150,8 +202,8 @@ void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         throw std::runtime_error("conv1d weight C_in mismatch");
     }
 
-    if (X.precision != Precision::FP16 || W.precision != Precision::FP16) {
-        throw std::runtime_error("Conv1d only supports FP16");
+    if (X.precision != Precision::FP16) {
+        throw std::runtime_error("Conv1d only supports FP16 activations");
     }
 
     const __fp16* bias_ptr = nullptr;
@@ -171,7 +223,18 @@ void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         }
     }
 
-    cactus_conv1d_f16(X.data_as<__fp16>(), W.data_as<__fp16>(), bias_ptr,
+    std::vector<__fp16> W_fp16;
+    const __fp16* W_ptr = nullptr;
+    if (W.precision == Precision::FP16) {
+        W_ptr = W.data_as<__fp16>();
+    } else if (W.precision == Precision::INT8) {
+        W_fp16 = dequantize_int8_weights_to_fp16(W, C_out, C_in * K, "conv1d");
+        W_ptr = W_fp16.data();
+    } else {
+        throw std::runtime_error("Conv1d only supports FP16/INT8 weights");
+    }
+
+    cactus_conv1d_f16(X.data_as<__fp16>(), W_ptr, bias_ptr,
                       Y.data_as<__fp16>(), N, L, C_in, C_out, K, stride);
 }
 
@@ -244,7 +307,19 @@ void compute_conv1d_same_depthwise_k9_node(GraphNode& node, const std::vector<st
         return;
     }
 
-    throw std::runtime_error("Conv requires FP16 weights");
+    if (W.precision == Precision::INT8) {
+        auto W_fp16 = dequantize_int8_weights_to_fp16(W, C, K, "conv1d_same_depthwise_k9");
+        cactus_conv1d_same_depthwise_f16_k9(
+            X.data_as<__fp16>(),
+            W_fp16.data(),
+            bias_ptr,
+            Y.data_as<__fp16>(),
+            N, L, C
+        );
+        return;
+    }
+
+    throw std::runtime_error("Conv requires FP16/INT8 weights");
 }
 
 void compute_conv2d_k3s2p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
@@ -306,7 +381,22 @@ void compute_conv2d_k3s2p1_node(GraphNode& node, const std::vector<std::unique_p
         return;
     }
 
-    throw std::runtime_error("Conv requires FP16 weights");
+    if (W.precision == Precision::INT8) {
+        if (W.shape.size() != 4) {
+            throw std::runtime_error("conv2d_k3s2p1 INT8 weight must be [C_out, C_in, 3, 3]");
+        }
+        auto W_fp16 = dequantize_int8_weights_to_fp16(W, C_out, C_in * 3 * 3, "conv2d_k3s2p1");
+        cactus_conv2d_f16_k3s2p1_nchw(
+            X.data_as<__fp16>(),
+            W_fp16.data(),
+            bias_ptr,
+            Y.data_as<__fp16>(),
+            N, C_in, H, W_in, C_out
+        );
+        return;
+    }
+
+    throw std::runtime_error("Conv requires FP16/INT8 weights");
 }
 
 void compute_conv2d_depthwise_k3s2p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
@@ -383,7 +473,19 @@ void compute_conv2d_depthwise_k3s2p1_node(GraphNode& node, const std::vector<std
         return;
     }
 
-    throw std::runtime_error("Conv requires FP16 weights");
+    if (W.precision == Precision::INT8) {
+        auto W_fp16 = dequantize_int8_weights_to_fp16(W, C, 3 * 3, "conv2d_depthwise_k3s2p1");
+        cactus_conv2d_depthwise_f16_k3s2p1_nchw(
+            X.data_as<__fp16>(),
+            W_fp16.data(),
+            bias_ptr,
+            Y.data_as<__fp16>(),
+            N, C, H, W_in
+        );
+        return;
+    }
+
+    throw std::runtime_error("Conv requires FP16/INT8 weights");
 }
 
 void compute_conv2d_pointwise_1x1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
@@ -461,7 +563,19 @@ void compute_conv2d_pointwise_1x1_node(GraphNode& node, const std::vector<std::u
         return;
     }
 
-    throw std::runtime_error("Conv requires FP16 weights");
+    if (W.precision == Precision::INT8) {
+        auto W_fp16 = dequantize_int8_weights_to_fp16(W, C_out, C_in, "conv2d_pointwise_1x1");
+        cactus_conv2d_pointwise_f16_1x1_nchw_gemm(
+            X.data_as<__fp16>(),
+            W_fp16.data(),
+            bias_ptr,
+            Y.data_as<__fp16>(),
+            N, C_in, H, W_in, C_out
+        );
+        return;
+    }
+
+    throw std::runtime_error("Conv requires FP16/INT8 weights");
 }
 
 void compute_conv1d_pointwise_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
@@ -535,7 +649,19 @@ void compute_conv1d_pointwise_node(GraphNode& node, const std::vector<std::uniqu
         return;
     }
 
-    throw std::runtime_error("Conv requires FP16 weights");
+    if (W.precision == Precision::INT8) {
+        auto W_fp16 = dequantize_int8_weights_to_fp16(W, C_out, C_in, "conv1d_pointwise");
+        cactus_conv1d_pointwise_f16_gemm(
+            X.data_as<__fp16>(),
+            W_fp16.data(),
+            bias_ptr,
+            Y.data_as<__fp16>(),
+            N, L, C_in, C_out
+        );
+        return;
+    }
+
+    throw std::runtime_error("Conv requires FP16/INT8 weights");
 }
 
 void compute_batchnorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
@@ -785,4 +911,3 @@ void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_p
 
     throw std::runtime_error("conv2d_k3s1p1 only supports FP16 weights");
 }
-

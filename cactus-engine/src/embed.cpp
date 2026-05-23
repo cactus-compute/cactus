@@ -19,6 +19,7 @@ static std::vector<float> compute_mel_from_wav(const std::string& wav_path, size
 
     int norm_type = is_v3 ? 1 : 1;
     int scale_type = is_v3 ? 2 : 2;
+    cactus::audio::pad_or_trim_whisper_waveform(waveform_16k);
     std::vector<float> mel = cactus::audio::compute_spectrogram_graph(
         waveform_16k, cfg, num_mel_filters, 0.0f, 8000.0f, 16000, norm_type, scale_type);
     if (mel.empty()) return mel;

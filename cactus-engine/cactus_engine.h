@@ -112,38 +112,6 @@ CACTUS_FFI_EXPORT int cactus_audio_embed(
     size_t* embedding_dim
 );
 
-CACTUS_FFI_EXPORT int cactus_vad(
-    cactus_model_t model,
-    const char* audio_file_path,
-    char* response_buffer,
-    size_t buffer_size,
-    const char* options_json,
-    const uint8_t* pcm_buffer,
-    size_t pcm_buffer_size
-);
-
-CACTUS_FFI_EXPORT int cactus_diarize(
-    cactus_model_t model,
-    const char* audio_file_path,
-    char* response_buffer,
-    size_t buffer_size,
-    const char* options_json,
-    const uint8_t* pcm_buffer,
-    size_t pcm_buffer_size
-);
-
-CACTUS_FFI_EXPORT int cactus_embed_speaker(
-    cactus_model_t model,
-    const char* audio_file_path,
-    char* response_buffer,
-    size_t buffer_size,
-    const char* options_json,
-    const uint8_t* pcm_buffer,
-    size_t pcm_buffer_size,
-    const float* mask_weights,
-    size_t mask_num_frames
-);
-
 CACTUS_FFI_EXPORT int cactus_rag_query(
     cactus_model_t model,
     const char* query,
@@ -241,6 +209,8 @@ CACTUS_FFI_EXPORT int cactus_graph_set_input(
 precision);
 CACTUS_FFI_EXPORT int cactus_graph_set_external_input(
     cactus_graph_t graph, cactus_node_t node, void* data, int32_t precision);
+CACTUS_FFI_EXPORT int cactus_graph_mark_embedded_input(
+    cactus_graph_t graph, cactus_node_t node);
 
 CACTUS_FFI_EXPORT int cactus_graph_precision_cast(
     cactus_graph_t graph, cactus_node_t input, int32_t target_precision, cactus_node_t* out);
@@ -255,11 +225,14 @@ CACTUS_FFI_EXPORT int cactus_graph_multiply(cactus_graph_t graph, cactus_node_t
 a, cactus_node_t b, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_divide(cactus_graph_t graph, cactus_node_t
 a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_not_equal(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_scalar_add(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_subtract(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_multiply(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_divide(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_not_equal(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_exp(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_sqrt(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_cos(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
@@ -292,6 +265,7 @@ CACTUS_FFI_EXPORT int cactus_graph_mean(cactus_graph_t graph, cactus_node_t x, i
 CACTUS_FFI_EXPORT int cactus_graph_variance(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_min(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_max(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_cumsum(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_concat(
     cactus_graph_t graph, cactus_node_t a, cactus_node_t b, int32_t axis,
@@ -312,6 +286,8 @@ CACTUS_FFI_EXPORT int cactus_graph_mmap_embeddings(
     cactus_graph_t graph, const char* filename, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_mmap_weights(
     cactus_graph_t graph, const char* filename, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_bind_mmap_weights(
+    cactus_graph_t graph, cactus_node_t node, const char* filename);
 CACTUS_FFI_EXPORT int cactus_graph_bilinear_interpolation(
     cactus_graph_t graph, cactus_node_t pos_embeds, size_t dst_height, size_t dst_width, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_release_weight_pages(cactus_graph_t graph, cactus_node_t node);

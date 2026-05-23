@@ -82,6 +82,15 @@ else
     echo -e "${YELLOW}Warning: requirements.txt not found${NC}"
 fi
 
+echo ""
+echo -e "${BLUE}Step 3b: Upgrading Transformers...${NC}"
+if python3 -m pip install --upgrade "transformers==5.5.4" -q; then
+    echo -e "${GREEN}✓ Transformers upgraded to 5.5.4${NC}"
+else
+    echo -e "${RED}Failed to upgrade Transformers${NC}"
+    return 1
+fi
+
 if [ -f "$PARENT_REQUIREMENTS" ] && [ "$PARENT_REQUIREMENTS" != "$REQUIREMENTS_FILE" ]; then
     echo ""
     echo -e "${BLUE}Detected parent repo requirements at: $PARENT_REQUIREMENTS${NC}"

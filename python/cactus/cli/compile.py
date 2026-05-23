@@ -1,0 +1,261 @@
+import subprocess
+import platform
+from pathlib import Path
+
+from .common import (
+    PROJECT_ROOT,
+    check_command,
+    run_command,
+    print_color,
+    RED, GREEN, YELLOW, BLUE,
+)
+
+
+def check_libcurl():
+    """Check if libcurl development libraries are installed."""
+    if platform.system() == 'Darwin':
+        return True
+
+    if check_command('pkg-config'):
+        result = subprocess.run(['pkg-config', '--exists', 'libcurl'], capture_output=True)
+        if result.returncode == 0:
+            return True
+
+    curl_paths = [
+        '/usr/include/curl/curl.h',
+        '/usr/include/x86_64-linux-gnu/curl/curl.h',
+        '/usr/include/aarch64-linux-gnu/curl/curl.h',
+        '/usr/local/include/curl/curl.h',
+    ]
+    for path in curl_paths:
+        if Path(path).exists():
+            return True
+
+    return False
+
+
+def _detect_sdl2() -> tuple[list[str], list[str]]:
+    """Detect SDL2 and return (compiler_flags, linker_flags)."""
+    is_darwin = platform.system() == "Darwin"
+
+    if is_darwin:
+        sdl2_check = subprocess.run(["brew", "list", "sdl2"], capture_output=True)
+        if sdl2_check.returncode == 0:
+            sdl2_prefix_result = subprocess.run(
+                ["brew", "--prefix", "sdl2"], capture_output=True, text=True,
+            )
+            if sdl2_prefix_result.returncode == 0:
+                sdl2_prefix = sdl2_prefix_result.stdout.strip()
+                return (
+                    ["-DHAVE_SDL2", f"-I{sdl2_prefix}/include", f"-I{sdl2_prefix}/include/SDL2"],
+                    [f"-L{sdl2_prefix}/lib", "-lSDL2"],
+                )
+    else:
+        sdl2_check = subprocess.run(["pkg-config", "--exists", "sdl2"], capture_output=True)
+        if sdl2_check.returncode == 0:
+            cflags = subprocess.run(["pkg-config", "--cflags", "sdl2"], capture_output=True, text=True)
+            libs = subprocess.run(["pkg-config", "--libs", "sdl2"], capture_output=True, text=True)
+            if cflags.returncode == 0 and libs.returncode == 0:
+                return (
+                    ["-DHAVE_SDL2"] + cflags.stdout.strip().split(),
+                    libs.stdout.strip().split(),
+                )
+
+    return [], []
+
+
+def build_binary(
+    name: str,
+    lib_path: Path,
+    *,
+    sdl2: tuple[list[str], list[str]] | None = None,
+) -> int:
+    """Compile a single C++ binary (chat or asr) against libcactus.a.
+
+    Handles darwin vs linux, vendored curl.
+    Pass *sdl2=(flags, link)* to reuse a prior detection; None re-detects.
+    Returns 0 on success.
+    """
+    tests_dir = PROJECT_ROOT / "cactus-engine" / "tests"
+    source = tests_dir / f"{name}.cpp"
+    build_dir = tests_dir / "build"
+    build_dir.mkdir(parents=True, exist_ok=True)
+
+    if not source.exists():
+        print_color(RED, f"Error: {name}.cpp not found at {source}")
+        return 1
+
+    is_darwin = platform.system() == "Darwin"
+    sdl2_flags, sdl2_link = sdl2 if sdl2 is not None else _detect_sdl2()
+
+    include_dirs = [PROJECT_ROOT]
+    if name == "chat":
+        include_dirs += [
+            PROJECT_ROOT / "cactus-engine",
+            PROJECT_ROOT / "cactus-graph",
+            PROJECT_ROOT / "cactus-kernels",
+        ]
+
+    print(f"Compiling {name}.cpp...")
+
+    if is_darwin:
+        vendored_curl = PROJECT_ROOT / "cactus-engine" / "libs" / "curl" / "lib" / "libcurl.a"
+        curl_link = [str(vendored_curl)] if vendored_curl.exists() else ["-lcurl"]
+        compiler = "clang++"
+        cmd = [
+            compiler, "-std=c++20", "-O3",
+            "-DACCELERATE_NEW_LAPACK",
+            *[f"-I{d}" for d in include_dirs],
+            *sdl2_flags,
+            str(source), str(lib_path),
+            "-o", name,
+            *curl_link,
+            "-framework", "Accelerate",
+            "-framework", "CoreML",
+            "-framework", "Foundation",
+            "-framework", "Security",
+            "-framework", "SystemConfiguration",
+            "-framework", "CFNetwork",
+            *sdl2_link,
+        ]
+    else:
+        compiler = "g++"
+        cmd = [
+            compiler, "-std=c++20", "-O3",
+            *[f"-I{d}" for d in include_dirs],
+            *sdl2_flags,
+            str(source), str(lib_path),
+            "-o", name,
+            "-lcurl", "-pthread",
+            *sdl2_link,
+        ]
+
+    if not check_command(compiler):
+        print_color(RED, f"Error: {compiler} is not installed")
+        return 1
+
+    result = subprocess.run(cmd, cwd=build_dir)
+    if result.returncode != 0:
+        print_color(RED, f"{name} build failed")
+        return 1
+
+    print_color(GREEN, f"Build complete: {build_dir / name}")
+    return 0
+
+
+def cmd_build(args):
+    """Build the Cactus library."""
+    if args.apple:
+        return _build_with_script("apple", "Building Cactus for Apple platforms")
+    if args.android:
+        return _build_with_script("android", "Building Cactus for Android")
+    if args.python:
+        return cmd_build_python()
+
+    print_color(BLUE, "Building Cactus library...")
+    print("=" * 24)
+
+    if not check_command('cmake'):
+        print_color(RED, "Error: CMake is not installed")
+        print("  macOS: brew install cmake")
+        print("  Ubuntu: sudo apt-get install cmake build-essential")
+        return 1
+
+    if not check_libcurl():
+        print_color(RED, "Error: libcurl development libraries not found")
+        print("  macOS: brew install curl")
+        print("  Ubuntu: sudo apt-get install libcurl4-openssl-dev")
+        return 1
+
+    cactus_dir = PROJECT_ROOT / "cactus"
+    lib_path = cactus_dir / "build" / "libcactus.a"
+
+    print_color(YELLOW, "Building Cactus library...")
+    build_script = cactus_dir / "build.sh"
+    if not build_script.exists():
+        print_color(RED, f"Error: build.sh not found at {build_script}")
+        return 1
+    result = run_command(str(build_script), cwd=cactus_dir, check=False)
+    if result.returncode != 0:
+        print_color(RED, "Failed to build cactus library")
+        return 1
+
+    sdl2 = _detect_sdl2()
+    if sdl2[0]:
+        print_color(GREEN, "SDL2 found - building with live audio support")
+    else:
+        print_color(YELLOW, "SDL2 not found - live mic recording will be disabled")
+        print_color(YELLOW, "Install SDL2 for live mic support: brew install sdl2 (macOS)")
+
+    rc = build_binary("chat", lib_path, sdl2=sdl2)
+    if rc != 0:
+        return rc
+
+    asr_cpp = PROJECT_ROOT / "cactus-engine" / "tests" / "asr.cpp"
+    if asr_cpp.exists():
+        rc = build_binary("asr", lib_path, sdl2=sdl2)
+        if rc != 0:
+            return rc
+
+    print_color(GREEN, "Cactus library built successfully!")
+    print(f"Library location: {lib_path}")
+
+    return 0
+
+
+def _build_with_script(subdir, title):
+    """Run a platform build.sh script from the given subdirectory."""
+    print_color(BLUE, f"{title}...")
+
+    if subdir == "apple" and platform.system() != "Darwin":
+        print_color(RED, "Error: Apple builds require macOS")
+        return 1
+
+    build_script = PROJECT_ROOT / subdir / "build.sh"
+    if not build_script.exists():
+        print_color(RED, f"Error: build.sh not found at {build_script}")
+        return 1
+
+    result = run_command(str(build_script), cwd=PROJECT_ROOT / subdir, check=False)
+    if result.returncode != 0:
+        print_color(RED, f"{title} failed")
+        return 1
+
+    print_color(GREEN, f"{title} complete!")
+    return 0
+
+
+def cmd_build_python():
+    """Build Cactus shared library for Python FFI."""
+    print_color(BLUE, "Building Cactus for Python...")
+
+    if not check_command('cmake'):
+        print_color(RED, "Error: CMake is not installed")
+        print("  macOS: brew install cmake")
+        print("  Ubuntu: sudo apt-get install cmake")
+        return 1
+
+    cactus_dir = PROJECT_ROOT / "cactus"
+    build_script = cactus_dir / "build.sh"
+    if not build_script.exists():
+        print_color(RED, f"Error: build.sh not found at {build_script}")
+        return 1
+
+    result = run_command(str(build_script), cwd=cactus_dir, check=False)
+    if result.returncode != 0:
+        print_color(RED, "Build failed")
+        return 1
+
+    if platform.system() == "Darwin":
+        lib_name = "libcactus.dylib"
+    else:
+        lib_name = "libcactus.so"
+
+    lib_path = cactus_dir / "build" / lib_name
+    if not lib_path.exists():
+        print_color(RED, f"Shared library not found at {lib_path}")
+        return 1
+
+    print_color(GREEN, "Python build complete!")
+    print(f"Library: {lib_path}")
+    return 0

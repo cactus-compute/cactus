@@ -518,6 +518,7 @@ PrefillResult do_prefill(
 ) {
     PrefillResult result = {};
     bool has_images = prompt.has_images();
+    bool has_audio = prompt.has_audio();
 
     result.was_prefix = prompt_context_matches(handle, prompt);
     result.was_exact_match = result.was_prefix &&
@@ -541,7 +542,22 @@ PrefillResult do_prefill(
     if (tokens_to_process.size() > 1) {
         std::vector<uint32_t> prefill_tokens(tokens_to_process.begin(), tokens_to_process.end() - 1);
         result.prefilled_count = prefill_tokens.size();
-        if (has_images) {
+        if (has_images && has_audio) {
+            std::vector<std::string> delta_image_paths;
+            if (result.was_prefix) {
+                size_t cached_image_count = 0;
+                for (const auto& msg_imgs : handle->processed_images) {
+                    cached_image_count += msg_imgs.size();
+                }
+                delta_image_paths.assign(
+                    prompt.image_paths.begin() + cached_image_count,
+                    prompt.image_paths.end()
+                );
+            } else {
+                delta_image_paths = prompt.image_paths;
+            }
+            handle->model->prefill_with_media(prefill_tokens, delta_image_paths, prompt.audio_features);
+        } else if (has_images) {
             std::vector<std::string> delta_image_paths;
             if (result.was_prefix) {
                 size_t cached_image_count = 0;
@@ -556,6 +572,8 @@ PrefillResult do_prefill(
                 delta_image_paths = prompt.image_paths;
             }
             handle->model->prefill_with_images(prefill_tokens, delta_image_paths);
+        } else if (has_audio) {
+            handle->model->prefill_with_audio(prefill_tokens, prompt.audio_features);
         } else {
             handle->model->prefill(prefill_tokens, handle->model->get_prefill_chunk_size());
         }
@@ -660,18 +678,11 @@ int cactus_complete(
         bool has_audio = prompt.has_audio();
         const bool has_gemma4_mixed_media = prompt.model_type == Config::ModelType::GEMMA4 && has_images && has_audio;
         auto decode_gemma4_mixed_media = [&](const std::vector<uint32_t>& tokens, float* out_entropy) -> uint32_t {
-            auto* gemma4_mm = dynamic_cast<Gemma4MmModel*>(handle->model.get());
-            if (!gemma4_mm) {
-                throw std::runtime_error("Gemma4 mixed-media decode requested on non-Gemma4 multimodal model");
-            }
-            return gemma4_mm->decode_with_media(
-                tokens,
-                prompt.image_paths,
-                prompt.audio_features,
-                prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
-                "", out_entropy,
-                prompt.options.min_p, prompt.options.repetition_penalty
-            );
+            (void)tokens;
+            (void)out_entropy;
+            throw std::runtime_error(
+                "Gemma4 mixed-media native decode is not present in this build. "
+                "Use cactus run-transpiled for transpiled graph bundles.");
         };
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
@@ -701,13 +712,6 @@ int cactus_complete(
         if (has_gemma4_mixed_media) {
             prompt_tokens = prompt.tokens.size();
             next_token = decode_gemma4_mixed_media(prompt.tokens, &first_token_entropy);
-        } else if (has_audio) {
-            prompt_tokens = prompt.tokens.size();
-            next_token = handle->model->decode_with_audio(
-                prompt.tokens, prompt.audio_features,
-                prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
-                "", &first_token_entropy,
-                prompt.options.min_p, prompt.options.repetition_penalty);
         } else {
             auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
             prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
@@ -827,10 +831,6 @@ int cactus_complete(
 
         if (prompt.model_type == Config::ModelType::GEMMA4 && prompt.options.enable_thinking_if_supported && !generated_tokens.empty()) {
             strip_thinking_from_cache(handle, generated_tokens, prompt.tokens.size());
-        }
-
-        if (prompt.model_type == Config::ModelType::GEMMA4) {
-            handle->model->compact_kv_cache();
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();

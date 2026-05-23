@@ -21,7 +21,7 @@ We will acknowledge receipt within 48 hours and aim to provide a fix or mitigati
 
 ## Scope
 
-This policy covers the Cactus inference engine, its SDKs (Python, Swift, Kotlin, Flutter, Rust, React Native), and the official model weights hosted on [HuggingFace](https://huggingface.co/Cactus-Compute).
+This policy covers the Cactus inference engine, its bindings (Python, Swift, Kotlin, Flutter, Rust, React Native), and the official model weights hosted on [HuggingFace](https://huggingface.co/Cactus-Compute).
 
 ## Supported Versions
 
