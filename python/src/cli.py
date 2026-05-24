@@ -623,6 +623,7 @@ def cmd_download(args):
                 or model_type == 'youtu'
                 or 'gemma4' in model_type
                 or 'gemma3n' in model_type
+                or model_type == 'openai_privacy_filter'
             ):
                 if model_type == 'lfm2_moe':
                     print("  Note: Loading raw checkpoint tensors for lfm2_moe conversion...")

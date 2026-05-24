@@ -549,6 +549,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (value == "youtu" || value == "YOUTU") model_type = ModelType::YOUTU;
             else if (value == "pyannote" || value == "PYANNOTE") model_type = ModelType::PYANNOTE;
             else if (value == "wespeaker" || value == "WESPEAKER") model_type = ModelType::WESPEAKER;
+            else if (value == "opf" || value == "OPF" || value == "openai_privacy_filter") model_type = ModelType::OPF;
             else model_type = ModelType::QWEN;
         }
         else if (key == "model_variant") {
@@ -607,6 +608,9 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "rope_interleave") rope_interleave = (value == "true" || value == "1");
         else if (key == "attention_bias") attention_bias = (value == "true" || value == "1");
         else if (key == "rope_scaling_factor") rope_scaling_factor = std::stof(value);
+        else if (key == "rope_beta_fast") rope_beta_fast = std::stof(value);
+        else if (key == "rope_beta_slow") rope_beta_slow = std::stof(value);
+        else if (key == "rope_original_max_position_embeddings") rope_original_ctx = static_cast<uint32_t>(std::stoul(value));
         else if (key == "rope_mscale_all_dim") rope_mscale_all_dim = std::stof(value);
         else if (key == "linear_k_proj_dim") linear_k_proj_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "linear_v_proj_dim") linear_v_proj_dim = static_cast<uint32_t>(std::stoul(value));
@@ -632,6 +636,18 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "hidden_size_per_layer_input") hidden_size_per_layer_input = static_cast<uint32_t>(std::stoul(value));
         else if (key == "num_kv_shared_layers") num_kv_shared_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "sliding_window") sliding_window = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_labels") num_labels = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "label_names") {
+            label_names.clear();
+            size_t start = 0;
+            while (start < value.size()) {
+                size_t end = value.find(',', start);
+                std::string tok = value.substr(start, (end == std::string::npos ? value.size() : end) - start);
+                if (!tok.empty()) label_names.push_back(tok);
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+        }
         else if (key == "rope_local_base_freq") rope_local_base_freq = std::stof(value);
         else if (key == "final_logit_softcapping") final_logit_softcapping = std::stof(value);
         else if (key == "global_partial_rotary_factor") global_partial_rotary_factor = std::stof(value);
@@ -813,6 +829,8 @@ std::unique_ptr<Model> create_model(const std::string& model_folder) {
             return std::make_unique<PyAnnoteModel>(config);
         case Config::ModelType::WESPEAKER:
             return std::make_unique<WeSpeakerModel>(config);
+        case Config::ModelType::OPF:
+            return std::make_unique<OPFModel>(config);
         default:
             return std::make_unique<QwenModel>(config);
     }

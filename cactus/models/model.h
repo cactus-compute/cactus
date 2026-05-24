@@ -1769,6 +1769,84 @@ private:
     std::vector<float> mask_buf_;
 };
 
+class OPFModel : public Model {
+public:
+    OPFModel();
+    explicit OPFModel(const Config& config);
+    ~OPFModel() override = default;
+
+    struct Span {
+        size_t token_start;
+        size_t token_end;
+        std::string label;
+    };
+
+    std::vector<Span> classify(const std::string& text);
+
+protected:
+    size_t build_attention(CactusGraph* gb, size_t normalized_input, uint32_t layer_idx,
+                           ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t build_mlp(CactusGraph* gb, size_t normalized_h, uint32_t layer_idx,
+                     ComputeBackend backend) const override;
+
+    size_t build_transformer_block(CactusGraph* gb, size_t hidden, uint32_t layer_idx,
+                                   ComputeBackend backend, bool use_cache = false, size_t position_offset = 0) override;
+
+    size_t forward(const std::vector<uint32_t>& tokens, bool use_cache = false) override;
+
+    void load_weights_to_graph(CactusGraph* gb) override;
+
+    void post_init() override;
+
+private:
+    size_t build_bidirectional_band_mask(CactusGraph* gb, size_t seq_len) const;
+    std::vector<int> viterbi_decode(const float* logits, size_t seq_len, size_t num_classes) const;
+
+    struct LabelTables {
+        std::vector<std::string> class_names;
+        std::vector<int> token_to_span_label;
+        std::vector<char> token_boundary_tag;
+        std::vector<std::string> span_class_names;
+        int background_token_idx = 0;
+    } label_tables_;
+
+    std::vector<float> crf_start_scores_;
+    std::vector<float> crf_end_scores_;
+    std::vector<float> crf_transition_scores_;
+
+    void rebuild_crf_tables();
+
+    struct WeightNodeIDs {
+        size_t classifier_weight = 0;
+        size_t classifier_bias = 0;
+
+        struct LayerWeights {
+            size_t attn_q_weight = 0;
+            size_t attn_k_weight = 0;
+            size_t attn_v_weight = 0;
+            size_t attn_output_weight = 0;
+            size_t attn_q_bias = 0;
+            size_t attn_k_bias = 0;
+            size_t attn_v_bias = 0;
+            size_t attn_output_bias = 0;
+            size_t attn_sinks = 0;
+            size_t input_norm_weight = 0;
+            size_t post_attn_norm_weight = 0;
+            size_t moe_router_weight = 0;
+            size_t moe_router_bias = 0;
+            std::vector<size_t> expert_w1_weight;
+            std::vector<size_t> expert_w3_weight;
+            std::vector<size_t> expert_w2_weight;
+            std::vector<size_t> expert_w1_bias;
+            std::vector<size_t> expert_w3_bias;
+            std::vector<size_t> expert_w2_bias;
+        };
+        std::vector<LayerWeights> layers;
+        size_t output_norm_weight = 0;
+    } weight_nodes_;
+};
+
 }
 }
 

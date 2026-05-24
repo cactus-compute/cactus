@@ -115,6 +115,8 @@ def detect_model_type(cfg, config, output_dir=None):
         return 'whisper'
     elif 'parakeet' in model_type_str:
         return 'parakeet'
+    elif 'openai_privacy_filter' in model_type_str or 'opf' == model_type_str:
+        return 'opf'
     else:
         if model_type_str:
             print(f"  Warning: Unknown model type '{model_type_str}', defaulting to 'qwen'")
@@ -436,6 +438,27 @@ def extract_complex_gemma_config(cfg, root_config):
     if activation_sparsity_ppf:
         result['activation_sparsity_ppf'] = activation_sparsity_ppf
     return result
+
+def extract_opf_config(cfg, config):
+    rope_params = cfg_get(cfg, 'rope_parameters', {}) or {}
+    id2label = cfg_get(cfg, 'id2label', {}) or {}
+    num_labels = len(id2label) if id2label else int(cfg_get(cfg, 'num_labels', 0))
+    if id2label:
+        label_names = [id2label[str(i)] if str(i) in id2label else id2label.get(i, '') for i in range(num_labels)]
+    else:
+        label_names = []
+    return {
+        'num_labels': int(num_labels),
+        'label_names': ','.join(label_names),
+        'num_experts': int(cfg_get(cfg, 'num_local_experts', 0)),
+        'num_experts_per_tok': int(cfg_get(cfg, 'num_experts_per_tok', 0)),
+        'sliding_window': int(cfg_get(cfg, 'sliding_window', 0)),
+        'rope_scaling_factor': float(cfg_get(rope_params, 'factor', 1.0)),
+        'rope_beta_fast': float(cfg_get(rope_params, 'beta_fast', 32.0)),
+        'rope_beta_slow': float(cfg_get(rope_params, 'beta_slow', 1.0)),
+        'rope_original_max_position_embeddings': int(cfg_get(rope_params, 'original_max_position_embeddings', 4096)),
+    }
+
 
 def extract_audio_config(config, audio_cfg):
     """Extract audio encoder configuration for multimodal models."""

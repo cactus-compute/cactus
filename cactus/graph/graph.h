@@ -117,7 +117,8 @@ enum class Activation {
     GELU_ERF,
     RELU,
     SIGMOID,
-    TANH
+    TANH,
+    OPENAI_GLU
 };
 
 enum class OpType {
@@ -354,8 +355,15 @@ struct OpParams {
     bool normalize_routing = false;
     size_t num_experts = 0;
     size_t num_experts_per_tok = 0;
-    bool moe_gated = true; 
+    bool moe_gated = true;
     Activation activation = Activation::SILU;
+    bool moe_has_biases = false;
+    float swiglu_alpha = 1.702f;
+    float swiglu_limit = 7.0f;
+    float rope_scaling_factor = 1.0f;
+    float rope_beta_fast = 32.0f;
+    float rope_beta_slow = 1.0f;
+    size_t rope_original_ctx = 0;
 
     std::vector<float> bias_values;
     std::vector<uint32_t> bias_indices;
@@ -582,9 +590,24 @@ public:
                      float epsilon,
                      float routed_scaling_factor,
                      Activation activation);
+    size_t moe_layer_openai(size_t hidden,
+                            size_t routing_probs,
+                            size_t topk_indices,
+                            const std::vector<size_t>& w1_weights,
+                            const std::vector<size_t>& w3_weights,
+                            const std::vector<size_t>& w2_weights,
+                            const std::vector<size_t>& w1_biases,
+                            const std::vector<size_t>& w3_biases,
+                            const std::vector<size_t>& w2_biases,
+                            size_t num_experts,
+                            size_t num_experts_per_tok);
     size_t rms_norm(size_t input, size_t weight, float epsilon = 1e-5f);
     size_t rope(size_t input, float theta, size_t position_offset = 0, ComputeBackend backend = ComputeBackend::CPU);
     size_t rope_gptj(size_t input, float theta, size_t position_offset = 0, size_t rot_dim = 0, ComputeBackend backend = ComputeBackend::CPU);
+    size_t rope_gptj_yarn(size_t input, float theta, float scaling_factor,
+                          float beta_fast, float beta_slow, size_t original_ctx,
+                          size_t position_offset = 0, size_t rot_dim = 0,
+                          ComputeBackend backend = ComputeBackend::CPU);
     size_t softmax(size_t input, int axis = -1);
     size_t attention(size_t query, size_t key, size_t value, float scale, bool is_causal = true, ComputeBackend backend = ComputeBackend::CPU);
     size_t attention(size_t query, size_t key, size_t value, float scale, size_t position_offset, ComputeBackend backend = ComputeBackend::CPU);
@@ -592,7 +615,7 @@ public:
     size_t attention_masked(size_t query, size_t key, size_t value, size_t mask, float scale,
                             bool is_causal = true, ComputeBackend backend = ComputeBackend::CPU,
                             bool additive_mask = false, size_t position_offset = 0, size_t window_size = 0,
-                            float logit_cap = 0.0f);
+                            float logit_cap = 0.0f, size_t sinks = 0);
     size_t rel_pos_bias(size_t query, size_t relative_key, float scale);
 
     size_t attention_int8_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,

@@ -141,6 +141,12 @@ WHISPER_GLOBAL_WEIGHTS = [
 ]
 
 
+OPF_GLOBAL_WEIGHTS = [
+    ('score.weight', 'classifier.weights'),
+    ('score.bias', 'classifier.bias'),
+]
+
+
 NEEDLE_GLOBAL_WEIGHTS = [
     ('embedding.embedding',              'token_embeddings.weights',          False),
     ('embedding.embedding',              'output_weight.weights',             False),
@@ -193,6 +199,7 @@ def get_layer_weight_patterns(i, precision, model_type=None, skip_kv=False):
     is_whisper = model_type == 'whisper'
     is_qwen_family = isinstance(model_type, str) and ('qwen' in model_type)
     is_youtu = model_type == 'youtu'
+    is_opf = model_type == 'opf' or model_type == 'openai_privacy_filter'
 
     patterns = [
         # Youtu MLA attention weights
@@ -206,6 +213,13 @@ def get_layer_weight_patterns(i, precision, model_type=None, skip_kv=False):
         (['self_attn.k_proj.weight', 'attn.k_proj.weight'], precision, f'layer_{i}_attn_k.weights', False) if not is_whisper and not skip_kv and not is_youtu else None,
         (['self_attn.v_proj.weight', 'attn.v_proj.weight'], precision, f'layer_{i}_attn_v.weights', False) if not is_whisper and not skip_kv and not is_youtu else None,
         (['self_attn.o_proj.weight', 'attn.o_proj.weight', 'attn.c_proj.weight', 'self_attn.out_proj.weight'], precision, f'layer_{i}_attn_output.weights', False) if not is_whisper else None,
+        (['self_attn.sinks'], 'FP16', f'layer_{i}_attn_sinks.weights', False) if is_opf else None,
+        (['self_attn.q_proj.bias'], precision, f'layer_{i}_attn_q.bias', False) if is_opf else None,
+        (['self_attn.k_proj.bias'], precision, f'layer_{i}_attn_k.bias', False) if is_opf else None,
+        (['self_attn.v_proj.bias'], precision, f'layer_{i}_attn_v.bias', False) if is_opf else None,
+        (['self_attn.o_proj.bias'], precision, f'layer_{i}_attn_output.bias', False) if is_opf else None,
+        (['mlp.router.weight'], precision, f'layer_{i}_moe_router.weights', False) if is_opf else None,
+        (['mlp.router.bias'], precision, f'layer_{i}_moe_router.bias', False) if is_opf else None,
         # Qwen3.5 linear-attention path
         (['linear_attn.in_proj_qkv.weight'], precision, f'layer_{i}_linear_attn_qkv.weights', False) if is_qwen_family else None,
         (['linear_attn.in_proj_a.weight'], precision, f'layer_{i}_linear_attn_a.weights', False) if is_qwen_family else None,

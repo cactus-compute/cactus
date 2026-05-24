@@ -346,10 +346,15 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     const float routed_scaling_factor = node.params.scalar;
     const bool gated = node.params.moe_gated;
     const Activation activation = node.params.activation;
+    const bool has_biases = node.params.moe_has_biases;
     const size_t base_inputs = gated ? (3 + 3 * num_experts) : (3 + 2 * num_experts);
-    bool has_per_expert_scale = node.input_ids.size() == base_inputs + 1;
-    if (node.input_ids.size() != base_inputs && node.input_ids.size() != base_inputs + 1) {
-        throw std::runtime_error("moe_layer expects " + std::to_string(base_inputs) + " or " + std::to_string(base_inputs + 1) + " inputs, got " + std::to_string(node.input_ids.size()));
+    const size_t with_biases_inputs = has_biases ? (base_inputs + 3 * num_experts) : base_inputs;
+    bool has_per_expert_scale = node.input_ids.size() == with_biases_inputs + 1;
+    if (node.input_ids.size() != with_biases_inputs && node.input_ids.size() != with_biases_inputs + 1) {
+        throw std::runtime_error("moe_layer expects " + std::to_string(with_biases_inputs) + " or " + std::to_string(with_biases_inputs + 1) + " inputs, got " + std::to_string(node.input_ids.size()));
+    }
+    if (has_biases && !gated) {
+        throw std::runtime_error("moe_layer per-expert biases require the gated path");
     }
 
     const auto& hidden_buffer = get_input(node, 0, nodes, node_index_map);
@@ -467,29 +472,53 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         moe_matmul(compact_hidden, selected_count, hidden_dim, w1_buffer, gate, expert_intermediate_dim);
         const bool w1_was_int8 = w1_buffer.is_grouped_int8();
 
-        switch (activation) {
-            case Activation::GELU:
-                cactus_gelu_f16(gate, gate, selected_count * expert_intermediate_dim);
-                break;
-            case Activation::GELU_ERF:
-                cactus_gelu_f16_erf(gate, gate, selected_count * expert_intermediate_dim);
-                break;
-            case Activation::RELU:
-                cactus_relu_f16(gate, gate, selected_count * expert_intermediate_dim);
-                break;
-            case Activation::SILU:
-            default:
-                cactus_silu_f16(gate, gate, selected_count * expert_intermediate_dim);
-                break;
+        if (has_biases) {
+            const auto& w1_bias_buf = get_input(node, base_inputs + 0 * num_experts + expert_idx, nodes, node_index_map);
+            cactus_add_bias_rows_f16(gate, selected_count, expert_intermediate_dim, w1_bias_buf.data_as<__fp16>());
         }
 
-        if (gated) {
+        if (activation == Activation::OPENAI_GLU) {
             const auto& w3_buffer = get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map);
             moe_matmul(compact_hidden, selected_count, hidden_dim, w3_buffer, up, expert_intermediate_dim, w1_was_int8);
-            cactus_multiply_f16(gate, up, gate, selected_count * expert_intermediate_dim);
+            if (has_biases) {
+                const auto& w3_bias_buf = get_input(node, base_inputs + 1 * num_experts + expert_idx, nodes, node_index_map);
+                cactus_add_bias_rows_f16(up, selected_count, expert_intermediate_dim, w3_bias_buf.data_as<__fp16>());
+            }
+            cactus_openai_glu_merge_f16(gate, up, selected_count * expert_intermediate_dim,
+                                        node.params.swiglu_alpha, node.params.swiglu_limit);
+        } else {
+            switch (activation) {
+                case Activation::GELU:
+                    cactus_gelu_f16(gate, gate, selected_count * expert_intermediate_dim);
+                    break;
+                case Activation::GELU_ERF:
+                    cactus_gelu_f16_erf(gate, gate, selected_count * expert_intermediate_dim);
+                    break;
+                case Activation::RELU:
+                    cactus_relu_f16(gate, gate, selected_count * expert_intermediate_dim);
+                    break;
+                case Activation::SILU:
+                default:
+                    cactus_silu_f16(gate, gate, selected_count * expert_intermediate_dim);
+                    break;
+            }
+
+            if (gated) {
+                const auto& w3_buffer = get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map);
+                moe_matmul(compact_hidden, selected_count, hidden_dim, w3_buffer, up, expert_intermediate_dim, w1_was_int8);
+                if (has_biases) {
+                    const auto& w3_bias_buf = get_input(node, base_inputs + 1 * num_experts + expert_idx, nodes, node_index_map);
+                    cactus_add_bias_rows_f16(up, selected_count, expert_intermediate_dim, w3_bias_buf.data_as<__fp16>());
+                }
+                cactus_multiply_f16(gate, up, gate, selected_count * expert_intermediate_dim);
+            }
         }
 
         moe_matmul(gate, selected_count, expert_intermediate_dim, w2_buffer, expert_out, hidden_dim);
+        if (has_biases) {
+            const auto& w2_bias_buf = get_input(node, base_inputs + 2 * num_experts + expert_idx, nodes, node_index_map);
+            cactus_add_bias_rows_f16(expert_out, selected_count, hidden_dim, w2_bias_buf.data_as<__fp16>());
+        }
 
         for (size_t i = 0; i < selected_count; ++i) {
             const size_t tok = selected_tokens[i];
@@ -840,8 +869,8 @@ void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<G
         throw std::runtime_error("NPU attention operation not yet implemented");
     }
 
-    if (node.input_ids.size() < 3 || node.input_ids.size() > 4) {
-        throw std::runtime_error("Attention operation requires 3 or 4 inputs (query, key, value[, mask]), got " +
+    if (node.input_ids.size() < 3 || node.input_ids.size() > 5) {
+        throw std::runtime_error("Attention operation requires 3-5 inputs (query, key, value[, mask[, sinks]]), got " +
                                 std::to_string(node.input_ids.size()) + " inputs");
     }
 
@@ -849,8 +878,15 @@ void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<G
     const auto& key_buffer = get_input(node, 1, nodes, node_index_map);
     const auto& value_buffer = get_input(node, 2, nodes, node_index_map);
     const BufferDesc* mask_buffer = nullptr;
-    if (node.input_ids.size() == 4) {
+    const BufferDesc* sinks_buffer = nullptr;
+    if (node.input_ids.size() >= 4) {
         mask_buffer = &get_input(node, 3, nodes, node_index_map);
+    }
+    if (node.input_ids.size() == 5) {
+        sinks_buffer = &get_input(node, 4, nodes, node_index_map);
+        if (sinks_buffer->precision != Precision::FP16) {
+            throw std::runtime_error("Attention sinks tensor must be FP16");
+        }
     }
     const auto& q_shape = query_buffer.shape;
     const auto& k_shape = key_buffer.shape;
@@ -901,11 +937,13 @@ void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<G
         mask_ptr = mask_buffer->data_as<__fp16>();
     }
 
+    const __fp16* sinks_ptr = sinks_buffer ? sinks_buffer->data_as<__fp16>() : nullptr;
     cactus_attention_f16(query_buffer.data_as<__fp16>(), key_buffer.data_as<__fp16>(),
                          value_buffer.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
                          batch_size, seq_len, kv_seq_len, num_q_heads, num_kv_heads, head_dim, node.params.scale, mask_ptr,
                          node.params.position_offset, node.params.window_size, node.params.is_causal,
-                         node.params.attention_mask_is_additive, mask_per_head, v_head_dim, node.params.logit_cap);
+                         node.params.attention_mask_is_additive, mask_per_head, v_head_dim, node.params.logit_cap,
+                         sinks_ptr);
 }
 
 void compute_attention_int8_hybrid_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -2173,6 +2211,16 @@ void compute_rope_gptj_node(GraphNode& node, const std::vector<std::unique_ptr<G
     size_t num_heads = shape[2];
     size_t head_dim = shape[3];
     size_t rot_dim = static_cast<size_t>(node.params.scalar);
+
+    if (node.params.rope_scaling_factor > 1.0f && node.params.rope_original_ctx > 0) {
+        cactus_gpt_j_yarn_rope_f16(input_buffer.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
+                                   batch_size, seq_len, num_heads, head_dim, rot_dim,
+                                   node.params.position_offset, node.params.theta,
+                                   node.params.rope_scaling_factor,
+                                   node.params.rope_beta_fast, node.params.rope_beta_slow,
+                                   node.params.rope_original_ctx);
+        return;
+    }
 
     cactus_gpt_j_rope_f16(input_buffer.data_as<__fp16>(), node.output_buffer.data_as<__fp16>(),
                           batch_size, seq_len, num_heads, head_dim, rot_dim,

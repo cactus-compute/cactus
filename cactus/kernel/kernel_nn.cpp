@@ -922,3 +922,64 @@ void cactus_sample_f16_ex(const __fp16* logits, uint32_t* output, size_t vocab_s
 
     output[0] = 0;
 }
+
+
+
+void cactus_add_bias_rows_f16(__fp16* dst, size_t rows, size_t cols, const __fp16* bias) {
+    constexpr size_t SIMD_WIDTH = 8;
+    const size_t vec_cols = (cols / SIMD_WIDTH) * SIMD_WIDTH;
+    CactusThreading::parallel_for(rows, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t start, size_t end) {
+            for (size_t r = start; r < end; ++r) {
+                __fp16* row = dst + r * cols;
+                for (size_t c = 0; c < vec_cols; c += SIMD_WIDTH) {
+                    float16x8_t v = vld1q_f16(&row[c]);
+                    float16x8_t b = vld1q_f16(&bias[c]);
+                    vst1q_f16(&row[c], vaddq_f16(v, b));
+                }
+                for (size_t c = vec_cols; c < cols; ++c) {
+                    row[c] = static_cast<__fp16>(static_cast<float>(row[c]) + static_cast<float>(bias[c]));
+                }
+            }
+        });
+}
+
+void cactus_openai_glu_merge_f16(__fp16* gate, const __fp16* up, size_t num_elements,
+                                 float alpha, float limit) {
+    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t start, size_t end) {
+            constexpr size_t SIMD_WIDTH = 8;
+            const size_t vec_end = start + ((end - start) / SIMD_WIDTH) * SIMD_WIDTH;
+            const float16x8_t limit_vec = vdupq_n_f16(static_cast<__fp16>(limit));
+            const float16x8_t neg_limit_vec = vdupq_n_f16(static_cast<__fp16>(-limit));
+            const float16x8_t one_vec = vdupq_n_f16(static_cast<__fp16>(1.0f));
+            const float32x4_t one_f32 = vdupq_n_f32(1.0f);
+            const float32x4_t alpha_f32 = vdupq_n_f32(alpha);
+
+            for (size_t i = start; i < vec_end; i += SIMD_WIDTH) {
+                float16x8_t g = vminq_f16(vld1q_f16(&gate[i]), limit_vec);
+                float16x8_t u = vminq_f16(vmaxq_f16(vld1q_f16(&up[i]), neg_limit_vec), limit_vec);
+
+                float32x4_t g_lo = vcvt_f32_f16(vget_low_f16(g));
+                float32x4_t g_hi = vcvt_f32_f16(vget_high_f16(g));
+                float32x4_t s_lo = fast_exp_f32x4(vnegq_f32(vmulq_f32(alpha_f32, g_lo)));
+                float32x4_t s_hi = fast_exp_f32x4(vnegq_f32(vmulq_f32(alpha_f32, g_hi)));
+                s_lo = vdivq_f32(one_f32, vaddq_f32(one_f32, s_lo));
+                s_hi = vdivq_f32(one_f32, vaddq_f32(one_f32, s_hi));
+                float16x8_t sig = vcombine_f16(vcvt_f16_f32(s_lo), vcvt_f16_f32(s_hi));
+
+                float16x8_t glu = vmulq_f16(g, sig);
+                float16x8_t up1 = vaddq_f16(u, one_vec);
+                vst1q_f16(&gate[i], vmulq_f16(glu, up1));
+            }
+            for (size_t i = vec_end; i < end; ++i) {
+                float gf = static_cast<float>(gate[i]);
+                float uf = static_cast<float>(up[i]);
+                if (gf > limit) gf = limit;
+                if (uf > limit) uf = limit;
+                if (uf < -limit) uf = -limit;
+                float sig = 1.0f / (1.0f + std::exp(-alpha * gf));
+                gate[i] = static_cast<__fp16>(gf * sig * (uf + 1.0f));
+            }
+        });
+}

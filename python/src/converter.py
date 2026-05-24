@@ -9,13 +9,14 @@ except ImportError:
     torch = None
 
 from .tensor_io import save_tensor_with_header, create_quantization_stats, print_quantization_summary, fold_bn_into_conv
-from .config_utils import cfg_get, detect_model_type, extract_base_config, extract_vision_config, extract_lfm2_config, is_vlm_model, extract_moonshine_config, extract_complex_gemma_config, extract_audio_config, extract_youtu_config
+from .config_utils import cfg_get, detect_model_type, extract_base_config, extract_vision_config, extract_lfm2_config, is_vlm_model, extract_moonshine_config, extract_complex_gemma_config, extract_audio_config, extract_youtu_config, extract_opf_config
 from .weight_patterns import (
     EMBED_NAMES, OUTPUT_NAMES, OUTPUT_NORM_NAMES, LAYER_PREFIXES,
     VISION_ITEMS, PROJECTOR_WEIGHTS, WHISPER_GLOBAL_WEIGHTS, MOONSHINE_GLOBAL_WEIGHTS,
     GEMMA3N_GLOBAL_WEIGHTS, GEMMA3N_VISION_TOWER_PREFIX, GEMMA3N_AUDIO_TOWER_PREFIX,
     GEMMA4_GLOBAL_WEIGHTS, GEMMA4_VISION_TOWER_PREFIX, GEMMA4_AUDIO_TOWER_PREFIX,
     NEEDLE_GLOBAL_WEIGHTS, NEEDLE_ENCODER_LAYER_WEIGHTS, NEEDLE_DECODER_LAYER_WEIGHTS,
+    OPF_GLOBAL_WEIGHTS,
     get_layer_weight_patterns, get_vision_layer_weights
 )
 
@@ -161,6 +162,8 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
             args.weight_scale = 1.0
     elif detected_model_type == 'lfm2':
         model_config.update(extract_lfm2_config(config))
+    elif detected_model_type == 'opf':
+        model_config.update(extract_opf_config(config, root_config))
     elif detected_model_type == 'youtu':
         model_config.update(extract_youtu_config(config))
     elif detected_model_type == 'moonshine':
@@ -496,6 +499,43 @@ def convert_hf_model_weights(model, output_dir, precision='INT8', args=None):
                 del state_dict[hf_key]
 
         gc.collect()
+
+    if detected_model_type == 'opf':
+        def _save(tensor, name, prec):
+            save_tensor_with_header(tensor, output_dir / name, prec, transpose=False,
+                                    stats_tracker=quantization_stats, args=args,
+                                    model_type=detected_model_type)
+
+        for name, save_name in OPF_GLOBAL_WEIGHTS:
+            if name in state_dict:
+                _save(state_dict[name], save_name, precision)
+                saved_tensor_full_names.add(name)
+
+        num_experts = int(model_config.get('num_experts', 0))
+        intermediate_size = int(model_config.get('moe_intermediate_size', model_config.get('ffn_intermediate_dim', 0)))
+        if num_experts <= 0 or intermediate_size <= 0:
+            raise ValueError(f"OPF requires num_experts>0 and intermediate_size>0 (got {num_experts}, {intermediate_size})")
+
+        for i in range(num_layers):
+            prefix = f'model.layers.{i}.mlp.experts.'
+            gate_up = state_dict.get(prefix + 'gate_up_proj')
+            gate_up_bias = state_dict.get(prefix + 'gate_up_proj_bias')
+            down = state_dict.get(prefix + 'down_proj')
+            down_bias = state_dict.get(prefix + 'down_proj_bias')
+            if any(t is None for t in (gate_up, gate_up_bias, down, down_bias)):
+                raise ValueError(f"OPF layer {i}: missing packed expert tensors under {prefix}")
+
+            for e in range(num_experts):
+                base = f'layer_{i}_moe_expert_{e}_'
+                _save(gate_up[e, :, :intermediate_size].transpose(0, 1).contiguous(), base + 'w1.weights', precision)
+                _save(gate_up[e, :, intermediate_size:].transpose(0, 1).contiguous(), base + 'w3.weights', precision)
+                _save(down[e].transpose(0, 1).contiguous(),                            base + 'w2.weights', precision)
+                _save(gate_up_bias[e, :intermediate_size].contiguous(),                base + 'w1.bias', 'FP16')
+                _save(gate_up_bias[e, intermediate_size:].contiguous(),                base + 'w3.bias', 'FP16')
+                _save(down_bias[e].contiguous(),                                       base + 'w2.bias', 'FP16')
+
+            for key in ('gate_up_proj', 'gate_up_proj_bias', 'down_proj', 'down_proj_bias'):
+                saved_tensor_full_names.add(prefix + key)
 
     missing_tensors = []
     if detected_model_type == 'parakeet':

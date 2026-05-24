@@ -482,6 +482,55 @@ size_t CactusGraph::moe_layer(size_t hidden,
     return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
 }
 
+size_t CactusGraph::moe_layer_openai(size_t hidden,
+                                     size_t routing_probs,
+                                     size_t topk_indices,
+                                     const std::vector<size_t>& w1_weights,
+                                     const std::vector<size_t>& w3_weights,
+                                     const std::vector<size_t>& w2_weights,
+                                     const std::vector<size_t>& w1_biases,
+                                     const std::vector<size_t>& w3_biases,
+                                     const std::vector<size_t>& w2_biases,
+                                     size_t num_experts,
+                                     size_t num_experts_per_tok) {
+    const auto& hidden_buffer = get_output_buffer(hidden);
+    const auto& routing_buffer = get_output_buffer(routing_probs);
+    const auto& topk_buffer = get_output_buffer(topk_indices);
+
+    const size_t tokens = hidden_buffer.shape.size() == 2 ? hidden_buffer.shape[0] : 0;
+    if (tokens == 0 ||
+        routing_buffer.shape.size() != 2 || routing_buffer.shape[0] != tokens ||
+        topk_buffer.shape.size() != 2    || topk_buffer.shape[0] != tokens) {
+        throw std::runtime_error("moe_layer_openai expects 2D hidden/routing/topk aligned on tokens");
+    }
+    for (const auto* v : {&w1_weights, &w3_weights, &w2_weights,
+                          &w1_biases,  &w3_biases,  &w2_biases}) {
+        if (v->size() != num_experts) {
+            throw std::runtime_error("moe_layer_openai: weight/bias list size != num_experts");
+        }
+    }
+
+    std::vector<size_t> input_ids;
+    input_ids.reserve(3 + 6 * num_experts);
+    input_ids.push_back(hidden);
+    input_ids.push_back(routing_probs);
+    input_ids.push_back(topk_indices);
+    for (const auto* v : {&w1_weights, &w3_weights, &w2_weights,
+                          &w1_biases,  &w3_biases,  &w2_biases}) {
+        input_ids.insert(input_ids.end(), v->begin(), v->end());
+    }
+
+    OpParams params;
+    params.num_experts = num_experts;
+    params.num_experts_per_tok = num_experts_per_tok;
+    params.scalar = 1.0f;
+    params.output_precision = hidden_buffer.precision;
+    params.activation = Activation::OPENAI_GLU;
+    params.moe_gated = true;
+    params.moe_has_biases = true;
+    return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
+}
+
 size_t CactusGraph::layernorm(size_t input, size_t weight, size_t bias, float epsilon) {
     OpParams params{.epsilon = epsilon};
     return add_node(OpType::LAYERNORM, {input, weight, bias}, {}, params);
@@ -549,7 +598,8 @@ size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scal
 
 size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, size_t mask, float scale,
                                      bool is_causal, ComputeBackend backend, bool additive_mask,
-                                     size_t position_offset, size_t window_size, float logit_cap) {
+                                     size_t position_offset, size_t window_size, float logit_cap,
+                                     size_t sinks) {
     OpParams params{
         .scale = scale,
         .position_offset = position_offset,
@@ -559,9 +609,11 @@ size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, siz
     };
     params.attention_mask_is_additive = additive_mask;
     params.logit_cap = logit_cap;
+    std::vector<size_t> inputs = {query, key, value, mask};
+    if (sinks != 0) inputs.push_back(sinks);
     const auto& qs = get_output_buffer(query).shape;
     const auto& vs = get_output_buffer(value).shape;
-    return add_node(OpType::ATTENTION, {query, key, value, mask}, {qs[0], qs[1], qs[2], vs[3]}, params);
+    return add_node(OpType::ATTENTION, inputs, {qs[0], qs[1], qs[2], vs[3]}, params);
 }
 
 size_t CactusGraph::rel_pos_bias(size_t query, size_t relative_key, float scale) {
@@ -1259,18 +1311,16 @@ size_t CactusGraph::scatter_topk(size_t indices, size_t values, size_t num_class
     const auto& indices_buffer = get_output_buffer(indices);
     const auto& values_buffer = get_output_buffer(values);
 
-    if (indices_buffer.shape != values_buffer.shape) {
-        throw std::runtime_error("ScatterTopK requires indices and values with identical shapes");
+    if (indices_buffer.shape != values_buffer.shape || indices_buffer.shape.size() != 2) {
+        throw std::runtime_error("ScatterTopK expects 2D indices/values with matching shapes");
     }
-    if (indices_buffer.shape.size() != 2) {
-        throw std::runtime_error("ScatterTopK currently supports 2D tensors [batch, top_k]");
-    }
-    if (indices_buffer.precision != Precision::FP32 || values_buffer.precision != Precision::FP32) {
-        throw std::runtime_error("ScatterTopK expects FP32 indices and values");
+    if (indices_buffer.precision != Precision::FP32 ||
+        (values_buffer.precision != Precision::FP16 && values_buffer.precision != Precision::FP32)) {
+        throw std::runtime_error("ScatterTopK expects FP32 indices and FP16/FP32 values");
     }
 
-    std::vector<size_t> output_shape = {num_classes, indices_buffer.shape[0]};
-    OpParams params{.output_precision = Precision::FP32, .num_classes = num_classes};
+    std::vector<size_t> output_shape = {indices_buffer.shape[0], num_classes};
+    OpParams params{.output_precision = values_buffer.precision, .num_classes = num_classes};
     return add_node(OpType::SCATTER_TOPK, {indices, values}, output_shape, params);
 }
 
@@ -1415,6 +1465,22 @@ size_t CactusGraph::rope_gptj(size_t input, float theta, size_t position_offset,
     params.position_offset = position_offset;
     params.scalar = static_cast<float>(rot_dim);
     params.backend = backend;
+    return add_node(OpType::ROPE_GPTJ, {input}, {}, params);
+}
+
+size_t CactusGraph::rope_gptj_yarn(size_t input, float theta, float scaling_factor,
+                                   float beta_fast, float beta_slow, size_t original_ctx,
+                                   size_t position_offset, size_t rot_dim,
+                                   ComputeBackend backend) {
+    OpParams params;
+    params.theta = theta;
+    params.position_offset = position_offset;
+    params.scalar = static_cast<float>(rot_dim);
+    params.backend = backend;
+    params.rope_scaling_factor = scaling_factor;
+    params.rope_beta_fast = beta_fast;
+    params.rope_beta_slow = beta_slow;
+    params.rope_original_ctx = original_ctx;
     return add_node(OpType::ROPE_GPTJ, {input}, {}, params);
 }
 

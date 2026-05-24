@@ -121,6 +121,11 @@ void cactus_rope_f16(const __fp16* input, __fp16* output, size_t batch_size, siz
 void cactus_gpt_j_rope_f16(const __fp16* input, __fp16* output, size_t batch_size, size_t seq_len,
                            size_t num_heads, size_t head_dim, size_t rot_dim, size_t start_pos, float theta);
 
+void cactus_gpt_j_yarn_rope_f16(const __fp16* input, __fp16* output, size_t batch_size, size_t seq_len,
+                                size_t num_heads, size_t head_dim, size_t rot_dim, size_t start_pos,
+                                float theta, float scaling_factor, float beta_fast, float beta_slow,
+                                size_t original_ctx);
+
 void cactus_softmax_f16(const __fp16* input, __fp16* output, size_t batch_size,
                          size_t seq_len, size_t vocab_size);
 
@@ -135,6 +140,11 @@ void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t num_elements);
 void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t num_elements);
 
 void cactus_sigmoid_f16(const __fp16* input, __fp16* output, size_t num_elements);
+
+void cactus_add_bias_rows_f16(__fp16* dst, size_t rows, size_t cols, const __fp16* bias);
+
+void cactus_openai_glu_merge_f16(__fp16* gate, const __fp16* up, size_t num_elements,
+                                 float alpha, float limit);
 
 void cactus_tanh_f16(const __fp16* input, __fp16* output, size_t num_elements);
 
@@ -184,7 +194,8 @@ void cactus_attention_f16(const __fp16* queries, const __fp16* keys, const __fp1
                           size_t batch_size, size_t seq_len, size_t kv_seq_len, size_t num_q_heads, size_t num_kv_heads,
                           size_t head_dim, float scale, const __fp16* mask, size_t position_offset = 0, size_t window_size = 0,
                           bool is_causal = true, bool mask_is_additive = false, bool mask_per_head = false,
-                          size_t v_head_dim = 0, float logit_cap = 0.0f);
+                          size_t v_head_dim = 0, float logit_cap = 0.0f,
+                          const __fp16* sinks = nullptr);
 
 void cactus_attention_hybrid_int8_fp16(
     const __fp16* queries,
