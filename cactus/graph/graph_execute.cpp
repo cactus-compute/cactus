@@ -1,4 +1,5 @@
 #include "graph.h"
+#include "../kernel/kernel.h"
 #include "../kernel/kernel_utils.h"
 #include <algorithm>
 #include <chrono>
@@ -702,6 +703,10 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
         }
     }
+
+#ifdef __APPLE__
+    cactus_mps_flush();
+#endif
 
     if (enable_profiling) {
         auto total_end = std::chrono::high_resolution_clock::now();

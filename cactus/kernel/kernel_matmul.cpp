@@ -168,6 +168,11 @@ void cactus_matmul_f16(
 ) {
 
 #ifdef __APPLE__
+    if (cactus_mps_enabled() && M >= MPS_F16_M_THRESHOLD && K >= MPS_F16_K_THRESHOLD && N >= MPS_F16_N_THRESHOLD && cactus_mps_available()) {
+        cactus_matmul_f16_mps(a, b_transposed, c, M, K, N);
+        cactus_mps_synchronize();
+        return;
+    }
     if (K >= ACCELERATE_K_THRESHOLD && M >= ACCELERATE_M_THRESHOLD) {
         const size_t a_len = M * K;
         const size_t b_len = N * K;

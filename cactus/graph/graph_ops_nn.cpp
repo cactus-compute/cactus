@@ -223,13 +223,39 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
                                             lhs_buffer.has_activation_scales());
 
     if (PrecisionTraits::is_integer(rhs_buffer.precision) && rhs_buffer.group_size > 0) {
-        const int8_t* rhs = rhs_buffer.data_as<int8_t>();
-        const __fp16* rhs_scales = rhs_buffer.scales_as_fp16();
-        __fp16* output = node.output_buffer.data_as<__fp16>();
-
         if (!pretransposed_rhs) {
             throw std::runtime_error("Group-wise quantized matmul requires pretransposed weights");
         }
+
+#ifdef __APPLE__
+        if (cactus_mps_enabled() &&
+            rhs_buffer.precision == Precision::INT4 &&
+            lhs_buffer.precision == Precision::FP16 &&
+            cactus_mps_available()) {
+            if (M == 1 && K >= MPS_GEMV_INT4_K_THRESHOLD && N >= MPS_GEMV_INT4_N_THRESHOLD && N % 4 == 0) {
+                cactus_gemv_int4_mps(lhs_buffer.data_ptr_raw<__fp16>(),
+                                     rhs_buffer.data_ptr_raw<int8_t>(),
+                                     rhs_buffer.scales_as_fp16(),
+                                     node.output_buffer.data_ptr_raw<__fp16>(),
+                                     K, N, rhs_buffer.group_size);
+                node.output_buffer.pending_gpu_write = true;
+                return;
+            }
+            if (M >= MPS_INT4_M_THRESHOLD && K >= MPS_INT4_K_THRESHOLD && N >= MPS_INT4_N_THRESHOLD) {
+                cactus_matmul_int4_mps(lhs_buffer.data_ptr_raw<__fp16>(),
+                                       rhs_buffer.data_ptr_raw<int8_t>(),
+                                       rhs_buffer.scales_as_fp16(),
+                                       node.output_buffer.data_ptr_raw<__fp16>(),
+                                       M, K, N, rhs_buffer.group_size);
+                node.output_buffer.pending_gpu_write = true;
+                return;
+            }
+        }
+#endif
+
+        const int8_t* rhs = rhs_buffer.data_as<int8_t>();
+        const __fp16* rhs_scales = rhs_buffer.scales_as_fp16();
+        __fp16* output = node.output_buffer.data_as<__fp16>();
 
         const int8_t* lhs_int8;
         const float* lhs_scales;
@@ -256,6 +282,19 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         if (lhs_buffer.precision != Precision::FP16) {
             throw std::runtime_error("FP16 matmul requires FP16 activations (got precision " + std::to_string(static_cast<int>(lhs_buffer.precision)) + ")");
         }
+
+#ifdef __APPLE__
+        if (cactus_mps_enabled() && pretransposed_rhs &&
+            M >= MPS_F16_M_THRESHOLD && K >= MPS_F16_K_THRESHOLD && N >= MPS_F16_N_THRESHOLD &&
+            cactus_mps_available()) {
+            cactus_matmul_f16_mps(lhs_buffer.data_ptr_raw<__fp16>(),
+                                  rhs_buffer.data_ptr_raw<__fp16>(),
+                                  node.output_buffer.data_ptr_raw<__fp16>(),
+                                  M, K, N);
+            node.output_buffer.pending_gpu_write = true;
+            return;
+        }
+#endif
 
         const __fp16* lhs = lhs_buffer.data_as<__fp16>();
         const __fp16* rhs = rhs_buffer.data_as<__fp16>();

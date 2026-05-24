@@ -89,6 +89,37 @@ void cactus_matmul_integer(Precision precision,
 void cactus_matmul_f16(const __fp16* a, const __fp16* b_transposed, __fp16* c,
                        size_t M, size_t K, size_t N);
 
+#ifdef __APPLE__
+constexpr size_t MPS_F16_M_THRESHOLD = 128;
+constexpr size_t MPS_F16_K_THRESHOLD = 1024;
+constexpr size_t MPS_F16_N_THRESHOLD = 1024;
+constexpr size_t MPS_INT4_M_THRESHOLD = 256;
+constexpr size_t MPS_INT4_K_THRESHOLD = 1024;
+constexpr size_t MPS_INT4_N_THRESHOLD = 256;
+constexpr size_t MPS_GEMV_INT4_K_THRESHOLD = 1024;
+constexpr size_t MPS_GEMV_INT4_N_THRESHOLD = 32768;
+constexpr size_t MPS_ATTN_SEQ_THRESHOLD = 1024;
+bool cactus_mps_available();
+void cactus_mps_set_enabled(bool enabled);
+bool cactus_mps_enabled();
+void cactus_mps_flush();
+void cactus_mps_synchronize();
+void cactus_matmul_f16_mps(const __fp16* A, const __fp16* B_T, __fp16* C,
+                           size_t M, size_t K, size_t N);
+void cactus_matmul_int4_mps(const __fp16* A, const int8_t* B_packed, const __fp16* B_scales,
+                            __fp16* C, size_t M, size_t K, size_t N, size_t group_size);
+void cactus_gemv_int4_mps(const __fp16* A, const int8_t* B_packed, const __fp16* B_scales,
+                          __fp16* C, size_t K, size_t N, size_t group_size);
+void cactus_attention_f16_mps(const __fp16* Q, const __fp16* K, const __fp16* V, __fp16* O,
+                              size_t seq_len, size_t kv_seq_len,
+                              size_t num_q_heads, size_t num_kv_heads,
+                              size_t head_dim, float scale, size_t position_offset);
+void cactus_attention_f16_mpsgraph(const __fp16* Q, const __fp16* K, const __fp16* V, __fp16* O,
+                                    size_t seq_len, size_t kv_seq_len,
+                                    size_t num_q_heads, size_t num_kv_heads,
+                                    size_t head_dim, float scale, size_t position_offset);
+#endif
+
 void cactus_transpose_2d_f16(const __fp16* source, __fp16* destination,
                              size_t num_rows, size_t num_cols, size_t start_row, size_t end_row);
 void cactus_transpose_f16(const __fp16* source, __fp16* destination, const size_t* shape,

@@ -602,6 +602,211 @@ bool test_fast_tanh_f32x4_correctness() {
     return true;
 }
 
+#ifdef __APPLE__
+bool test_mps_matmul_f16_correctness() {
+    if (!cactus_mps_available()) return true;
+    const size_t M = 32, K = 512, N = 256;
+
+    std::mt19937 gen(7);
+    std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
+
+    std::vector<__fp16> A(M * K), BT(N * K), C_mps(M * N), C_ref(M * N);
+    for (size_t i = 0; i < M * K; ++i) {
+        A[i] = static_cast<__fp16>(dis(gen));
+    }
+    for (size_t i = 0; i < N * K; ++i) {
+        BT[i] = static_cast<__fp16>(dis(gen));
+    }
+
+    cactus_matmul_f16_mps(A.data(), BT.data(), C_mps.data(), M, K, N);
+    cactus_mps_synchronize();
+
+    for (size_t m = 0; m < M; ++m) {
+        for (size_t n = 0; n < N; ++n) {
+            float acc = 0.0f;
+            for (size_t k = 0; k < K; ++k) {
+                acc += static_cast<float>(A[m * K + k]) * static_cast<float>(BT[n * K + k]);
+            }
+            C_ref[m * N + n] = static_cast<__fp16>(acc);
+        }
+    }
+
+    float max_err = 0.0f;
+    for (size_t i = 0; i < M * N; ++i) {
+        float err = std::abs(static_cast<float>(C_mps[i]) - static_cast<float>(C_ref[i]));
+        if (err > max_err) max_err = err;
+    }
+
+    std::cout << "  MPS FP16 matmul max abs error: " << max_err << std::endl;
+    return max_err < 0.5f;
+}
+
+bool test_mps_matmul_int4_correctness() {
+    if (!cactus_mps_available()) return true;
+    const size_t M = 32, K = 512, N = 256, group_size = 32;
+    const size_t num_groups = K / group_size;
+    const size_t BS = 4;
+
+    std::mt19937 gen(11);
+    std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
+
+    std::vector<float> B_fp32(N * K);
+    for (size_t i = 0; i < N * K; ++i) {
+        B_fp32[i] = dis(gen);
+    }
+
+    std::vector<int8_t> B_raw(N * K);
+    std::vector<float> B_scales(N * num_groups);
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t g = 0; g < num_groups; ++g) {
+            float max_abs = 0.0f;
+            for (size_t k = 0; k < group_size; ++k) {
+                float val = std::abs(B_fp32[n * K + g * group_size + k]);
+                if (val > max_abs) max_abs = val;
+            }
+            float scale = std::max(max_abs / 7.0f, 1e-10f);
+            B_scales[n * num_groups + g] = scale;
+            for (size_t k = 0; k < group_size; ++k) {
+                int32_t q = static_cast<int32_t>(std::round(B_fp32[n * K + g * group_size + k] / scale));
+                B_raw[n * K + g * group_size + k] = static_cast<int8_t>(std::clamp(q, -8, 7));
+            }
+        }
+    }
+
+    std::vector<int8_t> B_inter(N * K);
+    for (size_t nb = 0; nb < N / BS; ++nb) {
+        for (size_t kb = 0; kb < K / BS; ++kb) {
+            for (size_t ni = 0; ni < BS; ++ni) {
+                for (size_t ki = 0; ki < BS; ++ki) {
+                    B_inter[(nb * (K / BS) + kb) * BS * BS + ni * BS + ki] =
+                        B_raw[(nb * BS + ni) * K + kb * BS + ki];
+                }
+            }
+        }
+    }
+
+    std::vector<uint8_t> B_packed(N * K / 2);
+    for (size_t i = 0; i < N * K; i += 32) {
+        for (size_t j = 0; j < 16; ++j) {
+            uint8_t lo = static_cast<uint8_t>(B_inter[i + j] & 0x0F);
+            uint8_t hi = static_cast<uint8_t>((B_inter[i + 16 + j] & 0x0F) << 4);
+            B_packed[i / 2 + j] = lo | hi;
+        }
+    }
+
+    std::vector<__fp16> B_scales_inter(N * num_groups);
+    for (size_t nb = 0; nb < N / BS; ++nb) {
+        for (size_t g = 0; g < num_groups; ++g) {
+            for (size_t ni = 0; ni < BS; ++ni) {
+                B_scales_inter[(nb * num_groups + g) * BS + ni] =
+                    static_cast<__fp16>(B_scales[(nb * BS + ni) * num_groups + g]);
+            }
+        }
+    }
+
+    std::vector<__fp16> A(M * K);
+    for (size_t i = 0; i < M * K; ++i) {
+        A[i] = static_cast<__fp16>(dis(gen));
+    }
+
+    std::vector<__fp16> C_mps(M * N);
+    cactus_matmul_int4_mps(A.data(), reinterpret_cast<const int8_t*>(B_packed.data()),
+                           B_scales_inter.data(), C_mps.data(), M, K, N, group_size);
+    cactus_mps_synchronize();
+
+    float max_err = 0.0f;
+    for (size_t m = 0; m < M; ++m) {
+        for (size_t n = 0; n < N; ++n) {
+            float acc = 0.0f;
+            for (size_t k = 0; k < K; ++k) {
+                acc += static_cast<float>(A[m * K + k]) * static_cast<float>(B_raw[n * K + k]) *
+                       B_scales[n * num_groups + (k / group_size)];
+            }
+            float err = std::abs(static_cast<float>(C_mps[m * N + n]) - acc);
+            if (err > max_err) max_err = err;
+        }
+    }
+
+    std::cout << "  MPS INT4 matmul max abs error: " << max_err << std::endl;
+    return max_err < 0.1f;
+}
+
+bool test_mps_attention_f16_correctness() {
+    if (!cactus_mps_available()) return true;
+    const size_t seq_len = 64, kv_seq_len = 64;
+    const size_t num_q_heads = 4, num_kv_heads = 2, head_dim = 64;
+    const float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
+
+    std::mt19937 gen(13);
+    std::uniform_real_distribution<float> dis(-0.5f, 0.5f);
+
+    std::vector<__fp16> Q(seq_len * num_q_heads * head_dim);
+    std::vector<__fp16> K(kv_seq_len * num_kv_heads * head_dim);
+    std::vector<__fp16> V(kv_seq_len * num_kv_heads * head_dim);
+    for (size_t i = 0; i < Q.size(); ++i) Q[i] = static_cast<__fp16>(dis(gen));
+    for (size_t i = 0; i < K.size(); ++i) K[i] = static_cast<__fp16>(dis(gen));
+    for (size_t i = 0; i < V.size(); ++i) V[i] = static_cast<__fp16>(dis(gen));
+
+    std::vector<__fp16> O_mps(seq_len * num_q_heads * head_dim);
+    std::vector<__fp16> O_ref(seq_len * num_q_heads * head_dim);
+
+    cactus_attention_f16_mps(Q.data(), K.data(), V.data(), O_mps.data(),
+                             seq_len, kv_seq_len, num_q_heads, num_kv_heads,
+                             head_dim, scale, 0);
+    cactus_mps_synchronize();
+
+    cactus_attention_f16(Q.data(), K.data(), V.data(), O_ref.data(),
+                         1, seq_len, kv_seq_len, num_q_heads, num_kv_heads,
+                         head_dim, scale, nullptr, 0, 0, true, false, false, head_dim, 0.0f);
+
+    float max_err = 0.0f;
+    for (size_t i = 0; i < O_mps.size(); ++i) {
+        float err = std::abs(static_cast<float>(O_mps[i]) - static_cast<float>(O_ref[i]));
+        if (err > max_err) max_err = err;
+    }
+
+    std::cout << "  MPS attention F16 max abs error: " << max_err << std::endl;
+    return max_err < 0.05f;
+}
+
+bool test_mpsgraph_attention_f16_correctness() {
+    if (!cactus_mps_available()) return true;
+    const size_t seq_len = 64, kv_seq_len = 64;
+    const size_t num_q_heads = 4, num_kv_heads = 2, head_dim = 64;
+    const float scale = 1.0f / sqrtf(static_cast<float>(head_dim));
+
+    std::mt19937 gen(17);
+    std::uniform_real_distribution<float> dis(-0.5f, 0.5f);
+
+    std::vector<__fp16> Q(seq_len * num_q_heads * head_dim);
+    std::vector<__fp16> K(kv_seq_len * num_kv_heads * head_dim);
+    std::vector<__fp16> V(kv_seq_len * num_kv_heads * head_dim);
+    for (size_t i = 0; i < Q.size(); ++i) Q[i] = static_cast<__fp16>(dis(gen));
+    for (size_t i = 0; i < K.size(); ++i) K[i] = static_cast<__fp16>(dis(gen));
+    for (size_t i = 0; i < V.size(); ++i) V[i] = static_cast<__fp16>(dis(gen));
+
+    std::vector<__fp16> O_g(seq_len * num_q_heads * head_dim);
+    std::vector<__fp16> O_ref(seq_len * num_q_heads * head_dim);
+
+    cactus_attention_f16_mpsgraph(Q.data(), K.data(), V.data(), O_g.data(),
+                                   seq_len, kv_seq_len, num_q_heads, num_kv_heads,
+                                   head_dim, scale, 0);
+
+    cactus_attention_f16(Q.data(), K.data(), V.data(), O_ref.data(),
+                         1, seq_len, kv_seq_len, num_q_heads, num_kv_heads,
+                         head_dim, scale, nullptr, 0, 0, true, false, false, head_dim, 0.0f);
+
+    float max_err = 0.0f;
+    for (size_t i = 0; i < O_g.size(); ++i) {
+        float err = std::abs(static_cast<float>(O_g[i]) - static_cast<float>(O_ref[i]));
+        if (err > max_err) max_err = err;
+    }
+
+    std::cout << "  MPSGraph SDPA F16 max abs error: " << max_err << std::endl;
+    return max_err < 0.05f;
+}
+#endif
+
 int main() {
     TestUtils::TestRunner runner("Kernel Backend Tests");
 
@@ -624,6 +829,12 @@ int main() {
     runner.run_test("Kernel INT4 MatMul Correctness", test_int4_matmul_correctness());
     runner.run_test("Kernel STFT Complex Correctness", test_stft_kernel_correctness());
     runner.run_test("Kernel Fast Tanh Correctness", test_fast_tanh_f32x4_correctness());
+#ifdef __APPLE__
+    runner.run_test("Kernel MPS FP16 MatMul Correctness", test_mps_matmul_f16_correctness());
+    runner.run_test("Kernel MPS INT4 MatMul Correctness", test_mps_matmul_int4_correctness());
+    runner.run_test("Kernel MPS Attention F16 Correctness", test_mps_attention_f16_correctness());
+    runner.run_test("Kernel MPSGraph SDPA F16 Correctness", test_mpsgraph_attention_f16_correctness());
+#endif
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

@@ -1,5 +1,10 @@
 #include "graph.h"
 #include "graph_param_io.h"
+#include "../kernel/kernel.h"
+#include <algorithm>
+#include <cerrno>
+#include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <stdexcept>
 #include <sys/mman.h>
@@ -26,6 +31,31 @@ namespace {
         size_t remainder = offset % alignment;
         if (remainder == 0) return offset;
         return offset + (alignment - remainder);
+    }
+
+    std::string normalize_storage_mode(std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return value;
+    }
+
+    bool should_avoid_mmap_for_tensor_files() {
+        const char* env_mode = std::getenv("CACTUS_WEIGHT_STORAGE");
+        if (env_mode && *env_mode) {
+            const std::string mode = normalize_storage_mode(env_mode);
+            if (mode == "ram" || mode == "copy" || mode == "heap") {
+                return true;
+            }
+            if (mode == "mmap" || mode == "map" || mode == "mapped") {
+                return false;
+            }
+        }
+
+#ifdef __APPLE__
+        return cactus_mps_enabled() && cactus_mps_available();
+#else
+        return false;
+#endif
     }
 
     inline void write_u32(std::ostream& out, uint32_t v) {
@@ -598,23 +628,48 @@ MappedFile::MappedFile(const std::string& filename)
     }
     file_size_ = static_cast<size_t>(st.st_size);
 
-    mapped_data_ = mmap(nullptr, file_size_, PROT_READ, MAP_SHARED, fd_, 0);
-    if (mapped_data_ == MAP_FAILED) {
+    try {
+        if (should_avoid_mmap_for_tensor_files()) {
+            storage_mode_ = StorageMode::OwnedRam;
+            load_file_into_ram();
+        } else {
+            mapped_data_ = mmap(nullptr, file_size_, PROT_READ, MAP_SHARED, fd_, 0);
+            if (mapped_data_ == MAP_FAILED) {
+                throw std::runtime_error("Cannot map file: " + filename);
+            }
+            storage_mode_ = StorageMode::MappedFile;
+        }
+
         close(fd_);
-        throw std::runtime_error("Cannot map file: " + filename);
+        fd_ = -1;
+
+        parse_header();
+        apply_madvise_hints();
+    } catch (...) {
+        if (fd_ != -1) {
+            close(fd_);
+            fd_ = -1;
+        }
+        if (storage_mode_ == StorageMode::MappedFile &&
+            mapped_data_ != nullptr && mapped_data_ != MAP_FAILED) {
+            munmap(mapped_data_, file_size_);
+            mapped_data_ = nullptr;
+        } else if (storage_mode_ == StorageMode::OwnedRam && mapped_data_ != nullptr) {
+            free(mapped_data_);
+            mapped_data_ = nullptr;
+        }
+        throw;
     }
-
-    close(fd_);
-    fd_ = -1;
-
-    parse_header();
-    apply_madvise_hints();
 }
 
 MappedFile::~MappedFile() {
-    if (mapped_data_ != nullptr && mapped_data_ != MAP_FAILED) {
+    if (storage_mode_ == StorageMode::MappedFile &&
+        mapped_data_ != nullptr && mapped_data_ != MAP_FAILED) {
         madvise(mapped_data_, file_size_, MADV_DONTNEED);
         munmap(mapped_data_, file_size_);
+        mapped_data_ = nullptr;
+    } else if (storage_mode_ == StorageMode::OwnedRam && mapped_data_ != nullptr) {
+        free(mapped_data_);
         mapped_data_ = nullptr;
     }
     if (fd_ != -1) {
@@ -631,18 +686,23 @@ MappedFile::MappedFile(MappedFile&& other) noexcept
       scales_offset_(other.scales_offset_), scales_bytes_(other.scales_bytes_),
       alignment_(other.alignment_),
       is_interleaved_(other.is_interleaved_),
-      original_N_(other.original_N_) {
+      original_N_(other.original_N_),
+      storage_mode_(other.storage_mode_) {
     other.fd_ = -1;
     other.mapped_data_ = nullptr;
     other.file_size_ = 0;
     other.is_interleaved_ = false;
     other.original_N_ = 0;
+    other.storage_mode_ = StorageMode::MappedFile;
 }
 
 MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
     if (this != &other) {
-        if (mapped_data_ != nullptr && mapped_data_ != MAP_FAILED) {
+        if (storage_mode_ == StorageMode::MappedFile &&
+            mapped_data_ != nullptr && mapped_data_ != MAP_FAILED) {
             munmap(mapped_data_, file_size_);
+        } else if (storage_mode_ == StorageMode::OwnedRam && mapped_data_ != nullptr) {
+            free(mapped_data_);
         }
         if (fd_ != -1) {
             close(fd_);
@@ -662,11 +722,13 @@ MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
         alignment_ = other.alignment_;
         is_interleaved_ = other.is_interleaved_;
         original_N_ = other.original_N_;
+        storage_mode_ = other.storage_mode_;
         other.fd_ = -1;
         other.mapped_data_ = nullptr;
         other.file_size_ = 0;
         other.is_interleaved_ = false;
         other.original_N_ = 0;
+        other.storage_mode_ = StorageMode::MappedFile;
     }
     return *this;
 }
@@ -771,6 +833,10 @@ void MappedFile::parse_header() {
 }
 
 void MappedFile::apply_madvise_hints() {
+    if (storage_mode_ != StorageMode::MappedFile) {
+        return;
+    }
+
     if (scales_bytes_ > 0 && scales_offset_ > 0) {
         madvise(static_cast<char*>(mapped_data_) + scales_offset_, scales_bytes_, MADV_WILLNEED);
     }
@@ -783,7 +849,10 @@ void MappedFile::apply_madvise_hints() {
 }
 
 void MappedFile::release_pages() {
-    if (mapped_data_ == nullptr || mapped_data_ == MAP_FAILED) return;
+    if (storage_mode_ != StorageMode::MappedFile ||
+        mapped_data_ == nullptr || mapped_data_ == MAP_FAILED) {
+        return;
+    }
 
     if (scales_bytes_ > 0 && scales_offset_ > 0) {
         madvise(static_cast<char*>(mapped_data_) + scales_offset_, scales_bytes_, MADV_DONTNEED);
@@ -792,12 +861,55 @@ void MappedFile::release_pages() {
 }
 
 void MappedFile::prefetch_pages() {
-    if (mapped_data_ == nullptr || mapped_data_ == MAP_FAILED) return;
+    if (storage_mode_ != StorageMode::MappedFile ||
+        mapped_data_ == nullptr || mapped_data_ == MAP_FAILED) {
+        return;
+    }
 
     if (scales_bytes_ > 0 && scales_offset_ > 0) {
         madvise(static_cast<char*>(mapped_data_) + scales_offset_, scales_bytes_, MADV_WILLNEED);
     }
     madvise(static_cast<char*>(mapped_data_) + data_offset_, byte_size_, MADV_WILLNEED);
+}
+
+void MappedFile::load_file_into_ram() {
+    if (file_size_ == 0) {
+        throw std::runtime_error("Cannot load empty tensor file into RAM");
+    }
+
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) {
+        page_size = 4096;
+    }
+
+    void* buffer = nullptr;
+    const int alloc_rc = posix_memalign(&buffer, static_cast<size_t>(page_size), file_size_);
+    if (alloc_rc != 0 || buffer == nullptr) {
+        throw std::runtime_error("Cannot allocate RAM buffer for tensor file");
+    }
+
+    char* dst = static_cast<char*>(buffer);
+    size_t total_read = 0;
+    constexpr size_t kMaxReadChunk = static_cast<size_t>(1) << 30; // Keep macOS read() calls well below INT_MAX.
+    while (total_read < file_size_) {
+        size_t remaining = file_size_ - total_read;
+        size_t chunk_size = std::min(remaining, kMaxReadChunk);
+        ssize_t bytes_read = read(fd_, dst + total_read, chunk_size);
+        if (bytes_read < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            free(buffer);
+            throw std::runtime_error("Cannot read tensor file into RAM");
+        }
+        if (bytes_read == 0) {
+            free(buffer);
+            throw std::runtime_error("Unexpected EOF while reading tensor file into RAM");
+        }
+        total_read += static_cast<size_t>(bytes_read);
+    }
+
+    mapped_data_ = buffer;
 }
 
 template const int8_t* MappedFile::typed_data<int8_t>() const;

@@ -1,4 +1,5 @@
 #include "graph.h"
+#include "../kernel/kernel.h"
 #include <algorithm>
 #include <stdexcept>
 #include <cstring>
@@ -153,6 +154,24 @@ const void* BufferDesc::get_data() const {
     if (external_data) return external_data;
     if (pooled_data) return pooled_data;
     return data.get();
+}
+
+void BufferDesc::flush_if_pending() {
+#ifdef __APPLE__
+    if (pending_gpu_write) {
+        cactus_mps_synchronize();
+        pending_gpu_write = false;
+    }
+#endif
+}
+
+void BufferDesc::flush_if_pending() const {
+#ifdef __APPLE__
+    if (pending_gpu_write) {
+        cactus_mps_synchronize();
+        const_cast<BufferDesc*>(this)->pending_gpu_write = false;
+    }
+#endif
 }
 
 void BufferDesc::allocate() {

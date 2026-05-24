@@ -243,7 +243,9 @@ struct BufferDesc {
     std::unique_ptr<char[]> owned_scales;
 
     bool is_interleaved = false;
-    size_t original_N = 0;  
+    size_t original_N = 0;
+
+    bool pending_gpu_write = false;
 
     void* activation_scales_data = nullptr;
     std::unique_ptr<char[]> owned_activation_scales;
@@ -262,11 +264,20 @@ struct BufferDesc {
     void* get_data();
     const void* get_data() const;
 
-    template<typename T>
-    T* data_as() { return static_cast<T*>(get_data()); }
+    void flush_if_pending();
+    void flush_if_pending() const;
 
     template<typename T>
-    const T* data_as() const { return static_cast<const T*>(get_data()); }
+    T* data_as() { flush_if_pending(); return static_cast<T*>(get_data()); }
+
+    template<typename T>
+    const T* data_as() const { flush_if_pending(); return static_cast<const T*>(get_data()); }
+
+    template<typename T>
+    T* data_ptr_raw() { return static_cast<T*>(get_data()); }
+
+    template<typename T>
+    const T* data_ptr_raw() const { return static_cast<const T*>(get_data()); }
 
     const __fp16* scales_as_fp16() const {
         return reinterpret_cast<const __fp16*>(scales_data);
@@ -756,6 +767,11 @@ namespace GraphFile {
         void prefetch_pages();
 
     private:
+        enum class StorageMode {
+            MappedFile,
+            OwnedRam,
+        };
+
         int fd_;
         void* mapped_data_;
         size_t file_size_, data_offset_;
@@ -770,9 +786,11 @@ namespace GraphFile {
 
         bool is_interleaved_ = false;
         size_t original_N_ = 0;
+        StorageMode storage_mode_ = StorageMode::MappedFile;
 
         void parse_header();
         void apply_madvise_hints();
+        void load_file_into_ram();
     };
 }
 

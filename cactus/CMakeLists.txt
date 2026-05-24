@@ -53,6 +53,9 @@ if(APPLE)
     set(CACTUS_CURL_LIBRARY_MACOS "${CACTUS_CURL_ROOT}/macos/libcurl.a")
     cactus_require_vendored_curl("${CACTUS_CURL_INCLUDE_DIR}" "${CACTUS_CURL_LIBRARY_MACOS}" "macOS")
     find_library(COREML_FRAMEWORK CoreML REQUIRED)
+    find_library(METAL_FRAMEWORK Metal REQUIRED)
+    find_library(MPS_FRAMEWORK MetalPerformanceShaders REQUIRED)
+    find_library(MPSGRAPH_FRAMEWORK MetalPerformanceShadersGraph REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
     find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
     find_library(SECURITY_FRAMEWORK Security REQUIRED)
@@ -80,10 +83,12 @@ list(REMOVE_ITEM KERNEL_SOURCES "${I8MM_SOURCE}")
 
 if(APPLE)
     set(NPU_SOURCES "npu/npu_ane.mm")
-    set_source_files_properties(npu/npu_ane.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-    message(STATUS "Apple platform detected - NPU/ANE acceleration enabled")
+    set(MPS_SOURCES "kernel/kernel_mps.mm")
+    set_source_files_properties(npu/npu_ane.mm kernel/kernel_mps.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    message(STATUS "Apple platform detected - NPU/ANE and Metal/MPS acceleration enabled")
 else()
     set(NPU_SOURCES "npu/npu.cpp")
+    set(MPS_SOURCES "")
 endif()
 
 set(COMMON_SOURCES
@@ -93,6 +98,7 @@ set(COMMON_SOURCES
     ${FFI_SOURCES}
     ${MODEL_SOURCES}
     ${NPU_SOURCES}
+    ${MPS_SOURCES}
     ${TELEMETRY_SOURCES}
 )
 
@@ -123,6 +129,9 @@ function(configure_cactus_target target_name)
     if(APPLE)
         target_link_libraries(${target_name} PUBLIC
             ${COREML_FRAMEWORK}
+            ${METAL_FRAMEWORK}
+            ${MPS_FRAMEWORK}
+            ${MPSGRAPH_FRAMEWORK}
             ${FOUNDATION_FRAMEWORK}
             ${ACCELERATE_FRAMEWORK}
             ${SECURITY_FRAMEWORK}
