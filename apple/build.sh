@@ -30,12 +30,27 @@ echo "XCFramework: $BUILD_XCFRAMEWORK"
 echo "Vendored libcurl root: $CACTUS_CURL_ROOT"
 
 function cp_headers() {
-    mkdir -p "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers"
-    cp "$ROOT_DIR/cactus/ffi/"*.h "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
-    cp "$ROOT_DIR/cactus/engine/"*.h "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
-    cp "$ROOT_DIR/cactus/graph/"*.h "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
-    cp "$ROOT_DIR/cactus/kernel/"*.h "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
-    cp "$ROOT_DIR/cactus/"*.h "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
+    local fw_root="$ROOT_DIR/apple/$1/$2/cactus.framework"
+    local headers_dir
+
+    # macOS frameworks have a versioned bundle layout (Versions/A/Headers with
+    # a top-level Headers symlink). iOS frameworks are flat (Headers at top).
+    if [ -d "$fw_root/Versions/A" ]; then
+        headers_dir="$fw_root/Versions/A/Headers"
+        mkdir -p "$headers_dir"
+        if [ ! -e "$fw_root/Headers" ]; then
+            (cd "$fw_root" && ln -s "Versions/Current/Headers" "Headers")
+        fi
+    else
+        headers_dir="$fw_root/Headers"
+        mkdir -p "$headers_dir"
+    fi
+
+    cp "$ROOT_DIR/cactus/ffi/"*.h    "$headers_dir/" 2>/dev/null || true
+    cp "$ROOT_DIR/cactus/engine/"*.h "$headers_dir/" 2>/dev/null || true
+    cp "$ROOT_DIR/cactus/graph/"*.h  "$headers_dir/" 2>/dev/null || true
+    cp "$ROOT_DIR/cactus/kernel/"*.h "$headers_dir/" 2>/dev/null || true
+    cp "$ROOT_DIR/cactus/"*.h        "$headers_dir/" 2>/dev/null || true
 }
 
 function create_ios_xcframework_info_plist() {
@@ -47,6 +62,8 @@ function create_ios_xcframework_info_plist() {
 	<key>AvailableLibraries</key>
 	<array>
 		<dict>
+			<key>DebugSymbolsPath</key>
+			<string>dSYMs</string>
 			<key>LibraryIdentifier</key>
 			<string>ios-arm64</string>
 			<key>LibraryPath</key>
@@ -59,6 +76,8 @@ function create_ios_xcframework_info_plist() {
 			<string>ios</string>
 		</dict>
 		<dict>
+			<key>DebugSymbolsPath</key>
+			<string>dSYMs</string>
 			<key>LibraryIdentifier</key>
 			<string>ios-arm64-simulator</string>
 			<key>LibraryPath</key>
@@ -91,6 +110,8 @@ function create_macos_xcframework_info_plist() {
 	<key>AvailableLibraries</key>
 	<array>
 		<dict>
+			<key>DebugSymbolsPath</key>
+			<string>dSYMs</string>
 			<key>LibraryIdentifier</key>
 			<string>macos-arm64</string>
 			<key>LibraryPath</key>
@@ -182,12 +203,13 @@ function build_framework() {
         -DBUILD_SHARED_LIBS=ON \
         -DCACTUS_CURL_ROOT="$CACTUS_CURL_ROOT" \
         -DCMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH=NO \
+        -DCMAKE_XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \
         -DCMAKE_IOS_INSTALL_COMBINED=YES >/dev/null
 
     cmake --build . --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null 2>&1
 
     DEST_DIR="$ROOT_DIR/apple/$6/$4"
-    
+
     # Try different possible framework locations
     FRAMEWORK_SRC=""
     if [ -d "$CMAKE_BUILD_TYPE-$3/cactus.framework" ]; then
@@ -198,20 +220,43 @@ function build_framework() {
         # Find the framework in any subdirectory
         FRAMEWORK_SRC=$(find . -name "cactus.framework" -type d | head -n 1)
     fi
-    
+
+    # Locate the matching .dSYM produced alongside the framework. cmake's Xcode
+    # generator only emits dSYMs when DEBUG_INFORMATION_FORMAT=dwarf-with-dsym.
+    DSYM_SRC=""
+    if [ -d "$CMAKE_BUILD_TYPE-$3/cactus.framework.dSYM" ]; then
+        DSYM_SRC="$CMAKE_BUILD_TYPE-$3/cactus.framework.dSYM"
+    elif [ -d "$CMAKE_BUILD_TYPE/cactus.framework.dSYM" ]; then
+        DSYM_SRC="$CMAKE_BUILD_TYPE/cactus.framework.dSYM"
+    else
+        DSYM_SRC=$(find . -name "cactus.framework.dSYM" -type d | head -n 1)
+    fi
+
     FRAMEWORK_DEST="$DEST_DIR/cactus.framework"
+    DSYMS_DEST_DIR="$DEST_DIR/dSYMs"
 
     rm -rf "$DEST_DIR"
     mkdir -p "$DEST_DIR"
 
     if [ -n "$FRAMEWORK_SRC" ] && [ -d "$FRAMEWORK_SRC" ]; then
-        cp -R "$FRAMEWORK_SRC" "$FRAMEWORK_DEST"
+        # ditto preserves the macOS framework's Versions/A symlink layout.
+        # cp -R follows symlinks and produces a malformed bundle that fails App
+        # Store validation with "Multiple binaries share the same codesign path".
+        ditto "$FRAMEWORK_SRC" "$FRAMEWORK_DEST"
         echo "Framework copied from $FRAMEWORK_SRC to $FRAMEWORK_DEST"
     else
         echo "Error: Framework not found in build directory"
         echo "Available files:"
         find . -name "*.framework" -o -name "libcactus*" 2>/dev/null || true
         exit 1
+    fi
+
+    if [ -n "$DSYM_SRC" ] && [ -d "$DSYM_SRC" ]; then
+        mkdir -p "$DSYMS_DEST_DIR"
+        ditto "$DSYM_SRC" "$DSYMS_DEST_DIR/cactus.framework.dSYM"
+        echo "dSYM copied from $DSYM_SRC to $DSYMS_DEST_DIR/cactus.framework.dSYM"
+    else
+        echo "Warning: cactus.framework.dSYM not found; xcframework will lack debug symbols for $4"
     fi
 
     cp_headers $6 $4
