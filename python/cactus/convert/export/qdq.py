@@ -210,6 +210,17 @@ def unpack_lsb_values(packed: np.ndarray, count: int, bits: int) -> np.ndarray:
     return out
 
 
+def unpack_interleaved_4row_4bit(packed: np.ndarray, rows: int, cols: int) -> np.ndarray:
+    if rows % 4 != 0 or cols % 8 != 0:
+        raise ValueError(f"INTERLEAVED_4ROW CQ4 requires rows % 4 == 0 and cols % 8 == 0, got {(rows, cols)}")
+    chunks = cols // 8
+    view = packed.reshape(rows // 4, chunks, 4, 4)
+    lo = (view & 0x0F).astype(np.uint8)
+    hi = ((view >> 4) & 0x0F).astype(np.uint8)
+    out = np.concatenate([lo, hi], axis=3).transpose(0, 2, 1, 3).copy()
+    return out.reshape(rows, cols)
+
+
 def dequantize_fp_file(path: Path, header: CactusHeader, out_dtype: torch.dtype) -> torch.Tensor:
     offset = align_offset(HEADER_SIZE, header.alignment)
     dtype = np.float16 if header.precision == PRECISION_FP16 else np.float32
@@ -319,13 +330,23 @@ def dequantize_cq_file(path: Path, header: CactusHeader, out_dtype: torch.dtype,
         packed_row_bytes = math.ceil(k * bits / 8)
         codebook, input_scale, norms, rotation = parse_orthogonal_metadata(scales_blob, header)
         out = torch.empty(n, k, dtype=out_dtype)
-        packed_rows = packed.reshape(n, packed_row_bytes)
+        interleaved = bool(header.flags & FLAG_INTERLEAVED_4ROW)
+        if interleaved:
+            if bits != 4 or header.num_groups != 1 or header.group_size != k:
+                raise ValueError(f"{path}: orthogonal INTERLEAVED_4ROW requires full-width CQ4")
+            packed_indices = unpack_interleaved_4row_4bit(packed, n, k)
+            norms = norms.reshape(n // 4, 4).reshape(n)
+        else:
+            packed_rows = packed.reshape(n, packed_row_bytes)
         rt = rotation.float().T.contiguous()
         scale = input_scale.float().unsqueeze(0)
         codebook = codebook.float()
         for start in range(0, n, row_batch_size):
             end = min(start + row_batch_size, n)
-            idx_np = np.stack([unpack_lsb_values(row, k, bits) for row in packed_rows[start:end]])
+            if interleaved:
+                idx_np = packed_indices[start:end]
+            else:
+                idx_np = np.stack([unpack_lsb_values(row, k, bits) for row in packed_rows[start:end]])
             idx = torch.from_numpy(idx_np.astype(np.int64, copy=False))
             recon = (codebook[idx] @ rt) * norms[start:end].float().unsqueeze(1)
             out[start:end] = (recon / scale).to(out_dtype)

@@ -214,6 +214,20 @@ def _scale_cq_norms(cq, factor: float):
     return replace(cq, norms=(cq.norms.astype(np.float32) * float(factor)).astype(np.float16))
 
 
+def _validate_cq_layout(policy, shape: tuple[int, ...], source_name: str, output_name: str) -> None:
+    if getattr(policy, "layout", "row_major") != "interleaved_4row":
+        return
+    if policy.rotation != "orthogonal" or int(policy.bits or 0) != 4:
+        raise RuntimeError(f"{source_name}: INTERLEAVED_4ROW output {output_name} requires orthogonal CQ4")
+    if len(shape) != 2:
+        raise RuntimeError(f"{source_name}: INTERLEAVED_4ROW output {output_name} requires rank-2 tensor, got shape={shape}")
+    n, k = int(shape[0]), int(shape[1])
+    if n % 4 != 0 or k % 32 != 0:
+        raise RuntimeError(
+            f"{source_name}: INTERLEAVED_4ROW output {output_name} requires N % 4 == 0 and K % 32 == 0, got shape={shape}"
+        )
+
+
 def _adapt_tensor_for_cactus(tensor, output_name: str | None, family: str):
     match = type("_CompatMatch", (), {"output_name": output_name})()
     transformed, _name = adapter_for_family(family).transform_tensor(match, tensor)
@@ -481,6 +495,7 @@ def convert(args: argparse.Namespace) -> None:
                 if not match.recognized and args.strict:
                     raise RuntimeError(f"unrecognized tensor in strict mode: {name}")
                 if emit_policy.action == "convert" and out_path is not None:
+                    _validate_cq_layout(emit_policy, _tensor_shape(emit_tensor), name, out_path.name)
                     if emit_policy.use_gptq and int(hessian_samples.get(module_name, 0)) <= 0:
                         hessian_missing_reason = "expected GPTQ target had zero samples"
                         if args.strict:
@@ -502,6 +517,8 @@ def convert(args: argparse.Namespace) -> None:
                             input_scale=input_scale,
                         )
                     cq = _scale_cq_norms(cq, adapter.scale_factor(out_path.name))
+                    if getattr(emit_policy, "layout", "row_major") == "interleaved_4row":
+                        cq = replace(cq, interleaved_4row=True)
                     write_cq_tensor(out_path, cq)
                     gptq_used = cq.gptq_used
                     status = "converted" if match.recognized else "unrecognized"
@@ -511,7 +528,7 @@ def convert(args: argparse.Namespace) -> None:
                 elif emit_policy.action == "ignored":
                     status = "ignored"
             except Exception as exc:
-                if args.strict:
+                if args.strict or getattr(emit_policy, "layout", "row_major") == "interleaved_4row":
                     raise
                 if out_path is not None:
                     _save_fallback_tensor(emit_tensor, out_path, "FP16", family)

@@ -1,6 +1,6 @@
 from cactus.convert.model_adapters.naming import cactus_name_for_tensor
 from cactus.convert.model_adapters.policy import policy_for_tensor
-from cactus.convert.cli import _bits_for_component
+from cactus.convert.cli import _bits_for_component, _validate_cq_layout
 from cactus.convert.model_adapters.detection import detect_family
 from cactus.convert.cactus_adapters.config_utils import extract_parakeet_tdt_config, extract_whisper_config
 from cactus.convert.cli import _augment_state_dict_for_family
@@ -13,6 +13,44 @@ def test_policy_embedding_cq4():
     p = policy_for_tensor(match, (100, 64), 2, "generic")
     assert p.precision == "CQ4"
     assert p.rotation == "orthogonal"
+    assert p.layout == "interleaved_4row"
+
+
+def test_policy_lm_head_interleaved_cq4():
+    match = cactus_name_for_tensor("lm_head.weight", "generic", 1)
+    p = policy_for_tensor(match, (100, 64), 2, "generic")
+    assert p.precision == "CQ4"
+    assert p.rotation == "orthogonal"
+    assert p.layout == "interleaved_4row"
+
+
+def test_policy_lfm_qwen_tied_embeddings_interleaved_cq4():
+    for family in ("lfm2", "qwen"):
+        embed = cactus_name_for_tensor("model.language_model.embed_tokens.weight", family, 1)
+        embed_policy = policy_for_tensor(embed, (65536, 2048), 2, family)
+        assert embed.output_name == "token_embeddings.weights"
+        assert embed_policy.precision == "CQ4"
+        assert embed_policy.rotation == "orthogonal"
+        assert embed_policy.layout == "interleaved_4row"
+        _validate_cq_layout(embed_policy, (65536, 2048), embed.source_name, embed.output_name)
+
+        lm_head = cactus_name_for_tensor("lm_head.weight", family, 1)
+        lm_head_policy = policy_for_tensor(lm_head, (65536, 2048), 2, family)
+        assert lm_head.output_name == "output_weight.weights"
+        assert lm_head_policy.precision == "CQ4"
+        assert lm_head_policy.rotation == "orthogonal"
+        assert lm_head_policy.layout == "interleaved_4row"
+        _validate_cq_layout(lm_head_policy, (65536, 2048), lm_head.source_name, lm_head.output_name)
+
+
+def test_interleaved_lm_head_policy_rejects_unsupported_shape():
+    match = cactus_name_for_tensor("lm_head.weight", "generic", 1)
+    p = policy_for_tensor(match, (101, 64), 2, "generic")
+    try:
+        _validate_cq_layout(p, (101, 64), "lm_head.weight", "output_weight.weights")
+    except RuntimeError:
+        return
+    raise AssertionError("expected unsupported interleaved LM-head shape to fail")
 
 
 def test_adapter_registry_preserves_family_names():
