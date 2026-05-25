@@ -372,6 +372,69 @@ bool test_graph_save_for_inspection() {
     }
 }
 
+bool test_rejects_malformed_interleaved_cq() {
+    const std::string filename = "test_bad_interleaved_cq.weights";
+    const uint32_t flags = (1u << 1) | (1u << 2);
+    const uint32_t alignment = 32;
+    const uint64_t k = 32;
+    const uint32_t precision = static_cast<uint32_t>(Precision::CQ4);
+    auto pad_to = [](std::ofstream& out, size_t offset, size_t alignment) {
+        size_t aligned = ((offset + alignment - 1) / alignment) * alignment;
+        for (size_t i = offset; i < aligned; ++i) out.put('\0');
+        return aligned;
+    };
+    auto write_file = [&](uint64_t n, uint64_t scales_bytes) {
+        const uint64_t data_bytes = n * k / 2;
+        std::ofstream out(filename, std::ios::binary);
+        out.write("CACT", 4);
+        out.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
+        out.write(reinterpret_cast<const char*>(&alignment), sizeof(alignment));
+        uint32_t ndim = 2;
+        out.write(reinterpret_cast<const char*>(&ndim), sizeof(ndim));
+        uint64_t dims[4] = {n, k, 0, 0};
+        out.write(reinterpret_cast<const char*>(dims), sizeof(dims));
+        out.write(reinterpret_cast<const char*>(&precision), sizeof(precision));
+        out.write(reinterpret_cast<const char*>(&data_bytes), sizeof(data_bytes));
+        out.write(reinterpret_cast<const char*>(&scales_bytes), sizeof(scales_bytes));
+        uint32_t group_size = static_cast<uint32_t>(k);
+        uint32_t num_groups = 1;
+        out.write(reinterpret_cast<const char*>(&group_size), sizeof(group_size));
+        out.write(reinterpret_cast<const char*>(&num_groups), sizeof(num_groups));
+        out.write(reinterpret_cast<const char*>(&n), sizeof(n));
+        size_t offset = pad_to(out, 84, alignment);
+        for (uint64_t i = 0; i < scales_bytes; ++i) out.put('\0');
+        offset = pad_to(out, offset + static_cast<size_t>(scales_bytes), alignment);
+        for (uint64_t i = 0; i < data_bytes; ++i) out.put('\0');
+    };
+
+    const uint64_t valid_n = 8;
+    const uint64_t valid_scales_bytes =
+        16 * sizeof(__fp16) + 2 * k * sizeof(__fp16) + valid_n * sizeof(__fp16) + k * k * sizeof(__fp16);
+    write_file(5, 16 * sizeof(__fp16) + 2 * k * sizeof(__fp16) + 5 * sizeof(__fp16) + k * k * sizeof(__fp16));
+    bool rejected = false;
+    try {
+        CactusGraph graph;
+        graph.mmap_weights(filename);
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    if (!rejected) {
+        std::remove(filename.c_str());
+        return false;
+    }
+
+    write_file(valid_n, valid_scales_bytes - sizeof(__fp16));
+    rejected = false;
+    try {
+        CactusGraph graph;
+        graph.mmap_weights(filename);
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    std::remove(filename.c_str());
+    return rejected;
+}
+
 bool run_benchmarks() {
     const int ITERS = 100;
     const std::string temp_file = "bench_io_50nodes.cg";
@@ -432,6 +495,7 @@ int main() {
     runner.run_test("Graph Save/Load Roundtrip Execution", test_graph_save_load_roundtrip_execution());
     runner.run_test("Graph Save/Load Supported Ops Roundtrip", test_graph_save_load_supported_ops_roundtrip());
     runner.run_test("Graph Save For Inspection", test_graph_save_for_inspection());
+    runner.run_test("Reject Malformed Interleaved CQ", test_rejects_malformed_interleaved_cq());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import struct
 
 import numpy as np
+import torch
 
 from cactus.convert.cactus_adapters.tensor_io import (
     FLAG_HAS_SCALES,
@@ -11,6 +13,8 @@ from cactus.convert.cactus_adapters.tensor_io import (
     save_pointwise_conv1d_int8_with_header,
     save_tensor_with_header,
 )
+from cactus.convert.export.qdq import FLAG_INTERLEAVED_4ROW, FLAG_ORTHOGONAL_ROTATION, dequantize_cq_file, read_header
+from cactus.convert.interleave_orthogonal_cq4 import interleave_orthogonal_cq4_file
 from cactus.convert.quantization.cq import PRECISION_CQ, pack_indices_lsb, quantize_hadamard, quantize_orthogonal, write_cq_tensor
 
 
@@ -50,6 +54,35 @@ def test_orthogonal_embedding_is_cq4(tmp_path):
     precision = struct.unpack_from("<I", out.read_bytes(), 48)[0]
     assert precision == PRECISION_CQ[4]
     assert cq.rotation_family == "orthogonal"
+
+
+def test_orthogonal_interleaved_cq4_qdq_matches_row_major(tmp_path):
+    w = np.random.default_rng(2).standard_normal((8, 32), dtype=np.float32)
+    cq = quantize_orthogonal(w, bits=4)
+    row_path = tmp_path / "row.weights"
+    inter_path = tmp_path / "inter.weights"
+    write_cq_tensor(row_path, cq)
+    write_cq_tensor(inter_path, replace(cq, interleaved_4row=True))
+
+    inter_header = read_header(inter_path)
+    assert inter_header.flags & FLAG_ORTHOGONAL_ROTATION
+    assert inter_header.flags & FLAG_INTERLEAVED_4ROW
+
+    row = dequantize_cq_file(row_path, read_header(row_path), torch.float32, 4)
+    inter = dequantize_cq_file(inter_path, inter_header, torch.float32, 4)
+    assert torch.max(torch.abs(row - inter)).item() <= 1e-6
+
+
+def test_interleave_orthogonal_cq4_file_preserves_qdq(tmp_path):
+    w = np.random.default_rng(3).standard_normal((8, 32), dtype=np.float32)
+    src = tmp_path / "src.weights"
+    dst = tmp_path / "dst.weights"
+    write_cq_tensor(src, quantize_orthogonal(w, bits=4))
+    interleave_orthogonal_cq4_file(src, dst)
+
+    src_tensor = dequantize_cq_file(src, read_header(src), torch.float32, 4)
+    dst_tensor = dequantize_cq_file(dst, read_header(dst), torch.float32, 4)
+    assert torch.max(torch.abs(src_tensor - dst_tensor)).item() <= 1e-6
 
 
 def test_int8_bias_uses_cactus_grouped_layout(tmp_path):

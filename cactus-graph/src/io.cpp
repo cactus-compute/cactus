@@ -52,6 +52,59 @@ namespace {
         return filename;
     }
 
+    void validate_interleaved_4row_tensor(
+        Precision precision,
+        const std::vector<size_t>& shape,
+        size_t group_size,
+        size_t num_groups,
+        size_t byte_size,
+        size_t scales_bytes,
+        bool orthogonal) {
+        if (!PrecisionTraits::is_cq(precision) || group_size == 0 || num_groups == 0) {
+            throw std::runtime_error("Invalid tensor file: INTERLEAVED_4ROW requires grouped CQ precision");
+        }
+        if (shape.size() != 2) {
+            throw std::runtime_error("Invalid tensor file: INTERLEAVED_4ROW requires a rank-2 tensor");
+        }
+        const uint32_t bits = PrecisionTraits::cq_bits(precision);
+        const size_t n = shape[0];
+        const size_t k = shape[1];
+        if (bits < 1 || bits > 4) {
+            throw std::runtime_error("Invalid tensor file: INTERLEAVED_4ROW only supports CQ1..CQ4");
+        }
+        if ((n % 4) != 0) {
+            throw std::runtime_error("Invalid tensor file: INTERLEAVED_4ROW requires N % 4 == 0");
+        }
+        if (group_size * num_groups != k) {
+            throw std::runtime_error("Invalid tensor file: INTERLEAVED_4ROW group metadata does not match tensor shape");
+        }
+        if (orthogonal) {
+            if (bits != 4 || num_groups != 1 || group_size != k || (k % 32) != 0) {
+                throw std::runtime_error("Invalid tensor file: orthogonal INTERLEAVED_4ROW requires full-width CQ4 with K % 32 == 0");
+            }
+        } else if ((group_size % 32) != 0 || group_size > 256) {
+            throw std::runtime_error("Invalid tensor file: INTERLEAVED_4ROW requires group_size % 32 == 0 and group_size <= 256");
+        }
+
+        const size_t packed_group_bytes = (group_size * bits + 7) / 8;
+        const size_t expected_bytes = n * num_groups * packed_group_bytes;
+        if (byte_size != expected_bytes) {
+            throw std::runtime_error("Invalid tensor file: INTERLEAVED_4ROW packed byte size mismatch");
+        }
+
+        const size_t codebook_bytes = (static_cast<size_t>(1) << bits) * sizeof(__fp16);
+        const size_t input_scale_bytes = k * sizeof(__fp16);
+        const size_t norms_bytes = n * num_groups * sizeof(__fp16);
+        const size_t rotation_bytes = orthogonal
+            ? k * k * sizeof(__fp16)
+            : 2 * group_size + group_size * sizeof(uint32_t);
+        const size_t expected_scales_bytes =
+            codebook_bytes + 2 * input_scale_bytes + norms_bytes + rotation_bytes;
+        if (scales_bytes != expected_scales_bytes) {
+            throw std::runtime_error("Invalid tensor file: INTERLEAVED_4ROW metadata byte size mismatch");
+        }
+    }
+
     inline void write_u32(std::ostream& out, uint32_t v) {
       out.write(reinterpret_cast<const char*>(&v), sizeof(v));
     }
@@ -1016,6 +1069,11 @@ void MappedFile::parse_header() {
         if (dims[i] > 0) {
             shape_.push_back(static_cast<size_t>(dims[i]));
         }
+    }
+
+    if (is_interleaved_4row_) {
+        validate_interleaved_4row_tensor(
+            precision_, shape_, group_size_, num_groups_, byte_size_, scales_bytes_, is_orthogonal_rotation_);
     }
 
     size_t aligned_header = align_offset(header_size, alignment_);
