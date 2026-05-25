@@ -55,37 +55,25 @@ def _try_cq_download(model_id, *, bits, token, cache_dir, weights_dir):
     """Try pre-converted CQ weights from Cactus-Compute. Returns path or None."""
     from .download import get_model_dir_name
     from .utils import (
-        combo_label,
         download_cq_archive,
         list_hf_cq_archives,
         resolve_archive,
         suggested_cq_repo,
     )
 
-    cq_repo_id = (
-        model_id
-        if model_id.lower().endswith("-cq") and "/" in model_id
-        else suggested_cq_repo(model_id)
-    )
+    cq_repo_id = suggested_cq_repo(model_id)
     try:
         archives = list_hf_cq_archives(cq_repo_id, token=token)
         if not archives:
             return None
         local_name = get_model_dir_name(model_id)
-        resolution = resolve_archive(cq_repo_id, local_name, archives, {"L": bits})
-        for w in resolution.warnings:
-            print_color(YELLOW, f"  {w}")
-        size_text = (
-            f" ({resolution.archive.size / (1024 * 1024):.1f} MiB)"
-            if resolution.archive.size
-            else ""
-        )
-        print(f"  Downloading pre-converted {resolution.archive.filename}"
-              f" [{combo_label(resolution.archive.combo)}]{size_text}")
+        resolution = resolve_archive(cq_repo_id, local_name, archives, bits)
+        size_mb = f" ({resolution.archive.size / (1024 * 1024):.1f} MiB)" if resolution.archive.size else ""
+        print(f"  Downloading pre-converted {resolution.archive.filename} [cq{bits}]{size_mb}")
         download_cq_archive(resolution, weights_dir, token=token, cache_dir=cache_dir)
         print_color(GREEN, f"CQ model ready at {weights_dir}")
         return weights_dir
-    except Exception as exc:
+    except (RuntimeError, OSError) as exc:
         print(f"  Pre-converted CQ not available ({exc})")
         return None
 

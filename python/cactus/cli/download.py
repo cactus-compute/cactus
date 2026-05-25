@@ -1,8 +1,7 @@
 """Download command and path helpers."""
 from pathlib import Path
 
-
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+from .common import PROJECT_ROOT, is_repo_checkout
 
 
 def get_model_dir_name(model_id):
@@ -10,9 +9,15 @@ def get_model_dir_name(model_id):
     return model_id.split("/")[-1].lower()
 
 
+def _weights_root():
+    if is_repo_checkout():
+        return PROJECT_ROOT / "weights"
+    return Path.home() / ".cache" / "cactus" / "weights"
+
+
 def get_weights_dir(model_id):
-    """Return ``<project>/weights/<model_name>``."""
-    return _PROJECT_ROOT / "weights" / get_model_dir_name(model_id)
+    """Return the weights directory for a model."""
+    return _weights_root() / get_model_dir_name(model_id)
 
 
 def ensure_model(model_id):
@@ -33,6 +38,6 @@ def cmd_download(args):
     try:
         download_model(model_id, token=args.token, cache_dir=args.cache_dir)
         return 0
-    except Exception as e:
+    except (RuntimeError, OSError) as e:
         print_color(RED, f"Download failed: {e}")
         return 1

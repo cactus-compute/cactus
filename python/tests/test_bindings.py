@@ -323,10 +323,26 @@ class TestCliParser:
         assert args.model_id == "gemma4"
         assert args.prompt == "hi"
 
+    def test_run_command_chunked_bundle_flags(self):
+        args = self.parser.parse_args([
+            "run", "bundle",
+            "--file", "audio.wav",
+            "--image-file", "image.png",
+            "--input-ids", "1,2,3",
+            "--max-new-tokens", "4",
+            "--result-json", "result.json",
+        ])
+        assert args.command == "run"
+        assert args.audio_file == "audio.wav"
+        assert args.image_file == ["image.png"]
+        assert args.input_ids == "1,2,3"
+        assert args.max_new_tokens == 4
+        assert args.result_json == "result.json"
+
     def test_convert_command(self):
         args = self.parser.parse_args(["convert", "qwen", "--bits", "2"])
         assert args.command == "convert"
-        assert args.model_name == "qwen"
+        assert args.model_id == "qwen"
         assert args.bits == 2
 
     def test_build_command(self):

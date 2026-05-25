@@ -1,14 +1,11 @@
 import os
-import platform
 import subprocess
-import sys
 from pathlib import Path
 
-from .common import PROJECT_ROOT, print_color, RED, GREEN
+from .common import print_color, RED, GREEN
 
 
 def _resolve_bundle_dir(model_id):
-    """Return bundle root if model_id points to a local transpiled bundle."""
     path = Path(model_id).expanduser()
     if not path.exists() or not path.is_dir():
         return None
@@ -20,7 +17,6 @@ def _resolve_bundle_dir(model_id):
 
 
 def cmd_run(args):
-    """Run a model — auto-converts if needed."""
     from .model import resolve_model_id, ensure_bundle
 
     if args.no_cloud_tele:
@@ -37,10 +33,10 @@ def cmd_run(args):
                 reconvert=args.reconvert,
             )
         except RuntimeError as e:
-            print_color(RED, str(e))
+            print_color(RED, f"Model setup failed: {e}")
             return 1
 
-    chat = PROJECT_ROOT / "cactus-engine" / "tests" / "build" / "chat"
+    chat = Path(__file__).resolve().parent.parent / "bin" / "chat"
     if not chat.exists():
         print_color(RED, "Chat binary not found. Run `cactus build` first.")
         return 1
@@ -71,10 +67,6 @@ def cmd_run(args):
     if getattr(args, 'thinking', False):
         cmd.append("--thinking")
 
-    if sys.stdout.isatty():
-        subprocess.run(["clear" if platform.system() != "Windows" else "cls"],
-                       shell=False, check=False,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print_color(GREEN, f"Starting Cactus Chat with model: {bundle_dir}")
     print()
 

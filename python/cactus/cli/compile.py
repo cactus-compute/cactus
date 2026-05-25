@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import platform
 from pathlib import Path
@@ -139,7 +140,10 @@ def build_binary(
         print_color(RED, f"{name} build failed")
         return 1
 
-    print_color(GREEN, f"Build complete: {build_dir / name}")
+    bin_dir = Path(__file__).resolve().parent.parent / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(build_dir / name, bin_dir / name)
+    print_color(GREEN, f"Build complete: {bin_dir / name}")
     return 0
 
 
@@ -175,7 +179,7 @@ def cmd_build(args):
     if not build_script.exists():
         print_color(RED, f"Error: build.sh not found at {build_script}")
         return 1
-    result = run_command(str(build_script), cwd=cactus_dir, check=False)
+    result = run_command(str(build_script), cwd=cactus_dir)
     if result.returncode != 0:
         print_color(RED, "Failed to build cactus library")
         return 1
@@ -224,7 +228,7 @@ def _build_with_script(subdir, title):
         print_color(RED, f"Error: build.sh not found at {build_script}")
         return 1
 
-    result = run_command(str(build_script), cwd=PROJECT_ROOT / subdir, check=False)
+    result = run_command(str(build_script), cwd=PROJECT_ROOT / subdir)
     if result.returncode != 0:
         print_color(RED, f"{title} failed")
         return 1
@@ -249,7 +253,7 @@ def cmd_build_python():
         print_color(RED, f"Error: build.sh not found at {build_script}")
         return 1
 
-    result = run_command(str(build_script), cwd=cactus_dir, check=False)
+    result = run_command(str(build_script), cwd=cactus_dir)
     if result.returncode != 0:
         print_color(RED, "Build failed")
         return 1

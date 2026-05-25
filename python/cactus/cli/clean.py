@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .common import (
     PROJECT_ROOT,
-    print_color,
+    print_color, mask_key,
     GREEN, YELLOW, BLUE,
 )
 
@@ -48,8 +48,7 @@ def cmd_clean(args):
     saved_key = config.load_config().get("api_key", "")
     if saved_key:
         config.cache_api_key(saved_key)
-        masked = saved_key[:4] + "..." + saved_key[-4:]
-        print(f"Restored cached API key: {masked}")
+        print(f"Restored cached API key: {mask_key(saved_key)}")
 
     print()
     print("Removing compiled libraries and frameworks...")

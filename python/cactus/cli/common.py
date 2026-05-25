@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import sys
 import os
 import subprocess
 import shutil
@@ -35,6 +34,12 @@ def _resolve_project_root():
 
 
 PROJECT_ROOT = _resolve_project_root()
+
+
+def is_repo_checkout():
+    return _looks_like_project_root(PROJECT_ROOT)
+
+
 DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_TEST_MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
@@ -52,19 +57,19 @@ def print_color(color, message):
     print(f"{color}{message}{NC}")
 
 
+def mask_key(key):
+    return key[:4] + "..." + key[-4:] if len(key) >= 8 else "***"
+
+
 def check_command(cmd):
     """Check if a command is available in PATH."""
     return shutil.which(cmd) is not None
 
 
-def run_command(cmd, cwd=None, check=True):
-    """Run a script or command and optionally exit on failure."""
+def run_command(cmd, cwd=None):
     if isinstance(cmd, str):
         cmd = [cmd]
-    result = subprocess.run(cmd, cwd=cwd)
-    if check and result.returncode != 0:
-        sys.exit(result.returncode)
-    return result
+    return subprocess.run(cmd, cwd=cwd)
 
 
 def prompt_for_api_key(config):
@@ -82,7 +87,6 @@ def prompt_for_api_key(config):
     api_key = input("Your Cactus Cloud key (press Enter to skip): ").strip()
     if api_key:
         config.set_api_key(api_key)
-        masked = api_key[:4] + "..." + api_key[-4:]
-        print_color(GREEN, f"API key saved: {masked}")
+        print_color(GREEN, f"API key saved: {mask_key(api_key)}")
     print()
     return api_key

@@ -6,7 +6,7 @@ def cmd_convert(args):
     """Convert a HuggingFace model to CQ format and transpile it in place."""
     from .model import resolve_model_id, ensure_bundle, TranspileOptions
 
-    model_id = resolve_model_id(args.model_name)
+    model_id = resolve_model_id(args.model_id)
     output_dir = args.output_dir or str(get_weights_dir(model_id))
 
     try:

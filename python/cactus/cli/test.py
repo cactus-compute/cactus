@@ -36,7 +36,7 @@ def cmd_test(args):
         print_color(YELLOW, "Warning: iOS tests without --reconvert may use stale weights.")
 
     try:
-        weights_dir = ensure_weights(args.model, token=args.token, reconvert=args.reconvert)
+        weights_dir = ensure_weights(args.model_id, token=args.token, reconvert=args.reconvert)
     except RuntimeError as e:
         print_color(RED, f"Failed to download model weights: {e}")
         return 1

@@ -1,7 +1,6 @@
 """Cactus Python FFI bindings."""
 import ctypes
 import json
-import os
 import platform
 from pathlib import Path
 
@@ -11,10 +10,6 @@ _LIB_NAME = "libcactus.dylib" if platform.system() == "Darwin" else "libcactus.s
 
 
 def _find_library():
-    override = os.environ.get("CACTUS_LIB_PATH")
-    if override:
-        return Path(override).expanduser().resolve()
-
     bundled = Path(__file__).parent / "lib" / _LIB_NAME
     if bundled.exists():
         return bundled

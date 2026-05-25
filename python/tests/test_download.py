@@ -10,11 +10,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cactus.cli.utils import (
     archives_from_repo_files,
-    combo_label,
-    parse_combo,
+    parse_cq_bits,
     promote_single_root,
     resolve_archive,
-    resolve_cq_repo,
     safe_extract_archive,
     suggested_cq_repo,
     validate_extracted_cq,
@@ -23,65 +21,66 @@ from cactus.cli.utils import (
 
 
 class TestCqDownloadResolver(unittest.TestCase):
-    def test_resolve_requires_cactus_compute_cq_repo(self):
-        self.assertEqual(
-            resolve_cq_repo("Cactus-Compute/lfm2p5-350m-cq"),
-            ("Cactus-Compute/lfm2p5-350m-cq", "lfm2p5-350m"),
-        )
-        with self.assertRaisesRegex(RuntimeError, "try Cactus-Compute/LFM2.5-350M-cq"):
-            resolve_cq_repo("LiquidAI/LFM2.5-350M")
-
-    def test_suggested_cq_repo_replaces_org_and_adds_suffix(self):
+    def test_suggested_cq_repo_strips_org(self):
         self.assertEqual(
             suggested_cq_repo("LiquidAI/LFM2.5-350M"),
-            "Cactus-Compute/LFM2.5-350M-cq",
+            "Cactus-Compute/LFM2.5-350M",
         )
         self.assertEqual(
-            suggested_cq_repo("OtherOrg/model-cq"),
-            "Cactus-Compute/model-cq",
+            suggested_cq_repo("google/gemma-4-E2B-it"),
+            "Cactus-Compute/gemma-4-E2B-it",
         )
 
-    def test_parse_combo_is_order_insensitive(self):
-        self.assertEqual(parse_combo("L4V3A4.zip"), {"L": 4, "V": 3, "A": 4})
-        self.assertEqual(parse_combo("A4V4L1.zip"), {"A": 4, "V": 4, "L": 1})
-
-    def test_parse_combo_rejects_loose_or_duplicate_names(self):
-        self.assertEqual(parse_combo("model-L4.zip"), {})
-        self.assertEqual(parse_combo("L4L3.zip"), {})
-        self.assertEqual(parse_combo("L4-extra.zip"), {})
-
-    def test_strict_combo_match(self):
-        archives = archives_from_repo_files(["L1V4.zip", "L2V4.zip", "L3V4.zip", "L4V4.zip", "model-L4V4.zip"])
-        resolution = resolve_archive(
-            "Cactus-Compute/lfm2p5-vl-1p6b-cq",
-            "lfm2.5-vl-1.6b",
-            archives,
-            {"L": 4, "V": 4},
+    def test_suggested_cq_repo_strips_existing_cq_suffix(self):
+        self.assertEqual(
+            suggested_cq_repo("Cactus-Compute/model-cq4"),
+            "Cactus-Compute/model",
         )
-        self.assertEqual(resolution.archive.filename, "L4V4.zip")
-        self.assertEqual(combo_label(resolution.archive.combo), "L4V4")
-
-    def test_missing_supported_combo_errors(self):
-        archives = archives_from_repo_files(["L1V4.zip", "L2V4.zip", "L3V4.zip", "L4V4.zip"])
-        with self.assertRaisesRegex(RuntimeError, "Available combos: L1V4, L2V4, L3V4, L4V4"):
-            resolve_archive(
-                "Cactus-Compute/lfm2p5-vl-1p6b-cq",
-                "lfm2.5-vl-1.6b",
-                archives,
-                {"L": 4, "V": 2},
-            )
-
-    def test_unsupported_modality_warns_and_ignores(self):
-        archives = archives_from_repo_files(["L1.zip", "L2.zip", "L3.zip", "L4.zip"])
-        resolution = resolve_archive(
-            "Cactus-Compute/lfm2p5-350m-cq",
-            "lfm2.5-350m",
-            archives,
-            {"L": 4, "A": 4},
+        self.assertEqual(
+            suggested_cq_repo("Cactus-Compute/model-cq"),
+            "Cactus-Compute/model",
         )
-        self.assertEqual(resolution.archive.filename, "L4.zip")
-        self.assertEqual(len(resolution.warnings), 1)
-        self.assertIn("has no A modality", resolution.warnings[0])
+
+    def test_parse_cq_bits(self):
+        self.assertEqual(parse_cq_bits("gemma-4-E2B-it-cq1.zip"), 1)
+        self.assertEqual(parse_cq_bits("gemma-4-E2B-it-cq4.zip"), 4)
+        self.assertEqual(parse_cq_bits("gemma-4-E2B-it-CQ3.tar.gz"), 3)
+        self.assertIsNone(parse_cq_bits("README.md"))
+        self.assertIsNone(parse_cq_bits("L4V4A4.zip"))
+
+    def test_archives_from_repo_files(self):
+        files = [
+            "gemma-4-E2B-it-cq1.zip",
+            "gemma-4-E2B-it-cq2.zip",
+            "gemma-4-E2B-it-cq3.zip",
+            "gemma-4-E2B-it-cq4.zip",
+            "README.md",
+            "config.json",
+        ]
+        sizes = {"gemma-4-E2B-it-cq4.zip": 500_000_000}
+        archives = archives_from_repo_files(files, sizes=sizes)
+        self.assertEqual(len(archives), 4)
+        self.assertEqual(archives[0].bits, 1)
+        self.assertEqual(archives[3].bits, 4)
+        self.assertEqual(archives[3].size, 500_000_000)
+        self.assertIsNone(archives[0].size)
+
+    def test_resolve_archive_finds_match(self):
+        files = ["model-cq1.zip", "model-cq2.zip", "model-cq3.zip", "model-cq4.zip"]
+        archives = archives_from_repo_files(files)
+        resolution = resolve_archive("Cactus-Compute/model", "model", archives, 4)
+        self.assertEqual(resolution.archive.filename, "model-cq4.zip")
+        self.assertEqual(resolution.archive.bits, 4)
+
+    def test_resolve_archive_missing_bits_errors(self):
+        files = ["model-cq1.zip", "model-cq2.zip"]
+        archives = archives_from_repo_files(files)
+        with self.assertRaisesRegex(RuntimeError, "cq4 not found"):
+            resolve_archive("Cactus-Compute/model", "model", archives, 4)
+
+    def test_resolve_archive_empty_errors(self):
+        with self.assertRaisesRegex(RuntimeError, "No CQ archives"):
+            resolve_archive("Cactus-Compute/model", "model", [], 4)
 
 
 class TestCqSafeExtraction(unittest.TestCase):
@@ -103,11 +102,11 @@ class TestCqSafeExtraction(unittest.TestCase):
 
     def test_zip_extract_and_promote_single_root(self):
         package = self.root / "pkg"
-        self._write_minimal_package(package / "L4")
-        archive = self.root / "L4.zip"
+        self._write_minimal_package(package / "model-cq4")
+        archive = self.root / "model-cq4.zip"
         with zipfile.ZipFile(archive, "w") as zf:
-            for path in (package / "L4").iterdir():
-                zf.write(path, f"L4/{path.name}")
+            for path in (package / "model-cq4").iterdir():
+                zf.write(path, f"model-cq4/{path.name}")
 
         out = self.root / "out"
         out.mkdir()
@@ -131,7 +130,7 @@ class TestCqSafeExtraction(unittest.TestCase):
             validate_extracted_cq(package)
 
     def test_verify_archive_sha256_rejects_mismatch(self):
-        archive = self.root / "L4.zip"
+        archive = self.root / "model-cq4.zip"
         archive.write_bytes(b"archive")
         with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
             verify_archive_sha256(archive, "0" * 64)

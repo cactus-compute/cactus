@@ -4,6 +4,7 @@ from __future__ import annotations
 import platform
 import shutil
 import subprocess
+from pathlib import Path
 
 from .common import PROJECT_ROOT, YELLOW, print_color
 
@@ -42,6 +43,9 @@ def ensure_library():
 
 def _python_runtime_library_path():
     suffix = ".dylib" if platform.system() == "Darwin" else ".so"
+    bundled = Path(__file__).resolve().parent.parent / "bindings" / "lib" / f"libcactus{suffix}"
+    if bundled.exists():
+        return bundled
     return PROJECT_ROOT / "cactus" / "build" / f"libcactus{suffix}"
 
 
@@ -130,8 +134,8 @@ def ensure_python_runtime_library():
 
     if (
         library_path.exists()
-        and static_lib.exists()
-        and library_path.stat().st_mtime >= static_lib.stat().st_mtime
+        and (not static_lib.exists()
+             or library_path.stat().st_mtime >= static_lib.stat().st_mtime)
     ):
         return library_path
 
