@@ -176,6 +176,8 @@ inline float16x8_t apply_f32_op_on_f16x8(float16x8_t v, F32x4Op op) {
 namespace CactusThreading {
 
 #if defined(__ANDROID__)
+    static constexpr size_t ANDROID_DYNAMIC_CHUNK_MULTIPLIER = 16;
+
     struct CoreTopology {
         std::vector<int> performance_cores;  
         std::vector<int> all_cores;
@@ -312,12 +314,14 @@ namespace CactusThreading {
 
             workers.reserve(num_workers_);
             for (size_t i = 0; i < num_workers_; ++i) {
-                workers.emplace_back([this]() {
+                workers.emplace_back([this, i]() {
 #if defined(__ANDROID__)
                     auto& perf = CoreTopology::get().performance_cores;
                     if (!perf.empty()) {
-                        pin_current_thread_to_cores(perf);
+                        pin_current_thread_to_cores({perf[i % perf.size()]});
                     }
+#else
+                    (void)i;
 #endif
                     worker_thread();
                 });
@@ -390,16 +394,22 @@ namespace CactusThreading {
             if (total_work == 0 || num_threads == 0) return;
 
             num_threads = std::min(num_threads, std::min(num_workers_, total_work));
-            const size_t per_thread = total_work / num_threads;
-            const size_t remainder = total_work % num_threads;
+            size_t num_tasks = num_threads;
+#if defined(__ANDROID__)
+            if (num_threads > 1) {
+                num_tasks = std::min(total_work, std::max(num_threads, num_threads * ANDROID_DYNAMIC_CHUNK_MULTIPLIER));
+            }
+#endif
+            const size_t per_task = total_work / num_tasks;
+            const size_t remainder = total_work % num_tasks;
 
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                pending_tasks.fetch_add(num_threads, std::memory_order_relaxed);
+                pending_tasks.fetch_add(num_tasks, std::memory_order_relaxed);
 
-                for (size_t t = 0; t < num_threads; ++t) {
-                    size_t start = t * per_thread + std::min(t, remainder);
-                    size_t end = start + per_thread + (t < remainder ? 1 : 0);
+                for (size_t t = 0; t < num_tasks; ++t) {
+                    size_t start = t * per_task + std::min(t, remainder);
+                    size_t end = start + per_task + (t < remainder ? 1 : 0);
                     tasks.emplace_back([=]() { task_func(start, end); });
                 }
             }
@@ -556,6 +566,14 @@ namespace CactusThreading {
         }
 
         auto& pool = get_thread_pool();
+#if defined(__ANDROID__)
+        if (wait) {
+            pool.enqueue_n_threads(total_work, num_threads, work_func);
+            pool.wait_all();
+            return handle;
+        }
+#endif
+
         const size_t work_per_thread = total_work / num_threads;
 
         for (size_t t = 0; t < num_threads; ++t) {
