@@ -1,0 +1,255 @@
+{
+  "format": "jax_user_graph_bundle.v0",
+  "model": "needle_real",
+  "max_enc_len": 256,
+  "max_gen_len": 48,
+  "checkpoint": "checkpoints/needle.pkl",
+  "tokenizer_model": "checkpoints/tokenizer/needle.model",
+  "weights_dir": "artifacts/needle_jax_user_graph_bundle/weights",
+  "weights_manifest": "artifacts/needle_jax_user_graph_bundle/weights/weights_manifest.json",
+  "components_manifest": "artifacts/needle_jax_user_graph_bundle/components/manifest.json",
+  "graphs": {
+    "encoder": {
+      "path": "components/encoder/graph.cactus",
+      "role": "encoder",
+      "input_names": [
+        "source_tokens",
+        "src_mask"
+      ],
+      "output_names": [
+        "encoder_out",
+        "enc_mask"
+      ],
+      "runtime_input_node_ids": [
+        1,
+        2
+      ],
+      "output_node_ids": [
+        3084,
+        2
+      ],
+      "bound_constant_bindings": [
+        {
+          "node_id": 3,
+          "value_id": "v2",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/embedding.embedding.weights",
+          "kind": "weight",
+          "source_name": "embedding.embedding"
+        },
+        {
+          "node_id": 4,
+          "value_id": "v3",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/encoder.layers.EncoderBlock_0.ZCRMSNorm_0.scale.weights",
+          "kind": "weight",
+          "source_name": "encoder.layers.EncoderBlock_0.ZCRMSNorm_0.scale"
+        },
+        {
+          "node_id": 5,
+          "value_id": "v4",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/encoder.layers.EncoderBlock_0.attn_gate.weights",
+          "kind": "weight",
+          "source_name": "encoder.layers.EncoderBlock_0.attn_gate"
+        },
+        {
+          "node_id": 6,
+          "value_id": "v5",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/encoder.layers.EncoderBlock_0.self_attn.k_norm.scale.weights",
+          "kind": "weight",
+          "source_name": "encoder.layers.EncoderBlock_0.self_attn.k_norm.scale"
+        },
+        {
+          "node_id": 7,
+          "value_id": "v6",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/encoder.layers.EncoderBlock_0.self_attn.k_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "encoder.layers.EncoderBlock_0.self_attn.k_proj.kernel"
+        },
+        {
+          "node_id": 8,
+          "value_id": "v7",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/encoder.layers.EncoderBlock_0.self_attn.out_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "encoder.layers.EncoderBlock_0.self_attn.out_proj.kernel"
+        },
+        {
+          "node_id": 9,
+          "value_id": "v8",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/encoder.layers.EncoderBlock_0.self_attn.q_norm.scale.weights",
+          "kind": "weight",
+          "source_name": "encoder.layers.EncoderBlock_0.self_attn.q_norm.scale"
+        },
+        {
+          "node_id": 10,
+          "value_id": "v9",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/encoder.layers.EncoderBlock_0.self_attn.q_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "encoder.layers.EncoderBlock_0.self_attn.q_proj.kernel"
+        },
+        {
+          "node_id": 11,
+          "value_id": "v10",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/encoder.layers.EncoderBlock_0.self_attn.v_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "encoder.layers.EncoderBlock_0.self_attn.v_proj.kernel"
+        },
+        {
+          "node_id": 12,
+          "value_id": "v11",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/encoder.final_norm.scale.weights",
+          "kind": "weight",
+          "source_name": "encoder.final_norm.scale"
+        }
+      ]
+    },
+    "decoder_prefill": {
+      "path": "components/decoder_prefill/graph.cactus",
+      "role": "decoder_prefill",
+      "input_names": [
+        "target_tokens",
+        "encoder_out",
+        "self_mask",
+        "cross_mask"
+      ],
+      "output_names": [
+        "logits"
+      ],
+      "runtime_input_node_ids": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "output_node_ids": [
+        3876
+      ],
+      "bound_constant_bindings": [
+        {
+          "node_id": 5,
+          "value_id": "v4",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/embedding.embedding.weights",
+          "kind": "weight",
+          "source_name": "embedding.embedding"
+        },
+        {
+          "node_id": 6,
+          "value_id": "v5",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.ZCRMSNorm_0.scale.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.ZCRMSNorm_0.scale"
+        },
+        {
+          "node_id": 7,
+          "value_id": "v6",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.ZCRMSNorm_1.scale.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.ZCRMSNorm_1.scale"
+        },
+        {
+          "node_id": 8,
+          "value_id": "v7",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.cross_attn.k_norm.scale.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.cross_attn.k_norm.scale"
+        },
+        {
+          "node_id": 9,
+          "value_id": "v8",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.cross_attn.k_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.cross_attn.k_proj.kernel"
+        },
+        {
+          "node_id": 10,
+          "value_id": "v9",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.cross_attn.out_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.cross_attn.out_proj.kernel"
+        },
+        {
+          "node_id": 11,
+          "value_id": "v10",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.cross_attn.q_norm.scale.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.cross_attn.q_norm.scale"
+        },
+        {
+          "node_id": 12,
+          "value_id": "v11",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.cross_attn.q_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.cross_attn.q_proj.kernel"
+        },
+        {
+          "node_id": 13,
+          "value_id": "v12",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.cross_attn.v_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.cross_attn.v_proj.kernel"
+        },
+        {
+          "node_id": 14,
+          "value_id": "v13",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.cross_attn_gate.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.cross_attn_gate"
+        },
+        {
+          "node_id": 15,
+          "value_id": "v14",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.self_attn.k_norm.scale.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.self_attn.k_norm.scale"
+        },
+        {
+          "node_id": 16,
+          "value_id": "v15",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.self_attn.k_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.self_attn.k_proj.kernel"
+        },
+        {
+          "node_id": 17,
+          "value_id": "v16",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.self_attn.out_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.self_attn.out_proj.kernel"
+        },
+        {
+          "node_id": 18,
+          "value_id": "v17",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.self_attn.q_norm.scale.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.self_attn.q_norm.scale"
+        },
+        {
+          "node_id": 19,
+          "value_id": "v18",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.self_attn.q_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.self_attn.q_proj.kernel"
+        },
+        {
+          "node_id": 20,
+          "value_id": "v19",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.self_attn.v_proj.kernel.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.self_attn.v_proj.kernel"
+        },
+        {
+          "node_id": 21,
+          "value_id": "v20",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.layers.DecoderBlock_0.self_attn_gate.weights",
+          "kind": "weight",
+          "source_name": "decoder.layers.DecoderBlock_0.self_attn_gate"
+        },
+        {
+          "node_id": 22,
+          "value_id": "v21",
+          "path": "artifacts/needle_jax_user_graph_bundle/weights/decoder.ZCRMSNorm_0.scale.weights",
+          "kind": "weight",
+          "source_name": "decoder.ZCRMSNorm_0.scale"
+        }
+      ]
+    }
+  }
+}

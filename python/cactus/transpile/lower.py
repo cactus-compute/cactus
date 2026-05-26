@@ -791,7 +791,7 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             if len(base_shape) != 4:
                 raise NotImplementedError(f"gqa_repeat_kv alias requires 4D base tensor, got {base_shape}")
             if len(target_shape) != 4:
-                raise NotImplementedError(f"gqa_repeat_kv reshape requires 4D target shape, got {target_shape}")
+                return [g.reshape(_materialize_broadcast_alias(g, source), target_shape)]
             batch, kv_heads, seq_len, head_dim = base_shape
             if target_shape[0] != batch or target_shape[2] != seq_len or target_shape[3] != head_dim:
                 raise NotImplementedError(
@@ -857,7 +857,12 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [g.permute(x, permutation)]
 
     if op == "permute":
-        x = _legalize_for_transpose(g, _tensor(env, node.inputs[0]))
+        source = env[node.inputs[0]]
+        if isinstance(source, BroadcastAlias):
+            x = _materialize_broadcast_alias(g, source)
+        else:
+            x = _tensor(env, node.inputs[0])
+        x = _legalize_for_transpose(g, x)
         permutation = tuple(_normalize_dim(int(dim), len(x.shape)) for dim in node.attrs["permutation"])
         if len(permutation) == 2 and permutation == (1, 0):
             return [g.transpose(x)]
@@ -1401,7 +1406,11 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [g.cat(reshaped, axis=axis)]
 
     if op == "slice":
-        x = _tensor(env, node.inputs[0])
+        source = env[node.inputs[0]]
+        if isinstance(source, BroadcastAlias):
+            x = _materialize_broadcast_alias(g, source)
+        else:
+            x = _tensor(env, node.inputs[0])
         axis = _normalize_dim(int(node.attrs["axis"]), len(x.shape))
         start = int(node.attrs["start"])
         end = int(node.attrs["end"])
@@ -2153,6 +2162,26 @@ def _tensor(env: dict[str, Any], value_id: str) -> Tensor:
     return value
 
 
+def _materialize_broadcast_alias(g: Graph, value: BroadcastAlias) -> Tensor:
+    if value.kind != "gqa_repeat_kv":
+        raise TypeError(f"unsupported broadcast alias: {value.kind}")
+    base_shape = tuple(int(dim) for dim in value.tensor.shape)
+    logical_shape = tuple(int(dim) for dim in value.logical_shape)
+    if len(base_shape) != 4 or len(logical_shape) not in {4, 5}:
+        raise TypeError(f"gqa_repeat_kv alias expects 4D->4D/5D shape, got {base_shape} -> {logical_shape}")
+    batch, kv_heads, seq_len, head_dim = base_shape
+    if len(logical_shape) == 5:
+        if logical_shape[0] != batch or logical_shape[1] != kv_heads or logical_shape[3] != seq_len or logical_shape[4] != head_dim:
+            raise TypeError(f"gqa_repeat_kv alias shape mismatch: {base_shape} -> {logical_shape}")
+        base = g.reshape(value.tensor, (batch, kv_heads, 1, seq_len, head_dim))
+        return _lower_repeat(g, base, (1, 1, logical_shape[2], 1, 1))
+    if logical_shape[0] != batch or logical_shape[2] != seq_len or logical_shape[3] != head_dim:
+        raise TypeError(f"gqa_repeat_kv alias shape mismatch: {base_shape} -> {logical_shape}")
+    if logical_shape[1] % max(kv_heads, 1) != 0:
+        raise TypeError(f"gqa_repeat_kv head count mismatch: {base_shape} -> {logical_shape}")
+    return _lower_repeat(g, value.tensor, (1, logical_shape[1] // max(kv_heads, 1), 1, 1))
+
+
 def _attention_tensor(env: dict[str, Any], value_id: str) -> Tensor:
     try:
         value = env[value_id]
@@ -2510,6 +2539,110 @@ def _try_lower_advanced_index(
     return _try_lower_embedding_advanced_index(g, node, env, ir)
 
 
+def _producer(ir: IRGraph, value_id: str) -> IRNode | None:
+    value = ir.values.get(value_id)
+    if value is None or value.producer is None:
+        return None
+    return ir.nodes.get(value.producer)
+
+
+def _skip_simple_value_wrappers(ir: IRGraph, value_id: str) -> str:
+    current = value_id
+    for _ in range(8):
+        producer = _producer(ir, current)
+        if producer is None or producer.op not in {"precision_cast", "view", "expand"} or not producer.inputs:
+            return current
+        current = producer.inputs[0]
+    return current
+
+
+def _trace_rms_denominator(ir: IRGraph, value_id: str) -> str | None:
+    sqrt_node = _producer(ir, value_id)
+    if sqrt_node is None or sqrt_node.op != "scalar_sqrt" or not sqrt_node.inputs:
+        return None
+    add_node = _producer(ir, sqrt_node.inputs[0])
+    if add_node is None or add_node.op != "add":
+        return None
+    for add_input in add_node.inputs:
+        mean_id = _skip_simple_value_wrappers(ir, add_input)
+        mean_node = _producer(ir, mean_id)
+        if mean_node is None or mean_node.op not in {"mean", "sum"} or not mean_node.inputs:
+            continue
+        square_node = _producer(ir, mean_node.inputs[0])
+        if square_node is None or square_node.op != "multiply" or len(square_node.inputs) != 2:
+            continue
+        lhs = _skip_simple_value_wrappers(ir, square_node.inputs[0])
+        rhs = _skip_simple_value_wrappers(ir, square_node.inputs[1])
+        if lhs == rhs:
+            return lhs
+    return None
+
+
+def _trace_rms_numerator(ir: IRGraph, value_id: str, source_id: str) -> tuple[str, str] | None:
+    current = value_id
+    producer = _producer(ir, current)
+    if producer is not None and producer.op == "precision_cast" and producer.inputs:
+        current = producer.inputs[0]
+        producer = _producer(ir, current)
+    if producer is None or producer.op != "multiply" or len(producer.inputs) != 2:
+        return None
+    lhs, rhs = producer.inputs
+    if _skip_simple_value_wrappers(ir, lhs) == source_id:
+        return lhs, rhs
+    if _skip_simple_value_wrappers(ir, rhs) == source_id:
+        return rhs, lhs
+    return None
+
+
+def _base_weight_value_id(ir: IRGraph, value_id: str) -> str:
+    current = value_id
+    for _ in range(8):
+        producer = _producer(ir, current)
+        if producer is None or producer.op not in {"view", "expand"} or not producer.inputs:
+            return current
+        current = producer.inputs[0]
+    return current
+
+
+def _lower_rms_norm_tensor(g: Graph, x: Tensor, weight: Tensor, *, eps: float) -> Tensor:
+    original_shape = tuple(int(dim) for dim in x.shape)
+    if not original_shape:
+        return x
+    dim = int(original_shape[-1])
+    x = _ensure_tensor_dtype(g, x, Graph.FP16)
+    weight = _ensure_tensor_dtype(g, weight, Graph.FP16)
+    if len(original_shape) == 2:
+        return g.rms_norm(x, weight, eps=eps)
+    rows = math.prod(original_shape[:-1])
+    out = g.rms_norm(g.reshape(x, (rows, dim)), weight, eps=eps)
+    return g.reshape(out, original_shape)
+
+
+def _try_lower_jax_rms_norm(
+    g: Graph,
+    node: IRNode,
+    env: dict[str, Any],
+    ir: IRGraph,
+) -> Tensor | None:
+    source_id = _trace_rms_denominator(ir, node.inputs[1])
+    if source_id is None:
+        return None
+    numerator = _trace_rms_numerator(ir, node.inputs[0], source_id)
+    if numerator is None:
+        return None
+    x_id, weight_id = numerator
+    x = _tensor(env, x_id)
+    weight_base_id = _base_weight_value_id(ir, weight_id)
+    weight_value = env.get(weight_base_id)
+    if not isinstance(weight_value, Tensor):
+        return None
+    if len(tuple(int(dim) for dim in weight_value.shape)) != 1:
+        return None
+    if int(weight_value.shape[0]) != int(x.shape[-1]):
+        return None
+    return _lower_rms_norm_tensor(g, x, weight_value, eps=1.0e-6)
+
+
 def _normalize_slice_end(end: int, dim_size: int) -> int:
     if end < 0:
         end += dim_size
@@ -2650,6 +2783,9 @@ def _reshape_for_trailing_broadcast(g: Graph, tensor: Tensor, target_shape: tupl
 
     if tensor_rank > target_rank:
         return tensor
+
+    if math.prod(tensor_shape or (1,)) == 1 and target_shape:
+        return g.expand(tensor, target_shape)
 
     padded_shape = (1,) * (target_rank - tensor_rank) + tensor_shape
 
