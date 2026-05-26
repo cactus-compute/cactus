@@ -160,9 +160,18 @@ void BufferDesc::release_to_pool(BufferPool& pool) {
     }
 }
 
+void BufferDesc::release_memory(BufferPool& pool) {
+    release_to_pool(pool);
+    data.reset();
+    external_data = nullptr;
+}
+
 void BufferDesc::set_external(void* ptr) {
     external_data = ptr;
     data.reset();
+    if (pooled_data) {
+        delete[] pooled_data;
+    }
     pooled_data = nullptr;
 }
 
@@ -246,6 +255,29 @@ void CactusGraph::allocate_buffers() {
     for (auto& node : nodes_) {
         if (node->op_type != OpType::INPUT) {
             node->output_buffer.allocate();
+        }
+    }
+}
+
+void CactusGraph::release_runtime_buffers() {
+    for (auto& node : nodes_) {
+        if (node->op_type == OpType::INPUT) continue;
+        if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) continue;
+        if (persistent_node_ids_.count(node->id)) continue;
+        node->output_buffer.release_memory(buffer_pool_);
+    }
+    buffer_pool_.clear();
+    shrink_thread_local_buffers();
+}
+
+void CactusGraph::clear_buffer_pool() {
+    buffer_pool_.clear();
+}
+
+void CactusGraph::retain_outputs(const std::vector<int>& node_ids) {
+    for (int node_id : node_ids) {
+        if (node_id >= 0) {
+            retained_output_node_ids_.insert(static_cast<size_t>(node_id));
         }
     }
 }

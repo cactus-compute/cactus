@@ -705,22 +705,8 @@ static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* ar
     }
     if (!result || error) return 0;
 
-    static bool logged_multi_layout = false;
-    if (!logged_multi_layout) {
-        for (NSString* key in inputDict) {
-            MLFeatureValue* inFeature = inputDict[key];
-            if (inFeature && inFeature.multiArrayValue) {
-                MLMultiArray* arr = inFeature.multiArrayValue;
-            }
-        }
-    }
-
     MLFeatureValue* outFeature = [result featureValueForName:outputName];
     if (!outFeature || !outFeature.multiArrayValue) return 0;
-    if (!logged_multi_layout) {
-        MLMultiArray* outArr = outFeature.multiArrayValue;
-        logged_multi_layout = true;
-    }
     return copyMLArrayToFP16(outFeature.multiArrayValue, output);
 }
 

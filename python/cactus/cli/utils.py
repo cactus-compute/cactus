@@ -16,16 +16,14 @@ from pathlib import Path
 from typing import Iterable
 
 
-MODALITIES = ("L", "V", "A")
-COMBO_RE = re.compile(r"(?:[LVA][1-4])+", re.IGNORECASE)
-COMBO_PART_RE = re.compile(r"([LVA])([1-4])", re.IGNORECASE)
+CQ_BITS_RE = re.compile(r"-cq([1-4])$", re.IGNORECASE)
 ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
 
 
 @dataclass(frozen=True)
 class CqArchive:
     filename: str
-    combo: dict[str, int]
+    bits: int
     size: int | None = None
     sha256: str | None = None
 
@@ -35,39 +33,13 @@ class CqResolution:
     repo_id: str
     local_name: str
     archive: CqArchive
-    requested: dict[str, int]
-    warnings: tuple[str, ...]
     available: tuple[CqArchive, ...]
 
 
-def normalize_model_key(model_id: str) -> str:
-    return str(model_id).strip().lower().replace("_", "-")
-
-
-def default_local_name(model_id: str) -> str:
-    name = str(model_id).strip().split("/")[-1].lower().replace("_", "-")
-    return name.removesuffix("-cq")
-
-
 def suggested_cq_repo(model_id: str) -> str:
-    raw = str(model_id).strip().replace("_", "-")
-    name = raw.split("/")[-1]
-    if not name.lower().endswith("-cq"):
-        name = f"{name}-cq"
+    name = str(model_id).strip().replace("_", "-").split("/")[-1]
+    name = re.sub(r"-cq\d*$", "", name, flags=re.IGNORECASE)
     return f"Cactus-Compute/{name}"
-
-
-def resolve_cq_repo(model_id: str) -> tuple[str, str]:
-    raw = str(model_id).strip()
-    key = normalize_model_key(raw)
-
-    if "/" in raw and key.startswith("cactus-compute/") and key.endswith("-cq"):
-        return raw, default_local_name(raw)
-
-    raise RuntimeError(
-        "download-cq expects a Cactus-Compute CQ repo ending in -cq. "
-        f"If you meant to download CQ weights for {raw}, try {suggested_cq_repo(raw)}."
-    )
 
 
 def archive_stem(filename: str) -> str:
@@ -77,19 +49,10 @@ def archive_stem(filename: str) -> str:
     return filename
 
 
-def parse_combo(filename: str) -> dict[str, int]:
+def parse_cq_bits(filename: str) -> int | None:
     stem = archive_stem(Path(filename).name)
-    if not COMBO_RE.fullmatch(stem):
-        return {}
-    combo: dict[str, int] = {}
-    seen = set()
-    for modality, bits in COMBO_PART_RE.findall(stem):
-        modality = modality.upper()
-        if modality in seen:
-            return {}
-        seen.add(modality)
-        combo[modality] = int(bits)
-    return combo
+    m = CQ_BITS_RE.search(stem)
+    return int(m.group(1)) if m else None
 
 
 def is_supported_archive(filename: str) -> bool:
@@ -105,60 +68,29 @@ def archives_from_repo_files(repo_files: Iterable[str], sizes: dict[str, int] | 
     for filename in repo_files:
         if not is_supported_archive(filename):
             continue
-        combo = parse_combo(filename)
-        if "L" not in combo:
+        bits = parse_cq_bits(filename)
+        if bits is None:
             continue
-        archives.append(CqArchive(filename=filename, combo=combo,
+        archives.append(CqArchive(filename=filename, bits=bits,
                                   size=sizes.get(filename), sha256=sha256s.get(filename)))
-    return tuple(sorted(archives, key=lambda a: a.filename))
-
-
-def combo_label(combo: dict[str, int]) -> str:
-    return "".join(f"{m}{combo[m]}" for m in MODALITIES if m in combo)
+    return tuple(sorted(archives, key=lambda a: a.bits))
 
 
 def resolve_archive(repo_id: str, local_name: str, archives: Iterable[CqArchive],
-                    requested: dict[str, int]) -> CqResolution:
+                    bits: int) -> CqResolution:
     available = tuple(archives)
     if not available:
         raise RuntimeError(f"No CQ archives found in {repo_id}")
 
-    requested = {k.upper(): int(v) for k, v in requested.items() if v is not None}
-    repo_modalities = {m for archive in available for m in archive.combo}
-    effective = {}
-    warnings = []
-    for modality in MODALITIES:
-        if modality not in requested:
-            continue
-        if modality not in repo_modalities:
-            warnings.append(
-                f"Requested {modality}{requested[modality]}, but {repo_id} has no {modality} modality; ignoring it."
-            )
-            continue
-        effective[modality] = requested[modality]
-
-    matches = [
-        archive for archive in available
-        if all(archive.combo.get(modality) == bits for modality, bits in effective.items())
-    ]
-    if not matches:
-        wanted = combo_label(effective) or combo_label(requested)
-        choices = ", ".join(combo_label(a.combo) for a in available)
-        raise RuntimeError(f"CQ combo {wanted} not found in {repo_id}. Available combos: {choices}")
-
-    def score(archive: CqArchive) -> tuple[int, int, str]:
-        # Prefer archives that do not add unrequested modalities when possible,
-        # then prefer higher precision for unspecified modalities.
-        extra_modalities = len(set(archive.combo) - set(effective))
-        precision_sum = sum(archive.combo.values())
-        return (extra_modalities, -precision_sum, archive.filename)
+    match = next((a for a in available if a.bits == bits), None)
+    if not match:
+        choices = ", ".join(f"cq{a.bits}" for a in available)
+        raise RuntimeError(f"cq{bits} not found in {repo_id}. Available: {choices}")
 
     return CqResolution(
         repo_id=repo_id,
         local_name=local_name,
-        archive=sorted(matches, key=score)[0],
-        requested=requested,
-        warnings=tuple(warnings),
+        archive=match,
         available=available,
     )
 
@@ -261,13 +193,13 @@ def verify_archive_sha256(archive_path: Path, expected_sha256: str | None) -> No
         )
 
 
-def _download_with_urllib(resolution: CqResolution, *, token=None, cache_dir=None, revision=None) -> Path:
+def _download_with_urllib(resolution: CqResolution, *, token=None, revision=None) -> Path:
     quoted_repo = urllib.parse.quote(resolution.repo_id, safe="")
     quoted_file = urllib.parse.quote(resolution.archive.filename)
     revision = revision or "main"
     url = f"https://huggingface.co/{resolution.repo_id}/resolve/{urllib.parse.quote(str(revision), safe='')}/{quoted_file}"
 
-    cache_root = Path(cache_dir).expanduser() if cache_dir else Path(tempfile.gettempdir()) / "cactus-cq-cache"
+    cache_root = Path(tempfile.gettempdir()) / "cactus-cq-cache"
     archive_dir = cache_root / quoted_repo / str(revision)
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive_path = archive_dir / Path(resolution.archive.filename).name
@@ -292,9 +224,7 @@ def write_download_metadata(output_dir: Path, resolution: CqResolution, archive_
         "repo_id": resolution.repo_id,
         "local_name": resolution.local_name,
         "archive": resolution.archive.filename,
-        "combo": resolution.archive.combo,
-        "requested": resolution.requested,
-        "warnings": list(resolution.warnings),
+        "bits": resolution.archive.bits,
         "archive_size": resolution.archive.size if resolution.archive.size is not None else archive_path.stat().st_size,
         "archive_sha256": resolution.archive.sha256,
     }
@@ -304,7 +234,7 @@ def write_download_metadata(output_dir: Path, resolution: CqResolution, archive_
 
 
 def download_cq_archive(resolution: CqResolution, output_dir: Path, *, token=None,
-                        cache_dir=None, revision=None, force=False, dry_run=False) -> Path:
+                        revision=None, force=False, dry_run=False) -> Path:
     if dry_run:
         return output_dir
 
@@ -322,14 +252,12 @@ def download_cq_archive(resolution: CqResolution, output_dir: Path, *, token=Non
             filename=resolution.archive.filename,
             repo_type="model",
             token=token,
-            cache_dir=cache_dir,
             revision=revision,
         ))
     except ImportError:
         archive_path = _download_with_urllib(
             resolution,
             token=token,
-            cache_dir=cache_dir,
             revision=revision,
         )
     verify_archive_sha256(archive_path, resolution.archive.sha256)

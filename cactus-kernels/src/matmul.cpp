@@ -5,6 +5,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 #ifdef __APPLE__
@@ -1906,17 +1907,34 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
     const __fp16* norms,
     const __fp16* input_scale_recip,
     const __fp16* rotation,
+    uint32_t flags,
     __fp16* out_row) {
     if (!packed_base || !codebook || !norms || !rotation || !out_row || bits == 0 || bits > 4) return;
     if (K == 0) return;
 
     const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(bits, K);
-    const uint8_t* packed = packed_base + static_cast<size_t>(row) * packed_group_bytes;
-    const float norm = static_cast<float>(norms[row]);
+    const bool interleaved = (flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0;
+    if (interleaved && (bits != 4 || (K % 8) != 0)) return;
+    const uint8_t* packed = interleaved ? nullptr : packed_base + static_cast<size_t>(row) * packed_group_bytes;
+    const float norm = interleaved
+        ? static_cast<float>(norms[(row / 4) * 4 + (row & 3u)])
+        : static_cast<float>(norms[row]);
 
     std::vector<float> dq(K);
     for (uint32_t i = 0; i < K; ++i) {
-        dq[i] = static_cast<float>(codebook[tq_extract_idx(packed, i, bits)]);
+        uint32_t idx = 0;
+        if (interleaved) {
+            const size_t panel_bytes = static_cast<size_t>(4) * packed_group_bytes;
+            const uint8_t* panel = packed_base + (row / 4) * panel_bytes;
+            const uint32_t chunk = i / 8;
+            const uint32_t sub = i & 7u;
+            const uint8_t packed_byte = panel[chunk * 16 + (row & 3u) * 4 + (sub & 3u)];
+            idx = (sub & 4u) ? static_cast<uint32_t>(packed_byte >> 4)
+                             : static_cast<uint32_t>(packed_byte & 0x0F);
+        } else {
+            idx = tq_extract_idx(packed, i, bits);
+        }
+        dq[i] = static_cast<float>(codebook[idx]);
     }
 
     for (uint32_t j = 0; j < K; ++j) {
@@ -1927,6 +1945,103 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
         float scale = input_scale_recip ? static_cast<float>(input_scale_recip[j]) : 1.0f;
         out_row[j] = static_cast<__fp16>(acc * norm * scale);
     }
+}
+
+static inline uint32_t tq_extract_interleaved_4row_4bit(
+    const uint8_t* packed_base,
+    uint32_t K,
+    size_t row,
+    uint32_t k) {
+    const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(4, K);
+    const size_t panel_bytes = static_cast<size_t>(4) * packed_group_bytes;
+    const uint8_t* panel = packed_base + (row / 4) * panel_bytes;
+    const uint32_t chunk = k / 8;
+    const uint32_t sub = k & 7u;
+    const uint8_t packed_byte = panel[chunk * 16 + (row & 3u) * 4 + (sub & 3u)];
+    return (sub & 4u) ? static_cast<uint32_t>(packed_byte >> 4)
+                      : static_cast<uint32_t>(packed_byte & 0x0F);
+}
+
+static bool cactus_quant_orthogonal_interleaved_lmhead_matmul(
+    const CactusQuantMatrix* W,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C) {
+    if (!W || !A || !C || M != 1) return false;
+    if (W->bits != 4 || W->num_groups != 1 || W->group_size != W->K) return false;
+    if ((W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) == 0) return false;
+    if ((W->K % 32) != 0 || (W->N % 4) != 0) return false;
+
+    const uint32_t K = W->K;
+    const uint32_t N = W->N;
+    const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(4, K);
+    const size_t panel_bytes = static_cast<size_t>(4) * packed_group_bytes;
+    const size_t N_blocks = N / 4;
+
+    thread_local std::vector<float> ar32;
+    thread_local std::vector<int8_t> act_i8;
+    if (ar32.size() < K) ar32.resize(K);
+    if (act_i8.size() < K) act_i8.resize(K);
+    std::fill(ar32.begin(), ar32.begin() + K, 0.0f);
+
+    for (uint32_t k = 0; k < K; ++k) {
+        float a_val = static_cast<float>(A[k]);
+        if (W->input_scale_recip) a_val *= static_cast<float>(W->input_scale_recip[k]);
+        if (a_val == 0.0f) continue;
+        const __fp16* r = W->rotation + static_cast<size_t>(k) * K;
+        const float32x4_t av = vdupq_n_f32(a_val);
+        uint32_t i = 0;
+        for (; i + 8 <= K; i += 8) {
+            const float16x8_t rv = vld1q_f16(r + i);
+            vst1q_f32(ar32.data() + i,
+                      vfmaq_f32(vld1q_f32(ar32.data() + i), av, vcvt_f32_f16(vget_low_f16(rv))));
+            vst1q_f32(ar32.data() + i + 4,
+                      vfmaq_f32(vld1q_f32(ar32.data() + i + 4), av, vcvt_f32_f16(vget_high_f16(rv))));
+        }
+        for (; i < K; ++i) ar32[i] += a_val * static_cast<float>(r[i]);
+    }
+
+    float max_abs = 0.0f;
+    for (uint32_t i = 0; i < K; ++i) max_abs = std::max(max_abs, std::abs(ar32[i]));
+    const float act_scale = max_abs > 0.0f ? max_abs / 127.0f : 1.0f;
+    const float inv_act_scale = 1.0f / act_scale;
+    for (uint32_t i = 0; i < K; ++i) {
+        int q = static_cast<int>(std::lrintf(ar32[i] * inv_act_scale));
+        q = std::max(-127, std::min(127, q));
+        act_i8[i] = static_cast<int8_t>(q);
+    }
+
+    int8_t cb_i8[16] = {};
+    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 16);
+    const int8x16_t cb_lut = vld1q_s8(cb_i8);
+    const uint8x16_t lo_mask = vdupq_n_u8(0x0F);
+    const int8_t* act_i8_data = act_i8.data();
+
+    cactus_quant_parallel_ranges(N_blocks, 64, [&](size_t block_start, size_t block_end) {
+        for (size_t nb = block_start; nb < block_end; ++nb) {
+            const uint8_t* panel = W->packed_indices + nb * panel_bytes;
+            int32x4_t dot_a = vdupq_n_s32(0);
+            int32x4_t dot_b = vdupq_n_s32(0);
+            for (uint32_t kb = 0; kb < K; kb += 16) {
+                const int8x16_t a_v = vld1q_s8(act_i8_data + kb);
+                const uint8x16_t p0 = vld1q_u8(panel + (kb / 8 + 0) * 16);
+                const int8x16_t w0 = vqtbl1q_s8(cb_lut, vandq_u8(p0, lo_mask));
+                const int8x16_t w1 = vqtbl1q_s8(cb_lut, vshrq_n_u8(p0, 4));
+                dot_a = CACTUS_DOTQ_LANE(dot_a, w0, a_v, 0);
+                dot_b = CACTUS_DOTQ_LANE(dot_b, w1, a_v, 1);
+                const uint8x16_t p1 = vld1q_u8(panel + (kb / 8 + 1) * 16);
+                const int8x16_t w2 = vqtbl1q_s8(cb_lut, vandq_u8(p1, lo_mask));
+                const int8x16_t w3 = vqtbl1q_s8(cb_lut, vshrq_n_u8(p1, 4));
+                dot_a = CACTUS_DOTQ_LANE(dot_a, w2, a_v, 2);
+                dot_b = CACTUS_DOTQ_LANE(dot_b, w3, a_v, 3);
+            }
+            const int32x4_t dot = vaddq_s32(dot_a, dot_b);
+            float32x4_t scale = vcvt_f32_f16(vld1_f16(W->norms + nb * 4));
+            scale = vmulq_n_f32(scale, cb_scale * act_scale);
+            vst1_f16(C + nb * 4, vcvt_f16_f32(vmulq_f32(vcvtq_f32_s32(dot), scale)));
+        }
+    });
+    return true;
 }
 
 void cactus_quant_orthogonal_matmul(
@@ -1941,6 +2056,17 @@ void cactus_quant_orthogonal_matmul(
     const uint32_t N    = W->N;
     const uint32_t bits = W->bits;
     const uint32_t pgb  = cactus_quant_packed_group_bytes(bits, K);
+    const bool interleaved = (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0;
+
+    if (cactus_quant_orthogonal_interleaved_lmhead_matmul(W, A, M, C)) {
+        return;
+    }
+    const bool invalid_interleaved =
+        interleaved && (bits != 4 || W->num_groups != 1 || W->group_size != K ||
+                        (K % 8) != 0 || (N % 4) != 0);
+    if (invalid_interleaved) {
+        throw std::runtime_error("Invalid orthogonal INTERLEAVED_4ROW matmul layout");
+    }
 
     const uint32_t n_cb = 1u << bits;
 
@@ -1971,7 +2097,7 @@ void cactus_quant_orthogonal_matmul(
         }
     }
 
-    if (bits == 4 && (K % 16) == 0) {
+    if (!interleaved && bits == 4 && (K % 16) == 0) {
         __fp16 cb_f16[16];
         uint8_t cb_lo_arr[16], cb_hi_arr[16];
         for (uint32_t c = 0; c < 16; ++c) {
@@ -2057,7 +2183,9 @@ void cactus_quant_orthogonal_matmul(
                     const float* ar = A_rot.data() + static_cast<size_t>(m) * K;
                     float acc = 0.0f;
                     for (uint32_t i = 0; i < K; ++i) {
-                        uint8_t idx = static_cast<uint8_t>(tq_extract_idx(packed, i, bits));
+                        uint8_t idx = interleaved
+                            ? static_cast<uint8_t>(tq_extract_interleaved_4row_4bit(W->packed_indices, K, n, i))
+                            : static_cast<uint8_t>(tq_extract_idx(packed, i, bits));
                         acc += cb_f32[idx] * ar[i];
                     }
                     C[static_cast<size_t>(m) * N + n] = static_cast<__fp16>(acc * norm_n);

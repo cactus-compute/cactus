@@ -35,7 +35,7 @@ bool test_transcription() {
     Timer timer;
     int rc = cactus_transcribe(model, audio_path.c_str(), nullptr,
                                response, sizeof(response),
-                               R"({"max_tokens": 200, "telemetry_enabled": false})",
+                               R"({"max_tokens": 200, "telemetry_enabled": false, "auto_handoff": false})",
                                nullptr, nullptr, nullptr, 0);
     double elapsed = timer.elapsed_ms();
 
@@ -105,7 +105,7 @@ bool test_transcription_pcm() {
     Timer timer;
     int rc = cactus_transcribe(model, nullptr, nullptr,
                                response, sizeof(response),
-                               R"({"max_tokens": 200, "telemetry_enabled": false})",
+                               R"({"max_tokens": 200, "telemetry_enabled": false, "auto_handoff": false})",
                                nullptr, nullptr,
                                pcm_data.data(), pcm_data.size());
     double elapsed = timer.elapsed_ms();

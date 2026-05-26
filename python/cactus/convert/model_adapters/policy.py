@@ -14,6 +14,7 @@ class TensorPolicy:
     use_gptq: bool
     rotation: str
     fallback_reason: str | None = None
+    layout: str = "row_major"
 
 
 def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, family: str) -> TensorPolicy:
@@ -24,6 +25,8 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("ignored", "none", None, component, False, "none", "no output filename")
     if "norm" in out.lower():
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "norm tensor")
+    if family == "gemma4" and name == "model.embed_vision.embedding_projection.weight":
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "vision embedding projection scale-sensitive")
     if family in {"parakeet", "parakeet_tdt"} and out.endswith(".bias") and (
         "conv_" in out or out.startswith("subsampling_") or out.startswith("ctc_head_")
     ):
@@ -44,6 +47,8 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "conformer conv tensor")
     if family == "whisper" and out.startswith("encoder.layer_"):
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "whisper encoder tensor")
+    if family == "gemma4" and component == "audio" and (name.endswith(".bias") or out.endswith(".bias") or ".bias." in out):
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "audio bias tensor")
     if name.endswith(".bias") or out.endswith(".bias") or ".bias." in out:
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "bias tensor")
     if len(shape) != 2:
@@ -54,8 +59,10 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("convert", f"CQ{user_bits}", user_bits, component, False, "hadamard")
     if family == "gemma4" and component in {"audio", "vision"}:
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "gemma4 media tower accuracy")
-    if component == "embedding" or out in {"token_embeddings.weights", "output_weight.weights"}:
-        return TensorPolicy("convert", "CQ4", 4, component, False, "orthogonal")
+    output_head_or_tied_embedding = out in {"token_embeddings.weights", "decoder_token_embeddings.weights", "output_weight.weights"}
+    if component == "embedding" or output_head_or_tied_embedding:
+        layout = "interleaved_4row" if output_head_or_tied_embedding else "row_major"
+        return TensorPolicy("convert", "CQ4", 4, component, False, "orthogonal", layout=layout)
     if component == "audio" or component == "transcription":
         return TensorPolicy("convert", f"CQ{user_bits}", user_bits, component, False, "hadamard")
     return TensorPolicy("convert", f"CQ{user_bits}", user_bits, component, True, "hadamard")

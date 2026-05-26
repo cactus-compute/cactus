@@ -240,11 +240,18 @@ namespace CactusThreading {
 
     inline bool pin_current_thread_to_cores(const std::vector<int>& cores) {
         if (cores.empty()) return false;
+        cpu_set_t current_mask;
+        const bool has_current_mask = sched_getaffinity(0, sizeof(current_mask), &current_mask) == 0;
         cpu_set_t mask;
         CPU_ZERO(&mask);
+        bool selected = false;
         for (int core : cores) {
-            CPU_SET(core, &mask);
+            if (!has_current_mask || CPU_ISSET(core, &current_mask)) {
+                CPU_SET(core, &mask);
+                selected = true;
+            }
         }
+        if (!selected && has_current_mask) return true;
         return sched_setaffinity(0, sizeof(mask), &mask) == 0;
     }
 #endif

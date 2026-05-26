@@ -283,6 +283,32 @@ bool file_exists(const std::string& path) {
     return f.good();
 }
 
+std::vector<uint32_t> parse_token_ids(const std::string& text) {
+    std::vector<uint32_t> tokens;
+    std::stringstream ss(text);
+    std::string part;
+    while (std::getline(ss, part, ',')) {
+        size_t start = part.find_first_not_of(" \t\r\n");
+        if (start == std::string::npos) continue;
+        size_t end = part.find_last_not_of(" \t\r\n");
+        std::string value = part.substr(start, end - start + 1);
+        char* parsed_end = nullptr;
+        unsigned long parsed = std::strtoul(value.c_str(), &parsed_end, 10);
+        if (!parsed_end || *parsed_end != '\0') {
+            throw std::runtime_error("Invalid token id: " + value);
+        }
+        tokens.push_back(static_cast<uint32_t>(parsed));
+    }
+    return tokens;
+}
+
+bool write_text_file(const std::string& path, const std::string& text) {
+    std::ofstream out(path);
+    if (!out) return false;
+    out << text;
+    return out.good();
+}
+
 std::string json_string_value(const std::string& json, const std::string& key) {
     std::string needle = "\"" + key + "\":\"";
     size_t start = json.find(needle);
@@ -338,7 +364,8 @@ std::string build_messages(const std::string& system_prompt,
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>]"
-              << " [--prompt <text>] [--thinking]\n";
+              << " [--prompt <text>] [--input-ids <ids>] [--max-new-tokens <n>]"
+              << " [--result-json <path>] [--thinking]\n";
 }
 
 } // namespace
@@ -354,6 +381,9 @@ int main(int argc, char** argv) {
     std::string current_image;
     std::string current_audio;
     std::string initial_prompt;
+    std::string input_ids;
+    std::string result_json;
+    int max_new_tokens = kMaxTokens;
     bool thinking = false;
 
     for (int i = 2; i < argc; ++i) {
@@ -366,6 +396,12 @@ int main(int argc, char** argv) {
             current_audio = expand_tilde(argv[++i]);
         } else if (arg == "--prompt" && i + 1 < argc) {
             initial_prompt = argv[++i];
+        } else if (arg == "--input-ids" && i + 1 < argc) {
+            input_ids = argv[++i];
+        } else if (arg == "--max-new-tokens" && i + 1 < argc) {
+            max_new_tokens = std::max(0, std::atoi(argv[++i]));
+        } else if (arg == "--result-json" && i + 1 < argc) {
+            result_json = argv[++i];
         } else if (arg == "--thinking") {
             thinking = true;
         }
@@ -385,6 +421,39 @@ int main(int argc, char** argv) {
     if (!model) {
         std::cerr << "Failed to initialize model\n";
         return 1;
+    }
+
+    if (!input_ids.empty()) {
+        std::vector<uint32_t> tokens;
+        try {
+            tokens = parse_token_ids(input_ids);
+        } catch (const std::exception& e) {
+            std::cerr << e.what() << "\n";
+            cactus_destroy(model);
+            return 1;
+        }
+        if (tokens.empty()) {
+            std::cerr << "--input-ids did not contain any token ids\n";
+            cactus_destroy(model);
+            return 1;
+        }
+        std::vector<char> response(kResponseBufferSize, 0);
+        int rc = cactus_benchmark_tokens(
+            model,
+            tokens.data(),
+            tokens.size(),
+            static_cast<size_t>(max_new_tokens),
+            response.data(),
+            response.size());
+        std::string response_json(response.data());
+        if (!result_json.empty() && !write_text_file(result_json, response_json)) {
+            std::cerr << "Failed to write result JSON: " << result_json << "\n";
+            cactus_destroy(model);
+            return 1;
+        }
+        std::cout << response_json << "\n";
+        cactus_destroy(model);
+        return rc < 0 ? 1 : 0;
     }
 
     std::cout << "Model loaded.\n";
@@ -485,7 +554,7 @@ int main(int argc, char** argv) {
         history.push_back({"user", input});
         std::string messages = build_messages(system_prompt, history, current_image, current_audio, attach_media);
         std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
-            + std::to_string(kMaxTokens)
+            + std::to_string(max_new_tokens)
             + ",\"enable_thinking_if_supported\":" + (thinking ? "true" : "false")
             + ",\"auto_handoff\":false,\"confidence_threshold\":0.0"
             + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
@@ -512,6 +581,9 @@ int main(int argc, char** argv) {
                                  current_pcm.size());
 
         std::string response_json(response.data());
+        if (!result_json.empty() && !write_text_file(result_json, response_json)) {
+            std::cerr << "Failed to write result JSON: " << result_json << "\n";
+        }
         double ram_mb = json_number_value(response_json, "ram_usage_mb");
         printer.print_stats(ram_mb);
         std::cout << "\n";

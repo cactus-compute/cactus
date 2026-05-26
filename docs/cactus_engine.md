@@ -17,14 +17,16 @@ Before using the Cactus Engine, you need to download model weights:
 cactus download LiquidAI/LFM2-1.2B
 cactus download LiquidAI/LFM2-VL-450M
 cactus download openai/whisper-small
-cactus download UsefulSensors/moonshine-base --precision FP16
 
 # Optional: set your Cactus Cloud API key for automatic cloud fallback
 cactus auth
 ```
 
-Weights are saved to the `weights/` directory and can be loaded using `cactus_init()`.
-Moonshine requires FP16 precision when downloading and running.
+`cactus download` fetches pre-converted CQ weights from
+[huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute) into
+`weights/<model>` and they can be loaded directly via `cactus_init()`. For
+models without a pre-converted archive, use `cactus convert <model>` to build
+them from source.
 
 ## Types
 
@@ -40,13 +42,6 @@ An opaque pointer type representing a vector index instance.
 
 ```c
 typedef void* cactus_index_t;
-```
-
-### `cactus_stream_transcribe_t`
-An opaque pointer type representing a streaming transcription session.
-
-```c
-typedef void* cactus_stream_transcribe_t;
 ```
 
 ### `cactus_token_callback`
@@ -598,169 +593,6 @@ int result = cactus_transcribe(whisper, "medical_notes.wav", NULL,
 if (result > 0) {
     printf("Transcription: %s\n", response);
 }
-```
-
-### `cactus_stream_transcribe_t`
-An opaque pointer type representing a streaming transcription session. Used for real-time audio transcription with incremental confirmation.
-
-```c
-typedef void* cactus_stream_transcribe_t;
-```
-
-### `cactus_stream_transcribe_start`
-Initializes a new streaming transcription session with optional configuration.
-
-```c
-cactus_stream_transcribe_t cactus_stream_transcribe_start(
-    cactus_model_t model,        // Model handle
-    const char* options_json     // Optional configuration (can be NULL)
-);
-```
-
-**Returns:** Stream handle on success, NULL on failure
-
-**Options Format:**
-```json
-{
-    "min_chunk_size": 32000,
-    "language": "en",
-    "custom_vocabulary": ["Omeprazole", "HIPAA", "Cactus"],
-    "vocabulary_boost": 3.0
-}
-```
-
-- `min_chunk_size`: Minimum number of audio samples (as int16 samples) required before a transcription processing step is triggered. Default: 32000
-- `language`: ISO 639-1 language code (e.g., "en", "es", "fr", "de"). Default: "en". Ignored for non-Whisper models.
-- `custom_vocabulary`: List of words or phrases to bias the decoder toward. Useful for proper nouns, acronyms, and domain-specific terms. The bias is applied for the lifetime of the stream session.
-- `vocabulary_boost`: Logit bias strength for `custom_vocabulary` tokens. Default: 5.0. Clamped to 0.0–20.0.
-
-**Example:**
-```c
-cactus_model_t whisper = cactus_init("../../weights/whisper-small", NULL, false);
-
-cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(whisper, "{\"min_chunk_size\": 32000, \"language\": \"en\"}");
-if (!stream) {
-    fprintf(stderr, "Failed to start stream: %s\n", cactus_get_last_error());
-    return -1;
-}
-```
-
-**Example (with custom vocabulary):**
-```c
-const char* options = "{\"confirmation_threshold\": 0.99, \"custom_vocabulary\": [\"Omeprazole\", \"HIPAA\"], \"vocabulary_boost\": 5.0}";
-cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(whisper, options);
-```
-
-### `cactus_stream_transcribe_process`
-Processes audio chunk and returns confirmed and pending transcription results.
-
-```c
-int cactus_stream_transcribe_process(
-    cactus_stream_transcribe_t stream,  // Stream handle
-    const uint8_t* pcm_buffer,          // Raw PCM audio (16-bit, 16kHz, mono)
-    size_t pcm_buffer_size,             // Size of PCM buffer in bytes
-    char* response_buffer,              // Buffer for response JSON
-    size_t buffer_size                  // Size of response buffer
-);
-```
-
-**Returns:** Number of bytes written to response_buffer on success, negative value on error
-
-When the accumulated audio has not yet reached `min_chunk_size`, a minimal buffering response is returned immediately (no inference is run):
-```json
-{"success": true, "confirmed": "", "pending": ""}
-```
-
-When a transcription step is triggered, the full response is returned:
-
-**Response Format:**
-```json
-{
-    "success": true,
-    "buffer_duration_ms": 1000.0,
-    "error": null,
-    "cloud_handoff": false,
-    "cloud_job_id": 0,
-    "cloud_result_job_id": 0,
-    "cloud_result": "",
-    "cloud_result_used_cloud": false,
-    "cloud_result_error": null,
-    "cloud_result_source": "fallback",
-    "confirmed_local": "text confirmed from local model",
-    "confirmed": "text confirmed (may be from cloud if cloud was used)",
-    "pending": "current transcription result",
-    "segments": [],
-    "function_calls": [],
-    "confidence": 0.95,
-    "time_to_first_token_ms": 150.5,
-    "total_time_ms": 450.2,
-    "prefill_tps": 100.0,
-    "decode_tps": 50.0,
-    "ram_usage_mb": 512.5,
-    "prefill_tokens": 100,
-    "decode_tokens": 50,
-    "total_tokens": 150
-}
-```
-
-- `buffer_duration_ms`: Duration of the confirmed audio that has been consumed from the buffer (milliseconds)
-- `confirmed`: Confirmed transcription text from this chunk; if a cloud job returned a result it may reflect the cloud transcript
-- `confirmed_local`: The confirmed text as produced by the local model (before any cloud override)
-- `pending`: Current (not yet confirmed) transcription result from the latest inference pass
-- `segments`: Array of `{"start": float, "end": float, "text": string}` objects representing transcription segments with timestamps (in seconds, relative to the start of the stream). Whisper produces phrase-level segments; Parakeet TDT produces word-level segments; Parakeet CTC and Moonshine produce one segment per transcription window (consecutive VAD speech regions grouped up to 30 seconds).
-- `cloud_handoff`: Whether a cloud transcription job was queued for the confirmed audio
-- `cloud_job_id`: ID of the cloud job queued in this call (0 if none)
-- `cloud_result_job_id`: ID of the cloud job whose result is returned in this response (0 if none ready)
-- `cloud_result`: Transcript returned by the completed cloud job (empty if no result ready)
-- `cloud_result_used_cloud`: Whether the completed cloud job actually reached a cloud API
-- `cloud_result_error`: Error message from the cloud job, null if none
-- `cloud_result_source`: `"cloud"` or `"fallback"` for the completed cloud job
-- `error`: Error message if any, null otherwise
-- `function_calls`: Array of function calls if any
-- `confidence`, timing, and token metrics: Model performance statistics from the underlying transcription call
-
-**Example:**
-```c
-uint8_t audio_chunk[32000]; // 1 second at 16kHz, 16-bit
-char response[32768];
-
-int result = cactus_stream_transcribe_process(stream, audio_chunk, sizeof(audio_chunk), response, sizeof(response));
-if (result >= 0) {
-    printf("Response: %s\n", response);
-}
-```
-
-### `cactus_stream_transcribe_stop`
-Stops the streaming session and returns any remaining confirmed transcription. Releases all resources.
-
-```c
-int cactus_stream_transcribe_stop(
-    cactus_stream_transcribe_t stream,  // Stream handle
-    char* response_buffer,              // Buffer for response JSON (can be NULL)
-    size_t buffer_size                  // Size of response buffer (can be 0)
-);
-```
-
-**Returns:** Number of bytes written on success, 0 if no response buffer provided, negative value on error
-
-**Response Format:**
-```json
-{
-    "success": true,
-    "confirmed": "Final confirmed transcription chunk"
-}
-```
-
-**Example:**
-```c
-char final_response[32768];
-int result = cactus_stream_transcribe_stop(stream, final_response, sizeof(final_response));
-if (result >= 0) {
-    printf("Final: %s\n", final_response);
-}
-
-// Or simply cleanup resources without response
-cactus_stream_transcribe_stop(stream, NULL, 0);
 ```
 
 ### `cactus_detect_language`

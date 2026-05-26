@@ -1,8 +1,7 @@
-from .common import print_color, GREEN
+from .common import print_color, mask_key, GREEN
 
 
 def cmd_auth(args):
-    """Manage Cactus Cloud API key."""
     from .config_utils import CactusConfig
 
     config = CactusConfig()
@@ -15,8 +14,7 @@ def cmd_auth(args):
     api_key = config.get_api_key()
 
     if api_key:
-        masked = api_key[:4] + "..." + api_key[-4:]
-        print(f"Current API key: {masked}")
+        print(f"Current API key: {mask_key(api_key)}")
     else:
         print("No API key set.")
 
@@ -28,6 +26,5 @@ def cmd_auth(args):
     new_key = input("Enter new API key (press Enter to skip): ").strip()
     if new_key:
         config.set_api_key(new_key)
-        masked = new_key[:4] + "..." + new_key[-4:]
-        print_color(GREEN, f"API key saved: {masked}")
+        print_color(GREEN, f"API key saved: {mask_key(new_key)}")
     return 0

@@ -8,6 +8,7 @@
 #include <memory>
 #include <cstdint>
 #include <atomic>
+#include <limits>
 
 #include "cactus_graph.h"
 
@@ -580,18 +581,21 @@ public:
     uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
                     size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                     float min_p = 0.15f, float repetition_penalty = 1.1f);
+    bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token);
 
-    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 256, const std::string& profile_file = "");
+    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 128, const std::string& profile_file = "",
+                 bool prepare_decode = true);
 
     void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                              const std::string& profile_file = "");
 
-    void prefill_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+    void prefill_with_audio(const std::vector<uint32_t>& tokens,
+                            const std::vector<std::vector<float>>& audio_features_per_message,
                             const std::string& profile_file = "");
 
     void prefill_with_media(const std::vector<uint32_t>& tokens,
                             const std::vector<std::string>& image_paths,
-                            const std::vector<float>& audio_features,
+                            const std::vector<std::vector<float>>& audio_features_per_message,
                             const std::string& profile_file = "");
 
     uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
@@ -599,7 +603,8 @@ public:
                                 size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                                 float min_p = 0.15f, float repetition_penalty = 1.1f);
 
-    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens, const std::vector<float>& audio_features,
+    uint32_t decode_with_audio(const std::vector<uint32_t>& tokens,
+                               const std::vector<std::vector<float>>& audio_features_per_message,
                                float temperature = 0.0f, float top_p = 0.0f,
                                size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                                float min_p = 0.15f, float repetition_penalty = 1.1f,
@@ -635,7 +640,10 @@ public:
 
     bool load_npu_prefill(const std::string& model_path);
     bool has_npu_prefill() const { return false; }
-    size_t get_prefill_chunk_size() const { return 256; }
+    size_t get_prefill_chunk_size() const { return 128; }
+    double last_prefill_cache_copy_ms() const { return last_prefill_cache_copy_ms_; }
+    size_t last_prefill_padding_tokens() const { return last_prefill_padding_tokens_; }
+    size_t last_prefill_scalar_tail_tokens() const { return last_prefill_scalar_tail_tokens_; }
 
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
@@ -655,7 +663,7 @@ private:
         std::string path;
     };
 
-    struct CacheStateEntry {
+    struct CacheStateBinding {
         std::string layer_key;
         int key_node_id = -1;
         int value_node_id = -1;
@@ -669,32 +677,56 @@ private:
         std::vector<int> output_node_ids;
         std::vector<std::string> logical_outputs;
         std::vector<Binding> bindings;
+        std::vector<CacheStateBinding> cache_states;
         std::unique_ptr<CactusGraph> graph;
         std::vector<std::vector<uint8_t>> input_buffers;
-        std::vector<CacheStateEntry> cache_states;
     };
 
     void copy_cache_state(const Component& src, Component& dst);
-    void reset_component_cache_states(Component& comp);
+
+    struct ChunkedPrefillResult {
+        size_t logical_tokens = 0;
+        size_t executed_tokens = 0;
+        size_t padding_tokens = 0;
+        size_t scalar_tail_tokens = 0;
+        size_t last_logit_row = 0;
+    };
 
     bool load_manifest();
     bool setup_tokenizer();
-    bool load_components();
+    bool load_components(const std::unordered_set<std::string>& required_components);
+    bool load_component_graph(Component& comp);
+    void unload_component_graph(Component& comp);
     bool bind_runtime_buffers(Component& comp);
     void run_step(uint32_t token_id, size_t position, bool read_logits);
+    void run_encoder_step(uint32_t token_id, size_t position);
     void run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
                         Precision feature_precision);
+    void copy_component_outputs_to_inputs(const Component& source, Component& target);
     void copy_encoder_outputs_to_decoder(const Component& enc);
+    void copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index);
+    void copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target, size_t token_offset);
+    bool cache_states_compatible(const Component& source, const Component& target) const;
+    void copy_cache_states(const Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
+    void reset_component_cache_states(Component& comp);
+    size_t component_chunk_tokens(const Component& comp, const std::string& input_name) const;
+    size_t component_output_tokens(const Component& comp, const std::string& output_name) const;
+    ChunkedPrefillResult run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position,
+                                             size_t chunk_size, bool prepare_decode);
+    void run_full_context_text();
+    uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max());
     void write_int_input(Component& comp, const std::string& name, int64_t value);
+    void write_int_input_at(Component& comp, const std::string& name, size_t index, int64_t value);
     void write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size);
     int input_index(const Component& comp, const std::string& name) const;
     int output_index(const Component& comp, const std::string& name) const;
     uint32_t argmax_last_logits();
     void run_vision_encoder(const std::string& image_path);
     void run_audio_encoder(const std::vector<float>& audio_features);
+    void run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message);
     bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                 const std::vector<std::string>& image_paths,
-                                const std::vector<float>& audio_features);
+                                const std::vector<std::vector<float>>& audio_features_per_message);
     bool build_lm_encoder_outputs_dynamic_gemma4(
         const std::vector<uint32_t>& tokens,
         std::map<std::string, std::vector<uint8_t>>& store_bytes,
@@ -705,6 +737,10 @@ private:
     std::map<std::string, Component> components_;
     Component* encoder_ = nullptr;
     Component* decoder_ = nullptr;
+    Component* decoder_prefill_ = nullptr;
+    Component* prefill_encoder_ = nullptr;
+    enum class DecodeRoute { CACHED_STEP, DIRECT_DECODER_STEP, FULL_CONTEXT_TEXT };
+    DecodeRoute decode_route_ = DecodeRoute::CACHED_STEP;
     Component* vision_encoder_ = nullptr;
     Component* audio_encoder_ = nullptr;
     Component* lm_encoder_media_step_ = nullptr;
@@ -724,6 +760,11 @@ private:
     bool initialized_ = false;
     size_t cache_total_seq_len_ = 0;
     size_t cache_max_seq_len_ = 4096;
+    size_t last_logit_position_ = 0;
+    double last_prefill_cache_copy_ms_ = 0.0;
+    size_t last_prefill_padding_tokens_ = 0;
+    size_t last_prefill_scalar_tail_tokens_ = 0;
+    std::vector<uint32_t> context_tokens_;
 
     static constexpr size_t MAX_TOKEN_HISTORY = 128;
     std::vector<uint32_t> token_history_;
@@ -870,6 +911,16 @@ struct Lfm2VlImagePreprocessed {
 };
 
 Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, const Config& config);
+
+struct Qwen3VlImagePreprocessed {
+    std::vector<float> pixel_values;
+    size_t grid_t = 1;
+    size_t grid_h = 0;
+    size_t grid_w = 0;
+    size_t patch_dim = 0;
+};
+
+Qwen3VlImagePreprocessed preprocess_qwen3_vl_image(const std::string& image_path, const Config& config);
 
 
 struct SpectrogramConfig {

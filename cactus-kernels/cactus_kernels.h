@@ -333,6 +333,7 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
     const __fp16* norms,
     const __fp16* input_scale_recip,
     const __fp16* rotation,
+    uint32_t flags,
     __fp16* out_row);
 
 void cactus_rms_norm_f16(

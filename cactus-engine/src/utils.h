@@ -415,16 +415,6 @@ inline AudioPreprocessResult preprocess_audio_for_gemma4(
     AudioPreprocessResult result;
     if (audio_samples.empty()) return result;
 
-    size_t max_soft = model_config.audio_soft_tokens;
-    if (max_soft > 0) {
-        size_t max_frames = (max_soft * 2 - 1) * 2 - 1;
-        size_t hop_length = 160;
-        size_t max_samples = max_frames * hop_length;
-        if (audio_samples.size() > max_samples) {
-            audio_samples.resize(max_samples);
-        }
-    }
-
     size_t pad_amt = 320 - (audio_samples.size() % 320);
     if (pad_amt < 320)
         audio_samples.resize(audio_samples.size() + pad_amt, 0.0f);
@@ -441,8 +431,15 @@ inline AudioPreprocessResult preprocess_audio_for_gemma4(
     result.num_frames = mel.size() / mel_bins;
     result.features = transpose_mel_to_frame_major(mel, mel_bins, result.num_frames);
 
-    size_t after_stage1 = (result.num_frames + 1) / 2;
-    result.num_soft_tokens = (after_stage1 + 1) / 2;
+    size_t max_soft = model_config.audio_soft_tokens;
+    size_t max_frames_per_chunk = max_soft > 0 ? (max_soft * 2 - 1) * 2 - 1 : 0;
+    if (max_soft > 0 && result.num_frames > max_frames_per_chunk) {
+        size_t num_chunks = (result.num_frames + max_frames_per_chunk - 1) / max_frames_per_chunk;
+        result.num_soft_tokens = num_chunks * max_soft;
+    } else {
+        size_t after_stage1 = (result.num_frames + 1) / 2;
+        result.num_soft_tokens = (after_stage1 + 1) / 2;
+    }
 
     return result;
 }

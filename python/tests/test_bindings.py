@@ -30,8 +30,7 @@ class TestPackageStructure:
         assert callable(create_parser)
 
     def test_model_module_importable(self):
-        from cactus.cli.model import resolve_model_id, ensure_weights, ensure_bundle, TranspileOptions
-        assert callable(resolve_model_id)
+        from cactus.cli.model import ensure_weights, ensure_bundle, TranspileOptions
         assert callable(ensure_weights)
         assert callable(ensure_bundle)
 
@@ -226,37 +225,6 @@ class TestEnc:
 # ── Model ID resolution tests ──────────────────────────────────────
 
 
-class TestResolveModelId:
-    """Test model alias resolution."""
-
-    def setup_method(self):
-        from cactus.cli.model import resolve_model_id
-        self.resolve = resolve_model_id
-
-    def test_known_aliases(self):
-        assert self.resolve("gemma4") == "google/gemma-4-E2B-it"
-        assert self.resolve("parakeet") == "nvidia/parakeet-tdt-0.6b-v3"
-        assert self.resolve("whisper") == "openai/whisper-small"
-        assert self.resolve("qwen") == "Qwen/Qwen3-1.7B"
-        assert self.resolve("lfm") == "LiquidAI/LFM2-VL-450M"
-
-    def test_case_insensitive(self):
-        assert self.resolve("GEMMA4") == "google/gemma-4-E2B-it"
-        assert self.resolve("Parakeet") == "nvidia/parakeet-tdt-0.6b-v3"
-
-    def test_unknown_passthrough(self):
-        assert self.resolve("meta/llama-3.3-70b") == "meta/llama-3.3-70b"
-
-    def test_whitespace_stripped(self):
-        assert self.resolve("  gemma4  ") == "google/gemma-4-E2B-it"
-
-    def test_empty_string(self):
-        assert self.resolve("") == ""
-
-    def test_none_safe(self):
-        assert self.resolve(None) == ""
-
-
 # ── TranspileOptions tests ──────────────────────────────────────────
 
 
@@ -315,7 +283,7 @@ class TestCliParser:
     def test_download_defaults(self):
         args = self.parser.parse_args(["download"])
         assert args.token is None
-        assert args.cache_dir is None
+        assert args.bits == 4
 
     def test_run_command(self):
         args = self.parser.parse_args(["run", "gemma4", "--prompt", "hi"])
@@ -323,10 +291,26 @@ class TestCliParser:
         assert args.model_id == "gemma4"
         assert args.prompt == "hi"
 
+    def test_run_command_chunked_bundle_flags(self):
+        args = self.parser.parse_args([
+            "run", "bundle",
+            "--audio", "audio.wav",
+            "--image", "image.png",
+            "--input-ids", "1,2,3",
+            "--max-new-tokens", "4",
+            "--result-json", "result.json",
+        ])
+        assert args.command == "run"
+        assert args.audio == "audio.wav"
+        assert args.image == "image.png"
+        assert args.input_ids == "1,2,3"
+        assert args.max_new_tokens == 4
+        assert args.result_json == "result.json"
+
     def test_convert_command(self):
         args = self.parser.parse_args(["convert", "qwen", "--bits", "2"])
         assert args.command == "convert"
-        assert args.model_name == "qwen"
+        assert args.model_id == "qwen"
         assert args.bits == 2
 
     def test_build_command(self):

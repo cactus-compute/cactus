@@ -4,6 +4,7 @@
 #include <fstream>
 #include <cstring>
 #include <cmath>
+#include <algorithm>
 #include <iostream>
 #include <iomanip>
 #include <cstdio>
@@ -552,6 +553,126 @@ bool test_cq_embedding_operation() {
     return true;
 }
 
+static void set_cq4_index(std::vector<uint8_t>& packed, uint32_t K, uint32_t row, uint32_t col, uint8_t value) {
+    const size_t byte_index = static_cast<size_t>(row) * (K / 2) + col / 2;
+    if ((col & 1u) == 0) {
+        packed[byte_index] = static_cast<uint8_t>((packed[byte_index] & 0xF0) | (value & 0x0F));
+    } else {
+        packed[byte_index] = static_cast<uint8_t>((packed[byte_index] & 0x0F) | ((value & 0x0F) << 4));
+    }
+}
+
+static std::vector<uint8_t> make_interleaved_cq4(const std::vector<uint8_t>& row_major, uint32_t N, uint32_t K) {
+    const uint32_t pgb = cactus_quant_packed_group_bytes(4, K);
+    std::vector<uint8_t> interleaved(static_cast<size_t>(N / 4) * 4 * pgb, 0);
+    for (uint32_t row = 0; row < N; ++row) {
+        const uint8_t* src = row_major.data() + static_cast<size_t>(row) * pgb;
+        uint8_t* panel = interleaved.data() + static_cast<size_t>(row / 4) * 4 * pgb;
+        for (uint32_t k = 0; k < K; ++k) {
+            const uint8_t idx = static_cast<uint8_t>((src[k / 2] >> ((k & 1u) * 4)) & 0x0F);
+            const uint32_t chunk = k / 8;
+            const uint32_t sub = k & 7u;
+            uint8_t& dst = panel[chunk * 16 + (row & 3u) * 4 + (sub & 3u)];
+            if (sub & 4u) dst = static_cast<uint8_t>((dst & 0x0F) | (idx << 4));
+            else dst = static_cast<uint8_t>((dst & 0xF0) | idx);
+        }
+    }
+    return interleaved;
+}
+
+bool test_orthogonal_interleaved_embedding_row() {
+    const uint32_t N = 8;
+    const uint32_t K = 32;
+    std::vector<__fp16> codebook(16);
+    for (uint32_t i = 0; i < 16; ++i) codebook[i] = static_cast<__fp16>((static_cast<int>(i) - 8) * 0.125f);
+    std::vector<__fp16> input_scale_recip(K, static_cast<__fp16>(1.0f));
+    std::vector<__fp16> norms(N);
+    for (uint32_t row = 0; row < N; ++row) norms[row] = static_cast<__fp16>(0.5f + 0.03125f * row);
+    std::vector<__fp16> rotation(static_cast<size_t>(K) * K, static_cast<__fp16>(0.0f));
+    for (uint32_t i = 0; i < K; ++i) rotation[static_cast<size_t>(i) * K + i] = static_cast<__fp16>(1.0f);
+
+    std::vector<uint8_t> row_major(static_cast<size_t>(N) * K / 2, 0);
+    for (uint32_t row = 0; row < N; ++row)
+        for (uint32_t col = 0; col < K; ++col)
+            set_cq4_index(row_major, K, row, col, static_cast<uint8_t>((row * 3 + col) & 0x0F));
+    std::vector<uint8_t> interleaved = make_interleaved_cq4(row_major, N, K);
+
+    for (uint32_t row : {0u, 1u, 3u, 4u, 7u}) {
+        std::vector<__fp16> ref(K);
+        std::vector<__fp16> got(K);
+        cactus_quant_dequantize_orthogonal_embedding_row(
+            4, K, row, row_major.data(), codebook.data(), norms.data(), input_scale_recip.data(),
+            rotation.data(), CACTUS_QUANT_FLAG_ORTHOGONAL, ref.data());
+        cactus_quant_dequantize_orthogonal_embedding_row(
+            4, K, row, interleaved.data(), codebook.data(), norms.data(), input_scale_recip.data(),
+            rotation.data(), CACTUS_QUANT_FLAG_ORTHOGONAL | CACTUS_QUANT_FLAG_INTERLEAVED_4ROW, got.data());
+        for (uint32_t i = 0; i < K; ++i) {
+            if (std::abs(static_cast<float>(ref[i]) - static_cast<float>(got[i])) > 0.001f) return false;
+        }
+    }
+    return true;
+}
+
+bool test_orthogonal_interleaved_lmhead_matmul() {
+    const uint32_t N = 8;
+    const uint32_t K = 32;
+    std::vector<__fp16> codebook(16);
+    for (uint32_t i = 0; i < 16; ++i) codebook[i] = static_cast<__fp16>((static_cast<int>(i) - 8) * 0.125f);
+    std::vector<__fp16> input_scale_recip(K, static_cast<__fp16>(1.0f));
+    std::vector<__fp16> norms(N);
+    for (uint32_t row = 0; row < N; ++row) norms[row] = static_cast<__fp16>(0.05f + 0.003f * row);
+    std::vector<__fp16> rotation(static_cast<size_t>(K) * K, static_cast<__fp16>(0.0f));
+    for (uint32_t i = 0; i < K; ++i) {
+        uint32_t j = (i * 5) % K;
+        rotation[static_cast<size_t>(i) * K + j] = static_cast<__fp16>((i & 1u) ? -1.0f : 1.0f);
+    }
+    std::vector<uint8_t> row_major(static_cast<size_t>(N) * K / 2, 0);
+    for (uint32_t row = 0; row < N; ++row)
+        for (uint32_t col = 0; col < K; ++col)
+            set_cq4_index(row_major, K, row, col, static_cast<uint8_t>((row + col * 5) & 0x0F));
+    std::vector<uint8_t> interleaved = make_interleaved_cq4(row_major, N, K);
+    std::vector<__fp16> activation(static_cast<size_t>(2) * K);
+    for (uint32_t i = 0; i < K; ++i) {
+        activation[i] = static_cast<__fp16>((static_cast<int>(i % 9) - 4) * 0.1f);
+        activation[K + i] = static_cast<__fp16>((static_cast<int>((i * 3) % 11) - 5) * 0.07f);
+    }
+
+    CactusQuantMatrix row_mat{
+        .bits = 4, .K = K, .N = N, .group_size = K, .num_groups = 1,
+        .flags = CACTUS_QUANT_FLAG_ORTHOGONAL, .codebook = codebook.data(),
+        .input_scale = nullptr, .input_scale_recip = input_scale_recip.data(), .norms = norms.data(),
+        .packed_indices = row_major.data(), .left_signs = nullptr, .right_signs = nullptr,
+        .permutation = nullptr, .rotation = rotation.data(), .expanded = nullptr, .norm_f32 = nullptr,
+    };
+    CactusQuantMatrix inter_mat = row_mat;
+    inter_mat.flags = CACTUS_QUANT_FLAG_ORTHOGONAL | CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+    inter_mat.packed_indices = interleaved.data();
+    std::vector<__fp16> ref(N);
+    std::vector<__fp16> got(N);
+    cactus_quant_orthogonal_matmul(&row_mat, activation.data(), 1, ref.data());
+    cactus_quant_orthogonal_matmul(&inter_mat, activation.data(), 1, got.data());
+
+    float diff2 = 0.0f;
+    float ref2 = 0.0f;
+    for (uint32_t i = 0; i < N; ++i) {
+        const float d = static_cast<float>(got[i]) - static_cast<float>(ref[i]);
+        diff2 += d * d;
+        ref2 += static_cast<float>(ref[i]) * static_cast<float>(ref[i]);
+    }
+    if (std::sqrt(diff2 / std::max(ref2, 1.0e-12f)) >= 0.08f) return false;
+
+    std::vector<__fp16> ref_fallback(static_cast<size_t>(2) * N);
+    std::vector<__fp16> got_fallback(static_cast<size_t>(2) * N);
+    cactus_quant_orthogonal_matmul(&row_mat, activation.data(), 2, ref_fallback.data());
+    cactus_quant_orthogonal_matmul(&inter_mat, activation.data(), 2, got_fallback.data());
+    for (uint32_t i = 0; i < 2 * N; ++i) {
+        if (std::abs(static_cast<float>(got_fallback[i]) - static_cast<float>(ref_fallback[i])) > 0.001f) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool test_embedding_from_file() {
     CactusGraph graph;
 
@@ -657,6 +778,8 @@ int main() {
     runner.run_test("Memory-Mapped Gather", test_mmap_gather());
     runner.run_test("Embedding Operation", test_embedding_operation());
     runner.run_test("CQ Embedding Operation", test_cq_embedding_operation());
+    runner.run_test("Orthogonal Interleaved Embedding Row", test_orthogonal_interleaved_embedding_row());
+    runner.run_test("Orthogonal Interleaved LMHead MatMul", test_orthogonal_interleaved_lmhead_matmul());
     runner.run_test("Embedding from File", test_embedding_from_file());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());

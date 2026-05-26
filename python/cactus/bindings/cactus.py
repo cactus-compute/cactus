@@ -1,7 +1,6 @@
 """Cactus Python FFI bindings."""
 import ctypes
 import json
-import os
 import platform
 from pathlib import Path
 
@@ -11,10 +10,6 @@ _LIB_NAME = "libcactus.dylib" if platform.system() == "Darwin" else "libcactus.s
 
 
 def _find_library():
-    override = os.environ.get("CACTUS_LIB_PATH")
-    if override:
-        return Path(override).expanduser().resolve()
-
     bundled = Path(__file__).parent / "lib" / _LIB_NAME
     if bundled.exists():
         return bundled
@@ -730,23 +725,6 @@ _lib.cactus_rag_query.argtypes = [
 ]
 _lib.cactus_rag_query.restype = ctypes.c_int
 
-_bind_optional("cactus_stream_transcribe_start", [ctypes.c_void_p, ctypes.c_char_p], ctypes.c_void_p)
-
-_bind_optional(
-    "cactus_stream_transcribe_process",
-    [
-        ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t,
-        ctypes.c_char_p, ctypes.c_size_t,
-    ],
-    ctypes.c_int,
-)
-
-_bind_optional(
-    "cactus_stream_transcribe_stop",
-    [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t],
-    ctypes.c_int,
-)
-
 _lib.cactus_index_init.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
 _lib.cactus_index_init.restype = ctypes.c_void_p
 
@@ -1043,50 +1021,6 @@ def cactus_preprocess_audio_features(audio_path, model_type, mel_bins, capacity)
     if rc < 0:
         raise RuntimeError(_err("Audio feature preprocessing failed"))
     return list(buf[:feature_count.value]), int(out_mels.value), int(out_frames.value)
-
-
-# ── Streaming transcription ──────────────────────────────────────────
-
-
-def cactus_stream_transcribe_start(model, options=None):
-    """Start a streaming transcription session.
-
-    Returns:
-        An opaque stream handle. Feed audio with cactus_stream_transcribe_process(),
-        then finalize with cactus_stream_transcribe_stop().
-    """
-    handle = _lib.cactus_stream_transcribe_start(model, _to_json(options))
-    if not handle:
-        raise RuntimeError(_err("Failed to start stream transcription"))
-    return handle
-
-
-def cactus_stream_transcribe_process(stream, pcm_data):
-    """Feed a PCM audio chunk to a streaming transcription session.
-
-    Returns:
-        A dict with partial transcription results.
-    """
-    buf = ctypes.create_string_buffer(65536)
-    pcm_arr = (ctypes.c_uint8 * len(pcm_data))(*pcm_data)
-    pcm_ptr = ctypes.cast(pcm_arr, ctypes.POINTER(ctypes.c_uint8))
-    rc = _lib.cactus_stream_transcribe_process(stream, pcm_ptr, len(pcm_data), buf, len(buf))
-    if rc < 0:
-        raise RuntimeError(_err("Stream process failed"))
-    return _from_json(buf)
-
-
-def cactus_stream_transcribe_stop(stream):
-    """Finalize a streaming transcription session.
-
-    Returns:
-        A dict with the final transcription.
-    """
-    buf = ctypes.create_string_buffer(65536)
-    rc = _lib.cactus_stream_transcribe_stop(stream, buf, len(buf))
-    if rc < 0:
-        raise RuntimeError(_err("Stream stop failed"))
-    return _from_json(buf)
 
 
 # ── Embeddings ───────────────────────────────────────────────────────

@@ -26,11 +26,16 @@ bindings/flutter/*.xcframework
 .DS_Store
 
 __pycache__
+__pycache__/
+*.pyc
 *.egg-info
 venv
 
 weights/
 stage/
+python/dist/
+python/cactus/bin/
+python/cactus/bindings/lib/
 .cache/
 tmp
 site/

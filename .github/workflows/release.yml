@@ -4,68 +4,90 @@ on:
   release:
     types: [published]
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   pypi:
+    permissions:
+      id-token: write
+      contents: read
     uses: ./.github/workflows/pypi.yml
 
   homebrew:
     needs: pypi
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      PACKAGE: cactus-compute
+      TAP: cactus-compute/homebrew-cactus
+      TAG: ${{ github.event.release.tag_name }}
     steps:
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Update Homebrew formula
-        env:
-          TAG: ${{ github.event.release.tag_name }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - name: Resolve version
+        id: ver
         run: |
-          python3 - <<'SCRIPT'
-          import hashlib, os, pathlib, subprocess, time, urllib.request
+          raw="${TAG#v}"
+          version=$(python3 -c "raw='${raw}'; print(raw + '.0' if raw.count('.') == 1 else raw)")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-          tag = os.environ["TAG"]
-          token = os.environ["HOMEBREW_TAP_TOKEN"]
-          version = tag.lstrip("v") + ".0"
-          url = f"https://files.pythonhosted.org/packages/source/c/cactus-compute/cactus_compute-{version}.tar.gz"
+      - name: Resolve sdist URL and SHA256 from PyPI
+        id: pypi
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          for i in $(seq 1 10); do
+            if json=$(curl -fsSL "https://pypi.org/pypi/${PACKAGE}/${VERSION}/json"); then
+              break
+            fi
+            echo "Waiting for PyPI metadata (attempt $i)..."
+            sleep 30
+          done
+          [ -n "$json" ] || { echo "PyPI metadata not available for ${PACKAGE} ${VERSION}"; exit 1; }
+          url=$(echo "$json" | jq -er '.urls[] | select(.packagetype == "sdist") | .url')
+          sha=$(echo "$json" | jq -er '.urls[] | select(.packagetype == "sdist") | .digests.sha256')
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-          for attempt in range(5):
-              try:
-                  data = urllib.request.urlopen(url, timeout=30).read()
-                  sha = hashlib.sha256(data).hexdigest()
-                  break
-              except Exception:
-                  print(f"Waiting for PyPI CDN (attempt {attempt + 1})...")
-                  time.sleep(15)
-          else:
-              raise RuntimeError(f"Package not available at {url}")
-
-          formula = f'''class Cactus < Formula
-            include Language::Python::Virtualenv
+      - name: Update tap formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          URL: ${{ steps.pypi.outputs.url }}
+          SHA: ${{ steps.pypi.outputs.sha }}
+        run: |
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP}.git" tap
+          mkdir -p tap/Formula
+          cat > tap/Formula/cactus.rb <<EOF
+          class Cactus < Formula
             desc "On-device AI inference"
             homepage "https://cactuscompute.com"
-            url "{url}"
-            sha256 "{sha}"
+            url "${URL}"
+            sha256 "${SHA}"
             license "Cactus Compute License"
+            include Language::Python::Virtualenv
             depends_on "python@3.12"
-            def install
-              virtualenv_install_with_resources
+
+            livecheck do
+              url "https://pypi.org/pypi/${PACKAGE}/json"
+              regex(/"version":\s*"(\d+(?:\.\d+)+)"/i)
             end
+
+            def install
+              venv = virtualenv_create(libexec, "python3.12")
+              venv.pip_install "${PACKAGE}==#{version}"
+              bin.install_symlink libexec/"bin/cactus"
+            end
+
             test do
-              system bin/"cactus", "--help"
+              assert_equal "cactus #{version}\n", shell_output("#{bin}/cactus --version")
             end
           end
-          '''
-
-          subprocess.run(["git", "clone", f"https://x-access-token:{token}@github.com/cactus-compute/homebrew-cactus.git", "tap"], check=True)
-          os.chdir("tap")
-          pathlib.Path("Formula/cactus.rb").write_text(formula)
-          subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
-          subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True)
-          subprocess.run(["git", "add", "Formula/cactus.rb"], check=True)
-          subprocess.run(["git", "commit", "-m", f"Update cactus to {tag}"], check=True)
-          subprocess.run(["git", "push", "origin", "main"], check=True)
-          SCRIPT
+          EOF
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/cactus.rb
+          git commit -m "Update cactus to ${TAG}"
+          git push origin main
 
   docs:
     permissions:

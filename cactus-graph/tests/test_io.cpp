@@ -75,7 +75,7 @@ bool test_graph_save_load() {
         size_t input_a = graph.input({2, 3}, Precision::FP16);
         size_t input_b = graph.input({2, 3}, Precision::FP16);
         size_t sum_id = graph.add(input_a, input_b);
-        graph.pow(sum_id, 2.0f);
+        size_t pow_id = graph.pow(sum_id, 2.0f);
 
         graph.save(filename);
 
@@ -88,8 +88,8 @@ bool test_graph_save_load() {
             return false;
         }
 
-        if (sg.graph_inputs.size() != 2 || sg.graph_inputs[0] != 0 ||
-  sg.graph_inputs[1] != 1) {
+        if (sg.graph_inputs.size() != 2 || sg.graph_inputs[0] != input_a ||
+  sg.graph_inputs[1] != input_b) {
             std::cout << "[graph_save_load] unexpected graph_inputs:";
             for (uint32_t idx : sg.graph_inputs) {
                 std::cout << " " << idx;
@@ -99,7 +99,7 @@ bool test_graph_save_load() {
             return false;
         }
 
-        if (sg.graph_outputs.size() != 1 || sg.graph_outputs[0] != 3) {
+        if (sg.graph_outputs.size() != 1 || sg.graph_outputs[0] != pow_id) {
             std::cout << "[graph_save_load] unexpected graph_outputs:";
             for (uint32_t idx : sg.graph_outputs) {
                 std::cout << " " << idx;

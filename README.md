@@ -255,19 +255,21 @@ cactus build               # default static lib
 │    --prompt <text>                   initial prompt                          │
 │    --thinking                        enable thinking/reasoning mode          │
 │                                                                              │
-│  cactus transcribe [model]           live mic transcription (parakeet-tdt-0.6b-v3) │
+│  cactus transcribe [model]        speech-to-text (parakeet-tdt-0.6b-v3)     │
 │    --file <audio.wav>                transcribe file instead of mic          │
 │    --token <token>                   HF token (gated models)                 │
 │    --reconvert                       force reconversion from source          │
 │                                                                              │
-│  cactus download <model>             downloads model to ./weights            │
+│  cactus download <model>          fetch pre-converted CQ from Cactus-Compute │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)            │
 │    --token <token>                   HuggingFace API token                   │
-│    --reconvert                       force reconversion from source          │
 │                                                                              │
 │  cactus convert <model> [dir]        convert model to CQ format              │
+│                                      (pre-converted if available, else       │
+│                                      built from source)                      │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)            │
 │    --token <token>                   HuggingFace API token                   │
+│    --reconvert                       force build from source                 │
 │                                                                              │
 │  cactus build                        build for ARM → build/libcactus.a       │
 │    --apple                           Apple (iOS/macOS)                       │

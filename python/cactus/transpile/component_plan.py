@@ -30,8 +30,8 @@ def _plan_from_profile(
         if not has_vision:
             return ComponentPlan(
                 task="causal_lm_logits",
-                components=("decoder",) + tuple(profile.cached_step_components or ()),
-                force_component_pipeline=bool(profile.cached_step_components),
+                components=("decoder", "decoder_step"),
+                force_component_pipeline=True,
             )
     return ComponentPlan(
         task=profile.default_task,

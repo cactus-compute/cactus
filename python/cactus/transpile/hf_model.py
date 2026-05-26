@@ -311,6 +311,7 @@ def _write_component_bundle(
             "audio_encoder",
             "vision_encoder",
             "lm_encoder",
+            "lm_encoder_text_chunk",
             "decoder_prefill_chunk",
             "decoder",
             "lm_encoder_step",
@@ -2479,6 +2480,14 @@ def _load_transformers_bundle(
 ):
     config = _load_config_json(model_id)
     config_model_type = str(config.get("model_type", "") or "").lower()
+    if not config_model_type:
+        normalized_model_id = model_id.lower().replace("_", "-")
+        if "qwen3-vl" in normalized_model_id:
+            config_model_type = "qwen3_vl"
+        elif "lfm2.5-vl" in normalized_model_id or "lfm2-vl" in normalized_model_id:
+            config_model_type = "lfm2_vl"
+        if config_model_type:
+            config = {"model_type": config_model_type}
     external_transformers_site_packages = _ensure_transformers_supports_model_type(config_model_type)
     patch_note = _patch_transformers_torchvision_probe()
     if patch_note:
@@ -2532,7 +2541,7 @@ def _load_transformers_bundle(
                 f"Could not load tokenizer for {model_id}:\n"
                 + "\n".join(tokenizer_errors)
             )
-        if config_model_type in {"lfm2_vl", "qwen3_5"}:
+        if config_model_type in {"lfm2_vl", "qwen3_5", "qwen3_vl"}:
             model = AutoModelForImageTextToText.from_pretrained(
                 model_source,
                 dtype=torch_dtype,
@@ -2543,7 +2552,7 @@ def _load_transformers_bundle(
             tie_note = _tie_lfm2_vl_lm_head_if_needed(model)
             if tie_note:
                 print(f"note={tie_note}")
-        elif config_model_type == "qwen3_5" and isinstance(config.get("text_config"), dict):
+        elif config_model_type in {"qwen3_5", "qwen3_vl"} and isinstance(config.get("text_config"), dict):
             model = AutoModelForImageTextToText.from_pretrained(
                 model_source,
                 dtype=torch_dtype,
@@ -2592,7 +2601,7 @@ def _load_transformers_bundle(
                 + processor_config_hint
             )
 
-        if config_model_type in {"lfm2_vl", "qwen3_5"}:
+        if config_model_type in {"lfm2_vl", "qwen3_5", "qwen3_vl"}:
             model = AutoModelForImageTextToText.from_pretrained(
                 model_source,
                 dtype=torch_dtype,
@@ -3025,7 +3034,7 @@ def main() -> int:
                 system_prompt=args.system_prompt,
                 enable_thinking_if_supported=args.enable_thinking,
             )
-        elif config_model_type == "qwen3_5":
+        elif config_model_type in {"qwen3_5", "qwen3_vl"}:
             prepared = _prepare_qwen3_5_multimodal_inputs(
                 processor_or_tokenizer,
                 prompt=args.prompt,

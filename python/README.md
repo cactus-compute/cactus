@@ -209,25 +209,12 @@ options = json.dumps({
 result = json.loads(cactus_transcribe(model, "medical_notes.wav", None, options, None, None))
 ```
 
-Streaming transcription:
-Streaming transcription also returns JSON strings:
-
-```python
-stream       = cactus_stream_transcribe_start(model: int, options_json: str | None) -> int
-partial_json = cactus_stream_transcribe_process(stream: int, pcm_data: bytes) -> str
-final_json   = cactus_stream_transcribe_stop(stream: int) -> str
-```
-
-In `cactus_stream_transcribe_process` responses: `confirmed` is the stable text from segments that have been finalised across two consecutive decode passes (potentially replaced by a cloud result); `confirmed_local` is the same text before any cloud substitution; `pending` is the current window's unconfirmed transcription text; `segments` contains timestamped segments for the current audio window.
-
 ```python
 result = json.loads(cactus_transcribe(model, "/path/to/audio.wav", None, None, None, None))
 print(result["response"])
 for seg in result["segments"]:
     print(f"[{seg['start']:.3f}s - {seg['end']:.3f}s] {seg['text']}")
 ```
-
-Streaming also accepts `custom_vocabulary` in the options passed to `cactus_stream_transcribe_start`. The bias is applied for the lifetime of the stream session.
 
 ### Embeddings
 

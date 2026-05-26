@@ -162,7 +162,7 @@ class Gemma4Adapter(FamilyAdapter):
         policy = super().policy(match, shape, requested_bits)
         name = match.source_name
         if name == "model.embed_vision.embedding_projection.weight":
-            return replace(policy, use_gptq=False, fallback_reason=policy.fallback_reason or "vision embedding projection has no stable Hessian target")
+            return policy
         if ".self_attn." in name and (name.endswith(".k_proj.weight") or name.endswith(".v_proj.weight")):
             parts = name.split(".")
             try:

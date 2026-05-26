@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import platform
 from pathlib import Path
@@ -139,7 +140,10 @@ def build_binary(
         print_color(RED, f"{name} build failed")
         return 1
 
-    print_color(GREEN, f"Build complete: {build_dir / name}")
+    bin_dir = Path(__file__).resolve().parent.parent / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(build_dir / name, bin_dir / name)
+    print_color(GREEN, f"Build complete: {bin_dir / name}")
     return 0
 
 
@@ -175,17 +179,20 @@ def cmd_build(args):
     if not build_script.exists():
         print_color(RED, f"Error: build.sh not found at {build_script}")
         return 1
-    result = run_command(str(build_script), cwd=cactus_dir, check=False)
+    result = run_command(str(build_script), cwd=cactus_dir)
     if result.returncode != 0:
         print_color(RED, "Failed to build cactus library")
+        return 1
+    if not lib_path.exists():
+        print_color(RED, f"Build did not produce {lib_path}")
         return 1
 
     sdl2 = _detect_sdl2()
     if sdl2[0]:
-        print_color(GREEN, "SDL2 found - building with live audio support")
+        print_color(GREEN, "SDL2 found - chat voice input enabled")
     else:
-        print_color(YELLOW, "SDL2 not found - live mic recording will be disabled")
-        print_color(YELLOW, "Install SDL2 for live mic support: brew install sdl2 (macOS)")
+        print_color(YELLOW, "SDL2 not found - chat voice input disabled")
+        print_color(YELLOW, "Install SDL2 to enable chat voice input: brew install sdl2 (macOS)")
 
     rc = build_binary("chat", lib_path, sdl2=sdl2)
     if rc != 0:
@@ -216,7 +223,7 @@ def _build_with_script(subdir, title):
         print_color(RED, f"Error: build.sh not found at {build_script}")
         return 1
 
-    result = run_command(str(build_script), cwd=PROJECT_ROOT / subdir, check=False)
+    result = run_command(str(build_script), cwd=PROJECT_ROOT / subdir)
     if result.returncode != 0:
         print_color(RED, f"{title} failed")
         return 1
@@ -241,7 +248,7 @@ def cmd_build_python():
         print_color(RED, f"Error: build.sh not found at {build_script}")
         return 1
 
-    result = run_command(str(build_script), cwd=cactus_dir, check=False)
+    result = run_command(str(build_script), cwd=cactus_dir)
     if result.returncode != 0:
         print_color(RED, "Build failed")
         return 1

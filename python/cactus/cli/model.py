@@ -8,89 +8,10 @@ from pathlib import Path
 from .common import GREEN, PROJECT_ROOT, YELLOW, print_color
 
 
-# ── Model ID aliases (single source of truth) ────────────────────────
-
-MODEL_ID_ALIASES = {
-    "gemma4":       "google/gemma-4-E2B-it",
-    "gemma4-e2b":   "google/gemma-4-E2B-it",
-    "parakeet":     "nvidia/parakeet-tdt-0.6b-v3",
-    "parakeet-tdt": "nvidia/parakeet-tdt-0.6b-v3",
-    "whisper":      "openai/whisper-small",
-    "qwen":         "Qwen/Qwen3-1.7B",
-    "lfm":          "LiquidAI/LFM2-VL-450M",
-}
-
-
-def resolve_model_id(raw):
-    """Normalize alias -> canonical HuggingFace model ID."""
-    normalized = (raw or "").strip()
-    return MODEL_ID_ALIASES.get(normalized.lower(), normalized)
-
-
 # ── Weight download / conversion ──────────────────────────────────────
 
 
-def download_model(model_id, *, token=None, cache_dir=None):
-    """Download raw model weights from HuggingFace."""
-    from .download import get_weights_dir
-
-    weights_dir = get_weights_dir(model_id)
-
-    print()
-    print_color(YELLOW, f"Downloading {model_id} from HuggingFace...")
-    print("=" * 45)
-
-    from huggingface_hub import snapshot_download
-    snapshot_download(
-        repo_id=model_id,
-        token=token,
-        cache_dir=cache_dir,
-        local_dir=str(weights_dir),
-    )
-    print_color(GREEN, f"Model downloaded to {weights_dir}")
-    return weights_dir
-
-
-def _try_cq_download(model_id, *, bits, token, cache_dir, weights_dir):
-    """Try pre-converted CQ weights from Cactus-Compute. Returns path or None."""
-    from .download import get_model_dir_name
-    from .utils import (
-        combo_label,
-        download_cq_archive,
-        list_hf_cq_archives,
-        resolve_archive,
-        suggested_cq_repo,
-    )
-
-    cq_repo_id = (
-        model_id
-        if model_id.lower().endswith("-cq") and "/" in model_id
-        else suggested_cq_repo(model_id)
-    )
-    try:
-        archives = list_hf_cq_archives(cq_repo_id, token=token)
-        if not archives:
-            return None
-        local_name = get_model_dir_name(model_id)
-        resolution = resolve_archive(cq_repo_id, local_name, archives, {"L": bits})
-        for w in resolution.warnings:
-            print_color(YELLOW, f"  {w}")
-        size_text = (
-            f" ({resolution.archive.size / (1024 * 1024):.1f} MiB)"
-            if resolution.archive.size
-            else ""
-        )
-        print(f"  Downloading pre-converted {resolution.archive.filename}"
-              f" [{combo_label(resolution.archive.combo)}]{size_text}")
-        download_cq_archive(resolution, weights_dir, token=token, cache_dir=cache_dir)
-        print_color(GREEN, f"CQ model ready at {weights_dir}")
-        return weights_dir
-    except Exception as exc:
-        print(f"  Pre-converted CQ not available ({exc})")
-        return None
-
-
-def _convert_from_source(model_id, *, bits, token, cache_dir, weights_dir):
+def _convert_from_source(model_id, *, bits, token, weights_dir):
     """Download from HuggingFace and run CQ conversion."""
     print_color(YELLOW, f"Converting {model_id} from HuggingFace source...")
     from ..convert.cli import main as cq_main
@@ -103,18 +24,19 @@ def _convert_from_source(model_id, *, bits, token, cache_dir, weights_dir):
     ]
     if token:
         cq_args.extend(["--token", token])
-    if cache_dir:
-        cq_args.extend(["--cache-dir", cache_dir])
     cq_main(cq_args)
 
     print_color(GREEN, f"Model converted and ready at {weights_dir}")
     return weights_dir
 
 
-def ensure_weights(model_id, *, bits=4, token=None, cache_dir=None,
-                   reconvert=False, output_dir=None):
-    """Return path to CQ weights dir, converting as needed."""
-    from .download import get_weights_dir
+def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=None):
+    """Return path to CQ weights dir, downloading or converting as needed.
+
+    Fast path: pull a pre-converted CQ archive from huggingface.co/Cactus-Compute.
+    Fallback: ``--reconvert`` or no archive available → build from source.
+    """
+    from .download import get_weights_dir, download_cq_weights
 
     weights_dir = Path(output_dir) if output_dir else get_weights_dir(model_id)
 
@@ -127,13 +49,14 @@ def ensure_weights(model_id, *, bits=4, token=None, cache_dir=None,
         return weights_dir
 
     if not reconvert:
-        result = _try_cq_download(model_id, bits=bits, token=token,
-                                  cache_dir=cache_dir, weights_dir=weights_dir)
-        if result is not None:
-            return result
+        try:
+            return download_cq_weights(
+                model_id, bits=bits, token=token, output_dir=weights_dir,
+            )
+        except (RuntimeError, OSError) as exc:
+            print(f"  Pre-converted CQ not available ({exc})")
 
-    return _convert_from_source(model_id, bits=bits, token=token,
-                                cache_dir=cache_dir, weights_dir=weights_dir)
+    return _convert_from_source(model_id, bits=bits, token=token, weights_dir=weights_dir)
 
 
 # ── Transpile spec helpers ────────────────────────────────────────────
@@ -201,12 +124,15 @@ def _default_max_new_tokens(task):
 
 def _default_multimodal_assets():
     """Return bundled test image/audio paths for multimodal shape capture."""
-    assets_dir = PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
-    image_file = assets_dir / "test_monkey.png"
-    audio_file = assets_dir / "test.wav"
-    image_args = [str(image_file)] if image_file.exists() else []
-    audio_arg = str(audio_file) if audio_file.exists() else None
-    return image_args, audio_arg
+    candidates = (
+        Path(__file__).resolve().parent.parent / "assets",
+        PROJECT_ROOT / "cactus-engine" / "tests" / "assets",
+    )
+    def _find(name):
+        return next((d / name for d in candidates if (d / name).exists()), None)
+    image = _find("test_monkey.png")
+    audio = _find("test.wav")
+    return ([str(image)] if image else []), (str(audio) if audio else None)
 
 
 def _default_audio_asset():
@@ -250,6 +176,17 @@ _AUDIO_TASKS = frozenset({
 # ── Bundle preparation (weights + transpile) ──────────────────────────
 
 
+def resolve_bundle_dir(model_id):
+    path = Path(model_id).expanduser()
+    if not path.is_dir():
+        return None
+    if (path / "components" / "manifest.json").exists():
+        return path
+    if path.name == "components" and (path / "manifest.json").exists():
+        return path.parent
+    return None
+
+
 @dataclass(frozen=True)
 class TranspileOptions:
     """Transpile-phase parameters for ensure_bundle."""
@@ -265,12 +202,12 @@ class TranspileOptions:
     local_files_only: bool = False
 
 
-def ensure_bundle(model_id, *, bits=4, token=None, cache_dir=None,
+def ensure_bundle(model_id, *, bits=4, token=None,
                   reconvert=False, output_dir=None, transpile=None):
     """Return path to transpiled bundle, creating it if needed.
     """
     from .download import get_weights_dir
-    from .transpile import cmd_transpile
+    from .transpile import run_transpile
     from cactus.transpile.component_plan import infer_component_plan_from_output
 
     opts = transpile or TranspileOptions()
@@ -283,8 +220,7 @@ def ensure_bundle(model_id, *, bits=4, token=None, cache_dir=None,
     # Step 1: ensure CQ weights exist
     ensure_weights(
         model_id, bits=bits, token=token,
-        cache_dir=cache_dir, reconvert=reconvert,
-        output_dir=output_dir,
+        reconvert=reconvert, output_dir=output_dir,
     )
 
     # Step 2: skip if already transpiled
@@ -350,7 +286,7 @@ def ensure_bundle(model_id, *, bits=4, token=None, cache_dir=None,
     elif spec.task in _AUDIO_TASKS and not spec_audio_file:
         raise RuntimeError(f"{spec.task} transpile requires --audio-file.")
 
-    # Step 5: build transpile args and call cmd_transpile
+    # Step 5: build transpile args and call run_transpile
     effective_max_new_tokens = opts.max_new_tokens or _default_max_new_tokens(spec.task)
 
     extra_args = [
@@ -377,14 +313,7 @@ def ensure_bundle(model_id, *, bits=4, token=None, cache_dir=None,
     if opts.local_files_only:
         extra_args.append("--local-files-only")
 
-    import argparse
-    transpile_ns = argparse.Namespace(
-        model_id=model_id,
-        execute_after_transpile=False,
-        allow_unconverted_weights=False,
-        extra_args=extra_args,
-    )
-    rc = cmd_transpile(transpile_ns)
+    rc = run_transpile(model_id, extra_args=extra_args)
     if rc != 0:
         raise RuntimeError(f"Transpilation failed for {model_id}")
 

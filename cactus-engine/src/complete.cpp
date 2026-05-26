@@ -4,10 +4,13 @@
 #include "telemetry.h"
 #include "cactus_kernels.h"
 #include "wav.h"
+#include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <iostream>
 #include <memory>
 #include <vector>
 
@@ -20,6 +23,20 @@ namespace {
 
 std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema);
 std::vector<std::string> extract_schema_required(const std::string& schema);
+
+void maybe_pin_benchmark_main_to_max_perf_core() {
+#if defined(__ANDROID__)
+    const char* enabled = std::getenv("CACTUS_BENCH_PIN_MAIN_MAX_PERF");
+    if (!enabled || std::string(enabled) != "1") return;
+
+    (void)CactusThreading::get_thread_pool();
+    const auto& cores = CactusThreading::CoreTopology::get().performance_cores;
+    if (cores.empty()) return;
+    int core = *std::max_element(cores.begin(), cores.end());
+    bool ok = CactusThreading::pin_current_thread_to_cores({core});
+    std::cerr << "CACTUS_BENCH_PIN_MAIN_MAX_PERF cpu=" << core << " ok=" << (ok ? 1 : 0) << "\n";
+#endif
+}
 
 std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
@@ -325,7 +342,7 @@ struct PreparedPrompt {
     size_t context_token_count = 0;
     std::vector<std::vector<CactusModelHandle::ProcessedImage>> images;
 
-    std::vector<float> audio_features;
+    std::vector<std::vector<float>> audio_features;
     size_t audio_num_frames = 0;
 
     bool has_images() const {
@@ -334,7 +351,8 @@ struct PreparedPrompt {
     }
 
     bool has_audio() const {
-        return !audio_features.empty();
+        return std::any_of(audio_features.begin(), audio_features.end(),
+            [](const auto& mel) { return !mel.empty(); });
     }
 };
 
@@ -457,38 +475,36 @@ PreparedPrompt prepare_prompt(
     }
 
     if (prompt.model_type == Config::ModelType::GEMMA4) {
-        std::vector<float> audio_samples;
-        if (pcm_buffer != nullptr && pcm_buffer_size > 1) {
-            auto waveform_fp32 = cactus::audio::pcm_buffer_to_float_samples(pcm_buffer, pcm_buffer_size);
-            audio_samples = resample_to_16k_fp32(waveform_fp32, 16000);
-        } else if (!prompt.audio_paths.empty()) {
-            for (auto it = prompt.messages.rbegin(); it != prompt.messages.rend(); ++it) {
-                if (!it->audio.empty()) {
-                    const std::string& audio_path = it->audio.back();
-                    AudioFP32 wav = load_wav(audio_path);
-                    audio_samples = resample_to_16k_fp32(wav.samples, wav.sample_rate);
-                    break;
-                }
-            }
-        }
         std::vector<size_t> user_indices;
         for (size_t i = 0; i < prompt.messages.size(); i++) {
             if (prompt.messages[i].role == "user") user_indices.push_back(i);
         }
         auto& counts = handle->user_audio_counts;
-        for (size_t u = 0; u + 1 < user_indices.size(); u++) {
-            if (u < counts.size() && counts[u] > 0) {
-                prompt.messages[user_indices[u]].audio_soft_token_count = counts[u];
+        if (counts.size() < user_indices.size()) counts.resize(user_indices.size(), 0);
+
+        if (pcm_buffer != nullptr && pcm_buffer_size > 1 && !user_indices.empty()) {
+            auto waveform_fp32 = cactus::audio::pcm_buffer_to_float_samples(pcm_buffer, pcm_buffer_size);
+            auto samples_16k = resample_to_16k_fp32(waveform_fp32, 16000);
+            if (!samples_16k.empty()) {
+                auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(samples_16k, handle->model->get_config());
+                prompt.audio_features.push_back(std::move(audio_prep.features));
+                size_t u = user_indices.size() - 1;
+                prompt.messages[user_indices[u]].audio_soft_token_count = audio_prep.num_soft_tokens;
+                counts[u] = audio_prep.num_soft_tokens;
             }
-        }
-        if (!audio_samples.empty() && !user_indices.empty()) {
-            auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(audio_samples, handle->model->get_config());
-            prompt.audio_features = std::move(audio_prep.features);
-            prompt.audio_num_frames = audio_prep.num_frames;
-            size_t u = user_indices.size() - 1;
-            prompt.messages[user_indices[u]].audio_soft_token_count = audio_prep.num_soft_tokens;
-            if (counts.size() <= u) counts.resize(u + 1, 0);
-            counts[u] = audio_prep.num_soft_tokens;
+        } else if (!prompt.audio_paths.empty()) {
+            for (size_t u = 0; u < user_indices.size(); u++) {
+                const auto& msg = prompt.messages[user_indices[u]];
+                if (msg.audio.empty()) continue;
+                const std::string& audio_path = msg.audio.back();
+                AudioFP32 wav = load_wav(audio_path);
+                auto samples_16k = resample_to_16k_fp32(wav.samples, wav.sample_rate);
+                if (samples_16k.empty()) continue;
+                auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(samples_16k, handle->model->get_config());
+                prompt.audio_features.push_back(std::move(audio_prep.features));
+                prompt.messages[user_indices[u]].audio_soft_token_count = audio_prep.num_soft_tokens;
+                counts[u] = audio_prep.num_soft_tokens;
+            }
         }
     }
 
@@ -542,6 +558,21 @@ PrefillResult do_prefill(
     if (tokens_to_process.size() > 1) {
         std::vector<uint32_t> prefill_tokens(tokens_to_process.begin(), tokens_to_process.end() - 1);
         result.prefilled_count = prefill_tokens.size();
+
+        auto slice_delta_audio = [&]() -> std::vector<std::vector<float>> {
+            if (!result.was_prefix) return prompt.audio_features;
+            const size_t cached_msg_count = handle->processed_images.size();
+            size_t cached_audio_count = 0;
+            for (size_t i = 0; i < cached_msg_count && i < prompt.messages.size(); ++i) {
+                const auto& msg = prompt.messages[i];
+                if (msg.role == "user" && !msg.audio.empty()) cached_audio_count++;
+            }
+            cached_audio_count = std::min(cached_audio_count, prompt.audio_features.size());
+            return std::vector<std::vector<float>>(
+                prompt.audio_features.begin() + cached_audio_count,
+                prompt.audio_features.end());
+        };
+
         if (has_images && has_audio) {
             std::vector<std::string> delta_image_paths;
             if (result.was_prefix) {
@@ -556,7 +587,7 @@ PrefillResult do_prefill(
             } else {
                 delta_image_paths = prompt.image_paths;
             }
-            handle->model->prefill_with_media(prefill_tokens, delta_image_paths, prompt.audio_features);
+            handle->model->prefill_with_media(prefill_tokens, delta_image_paths, slice_delta_audio());
         } else if (has_images) {
             std::vector<std::string> delta_image_paths;
             if (result.was_prefix) {
@@ -573,7 +604,7 @@ PrefillResult do_prefill(
             }
             handle->model->prefill_with_images(prefill_tokens, delta_image_paths);
         } else if (has_audio) {
-            handle->model->prefill_with_audio(prefill_tokens, prompt.audio_features);
+            handle->model->prefill_with_audio(prefill_tokens, slice_delta_audio());
         } else {
             handle->model->prefill(prefill_tokens, handle->model->get_prefill_chunk_size());
         }
@@ -676,14 +707,6 @@ int cactus_complete(
 
         bool has_images = prompt.has_images();
         bool has_audio = prompt.has_audio();
-        const bool has_gemma4_mixed_media = prompt.model_type == Config::ModelType::GEMMA4 && has_images && has_audio;
-        auto decode_gemma4_mixed_media = [&](const std::vector<uint32_t>& tokens, float* out_entropy) -> uint32_t {
-            (void)tokens;
-            (void)out_entropy;
-            throw std::runtime_error(
-                "Gemma4 mixed-media native decode is not present in this build. "
-                "Use cactus run-transpiled for transpiled graph bundles.");
-        };
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
 
@@ -693,26 +716,28 @@ int cactus_complete(
         uint32_t next_token;
         size_t prompt_tokens;
 
-        if ((has_gemma4_mixed_media || has_audio) && !handle->processed_tokens.empty()) {
+        if (has_audio && !handle->processed_tokens.empty()) {
             auto& cache = handle->processed_tokens;
             size_t common = 0;
             size_t limit = std::min(cache.size(), prompt.tokens.size());
             while (common < limit && cache[common] == prompt.tokens[common]) common++;
             if (common < cache.size()) {
                 CACTUS_LOG_WARN("complete", "KV cache diverges from new prompt at position " << common
-                    << "/" << cache.size() << "; trimming and re-prefilling the divergent suffix");
-                size_t kv_len = handle->model->get_cache_size();
-                if (kv_len > common) {
-                    handle->model->remove_thinking_tokens({{common, kv_len - common}});
-                }
-                cache.resize(common);
+                    << "/" << cache.size() << "; resetting cache for clean audio re-prefill");
+                reset_cache(handle);
             }
         }
 
-        if (has_gemma4_mixed_media) {
-            prompt_tokens = prompt.tokens.size();
-            next_token = decode_gemma4_mixed_media(prompt.tokens, &first_token_entropy);
-        } else {
+        bool first_token_from_prefill = false;
+        if (!has_images && !has_audio && handle->processed_tokens.empty()) {
+            reset_cache(handle);
+            first_token_from_prefill = handle->model->prefill_and_sample_first_token(prompt.tokens, next_token);
+            if (first_token_from_prefill) {
+                prompt_tokens = prompt.tokens.size();
+                first_token_entropy = 0.0f;
+            }
+        }
+        if (!first_token_from_prefill) {
             auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
             prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
             next_token = generate_first_token(handle, prefill_result, prompt, &first_token_entropy);
@@ -784,11 +809,10 @@ int cactus_complete(
                 if (handle->should_stop) break;
 
                 float token_entropy = 0.0f;
-                if (has_gemma4_mixed_media) {
-                    next_token = decode_gemma4_mixed_media(handle->processed_tokens, &token_entropy);
-                } else if (has_audio) {
+                if (has_audio) {
+                    uint32_t last_token = handle->processed_tokens.empty() ? next_token : handle->processed_tokens.back();
                     next_token = handle->model->decode_with_audio(
-                        handle->processed_tokens, prompt.audio_features,
+                        {last_token}, prompt.audio_features,
                         prompt.options.temperature, prompt.options.top_p, prompt.options.top_k,
                         "", &token_entropy,
                         prompt.options.min_p, prompt.options.repetition_penalty);
@@ -1119,6 +1143,122 @@ int cactus_score_window(
 
     } catch (const std::exception& e) {
         handle_error_response(e.what(), response_buffer, buffer_size);
+        return -1;
+    }
+}
+
+int cactus_benchmark_tokens(
+    cactus_model_t model,
+    const uint32_t* prompt_tokens,
+    size_t prompt_token_len,
+    size_t decode_token_len,
+    char* response_buffer,
+    size_t buffer_size
+) {
+    if (!model || !prompt_tokens || prompt_token_len == 0 || !response_buffer || buffer_size == 0) {
+        handle_error_response("Invalid parameters", response_buffer, buffer_size);
+        return -1;
+    }
+
+    try {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        std::vector<uint32_t> prompt(prompt_tokens, prompt_tokens + prompt_token_len);
+
+        auto start_time = std::chrono::high_resolution_clock::now();
+        double peak_ram_usage_mb = get_ram_usage_mb();
+        auto sample_peak_ram = [&]() {
+            peak_ram_usage_mb = std::max(peak_ram_usage_mb, get_ram_usage_mb());
+        };
+        handle->model->reset_cache();
+        maybe_pin_benchmark_main_to_max_perf_core();
+        auto prefill_start_time = std::chrono::high_resolution_clock::now();
+        size_t cache_prime_tokens = 0;
+        uint32_t next_token = 0;
+        bool first_token_from_prefill = false;
+        if (decode_token_len == 0) {
+            handle->model->prefill(prompt, handle->model->get_prefill_chunk_size(), "", false);
+            cache_prime_tokens = prompt.size();
+        } else {
+            first_token_from_prefill = handle->model->prefill_and_sample_first_token(prompt, next_token);
+            if (first_token_from_prefill) {
+                cache_prime_tokens = prompt.size();
+            } else if (prompt.size() > 1) {
+                handle->model->prefill(
+                    std::vector<uint32_t>(prompt.begin(), prompt.end() - 1),
+                    handle->model->get_prefill_chunk_size()
+                );
+                cache_prime_tokens = prompt.size() - 1;
+            }
+        }
+        auto prefill_end_time = std::chrono::high_resolution_clock::now();
+        sample_peak_ram();
+        auto first_decode_start_time = std::chrono::high_resolution_clock::now();
+        if (decode_token_len > 0 && !first_token_from_prefill) {
+            next_token = handle->model->decode({prompt.back()}, 0.0f, 1.0f, 1);
+        }
+        sample_peak_ram();
+        auto first_token_time = std::chrono::high_resolution_clock::now();
+
+        size_t generated = decode_token_len > 0 ? 1 : 0;
+        while (generated < decode_token_len) {
+            next_token = handle->model->decode({next_token}, 0.0f, 1.0f, 1);
+            sample_peak_ram();
+            ++generated;
+        }
+
+        auto end_time = std::chrono::high_resolution_clock::now();
+        double ttft_ms = std::chrono::duration_cast<std::chrono::microseconds>(first_token_time - start_time).count() / 1000.0;
+        double total_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
+        double cache_prime_ms = std::chrono::duration_cast<std::chrono::microseconds>(prefill_end_time - prefill_start_time).count() / 1000.0;
+        double first_decode_ms = std::chrono::duration_cast<std::chrono::microseconds>(first_token_time - first_decode_start_time).count() / 1000.0;
+        double cache_state_copy_ms = handle->model->last_prefill_cache_copy_ms();
+        double cache_prime_compute_ms = std::max(0.0, cache_prime_ms - cache_state_copy_ms);
+        double decode_ms = std::max(0.0, total_ms - ttft_ms);
+        double prefill_prepare_tps = (cache_prime_tokens > 0 && cache_prime_ms > 0.0)
+            ? (static_cast<double>(cache_prime_tokens) * 1000.0) / cache_prime_ms
+            : 0.0;
+        double prefill_tps = (cache_prime_tokens > 0 && cache_prime_compute_ms > 0.0)
+            ? (static_cast<double>(cache_prime_tokens) * 1000.0) / cache_prime_compute_ms
+            : 0.0;
+        double ttft_prompt_tps = ttft_ms > 0.0 ? (static_cast<double>(prompt_token_len) * 1000.0) / ttft_ms : 0.0;
+        double decode_tps = (generated > 1 && decode_ms > 0.0) ? (static_cast<double>(generated - 1) * 1000.0) / decode_ms : 0.0;
+
+        std::ostringstream oss;
+        oss << "{"
+            << "\"success\":true,"
+            << "\"time_to_first_token_ms\":" << std::fixed << std::setprecision(2) << ttft_ms << ","
+            << "\"total_time_ms\":" << std::fixed << std::setprecision(2) << total_ms << ","
+            << "\"prefill_tps\":" << std::fixed << std::setprecision(2) << prefill_tps << ","
+            << "\"prefill_compute_tps\":" << std::fixed << std::setprecision(2) << prefill_tps << ","
+            << "\"prefill_prepare_tps\":" << std::fixed << std::setprecision(2) << prefill_prepare_tps << ","
+            << "\"ttft_prompt_tps\":" << std::fixed << std::setprecision(2) << ttft_prompt_tps << ","
+            << "\"cache_prime_ms\":" << std::fixed << std::setprecision(2) << cache_prime_ms << ","
+            << "\"cache_prime_compute_ms\":" << std::fixed << std::setprecision(2) << cache_prime_compute_ms << ","
+            << "\"cache_state_copy_ms\":" << std::fixed << std::setprecision(2) << cache_state_copy_ms << ","
+            << "\"cache_prime_tokens\":" << cache_prime_tokens << ","
+            << "\"first_decode_ms\":" << std::fixed << std::setprecision(2) << first_decode_ms << ","
+            << "\"first_token_from_prefill\":" << (first_token_from_prefill ? "true" : "false") << ","
+            << "\"prefill_padding_tokens\":" << handle->model->last_prefill_padding_tokens() << ","
+            << "\"prefill_scalar_tail_tokens\":" << handle->model->last_prefill_scalar_tail_tokens() << ","
+            << "\"decode_tps\":" << std::fixed << std::setprecision(2) << decode_tps << ","
+            << "\"prompt_tokens\":" << prompt_token_len << ","
+            << "\"completion_tokens\":" << generated << ","
+            << "\"peak_ram_usage_mb\":" << std::fixed << std::setprecision(2) << peak_ram_usage_mb << ","
+            << "\"ram_usage_mb\":" << std::fixed << std::setprecision(2) << get_ram_usage_mb()
+            << "}";
+
+        std::string result = oss.str();
+        if (result.size() >= buffer_size) {
+            handle_error_response("Response buffer too small", response_buffer, buffer_size);
+            return -1;
+        }
+        std::strcpy(response_buffer, result.c_str());
+        return static_cast<int>(result.size());
+    } catch (const std::exception& e) {
+        handle_error_response(e.what(), response_buffer, buffer_size);
+        return -1;
+    } catch (...) {
+        handle_error_response("Unknown error during token benchmark", response_buffer, buffer_size);
         return -1;
     }
 }

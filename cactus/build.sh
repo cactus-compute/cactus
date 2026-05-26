@@ -21,7 +21,17 @@ cd "$(dirname "$0")"
 
 echo "Building Cactus library..."
 
-rm -rf build
+LOCK_DIR="${TMPDIR:-/tmp}/cactus-build.lock"
+while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    if [ -f "$LOCK_DIR/pid" ] && ! kill -0 "$(cat "$LOCK_DIR/pid" 2>/dev/null)" 2>/dev/null; then
+        rm -rf "$LOCK_DIR"
+        continue
+    fi
+    sleep 2
+done
+echo "$$" > "$LOCK_DIR/pid"
+trap 'rm -rf "$LOCK_DIR"' EXIT
+
 mkdir -p build
 cd build
 

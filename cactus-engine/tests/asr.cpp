@@ -35,8 +35,7 @@ int main(int argc, char** argv) {
     }
 
     if (audio_path.empty()) {
-        std::cerr << "Error: live microphone capture not supported by asr binary; "
-                     "pass an audio file path.\n";
+        std::cerr << "Error: no audio file path provided.\n";
         print_usage(argv[0]);
         return 2;
     }
@@ -52,7 +51,7 @@ int main(int argc, char** argv) {
     std::cout << "Model loaded.\n";
 
     std::ostringstream opts;
-    opts << "{\"language\":\"" << language << "\",\"telemetry_enabled\":false}";
+    opts << "{\"language\":\"" << language << "\",\"telemetry_enabled\":false,\"auto_handoff\":false,\"max_tokens\":512}";
 
     constexpr size_t kBufSize = 1 << 16;
     std::string response(kBufSize, '\0');

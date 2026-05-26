@@ -315,7 +315,7 @@ int cactus_transcribe(
 
                 float token_entropy = 0.0f;
                 uint32_t next_token = handle->model->decode_with_audio(
-                    tokens, audio_features,
+                    tokens, std::vector<std::vector<float>>{audio_features},
                     options.temperature, options.top_p, options.top_k,
                     "", &token_entropy,
                     options.min_p, options.repetition_penalty,

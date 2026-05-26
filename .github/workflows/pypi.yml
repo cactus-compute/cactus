@@ -2,53 +2,72 @@ name: PyPI Publish
 
 on:
   workflow_call:
+  workflow_dispatch:
 
 jobs:
-  wheels:
-    strategy:
-      matrix:
-        include:
-          - os: macos-14
-            lib: libcactus.dylib
-            plat: macosx_14_0_arm64
-          - os: ubuntu-24.04-arm
-            lib: libcactus.so
-            plat: manylinux_2_17_aarch64
-    runs-on: ${{ matrix.os }}
+  wheels-macos:
+    runs-on: macos-26
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install build tools
-        run: |
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            sudo apt-get update && sudo apt-get install -y cmake build-essential libcurl4-openssl-dev
-          fi
-
-      - name: Build libcactus
-        run: bash cactus/build.sh
-
-      - name: Bundle library into package
-        run: |
-          mkdir -p python/cactus/bindings/lib
-          cp cactus/build/${{ matrix.lib }} python/cactus/bindings/lib/
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Build wheel
+      - name: Build native library
         run: |
-          pip install build wheel
-          cd python
-          python -m build --wheel -C="--build-option=--plat-name=${{ matrix.plat }}"
+          pip install -e python/
+          cactus build
+          mkdir -p python/cactus/bindings/lib
+          cp cactus/build/libcactus.dylib python/cactus/bindings/lib/
+
+      - name: Build and repair wheel
+        working-directory: python
+        run: |
+          pip install build delocate
+          python -m build --wheel -C="--build-option=--plat-name=macosx_14_0_arm64"
+          delocate-wheel --require-archs arm64 -w wheelhouse -v dist/*.whl
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-${{ matrix.os }}
-          path: python/dist/*.whl
+          name: wheel-macos-arm64
+          path: python/wheelhouse/*.whl
+
+  wheels-linux:
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: quay.io/pypa/manylinux_2_28_aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Provision toolchain
+        run: |
+          dnf install -y libcurl-devel openssl-devel
+          echo "/opt/python/cp312-cp312/bin" >> "$GITHUB_PATH"
+
+      - name: Build native library
+        run: |
+          pip install -e python/
+          cactus build
+          mkdir -p python/cactus/bindings/lib
+          cp cactus/build/libcactus.so python/cactus/bindings/lib/
+
+      - name: Build and repair wheel
+        working-directory: python
+        run: |
+          pip install build auditwheel
+          python -m build --wheel -C="--build-option=--plat-name=linux_aarch64"
+          auditwheel repair dist/*.whl -w wheelhouse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-linux-aarch64
+          path: python/wheelhouse/*.whl
 
   sdist:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -57,9 +76,9 @@ jobs:
           python-version: "3.12"
 
       - name: Build sdist
+        working-directory: python
         run: |
           pip install build
-          cd python
           python -m build --sdist
 
       - uses: actions/upload-artifact@v4
@@ -68,8 +87,8 @@ jobs:
           path: python/dist/*.tar.gz
 
   publish:
-    needs: [wheels, sdist]
-    runs-on: ubuntu-latest
+    needs: [wheels-macos, wheels-linux, sdist]
+    runs-on: ubuntu-24.04
     permissions:
       id-token: write
     steps:
@@ -81,3 +100,4 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+          attestations: false
