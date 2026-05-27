@@ -24,20 +24,6 @@ namespace {
 std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema);
 std::vector<std::string> extract_schema_required(const std::string& schema);
 
-void maybe_pin_benchmark_main_to_max_perf_core() {
-#if defined(__ANDROID__)
-    const char* enabled = std::getenv("CACTUS_BENCH_PIN_MAIN_MAX_PERF");
-    if (!enabled || std::string(enabled) != "1") return;
-
-    (void)CactusThreading::get_thread_pool();
-    const auto& cores = CactusThreading::CoreTopology::get().performance_cores;
-    if (cores.empty()) return;
-    int core = *std::max_element(cores.begin(), cores.end());
-    bool ok = CactusThreading::pin_current_thread_to_cores({core});
-    std::cerr << "CACTUS_BENCH_PIN_MAIN_MAX_PERF cpu=" << core << " ok=" << (ok ? 1 : 0) << "\n";
-#endif
-}
-
 std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
         if (it->role == "user") {
@@ -695,6 +681,7 @@ int cactus_complete(
     }
 
     try {
+        CactusThreading::prepare_current_thread_for_cactus_work();
         auto start_time = std::chrono::high_resolution_clock::now();
 
         auto* handle = static_cast<CactusModelHandle*>(model);
@@ -1025,6 +1012,7 @@ int cactus_prefill(
     }
 
     try {
+        CactusThreading::prepare_current_thread_for_cactus_work();
         auto start_time = std::chrono::high_resolution_clock::now();
 
         auto* handle = static_cast<CactusModelHandle*>(model);
@@ -1118,6 +1106,7 @@ int cactus_score_window(
     }
 
     try {
+        CactusThreading::prepare_current_thread_for_cactus_work();
         auto* handle = static_cast<CactusModelHandle*>(model);
 
         std::vector<uint32_t> vec(tokens, tokens + token_len);
@@ -1161,6 +1150,7 @@ int cactus_benchmark_tokens(
     }
 
     try {
+        CactusThreading::prepare_current_thread_for_cactus_work();
         auto* handle = static_cast<CactusModelHandle*>(model);
         std::vector<uint32_t> prompt(prompt_tokens, prompt_tokens + prompt_token_len);
 
@@ -1170,7 +1160,6 @@ int cactus_benchmark_tokens(
             peak_ram_usage_mb = std::max(peak_ram_usage_mb, get_ram_usage_mb());
         };
         handle->model->reset_cache();
-        maybe_pin_benchmark_main_to_max_perf_core();
         auto prefill_start_time = std::chrono::high_resolution_clock::now();
         size_t cache_prime_tokens = 0;
         uint32_t next_token = 0;
