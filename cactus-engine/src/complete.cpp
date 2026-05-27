@@ -701,7 +701,6 @@ int cactus_complete(
         handle->should_stop = false;
         auto* tokenizer = handle->model->get_tokenizer();
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true, pcm_buffer, pcm_buffer_size);
-        handle->model->reset_cloud_handoff_probe_rollout();
 
         CACTUS_LOG_DEBUG("complete", "Prompt tokens: " << prompt.tokens.size()
             << ", max_tokens: " << prompt.options.max_tokens);
@@ -751,12 +750,6 @@ int cactus_complete(
         time_to_first_token = std::chrono::duration_cast<std::chrono::microseconds>(token_end - start_time).count() / 1000.0;
 
         float confidence = 1.0f - first_token_entropy;
-        {
-            float probe_confidence = 0.0f;
-            if (handle->model->cloud_handoff_probe_confidence(&probe_confidence, false)) {
-                confidence = probe_confidence;
-            }
-        }
         bool cloud_used = false;
         std::string cloud_error;
         std::future<CloudCompletionResult> cloud_future;
@@ -831,14 +824,7 @@ int cactus_complete(
 
                 entropy.add(token_entropy);
 
-                float handoff_confidence = entropy.rolling_confidence();
-                {
-                    float probe_confidence = 0.0f;
-                    if (handle->model->cloud_handoff_probe_confidence(&probe_confidence, false)) {
-                        handoff_confidence = probe_confidence;
-                    }
-                }
-                if (handoff_confidence < prompt.options.confidence_threshold) {
+                if (entropy.rolling_confidence() < prompt.options.confidence_threshold) {
                     entropy.spike_handoff = true;
                     maybe_start_cloud_handoff("", {});
                 }
@@ -862,12 +848,6 @@ int cactus_complete(
         }
 
         confidence = entropy.mean_confidence();
-        {
-            float probe_confidence = 0.0f;
-            if (handle->model->cloud_handoff_probe_confidence(&probe_confidence, true)) {
-                confidence = probe_confidence;
-            }
-        }
 
         if (prompt.options.force_tools && !prompt.tools.empty()) {
             handle->model->clear_tool_constraints();
