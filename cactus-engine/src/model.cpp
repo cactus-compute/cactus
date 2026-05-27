@@ -322,12 +322,6 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
 
     cache_max_seq_len_ = context_size;
 
-    if (!npu_prefill_mlpackage_.empty()) {
-        std::string full_path = bundle_dir + "/" + npu_prefill_mlpackage_;
-        if (!load_npu_prefill(full_path)) {
-            CACTUS_LOG_WARN("model", "NPU prefill load failed for " << full_path << "; falling back to CPU");
-        }
-    }
     if (!npu_audio_encoder_mlpackage_.empty()) {
         std::string full_path = bundle_dir + "/" + npu_audio_encoder_mlpackage_;
         if (!load_npu_audio_encoder(full_path)) {
@@ -357,9 +351,6 @@ bool Model::load_manifest() {
     const auto& obj = root.get<picojson::object>();
     if (obj.count("family") && obj.at("family").is<std::string>()) {
         family_ = obj.at("family").get<std::string>();
-    }
-    if (obj.count("npu_prefill") && obj.at("npu_prefill").is<std::string>()) {
-        npu_prefill_mlpackage_ = obj.at("npu_prefill").get<std::string>();
     }
     if (obj.count("npu_audio_encoder") && obj.at("npu_audio_encoder").is<std::string>()) {
         npu_audio_encoder_mlpackage_ = obj.at("npu_audio_encoder").get<std::string>();
@@ -1197,11 +1188,6 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     if (tokens.empty() || !decoder_ || cache_total_seq_len_ != 0) {
         return false;
     }
-    // If NPU prefill is available, defer to the regular prefill() path so the
-    // NPU dispatch fires; the caller will sample the first token from decode.
-    if (has_npu_prefill()) {
-        return false;
-    }
     if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
@@ -1255,9 +1241,6 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     last_prefill_cache_copy_ms_ = 0.0;
     last_prefill_padding_tokens_ = 0;
     last_prefill_scalar_tail_tokens_ = 0;
-    if (has_npu_prefill() && prefill_via_npu(tokens)) {
-        return;
-    }
     if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         if (!context_tokens_.empty()) run_full_context_text();
@@ -1598,6 +1581,9 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         for (const auto& path : image_paths) {
             if (family_ == "lfm2_vl") {
                 Lfm2VlImagePreprocessed prep = preprocess_lfm2_vl_image(path, config_);
+                if (has_npu_vision_encoder() && vision_encode_via_npu(prep.pixel_values)) {
+                    continue;
+                }
                 int pv_idx = input_index(*vision_encoder_, "pixel_values");
                 if (pv_idx >= 0) {
                     auto& pv_buf = vision_encoder_->input_buffers[pv_idx];

@@ -201,7 +201,6 @@ class TranspileOptions:
     trust_remote_code: bool = False
     local_files_only: bool = False
     npu: bool = False
-    npu_chunk_size: int = 256
     npu_quantize: int | None = None
 
 
@@ -317,7 +316,6 @@ def ensure_bundle(model_id, *, bits=4, token=None,
         extra_args.append("--local-files-only")
     if opts.npu:
         extra_args.append("--npu")
-        extra_args.extend(["--npu-chunk-size", str(opts.npu_chunk_size)])
         if opts.npu_quantize is not None:
             extra_args.extend(["--npu-quantize", str(int(opts.npu_quantize))])
 

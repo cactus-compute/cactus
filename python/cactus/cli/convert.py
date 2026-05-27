@@ -27,7 +27,6 @@ def cmd_convert(args):
                 trust_remote_code=args.trust_remote_code,
                 local_files_only=args.local_files_only,
                 npu=getattr(args, "npu", False),
-                npu_chunk_size=getattr(args, "npu_chunk_size", 256),
                 npu_quantize=getattr(args, "npu_quantize", None),
             ),
         )

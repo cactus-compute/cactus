@@ -25,6 +25,8 @@ def apply_all_coremltools_patches() -> None:
         _register_new_ones_op()
         _register_logical_and_op()
         _override_layer_norm_translator()
+        _override_one_hot_translator()
+        _register_unfold_op()
         _patch_pipeline_remove_fuse_prelu()
         _patch_mb_binops_scalar_cast()
         _patch_fp16_cast_skip_layer_norm()
@@ -268,8 +270,17 @@ def build_cactus_pass_pipeline():
 
 def _patch_mb_binops_scalar_cast() -> None:
     """Auto-align dtypes for mb.{sub,mul,add,div} so SDPA mask paths don't
-    crash on mixed fp16/fp32 inputs. Casts both scalars and tensors to
-    match whichever operand is already in the lower-precision dtype."""
+    crash on mixed fp16/fp32 inputs.
+
+    Critical: only Var operands get a ``mb.cast`` injected — numpy
+    arrays/scalars are retyped via ``numpy.astype`` because injecting a
+    fresh ``mb.cast`` Var from inside MIL passes lands it in the wrong
+    block scope (e.g. ``divide_to_multiply`` calling ``mb.mul`` with
+    ``before_op=`` on an op nested in ``block0``). That mis-scoping fails
+    the "var visibility" validator and trips a hard ValueError mid-pass.
+    Python scalars are materialized as typed ``mb.const`` for the same
+    reason."""
+    import numpy as np
     from coremltools.converters.mil import Builder as mb
 
     def _dtype_name(v):
@@ -278,6 +289,38 @@ def _patch_mb_binops_scalar_cast() -> None:
 
     def _is_fp(name):
         return "fp" in name or "float" in name or "double" in name
+
+    def _np_for(dtype_name):
+        if "fp16" in dtype_name or "float16" in dtype_name:
+            return np.float16
+        if "fp32" in dtype_name or "float32" in dtype_name:
+            return np.float32
+        if "fp64" in dtype_name or "float64" in dtype_name or "double" in dtype_name:
+            return np.float64
+        return np.float32
+
+    def _is_var(v):
+        # MIL Vars carry sym_type / op fields; numpy arrays don't.
+        return hasattr(v, "op") and hasattr(v, "sym_type")
+
+    def _retype_in_place(v, target_dtype_name):
+        """Convert a *non-Var* operand (numpy array/scalar/python scalar) to
+        ``target_dtype_name``. Returning a fresh numpy value (not a new Var)
+        keeps the operand inline so MIL passes don't see a stray Var in the
+        wrong block."""
+        np_dtype = _np_for(target_dtype_name)
+        if isinstance(v, np.ndarray):
+            return v.astype(np_dtype)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return np_dtype(v)
+        # Best-effort fallback (lists, etc.)
+        try:
+            return np.asarray(v, dtype=np_dtype)
+        except Exception:
+            return v
+
+    def _scalar_const(s, dtype_name):
+        return mb.const(val=_np_for(dtype_name)(s))
 
     for op_name in ("sub", "mul", "add", "div", "real_div"):
         original = getattr(mb, op_name, None)
@@ -290,24 +333,51 @@ def _patch_mb_binops_scalar_cast() -> None:
                 y = kwargs.get("y")
                 xn = _dtype_name(x)
                 yn = _dtype_name(y)
-                # If only one is a tensor, cast scalars to match it.
+                # If only one is a tensor, materialize scalars as typed consts.
                 if xn and not yn and _is_fp(xn) and isinstance(y, (int, float)) and not isinstance(y, bool):
-                    kwargs["y"] = mb.cast(x=y, dtype=xn)
+                    kwargs["y"] = _scalar_const(y, xn)
                 elif yn and not xn and _is_fp(yn) and isinstance(x, (int, float)) and not isinstance(x, bool):
-                    kwargs["x"] = mb.cast(x=x, dtype=yn)
+                    kwargs["x"] = _scalar_const(x, yn)
                 elif xn and yn and xn != yn:
-                    # Both tensors, mismatched. Prefer fp16 to keep memory low.
+                    # Both have a dtype but mismatched. Prefer fp16.
                     target = "fp16" if (xn == "fp16" or yn == "fp16") else xn
                     if xn != target:
-                        kwargs["x"] = mb.cast(x=x, dtype=target)
+                        kwargs["x"] = mb.cast(x=x, dtype=target) if _is_var(x) else _retype_in_place(x, target)
                     if yn != target:
-                        kwargs["y"] = mb.cast(x=y, dtype=target)
+                        kwargs["y"] = mb.cast(x=y, dtype=target) if _is_var(y) else _retype_in_place(y, target)
                 return orig(**kwargs)
             wrapper._cactus_scalar_cast_patched = True
             wrapper.__name__ = orig.__name__
             return wrapper
 
         setattr(mb, op_name, make_wrapper(original))
+
+    # mb.select(cond, a, b) requires a and b to share a dtype. Gemma 4 vision
+    # hits this via `torch.where(cond, scalar, tensor)` — the scalar becomes
+    # fp32 while the tensor is fp16. Materialize scalars as typed consts.
+    select_op = getattr(mb, "select", None)
+    if select_op is not None and not getattr(select_op, "_cactus_scalar_cast_patched", False):
+        def _select_wrap(orig):
+            def wrapper(**kwargs):
+                a = kwargs.get("a")
+                b = kwargs.get("b")
+                an = _dtype_name(a)
+                bn = _dtype_name(b)
+                if an and not bn and _is_fp(an) and isinstance(b, (int, float)) and not isinstance(b, bool):
+                    kwargs["b"] = _scalar_const(b, an)
+                elif bn and not an and _is_fp(bn) and isinstance(a, (int, float)) and not isinstance(a, bool):
+                    kwargs["a"] = _scalar_const(a, bn)
+                elif an and bn and an != bn:
+                    target = "fp16" if (an == "fp16" or bn == "fp16") else an
+                    if an != target:
+                        kwargs["a"] = mb.cast(x=a, dtype=target) if _is_var(a) else _retype_in_place(a, target)
+                    if bn != target:
+                        kwargs["b"] = mb.cast(x=b, dtype=target) if _is_var(b) else _retype_in_place(b, target)
+                return orig(**kwargs)
+            wrapper._cactus_scalar_cast_patched = True
+            wrapper.__name__ = orig.__name__
+            return wrapper
+        setattr(mb, "select", _select_wrap(select_op))
 
     # layer_norm: epsilon (scalar) must match gamma/beta dtype. Parakeet's
     # Conformer norms produce fp16 gamma but coremltools emits fp32 epsilon.
@@ -320,7 +390,7 @@ def _patch_mb_binops_scalar_cast() -> None:
                 if _is_fp(gn):
                     eps = kwargs.get("epsilon")
                     if isinstance(eps, (int, float)) and not isinstance(eps, bool):
-                        kwargs["epsilon"] = mb.cast(x=eps, dtype=gn)
+                        kwargs["epsilon"] = _scalar_const(eps, gn)
                     elif hasattr(eps, "dtype") and _dtype_name(eps) != gn:
                         kwargs["epsilon"] = mb.cast(x=eps, dtype=gn)
                 return orig(**kwargs)
@@ -342,7 +412,7 @@ def _patch_mb_binops_scalar_cast() -> None:
                 if _is_fp(rn):
                     eps = kwargs.get("epsilon")
                     if isinstance(eps, (int, float)) and not isinstance(eps, bool):
-                        kwargs["epsilon"] = mb.cast(x=eps, dtype=rn)
+                        kwargs["epsilon"] = _scalar_const(eps, rn)
                     elif hasattr(eps, "dtype") and _dtype_name(eps) != rn:
                         kwargs["epsilon"] = mb.cast(x=eps, dtype=rn)
                 return orig(**kwargs)
@@ -371,3 +441,91 @@ def _patch_fp16_cast_skip_layer_norm() -> None:
     for op in ("layer_norm", "batch_norm", "instance_norm", "rms_norm"):
         base.add(op)
     FP16ComputePrecision._UNSUPPORTED_FP16_OPS = base
+
+
+def _override_one_hot_translator() -> None:
+    """Override ``one_hot`` to cast indices to int32 before calling ``mb.one_hot``.
+
+    The MIL ``one_hot`` op requires int32 indices, but Gemma 4 vision feeds
+    ``pixel_position_ids`` as fp32 through ``torch.export``. The default
+    coremltools translator passes the labels through unchanged, which trips
+    the type domain check.
+    """
+    from coremltools.converters.mil.frontend.torch.torch_op_registry import (
+        _TORCH_OPS_REGISTRY,
+    )
+    from coremltools.converters.mil.frontend.torch.ops import _get_inputs, _get_kwinputs
+    from coremltools.converters.mil import Builder as mb
+
+    def _dtype_name(v):
+        d = getattr(v, "dtype", None)
+        return getattr(d, "__name__", str(d) if d else "")
+
+    def one_hot(context, node):
+        inputs = _get_inputs(context, node, expected=(1, 2))
+        labels = inputs[0]
+        num_classes = inputs[1] if len(inputs) > 1 else -1
+        num_classes = _get_kwinputs(context, node, "num_classes", default=[num_classes])[0]
+        if hasattr(num_classes, "val") and num_classes.val is not None:
+            num_classes = num_classes.val
+
+        if hasattr(labels, "dtype") and _dtype_name(labels) != "int32":
+            labels = mb.cast(x=labels, dtype="int32")
+
+        res = mb.one_hot(indices=labels, one_hot_vector_size=num_classes, name=node.name)
+        context.add(res)
+
+    _TORCH_OPS_REGISTRY.set_func_by_name(one_hot, "one_hot")
+
+
+def _register_unfold_op() -> None:
+    """Translate ``Tensor.unfold(dimension, size, step)`` to ``mb.sliding_windows``.
+
+    Layout note: PyTorch's ``unfold`` *appends* the window-size dim at the
+    end of the output (rank N+1). MIL's ``mb.sliding_windows`` *inserts*
+    the size dim at ``axis+1`` instead. We translate to ``sliding_windows``
+    then ``mb.transpose`` the size dim to the trailing position so downstream
+    permutes/movedims see the shape PyTorch produced.
+
+    Gemma 4 audio's ``_extract_block_context`` is the canonical caller and
+    deeply depends on this layout (size at last axis, then ``movedim(-1, 2)``).
+    """
+    from coremltools.converters.mil.frontend.torch.torch_op_registry import (
+        _TORCH_OPS_REGISTRY,
+    )
+    from coremltools.converters.mil.frontend.torch.ops import _get_inputs
+    from coremltools.converters.mil import Builder as mb
+
+    def unfold(context, node):
+        inputs = _get_inputs(context, node, min_expected=4)
+        x = inputs[0]
+        dimension = inputs[1].val if hasattr(inputs[1], "val") else int(inputs[1])
+        size = inputs[2].val if hasattr(inputs[2], "val") else int(inputs[2])
+        step = inputs[3].val if hasattr(inputs[3], "val") else int(inputs[3])
+
+        rank = len(x.shape) if hasattr(x, "shape") else x.rank
+        dim = int(dimension)
+        if dim < 0:
+            dim += rank
+
+        windowed = mb.sliding_windows(
+            x=x,
+            axis=dim,
+            size=int(size),
+            stride=int(step),
+        )
+
+        # sliding_windows inserts the window-size dim at axis+1; PyTorch
+        # unfold appends it at the end. Permute (size_axis) to the last axis.
+        out_rank = rank + 1
+        perm = list(range(out_rank))
+        size_axis = dim + 1
+        perm.pop(size_axis)
+        perm.append(size_axis)
+        if perm == list(range(out_rank)):
+            out = mb.identity(x=windowed, name=node.name)
+        else:
+            out = mb.transpose(x=windowed, perm=perm, name=node.name)
+        context.add(out)
+
+    _TORCH_OPS_REGISTRY.set_func_by_name(unfold, "unfold")

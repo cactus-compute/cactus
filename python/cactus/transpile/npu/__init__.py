@@ -1,12 +1,13 @@
 """NPU transpiler pipeline.
 
-Parallel to the graph transpiler: takes a captured HF causal LM and emits a
-CoreML `.mlpackage` for Apple Neural Engine prefill, alongside the
-`.cactus` graphs the graph transpiler produces. Entry point is
-`run_prefill_pipeline`, invoked from `hf_model._run_component_pipeline_transpile`
-and the legacy single-graph path.
+Emits CoreML `.mlpackage`s for Apple Neural Engine **audio + vision encoders**
+alongside the cactus graph transpiler's output. Text-decoder prefill is
+intentionally not on NPU — CPU prefill is the supported path.
+
+Entry point: `run_encoder_pipeline`, invoked from
+`hf_model._run_component_pipeline_transpile` when `--npu` is passed.
 """
 
-from .pipeline import run_encoder_pipeline, run_prefill_pipeline
+from .pipeline import run_encoder_pipeline
 
-__all__ = ["run_prefill_pipeline", "run_encoder_pipeline"]
+__all__ = ["run_encoder_pipeline"]

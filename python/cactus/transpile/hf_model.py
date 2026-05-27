@@ -303,7 +303,6 @@ def _write_component_bundle(
     transpiled_component_graphs: dict[str, TranspiledGraph] | None = None,
     component_io_signatures: dict[str, dict[str, tuple[str, ...]]] | None = None,
     graph_filename: str = "graph.cactus",
-    npu_prefill_mlpackage: str | None = None,
     npu_encoder_mlpackages: dict[str, str] | None = None,
 ) -> Path:
     bundle_dir = artifact_dir / "components"
@@ -417,8 +416,6 @@ def _write_component_bundle(
         "inputs": _serialize_json_compatible(inputs_metadata),
         "components": manifest_components,
     }
-    if npu_prefill_mlpackage:
-        manifest_payload["npu_prefill"] = npu_prefill_mlpackage
     for manifest_key, mlpackage_path in (npu_encoder_mlpackages or {}).items():
         if mlpackage_path:
             manifest_payload[manifest_key] = mlpackage_path
@@ -547,6 +544,25 @@ def _run_component_pipeline_transpile(
         print(f"input_{name}_shape={list(tensor.shape)}")
     if weights_dir:
         print(f"weights_dir={weights_dir}")
+
+    # NPU emit runs BEFORE cactus capture so peak memory is just HF model +
+    # per-encoder coremltools temp, not HF model + all captured graphs.
+    # Encoders only — text prefill is intentionally not on NPU.
+    npu_enabled = bool(getattr(args, "npu", False))
+    npu_quantize = getattr(args, "npu_quantize", None)
+    npu_encoder_mlpackages: dict[str, str] = {}
+    if npu_enabled and artifact_dir is not None:
+        from .npu import run_encoder_pipeline
+        npu_encoder_mlpackages = run_encoder_pipeline(
+            component_specs,
+            artifact_dir,
+            enabled=True,
+            quantize_bits=npu_quantize,
+        )
+        # Drop coremltools-side intermediates before the heavy cactus capture
+        # below — both phases compete for the same working set on a 16 GB host.
+        import gc as _gc
+        _gc.collect()
 
     print("capture_begin=true", flush=True)
     captured_components = {}
@@ -679,22 +695,8 @@ def _run_component_pipeline_transpile(
                 f"saved_optimized_component_ir_{component}="
                 f"{artifact_dir / _component_artifact_name('optimized_ir', component)}"
             )
-        from .npu import run_encoder_pipeline, run_prefill_pipeline
-        npu_enabled = bool(getattr(args, "npu", False))
-        npu_quantize = getattr(args, "npu_quantize", None)
-        npu_prefill_filename = run_prefill_pipeline(
-            model,
-            artifact_dir,
-            chunk_size=int(getattr(args, "npu_chunk_size", 256)),
-            enabled=npu_enabled,
-            quantize_bits=npu_quantize,
-        )
-        npu_encoder_mlpackages = run_encoder_pipeline(
-            component_specs,
-            artifact_dir,
-            enabled=npu_enabled,
-            quantize_bits=npu_quantize,
-        )
+        # NPU mlpackages were already emitted at the top of this function,
+        # before cactus capture, to keep peak memory bounded.
 
         component_manifest_path = _write_component_bundle(
             artifact_dir=artifact_dir,
@@ -708,7 +710,6 @@ def _run_component_pipeline_transpile(
             transpiled_component_graphs=transpiled_component_graphs,
             component_io_signatures=component_io_signatures,
             graph_filename=args.graph_filename,
-            npu_prefill_mlpackage=npu_prefill_filename,
             npu_encoder_mlpackages=npu_encoder_mlpackages,
         )
         print(f"saved_component_bundle_manifest={component_manifest_path}")
@@ -2962,13 +2963,7 @@ def main() -> int:
     parser.add_argument(
         "--npu",
         action="store_true",
-        help="Also emit a CoreML .mlpackage for Apple Neural Engine prefill.",
-    )
-    parser.add_argument(
-        "--npu-chunk-size",
-        type=int,
-        default=256,
-        help="Prefill chunk size baked into the emitted .mlpackage (default: 256).",
+        help="Also emit CoreML .mlpackage(s) for Apple Neural Engine audio + vision encoders.",
     )
     parser.add_argument(
         "--npu-quantize",
@@ -3369,14 +3364,9 @@ def main() -> int:
                 f"saved_optimized_component_ir_{component}="
                 f"{artifact_dir / _component_artifact_name('optimized_ir', component)}"
             )
-        from .npu import run_prefill_pipeline
-        npu_prefill_filename = run_prefill_pipeline(
-            model,
-            artifact_dir,
-            chunk_size=int(getattr(args, "npu_chunk_size", 256)),
-            enabled=bool(getattr(args, "npu", False)),
-            quantize_bits=getattr(args, "npu_quantize", None),
-        )
+        # NPU emit (encoders only — text prefill is intentionally not on NPU)
+        # is handled in `_run_component_pipeline_transpile`; this legacy
+        # single-graph path does not exercise the multimodal adapters.
 
         component_manifest_path = _write_component_bundle(
             artifact_dir=artifact_dir,
@@ -3389,7 +3379,6 @@ def main() -> int:
             optimized_component_graphs=optimized_component_graphs,
             transpiled_component_graphs=transpiled_component_graphs,
             graph_filename=args.graph_filename,
-            npu_prefill_mlpackage=npu_prefill_filename,
         )
         print(f"saved_component_bundle_manifest={component_manifest_path}")
         for component in optimized_component_graphs:

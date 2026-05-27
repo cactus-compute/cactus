@@ -50,35 +50,6 @@ public:
 std::unique_ptr<NPUEncoder> create_encoder();
 bool is_npu_available();
 
-struct NPUBufferRef {
-    const __fp16* data;
-    size_t count;
-};
-
-struct NPUPrefillDirectResult {
-    NPUBufferRef hidden;
-    std::vector<NPUBufferRef> k_caches;
-    std::vector<NPUBufferRef> v_caches;
-    bool valid;
-};
-
-class NPUPrefill {
-public:
-    virtual ~NPUPrefill() = default;
-    virtual bool load(const std::string& model_path) = 0;
-    virtual bool is_available() const = 0;
-    virtual int get_chunk_size() const = 0;
-    virtual int get_hidden_dim() const = 0;
-    virtual int get_num_layers() const = 0;
-    virtual int get_num_kv_heads() const = 0;
-    virtual int get_head_dim() const = 0;
-    virtual NPUPrefillDirectResult prefill_chunk_tokens(
-        const std::vector<int32_t>& input_ids,
-        const std::vector<int32_t>& position_ids) = 0;
-};
-
-std::unique_ptr<NPUPrefill> create_prefill();
-
 } // namespace npu
 namespace engine {
 
@@ -637,8 +608,6 @@ public:
     void set_cache_window(size_t window_size, size_t sink_size = 4);
     size_t get_cache_size() const { return cache_total_seq_len_; }
 
-    bool load_npu_prefill(const std::string& model_path);
-    bool has_npu_prefill() const { return npu_prefill_ != nullptr; }
     size_t get_prefill_chunk_size() const { return 128; }
     double last_prefill_cache_copy_ms() const { return last_prefill_cache_copy_ms_; }
     size_t last_prefill_padding_tokens() const { return last_prefill_padding_tokens_; }
@@ -755,16 +724,12 @@ private:
     Component* lm_encoder_media_chunk_ = nullptr;
 
     std::string family_;
-    std::string npu_prefill_mlpackage_;
     std::string npu_audio_encoder_mlpackage_;
     std::string npu_vision_encoder_mlpackage_;
 
-    std::unique_ptr<npu::NPUPrefill> npu_prefill_;
     std::unique_ptr<npu::NPUEncoder> npu_audio_encoder_;
     std::unique_ptr<npu::NPUEncoder> npu_vision_encoder_;
 
-    bool prefill_via_npu(const std::vector<uint32_t>& tokens);
-    void write_npu_kv_to_cache(const npu::NPUPrefillDirectResult& result, size_t prefill_len);
     bool audio_encode_via_npu(const std::vector<float>& audio_features);
     bool vision_encode_via_npu(const std::vector<float>& pixel_values);
 

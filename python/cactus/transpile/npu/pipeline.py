@@ -1,94 +1,20 @@
 """NPU transpiler orchestrator.
 
-Mirrors the role of `component_pipeline.execute_component_pipeline` but
-for CoreML. Invoked from `hf_model._run_component_pipeline_transpile` and
-the legacy single-graph path when `--npu` is passed on the CLI.
+Emits CoreML `.mlpackage`s for **audio + vision encoders** from the same
+``ComponentModuleSpec`` adapter modules the graph transpiler captures.
+Invoked from ``hf_model._run_component_pipeline_transpile`` when ``--npu``
+is passed on the CLI.
 
-Two entry points:
-- `run_prefill_pipeline`: emits the text-decoder prefill `.mlpackage`.
-- `run_encoder_pipeline`: emits audio / vision encoder `.mlpackage`s by
-  reusing the same component adapter modules the graph transpiler captures.
-
-Historically (`origin/main`) NPU covered text prefill (Gemma/Qwen),
-audio encoders (Whisper/Moonshine/Parakeet/Gemma4) and vision encoders
-(SigLIP2/Gemma4). This pipeline regenerates those `.mlpackage`s through
-the v2 transpiler instead of shipping them pre-built.
+Text-decoder prefill is intentionally not on NPU — CPU prefill is the
+supported path. (Historically ``origin/main`` shipped pre-built NPU prefill
+mlpackages for Gemma/Qwen; v2 does not regenerate them.)
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
-import torch
 
 from .audio import emit_audio_encoder_mlpackage
-from .prefill import emit_prefill_mlpackage
 from .vision import emit_vision_encoder_mlpackage
-
-
-DEFAULT_CHUNK_SIZE = 256
-
-
-def _extract_dims(hf_model: torch.nn.Module) -> tuple[int, int]:
-    """Walk through possible config locations to find text decoder dims.
-
-    Multimodal HF models (Gemma 4, LFM-VL, etc.) nest text dims under
-    `config.text_config`. Plain causal LMs expose them at the top level.
-    """
-    candidates = []
-    cfg = getattr(hf_model, "config", None)
-    if cfg is not None:
-        candidates.append(cfg)
-        text_cfg = getattr(cfg, "text_config", None)
-        if text_cfg is not None:
-            candidates.insert(0, text_cfg)
-    inner_cfg = getattr(getattr(hf_model, "model", None), "config", None)
-    if inner_cfg is not None and inner_cfg not in candidates:
-        candidates.append(inner_cfg)
-
-    for c in candidates:
-        hidden_dim = int(getattr(c, "hidden_size", 0) or 0)
-        num_layers = int(getattr(c, "num_hidden_layers", 0) or 0)
-        if hidden_dim > 0 and num_layers > 0:
-            return hidden_dim, num_layers
-    return 0, 0
-
-
-def run_prefill_pipeline(
-    hf_model: torch.nn.Module,
-    artifact_dir: Path,
-    *,
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
-    enabled: bool = True,
-    quantize_bits: int | None = None,
-) -> str | None:
-    """Run the NPU prefill transpilation. Returns the manifest-relative
-    filename to embed in `manifest.json["npu_prefill"]`, or None.
-    """
-    if not enabled:
-        return None
-
-    hidden_dim, num_layers = _extract_dims(hf_model)
-    if hidden_dim <= 0 or num_layers <= 0:
-        print("npu.pipeline: model config missing hidden_size/num_hidden_layers; skipping")
-        return None
-
-    bundle_root = artifact_dir / "components"
-    bundle_root.mkdir(parents=True, exist_ok=True)
-
-    qbits: int | None = quantize_bits
-    if qbits == 0:
-        qbits = None
-
-    filename = emit_prefill_mlpackage(
-        hf_model,
-        bundle_root,
-        hidden_dim=hidden_dim,
-        num_layers=num_layers,
-        chunk_size=chunk_size,
-        quantize_bits=qbits,
-    )
-    return f"components/{filename}" if filename else None
 
 
 # Component name -> (emit function, output mlpackage filename).
