@@ -472,10 +472,7 @@ def _lower_gated_deltanet_initial_state(
     layer_key = f"gdn:{_gated_deltanet_layer_key(ir, node)}"
     gdn_states: dict[str, Tensor] = env.setdefault("__internal_gated_deltanet_cache_states", {})  # type: ignore[assignment]
     if layer_key not in gdn_states:
-        # Unlike KV/conv caches, Gated DeltaNet state is produced as a slice of
-        # the recurrent op output. Represent the previous state as a hidden graph
-        # input and let the runtime feed back the latest output every token.
-        gdn_states[layer_key] = g.input(shape=state_shape, dtype=Graph.FP16)
+        gdn_states[layer_key] = _materialize_constant_tensor(g, torch.zeros(state_shape, dtype=torch.float16))
     return layer_key, gdn_states[layer_key]
 
 

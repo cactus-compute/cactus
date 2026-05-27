@@ -74,6 +74,15 @@ CACTUS_FFI_EXPORT int cactus_score_window(
     size_t buffer_size
 );
 
+CACTUS_FFI_EXPORT int cactus_benchmark_tokens(
+    cactus_model_t model,
+    const uint32_t* prompt_tokens,
+    size_t prompt_token_len,
+    size_t decode_token_len,
+    char* response_buffer,
+    size_t buffer_size
+);
+
 CACTUS_FFI_EXPORT int cactus_transcribe(
     cactus_model_t model,
     const char* audio_file_path,            // NULL if using pcm_buffer
@@ -110,38 +119,6 @@ CACTUS_FFI_EXPORT int cactus_audio_embed(
     float* embeddings_buffer,
     size_t buffer_size,
     size_t* embedding_dim
-);
-
-CACTUS_FFI_EXPORT int cactus_vad(
-    cactus_model_t model,
-    const char* audio_file_path,
-    char* response_buffer,
-    size_t buffer_size,
-    const char* options_json,
-    const uint8_t* pcm_buffer,
-    size_t pcm_buffer_size
-);
-
-CACTUS_FFI_EXPORT int cactus_diarize(
-    cactus_model_t model,
-    const char* audio_file_path,
-    char* response_buffer,
-    size_t buffer_size,
-    const char* options_json,
-    const uint8_t* pcm_buffer,
-    size_t pcm_buffer_size
-);
-
-CACTUS_FFI_EXPORT int cactus_embed_speaker(
-    cactus_model_t model,
-    const char* audio_file_path,
-    char* response_buffer,
-    size_t buffer_size,
-    const char* options_json,
-    const uint8_t* pcm_buffer,
-    size_t pcm_buffer_size,
-    const float* mask_weights,
-    size_t mask_num_frames
 );
 
 CACTUS_FFI_EXPORT int cactus_rag_query(

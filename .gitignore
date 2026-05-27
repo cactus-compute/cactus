@@ -33,6 +33,9 @@ venv
 
 weights/
 stage/
+python/dist/
+python/cactus/bin/
+python/cactus/bindings/lib/
 .cache/
 tmp
 site/

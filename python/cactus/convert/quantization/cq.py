@@ -36,6 +36,7 @@ class CQTensor:
     rotation_family: str = "hadamard"
     seed: int = 1234
     gptq_used: bool = False
+    interleaved_4row: bool = False
 
 
 _CODEBOOK_CACHE: dict[tuple[int, int], np.ndarray] = {}
@@ -325,18 +326,34 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
 
     is_embedding = out_path.stem in _EMBEDDING_TENSOR_STEMS
 
+    if cq.interleaved_4row:
+        if cq.bits not in (1, 2, 3, 4):
+            raise ValueError(f"INTERLEAVED_4ROW only supports CQ1..CQ4, got CQ{cq.bits}")
+        if n % 4 != 0:
+            raise ValueError(f"INTERLEAVED_4ROW requires N % 4 == 0, got N={n}")
+        if cq.rotation_family == "orthogonal":
+            if cq.bits != 4 or group_size != k:
+                raise ValueError("orthogonal INTERLEAVED_4ROW requires full-width CQ4")
+            if k % 32 != 0:
+                raise ValueError(f"orthogonal INTERLEAVED_4ROW requires K % 32 == 0, got K={k}")
+        elif group_size % 32 != 0 or group_size > 256:
+            raise ValueError(f"INTERLEAVED_4ROW requires group_size % 32 == 0 and group_size <= 256, got {group_size}")
+
     interleaved = (
-        cq.bits in (1, 2, 3, 4)
-        and cq.rotation_family != "orthogonal"
-        and n % 4 == 0
-        and group_size % 32 == 0
-        and group_size <= 256
-        and not is_embedding
+        cq.interleaved_4row
+        or (
+            cq.bits in (1, 2, 3, 4)
+            and cq.rotation_family != "orthogonal"
+            and n % 4 == 0
+            and group_size % 32 == 0
+            and group_size <= 256
+            and not is_embedding
+        )
     )
 
     codebook_f32 = make_codebook(group_size, cq.bits).astype(np.float32)
     norms_f32 = cq.norms.astype(np.float32, copy=True)
-    if interleaved:
+    if interleaved and cq.rotation_family != "orthogonal":
         cb_max = float(np.max(np.abs(codebook_f32)))
         cb_factor = cb_max / 127.0 if cb_max > 1e-12 else 1.0 / 127.0
         codebook_f32 = codebook_f32 / cb_factor

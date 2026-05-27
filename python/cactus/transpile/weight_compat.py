@@ -15,12 +15,14 @@ from cactus.convert.model_adapters.naming import gemma4_scale_factor
 from cactus.transpile.runtime_compat import Graph
 from cactus.transpile.weight_binding import WeightBinding
 from cactus.convert.quantization.cq import FLAG_ORTHOGONAL_ROTATION
+from cactus.convert.quantization.cq import FLAG_INTERLEAVED_4ROW
 from cactus.convert.quantization.cq import GROUP_SIZE as CQ_GROUP_SIZE
 from cactus.convert.quantization.cq import PRECISION_CQ
 from cactus.convert.quantization.cq import make_codebook
 from cactus.convert.quantization.cq import make_hadamard_components
 from cactus.convert.quantization.cq import make_hadamard_matrix
 from cactus.convert.quantization.cq import make_orthogonal_rotation
+from cactus.convert.quantization.cq import pack_indices_interleaved_4row
 from cactus.convert.quantization.cq import pack_indices_lsb
 from cactus.convert.quantization.cq import quantize_hadamard
 from cactus.convert.quantization.cq import quantize_orthogonal
@@ -94,6 +96,7 @@ def ensure_embedding_binding_compatible(binding: WeightBinding) -> WeightBinding
         compat_path,
         bits=int(config["bits"]),
         rotation=str(config["rotation"]),
+        layout=str(config.get("layout", "row_major")),
     )
     _cleanup_legacy_fp16_cache(source_path)
     return WeightBinding(path=str(compat_path), kind=binding.kind, source_name=binding.source_name)
@@ -104,7 +107,7 @@ def _embedding_cache_config(filename: str, *, source_name: str) -> dict[str, obj
     if filename in _PER_LAYER_EMBEDDING_FILENAMES or normalized_source.endswith("embed_tokens_per_layer.weight"):
         return {"bits": 2, "rotation": "hadamard"}
     if filename in _TOKEN_EMBEDDING_FILENAMES:
-        return {"bits": 4, "rotation": "orthogonal"}
+        return {"bits": 4, "rotation": "orthogonal", "layout": "interleaved_4row"}
     return {"bits": 4, "rotation": "orthogonal"}
 
 
@@ -286,6 +289,7 @@ def _materialize_cq_embedding_cache(
     *,
     bits: int,
     rotation: str,
+    layout: str = "row_major",
 ) -> None:
     src_mtime_ns = opened.path.stat().st_mtime_ns
     if out_path.exists() and out_path.stat().st_mtime_ns >= src_mtime_ns:
@@ -296,6 +300,12 @@ def _materialize_cq_embedding_cache(
 
     rows = int(opened.original_n or opened.shape[0])
     cols = int(opened.shape[1])
+    interleaved = layout == "interleaved_4row"
+    if interleaved:
+        if rotation != "orthogonal" or bits != 4:
+            raise RuntimeError(f"INTERLEAVED_4ROW embedding cache requires orthogonal CQ4, got rotation={rotation} bits={bits}")
+        if rows % 4 != 0 or cols % 32 != 0:
+            raise RuntimeError(f"INTERLEAVED_4ROW embedding cache requires rows % 4 == 0 and cols % 32 == 0, got {(rows, cols)}")
     if rotation == "hadamard" and cols % CQ_GROUP_SIZE != 0:
         raise RuntimeError(
             f"Hadamard CQ embedding conversion requires hidden dim divisible by {CQ_GROUP_SIZE}, "
@@ -319,6 +329,8 @@ def _materialize_cq_embedding_cache(
     trailer_parts: list[bytes] = []
     if rotation == "orthogonal":
         flags |= FLAG_ORTHOGONAL_ROTATION
+        if interleaved:
+            flags |= FLAG_INTERLEAVED_4ROW
         trailer_parts.append(make_orthogonal_rotation(group_size, seed=1234).astype(np.float16).tobytes())
     else:
         left, right, perm = make_hadamard_components(group_size, seed=1234)
@@ -334,7 +346,7 @@ def _materialize_cq_embedding_cache(
                 stop = min(start + chunk_rows, rows)
                 chunk = _dequantize_int8_rows(opened, start, stop)
                 if rotation == "orthogonal":
-                    packed, norms = _quantize_orthogonal_chunk(chunk, bits=bits, input_scale=input_scale)
+                    packed, norms = _quantize_orthogonal_chunk(chunk, bits=bits, input_scale=input_scale, interleaved=interleaved)
                 else:
                     packed, norms = _quantize_hadamard_chunk(chunk, bits=bits, input_scale=input_scale)
                 norms_handle.write(np.ascontiguousarray(norms, dtype=np.float16).tobytes())
@@ -456,6 +468,7 @@ def _quantize_orthogonal_chunk(
     *,
     bits: int,
     input_scale: np.ndarray,
+    interleaved: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     work = chunk.astype(np.float32, copy=False) * input_scale.astype(np.float32, copy=False)[None, :]
     rows, cols = work.shape
@@ -464,6 +477,8 @@ def _quantize_orthogonal_chunk(
     norms = np.linalg.norm(work, axis=1).clip(min=1e-8).astype(np.float32, copy=False)
     rotated = (work / norms[:, None]) @ rotation
     indices = np.abs(rotated[..., None] - codebook[None, None, :]).argmin(axis=-1).astype(np.uint8)
+    if interleaved:
+        return pack_indices_interleaved_4row(indices, cols, bits), norms.astype(np.float16).reshape(rows, 1)
     return pack_indices_lsb(indices, cols, bits), norms.astype(np.float16).reshape(rows, 1)
 
 

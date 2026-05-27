@@ -1,60 +1,57 @@
 import os
-import platform
 import subprocess
-import sys
 from pathlib import Path
 
-from .common import PROJECT_ROOT, print_color, RED, GREEN
-
-
-def _resolve_bundle_dir(model_id: str) -> Path | None:
-    """Treat model_id as a local bundle dir; return its root if it is a transpiled bundle."""
-    path = Path(model_id).expanduser()
-    if not path.exists() or not path.is_dir():
-        return None
-    if (path / "components" / "manifest.json").exists():
-        return path
-    if path.name == "components" and (path / "manifest.json").exists():
-        return path.parent
-    return None
-
-
-def _ensure_chat_binary() -> Path | None:
-    chat = PROJECT_ROOT / "cactus-engine" / "tests" / "build" / "chat"
-    if chat.exists():
-        return chat
-    print_color(RED, "Error: chat binary not found. Run `cactus build` first.")
-    return None
+from .common import print_color, is_repo_checkout, RED, GREEN
 
 
 def cmd_run(args):
-    """Run a transpiled Cactus bundle through the libcactus-backed chat binary."""
-    if getattr(args, 'no_cloud_tele', False):
+    from .model import ensure_bundle, resolve_bundle_dir, TranspileOptions
+    from .config_utils import CactusConfig
+
+    if args.no_cloud_tele:
         os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
 
-    bundle_dir = _resolve_bundle_dir(args.model_id)
-    if bundle_dir is None:
-        print_color(RED,
-            f"Error: {args.model_id} is not a transpiled bundle. "
-            "Run `cactus convert <hf_model>` to produce one.")
-        return 1
+    api_key = CactusConfig().get_api_key()
+    if api_key:
+        os.environ["CACTUS_CLOUD_KEY"] = api_key
 
-    chat = _ensure_chat_binary()
-    if chat is None:
+    bundle_dir = resolve_bundle_dir(args.model_id)
+    if bundle_dir is None:
+        try:
+            bundle_dir = ensure_bundle(
+                args.model_id,
+                token=args.token,
+                reconvert=args.reconvert,
+                transpile=TranspileOptions(
+                    image_files=[args.image] if args.image else None,
+                    audio_file=args.audio,
+                ),
+            )
+        except RuntimeError as e:
+            print_color(RED, f"Model setup failed: {e}")
+            return 1
+
+    chat = Path(__file__).resolve().parent.parent / "bin" / "chat"
+    if is_repo_checkout() and not chat.exists():
+        print_color(RED, "Chat binary not found. Run `cactus build` first.")
         return 1
 
     cmd = [str(chat), str(bundle_dir)]
-    for flag, value in (("--system", getattr(args, 'system', None)),
-                         ("--prompt", getattr(args, 'prompt', None)),
-                         ("--image", getattr(args, 'image', None)),
-                         ("--audio", getattr(args, 'audio', None) or getattr(args, 'audio_file', None))):
-        if value:
-            cmd.extend([flag, str(Path(value).expanduser().resolve()) if flag in ("--image", "--audio") else str(value)])
-    if getattr(args, 'thinking', False):
+    for flag, value in (
+        ("--system", args.system),
+        ("--prompt", args.prompt),
+        ("--image", args.image),
+        ("--audio", args.audio),
+        ("--input-ids", args.input_ids),
+        ("--max-new-tokens", args.max_new_tokens),
+        ("--result-json", args.result_json),
+    ):
+        if value is not None:
+            cmd.extend([flag, str(value)])
+    if args.thinking:
         cmd.append("--thinking")
 
-    if sys.stdout.isatty():
-        os.system('clear' if platform.system() != 'Windows' else 'cls')
     print_color(GREEN, f"Starting Cactus Chat with model: {bundle_dir}")
     print()
 

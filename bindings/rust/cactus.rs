@@ -21,9 +21,6 @@ extern "C" {
     pub fn cactus_image_embed(model: CactusModelT, image_path: *const c_char, embeddings_buffer: *mut c_float, buffer_size: usize, embedding_dim: *mut usize) -> c_int;
     pub fn cactus_audio_embed(model: CactusModelT, audio_path: *const c_char, embeddings_buffer: *mut c_float, buffer_size: usize, embedding_dim: *mut usize) -> c_int;
 
-    pub fn cactus_vad(model: CactusModelT, audio_file_path: *const c_char, response_buffer: *mut c_char, buffer_size: usize, options_json: *const c_char, pcm_buffer: *const u8, pcm_buffer_size: usize) -> c_int;
-    pub fn cactus_diarize(model: CactusModelT, audio_file_path: *const c_char, response_buffer: *mut c_char, buffer_size: usize, options_json: *const c_char, pcm_buffer: *const u8, pcm_buffer_size: usize) -> c_int;
-    pub fn cactus_embed_speaker(model: CactusModelT, audio_file_path: *const c_char, response_buffer: *mut c_char, buffer_size: usize, options_json: *const c_char, pcm_buffer: *const u8, pcm_buffer_size: usize, mask_weights: *const c_float, mask_num_frames: usize) -> c_int;
     pub fn cactus_rag_query(model: CactusModelT, query: *const c_char, response_buffer: *mut c_char, buffer_size: usize, top_k: usize) -> c_int;
 
     pub fn cactus_index_init(index_dir: *const c_char, embedding_dim: usize) -> CactusIndexT;

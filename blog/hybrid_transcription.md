@@ -73,9 +73,9 @@ Check out the open-source engine and documentation on GitHub.
 
 ## See Also
 
-- [Cactus Engine API Reference](/docs/cactus_engine.md) — Full transcription API docs (`cactus_transcribe`, `cactus_stream_transcribe_*`)
-- [Python Binding](/python/) — Python bindings with streaming transcription support
-- [Swift Binding](/bindings/swift/) — Swift API with streaming transcription
-- [Kotlin Binding](/bindings/kotlin/) — Kotlin API with streaming transcription support
-- [Flutter Binding](/flutter/) — Flutter bindings with streaming transcription
+- [Cactus Engine API Reference](/docs/cactus_engine.md) — Full transcription API docs (`cactus_transcribe`)
+- [Python Binding](/python/) — Python bindings
+- [Swift Binding](/bindings/swift/) — Swift API
+- [Kotlin Binding](/bindings/kotlin/) — Kotlin API
+- [Flutter Binding](/flutter/) — Flutter bindings
 - [LFM2 24B Review](/blog/lfm2_24b_a2b.md) — Running large MoE models locally with Cactus

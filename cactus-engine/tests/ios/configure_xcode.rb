@@ -203,7 +203,7 @@ end
 
 target.build_configurations.each do |config|
   config.build_settings['HEADER_SEARCH_PATHS'] ||= ['$(inherited)']
-  [tests_root, cactus_dir, cactus_engine_dir, cactus_graph_dir, cactus_kernels_dir].each do |path|
+  [tests_root, cactus_dir, cactus_engine_dir, cactus_graph_dir, cactus_kernels_dir, File.join(cactus_kernels_dir, 'src')].each do |path|
     config.build_settings['HEADER_SEARCH_PATHS'] << path unless config.build_settings['HEADER_SEARCH_PATHS'].include?(path)
   end
   if curl_root && !curl_root.empty?

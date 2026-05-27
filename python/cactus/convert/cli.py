@@ -30,6 +30,7 @@ from .export.reports import print_summary, write_reports
 from .export.validate import validate_qdq
 from .model_adapters.detection import SUPPORTED_FAMILIES, detect_family
 from .model_adapters.adapters import adapter_for_family
+from .model_adapters.nemo import ensure_parakeet_tdt_nemo_source
 from .quantization.cq import quantize_hadamard, quantize_orthogonal, write_cq_tensor
 from .compat import patch_transformers_import_compat
 
@@ -48,6 +49,9 @@ def _load_hf(model_id_or_path: str, device: str):
     warnings.filterwarnings("ignore", message=".*You are using a model of type.*")
     for note in patch_transformers_import_compat():
         print(f"note={note}")
+    nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path, cache_dir=_hf_cache_dir())
+    if nemo_export is not None:
+        model_id_or_path = nemo_export
     try:
         from transformers import AutoConfig, AutoModel
     except Exception as exc:  # pragma: no cover
@@ -123,6 +127,9 @@ def _bits_for_component(component: str, args: argparse.Namespace) -> int:
 
 
 def _load_checkpoint_state_dict(model_id_or_path: str) -> dict[str, Any] | None:
+    nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path, cache_dir=_hf_cache_dir())
+    if nemo_export is not None:
+        model_id_or_path = nemo_export
     root = Path(model_id_or_path)
     if not root.exists() or not root.is_dir():
         try:
@@ -205,6 +212,20 @@ def _scale_cq_norms(cq, factor: float):
     if factor == 1.0:
         return cq
     return replace(cq, norms=(cq.norms.astype(np.float32) * float(factor)).astype(np.float16))
+
+
+def _validate_cq_layout(policy, shape: tuple[int, ...], source_name: str, output_name: str) -> None:
+    if getattr(policy, "layout", "row_major") != "interleaved_4row":
+        return
+    if policy.rotation != "orthogonal" or int(policy.bits or 0) != 4:
+        raise RuntimeError(f"{source_name}: INTERLEAVED_4ROW output {output_name} requires orthogonal CQ4")
+    if len(shape) != 2:
+        raise RuntimeError(f"{source_name}: INTERLEAVED_4ROW output {output_name} requires rank-2 tensor, got shape={shape}")
+    n, k = int(shape[0]), int(shape[1])
+    if n % 4 != 0 or k % 32 != 0:
+        raise RuntimeError(
+            f"{source_name}: INTERLEAVED_4ROW output {output_name} requires N % 4 == 0 and K % 32 == 0, got shape={shape}"
+        )
 
 
 def _adapt_tensor_for_cactus(tensor, output_name: str | None, family: str):
@@ -370,6 +391,7 @@ def convert(args: argparse.Namespace) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cfg, processor, model = _load_hf(args.model, args.device)
+    runtime_source = ensure_parakeet_tdt_nemo_source(args.model, cache_dir=_hf_cache_dir()) or args.model
     family = detect_family(cfg, args.model_family)
     adapter = adapter_for_family(family)
     checkpoint_state = _load_checkpoint_state_dict(args.model)
@@ -382,7 +404,7 @@ def convert(args: argparse.Namespace) -> None:
     model_config = adapter.runtime_config(cfg)
     model_config["model_type"] = adapter.runtime_model_type()
     write_config_txt({**_config_dict(cfg), **model_config}, out_dir)
-    copy_runtime_files(args.model, out_dir, token=getattr(args, "token", None), cache_dir=_hf_cache_dir())
+    copy_runtime_files(runtime_source, out_dir, token=getattr(args, "token", None), cache_dir=_hf_cache_dir())
     try:
         from .cactus_adapters.tokenizer import convert_hf_tokenizer
 
@@ -473,6 +495,7 @@ def convert(args: argparse.Namespace) -> None:
                 if not match.recognized and args.strict:
                     raise RuntimeError(f"unrecognized tensor in strict mode: {name}")
                 if emit_policy.action == "convert" and out_path is not None:
+                    _validate_cq_layout(emit_policy, _tensor_shape(emit_tensor), name, out_path.name)
                     if emit_policy.use_gptq and int(hessian_samples.get(module_name, 0)) <= 0:
                         hessian_missing_reason = "expected GPTQ target had zero samples"
                         if args.strict:
@@ -494,6 +517,8 @@ def convert(args: argparse.Namespace) -> None:
                             input_scale=input_scale,
                         )
                     cq = _scale_cq_norms(cq, adapter.scale_factor(out_path.name))
+                    if getattr(emit_policy, "layout", "row_major") == "interleaved_4row":
+                        cq = replace(cq, interleaved_4row=True)
                     write_cq_tensor(out_path, cq)
                     gptq_used = cq.gptq_used
                     status = "converted" if match.recognized else "unrecognized"
@@ -503,7 +528,7 @@ def convert(args: argparse.Namespace) -> None:
                 elif emit_policy.action == "ignored":
                     status = "ignored"
             except Exception as exc:
-                if args.strict:
+                if args.strict or getattr(emit_policy, "layout", "row_major") == "interleaved_4row":
                     raise
                 if out_path is not None:
                     _save_fallback_tensor(emit_tensor, out_path, "FP16", family)

@@ -14,7 +14,6 @@ class WeightBinding:
     source_name: str
 
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _TOKEN_EMBEDDING_OUTPUT_NAMES = {
     "token_embeddings.weights",
     "token_embeddings.cq2.weights",
@@ -63,8 +62,10 @@ def _candidate_model_dir_names(model_name_or_path: str) -> list[str]:
 def _default_weights_dir_for_model_name(model_name_or_path: str) -> str | None:
     if not model_name_or_path:
         return None
+    from ..cli.download import _weights_root
+    root = _weights_root()
     for model_dir_name in _candidate_model_dir_names(model_name_or_path):
-        candidate = _PROJECT_ROOT / "weights" / model_dir_name
+        candidate = root / model_dir_name
         if candidate.exists():
             return str(candidate)
     return None

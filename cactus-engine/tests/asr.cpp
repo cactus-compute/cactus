@@ -35,8 +35,7 @@ int main(int argc, char** argv) {
     }
 
     if (audio_path.empty()) {
-        std::cerr << "Error: live microphone capture not supported by asr binary; "
-                     "pass an audio file path.\n";
+        std::cerr << "Error: no audio file path provided.\n";
         print_usage(argv[0]);
         return 2;
     }

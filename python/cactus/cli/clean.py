@@ -4,42 +4,9 @@ from pathlib import Path
 
 from .common import (
     PROJECT_ROOT,
-    get_weights_dir,
     print_color,
-    RED, GREEN, YELLOW, BLUE, NC,
+    GREEN, YELLOW, BLUE,
 )
-
-
-def cmd_auth(args):
-    """Manage Cactus Cloud API key."""
-    from .config_utils import CactusConfig
-
-    config = CactusConfig()
-
-    if args.clear:
-        config.clear_api_key()
-        print_color(GREEN, "API key cleared.")
-        return 0
-
-    api_key = config.get_api_key()
-
-    if api_key:
-        masked = api_key[:4] + "..." + api_key[-4:]
-        print(f"Current API key: {masked}")
-    else:
-        print("No API key set.")
-
-    if args.status:
-        return 0
-
-    print()
-    print("Get your cloud key at \033[1;36mhttps://www.cactuscompute.com/dashboard/api-keys\033[0m")
-    new_key = input("Enter new API key (press Enter to skip): ").strip()
-    if new_key:
-        config.set_api_key(new_key)
-        masked = new_key[:4] + "..." + new_key[-4:]
-        print_color(GREEN, f"API key saved: {masked}")
-    return 0
 
 
 def cmd_clean(args):
@@ -65,11 +32,12 @@ def cmd_clean(args):
 
     remove_if_exists(PROJECT_ROOT / "tests" / "build")
 
+    remove_if_exists(PROJECT_ROOT / "python" / "cactus" / "bin")
+
     remove_if_exists(PROJECT_ROOT / "venv")
 
     remove_if_exists(PROJECT_ROOT / "weights")
 
-    # Clean telemetry cache
     telemetry_cache = Path.home() / "Library" / "Caches" / "cactus" / "telemetry"
     if telemetry_cache.exists():
         print(f"Removing telemetry cache: {telemetry_cache}")
@@ -77,36 +45,18 @@ def cmd_clean(args):
     else:
         print(f"Telemetry cache not found: {telemetry_cache}")
 
-    # Re-cache API key from config so users don't need to run `cactus auth` again
-    from .config_utils import CactusConfig
-    config = CactusConfig()
-    saved_key = config.load_config().get("api_key", "")
-    if saved_key:
-        config.cache_api_key(saved_key)
-        masked = saved_key[:4] + "..." + saved_key[-4:]
-        print(f"Restored cached API key: {masked}")
-
     print()
     print("Removing compiled libraries and frameworks...")
 
     preserve_roots = [
-        PROJECT_ROOT / "cactus-engine" / "libs" / "curl",
-        PROJECT_ROOT / "android" / "mbedtls",
-        PROJECT_ROOT / "libs" / "mbedtls",
+        (PROJECT_ROOT / "cactus-engine" / "libs" / "curl").resolve(),
+        (PROJECT_ROOT / "android" / "mbedtls").resolve(),
+        (PROJECT_ROOT / "libs" / "mbedtls").resolve(),
     ]
 
-    def should_preserve_artifact(path: Path) -> bool:
-        try:
-            resolved = path.resolve()
-        except FileNotFoundError:
-            return False
-        for root in preserve_roots:
-            try:
-                if resolved.is_relative_to(root.resolve()):
-                    return True
-            except FileNotFoundError:
-                continue
-        return False
+    def should_preserve_artifact(path):
+        resolved = path.resolve()
+        return any(resolved.is_relative_to(root) for root in preserve_roots)
 
     so_count = 0
     for so_file in PROJECT_ROOT.rglob("*.so"):
@@ -115,23 +65,26 @@ def cmd_clean(args):
     print(f"Removed {so_count} .so files" if so_count else "No .so files found")
 
     a_count = 0
-    a_preserved_count = 0
     for a_file in PROJECT_ROOT.rglob("*.a"):
         if should_preserve_artifact(a_file):
-            a_preserved_count += 1
             continue
         a_file.unlink()
         a_count += 1
-    if a_count or a_preserved_count:
-        print(f"Removed {a_count} .a files (preserved {a_preserved_count} vendored static libs)")
-    else:
-        print("No .a files found")
+    print(f"Removed {a_count} .a files" if a_count else "No .a files found")
 
     bin_count = 0
     for bin_file in PROJECT_ROOT.rglob("*.bin"):
         bin_file.unlink()
         bin_count += 1
     print(f"Removed {bin_count} .bin files" if bin_count else "No .bin files found")
+
+    dylib_count = 0
+    for dylib_file in PROJECT_ROOT.rglob("*.dylib"):
+        if should_preserve_artifact(dylib_file):
+            continue
+        dylib_file.unlink()
+        dylib_count += 1
+    print(f"Removed {dylib_count} .dylib files" if dylib_count else "No .dylib files found")
 
     xcf_count = 0
     for xcf_dir in PROJECT_ROOT.rglob("*.xcframework"):
@@ -159,7 +112,6 @@ def cmd_clean(args):
     print("All build artifacts have been removed.")
     print()
 
-    # Re-run setup automatically
     print_color(BLUE, "Re-running setup...")
     setup_script = PROJECT_ROOT / "setup"
     result = subprocess.run(

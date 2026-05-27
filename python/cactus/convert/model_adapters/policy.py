@@ -14,6 +14,7 @@ class TensorPolicy:
     use_gptq: bool
     rotation: str
     fallback_reason: str | None = None
+    layout: str = "row_major"
 
 
 def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, family: str) -> TensorPolicy:
@@ -34,6 +35,8 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "lstm recurrent tensor")
     if family == "parakeet_tdt" and out.startswith("tdt_"):
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "tdt decoder tensor")
+    if family in {"parakeet", "parakeet_tdt"} and "self_attn_bias_" in out:
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "relative attention bias tensor")
     if family in {"parakeet", "parakeet_tdt"} and "conv_pointwise" in out and len(shape) == 3 and shape[2] == 1:
         return TensorPolicy("fallback", "INT8", 8, component, False, "none", "pointwise conv tensor")
     if "conv_depthwise.weights" in out and len(shape) == 3 and shape[1] == 1:
@@ -56,8 +59,10 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("convert", f"CQ{user_bits}", user_bits, component, False, "hadamard")
     if family == "gemma4" and component in {"audio", "vision"}:
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "gemma4 media tower accuracy")
-    if component == "embedding" or out in {"token_embeddings.weights", "output_weight.weights"}:
-        return TensorPolicy("convert", "CQ4", 4, component, False, "orthogonal")
+    output_head_or_tied_embedding = out in {"token_embeddings.weights", "decoder_token_embeddings.weights", "output_weight.weights"}
+    if component == "embedding" or output_head_or_tied_embedding:
+        layout = "interleaved_4row" if output_head_or_tied_embedding else "row_major"
+        return TensorPolicy("convert", "CQ4", 4, component, False, "orthogonal", layout=layout)
     if component == "audio" or component == "transcription":
         return TensorPolicy("convert", f"CQ{user_bits}", user_bits, component, False, "hadamard")
     return TensorPolicy("convert", f"CQ{user_bits}", user_bits, component, True, "hadamard")

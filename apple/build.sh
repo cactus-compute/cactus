@@ -31,9 +31,7 @@ echo "Vendored libcurl root: $CACTUS_CURL_ROOT"
 
 function cp_headers() {
     mkdir -p "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers"
-    cp "$ROOT_DIR/cactus-engine/cactus_engine.h"   "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
-    cp "$ROOT_DIR/cactus-graph/cactus_graph.h"     "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
-    cp "$ROOT_DIR/cactus-kernels/cactus_kernels.h" "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/" 2>/dev/null || true
+    cp "$ROOT_DIR/cactus-engine/cactus_engine.h" "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/"
 }
 
 function create_ios_xcframework_info_plist() {

@@ -259,6 +259,36 @@ def test_resolve_weight_binding_expands_language_model_backbone_aliases(tmp_path
     assert binding.path.endswith("layer_0_scalar.weights")
 
 
+def test_resolve_weight_binding_maps_tied_lm_head_to_token_embedding_manifest(tmp_path: Path) -> None:
+    (tmp_path / "token_embeddings.weights").write_bytes(b"")
+    (tmp_path / "weights_manifest.json").write_text(
+        json.dumps(
+            {
+                "weights": [
+                    {
+                        "source_name": "model.language_model.embed_tokens.weight",
+                        "hf_name": "model.language_model.embed_tokens.weight",
+                        "adapter_name": "model.language_model.embed_tokens.weight",
+                        "source_names": ["model.language_model.embed_tokens.weight"],
+                        "output_name": "token_embeddings.weights",
+                        "component": "embedding",
+                    }
+                ]
+            }
+        )
+    )
+
+    for source_name in ("lm_head.weight", "model.lm_head.weight"):
+        binding = resolve_weight_binding(
+            weights_dir=str(tmp_path),
+            source_name=source_name,
+        )
+
+        assert binding is not None
+        assert binding.path.endswith("token_embeddings.weights")
+        assert binding.kind == "embedding"
+
+
 def test_resolve_weight_binding_expands_nested_model_tower_aliases(tmp_path: Path) -> None:
     (tmp_path / "vision_q.weights").write_bytes(b"")
     (tmp_path / "weights_manifest.json").write_text(

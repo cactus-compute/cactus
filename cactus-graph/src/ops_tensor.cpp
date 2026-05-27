@@ -186,6 +186,7 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
                     embeddings_buffer.cq_norms,
                     embeddings_buffer.cq_input_scale_recip,
                     embeddings_buffer.cq_rotation,
+                    embeddings_buffer.cq_flags,
                     output + i * hidden_dim);
             } else {
                 cactus_quant_dequantize_hadamard_embedding_row(

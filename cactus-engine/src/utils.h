@@ -98,6 +98,15 @@ namespace audio {
 
 static constexpr size_t WHISPER_TARGET_FRAMES = 3000;
 static constexpr int WHISPER_SAMPLE_RATE = 16000;
+static constexpr size_t WHISPER_TARGET_SAMPLES = WHISPER_SAMPLE_RATE * 30;
+
+inline void pad_or_trim_whisper_waveform(std::vector<float>& samples) {
+    if (samples.size() > WHISPER_TARGET_SAMPLES) {
+        samples.resize(WHISPER_TARGET_SAMPLES);
+    } else if (samples.size() < WHISPER_TARGET_SAMPLES) {
+        samples.resize(WHISPER_TARGET_SAMPLES, 0.0f);
+    }
+}
 
 inline cactus::engine::SpectrogramConfig get_whisper_spectrogram_config() {
     cactus::engine::SpectrogramConfig cfg{};
@@ -161,27 +170,6 @@ inline cactus::engine::SpectrogramConfig get_gemma4_audio_spectrogram_config(
     auto cfg = get_htk_spectrogram_config();
     cfg.fft_override = model_config.audio_fft_length;
     cfg.mel_floor_additive = true;
-    return cfg;
-}
-
-inline cactus::engine::SpectrogramConfig get_wespeaker_spectrogram_config() {
-    cactus::engine::SpectrogramConfig cfg{};
-    cfg.n_fft            = 512;
-    cfg.frame_length     = 400;
-    cfg.hop_length       = 160;
-    cfg.power            = 2.0f;
-    cfg.center           = false;
-    cfg.pad_mode         = "constant";
-    cfg.onesided         = true;
-    cfg.dither           = 0.0f;
-    cfg.mel_floor        = 1.1754944e-38f;
-    cfg.log_mel          = "log";
-    cfg.reference        = 1.0f;
-    cfg.min_value        = 1.1754944e-38f;
-    cfg.remove_dc_offset = true;
-    cfg.preemphasis      = 0.97f;
-    cfg.hann_periodic    = false;
-    cfg.window_a0        = 0.54f;
     return cfg;
 }
 
@@ -312,6 +300,17 @@ inline std::vector<float> normalize_whisper_mel(std::vector<float>& mel, size_t 
                                                 bool use_mel_floor_padding = false) {
     if (mel.empty() || n_mels == 0) return mel;
     size_t n_frames = mel.size() / n_mels;
+
+    if (n_frames > WHISPER_TARGET_FRAMES) {
+        std::vector<float> trimmed(n_mels * WHISPER_TARGET_FRAMES);
+        for (size_t m = 0; m < n_mels; ++m) {
+            const float* src = &mel[m * n_frames];
+            float* dst = &trimmed[m * WHISPER_TARGET_FRAMES];
+            std::copy(src, src + WHISPER_TARGET_FRAMES, dst);
+        }
+        mel = std::move(trimmed);
+        n_frames = WHISPER_TARGET_FRAMES;
+    }
 
     float max_val = -std::numeric_limits<float>::infinity();
     for (float v : mel) if (v > max_val) max_val = v;

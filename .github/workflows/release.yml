@@ -1,95 +1,97 @@
-name: Release & Update Homebrew
+name: Release
 
 on:
-  schedule:
-    - cron: "0 21 * * 1" # Every Monday at 9pm UTC
-  workflow_dispatch:
+  release:
+    types: [published]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  pypi:
     permissions:
-      contents: write
+      id-token: write
+      contents: read
+    uses: ./.github/workflows/pypi.yml
+
+  homebrew:
+    needs: pypi
+    runs-on: ubuntu-24.04
+    env:
+      PACKAGE: cactus-compute
+      TAP: cactus-compute/homebrew-cactus
+      TAG: ${{ github.event.release.tag_name }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Determine version
-        id: version
+      - name: Resolve version
+        id: ver
         run: |
-          TAG=$(cat CACTUS_VERSION | tr -d '[:space:]')
-          if git rev-parse "${TAG}" >/dev/null 2>&1; then
-            echo "Tag ${TAG} already exists. Skipping."
-            echo "skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${TAG}" >> $GITHUB_OUTPUT
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
+          raw="${TAG#v}"
+          version=$(python3 -c "raw='${raw}'; print(raw + '.0' if raw.count('.') == 1 else raw)")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Create tag and release
-        if: steps.version.outputs.skip == 'false'
-        run: |
-          TAG=${{ steps.version.outputs.tag }}
-          git tag ${TAG}
-          git push origin ${TAG}
-          gh release create ${TAG} \
-            --title "${TAG}" \
-            --generate-notes
+      - name: Resolve sdist URL and SHA256 from PyPI
+        id: pypi
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/setup-python@v5
-        if: steps.version.outputs.skip == 'false'
-        with:
-          python-version: "3.x"
-
-      - name: Deploy versioned docs
-        if: steps.version.outputs.skip == 'false'
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          pip install "mkdocs==1.6.1" "mkdocs-material==9.7.5" "mike==2.1.4"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          TAG=${{ steps.version.outputs.tag }}
-          bash .github/assemble-docs.sh "$TAG"
-          mike deploy ${TAG} latest --update-aliases --push
-          mike set-default latest --push
+          for i in $(seq 1 10); do
+            if json=$(curl -fsSL "https://pypi.org/pypi/${PACKAGE}/${VERSION}/json"); then
+              break
+            fi
+            echo "Waiting for PyPI metadata (attempt $i)..."
+            sleep 30
+          done
+          [ -n "$json" ] || { echo "PyPI metadata not available for ${PACKAGE} ${VERSION}"; exit 1; }
+          url=$(echo "$json" | jq -er '.urls[] | select(.packagetype == "sdist") | .url')
+          sha=$(echo "$json" | jq -er '.urls[] | select(.packagetype == "sdist") | .digests.sha256')
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-          git checkout gh-pages
-          echo "docs.cactuscompute.com" > CNAME
-          git add CNAME
-          git commit -m "Preserve CNAME for custom domain" --allow-empty || true
-          git push origin gh-pages
-          git checkout -
-
-      - name: Get tarball SHA256
-        if: steps.version.outputs.skip == 'false'
-        id: sha
+      - name: Update tap formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          URL: ${{ steps.pypi.outputs.url }}
+          SHA: ${{ steps.pypi.outputs.sha }}
         run: |
-          TAG=${{ steps.version.outputs.tag }}
-          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz"
-          SHA=$(curl -sL "$URL" | shasum -a 256 | awk '{print $1}')
-          echo "sha256=${SHA}" >> $GITHUB_OUTPUT
-          echo "url=${URL}" >> $GITHUB_OUTPUT
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP}.git" tap
+          mkdir -p tap/Formula
+          cat > tap/Formula/cactus.rb <<EOF
+          class Cactus < Formula
+            desc "On-device AI inference"
+            homepage "https://cactuscompute.com"
+            url "${URL}"
+            sha256 "${SHA}"
+            license "Cactus Compute License"
+            include Language::Python::Virtualenv
+            depends_on "python@3.12"
 
-      - name: Update Homebrew formula
-        if: steps.version.outputs.skip == 'false'
-        run: |
-          TAG=${{ steps.version.outputs.tag }}
-          SHA=${{ steps.sha.outputs.sha256 }}
-          URL=${{ steps.sha.outputs.url }}
+            livecheck do
+              url "https://pypi.org/pypi/${PACKAGE}/json"
+              regex(/"version":\s*"(\d+(?:\.\d+)+)"/i)
+            end
 
-          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/cactus-compute/homebrew-cactus.git tap
+            def install
+              venv = virtualenv_create(libexec, "python3.12")
+              venv.pip_install "${PACKAGE}==#{version}"
+              bin.install_symlink libexec/"bin/cactus"
+            end
+
+            test do
+              assert_equal "cactus #{version}\n", shell_output("#{bin}/cactus --version")
+            end
+          end
+          EOF
           cd tap
-
-          sed -i "s|url \".*\"|url \"${URL}\"|" Formula/cactus.rb
-          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/cactus.rb
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/cactus.rb
           git commit -m "Update cactus to ${TAG}"
           git push origin main
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+  docs:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/docs.yml
+    with:
+      version: ${{ github.event.release.tag_name }}

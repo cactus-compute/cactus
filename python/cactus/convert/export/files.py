@@ -11,6 +11,7 @@ TOKENIZER_FILES = [
     "merges.txt",
     "tokenizer.json",
     "tokenizer.model",
+    "vocab.txt",
     "tokenizer_config.json",
     "special_tokens_map.json",
     "added_tokens.json",

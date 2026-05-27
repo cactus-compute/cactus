@@ -3,7 +3,7 @@ import React
 import cactus
 
 @objc(Cactus)
-final class Cactus: NSObject {
+final class Cactus: RCTEventEmitter {
     private let defaultBufferSize = 65_536
     private let largeBufferSize = 1 << 20
     private let defaultEmbeddingBufferSize = 4096
@@ -13,8 +13,12 @@ final class Cactus: NSObject {
     private let defaultIndexEmbeddingBufferSize = 4096
 
     @objc
-    static func requiresMainQueueSetup() -> Bool {
+    override static func requiresMainQueueSetup() -> Bool {
         false
+    }
+
+    override func supportedEvents() -> [String] {
+        ["onToken"]
     }
 
     private func lastError(_ fallback: String) -> String {
@@ -109,13 +113,14 @@ final class Cactus: NSObject {
         resolve(stringFromBuffer(buffer))
     }
 
-    @objc(complete:messagesJson:optionsJson:toolsJson:pcmDataBase64:resolver:rejecter:)
+    @objc(complete:messagesJson:optionsJson:toolsJson:pcmDataBase64:streamTokens:resolver:rejecter:)
     func complete(
         _ handle: String,
         messagesJson: String,
         optionsJson: String?,
         toolsJson: String?,
         pcmDataBase64: String?,
+        streamTokens: Bool,
         resolver resolve: RCTPromiseResolveBlock,
         rejecter reject: RCTPromiseRejectBlock
     ) {
@@ -124,9 +129,28 @@ final class Cactus: NSObject {
             self.reject(reject, "Invalid native handle")
             return
         }
+
+        var cb: cactus_token_callback? = nil
+        var userData: UnsafeMutableRawPointer? = nil
+        if streamTokens {
+            let emitter = Unmanaged.passRetained(self).toOpaque()
+            userData = emitter
+            cb = { tokenPtr, tokenId, ctx in
+                guard let ctx = ctx, let tokenPtr = tokenPtr else { return }
+                let emitter = Unmanaged<Cactus>.fromOpaque(ctx).takeUnretainedValue()
+                let token = String(cString: tokenPtr)
+                emitter.sendEvent(withName: "onToken", body: ["token": token, "tokenId": tokenId])
+            }
+        }
+
         let rc = decodeBase64(pcmDataBase64)?.withUnsafeBytes { rawBuffer in
-            cactus_complete(nativeHandle, messagesJson, &buffer, buffer.count, optionsJson, toolsJson, nil, nil, rawBuffer.bindMemory(to: UInt8.self).baseAddress, rawBuffer.count)
-        } ?? cactus_complete(nativeHandle, messagesJson, &buffer, buffer.count, optionsJson, toolsJson, nil, nil, nil, 0)
+            cactus_complete(nativeHandle, messagesJson, &buffer, buffer.count, optionsJson, toolsJson, cb, userData, rawBuffer.bindMemory(to: UInt8.self).baseAddress, rawBuffer.count)
+        } ?? cactus_complete(nativeHandle, messagesJson, &buffer, buffer.count, optionsJson, toolsJson, cb, userData, nil, 0)
+
+        if streamTokens, let userData = userData {
+            Unmanaged<Cactus>.fromOpaque(userData).release()
+        }
+
         guard rc >= 0 else {
             self.reject(reject, "Completion failed")
             return
@@ -246,88 +270,6 @@ final class Cactus: NSObject {
             return
         }
         resolve(buffer.prefix(dim).map(Double.init))
-    }
-
-    @objc(vad:audioPath:optionsJson:pcmDataBase64:resolver:rejecter:)
-    func vad(
-        _ handle: String,
-        audioPath: String?,
-        optionsJson: String?,
-        pcmDataBase64: String?,
-        resolver resolve: RCTPromiseResolveBlock,
-        rejecter reject: RCTPromiseRejectBlock
-    ) {
-        guard let nativeHandle = decodeHandle(handle) else {
-            self.reject(reject, "Invalid native handle")
-            return
-        }
-        var buffer = [CChar](repeating: 0, count: defaultBufferSize)
-        let rc = decodeBase64(pcmDataBase64)?.withUnsafeBytes { rawBuffer in
-            cactus_vad(nativeHandle, audioPath, &buffer, buffer.count, optionsJson, rawBuffer.bindMemory(to: UInt8.self).baseAddress, rawBuffer.count)
-        } ?? cactus_vad(nativeHandle, audioPath, &buffer, buffer.count, optionsJson, nil, 0)
-        guard rc >= 0 else {
-            self.reject(reject, "VAD failed")
-            return
-        }
-        resolve(stringFromBuffer(buffer))
-    }
-
-    @objc(diarize:audioPath:optionsJson:pcmDataBase64:resolver:rejecter:)
-    func diarize(
-        _ handle: String,
-        audioPath: String?,
-        optionsJson: String?,
-        pcmDataBase64: String?,
-        resolver resolve: RCTPromiseResolveBlock,
-        rejecter reject: RCTPromiseRejectBlock
-    ) {
-        guard let nativeHandle = decodeHandle(handle) else {
-            self.reject(reject, "Invalid native handle")
-            return
-        }
-        var buffer = [CChar](repeating: 0, count: largeBufferSize)
-        let rc = decodeBase64(pcmDataBase64)?.withUnsafeBytes { rawBuffer in
-            cactus_diarize(nativeHandle, audioPath, &buffer, buffer.count, optionsJson, rawBuffer.bindMemory(to: UInt8.self).baseAddress, rawBuffer.count)
-        } ?? cactus_diarize(nativeHandle, audioPath, &buffer, buffer.count, optionsJson, nil, 0)
-        guard rc >= 0 else {
-            self.reject(reject, "Diarize failed")
-            return
-        }
-        resolve(stringFromBuffer(buffer))
-    }
-
-    @objc(embedSpeaker:audioPath:optionsJson:pcmDataBase64:maskWeights:resolver:rejecter:)
-    func embedSpeaker(
-        _ handle: String,
-        audioPath: String?,
-        optionsJson: String?,
-        pcmDataBase64: String?,
-        maskWeights: [NSNumber]?,
-        resolver resolve: RCTPromiseResolveBlock,
-        rejecter reject: RCTPromiseRejectBlock
-    ) {
-        guard let nativeHandle = decodeHandle(handle) else {
-            self.reject(reject, "Invalid native handle")
-            return
-        }
-        var buffer = [CChar](repeating: 0, count: defaultBufferSize)
-        var mask = maskWeights?.map { Float(truncating: $0) }
-        let rc = decodeBase64(pcmDataBase64)?.withUnsafeBytes { rawBuffer in
-            if var mask {
-                return cactus_embed_speaker(nativeHandle, audioPath, &buffer, buffer.count, optionsJson, rawBuffer.bindMemory(to: UInt8.self).baseAddress, rawBuffer.count, &mask, mask.count)
-            }
-            return cactus_embed_speaker(nativeHandle, audioPath, &buffer, buffer.count, optionsJson, rawBuffer.bindMemory(to: UInt8.self).baseAddress, rawBuffer.count, nil, 0)
-        } ?? {
-            if var mask {
-                return cactus_embed_speaker(nativeHandle, audioPath, &buffer, buffer.count, optionsJson, nil, 0, &mask, mask.count)
-            }
-            return cactus_embed_speaker(nativeHandle, audioPath, &buffer, buffer.count, optionsJson, nil, 0, nil, 0)
-        }()
-        guard rc >= 0 else {
-            self.reject(reject, "EmbedSpeaker failed")
-            return
-        }
-        resolve(stringFromBuffer(buffer))
     }
 
     @objc(ragQuery:query:topK:resolver:rejecter:)
