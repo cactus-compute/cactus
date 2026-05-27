@@ -64,6 +64,7 @@ include = ["cactus*"]
 [tool.setuptools.package-data]
 "cactus.bindings" = ["lib/*.dylib", "lib/*.so"]
 "cactus" = ["bin/chat", "bin/asr", "assets/*"]
+"cactus.cloud_handoff" = ["models/v10p6_probe_release/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -561,6 +561,55 @@ def _gemma4_text_backbone_forward(
     return backbone.norm(hidden_states) if apply_norm else hidden_states
 
 
+def _gemma4_text_backbone_forward_with_checkpoint(
+    backbone: torch.nn.Module,
+    *,
+    inputs_embeds: torch.Tensor,
+    per_layer_inputs: torch.Tensor | None,
+    causal_mask_mapping: dict[str, torch.Tensor],
+    position_ids: torch.LongTensor,
+    capture_layer_index: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    hidden_states = inputs_embeds
+    captured = None
+    layer_types = tuple(dict.fromkeys(getattr(backbone.config, "layer_types", ())))
+    position_embeddings = {
+        layer_type: backbone.rotary_emb(hidden_states, position_ids, layer_type)
+        for layer_type in layer_types
+    }
+    num_shared_layers = int(getattr(backbone.config, "num_kv_shared_layers", 0) or 0)
+    shared_kv_states = {} if num_shared_layers > 0 else None
+    config_layer_types = tuple(getattr(backbone.config, "layer_types", ()))
+    end = int(backbone.config.num_hidden_layers)
+    for layer_index in range(end):
+        decoder_layer = backbone.layers[layer_index]
+        layer_per_input = None
+        if per_layer_inputs is not None:
+            layer_per_input = per_layer_inputs[:, :, decoder_layer.layer_idx, :]
+        attention_type = getattr(
+            decoder_layer,
+            "attention_type",
+            config_layer_types[layer_index] if layer_index < len(config_layer_types) else "full_attention",
+        )
+        hidden_states = _gemma4_text_decoder_layer_forward(
+            decoder_layer,
+            hidden_states,
+            per_layer_input=layer_per_input,
+            attention_mask=causal_mask_mapping[attention_type],
+            position_embeddings=position_embeddings[attention_type],
+            position_ids=position_ids,
+            past_key_values=None,
+            use_cache=False,
+            shared_kv_states=shared_kv_states,
+        )
+        if layer_index == int(capture_layer_index):
+            captured = hidden_states
+
+    if captured is None:
+        captured = hidden_states
+    return backbone.norm(hidden_states), captured[:, -1:, :]
+
+
 def _gemma4_strip_audio_padding(audio_output: object) -> torch.Tensor:
     audio_features = getattr(audio_output, "pooler_output", None)
     if not isinstance(audio_features, torch.Tensor):
@@ -3074,7 +3123,38 @@ class Gemma4DecoderAdapter(_Gemma4MultimodalComponentBase):
 
 
 class Gemma4DecoderStepAdapter(Gemma4DecoderAdapter):
-    pass
+    def forward(
+        self,
+        inputs_embeds: torch.Tensor,
+        per_layer_inputs: torch.Tensor,
+        position_ids: torch.LongTensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        normalized_per_layer_inputs = per_layer_inputs
+        if normalized_per_layer_inputs.numel() == 0:
+            normalized_per_layer_inputs = None
+        attention_mask = torch.ones(
+            position_ids.shape,
+            dtype=torch.long,
+            device=position_ids.device,
+        )
+        causal_mask_mapping = _gemma4_build_standard_causal_mask_mapping(
+            create_causal_mask=self._create_causal_mask,
+            create_sliding_window_causal_mask=self._create_sliding_window_causal_mask,
+            config=self.backbone.config,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+        )
+        hidden_states, cloud_handoff_hidden = _gemma4_text_backbone_forward_with_checkpoint(
+            self.backbone,
+            inputs_embeds=inputs_embeds,
+            per_layer_inputs=normalized_per_layer_inputs,
+            causal_mask_mapping=causal_mask_mapping,
+            position_ids=position_ids,
+            capture_layer_index=28,
+        )
+        logits = self.model.lm_head(hidden_states[:, -1:, :])
+        return _gemma4_apply_final_logit_softcapping(self.model, logits), cloud_handoff_hidden
 
 
 class Gemma4DecoderPrefillChunkAdapter(Gemma4DecoderAdapter):
@@ -3474,7 +3554,7 @@ def _build_gemma4_multimodal_component_specs(
             module=decoder_step,
             example_inputs=tuple(decoder_step_inputs),
             input_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
-            output_keys=("logits",),
+            output_keys=("logits", "cloud_handoff_hidden"),
             graph_meta={
                 **common_graph_meta,
                 "component": "decoder_step",

@@ -83,6 +83,7 @@ std::unique_ptr<NPUPrefill> create_prefill();
 } // namespace npu
 namespace engine {
 
+class WrongnessProbe;
 
 struct Config {
     uint32_t vocab_size = 151936;
@@ -637,6 +638,8 @@ public:
 
     void set_cache_window(size_t window_size, size_t sink_size = 4);
     size_t get_cache_size() const { return cache_total_seq_len_; }
+    void reset_cloud_handoff_probe_rollout();
+    bool cloud_handoff_probe_confidence(float* out_confidence, bool force = false);
 
     bool load_npu_prefill(const std::string& model_path);
     bool has_npu_prefill() const { return false; }
@@ -714,6 +717,8 @@ private:
     ChunkedPrefillResult run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position,
                                              size_t chunk_size, bool prepare_decode);
     void run_full_context_text();
+    void maybe_load_cloud_handoff_probe();
+    void capture_cloud_handoff_hidden(Component& comp);
     uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max());
     void write_int_input(Component& comp, const std::string& name, int64_t value);
     void write_int_input_at(Component& comp, const std::string& name, size_t index, int64_t value);
@@ -754,6 +759,10 @@ private:
     std::map<std::string, std::vector<uint8_t>> media_features_;
     std::map<std::string, std::vector<size_t>> media_feature_shapes_;
     std::map<std::string, Precision> media_feature_precisions_;
+    std::unique_ptr<WrongnessProbe> cloud_handoff_probe_;
+    std::vector<float> cloud_handoff_hidden_states_;
+    size_t cloud_handoff_last_scored_tokens_ = 0;
+    float cloud_handoff_last_confidence_ = 1.0f;
 
     Config config_;
     std::unique_ptr<Tokenizer> tokenizer_;

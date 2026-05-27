@@ -1,6 +1,7 @@
 #include "engine.h"
 #include "cactus_graph.h"
 #include "cactus_kernels.h"
+#include "wrongness_probe.h"
 
 #define PICOJSON_USE_INT64
 #include "picojson.h"
@@ -11,6 +12,7 @@
 #include <iostream>
 #include <cmath>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <dirent.h>
 #include <algorithm>
@@ -205,6 +207,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         CACTUS_LOG_ERROR("model", "Tokenizer init failed for bundle: " << bundle_dir);
         return false;
     }
+    maybe_load_cloud_handoff_probe();
     std::string encoder_name;
     std::string decoder_name;
     std::unordered_set<std::string> required_components;
@@ -399,6 +402,29 @@ bool Model::setup_tokenizer() {
     return tokenizer_->load_vocabulary_with_config(vocab, merges, cfg);
 }
 
+void Model::maybe_load_cloud_handoff_probe() {
+    if (config_.model_type != Config::ModelType::GEMMA4 && family_ != "gemma4") {
+        return;
+    }
+    std::vector<fs::path> candidates;
+    if (const char* env_path = std::getenv("CACTUS_CLOUD_HANDOFF_PROBE_PATH")) {
+        if (*env_path) candidates.emplace_back(env_path);
+    }
+    candidates.emplace_back(fs::path(bundle_dir_) / "cloud_handoff" / "global_attn_probe_v10p6.bin");
+    candidates.emplace_back(fs::path(bundle_dir_) / "global_attn_probe_v10p6.bin");
+
+    for (const auto& candidate : candidates) {
+        if (!fs::exists(candidate)) continue;
+        auto probe = std::make_unique<WrongnessProbe>();
+        if (probe->load(candidate.string())) {
+            cloud_handoff_probe_ = std::move(probe);
+            CACTUS_LOG_INFO("model", "Loaded Gemma4 cloud handoff probe: " << candidate.string());
+            return;
+        }
+        CACTUS_LOG_WARN("model", "Failed to load cloud handoff probe: " << candidate.string());
+    }
+}
+
 bool Model::load_components(const std::unordered_set<std::string>& required_components) {
     for (auto& [name, comp] : components_) {
         if (!required_components.empty() && !required_components.count(name)) continue;
@@ -525,22 +551,48 @@ void Model::copy_encoder_outputs_to_decoder(const Component& enc) {
     }
 }
 
-void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/) {
+void Model::run_step(uint32_t token_id, size_t position, bool read_logits) {
     if (decode_route_ == DecodeRoute::DIRECT_DECODER_STEP) {
         write_int_input(*decoder_, "input_ids", static_cast<int64_t>(token_id));
         write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
         decoder_->graph->execute();
+        if (read_logits) capture_cloud_handoff_hidden(*decoder_);
         return;
     }
     run_encoder_step(token_id, position);
     copy_component_outputs_to_inputs(*encoder_, *decoder_);
     decoder_->graph->execute();
+    if (read_logits) capture_cloud_handoff_hidden(*decoder_);
 }
 
 void Model::run_encoder_step(uint32_t token_id, size_t position) {
     write_int_input(*encoder_, "input_ids", static_cast<int64_t>(token_id));
     write_int_input(*encoder_, "position_ids", static_cast<int64_t>(position));
     encoder_->graph->execute();
+}
+
+void Model::capture_cloud_handoff_hidden(Component& comp) {
+    if (!cloud_handoff_probe_ || !cloud_handoff_probe_->is_loaded()) return;
+    int idx = output_index(comp, "cloud_handoff_hidden");
+    if (idx < 0 || static_cast<size_t>(idx) >= comp.output_node_ids.size()) return;
+    size_t node = static_cast<size_t>(comp.output_node_ids[static_cast<size_t>(idx)]);
+    const auto& desc = comp.graph->get_output_buffer(node);
+    const uint8_t* ptr = static_cast<const uint8_t*>(comp.graph->get_output(node));
+    if (!ptr || desc.total_size < WrongnessProbe::FEAT_DIM) return;
+    size_t vectors = desc.total_size / WrongnessProbe::FEAT_DIM;
+    size_t vector_index = vectors > 0 ? vectors - 1 : 0;
+    size_t offset = vector_index * WrongnessProbe::FEAT_DIM;
+    size_t token_count = cloud_handoff_hidden_states_.size() / WrongnessProbe::FEAT_DIM;
+    if (token_count >= WrongnessProbe::MAX_TOKENS) {
+        cloud_handoff_hidden_states_.erase(
+            cloud_handoff_hidden_states_.begin(),
+            cloud_handoff_hidden_states_.begin() + static_cast<std::ptrdiff_t>(WrongnessProbe::FEAT_DIM));
+    }
+    const size_t old_size = cloud_handoff_hidden_states_.size();
+    cloud_handoff_hidden_states_.resize(old_size + WrongnessProbe::FEAT_DIM);
+    for (size_t i = 0; i < WrongnessProbe::FEAT_DIM; ++i) {
+        cloud_handoff_hidden_states_[old_size + i] = read_scalar_value(desc.precision, ptr, offset + i);
+    }
 }
 
 void Model::copy_component_outputs_to_inputs(const Component& source, Component& target) {
@@ -2305,6 +2357,7 @@ void Model::reset_cache() {
     last_logit_position_ = 0;
     context_tokens_.clear();
     token_history_.clear();
+    reset_cloud_handoff_probe_rollout();
     media_features_.clear();
     media_feature_shapes_.clear();
     media_feature_precisions_.clear();
@@ -2313,6 +2366,29 @@ void Model::reset_cache() {
         if (!comp.graph) continue;
         reset_component_cache_states(comp);
     }
+}
+
+void Model::reset_cloud_handoff_probe_rollout() {
+    cloud_handoff_hidden_states_.clear();
+    cloud_handoff_last_scored_tokens_ = 0;
+    cloud_handoff_last_confidence_ = 1.0f;
+}
+
+bool Model::cloud_handoff_probe_confidence(float* out_confidence, bool force) {
+    if (!out_confidence || !cloud_handoff_probe_ || !cloud_handoff_probe_->is_loaded()) return false;
+    size_t token_count = cloud_handoff_hidden_states_.size() / WrongnessProbe::FEAT_DIM;
+    if (token_count == 0) return false;
+    bool should_score = force || token_count != cloud_handoff_last_scored_tokens_;
+    if (!force && token_count > 4 && (token_count % 4) != 0) {
+        should_score = false;
+    }
+    if (should_score) {
+        WrongnessProbeScore score = cloud_handoff_probe_->score(cloud_handoff_hidden_states_, token_count);
+        cloud_handoff_last_confidence_ = score.confidence;
+        cloud_handoff_last_scored_tokens_ = token_count;
+    }
+    *out_confidence = cloud_handoff_last_confidence_;
+    return true;
 }
 
 void Model::set_cache_window(size_t /*window_size*/, size_t /*sink_size*/) {}

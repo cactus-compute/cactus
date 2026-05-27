@@ -57,6 +57,7 @@ set(ENGINE_SOURCES
     src/telemetry.cpp
     src/telemetry_impl.cpp
     src/cloud.cpp
+    src/wrongness_probe.cpp
     src/init.cpp
     src/embed.cpp
     src/complete.cpp

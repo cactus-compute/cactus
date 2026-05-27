@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import shutil
+import json
 from dataclasses import dataclass
+from importlib.resources import as_file, files
 from pathlib import Path
 
 from .common import GREEN, PROJECT_ROOT, YELLOW, print_color
@@ -167,6 +169,62 @@ def _has_transpiled_bundle(path):
     return (path / "components" / "manifest.json").exists()
 
 
+def _is_gemma4_bundle(model_id, output_dir):
+    config_path = Path(output_dir) / "config.txt"
+    if config_path.exists():
+        try:
+            text = config_path.read_text(encoding="utf-8", errors="ignore")
+            if "model_type=gemma4" in text or "Gemma4" in text:
+                return True
+        except OSError:
+            pass
+    return "gemma-4" in str(model_id).lower() or "gemma4" in str(model_id).lower()
+
+
+def _install_gemma4_cloud_handoff_probe(model_id, output_dir):
+    """Install the v10p6 probe artifact into Gemma4 bundles for native runtime use."""
+    if not _is_gemma4_bundle(model_id, output_dir):
+        return
+    probe_dir = Path(output_dir) / "cloud_handoff"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    destination = probe_dir / "global_attn_probe_v10p6.bin"
+    if destination.exists():
+        return
+
+    try:
+        resource = files("cactus.cloud_handoff").joinpath(
+            "models", "v10p6_probe_release", "global_attn_probe_v10p6.bin"
+        )
+        with as_file(resource) as source:
+            if Path(source).exists():
+                shutil.copy2(source, destination)
+                return
+    except Exception:
+        pass
+
+    from cactus.cloud_handoff import export_probe_binary
+
+    export_probe_binary(destination)
+
+
+def _gemma4_bundle_needs_probe_retranspile(model_id, output_dir):
+    if not _is_gemma4_bundle(model_id, output_dir):
+        return False
+    manifest_path = Path(output_dir) / "components" / "manifest.json"
+    if not manifest_path.exists():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    for component in manifest.get("components", []):
+        if component.get("component") != "decoder_step":
+            continue
+        outputs = set(component.get("logical_outputs") or [])
+        return "cloud_handoff_hidden" not in outputs
+    return False
+
+
 _AUDIO_TASKS = frozenset({
     "tdt_transcription", "seq2seq_transcription",
     "ctc_logits", "encoder_hidden_states",
@@ -225,7 +283,14 @@ def ensure_bundle(model_id, *, bits=4, token=None,
 
     # Step 2: skip if already transpiled
     if _has_transpiled_bundle(output_dir):
-        return output_dir
+        _install_gemma4_cloud_handoff_probe(model_id, output_dir)
+        if not _gemma4_bundle_needs_probe_retranspile(model_id, output_dir):
+            return output_dir
+        print_color(
+            YELLOW,
+            "Existing Gemma4 bundle is missing cloud handoff probe outputs; "
+            "refreshing transpiled graphs.",
+        )
 
     # Step 3: infer transpile spec from converted output
     plan = infer_component_plan_from_output(str(output_dir), model_id=model_id)
@@ -316,6 +381,8 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     rc = run_transpile(model_id, extra_args=extra_args)
     if rc != 0:
         raise RuntimeError(f"Transpilation failed for {model_id}")
+
+    _install_gemma4_cloud_handoff_probe(model_id, output_dir)
 
     print_color(GREEN, f"Model converted and transpiled to {output_dir}")
     return output_dir
