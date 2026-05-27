@@ -466,7 +466,7 @@ void CactusGraph::execute(const std::string& profile_file) {
             std::cerr << "]" << std::endl;
         }
 
-        if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) {
+        if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::KV_CACHE_STATE_TQ || node->op_type == OpType::CONV_CACHE_STATE) {
             dispatch_node(*node, nodes_, node_index_map_);
             trace_nonfinite(node_idx, *node);
             populated_node_ids_.insert(node->id);

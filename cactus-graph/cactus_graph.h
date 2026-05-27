@@ -605,6 +605,8 @@ public:
         size_t window_size = 0,
         size_t v_head_dim = 0);
 
+    void upgrade_kv_cache_to_tq(size_t cache_node_id, size_t angle_bits, size_t seed);
+
     size_t conv_cache_state(size_t window_size, size_t hidden_dim);
     size_t conv_cache_append(size_t new_data, size_t cache_state_node);
 

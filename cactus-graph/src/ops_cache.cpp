@@ -507,6 +507,10 @@ void compute_attention_cached_tq_node(
         kernel_window = 0;
     }
 
+    size_t position_offset = node.params.position_offset;
+    if (position_offset == std::numeric_limits<size_t>::max())
+        position_offset = history_len;
+
     cactus_attention_hybrid_turboquant_fp16(
         query_buf.data_as<__fp16>(),
         k_radii, k_angles,
@@ -519,7 +523,7 @@ void compute_attention_cached_tq_node(
         num_q_heads, kv_heads, hdim,
         node.params.scale,
         k_angle_bits, v_angle_bits,
-        node.params.position_offset,
+        position_offset,
         true,
         kernel_window);
 }

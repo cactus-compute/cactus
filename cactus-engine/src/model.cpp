@@ -191,6 +191,20 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     }
 
     cache_max_seq_len_ = context_size;
+
+    if (const char* tq_bits = std::getenv("CACTUS_KV_TQ_BITS")) {
+        cache_tq_k_bits_ = std::stoul(tq_bits);
+        cache_tq_v_bits_ = cache_tq_k_bits_;
+    }
+    if (const char* v = std::getenv("CACTUS_KV_TQ_K_BITS"))
+        cache_tq_k_bits_ = std::stoul(v);
+    if (const char* v = std::getenv("CACTUS_KV_TQ_V_BITS"))
+        cache_tq_v_bits_ = std::stoul(v);
+    if (const char* v = std::getenv("CACTUS_KV_TQ_SEED"))
+        cache_tq_seed_ = std::stoul(v);
+    if (cache_tq_k_bits_ > 0 || cache_tq_v_bits_ > 0)
+        upgrade_caches_to_tq();
+
     initialized_ = true;
     return true;
 }
@@ -1500,6 +1514,28 @@ std::vector<float> Model::get_audio_embeddings(const std::vector<float>& /*mel_b
     throw std::runtime_error("Audio embeddings not wired up for transpiled bundles yet");
 }
 
+void Model::upgrade_caches_to_tq() {
+    size_t upgraded = 0;
+    for (auto& [name, comp] : components_) {
+        if (!comp.graph || comp.cache_states.empty()) continue;
+        for (const auto& cs : comp.cache_states) {
+            if (cs.key_node_id >= 0 && cache_tq_k_bits_ > 0) {
+                comp.graph->upgrade_kv_cache_to_tq(
+                    static_cast<size_t>(cs.key_node_id), cache_tq_k_bits_, cache_tq_seed_);
+                ++upgraded;
+            }
+            if (cs.value_node_id >= 0 && cache_tq_v_bits_ > 0) {
+                comp.graph->upgrade_kv_cache_to_tq(
+                    static_cast<size_t>(cs.value_node_id), cache_tq_v_bits_, cache_tq_seed_);
+                ++upgraded;
+            }
+        }
+    }
+    CACTUS_LOG_INFO("model", "TQ KV cache enabled: K=" << cache_tq_k_bits_
+        << " V=" << cache_tq_v_bits_ << " seed=" << cache_tq_seed_
+        << " (" << upgraded << " nodes)");
+}
+
 void Model::reset_cache() {
     cache_total_seq_len_ = 0;
     token_history_.clear();
@@ -1563,13 +1599,39 @@ void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>&
                 size_t kv_heads = hdr->num_kv_heads;
                 size_t hdim = hdr->head_dim;
                 if (kv_heads == 0 || hdim == 0) continue;
-                size_t token_elems = kv_heads * hdim;
-                size_t num_groups = (hdim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-                size_t token_scales = kv_heads * num_groups;
                 size_t max_seq = hdr->max_seq_len;
 
+                auto nit = comp.graph->node_index_map_.find(static_cast<size_t>(node_id));
+                bool is_tq = nit != comp.graph->node_index_map_.end() &&
+                             comp.graph->nodes_[nit->second]->op_type == OpType::KV_CACHE_STATE_TQ;
+
                 size_t new_len = cur;
-                if (desc.precision == Precision::FP16) {
+                if (is_tq) {
+                    size_t angle_bits = hdr->reserved[0];
+                    size_t abph = (hdim * angle_bits + 7) / 8;
+                    size_t angle_stride = kv_heads * abph;
+                    size_t radius_stride = kv_heads;
+                    auto* angle_base = reinterpret_cast<uint8_t*>(static_cast<char*>(raw) + kHeaderBytes);
+                    auto* radii_base = reinterpret_cast<float*>(static_cast<char*>(raw) + kHeaderBytes +
+                                                                 max_seq * angle_stride);
+                    for (auto it = sorted_ranges.rbegin(); it != sorted_ranges.rend(); ++it) {
+                        size_t start = it->first;
+                        if (start >= new_len) continue;
+                        size_t count = std::min(it->second, new_len - start);
+                        size_t tail_start = start + count;
+                        size_t tail_count = new_len - tail_start;
+                        if (tail_count > 0) {
+                            std::memmove(angle_base + start * angle_stride,
+                                         angle_base + tail_start * angle_stride,
+                                         tail_count * angle_stride);
+                            std::memmove(radii_base + start * radius_stride,
+                                         radii_base + tail_start * radius_stride,
+                                         tail_count * radius_stride * sizeof(float));
+                        }
+                        new_len -= count;
+                    }
+                } else if (desc.precision == Precision::FP16) {
+                    size_t token_elems = kv_heads * hdim;
                     auto* base = reinterpret_cast<__fp16*>(static_cast<char*>(raw) + kHeaderBytes);
                     for (auto it = sorted_ranges.rbegin(); it != sorted_ranges.rend(); ++it) {
                         size_t start = it->first;
@@ -1585,6 +1647,9 @@ void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>&
                         new_len -= count;
                     }
                 } else {
+                    size_t token_elems = kv_heads * hdim;
+                    size_t num_groups = (hdim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+                    size_t token_scales = kv_heads * num_groups;
                     auto* int8_base = reinterpret_cast<int8_t*>(static_cast<char*>(raw) + kHeaderBytes);
                     auto* scale_base = reinterpret_cast<float*>(static_cast<char*>(raw) + kHeaderBytes +
                                                                 max_seq * kv_heads * hdim);
@@ -1916,6 +1981,78 @@ double Model::score_tokens_window_logprob(const std::vector<uint32_t>& /*tokens*
                                             size_t /*end*/, size_t /*context*/, size_t* tokens_scored) {
     if (tokens_scored) *tokens_scored = 0;
     return 0.0;
+}
+
+double Model::score_tokens_cached_logprob(
+        const std::vector<uint32_t>& tokens, size_t start, size_t end,
+        size_t /*context*/, size_t* tokens_scored,
+        std::vector<float>* per_pos_logprob,
+        std::vector<uint32_t>* per_pos_argmax) {
+    if (!decoder_ || tokens.empty() || start >= end || start >= tokens.size()) {
+        if (tokens_scored) *tokens_scored = 0;
+        return 0.0;
+    }
+    end = std::min(end, tokens.size());
+    if (per_pos_logprob) per_pos_logprob->clear();
+    if (per_pos_argmax) per_pos_argmax->clear();
+
+    reset_cache();
+
+    for (size_t i = 0; i + 1 < start; ++i) {
+        run_step(tokens[i], cache_total_seq_len_, false);
+        ++cache_total_seq_len_;
+    }
+
+    size_t out_node = static_cast<size_t>(decoder_->output_node_ids.empty() ? 0 : decoder_->output_node_ids[0]);
+    double total_lp = 0.0;
+    size_t count = 0;
+
+    for (size_t i = (start > 0 ? start - 1 : 0); i + 1 < end; ++i) {
+        run_step(tokens[i], cache_total_seq_len_, true);
+        ++cache_total_seq_len_;
+
+        const auto& desc = decoder_->graph->get_output_buffer(out_node);
+        void* ptr = decoder_->graph->get_output(out_node);
+        size_t vocab = desc.shape.empty() ? 0 : desc.shape.back();
+        size_t seq = desc.shape.size() >= 2 ? desc.shape[desc.shape.size() - 2] : 1;
+        size_t row_off = (seq > 0 ? (seq - 1) * vocab : 0);
+        if (vocab == 0 || !ptr) continue;
+
+        uint32_t target = tokens[i + 1];
+        if (target >= vocab) continue;
+
+        double max_v = -1e30;
+        uint32_t argmax_tok = 0;
+        if (desc.precision == Precision::FP32) {
+            const float* row = static_cast<const float*>(ptr) + row_off;
+            for (size_t j = 0; j < vocab; ++j) {
+                if (row[j] > max_v) { max_v = row[j]; argmax_tok = static_cast<uint32_t>(j); }
+            }
+            double lse = 0.0;
+            for (size_t j = 0; j < vocab; ++j) lse += std::exp(double(row[j]) - max_v);
+            lse = max_v + std::log(lse);
+            double lp = double(row[target]) - lse;
+            total_lp += lp;
+            if (per_pos_logprob) per_pos_logprob->push_back(static_cast<float>(lp));
+        } else {
+            const __fp16* row = static_cast<const __fp16*>(ptr) + row_off;
+            for (size_t j = 0; j < vocab; ++j) {
+                float v = static_cast<float>(row[j]);
+                if (v > max_v) { max_v = v; argmax_tok = static_cast<uint32_t>(j); }
+            }
+            double lse = 0.0;
+            for (size_t j = 0; j < vocab; ++j) lse += std::exp(double(static_cast<float>(row[j])) - max_v);
+            lse = max_v + std::log(lse);
+            double lp = double(static_cast<float>(row[target])) - lse;
+            total_lp += lp;
+            if (per_pos_logprob) per_pos_logprob->push_back(static_cast<float>(lp));
+        }
+        if (per_pos_argmax) per_pos_argmax->push_back(argmax_tok);
+        ++count;
+    }
+
+    if (tokens_scored) *tokens_scored = count;
+    return total_lp;
 }
 
 }

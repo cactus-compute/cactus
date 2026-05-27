@@ -1490,6 +1490,47 @@ size_t CactusGraph::attention_cached_tq(size_t query, size_t key_new, size_t val
                     {batch, seq_len, num_q_heads, out_v_dim}, params);
 }
 
+void CactusGraph::upgrade_kv_cache_to_tq(size_t cache_node_id, size_t angle_bits, size_t seed) {
+    auto it = node_index_map_.find(cache_node_id);
+    if (it == node_index_map_.end()) return;
+    auto& node = *nodes_[it->second];
+    if (node.op_type != OpType::KV_CACHE_STATE) return;
+
+    size_t max_seq  = node.params.max_cache_seq_len;
+    size_t kv_heads = node.params.num_kv_heads;
+    size_t head_dim = node.params.head_dim;
+
+    size_t angle_bytes_per_head = (head_dim * angle_bits + 7) / 8;
+    size_t angles_total = max_seq * kv_heads * angle_bytes_per_head;
+    size_t radii_total  = max_seq * kv_heads * sizeof(float);
+    size_t signs_total  = ((head_dim + 7) / 8) * 3;
+    size_t total_bytes  = 64 + angles_total + radii_total + signs_total;
+
+    node.op_type = OpType::KV_CACHE_STATE_TQ;
+    node.params.angle_bits = angle_bits;
+    node.params.cache_seed = seed;
+    node.output_buffer = BufferDesc({total_bytes}, Precision::INT8);
+    persistent_node_ids_.insert(cache_node_id);
+
+    for (auto& n : nodes_) {
+        if (n->op_type == OpType::KV_CACHE_APPEND &&
+            n->input_ids.size() >= 2 && n->input_ids[1] == cache_node_id) {
+            n->op_type = OpType::KV_CACHE_APPEND_TQ;
+        }
+        if (n->op_type == OpType::ATTENTION_CACHED && n->input_ids.size() >= 5) {
+            bool k_is_tq = false, v_is_tq = false;
+            auto k_it = node_index_map_.find(n->input_ids[3]);
+            auto v_it = node_index_map_.find(n->input_ids[4]);
+            if (k_it != node_index_map_.end())
+                k_is_tq = (nodes_[k_it->second]->op_type == OpType::KV_CACHE_STATE_TQ);
+            if (v_it != node_index_map_.end())
+                v_is_tq = (nodes_[v_it->second]->op_type == OpType::KV_CACHE_STATE_TQ);
+            if (k_is_tq && v_is_tq)
+                n->op_type = OpType::ATTENTION_CACHED_TQ;
+        }
+    }
+}
+
 size_t CactusGraph::conv_cache_state(size_t ws, size_t hidden_dim) {
     size_t total_bytes = sizeof(uint64_t) * 8 + ws * hidden_dim * sizeof(__fp16);
     OpParams params{};
