@@ -77,6 +77,10 @@ sedi 's/^# Cactus$//' site_docs/index.md
 sedi 's|(cactus_engine\.md)|(docs/cactus_engine.md)|g' site_docs/index.md
 sedi 's|(cactus_graph\.md)|(docs/cactus_graph.md)|g' site_docs/index.md
 sedi 's|(cactus_index\.md)|(docs/cactus_index.md)|g' site_docs/index.md
+sedi 's|(cactus_kernels\.md)|(docs/cactus_kernels.md)|g' site_docs/index.md
+sedi 's|(cactus_quants\.md)|(docs/cactus_quants.md)|g' site_docs/index.md
+sedi 's|(cactus_transpiler\.md)|(docs/cactus_transpiler.md)|g' site_docs/index.md
+sedi 's|(cactus_hybrid\.md)|(docs/cactus_hybrid.md)|g' site_docs/index.md
 sedi 's|(finetuning\.md)|(docs/finetuning.md)|g' site_docs/index.md
 sedi 's|(compatibility\.md)|(docs/compatibility.md)|g' site_docs/index.md
 sedi 's|(/CONTRIBUTING\.md)|(CONTRIBUTING.md)|g' site_docs/index.md
@@ -104,6 +108,10 @@ for f in site_docs/docs/*.md; do
   sedi 's|(/docs/cactus_engine\.md)|(cactus_engine.md)|g' "$f"
   sedi 's|(/docs/cactus_graph\.md)|(cactus_graph.md)|g' "$f"
   sedi 's|(/docs/cactus_index\.md)|(cactus_index.md)|g' "$f"
+  sedi 's|(/docs/cactus_kernels\.md)|(cactus_kernels.md)|g' "$f"
+  sedi 's|(/docs/cactus_quants\.md)|(cactus_quants.md)|g' "$f"
+  sedi 's|(/docs/cactus_transpiler\.md)|(cactus_transpiler.md)|g' "$f"
+  sedi 's|(/docs/cactus_hybrid\.md)|(cactus_hybrid.md)|g' "$f"
   sedi 's|(/docs/finetuning\.md)|(finetuning.md)|g' "$f"
   sedi 's|(/docs/compatibility\.md)|(compatibility.md)|g' "$f"
   sedi 's|(/docs/quickstart\.md)|(quickstart.md)|g' "$f"
@@ -127,6 +135,10 @@ for f in site_docs/python/README.md site_docs/apple/README.md site_docs/android/
   sedi 's|(/docs/cactus_engine\.md)|(../docs/cactus_engine.md)|g' "$f"
   sedi 's|(/docs/cactus_graph\.md)|(../docs/cactus_graph.md)|g' "$f"
   sedi 's|(/docs/cactus_index\.md)|(../docs/cactus_index.md)|g' "$f"
+  sedi 's|(/docs/cactus_kernels\.md)|(../docs/cactus_kernels.md)|g' "$f"
+  sedi 's|(/docs/cactus_quants\.md)|(../docs/cactus_quants.md)|g' "$f"
+  sedi 's|(/docs/cactus_transpiler\.md)|(../docs/cactus_transpiler.md)|g' "$f"
+  sedi 's|(/docs/cactus_hybrid\.md)|(../docs/cactus_hybrid.md)|g' "$f"
   sedi 's|(/docs/finetuning\.md)|(../docs/finetuning.md)|g' "$f"
   sedi 's|(/docs/compatibility\.md)|(../docs/compatibility.md)|g' "$f"
   sedi 's|(/docs/quickstart\.md)|(../docs/quickstart.md)|g' "$f"
@@ -150,6 +162,10 @@ if [ -f site_docs/rust/README.md ]; then
     's|(/docs/cactus_engine\.md)|(../docs/cactus_engine.md)|g' \
     's|(/docs/cactus_graph\.md)|(../docs/cactus_graph.md)|g' \
     's|(/docs/cactus_index\.md)|(../docs/cactus_index.md)|g' \
+    's|(/docs/cactus_kernels\.md)|(../docs/cactus_kernels.md)|g' \
+    's|(/docs/cactus_quants\.md)|(../docs/cactus_quants.md)|g' \
+    's|(/docs/cactus_transpiler\.md)|(../docs/cactus_transpiler.md)|g' \
+    's|(/docs/cactus_hybrid\.md)|(../docs/cactus_hybrid.md)|g' \
     's|(/docs/finetuning\.md)|(../docs/finetuning.md)|g' \
     's|(/docs/compatibility\.md)|(../docs/compatibility.md)|g' \
     's|(/docs/quickstart\.md)|(../docs/quickstart.md)|g' \
@@ -175,6 +191,10 @@ if ls site_docs/blog/*.md >/dev/null 2>&1; then
     sedi 's|(/docs/cactus_engine\.md)|(../docs/cactus_engine.md)|g' "$f"
     sedi 's|(/docs/cactus_graph\.md)|(../docs/cactus_graph.md)|g' "$f"
     sedi 's|(/docs/cactus_index\.md)|(../docs/cactus_index.md)|g' "$f"
+    sedi 's|(/docs/cactus_kernels\.md)|(../docs/cactus_kernels.md)|g' "$f"
+    sedi 's|(/docs/cactus_quants\.md)|(../docs/cactus_quants.md)|g' "$f"
+    sedi 's|(/docs/cactus_transpiler\.md)|(../docs/cactus_transpiler.md)|g' "$f"
+    sedi 's|(/docs/cactus_hybrid\.md)|(../docs/cactus_hybrid.md)|g' "$f"
     sedi 's|(/docs/finetuning\.md)|(../docs/finetuning.md)|g' "$f"
     sedi 's|(/docs/compatibility\.md)|(../docs/compatibility.md)|g' "$f"
     sedi 's|(/bindings/swift/)|(../swift/README.md)|g' "$f"
@@ -201,6 +221,10 @@ if [ -f site_docs/CONTRIBUTING.md ]; then
   sedi 's|(/docs/cactus_engine\.md)|(docs/cactus_engine.md)|g' site_docs/CONTRIBUTING.md
   sedi 's|(/docs/cactus_graph\.md)|(docs/cactus_graph.md)|g' site_docs/CONTRIBUTING.md
   sedi 's|(/docs/cactus_index\.md)|(docs/cactus_index.md)|g' site_docs/CONTRIBUTING.md
+  sedi 's|(/docs/cactus_kernels\.md)|(docs/cactus_kernels.md)|g' site_docs/CONTRIBUTING.md
+  sedi 's|(/docs/cactus_quants\.md)|(docs/cactus_quants.md)|g' site_docs/CONTRIBUTING.md
+  sedi 's|(/docs/cactus_transpiler\.md)|(docs/cactus_transpiler.md)|g' site_docs/CONTRIBUTING.md
+  sedi 's|(/docs/cactus_hybrid\.md)|(docs/cactus_hybrid.md)|g' site_docs/CONTRIBUTING.md
   sedi 's|(/docs/index\.md)|(index.md)|g' site_docs/CONTRIBUTING.md
 fi
 

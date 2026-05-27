@@ -9,26 +9,34 @@
 [![Reddit][reddit-shield]][reddit-url]
 [![Blog][blog-shield]][blog-url]
 
-A low-latency AI engine for mobile devices & wearables. Main features:
+A low-latency AI engine for mobile devices & wearables.
 
-- **Fast:** fastest inference on ARM CPU
+- **Fast & accurate:** fastest inference on ARM CPU, Cactus quants at 4-bit matches f16
 - **Low RAM:** zero-copy memory mapping ensures 10x lower RAM use than other engines
 - **Multimodal:** one engine for speech, vision, and language models
 - **Cloud fallback:** automatically route requests to cloud models if needed
-- **Energy-efficient:** NPU-accelerated prefill
+- **Model-Agnostic:** Custom PyTorch models can be exported to the Cactus runtime. 
 
 ```
 ┌─────────────────┐
-│  Cactus Engine  │ ←── OpenAI-compatible APIs for all major languages
-└─────────────────┘     Chat, vision, STT, RAG, tool call, cloud handoff
+│  Cactus Engine  │ ←── OpenAI-compatible APIs for text, speech, and vision.
+└─────────────────┘     
          │
 ┌─────────────────┐
-│  Cactus Graph   │ ←── Zero-copy computation graph (PyTorch for mobile)
-└─────────────────┘     Custom models, optimised for RAM & quantisation
+│  Cactus Graph   │ ←── Zero-copy computation graph ensures 10x lower RAM 
+└─────────────────┘     
          │
 ┌─────────────────┐
-│ Cactus Kernels  │ ←── ARM SIMD kernels (Apple, Snapdragon, Exynos, etc)
-└─────────────────┘     Custom attention, KV-cache quant, chunked prefill
+│ Cactus Kernels  │ ←── Fastest ARM SIMD kernels (Apple, Samsung, Pixel, etc)
+└─────────────────┘     
+         │
+┌─────────────────┐
+│ Cactus Quants   │ ←── Cactus Quants at 4-bit uniform matches f16.
+└─────────────────┘  
+         │
+┌─────────────────┐
+│Cactus Transpiler│ ←── Transpiles custom PyTorch model to Cactus.
+└─────────────────┘
 ```
 
 ## Quick Demo (Mac)
@@ -116,12 +124,16 @@ void* output_data = graph.get_output(result);
 graph.hard_reset(); 
 ```
 
-## APIs
+## Learn More
 
 | Reference | Language | Description |
 |-----------|----------|-------------|
-| Engine API | C | Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, vector index, cloud handoff |
-| Graph API | C++ | Tensor operations, matrix multiplication, attention, normalization, activation functions |
+| [Cactus Engine](/docs/cactus_engine.md) | C | Chat completion, streaming, tool calling, transcription, embeddings, RAG, vision, vector index, cloud handoff |
+| [Cactus Graph](/docs/cactus_graph.md) | C++ | Tensor operations, matrix multiplication, attention, normalization, activation functions |
+| [Cactus Kernels](/docs/cactus_kernels.md) | C++ | ARM NEON SIMD kernels for matmul, attention, convolution, quantization, DSP, image processing |
+| [Cactus Quants](/docs/cactus_quants.md) | C++ | Rotation-and-codebook quantization from 4-bit to 1-bit for all weight tensors |
+| [Cactus Hybrid](/docs/cactus_hybrid.md) | C/Python | Route hard queries to the cloud automatically based on local model confidence |
+| [Cactus Transpiler](/docs/cactus_transpiler.md) | Python | Convert any PyTorch model to a Cactus runtime graph for on-device inference |
 | [Python Package](/python/) | Python | Python package and CLI |
 
 ## Build
@@ -212,24 +224,6 @@ cactus build               # default static lib
 | tencent/Youtu-LLM-2B | completion, tools, embed |
 | nomic-ai/nomic-embed-text-v2-moe | embed |
 
-## Roadmap
-
-| Date | Status | Milestone |
-|------|--------|-----------|
-| Sep 2025 | Done | Released v1 |
-| Oct 2025 | Done | Chunked prefill, KVCache Quant (2x prefill) |
-| Nov 2025 | Done | Cactus Attention (10 & 1k prefill = same decode) |
-| Dec 2025 | Done | Team grows to +6 Research Engineers |
-| Jan 2026 | Done | Apple NPU/RAM, 5-11x faster iOS/Mac |
-| Feb 2026 | Done | Hybrid inference, INT4, lossless Quant (1.5x) |
-| Mar 2026 | Coming | Qualcomm/Google NPUs, 5-11x faster Android |
-| Apr 2026 | Coming | Mediatek/Exynos NPUs, Cactus@ICLR |
-| May 2026 | Coming | Kernel→C++, Graph/Engine→Rust, Mac GPU & VR |
-| Jun 2026 | Coming | Torch/JAX model transpilers |
-| Jul 2026 | Coming | Wearables optimisations, Cactus@ICML |
-| Aug 2026 | Coming | Orchestration |
-| Sep 2026 | Coming | Full Cactus paper, chip manufacturer partners |
-
 ## Using this repo
 
 ```
@@ -250,13 +244,18 @@ cactus build               # default static lib
 │    --status                          show key status                         │
 │    --clear                           remove saved key                        │
 │                                                                              │
-│  cactus run <bundle_dir>             runs a transpiled Cactus bundle         │
+│  cactus run [model]                  chat playground (gemma-4-E2B-it)        │
+│    --image <path>                    image file for VLM inference            │
+│    --audio <path>                    audio file (WAV) for audio chat         │
 │    --system <prompt>                 system prompt                           │
-│    --prompt <text>                   initial prompt                          │
+│    --prompt <text>                   send prompt immediately                 │
 │    --thinking                        enable thinking/reasoning mode          │
+│    --token <token>                   HF token (gated models)                 │
+│    --reconvert                       force reconversion from source          │
 │                                                                              │
-│  cactus transcribe [model]        speech-to-text (parakeet-tdt-0.6b-v3)     │
-│    --file <audio.wav>                transcribe file instead of mic          │
+│  cactus transcribe [model]           speech-to-text (parakeet-tdt-0.6b-v3)   │
+│    --file <audio.wav>                audio file to transcribe (required)     │
+│    --language <code>                 language code (default: en)             │
 │    --token <token>                   HF token (gated models)                 │
 │    --reconvert                       force reconversion from source          │
 │                                                                              │
@@ -278,11 +277,10 @@ cactus build               # default static lib
 │                                                                              │
 │  cactus test                         run unit tests and benchmarks           │
 │    --model <model>                   default: google/gemma-4-E2B-it          │
+│    --suite <name>                    run a specific suite (llm, vlm, stt,    │
+│                                      embed, rag, graph, index, kernel, etc.) │
+│    --token <token>                   HuggingFace API token                   │
 │    --reconvert                       force reconversion from source          │
-│    --llm / --vlm / --stt / --embed   run specific test suite                 │
-│    --rag / --graph / --index         run specific test suite                 │
-│    --kernel / --kv_cache             run specific test suite                 │
-│    --performance                     run performance benchmarks              │
 │    --ios                             run on connected iPhone                 │
 │    --android                         run on connected Android                │
 │                                                                              │
