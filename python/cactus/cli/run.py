@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 from .common import print_color, RED, GREEN
+from .kimi import cmd_run_kimi, looks_like_kimi_bundle
 
 
 def _resolve_bundle_dir(model_id):
@@ -21,6 +22,10 @@ def cmd_run(args):
 
     if args.no_cloud_tele:
         os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
+
+    path = Path(args.model_id).expanduser()
+    if looks_like_kimi_bundle(path):
+        return cmd_run_kimi(args)
 
     bundle_dir = _resolve_bundle_dir(args.model_id)
     if bundle_dir is None:

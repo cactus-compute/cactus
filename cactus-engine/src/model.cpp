@@ -1,6 +1,7 @@
 #include "engine.h"
 #include "cactus_graph.h"
 #include "cactus_kernels.h"
+#include "kimi_k2_model.h"
 
 #define PICOJSON_USE_INT64
 #include "picojson.h"
@@ -2434,20 +2435,20 @@ bool Config::from_json(const std::string& config_path) {
         if (key == "vocab_size") vocab_size = static_cast<uint32_t>(std::stoul(value));
         else if (key == "bos_token_id") bos_token_id = static_cast<uint32_t>(std::stoul(value));
         else if (key == "eos_token_id") eos_token_id = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "num_layers") num_layers = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "hidden_dim") hidden_dim = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "ffn_intermediate_dim") ffn_intermediate_dim = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "attention_heads") attention_heads = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "attention_kv_heads") attention_kv_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_layers" || key == "num_hidden_layers") num_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "hidden_dim" || key == "hidden_size") hidden_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "ffn_intermediate_dim" || key == "intermediate_size") ffn_intermediate_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "attention_heads" || key == "num_attention_heads") attention_heads = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "attention_kv_heads" || key == "num_key_value_heads") attention_kv_heads = static_cast<uint32_t>(std::stoul(value));
         else if (key == "attention_head_dim") attention_head_dim = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "layer_norm_eps") layer_norm_eps = std::stof(value);
+        else if (key == "layer_norm_eps" || key == "rms_norm_eps") layer_norm_eps = std::stof(value);
         else if (key == "rope_theta") rope_theta = std::stof(value);
-        else if (key == "num_experts") num_experts = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "num_shared_experts") num_shared_experts = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_experts" || key == "n_routed_experts") num_experts = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_shared_experts" || key == "n_shared_experts") num_shared_experts = static_cast<uint32_t>(std::stoul(value));
         else if (key == "num_top_experts") num_top_experts = static_cast<uint32_t>(std::stoul(value));
         else if (key == "moe_every_n_layers") moe_every_n_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "moe_intermediate_dim" || key == "moe_intermediate_size") moe_intermediate_dim = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "num_dense_layers") num_dense_layers = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "num_dense_layers" || key == "first_k_dense_replace") num_dense_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "num_experts_per_tok") num_experts_per_tok = static_cast<uint32_t>(std::stoul(value));
         else if (key == "norm_topk_prob") norm_topk_prob = (value == "true" || value == "1");
         else if (key == "use_expert_bias") use_expert_bias = (value == "true" || value == "1");
@@ -2498,6 +2499,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (mt == "parakeet_tdt" || mt == "parakeet-tdt") model_type = ModelType::PARAKEET_TDT;
             else if (mt == "youtu") model_type = ModelType::YOUTU;
             else if (mt == "needle") model_type = ModelType::NEEDLE;
+            else if (mt == "kimi_k2" || mt == "kimi-k2" || mt == "kimi_k25" || mt == "kimi-k25") model_type = ModelType::KIMI_K2;
             else model_type = ModelType::GEMMA4;
         }
         else if (key == "model_variant") {
@@ -2557,6 +2559,15 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "attention_bias") attention_bias = (value == "true" || value == "1");
         else if (key == "rope_scaling_factor") rope_scaling_factor = std::stof(value);
         else if (key == "rope_mscale_all_dim") rope_mscale_all_dim = std::stof(value);
+        else if (key == "rope_yarn_beta_fast") rope_yarn_beta_fast = std::stof(value);
+        else if (key == "rope_yarn_beta_slow") rope_yarn_beta_slow = std::stof(value);
+        else if (key == "rope_yarn_mscale") rope_yarn_mscale = std::stof(value);
+        else if (key == "rope_original_max_position_embeddings") rope_original_max_position_embeddings = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "max_position_embeddings") max_position_embeddings = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "moe_n_group" || key == "n_group") moe_n_group = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "moe_topk_group" || key == "topk_group") moe_topk_group = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "moe_topk_method" || key == "topk_method") moe_topk_method = value;
+        else if (key == "moe_scoring_func" || key == "scoring_func") moe_scoring_func = value;
         else if (key == "linear_k_proj_dim") linear_k_proj_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "linear_v_proj_dim") linear_v_proj_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "predictor_hidden_dim") predictor_hidden_dim = static_cast<uint32_t>(std::stoul(value));
@@ -2686,6 +2697,12 @@ std::string Config::to_json() const {
 
 std::unique_ptr<Model> create_model(const std::string& bundle_dir) {
     CACTUS_LOG_DEBUG("model", "Creating model from: " << bundle_dir);
+    Config config;
+    if (config.from_json((fs::path(bundle_dir) / "config.txt").string()) &&
+        config.model_type == Config::ModelType::KIMI_K2) {
+        return std::make_unique<KimiK2Model>(config);
+    }
+
     fs::path manifest = fs::path(bundle_dir) / "components" / "manifest.json";
     if (!fs::exists(manifest)) {
         CACTUS_LOG_ERROR("model",

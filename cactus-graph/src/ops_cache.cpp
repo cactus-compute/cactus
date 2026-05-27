@@ -94,8 +94,6 @@ void compute_kv_cache_state_node(
     const nodes_vector&,
     const node_index_map_t&) {
 
-    if (node.output_buffer.get_data()) return;
-
     size_t max_seq = node.params.max_cache_seq_len;
     size_t kv_heads = node.params.num_kv_heads;
     size_t hdim = node.params.head_dim;
@@ -104,8 +102,17 @@ void compute_kv_cache_state_node(
         ? fp16_cache_elements(max_seq, kv_heads, hdim)
         : cache_buffer_size(max_seq, kv_heads, hdim);
 
-    node.output_buffer = BufferDesc({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
-    node.output_buffer.allocate();
+    if (node.output_buffer.get_data()) {
+        const auto* existing = get_meta(node.output_buffer);
+        if (existing->max_seq_len == max_seq &&
+            existing->num_kv_heads == kv_heads &&
+            existing->head_dim == hdim) {
+            return;
+        }
+    } else {
+        node.output_buffer = BufferDesc({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
+        node.output_buffer.allocate();
+    }
     std::memset(node.output_buffer.get_data(), 0, node.output_buffer.byte_size);
 
     auto* meta = get_meta(node.output_buffer);

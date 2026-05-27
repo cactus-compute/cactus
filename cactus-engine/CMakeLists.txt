@@ -62,6 +62,7 @@ set(ENGINE_SOURCES
     src/complete.cpp
     src/transcribe.cpp
     src/tokenizer.cpp
+    src/kimi_k2_model.cpp
 )
 if(APPLE)
     enable_language(OBJCXX)
@@ -124,4 +125,11 @@ target_compile_options(cactus_engine PRIVATE
     -Wall -Wextra -pedantic -Wno-missing-field-initializers
     $<$<CXX_COMPILER_ID:AppleClang,Clang>:-Wno-c99-extensions>
     $<$<CXX_COMPILER_ID:GNU>:-Wno-pedantic>
+)
+
+add_executable(kimi_stream tools/kimi_stream.cpp)
+target_link_libraries(kimi_stream PRIVATE cactus_engine)
+target_include_directories(kimi_stream PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )

@@ -170,8 +170,17 @@ struct Config {
     bool attention_bias = false;
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
+    float rope_yarn_beta_fast = 32.0f;
+    float rope_yarn_beta_slow = 1.0f;
+    float rope_yarn_mscale = 1.0f;
+    uint32_t rope_original_max_position_embeddings = 4096;
+    uint32_t max_position_embeddings = 4096;
+    uint32_t moe_n_group = 1;
+    uint32_t moe_topk_group = 1;
+    std::string moe_topk_method = "noaux_tc";
+    std::string moe_scoring_func = "sigmoid";
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, NEEDLE = 18};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, NEEDLE = 18, KIMI_K2 = 19};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
@@ -360,7 +369,7 @@ public:
     size_t get_image_soft_token_count() const { return image_soft_token_count_; }
 
 protected:
-    enum class ModelType { UNKNOWN, GEMMA4, QWEN, LFM2 };
+    enum class ModelType { UNKNOWN, GEMMA4, QWEN, LFM2, KIMI_K2 };
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -384,6 +393,7 @@ protected:
     std::string format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_kimi_k2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, bool enable_thinking_if_supported = true) const;
 };
 
 class BPETokenizer : public Tokenizer {
@@ -569,22 +579,22 @@ public:
 
     Model();
     explicit Model(const Config& config);
-    ~Model();
+    virtual ~Model();
 
-    const Config& get_config() const { return config_; }
-    Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
-    const std::vector<DebugNode>& get_debug_nodes() const;
+    virtual const Config& get_config() const { return config_; }
+    virtual Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
+    virtual const std::vector<DebugNode>& get_debug_nodes() const;
 
-    bool init(const std::string& bundle_dir, size_t context_size,
-              const std::string& system_prompt = "", bool do_warmup = true);
+    virtual bool init(const std::string& bundle_dir, size_t context_size,
+                      const std::string& system_prompt = "", bool do_warmup = true);
 
-    uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
-                    size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
-                    float min_p = 0.15f, float repetition_penalty = 1.1f);
-    bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token);
+    virtual uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
+                            size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
+                            float min_p = 0.15f, float repetition_penalty = 1.1f);
+    virtual bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token);
 
-    void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 128, const std::string& profile_file = "",
-                 bool prepare_decode = true);
+    virtual void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 128, const std::string& profile_file = "",
+                         bool prepare_decode = true);
 
     void prefill_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                              const std::string& profile_file = "");
@@ -617,14 +627,14 @@ public:
                                                      const std::vector<std::vector<uint32_t>>& stop_token_sequences,
                                                      const std::atomic<bool>* should_stop = nullptr);
 
-    std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
-                                       bool normalize = false, const std::string& profile_file = "");
+    virtual std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
+                                              bool normalize = false, const std::string& profile_file = "");
 
     std::vector<float> get_image_embeddings(const std::string& image_path);
 
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features);
 
-    void reset_cache();
+    virtual void reset_cache();
     void record_sampled_token(uint32_t token) {
         if (token_history_.size() >= MAX_TOKEN_HISTORY) {
             token_history_.erase(token_history_.begin(), token_history_.begin() + (MAX_TOKEN_HISTORY / 2));
@@ -632,8 +642,8 @@ public:
         token_history_.push_back(token);
     }
 
-    double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end,
-                                        size_t context, size_t* tokens_scored);
+    virtual double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end,
+                                               size_t context, size_t* tokens_scored);
 
     void set_cache_window(size_t window_size, size_t sink_size = 4);
     size_t get_cache_size() const { return cache_total_seq_len_; }

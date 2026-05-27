@@ -115,7 +115,8 @@ enum class OpType {
     CLAMP,
     DENSE_MLP_TQ_FUSED,
     NOT_EQUAL,
-    SCALAR_NOT_EQUAL
+    SCALAR_NOT_EQUAL,
+    KIMI_YARN_ROPE
 };
 
 struct PrecisionTraits {
@@ -377,6 +378,11 @@ struct OpParams {
     float max_frequency = 8000.0f;
     int mel_norm_type = 0;
     int mel_scale_type = 0;
+    float yarn_beta_fast = 32.0f;
+    float yarn_beta_slow = 1.0f;
+    float yarn_mscale = 1.0f;
+    float yarn_mscale_all_dim = 1.0f;
+    size_t yarn_original_max_position_embeddings = 4096;
 
     int patch_size = 16;
     float rescale_factor = 1.0f / 255.0f;
@@ -531,6 +537,9 @@ public:
 
     size_t rope(size_t input, float theta, size_t position_offset = 0, ComputeBackend backend = ComputeBackend::CPU);
     size_t rope_gptj(size_t input, float theta, size_t position_offset = 0, size_t rot_dim = 0, ComputeBackend backend = ComputeBackend::CPU);
+    size_t kimi_yarn_rope(size_t input, float theta, size_t position_offset, float scaling_factor,
+                          size_t original_max_position_embeddings, float beta_fast, float beta_slow,
+                          float mscale, float mscale_all_dim, ComputeBackend backend = ComputeBackend::CPU);
 
 
     size_t attention(size_t query, size_t key, size_t value, float scale,

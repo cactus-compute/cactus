@@ -2,13 +2,17 @@
 #include "param_io.h"
 #include <fstream>
 #include <stdexcept>
+#include <algorithm>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
+#include <cstdlib>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
+#include <string>
 
 namespace {
     constexpr uint32_t fourcc(char a, char b, char c, char d) {
@@ -1040,7 +1044,17 @@ void MappedFile::apply_madvise_hints() {
         madvise(static_cast<char*>(mapped_data_) + scales_offset_, scales_bytes_, MADV_WILLNEED);
     }
 
-    madvise(static_cast<char*>(mapped_data_) + data_offset_, byte_size_, MADV_SEQUENTIAL);
+    int advice = MADV_SEQUENTIAL;
+    if (const char* env = std::getenv("CACTUS_MMAP_ADVICE")) {
+        std::string value(env);
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (value == "random") advice = MADV_RANDOM;
+        else if (value == "willneed") advice = MADV_WILLNEED;
+        else if (value == "normal" || value == "default") advice = MADV_NORMAL;
+        else if (value == "sequential") advice = MADV_SEQUENTIAL;
+    }
+    madvise(static_cast<char*>(mapped_data_) + data_offset_, byte_size_, advice);
 }
 
 void MappedFile::release_pages() {

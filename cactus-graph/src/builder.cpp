@@ -1139,6 +1139,22 @@ size_t CactusGraph::rope_gptj(size_t input, float theta, size_t position_offset,
     return add_node(OpType::ROPE_GPTJ, {input}, {}, params);
 }
 
+size_t CactusGraph::kimi_yarn_rope(size_t input, float theta, size_t position_offset, float scaling_factor,
+                                   size_t original_max_position_embeddings, float beta_fast, float beta_slow,
+                                   float mscale, float mscale_all_dim, ComputeBackend backend) {
+    OpParams params;
+    params.theta = theta;
+    params.position_offset = position_offset;
+    params.scalar = scaling_factor;
+    params.yarn_original_max_position_embeddings = original_max_position_embeddings;
+    params.yarn_beta_fast = beta_fast;
+    params.yarn_beta_slow = beta_slow;
+    params.yarn_mscale = mscale;
+    params.yarn_mscale_all_dim = mscale_all_dim;
+    params.backend = backend;
+    return add_node(OpType::KIMI_YARN_ROPE, {input}, {}, params);
+}
+
 size_t CactusGraph::gather(size_t tensor, size_t indices) {
     const auto& tensor_buffer = get_output_buffer(tensor);
     const auto& idx_shape = get_output_buffer(indices).shape;
@@ -1234,7 +1250,11 @@ size_t CactusGraph::add_node(OpType op_type, const std::vector<size_t>& inputs, 
     }
 
     Precision result_precision = params.output_precision;
-    if (op_type == OpType::PRECISION_CAST || op_type == OpType::EMBEDDING) {
+    if (op_type == OpType::PRECISION_CAST ||
+        op_type == OpType::EMBEDDING ||
+        op_type == OpType::TOPK ||
+        op_type == OpType::SCATTER_TOPK ||
+        op_type == OpType::SAMPLE) {
         result_precision = params.output_precision;
     } else if (!inputs.empty()) {
         result_precision = nodes_[node_index_map_[inputs[0]]]->output_buffer.precision;

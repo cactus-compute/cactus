@@ -339,7 +339,9 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
         std::transform(lower_line.begin(), lower_line.end(), lower_line.begin(), ::tolower);
 
         if (lower_line.find("model_type") != std::string::npos) {
-            if (lower_line.find("qwen") != std::string::npos) {
+            if (lower_line.find("kimi_k2") != std::string::npos || lower_line.find("kimi-k2") != std::string::npos) {
+                model_type_ = ModelType::KIMI_K2;
+            } else if (lower_line.find("qwen") != std::string::npos) {
                 model_type_ = ModelType::QWEN;
             } else if (lower_line.find("lfm2") != std::string::npos) {
                 model_type_ = ModelType::LFM2;
@@ -370,7 +372,7 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
 }
 
 std::string Tokenizer::get_default_stop_sequence() const {
-    if (model_type_ == ModelType::QWEN || model_type_ == ModelType::LFM2) {
+    if (model_type_ == ModelType::QWEN || model_type_ == ModelType::LFM2 || model_type_ == ModelType::KIMI_K2) {
         return "<|im_end|>";
     }
     return "<turn|>";
@@ -388,7 +390,44 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
     if (model_type_ == ModelType::LFM2) {
         return format_lfm2_style(messages, add_generation_prompt, tools_json);
     }
+    if (model_type_ == ModelType::KIMI_K2) {
+        return format_kimi_k2_style(messages, add_generation_prompt, enable_thinking_if_supported);
+    }
     return format_gemma4_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
+}
+
+std::string Tokenizer::format_kimi_k2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
+                                            bool enable_thinking_if_supported) const {
+    std::string result;
+    for (const auto& msg : messages) {
+        std::string role = msg.role;
+        if (role == "developer") {
+            role = "system";
+        } else if (role != "system" && role != "assistant") {
+            role = "user";
+        }
+
+        if (role == "system") {
+            result += "<|im_system|>system<|im_middle|>";
+            result += msg.content;
+            result += "<|im_end|>";
+        } else if (role == "user") {
+            result += "<|im_user|>user<|im_middle|>";
+            result += msg.content;
+            result += "<|im_end|>";
+        } else {
+            result += "<|im_assistant|>assistant<|im_middle|><think></think>";
+            result += msg.content;
+            result += "<|im_end|>";
+        }
+    }
+
+    if (add_generation_prompt) {
+        result += "<|im_assistant|>assistant<|im_middle|>";
+        result += enable_thinking_if_supported ? "<think>\n" : "<think></think>";
+    }
+
+    return result;
 }
 
 std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,

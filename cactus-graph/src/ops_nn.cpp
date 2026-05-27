@@ -10,6 +10,9 @@
 #include <limits>
 #include <atomic>
 #include <iostream>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <cstdint>
 
 namespace {
     thread_local std::vector<__fp16> transpose_buffer_fp16;
@@ -125,6 +128,34 @@ namespace {
 
         throw std::runtime_error("moe_layer only supports FP16 or TQ expert weights");
     }
+
+    bool moe_prefetch_enabled() {
+        static const bool enabled = [] {
+            const char* value = std::getenv("CACTUS_MOE_PREFETCH");
+            return value != nullptr && value[0] != '\0' && value[0] != '0';
+        }();
+        return enabled;
+    }
+
+    void madvise_buffer_willneed(const void* ptr, size_t bytes) {
+        if (!ptr || bytes == 0) return;
+        long page_size_long = sysconf(_SC_PAGESIZE);
+        if (page_size_long <= 0) return;
+        const uintptr_t page_size = static_cast<uintptr_t>(page_size_long);
+        const uintptr_t start = reinterpret_cast<uintptr_t>(ptr);
+        const uintptr_t page_start = start & ~(page_size - 1);
+        const uintptr_t end = start + static_cast<uintptr_t>(bytes);
+        const uintptr_t page_end = (end + page_size - 1) & ~(page_size - 1);
+        if (page_end <= page_start) return;
+        madvise(reinterpret_cast<void*>(page_start), page_end - page_start, MADV_WILLNEED);
+    }
+
+    void prefetch_moe_weight_buffer(const BufferDesc& buffer) {
+        madvise_buffer_willneed(buffer.get_data(), buffer.byte_size);
+        __builtin_prefetch(buffer.get_data(), 0, 0);
+        if (buffer.cq_norms) __builtin_prefetch(buffer.cq_norms, 0, 0);
+        if (buffer.cq_codebook) __builtin_prefetch(buffer.cq_codebook, 0, 0);
+    }
 }
 
 void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -228,6 +259,21 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     }
 
     std::memset(output, 0, token_count * hidden_dim * sizeof(__fp16));
+
+    if (moe_prefetch_enabled()) {
+        for (size_t expert_idx = 0; expert_idx < num_experts; ++expert_idx) {
+            const size_t start = expert_offsets[expert_idx];
+            const size_t end = expert_offsets[expert_idx + 1];
+            if (start == end) continue;
+            prefetch_moe_weight_buffer(get_input(node, 3 + expert_idx, nodes, node_index_map));
+            if (gated) {
+                prefetch_moe_weight_buffer(get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map));
+                prefetch_moe_weight_buffer(get_input(node, 3 + 2 * num_experts + expert_idx, nodes, node_index_map));
+            } else {
+                prefetch_moe_weight_buffer(get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map));
+            }
+        }
+    }
 
     for (size_t expert_idx = 0; expert_idx < num_experts; ++expert_idx) {
         const size_t start = expert_offsets[expert_idx];
@@ -928,6 +974,5 @@ void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
         }
     }
 }
-
 
 

@@ -45,6 +45,7 @@ DECLARE_COMPUTE(compute_glu_node);
 DECLARE_COMPUTE(compute_batchnorm_node);
 DECLARE_COMPUTE(compute_groupnorm_node);
 DECLARE_COMPUTE(compute_rope_gptj_node);
+DECLARE_COMPUTE(compute_kimi_yarn_rope_node);
 DECLARE_COMPUTE(compute_lstm_cell_node);
 DECLARE_COMPUTE(compute_gated_deltanet_decode_node);
 DECLARE_COMPUTE(compute_gated_deltanet_prefill_node);
@@ -84,7 +85,7 @@ DECLARE_COMPUTE(compute_spectrogram_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::SCALAR_NOT_EQUAL) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::KIMI_YARN_ROPE) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -132,6 +133,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::BATCHNORM)] = compute_batchnorm_node;
     dispatch_flat[static_cast<int>(OpType::ROPE)] = compute_rope_node;
     dispatch_flat[static_cast<int>(OpType::ROPE_GPTJ)] = compute_rope_gptj_node;
+    dispatch_flat[static_cast<int>(OpType::KIMI_YARN_ROPE)] = compute_kimi_yarn_rope_node;
     dispatch_flat[static_cast<int>(OpType::SOFTMAX)] = compute_softmax_node;
     dispatch_flat[static_cast<int>(OpType::ATTENTION)] = compute_attention_node;
     dispatch_flat[static_cast<int>(OpType::ATTENTION_INT8_HYBRID)] = compute_attention_int8_hybrid_node;
@@ -224,7 +226,7 @@ static const char* op_type_names[] = {
     "CONV_CACHE_STATE", "CONV_CACHE_APPEND",
     "RFFT", "IRFFT", "MEL_FILTER_BANK", "SPECTROGRAM",
     "IMAGE_PREPROCESS", "CLAMP", "DENSE_MLP_TQ_FUSED",
-    "NOT_EQUAL", "SCALAR_NOT_EQUAL"
+    "NOT_EQUAL", "SCALAR_NOT_EQUAL", "KIMI_YARN_ROPE"
 };
 
 static const char* get_op_name(OpType op) {

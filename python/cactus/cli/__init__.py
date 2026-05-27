@@ -186,6 +186,24 @@ def create_parser():
                             help="Optional path to save transpiled bundle results as JSON")
     run_parser.add_argument("--thinking", action="store_true",
                             help="Enable thinking/reasoning for models that support it")
+    run_parser.add_argument("--temperature", type=float, default=0.0,
+                            help="Sampling temperature for Kimi native runner (default: 0.0)")
+    run_parser.add_argument("--top-p", type=float, default=1.0,
+                            help="Top-p for Kimi native runner (default: 1.0)")
+    run_parser.add_argument("--top-k", type=int, default=1,
+                            help="Top-k for Kimi native runner (default: 1)")
+    run_parser.add_argument("--context", type=int, default=None,
+                            help="Context size for Kimi native runner")
+    run_parser.add_argument("--tokenizer", default=None,
+                            help="Tokenizer source for Kimi native runner (default: moonshotai/Kimi-K2.6)")
+    run_parser.add_argument("--kimi-fast-kv", action="store_true",
+                            help="Use faster quantized KV cache for Kimi instead of FP16 correctness mode")
+    run_parser.add_argument("--kimi-moe-prefetch", action="store_true",
+                            help="Prefetch selected Kimi MoE expert pages during decode")
+    run_parser.add_argument("--kimi-warmup-moe-experts", action="store_true",
+                            help="Ask the OS to prefetch all Kimi MoE expert pages before generation")
+    run_parser.add_argument("--verbose", action="store_true",
+                            help="Show native Kimi runner stderr logs")
 
     # ── transcribe ────────────────────────────────────────────────────
     transcribe_parser = subparsers.add_parser("transcribe", help="Download ASR model and run transcription",

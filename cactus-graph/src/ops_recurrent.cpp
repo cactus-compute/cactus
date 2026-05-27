@@ -183,6 +183,78 @@ void compute_rope_gptj_node(GraphNode& node, const std::vector<std::unique_ptr<G
                           node.params.position_offset, node.params.theta);
 }
 
+void compute_kimi_yarn_rope_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                 const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
+    if (input_buffer.precision != Precision::FP16) {
+        throw std::runtime_error("Kimi YaRN RoPE requires FP16 input");
+    }
+    const auto& shape = input_buffer.shape;
+    if (shape.size() != 4 || (shape[3] % 2) != 0) {
+        throw std::runtime_error("Kimi YaRN RoPE expects [batch, seq, heads, even_dim]");
+    }
+
+    const size_t batch_size = shape[0];
+    const size_t seq_len = shape[1];
+    const size_t num_heads = shape[2];
+    const size_t dim = shape[3];
+    const size_t half_dim = dim / 2;
+
+    auto correction_dim = [](float rotations, size_t rope_dim, float base, size_t max_pos) {
+        return (static_cast<float>(rope_dim) * std::log(static_cast<float>(max_pos) / (rotations * 2.0f * static_cast<float>(M_PI)))) /
+               (2.0f * std::log(base));
+    };
+    auto ramp_value = [](float idx, float low, float high) {
+        if (low == high) high += 0.001f;
+        float v = (idx - low) / (high - low);
+        return std::min(1.0f, std::max(0.0f, v));
+    };
+    auto yarn_mscale = [](float scale, float mscale) {
+        if (scale <= 1.0f) return 1.0f;
+        return 0.1f * mscale * std::log(scale) + 1.0f;
+    };
+
+    const float theta = node.params.theta;
+    const float factor = node.params.scalar;
+    const size_t original_max = node.params.yarn_original_max_position_embeddings;
+    const float low_raw = std::floor(correction_dim(node.params.yarn_beta_fast, dim, theta, original_max));
+    const float high_raw = std::ceil(correction_dim(node.params.yarn_beta_slow, dim, theta, original_max));
+    const float low = std::max(0.0f, low_raw);
+    const float high = std::min(static_cast<float>(dim - 1), high_raw);
+    const float mscale = yarn_mscale(factor, node.params.yarn_mscale) /
+                         yarn_mscale(factor, node.params.yarn_mscale_all_dim);
+
+    std::vector<float> inv_freq(half_dim);
+    for (size_t i = 0; i < half_dim; ++i) {
+        const float exponent = static_cast<float>(2 * i) / static_cast<float>(dim);
+        const float base_freq = 1.0f / std::pow(theta, exponent);
+        const float freq_extra = base_freq;
+        const float freq_inter = base_freq / factor;
+        const float inv_freq_mask = 1.0f - ramp_value(static_cast<float>(i), low, high);
+        inv_freq[i] = freq_inter * (1.0f - inv_freq_mask) + freq_extra * inv_freq_mask;
+    }
+
+    const __fp16* input = input_buffer.data_as<__fp16>();
+    __fp16* output = node.output_buffer.data_as<__fp16>();
+    for (size_t b = 0; b < batch_size; ++b) {
+        for (size_t t = 0; t < seq_len; ++t) {
+            const float position = static_cast<float>(node.params.position_offset + t);
+            for (size_t h = 0; h < num_heads; ++h) {
+                const size_t offset = ((b * seq_len + t) * num_heads + h) * dim;
+                for (size_t i = 0; i < half_dim; ++i) {
+                    const float angle = position * inv_freq[i];
+                    const float c = std::cos(angle) * mscale;
+                    const float s = std::sin(angle) * mscale;
+                    const float even = static_cast<float>(input[offset + 2 * i]);
+                    const float odd = static_cast<float>(input[offset + 2 * i + 1]);
+                    output[offset + i] = static_cast<__fp16>(even * c - odd * s);
+                    output[offset + half_dim + i] = static_cast<__fp16>(odd * c + even * s);
+                }
+            }
+        }
+    }
+}
+
 void compute_lstm_cell_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& h_prev_buffer = get_input(node, 1, nodes, node_index_map);
@@ -400,4 +472,3 @@ void compute_weighted_stats_pool_node(GraphNode& node, const std::vector<std::un
         }
     }
 }
-
