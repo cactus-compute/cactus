@@ -1,14 +1,77 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from cactus import cli
 from cactus.cli import convert as convert_cli
 import cactus.cli.model as model_mod
+from cactus.transpile.model_adapters import _cache_context_length
+
+
+class _ConfigWithText:
+    def get_text_config(self):
+        return SimpleNamespace(max_position_embeddings=128000)
+
+
+def test_cache_context_length_uses_explicit_value() -> None:
+    model = SimpleNamespace(config=SimpleNamespace(max_position_embeddings=40960))
+
+    assert _cache_context_length(
+        model,
+        input_seq_len=2048,
+        cache_context_length="32768",
+        fallback_extra_tokens=512,
+    ) == 32768
+
+
+def test_cache_context_length_reads_top_level_config() -> None:
+    model = SimpleNamespace(config=SimpleNamespace(max_position_embeddings=40960))
+
+    assert _cache_context_length(
+        model,
+        input_seq_len=2048,
+        cache_context_length=None,
+        fallback_extra_tokens=512,
+    ) == 40960
+
+
+def test_cache_context_length_reads_text_config() -> None:
+    model = SimpleNamespace(config=_ConfigWithText())
+
+    assert _cache_context_length(
+        model,
+        input_seq_len=2048,
+        cache_context_length="auto",
+        fallback_extra_tokens=512,
+    ) == 128000
+
+
+def test_cache_context_length_falls_back_to_capture_size() -> None:
+    model = SimpleNamespace(config=SimpleNamespace())
+
+    assert _cache_context_length(
+        model,
+        input_seq_len=2048,
+        cache_context_length=None,
+        fallback_extra_tokens=512,
+    ) == 2560
+
+
+def test_cache_context_length_rejects_non_positive_explicit_value() -> None:
+    with pytest.raises(ValueError):
+        _cache_context_length(
+            SimpleNamespace(config=SimpleNamespace()),
+            input_seq_len=2048,
+            cache_context_length="0",
+            fallback_extra_tokens=512,
+        )
 
 
 def _write_gemma4_multimodal_config(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "config.txt").write_text("model_type=gemma4\n", encoding="utf-8")
     (output_dir / "hf_config.json").write_text(
         (
             '{"model_type":"gemma4",'
@@ -21,8 +84,7 @@ def _write_gemma4_multimodal_config(output_dir: Path) -> None:
 
 
 def _gemma4_multimodal_extra_args(model_dir: Path, artifact_dir: Path) -> list[str]:
-    from cactus.cli.common import PROJECT_ROOT
-    assets_dir = PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
+    default_images, default_audio = model_mod._default_multimodal_assets()
     return [
         "--weights-dir",
         str(model_dir),
@@ -39,9 +101,9 @@ def _gemma4_multimodal_extra_args(model_dir: Path, artifact_dir: Path) -> list[s
         "--components",
         "vision_encoder,audio_encoder,lm_encoder,decoder",
         "--image-file",
-        str(assets_dir / "test_monkey.png"),
+        default_images[0],
         "--audio-file",
-        str(assets_dir / "test.wav"),
+        str(default_audio),
         "--trust-remote-code",
     ]
 
@@ -139,6 +201,41 @@ def test_cmd_convert_honors_explicit_output_dir(monkeypatch, tmp_path: Path) -> 
     assert transpile_calls[0]["extra_args"] == _gemma4_multimodal_extra_args(output_dir, output_dir)
 
 
+def test_cmd_convert_retranspile_reuses_weights_and_forwards_cache_context(monkeypatch, tmp_path: Path) -> None:
+    parser = cli.create_parser()
+    output_dir = tmp_path / "gemma4"
+    _write_gemma4_multimodal_config(output_dir)
+    (output_dir / "components").mkdir()
+    (output_dir / "components" / "manifest.json").write_text("{}", encoding="utf-8")
+    (output_dir / "raw_ir_decoder_step.json").write_text("{}", encoding="utf-8")
+    args = parser.parse_args([
+        "convert",
+        "google/gemma-4-E2B-it",
+        str(output_dir),
+        "--retranspile",
+        "--cache-context-length",
+        "131072",
+    ])
+
+    def _unexpected_cq_main(command):
+        raise AssertionError(f"unexpected CQ conversion: {command}")
+
+    import cactus.convert.cli as cq_cli
+    monkeypatch.setattr(cq_cli, "main", _unexpected_cq_main)
+
+    transpile_calls: list[dict] = []
+    _patch_transpile(monkeypatch, transpile_calls)
+
+    rc = convert_cli.cmd_convert(args)
+
+    assert rc == 0
+    assert not (output_dir / "components").exists()
+    assert not (output_dir / "raw_ir_decoder_step.json").exists()
+    assert len(transpile_calls) == 1
+    extra_args = transpile_calls[0]["extra_args"]
+    assert extra_args[extra_args.index("--cache-context-length") + 1] == "131072"
+
+
 def test_cmd_convert_supplies_default_audio_for_parakeet(monkeypatch, tmp_path: Path) -> None:
     parser = cli.create_parser()
     output_dir = tmp_path / "parakeet"
@@ -164,7 +261,7 @@ def test_cmd_convert_supplies_default_audio_for_parakeet(monkeypatch, tmp_path: 
     extra_args = transpile_calls[0]["extra_args"]
     assert extra_args[extra_args.index("--task") + 1] == "tdt_transcription"
     assert "--audio-file" in extra_args
-    assert extra_args[extra_args.index("--audio-file") + 1].endswith("cactus-engine/tests/assets/test.wav")
+    assert Path(extra_args[extra_args.index("--audio-file") + 1]).name == "test.wav"
 
 
 def test_cmd_convert_supplies_default_audio_for_whisper(monkeypatch, tmp_path: Path) -> None:

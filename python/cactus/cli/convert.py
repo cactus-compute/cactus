@@ -14,6 +14,7 @@ def cmd_convert(args):
             bits=args.bits or 4,
             token=args.token,
             reconvert=args.reconvert,
+            retranspile=args.retranspile,
             output_dir=output_dir,
             transpile=TranspileOptions(
                 task=args.task or "auto",
@@ -26,6 +27,7 @@ def cmd_convert(args):
                 system_prompt=args.system_prompt,
                 trust_remote_code=args.trust_remote_code,
                 local_files_only=args.local_files_only,
+                cache_context_length=args.cache_context_length,
             ),
         )
         return 0

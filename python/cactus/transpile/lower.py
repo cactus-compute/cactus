@@ -238,7 +238,8 @@ def _lower_attention_with_internal_kv_cache(
     )
     if layer_key not in cache_states:
         default_cache_len = max(512, int(key_shape[1]))
-        max_cache_seq_len = int(ir.meta.get("max_cache_seq_len", default_cache_len) or default_cache_len)
+        requested_cache_len = node.meta.get("max_cache_seq_len", ir.meta.get("max_cache_seq_len", default_cache_len))
+        max_cache_seq_len = max(default_cache_len, int(requested_cache_len or default_cache_len))
         sink_size = int(ir.meta.get("cache_sink_size", 4) or 4)
         window_size = int(node.attrs.get("window_size", 0) or 0)
         k_cache = g.kv_cache_state(
