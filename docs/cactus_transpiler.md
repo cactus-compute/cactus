@@ -334,7 +334,7 @@ y = loaded.execute("forward", np.ones((2, 4), np.float16))[0].numpy()
 For encoder-decoder models, provide each graph boundary explicitly:
 
 ```python
-params, model, tokenizer, config = load_needle_model()  # user/model-specific
+params, model, tokenizer, config = load_needle_model()
 src = tokenizer.encode("What time is it in Tokyo?")
 tgt = tokenizer.encode("<bos>")
 src_mask = make_padding_mask(src, config.pad_token_id)

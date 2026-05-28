@@ -1499,12 +1499,6 @@ def capture_jax_function(
     weights_dir: str | None = None,
     graph_meta: dict[str, object] | None = None,
 ) -> IRGraph:
-    """Capture a small pure JAX function into Cactus IR.
-
-    This is a phase-1 frontend for simple inference graphs. It imports JAXPR
-    primitives directly and then relies on the existing Cactus IR optimizer and
-    lowering stack.
-    """
     try:
         import jax
     except Exception as exc:  # pragma: no cover - depends on optional dependency
@@ -1574,7 +1568,6 @@ def capture_jax_function_with_params(
     weight_bindings: dict[str, dict[str, str]] | None = None,
     graph_meta: dict[str, object] | None = None,
 ) -> IRGraph:
-    """Capture ``fn(params, *args)`` with pytree params frozen as named constants."""
     try:
         import jax
     except Exception as exc:  # pragma: no cover - depends on optional dependency
@@ -1619,13 +1612,6 @@ def capture_jax_graphs(
     weight_bindings: dict[str, dict[str, str]] | None = None,
     graph_meta: dict[str, object] | None = None,
 ) -> CapturedJaxGraphBundle:
-    """Capture named JAX entrypoints as separate Cactus graphs.
-
-    Each spec function must have the tensor boundary ``fn(params, *args)``.
-    The bundle is intentionally only orchestration; every graph still uses the
-    generic JAX importer and the same mmap weight binding path as
-    ``capture_jax_function_with_params``.
-    """
     seen_names: set[str] = set()
     for spec in specs:
         if spec.name in seen_names:

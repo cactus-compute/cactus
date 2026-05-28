@@ -110,13 +110,6 @@ def write_fp16_weights_manifest(
 
 
 def load_jax_user_graph_bundle(bundle_dir_or_manifest: str | Path) -> LoadedJaxUserGraphBundle:
-    """Load a saved generic JAX user graph bundle.
-
-    This is the persistence pair for ``build_jax_user_graph_bundle`` and
-    ``build_jax_generation_graph_bundle``. It loads every saved ``graph.cactus``,
-    rebinds mmap weights from the component manifest, and exposes a small
-    ``execute(graph_name, *inputs)`` API for user-managed frontends.
-    """
     manifest_path = _resolve_components_manifest(bundle_dir_or_manifest)
     root = manifest_path.parent.parent
     manifest = json.loads(manifest_path.read_text())
@@ -283,15 +276,6 @@ def build_jax_user_graph_bundle(
     exclude_weights: set[str] | None = None,
     weights_dir: str | Path | None = None,
 ) -> JaxUserGraphBundleResult:
-    """Capture user-supplied JAX entrypoints and write a Cactus component bundle.
-
-    This is the generic JAX model boundary. The caller owns all model-specific
-    work: loading params, tokenization, masks, cache layout, and deciding which
-    functions are separate graphs. Each spec function must have the signature
-    ``fn(params, *runtime_inputs) -> outputs``. This helper only flattens/binds
-    params, captures each JAX function, lowers through the shared Cactus IR path,
-    and writes a standard component-style manifest.
-    """
     arrays = weight_arrays if weight_arrays is not None else flatten_jax_params(params)
     root = Path(output_dir)
     weights_root = Path(weights_dir) if weights_dir is not None else root
@@ -338,13 +322,6 @@ def build_jax_generation_graph_bundle(
     max_cache_seq_len: int | None = None,
     cache_sink_size: int = 4,
 ) -> JaxUserGraphBundleResult:
-    """Build a generic generation bundle with standard cache-aware roles.
-
-    Callers still own tokenization, masks, sampling, and the decode loop. This
-    helper only tags user-provided entrypoints as encoder, prefill, and/or
-    decode-step graphs. Prefill and decode-step specs get the same internal KV
-    cache metadata used by the PyTorch model adapters.
-    """
     root = Path(output_dir)
     weights_root = Path(weights_dir) if weights_dir is not None else root
     arrays = weight_arrays if weight_arrays is not None else flatten_jax_params(params)
@@ -390,7 +367,6 @@ def capture_jax_generation_graphs(
     max_cache_seq_len: int | None = None,
     cache_sink_size: int = 4,
 ) -> Any:
-    """Capture standard generation entrypoints as role-tagged JAX graphs."""
     specs: list[JaxGraphSpec] = []
 
     def _with_meta(
