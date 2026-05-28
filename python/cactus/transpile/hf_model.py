@@ -549,7 +549,9 @@ def _run_component_pipeline_transpile(
     # per-encoder coremltools temp, not HF model + all captured graphs.
     # Encoders only — text prefill is intentionally not on NPU.
     npu_enabled = bool(getattr(args, "npu", False))
-    npu_quantize = getattr(args, "npu_quantize", None)
+    npu_quantize = getattr(args, "npu_quantize", None)                # legacy override
+    npu_audio_quantize  = getattr(args, "npu_audio_quantize",  None)  # default 8 if neither set
+    npu_vision_quantize = getattr(args, "npu_vision_quantize", None)  # default 0 (fp16) if neither set
     npu_encoder_mlpackages: dict[str, str] = {}
     if npu_enabled and artifact_dir is not None:
         from .npu import run_encoder_pipeline
@@ -558,6 +560,8 @@ def _run_component_pipeline_transpile(
             artifact_dir,
             enabled=True,
             quantize_bits=npu_quantize,
+            audio_quantize_bits=npu_audio_quantize,
+            vision_quantize_bits=npu_vision_quantize,
         )
         # Drop coremltools-side intermediates before the heavy cactus capture
         # below — both phases compete for the same working set on a 16 GB host.
@@ -2968,9 +2972,23 @@ def main() -> int:
     parser.add_argument(
         "--npu-quantize",
         type=int,
-        default=4,
+        default=None,
         choices=[0, 4, 8],
-        help="Post-conversion weight quantization for the .mlpackage (0=off, 4=int4 default, 8=int8). Smaller weights = faster on ANE and smaller .mlpackage on disk.",
+        help="Legacy override that forces BOTH audio and vision encoders to the same weight quant (0=fp16, 4=int4, 8=int8). When unset, per-component defaults apply: audio=int8, vision=fp16.",
+    )
+    parser.add_argument(
+        "--npu-audio-quantize",
+        type=int,
+        default=None,
+        choices=[0, 4, 8],
+        help="Quantization for the audio encoder .mlpackage (0=fp16, 4=int4, 8=int8). Default int8: Conformer-style encoders absorb int8 quant noise well.",
+    )
+    parser.add_argument(
+        "--npu-vision-quantize",
+        type=int,
+        default=None,
+        choices=[0, 4, 8],
+        help="Quantization for the vision encoder .mlpackage (0=fp16, 4=int4, 8=int8). Default fp16: ViT-style towers are small enough that fp16 is the safer correctness default — int4 visibly degrades on Gemma 4 vision.",
     )
     parser.add_argument("--no-fuse-gated-deltanet", action="store_true")
     parser.add_argument("--no-fuse-rms-norm", action="store_true")
