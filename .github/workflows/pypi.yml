@@ -3,6 +3,11 @@ name: PyPI Publish
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 2.0.0). Leave empty to read from CACTUS_VERSION."
+        required: false
+        type: string
 
 jobs:
   wheels-macos:
@@ -15,6 +20,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - uses: ./.github/actions/stamp-version
 
       - name: Build native library
         run: |
@@ -47,6 +54,8 @@ jobs:
           dnf install -y libcurl-devel openssl-devel
           echo "/opt/python/cp312-cp312/bin" >> "$GITHUB_PATH"
 
+      - uses: ./.github/actions/stamp-version
+
       - name: Build native library
         run: |
           pip install -e python/
@@ -74,6 +83,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - uses: ./.github/actions/stamp-version
 
       - name: Build sdist
         working-directory: python
