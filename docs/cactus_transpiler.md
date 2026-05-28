@@ -299,12 +299,10 @@ print("Output shape:", result.shape)  # (1, 32)
 
 ### Generic JAX User Graphs
 
-JAX and Flax models can use the generic user-graph bundle path when the caller owns
-the model code, params, tokenizer, masks, and runtime loop. Cactus does not infer a
-full chat runtime here. It captures the graph entrypoints you provide, flattens the
-params pytree, writes FP16 mmap weights, lowers each entrypoint to `graph.cactus`,
-and writes per-component `raw_ir.json` and `optimized_ir.json` artifacts so the
-graphs can be inspected or loaded later.
+JAX and Flax models can be bundled by providing params and one or more graph
+entrypoints. The caller owns tokenization, masks, sampling, and any prefill/decode
+loop; Cactus captures the supplied functions, writes FP16 mmap weights, and saves
+component graphs.
 
 ```python
 import jax.numpy as jnp
@@ -333,8 +331,7 @@ loaded = load_jax_user_graph_bundle(result.output_dir)
 y = loaded.execute("forward", np.ones((2, 4), np.float16))[0].numpy()
 ```
 
-For an encoder-decoder model such as Needle, the same API is used; the user chooses
-the graph boundaries and keeps tokenization/sampling in their frontend:
+For encoder-decoder models, provide each graph boundary explicitly:
 
 ```python
 params, model, tokenizer, config = load_needle_model()  # user/model-specific
@@ -375,26 +372,9 @@ logits = loaded.execute("decoder_prefill", tgt, encoder_out.numpy(), tgt_mask, e
 next_token = int(np.argmax(logits[0, -1]))
 ```
 
-Supported now: JAX functions, callable classes, Flax inference modules, params
-pytrees as FP16 mmap weights, multiple graphs per bundle, dense/embedding/gather,
-dot/general matmul, elementwise math, reshape/transpose/concat/split/stack/slice,
-tile/repeat, sum/mean/min/max, softmax, GELU/SiLU/ReLU/sigmoid/tanh, RMSNorm,
-inference BatchNorm, Conv1D, and runtime-supported Conv2D forms.
-
-Not supported yet: pooling/general `reduce_window`, full general Conv2D coverage,
-BatchNorm or dropout training mode, dynamic slice/update with runtime indices, pad,
-argmax, sort/argsort, cumsum, scatter updates, general `take_along_axis`, automatic
-tokenizer/chat integration with `cactus_init`/`cactus_complete`, automatic
-prefill/decode splitting, and automatic KV-cache creation. For fast decode, expose a
-separate `decoder_step` graph with cache tensors as explicit inputs/outputs.
-
-Only rewrites that improved runtime are enabled by default: RMSNorm and SiLU.
-LayerNorm, RoPE, and attention-shaped graphs stay decomposed for now. Local
-benchmarks showed their fused forms were more numerically stable but slower on the
-current graph backend, mostly because the kernels take general fused paths and JAX
-often represents attention tensors in `BTHD` order while the fused Cactus attention
-kernel expects `BHSD` order (`batch`, `heads`, `sequence/tokens`, `head_dim`),
-requiring extra transpose operations around the fused op.
+Each component is saved under `components/<name>/` with `graph.cactus`,
+`raw_ir.json`, and `optimized_ir.json`. For fast decode, expose a separate
+`decoder_step` graph with cache tensors as explicit inputs and outputs.
 
 ---
 
