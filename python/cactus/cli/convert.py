@@ -14,6 +14,7 @@ def cmd_convert(args):
             bits=args.bits or 4,
             token=args.token,
             reconvert=args.reconvert,
+            retranspile=args.retranspile,
             output_dir=output_dir,
             transpile=TranspileOptions(
                 task=args.task or "auto",
@@ -30,6 +31,7 @@ def cmd_convert(args):
                 npu_quantize=getattr(args, "npu_quantize", None),
                 npu_audio_quantize=getattr(args, "npu_audio_quantize", None),
                 npu_vision_quantize=getattr(args, "npu_vision_quantize", None),
+                cache_context_length=args.cache_context_length,
             ),
         )
         return 0

@@ -182,6 +182,57 @@ def test_normalize_gemma4_attention_recovers_layer_hints_from_graph_meta() -> No
     assert graph.nodes["attn_1"].attrs["window_size"] == 800
 
 
+def test_normalize_gemma4_cached_attention_sets_per_layer_cache_lengths() -> None:
+    graph = IRGraph(
+        values={
+            "query_0": IRValue(id="query_0", shape=(1, 8, 1, 256), dtype="fp16"),
+            "key_0": IRValue(id="key_0", shape=(1, 8, 1, 256), dtype="fp16"),
+            "value_0": IRValue(id="value_0", shape=(1, 8, 1, 256), dtype="fp16"),
+            "out_0": IRValue(id="out_0", shape=(1, 8, 1, 256), dtype="fp16", producer="attn_0"),
+            "query_1": IRValue(id="query_1", shape=(1, 8, 1, 256), dtype="fp16"),
+            "key_1": IRValue(id="key_1", shape=(1, 8, 1, 256), dtype="fp16"),
+            "value_1": IRValue(id="value_1", shape=(1, 8, 1, 256), dtype="fp16"),
+            "out_1": IRValue(id="out_1", shape=(1, 8, 1, 256), dtype="fp16", producer="attn_1"),
+        },
+        nodes={
+            "attn_0": IRNode(
+                id="attn_0",
+                op="attention",
+                inputs=["query_0", "key_0", "value_0"],
+                outputs=["out_0"],
+                attrs={"is_causal": False, "window_size": 0},
+            ),
+            "attn_1": IRNode(
+                id="attn_1",
+                op="attention",
+                inputs=["query_1", "key_1", "value_1"],
+                outputs=["out_1"],
+                attrs={"is_causal": False, "window_size": 0},
+            ),
+        },
+        order=["attn_0", "attn_1"],
+        inputs=["query_0", "key_0", "value_0", "query_1", "key_1", "value_1"],
+        outputs=["out_1"],
+        constants={},
+        meta={
+            "adapter_family": "gemma4",
+            "component": "decoder_step",
+            "use_internal_kv_cache": True,
+            "sliding_window": 512,
+            "max_cache_seq_len": 131072,
+            "layer_types": ("sliding_attention", "full_attention"),
+        },
+    )
+
+    changed = normalize_gemma4_decoder_attention_semantics(graph)
+
+    assert changed is True
+    assert graph.nodes["attn_0"].attrs["window_size"] == 512
+    assert graph.nodes["attn_0"].meta["max_cache_seq_len"] == 512
+    assert graph.nodes["attn_1"].attrs["window_size"] == 0
+    assert graph.nodes["attn_1"].meta["max_cache_seq_len"] == 131072
+
+
 def test_normalize_gemma4_attention_elides_logical_fp16_mask() -> None:
     graph = IRGraph(
         values={

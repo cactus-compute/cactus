@@ -204,10 +204,11 @@ class TranspileOptions:
     npu_quantize: int | None = None
     npu_audio_quantize: int | None = None
     npu_vision_quantize: int | None = None
+    cache_context_length: str | int | None = None
 
 
 def ensure_bundle(model_id, *, bits=4, token=None,
-                  reconvert=False, output_dir=None, transpile=None):
+                  reconvert=False, retranspile=False, output_dir=None, transpile=None):
     """Return path to transpiled bundle, creating it if needed.
     """
     from .download import get_weights_dir
@@ -228,7 +229,7 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     )
 
     # Step 2: skip if already transpiled
-    if _has_transpiled_bundle(output_dir):
+    if _has_transpiled_bundle(output_dir) and not retranspile:
         return output_dir
 
     # Step 3: infer transpile spec from converted output
@@ -324,6 +325,8 @@ def ensure_bundle(model_id, *, bits=4, token=None,
             extra_args.extend(["--npu-audio-quantize", str(int(opts.npu_audio_quantize))])
         if opts.npu_vision_quantize is not None:
             extra_args.extend(["--npu-vision-quantize", str(int(opts.npu_vision_quantize))])
+    if opts.cache_context_length is not None:
+        extra_args.extend(["--cache-context-length", str(opts.cache_context_length)])
 
     rc = run_transpile(model_id, extra_args=extra_args)
     if rc != 0:

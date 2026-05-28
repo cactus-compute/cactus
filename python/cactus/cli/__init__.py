@@ -187,6 +187,8 @@ def create_parser():
                             help="Initial prompt to send immediately")
     run_parser.add_argument("--input-ids", default=None,
                             help="Comma-separated token ids for transpiled causal-LM bundles")
+    run_parser.add_argument("--input-ids-file", default=None,
+                            help="File containing token ids for transpiled causal-LM bundles")
     run_parser.add_argument("--max-new-tokens", type=int, default=None,
                             help="Maximum tokens to generate for transpiled causal-LM bundles")
     run_parser.add_argument("--result-json", default=None,
@@ -283,6 +285,8 @@ def create_parser():
                                 help="Allow HF remote code during the transpile phase")
     convert_parser.add_argument("--local-files-only", action="store_true",
                                 help="Require HF model/processor files to already be local during transpile")
+    convert_parser.add_argument("--cache-context-length", default=None,
+                                help="KV cache context length for cached decode graphs (default: model config)")
     convert_parser.add_argument("--reconvert", action="store_true",
                                 help="Force conversion from source")
     convert_parser.add_argument("--npu", action="store_true",
@@ -293,6 +297,8 @@ def create_parser():
                                 help="Audio encoder weight quant (0=fp16, 4=int4, 8=int8). Default int8.")
     convert_parser.add_argument("--npu-vision-quantize", type=int, choices=[0, 4, 8], default=None,
                                 help="Vision encoder weight quant (0=fp16, 4=int4, 8=int8). Default fp16 — int4 is known to degrade Gemma 4 vision output.")
+    convert_parser.add_argument("--retranspile", action="store_true",
+                                help="Force transpilation while reusing existing converted weights")
 
     return parser
 
