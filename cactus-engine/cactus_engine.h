@@ -347,6 +347,13 @@ CACTUS_FFI_EXPORT int cactus_graph_conv_cache_state(
     cactus_graph_t graph, size_t window_size, size_t hidden_dim, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_conv_cache_append(
     cactus_graph_t graph, cactus_node_t new_data, cactus_node_t cache_state, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv_cache_initialize(
+    cactus_graph_t graph, cactus_node_t rows, cactus_node_t cache_state, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_recurrent_cache_state(
+    cactus_graph_t graph, const size_t* shape, size_t shape_len, int precision, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_recurrent_cache_write(
+    cactus_graph_t graph, cactus_node_t new_value, cactus_node_t cache_input, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_rfft(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t* out);

@@ -372,6 +372,58 @@ bool test_graph_save_for_inspection() {
     }
 }
 
+bool test_save_load_preserves_recurrent_cache_persistence() {
+    try {
+        const std::string filename = "test_recurrent_save_load.cg";
+
+        CactusGraph graph;
+        const std::vector<size_t> shape{2, 4};
+        size_t cache = graph.recurrent_cache_state(shape, Precision::FP16);
+        (void)cache;
+        graph.save(filename);
+
+        CactusGraph loaded = CactusGraph::load(filename);
+        loaded.execute();
+
+        size_t loaded_cache_id = 0;
+        bool found = false;
+        for (size_t i = 0; i < loaded.get_node_count(); ++i) {
+            const auto& node = loaded.nodes_[i];
+            if (node->op_type == OpType::RECURRENT_CACHE_STATE) {
+                loaded_cache_id = node->id;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std::remove(filename.c_str());
+            return false;
+        }
+
+        const __fp16* data = static_cast<const __fp16*>(loaded.get_output(loaded_cache_id));
+        if (!data) {
+            std::remove(filename.c_str());
+            return false;
+        }
+        for (size_t i = 0; i < 8; ++i) {
+            if (static_cast<float>(data[i]) != 0.0f) {
+                std::remove(filename.c_str());
+                return false;
+            }
+        }
+
+        loaded.release_runtime_buffers();
+        const __fp16* still_there = static_cast<const __fp16*>(loaded.get_output(loaded_cache_id));
+        bool persisted = still_there != nullptr;
+
+        std::remove(filename.c_str());
+        return persisted;
+    } catch (const std::exception& e) {
+        std::cout << "[recurrent_save_load] exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 bool run_benchmarks() {
     const int ITERS = 100;
     const std::string temp_file = "bench_io_50nodes.cg";
@@ -432,6 +484,8 @@ int main() {
     runner.run_test("Graph Save/Load Roundtrip Execution", test_graph_save_load_roundtrip_execution());
     runner.run_test("Graph Save/Load Supported Ops Roundtrip", test_graph_save_load_supported_ops_roundtrip());
     runner.run_test("Graph Save For Inspection", test_graph_save_for_inspection());
+    runner.run_test("Save/Load Preserves Recurrent Cache Persistence",
+                    test_save_load_preserves_recurrent_cache_persistence());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

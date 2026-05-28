@@ -259,6 +259,37 @@ def test_resolve_weight_binding_expands_language_model_backbone_aliases(tmp_path
     assert binding.path.endswith("layer_0_scalar.weights")
 
 
+def test_resolve_weight_binding_maps_module_backbone_to_model_manifest(tmp_path: Path) -> None:
+    (tmp_path / "layer_0_q.weights").write_bytes(b"")
+    (tmp_path / "weights_manifest.json").write_text(
+        json.dumps(
+            {
+                "weights": [
+                    {
+                        "source_name": "model.layers.0.self_attn.q_proj.weight",
+                        "hf_name": "model.layers.0.self_attn.q_proj.weight",
+                        "adapter_name": "model.layers.0.self_attn.q_proj.weight",
+                        "output_name": "layer_0_q.weights",
+                        "component": "language",
+                    }
+                ]
+            }
+        )
+    )
+
+    for source_name in (
+        "module.backbone.layers.0.self_attn.q_proj.weight",
+        "adapter.backbone.layers.0.self_attn.q_proj.weight",
+    ):
+        binding = resolve_weight_binding(
+            weights_dir=str(tmp_path),
+            source_name=source_name,
+        )
+
+        assert binding is not None, source_name
+        assert binding.path.endswith("layer_0_q.weights"), source_name
+
+
 def test_resolve_weight_binding_maps_tied_lm_head_to_token_embedding_manifest(tmp_path: Path) -> None:
     (tmp_path / "token_embeddings.weights").write_bytes(b"")
     (tmp_path / "weights_manifest.json").write_text(

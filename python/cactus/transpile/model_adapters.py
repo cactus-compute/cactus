@@ -1476,6 +1476,62 @@ class Lfm2CausalLMLogitsAdapter(torch.nn.Module):
         }
 
 
+class Lfm2CausalLMStepAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
+        super().__init__()
+        self.model = model
+        model_root = getattr(model, "model", None)
+        language_model = getattr(model_root, "language_model", None)
+        self.backbone = language_model if isinstance(language_model, torch.nn.Module) else model_root
+        self.lm_head = getattr(model, "lm_head", None)
+        self.pad_token_id = pad_token_id if pad_token_id is not None else _resolve_model_pad_token_id(model)
+
+    def forward(self, input_ids: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        backbone = self.backbone
+        lm_head = self.lm_head
+        if not isinstance(backbone, torch.nn.Module) or not isinstance(lm_head, torch.nn.Module):
+            raise TypeError("LFM2 causal step adapter requires backbone and lm_head modules")
+
+        inputs_embeds = backbone.embed_tokens(input_ids)
+        text_position_ids = position_ids.to(dtype=torch.int64)
+        seq_len = int(inputs_embeds.shape[1])
+        causal_mask = None
+
+        hidden_states = inputs_embeds
+        position_embeddings = backbone.rotary_emb(hidden_states, position_ids=text_position_ids)
+        layer_types = tuple(getattr(backbone.config, "layer_types", ()))
+
+        for layer_index, decoder_layer in enumerate(backbone.layers[: backbone.config.num_hidden_layers]):
+            layer_type = layer_types[layer_index] if layer_index < len(layer_types) else "full_attention"
+            layer_mask = causal_mask if layer_type == "full_attention" else None
+            hidden_states = decoder_layer(
+                hidden_states,
+                attention_mask=layer_mask,
+                position_embeddings=position_embeddings,
+                position_ids=text_position_ids,
+                past_key_values=None,
+                use_cache=False,
+            )
+
+        hidden_states = backbone.embedding_norm(hidden_states)
+        return lm_head(hidden_states[:, -1:, :])
+
+    def get_transpile_metadata(self):
+        layer_types = tuple(str(value) for value in (getattr(self.backbone.config, "layer_types", ()) or ()))
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.model,
+                    adapter_family="lfm2",
+                    adapter_type=type(self).__name__,
+                    input_names=("input_ids", "position_ids"),
+                ),
+                "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
+                "layer_types": layer_types,
+            }
+        }
+
+
 def _lfm2_vl_model_root(model: torch.nn.Module) -> torch.nn.Module:
     root = getattr(model, "model", None)
     if not isinstance(root, torch.nn.Module):
@@ -4750,6 +4806,62 @@ def _build_whisper_seq2seq_component_specs(
     return specs
 
 
+def _build_lfm2_causal_lm_component_specs(
+    model: torch.nn.Module,
+    *,
+    named_tensors: dict[str, torch.Tensor],
+    weights_dir: str | None = None,
+    components: tuple[str, ...] | None = None,
+) -> list[ComponentModuleSpec] | None:
+    input_ids = named_tensors.get("input_ids")
+    if input_ids is None:
+        return None
+    pad_token_id = _resolve_model_pad_token_id(model)
+    decoder = Lfm2CausalLMLogitsAdapter(model, pad_token_id=pad_token_id).eval()
+    decoder_step = Lfm2CausalLMStepAdapter(model, pad_token_id=pad_token_id).eval()
+
+    requested = tuple(components or ("decoder", "decoder_step"))
+    requested_set = set(requested)
+    common_graph_meta = {
+        "weights_dir": weights_dir,
+        "task": "causal_lm_logits",
+        "adapter_family": "lfm2",
+    }
+    specs: list[ComponentModuleSpec] = []
+    if "decoder" in requested_set:
+        specs.append(ComponentModuleSpec(
+            component="decoder",
+            module=decoder,
+            example_inputs=(input_ids,),
+            input_keys=("input_ids",),
+            output_keys=("logits",),
+            graph_meta={**common_graph_meta, "component": "decoder"},
+            metadata={"family": "lfm2", "task": "causal_lm_logits"},
+        ))
+    if "decoder_step" in requested_set:
+        step_input_ids = input_ids[:, :1]
+        step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
+        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
+        specs.append(ComponentModuleSpec(
+            component="decoder_step",
+            module=decoder_step,
+            example_inputs=(step_input_ids, step_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=("logits",),
+            graph_meta={
+                **common_graph_meta,
+                "component": "decoder_step",
+                "use_internal_kv_cache": True,
+                "use_internal_conv_cache": True,
+                "use_internal_gated_deltanet_cache": True,
+                "max_cache_seq_len": max_cache_seq_len,
+                "cache_sink_size": 4,
+            },
+            metadata={"family": "lfm2", "task": "causal_lm_logits"},
+        ))
+    return specs
+
+
 def _build_lfm2_vl_multimodal_component_specs(
     model: torch.nn.Module,
     *,
@@ -5024,6 +5136,13 @@ def build_component_module_specs(
         )
     if family == "lfm2_vl" and task == "multimodal_causal_lm_logits":
         return _build_lfm2_vl_multimodal_component_specs(
+            model,
+            named_tensors=named_tensors,
+            weights_dir=weights_dir,
+            components=components,
+        )
+    if family == "lfm2" and task == "causal_lm_logits":
+        return _build_lfm2_causal_lm_component_specs(
             model,
             named_tensors=named_tensors,
             weights_dir=weights_dir,

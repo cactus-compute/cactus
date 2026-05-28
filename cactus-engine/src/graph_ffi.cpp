@@ -993,6 +993,42 @@ int cactus_graph_conv_cache_append(cactus_graph_t graph, cactus_node_t new_data,
     }
 }
 
+int cactus_graph_conv_cache_initialize(cactus_graph_t graph, cactus_node_t rows, cactus_node_t cache_state, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_conv_cache_initialize");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.conv_cache_initialize(static_cast<size_t>(rows), static_cast<size_t>(cache_state)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+int cactus_graph_recurrent_cache_state(cactus_graph_t graph, const size_t* shape, size_t shape_len, int precision, cactus_node_t* out) {
+    if (!graph || !out || (!shape && shape_len > 0)) {
+        return fail_invalid("Invalid args to cactus_graph_recurrent_cache_state");
+    }
+    try {
+        std::vector<size_t> shape_vec(shape, shape + shape_len);
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.recurrent_cache_state(shape_vec, static_cast<Precision>(precision)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+int cactus_graph_recurrent_cache_write(cactus_graph_t graph, cactus_node_t new_value, cactus_node_t cache_input, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_recurrent_cache_write");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.recurrent_cache_write(static_cast<size_t>(new_value), static_cast<size_t>(cache_input)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_rfft(cactus_graph_t graph, cactus_node_t input, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_rfft");
     try {

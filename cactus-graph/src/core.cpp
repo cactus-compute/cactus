@@ -253,16 +253,20 @@ void CactusGraph::clear_debug_nodes() {
 
 void CactusGraph::allocate_buffers() {
     for (auto& node : nodes_) {
-        if (node->op_type != OpType::INPUT) {
-            node->output_buffer.allocate();
-        }
+        if (node->op_type == OpType::INPUT) continue;
+        if (node->op_type == OpType::KV_CACHE_STATE
+            || node->op_type == OpType::CONV_CACHE_STATE
+            || node->op_type == OpType::RECURRENT_CACHE_STATE) continue;
+        node->output_buffer.allocate();
     }
 }
 
 void CactusGraph::release_runtime_buffers() {
     for (auto& node : nodes_) {
         if (node->op_type == OpType::INPUT) continue;
-        if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) continue;
+        if (node->op_type == OpType::KV_CACHE_STATE
+            || node->op_type == OpType::CONV_CACHE_STATE
+            || node->op_type == OpType::RECURRENT_CACHE_STATE) continue;
         if (persistent_node_ids_.count(node->id)) continue;
         node->output_buffer.release_memory(buffer_pool_);
     }

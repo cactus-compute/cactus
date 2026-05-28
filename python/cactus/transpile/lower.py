@@ -439,7 +439,7 @@ def _should_lower_gated_deltanet_with_internal_cache(
     if op not in {"gated_deltanet_prefill", "gated_deltanet_decode"}:
         return False
     component = str(ir.meta.get("component", "") or "").strip().lower()
-    return component in {"decoder_step", "decoder_media_step"} and int(seq_len) == 1
+    return component in {"decoder_prefill_chunk", "decoder_step", "decoder_media_step"}
 
 
 def _gated_deltanet_layer_key(ir: IRGraph, node: IRNode) -> str:
@@ -472,7 +472,7 @@ def _lower_gated_deltanet_initial_state(
     layer_key = f"gdn:{_gated_deltanet_layer_key(ir, node)}"
     gdn_states: dict[str, Tensor] = env.setdefault("__internal_gated_deltanet_cache_states", {})  # type: ignore[assignment]
     if layer_key not in gdn_states:
-        gdn_states[layer_key] = _materialize_constant_tensor(g, torch.zeros(state_shape, dtype=torch.float16))
+        gdn_states[layer_key] = g.recurrent_cache_state(state_shape, dtype=g.FP16)
     return layer_key, gdn_states[layer_key]
 
 
@@ -502,11 +502,21 @@ def _lower_gated_deltanet_conv1d(
         cache_entries.append((layer_key, cache_state, cache_state))
 
     cache_state = conv_states[layer_key]
+    if batch_size != 1:
+        raise NotImplementedError(
+            f"gated_deltanet conv cache lowering currently supports batch_size=1 only, got {batch_size}"
+        )
     x_rows = g.reshape(mixed_qkv, (batch_size * seq_len, mixed_qkv_dim))
-    window = g.conv_cache_append(x_rows, cache_state)
-    window_nlc = g.reshape(window, (batch_size, kernel_size, mixed_qkv_dim))
-    conv_out = g.conv1d_causal(window_nlc, conv_weight, kernel_size=kernel_size, dilation=1)
-    return g.slice(conv_out, axis=1, start=kernel_size - 1, length=1)
+
+    if seq_len == 1:
+        window = g.conv_cache_append(x_rows, cache_state)
+        window_nlc = g.reshape(window, (batch_size, kernel_size, mixed_qkv_dim))
+        conv_out = g.conv1d_causal(window_nlc, conv_weight, kernel_size=kernel_size, dilation=1)
+        return g.slice(conv_out, axis=1, start=kernel_size - 1, length=1)
+
+    conv_out = g.conv1d_causal(mixed_qkv, conv_weight, kernel_size=kernel_size, dilation=1)
+    g.conv_cache_initialize(x_rows, cache_state)
+    return conv_out
 
 
 def _lower_constant_value(
@@ -2138,14 +2148,15 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         )
 
         deltanet_scale = 1.0 / math.sqrt(float(key_dim))
-        if op == "gated_deltanet_decode":
+        if seq_len == 1:
             deltanet_out = g.gated_deltanet_decode(q_4d, k_4d, v_4d, gate_log, beta, initial_state, deltanet_scale)
         else:
             deltanet_out = g.gated_deltanet_prefill(q_4d, k_4d, v_4d, gate_log, beta, initial_state, chunk_size, deltanet_scale)
         if cache_layer_key is not None:
             final_state = g.slice(deltanet_out, axis=1, start=seq_len, length=key_dim)
+            g.recurrent_cache_write(final_state, initial_state)
             cache_entries: list[tuple[str, Tensor, Tensor]] = env.setdefault("__internal_kv_cache_state_entries", [])  # type: ignore[assignment]
-            cache_entries.append((cache_layer_key, initial_state, final_state))
+            cache_entries.append((cache_layer_key, initial_state, initial_state))
 
         y_4d = g.slice(deltanet_out, axis=1, start=0, length=seq_len)
         y_2d = g.reshape(y_4d, (seq_len * num_v_heads, value_dim))

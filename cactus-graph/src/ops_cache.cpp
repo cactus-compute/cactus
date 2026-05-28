@@ -406,3 +406,64 @@ void compute_conv_cache_append_node(
         }
     }
 }
+
+void compute_conv_cache_initialize_node(
+    GraphNode& node,
+    const nodes_vector& nodes,
+    const node_index_map_t& node_index_map) {
+
+    const auto& new_data = get_input(node, 0, nodes, node_index_map);
+    auto& cache_buf = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    auto* meta = get_conv_meta(cache_buf);
+
+    const size_t ws = meta->window_size;
+    const size_t hd = meta->hidden_dim;
+
+    __fp16* cache_data = get_conv_data(cache_buf);
+    std::memset(cache_data, 0, ws * hd * sizeof(__fp16));
+    meta->head = 0;
+    meta->count = 0;
+
+    const size_t num_rows = new_data.total_size / hd;
+    if (num_rows == 0) return;
+
+    const __fp16* src;
+    std::vector<__fp16> converted;
+    if (new_data.precision == Precision::FP16) {
+        src = new_data.data_as<__fp16>();
+    } else if (new_data.precision == Precision::FP32) {
+        converted.resize(new_data.total_size);
+        Quantization::fp32_to_fp16(new_data.data_as<float>(), converted.data(), new_data.total_size);
+        src = converted.data();
+    } else {
+        converted.resize(new_data.total_size);
+        Quantization::int8_to_fp16(new_data.data_as<int8_t>(), converted.data(), new_data.total_size);
+        src = converted.data();
+    }
+
+    const size_t copy_rows = std::min(num_rows, ws);
+    const size_t start_row = num_rows - copy_rows;
+    std::memcpy(cache_data, src + start_row * hd, copy_rows * hd * sizeof(__fp16));
+    meta->head = copy_rows % ws;
+    meta->count = copy_rows;
+}
+
+void compute_recurrent_cache_state_node(
+    GraphNode& node,
+    const nodes_vector&,
+    const node_index_map_t&) {
+
+    if (node.output_buffer.get_data()) return;
+    node.output_buffer.allocate();
+    std::memset(node.output_buffer.get_data(), 0, node.output_buffer.byte_size);
+}
+
+void compute_recurrent_cache_write_node(
+    GraphNode& node,
+    const nodes_vector& nodes,
+    const node_index_map_t& node_index_map) {
+
+    const auto& src = get_input(node, 0, nodes, node_index_map);
+    auto& cache_buf = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
+    std::memcpy(cache_buf.get_data(), src.get_data(), src.byte_size);
+}
