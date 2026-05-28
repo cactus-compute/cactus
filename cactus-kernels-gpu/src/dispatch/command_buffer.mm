@@ -18,6 +18,7 @@ void command_buffer_barrier(CommandBuffer*) {}
 void command_buffer_commit(CommandBuffer*) {}
 void command_buffer_wait(CommandBuffer*) {}
 bool command_buffer_is_complete(const CommandBuffer*) { return true; }
+void command_buffer_destroy(CommandBuffer*) {}
 
 #else
 
@@ -97,6 +98,19 @@ bool command_buffer_is_complete(const CommandBuffer* cb) {
     if (!cb) return true;
     MTLCommandBufferStatus s = [cb->mtl_buffer status];
     return s == MTLCommandBufferStatusCompleted || s == MTLCommandBufferStatusError;
+}
+
+void command_buffer_destroy(CommandBuffer* cb) {
+    if (!cb) return;
+    @autoreleasepool {
+        if (cb->encoder_open && cb->encoder) {
+            [cb->encoder endEncoding];
+        }
+        cb->encoder = nil;
+        cb->encoder_open = false;
+        cb->mtl_buffer = nil;
+    }
+    delete cb;
 }
 
 #endif

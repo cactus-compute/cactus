@@ -28,6 +28,8 @@ Pipeline* pipeline_kv_cache_append(Context*, uint32_t, uint32_t) { return nullpt
 Pipeline* pipeline_sample_argmax(Context*, uint32_t) { return nullptr; }
 Pipeline* pipeline_sample_top_k_top_p(Context*, uint32_t) { return nullptr; }
 Pipeline* pipeline_embed_lookup(Context*, uint32_t) { return nullptr; }
+Pipeline* pipeline_residual_add(Context*, uint32_t) { return nullptr; }
+Pipeline* pipeline_mul_mv_fp16(Context*, uint32_t, uint32_t) { return nullptr; }
 
 #else
 
@@ -67,6 +69,13 @@ namespace fc {
     // Sampling / lookup
     constexpr uint32_t SAMPLE_VOCAB   = 70;
     constexpr uint32_t EMBED_HIDDEN   = 71;
+
+    // Residual add
+    constexpr uint32_t RESIDUAL_AXIS  = 80;
+
+    // fp16 mat-vec (LM head)
+    constexpr uint32_t MM_K_FP        = 90;
+    constexpr uint32_t MM_N_FP        = 91;
 }
 
 // ----------------------------------------------------------------------------
@@ -197,6 +206,27 @@ Pipeline* pipeline_embed_lookup(Context* ctx, uint32_t hidden_dim) {
         {"HIDDEN_DIM", FCType::UINT32, fc::EMBED_HIDDEN, {.u32 = hidden_dim}},
     };
     return pipeline_create(ctx, "embed_lookup", fcs, 1);
+}
+
+// ----------------------------------------------------------------------------
+// Residual add: y[:] += x[:]
+// ----------------------------------------------------------------------------
+Pipeline* pipeline_residual_add(Context* ctx, uint32_t axis_size) {
+    FunctionConstant fcs[1] = {
+        {"AXIS_SIZE_RES", FCType::UINT32, fc::RESIDUAL_AXIS, {.u32 = axis_size}},
+    };
+    return pipeline_create(ctx, "residual_add", fcs, 1);
+}
+
+// ----------------------------------------------------------------------------
+// fp16 mat-vec (LM head)
+// ----------------------------------------------------------------------------
+Pipeline* pipeline_mul_mv_fp16(Context* ctx, uint32_t K, uint32_t N) {
+    FunctionConstant fcs[2] = {
+        {"MM_K_FP", FCType::UINT32, fc::MM_K_FP, {.u32 = K}},
+        {"MM_N_FP", FCType::UINT32, fc::MM_N_FP, {.u32 = N}},
+    };
+    return pipeline_create(ctx, "mul_mv_fp16", fcs, 2);
 }
 
 #endif  // CACTUS_HAS_METAL

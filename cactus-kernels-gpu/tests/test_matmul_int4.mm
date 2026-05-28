@@ -73,13 +73,11 @@ int main(int argc, char** argv) {
                                               ((q3 & 0xF) << 12));
                 uint32_t k4_row = (g * 128 + i) / 4;
                 qs[k4_row * N + n] = packed;
-                // Dequantize for the CPU reference. NB: kernel currently treats
-                // quants as unsigned (no -8 zero-point) since the cactus
-                // codebook is centered at zero. Match that here.
-                W_f32[(g * 128 + i + 0) * N + n] = scale * float(q0);
-                W_f32[(g * 128 + i + 1) * N + n] = scale * float(q1);
-                W_f32[(g * 128 + i + 2) * N + n] = scale * float(q2);
-                W_f32[(g * 128 + i + 3) * N + n] = scale * float(q3);
+                // q4_0 dequant semantics: weight = scale * (nibble - 8).
+                W_f32[(g * 128 + i + 0) * N + n] = scale * float(q0 - 8);
+                W_f32[(g * 128 + i + 1) * N + n] = scale * float(q1 - 8);
+                W_f32[(g * 128 + i + 2) * N + n] = scale * float(q2 - 8);
+                W_f32[(g * 128 + i + 3) * N + n] = scale * float(q3 - 8);
             }
         }
     }

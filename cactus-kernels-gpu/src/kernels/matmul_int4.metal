@@ -57,15 +57,22 @@ kernel void mul_mv_int4_fp16(
     const uint row_base = tgid.x * MV_ROWS_PER_GROUP;
     if (row_base >= N) return;
 
-    // 32 threads × 4 weights/thread = 128 weights = 1 CQ4 group per iteration.
-    // Each thread accumulates into 4 per-row registers; simd_sum reduces
-    // across the simdgroup at the end. (sum-of-x for the -8 zero-point fix
-    // will be reintroduced when we wire the cactus CQ4 zero-point semantics.)
-    float acc[MV_ROWS_PER_GROUP] = {0.f, 0.f, 0.f, 0.f};
+    // q4_0-style symmetric int4: dequant(nibble) = scale * (nibble - 8).
+    //
+    // Split into two accumulators so we minimize simd_sums:
+    //   acc_pos[r] = sum over groups + threads of  scale[g,r] * (nibble * x).
+    //               Each thread accumulates its partial → simd_sum at the end.
+    //   acc_neg[r] = sum over groups of  scale[g,r] * (sum_x_group).
+    //               sum_x_group is a SCALAR shared by all threads (one
+    //               simd_sum per group), so only lane 0 needs to accumulate
+    //               to avoid 32× double-counting.
+    //   y[r] = acc_pos[r] - 8 * acc_neg[r] [+ bias[r]]
+    //
+    // Cost: 1 simd_sum/group (sum_x) + 4 simd_sums total (per row, at end).
+    float acc_pos[MV_ROWS_PER_GROUP] = {0.f, 0.f, 0.f, 0.f};
+    float acc_neg[MV_ROWS_PER_GROUP] = {0.f, 0.f, 0.f, 0.f};
 
     const uint group_count = K / CQ4_GROUP_SIZE;
-    // One scale per group of 128, so 1 scale per 32 uint16s of qs.
-    // Loop K in chunks of 32 uint16s = 128 nibbles = 1 CQ4 group.
     for (uint g = 0; g < group_count; ++g) {
         // Scale for this group, per row (4 rows).
         float s[MV_ROWS_PER_GROUP];
@@ -74,39 +81,39 @@ kernel void mul_mv_int4_fp16(
             s[r] = float(scales[(g * N) + (row_base + r)]);
         }
 
-        // Per-iteration: 1 thread handles 1 uint16 = 4 nibbles per row.
-        // The 32 threads cover all 32 uint16s in the group.
-        const uint w_off_thread = (g * CQ4_UINT16_PER_GROUP) + tid;          // uint16 index
-        const uint x_off_thread = (g * CQ4_GROUP_SIZE) + (tid * 4u);         // 4 fp16 inputs
+        // Each of 32 threads handles 1 uint16 (= 4 nibbles per row) + 4 inputs.
+        const uint w_off_thread = (g * CQ4_UINT16_PER_GROUP) + tid;
+        const uint x_off_thread = (g * CQ4_GROUP_SIZE) + (tid * 4u);
 
-        // Load 4 inputs and pre-shift.
-        float xv[4];
-        xv[0] = float(x[x_off_thread + 0]);
-        xv[1] = float(x[x_off_thread + 1]) * (1.0f / 16.0f);
-        xv[2] = float(x[x_off_thread + 2]) * (1.0f / 256.0f);
-        xv[3] = float(x[x_off_thread + 3]) * (1.0f / 4096.0f);
-        // Inner reduce: for each of 4 rows, fetch one uint16 of nibbles,
-        // multiply by pre-shifted x, accumulate.
+        float x0 = float(x[x_off_thread + 0]);
+        float x1 = float(x[x_off_thread + 1]);
+        float x2 = float(x[x_off_thread + 2]);
+        float x3 = float(x[x_off_thread + 3]);
+        // Pre-shifted xs match the nibble bit positions inside one uint16.
+        float xv[4] = {x0,
+                       x1 * (1.0f / 16.0f),
+                       x2 * (1.0f / 256.0f),
+                       x3 * (1.0f / 4096.0f)};
+        // Per-group sum of *all* 128 x's: each thread contributes 4.
+        float sum_x_group = simd_sum(x0 + x1 + x2 + x3);
+
         #pragma unroll
         for (uint r = 0; r < MV_ROWS_PER_GROUP; ++r) {
             uint16_t q = qs[(w_off_thread * N) + (row_base + r)];
-            acc[r] += s[r] * cq4_nibble_dot(q, xv);
+            acc_pos[r] += s[r] * cq4_nibble_dot(q, xv);
+            if (tid == 0u) acc_neg[r] += s[r] * sum_x_group;
         }
     }
 
-    // Reduce across simdgroup: each thread holds partial per-row sums.
+    // Reduce acc_pos across the simdgroup. acc_neg lives only on lane 0.
     #pragma unroll
     for (uint r = 0; r < MV_ROWS_PER_GROUP; ++r) {
-        acc[r] = simd_sum(acc[r]);
+        acc_pos[r] = simd_sum(acc_pos[r]);
     }
 
     if (tid == 0u) {
         for (uint r = 0; r < MV_ROWS_PER_GROUP; ++r) {
-            // Per-group fixup placeholder: we hold the cactus codebook-centered-
-            // at-zero assumption. The -8 zero-point correction is folded
-            // (sum_x_minus8 unused for now; reinstated when we add the
-            // proper per-group fixup as part of the CQ4 quant integration).
-            float out_val = acc[r];
+            float out_val = acc_pos[r] - 8.0f * acc_neg[r];
             if (HAS_BIAS) out_val += float(bias[row_base + r]);
             y[row_base + r] = half(out_val);
         }

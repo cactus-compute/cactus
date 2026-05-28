@@ -150,6 +150,8 @@ void command_buffer_barrier(CommandBuffer* cb);
 void command_buffer_commit(CommandBuffer* cb);
 void command_buffer_wait(CommandBuffer* cb);
 bool command_buffer_is_complete(const CommandBuffer* cb);
+// Release the CommandBuffer wrapper. Safe to call after wait or before commit.
+void command_buffer_destroy(CommandBuffer* cb);
 
 // ============================================================================
 // High-level convenience: build cactus kernel pipelines by enum name
@@ -164,8 +166,11 @@ Pipeline* pipeline_mul_mv_int4_fp16(Context* ctx, uint32_t K, uint32_t N);
 // INT4 matrix-matrix (prefill): out = W_int4 * X_fp16, batched.
 Pipeline* pipeline_mul_mm_int4_fp16(Context* ctx, uint32_t K, uint32_t N, uint32_t M_tile);
 
-// FP16 × FP16 matrix-matrix (e.g., LM head).
+// FP16 × FP16 matrix-matrix (e.g., LM head, prefill batch).
 Pipeline* pipeline_mul_mm_fp16(Context* ctx, uint32_t K, uint32_t N);
+
+// FP16 × FP16 matrix-vector (decode: LM head, sometimes attention proj).
+Pipeline* pipeline_mul_mv_fp16(Context* ctx, uint32_t K, uint32_t N);
 
 // RMSNorm with fused weight scale. `axis_size` = the last dim (model dim).
 Pipeline* pipeline_rms_norm_fp16(Context* ctx, uint32_t axis_size);
@@ -193,6 +198,9 @@ Pipeline* pipeline_swiglu(Context* ctx, uint32_t hidden_dim);
 
 // Append a single token's K,V into the per-layer cache at offset.
 Pipeline* pipeline_kv_cache_append(Context* ctx, uint32_t num_kv_heads, uint32_t head_dim);
+
+// In-place residual add: y[:] += x[:].
+Pipeline* pipeline_residual_add(Context* ctx, uint32_t axis_size);
 
 // Sampling: argmax (greedy) and top-k/top-p stochastic.
 Pipeline* pipeline_sample_argmax(Context* ctx, uint32_t vocab_size);

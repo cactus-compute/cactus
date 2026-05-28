@@ -60,10 +60,19 @@ class Op:
 @dataclass
 class Layer:
     layer_idx: int
+    # "full"  → this layer computes its own K/V (q,k,v,o projections present)
+    # "sliding" → reuses K/V from the kv_source_layer (only q,o projections present)
+    attention_kind: str = "full"
+    kv_source_layer: int = -1   # -1 means self (i.e. layer_idx)
     ops: list[Op] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"layer_idx": self.layer_idx, "ops": [o.to_dict() for o in self.ops]}
+        return {
+            "layer_idx": self.layer_idx,
+            "attention_kind": self.attention_kind,
+            "kv_source_layer": self.kv_source_layer,
+            "ops": [o.to_dict() for o in self.ops],
+        }
 
 
 @dataclass
@@ -179,35 +188,87 @@ def build_gpu_plan(model: torch.nn.Module, *, quantize_bits: int | None) -> GPUP
         kv_cache_dtype=kv_cache_dtype,
     )
 
-    # M1: enumerate per-layer ops with placeholder weight offsets. The real
-    # offsets are filled in by ``weight_pack`` (it builds the offsets as a
-    # side-effect of laying out the binary file).
+    # Per-layer attention kinds. Gemma 4 uses an interleaved schedule
+    # (e.g. ["sliding","sliding","sliding","sliding","full",...]) where
+    # *some* sliding layers reuse K/V from the nearest preceding `full`
+    # layer (these have only q+o projections). Other architectures
+    # (LLaMA, Qwen) have uniform `full` everywhere.
+    #
+    # Empirical rule: if the layer module HAS k_proj/v_proj, treat as
+    # "full" regardless of layer_types tag. Only mark as "sliding" if
+    # the module is actually missing those Linears AND there's a prior
+    # full-attention layer to source from. This handles Gemma 4's
+    # first-4-layer edge case (config says sliding but module has k/v).
+    layer_types = list(getattr(cfg, "layer_types", []))
+
+    def _module_has_kv(li: int) -> bool:
+        # Walk the HF model to find the layer's self_attn and check for an
+        # actually-present k_proj weight tensor (not just the attribute, which
+        # may exist as None on sliding layers).
+        for path in ("model.language_model.layers", "model.layers",
+                     "language_model.layers", "model.model.layers"):
+            mod = model
+            ok = True
+            for part in path.split("."):
+                mod = getattr(mod, part, None)
+                if mod is None:
+                    ok = False
+                    break
+            if ok and li < len(mod):
+                sa = getattr(mod[li], "self_attn", None)
+                if sa is None:
+                    return False
+                kp = getattr(sa, "k_proj", None)
+                return kp is not None and hasattr(kp, "weight")
+        return True  # conservative: assume full
+
+    def _kind_for(li: int) -> tuple[str, int]:
+        # Empirical: if the layer has its own k_proj.weight, treat as full.
+        # Otherwise it must be sharing KV from the nearest preceding layer
+        # that does. Ignore the config's layer_types — it's misleading for
+        # Gemma 4 (some "full_attention"-tagged layers also lack their own KV).
+        if _module_has_kv(li):
+            return "full", -1
+        for prev in range(li - 1, -1, -1):
+            if _module_has_kv(prev):
+                return "sliding", prev
+        return "full", -1  # no prior with KV → can't really happen for sane models
+
     for li in range(num_layers):
-        layer = Layer(layer_idx=li)
+        kind, src = _kind_for(li)
+        layer = Layer(layer_idx=li, attention_kind=kind, kv_source_layer=src)
         # canonical Llama-style decoder layer:
         #   in -> rms_norm_attn -> q_proj | k_proj | v_proj -> rope -> kv_append
         #      -> flash_attn -> out_proj -> +residual
         #      -> rms_norm_mlp -> gate_proj | up_proj -> swiglu -> down_proj -> +residual
         layer.ops.append(Op("rms_norm", {"tag": "attn_norm", "axis_size": hidden_dim}))
-        for tag, in_dim, out_dim in (
-            ("q_proj", hidden_dim, num_q_heads  * head_dim),
-            ("k_proj", hidden_dim, num_kv_heads * head_dim),
-            ("v_proj", hidden_dim, num_kv_heads * head_dim),
-        ):
+        # q_proj is always present. k_proj / v_proj only on full-attention layers.
+        proj_specs = [("q_proj", hidden_dim, num_q_heads * head_dim)]
+        if kind == "full":
+            proj_specs += [
+                ("k_proj", hidden_dim, num_kv_heads * head_dim),
+                ("v_proj", hidden_dim, num_kv_heads * head_dim),
+            ]
+        for tag, in_dim, out_dim in proj_specs:
             layer.ops.append(Op("mul_mv_int4_fp16" if quantize_bits == 4 else "mul_mv_fp16",
                                 {"tag": tag, "K": in_dim, "N": out_dim}))
+        # RoPE — full layers apply to both Q and K (their own freshly-computed
+        # K). Sliding layers only apply to Q (K from the source layer was
+        # already RoPE'd when that layer ran).
         layer.ops.append(Op("rope_apply",
                             {"head_dim": head_dim,
                              "num_q_heads": num_q_heads,
-                             "num_kv_heads": num_kv_heads,
+                             "num_kv_heads": num_kv_heads if kind == "full" else 0,
                              "is_neox": rope_neox,
                              "theta": rope_theta}))
-        layer.ops.append(Op("kv_cache_append",
-                            {"num_kv_heads": num_kv_heads, "head_dim": head_dim}))
+        if kind == "full":
+            layer.ops.append(Op("kv_cache_append",
+                                {"num_kv_heads": num_kv_heads, "head_dim": head_dim}))
         layer.ops.append(Op("flash_attn",
                             {"head_dim_q": head_dim, "head_dim_v": head_dim,
                              "num_query_groups": num_q_heads // max(1, num_kv_heads),
-                             "causal": True, "has_softcap": False}))
+                             "causal": True, "has_softcap": False,
+                             "kv_source_layer": src if kind == "sliding" else li}))
         layer.ops.append(Op("mul_mv_int4_fp16" if quantize_bits == 4 else "mul_mv_fp16",
                             {"tag": "out_proj", "K": num_q_heads * head_dim, "N": hidden_dim}))
         layer.ops.append(Op("residual_add", {"axis_size": hidden_dim}))

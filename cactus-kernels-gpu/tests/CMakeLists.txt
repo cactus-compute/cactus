@@ -9,3 +9,7 @@ target_compile_options(test_matmul_int4 PRIVATE -fobjc-arc)
 add_executable(test_matmul_int4_simple test_matmul_int4_simple.mm)
 target_link_libraries(test_matmul_int4_simple PRIVATE cactus-kernels-gpu)
 target_compile_options(test_matmul_int4_simple PRIVATE -fobjc-arc)
+
+add_executable(test_matmul_fp16 test_matmul_fp16.mm)
+target_link_libraries(test_matmul_fp16 PRIVATE cactus-kernels-gpu)
+target_compile_options(test_matmul_fp16 PRIVATE -fobjc-arc)

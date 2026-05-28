@@ -49,10 +49,10 @@ def run_gpu_pipeline(
     # Step 1: build the dispatch plan from the HF model's architecture.
     plan = build_gpu_plan(hf_model, quantize_bits=quantize_bits)
     plan_path = gpu_dir / "gpu_plan.json"
-    plan.write(plan_path)
-    print(f"gpu.pipeline: wrote plan -> {plan_path}")
 
-    # Step 2: pack the weights into the GPU layout described by the plan.
+    # Step 2: pack the weights. This MUTATES the plan ops to record byte
+    # offsets per weight; we serialize the plan AFTER packing so the runtime
+    # sees the offsets.
     weights_path = gpu_dir / "weights.bin"
     scales_path  = gpu_dir / "scales.bin"
     embed_path   = gpu_dir / "embedding.bin"
@@ -64,6 +64,10 @@ def run_gpu_pipeline(
         embedding_path=embed_path,
         quantize_bits=quantize_bits,
     )
+
+    # Step 3: serialize the populated plan.
+    plan.write(plan_path)
+    print(f"gpu.pipeline: wrote plan -> {plan_path}")
     print(
         "gpu.pipeline: wrote weights ({:.1f} MB) + scales ({:.1f} MB) + "
         "embedding ({:.1f} MB)".format(

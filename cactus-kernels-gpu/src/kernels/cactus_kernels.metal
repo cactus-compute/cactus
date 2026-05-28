@@ -8,3 +8,5 @@
 #include "embed_and_kv.metal"
 #include "sample.metal"
 #include "flash_attn.metal"
+#include "residual_add.metal"
+#include "matmul_fp16.metal"

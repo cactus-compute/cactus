@@ -19,7 +19,64 @@ For the architectural rationale, see `DESIGN.md` in this directory.
 | CLI plumbing (`--gpu`, `--gpu-quantize`) | ✅ | Added to the convert flow alongside `--npu`. |
 | Existing tests (Parakeet ASR, LFM-VL chat) | ✅ still pass | Verified no regression after GPU integration. |
 
-## What's left for end-to-end (M2 → M3 → M4)
+## What landed in the M2/M3 push (this session)
+
+| Area | Status |
+|---|---|
+| `weight_pack.py` real q4_0 quantization (group=128 symmetric) | ✅ |
+| Bundle emit on real Gemma 4 → 1.7 GB weights + 28.7 MB scales + 805 MB embedding | ✅ |
+| q_proj layer 0 round-trip dequant cos_sim vs HF | **0.993** ✅ |
+| Embedding round-trip vs HF | **bit-exact** ✅ |
+| Plan parser in C++ (picojson) | ✅ |
+| Pipeline cache + per-shape Metal pipelines built lazily on first use | ✅ |
+| `decode_one` plan walker — dispatches embed → (rms_norm → q/k/v → rope → kv_append → flash_attn → out_proj → residual → rms_norm → gate/up → swiglu → down → residual)×N → final_norm → lm_head → argmax | ✅ |
+| `residual_add` + `mul_mv_fp16` Metal kernels | ✅ |
+| `command_buffer_destroy` public API | ✅ |
+| End-to-end smoke test (`test_gpu_decode`): loads Gemma 4 bundle, runs `decode_one`×2 without crashing, KV cache advances | ✅ |
+| Numerical correctness vs HF on a real model | ❌ (see "Known gap" below) |
+
+### Forward pass produces real output (M3 fully wired)
+
+After fixing three subtle bugs:
+
+1. **Buffer lifetime** — `command_buffer_begin` uses `commandBufferWithUnretainedReferences` (MLX optimization, skips Metal's hazard tracking). This requires every bound `MTLBuffer` to stay alive until the command buffer completes. The walker was calling `buffer_destroy` mid-encode for weight wrappers + small param buffers, so the GPU was reading freed memory by the time it executed. Fix: collect all ephemerals into a `std::vector<Buffer*>` and free after `command_buffer_wait`. **This was the killer bug.**
+2. **RoPE binding** — kernel reads `num_q_heads` / `num_kv_heads` via `[[buffer(3)]]` / `[[buffer(4)]]`; dispatch was only binding 3 buffers. Fixed by allocating two 4-byte SHARED buffers per call.
+3. **Empirical attention_kind detection** — Gemma 4's `cfg.layer_types` is misleading. Some "full_attention"-tagged layers (19, 24, 29, 34) also lack their own k_proj. Switched plan generator to ignore the config tag and just check `module.self_attn.k_proj.weight` empirically.
+
+**Result on Gemma 4 E2B**, `decode_one(BOS=2)`:
+- residual / norm_out / logits all contain real fp16 values (not zeros)
+- Argmax returns token id **8227** (` Miss`); HF returns **236761** (`.`)
+- Output is incorrect but the entire 35-layer × 14-op-per-layer dispatch path executes cleanly
+
+### Followup pass: Gemma 4 sliding-attention KV sharing (partial)
+
+Encoded `attention_kind` ("full"/"sliding") and `kv_source_layer` per layer in the plan. `plan.py` now skips k_proj/v_proj op emission for sliding layers; the C++ walker routes `flash_attn` to the source layer's K/V cache. After re-emit, the "missing tags" warning dropped from 20 each → 4 each (the first 4 sliding layers preceding the first full-attention layer at index 4 — these are an unhandled edge case; Gemma 4 may apply special init or actually have them with full KV).
+
+Re-tested: `decode_one(2)` still returns 0. Root causes still in play, in order of likelihood:
+
+1. **`mul_mv_fp16` (LM head kernel) is untested.** It's the simplest of the kernels but has zero numerical validation against a CPU reference. If it produces garbage, the sampler gets uninitialized memory and `simd_max` over all-zeros returns 0.
+2. **RoPE dispatch binding is incomplete.** I bind 3 buffers (q, k, position_ids) but the kernel signature also references `num_q_heads` / `num_kv_heads` via additional buffers — those aren't bound in the dispatch wrapper. They'd read garbage.
+3. **First 4 layers of Gemma 4** have no `full_attention` predecessor; my plan generator emits q-only (sliding) for them which means their attention has no K/V cache to read from. Should likely fall back to "full" if the layer module has k_proj.
+4. **q_proj on sliding layers reads from norm_out** which was computed correctly, BUT the output `q_buf` gets reused next layer without being cleared — but the kernel writes every element so this should be fine.
+
+### Known gap: numerical correctness needs kernel-level debugging
+
+Gemma 4's `Gemma4TextDecoderLayer` interleaves two attention flavors:
+
+- 7 `full_attention` layers (every 5th: 4, 9, 14, 19, 24, 29, 34) — these have q, k, v, o projections.
+- 28 `sliding_attention` layers — these only have q + o; they **reuse K/V from the nearest preceding `full_attention` layer.**
+
+Our plan generator emits q/k/v/o ops for *every* layer, but `weight_pack.py` correctly skips the missing k_proj/v_proj on sliding layers (with a console warning). The C++ `decode_one` walker then **also** skips those ops at runtime — but because the K/V buffers (`k_buf`, `v_buf`) hold stale values from the previous layer, the `kv_cache_append` + `flash_attn` for sliding layers read garbage.
+
+**This is why `decode_one(2)` currently returns token 0** on Gemma 4 — partially-correct residual stream propagates through, but with garbage attention from sliding layers, the final logits collapse.
+
+Fix lives in:
+- `plan.py`: encode `attention_kind: "full"|"sliding"` per layer + `kv_source_layer: int` for sliding ones.
+- `gpu_model.mm`: when an op is on a sliding layer, route `kv_cache_append` + `flash_attn` to the K/V buffers of `kv_source_layer` instead of computing fresh.
+
+Estimated work: ~100 lines in plan.py, ~50 in gpu_model.mm.
+
+## What's left (M3 polish → M4)
 
 | Area | Owner | Notes |
 |---|---|---|

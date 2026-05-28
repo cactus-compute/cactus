@@ -35,6 +35,7 @@ else()
     find_library(SECURITY_FRAMEWORK Security REQUIRED)
     find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
     find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
+    find_library(METAL_FRAMEWORK Metal REQUIRED)
 endif()
 
 function(cactus_link_target target_name)
@@ -52,6 +53,7 @@ function(cactus_link_target target_name)
         target_link_libraries(${target_name} PRIVATE
             ${ACCELERATE_FRAMEWORK} ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK}
             ${SECURITY_FRAMEWORK} ${SYSTEMCONFIGURATION_FRAMEWORK} ${CFNETWORK_FRAMEWORK}
+            ${METAL_FRAMEWORK}
         )
         if(CACTUS_CURL_LIBRARY_MACOS)
             target_link_libraries(${target_name} PRIVATE ${CACTUS_CURL_LIBRARY_MACOS})
