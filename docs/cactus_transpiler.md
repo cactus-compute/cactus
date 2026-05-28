@@ -297,6 +297,105 @@ result = outputs[0].numpy()
 print("Output shape:", result.shape)  # (1, 32)
 ```
 
+### Generic JAX User Graphs
+
+JAX and Flax models can use the generic user-graph bundle path when the caller owns
+the model code, params, tokenizer, masks, and runtime loop. Cactus does not infer a
+full chat runtime here. It captures the graph entrypoints you provide, flattens the
+params pytree, writes FP16 mmap weights, lowers each entrypoint to `graph.cactus`,
+and writes per-component `raw_ir.json` and `optimized_ir.json` artifacts so the
+graphs can be inspected or loaded later.
+
+```python
+import jax.numpy as jnp
+import numpy as np
+
+from cactus.transpile.capture_jax import JaxGraphSpec
+from cactus.transpile.jax_user_graph_bundle import build_jax_user_graph_bundle
+from cactus.transpile.jax_user_graph_bundle import load_jax_user_graph_bundle
+
+
+def model(params, x):
+    return jnp.maximum(x @ params["w"] + params["b"], 0)
+
+
+params = {"w": jnp.ones((4, 3), jnp.float16), "b": jnp.zeros((3,), jnp.float16)}
+example_x = jnp.ones((2, 4), jnp.float16)
+
+result = build_jax_user_graph_bundle(
+    params=params,
+    output_dir="/tmp/my-jax-bundle",
+    model_id="my-jax-model",
+    specs=(JaxGraphSpec(name="forward", fn=model, example_args=(example_x,)),),
+)
+
+loaded = load_jax_user_graph_bundle(result.output_dir)
+y = loaded.execute("forward", np.ones((2, 4), np.float16))[0].numpy()
+```
+
+For an encoder-decoder model such as Needle, the same API is used; the user chooses
+the graph boundaries and keeps tokenization/sampling in their frontend:
+
+```python
+params, model, tokenizer, config = load_needle_model()  # user/model-specific
+src = tokenizer.encode("What time is it in Tokyo?")
+tgt = tokenizer.encode("<bos>")
+src_mask = make_padding_mask(src, config.pad_token_id)
+tgt_mask = make_causal_mask(tgt.shape[1])
+encoder_out, enc_mask = model.apply({"params": params}, src, src_mask, method=model.encode_text)
+
+result = build_jax_user_graph_bundle(
+    params=params,
+    output_dir="weights/needle",
+    model_id="needle",
+    task="encoder-decoder",
+    specs=(
+        JaxGraphSpec(
+            name="encoder",
+            fn=lambda params, src, src_mask: model.apply(
+                {"params": params}, src, src_mask, method=model.encode_text
+            ),
+            example_args=(src, src_mask),
+            output_names=("encoder_out", "encoder_mask"),
+        ),
+        JaxGraphSpec(
+            name="decoder_prefill",
+            fn=lambda params, tgt, encoder_out, tgt_mask, cross_mask: model.apply(
+                {"params": params}, tgt, encoder_out, tgt_mask, cross_mask, method=model.decode
+            ),
+            example_args=(tgt, encoder_out, tgt_mask, enc_mask),
+            output_names=("logits",),
+        ),
+    ),
+)
+
+loaded = load_jax_user_graph_bundle(result.output_dir)
+encoder_out, enc_mask = loaded.execute("encoder", src, src_mask)
+logits = loaded.execute("decoder_prefill", tgt, encoder_out.numpy(), tgt_mask, enc_mask.numpy())[0].numpy()
+next_token = int(np.argmax(logits[0, -1]))
+```
+
+Supported now: JAX functions, callable classes, Flax inference modules, params
+pytrees as FP16 mmap weights, multiple graphs per bundle, dense/embedding/gather,
+dot/general matmul, elementwise math, reshape/transpose/concat/split/stack/slice,
+tile/repeat, sum/mean/min/max, softmax, GELU/SiLU/ReLU/sigmoid/tanh, RMSNorm,
+inference BatchNorm, Conv1D, and runtime-supported Conv2D forms.
+
+Not supported yet: pooling/general `reduce_window`, full general Conv2D coverage,
+BatchNorm or dropout training mode, dynamic slice/update with runtime indices, pad,
+argmax, sort/argsort, cumsum, scatter updates, general `take_along_axis`, automatic
+tokenizer/chat integration with `cactus_init`/`cactus_complete`, automatic
+prefill/decode splitting, and automatic KV-cache creation. For fast decode, expose a
+separate `decoder_step` graph with cache tensors as explicit inputs/outputs.
+
+Only rewrites that improved runtime are enabled by default: RMSNorm and SiLU.
+LayerNorm, RoPE, and attention-shaped graphs stay decomposed for now. Local
+benchmarks showed their fused forms were more numerically stable but slower on the
+current graph backend, mostly because the kernels take general fused paths and JAX
+often represents attention tensors in `BTHD` order while the fused Cactus attention
+kernel expects `BHSD` order (`batch`, `heads`, `sequence/tokens`, `head_dim`),
+requiring extra transpose operations around the fused op.
+
 ---
 
 ## Artifact Layout
@@ -313,13 +412,21 @@ transpiled/<model>/
   components/              # for multimodal models
     manifest.json          # component order, input/output names
     vision_encoder/
+      raw_ir.json
+      optimized_ir.json
       graph.cactus
       bound_constants/
     audio_encoder/
+      raw_ir.json
+      optimized_ir.json
       graph.cactus
     lm_encoder/
+      raw_ir.json
+      optimized_ir.json
       graph.cactus
     decoder/
+      raw_ir.json
+      optimized_ir.json
       graph.cactus
 ```
 
