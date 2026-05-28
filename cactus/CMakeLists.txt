@@ -11,6 +11,11 @@ endif()
 
 set(_ARCHIVES $<TARGET_FILE:cactus_engine> $<TARGET_FILE:cactus_graph> $<TARGET_FILE:cactus_kernels>)
 set(_DEPS cactus_engine cactus_graph cactus_kernels)
+# GPU kernel dispatch lib (Metal-backed) is added by cactus-engine on Apple.
+if(APPLE AND TARGET cactus-kernels-gpu)
+    list(APPEND _ARCHIVES $<TARGET_FILE:cactus-kernels-gpu>)
+    list(APPEND _DEPS cactus-kernels-gpu)
+endif()
 
 if(APPLE)
     add_custom_target(cactus ALL
@@ -34,11 +39,19 @@ set_target_properties(cactus_shared PROPERTIES OUTPUT_NAME cactus)
 add_dependencies(cactus_shared ${_DEPS})
 
 if(APPLE)
-    target_link_options(cactus_shared PRIVATE
+    set(_FORCE_LOADS
         -Wl,-force_load,$<TARGET_FILE:cactus_engine>
         -Wl,-force_load,$<TARGET_FILE:cactus_graph>
-        -Wl,-force_load,$<TARGET_FILE:cactus_kernels>
-    )
+        -Wl,-force_load,$<TARGET_FILE:cactus_kernels>)
+    if(TARGET cactus-kernels-gpu)
+        list(APPEND _FORCE_LOADS -Wl,-force_load,$<TARGET_FILE:cactus-kernels-gpu>)
+    endif()
+    target_link_options(cactus_shared PRIVATE ${_FORCE_LOADS})
+    # The Metal kernel dispatch wrappers reference Metal.framework symbols.
+    if(TARGET cactus-kernels-gpu)
+        find_library(_METAL_FW Metal REQUIRED)
+        target_link_libraries(cactus_shared PRIVATE ${_METAL_FW})
+    endif()
     set(_CURL "${CACTUS_CURL_ROOT}/macos/libcurl.a")
     if(EXISTS "${_CURL}")
         target_link_libraries(cactus_shared PRIVATE "${_CURL}")

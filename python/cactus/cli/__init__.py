@@ -262,8 +262,16 @@ def create_parser():
                                 help="Force conversion from source")
     convert_parser.add_argument("--npu", action="store_true",
                                 help="Also emit CoreML .mlpackage(s) for NPU (Apple Neural Engine) audio + vision encoders")
-    convert_parser.add_argument("--npu-quantize", type=int, choices=[0, 4, 8], default=4,
-                                help="Quantize .mlpackage weights (0=off, 4=int4 default, 8=int8). Smaller weights = faster on ANE + fits saved .mlpackage in less disk.")
+    convert_parser.add_argument("--npu-quantize", type=int, choices=[0, 4, 8], default=None,
+                                help="Legacy override that forces BOTH audio and vision .mlpackages to the same quant (0=fp16, 4=int4, 8=int8). When unset, per-component defaults apply: audio=int8, vision=fp16.")
+    convert_parser.add_argument("--npu-audio-quantize", type=int, choices=[0, 4, 8], default=None,
+                                help="Audio encoder weight quant (0=fp16, 4=int4, 8=int8). Default int8.")
+    convert_parser.add_argument("--npu-vision-quantize", type=int, choices=[0, 4, 8], default=None,
+                                help="Vision encoder weight quant (0=fp16, 4=int4, 8=int8). Default fp16 — int4 is known to degrade Gemma 4 vision output.")
+    convert_parser.add_argument("--gpu", action="store_true",
+                                help="Also emit a Metal GPU bundle (per-model dispatch plan + packed weights) for Apple GPU prefill + decode")
+    convert_parser.add_argument("--gpu-quantize", type=int, choices=[0, 4], default=4,
+                                help="Quantize GPU weights (0=fp16, 4=cq4 group128). 4 is the default; fp16 needs ~2x memory but matmul is denser.")
 
     return parser
 

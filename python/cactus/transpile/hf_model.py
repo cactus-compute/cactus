@@ -304,6 +304,7 @@ def _write_component_bundle(
     component_io_signatures: dict[str, dict[str, tuple[str, ...]]] | None = None,
     graph_filename: str = "graph.cactus",
     npu_encoder_mlpackages: dict[str, str] | None = None,
+    gpu_bundle: dict[str, str] | None = None,
 ) -> Path:
     bundle_dir = artifact_dir / "components"
     component_order = [
@@ -419,6 +420,9 @@ def _write_component_bundle(
     for manifest_key, mlpackage_path in (npu_encoder_mlpackages or {}).items():
         if mlpackage_path:
             manifest_payload[manifest_key] = mlpackage_path
+    for manifest_key, gpu_path in (gpu_bundle or {}).items():
+        if gpu_path:
+            manifest_payload[manifest_key] = gpu_path
     _write_json(manifest_path, manifest_payload)
     return manifest_path
 
@@ -549,7 +553,9 @@ def _run_component_pipeline_transpile(
     # per-encoder coremltools temp, not HF model + all captured graphs.
     # Encoders only — text prefill is intentionally not on NPU.
     npu_enabled = bool(getattr(args, "npu", False))
-    npu_quantize = getattr(args, "npu_quantize", None)
+    npu_quantize = getattr(args, "npu_quantize", None)                # legacy override
+    npu_audio_quantize  = getattr(args, "npu_audio_quantize",  None)  # default 8 if neither set
+    npu_vision_quantize = getattr(args, "npu_vision_quantize", None)  # default 0 (fp16) if neither set
     npu_encoder_mlpackages: dict[str, str] = {}
     if npu_enabled and artifact_dir is not None:
         from .npu import run_encoder_pipeline
@@ -558,9 +564,29 @@ def _run_component_pipeline_transpile(
             artifact_dir,
             enabled=True,
             quantize_bits=npu_quantize,
+            audio_quantize_bits=npu_audio_quantize,
+            vision_quantize_bits=npu_vision_quantize,
         )
         # Drop coremltools-side intermediates before the heavy cactus capture
         # below — both phases compete for the same working set on a 16 GB host.
+        import gc as _gc
+        _gc.collect()
+
+    # GPU emit: per-model Metal dispatch plan + packed weights bundle. Runs
+    # at the same point in the pipeline as NPU (before cactus capture) so
+    # we can free intermediates symmetrically. Text decoder only — encoders
+    # remain on NPU. See ``python/cactus/transpile/gpu/`` + ``docs/gpu/DESIGN.md``.
+    gpu_enabled = bool(getattr(args, "gpu", False))
+    gpu_quantize = getattr(args, "gpu_quantize", None)
+    gpu_bundle: dict[str, str] = {}
+    if gpu_enabled and artifact_dir is not None:
+        from .gpu import run_gpu_pipeline
+        gpu_bundle = run_gpu_pipeline(
+            model,
+            artifact_dir,
+            enabled=True,
+            quantize_bits=gpu_quantize,
+        )
         import gc as _gc
         _gc.collect()
 
@@ -711,6 +737,7 @@ def _run_component_pipeline_transpile(
             component_io_signatures=component_io_signatures,
             graph_filename=args.graph_filename,
             npu_encoder_mlpackages=npu_encoder_mlpackages,
+            gpu_bundle=gpu_bundle,
         )
         print(f"saved_component_bundle_manifest={component_manifest_path}")
         for component in transpiled_component_graphs:
@@ -2968,9 +2995,35 @@ def main() -> int:
     parser.add_argument(
         "--npu-quantize",
         type=int,
-        default=4,
+        default=None,
         choices=[0, 4, 8],
-        help="Post-conversion weight quantization for the .mlpackage (0=off, 4=int4 default, 8=int8). Smaller weights = faster on ANE and smaller .mlpackage on disk.",
+        help="Legacy override that forces BOTH audio and vision encoders to the same weight quant (0=fp16, 4=int4, 8=int8). When unset, per-component defaults apply: audio=int8, vision=fp16.",
+    )
+    parser.add_argument(
+        "--npu-audio-quantize",
+        type=int,
+        default=None,
+        choices=[0, 4, 8],
+        help="Quantization for the audio encoder .mlpackage (0=fp16, 4=int4, 8=int8). Default int8: Conformer-style encoders absorb int8 quant noise well.",
+    )
+    parser.add_argument(
+        "--npu-vision-quantize",
+        type=int,
+        default=None,
+        choices=[0, 4, 8],
+        help="Quantization for the vision encoder .mlpackage (0=fp16, 4=int4, 8=int8). Default fp16: ViT-style towers are small enough that fp16 is the safer correctness default — int4 visibly degrades on Gemma 4 vision.",
+    )
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Also emit a Metal GPU bundle (per-model dispatch plan + packed weights) for Apple GPU prefill + decode.",
+    )
+    parser.add_argument(
+        "--gpu-quantize",
+        type=int,
+        default=4,
+        choices=[0, 4],
+        help="GPU weight format: 0=fp16, 4=CQ4 group128 (default).",
     )
     parser.add_argument("--no-fuse-gated-deltanet", action="store_true")
     parser.add_argument("--no-fuse-rms-norm", action="store_true")
