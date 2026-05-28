@@ -4,8 +4,18 @@
 #include <iostream>
 #include <iomanip>
 #include <cstring>
+#include <cstdlib>
+#include <stdexcept>
 
 using namespace TestUtils;
+
+static size_t kv_cache_data_offset(size_t max_seq) {
+    return 64 + max_seq * sizeof(uint64_t);
+}
+
+static uint64_t* kv_cache_positions(void* raw) {
+    return reinterpret_cast<uint64_t*>(static_cast<uint8_t*>(raw) + 64);
+}
 
 bool test_kv_cache_state_init() {
     CactusGraph g;
@@ -187,6 +197,98 @@ bool test_kv_cache_append_full_window_eviction() {
     }
 
     return true;
+}
+
+bool test_kv_cache_append_context_shift_prompt_keep() {
+    CactusGraph g;
+
+    const size_t kv_heads = 1, head_dim = 1;
+    const size_t max_seq = 16, compact_to = 8, keep = 4, prompt_len = 12;
+    size_t cache_node = g.kv_cache_state(max_seq, kv_heads, head_dim, 0, 0, compact_to, keep, prompt_len, true, true);
+
+    {
+        size_t kv_input = g.input({max_seq}, Precision::FP16);
+        std::vector<__fp16> data(max_seq);
+        for (size_t i = 0; i < max_seq; ++i) data[i] = static_cast<__fp16>(static_cast<float>(i));
+        g.set_input(kv_input, data.data(), Precision::FP16);
+        g.kv_cache_append(kv_input, cache_node, 0, 0, compact_to, keep, prompt_len, 0, true, true);
+        g.execute();
+    }
+
+    g.soft_reset();
+    {
+        size_t kv_input = g.input({1}, Precision::FP16);
+        __fp16 value = static_cast<__fp16>(100.0f);
+        g.set_input(kv_input, &value, Precision::FP16);
+        g.kv_cache_append(kv_input, cache_node, 0, 0, compact_to, keep, prompt_len, max_seq, true, true);
+        g.execute();
+    }
+
+    auto* raw = static_cast<uint8_t*>(g.get_output(cache_node));
+    if (*reinterpret_cast<uint64_t*>(raw) != 9) return false;
+    auto* rows = reinterpret_cast<__fp16*>(raw + kv_cache_data_offset(max_seq));
+    auto* positions = kv_cache_positions(raw);
+    const float expected[] = {0, 1, 2, 3, 12, 13, 14, 15, 100};
+    const uint64_t expected_positions[] = {0, 1, 2, 3, 12, 13, 14, 15, 16};
+    for (size_t i = 0; i < 9; ++i) {
+        if (std::fabs(static_cast<float>(rows[i]) - expected[i]) > 1e-3f) return false;
+        if (positions[i] != expected_positions[i]) return false;
+    }
+    return true;
+}
+
+bool test_kv_cache_append_context_shift_recent_only() {
+    CactusGraph g;
+
+    const size_t max_seq = 16, compact_to = 8, keep = 0;
+    size_t cache_node = g.kv_cache_state(max_seq, 1, 1, 0, 0, compact_to, keep, 0, true, true);
+
+    {
+        size_t kv_input = g.input({max_seq}, Precision::FP16);
+        std::vector<__fp16> data(max_seq);
+        for (size_t i = 0; i < max_seq; ++i) data[i] = static_cast<__fp16>(static_cast<float>(i));
+        g.set_input(kv_input, data.data(), Precision::FP16);
+        g.kv_cache_append(kv_input, cache_node, 0, 0, compact_to, keep, 0, 0, true, true);
+        g.execute();
+    }
+
+    g.soft_reset();
+    {
+        size_t kv_input = g.input({1}, Precision::FP16);
+        __fp16 value = static_cast<__fp16>(100.0f);
+        g.set_input(kv_input, &value, Precision::FP16);
+        g.kv_cache_append(kv_input, cache_node, 0, 0, compact_to, keep, 0, max_seq, true, true);
+        g.execute();
+    }
+
+    auto* raw = static_cast<uint8_t*>(g.get_output(cache_node));
+    if (*reinterpret_cast<uint64_t*>(raw) != 9) return false;
+    auto* rows = reinterpret_cast<__fp16*>(raw + kv_cache_data_offset(max_seq));
+    auto* positions = kv_cache_positions(raw);
+    const float expected[] = {8, 9, 10, 11, 12, 13, 14, 15, 100};
+    const uint64_t expected_positions[] = {8, 9, 10, 11, 12, 13, 14, 15, 16};
+    for (size_t i = 0; i < 9; ++i) {
+        if (std::fabs(static_cast<float>(rows[i]) - expected[i]) > 1e-3f) return false;
+        if (positions[i] != expected_positions[i]) return false;
+    }
+    return true;
+}
+
+bool test_kv_cache_append_no_context_shift_fails() {
+    CactusGraph g;
+
+    const size_t max_seq = 4;
+    size_t cache_node = g.kv_cache_state(max_seq, 1, 1, 0, 0, 2, 0, 0, false, true);
+    size_t kv_input = g.input({5}, Precision::FP16);
+    std::vector<__fp16> data(5, static_cast<__fp16>(1.0f));
+    g.set_input(kv_input, data.data(), Precision::FP16);
+    g.kv_cache_append(kv_input, cache_node, 0, 0, 2, 0, 0, 0, false, true);
+    try {
+        g.execute();
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+    return false;
 }
 
 bool test_attention_cached_basic() {
@@ -512,6 +614,7 @@ bool run_benchmarks() {
 }
 
 int main() {
+    setenv("CACTUS_KV_CACHE_FP16", "1", 1);
     TestUtils::TestRunner runner("Cache Tests");
 
     runner.run_test("KV Cache State Init", test_kv_cache_state_init());
@@ -520,6 +623,9 @@ int main() {
     runner.run_test("KV Cache Append Multiple", test_kv_cache_append_multiple());
     runner.run_test("KV Cache Append Eviction", test_kv_cache_append_eviction());
     runner.run_test("KV Cache Append Full Window Eviction", test_kv_cache_append_full_window_eviction());
+    runner.run_test("KV Cache Context Shift Prompt Keep", test_kv_cache_append_context_shift_prompt_keep());
+    runner.run_test("KV Cache Context Shift Recent Only", test_kv_cache_append_context_shift_recent_only());
+    runner.run_test("KV Cache No Context Shift Fails", test_kv_cache_append_no_context_shift_fails());
     runner.run_test("Attention Cached Basic", test_attention_cached_basic());
     runner.run_test("Attention Cached Multistep", test_attention_cached_multistep());
     runner.run_test("KV Cache Invalidate", test_kv_cache_invalidate());

@@ -317,6 +317,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     }
 
     cache_max_seq_len_ = context_size;
+    model_max_position_ = config_.context_length;
     initialized_ = true;
     return true;
 }
@@ -529,11 +530,13 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/) {
     if (decode_route_ == DecodeRoute::DIRECT_DECODER_STEP) {
         write_int_input(*decoder_, "input_ids", static_cast<int64_t>(token_id));
         write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
+        apply_cache_runtime_params(*decoder_, position);
         decoder_->graph->execute();
         return;
     }
     run_encoder_step(token_id, position);
     copy_component_outputs_to_inputs(*encoder_, *decoder_);
+    apply_cache_runtime_params(*decoder_, position);
     decoder_->graph->execute();
 }
 
@@ -787,6 +790,22 @@ void Model::reset_component_cache_states(Component& comp) {
     }
 }
 
+void Model::apply_cache_runtime_params(Component& comp, size_t position_base) {
+    if (!comp.graph) return;
+    for (auto& node : comp.graph->nodes_) {
+        if (!node || node->op_type != OpType::KV_CACHE_APPEND) continue;
+        node->params.cache_prompt_len = cache_prompt_len_;
+        node->params.cache_position_base = position_base;
+    }
+}
+
+void Model::ensure_position_limit(size_t start_position, size_t token_count) const {
+    if (model_max_position_ == 0 || token_count == 0) return;
+    if (start_position >= model_max_position_ || token_count > model_max_position_ - start_position) {
+        throw std::runtime_error("model position limit exceeded");
+    }
+}
+
 size_t Model::component_chunk_tokens(const Component& comp, const std::string& input_name) const {
     int idx = input_index(comp, input_name);
     if (idx < 0) return 0;
@@ -869,6 +888,7 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
                 copy_component_outputs_to_chunk_inputs(*encoder_, *decoder_prefill_, i);
             }
         }
+        apply_cache_runtime_params(*decoder_prefill_, start_position + processed);
         decoder_prefill_->graph->execute();
         processed += effective_chunk;
     }
@@ -966,6 +986,7 @@ void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t f
     write_int_input(*lm_encoder_media_step_, "position_ids", static_cast<int64_t>(position));
     lm_encoder_media_step_->graph->execute();
     copy_encoder_outputs_to_decoder(*lm_encoder_media_step_);
+    apply_cache_runtime_params(*decoder_, position);
     decoder_->graph->execute();
 }
 
@@ -1155,6 +1176,8 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     if (tokens.empty() || !decoder_ || cache_total_seq_len_ != 0) {
         return false;
     }
+    ensure_position_limit(cache_total_seq_len_, tokens.size());
+    cache_prompt_len_ = tokens.size();
     if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
@@ -1208,6 +1231,8 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     last_prefill_cache_copy_ms_ = 0.0;
     last_prefill_padding_tokens_ = 0;
     last_prefill_scalar_tail_tokens_ = 0;
+    ensure_position_limit(cache_total_seq_len_, tokens.size());
+    if (cache_total_seq_len_ == 0) cache_prompt_len_ = tokens.size();
     if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         if (!context_tokens_.empty()) run_full_context_text();
@@ -1801,6 +1826,7 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             size_t src_slice_bytes = chunk_seq * src_per_pos;
             write_typed_buffer(dst_buf, desc.precision, src_ptr, src_slice_bytes, src_prec);
         }
+        apply_cache_runtime_params(*decoder_prefill_chunk_, cache_total_seq_len_ + chunk_start);
         decoder_prefill_chunk_->graph->execute();
     }
     if (whole_chunks_end > 0 && decoder_ != nullptr) {
@@ -1821,6 +1847,7 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             const uint8_t* src_ptr = kv.second.data() + pos * src_per_pos;
             write_typed_buffer(dst_buf, desc.precision, src_ptr, src_per_pos, src_prec);
         }
+        apply_cache_runtime_params(*decoder_, cache_total_seq_len_ + pos);
         decoder_->graph->execute();
     }
     cache_total_seq_len_ += valid_seq;
@@ -1832,6 +1859,8 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
                                const std::vector<std::vector<float>>& audio_features_per_message,
                                const std::string& profile_file) {
     if (tokens.empty()) return;
+    ensure_position_limit(cache_total_seq_len_, tokens.size());
+    if (cache_total_seq_len_ == 0) cache_prompt_len_ = tokens.size();
     if (!image_paths.empty() && vision_encoder_ == nullptr) {
         throw std::runtime_error("Model bundle does not include a vision_encoder for image input");
     }
@@ -1957,6 +1986,8 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
                         size_t /*top_k*/, const std::string& /*profile_file*/, float* out_entropy,
                         float /*min_p*/, float /*repetition_penalty*/) {
     if (tokens.empty()) return 0;
+    ensure_position_limit(cache_total_seq_len_, tokens.size());
+    if (cache_total_seq_len_ == 0 && cache_prompt_len_ == 0) cache_prompt_len_ = tokens.size();
     if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
@@ -2302,6 +2333,7 @@ std::vector<float> Model::get_audio_embeddings(const std::vector<float>& /*mel_b
 
 void Model::reset_cache() {
     cache_total_seq_len_ = 0;
+    cache_prompt_len_ = 0;
     last_logit_position_ = 0;
     context_tokens_.clear();
     token_history_.clear();
@@ -2360,10 +2392,12 @@ void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>&
                 size_t num_groups = (hdim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
                 size_t token_scales = kv_heads * num_groups;
                 size_t max_seq = hdr->max_seq_len;
+                size_t data_offset = kHeaderBytes + max_seq * sizeof(uint64_t);
+                auto* positions = reinterpret_cast<uint64_t*>(static_cast<char*>(raw) + kHeaderBytes);
 
                 size_t new_len = cur;
                 if (desc.precision == Precision::FP16) {
-                    auto* base = reinterpret_cast<__fp16*>(static_cast<char*>(raw) + kHeaderBytes);
+                    auto* base = reinterpret_cast<__fp16*>(static_cast<char*>(raw) + data_offset);
                     for (auto it = sorted_ranges.rbegin(); it != sorted_ranges.rend(); ++it) {
                         size_t start = it->first;
                         if (start >= new_len) continue;
@@ -2374,12 +2408,15 @@ void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>&
                             std::memmove(base + start * token_elems,
                                          base + tail_start * token_elems,
                                          tail_count * token_elems * sizeof(__fp16));
+                            std::memmove(positions + start,
+                                         positions + tail_start,
+                                         tail_count * sizeof(uint64_t));
                         }
                         new_len -= count;
                     }
                 } else {
-                    auto* int8_base = reinterpret_cast<int8_t*>(static_cast<char*>(raw) + kHeaderBytes);
-                    auto* scale_base = reinterpret_cast<float*>(static_cast<char*>(raw) + kHeaderBytes +
+                    auto* int8_base = reinterpret_cast<int8_t*>(static_cast<char*>(raw) + data_offset);
+                    auto* scale_base = reinterpret_cast<float*>(static_cast<char*>(raw) + data_offset +
                                                                 max_seq * kv_heads * hdim);
                     for (auto it = sorted_ranges.rbegin(); it != sorted_ranges.rend(); ++it) {
                         size_t start = it->first;
@@ -2394,6 +2431,9 @@ void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>&
                             std::memmove(scale_base + start * token_scales,
                                          scale_base + tail_start * token_scales,
                                          tail_count * token_scales * sizeof(float));
+                            std::memmove(positions + start,
+                                         positions + tail_start,
+                                         tail_count * sizeof(uint64_t));
                         }
                         new_len -= count;
                     }
@@ -2535,6 +2575,7 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "num_decoder_layers") num_decoder_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "partial_rotary_factor") partial_rotary_factor = std::stof(value);
         else if (key == "pad_token_id") pad_token_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "context_length" || key == "max_position_embeddings" || key == "model_max_length" || key == "n_positions") context_length = static_cast<uint32_t>(std::stoul(value));
         else if (key == "conv_kernel_size") conv_kernel_size = static_cast<uint32_t>(std::stoul(value));
         else if (key == "subsampling_conv_kernel_size") subsampling_conv_kernel_size = static_cast<uint32_t>(std::stoul(value));
         else if (key == "subsampling_conv_stride") subsampling_conv_stride = static_cast<uint32_t>(std::stoul(value));

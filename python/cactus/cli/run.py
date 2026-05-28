@@ -26,6 +26,11 @@ def cmd_run(args):
                 transpile=TranspileOptions(
                     image_files=[args.image] if args.image else None,
                     audio_file=args.audio,
+                    ctx_size=args.ctx_size,
+                    cache_context_length=args.cache_context_length,
+                    cache_context_shift=args.cache_context_shift,
+                    cache_keep=args.cache_keep,
+                    cache_keep_prompt=args.cache_keep_prompt,
                 ),
             )
         except RuntimeError as e:

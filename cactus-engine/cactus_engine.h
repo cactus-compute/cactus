@@ -335,9 +335,11 @@ CACTUS_FFI_EXPORT int cactus_graph_attention_int8_hybrid(
     size_t cache_len, size_t num_kv_heads, size_t head_dim, size_t window_size, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_kv_cache_state(
-    cactus_graph_t graph, size_t max_seq_len, size_t num_kv_heads, size_t head_dim, size_t window_size, size_t sink_size, cactus_node_t* out);
+    cactus_graph_t graph, size_t max_seq_len, size_t num_kv_heads, size_t head_dim, size_t window_size, size_t sink_size,
+    size_t compact_to, size_t keep, size_t prompt_len, bool context_shift, bool keep_prompt, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_kv_cache_append(
-    cactus_graph_t graph, cactus_node_t new_kv, cactus_node_t cache_state, size_t window_size, size_t sink_size, cactus_node_t* out);
+    cactus_graph_t graph, cactus_node_t new_kv, cactus_node_t cache_state, size_t window_size, size_t sink_size,
+    size_t compact_to, size_t keep, size_t prompt_len, size_t position_base, bool context_shift, bool keep_prompt, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_attention_cached(
     cactus_graph_t graph, cactus_node_t query, cactus_node_t key_new, cactus_node_t value_new,
     cactus_node_t k_cache_state, cactus_node_t v_cache_state,

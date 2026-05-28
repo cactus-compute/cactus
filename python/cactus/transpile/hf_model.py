@@ -45,6 +45,7 @@ from cactus.transpile.lower import _lower_input_value
 from cactus.transpile.lower import _lower_ir_node
 from cactus.transpile.lower import _lookup_weight_binding
 from cactus.transpile.media_limits import resize_static_image
+from cactus.transpile.cache_policy import normalize_cache_policy
 from cactus.transpile.model_adapters import build_component_module_specs
 from cactus.transpile.model_adapters import canonicalize_model_interface
 from cactus.transpile.model_profiles import multimodal_context_tokens_for_model_type
@@ -2871,9 +2872,46 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "-c",
+        "--ctx-size",
+        default=None,
+        help="KV cache context length for cached decode graphs (default: 16384, auto = model config).",
+    )
+    parser.add_argument(
         "--cache-context-length",
-        default="auto",
-        help="KV cache context length for cached decode graphs. Use auto to read the model config.",
+        default=None,
+        help="Deprecated alias for --ctx-size.",
+    )
+    parser.add_argument(
+        "--context-shift",
+        dest="cache_context_shift",
+        action="store_true",
+        default=None,
+        help="Enable KV cache compaction when the context fills.",
+    )
+    parser.add_argument(
+        "--no-context-shift",
+        dest="cache_context_shift",
+        action="store_false",
+        help="Disable KV cache compaction and fail when the context fills.",
+    )
+    parser.add_argument(
+        "--keep",
+        default=None,
+        help="Number of prefix tokens to preserve during KV cache compaction.",
+    )
+    parser.add_argument(
+        "--keep-prompt",
+        dest="cache_keep_prompt",
+        action="store_true",
+        default=None,
+        help="Apply --keep to the original prompt prefix.",
+    )
+    parser.add_argument(
+        "--no-keep-prompt",
+        dest="cache_keep_prompt",
+        action="store_false",
+        help="Apply --keep to the raw cache prefix.",
     )
     parser.add_argument(
         "--audio-file",
@@ -3134,6 +3172,13 @@ def main() -> int:
             for component in str(args.components).split(",")
             if component.strip()
         )
+    normalize_cache_policy(
+        ctx_size=args.ctx_size,
+        cache_context_length=args.cache_context_length,
+        context_shift=args.cache_context_shift,
+        keep=args.keep,
+        keep_prompt=args.cache_keep_prompt,
+    )
     component_specs = build_component_module_specs(
         model,
         task=task,
@@ -3141,7 +3186,10 @@ def main() -> int:
         weights_dir=weights_dir,
         inputs_metadata=prepared.metadata,
         components=requested_components,
-        cache_context_length=args.cache_context_length,
+        cache_context_length=args.ctx_size if args.ctx_size is not None else args.cache_context_length,
+        cache_context_shift=args.cache_context_shift,
+        cache_keep=args.keep,
+        cache_keep_prompt=args.cache_keep_prompt,
     )
     use_component_pipeline = False
     if args.component_pipeline == "on":

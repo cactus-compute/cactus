@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from cactus.transpile.cache_policy import normalize_cache_policy, parse_optional_int
 from cactus.transpile.component_pipeline import ComponentModuleSpec
 from cactus.convert.cactus_adapters.tensor_io import CACTUS_MAGIC
 from cactus.convert.cactus_adapters.tensor_io import align_offset
@@ -291,18 +292,7 @@ def _gemma4_text_config(multimodal_backbone: torch.nn.Module) -> object:
 
 
 def _parse_cache_context_length(value: str | int | None) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"", "auto"}:
-            return None
-        parsed = int(normalized)
-    else:
-        parsed = int(value)
-    if parsed <= 0:
-        raise ValueError("--cache-context-length must be a positive integer or auto")
-    return parsed
+    return parse_optional_int(value, option_name="--cache-context-length", allow_auto=True)
 
 
 def _config_int_value(config: object, key: str) -> int | None:
@@ -358,6 +348,9 @@ def _cache_context_length(
     if explicit_length is not None:
         return explicit_length
 
+    if cache_context_length is None:
+        return 16384
+
     for candidate in _config_candidates_for_context_length(model):
         for key in ("max_position_embeddings", "context_length", "model_max_length", "n_positions"):
             value = _config_int_value(candidate, key)
@@ -379,6 +372,48 @@ def _max_cache_seq_len(
         cache_context_length=cache_context_length,
         fallback_extra_tokens=fallback_extra_tokens,
     ))
+
+
+def _cache_policy_metadata(
+    model: torch.nn.Module,
+    input_ids: torch.Tensor,
+    cache_context_length: str | int | None,
+    *,
+    context_shift: bool | None = None,
+    keep: str | int | None = None,
+    keep_prompt: bool | None = None,
+    fallback_extra_tokens: int = 512,
+) -> dict[str, object]:
+    policy = normalize_cache_policy(
+        cache_context_length=cache_context_length,
+        context_shift=context_shift,
+        keep=keep,
+        keep_prompt=keep_prompt,
+    )
+    if policy.use_model_context:
+        ctx_size = max(1024, _cache_context_length(
+            model,
+            input_seq_len=int(input_ids.shape[1]),
+            cache_context_length="auto",
+            fallback_extra_tokens=fallback_extra_tokens,
+        ))
+        policy = normalize_cache_policy(
+            cache_context_length=ctx_size,
+            context_shift=policy.context_shift,
+            keep=keep,
+            keep_prompt=policy.keep_prompt,
+        )
+    assert policy.ctx_size is not None
+    assert policy.compact_to is not None
+    assert policy.keep is not None
+    return {
+        "max_cache_seq_len": max(1024, int(policy.ctx_size)),
+        "cache_compact_to": int(policy.compact_to),
+        "cache_keep": int(policy.keep),
+        "cache_keep_prompt": bool(policy.keep_prompt),
+        "cache_context_shift": bool(policy.context_shift),
+        "cache_prompt_len": int(input_ids.shape[1]),
+    }
 
 
 def _gemma4_special_token_ids(multimodal_backbone: torch.nn.Module) -> tuple[int, int, int]:
@@ -3243,6 +3278,9 @@ def _build_gemma4_multimodal_component_specs(
     weights_dir: str | None,
     components: tuple[str, ...] | None = None,
     cache_context_length: str | int | None = None,
+    cache_context_shift: bool | None = None,
+    cache_keep: str | int | None = None,
+    cache_keep_prompt: bool | None = None,
 ) -> list[ComponentModuleSpec]:
     pixel_values = named_tensors["pixel_values"]
     pixel_position_ids = named_tensors.get("pixel_position_ids")
@@ -3461,7 +3499,15 @@ def _build_gemma4_multimodal_component_specs(
             graph_meta={**common_graph_meta, "component": "lm_encoder"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
         ))
-    cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=256)
+    cache_policy_meta = _cache_policy_metadata(
+        model,
+        input_ids,
+        cache_context_length,
+        context_shift=cache_context_shift,
+        keep=cache_keep,
+        keep_prompt=cache_keep_prompt,
+        fallback_extra_tokens=256,
+    )
     prefill_chunk_size = max(1, int(os.environ.get("CACTUS_GEMMA4_PREFILL_CHUNK", "128") or "128"))
     prefill_chunk_size = min(prefill_chunk_size, int(input_ids.shape[1]))
     if "decoder" in expanded_components:
@@ -3499,9 +3545,9 @@ def _build_gemma4_multimodal_component_specs(
                 **common_graph_meta,
                 "component": "decoder_prefill_chunk",
                 "use_internal_kv_cache": True,
-                "max_cache_seq_len": cache_seq_len,
                 "cache_sink_size": 4,
                 "prefill_chunk_size": prefill_chunk_size,
+                **cache_policy_meta,
             },
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
         ))
@@ -3570,8 +3616,8 @@ def _build_gemma4_multimodal_component_specs(
                 **common_graph_meta,
                 "component": "decoder_step",
                 "use_internal_kv_cache": True,
-                "max_cache_seq_len": cache_seq_len,
                 "cache_sink_size": 4,
+                **cache_policy_meta,
             },
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
         ))
@@ -4178,6 +4224,9 @@ def _build_qwen_causal_lm_component_specs(
     weights_dir: str | None = None,
     components: tuple[str, ...] | None = None,
     cache_context_length: str | int | None = None,
+    cache_context_shift: bool | None = None,
+    cache_keep: str | int | None = None,
+    cache_keep_prompt: bool | None = None,
 ) -> list[ComponentModuleSpec] | None:
     input_ids = named_tensors.get("input_ids")
     if input_ids is None:
@@ -4214,7 +4263,15 @@ def _build_qwen_causal_lm_component_specs(
     if "decoder_step" in requested_set:
         step_input_ids = input_ids[:, :1]
         step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
-        max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
+        cache_policy_meta = _cache_policy_metadata(
+            model,
+            input_ids,
+            cache_context_length,
+            context_shift=cache_context_shift,
+            keep=cache_keep,
+            keep_prompt=cache_keep_prompt,
+            fallback_extra_tokens=512,
+        )
         specs.append(ComponentModuleSpec(
             component="decoder_step",
             module=decoder_step,
@@ -4227,8 +4284,8 @@ def _build_qwen_causal_lm_component_specs(
                 "use_internal_kv_cache": True,
                 "use_internal_conv_cache": True,
                 "use_internal_gated_deltanet_cache": True,
-                "max_cache_seq_len": max_cache_seq_len,
                 "cache_sink_size": 4,
+                **cache_policy_meta,
             },
             metadata={"family": family, "task": "causal_lm_logits"},
         ))
@@ -4242,6 +4299,9 @@ def _build_qwen3_5_multimodal_component_specs(
     weights_dir: str | None,
     components: tuple[str, ...] | None = None,
     cache_context_length: str | int | None = None,
+    cache_context_shift: bool | None = None,
+    cache_keep: str | int | None = None,
+    cache_keep_prompt: bool | None = None,
 ) -> list[ComponentModuleSpec] | None:
     input_ids = named_tensors.get("input_ids")
     attention_mask = named_tensors.get("attention_mask")
@@ -4326,7 +4386,15 @@ def _build_qwen3_5_multimodal_component_specs(
         "task": "multimodal_causal_lm_logits",
         "adapter_family": "qwen3_5",
     }
-    max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
+    cache_policy_meta = _cache_policy_metadata(
+        model,
+        input_ids,
+        cache_context_length,
+        context_shift=cache_context_shift,
+        keep=cache_keep,
+        keep_prompt=cache_keep_prompt,
+        fallback_extra_tokens=512,
+    )
     specs: list[ComponentModuleSpec] = []
     if "vision_encoder" in expanded_components:
         specs.append(ComponentModuleSpec(
@@ -4399,9 +4467,9 @@ def _build_qwen3_5_multimodal_component_specs(
                 "use_internal_kv_cache": True,
                 "use_internal_conv_cache": True,
                 "use_internal_gated_deltanet_cache": True,
-                "max_cache_seq_len": max_cache_seq_len,
                 "cache_sink_size": 4,
                 "prefill_chunk_size": prefill_chunk_size,
+                **cache_policy_meta,
             },
             metadata={"family": "qwen3_5", "task": "multimodal_causal_lm_logits"},
         ))
@@ -4422,8 +4490,8 @@ def _build_qwen3_5_multimodal_component_specs(
                 "use_internal_kv_cache": True,
                 "use_internal_conv_cache": True,
                 "use_internal_gated_deltanet_cache": True,
-                "max_cache_seq_len": max_cache_seq_len,
                 "cache_sink_size": 4,
+                **cache_policy_meta,
             },
             metadata={"family": "qwen3_5", "task": "multimodal_causal_lm_logits"},
         ))
@@ -4442,8 +4510,8 @@ def _build_qwen3_5_multimodal_component_specs(
                 "use_internal_kv_cache": True,
                 "use_internal_conv_cache": True,
                 "use_internal_gated_deltanet_cache": True,
-                "max_cache_seq_len": max_cache_seq_len,
                 "cache_sink_size": 4,
+                **cache_policy_meta,
             },
             metadata={"family": "qwen3_5", "task": "multimodal_causal_lm_logits"},
         ))
@@ -4848,6 +4916,9 @@ def _build_lfm2_vl_multimodal_component_specs(
     weights_dir: str | None,
     components: tuple[str, ...] | None = None,
     cache_context_length: str | int | None = None,
+    cache_context_shift: bool | None = None,
+    cache_keep: str | int | None = None,
+    cache_keep_prompt: bool | None = None,
 ) -> list[ComponentModuleSpec]:
     input_ids = named_tensors["input_ids"]
     attention_mask = named_tensors["attention_mask"]
@@ -4949,7 +5020,15 @@ def _build_lfm2_vl_multimodal_component_specs(
         "task": "multimodal_causal_lm_logits",
         "adapter_family": "lfm2_vl",
     }
-    max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
+    cache_policy_meta = _cache_policy_metadata(
+        model,
+        input_ids,
+        cache_context_length,
+        context_shift=cache_context_shift,
+        keep=cache_keep,
+        keep_prompt=cache_keep_prompt,
+        fallback_extra_tokens=512,
+    )
     specs: list[ComponentModuleSpec] = []
     if "vision_encoder" in expanded_components:
         specs.append(ComponentModuleSpec(
@@ -5053,8 +5132,8 @@ def _build_lfm2_vl_multimodal_component_specs(
                 "component": "decoder_prefill_chunk",
                 "use_internal_kv_cache": True,
                 "use_internal_conv_cache": True,
-                "max_cache_seq_len": max_cache_seq_len,
                 "cache_sink_size": 4,
+                **cache_policy_meta,
             },
             metadata={"family": "lfm2_vl", "task": "multimodal_causal_lm_logits"},
         ))
@@ -5074,8 +5153,8 @@ def _build_lfm2_vl_multimodal_component_specs(
                 "component": "decoder_step",
                 "use_internal_kv_cache": True,
                 "use_internal_conv_cache": True,
-                "max_cache_seq_len": max_cache_seq_len,
                 "cache_sink_size": 4,
+                **cache_policy_meta,
             },
             metadata={"family": "lfm2_vl", "task": "multimodal_causal_lm_logits"},
         ))
@@ -5091,6 +5170,9 @@ def build_component_module_specs(
     inputs_metadata: dict[str, object] | None = None,
     components: tuple[str, ...] | None = None,
     cache_context_length: str | int | None = None,
+    cache_context_shift: bool | None = None,
+    cache_keep: str | int | None = None,
+    cache_keep_prompt: bool | None = None,
 ) -> list[ComponentModuleSpec] | None:
     family = _family_key(model)
     if family == "qwen3_5" and task == "multimodal_causal_lm_logits":
@@ -5100,6 +5182,9 @@ def build_component_module_specs(
             weights_dir=weights_dir,
             components=components,
             cache_context_length=cache_context_length,
+            cache_context_shift=cache_context_shift,
+            cache_keep=cache_keep,
+            cache_keep_prompt=cache_keep_prompt,
         )
     if family in {"qwen3", "qwen3_5"} and task == "causal_lm_logits":
         return _build_qwen_causal_lm_component_specs(
@@ -5108,6 +5193,9 @@ def build_component_module_specs(
             weights_dir=weights_dir,
             components=components,
             cache_context_length=cache_context_length,
+            cache_context_shift=cache_context_shift,
+            cache_keep=cache_keep,
+            cache_keep_prompt=cache_keep_prompt,
         )
     if family == "gemma4" and task == "multimodal_causal_lm_logits":
         return _build_gemma4_multimodal_component_specs(
@@ -5116,6 +5204,9 @@ def build_component_module_specs(
             weights_dir=weights_dir,
             components=components,
             cache_context_length=cache_context_length,
+            cache_context_shift=cache_context_shift,
+            cache_keep=cache_keep,
+            cache_keep_prompt=cache_keep_prompt,
         )
     if family == "lfm2_vl" and task == "multimodal_causal_lm_logits":
         return _build_lfm2_vl_multimodal_component_specs(
@@ -5124,6 +5215,9 @@ def build_component_module_specs(
             weights_dir=weights_dir,
             components=components,
             cache_context_length=cache_context_length,
+            cache_context_shift=cache_context_shift,
+            cache_keep=cache_keep,
+            cache_keep_prompt=cache_keep_prompt,
         )
     if family == "parakeet_tdt" and task == "tdt_transcription":
         from cactus.transpile.tdt_runtime import build_parakeet_tdt_component_specs

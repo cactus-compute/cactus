@@ -27,7 +27,11 @@ def cmd_convert(args):
                 system_prompt=args.system_prompt,
                 trust_remote_code=args.trust_remote_code,
                 local_files_only=args.local_files_only,
+                ctx_size=args.ctx_size,
                 cache_context_length=args.cache_context_length,
+                cache_context_shift=args.cache_context_shift,
+                cache_keep=args.cache_keep,
+                cache_keep_prompt=args.cache_keep_prompt,
             ),
         )
         return 0

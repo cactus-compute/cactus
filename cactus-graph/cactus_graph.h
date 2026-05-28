@@ -361,6 +361,12 @@ struct OpParams {
     size_t kernel_size = 0;
     size_t max_cache_seq_len = 0;
     size_t cache_sink_size = 0;
+    size_t cache_compact_to = 0;
+    size_t cache_keep = 0;
+    size_t cache_prompt_len = 0;
+    size_t cache_position_base = 0;
+    bool cache_context_shift = true;
+    bool cache_keep_prompt = true;
 
     size_t hop_length = 0;
     float power = 2.0f;
@@ -557,13 +563,24 @@ public:
         size_t num_kv_heads,
         size_t head_dim,
         size_t window_size = 0,
-        size_t sink_size = 4);
+        size_t sink_size = 4,
+        size_t compact_to = 0,
+        size_t keep = 0,
+        size_t prompt_len = 0,
+        bool context_shift = true,
+        bool keep_prompt = true);
 
     size_t kv_cache_append(
         size_t new_kv,
         size_t cache_state_node,
         size_t window_size = 0,
-        size_t sink_size = 4);
+        size_t sink_size = 4,
+        size_t compact_to = 0,
+        size_t keep = 0,
+        size_t prompt_len = 0,
+        size_t position_base = 0,
+        bool context_shift = true,
+        bool keep_prompt = true);
 
     size_t attention_cached(
         size_t query,

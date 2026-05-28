@@ -390,6 +390,11 @@ _lib.cactus_graph_kv_cache_state.argtypes = [
     ctypes.c_size_t,
     ctypes.c_size_t,
     ctypes.c_size_t,
+    ctypes.c_size_t,
+    ctypes.c_size_t,
+    ctypes.c_size_t,
+    ctypes.c_bool,
+    ctypes.c_bool,
     ctypes.POINTER(cactus_node_t),
 ]
 _lib.cactus_graph_kv_cache_state.restype = ctypes.c_int
@@ -399,6 +404,12 @@ _lib.cactus_graph_kv_cache_append.argtypes = [
     cactus_node_t,
     ctypes.c_size_t,
     ctypes.c_size_t,
+    ctypes.c_size_t,
+    ctypes.c_size_t,
+    ctypes.c_size_t,
+    ctypes.c_size_t,
+    ctypes.c_bool,
+    ctypes.c_bool,
     ctypes.POINTER(cactus_node_t),
 ]
 _lib.cactus_graph_kv_cache_append.restype = ctypes.c_int

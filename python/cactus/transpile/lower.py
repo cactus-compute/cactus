@@ -241,6 +241,11 @@ def _lower_attention_with_internal_kv_cache(
         requested_cache_len = node.meta.get("max_cache_seq_len", ir.meta.get("max_cache_seq_len", default_cache_len))
         max_cache_seq_len = max(default_cache_len, int(requested_cache_len or default_cache_len))
         sink_size = int(ir.meta.get("cache_sink_size", 4) or 4)
+        compact_to = int(ir.meta.get("cache_compact_to", max_cache_seq_len) or max_cache_seq_len)
+        keep = int(ir.meta.get("cache_keep", sink_size) or 0)
+        prompt_len = int(ir.meta.get("cache_prompt_len", 0) or 0)
+        context_shift = bool(ir.meta.get("cache_context_shift", True))
+        keep_prompt = bool(ir.meta.get("cache_keep_prompt", True))
         window_size = int(node.attrs.get("window_size", 0) or 0)
         k_cache = g.kv_cache_state(
             max_cache_seq_len,
@@ -248,6 +253,11 @@ def _lower_attention_with_internal_kv_cache(
             int(key_shape[3]),
             window_size=window_size,
             sink_size=sink_size,
+            compact_to=compact_to,
+            keep=keep,
+            prompt_len=prompt_len,
+            context_shift=context_shift,
+            keep_prompt=keep_prompt,
         )
         v_cache = g.kv_cache_state(
             max_cache_seq_len,
@@ -255,6 +265,11 @@ def _lower_attention_with_internal_kv_cache(
             int(value_shape[3]),
             window_size=window_size,
             sink_size=sink_size,
+            compact_to=compact_to,
+            keep=keep,
+            prompt_len=prompt_len,
+            context_shift=context_shift,
+            keep_prompt=keep_prompt,
         )
         cache_states[layer_key] = (k_cache, v_cache)
         cache_entries: list[tuple[str, Tensor, Tensor]] = env.setdefault("__internal_kv_cache_state_entries", [])  # type: ignore[assignment]
@@ -263,8 +278,41 @@ def _lower_attention_with_internal_kv_cache(
     k_cache, v_cache = cache_states[layer_key]
     window_size = int(node.attrs.get("window_size", 0) or 0)
     sink_size = int(ir.meta.get("cache_sink_size", 4) or 4)
-    g.kv_cache_append(key, k_cache, window_size=window_size, sink_size=sink_size)
-    g.kv_cache_append(value, v_cache, window_size=window_size, sink_size=sink_size)
+    compact_default = int(ir.meta.get("max_cache_seq_len", 0) or 0)
+    compact_to = int(ir.meta.get("cache_compact_to", compact_default) or compact_default)
+    keep = int(ir.meta.get("cache_keep", sink_size) or 0)
+    prompt_len = int(ir.meta.get("cache_prompt_len", 0) or 0)
+    context_shift = bool(ir.meta.get("cache_context_shift", True))
+    keep_prompt = bool(ir.meta.get("cache_keep_prompt", True))
+    if window_size > 0:
+        compact_to = min(compact_to if compact_to > 0 else window_size, window_size)
+        keep = 0
+        prompt_len = 0
+        keep_prompt = False
+    g.kv_cache_append(
+        key,
+        k_cache,
+        window_size=window_size,
+        sink_size=sink_size,
+        compact_to=compact_to,
+        keep=keep,
+        prompt_len=prompt_len,
+        position_base=_DYNAMIC_KV_POSITION_OFFSET,
+        context_shift=context_shift,
+        keep_prompt=keep_prompt,
+    )
+    g.kv_cache_append(
+        value,
+        v_cache,
+        window_size=window_size,
+        sink_size=sink_size,
+        compact_to=compact_to,
+        keep=keep,
+        prompt_len=prompt_len,
+        position_base=_DYNAMIC_KV_POSITION_OFFSET,
+        context_shift=context_shift,
+        keep_prompt=keep_prompt,
+    )
     kv_input_cache_states: dict[tuple[str, str], tuple[Tensor, Tensor, int, int]] = env.setdefault(
         "__internal_kv_cache_by_kv_inputs",
         {},

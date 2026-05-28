@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <limits>
 #include <cstdlib>
+#include <stdexcept>
 
 namespace {
 
@@ -35,6 +36,7 @@ struct CacheMetadata {
 };
 
 static_assert(sizeof(CacheMetadata) == 64, "CacheMetadata must be 64 bytes");
+constexpr uint64_t kInvalidCachePosition = std::numeric_limits<uint64_t>::max();
 
 inline CacheMetadata* get_meta(BufferDesc& buf) {
     return static_cast<CacheMetadata*>(buf.get_data());
@@ -44,39 +46,51 @@ inline const CacheMetadata* get_meta(const BufferDesc& buf) {
     return static_cast<const CacheMetadata*>(buf.get_data());
 }
 
+inline uint64_t* get_positions(BufferDesc& buf) {
+    return reinterpret_cast<uint64_t*>(static_cast<char*>(buf.get_data()) + sizeof(CacheMetadata));
+}
+
+inline size_t cache_data_offset(size_t max_seq) {
+    return sizeof(CacheMetadata) + max_seq * sizeof(uint64_t);
+}
+
 inline int8_t* get_int8_data(BufferDesc& buf) {
-    return reinterpret_cast<int8_t*>(static_cast<char*>(buf.get_data()) + sizeof(CacheMetadata));
+    const auto* meta = get_meta(buf);
+    return reinterpret_cast<int8_t*>(static_cast<char*>(buf.get_data()) + cache_data_offset(meta->max_seq_len));
 }
 
 inline const int8_t* get_int8_data(const BufferDesc& buf) {
-    return reinterpret_cast<const int8_t*>(static_cast<const char*>(buf.get_data()) + sizeof(CacheMetadata));
+    const auto* meta = get_meta(buf);
+    return reinterpret_cast<const int8_t*>(static_cast<const char*>(buf.get_data()) + cache_data_offset(meta->max_seq_len));
 }
 
 inline float* get_scales(BufferDesc& buf, size_t max_seq, size_t kv_heads, size_t head_dim) {
     size_t int8_bytes = max_seq * kv_heads * head_dim;
-    return reinterpret_cast<float*>(static_cast<char*>(buf.get_data()) + sizeof(CacheMetadata) + int8_bytes);
+    return reinterpret_cast<float*>(static_cast<char*>(buf.get_data()) + cache_data_offset(max_seq) + int8_bytes);
 }
 
 inline const float* get_scales(const BufferDesc& buf, size_t max_seq, size_t kv_heads, size_t head_dim) {
     size_t int8_bytes = max_seq * kv_heads * head_dim;
-    return reinterpret_cast<const float*>(static_cast<const char*>(buf.get_data()) + sizeof(CacheMetadata) + int8_bytes);
+    return reinterpret_cast<const float*>(static_cast<const char*>(buf.get_data()) + cache_data_offset(max_seq) + int8_bytes);
 }
 
 inline size_t cache_buffer_size(size_t max_seq, size_t kv_heads, size_t head_dim) {
     size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-    return sizeof(CacheMetadata) + max_seq * kv_heads * head_dim + max_seq * kv_heads * num_groups * sizeof(float);
+    return cache_data_offset(max_seq) + max_seq * kv_heads * head_dim + max_seq * kv_heads * num_groups * sizeof(float);
 }
 
 inline size_t fp16_cache_elements(size_t max_seq, size_t kv_heads, size_t head_dim) {
-    return (sizeof(CacheMetadata) / sizeof(__fp16)) + max_seq * kv_heads * head_dim;
+    return (cache_data_offset(max_seq) / sizeof(__fp16)) + max_seq * kv_heads * head_dim;
 }
 
 inline __fp16* get_fp16_data(BufferDesc& buf) {
-    return reinterpret_cast<__fp16*>(static_cast<char*>(buf.get_data()) + sizeof(CacheMetadata));
+    const auto* meta = get_meta(buf);
+    return reinterpret_cast<__fp16*>(static_cast<char*>(buf.get_data()) + cache_data_offset(meta->max_seq_len));
 }
 
 inline const __fp16* get_fp16_data(const BufferDesc& buf) {
-    return reinterpret_cast<const __fp16*>(static_cast<const char*>(buf.get_data()) + sizeof(CacheMetadata));
+    const auto* meta = get_meta(buf);
+    return reinterpret_cast<const __fp16*>(static_cast<const char*>(buf.get_data()) + cache_data_offset(meta->max_seq_len));
 }
 
 inline bool use_fp16_kv_cache() {
@@ -85,6 +99,84 @@ inline bool use_fp16_kv_cache() {
         return value != nullptr && std::strcmp(value, "1") == 0;
     }();
     return cached;
+}
+
+struct CacheAppendPlan {
+    bool compact;
+    size_t prefix_keep;
+    size_t existing_tail_keep;
+    size_t incoming_tail_offset;
+    size_t incoming_tail_keep;
+    size_t append_offset;
+    size_t append_count;
+    size_t final_len;
+};
+
+CacheAppendPlan make_cache_append_plan(
+    size_t current_len,
+    size_t new_seq_len,
+    size_t max_len,
+    size_t compact_to,
+    size_t keep,
+    size_t prompt_len,
+    bool context_shift,
+    bool keep_prompt) {
+
+    if (new_seq_len > max_len) {
+        if (!context_shift) {
+            throw std::runtime_error("KV cache context limit exceeded and context shift is disabled");
+        }
+    } else if (current_len + new_seq_len <= max_len) {
+        return CacheAppendPlan{
+            false, 0, 0, 0, 0,
+            current_len, new_seq_len, current_len + new_seq_len
+        };
+    } else if (!context_shift) {
+        throw std::runtime_error("KV cache context limit exceeded and context shift is disabled");
+    }
+
+    if (compact_to == 0 || compact_to > max_len) compact_to = max_len;
+    if (compact_to == 0) {
+        throw std::runtime_error("KV cache compact target is zero");
+    }
+    if (keep >= compact_to) {
+        throw std::runtime_error("KV cache keep must be smaller than compact target");
+    }
+
+    size_t prefix_cap = keep_prompt ? std::min(prompt_len, keep) : keep;
+    size_t prefix_keep = std::min(prefix_cap, current_len);
+    size_t tail_capacity = compact_to - prefix_keep;
+    size_t target_after_append = std::min(max_len, compact_to + new_seq_len);
+    if (target_after_append > prefix_keep) {
+        tail_capacity = target_after_append - prefix_keep;
+    }
+
+    if (new_seq_len >= tail_capacity) {
+        size_t incoming_keep = std::min(tail_capacity, new_seq_len);
+        return CacheAppendPlan{
+            true,
+            prefix_keep,
+            0,
+            new_seq_len - incoming_keep,
+            incoming_keep,
+            prefix_keep,
+            0,
+            prefix_keep + incoming_keep,
+        };
+    }
+
+    size_t existing_tail_keep = std::min(current_len - prefix_keep, tail_capacity - new_seq_len);
+    size_t append_offset = prefix_keep + existing_tail_keep;
+    return CacheAppendPlan{
+        true,
+        prefix_keep,
+        existing_tail_keep,
+        0,
+        0,
+        append_offset,
+        new_seq_len,
+        append_offset + new_seq_len,
+    };
 }
 
 } // namespace
@@ -114,6 +206,7 @@ void compute_kv_cache_state_node(
     meta->num_kv_heads = kv_heads;
     meta->head_dim = hdim;
     meta->sink_size = node.params.cache_sink_size;
+    std::fill(get_positions(node.output_buffer), get_positions(node.output_buffer) + max_seq, kInvalidCachePosition);
 }
 
 void compute_kv_cache_append_node(
@@ -139,43 +232,64 @@ void compute_kv_cache_append_node(
     if (cache_buf.precision == Precision::FP16) {
         size_t stride = kv_heads * hdim;
         __fp16* fp16_base = get_fp16_data(cache_buf);
+        uint64_t* positions = get_positions(cache_buf);
         const __fp16* source = new_kv.data_as<__fp16>();
-        size_t window = node.params.window_size;
-        if (window == 0) window = max_len;
-
-        size_t new_total = current_len + new_seq_len;
-        bool needs_eviction = new_total > window;
-        if (needs_eviction) {
-            size_t keep_sink = std::min({sink, current_len, window});
-            size_t tail_capacity = window - keep_sink;
-            if (new_seq_len >= tail_capacity) {
-                if (tail_capacity > 0) {
-                    size_t source_offset = new_seq_len - tail_capacity;
-                    std::memcpy(
-                        fp16_base + keep_sink * stride,
-                        source + source_offset * stride,
-                        tail_capacity * stride * sizeof(__fp16));
+        const bool has_explicit_policy = node.params.cache_compact_to != 0;
+        size_t compact_to = node.params.cache_compact_to;
+        if (compact_to == 0) compact_to = node.params.window_size ? node.params.window_size : max_len;
+        size_t keep = has_explicit_policy ? node.params.cache_keep : sink;
+        auto plan = make_cache_append_plan(
+            current_len,
+            new_seq_len,
+            max_len,
+            compact_to,
+            keep,
+            node.params.cache_prompt_len,
+            node.params.cache_context_shift,
+            has_explicit_policy ? node.params.cache_keep_prompt : false);
+        if (plan.compact) {
+            if (plan.existing_tail_keep > 0) {
+                size_t shift_src = current_len - plan.existing_tail_keep;
+                if (shift_src != plan.prefix_keep) {
+                    std::memmove(
+                        fp16_base + plan.prefix_keep * stride,
+                        fp16_base + shift_src * stride,
+                        plan.existing_tail_keep * stride * sizeof(__fp16));
                 }
-                meta->current_seq_len = keep_sink + tail_capacity;
-                *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);
-                return;
-            }
-
-            size_t remaining = tail_capacity - new_seq_len;
-            remaining = std::min(remaining, current_len - keep_sink);
-            size_t shift_src = current_len - remaining;
-            if (remaining > 0 && shift_src > keep_sink) {
                 std::memmove(
-                    fp16_base + keep_sink * stride,
-                    fp16_base + shift_src * stride,
-                    remaining * stride * sizeof(__fp16));
+                    positions + plan.prefix_keep,
+                    positions + shift_src,
+                    plan.existing_tail_keep * sizeof(uint64_t));
             }
-            size_t append_offset = keep_sink + remaining;
-            std::memcpy(fp16_base + append_offset * stride, source, new_seq_len * stride * sizeof(__fp16));
-            meta->current_seq_len = append_offset + new_seq_len;
+            if (plan.incoming_tail_keep > 0) {
+                std::memcpy(
+                    fp16_base + plan.prefix_keep * stride,
+                    source + plan.incoming_tail_offset * stride,
+                    plan.incoming_tail_keep * stride * sizeof(__fp16));
+                for (size_t i = 0; i < plan.incoming_tail_keep; ++i) {
+                    positions[plan.prefix_keep + i] = static_cast<uint64_t>(
+                        node.params.cache_position_base + plan.incoming_tail_offset + i);
+                }
+            } else if (plan.append_count > 0) {
+                std::memcpy(
+                    fp16_base + plan.append_offset * stride,
+                    source,
+                    plan.append_count * stride * sizeof(__fp16));
+                for (size_t i = 0; i < plan.append_count; ++i) {
+                    positions[plan.append_offset + i] = static_cast<uint64_t>(
+                        node.params.cache_position_base + i);
+                }
+            }
+            if (plan.final_len < max_len) {
+                std::fill(positions + plan.final_len, positions + max_len, kInvalidCachePosition);
+            }
+            meta->current_seq_len = plan.final_len;
         } else {
-            std::memcpy(fp16_base + current_len * stride, source, new_seq_len * stride * sizeof(__fp16));
-            meta->current_seq_len = new_total;
+            std::memcpy(fp16_base + plan.append_offset * stride, source, plan.append_count * stride * sizeof(__fp16));
+            for (size_t i = 0; i < plan.append_count; ++i) {
+                positions[plan.append_offset + i] = static_cast<uint64_t>(node.params.cache_position_base + i);
+            }
+            meta->current_seq_len = plan.final_len;
         }
 
         *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);
@@ -183,60 +297,75 @@ void compute_kv_cache_append_node(
     }
 
     int8_t* int8_base = get_int8_data(cache_buf);
+    uint64_t* positions = get_positions(cache_buf);
     float* scale_base = get_scales(cache_buf, max_len, kv_heads, hdim);
 
-    size_t window = node.params.window_size;
-    if (window == 0) window = max_len;
+    const bool has_explicit_policy = node.params.cache_compact_to != 0;
+    size_t compact_to = node.params.cache_compact_to;
+    if (compact_to == 0) compact_to = node.params.window_size ? node.params.window_size : max_len;
+    size_t keep = has_explicit_policy ? node.params.cache_keep : sink;
+    auto plan = make_cache_append_plan(
+        current_len,
+        new_seq_len,
+        max_len,
+        compact_to,
+        keep,
+        node.params.cache_prompt_len,
+        node.params.cache_context_shift,
+        has_explicit_policy ? node.params.cache_keep_prompt : false);
 
-    size_t new_total = current_len + new_seq_len;
-    bool needs_eviction = new_total > window;
-
-    if (needs_eviction) {
-        size_t keep_sink = std::min({sink, current_len, window});
-        size_t tail_capacity = window - keep_sink;
-        if (new_seq_len >= tail_capacity) {
-            if (tail_capacity > 0) {
-                size_t source_offset = new_seq_len - tail_capacity;
-                cactus_quantize_kv_fp16_to_int8(
-                    new_kv.data_as<__fp16>() + source_offset * int8_stride,
-                    int8_base + keep_sink * int8_stride,
-                    scale_base + keep_sink * scale_stride,
-                    tail_capacity, kv_heads, hdim);
+    if (plan.compact) {
+        if (plan.existing_tail_keep > 0) {
+            size_t shift_src = current_len - plan.existing_tail_keep;
+            if (shift_src != plan.prefix_keep) {
+                std::memmove(int8_base + plan.prefix_keep * int8_stride,
+                             int8_base + shift_src * int8_stride,
+                             plan.existing_tail_keep * int8_stride);
+                std::memmove(scale_base + plan.prefix_keep * scale_stride,
+                             scale_base + shift_src * scale_stride,
+                             plan.existing_tail_keep * scale_stride * sizeof(float));
             }
-            meta->current_seq_len = keep_sink + tail_capacity;
-            *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);
-            return;
+            std::memmove(positions + plan.prefix_keep,
+                         positions + shift_src,
+                         plan.existing_tail_keep * sizeof(uint64_t));
+        }
+        if (plan.incoming_tail_keep > 0) {
+            cactus_quantize_kv_fp16_to_int8(
+                new_kv.data_as<__fp16>() + plan.incoming_tail_offset * int8_stride,
+                int8_base + plan.prefix_keep * int8_stride,
+                scale_base + plan.prefix_keep * scale_stride,
+                plan.incoming_tail_keep, kv_heads, hdim);
+            for (size_t i = 0; i < plan.incoming_tail_keep; ++i) {
+                positions[plan.prefix_keep + i] = static_cast<uint64_t>(
+                    node.params.cache_position_base + plan.incoming_tail_offset + i);
+            }
+        } else if (plan.append_count > 0) {
+            cactus_quantize_kv_fp16_to_int8(
+                new_kv.data_as<__fp16>(),
+                int8_base + plan.append_offset * int8_stride,
+                scale_base + plan.append_offset * scale_stride,
+                plan.append_count, kv_heads, hdim);
+            for (size_t i = 0; i < plan.append_count; ++i) {
+                positions[plan.append_offset + i] = static_cast<uint64_t>(
+                    node.params.cache_position_base + i);
+            }
         }
 
-        size_t remaining = tail_capacity - new_seq_len;
-        remaining = std::min(remaining, current_len - keep_sink);
-        size_t shift_src = current_len - remaining;
-
-        if (remaining > 0 && shift_src > keep_sink) {
-            std::memmove(int8_base + keep_sink * int8_stride,
-                         int8_base + shift_src * int8_stride,
-                         remaining * int8_stride);
-            std::memmove(scale_base + keep_sink * scale_stride,
-                         scale_base + shift_src * scale_stride,
-                         remaining * scale_stride * sizeof(float));
+        if (plan.final_len < max_len) {
+            std::fill(positions + plan.final_len, positions + max_len, kInvalidCachePosition);
         }
-
-        size_t append_offset = keep_sink + remaining;
-        cactus_quantize_kv_fp16_to_int8(
-            new_kv.data_as<__fp16>(),
-            int8_base + append_offset * int8_stride,
-            scale_base + append_offset * scale_stride,
-            new_seq_len, kv_heads, hdim);
-
-        meta->current_seq_len = append_offset + new_seq_len;
+        meta->current_seq_len = plan.final_len;
     } else {
         cactus_quantize_kv_fp16_to_int8(
             new_kv.data_as<__fp16>(),
-            int8_base + current_len * int8_stride,
-            scale_base + current_len * scale_stride,
-            new_seq_len, kv_heads, hdim);
+            int8_base + plan.append_offset * int8_stride,
+            scale_base + plan.append_offset * scale_stride,
+            plan.append_count, kv_heads, hdim);
+        for (size_t i = 0; i < plan.append_count; ++i) {
+            positions[plan.append_offset + i] = static_cast<uint64_t>(node.params.cache_position_base + i);
+        }
 
-        meta->current_seq_len = new_total;
+        meta->current_seq_len = plan.final_len;
     }
 
     *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);

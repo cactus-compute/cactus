@@ -688,7 +688,19 @@ class Graph:
             raise RuntimeError("graph_attention failed")
         return self._tensor_from_node(out.value)
 
-    def kv_cache_state(self, max_seq_len, num_kv_heads, head_dim, window_size=0, sink_size=0):
+    def kv_cache_state(
+        self,
+        max_seq_len,
+        num_kv_heads,
+        head_dim,
+        window_size=0,
+        sink_size=0,
+        compact_to=0,
+        keep=0,
+        prompt_len=0,
+        context_shift=True,
+        keep_prompt=True,
+    ):
         out = cactus_node_t()
         rc = _lib.cactus_graph_kv_cache_state(
             self.h,
@@ -697,13 +709,30 @@ class Graph:
             ctypes.c_size_t(int(head_dim)),
             ctypes.c_size_t(int(window_size)),
             ctypes.c_size_t(int(sink_size)),
+            ctypes.c_size_t(int(compact_to)),
+            ctypes.c_size_t(int(keep)),
+            ctypes.c_size_t(int(prompt_len)),
+            ctypes.c_bool(bool(context_shift)),
+            ctypes.c_bool(bool(keep_prompt)),
             ctypes.byref(out),
         )
         if rc != 0:
             raise RuntimeError(_err("graph_kv_cache_state failed"))
         return self._tensor_from_node(out.value)
 
-    def kv_cache_append(self, new_kv, cache_state, window_size=0, sink_size=0):
+    def kv_cache_append(
+        self,
+        new_kv,
+        cache_state,
+        window_size=0,
+        sink_size=0,
+        compact_to=0,
+        keep=0,
+        prompt_len=0,
+        position_base=0,
+        context_shift=True,
+        keep_prompt=True,
+    ):
         new_kv = self._ensure_tensor(new_kv)
         cache_state = self._ensure_tensor(cache_state)
         out = cactus_node_t()
@@ -713,6 +742,12 @@ class Graph:
             cactus_node_t(cache_state.id),
             ctypes.c_size_t(int(window_size)),
             ctypes.c_size_t(int(sink_size)),
+            ctypes.c_size_t(int(compact_to)),
+            ctypes.c_size_t(int(keep)),
+            ctypes.c_size_t(int(prompt_len)),
+            ctypes.c_size_t(int(position_base)),
+            ctypes.c_bool(bool(context_shift)),
+            ctypes.c_bool(bool(keep_prompt)),
             ctypes.byref(out),
         )
         if rc != 0:

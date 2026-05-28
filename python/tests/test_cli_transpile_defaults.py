@@ -7,12 +7,41 @@ import pytest
 from cactus import cli
 from cactus.cli import convert as convert_cli
 import cactus.cli.model as model_mod
+from cactus.transpile.cache_policy import normalize_cache_policy
 from cactus.transpile.model_adapters import _cache_context_length
 
 
 class _ConfigWithText:
     def get_text_config(self):
         return SimpleNamespace(max_position_embeddings=128000)
+
+
+def test_cache_policy_defaults_to_16k_half_compaction() -> None:
+    policy = normalize_cache_policy()
+
+    assert policy.ctx_size == 16384
+    assert policy.compact_to == 8192
+    assert policy.keep == 4096
+    assert policy.context_shift is True
+    assert policy.keep_prompt is True
+
+
+def test_cache_policy_accepts_recent_only_keep() -> None:
+    policy = normalize_cache_policy(ctx_size=8192, keep=0)
+
+    assert policy.ctx_size == 8192
+    assert policy.compact_to == 4096
+    assert policy.keep == 0
+
+
+def test_cache_policy_rejects_keep_at_or_above_compact_target() -> None:
+    with pytest.raises(ValueError):
+        normalize_cache_policy(ctx_size=8192, keep=4096)
+
+
+def test_cache_policy_rejects_conflicting_context_aliases() -> None:
+    with pytest.raises(ValueError):
+        normalize_cache_policy(ctx_size=8192, cache_context_length=16384)
 
 
 def test_cache_context_length_uses_explicit_value() -> None:
@@ -26,7 +55,7 @@ def test_cache_context_length_uses_explicit_value() -> None:
     ) == 32768
 
 
-def test_cache_context_length_reads_top_level_config() -> None:
+def test_cache_context_length_defaults_to_static_limit() -> None:
     model = SimpleNamespace(config=SimpleNamespace(max_position_embeddings=40960))
 
     assert _cache_context_length(
@@ -34,7 +63,7 @@ def test_cache_context_length_reads_top_level_config() -> None:
         input_seq_len=2048,
         cache_context_length=None,
         fallback_extra_tokens=512,
-    ) == 40960
+    ) == 16384
 
 
 def test_cache_context_length_reads_text_config() -> None:
@@ -48,13 +77,13 @@ def test_cache_context_length_reads_text_config() -> None:
     ) == 128000
 
 
-def test_cache_context_length_falls_back_to_capture_size() -> None:
+def test_cache_context_length_auto_falls_back_to_capture_size() -> None:
     model = SimpleNamespace(config=SimpleNamespace())
 
     assert _cache_context_length(
         model,
         input_seq_len=2048,
-        cache_context_length=None,
+        cache_context_length="auto",
         fallback_extra_tokens=512,
     ) == 2560
 

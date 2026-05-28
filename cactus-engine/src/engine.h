@@ -145,6 +145,7 @@ struct Config {
     uint32_t num_decoder_layers = 0;
     float partial_rotary_factor = 0.0f;
     uint32_t pad_token_id = 0;
+    uint32_t context_length = 0;
     uint32_t conv_kernel_size = 0;
     uint32_t subsampling_conv_kernel_size = 0;
     uint32_t subsampling_conv_stride = 0;
@@ -709,6 +710,8 @@ private:
     bool cache_states_compatible(const Component& source, const Component& target) const;
     void copy_cache_states(const Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
     void reset_component_cache_states(Component& comp);
+    void apply_cache_runtime_params(Component& comp, size_t position_base);
+    void ensure_position_limit(size_t start_position, size_t token_count) const;
     size_t component_chunk_tokens(const Component& comp, const std::string& input_name) const;
     size_t component_output_tokens(const Component& comp, const std::string& output_name) const;
     ChunkedPrefillResult run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position,
@@ -759,7 +762,9 @@ private:
     std::unique_ptr<Tokenizer> tokenizer_;
     bool initialized_ = false;
     size_t cache_total_seq_len_ = 0;
+    size_t cache_prompt_len_ = 0;
     size_t cache_max_seq_len_ = 4096;
+    size_t model_max_position_ = 0;
     size_t last_logit_position_ = 0;
     double last_prefill_cache_copy_ms_ = 0.0;
     size_t last_prefill_padding_tokens_ = 0;

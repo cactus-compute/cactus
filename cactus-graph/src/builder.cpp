@@ -1403,16 +1403,18 @@ size_t CactusGraph::weighted_stats_pool(size_t input, size_t weights) {
 }
 
 size_t CactusGraph::kv_cache_state(size_t max_seq_len, size_t num_kv_heads, size_t head_dim,
-                                    size_t window_size, size_t sink_size) {
+                                    size_t window_size, size_t sink_size, size_t compact_to,
+                                    size_t keep, size_t prompt_len, bool context_shift,
+                                    bool keep_prompt) {
     bool fp16_cache = use_fp16_kv_cache_for_builder();
     size_t total_elements = 0;
     Precision precision = Precision::INT8;
     if (fp16_cache) {
-        total_elements = (64 / sizeof(__fp16)) + max_seq_len * num_kv_heads * head_dim;
+        total_elements = ((64 + max_seq_len * sizeof(uint64_t)) / sizeof(__fp16)) + max_seq_len * num_kv_heads * head_dim;
         precision = Precision::FP16;
     } else {
         size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-        total_elements = 64 + max_seq_len * num_kv_heads * head_dim +
+        total_elements = 64 + max_seq_len * sizeof(uint64_t) + max_seq_len * num_kv_heads * head_dim +
                          max_seq_len * num_kv_heads * num_groups * sizeof(float);
     }
     OpParams params{};
@@ -1421,6 +1423,11 @@ size_t CactusGraph::kv_cache_state(size_t max_seq_len, size_t num_kv_heads, size
     params.head_dim = head_dim;
     params.window_size = window_size;
     params.cache_sink_size = sink_size;
+    params.cache_compact_to = compact_to;
+    params.cache_keep = keep;
+    params.cache_prompt_len = prompt_len;
+    params.cache_context_shift = context_shift;
+    params.cache_keep_prompt = keep_prompt;
     params.output_precision = precision;
     size_t node_id = add_node(OpType::KV_CACHE_STATE, {}, {total_elements}, params);
     persistent_node_ids_.insert(node_id);
@@ -1428,10 +1435,18 @@ size_t CactusGraph::kv_cache_state(size_t max_seq_len, size_t num_kv_heads, size
 }
 
 size_t CactusGraph::kv_cache_append(size_t new_kv, size_t cache_state_node,
-                                     size_t window_size, size_t sink_size) {
+                                     size_t window_size, size_t sink_size, size_t compact_to,
+                                     size_t keep, size_t prompt_len, size_t position_base, bool context_shift,
+                                     bool keep_prompt) {
     OpParams params{};
     params.window_size = window_size;
     params.cache_sink_size = sink_size;
+    params.cache_compact_to = compact_to;
+    params.cache_keep = keep;
+    params.cache_prompt_len = prompt_len;
+    params.cache_position_base = position_base;
+    params.cache_context_shift = context_shift;
+    params.cache_keep_prompt = keep_prompt;
     params.output_precision = Precision::FP32;
     return add_node(OpType::KV_CACHE_APPEND, {new_kv, cache_state_node}, {1}, params);
 }

@@ -200,7 +200,11 @@ class TranspileOptions:
     system_prompt: str | None = None
     trust_remote_code: bool = False
     local_files_only: bool = False
+    ctx_size: str | int | None = None
     cache_context_length: str | int | None = None
+    cache_context_shift: bool | None = None
+    cache_keep: str | int | None = None
+    cache_keep_prompt: bool | None = None
 
 
 def ensure_bundle(model_id, *, bits=4, token=None,
@@ -209,9 +213,17 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     """
     from .download import get_weights_dir
     from .transpile import run_transpile
+    from cactus.transpile.cache_policy import normalize_cache_policy
     from cactus.transpile.component_plan import infer_component_plan_from_output
 
     opts = transpile or TranspileOptions()
+    normalize_cache_policy(
+        ctx_size=opts.ctx_size,
+        cache_context_length=opts.cache_context_length,
+        context_shift=opts.cache_context_shift,
+        keep=opts.cache_keep,
+        keep_prompt=opts.cache_keep_prompt,
+    )
 
     if output_dir is not None:
         output_dir = Path(output_dir)
@@ -313,8 +325,16 @@ def ensure_bundle(model_id, *, bits=4, token=None,
         extra_args.append("--trust-remote-code")
     if opts.local_files_only:
         extra_args.append("--local-files-only")
+    if opts.ctx_size is not None:
+        extra_args.extend(["--ctx-size", str(opts.ctx_size)])
     if opts.cache_context_length is not None:
         extra_args.extend(["--cache-context-length", str(opts.cache_context_length)])
+    if opts.cache_context_shift is not None:
+        extra_args.append("--context-shift" if opts.cache_context_shift else "--no-context-shift")
+    if opts.cache_keep is not None:
+        extra_args.extend(["--keep", str(opts.cache_keep)])
+    if opts.cache_keep_prompt is not None:
+        extra_args.append("--keep-prompt" if opts.cache_keep_prompt else "--no-keep-prompt")
 
     rc = run_transpile(model_id, extra_args=extra_args)
     if rc != 0:

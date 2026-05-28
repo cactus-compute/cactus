@@ -933,10 +933,13 @@ int cactus_graph_attention_int8_hybrid(cactus_graph_t graph, cactus_node_t query
     }
 }
 
-int cactus_graph_kv_cache_state(cactus_graph_t graph, size_t max_seq_len, size_t num_kv_heads, size_t head_dim, size_t window_size, size_t sink_size, cactus_node_t* out) {
+int cactus_graph_kv_cache_state(cactus_graph_t graph, size_t max_seq_len, size_t num_kv_heads, size_t head_dim, size_t window_size, size_t sink_size,
+                                size_t compact_to, size_t keep, size_t prompt_len, bool context_shift, bool keep_prompt, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_kv_cache_state");
     try {
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.kv_cache_state(max_seq_len, num_kv_heads, head_dim, window_size, sink_size));
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.kv_cache_state(
+            max_seq_len, num_kv_heads, head_dim, window_size, sink_size,
+            compact_to, keep, prompt_len, context_shift, keep_prompt));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();
@@ -944,10 +947,13 @@ int cactus_graph_kv_cache_state(cactus_graph_t graph, size_t max_seq_len, size_t
     }
 }
 
-int cactus_graph_kv_cache_append(cactus_graph_t graph, cactus_node_t new_kv, cactus_node_t cache_state, size_t window_size, size_t sink_size, cactus_node_t* out) {
+int cactus_graph_kv_cache_append(cactus_graph_t graph, cactus_node_t new_kv, cactus_node_t cache_state, size_t window_size, size_t sink_size,
+                                 size_t compact_to, size_t keep, size_t prompt_len, size_t position_base, bool context_shift, bool keep_prompt, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_kv_cache_append");
     try {
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.kv_cache_append(static_cast<size_t>(new_kv), static_cast<size_t>(cache_state), window_size, sink_size));
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.kv_cache_append(
+            static_cast<size_t>(new_kv), static_cast<size_t>(cache_state), window_size, sink_size,
+            compact_to, keep, prompt_len, position_base, context_shift, keep_prompt));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();

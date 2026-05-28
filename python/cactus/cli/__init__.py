@@ -181,6 +181,20 @@ def create_parser():
                             help="File containing token ids for transpiled causal-LM bundles")
     run_parser.add_argument("--max-new-tokens", type=int, default=None,
                             help="Maximum tokens to generate for transpiled causal-LM bundles")
+    run_parser.add_argument("-c", "--ctx-size", default=None,
+                            help="KV cache context length when auto-converting a missing bundle")
+    run_parser.add_argument("--cache-context-length", default=None,
+                            help="Deprecated alias for --ctx-size")
+    run_parser.add_argument("--context-shift", dest="cache_context_shift", action="store_true", default=None,
+                            help="Enable KV cache compaction when context fills")
+    run_parser.add_argument("--no-context-shift", dest="cache_context_shift", action="store_false",
+                            help="Disable KV cache compaction when context fills")
+    run_parser.add_argument("--keep", dest="cache_keep", default=None,
+                            help="Prefix tokens to preserve during KV cache compaction")
+    run_parser.add_argument("--keep-prompt", dest="cache_keep_prompt", action="store_true", default=None,
+                            help="Apply --keep to the original prompt prefix")
+    run_parser.add_argument("--no-keep-prompt", dest="cache_keep_prompt", action="store_false",
+                            help="Apply --keep to the raw cache prefix")
     run_parser.add_argument("--result-json", default=None,
                             help="Optional path to save transpiled bundle results as JSON")
     run_parser.add_argument("--thinking", action="store_true",
@@ -261,7 +275,19 @@ def create_parser():
     convert_parser.add_argument("--local-files-only", action="store_true",
                                 help="Require HF model/processor files to already be local during transpile")
     convert_parser.add_argument("--cache-context-length", default=None,
-                                help="KV cache context length for cached decode graphs (default: model config)")
+                                help="Deprecated alias for --ctx-size")
+    convert_parser.add_argument("-c", "--ctx-size", default=None,
+                                help="KV cache context length for cached decode graphs (default: 16384, auto = model config)")
+    convert_parser.add_argument("--context-shift", dest="cache_context_shift", action="store_true", default=None,
+                                help="Enable KV cache compaction when context fills")
+    convert_parser.add_argument("--no-context-shift", dest="cache_context_shift", action="store_false",
+                                help="Disable KV cache compaction when context fills")
+    convert_parser.add_argument("--keep", dest="cache_keep", default=None,
+                                help="Prefix tokens to preserve during KV cache compaction")
+    convert_parser.add_argument("--keep-prompt", dest="cache_keep_prompt", action="store_true", default=None,
+                                help="Apply --keep to the original prompt prefix")
+    convert_parser.add_argument("--no-keep-prompt", dest="cache_keep_prompt", action="store_false",
+                                help="Apply --keep to the raw cache prefix")
     convert_parser.add_argument("--reconvert", action="store_true",
                                 help="Force conversion from source")
     convert_parser.add_argument("--retranspile", action="store_true",

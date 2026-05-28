@@ -142,6 +142,12 @@ enum class ParamField : uint32_t {
     CachedVScalesPtr,
     MaxCacheSeqLen,
     CacheSinkSize,
+    CacheCompactTo,
+    CacheKeep,
+    CachePromptLen,
+    CachePositionBase,
+    CacheContextShift,
+    CacheKeepPrompt,
 };
 
 enum class FieldPersistence {
@@ -211,10 +217,21 @@ const Schema& op_schema(OpType op_type) {
             {ParamField::HeadDim, FieldPersistence::Persistent},
             {ParamField::WindowSize, FieldPersistence::Persistent},
             {ParamField::CacheSinkSize, FieldPersistence::Persistent},
+            {ParamField::CacheCompactTo, FieldPersistence::Persistent},
+            {ParamField::CacheKeep, FieldPersistence::Persistent},
+            {ParamField::CachePromptLen, FieldPersistence::Persistent},
+            {ParamField::CacheContextShift, FieldPersistence::Persistent},
+            {ParamField::CacheKeepPrompt, FieldPersistence::Persistent},
         }},
         {OpType::KV_CACHE_APPEND, {
             {ParamField::WindowSize, FieldPersistence::Persistent},
             {ParamField::CacheSinkSize, FieldPersistence::Persistent},
+            {ParamField::CacheCompactTo, FieldPersistence::Persistent},
+            {ParamField::CacheKeep, FieldPersistence::Persistent},
+            {ParamField::CachePromptLen, FieldPersistence::Persistent},
+            {ParamField::CachePositionBase, FieldPersistence::Persistent},
+            {ParamField::CacheContextShift, FieldPersistence::Persistent},
+            {ParamField::CacheKeepPrompt, FieldPersistence::Persistent},
         }},
         {OpType::ATTENTION_CACHED, {
             {ParamField::Scale, FieldPersistence::Persistent},
@@ -300,6 +317,12 @@ void write_field(std::ostream& out, ParamField field, const OpParams& params) {
             throw std::runtime_error("Attempted to serialize runtime-only pointer field");
         case ParamField::MaxCacheSeqLen: write_u64(out, static_cast<uint64_t>(params.max_cache_seq_len)); break;
         case ParamField::CacheSinkSize: write_u64(out, static_cast<uint64_t>(params.cache_sink_size)); break;
+        case ParamField::CacheCompactTo: write_u64(out, static_cast<uint64_t>(params.cache_compact_to)); break;
+        case ParamField::CacheKeep: write_u64(out, static_cast<uint64_t>(params.cache_keep)); break;
+        case ParamField::CachePromptLen: write_u64(out, static_cast<uint64_t>(params.cache_prompt_len)); break;
+        case ParamField::CachePositionBase: write_u64(out, static_cast<uint64_t>(params.cache_position_base)); break;
+        case ParamField::CacheContextShift: write_u32(out, params.cache_context_shift ? 1u : 0u); break;
+        case ParamField::CacheKeepPrompt: write_u32(out, params.cache_keep_prompt ? 1u : 0u); break;
     }
 }
 
@@ -364,6 +387,12 @@ void read_field(std::istream& in, ParamField field, OpParams& params) {
             throw std::runtime_error("Graph file corrupted: runtime-only field serialized");
         case ParamField::MaxCacheSeqLen: params.max_cache_seq_len = static_cast<size_t>(read_u64(in)); break;
         case ParamField::CacheSinkSize: params.cache_sink_size = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::CacheCompactTo: params.cache_compact_to = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::CacheKeep: params.cache_keep = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::CachePromptLen: params.cache_prompt_len = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::CachePositionBase: params.cache_position_base = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::CacheContextShift: params.cache_context_shift = (read_u32(in) != 0); break;
+        case ParamField::CacheKeepPrompt: params.cache_keep_prompt = (read_u32(in) != 0); break;
     }
 }
 
