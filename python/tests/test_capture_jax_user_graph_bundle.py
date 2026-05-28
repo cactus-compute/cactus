@@ -136,6 +136,34 @@ def test_jax_user_graph_bundle_supports_external_weights_dir(tmp_path: Path) -> 
     _assert_close(loaded.execute("project", x)[0].numpy(), fn(params, x))
 
 
+def test_jax_user_graph_bundle_binds_duplicate_equal_params_by_path(tmp_path: Path) -> None:
+    params = {
+        "a": jnp.zeros((2,), dtype=jnp.float16),
+        "b": jnp.zeros((2,), dtype=jnp.float16),
+    }
+    weight_arrays = {
+        "a": np.asarray([1.0, 1.0], dtype=np.float16),
+        "b": np.asarray([2.0, 2.0], dtype=np.float16),
+    }
+    x = jnp.asarray([10.0, 20.0], dtype=jnp.float16)
+
+    def fn(model_params, values):
+        return values + model_params["b"]
+
+    result = build_jax_user_graph_bundle(
+        params=params,
+        weight_arrays=weight_arrays,
+        specs=(JaxGraphSpec(name="forward", fn=fn, example_args=(x,)),),
+        output_dir=tmp_path / "bundle",
+        model_id="duplicate-param-bindings",
+    )
+    loaded = load_jax_user_graph_bundle(result.output_dir)
+    bindings = loaded.manifest["components"][0]["bound_constant_bindings"]
+
+    assert [binding["source_name"] for binding in bindings] == ["b"]
+    _assert_close(loaded.execute("forward", x)[0].numpy(), np.asarray(x) + weight_arrays["b"])
+
+
 def test_jax_user_graph_execute_coerces_inputs_to_example_dtype(tmp_path: Path) -> None:
     params = {"w": jnp.asarray([[0.5], [-0.25]], dtype=jnp.float16)}
     x = jnp.asarray([[2.0, -1.0]], dtype=jnp.float16)

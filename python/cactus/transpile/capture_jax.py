@@ -172,35 +172,6 @@ def _flatten_named_leaves(tree_util: Any, params: Any) -> list[tuple[str, np.nda
     return leaves
 
 
-def _match_param_names_to_constants(
-    named_leaves: Sequence[tuple[str, np.ndarray]],
-    constants: dict[str, object],
-) -> dict[str, str]:
-    matches: dict[str, str] = {}
-    used_leaf_indexes: set[int] = set()
-    for value_id, const in constants.items():
-        const_array = np.asarray(const)
-        for leaf_index, (name, leaf_array) in enumerate(named_leaves):
-            if leaf_index in used_leaf_indexes:
-                continue
-            if const_array.shape != leaf_array.shape:
-                continue
-            comparable_leaf = leaf_array
-            comparable_const = const_array
-            if leaf_array.dtype.name == "bfloat16" and const_array.dtype == np.dtype(np.float32):
-                comparable_leaf = leaf_array.astype(np.float32)
-            elif const_array.dtype.name == "bfloat16" and leaf_array.dtype == np.dtype(np.float32):
-                comparable_const = const_array.astype(np.float32)
-            elif const_array.dtype != leaf_array.dtype:
-                continue
-            if not np.array_equal(comparable_const, comparable_leaf):
-                continue
-            matches[value_id] = name
-            used_leaf_indexes.add(leaf_index)
-            break
-    return matches
-
-
 def _weight_binding_fields(meta: dict[str, object]) -> dict[str, object] | None:
     path = meta.get("path")
     kind = meta.get("kind")
@@ -253,6 +224,39 @@ def _binding_meta(
         "kind": binding.kind,
         "source_name": binding.source_name,
     }
+
+
+def _freeze_leading_param_inputs(
+    graph: IRGraph,
+    named_leaves: Sequence[tuple[str, np.ndarray]],
+    *,
+    weights_dir: str | None,
+    explicit: dict[str, dict[str, str]],
+) -> None:
+    if not named_leaves:
+        return
+    if len(graph.inputs) < len(named_leaves):
+        raise ValueError(
+            f"JAX graph has {len(graph.inputs)} inputs, cannot freeze {len(named_leaves)} parameter leaves"
+        )
+    param_input_ids = list(graph.inputs[: len(named_leaves)])
+    graph.inputs = graph.inputs[len(named_leaves) :]
+    graph.meta["weight_bindings"] = {}
+    for value_id, (name, leaf_array) in zip(param_input_ids, named_leaves, strict=True):
+        value = graph.values[value_id]
+        tensor = _constant_to_torch(leaf_array)
+        value.shape = tuple(int(dim) for dim in tensor.shape)
+        value.dtype = _dtype_to_ir(tensor.numpy().dtype)
+        value.meta.update(
+            {
+                "source_name": name,
+                "jax_param_input": True,
+                **_binding_meta(name=name, weights_dir=weights_dir, explicit=explicit),
+            }
+        )
+        graph.constants[value_id] = tensor
+        if "path" in value.meta:
+            graph.meta["weight_bindings"][value_id] = dict(value.meta)
 
 
 def _literal_value(literal: Any) -> Any:
@@ -1577,28 +1581,33 @@ def capture_jax_function_with_params(
         raise RuntimeError("capture_jax_function_with_params requires the optional jax package") from exc
 
     named_leaves = _flatten_named_leaves(jax.tree_util, params)
+    flat_leaves, treedef = jax.tree_util.tree_flatten(params)
+    if len(flat_leaves) != len(named_leaves):
+        raise ValueError("JAX param flattening produced mismatched leaf counts")
+    leaf_count = len(flat_leaves)
 
-    def bound_fn(*args: Any) -> Any:
-        return fn(params, *args)
+    def bound_fn(*flat_params_and_args: Any) -> Any:
+        flat_param_values = flat_params_and_args[:leaf_count]
+        runtime_args = flat_params_and_args[leaf_count:]
+        rebuilt_params = jax.tree_util.tree_unflatten(treedef, flat_param_values)
+        return fn(rebuilt_params, *runtime_args)
 
     graph = capture_jax_function(
         bound_fn,
-        example_args,
+        (*flat_leaves, *example_args),
         weight_bindings=weight_bindings,
         weights_dir=weights_dir,
         graph_meta=graph_meta,
     )
     explicit = weight_bindings or {}
-    graph.meta["weight_bindings"] = {}
-    for value_id, name in _match_param_names_to_constants(named_leaves, graph.constants).items():
-        meta = {
-            "source_name": name,
-            **_binding_meta(name=name, weights_dir=weights_dir, explicit=explicit),
-        }
-        graph.values[value_id].meta.update(meta)
-        if "path" in meta:
-            graph.meta["weight_bindings"][value_id] = dict(meta)
+    _freeze_leading_param_inputs(
+        graph,
+        named_leaves,
+        weights_dir=weights_dir,
+        explicit=explicit,
+    )
     _propagate_weight_binding_meta(graph)
+    verify_ir(graph)
     return graph
 
 
