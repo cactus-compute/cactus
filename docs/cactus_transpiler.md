@@ -392,21 +392,13 @@ transpiled/<model>/
   components/              # for multimodal models
     manifest.json          # component order, input/output names
     vision_encoder/
-      raw_ir.json
-      optimized_ir.json
       graph.cactus
       bound_constants/
     audio_encoder/
-      raw_ir.json
-      optimized_ir.json
       graph.cactus
     lm_encoder/
-      raw_ir.json
-      optimized_ir.json
       graph.cactus
     decoder/
-      raw_ir.json
-      optimized_ir.json
       graph.cactus
 ```
 
