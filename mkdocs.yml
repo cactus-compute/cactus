@@ -91,10 +91,14 @@ nav:
     - Kotlin: kotlin/README.md
     - Flutter: flutter/README.md
     - Rust: rust/README.md
-  - Core APIs (C++):
+  - Core APIs:
     - Engine API: docs/cactus_engine.md
     - Graph API: docs/cactus_graph.md
+    - Kernels: docs/cactus_kernels.md
     - Index API: docs/cactus_index.md
+  - Cactus Quants: docs/cactus_quants.md
+  - Hybrid Inference: docs/cactus_hybrid.md
+  - Transpiler: docs/cactus_transpiler.md
   - Guides:
     - Fine-tuning & Deployment: docs/finetuning.md
     - Runtime Compatibility: docs/compatibility.md

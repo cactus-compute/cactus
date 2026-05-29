@@ -21,6 +21,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <cstdint>
 #include <future>
 #include <unistd.h>
 #include <unordered_map>
@@ -176,8 +177,13 @@ inline float16x8_t apply_f32_op_on_f16x8(float16x8_t v, F32x4Op op) {
 namespace CactusThreading {
 
 #if defined(__ANDROID__)
+    static constexpr size_t ANDROID_DYNAMIC_CHUNK_MULTIPLIER = 16;
+    class ThreadPool;
+    inline ThreadPool& get_thread_pool();
+
     struct CoreTopology {
         std::vector<int> performance_cores;  
+        std::vector<int> performance_core_capacities;
         std::vector<int> all_cores;
 
         static CoreTopology& get() {
@@ -231,6 +237,7 @@ namespace CactusThreading {
             for (auto& [id, cap] : core_caps) {
                 if (cap >= threshold) {
                     topo.performance_cores.push_back(id);
+                    topo.performance_core_capacities.push_back(cap);
                 }
             }
 
@@ -254,6 +261,125 @@ namespace CactusThreading {
         if (!selected && has_current_mask) return true;
         return sched_setaffinity(0, sizeof(mask), &mask) == 0;
     }
+
+    struct ThreadAffinityState {
+        cpu_set_t original_mask{};
+        bool has_original_mask{false};
+
+        static ThreadAffinityState& current() {
+            static thread_local ThreadAffinityState state;
+            return state;
+        }
+
+        void capture_once() {
+            if (has_original_mask) return;
+            has_original_mask = sched_getaffinity(0, sizeof(original_mask), &original_mask) == 0;
+        }
+
+        void restore() const {
+            if (has_original_mask) {
+                sched_setaffinity(0, sizeof(original_mask), &original_mask);
+            }
+        }
+    };
+
+    struct CpuTimeSample {
+        uint64_t idle{0};
+        uint64_t total{0};
+        bool valid{false};
+    };
+
+    inline std::vector<CpuTimeSample> read_cpu_time_samples() {
+        std::ifstream f("/proc/stat");
+        std::vector<CpuTimeSample> samples;
+        std::string label;
+        while (f >> label) {
+            if (label.size() <= 3 || label[0] != 'c' || label[1] != 'p' || label[2] != 'u') {
+                std::string rest;
+                std::getline(f, rest);
+                continue;
+            }
+
+            int cpu = 0;
+            for (size_t i = 3; i < label.size(); ++i) {
+                if (label[i] < '0' || label[i] > '9') {
+                    cpu = -1;
+                    break;
+                }
+                cpu = cpu * 10 + (label[i] - '0');
+            }
+            if (cpu < 0) continue;
+
+            uint64_t user = 0, nice = 0, system = 0, idle = 0, iowait = 0;
+            uint64_t irq = 0, softirq = 0, steal = 0, guest = 0, guest_nice = 0;
+            f >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal >> guest >> guest_nice;
+            if (samples.size() <= static_cast<size_t>(cpu)) samples.resize(static_cast<size_t>(cpu) + 1);
+            auto& sample = samples[static_cast<size_t>(cpu)];
+            sample.idle = idle + iowait;
+            sample.total = user + nice + system + idle + iowait + irq + softirq + steal + guest + guest_nice;
+            sample.valid = sample.total > 0;
+        }
+        return samples;
+    }
+
+    inline int select_load_aware_performance_core(
+        const std::vector<CpuTimeSample>& before,
+        const std::vector<CpuTimeSample>& after
+    ) {
+        auto& topo = CoreTopology::get();
+        if (topo.performance_cores.empty()) return -1;
+
+        cpu_set_t current_mask;
+        const bool has_current_mask = sched_getaffinity(0, sizeof(current_mask), &current_mask) == 0;
+        int best_core = -1;
+        double best_score = -1.0;
+        int max_cap = 1;
+        for (int cap : topo.performance_core_capacities) max_cap = std::max(max_cap, cap);
+
+        for (size_t i = 0; i < topo.performance_cores.size(); ++i) {
+            int core = topo.performance_cores[i];
+            if (has_current_mask && !CPU_ISSET(core, &current_mask)) continue;
+
+            double busy = 0.0;
+            if (static_cast<size_t>(core) < before.size() && static_cast<size_t>(core) < after.size()) {
+                const auto& prev = before[static_cast<size_t>(core)];
+                const auto& curr = after[static_cast<size_t>(core)];
+                if (prev.valid && curr.valid && curr.total >= prev.total && curr.idle >= prev.idle) {
+                    uint64_t total_delta = curr.total - prev.total;
+                    uint64_t idle_delta = curr.idle - prev.idle;
+                    if (total_delta > 0 && idle_delta <= total_delta) {
+                        busy = 1.0 - (static_cast<double>(idle_delta) / static_cast<double>(total_delta));
+                    }
+                }
+            }
+
+            int cap = i < topo.performance_core_capacities.size() ? topo.performance_core_capacities[i] : max_cap;
+            double score = (static_cast<double>(cap) / static_cast<double>(max_cap)) / (1.0 + busy);
+            if (score > best_score || (score == best_score && core > best_core)) {
+                best_score = score;
+                best_core = core;
+            }
+        }
+        return best_core;
+    }
+
+    inline void prepare_current_thread_for_cactus_work() {
+        auto& affinity = ThreadAffinityState::current();
+        affinity.capture_once();
+        (void)get_thread_pool();
+        affinity.restore();
+
+        auto before = read_cpu_time_samples();
+        if (!before.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        int core = select_load_aware_performance_core(before, read_cpu_time_samples());
+        if (core >= 0) {
+            pin_current_thread_to_cores({core});
+        }
+    }
+#else
+    inline void prepare_current_thread_for_cactus_work() {}
 #endif
 
     class ThreadPool {
@@ -312,12 +438,14 @@ namespace CactusThreading {
 
             workers.reserve(num_workers_);
             for (size_t i = 0; i < num_workers_; ++i) {
-                workers.emplace_back([this]() {
+                workers.emplace_back([this, i]() {
 #if defined(__ANDROID__)
                     auto& perf = CoreTopology::get().performance_cores;
                     if (!perf.empty()) {
-                        pin_current_thread_to_cores(perf);
+                        pin_current_thread_to_cores({perf[i % perf.size()]});
                     }
+#else
+                    (void)i;
 #endif
                     worker_thread();
                 });
@@ -390,16 +518,22 @@ namespace CactusThreading {
             if (total_work == 0 || num_threads == 0) return;
 
             num_threads = std::min(num_threads, std::min(num_workers_, total_work));
-            const size_t per_thread = total_work / num_threads;
-            const size_t remainder = total_work % num_threads;
+            size_t num_tasks = num_threads;
+#if defined(__ANDROID__)
+            if (num_threads > 1) {
+                num_tasks = std::min(total_work, std::max(num_threads, num_threads * ANDROID_DYNAMIC_CHUNK_MULTIPLIER));
+            }
+#endif
+            const size_t per_task = total_work / num_tasks;
+            const size_t remainder = total_work % num_tasks;
 
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                pending_tasks.fetch_add(num_threads, std::memory_order_relaxed);
+                pending_tasks.fetch_add(num_tasks, std::memory_order_relaxed);
 
-                for (size_t t = 0; t < num_threads; ++t) {
-                    size_t start = t * per_thread + std::min(t, remainder);
-                    size_t end = start + per_thread + (t < remainder ? 1 : 0);
+                for (size_t t = 0; t < num_tasks; ++t) {
+                    size_t start = t * per_task + std::min(t, remainder);
+                    size_t end = start + per_task + (t < remainder ? 1 : 0);
                     tasks.emplace_back([=]() { task_func(start, end); });
                 }
             }
@@ -556,6 +690,14 @@ namespace CactusThreading {
         }
 
         auto& pool = get_thread_pool();
+#if defined(__ANDROID__)
+        if (wait) {
+            pool.enqueue_n_threads(total_work, num_threads, work_func);
+            pool.wait_all();
+            return handle;
+        }
+#endif
+
         const size_t work_per_thread = total_work / num_threads;
 
         for (size_t t = 0; t < num_threads; ++t) {
