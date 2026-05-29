@@ -197,6 +197,8 @@ static std::string call_cloud_endpoint(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, std::min<long>(timeout_ms, 2000L));
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
     if (!env_flag_enabled("CACTUS_CLOUD_STRICT_SSL")) {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);

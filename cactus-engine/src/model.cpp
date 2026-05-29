@@ -1113,7 +1113,7 @@ void Model::run_audio_encoder(const std::vector<float>& audio_features) {
     }
 }
 
-uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row) {
+uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float* out_uncertainty) {
     size_t out_node = static_cast<size_t>(comp.output_node_ids.empty() ? 0 : comp.output_node_ids[0]);
     const auto& desc = comp.graph->get_output_buffer(out_node);
     void* ptr = comp.graph->get_output(out_node);
@@ -1128,24 +1128,39 @@ uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row) {
     size_t row_off = row * vocab;
     uint32_t best = 0;
     float best_v = -std::numeric_limits<float>::infinity();
+    float second_v = -std::numeric_limits<float>::infinity();
+    auto observe_logit = [&](size_t i, float v) {
+        if (v > best_v) {
+            second_v = best_v;
+            best_v = v;
+            best = static_cast<uint32_t>(i);
+        } else if (v > second_v) {
+            second_v = v;
+        }
+    };
     if (desc.precision == Precision::FP32) {
         float* p = static_cast<float*>(ptr) + row_off;
-        for (size_t i = 0; i < vocab; ++i) if (p[i] > best_v) { best_v = p[i]; best = static_cast<uint32_t>(i); }
+        for (size_t i = 0; i < vocab; ++i) observe_logit(i, p[i]);
     } else if (desc.precision == Precision::FP16) {
         __fp16* p = static_cast<__fp16*>(ptr) + row_off;
-        for (size_t i = 0; i < vocab; ++i) {
-            float v = static_cast<float>(p[i]);
-            if (v > best_v) { best_v = v; best = static_cast<uint32_t>(i); }
-        }
+        for (size_t i = 0; i < vocab; ++i) observe_logit(i, static_cast<float>(p[i]));
     } else {
         int8_t* p = static_cast<int8_t*>(ptr) + row_off;
-        for (size_t i = 0; i < vocab; ++i) if (p[i] > best_v) { best_v = static_cast<float>(p[i]); best = static_cast<uint32_t>(i); }
+        for (size_t i = 0; i < vocab; ++i) observe_logit(i, static_cast<float>(p[i]));
+    }
+    if (out_uncertainty) {
+        float confidence = 1.0f;
+        if (std::isfinite(best_v) && std::isfinite(second_v)) {
+            float margin = std::max(-60.0f, std::min(60.0f, best_v - second_v));
+            confidence = 1.0f / (1.0f + std::exp(-margin));
+        }
+        *out_uncertainty = std::max(0.0f, std::min(1.0f, 1.0f - confidence));
     }
     return best;
 }
 
-uint32_t Model::argmax_last_logits() {
-    return argmax_component_logits(*decoder_);
+uint32_t Model::argmax_last_logits(float* out_uncertainty) {
+    return argmax_component_logits(*decoder_, std::numeric_limits<size_t>::max(), out_uncertainty);
 }
 
 bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token) {
@@ -1961,8 +1976,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
         cache_total_seq_len_ = context_tokens_.size();
-        if (out_entropy) *out_entropy = 0.0f;
-        uint32_t result = argmax_last_logits();
+        uint32_t result = argmax_last_logits(out_entropy);
         record_sampled_token(result);
         return result;
     }
@@ -1971,8 +1985,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
     }
     run_step(tokens.back(), cache_total_seq_len_ + tokens.size() - 1, /*read_logits=*/true);
     cache_total_seq_len_ += tokens.size();
-    if (out_entropy) *out_entropy = 0.0f;
-    uint32_t result = argmax_last_logits();
+    uint32_t result = argmax_last_logits(out_entropy);
     record_sampled_token(result);
     return result;
 }

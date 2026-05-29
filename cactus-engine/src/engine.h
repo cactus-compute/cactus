@@ -713,13 +713,14 @@ private:
     ChunkedPrefillResult run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position,
                                              size_t chunk_size, bool prepare_decode);
     void run_full_context_text();
-    uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max());
+    uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max(),
+                                     float* out_uncertainty = nullptr);
     void write_int_input(Component& comp, const std::string& name, int64_t value);
     void write_int_input_at(Component& comp, const std::string& name, size_t index, int64_t value);
     void write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size);
     int input_index(const Component& comp, const std::string& name) const;
     int output_index(const Component& comp, const std::string& name) const;
-    uint32_t argmax_last_logits();
+    uint32_t argmax_last_logits(float* out_uncertainty = nullptr);
     void run_vision_encoder(const std::string& image_path);
     void run_audio_encoder(const std::vector<float>& audio_features);
     void run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message);
