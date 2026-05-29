@@ -1061,7 +1061,7 @@ def cactus_embed(model, text, normalize=True):
     """
     buf = (ctypes.c_float * 4096)()
     dim = ctypes.c_size_t()
-    rc = _lib.cactus_embed(model, _enc(text), buf, 4096, ctypes.byref(dim), normalize)
+    rc = _lib.cactus_embed(model, _enc(text), buf, ctypes.sizeof(buf), ctypes.byref(dim), normalize)
     if rc < 0:
         raise RuntimeError(_err("Embedding failed"))
     return list(buf[:dim.value])
@@ -1071,7 +1071,7 @@ def cactus_image_embed(model, image_path):
     """Compute an image embedding. Returns a list of floats."""
     buf = (ctypes.c_float * 4096)()
     dim = ctypes.c_size_t()
-    rc = _lib.cactus_image_embed(model, _enc(image_path), buf, 4096, ctypes.byref(dim))
+    rc = _lib.cactus_image_embed(model, _enc(image_path), buf, ctypes.sizeof(buf), ctypes.byref(dim))
     if rc < 0:
         raise RuntimeError(_err("Image embedding failed"))
     return list(buf[:dim.value])
@@ -1081,7 +1081,7 @@ def cactus_audio_embed(model, audio_path):
     """Compute an audio embedding. Returns a list of floats."""
     buf = (ctypes.c_float * 4096)()
     dim = ctypes.c_size_t()
-    rc = _lib.cactus_audio_embed(model, _enc(audio_path), buf, 4096, ctypes.byref(dim))
+    rc = _lib.cactus_audio_embed(model, _enc(audio_path), buf, ctypes.sizeof(buf), ctypes.byref(dim))
     if rc < 0:
         raise RuntimeError(_err("Audio embedding failed"))
     return list(buf[:dim.value])

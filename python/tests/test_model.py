@@ -33,9 +33,9 @@ def _find_asset(name):
 _TEST_IMAGE = _find_asset("test_monkey.png")
 _TEST_AUDIO = _find_asset("test.wav")
 
-_EMBED_NOT_IMPLEMENTED = (
-    "Embeddings are not wired up for transpiled bundles in the v2 engine "
-    "(Model::get_embeddings stub + image/audio embed paths gated)."
+_TEXT_EMBED_NOT_IMPLEMENTED = (
+    "Text embeddings are not wired up for transpiled bundles in the v2 engine "
+    "(Model::get_embeddings throws in model.cpp)."
 )
 
 
@@ -58,13 +58,13 @@ class TestVLMModel(unittest.TestCase):
         self.assertTrue(result.get("success", False))
         self.assertGreater(len(result.get("response", "")), 0)
 
-    @unittest.skip(_EMBED_NOT_IMPLEMENTED)
+    @unittest.skip(_TEXT_EMBED_NOT_IMPLEMENTED)
     def test_text_embedding(self):
         embedding = cactus_embed(self.model, "Hello world", True)
         self.assertIsInstance(embedding, list)
         self.assertGreater(len(embedding), 0)
 
-    @unittest.skip(_EMBED_NOT_IMPLEMENTED)
+    @unittest.skipUnless(_TEST_IMAGE is not None, "test_monkey.png not found")
     def test_image_embedding(self):
         embedding = cactus_image_embed(self.model, str(_TEST_IMAGE))
         self.assertIsInstance(embedding, list)
@@ -111,7 +111,7 @@ class TestWhisperModel(unittest.TestCase):
         self.assertTrue(result.get("success", False))
         self.assertGreater(len(result.get("response", "")), 0)
 
-    @unittest.skip(_EMBED_NOT_IMPLEMENTED)
+    @unittest.skipUnless(_TEST_AUDIO is not None, "test.wav not found")
     def test_audio_embedding(self):
         embedding = cactus_audio_embed(self.model, str(_TEST_AUDIO))
         self.assertIsInstance(embedding, list)

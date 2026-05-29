@@ -124,7 +124,13 @@ std::string retrieve_rag_context(CactusModelHandle* handle, const std::string& q
     std::vector<uint32_t> query_tokens = tokenizer->encode(query);
     if (query_tokens.empty()) return "";
 
-    std::vector<float> query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+    std::vector<float> query_embedding;
+    try {
+        query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+    } catch (const std::exception& e) {
+        CACTUS_LOG_WARN("rag", "get_embeddings unavailable, skipping RAG context: " << e.what());
+        return "";
+    }
     if (query_embedding.size() != handle->corpus_embedding_dim) {
         CACTUS_LOG_WARN("rag", "Query embedding dimension mismatch");
         return "";
@@ -262,8 +268,15 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
 
             std::vector<uint32_t> tokens = tokenizer->encode(text);
             if (!tokens.empty()) {
-                std::vector<float> emb = handle->model->get_embeddings(tokens, true, true);
-                handle->tool_embeddings.push_back(std::move(emb));
+                try {
+                    std::vector<float> emb = handle->model->get_embeddings(tokens, true, true);
+                    handle->tool_embeddings.push_back(std::move(emb));
+                } catch (const std::exception& e) {
+                    CACTUS_LOG_WARN("tool_rag", "get_embeddings unavailable, returning all tools: " << e.what());
+                    handle->tool_texts.clear();
+                    handle->tool_embeddings.clear();
+                    return all_tools;
+                }
             } else {
                 handle->tool_embeddings.push_back({});
             }
@@ -277,7 +290,13 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
         return all_tools;
     }
 
-    std::vector<float> query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+    std::vector<float> query_embedding;
+    try {
+        query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+    } catch (const std::exception& e) {
+        CACTUS_LOG_WARN("tool_rag", "get_embeddings unavailable, returning all tools: " << e.what());
+        return all_tools;
+    }
     if (query_embedding.empty()) {
         CACTUS_LOG_WARN("tool_rag", "Failed to get query embedding, returning all tools");
         return all_tools;
