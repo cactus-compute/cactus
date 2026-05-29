@@ -77,6 +77,16 @@ struct OpSpec {
     int head_dim = 0;
     int num_q_heads = 0, num_kv_heads = 0;
     int axis_size = 0;
+    // For RMSNorm: how many independent rows to normalize. Default 1 (the
+    // canonical "normalize the hidden vector" use). Gemma 3/4's q_norm /
+    // k_norm / v_norm normalize per-head, with rows = num_q_heads / num_kv_heads.
+    int rows = 1;
+    // For RMSNorm: which scratch buffer to read from / write to. Defaults are
+    // (residual -> norm_out) which matches the canonical pre-attn / pre-MLP
+    // norms. Gemma's per-head q/k/v norms operate in-place on q_buf/k_buf/v_buf,
+    // and post-attention / post-feedforward norms operate in-place on mlp_down.
+    std::string in_buf;
+    std::string out_buf;
     int hidden_dim = 0;
     int M_tile = 1;
     bool is_neox = true;
@@ -88,6 +98,12 @@ struct OpSpec {
     long long weight_nbytes = 0;
     long long scale_offset_bytes = -1;
     long long scale_nbytes = 0;
+    // Optional bias bytes for Qwen2-style projections. has_bias mirrors the
+    // kernel's HAS_BIAS function constant; bias_offset_bytes / nbytes point at
+    // a fp16 vector of length N inside weights.bin.
+    bool      has_bias = false;
+    long long bias_offset_bytes = -1;
+    long long bias_nbytes = 0;
 };
 
 struct LayerSpec {
@@ -188,6 +204,9 @@ static bool parse_plan(const std::string& json_text, PlanSpec& plan) {
             op.num_q_heads  = _get_int(oo, "num_q_heads");
             op.num_kv_heads = _get_int(oo, "num_kv_heads");
             op.axis_size   = _get_int(oo, "axis_size");
+            op.rows        = _get_int(oo, "rows", 1);
+            op.in_buf      = _get_str(oo, "in_buf");
+            op.out_buf     = _get_str(oo, "out_buf");
             op.hidden_dim  = _get_int(oo, "hidden_dim");
             op.M_tile      = _get_int(oo, "M_tile", 1);
             op.is_neox     = _get_bool(oo, "is_neox", true);
@@ -199,6 +218,9 @@ static bool parse_plan(const std::string& json_text, PlanSpec& plan) {
             op.weight_nbytes       = _get_int(oo, "weight_nbytes", 0);
             op.scale_offset_bytes  = _get_int_or_neg1(oo, "scale_offset_bytes");
             op.scale_nbytes        = _get_int(oo, "scale_nbytes", 0);
+            op.has_bias            = _get_bool(oo, "has_bias", false);
+            op.bias_offset_bytes   = _get_int_or_neg1(oo, "bias_offset_bytes");
+            op.bias_nbytes         = _get_int(oo, "bias_nbytes", 0);
             ls.ops.push_back(op);
         }
         plan.layers.push_back(std::move(ls));
@@ -454,6 +476,10 @@ uint32_t GPUModel::decode_one(uint32_t input_token,
         }
 
         // Stage 3: per-layer loop.
+        // Per-layer debugging: set CACTUS_GPU_TRACE_LAYER=N to commit + wait
+        // + dump the residual buffer after layer N completes, then return.
+        const char* trace_env = std::getenv("CACTUS_GPU_TRACE_LAYER");
+        const int trace_layer = trace_env ? std::atoi(trace_env) : -1;
         for (size_t li = 0; li < P.layers.size(); ++li) {
             const auto& layer = P.layers[li];
             for (const auto& op : layer.ops) {
@@ -471,24 +497,50 @@ uint32_t GPUModel::decode_one(uint32_t input_token,
                             (char*)I.weights.ptr + op.weight_offset_bytes,
                             op.weight_nbytes);
                     }
-                    BufferBinding bb[4] = {{I.residual, 0}, {w, 0}, {I.norm_out, 0}, {eps_buf, 0}};
-                    const uint32_t tg = (uint32_t)(op.axis_size / 4);
-                    command_buffer_dispatch(cb, pp, bb, 4, 1, 1, 1, tg, 1, 1);
+                    // Pick the input/output buffers. Default is residual ->
+                    // norm_out (the canonical pre-attn / pre-MLP norm). Plans
+                    // can override with in_buf/out_buf for in-place per-head
+                    // norms (Gemma 3/4 q/k/v_norm) and post-attn/post-FF norms.
+                    auto pick = [&](const std::string& name, Buffer* def) -> Buffer* {
+                        if (name.empty() || name == "residual") return I.residual;
+                        if (name == "norm_out") return I.norm_out;
+                        if (name == "q_buf")    return I.q_buf;
+                        if (name == "k_buf")    return I.k_buf;
+                        if (name == "v_buf")    return I.v_buf;
+                        if (name == "attn_buf") return I.attn_buf;
+                        if (name == "mlp_down") return I.mlp_down;
+                        return def;
+                    };
+                    Buffer* in_b  = pick(op.in_buf,  I.residual);
+                    Buffer* out_b = pick(op.out_buf, I.norm_out);
+                    BufferBinding bb[4] = {{in_b, 0}, {w, 0}, {out_b, 0}, {eps_buf, 0}};
+                    const uint32_t tg   = (uint32_t)(op.axis_size / 4);
+                    const uint32_t rows = (uint32_t)std::max(1, op.rows);
+                    command_buffer_dispatch(cb, pp, bb, 4, rows, 1, 1, tg, 1, 1);
                     command_buffer_barrier(cb);
                     ephemeral.push_back(eps_buf);
                     if (w) ephemeral.push_back(w);
                 }
                 else if (op.kind == "mul_mv_int4_fp16") {
                     if (op.weight_offset_bytes < 0) continue;  // missing weights (e.g. KV-shared sliding layer)
-                    char key[96]; std::snprintf(key, sizeof(key), "mvi4:%d:%d", op.K, op.N);
+                    // Bias support — Qwen2 q/k/v have bias. The function
+                    // constant lives in the pipeline cache key so different
+                    // (has_bias, K, N) tuples get their own compiled pipeline.
+                    const bool hb = op.has_bias && op.bias_offset_bytes >= 0;
+                    char key[96]; std::snprintf(key, sizeof(key), "mvi4:%d:%d:%d", op.K, op.N, hb ? 1 : 0);
                     auto* pp = I.lookup(key);
                     if (!pp) pp = I.cache(key,
-                        pipeline_mul_mv_int4_fp16(I.ctx, (uint32_t)op.K, (uint32_t)op.N));
+                        pipeline_mul_mv_int4_fp16(I.ctx, (uint32_t)op.K, (uint32_t)op.N, hb));
                     if (!pp) continue;
                     auto* qs = buffer_wrap_host_memory(I.ctx,
                         (char*)I.weights.ptr + op.weight_offset_bytes, op.weight_nbytes);
                     auto* sc = buffer_wrap_host_memory(I.ctx,
                         (char*)I.scales.ptr + op.scale_offset_bytes, op.scale_nbytes);
+                    Buffer* bias_b = nullptr;
+                    if (hb) {
+                        bias_b = buffer_wrap_host_memory(I.ctx,
+                            (char*)I.weights.ptr + op.bias_offset_bytes, op.bias_nbytes);
+                    }
                     Buffer* in_buf  = I.norm_out;
                     Buffer* out_buf = nullptr;
                     if      (op.tag == "q_proj")    out_buf = I.q_buf;
@@ -498,11 +550,21 @@ uint32_t GPUModel::decode_one(uint32_t input_token,
                     else if (op.tag == "gate_proj") out_buf = I.mlp_gate;
                     else if (op.tag == "up_proj")   out_buf = I.mlp_up;
                     else if (op.tag == "down_proj") { in_buf = I.mlp_silu; out_buf = I.mlp_down; }
-                    else { ephemeral.push_back(qs); ephemeral.push_back(sc); continue; }
-                    BufferBinding bb[4] = {{qs, 0}, {sc, 0}, {in_buf, 0}, {out_buf, 0}};
-                    command_buffer_dispatch(cb, pp, bb, 4, (uint32_t)(op.N / 4), 1, 1, 32, 1, 1);
+                    else {
+                        ephemeral.push_back(qs); ephemeral.push_back(sc);
+                        if (bias_b) ephemeral.push_back(bias_b);
+                        continue;
+                    }
+                    if (hb) {
+                        BufferBinding bb[5] = {{qs, 0}, {sc, 0}, {in_buf, 0}, {out_buf, 0}, {bias_b, 0}};
+                        command_buffer_dispatch(cb, pp, bb, 5, (uint32_t)(op.N / 4), 1, 1, 32, 1, 1);
+                    } else {
+                        BufferBinding bb[4] = {{qs, 0}, {sc, 0}, {in_buf, 0}, {out_buf, 0}};
+                        command_buffer_dispatch(cb, pp, bb, 4, (uint32_t)(op.N / 4), 1, 1, 32, 1, 1);
+                    }
                     command_buffer_barrier(cb);
                     ephemeral.push_back(qs); ephemeral.push_back(sc);
+                    if (bias_b) ephemeral.push_back(bias_b);
                 }
                 else if (op.kind == "rope_apply") {
                     char key[96]; std::snprintf(key, sizeof(key), "rope:%d:%d:%g",
@@ -618,6 +680,20 @@ uint32_t GPUModel::decode_one(uint32_t input_token,
                     command_buffer_dispatch(cb, pp, bb, 2, tgx, 1, 1, tg, 1, 1);
                     command_buffer_barrier(cb);
                 }
+            }
+            // Optional per-layer trace: commit + wait + dump residual.
+            if (trace_layer >= 0 && (int)li == trace_layer) {
+                command_buffer_commit(cb);
+                command_buffer_wait(cb);
+                command_buffer_destroy(cb);
+                uint16_t* r = (uint16_t*)buffer_contents(I.residual);
+                std::fprintf(stderr, "  [trace L%zu] residual[0..7]:", li);
+                for (int i = 0; i < 8; ++i) std::fprintf(stderr, " 0x%04x", r[i]);
+                std::fprintf(stderr, "\n");
+                for (auto* eb : ephemeral) buffer_destroy(eb);
+                ephemeral.clear();
+                I.kv_cur_len++;
+                return 0;
             }
         }
 

@@ -107,7 +107,22 @@ _DECODER_LAYER_LIST_CANDIDATES = (
     "transformer.h",
 )
 _ATTN_NORM_CANDIDATES = ("input_layernorm", "pre_attn_norm", "attn_norm")
-_MLP_NORM_CANDIDATES  = ("post_attention_layernorm", "post_attn_norm", "pre_mlp_norm", "mlp_norm")
+# Note: for Gemma 3/4 (gemma_norms), the pre-MLP norm is "pre_feedforward_layernorm",
+# not "post_attention_layernorm" — the latter is a SEPARATE norm applied AFTER attn.
+# For LLaMA-style models we still fall back to post_attention_layernorm as the
+# pre-MLP norm (their post_attention_layernorm is structurally placed BEFORE the
+# MLP, despite the misleading HF name).
+_MLP_NORM_CANDIDATES  = ("pre_feedforward_layernorm", "post_attention_layernorm",
+                         "post_attn_norm", "pre_mlp_norm", "mlp_norm")
+# Per-layer norms specific to Gemma 3/4
+_GEMMA_NORM_TAGS = {
+    "q_norm":         ("self_attn.q_norm",),
+    "k_norm":         ("self_attn.k_norm",),
+    "v_norm":         ("self_attn.v_norm",),
+    "post_attn_norm": ("post_attention_layernorm",),
+    "pre_ff_norm":    ("pre_feedforward_layernorm",),
+    "post_ff_norm":   ("post_feedforward_layernorm",),
+}
 _FINAL_NORM_CANDIDATES = (
     "model.language_model.norm", "model.norm",
     "language_model.norm", "model.model.norm",
@@ -159,7 +174,14 @@ def _layer_linear(layer_module: torch.nn.Module, tag: str) -> torch.nn.Module:
 
 
 def _layer_norm(layer_module: torch.nn.Module, tag: str) -> torch.nn.Module:
-    candidates = _ATTN_NORM_CANDIDATES if tag == "attn_norm" else _MLP_NORM_CANDIDATES
+    if tag == "attn_norm":
+        candidates = _ATTN_NORM_CANDIDATES
+    elif tag in ("mlp_norm", "pre_ff_norm"):
+        candidates = _MLP_NORM_CANDIDATES
+    elif tag in _GEMMA_NORM_TAGS:
+        candidates = _GEMMA_NORM_TAGS[tag]
+    else:
+        raise KeyError(f"gpu.weight_pack: no norm candidates for tag '{tag}'")
     norm = _first_resolvable(layer_module, candidates)
     if norm is None:
         raise RuntimeError(
@@ -240,7 +262,19 @@ def pack_decoder_weights(
             args = op.args
             if kind == "rms_norm":
                 norm = _layer_norm(layer_module, args["tag"])
-                off, sz = _emit_fp16_tensor(norm.weight)
+                # Some Gemma 3/4 norms (e.g. v_norm) are constructed with
+                # with_scale=False — they normalize but don't rescale. The
+                # kernel always multiplies by gamma, so emit a unit weight
+                # tensor of the right size to make it a no-op rescale.
+                if hasattr(norm, "weight"):
+                    off, sz = _emit_fp16_tensor(norm.weight)
+                else:
+                    axis = int(args.get("axis_size", 0))
+                    if axis <= 0:
+                        raise RuntimeError(
+                            f"gpu.weight_pack: norm '{args.get('tag')}' has no "
+                            f"weight and no axis_size in plan")
+                    off, sz = _emit_fp16_tensor(torch.ones(axis, dtype=torch.float16))
                 args["weight_offset_bytes"] = off
                 args["weight_nbytes"]       = sz
             elif kind in _WEIGHT_OPS_INT4 or kind in _WEIGHT_OPS_FP16:
@@ -265,6 +299,14 @@ def pack_decoder_weights(
                     off, sz = _emit_fp16_linear(linear)
                     args["weight_offset_bytes"] = off
                     args["weight_nbytes"]       = sz
+                # Plumb bias bytes if the plan flagged this op as bias-bearing
+                # and the actual Linear has one. (Qwen2 has bias on q/k/v.)
+                if args.get("has_bias") and getattr(linear, "bias", None) is not None:
+                    b_off, b_sz = _emit_fp16_tensor(linear.bias)
+                    args["bias_offset_bytes"] = b_off
+                    args["bias_nbytes"]       = b_sz
+                else:
+                    args["has_bias"] = False
             # other ops (rope, swiglu, residual, kv_cache_append, flash_attn)
             # have no weights — skip.
 
@@ -303,10 +345,15 @@ def pack_decoder_weights(
             pass
 
     # Embedding lookup table — separate file so the embedding kernel can bind
-    # it directly without offsetting into the big weights blob.
+    # it directly without offsetting into the big weights blob. For Gemma-
+    # family models the table is multiplied by ``plan.embed_scale``
+    # (sqrt(hidden_size)) here so the runtime stays family-agnostic.
     embed = _first_resolvable(hf_model, _EMBED_CANDIDATES)
     if embed is not None and hasattr(embed, "weight"):
-        embed_arr = embed.weight.detach().to(torch.float16).contiguous().cpu().numpy()
+        embed_arr = embed.weight.detach().to(torch.float32).contiguous().cpu().numpy()
+        if plan.embed_scale != 1.0:
+            embed_arr = embed_arr * float(plan.embed_scale)
+        embed_arr = embed_arr.astype(np.float16, copy=False)
         with open(embedding_path, "wb") as f:
             f.write(embed_arr.tobytes())
     else:

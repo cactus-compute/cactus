@@ -17,8 +17,8 @@ namespace gpu {
 
 #if !CACTUS_HAS_METAL
 
-Pipeline* pipeline_mul_mv_int4_fp16(Context*, uint32_t, uint32_t) { return nullptr; }
-Pipeline* pipeline_mul_mm_int4_fp16(Context*, uint32_t, uint32_t, uint32_t) { return nullptr; }
+Pipeline* pipeline_mul_mv_int4_fp16(Context*, uint32_t, uint32_t, bool) { return nullptr; }
+Pipeline* pipeline_mul_mm_int4_fp16(Context*, uint32_t, uint32_t, uint32_t, bool) { return nullptr; }
 Pipeline* pipeline_mul_mm_fp16(Context*, uint32_t, uint32_t) { return nullptr; }
 Pipeline* pipeline_rms_norm_fp16(Context*, uint32_t) { return nullptr; }
 Pipeline* pipeline_flash_attn(Context*, uint32_t, uint32_t, uint32_t, bool, bool) { return nullptr; }
@@ -53,6 +53,7 @@ namespace fc {
     constexpr uint32_t FA_NUM_GROUPS  = 32;
     constexpr uint32_t FA_CAUSAL      = 33;
     constexpr uint32_t FA_HAS_SOFTCAP = 34;
+    constexpr uint32_t FA_HAS_MASK    = 35;
 
     // RoPE
     constexpr uint32_t ROPE_HEAD_DIM  = 40;
@@ -81,11 +82,11 @@ namespace fc {
 // ----------------------------------------------------------------------------
 // Matmul: int4 × fp16, decode (mat-vec)
 // ----------------------------------------------------------------------------
-Pipeline* pipeline_mul_mv_int4_fp16(Context* ctx, uint32_t K, uint32_t N) {
+Pipeline* pipeline_mul_mv_int4_fp16(Context* ctx, uint32_t K, uint32_t N, bool has_bias) {
     FunctionConstant fcs[3] = {
         {"K",        FCType::UINT32, fc::MM_K,        {.u32 = K}},
         {"N",        FCType::UINT32, fc::MM_N,        {.u32 = N}},
-        {"HAS_BIAS", FCType::BOOL,   fc::MM_HAS_BIAS, {.b   = false}},
+        {"HAS_BIAS", FCType::BOOL,   fc::MM_HAS_BIAS, {.b   = has_bias}},
     };
     return pipeline_create(ctx, "mul_mv_int4_fp16", fcs, 3);
 }
@@ -93,12 +94,12 @@ Pipeline* pipeline_mul_mv_int4_fp16(Context* ctx, uint32_t K, uint32_t N) {
 // ----------------------------------------------------------------------------
 // Matmul: int4 × fp16, prefill (mat-mat)
 // ----------------------------------------------------------------------------
-Pipeline* pipeline_mul_mm_int4_fp16(Context* ctx, uint32_t K, uint32_t N, uint32_t M_tile) {
+Pipeline* pipeline_mul_mm_int4_fp16(Context* ctx, uint32_t K, uint32_t N, uint32_t M_tile, bool has_bias) {
     FunctionConstant fcs[4] = {
         {"K",        FCType::UINT32, fc::MM_K,        {.u32 = K}},
         {"N",        FCType::UINT32, fc::MM_N,        {.u32 = N}},
         {"M_TILE",   FCType::UINT32, fc::MM_M_TILE,   {.u32 = M_tile}},
-        {"HAS_BIAS", FCType::BOOL,   fc::MM_HAS_BIAS, {.b   = false}},
+        {"HAS_BIAS", FCType::BOOL,   fc::MM_HAS_BIAS, {.b   = has_bias}},
     };
     return pipeline_create(ctx, "mul_mm_int4_fp16", fcs, 4);
 }
@@ -137,12 +138,15 @@ Pipeline* pipeline_flash_attn(Context* ctx,
     std::snprintf(kname, sizeof(kname),
                   "flash_attn_dk%u_dv%u",
                   head_dim_q, head_dim_v);
-    FunctionConstant fcs[3] = {
+    // HAS_MASK defaults to false (decode path uses causal mask alone). The
+    // caller must rebuild with HAS_MASK=true if it ever binds a real mask.
+    FunctionConstant fcs[4] = {
         {"NUM_GROUPS",  FCType::UINT32, fc::FA_NUM_GROUPS,  {.u32 = num_query_groups}},
         {"CAUSAL",      FCType::BOOL,   fc::FA_CAUSAL,      {.b   = causal}},
         {"HAS_SOFTCAP", FCType::BOOL,   fc::FA_HAS_SOFTCAP, {.b   = has_softcap}},
+        {"HAS_MASK",    FCType::BOOL,   fc::FA_HAS_MASK,    {.b   = false}},
     };
-    return pipeline_create(ctx, kname, fcs, 3);
+    return pipeline_create(ctx, kname, fcs, 4);
 }
 
 // ----------------------------------------------------------------------------

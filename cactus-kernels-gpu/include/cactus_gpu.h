@@ -159,12 +159,13 @@ void command_buffer_destroy(CommandBuffer* cb);
 // These functions wrap `pipeline_create()` with the right function-constant
 // set per kernel. Callers don't need to know the constant indices.
 
-// INT4 matrix-vector (decode hot path): out = W_int4 * x_fp16
+// INT4 matrix-vector (decode hot path): out = W_int4 * x_fp16 [+ bias]
 // K must be a multiple of 128 (the CQ4 group size). N must be a multiple of 4.
-Pipeline* pipeline_mul_mv_int4_fp16(Context* ctx, uint32_t K, uint32_t N);
+// has_bias controls whether buffer(4) is a fp16 bias[N] that gets added to out.
+Pipeline* pipeline_mul_mv_int4_fp16(Context* ctx, uint32_t K, uint32_t N, bool has_bias = false);
 
-// INT4 matrix-matrix (prefill): out = W_int4 * X_fp16, batched.
-Pipeline* pipeline_mul_mm_int4_fp16(Context* ctx, uint32_t K, uint32_t N, uint32_t M_tile);
+// INT4 matrix-matrix (prefill): out = W_int4 * X_fp16 [+ bias], batched.
+Pipeline* pipeline_mul_mm_int4_fp16(Context* ctx, uint32_t K, uint32_t N, uint32_t M_tile, bool has_bias = false);
 
 // FP16 × FP16 matrix-matrix (e.g., LM head, prefill batch).
 Pipeline* pipeline_mul_mm_fp16(Context* ctx, uint32_t K, uint32_t N);

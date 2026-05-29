@@ -25,6 +25,7 @@
 constant uint NUM_GROUPS  [[function_constant(32)]];
 constant bool CAUSAL      [[function_constant(33)]];
 constant bool HAS_SOFTCAP [[function_constant(34)]];
+constant bool HAS_MASK    [[function_constant(35)]];
 
 // ----------------------------------------------------------------------------
 // Single-token / per-query-head decode flash attention.
@@ -93,7 +94,9 @@ void flash_attn_decode_impl(
         if (HAS_SOFTCAP) {
             qk = softcap * precise::tanh(qk / softcap);
         }
-        if (mask_or_null) {
+        // HAS_MASK is a compile-time constant; when false the branch (and
+        // its load) is eliminated entirely, so a nullptr mask binding is safe.
+        if (HAS_MASK) {
             qk += float(mask_or_null[kpos]);
         }
 
