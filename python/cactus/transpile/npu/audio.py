@@ -1,13 +1,3 @@
-"""CoreML audio encoder emit.
-
-Wraps an audio encoder PyTorch module (Conformer / Whisper-style) into an
-ANE-targeted `.mlpackage`. The runtime side (`cactus-engine/src/npu_ane.mm`)
-loads this with a single named input "x" and a single named output, matching
-the `NPUEncoder::encode` interface.
-
-Targets the audio encoder NPU path — historically the highest-impact use
-of the ANE for cactus (CPU was faster for text prefill in most cases).
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,17 +7,6 @@ import torch
 
 
 class AudioEncoderWrapper(torch.nn.Module):
-    """Single-input single-output wrapper around an audio encoder module.
-
-    Matches the runtime interface in `ANEEncoder::encode(input, output, ...)`:
-    one fp16 input tensor, one fp16 output tensor.
-
-    Audio encoder adapters that take auxiliary inputs (e.g. Gemma 4's
-    ``input_features_mask``) supply them via ``baked_inputs`` — these are
-    registered as constant buffers so the exported model keeps a static
-    single-input signature, as the ANE requires.
-    """
-
     def __init__(
         self,
         audio_module: torch.nn.Module,
@@ -85,14 +64,6 @@ def emit_audio_encoder_mlpackage(
     minimum_deployment_target: str = "iOS18",
     quantize_bits: int | None = None,
 ) -> str | None:
-    """Trace + convert + save. Returns the filename or None on failure.
-
-    `example_input` should be the shape the runtime will use at inference
-    time (e.g., for Parakeet: ``[1, num_frames, mel_bins]``). The ANE
-    requires a fully-specified shape; dynamic dims are not supported here.
-    `baked_inputs` carries any auxiliary encoder inputs (masks etc.) that
-    get frozen into the model as constants.
-    """
     ct = _import_coremltools()
     if ct is None:
         print("npu.audio: coremltools not installed; skipping mlpackage emit")
@@ -109,7 +80,6 @@ def emit_audio_encoder_mlpackage(
         print(f"npu.audio: torch.export failed ({type(exc).__name__}: {exc}); skipping mlpackage emit")
         return None
 
-    # Free the live module — ExportedProgram now owns what it needs.
     del wrapper
     import gc as _gc
     _gc.collect()

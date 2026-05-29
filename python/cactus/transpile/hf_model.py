@@ -545,9 +545,6 @@ def _run_component_pipeline_transpile(
     if weights_dir:
         print(f"weights_dir={weights_dir}")
 
-    # NPU emit runs BEFORE cactus capture so peak memory is just HF model +
-    # per-encoder coremltools temp, not HF model + all captured graphs.
-    # Encoders only — text prefill is intentionally not on NPU.
     npu_enabled = bool(getattr(args, "npu", False))
     npu_quantize = getattr(args, "npu_quantize", None)                # legacy override
     npu_audio_quantize  = getattr(args, "npu_audio_quantize",  None)  # default 8 if neither set
@@ -563,8 +560,6 @@ def _run_component_pipeline_transpile(
             audio_quantize_bits=npu_audio_quantize,
             vision_quantize_bits=npu_vision_quantize,
         )
-        # Drop coremltools-side intermediates before the heavy cactus capture
-        # below — both phases compete for the same working set on a 16 GB host.
         import gc as _gc
         _gc.collect()
 
@@ -699,8 +694,6 @@ def _run_component_pipeline_transpile(
                 f"saved_optimized_component_ir_{component}="
                 f"{artifact_dir / _component_artifact_name('optimized_ir', component)}"
             )
-        # NPU mlpackages were already emitted at the top of this function,
-        # before cactus capture, to keep peak memory bounded.
 
         component_manifest_path = _write_component_bundle(
             artifact_dir=artifact_dir,
@@ -3382,9 +3375,6 @@ def main() -> int:
                 f"saved_optimized_component_ir_{component}="
                 f"{artifact_dir / _component_artifact_name('optimized_ir', component)}"
             )
-        # NPU emit (encoders only — text prefill is intentionally not on NPU)
-        # is handled in `_run_component_pipeline_transpile`; this legacy
-        # single-graph path does not exercise the multimodal adapters.
 
         component_manifest_path = _write_component_bundle(
             artifact_dir=artifact_dir,

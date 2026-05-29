@@ -2177,10 +2177,6 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     write_typed_buffer(feat_buf, feat_desc.precision, transposed.data(),
                        transposed.size() * sizeof(float), Precision::FP32);
 
-    // Try NPU audio encoder first; fall back to CPU graph on failure.
-    // The NPU mlpackage has a fixed input window (e.g. 500 frames -> 63 hidden frames),
-    // so we chunk the input and concatenate chunk outputs into a buffer sized to the
-    // CPU graph's expected T (subsampling preserves the chunk:hidden ratio).
     std::vector<__fp16> npu_hidden_storage;
     bool used_npu = false;
     size_t npu_hidden_T = 0;

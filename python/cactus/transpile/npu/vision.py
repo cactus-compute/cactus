@@ -1,13 +1,3 @@
-"""CoreML vision encoder emit.
-
-Wraps a vision encoder PyTorch module (SigLIP2 / Gemma 4 vision tower)
-into an ANE-targeted `.mlpackage`. The runtime side
-(`cactus-engine/src/npu_ane.mm`) loads this with a single named input "x"
-and a single named output, matching the `NPUEncoder::encode` interface.
-
-Mirrors `audio.py`. Historically (`origin/main`) the NPU vision targets
-were SigLIP2 and the Gemma 4 vision tower; LFM-VL was never NPU-accelerated.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -17,17 +7,6 @@ import torch
 
 
 class VisionEncoderWrapper(torch.nn.Module):
-    """Single-input single-output wrapper around a vision encoder module.
-
-    Matches the runtime interface in `ANEEncoder::encode(input, output, ...)`:
-    one fp16 input tensor, one fp16 output tensor.
-
-    Auxiliary inputs that a vision tower needs (position ids, spatial
-    shapes, attention masks) are supplied via ``baked_inputs`` and frozen
-    as constant buffers so the exported model keeps a static single-input
-    signature, as the ANE requires.
-    """
-
     def __init__(
         self,
         vision_module: torch.nn.Module,
@@ -85,14 +64,6 @@ def emit_vision_encoder_mlpackage(
     minimum_deployment_target: str = "iOS18",
     quantize_bits: int | None = None,
 ) -> str | None:
-    """Trace + convert + save. Returns the filename or None on failure.
-
-    `example_input` should be the shape the runtime will use at inference
-    time (e.g. ``[1, num_patches, patch_dim]``). The ANE requires a
-    fully-specified shape; dynamic dims are not supported here.
-    `baked_inputs` carries any auxiliary encoder inputs (position ids,
-    masks) that get frozen into the model as constants.
-    """
     ct = _import_coremltools()
     if ct is None:
         print("npu.vision: coremltools not installed; skipping mlpackage emit")
@@ -109,7 +80,6 @@ def emit_vision_encoder_mlpackage(
         print(f"npu.vision: torch.export failed ({type(exc).__name__}: {exc}); skipping mlpackage emit")
         return None
 
-    # Free the live module — ExportedProgram now owns what it needs.
     del wrapper
     import gc as _gc
     _gc.collect()

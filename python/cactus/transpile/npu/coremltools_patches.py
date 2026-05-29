@@ -1,16 +1,3 @@
-"""Runtime patches for coremltools 9.0 to support Gemma 4 + torch.export.
-
-Each patch is idempotent and guarded so reimporting the module is safe.
-Call `apply_all_coremltools_patches()` once before invoking `ct.convert`.
-
-Patches:
-- register_func: allow dunder-suffixed op names (e.g. ``__and__``) past the
-  inplace-op rejection check.
-- new_ones: register a translation that maps to ``mb.fill(shape=..., value=1.0)``.
-- SDPA scalar-cast: ``mb.sub/mul/add`` auto-cast python scalars to the dtype
-  of the tensor input (avoids fp16/fp32 mismatch in the SDPA mask path).
-- Pipeline: remove ``common::fuse_prelu`` (KeyError on float64 in 9.0).
-"""
 from __future__ import annotations
 
 _APPLIED = False
@@ -65,12 +52,6 @@ def _patch_register_func_allow_dunder() -> None:
 
 
 def _register_new_ones_op() -> None:
-    """Translate Tensor.new_ones(size, ...) -> mb.fill(shape=size, value=1).
-
-    Mirrors coremltools' built-in `ones` translator (shift by 1 to skip the
-    `self` tensor argument). Direct registration via set_func_by_name avoids
-    the decorator's redundant name lookups.
-    """
     from coremltools.converters.mil.frontend.torch.torch_op_registry import (
         _TORCH_OPS_REGISTRY,
     )
@@ -100,9 +81,6 @@ def _register_new_ones_op() -> None:
 
 
 def _register_logical_and_op() -> None:
-    """Register __and__ / __or__ translations. Gemma 4's attention mask path emits
-    `__and__.Tensor` nodes for combining causal + padding masks; coremltools 9.0
-    doesn't ship a translator for those names by default."""
     from coremltools.converters.mil.frontend.torch.torch_op_registry import (
         _TORCH_OPS_REGISTRY,
         register_torch_op,
@@ -114,7 +92,6 @@ def _register_logical_and_op() -> None:
         name = getattr(dtype, "__name__", str(dtype) if dtype else "")
         if "bool" in name:
             return v
-        # cast through fp32 -> bool to handle exotic source dtypes (e.g. fp64)
         if "fp16" in name or "fp32" in name or "fp64" in name or "double" in name or "float" in name:
             non_zero = mb.not_equal(x=v, y=0.0)
             return non_zero
@@ -137,21 +114,12 @@ def _register_logical_and_op() -> None:
             context.add(out, node.name)
         return _impl
 
-    # Register all aliases that sanitize_op_kind + unify_inplace_and_functional
-    # may resolve fx node `__and__.Tensor` / `__or__.Tensor` to. The lookup
-    # chain for `__and__.Tensor` ends at `__and_` (one trailing underscore),
-    # for `aten::__and__` ends at `__and_`, and the raw key `__and__` ends at
-    # `and`. Cover all three so the bool-casting handler always wins.
     for tag, op_kind in [("__and_", "and"), ("__or_", "or"), ("__xor_", "xor")]:
         if tag not in _TORCH_OPS_REGISTRY.name_to_func_mapping:
             _TORCH_OPS_REGISTRY.set_func_by_name(make_logical(op_kind), tag)
     for tag, op_kind in [("__and__", "and"), ("__or__", "or"), ("__xor__", "xor")]:
         if tag not in _TORCH_OPS_REGISTRY.name_to_func_mapping:
             _TORCH_OPS_REGISTRY.set_func_by_name(make_logical(op_kind), tag)
-    # The default `bitwise_and` translator chokes on mixed bool+float inputs
-    # that Gemma 4's masking emits; override the lookup keys with the
-    # bool-casting variant. `and` and `or` are the sanitize_op_kind results
-    # for many aten op kinds, so override those too.
     for tag in ("bitwise_and", "and"):
         _TORCH_OPS_REGISTRY.set_func_by_name(make_logical("and"), tag)
     for tag in ("bitwise_or", "or"):
@@ -159,13 +127,6 @@ def _register_logical_and_op() -> None:
 
 
 def _override_layer_norm_translator() -> None:
-    """Override the torch frontend's ``layer_norm`` translator so gamma/beta/
-    epsilon share one dtype before reaching ``mb.layer_norm``.
-
-    coremltools 9.0's iOS17/iOS18 layer_norm op enforces this at validation
-    time. FP16-traced models hit it because the python-scalar ``eps`` arg
-    survives as fp32 while gamma/beta come through as fp16.
-    """
     import numpy as np
     from coremltools.converters.mil.frontend.torch.torch_op_registry import (
         _TORCH_OPS_REGISTRY,
@@ -178,8 +139,6 @@ def _override_layer_norm_translator() -> None:
         return getattr(d, "__name__", str(d) if d else "")
 
     def _to_typed_const(v, target):
-        """Force v to a const Var of dtype `target`. Eps stays a const so
-        later MIL passes (add_fp16_cast) don't promote it back to fp32."""
         if v is None:
             return v
         np_dtype = np.float16 if target == "fp16" else np.float32
@@ -211,7 +170,6 @@ def _override_layer_norm_translator() -> None:
             "fp32" if ("fp32" in ref_name or "float32" in ref_name) else "fp16"
         )
 
-        # x is a runtime tensor — keep as cast Var; gamma/beta/eps are const-like.
         if x is not None and hasattr(x, "dtype") and _dtype_name(x) != target:
             x = mb.cast(x=x, dtype=target)
         weight = _to_typed_const(weight, target)
@@ -237,27 +195,15 @@ def _override_layer_norm_translator() -> None:
 
 
 def _patch_pipeline_remove_fuse_prelu() -> None:
-    """No-op placeholder. ``PassPipeline.DEFAULT`` is a classproperty that
-    returns a fresh instance each time, so mutating it in-place doesn't
-    persist. We instead build a trimmed pipeline at convert time via
-    :func:`build_cactus_pass_pipeline` and pass it to ``ct.convert``.
-    """
     return
 
 
 _PASSES_TO_DROP = [
-    # fuse_prelu crashes on fp64 const tables in coremltools 9.0.
     "common::fuse_prelu",
 ]
 
 
 def build_cactus_pass_pipeline():
-    """Construct a fresh PassPipeline with our problem passes removed.
-
-    Pass this to ``ct.convert(..., pass_pipeline=pipeline)`` — mutating
-    ``PassPipeline.DEFAULT`` doesn't work because that's a classproperty
-    returning a new instance every time.
-    """
     from coremltools.converters.mil.mil.passes.pass_pipeline import PassPipeline
     pipeline = PassPipeline.DEFAULT
     for pass_name in _PASSES_TO_DROP:
@@ -269,17 +215,6 @@ def build_cactus_pass_pipeline():
 
 
 def _patch_mb_binops_scalar_cast() -> None:
-    """Auto-align dtypes for mb.{sub,mul,add,div} so SDPA mask paths don't
-    crash on mixed fp16/fp32 inputs.
-
-    Critical: only Var operands get a ``mb.cast`` injected — numpy
-    arrays/scalars are retyped via ``numpy.astype`` because injecting a
-    fresh ``mb.cast`` Var from inside MIL passes lands it in the wrong
-    block scope (e.g. ``divide_to_multiply`` calling ``mb.mul`` with
-    ``before_op=`` on an op nested in ``block0``). That mis-scoping fails
-    the "var visibility" validator and trips a hard ValueError mid-pass.
-    Python scalars are materialized as typed ``mb.const`` for the same
-    reason."""
     import numpy as np
     from coremltools.converters.mil import Builder as mb
 
@@ -300,20 +235,14 @@ def _patch_mb_binops_scalar_cast() -> None:
         return np.float32
 
     def _is_var(v):
-        # MIL Vars carry sym_type / op fields; numpy arrays don't.
         return hasattr(v, "op") and hasattr(v, "sym_type")
 
     def _retype_in_place(v, target_dtype_name):
-        """Convert a *non-Var* operand (numpy array/scalar/python scalar) to
-        ``target_dtype_name``. Returning a fresh numpy value (not a new Var)
-        keeps the operand inline so MIL passes don't see a stray Var in the
-        wrong block."""
         np_dtype = _np_for(target_dtype_name)
         if isinstance(v, np.ndarray):
             return v.astype(np_dtype)
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             return np_dtype(v)
-        # Best-effort fallback (lists, etc.)
         try:
             return np.asarray(v, dtype=np_dtype)
         except Exception:
@@ -333,13 +262,11 @@ def _patch_mb_binops_scalar_cast() -> None:
                 y = kwargs.get("y")
                 xn = _dtype_name(x)
                 yn = _dtype_name(y)
-                # If only one is a tensor, materialize scalars as typed consts.
                 if xn and not yn and _is_fp(xn) and isinstance(y, (int, float)) and not isinstance(y, bool):
                     kwargs["y"] = _scalar_const(y, xn)
                 elif yn and not xn and _is_fp(yn) and isinstance(x, (int, float)) and not isinstance(x, bool):
                     kwargs["x"] = _scalar_const(x, yn)
                 elif xn and yn and xn != yn:
-                    # Both have a dtype but mismatched. Prefer fp16.
                     target = "fp16" if (xn == "fp16" or yn == "fp16") else xn
                     if xn != target:
                         kwargs["x"] = mb.cast(x=x, dtype=target) if _is_var(x) else _retype_in_place(x, target)
@@ -352,9 +279,6 @@ def _patch_mb_binops_scalar_cast() -> None:
 
         setattr(mb, op_name, make_wrapper(original))
 
-    # mb.select(cond, a, b) requires a and b to share a dtype. Gemma 4 vision
-    # hits this via `torch.where(cond, scalar, tensor)` — the scalar becomes
-    # fp32 while the tensor is fp16. Materialize scalars as typed consts.
     select_op = getattr(mb, "select", None)
     if select_op is not None and not getattr(select_op, "_cactus_scalar_cast_patched", False):
         def _select_wrap(orig):
@@ -379,8 +303,6 @@ def _patch_mb_binops_scalar_cast() -> None:
             return wrapper
         setattr(mb, "select", _select_wrap(select_op))
 
-    # layer_norm: epsilon (scalar) must match gamma/beta dtype. Parakeet's
-    # Conformer norms produce fp16 gamma but coremltools emits fp32 epsilon.
     orig_ln = getattr(mb, "layer_norm", None)
     if orig_ln is not None and not getattr(orig_ln, "_cactus_scalar_cast_patched", False):
         def _ln_wrap(orig):
@@ -399,14 +321,12 @@ def _patch_mb_binops_scalar_cast() -> None:
             return wrapper
         setattr(mb, "layer_norm", _ln_wrap(orig_ln))
 
-    # batch_norm / instance_norm have similar epsilon shapes
     for op_name in ("batch_norm", "instance_norm", "rms_norm"):
         orig_op = getattr(mb, op_name, None)
         if orig_op is None or getattr(orig_op, "_cactus_scalar_cast_patched", False):
             continue
         def _bn_wrap(orig):
             def wrapper(**kwargs):
-                # Reference dtype: gamma if present, else x
                 ref = kwargs.get("gamma") or kwargs.get("x")
                 rn = _dtype_name(ref)
                 if _is_fp(rn):
@@ -423,13 +343,6 @@ def _patch_mb_binops_scalar_cast() -> None:
 
 
 def _patch_fp16_cast_skip_layer_norm() -> None:
-    """Tell the ``common::add_fp16_cast`` MIL pass to skip ``layer_norm`` and
-    ``batch_norm``-family ops. The pass casts gamma to fp16 but leaves
-    epsilon as fp32, which violates the iOS17+ ``layer_norm`` constraint that
-    gamma, beta, and epsilon share one dtype.
-
-    By marking them unsupported, we keep them at their original (fp32) dtype.
-    """
     try:
         from coremltools.converters.mil.mil.passes.defs.quantization import (
             FP16ComputePrecision,
@@ -444,13 +357,6 @@ def _patch_fp16_cast_skip_layer_norm() -> None:
 
 
 def _override_one_hot_translator() -> None:
-    """Override ``one_hot`` to cast indices to int32 before calling ``mb.one_hot``.
-
-    The MIL ``one_hot`` op requires int32 indices, but Gemma 4 vision feeds
-    ``pixel_position_ids`` as fp32 through ``torch.export``. The default
-    coremltools translator passes the labels through unchanged, which trips
-    the type domain check.
-    """
     from coremltools.converters.mil.frontend.torch.torch_op_registry import (
         _TORCH_OPS_REGISTRY,
     )
@@ -479,17 +385,6 @@ def _override_one_hot_translator() -> None:
 
 
 def _register_unfold_op() -> None:
-    """Translate ``Tensor.unfold(dimension, size, step)`` to ``mb.sliding_windows``.
-
-    Layout note: PyTorch's ``unfold`` *appends* the window-size dim at the
-    end of the output (rank N+1). MIL's ``mb.sliding_windows`` *inserts*
-    the size dim at ``axis+1`` instead. We translate to ``sliding_windows``
-    then ``mb.transpose`` the size dim to the trailing position so downstream
-    permutes/movedims see the shape PyTorch produced.
-
-    Gemma 4 audio's ``_extract_block_context`` is the canonical caller and
-    deeply depends on this layout (size at last axis, then ``movedim(-1, 2)``).
-    """
     from coremltools.converters.mil.frontend.torch.torch_op_registry import (
         _TORCH_OPS_REGISTRY,
     )
@@ -515,8 +410,6 @@ def _register_unfold_op() -> None:
             stride=int(step),
         )
 
-        # sliding_windows inserts the window-size dim at axis+1; PyTorch
-        # unfold appends it at the end. Permute (size_axis) to the last axis.
         out_rank = rank + 1
         perm = list(range(out_rank))
         size_axis = dim + 1

@@ -64,8 +64,6 @@ bool Model::audio_encode_via_npu(const std::vector<float>& audio_features) {
         input_fp16.data(), output_fp16.data(), input_shape, "x", "encoded");
     if (written == 0) return false;
 
-    // Copy NPU output into the CPU audio_encoder's primary output buffer so
-    // downstream code (dynamic walker / media_features_) sees the same path.
     for (size_t i = 0; i < audio_encoder_->output_node_ids.size()
                       && i < audio_encoder_->logical_outputs.size(); ++i) {
         const std::string& name = audio_encoder_->logical_outputs[i];
@@ -130,9 +128,6 @@ bool Model::vision_encode_via_npu(const std::vector<float>& pixel_values) {
         input_fp16.data(), output_fp16.data(), input_shape, "x", "encoded");
     if (written == 0) return false;
 
-    // Append NPU output into the media_features_ slot, matching the CPU
-    // vision_encoder path which appends per-image features (the chunk-prefill
-    // loop calls this once per image; subsequent calls grow the slot).
     for (size_t i = 0; i < vision_encoder_->output_node_ids.size()
                       && i < vision_encoder_->logical_outputs.size(); ++i) {
         const std::string& name = vision_encoder_->logical_outputs[i];
@@ -163,7 +158,6 @@ bool Model::vision_encode_via_npu(const std::vector<float>& pixel_values) {
         if (shape_it == media_feature_shapes_.end() || shape_it->second.empty()) {
             media_feature_shapes_[name] = npu_shape;
         } else if (npu_shape.size() >= 2 && shape_it->second.size() == npu_shape.size()) {
-            // Extend the row-count dim (second-to-last), mirroring CPU path.
             shape_it->second[shape_it->second.size() - 2] += npu_shape[npu_shape.size() - 2];
         }
         media_feature_precisions_[name] = cpu_prec;
