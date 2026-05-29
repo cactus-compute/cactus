@@ -303,6 +303,8 @@ def _write_component_bundle(
     transpiled_component_graphs: dict[str, TranspiledGraph] | None = None,
     component_io_signatures: dict[str, dict[str, tuple[str, ...]]] | None = None,
     graph_filename: str = "graph.cactus",
+    npu_encoder_mlpackages: dict[str, str] | None = None,
+    gpu_bundle: dict[str, str] | None = None,
 ) -> Path:
     bundle_dir = artifact_dir / "components"
     component_order = [
@@ -406,18 +408,22 @@ def _write_component_bundle(
         )
 
     manifest_path = bundle_dir / "manifest.json"
-    _write_json(
-        manifest_path,
-        {
-            "model_id": model_id,
-            "model_source": model_source,
-            "task": task,
-            "family": family,
-            "component_order": component_order,
-            "inputs": _serialize_json_compatible(inputs_metadata),
-            "components": manifest_components,
-        },
-    )
+    manifest_payload: dict[str, object] = {
+        "model_id": model_id,
+        "model_source": model_source,
+        "task": task,
+        "family": family,
+        "component_order": component_order,
+        "inputs": _serialize_json_compatible(inputs_metadata),
+        "components": manifest_components,
+    }
+    for manifest_key, mlpackage_path in (npu_encoder_mlpackages or {}).items():
+        if mlpackage_path:
+            manifest_payload[manifest_key] = mlpackage_path
+    for manifest_key, gpu_path in (gpu_bundle or {}).items():
+        if gpu_path:
+            manifest_payload[manifest_key] = gpu_path
+    _write_json(manifest_path, manifest_payload)
     return manifest_path
 
 
@@ -542,6 +548,47 @@ def _run_component_pipeline_transpile(
         print(f"input_{name}_shape={list(tensor.shape)}")
     if weights_dir:
         print(f"weights_dir={weights_dir}")
+
+    # NPU emit runs BEFORE cactus capture so peak memory is just HF model +
+    # per-encoder coremltools temp, not HF model + all captured graphs.
+    # Encoders only — text prefill is intentionally not on NPU.
+    npu_enabled = bool(getattr(args, "npu", False))
+    npu_quantize = getattr(args, "npu_quantize", None)                # legacy override
+    npu_audio_quantize  = getattr(args, "npu_audio_quantize",  None)  # default 8 if neither set
+    npu_vision_quantize = getattr(args, "npu_vision_quantize", None)  # default 0 (fp16) if neither set
+    npu_encoder_mlpackages: dict[str, str] = {}
+    if npu_enabled and artifact_dir is not None:
+        from .npu import run_encoder_pipeline
+        npu_encoder_mlpackages = run_encoder_pipeline(
+            component_specs,
+            artifact_dir,
+            enabled=True,
+            quantize_bits=npu_quantize,
+            audio_quantize_bits=npu_audio_quantize,
+            vision_quantize_bits=npu_vision_quantize,
+        )
+        # Drop coremltools-side intermediates before the heavy cactus capture
+        # below — both phases compete for the same working set on a 16 GB host.
+        import gc as _gc
+        _gc.collect()
+
+    # GPU emit: per-model Metal dispatch plan + packed weights bundle. Runs
+    # at the same point in the pipeline as NPU (before cactus capture) so
+    # we can free intermediates symmetrically. Text decoder only — encoders
+    # remain on NPU. See ``python/cactus/transpile/gpu/`` + ``docs/gpu/DESIGN.md``.
+    gpu_enabled = bool(getattr(args, "gpu", False))
+    gpu_quantize = getattr(args, "gpu_quantize", None)
+    gpu_bundle: dict[str, str] = {}
+    if gpu_enabled and artifact_dir is not None:
+        from .gpu import run_gpu_pipeline
+        gpu_bundle = run_gpu_pipeline(
+            model,
+            artifact_dir,
+            enabled=True,
+            quantize_bits=gpu_quantize,
+        )
+        import gc as _gc
+        _gc.collect()
 
     print("capture_begin=true", flush=True)
     captured_components = {}
@@ -674,6 +721,9 @@ def _run_component_pipeline_transpile(
                 f"saved_optimized_component_ir_{component}="
                 f"{artifact_dir / _component_artifact_name('optimized_ir', component)}"
             )
+        # NPU mlpackages were already emitted at the top of this function,
+        # before cactus capture, to keep peak memory bounded.
+
         component_manifest_path = _write_component_bundle(
             artifact_dir=artifact_dir,
             model_id=args.model_id,
@@ -686,6 +736,8 @@ def _run_component_pipeline_transpile(
             transpiled_component_graphs=transpiled_component_graphs,
             component_io_signatures=component_io_signatures,
             graph_filename=args.graph_filename,
+            npu_encoder_mlpackages=npu_encoder_mlpackages,
+            gpu_bundle=gpu_bundle,
         )
         print(f"saved_component_bundle_manifest={component_manifest_path}")
         for component in transpiled_component_graphs:
@@ -2935,6 +2987,44 @@ def main() -> int:
             "(for example: vision_encoder,audio_encoder,lm_encoder,decoder)."
         ),
     )
+    parser.add_argument(
+        "--npu",
+        action="store_true",
+        help="Also emit CoreML .mlpackage(s) for Apple Neural Engine audio + vision encoders.",
+    )
+    parser.add_argument(
+        "--npu-quantize",
+        type=int,
+        default=None,
+        choices=[0, 4, 8],
+        help="Legacy override that forces BOTH audio and vision encoders to the same weight quant (0=fp16, 4=int4, 8=int8). When unset, per-component defaults apply: audio=int8, vision=fp16.",
+    )
+    parser.add_argument(
+        "--npu-audio-quantize",
+        type=int,
+        default=None,
+        choices=[0, 4, 8],
+        help="Quantization for the audio encoder .mlpackage (0=fp16, 4=int4, 8=int8). Default int8: Conformer-style encoders absorb int8 quant noise well.",
+    )
+    parser.add_argument(
+        "--npu-vision-quantize",
+        type=int,
+        default=None,
+        choices=[0, 4, 8],
+        help="Quantization for the vision encoder .mlpackage (0=fp16, 4=int4, 8=int8). Default fp16: ViT-style towers are small enough that fp16 is the safer correctness default — int4 visibly degrades on Gemma 4 vision.",
+    )
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Also emit a Metal GPU bundle (per-model dispatch plan + packed weights) for Apple GPU prefill + decode.",
+    )
+    parser.add_argument(
+        "--gpu-quantize",
+        type=int,
+        default=4,
+        choices=[0, 4],
+        help="GPU weight format: 0=fp16, 4=CQ4 group128 (default).",
+    )
     parser.add_argument("--no-fuse-gated-deltanet", action="store_true")
     parser.add_argument("--no-fuse-rms-norm", action="store_true")
     parser.add_argument("--no-fuse-rope", action="store_true")
@@ -3327,6 +3417,10 @@ def main() -> int:
                 f"saved_optimized_component_ir_{component}="
                 f"{artifact_dir / _component_artifact_name('optimized_ir', component)}"
             )
+        # NPU emit (encoders only — text prefill is intentionally not on NPU)
+        # is handled in `_run_component_pipeline_transpile`; this legacy
+        # single-graph path does not exercise the multimodal adapters.
+
         component_manifest_path = _write_component_bundle(
             artifact_dir=artifact_dir,
             model_id=args.model_id,

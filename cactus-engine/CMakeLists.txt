@@ -48,6 +48,7 @@ set(ENGINE_SOURCES
     src/sp.cpp
     src/constraints.cpp
     src/model.cpp
+    src/model_npu.cpp
     src/engine_image.cpp
     src/index.cpp
     src/index_ffi.cpp
@@ -67,6 +68,16 @@ if(APPLE)
     enable_language(OBJCXX)
     list(APPEND ENGINE_SOURCES src/npu_ane.mm)
     set_source_files_properties(src/npu_ane.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+
+    # --- GPU backend (Metal text decoder, justin/v2-gpu) ---
+    # The GPU model lives in src/gpu/. Its Objective-C++ implementation
+    # depends on cactus-kernels-gpu (which we add as a subdirectory).
+    if(NOT TARGET cactus-kernels-gpu)
+        add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../cactus-kernels-gpu
+                         ${CMAKE_CURRENT_BINARY_DIR}/cactus-kernels-gpu)
+    endif()
+    list(APPEND ENGINE_SOURCES src/gpu/gpu_model.mm)
+    set_source_files_properties(src/gpu/gpu_model.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 else()
     list(APPEND ENGINE_SOURCES src/npu.cpp)
 endif()
@@ -110,6 +121,8 @@ if(APPLE)
         ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK}
         ${SECURITY_FRAMEWORK} ${SYSTEMCONFIGURATION_FRAMEWORK} ${CFNETWORK_FRAMEWORK}
     )
+    # GPU backend: link the kernel dispatch library + its Metal framework deps.
+    target_link_libraries(cactus_engine PUBLIC cactus-kernels-gpu)
 endif()
 
 # --- Version ---
