@@ -50,36 +50,6 @@ public:
 std::unique_ptr<NPUEncoder> create_encoder();
 bool is_npu_available();
 
-struct NPUBufferRef {
-    const __fp16* data;
-    size_t count;
-};
-
-struct NPUPrefillDirectResult {
-    NPUBufferRef hidden;
-    std::vector<NPUBufferRef> k_caches;
-    std::vector<NPUBufferRef> v_caches;
-    bool valid;
-};
-
-class NPUPrefill {
-public:
-    virtual ~NPUPrefill() = default;
-    virtual bool load(const std::string& model_path) = 0;
-    virtual bool is_available() const = 0;
-    virtual int get_chunk_size() const = 0;
-    virtual int get_hidden_dim() const = 0;
-    virtual int get_num_layers() const = 0;
-    virtual int get_num_kv_heads() const = 0;
-    virtual int get_head_dim() const = 0;
-    virtual NPUPrefillDirectResult prefill_chunk_direct(
-        const std::vector<__fp16>& embeddings,
-        int position_offset = 0,
-        const std::string& input_name = "x") = 0;
-};
-
-std::unique_ptr<NPUPrefill> create_prefill();
-
 } // namespace npu
 namespace engine {
 
@@ -638,12 +608,16 @@ public:
     void set_cache_window(size_t window_size, size_t sink_size = 4);
     size_t get_cache_size() const { return cache_total_seq_len_; }
 
-    bool load_npu_prefill(const std::string& model_path);
-    bool has_npu_prefill() const { return false; }
     size_t get_prefill_chunk_size() const { return 128; }
     double last_prefill_cache_copy_ms() const { return last_prefill_cache_copy_ms_; }
     size_t last_prefill_padding_tokens() const { return last_prefill_padding_tokens_; }
     size_t last_prefill_scalar_tail_tokens() const { return last_prefill_scalar_tail_tokens_; }
+
+    bool load_npu_audio_encoder(const std::string& model_path);
+    bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
+
+    bool load_npu_vision_encoder(const std::string& model_path);
+    bool has_npu_vision_encoder() const { return npu_vision_encoder_ != nullptr; }
 
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
@@ -750,6 +724,14 @@ private:
     Component* lm_encoder_media_chunk_ = nullptr;
 
     std::string family_;
+    std::string npu_audio_encoder_mlpackage_;
+    std::string npu_vision_encoder_mlpackage_;
+
+    std::unique_ptr<npu::NPUEncoder> npu_audio_encoder_;
+    std::unique_ptr<npu::NPUEncoder> npu_vision_encoder_;
+
+    bool audio_encode_via_npu(const std::vector<float>& audio_features);
+    bool vision_encode_via_npu(const std::vector<float>& pixel_values);
 
     std::map<std::string, std::vector<uint8_t>> media_features_;
     std::map<std::string, std::vector<size_t>> media_feature_shapes_;

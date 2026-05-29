@@ -28,6 +28,10 @@ def cmd_convert(args):
                 trust_remote_code=args.trust_remote_code,
                 local_files_only=args.local_files_only,
                 cache_context_length=args.cache_context_length,
+                npu=getattr(args, "npu", False),
+                npu_quantize=getattr(args, "npu_quantize", None),
+                npu_audio_quantize=getattr(args, "npu_audio_quantize", None),
+                npu_vision_quantize=getattr(args, "npu_vision_quantize", None),
             ),
         )
         return 0
