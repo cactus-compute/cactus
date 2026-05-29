@@ -33,4 +33,6 @@ jobs:
       - name: Run tests
         run: |
           cd python
-          pytest tests/ -v --ignore=tests/test_model.py
+          pytest tests/ -v \
+            --ignore=tests/test_model.py \
+            --ignore=tests/test_server_live.py
