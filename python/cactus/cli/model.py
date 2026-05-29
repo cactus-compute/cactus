@@ -200,6 +200,7 @@ class TranspileOptions:
     system_prompt: str | None = None
     trust_remote_code: bool = False
     local_files_only: bool = False
+    cache_context_length: str | int | None = None
     npu: bool = False
     npu_quantize: int | None = None
     npu_audio_quantize: int | None = None
@@ -207,7 +208,7 @@ class TranspileOptions:
 
 
 def ensure_bundle(model_id, *, bits=4, token=None,
-                  reconvert=False, output_dir=None, transpile=None):
+                  reconvert=False, retranspile=False, output_dir=None, transpile=None):
     """Return path to transpiled bundle, creating it if needed.
     """
     from .download import get_weights_dir
@@ -228,7 +229,7 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     )
 
     # Step 2: skip if already transpiled
-    if _has_transpiled_bundle(output_dir):
+    if _has_transpiled_bundle(output_dir) and not retranspile:
         return output_dir
 
     # Step 3: infer transpile spec from converted output
@@ -316,6 +317,8 @@ def ensure_bundle(model_id, *, bits=4, token=None,
         extra_args.append("--trust-remote-code")
     if opts.local_files_only:
         extra_args.append("--local-files-only")
+    if opts.cache_context_length is not None:
+        extra_args.extend(["--cache-context-length", str(opts.cache_context_length)])
     if opts.npu:
         extra_args.append("--npu")
         if opts.npu_quantize is not None:

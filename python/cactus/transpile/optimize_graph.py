@@ -701,6 +701,9 @@ def _assign_gemma4_decoder_attention_hints_from_graph_meta(graph: IRGraph) -> bo
     if len(attention_nodes) != len(layer_types):
         return False
 
+    use_internal_cache = bool(graph.meta.get("use_internal_kv_cache", False))
+    sliding_window = _graph_sliding_window(graph)
+    graph_cache_seq_len = _graph_max_cache_seq_len(graph)
     changed = False
     for layer_index, (node, layer_type) in enumerate(zip(attention_nodes, layer_types, strict=True)):
         if "attention_layer_type" not in node.meta:
@@ -709,6 +712,16 @@ def _assign_gemma4_decoder_attention_hints_from_graph_meta(graph: IRGraph) -> bo
         if "attention_layer_index" not in node.meta:
             node.meta["attention_layer_index"] = int(layer_index)
             changed = True
+        if use_internal_cache:
+            normalized_layer_type = str(layer_type).strip().lower()
+            node_cache_seq_len = None
+            if normalized_layer_type in {"sliding", "sliding_attention"} and sliding_window is not None and sliding_window > 0:
+                node_cache_seq_len = int(sliding_window)
+            elif normalized_layer_type in {"global", "full", "full_attention"} and graph_cache_seq_len is not None:
+                node_cache_seq_len = int(graph_cache_seq_len)
+            if node_cache_seq_len is not None and node.meta.get("max_cache_seq_len") != node_cache_seq_len:
+                node.meta["max_cache_seq_len"] = node_cache_seq_len
+                changed = True
     return changed
 
 
@@ -1446,6 +1459,22 @@ def _graph_sliding_window(graph: IRGraph) -> int | None:
             sliding_window = _coerce_optional_int(provider_meta.get("sliding_window"))
             if sliding_window is not None:
                 return sliding_window
+    return None
+
+
+def _graph_max_cache_seq_len(graph: IRGraph) -> int | None:
+    max_cache_seq_len = _coerce_optional_int(graph.meta.get("max_cache_seq_len"))
+    if max_cache_seq_len is not None:
+        return max_cache_seq_len
+
+    providers = graph.meta.get("transpile_metadata_providers")
+    if isinstance(providers, dict):
+        for provider_meta in providers.values():
+            if not isinstance(provider_meta, dict):
+                continue
+            max_cache_seq_len = _coerce_optional_int(provider_meta.get("max_cache_seq_len"))
+            if max_cache_seq_len is not None:
+                return max_cache_seq_len
     return None
 
 
