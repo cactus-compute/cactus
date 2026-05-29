@@ -546,9 +546,9 @@ def _run_component_pipeline_transpile(
         print(f"weights_dir={weights_dir}")
 
     npu_enabled = bool(getattr(args, "npu", False))
-    npu_quantize = getattr(args, "npu_quantize", None)                # legacy override
-    npu_audio_quantize  = getattr(args, "npu_audio_quantize",  None)  # default 8 if neither set
-    npu_vision_quantize = getattr(args, "npu_vision_quantize", None)  # default 0 (fp16) if neither set
+    npu_quantize = getattr(args, "npu_quantize", None)
+    npu_audio_quantize  = getattr(args, "npu_audio_quantize",  None)
+    npu_vision_quantize = getattr(args, "npu_vision_quantize", None)
     npu_encoder_mlpackages: dict[str, str] = {}
     if npu_enabled and artifact_dir is not None:
         from .npu import run_encoder_pipeline

@@ -89,7 +89,7 @@ bool Model::audio_encode_via_npu(const std::vector<float>& audio_features) {
             media_feature_shapes_[name] = std::move(shape);
         }
         media_feature_precisions_[name] = desc.precision;
-        break;  // audio encoder only has one logical output
+        break;
     }
     return true;
 }
@@ -161,11 +161,11 @@ bool Model::vision_encode_via_npu(const std::vector<float>& pixel_values) {
             shape_it->second[shape_it->second.size() - 2] += npu_shape[npu_shape.size() - 2];
         }
         media_feature_precisions_[name] = cpu_prec;
-        break;  // vision encoder has one logical output
+        break;
     }
     return true;
 }
 
 
-}  // namespace engine
-}  // namespace cactus
+}
+}
