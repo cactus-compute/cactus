@@ -16,7 +16,8 @@ Outputs:
 - `ios/simulator/libcurl.a`
 - `tvos/device/libcurl.a`
 - `tvos/simulator/libcurl.a`
-- `watchos/device/libcurl.a`
+- `watchos/device-arm64/libcurl.a`
+- `watchos/device-arm64_32/libcurl.a`
 - `watchos/simulator/libcurl.a`
 - `visionos/device/libcurl.a`
 - `visionos/simulator/libcurl.a`
@@ -26,5 +27,5 @@ Defaults:
 
 - curl `8.18.0`
 - `arm64` for iOS, tvOS, visionOS, and macOS
-- `arm64_32` and `arm64` for watchOS devices
+- separate `arm64_32` and `arm64` archives for watchOS devices
 - `arm64` for all simulators

@@ -144,14 +144,18 @@ build_macos() {
 build_watchos_device() {
     local build_dir_arm64_32="$BUILD_ROOT/build-watchos-device-arm64_32"
     local build_dir_arm64="$BUILD_ROOT/build-watchos-device-arm64"
-    local output_dir="$SCRIPT_DIR/watchos/device"
-    local output_lib="$output_dir/libcurl.a"
+    local legacy_output_dir="$SCRIPT_DIR/watchos/device"
+    local output_dir_arm64_32="$SCRIPT_DIR/watchos/device-arm64_32"
+    local output_dir_arm64="$SCRIPT_DIR/watchos/device-arm64"
+    local output_lib_arm64_32="$output_dir_arm64_32/libcurl.a"
+    local output_lib_arm64="$output_dir_arm64/libcurl.a"
     local lib_arm64_32="$build_dir_arm64_32/lib/Release-watchos/libcurl.a"
     local lib_arm64="$build_dir_arm64/lib/Release-watchos/libcurl.a"
 
     echo "Building watchos/device (arm64_32 + arm64, watchos)..."
 
     rm -rf "$build_dir_arm64_32" "$build_dir_arm64"
+    rm -rf "$legacy_output_dir"
 
     cmake -S "$SOURCE_DIR" \
         -B "$build_dir_arm64_32" \
@@ -200,8 +204,9 @@ build_watchos_device() {
     cmake --build "$build_dir_arm64_32" --config Release -j "$n_cpu" >/dev/null
     cmake --build "$build_dir_arm64" --config Release -j "$n_cpu" >/dev/null
 
-    mkdir -p "$output_dir"
-    lipo -create "$lib_arm64_32" "$lib_arm64" -output "$output_lib"
+    mkdir -p "$output_dir_arm64_32" "$output_dir_arm64"
+    cp "$lib_arm64_32" "$output_lib_arm64_32"
+    cp "$lib_arm64" "$output_lib_arm64"
 }
 
 download_source
