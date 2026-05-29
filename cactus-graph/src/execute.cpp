@@ -76,6 +76,9 @@ DECLARE_COMPUTE(compute_kv_cache_append_node);
 DECLARE_COMPUTE(compute_attention_cached_node);
 DECLARE_COMPUTE(compute_conv_cache_state_node);
 DECLARE_COMPUTE(compute_conv_cache_append_node);
+DECLARE_COMPUTE(compute_recurrent_cache_state_node);
+DECLARE_COMPUTE(compute_recurrent_cache_write_node);
+DECLARE_COMPUTE(compute_conv_cache_initialize_node);
 DECLARE_COMPUTE(compute_image_preprocess_node);
 DECLARE_COMPUTE(compute_rfft_node);
 DECLARE_COMPUTE(compute_irfft_node);
@@ -84,7 +87,7 @@ DECLARE_COMPUTE(compute_spectrogram_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::SCALAR_NOT_EQUAL) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::CONV_CACHE_INITIALIZE) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -177,6 +180,9 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::ATTENTION_CACHED)] = compute_attention_cached_node;
     dispatch_flat[static_cast<int>(OpType::CONV_CACHE_STATE)] = compute_conv_cache_state_node;
     dispatch_flat[static_cast<int>(OpType::CONV_CACHE_APPEND)] = compute_conv_cache_append_node;
+    dispatch_flat[static_cast<int>(OpType::RECURRENT_CACHE_STATE)] = compute_recurrent_cache_state_node;
+    dispatch_flat[static_cast<int>(OpType::RECURRENT_CACHE_WRITE)] = compute_recurrent_cache_write_node;
+    dispatch_flat[static_cast<int>(OpType::CONV_CACHE_INITIALIZE)] = compute_conv_cache_initialize_node;
     dispatch_flat[static_cast<int>(OpType::IMAGE_PREPROCESS)] = compute_image_preprocess_node;
     dispatch_flat[static_cast<int>(OpType::RFFT)] = compute_rfft_node;
     dispatch_flat[static_cast<int>(OpType::IRFFT)] = compute_irfft_node;
@@ -224,7 +230,10 @@ static const char* op_type_names[] = {
     "CONV_CACHE_STATE", "CONV_CACHE_APPEND",
     "RFFT", "IRFFT", "MEL_FILTER_BANK", "SPECTROGRAM",
     "IMAGE_PREPROCESS", "CLAMP", "DENSE_MLP_TQ_FUSED",
-    "NOT_EQUAL", "SCALAR_NOT_EQUAL"
+    "NOT_EQUAL", "SCALAR_NOT_EQUAL",
+    "RECURRENT_CACHE_STATE",
+    "RECURRENT_CACHE_WRITE",
+    "CONV_CACHE_INITIALIZE"
 };
 
 static const char* get_op_name(OpType op) {
@@ -362,7 +371,9 @@ void CactusGraph::execute(const std::string& profile_file) {
     auto can_release_node = [&](size_t node_idx) {
         const auto& node = nodes_[node_idx];
         if (node->op_type == OpType::INPUT) return false;
-        if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) return false;
+        if (node->op_type == OpType::KV_CACHE_STATE
+            || node->op_type == OpType::CONV_CACHE_STATE
+            || node->op_type == OpType::RECURRENT_CACHE_STATE) return false;
         if (persistent_node_ids_.count(node->id)) return false;
         if (retained_output_node_ids_.count(node->id)) return false;
         return true;
@@ -414,7 +425,9 @@ void CactusGraph::execute(const std::string& profile_file) {
         for (size_t i = 0; i < n; ++i) {
             auto& node = nodes_[i];
             if (node->op_type == OpType::INPUT) continue;
-            if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) {
+            if (node->op_type == OpType::KV_CACHE_STATE
+                || node->op_type == OpType::CONV_CACHE_STATE
+                || node->op_type == OpType::RECURRENT_CACHE_STATE) {
                 dispatch_node(*node, nodes_, node_index_map_);
                 populated_node_ids_.insert(node->id);
                 for (size_t release_idx : release_after[i]) {
@@ -495,6 +508,21 @@ void CactusGraph::execute(const std::string& profile_file) {
             continue;
         }
 
+        if (node->op_type == OpType::KV_CACHE_STATE
+            || node->op_type == OpType::CONV_CACHE_STATE
+            || node->op_type == OpType::RECURRENT_CACHE_STATE) {
+            dispatch_node(*node, nodes_, node_index_map_);
+            if (trace_execution) {
+                std::cerr << "[cactus:execute] cache-state idx=" << node_idx
+                          << " id=" << node->id
+                          << " op=" << get_op_name(node->op_type)
+                          << std::endl;
+            }
+            trace_nonfinite(node_idx, *node);
+            populated_node_ids_.insert(node->id);
+            continue;
+        }
+
         node->output_buffer.allocate_from_pool(pool);
 
         if (trace_execution) {
@@ -509,11 +537,7 @@ void CactusGraph::execute(const std::string& profile_file) {
             std::cerr << "]" << std::endl;
         }
 
-        if (node->op_type == OpType::KV_CACHE_STATE || node->op_type == OpType::CONV_CACHE_STATE) {
-            dispatch_node(*node, nodes_, node_index_map_);
-            trace_nonfinite(node_idx, *node);
-            populated_node_ids_.insert(node->id);
-        } else if (enable_profiling) {
+        if (enable_profiling) {
             auto start = std::chrono::high_resolution_clock::now();
             dispatch_node(*node, nodes_, node_index_map_);
             trace_nonfinite(node_idx, *node);

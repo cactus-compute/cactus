@@ -297,6 +297,85 @@ result = outputs[0].numpy()
 print("Output shape:", result.shape)  # (1, 32)
 ```
 
+### Generic JAX User Graphs
+
+JAX and Flax models can be bundled by providing params and one or more graph
+entrypoints. The caller owns tokenization, masks, sampling, and any prefill/decode
+loop; Cactus captures the supplied functions, writes FP16 mmap weights, and saves
+component graphs.
+
+```python
+import jax.numpy as jnp
+import numpy as np
+
+from cactus.transpile.capture_jax import JaxGraphSpec
+from cactus.transpile.jax_user_graph_bundle import build_jax_user_graph_bundle
+from cactus.transpile.jax_user_graph_bundle import load_jax_user_graph_bundle
+
+
+def model(params, x):
+    return jnp.maximum(x @ params["w"] + params["b"], 0)
+
+
+params = {"w": jnp.ones((4, 3), jnp.float16), "b": jnp.zeros((3,), jnp.float16)}
+example_x = jnp.ones((2, 4), jnp.float16)
+
+result = build_jax_user_graph_bundle(
+    params=params,
+    output_dir="/tmp/my-jax-bundle",
+    model_id="my-jax-model",
+    specs=(JaxGraphSpec(name="forward", fn=model, example_args=(example_x,)),),
+)
+
+loaded = load_jax_user_graph_bundle(result.output_dir)
+y = loaded.execute("forward", np.ones((2, 4), np.float16))[0].numpy()
+```
+
+For encoder-decoder models, provide each graph boundary explicitly:
+
+```python
+params, model, tokenizer, config = load_needle_model()
+src = tokenizer.encode("What time is it in Tokyo?")
+tgt = tokenizer.encode("<bos>")
+src_mask = make_padding_mask(src, config.pad_token_id)
+tgt_mask = make_causal_mask(tgt.shape[1])
+encoder_out, enc_mask = model.apply({"params": params}, src, src_mask, method=model.encode_text)
+
+result = build_jax_user_graph_bundle(
+    params=params,
+    output_dir="weights/needle",
+    model_id="needle",
+    task="encoder-decoder",
+    specs=(
+        JaxGraphSpec(
+            name="encoder",
+            fn=lambda params, src, src_mask: model.apply(
+                {"params": params}, src, src_mask, method=model.encode_text
+            ),
+            example_args=(src, src_mask),
+            output_names=("encoder_out", "encoder_mask"),
+        ),
+        JaxGraphSpec(
+            name="decoder_prefill",
+            fn=lambda params, tgt, encoder_out, tgt_mask, cross_mask: model.apply(
+                {"params": params}, tgt, encoder_out, tgt_mask, cross_mask, method=model.decode
+            ),
+            example_args=(tgt, encoder_out, tgt_mask, enc_mask),
+            output_names=("logits",),
+        ),
+    ),
+)
+
+loaded = load_jax_user_graph_bundle(result.output_dir)
+encoder_out, enc_mask = loaded.execute("encoder", src, src_mask)
+logits = loaded.execute("decoder_prefill", tgt, encoder_out.numpy(), tgt_mask, enc_mask.numpy())[0].numpy()
+next_token = int(np.argmax(logits[0, -1]))
+```
+
+Each component is saved under `components/<name>/` with `graph.cactus`,
+`raw_ir.json`, and `optimized_ir.json`. For fast decode, expose a separate
+`decoder_step` graph with cache tensors as explicit inputs and outputs.
+
 ---
 
 ## Artifact Layout

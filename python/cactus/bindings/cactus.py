@@ -430,6 +430,28 @@ _lib.cactus_graph_conv_cache_append.argtypes = [
     ctypes.POINTER(cactus_node_t),
 ]
 _lib.cactus_graph_conv_cache_append.restype = ctypes.c_int
+_lib.cactus_graph_conv_cache_initialize.argtypes = [
+    cactus_graph_t,
+    cactus_node_t,
+    cactus_node_t,
+    ctypes.POINTER(cactus_node_t),
+]
+_lib.cactus_graph_conv_cache_initialize.restype = ctypes.c_int
+_lib.cactus_graph_recurrent_cache_state.argtypes = [
+    cactus_graph_t,
+    ctypes.POINTER(ctypes.c_size_t),
+    ctypes.c_size_t,
+    ctypes.c_int,
+    ctypes.POINTER(cactus_node_t),
+]
+_lib.cactus_graph_recurrent_cache_state.restype = ctypes.c_int
+_lib.cactus_graph_recurrent_cache_write.argtypes = [
+    cactus_graph_t,
+    cactus_node_t,
+    cactus_node_t,
+    ctypes.POINTER(cactus_node_t),
+]
+_lib.cactus_graph_recurrent_cache_write.restype = ctypes.c_int
 _lib.cactus_graph_rel_pos_bias.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)
 ]

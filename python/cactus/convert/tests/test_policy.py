@@ -43,14 +43,17 @@ def test_policy_lfm_qwen_tied_embeddings_interleaved_cq4():
         _validate_cq_layout(lm_head_policy, (65536, 2048), lm_head.source_name, lm_head.output_name)
 
 
-def test_interleaved_lm_head_policy_rejects_unsupported_shape():
+def test_interleaved_lm_head_policy_falls_back_to_row_major_for_unsupported_shape():
     match = cactus_name_for_tensor("lm_head.weight", "generic", 1)
     p = policy_for_tensor(match, (101, 64), 2, "generic")
-    try:
-        _validate_cq_layout(p, (101, 64), "lm_head.weight", "output_weight.weights")
-    except RuntimeError:
-        return
-    raise AssertionError("expected unsupported interleaved LM-head shape to fail")
+    assert p.layout == "row_major"
+    _validate_cq_layout(p, (101, 64), "lm_head.weight", "output_weight.weights")
+
+
+def test_interleaved_lm_head_policy_uses_interleaved_for_supported_shape():
+    match = cactus_name_for_tensor("lm_head.weight", "generic", 1)
+    p = policy_for_tensor(match, (128, 256), 2, "generic")
+    assert p.layout == "interleaved_4row"
 
 
 def test_adapter_registry_preserves_family_names():

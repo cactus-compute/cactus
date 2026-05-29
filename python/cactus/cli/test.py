@@ -28,18 +28,20 @@ def discover_suites():
 
 
 def cmd_test(args):
-    from .model import ensure_weights
+    from .model import ensure_bundle, resolve_bundle_dir
 
     print_color(BLUE, "Running test suite...")
 
     if args.ios and not args.reconvert:
         print_color(YELLOW, "Warning: iOS tests without --reconvert may use stale weights.")
 
-    try:
-        weights_dir = ensure_weights(args.model_id, token=args.token, reconvert=args.reconvert)
-    except RuntimeError as e:
-        print_color(RED, f"Failed to download model weights: {e}")
-        return 1
+    bundle_dir = resolve_bundle_dir(args.model_id)
+    if bundle_dir is None:
+        try:
+            bundle_dir = ensure_bundle(args.model_id, token=args.token, reconvert=args.reconvert)
+        except RuntimeError as e:
+            print_color(RED, f"Model setup failed: {e}")
+            return 1
 
     suite = args.suite
     test_cwd = LAYERS.get(suite, ENGINE_DIR)
@@ -49,7 +51,7 @@ def cmd_test(args):
         print_color(RED, f"Test script not found: {test_script}")
         return 1
 
-    cmd = [str(test_script), "--model", str(weights_dir)]
+    cmd = [str(test_script), "--model", str(bundle_dir)]
     if args.android:
         cmd.append("--android")
     if args.ios:

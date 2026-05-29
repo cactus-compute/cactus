@@ -687,6 +687,32 @@ void Model::copy_cache_states(const Component& source, Component& target, size_t
             }
             void* src_ptr = source.graph->get_output(static_cast<size_t>(src_node));
             void* dst_ptr = target.graph->get_output(static_cast<size_t>(dst_node));
+
+            const OpType src_op = source.graph->get_node_op_type(static_cast<size_t>(src_node));
+            const OpType dst_op = target.graph->get_node_op_type(static_cast<size_t>(dst_node));
+            if (src_op != dst_op) {
+                throw std::runtime_error(
+                    "cache state op_type mismatch between prefill and step at layer "
+                    + src.layer_key);
+            }
+            if (src_op == OpType::RECURRENT_CACHE_STATE) {
+                if (src_desc.byte_size != dst_desc.byte_size) {
+                    throw std::runtime_error(
+                        "recurrent cache buffer shape mismatch between prefill and step at layer "
+                        + src.layer_key);
+                }
+                std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
+                continue;
+            }
+            if (src_op == OpType::CONV_CACHE_STATE) {
+                if (src_desc.byte_size != dst_desc.byte_size) {
+                    throw std::runtime_error(
+                        "conv cache buffer shape mismatch between prefill and step at layer "
+                        + src.layer_key);
+                }
+                std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
+                continue;
+            }
             if (src_desc.byte_size == dst_desc.byte_size && logical_current == std::numeric_limits<size_t>::max()) {
                 std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
                 continue;
@@ -802,11 +828,29 @@ void Model::reset_component_cache_states(Component& comp) {
         for (int node_id : {state.key_node_id, state.value_node_id}) {
             if (node_id < 0) continue;
             const auto& desc = comp.graph->get_output_buffer(static_cast<size_t>(node_id));
-            if (desc.byte_size < sizeof(uint64_t) || !desc.get_data()) continue;
+            if (desc.byte_size == 0 || !desc.get_data()) continue;
             void* ptr = comp.graph->get_output(static_cast<size_t>(node_id));
             if (!ptr) continue;
-            auto* metadata = static_cast<uint64_t*>(ptr);
-            metadata[0] = 0;
+            const OpType op_type = comp.graph->get_node_op_type(static_cast<size_t>(node_id));
+            switch (op_type) {
+                case OpType::KV_CACHE_STATE:
+                    if (desc.byte_size >= sizeof(uint64_t)) {
+                        static_cast<uint64_t*>(ptr)[0] = 0;
+                    }
+                    break;
+                case OpType::CONV_CACHE_STATE:
+                    if (desc.byte_size >= 2 * sizeof(uint64_t)) {
+                        auto* meta = static_cast<uint64_t*>(ptr);
+                        meta[0] = 0;  // head
+                        meta[1] = 0;  // count
+                    }
+                    break;
+                case OpType::RECURRENT_CACHE_STATE:
+                    std::memset(ptr, 0, desc.byte_size);
+                    break;
+                default:
+                    break;
+            }
         }
     }
 }
@@ -843,10 +887,28 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     if (component_tokens <= 1) return result;
     size_t effective_chunk = chunk_size > 0 ? std::min(chunk_size, component_tokens) : component_tokens;
     if (effective_chunk != component_tokens) effective_chunk = component_tokens;
-    const size_t whole_chunks_end = (tokens.size() / effective_chunk) * effective_chunk;
+    size_t whole_chunks_end = (tokens.size() / effective_chunk) * effective_chunk;
+    const bool has_recurrent_state = [&]() {
+        if (!decoder_prefill_->graph) return false;
+        for (const auto& state : decoder_prefill_->cache_states) {
+            for (int node_id : {state.key_node_id, state.value_node_id}) {
+                if (node_id < 0) continue;
+                if (decoder_prefill_->graph->get_node_op_type(static_cast<size_t>(node_id))
+                    == OpType::RECURRENT_CACHE_STATE) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }();
+    if (has_recurrent_state && whole_chunks_end > effective_chunk) {
+        whole_chunks_end = effective_chunk;
+    }
     const size_t tail_tokens = tokens.size() - whole_chunks_end;
     const size_t padding_cutoff = std::max<size_t>(1, effective_chunk / 16);
-    const bool pad_tail = family_ != "lfm2_vl" && tail_tokens >= padding_cutoff;
+    const bool pad_tail = family_ != "lfm2_vl"
+        && !has_recurrent_state
+        && tail_tokens >= padding_cutoff;
     const size_t executable_tokens = whole_chunks_end + (pad_tail ? effective_chunk : 0);
     if (executable_tokens == 0) {
         result.scalar_tail_tokens = tail_tokens;

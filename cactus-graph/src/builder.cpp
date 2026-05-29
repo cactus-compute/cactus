@@ -1253,6 +1253,10 @@ const BufferDesc& CactusGraph::get_output_buffer(size_t node_id) const {
     return nodes_[node_index_map_.at(node_id)]->output_buffer;
 }
 
+OpType CactusGraph::get_node_op_type(size_t node_id) const {
+    return nodes_[node_index_map_.at(node_id)]->op_type;
+}
+
 size_t CactusGraph::persistent(size_t source_node) {
     const auto& source_buffer = get_output_buffer(source_node);
     OpParams params;
@@ -1462,6 +1466,60 @@ size_t CactusGraph::conv_cache_append(size_t new_data, size_t cache_state_node) 
     OpParams params{};
     params.output_precision = Precision::FP16;
     return add_node(OpType::CONV_CACHE_APPEND, {new_data, cache_state_node}, {ws, hd}, params);
+}
+
+size_t CactusGraph::conv_cache_initialize(size_t rows, size_t cache_state_node) {
+    if (get_node_op_type(cache_state_node) != OpType::CONV_CACHE_STATE) {
+        throw std::invalid_argument(
+            "conv_cache_initialize target must be a CONV_CACHE_STATE node");
+    }
+    const auto& rows_buf = get_output_buffer(rows);
+    if (rows_buf.precision != Precision::FP16 && rows_buf.precision != Precision::FP32) {
+        throw std::invalid_argument(
+            "conv_cache_initialize requires FP16/FP32 input rows");
+    }
+    const size_t hidden_dim = nodes_[node_index_map_.at(cache_state_node)]->params.head_dim;
+    if (hidden_dim == 0) {
+        throw std::invalid_argument(
+            "conv_cache_initialize: cache hidden_dim is zero");
+    }
+    if (rows_buf.shape.empty() || rows_buf.shape.back() != hidden_dim) {
+        throw std::invalid_argument(
+            "conv_cache_initialize: rows last dim must equal cache hidden_dim");
+    }
+    if (rows_buf.total_size % hidden_dim != 0) {
+        throw std::invalid_argument(
+            "conv_cache_initialize: rows total size must be a multiple of cache hidden_dim");
+    }
+    OpParams params{};
+    params.output_precision = Precision::FP16;
+    return add_node(OpType::CONV_CACHE_INITIALIZE, {rows, cache_state_node}, {0}, params);
+}
+
+size_t CactusGraph::recurrent_cache_state(const std::vector<size_t>& shape, Precision precision) {
+    OpParams params{};
+    params.output_precision = precision;
+    size_t node_id = add_node(OpType::RECURRENT_CACHE_STATE, {}, shape, params);
+    persistent_node_ids_.insert(node_id);
+    return node_id;
+}
+
+size_t CactusGraph::recurrent_cache_write(size_t new_value, size_t cache_state) {
+    const auto& src_buf = get_output_buffer(new_value);
+    const auto& dst_buf = get_output_buffer(cache_state);
+    if (get_node_op_type(cache_state) != OpType::RECURRENT_CACHE_STATE) {
+        throw std::invalid_argument(
+            "recurrent_cache_write target must be a RECURRENT_CACHE_STATE node");
+    }
+    if (src_buf.shape != dst_buf.shape) {
+        throw std::invalid_argument("recurrent_cache_write requires matching shapes");
+    }
+    if (src_buf.precision != dst_buf.precision) {
+        throw std::invalid_argument("recurrent_cache_write requires matching precision");
+    }
+    OpParams params{};
+    params.output_precision = dst_buf.precision;
+    return add_node(OpType::RECURRENT_CACHE_WRITE, {new_value, cache_state}, {0}, params);
 }
 
 size_t CactusGraph::image_preprocess(
