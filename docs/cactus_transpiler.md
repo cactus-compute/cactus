@@ -368,13 +368,15 @@ result = build_jax_user_graph_bundle(
 
 loaded = load_jax_user_graph_bundle(result.output_dir)
 encoder_out, enc_mask = loaded.execute("encoder", src, src_mask)
-logits = loaded.execute("decoder_prefill", tgt, encoder_out.numpy(), tgt_mask, enc_mask.numpy())[0].numpy()
+logits = loaded.execute("decoder_prefill", tgt, encoder_out, tgt_mask, enc_mask)[0].numpy()
 next_token = int(np.argmax(logits[0, -1]))
 ```
 
 Each component is saved under `components/<name>/` with `graph.cactus`,
-`raw_ir.json`, and `optimized_ir.json`. For fast decode, expose a separate
-`decoder_step` graph with cache tensors as explicit inputs and outputs.
+`raw_ir.json`, and `optimized_ir.json`. For decode, expose a separate
+`decoder_step` graph. The generic JAX path does not create or manage internal
+KV cache yet; component output `Tensor`s can be passed directly into another
+component. Use `loaded.reset()` between independent generations.
 
 ---
 

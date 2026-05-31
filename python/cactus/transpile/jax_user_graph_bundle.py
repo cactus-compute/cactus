@@ -42,12 +42,28 @@ class LoadedJaxUserGraph:
                 f"graph {self.name!r} expected {len(self.runtime_inputs)} inputs, got {len(inputs)}"
             )
         for tensor, value in zip(self.runtime_inputs, inputs, strict=True):
-            self.graph.set_input(tensor, np.asarray(value))
+            if isinstance(value, Tensor):
+                if tuple(int(dim) for dim in value.shape) != tuple(int(dim) for dim in tensor.shape):
+                    raise ValueError(
+                        f"graph {self.name!r} input shape mismatch for node {tensor.id}: "
+                        f"expected {tensor.shape}, got {value.shape}"
+                    )
+                if int(value.dtype) != int(tensor.dtype):
+                    raise ValueError(
+                        f"graph {self.name!r} input dtype mismatch for node {tensor.id}: "
+                        f"expected {tensor.dtype}, got {value.dtype}"
+                    )
+                self.graph.set_input(tensor, value.numpy())
+            else:
+                self.graph.set_input(tensor, np.asarray(value))
 
     def execute(self, *inputs: Any) -> list[Tensor]:
         self.set_inputs(inputs)
         self.graph.execute()
         return self.outputs
+
+    def reset(self) -> None:
+        self.graph.hard_reset()
 
 
 @dataclass
@@ -62,6 +78,16 @@ class LoadedJaxUserGraphBundle:
             available = ", ".join(sorted(self.graphs)) or "<none>"
             raise ValueError(f"unknown JAX user graph {graph_name!r}; available graphs: {available}")
         return self.graphs[graph_name].execute(*inputs)
+
+    def reset(self, graph_name: str | None = None) -> None:
+        if graph_name is not None:
+            if graph_name not in self.graphs:
+                available = ", ".join(sorted(self.graphs)) or "<none>"
+                raise ValueError(f"unknown JAX user graph {graph_name!r}; available graphs: {available}")
+            self.graphs[graph_name].reset()
+            return
+        for graph in self.graphs.values():
+            graph.reset()
 
 
 def flatten_jax_params(params: object) -> dict[str, np.ndarray]:
@@ -319,8 +345,6 @@ def build_jax_generation_graph_bundle(
     weight_arrays: dict[str, object] | None = None,
     exclude_weights: set[str] | None = None,
     weights_dir: str | Path | None = None,
-    max_cache_seq_len: int | None = None,
-    cache_sink_size: int = 4,
 ) -> JaxUserGraphBundleResult:
     root = Path(output_dir)
     weights_root = Path(weights_dir) if weights_dir is not None else root
@@ -340,8 +364,6 @@ def build_jax_generation_graph_bundle(
             "graph_family": "jax_user_graph_bundle",
             **dict(graph_meta or {}),
         },
-        max_cache_seq_len=max_cache_seq_len,
-        cache_sink_size=cache_sink_size,
     )
     return _write_jax_user_graph_bundle(
         bundle=bundle,
@@ -364,8 +386,6 @@ def capture_jax_generation_graphs(
     weights_dir: str | None = None,
     weight_bindings: dict[str, dict[str, str]] | None = None,
     graph_meta: dict[str, object] | None = None,
-    max_cache_seq_len: int | None = None,
-    cache_sink_size: int = 4,
 ) -> Any:
     specs: list[JaxGraphSpec] = []
 
@@ -375,17 +395,9 @@ def capture_jax_generation_graphs(
         name: str,
         role: str,
         component: str,
-        use_cache: bool,
     ) -> None:
         if spec is None:
             return
-        cache_meta: dict[str, object] = {}
-        if use_cache:
-            cache_meta = {
-                "use_internal_kv_cache": True,
-                "cache_sink_size": int(cache_sink_size),
-                **({"max_cache_seq_len": int(max_cache_seq_len)} if max_cache_seq_len is not None else {}),
-            }
         specs.append(
             JaxGraphSpec(
                 name=spec.name or name,
@@ -396,26 +408,23 @@ def capture_jax_generation_graphs(
                 output_names=spec.output_names,
                 graph_meta={
                     "component": component,
-                    **cache_meta,
                     **dict(spec.graph_meta or {}),
                 },
             )
         )
 
-    _with_meta(encoder, name="encoder", role="encoder", component="encoder", use_cache=False)
+    _with_meta(encoder, name="encoder", role="encoder", component="encoder")
     _with_meta(
         decoder_prefill,
         name="decoder_prefill",
         role="decoder_prefill",
         component="decoder_prefill_chunk",
-        use_cache=True,
     )
     _with_meta(
         decoder_step,
         name="decoder_step",
         role="decoder_step",
         component="decoder_step",
-        use_cache=True,
     )
     if not specs:
         raise ValueError("capture_jax_generation_graphs requires at least one graph spec")

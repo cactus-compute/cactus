@@ -10,6 +10,7 @@ jax = pytest.importorskip("jax")
 import jax.numpy as jnp
 
 from cactus.transpile.capture_jax import JaxGraphSpec
+from cactus.transpile.jax_user_graph_bundle import build_jax_generation_graph_bundle
 from cactus.transpile.jax_user_graph_bundle import build_jax_user_graph_bundle
 from cactus.transpile.jax_user_graph_bundle import load_jax_user_graph_bundle
 
@@ -198,3 +199,136 @@ def test_jax_user_graph_rejects_wrong_input_count(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="expected 1 inputs"):
         result.bundle.execute("project")
+
+
+def test_jax_user_graph_bundle_supports_tensor_handoff_and_reset(tmp_path: Path) -> None:
+    params = {
+        "encoder_w": jnp.asarray([[0.2, -0.1], [0.3, 0.5]], dtype=jnp.float16),
+        "decoder_w": jnp.asarray([[0.1], [0.4]], dtype=jnp.float16),
+    }
+    x = jnp.asarray([[1.0, -0.5]], dtype=jnp.float16)
+
+    def encoder_fn(model_params, values):
+        return values @ model_params["encoder_w"]
+
+    def decoder_fn(model_params, encoded):
+        return encoded @ model_params["decoder_w"]
+
+    result = build_jax_user_graph_bundle(
+        params=params,
+        specs=(
+            JaxGraphSpec(name="encoder", fn=encoder_fn, example_args=(x,), output_names=("encoded",)),
+            JaxGraphSpec(
+                name="decoder",
+                fn=decoder_fn,
+                example_args=(encoder_fn(params, x),),
+                input_names=("encoded",),
+                output_names=("logits",),
+            ),
+        ),
+        output_dir=tmp_path / "bundle",
+        model_id="tensor-handoff",
+    )
+    loaded = load_jax_user_graph_bundle(result.output_dir)
+
+    encoded = loaded.execute("encoder", x)[0]
+    got = loaded.execute("decoder", encoded)[0].numpy()
+    loaded.reset()
+
+    _assert_close(got, decoder_fn(params, encoder_fn(params, x)))
+
+
+def test_jax_generation_decoder_step_fuses_attention_without_internal_cache(tmp_path: Path) -> None:
+    params = {
+        "wq": jnp.eye(16, dtype=jnp.float16),
+        "wk": jnp.eye(16, dtype=jnp.float16),
+        "wv": jnp.eye(16, dtype=jnp.float16),
+    }
+    x = jnp.asarray(
+        [[
+            [
+                0.25,
+                -0.5,
+                0.75,
+                0.125,
+                0.5,
+                -0.25,
+                0.375,
+                0.625,
+                -0.125,
+                0.875,
+                -0.75,
+                0.25,
+                0.125,
+                -0.375,
+                0.5,
+                -0.625,
+            ]
+        ]],
+        dtype=jnp.float16,
+    )
+
+    def decoder_step(model_params, values):
+        q = (values @ model_params["wq"]).reshape(1, 1, 2, 8).transpose(0, 2, 1, 3)
+        k = (values @ model_params["wk"]).reshape(1, 1, 2, 8).transpose(0, 2, 1, 3)
+        v = (values @ model_params["wv"]).reshape(1, 1, 2, 8).transpose(0, 2, 1, 3)
+        scores = (q @ k.transpose(0, 1, 3, 2)) / jnp.sqrt(jnp.asarray(8.0, dtype=jnp.float32))
+        probs = jax.nn.softmax(scores, axis=-1).astype(jnp.float16)
+        return (probs @ v).transpose(0, 2, 1, 3).reshape(1, 1, 16)
+
+    result = build_jax_generation_graph_bundle(
+        params=params,
+        decoder_step=JaxGraphSpec(name="decoder_step", fn=decoder_step, example_args=(x,), output_names=("hidden",)),
+        output_dir=tmp_path / "bundle",
+        model_id="decoder-step-attention",
+    )
+    graph = result.bundle.graphs["decoder_step"].ir_graph
+    attention_nodes = [node for node in graph.nodes.values() if node.op == "attention"]
+
+    assert "use_internal_kv_cache" not in graph.meta
+    assert len(attention_nodes) == 1
+    assert result.bundle.graphs["decoder_step"].graph.cache_state_tensors == []
+    _assert_close(result.bundle.execute("decoder_step", x)[0].numpy(), decoder_step(params, x))
+
+
+def test_jax_generation_decoder_step_fuses_cross_attention(tmp_path: Path) -> None:
+    params = {
+        "wq": jnp.eye(16, dtype=jnp.float16),
+    }
+    x = jnp.asarray(
+        [[[0.25, -0.5, 0.75, 0.125, 0.5, -0.25, 0.375, 0.625, -0.125, 0.875, -0.75, 0.25, 0.125, -0.375, 0.5, -0.625]]],
+        dtype=jnp.float16,
+    )
+    key = jnp.asarray(np.linspace(-0.5, 0.5, num=1 * 2 * 4 * 8).reshape(1, 2, 4, 8), dtype=jnp.float16)
+    value = jnp.asarray(np.linspace(0.75, -0.25, num=1 * 2 * 4 * 8).reshape(1, 2, 4, 8), dtype=jnp.float16)
+    mask = jnp.asarray([[[[True, True, True, False]]]], dtype=jnp.bool_)
+
+    def decoder_step(model_params, values, cross_k, cross_v, cross_mask):
+        q = (values @ model_params["wq"]).reshape(1, 1, 2, 8).transpose(0, 2, 1, 3)
+        scores = (q @ cross_k.transpose(0, 1, 3, 2)) / jnp.sqrt(jnp.asarray(8.0, dtype=jnp.float32))
+        scores = jnp.where(cross_mask, scores, jnp.finfo(scores.dtype).min)
+        probs = jax.nn.softmax(scores, axis=-1).astype(jnp.float16)
+        return (probs @ cross_v).transpose(0, 2, 1, 3).reshape(1, 1, 16)
+
+    result = build_jax_generation_graph_bundle(
+        params=params,
+        decoder_step=JaxGraphSpec(
+            name="decoder_step",
+            fn=decoder_step,
+            example_args=(x, key, value, mask),
+            output_names=("hidden",),
+        ),
+        output_dir=tmp_path / "bundle",
+        model_id="cross-attention-step",
+    )
+    graph = result.bundle.graphs["decoder_step"].ir_graph
+    attention_nodes = [node for node in graph.nodes.values() if node.op == "attention"]
+
+    assert len(attention_nodes) == 1
+    assert attention_nodes[0].meta["rewritten_from"] == "jax_decoder_step_cross_attention"
+    assert len(attention_nodes[0].inputs) == 4
+    assert result.bundle.graphs["decoder_step"].graph.cache_state_tensors == []
+    _assert_close(
+        result.bundle.execute("decoder_step", x, key, value, mask)[0].numpy(),
+        decoder_step(params, x, key, value, mask),
+    )
