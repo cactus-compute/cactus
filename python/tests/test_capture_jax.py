@@ -104,37 +104,6 @@ def test_capture_jax_gqa_repeat_then_matmul_matches_jax() -> None:
     _assert_close(got, fn(q, k))
 
 
-def test_capture_jax_rms_norm_pattern_is_visible_to_optimizer() -> None:
-    x = jnp.asarray(np.linspace(-1.0, 1.0, 16, dtype=np.float16).reshape(1, 2, 8))
-    weight = jnp.asarray(np.linspace(0.8, 1.2, 8, dtype=np.float16))
-
-    def fn(values):
-        rms = jnp.sqrt(jnp.mean(values.astype(jnp.float32) ** 2, axis=-1, keepdims=True) + 1.0e-6)
-        return ((values / rms) * weight).astype(jnp.float16)
-
-    ir = capture_jax_function(fn, (x,), constant_names=("weight",))
-    got = _execute_ir(ir, x)[0]
-
-    assert any(ir.nodes[node_id].op == "rms_norm" for node_id in ir.order)
-    _assert_close(got, fn(x))
-
-
-def test_capture_jax_rms_norm_sum_div_pattern_avoids_fp16_overflow() -> None:
-    x = jnp.asarray(np.linspace(-650.0, 640.0, 16, dtype=np.float16).reshape(1, 2, 8))
-    weight = jnp.asarray(np.linspace(0.8, 1.2, 8, dtype=np.float16))
-
-    def fn(values):
-        squared = values.astype(jnp.float32) * values.astype(jnp.float32)
-        var = jnp.sum(squared, axis=-1, keepdims=True) / values.shape[-1]
-        return (values * jax.lax.rsqrt(var + 1.0e-5)) * weight
-
-    ir = capture_jax_function(fn, (x,), constant_names=("weight",))
-    got = _execute_ir(ir, x)[0]
-
-    assert any(ir.nodes[node_id].op == "rms_norm" for node_id in ir.order)
-    _assert_close(got, fn(x))
-
-
 @pytest.mark.parametrize("variant", ["mean_rsqrt", "sum_div_rsqrt", "pow_neg_half", "inv_sqrt", "weight_first"])
 def test_capture_jax_rms_norm_common_spellings_lower_to_rms_norm(variant: str) -> None:
     x = jnp.asarray(np.linspace(-650.0, 640.0, 16, dtype=np.float16).reshape(1, 2, 8))

@@ -58,13 +58,21 @@ def _toy_export():
     return params, specs, source, target, encoder_fn, decoder_fn
 
 
-def test_jax_user_graph_bundle_writes_manifest_graphs_and_weights(tmp_path: Path) -> None:
+def _build_toy_bundle(tmp_path: Path, **kwargs):
     params, specs, source, target, encoder_fn, decoder_fn = _toy_export()
     result = build_jax_user_graph_bundle(
         params=params,
         specs=specs,
         output_dir=tmp_path / "bundle",
         model_id="toy-jax",
+        **kwargs,
+    )
+    return result, params, source, target, encoder_fn, decoder_fn
+
+
+def test_jax_user_graph_bundle_writes_manifest_graphs_and_weights(tmp_path: Path) -> None:
+    result, params, source, target, encoder_fn, decoder_fn = _build_toy_bundle(
+        tmp_path,
         task="generic",
         inputs_metadata={"owner": "client"},
     )
@@ -92,23 +100,18 @@ def test_jax_user_graph_bundle_writes_manifest_graphs_and_weights(tmp_path: Path
 
 
 def test_jax_user_graph_bundle_loads_saved_graphs_and_mmap_weights(tmp_path: Path) -> None:
-    params, specs, source, target, encoder_fn, decoder_fn = _toy_export()
-    result = build_jax_user_graph_bundle(
-        params=params,
-        specs=specs,
-        output_dir=tmp_path / "bundle",
-        model_id="toy-jax",
-    )
+    result, params, source, target, encoder_fn, decoder_fn = _build_toy_bundle(tmp_path)
     loaded = load_jax_user_graph_bundle(result.output_dir)
 
-    encoder_out = loaded.execute("encoder", source)[0].numpy()
+    encoder_out = loaded.execute("encoder", source)[0]
     logits = loaded.execute("decoder", target, encoder_out)[0].numpy()
 
     assert set(loaded.graphs) == {"encoder", "decoder"}
     assert loaded.graphs["encoder"].logical_inputs == ["source_features"]
     assert loaded.graphs["decoder"].logical_outputs == ["logits"]
-    _assert_close(encoder_out, encoder_fn(params, source))
+    _assert_close(encoder_out.numpy(), encoder_fn(params, source))
     _assert_close(logits, decoder_fn(params, target, encoder_fn(params, source)))
+    loaded.reset()
 
 
 def test_jax_user_graph_bundle_supports_external_weights_dir(tmp_path: Path) -> None:
@@ -201,72 +204,13 @@ def test_jax_user_graph_rejects_wrong_input_count(tmp_path: Path) -> None:
         result.bundle.execute("project")
 
 
-def test_jax_user_graph_bundle_supports_tensor_handoff_and_reset(tmp_path: Path) -> None:
-    params = {
-        "encoder_w": jnp.asarray([[0.2, -0.1], [0.3, 0.5]], dtype=jnp.float16),
-        "decoder_w": jnp.asarray([[0.1], [0.4]], dtype=jnp.float16),
-    }
-    x = jnp.asarray([[1.0, -0.5]], dtype=jnp.float16)
-
-    def encoder_fn(model_params, values):
-        return values @ model_params["encoder_w"]
-
-    def decoder_fn(model_params, encoded):
-        return encoded @ model_params["decoder_w"]
-
-    result = build_jax_user_graph_bundle(
-        params=params,
-        specs=(
-            JaxGraphSpec(name="encoder", fn=encoder_fn, example_args=(x,), output_names=("encoded",)),
-            JaxGraphSpec(
-                name="decoder",
-                fn=decoder_fn,
-                example_args=(encoder_fn(params, x),),
-                input_names=("encoded",),
-                output_names=("logits",),
-            ),
-        ),
-        output_dir=tmp_path / "bundle",
-        model_id="tensor-handoff",
-    )
-    loaded = load_jax_user_graph_bundle(result.output_dir)
-
-    encoded = loaded.execute("encoder", x)[0]
-    got = loaded.execute("decoder", encoded)[0].numpy()
-    loaded.reset()
-
-    _assert_close(got, decoder_fn(params, encoder_fn(params, x)))
-
-
 def test_jax_generation_decoder_step_fuses_attention_without_internal_cache(tmp_path: Path) -> None:
     params = {
         "wq": jnp.eye(16, dtype=jnp.float16),
         "wk": jnp.eye(16, dtype=jnp.float16),
         "wv": jnp.eye(16, dtype=jnp.float16),
     }
-    x = jnp.asarray(
-        [[
-            [
-                0.25,
-                -0.5,
-                0.75,
-                0.125,
-                0.5,
-                -0.25,
-                0.375,
-                0.625,
-                -0.125,
-                0.875,
-                -0.75,
-                0.25,
-                0.125,
-                -0.375,
-                0.5,
-                -0.625,
-            ]
-        ]],
-        dtype=jnp.float16,
-    )
+    x = jnp.asarray(np.linspace(-0.75, 0.75, 16, dtype=np.float16).reshape(1, 1, 16))
 
     def decoder_step(model_params, values):
         q = (values @ model_params["wq"]).reshape(1, 1, 2, 8).transpose(0, 2, 1, 3)
@@ -295,10 +239,7 @@ def test_jax_generation_decoder_step_fuses_cross_attention(tmp_path: Path) -> No
     params = {
         "wq": jnp.eye(16, dtype=jnp.float16),
     }
-    x = jnp.asarray(
-        [[[0.25, -0.5, 0.75, 0.125, 0.5, -0.25, 0.375, 0.625, -0.125, 0.875, -0.75, 0.25, 0.125, -0.375, 0.5, -0.625]]],
-        dtype=jnp.float16,
-    )
+    x = jnp.asarray(np.linspace(-0.75, 0.75, 16, dtype=np.float16).reshape(1, 1, 16))
     key = jnp.asarray(np.linspace(-0.5, 0.5, num=1 * 2 * 4 * 8).reshape(1, 2, 4, 8), dtype=jnp.float16)
     value = jnp.asarray(np.linspace(0.75, -0.25, num=1 * 2 * 4 * 8).reshape(1, 2, 4, 8), dtype=jnp.float16)
     mask = jnp.asarray([[[[True, True, True, False]]]], dtype=jnp.bool_)
