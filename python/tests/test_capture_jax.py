@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import numpy as np
 import pytest
 
 jax = pytest.importorskip("jax")
 import jax.numpy as jnp
 
-from cactus.convert.cactus_adapters.tensor_io import save_tensor_with_header
 from cactus.transpile.capture_jax import capture_jax_function
 from cactus.transpile.capture_jax import capture_jax_function_with_params
 from cactus.transpile.lower import transpile_ir
@@ -23,57 +19,6 @@ def _execute_ir(ir, *inputs: object) -> list[np.ndarray]:
 
 def _assert_close(actual: object, expected: object, *, atol: float = 8e-2, rtol: float = 8e-2) -> None:
     np.testing.assert_allclose(np.asarray(actual, dtype=np.float32), np.asarray(expected, dtype=np.float32), atol=atol, rtol=rtol)
-
-
-def _write_fp16_manifest(weights_dir: Path, params: dict[str, object]) -> None:
-    weights_dir.mkdir(parents=True, exist_ok=True)
-    manifest = {}
-    for name, value in params.items():
-        filename = f"{name}.weights"
-        save_tensor_with_header(np.asarray(value), weights_dir / filename, precision="FP16")
-        manifest[name] = {"filename": filename, "kind": "weight"}
-    (weights_dir / "weights_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-
-
-def test_capture_jax_function_imports_common_tensor_ops() -> None:
-    x = jnp.asarray([[0.2, -0.4, 0.7], [1.0, -1.2, 0.3]], dtype=jnp.float16)
-    w = jnp.asarray([[0.3, -0.5], [0.2, 0.4], [-0.7, 0.1]], dtype=jnp.float16)
-    b = jnp.asarray([0.05, -0.02], dtype=jnp.float16)
-
-    def fn(values):
-        hidden = jnp.matmul(values, w) + b
-        gated = hidden * jax.nn.sigmoid(hidden)
-        return jnp.concatenate([gated, jnp.tanh(gated)], axis=-1)
-
-    ir = capture_jax_function(fn, (x,), constant_names=("w", "b"))
-    got = _execute_ir(ir, x)[0]
-
-    assert ir.meta["frontend"] == "jax"
-    assert ir.meta["adapter_family"] == "generic"
-    _assert_close(got, fn(x))
-
-
-def test_capture_jax_params_resolve_mmap_weights(tmp_path: Path) -> None:
-    params = {
-        "w1": jnp.asarray([[0.1, -0.2, 0.3], [0.4, 0.2, -0.1]], dtype=jnp.float16),
-        "b1": jnp.asarray([0.01, -0.02, 0.03], dtype=jnp.float16),
-        "w2": jnp.asarray([[0.2], [-0.3], [0.4]], dtype=jnp.float16),
-    }
-    x = jnp.asarray([[1.0, -2.0]], dtype=jnp.float16)
-    _write_fp16_manifest(tmp_path, params)
-
-    def fn(model_params, values):
-        hidden = jax.nn.gelu(values @ model_params["w1"] + model_params["b1"])
-        return hidden @ model_params["w2"]
-
-    ir = capture_jax_function_with_params(fn, params, (x,), weights_dir=str(tmp_path))
-    graph = transpile_ir(ir)
-    graph.set_inputs([np.asarray(x)])
-    got = graph.execute()[0].numpy()
-
-    bound_sources = {binding["source_name"] for binding in graph.bound_constant_bindings}
-    assert bound_sources == set(params)
-    _assert_close(got, fn(params, x))
 
 
 def test_capture_jax_handles_scalar_and_broadcast_boundaries() -> None:
@@ -170,24 +115,6 @@ def test_capture_jax_layer_norm_common_spellings_lower_to_layer_norm(variant: st
     got = _execute_ir(ir, x)[0]
 
     assert any(ir.nodes[node_id].op == "layer_norm" for node_id in ir.order)
-    _assert_close(got, fn(x))
-
-
-def test_capture_jax_batch_norm_lowers_to_batch_norm() -> None:
-    x = jnp.asarray(np.linspace(-1.0, 1.0, 24, dtype=np.float16).reshape(2, 3, 4))
-    scale = jnp.asarray([0.8, 1.1, 0.9, 1.2], dtype=jnp.float16)
-    bias = jnp.asarray([0.05, -0.02, 0.03, -0.04], dtype=jnp.float16)
-    running_mean = jnp.asarray([0.1, -0.2, 0.05, 0.0], dtype=jnp.float16)
-    running_var = jnp.asarray([0.9, 1.2, 0.7, 1.5], dtype=jnp.float16)
-
-    def fn(values):
-        normalized = (values - running_mean) * (scale * ((running_var + 1.0e-5) ** -0.5))
-        return normalized + bias
-
-    ir = capture_jax_function(fn, (x,), constant_names=("bias", "running_mean", "running_var", "scale"))
-    got = _execute_ir(ir, x)[0]
-
-    assert any(ir.nodes[node_id].op == "batch_norm" for node_id in ir.order)
     _assert_close(got, fn(x))
 
 

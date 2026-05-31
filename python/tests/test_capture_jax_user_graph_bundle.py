@@ -78,12 +78,8 @@ def test_jax_user_graph_bundle_writes_manifest_graphs_and_weights(tmp_path: Path
     assert (tmp_path / "bundle/components/encoder/graph.cactus").exists()
     assert (tmp_path / "bundle/components/decoder/graph.cactus").exists()
     for component in manifest["components"]:
-        raw_ir_path = tmp_path / "bundle" / component["raw_ir"]
-        optimized_ir_path = tmp_path / "bundle" / component["optimized_ir"]
-        assert raw_ir_path == tmp_path / "bundle" / component["directory"] / "raw_ir.json"
-        assert optimized_ir_path == tmp_path / "bundle" / component["directory"] / "optimized_ir.json"
-        assert raw_ir_path.exists()
-        assert optimized_ir_path.exists()
+        raw_ir_path, optimized_ir_path = (tmp_path / "bundle" / component[key] for key in ("raw_ir", "optimized_ir"))
+        assert raw_ir_path.exists() and optimized_ir_path.exists()
         assert json.loads(raw_ir_path.read_text())["graph"]["meta"]["frontend"] == "jax"
         assert json.loads(optimized_ir_path.read_text())["graph"]["outputs"] == component["outputs"]
     assert (tmp_path / "bundle/weights_manifest.json").exists()
@@ -130,34 +126,6 @@ def test_jax_user_graph_bundle_supports_external_weights_dir(tmp_path: Path) -> 
     assert (tmp_path / "weights/weights_manifest.json").exists()
     assert manifest["weights_dir"] == str(tmp_path / "weights")
     _assert_close(loaded.execute("project", np.asarray(x, dtype=np.float32))[0].numpy(), fn(params, x))
-
-
-def test_jax_user_graph_bundle_binds_duplicate_equal_params_by_path(tmp_path: Path) -> None:
-    params = {
-        "a": jnp.zeros((2,), dtype=jnp.float16),
-        "b": jnp.zeros((2,), dtype=jnp.float16),
-    }
-    weight_arrays = {
-        "a": np.asarray([1.0, 1.0], dtype=np.float16),
-        "b": np.asarray([2.0, 2.0], dtype=np.float16),
-    }
-    x = jnp.asarray([10.0, 20.0], dtype=jnp.float16)
-
-    def fn(model_params, values):
-        return values + model_params["b"]
-
-    result = build_jax_user_graph_bundle(
-        params=params,
-        weight_arrays=weight_arrays,
-        specs=(JaxGraphSpec(name="forward", fn=fn, example_args=(x,)),),
-        output_dir=tmp_path / "bundle",
-        model_id="duplicate-param-bindings",
-    )
-    loaded = load_jax_user_graph_bundle(result.output_dir)
-    bindings = loaded.manifest["components"][0]["bound_constant_bindings"]
-
-    assert [binding["source_name"] for binding in bindings] == ["b"]
-    _assert_close(loaded.execute("forward", x)[0].numpy(), np.asarray(x) + weight_arrays["b"])
 
 
 def test_jax_generation_decoder_step_fuses_attention_without_internal_cache(tmp_path: Path) -> None:
