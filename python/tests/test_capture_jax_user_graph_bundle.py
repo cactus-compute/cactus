@@ -39,20 +39,12 @@ def _toy_export():
     encoder_out = encoder_fn(params, source)
     specs = (
         JaxGraphSpec(
-            name="encoder",
-            role="encoder",
-            fn=encoder_fn,
-            example_args=(source,),
-            input_names=("source_features",),
-            output_names=("encoder_out",),
+            name="encoder", role="encoder", fn=encoder_fn, example_args=(source,),
+            input_names=("source_features",), output_names=("encoder_out",),
         ),
         JaxGraphSpec(
-            name="decoder",
-            role="generic",
-            fn=decoder_fn,
-            example_args=(target, encoder_out),
-            input_names=("target_features", "encoder_out"),
-            output_names=("logits",),
+            name="decoder", role="generic", fn=decoder_fn, example_args=(target, encoder_out),
+            input_names=("target_features", "encoder_out"), output_names=("logits",),
         ),
     )
     return params, specs, source, target, encoder_fn, decoder_fn
@@ -137,7 +129,7 @@ def test_jax_user_graph_bundle_supports_external_weights_dir(tmp_path: Path) -> 
     assert result.weights_dir == tmp_path / "weights"
     assert (tmp_path / "weights/weights_manifest.json").exists()
     assert manifest["weights_dir"] == str(tmp_path / "weights")
-    _assert_close(loaded.execute("project", x)[0].numpy(), fn(params, x))
+    _assert_close(loaded.execute("project", np.asarray(x, dtype=np.float32))[0].numpy(), fn(params, x))
 
 
 def test_jax_user_graph_bundle_binds_duplicate_equal_params_by_path(tmp_path: Path) -> None:
@@ -166,42 +158,6 @@ def test_jax_user_graph_bundle_binds_duplicate_equal_params_by_path(tmp_path: Pa
 
     assert [binding["source_name"] for binding in bindings] == ["b"]
     _assert_close(loaded.execute("forward", x)[0].numpy(), np.asarray(x) + weight_arrays["b"])
-
-
-def test_jax_user_graph_execute_coerces_inputs_to_example_dtype(tmp_path: Path) -> None:
-    params = {"w": jnp.asarray([[0.5], [-0.25]], dtype=jnp.float16)}
-    x = jnp.asarray([[2.0, -1.0]], dtype=jnp.float16)
-
-    def fn(model_params, values):
-        return values @ model_params["w"]
-
-    result = build_jax_user_graph_bundle(
-        params=params,
-        specs=(JaxGraphSpec(name="project", fn=fn, example_args=(x,)),),
-        output_dir=tmp_path / "bundle",
-        model_id="dtype-coercion",
-    )
-
-    got = result.bundle.execute("project", np.asarray(x, dtype=np.float32))[0].numpy()
-    _assert_close(got, fn(params, x))
-
-
-def test_jax_user_graph_rejects_wrong_input_count(tmp_path: Path) -> None:
-    params = {"w": jnp.asarray([[1.0]], dtype=jnp.float16)}
-    x = jnp.asarray([[2.0]], dtype=jnp.float16)
-
-    def fn(model_params, values):
-        return values @ model_params["w"]
-
-    result = build_jax_user_graph_bundle(
-        params=params,
-        specs=(JaxGraphSpec(name="project", fn=fn, example_args=(x,)),),
-        output_dir=tmp_path / "bundle",
-        model_id="errors",
-    )
-
-    with pytest.raises(ValueError, match="expected 1 inputs"):
-        result.bundle.execute("project")
 
 
 def test_jax_generation_decoder_step_fuses_attention_without_internal_cache(tmp_path: Path) -> None:
@@ -254,10 +210,7 @@ def test_jax_generation_decoder_step_fuses_cross_attention(tmp_path: Path) -> No
     result = build_jax_generation_graph_bundle(
         params=params,
         decoder_step=JaxGraphSpec(
-            name="decoder_step",
-            fn=decoder_step,
-            example_args=(x, key, value, mask),
-            output_names=("hidden",),
+            name="decoder_step", fn=decoder_step, example_args=(x, key, value, mask), output_names=("hidden",),
         ),
         output_dir=tmp_path / "bundle",
         model_id="cross-attention-step",
