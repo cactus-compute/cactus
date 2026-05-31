@@ -70,14 +70,14 @@ GEMMA4_PROFILE = ModelProfile(
 )
 
 
-LFM2_VL_PROFILE = ModelProfile(
-    family="lfm2_vl",
-    model_types=("lfm2_vl",),
+LFM2_PROFILE = ModelProfile(
+    family="lfm2",
+    model_types=("lfm2_vl", "lfm2"),
     multimodal_context_tokens=256,
     input_combinations=((), ("image",)),
     model_id_aliases=(("lfm", "LiquidAI/LFM2-VL-450M"),),
     model_id_markers=("lfm2-vl", "lfm-vl"),
-    family_aliases=("lfm2", "lfm"),
+    family_aliases=("lfm2_vl", "lfm"),
     stop_tokens=("<|im_end|>",),
     avoid_native_loader=True,
     cached_step_components=("lm_encoder_step", "decoder_step"),
@@ -203,7 +203,7 @@ QWEN_PROFILE = ModelProfile(
 
 PROFILES: tuple[ModelProfile, ...] = (
     GEMMA4_PROFILE,
-    LFM2_VL_PROFILE,
+    LFM2_PROFILE,
     PARAKEET_TDT_PROFILE,
     WHISPER_PROFILE,
     QWEN_PROFILE,

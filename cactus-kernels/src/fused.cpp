@@ -279,6 +279,7 @@ void gated_deltanet_step(
     }
 
     const float prev_scale = state_scale;
+    state_scale = prev_scale * safe_exp_gate(gate_log_safe);
     std::fill(proj.begin(), proj.end(), 0.0f);
 
     for (size_t kd = 0; kd < k_dim; ++kd) {
@@ -299,14 +300,14 @@ void gated_deltanet_step(
     }
     {
         size_t vd = 0;
-        const float32x4_t scale4 = vdupq_n_f32(prev_scale);
+        const float32x4_t scale4 = vdupq_n_f32(state_scale);
         for (; vd + 4 <= v_dim; vd += 4) {
             float32x4_t p = vld1q_f32(proj.data() + vd);
             p = vmulq_f32(p, scale4);
             vst1q_f32(proj.data() + vd, p);
         }
         for (; vd < v_dim; ++vd) {
-            proj[vd] *= prev_scale;
+            proj[vd] *= state_scale;
         }
     }
 
@@ -315,7 +316,6 @@ void gated_deltanet_step(
         delta[vd] = (v_val - proj[vd]) * beta_safe;
     }
 
-    state_scale = prev_scale * safe_exp_gate(gate_log_safe);
     if (!std::isfinite(state_scale) ||
         std::fabs(state_scale) < 1e-8f ||
         std::fabs(state_scale) > 1e8f) {
@@ -612,7 +612,7 @@ void gated_deltanet_prefill_chunked_f16(
                     }
 
                     for (size_t t = 0; t < C; ++t) {
-                        const float pp = p_prev[t];
+                        const float pp = p_curr[t];
                         float* coeff_row = coeff + t * C;
                         for (size_t j = 0; j < t; ++j) {
                             const float inv_pc = inv_p_curr[j];
@@ -621,7 +621,7 @@ void gated_deltanet_prefill_chunked_f16(
                     }
 
                     for (size_t t = 0; t < C; ++t) {
-                        const float pp = p_prev[t];
+                        const float pp = p_curr[t];
                         const float bt = beta_chunk[t];
                         const float* n0_row = n0_proj + t * V;
                         const float* v_row = v_chunk + t * V;

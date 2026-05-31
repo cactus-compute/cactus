@@ -287,6 +287,8 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     audio_encoder_ = components_.count("audio_encoder") ? &components_.at("audio_encoder") : nullptr;
     lm_encoder_media_step_ = components_.count("lm_encoder_media_step") ? &components_.at("lm_encoder_media_step") : nullptr;
     lm_encoder_ = components_.count("lm_encoder") ? &components_.at("lm_encoder") : nullptr;
+    lm_encoder_text_chunk_ = components_.count("lm_encoder_text_chunk") ? &components_.at("lm_encoder_text_chunk") : nullptr;
+    lm_encoder_media_chunk_ = components_.count("lm_encoder_media_chunk") ? &components_.at("lm_encoder_media_chunk") : nullptr;
     std::vector<Component*> to_bind = {
         encoder_,
         prefill_encoder_,
@@ -296,6 +298,8 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         audio_encoder_,
         lm_encoder_media_step_,
         lm_encoder_,
+        lm_encoder_text_chunk_,
+        lm_encoder_media_chunk_,
     };
     if (components_.count("decoder_cross_kv")) {
         to_bind.push_back(&components_.at("decoder_cross_kv"));
@@ -317,6 +321,20 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     }
 
     cache_max_seq_len_ = context_size;
+
+    if (!npu_audio_encoder_mlpackage_.empty()) {
+        std::string full_path = bundle_dir + "/" + npu_audio_encoder_mlpackage_;
+        if (!load_npu_audio_encoder(full_path)) {
+            CACTUS_LOG_WARN("model", "NPU audio encoder load failed for " << full_path << "; falling back to CPU");
+        }
+    }
+    if (!npu_vision_encoder_mlpackage_.empty()) {
+        std::string full_path = bundle_dir + "/" + npu_vision_encoder_mlpackage_;
+        if (!load_npu_vision_encoder(full_path)) {
+            CACTUS_LOG_WARN("model", "NPU vision encoder load failed for " << full_path << "; falling back to CPU");
+        }
+    }
+
     initialized_ = true;
     return true;
 }
@@ -333,6 +351,12 @@ bool Model::load_manifest() {
     const auto& obj = root.get<picojson::object>();
     if (obj.count("family") && obj.at("family").is<std::string>()) {
         family_ = obj.at("family").get<std::string>();
+    }
+    if (obj.count("npu_audio_encoder") && obj.at("npu_audio_encoder").is<std::string>()) {
+        npu_audio_encoder_mlpackage_ = obj.at("npu_audio_encoder").get<std::string>();
+    }
+    if (obj.count("npu_vision_encoder") && obj.at("npu_vision_encoder").is<std::string>()) {
+        npu_vision_encoder_mlpackage_ = obj.at("npu_vision_encoder").get<std::string>();
     }
     if (!obj.count("components")) return false;
     for (const auto& cv : obj.at("components").get<picojson::array>()) {
@@ -663,6 +687,32 @@ void Model::copy_cache_states(const Component& source, Component& target, size_t
             }
             void* src_ptr = source.graph->get_output(static_cast<size_t>(src_node));
             void* dst_ptr = target.graph->get_output(static_cast<size_t>(dst_node));
+
+            const OpType src_op = source.graph->get_node_op_type(static_cast<size_t>(src_node));
+            const OpType dst_op = target.graph->get_node_op_type(static_cast<size_t>(dst_node));
+            if (src_op != dst_op) {
+                throw std::runtime_error(
+                    "cache state op_type mismatch between prefill and step at layer "
+                    + src.layer_key);
+            }
+            if (src_op == OpType::RECURRENT_CACHE_STATE) {
+                if (src_desc.byte_size != dst_desc.byte_size) {
+                    throw std::runtime_error(
+                        "recurrent cache buffer shape mismatch between prefill and step at layer "
+                        + src.layer_key);
+                }
+                std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
+                continue;
+            }
+            if (src_op == OpType::CONV_CACHE_STATE) {
+                if (src_desc.byte_size != dst_desc.byte_size) {
+                    throw std::runtime_error(
+                        "conv cache buffer shape mismatch between prefill and step at layer "
+                        + src.layer_key);
+                }
+                std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
+                continue;
+            }
             if (src_desc.byte_size == dst_desc.byte_size && logical_current == std::numeric_limits<size_t>::max()) {
                 std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
                 continue;
@@ -778,11 +828,29 @@ void Model::reset_component_cache_states(Component& comp) {
         for (int node_id : {state.key_node_id, state.value_node_id}) {
             if (node_id < 0) continue;
             const auto& desc = comp.graph->get_output_buffer(static_cast<size_t>(node_id));
-            if (desc.byte_size < sizeof(uint64_t) || !desc.get_data()) continue;
+            if (desc.byte_size == 0 || !desc.get_data()) continue;
             void* ptr = comp.graph->get_output(static_cast<size_t>(node_id));
             if (!ptr) continue;
-            auto* metadata = static_cast<uint64_t*>(ptr);
-            metadata[0] = 0;
+            const OpType op_type = comp.graph->get_node_op_type(static_cast<size_t>(node_id));
+            switch (op_type) {
+                case OpType::KV_CACHE_STATE:
+                    if (desc.byte_size >= sizeof(uint64_t)) {
+                        static_cast<uint64_t*>(ptr)[0] = 0;
+                    }
+                    break;
+                case OpType::CONV_CACHE_STATE:
+                    if (desc.byte_size >= 2 * sizeof(uint64_t)) {
+                        auto* meta = static_cast<uint64_t*>(ptr);
+                        meta[0] = 0;  // head
+                        meta[1] = 0;  // count
+                    }
+                    break;
+                case OpType::RECURRENT_CACHE_STATE:
+                    std::memset(ptr, 0, desc.byte_size);
+                    break;
+                default:
+                    break;
+            }
         }
     }
 }
@@ -819,10 +887,28 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     if (component_tokens <= 1) return result;
     size_t effective_chunk = chunk_size > 0 ? std::min(chunk_size, component_tokens) : component_tokens;
     if (effective_chunk != component_tokens) effective_chunk = component_tokens;
-    const size_t whole_chunks_end = (tokens.size() / effective_chunk) * effective_chunk;
+    size_t whole_chunks_end = (tokens.size() / effective_chunk) * effective_chunk;
+    const bool has_recurrent_state = [&]() {
+        if (!decoder_prefill_->graph) return false;
+        for (const auto& state : decoder_prefill_->cache_states) {
+            for (int node_id : {state.key_node_id, state.value_node_id}) {
+                if (node_id < 0) continue;
+                if (decoder_prefill_->graph->get_node_op_type(static_cast<size_t>(node_id))
+                    == OpType::RECURRENT_CACHE_STATE) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }();
+    if (has_recurrent_state && whole_chunks_end > effective_chunk) {
+        whole_chunks_end = effective_chunk;
+    }
     const size_t tail_tokens = tokens.size() - whole_chunks_end;
     const size_t padding_cutoff = std::max<size_t>(1, effective_chunk / 16);
-    const bool pad_tail = family_ != "lfm2_vl" && tail_tokens >= padding_cutoff;
+    const bool pad_tail = family_ != "lfm2_vl"
+        && !has_recurrent_state
+        && tail_tokens >= padding_cutoff;
     const size_t executable_tokens = whole_chunks_end + (pad_tail ? effective_chunk : 0);
     if (executable_tokens == 0) {
         result.scalar_tail_tokens = tail_tokens;
@@ -975,6 +1061,12 @@ void Model::run_vision_encoder(const std::string& image_path) {
         throw std::runtime_error("failed to load vision_encoder");
     }
     Gemma4ImagePreprocessed prep = preprocess_gemma4_image(image_path, config_);
+    if (has_npu_vision_encoder() && vision_encode_via_npu(prep.pixel_values)) {
+        return;
+    }
+    if (!load_component_graph(*vision_encoder_)) {
+        throw std::runtime_error("failed to load vision_encoder");
+    }
     write_bytes_input(*vision_encoder_, "pixel_values", prep.pixel_values.data(),
                       prep.pixel_values.size() * sizeof(float));
     write_bytes_input(*vision_encoder_, "pixel_position_ids", prep.pixel_position_ids.data(),
@@ -1018,6 +1110,9 @@ void Model::run_audio_encoder_messages(const std::vector<std::vector<float>>& au
 
 void Model::run_audio_encoder(const std::vector<float>& audio_features) {
     if (!audio_encoder_) return;
+    if (has_npu_audio_encoder() && audio_encode_via_npu(audio_features)) {
+        return;
+    }
     const std::vector<std::string> candidate_input_names = {"input_features", "audio_features"};
     int feature_idx = -1;
     for (const auto& name : candidate_input_names) {
@@ -1548,6 +1643,9 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         for (const auto& path : image_paths) {
             if (family_ == "lfm2_vl") {
                 Lfm2VlImagePreprocessed prep = preprocess_lfm2_vl_image(path, config_);
+                if (has_npu_vision_encoder() && vision_encode_via_npu(prep.pixel_values)) {
+                    continue;
+                }
                 int pv_idx = input_index(*vision_encoder_, "pixel_values");
                 if (pv_idx >= 0) {
                     auto& pv_buf = vision_encoder_->input_buffers[pv_idx];
@@ -2141,7 +2239,56 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     write_typed_buffer(feat_buf, feat_desc.precision, transposed.data(),
                        transposed.size() * sizeof(float), Precision::FP32);
 
-    audio_enc->graph->execute();
+    std::vector<__fp16> npu_hidden_storage;
+    bool used_npu = false;
+    size_t npu_hidden_T = 0;
+    if (has_npu_audio_encoder()) {
+        const std::vector<int> in_shape = npu_audio_encoder_->get_input_shape();
+        const std::vector<int> out_shape = npu_audio_encoder_->get_output_shape();
+        if (in_shape.size() >= 3 && out_shape.size() >= 3 &&
+            in_shape[1] > 0 && in_shape[2] > 0 && out_shape[1] > 0 && out_shape[2] > 0 &&
+            static_cast<size_t>(in_shape[2]) == expected_mels) {
+            const size_t window_frames = static_cast<size_t>(in_shape[1]);
+            const size_t window_hidden = static_cast<size_t>(out_shape[1]);
+            const size_t hidden_dim_npu = static_cast<size_t>(out_shape[2]);
+            const size_t chunk_input_elems = window_frames * expected_mels;
+            const size_t chunk_output_elems = window_hidden * hidden_dim_npu;
+            const size_t num_chunks = (copy_frames + window_frames - 1) / window_frames;
+            const size_t total_hidden_T = num_chunks * window_hidden;
+            npu_hidden_storage.assign(total_hidden_T * hidden_dim_npu, __fp16(0));
+            std::vector<__fp16> input_fp16(chunk_input_elems);
+            bool all_ok = num_chunks > 0;
+            for (size_t c = 0; c < num_chunks && all_ok; ++c) {
+                const size_t frame_start = c * window_frames;
+                const size_t frame_end = std::min(frame_start + window_frames, copy_frames);
+                std::fill(input_fp16.begin(), input_fp16.end(), __fp16(0));
+                for (size_t t = frame_start; t < frame_end; ++t) {
+                    const size_t local = (t - frame_start) * expected_mels;
+                    const size_t src = t * expected_mels;
+                    for (size_t m = 0; m < expected_mels; ++m) {
+                        input_fp16[local + m] = static_cast<__fp16>(transposed[src + m]);
+                    }
+                }
+                __fp16* out_ptr = npu_hidden_storage.data() + c * chunk_output_elems;
+                size_t written = npu_audio_encoder_->encode(
+                    input_fp16.data(), out_ptr, in_shape, "x", "encoded");
+                if (written == 0) { all_ok = false; break; }
+            }
+            if (all_ok) {
+                used_npu = true;
+                const size_t valid_input = copy_frames;
+                npu_hidden_T = (valid_input * window_hidden + window_frames - 1) / window_frames;
+                if (npu_hidden_T > total_hidden_T) npu_hidden_T = total_hidden_T;
+                CACTUS_LOG_INFO("model", "Parakeet audio encoder ran on NPU ("
+                                << num_chunks << " chunks, " << npu_hidden_T << " valid hidden frames)");
+            } else {
+                CACTUS_LOG_WARN("model", "NPU audio encoder chunk failed; falling back to CPU graph");
+            }
+        }
+    }
+    if (!used_npu) {
+        audio_enc->graph->execute();
+    }
 
     int hidden_idx = output_index(*audio_enc, "encoder_hidden_states");
     if (hidden_idx < 0) {
@@ -2150,14 +2297,20 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     }
     size_t hidden_node = static_cast<size_t>(audio_enc->output_node_ids[hidden_idx]);
     const auto& hidden_desc = audio_enc->graph->get_output_buffer(hidden_node);
-    const uint8_t* hidden_ptr = static_cast<const uint8_t*>(audio_enc->graph->get_output(hidden_node));
+    const uint8_t* hidden_ptr;
+    if (used_npu) {
+        hidden_ptr = reinterpret_cast<const uint8_t*>(npu_hidden_storage.data());
+    } else {
+        hidden_ptr = static_cast<const uint8_t*>(audio_enc->graph->get_output(hidden_node));
+    }
     if (hidden_desc.shape.size() < 3 || hidden_ptr == nullptr) {
         CACTUS_LOG_ERROR("model", "encoder_hidden_states must be 3D [B, T, D]");
         return emitted;
     }
-    const size_t T = hidden_desc.shape[1];
+    const size_t T = used_npu ? npu_hidden_T : hidden_desc.shape[1];
     const size_t D = hidden_desc.shape[2];
-    const size_t hidden_elem = PrecisionTraits::size_of(hidden_desc.precision);
+    const Precision hidden_precision = used_npu ? Precision::FP16 : hidden_desc.precision;
+    const size_t hidden_elem = PrecisionTraits::size_of(hidden_precision);
     const size_t frame_bytes = D * hidden_elem;
 
     auto zero_state = [&](const std::string& name) {
@@ -2223,7 +2376,7 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
 
     while (time_index < T) {
         const uint8_t* frame_ptr = hidden_ptr + time_index * frame_bytes;
-        write_typed_buffer(ef_buf, ef_desc.precision, frame_ptr, frame_bytes, hidden_desc.precision);
+        write_typed_buffer(ef_buf, ef_desc.precision, frame_ptr, frame_bytes, hidden_precision);
 
         size_t symbols_added = 0;
         bool advanced = false;
@@ -2701,9 +2854,6 @@ const std::vector<Model::DebugNode>& Model::get_debug_nodes() const {
     return debug_nodes_;
 }
 
-bool Model::load_npu_prefill(const std::string& /*model_path*/) {
-    return false;
-}
 
 double Model::score_tokens_window_logprob(const std::vector<uint32_t>& /*tokens*/, size_t /*start*/,
                                             size_t /*end*/, size_t /*context*/, size_t* tokens_scored) {

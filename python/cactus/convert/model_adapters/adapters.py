@@ -433,8 +433,13 @@ class Lfm2Adapter(FamilyAdapter):
         if processor is not None and hasattr(processor, "tokenizer"):
             return processor
         root = Path(model_id_or_path)
-        if not root.exists() or not (root / "tokenizer.json").exists():
-            return None
+        has_vl_processor_config = (
+            root.exists()
+            and (root / "tokenizer.json").exists()
+            and (root / "preprocessor_config.json").exists()
+        )
+        if not has_vl_processor_config:
+            return processor
         from transformers import Lfm2VlImageProcessorFast, Lfm2VlProcessor, PreTrainedTokenizerFast
 
         cfg_path = root / "tokenizer_config.json"

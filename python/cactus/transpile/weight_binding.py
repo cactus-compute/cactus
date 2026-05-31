@@ -193,13 +193,22 @@ def _manifest_source_aliases(name: str) -> tuple[str, ...]:
         tail = raw[len("model.") :]
         _add_with_wrappers(tail)
 
-    if raw.startswith("backbone."):
-        tail = raw[len("backbone.") :]
-        _add_with_wrappers(tail)
-        _add_with_wrappers(f"model.{tail}")
-        _add_with_wrappers(f"model.language_model.{tail}")
+    def _add_text_backbone_aliases(candidate: str) -> None:
+        for prefix in (
+            "module.backbone.",
+            "module.model.backbone.",
+            "adapter.backbone.",
+            "adapter.model.backbone.",
+            "backbone.",
+        ):
+            if candidate.startswith(prefix):
+                tail = candidate[len(prefix) :]
+                _add_with_wrappers(tail)
+                _add_with_wrappers(f"model.{tail}")
+                _add_with_wrappers(f"model.language_model.{tail}")
 
     for candidate in tuple(aliases):
+        _add_text_backbone_aliases(candidate)
         _add_multimodal_backbone_aliases(candidate)
 
     return tuple(aliases)

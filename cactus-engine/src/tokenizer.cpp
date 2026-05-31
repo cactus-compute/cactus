@@ -383,16 +383,16 @@ std::vector<uint32_t> Tokenizer::apply_chat_template(const std::vector<ChatMessa
 std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
                                           const std::string& tools_json, bool enable_thinking_if_supported) const {
     if (model_type_ == ModelType::QWEN) {
-        return format_qwen_style(messages, add_generation_prompt, tools_json);
+        return format_qwen_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
     }
     if (model_type_ == ModelType::LFM2) {
-        return format_lfm2_style(messages, add_generation_prompt, tools_json);
+        return format_lfm2_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
     }
     return format_gemma4_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
 }
 
 std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
-                                         const std::string& tools_json) const {
+                                         const std::string& tools_json, bool enable_thinking_if_supported) const {
     std::string result;
 
     if (!tools_json.empty()) {
@@ -437,14 +437,17 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
 
     if (add_generation_prompt) {
         result += "<|im_start|>assistant\n";
+        if (chat_template_.find("<think>") != std::string::npos) {
+            result += enable_thinking_if_supported ? "<think>\n" : "<think>\n\n</think>\n\n";
+        }
     }
 
     return result;
 }
 
 std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
-                                         const std::string& tools_json) const {
-    return "<|startoftext|>" + format_qwen_style(messages, add_generation_prompt, tools_json);
+                                         const std::string& tools_json, bool enable_thinking_if_supported) const {
+    return "<|startoftext|>" + format_qwen_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
 }
 
 std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,

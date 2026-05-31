@@ -61,7 +61,13 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "gemma4 media tower accuracy")
     output_head_or_tied_embedding = out in {"token_embeddings.weights", "decoder_token_embeddings.weights", "output_weight.weights"}
     if component == "embedding" or output_head_or_tied_embedding:
-        layout = "interleaved_4row" if output_head_or_tied_embedding else "row_major"
+        use_interleaved = (
+            output_head_or_tied_embedding
+            and len(shape) == 2
+            and int(shape[0]) % 4 == 0
+            and int(shape[1]) % 32 == 0
+        )
+        layout = "interleaved_4row" if use_interleaved else "row_major"
         return TensorPolicy("convert", "CQ4", 4, component, False, "orthogonal", layout=layout)
     if component == "audio" or component == "transcription":
         return TensorPolicy("convert", f"CQ{user_bits}", user_bits, component, False, "hadamard")

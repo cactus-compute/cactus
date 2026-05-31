@@ -780,6 +780,49 @@ class Graph:
             raise RuntimeError(_err("graph_conv_cache_append failed"))
         return self._tensor_from_node(out.value)
 
+    def conv_cache_initialize(self, rows, cache_state):
+        rows = self._ensure_tensor(rows)
+        cache_state = self._ensure_tensor(cache_state)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_conv_cache_initialize(
+            self.h,
+            cactus_node_t(rows.id),
+            cactus_node_t(cache_state.id),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_conv_cache_initialize failed"))
+        return self._tensor_from_node(out.value)
+
+    def recurrent_cache_state(self, shape, dtype=FP16):
+        shape = tuple(int(x) for x in shape)
+        arr = (ctypes.c_size_t * len(shape))(*shape)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_recurrent_cache_state(
+            self.h,
+            arr,
+            ctypes.c_size_t(len(shape)),
+            ctypes.c_int(int(dtype)),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_recurrent_cache_state failed"))
+        return self._tensor_from_node(out.value)
+
+    def recurrent_cache_write(self, new_value, cache_input):
+        new_value = self._ensure_tensor(new_value)
+        cache_input = self._ensure_tensor(cache_input)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_recurrent_cache_write(
+            self.h,
+            cactus_node_t(new_value.id),
+            cactus_node_t(cache_input.id),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_recurrent_cache_write failed"))
+        return self._tensor_from_node(out.value)
+
     def rel_pos_bias(self, query, relative_key, scale):
         query = self._ensure_tensor(query)
         relative_key = self._ensure_tensor(relative_key)

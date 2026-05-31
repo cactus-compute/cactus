@@ -115,7 +115,10 @@ enum class OpType {
     CLAMP,
     DENSE_MLP_TQ_FUSED,
     NOT_EQUAL,
-    SCALAR_NOT_EQUAL
+    SCALAR_NOT_EQUAL,
+    RECURRENT_CACHE_STATE,
+    RECURRENT_CACHE_WRITE,
+    CONV_CACHE_INITIALIZE
 };
 
 struct PrecisionTraits {
@@ -578,6 +581,10 @@ public:
 
     size_t conv_cache_state(size_t window_size, size_t hidden_dim);
     size_t conv_cache_append(size_t new_data, size_t cache_state_node);
+    size_t conv_cache_initialize(size_t rows, size_t cache_state_node);
+
+    size_t recurrent_cache_state(const std::vector<size_t>& shape, Precision precision);
+    size_t recurrent_cache_write(size_t new_value, size_t cache_state);
 
     size_t conv1d_causal(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1);
     size_t conv1d_k3(size_t input, size_t weight, size_t stride);
@@ -699,6 +706,7 @@ public:
     size_t add_node(OpType op_type, const std::vector<size_t>& inputs,
                     const std::vector<size_t>& output_shape, const OpParams& params = {});
     const BufferDesc& get_output_buffer(size_t node_id) const;
+    OpType get_node_op_type(size_t node_id) const;
     void allocate_buffers();
     size_t get_node_count() const;
 

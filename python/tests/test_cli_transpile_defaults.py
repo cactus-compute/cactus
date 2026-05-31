@@ -21,8 +21,7 @@ def _write_gemma4_multimodal_config(output_dir: Path) -> None:
 
 
 def _gemma4_multimodal_extra_args(model_dir: Path, artifact_dir: Path) -> list[str]:
-    from cactus.cli.common import PROJECT_ROOT
-    assets_dir = PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
+    assets_dir = Path(model_mod.__file__).resolve().parent.parent / "assets"
     return [
         "--weights-dir",
         str(model_dir),
@@ -164,7 +163,7 @@ def test_cmd_convert_supplies_default_audio_for_parakeet(monkeypatch, tmp_path: 
     extra_args = transpile_calls[0]["extra_args"]
     assert extra_args[extra_args.index("--task") + 1] == "tdt_transcription"
     assert "--audio-file" in extra_args
-    assert extra_args[extra_args.index("--audio-file") + 1].endswith("cactus-engine/tests/assets/test.wav")
+    assert extra_args[extra_args.index("--audio-file") + 1].endswith("python/cactus/assets/test.wav")
 
 
 def test_cmd_convert_supplies_default_audio_for_whisper(monkeypatch, tmp_path: Path) -> None:

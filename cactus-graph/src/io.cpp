@@ -230,7 +230,7 @@ namespace {
         GraphFile::NodeEntry node;
         node.index = read_u32(in);
         uint32_t op_type_val = read_u32(in);
-        if (op_type_val > static_cast<uint32_t>(OpType::SCALAR_NOT_EQUAL)) {
+        if (op_type_val > static_cast<uint32_t>(OpType::CONV_CACHE_INITIALIZE)) {
             throw std::runtime_error("Graph file corrupted: invalid op type");
         }
         node.op_type = static_cast<OpType>(op_type_val);
@@ -352,7 +352,10 @@ CactusGraph CactusGraph::from_serialized(const GraphFile::SerializedGraph& sg) {
             populate_derived_params(graph, node_entry, runtime_inputs, params);
             new_node_id = graph.add_node(node_entry.op_type, runtime_inputs, node_entry.output_shape, params);
 
-            if (node_entry.op_type == OpType::PERSISTENT) {
+            if (node_entry.op_type == OpType::PERSISTENT
+                || node_entry.op_type == OpType::KV_CACHE_STATE
+                || node_entry.op_type == OpType::CONV_CACHE_STATE
+                || node_entry.op_type == OpType::RECURRENT_CACHE_STATE) {
                 graph.persistent_node_ids_.insert(new_node_id);
             }
         }

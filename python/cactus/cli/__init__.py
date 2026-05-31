@@ -10,6 +10,7 @@ from .common import (
 from .download import cmd_download
 from .compile import cmd_build
 from .run import cmd_run
+from .serve import cmd_serve
 from .transcribe import cmd_transcribe
 from .test import cmd_test
 from .convert import cmd_convert
@@ -65,6 +66,15 @@ def create_parser():
     --language <code>                  language code (default: en)
     --token <token>                    HF token (for gated models)
     --reconvert                        force reconversion from source
+
+  -----------------------------------------------------------------
+
+  cactus serve [model]                 OpenAI-compatible local HTTP server
+                                       serves prepared v2 bundles only
+
+    Optional flags:
+    --host <addr>                      bind address (default: 127.0.0.1)
+    --port <port>                      port (default: 8080)
 
   -----------------------------------------------------------------
 
@@ -199,6 +209,15 @@ def create_parser():
     transcribe_parser.add_argument("--reconvert", action="store_true",
                                    help="Download original model and convert (instead of using pre-converted from Cactus-Compute)")
 
+    # ── serve ─────────────────────────────────────────────────────────
+    serve_parser = subparsers.add_parser("serve", help="Start OpenAI-compatible HTTP server")
+    serve_parser.add_argument("model", nargs="?", default=None,
+                              help="Prepared v2 bundle path, local model dir name, or HF model ID")
+    serve_parser.add_argument("--host", default="127.0.0.1",
+                              help="Bind address (default: 127.0.0.1)")
+    serve_parser.add_argument("--port", type=int, default=8080,
+                              help="Port (default: 8080)")
+
     # ── test ──────────────────────────────────────────────────────────
     test_parser = subparsers.add_parser("test", help="Run the test suite")
     test_parser.add_argument("--model", dest="model_id", default=DEFAULT_TEST_MODEL_ID,
@@ -260,6 +279,14 @@ def create_parser():
                                 help="Require HF model/processor files to already be local during transpile")
     convert_parser.add_argument("--reconvert", action="store_true",
                                 help="Force conversion from source")
+    convert_parser.add_argument("--npu", action="store_true",
+                                help="Also emit CoreML .mlpackage(s) for NPU (Apple Neural Engine) audio + vision encoders")
+    convert_parser.add_argument("--npu-quantize", type=int, choices=[0, 4, 8], default=None,
+                                help="Legacy override that forces BOTH audio and vision .mlpackages to the same quant (0=fp16, 4=int4, 8=int8). When unset, per-component defaults apply: audio=int8, vision=fp16.")
+    convert_parser.add_argument("--npu-audio-quantize", type=int, choices=[0, 4, 8], default=None,
+                                help="Audio encoder weight quant (0=fp16, 4=int4, 8=int8). Default int8.")
+    convert_parser.add_argument("--npu-vision-quantize", type=int, choices=[0, 4, 8], default=None,
+                                help="Vision encoder weight quant (0=fp16, 4=int4, 8=int8). Default fp16 — int4 is known to degrade Gemma 4 vision output.")
 
     return parser
 
@@ -270,6 +297,7 @@ _COMMANDS = {
     "download":   cmd_download,
     "build":      cmd_build,
     "run":        cmd_run,
+    "serve":      cmd_serve,
     "transcribe": cmd_transcribe,
     "test":       cmd_test,
 
