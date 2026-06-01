@@ -5,13 +5,13 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>English</string>
 	<key>CFBundleExecutable</key>
-	<string>CXXCactusDarwin</string>
+	<string>cactus</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.cactuscompute.CXXCactusDarwin</string>
+	<string>com.cactuscompute.cactus</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>CXXCactusDarwin</string>
+	<string>cactus</string>
 	<key>CFBundlePackageType</key>
 	<string>FMWK</string>
 	<key>CFBundleShortVersionString</key>

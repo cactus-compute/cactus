@@ -15,8 +15,8 @@ WATCHOS_DEPLOYMENT_TARGET=${WATCHOS_DEPLOYMENT_TARGET:-9.0}
 VISIONOS_DEPLOYMENT_TARGET=${VISIONOS_DEPLOYMENT_TARGET:-1.0}
 MACOS_DEPLOYMENT_TARGET=${MACOS_DEPLOYMENT_TARGET:-13.0}
 
-XCFRAMEWORK_PATH="$APPLE_DIR/CXXCactusDarwin.xcframework"
-XCFRAMEWORK_ZIP_PATH="$APPLE_DIR/CXXCactusDarwin.xcframework.zip"
+XCFRAMEWORK_PATH="$APPLE_DIR/cactus.xcframework"
+XCFRAMEWORK_ZIP_PATH="$APPLE_DIR/cactus.xcframework.zip"
 LAST_FRAMEWORK_PATH=""
 
 if ! command -v cmake >/dev/null 2>&1; then
@@ -128,18 +128,18 @@ build_framework_slice() {
 
     cmake --build "$build_dir" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
 
-    if [ -d "$build_dir/lib/$CMAKE_BUILD_TYPE/CXXCactusDarwin.framework" ]; then
-        framework_path="$build_dir/lib/$CMAKE_BUILD_TYPE/CXXCactusDarwin.framework"
-    elif [ -d "$build_dir/$CMAKE_BUILD_TYPE-$sdk_name/CXXCactusDarwin.framework" ]; then
-        framework_path="$build_dir/$CMAKE_BUILD_TYPE-$sdk_name/CXXCactusDarwin.framework"
-    elif [ -d "$build_dir/$CMAKE_BUILD_TYPE/CXXCactusDarwin.framework" ]; then
-        framework_path="$build_dir/$CMAKE_BUILD_TYPE/CXXCactusDarwin.framework"
+    if [ -d "$build_dir/lib/$CMAKE_BUILD_TYPE/cactus.framework" ]; then
+        framework_path="$build_dir/lib/$CMAKE_BUILD_TYPE/cactus.framework"
+    elif [ -d "$build_dir/$CMAKE_BUILD_TYPE-$sdk_name/cactus.framework" ]; then
+        framework_path="$build_dir/$CMAKE_BUILD_TYPE-$sdk_name/cactus.framework"
+    elif [ -d "$build_dir/$CMAKE_BUILD_TYPE/cactus.framework" ]; then
+        framework_path="$build_dir/$CMAKE_BUILD_TYPE/cactus.framework"
     else
-        framework_path=$(find "$build_dir" -path "*CXXCactusDarwin.framework" -not -path "*EagerLinkingTBDs*" | head -n 1)
+        framework_path=$(find "$build_dir" -path "*cactus.framework" -not -path "*EagerLinkingTBDs*" | head -n 1)
     fi
 
     if [ -z "$framework_path" ] || [ ! -d "$framework_path" ]; then
-        echo "Error: CXXCactusDarwin.framework not found for $platform_name"
+        echo "Error: cactus.framework not found for $platform_name"
         exit 1
     fi
 
@@ -149,10 +149,10 @@ build_framework_slice() {
 framework_binary_path() {
     local framework_path="$1"
 
-    if [ -f "$framework_path/CXXCactusDarwin" ]; then
-        printf '%s\n' "$framework_path/CXXCactusDarwin"
-    elif [ -f "$framework_path/Versions/A/CXXCactusDarwin" ]; then
-        printf '%s\n' "$framework_path/Versions/A/CXXCactusDarwin"
+    if [ -f "$framework_path/cactus" ]; then
+        printf '%s\n' "$framework_path/cactus"
+    elif [ -f "$framework_path/Versions/A/cactus" ]; then
+        printf '%s\n' "$framework_path/Versions/A/cactus"
     else
         echo "Error: Framework binary not found in $framework_path" >&2
         exit 1
@@ -217,7 +217,7 @@ build_combined_xcframework() {
     build_framework_slice "watchOS arm64_32" "watchOS" "watchos" "arm64_32" "$WATCHOS_DEPLOYMENT_TARGET" "$build_root/watchos-arm64_32"
     watchos_arm64_32_framework="$LAST_FRAMEWORK_PATH"
 
-    watchos_device_framework="$build_root/watchos-device/CXXCactusDarwin.framework"
+    watchos_device_framework="$build_root/watchos-device/cactus.framework"
     create_universal_framework "$watchos_arm64_framework" "$watchos_arm64_32_framework" "$watchos_device_framework"
 
     build_framework_slice "watchOS Simulator" "watchOS" "watchsimulator" "arm64" "$WATCHOS_DEPLOYMENT_TARGET" "$build_root/watchos-sim"
@@ -241,7 +241,7 @@ build_combined_xcframework() {
         -framework "$visionos_sim_framework" \
         -output "$XCFRAMEWORK_PATH" >/dev/null
 
-    local macos_framework_dir="$XCFRAMEWORK_PATH/macos-arm64/CXXCactusDarwin.framework"
+    local macos_framework_dir="$XCFRAMEWORK_PATH/macos-arm64/cactus.framework"
     if [ -d "$macos_framework_dir/Versions/A" ]; then
         rm -rf "$macos_framework_dir/Headers" "$macos_framework_dir/Modules"
         ln -s Versions/A/Headers "$macos_framework_dir/Headers"

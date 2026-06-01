@@ -5,10 +5,10 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PACKAGE_DIR="$SCRIPT_DIR/package"
 BUILD_DIR="$SCRIPT_DIR/build"
 PACKAGE_BIN_DIR="$PACKAGE_DIR/bin"
-ARTIFACT_BUNDLE_PATH="$PACKAGE_BIN_DIR/CXXCactus.artifactbundle"
-ARTIFACT_BUNDLE_ZIP_PATH="$PACKAGE_BIN_DIR/CXXCactus.artifactbundle.zip"
-DARWIN_XCFRAMEWORK_ZIP_SRC="$ROOT_DIR/apple/CXXCactusDarwin.xcframework.zip"
-DARWIN_XCFRAMEWORK_ZIP_DST="$PACKAGE_BIN_DIR/CXXCactusDarwin.xcframework.zip"
+ARTIFACT_BUNDLE_PATH="$PACKAGE_BIN_DIR/cactus_artifact.artifactbundle"
+ARTIFACT_BUNDLE_ZIP_PATH="$PACKAGE_BIN_DIR/cactus_artifact.artifactbundle.zip"
+DARWIN_XCFRAMEWORK_ZIP_SRC="$ROOT_DIR/apple/cactus.xcframework.zip"
+DARWIN_XCFRAMEWORK_ZIP_DST="$PACKAGE_BIN_DIR/cactus.xcframework.zip"
 
 CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:-Release}
 
@@ -28,7 +28,7 @@ artifactbundle_init() {
     cp "$ROOT_DIR/cactus-engine/cactus_engine.h" "$ARTIFACT_BUNDLE_PATH/include/cactus.h"
 
     cat > "$ARTIFACT_BUNDLE_PATH/include/module.modulemap" << 'EOF'
-module CXXCactus {
+module cactus_artifact {
     header "cactus.h"
     export *
 }
@@ -48,7 +48,7 @@ artifactbundle_write_info_json() {
         echo "{"
         echo "  \"schemaVersion\": \"1.0\","
         echo "  \"artifacts\": {"
-        echo "    \"cxxcactus\": {"
+        echo "    \"cactus_artifact\": {"
         echo "      \"type\": \"staticLibrary\","
         echo "      \"version\": \"1.0.0\","
         echo "      \"variants\": ["
@@ -157,9 +157,9 @@ let package = Package(
     .target(
       name: "CactusShims",
       dependencies: [
-        .target(name: "CXXCactus", condition: .when(platforms: [.android, .linux])),
+        .target(name: "cactus_artifact", condition: .when(platforms: [.android, .linux])),
         .target(
-          name: "CXXCactusDarwin",
+          name: "cactus",
           condition: .when(platforms: [.iOS, .macOS, .visionOS, .tvOS, .watchOS, .macCatalyst])
         )
       ],
@@ -167,8 +167,8 @@ let package = Package(
         .linkedLibrary("c++_shared", .when(platforms: [.android]))
       ]
     ),
-    .binaryTarget(name: "CXXCactusDarwin", path: "bin/CXXCactusDarwin.xcframework.zip"),
-    .binaryTarget(name: "CXXCactus", path: "bin/CXXCactus.artifactbundle.zip")
+    .binaryTarget(name: "cactus", path: "bin/cactus.xcframework.zip"),
+    .binaryTarget(name: "cactus_artifact", path: "bin/cactus_artifact.artifactbundle.zip")
   ]
 )
 EOF
@@ -178,9 +178,9 @@ write_package_sources() {
     mkdir -p "$PACKAGE_DIR/Sources/CactusShims"
     cat > "$PACKAGE_DIR/Sources/CactusShims/CactusShims.swift" << 'EOF'
 #if canImport(Darwin)
-  @_exported import CXXCactusDarwin
+  @_exported import cactus
 #else
-  @_exported import CXXCactus
+  @_exported import cactus_artifact
 #endif
 EOF
 }
