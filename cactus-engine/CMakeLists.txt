@@ -52,6 +52,15 @@ elseif(ANDROID)
         set(CACTUS_HAS_CURL FALSE)
         message(WARNING "Vendored libcurl not found for Android; cloud features disabled")
     endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CACTUS_LINUX_USE_SYSTEM_CURL)
+    if(EXISTS "${CACTUS_CURL_INCLUDE_DIR}/curl/curl.h")
+        set(CURL_INCLUDE_DIRS "${CACTUS_CURL_INCLUDE_DIR}")
+        set(CURL_LIBRARIES curl)
+        set(CACTUS_HAS_CURL TRUE)
+    else()
+        set(CACTUS_HAS_CURL FALSE)
+        message(WARNING "Vendored libcurl not found for Linux; cloud features disabled")
+    endif()
 else()
     find_package(CURL QUIET)
     set(CACTUS_HAS_CURL ${CURL_FOUND})
@@ -70,6 +79,7 @@ set(ENGINE_SOURCES
     src/graph_ffi.cpp
     src/rag.cpp
     src/telemetry.cpp
+    src/telemetry_impl.cpp
     src/cloud.cpp
     src/init.cpp
     src/embed.cpp
@@ -78,11 +88,6 @@ set(ENGINE_SOURCES
     src/tokenizer.cpp
 )
 
-if(CACTUS_HAS_CURL)
-    list(APPEND ENGINE_SOURCES src/telemetry_impl.cpp)
-else()
-    list(APPEND ENGINE_SOURCES src/telemetry_stub.cpp)
-endif()
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "watchOS")
     enable_language(OBJCXX)
     list(APPEND ENGINE_SOURCES src/npu_ane.mm)

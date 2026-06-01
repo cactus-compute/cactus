@@ -94,7 +94,7 @@ build_linux_arm_variant() {
     echo "Building Linux ARM artifact bundle variant..."
 
     local out="$BUILD_DIR/linux-arm"
-    local host_os host_arch toolchain_file llvm_root
+    local host_os host_arch toolchain_file
     host_os="$(uname -s)"
     host_arch="$(uname -m)"
     toolchain_file=""
@@ -119,6 +119,7 @@ build_linux_arm_variant() {
         -B "$out"
         -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE"
         -DCMAKE_SYSTEM_PROCESSOR=aarch64
+        -DCACTUS_LINUX_USE_SYSTEM_CURL=ON
     )
 
     if [ -n "$toolchain_file" ]; then
@@ -164,6 +165,7 @@ let package = Package(
         )
       ],
       linkerSettings: [
+        .linkedLibrary("curl", .when(platforms: [.linux])),
         .linkedLibrary("c++_shared", .when(platforms: [.android]))
       ]
     ),

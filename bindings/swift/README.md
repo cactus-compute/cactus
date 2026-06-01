@@ -15,7 +15,7 @@ cactus build --apple
 ## Usage
 
 ```swift
-import cactus
+import CactusShims
 
 let model = cactus_init("/path/to/model", nil, false)
 var buf = [CChar](repeating: 0, count: 65536)
