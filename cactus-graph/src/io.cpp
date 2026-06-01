@@ -27,7 +27,8 @@ namespace {
     constexpr uint32_t CACTUS_GRAPH_VERSION_LEGACY = 4;
     constexpr uint32_t CACTUS_GRAPH_VERSION_EMBEDDED_INPUTS = 5;
     constexpr uint32_t FLAG_ORTHOGONAL_ROTATION = 1 << 1;
-    constexpr uint32_t FLAG_INTERLEAVED_4ROW = 1 << 2;
+    constexpr uint32_t FLAG_CQ_INTERLEAVED_4ROW = 1 << 2;
+    constexpr uint32_t FLAG_INTERLEAVED_4ROW = 1 << 3;
     constexpr uint32_t FLAG_EXTENDED_SHAPE = 1 << 4;
     constexpr size_t HEADER_SIZE = 84;
 
@@ -425,6 +426,9 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
         buffer.group_size = mapped_file->group_size();
         buffer.num_groups = mapped_file->num_groups();
         buffer.set_activation_scales(const_cast<void*>(mapped_file->scales_data()), shape.empty() ? 0 : shape[0]);
+        if (mapped_file->is_interleaved_4row()) {
+            buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+        }
     }
 
     size_t file_idx = mapped_files_.size();
@@ -483,6 +487,14 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
             buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
             buffer.cq_flags = 0;
         }
+        if (mapped_file->is_interleaved_4row()) {
+            buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+        }
+    } else if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
+        auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
+        buffer.group_size = mapped_file->group_size();
+        buffer.num_groups = mapped_file->num_groups();
+        buffer.set_activation_scales(const_cast<void*>(mapped_file->scales_data()), shape.empty() ? 0 : shape[0]);
         if (mapped_file->is_interleaved_4row()) {
             buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
         }
@@ -573,6 +585,9 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
         buffer.group_size = mapped_file->group_size();
         buffer.num_groups = mapped_file->num_groups();
         buffer.set_activation_scales(const_cast<void*>(mapped_file->scales_data()), shape.empty() ? 0 : shape[0]);
+        if (mapped_file->is_interleaved_4row()) {
+            buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+        }
     }
 
     size_t file_idx = mapped_files_.size();
@@ -963,7 +978,7 @@ void MappedFile::parse_header() {
     uint32_t flags = *reinterpret_cast<const uint32_t*>(ptr + offset);
     offset += sizeof(uint32_t);
     is_orthogonal_rotation_ = (flags & FLAG_ORTHOGONAL_ROTATION) != 0;
-    is_interleaved_4row_ = (flags & FLAG_INTERLEAVED_4ROW) != 0;
+    is_interleaved_4row_ = false;
 
     alignment_ = *reinterpret_cast<const uint32_t*>(ptr + offset);
     offset += sizeof(uint32_t);
@@ -983,6 +998,11 @@ void MappedFile::parse_header() {
     uint32_t prec_val = *reinterpret_cast<const uint32_t*>(ptr + offset);
     precision_ = static_cast<Precision>(prec_val);
     offset += sizeof(uint32_t);
+    if (PrecisionTraits::is_cq(precision_)) {
+        is_interleaved_4row_ = (flags & (FLAG_CQ_INTERLEAVED_4ROW | FLAG_INTERLEAVED_4ROW)) != 0;
+    } else if (precision_ == Precision::INT8) {
+        is_interleaved_4row_ = (flags & FLAG_INTERLEAVED_4ROW) != 0;
+    }
 
     byte_size_ = *reinterpret_cast<const uint64_t*>(ptr + offset);
     offset += sizeof(uint64_t);
@@ -1017,7 +1037,9 @@ void MappedFile::parse_header() {
         throw std::runtime_error("Invalid tensor file: ndim exceeds encoded shape rank");
     }
     for (uint32_t i = 0; i < ndim; i++) {
-        if (dims[i] > 0) {
+        if (i == 0 && ndim == 1 && original_N_ > 0 && original_N_ < dims[i]) {
+            shape_.push_back(static_cast<size_t>(original_N_));
+        } else if (dims[i] > 0) {
             shape_.push_back(static_cast<size_t>(dims[i]));
         }
     }

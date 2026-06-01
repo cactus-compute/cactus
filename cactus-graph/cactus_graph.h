@@ -116,7 +116,22 @@ enum class OpType {
     DENSE_MLP_TQ_FUSED,
     NOT_EQUAL,
     SCALAR_NOT_EQUAL,
-    KIMI_YARN_ROPE
+    KIMI_YARN_ROPE,
+    DSV4_HC_MIX,
+    DSV4_HC_COLLAPSE,
+    DSV4_HC_POST,
+    DSV4_HC_HEAD,
+    DSV4_ROPE,
+    DSV4_SPARSE_ATTENTION,
+    DSV4_COMPRESS_HCA,
+    DSV4_COMPRESS_CSA,
+    DSV4_INDEXER_TOPK,
+    DSV4_ROUTER_TOPK,
+    DSV4_HASH_ROUTER,
+    DSV4_MOE_LAYER,
+    DSV4_SHARED_EXPERT,
+    DSV4_GROUPED_LINEAR,
+    DSV4_RMS_NORM
 };
 
 struct PrecisionTraits {
@@ -378,6 +393,8 @@ struct OpParams {
     float max_frequency = 8000.0f;
     int mel_norm_type = 0;
     int mel_scale_type = 0;
+    bool use_yarn = false;
+    bool inverse = false;
     float yarn_beta_fast = 32.0f;
     float yarn_beta_slow = 1.0f;
     float yarn_mscale = 1.0f;
@@ -540,6 +557,39 @@ public:
     size_t kimi_yarn_rope(size_t input, float theta, size_t position_offset, float scaling_factor,
                           size_t original_max_position_embeddings, float beta_fast, float beta_slow,
                           float mscale, float mscale_all_dim, ComputeBackend backend = ComputeBackend::CPU);
+    size_t dsv4_hc_mix(size_t streams, size_t fn, size_t base, size_t scale,
+                       float epsilon = 1e-6f, size_t sinkhorn_iters = 20);
+    size_t dsv4_hc_collapse(size_t streams, size_t mix);
+    size_t dsv4_hc_post(size_t sublayer_output, size_t residual_streams, size_t mix);
+    size_t dsv4_hc_head(size_t streams, size_t fn, size_t base, size_t scale, float epsilon = 1e-6f);
+    size_t dsv4_rope(size_t input, size_t rope_dim, float theta, size_t position_offset = 0,
+                     bool use_yarn = false, float scaling_factor = 1.0f,
+                     size_t original_max_position_embeddings = 65536,
+                     float beta_fast = 32.0f, float beta_slow = 1.0f, bool inverse = false,
+                     size_t position_stride = 1);
+    size_t dsv4_sparse_attention(size_t query, size_t kv, size_t attn_sink, size_t topk_indices,
+                                 float scale);
+    size_t dsv4_compress_hca(size_t kv, size_t score, size_t ape, size_t norm_weight,
+                             float epsilon = 1e-6f, size_t ratio = 128);
+    size_t dsv4_compress_csa(size_t kv, size_t score, size_t ape, size_t norm_weight,
+                             float epsilon = 1e-6f, size_t ratio = 4);
+    size_t dsv4_indexer_topk(size_t query, size_t compressed_kv, size_t weights, size_t position_ids,
+                             size_t top_k, size_t ratio = 4, size_t offset = 0, float scale = 1.0f);
+    size_t dsv4_router_topk(size_t hidden, size_t weight, size_t bias,
+                            size_t num_experts, size_t top_k, float routed_scaling_factor,
+                            float epsilon = 1e-20f);
+    size_t dsv4_hash_router(size_t hidden, size_t input_ids, size_t weight, size_t tid2eid,
+                            size_t num_experts, size_t top_k, float routed_scaling_factor,
+                            float epsilon = 1e-20f);
+    size_t dsv4_moe_layer(size_t hidden, size_t route,
+                          const std::vector<size_t>& gate_weights,
+                          const std::vector<size_t>& up_weights,
+                          const std::vector<size_t>& down_weights,
+                          size_t num_experts, size_t top_k, float swiglu_limit);
+    size_t dsv4_shared_expert(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight,
+                              float swiglu_limit);
+    size_t dsv4_grouped_linear(size_t input, size_t weight, size_t groups);
+    size_t dsv4_rms_norm(size_t input, float epsilon = 1e-6f);
 
 
     size_t attention(size_t query, size_t key, size_t value, float scale,

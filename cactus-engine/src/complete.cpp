@@ -1174,6 +1174,7 @@ int cactus_benchmark_tokens(
         auto prefill_start_time = std::chrono::high_resolution_clock::now();
         size_t cache_prime_tokens = 0;
         uint32_t next_token = 0;
+        std::vector<uint32_t> generated_tokens;
         bool first_token_from_prefill = false;
         if (decode_token_len == 0) {
             handle->model->prefill(prompt, handle->model->get_prefill_chunk_size(), "", false);
@@ -1200,10 +1201,14 @@ int cactus_benchmark_tokens(
         auto first_token_time = std::chrono::high_resolution_clock::now();
 
         size_t generated = decode_token_len > 0 ? 1 : 0;
+        if (generated > 0) {
+            generated_tokens.push_back(next_token);
+        }
         while (generated < decode_token_len) {
             next_token = handle->model->decode({next_token}, 0.0f, 1.0f, 1);
             sample_peak_ram();
             ++generated;
+            generated_tokens.push_back(next_token);
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
@@ -1243,6 +1248,12 @@ int cactus_benchmark_tokens(
             << "\"decode_tps\":" << std::fixed << std::setprecision(2) << decode_tps << ","
             << "\"prompt_tokens\":" << prompt_token_len << ","
             << "\"completion_tokens\":" << generated << ","
+            << "\"generated_tokens\":[";
+        for (size_t i = 0; i < generated_tokens.size(); ++i) {
+            if (i) oss << ",";
+            oss << generated_tokens[i];
+        }
+        oss << "],"
             << "\"peak_ram_usage_mb\":" << std::fixed << std::setprecision(2) << peak_ram_usage_mb << ","
             << "\"ram_usage_mb\":" << std::fixed << std::setprecision(2) << get_ram_usage_mb()
             << "}";

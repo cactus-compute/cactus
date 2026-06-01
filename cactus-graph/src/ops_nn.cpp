@@ -22,6 +22,57 @@ namespace {
             transpose_buffer_fp16.resize(required_size);
         }
     }
+
+    float read_grouped_int8_weight(const BufferDesc& W, size_t row, size_t col) {
+        const int8_t* data = W.data_as<int8_t>();
+        const __fp16* scales = reinterpret_cast<const __fp16*>(W.activation_scales_data);
+        const size_t group = col / W.group_size;
+        int8_t q = 0;
+        float scale = 1.0f;
+        if ((W.cq_flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0 && W.shape.size() == 2) {
+            const size_t k = W.group_size * W.num_groups;
+            const size_t block = row / 4;
+            const size_t lane = row % 4;
+            const size_t k4 = col / 4;
+            const size_t kk = col % 4;
+            q = data[((block * (k / 4) + k4) * 4 + lane) * 4 + kk];
+            scale = static_cast<float>(scales[(block * W.num_groups + group) * 4 + lane]);
+        } else {
+            q = data[row * W.shape[1] + col];
+            scale = static_cast<float>(scales[row * W.num_groups + group]);
+        }
+        return static_cast<float>(q) * scale;
+    }
+
+    void matmul_grouped_int8_rhs(const __fp16* lhs, const BufferDesc& rhs,
+                                 __fp16* output, size_t M, size_t K, size_t N,
+                                 bool pretransposed_rhs) {
+        if (rhs.group_size == 0 || rhs.activation_scales_data == nullptr || rhs.shape.size() != 2) {
+            throw std::runtime_error("INT8 matmul requires grouped 2D RHS weights with scales");
+        }
+        if (!pretransposed_rhs) {
+            throw std::runtime_error("INT8 matmul currently requires pretransposed RHS [N,K]");
+        }
+        if (K != rhs.group_size * rhs.num_groups) {
+            throw std::runtime_error("INT8 matmul K must equal group_size * num_groups");
+        }
+        for (size_t m = 0; m < M; ++m) {
+            for (size_t n = 0; n < N; ++n) {
+                float acc = 0.0f;
+                for (size_t k = 0; k < K; ++k) {
+                    acc += static_cast<float>(lhs[m * K + k]) * read_grouped_int8_weight(rhs, n, k);
+                }
+                output[m * N + n] = static_cast<__fp16>(acc);
+            }
+        }
+    }
+
+    float read_grouped_int8_vector(const BufferDesc& W, size_t idx) {
+        const int8_t* data = W.data_as<int8_t>();
+        const __fp16* scales = reinterpret_cast<const __fp16*>(W.activation_scales_data);
+        return static_cast<float>(data[idx]) *
+               static_cast<float>(scales[idx / W.group_size]);
+    }
 }
 
 void shrink_thread_local_buffers() {
@@ -61,6 +112,13 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
         else
             cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
+    } else if (rhs_buffer.precision == Precision::INT8 && rhs_buffer.group_size > 0) {
+        if (lhs_buffer.precision != Precision::FP16) {
+            throw std::runtime_error("INT8 matmul requires FP16 activations");
+        }
+        matmul_grouped_int8_rhs(lhs_buffer.data_as<__fp16>(), rhs_buffer,
+                                node.output_buffer.data_as<__fp16>(),
+                                M, K, N, pretransposed_rhs);
     } else {
         if (lhs_buffer.precision != Precision::FP16) {
             throw std::runtime_error("FP16 matmul requires FP16 activations (got precision " + std::to_string(static_cast<int>(lhs_buffer.precision)) + ")");
@@ -497,8 +555,32 @@ void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<Gr
         throw std::runtime_error("RMS normalization only supports FP16 precision");
     }
 
-    cactus_rms_norm_f16(input_buffer.data_as<__fp16>(), weight_buffer.data_as<__fp16>(),
-       node.output_buffer.data_as<__fp16>(), batch_size, dims, node.params.epsilon);
+    if (weight_buffer.precision == Precision::FP16) {
+        cactus_rms_norm_f16(input_buffer.data_as<__fp16>(), weight_buffer.data_as<__fp16>(),
+           node.output_buffer.data_as<__fp16>(), batch_size, dims, node.params.epsilon);
+        return;
+    }
+
+    if (weight_buffer.precision == Precision::INT8 && weight_buffer.group_size > 0 &&
+        weight_buffer.activation_scales_data != nullptr && weight_buffer.shape.size() == 1) {
+        const __fp16* input = input_buffer.data_as<__fp16>();
+        __fp16* output = node.output_buffer.data_as<__fp16>();
+        for (size_t b = 0; b < batch_size; ++b) {
+            double sum_sq = 0.0;
+            for (size_t d = 0; d < dims; ++d) {
+                const float x = static_cast<float>(input[b * dims + d]);
+                sum_sq += static_cast<double>(x) * x;
+            }
+            const float inv = 1.0f / std::sqrt(static_cast<float>(sum_sq / dims) + node.params.epsilon);
+            for (size_t d = 0; d < dims; ++d) {
+                const float w = read_grouped_int8_vector(weight_buffer, d);
+                output[b * dims + d] = static_cast<__fp16>(static_cast<float>(input[b * dims + d]) * inv * w);
+            }
+        }
+        return;
+    }
+
+    throw std::runtime_error("RMS normalization only supports FP16 or grouped INT8 weights");
 }
 
 void compute_rope_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -974,5 +1056,3 @@ void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
         }
     }
 }
-
-

@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 from .common import print_color, RED, GREEN
+from .deepseek import cmd_run_deepseek, looks_like_deepseek_bundle
 from .kimi import cmd_run_kimi, looks_like_kimi_bundle
 
 
@@ -11,6 +12,8 @@ def _resolve_bundle_dir(model_id):
     if not path.exists() or not path.is_dir():
         return None
     if (path / "components" / "manifest.json").exists():
+        return path
+    if (path / "weights_manifest.json").exists() and (path / "config.txt").exists():
         return path
     if path.name == "components" and (path / "manifest.json").exists():
         return path.parent
@@ -24,6 +27,8 @@ def cmd_run(args):
         os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
 
     path = Path(args.model_id).expanduser()
+    if looks_like_deepseek_bundle(path) and not getattr(args, "input_ids", None):
+        return cmd_run_deepseek(args)
     if looks_like_kimi_bundle(path):
         return cmd_run_kimi(args)
 

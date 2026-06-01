@@ -46,6 +46,21 @@ DECLARE_COMPUTE(compute_batchnorm_node);
 DECLARE_COMPUTE(compute_groupnorm_node);
 DECLARE_COMPUTE(compute_rope_gptj_node);
 DECLARE_COMPUTE(compute_kimi_yarn_rope_node);
+DECLARE_COMPUTE(compute_dsv4_hc_mix_node);
+DECLARE_COMPUTE(compute_dsv4_hc_collapse_node);
+DECLARE_COMPUTE(compute_dsv4_hc_post_node);
+DECLARE_COMPUTE(compute_dsv4_hc_head_node);
+DECLARE_COMPUTE(compute_dsv4_rope_node);
+DECLARE_COMPUTE(compute_dsv4_sparse_attention_node);
+DECLARE_COMPUTE(compute_dsv4_compress_hca_node);
+DECLARE_COMPUTE(compute_dsv4_compress_csa_node);
+DECLARE_COMPUTE(compute_dsv4_indexer_topk_node);
+DECLARE_COMPUTE(compute_dsv4_router_topk_node);
+DECLARE_COMPUTE(compute_dsv4_hash_router_node);
+DECLARE_COMPUTE(compute_dsv4_moe_layer_node);
+DECLARE_COMPUTE(compute_dsv4_shared_expert_node);
+DECLARE_COMPUTE(compute_dsv4_grouped_linear_node);
+DECLARE_COMPUTE(compute_dsv4_rms_norm_node);
 DECLARE_COMPUTE(compute_lstm_cell_node);
 DECLARE_COMPUTE(compute_gated_deltanet_decode_node);
 DECLARE_COMPUTE(compute_gated_deltanet_prefill_node);
@@ -85,7 +100,7 @@ DECLARE_COMPUTE(compute_spectrogram_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::KIMI_YARN_ROPE) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::DSV4_RMS_NORM) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -134,6 +149,21 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::ROPE)] = compute_rope_node;
     dispatch_flat[static_cast<int>(OpType::ROPE_GPTJ)] = compute_rope_gptj_node;
     dispatch_flat[static_cast<int>(OpType::KIMI_YARN_ROPE)] = compute_kimi_yarn_rope_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_HC_MIX)] = compute_dsv4_hc_mix_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_HC_COLLAPSE)] = compute_dsv4_hc_collapse_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_HC_POST)] = compute_dsv4_hc_post_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_HC_HEAD)] = compute_dsv4_hc_head_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_ROPE)] = compute_dsv4_rope_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_SPARSE_ATTENTION)] = compute_dsv4_sparse_attention_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_COMPRESS_HCA)] = compute_dsv4_compress_hca_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_COMPRESS_CSA)] = compute_dsv4_compress_csa_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_INDEXER_TOPK)] = compute_dsv4_indexer_topk_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_ROUTER_TOPK)] = compute_dsv4_router_topk_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_HASH_ROUTER)] = compute_dsv4_hash_router_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_MOE_LAYER)] = compute_dsv4_moe_layer_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_SHARED_EXPERT)] = compute_dsv4_shared_expert_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_GROUPED_LINEAR)] = compute_dsv4_grouped_linear_node;
+    dispatch_flat[static_cast<int>(OpType::DSV4_RMS_NORM)] = compute_dsv4_rms_norm_node;
     dispatch_flat[static_cast<int>(OpType::SOFTMAX)] = compute_softmax_node;
     dispatch_flat[static_cast<int>(OpType::ATTENTION)] = compute_attention_node;
     dispatch_flat[static_cast<int>(OpType::ATTENTION_INT8_HYBRID)] = compute_attention_int8_hybrid_node;
@@ -226,7 +256,11 @@ static const char* op_type_names[] = {
     "CONV_CACHE_STATE", "CONV_CACHE_APPEND",
     "RFFT", "IRFFT", "MEL_FILTER_BANK", "SPECTROGRAM",
     "IMAGE_PREPROCESS", "CLAMP", "DENSE_MLP_TQ_FUSED",
-    "NOT_EQUAL", "SCALAR_NOT_EQUAL", "KIMI_YARN_ROPE"
+    "NOT_EQUAL", "SCALAR_NOT_EQUAL", "KIMI_YARN_ROPE",
+    "DSV4_HC_MIX", "DSV4_HC_COLLAPSE", "DSV4_HC_POST", "DSV4_HC_HEAD",
+    "DSV4_ROPE", "DSV4_SPARSE_ATTENTION", "DSV4_COMPRESS_HCA",
+    "DSV4_COMPRESS_CSA", "DSV4_INDEXER_TOPK", "DSV4_ROUTER_TOPK", "DSV4_HASH_ROUTER",
+    "DSV4_MOE_LAYER", "DSV4_SHARED_EXPERT", "DSV4_GROUPED_LINEAR", "DSV4_RMS_NORM"
 };
 
 static const char* get_op_name(OpType op) {

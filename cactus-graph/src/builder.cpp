@@ -1155,6 +1155,368 @@ size_t CactusGraph::kimi_yarn_rope(size_t input, float theta, size_t position_of
     return add_node(OpType::KIMI_YARN_ROPE, {input}, {}, params);
 }
 
+size_t CactusGraph::dsv4_hc_mix(size_t streams, size_t fn, size_t base, size_t scale,
+                                float epsilon, size_t sinkhorn_iters) {
+    const auto& stream_buf = get_output_buffer(streams);
+    const auto& fn_buf = get_output_buffer(fn);
+    const auto& base_buf = get_output_buffer(base);
+    const auto& scale_buf = get_output_buffer(scale);
+    if (stream_buf.shape.size() != 3 || stream_buf.shape[1] != 4) {
+        throw std::runtime_error("dsv4_hc_mix expects streams shape [T,4,D]");
+    }
+    const size_t hidden = stream_buf.shape[2];
+    if (fn_buf.shape != std::vector<size_t>{24, 4 * hidden}) {
+        throw std::runtime_error("dsv4_hc_mix expects fn shape [24,4D]");
+    }
+    if (base_buf.shape != std::vector<size_t>{24}) {
+        throw std::runtime_error("dsv4_hc_mix expects base shape [24]");
+    }
+    if (scale_buf.shape != std::vector<size_t>{3}) {
+        throw std::runtime_error("dsv4_hc_mix expects scale shape [3]");
+    }
+    OpParams params;
+    params.epsilon = epsilon;
+    params.chunk_size = sinkhorn_iters;
+    params.output_precision = Precision::FP32;
+    return add_node(OpType::DSV4_HC_MIX, {streams, fn, base, scale}, {stream_buf.shape[0], 24}, params);
+}
+
+size_t CactusGraph::dsv4_hc_collapse(size_t streams, size_t mix) {
+    const auto& stream_buf = get_output_buffer(streams);
+    const auto& mix_buf = get_output_buffer(mix);
+    if (stream_buf.shape.size() != 3 || stream_buf.shape[1] != 4) {
+        throw std::runtime_error("dsv4_hc_collapse expects streams shape [T,4,D]");
+    }
+    if (mix_buf.shape != std::vector<size_t>{stream_buf.shape[0], 24}) {
+        throw std::runtime_error("dsv4_hc_collapse expects mix shape [T,24]");
+    }
+    OpParams params;
+    params.output_precision = stream_buf.precision;
+    return add_node(OpType::DSV4_HC_COLLAPSE, {streams, mix}, {stream_buf.shape[0], stream_buf.shape[2]}, params);
+}
+
+size_t CactusGraph::dsv4_hc_post(size_t sublayer_output, size_t residual_streams, size_t mix) {
+    const auto& out_buf = get_output_buffer(sublayer_output);
+    const auto& residual_buf = get_output_buffer(residual_streams);
+    const auto& mix_buf = get_output_buffer(mix);
+    if (residual_buf.shape.size() != 3 || residual_buf.shape[1] != 4) {
+        throw std::runtime_error("dsv4_hc_post expects residual streams shape [T,4,D]");
+    }
+    if (out_buf.shape != std::vector<size_t>{residual_buf.shape[0], residual_buf.shape[2]}) {
+        throw std::runtime_error("dsv4_hc_post expects sublayer output shape [T,D]");
+    }
+    if (mix_buf.shape != std::vector<size_t>{residual_buf.shape[0], 24}) {
+        throw std::runtime_error("dsv4_hc_post expects mix shape [T,24]");
+    }
+    OpParams params;
+    params.output_precision = residual_buf.precision;
+    return add_node(OpType::DSV4_HC_POST, {sublayer_output, residual_streams, mix}, residual_buf.shape, params);
+}
+
+size_t CactusGraph::dsv4_hc_head(size_t streams, size_t fn, size_t base, size_t scale, float epsilon) {
+    const auto& stream_buf = get_output_buffer(streams);
+    const auto& fn_buf = get_output_buffer(fn);
+    const auto& base_buf = get_output_buffer(base);
+    const auto& scale_buf = get_output_buffer(scale);
+    if (stream_buf.shape.size() != 3 || stream_buf.shape[1] != 4) {
+        throw std::runtime_error("dsv4_hc_head expects streams shape [T,4,D]");
+    }
+    const size_t hidden = stream_buf.shape[2];
+    if (fn_buf.shape != std::vector<size_t>{4, 4 * hidden}) {
+        throw std::runtime_error("dsv4_hc_head expects fn shape [4,4D]");
+    }
+    if (base_buf.shape != std::vector<size_t>{4}) {
+        throw std::runtime_error("dsv4_hc_head expects base shape [4]");
+    }
+    if (scale_buf.shape != std::vector<size_t>{1}) {
+        throw std::runtime_error("dsv4_hc_head expects scale shape [1]");
+    }
+    OpParams params;
+    params.epsilon = epsilon;
+    params.output_precision = stream_buf.precision;
+    return add_node(OpType::DSV4_HC_HEAD, {streams, fn, base, scale}, {stream_buf.shape[0], hidden}, params);
+}
+
+size_t CactusGraph::dsv4_rope(size_t input, size_t rope_dim, float theta, size_t position_offset,
+                              bool use_yarn, float scaling_factor,
+                              size_t original_max_position_embeddings,
+                              float beta_fast, float beta_slow, bool inverse,
+                              size_t position_stride) {
+    const auto& input_buf = get_output_buffer(input);
+    if (input_buf.shape.size() != 4) {
+        throw std::runtime_error("dsv4_rope expects [batch,seq,heads,head_dim]");
+    }
+    const size_t head_dim = input_buf.shape[3];
+    if (rope_dim == 0 || (rope_dim % 2) != 0 || rope_dim > head_dim) {
+        throw std::runtime_error("dsv4_rope expects a non-zero even rope_dim <= head_dim");
+    }
+    OpParams params;
+    params.theta = theta;
+    params.position_offset = position_offset;
+    params.head_dim = rope_dim;
+    params.use_yarn = use_yarn;
+    params.scalar = scaling_factor;
+    params.yarn_original_max_position_embeddings = original_max_position_embeddings;
+    params.yarn_beta_fast = beta_fast;
+    params.yarn_beta_slow = beta_slow;
+    params.inverse = inverse;
+    params.window_size = position_stride;
+    params.output_precision = input_buf.precision;
+    return add_node(OpType::DSV4_ROPE, {input}, input_buf.shape, params);
+}
+
+size_t CactusGraph::dsv4_sparse_attention(size_t query, size_t kv, size_t attn_sink, size_t topk_indices,
+                                          float scale) {
+    const auto& q_buf = get_output_buffer(query);
+    const auto& kv_buf = get_output_buffer(kv);
+    const auto& sink_buf = get_output_buffer(attn_sink);
+    const auto& idx_buf = get_output_buffer(topk_indices);
+    if (q_buf.shape.size() != 4) {
+        throw std::runtime_error("dsv4_sparse_attention expects query [B,S,H,D]");
+    }
+    if (kv_buf.shape.size() != 3 || kv_buf.shape[0] != q_buf.shape[0] || kv_buf.shape[2] != q_buf.shape[3]) {
+        throw std::runtime_error("dsv4_sparse_attention expects kv [B,N,D]");
+    }
+    if (sink_buf.shape != std::vector<size_t>{q_buf.shape[2]}) {
+        throw std::runtime_error("dsv4_sparse_attention expects attn_sink [H]");
+    }
+    if (idx_buf.shape.size() != 3 || idx_buf.shape[0] != q_buf.shape[0] || idx_buf.shape[1] != q_buf.shape[1]) {
+        throw std::runtime_error("dsv4_sparse_attention expects topk_indices [B,S,K]");
+    }
+    OpParams params;
+    params.scalar = scale;
+    params.output_precision = q_buf.precision;
+    return add_node(OpType::DSV4_SPARSE_ATTENTION, {query, kv, attn_sink, topk_indices}, q_buf.shape, params);
+}
+
+size_t CactusGraph::dsv4_compress_hca(size_t kv, size_t score, size_t ape, size_t norm_weight,
+                                      float epsilon, size_t ratio) {
+    const auto& kv_buf = get_output_buffer(kv);
+    const auto& score_buf = get_output_buffer(score);
+    const auto& ape_buf = get_output_buffer(ape);
+    const auto& norm_buf = get_output_buffer(norm_weight);
+    if (kv_buf.shape.size() != 3) {
+        throw std::runtime_error("dsv4_compress_hca expects kv [B,S,D]");
+    }
+    if (score_buf.shape != kv_buf.shape) {
+        throw std::runtime_error("dsv4_compress_hca score shape mismatch");
+    }
+    if (ratio == 0 || ape_buf.shape != std::vector<size_t>{ratio, kv_buf.shape[2]}) {
+        throw std::runtime_error("dsv4_compress_hca expects ape [ratio,D]");
+    }
+    if (norm_buf.shape != std::vector<size_t>{kv_buf.shape[2]}) {
+        throw std::runtime_error("dsv4_compress_hca expects norm_weight [D]");
+    }
+    OpParams params;
+    params.epsilon = epsilon;
+    params.chunk_size = ratio;
+    params.output_precision = kv_buf.precision;
+    return add_node(OpType::DSV4_COMPRESS_HCA, {kv, score, ape, norm_weight},
+                    {kv_buf.shape[0], kv_buf.shape[1] / ratio, kv_buf.shape[2]}, params);
+}
+
+size_t CactusGraph::dsv4_compress_csa(size_t kv, size_t score, size_t ape, size_t norm_weight,
+                                      float epsilon, size_t ratio) {
+    const auto& kv_buf = get_output_buffer(kv);
+    const auto& score_buf = get_output_buffer(score);
+    const auto& ape_buf = get_output_buffer(ape);
+    const auto& norm_buf = get_output_buffer(norm_weight);
+    if (kv_buf.shape.size() != 3 || kv_buf.shape[2] % 2 != 0) {
+        throw std::runtime_error("dsv4_compress_csa expects kv [B,S,2D]");
+    }
+    const size_t head_dim = kv_buf.shape[2] / 2;
+    if (score_buf.shape != kv_buf.shape) {
+        throw std::runtime_error("dsv4_compress_csa score shape mismatch");
+    }
+    if (ratio == 0 || ape_buf.shape != std::vector<size_t>{ratio, 2 * head_dim}) {
+        throw std::runtime_error("dsv4_compress_csa expects ape [ratio,2D]");
+    }
+    if (norm_buf.shape != std::vector<size_t>{head_dim}) {
+        throw std::runtime_error("dsv4_compress_csa expects norm_weight [D]");
+    }
+    OpParams params;
+    params.epsilon = epsilon;
+    params.chunk_size = ratio;
+    params.output_precision = kv_buf.precision;
+    return add_node(OpType::DSV4_COMPRESS_CSA, {kv, score, ape, norm_weight},
+                    {kv_buf.shape[0], kv_buf.shape[1] / ratio, head_dim}, params);
+}
+
+size_t CactusGraph::dsv4_indexer_topk(size_t query, size_t compressed_kv, size_t weights, size_t position_ids,
+                                      size_t top_k, size_t ratio, size_t offset, float scale) {
+    const auto& q_buf = get_output_buffer(query);
+    const auto& kv_buf = get_output_buffer(compressed_kv);
+    const auto& weights_buf = get_output_buffer(weights);
+    const auto& pos_buf = get_output_buffer(position_ids);
+    if (q_buf.shape.size() != 4) {
+        throw std::runtime_error("dsv4_indexer_topk expects query [B,S,H,D]");
+    }
+    if (kv_buf.shape.size() != 3 || kv_buf.shape[0] != q_buf.shape[0] || kv_buf.shape[2] != q_buf.shape[3]) {
+        throw std::runtime_error("dsv4_indexer_topk expects compressed_kv [B,N,D]");
+    }
+    if (weights_buf.shape != std::vector<size_t>{q_buf.shape[0], q_buf.shape[1], q_buf.shape[2]}) {
+        throw std::runtime_error("dsv4_indexer_topk expects weights [B,S,H]");
+    }
+    if (pos_buf.shape != std::vector<size_t>{q_buf.shape[0], q_buf.shape[1]}) {
+        throw std::runtime_error("dsv4_indexer_topk expects position_ids [B,S]");
+    }
+    if (top_k == 0 || top_k > kv_buf.shape[1] || ratio == 0) {
+        throw std::runtime_error("dsv4_indexer_topk got invalid top_k or ratio");
+    }
+    OpParams params;
+    params.top_k = top_k;
+    params.chunk_size = ratio;
+    params.index_value = offset;
+    params.scalar = scale;
+    params.output_precision = Precision::FP32;
+    return add_node(OpType::DSV4_INDEXER_TOPK, {query, compressed_kv, weights, position_ids},
+                    {q_buf.shape[0], q_buf.shape[1], top_k}, params);
+}
+
+size_t CactusGraph::dsv4_router_topk(size_t hidden, size_t weight, size_t bias,
+                                     size_t num_experts, size_t top_k, float routed_scaling_factor,
+                                     float epsilon) {
+    const auto& hidden_buf = get_output_buffer(hidden);
+    const auto& weight_buf = get_output_buffer(weight);
+    const auto& bias_buf = get_output_buffer(bias);
+    if (hidden_buf.shape.size() != 2) throw std::runtime_error("dsv4_router_topk expects hidden [T,D]");
+    if (weight_buf.shape != std::vector<size_t>{num_experts, hidden_buf.shape[1]}) {
+        throw std::runtime_error("dsv4_router_topk weight shape mismatch");
+    }
+    if (bias_buf.shape != std::vector<size_t>{num_experts}) {
+        throw std::runtime_error("dsv4_router_topk bias shape mismatch");
+    }
+    OpParams params;
+    params.num_experts = num_experts;
+    params.num_experts_per_tok = top_k;
+    params.scalar = routed_scaling_factor;
+    params.epsilon = epsilon;
+    params.output_precision = Precision::FP32;
+    return add_node(OpType::DSV4_ROUTER_TOPK, {hidden, weight, bias}, {2, hidden_buf.shape[0], top_k}, params);
+}
+
+size_t CactusGraph::dsv4_hash_router(size_t hidden, size_t input_ids, size_t weight, size_t tid2eid,
+                                     size_t num_experts, size_t top_k, float routed_scaling_factor,
+                                     float epsilon) {
+    const auto& hidden_buf = get_output_buffer(hidden);
+    const auto& ids_buf = get_output_buffer(input_ids);
+    const auto& weight_buf = get_output_buffer(weight);
+    const auto& tid_buf = get_output_buffer(tid2eid);
+    if (hidden_buf.shape.size() != 2) throw std::runtime_error("dsv4_hash_router expects hidden [T,D]");
+    if (ids_buf.shape != std::vector<size_t>{hidden_buf.shape[0]}) {
+        throw std::runtime_error("dsv4_hash_router expects input_ids [T]");
+    }
+    if (weight_buf.shape != std::vector<size_t>{num_experts, hidden_buf.shape[1]}) {
+        throw std::runtime_error("dsv4_hash_router weight shape mismatch");
+    }
+    if (tid_buf.shape.size() != 2 || tid_buf.shape[1] != top_k) {
+        throw std::runtime_error("dsv4_hash_router expects tid2eid [vocab,top_k]");
+    }
+    OpParams params;
+    params.num_experts = num_experts;
+    params.num_experts_per_tok = top_k;
+    params.scalar = routed_scaling_factor;
+    params.epsilon = epsilon;
+    params.output_precision = Precision::FP32;
+    return add_node(OpType::DSV4_HASH_ROUTER, {hidden, input_ids, weight, tid2eid}, {2, hidden_buf.shape[0], top_k}, params);
+}
+
+size_t CactusGraph::dsv4_moe_layer(size_t hidden, size_t route,
+                                   const std::vector<size_t>& gate_weights,
+                                   const std::vector<size_t>& up_weights,
+                                   const std::vector<size_t>& down_weights,
+                                   size_t num_experts, size_t top_k, float swiglu_limit) {
+    const auto& hidden_buf = get_output_buffer(hidden);
+    const auto& route_buf = get_output_buffer(route);
+    if (hidden_buf.shape.size() != 2) throw std::runtime_error("dsv4_moe_layer expects hidden [T,D]");
+    if (route_buf.shape != std::vector<size_t>{2, hidden_buf.shape[0], top_k}) {
+        throw std::runtime_error("dsv4_moe_layer expects route [2,T,top_k]");
+    }
+    if (gate_weights.size() != num_experts || up_weights.size() != num_experts || down_weights.size() != num_experts) {
+        throw std::runtime_error("dsv4_moe_layer expects per-expert gate/up/down weights");
+    }
+    const size_t hidden_dim = hidden_buf.shape[1];
+    const auto& gate0 = get_output_buffer(gate_weights[0]);
+    if (gate0.shape.size() != 2 || gate0.shape[1] != hidden_dim) {
+        throw std::runtime_error("dsv4_moe_layer gate weight shape mismatch");
+    }
+    const size_t inter_dim = gate0.shape[0];
+    for (size_t e = 0; e < num_experts; ++e) {
+        if (get_output_buffer(gate_weights[e]).shape != std::vector<size_t>{inter_dim, hidden_dim} ||
+            get_output_buffer(up_weights[e]).shape != std::vector<size_t>{inter_dim, hidden_dim} ||
+            get_output_buffer(down_weights[e]).shape != std::vector<size_t>{hidden_dim, inter_dim}) {
+            throw std::runtime_error("dsv4_moe_layer expert weight shape mismatch");
+        }
+    }
+    std::vector<size_t> inputs;
+    inputs.reserve(2 + 3 * num_experts);
+    inputs.push_back(hidden);
+    inputs.push_back(route);
+    for (size_t id : gate_weights) inputs.push_back(id);
+    for (size_t id : up_weights) inputs.push_back(id);
+    for (size_t id : down_weights) inputs.push_back(id);
+    OpParams params;
+    params.num_experts = num_experts;
+    params.num_experts_per_tok = top_k;
+    params.scalar = swiglu_limit;
+    params.output_precision = hidden_buf.precision;
+    return add_node(OpType::DSV4_MOE_LAYER, inputs, hidden_buf.shape, params);
+}
+
+size_t CactusGraph::dsv4_shared_expert(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight,
+                                       float swiglu_limit) {
+    const auto& hidden_buf = get_output_buffer(hidden);
+    const auto& gate_buf = get_output_buffer(gate_weight);
+    const auto& up_buf = get_output_buffer(up_weight);
+    const auto& down_buf = get_output_buffer(down_weight);
+    if (hidden_buf.shape.size() != 2) {
+        throw std::runtime_error("dsv4_shared_expert expects hidden [T,D]");
+    }
+    if (gate_buf.shape.size() != 2 || gate_buf.shape[1] != hidden_buf.shape[1]) {
+        throw std::runtime_error("dsv4_shared_expert gate weight shape mismatch");
+    }
+    const size_t inter_dim = gate_buf.shape[0];
+    const size_t hidden_dim = hidden_buf.shape[1];
+    if (up_buf.shape != std::vector<size_t>{inter_dim, hidden_dim} ||
+        down_buf.shape != std::vector<size_t>{hidden_dim, inter_dim}) {
+        throw std::runtime_error("dsv4_shared_expert up/down weight shape mismatch");
+    }
+    OpParams params;
+    params.scalar = swiglu_limit;
+    params.output_precision = hidden_buf.precision;
+    return add_node(OpType::DSV4_SHARED_EXPERT, {hidden, gate_weight, up_weight, down_weight},
+                    hidden_buf.shape, params);
+}
+
+size_t CactusGraph::dsv4_grouped_linear(size_t input, size_t weight, size_t groups) {
+    const auto& input_buf = get_output_buffer(input);
+    const auto& weight_buf = get_output_buffer(weight);
+    if (input_buf.shape.size() != 2) {
+        throw std::runtime_error("dsv4_grouped_linear expects input [T,D]");
+    }
+    if (weight_buf.shape.size() != 2 || groups == 0 ||
+        input_buf.shape[1] % groups != 0 || weight_buf.shape[0] % groups != 0 ||
+        weight_buf.shape[1] != input_buf.shape[1] / groups) {
+        throw std::runtime_error("dsv4_grouped_linear weight/group shape mismatch");
+    }
+    OpParams params;
+    params.num_groups = groups;
+    params.output_precision = input_buf.precision;
+    return add_node(OpType::DSV4_GROUPED_LINEAR, {input, weight},
+                    {input_buf.shape[0], weight_buf.shape[0]}, params);
+}
+
+size_t CactusGraph::dsv4_rms_norm(size_t input, float epsilon) {
+    const auto& input_buf = get_output_buffer(input);
+    if (input_buf.shape.empty()) {
+        throw std::runtime_error("dsv4_rms_norm expects non-scalar input");
+    }
+    OpParams params;
+    params.epsilon = epsilon;
+    params.output_precision = input_buf.precision;
+    return add_node(OpType::DSV4_RMS_NORM, {input}, input_buf.shape, params);
+}
+
 size_t CactusGraph::gather(size_t tensor, size_t indices) {
     const auto& tensor_buffer = get_output_buffer(tensor);
     const auto& idx_shape = get_output_buffer(indices).shape;
@@ -1254,7 +1616,21 @@ size_t CactusGraph::add_node(OpType op_type, const std::vector<size_t>& inputs, 
         op_type == OpType::EMBEDDING ||
         op_type == OpType::TOPK ||
         op_type == OpType::SCATTER_TOPK ||
-        op_type == OpType::SAMPLE) {
+        op_type == OpType::SAMPLE ||
+        op_type == OpType::DSV4_HC_MIX ||
+        op_type == OpType::DSV4_HC_COLLAPSE ||
+        op_type == OpType::DSV4_HC_POST ||
+        op_type == OpType::DSV4_HC_HEAD ||
+        op_type == OpType::DSV4_ROPE ||
+        op_type == OpType::DSV4_SPARSE_ATTENTION ||
+        op_type == OpType::DSV4_COMPRESS_HCA ||
+        op_type == OpType::DSV4_COMPRESS_CSA ||
+        op_type == OpType::DSV4_INDEXER_TOPK ||
+        op_type == OpType::DSV4_ROUTER_TOPK ||
+        op_type == OpType::DSV4_HASH_ROUTER ||
+        op_type == OpType::DSV4_MOE_LAYER ||
+        op_type == OpType::DSV4_SHARED_EXPERT ||
+        op_type == OpType::DSV4_RMS_NORM) {
         result_precision = params.output_precision;
     } else if (!inputs.empty()) {
         result_precision = nodes_[node_index_map_[inputs[0]]]->output_buffer.precision;

@@ -21,6 +21,7 @@ add_library(cactus_graph STATIC
     src/ops_tensor.cpp
     src/ops_sample.cpp
     src/ops_cache.cpp
+    src/ops_deepseek.cpp
     src/ops_dsp.cpp
     src/ops_image.cpp
 )

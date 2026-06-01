@@ -1,3 +1,4 @@
+import json
 import os
 import queue
 import subprocess
@@ -10,10 +11,10 @@ from pathlib import Path
 from .common import BLUE, GREEN, RED, YELLOW, PROJECT_ROOT, print_color
 
 
-DEFAULT_KIMI_TOKENIZER = "moonshotai/Kimi-K2.6"
+DEFAULT_DEEPSEEK_TOKENIZER = "deepseek-ai/DeepSeek-V4-Flash"
 
 
-def looks_like_kimi_bundle(path: Path) -> bool:
+def looks_like_deepseek_bundle(path: Path) -> bool:
     if not (
         path.is_dir()
         and (path / "weights_manifest.json").exists()
@@ -24,21 +25,25 @@ def looks_like_kimi_bundle(path: Path) -> bool:
     try:
         cfg_path = path / "config.json" if (path / "config.json").exists() else path / "config.txt"
         text = cfg_path.read_text(errors="ignore").lower()
-        return "kimi_k2" in text or "kimi-k2" in text or "kimi_k25" in text or "kimi-k25" in text
+        if "deepseek_v4" in text or "deepseek-v4" in text or "deepseek_v4_flash" in text:
+            return True
+        manifest = json.loads((path / "weights_manifest.json").read_text())
+        blob = json.dumps(manifest)[:200000].lower()
+        return "hc_head" in blob and "attn_hc" in blob and "self_attn.compressor" in blob
     except Exception:
         return False
 
 
-def _find_kimi_stream_binary() -> Path | None:
-    env_bin = os.getenv("CACTUS_KIMI_STREAM_BIN", "").strip()
+def _find_deepseek_stream_binary() -> Path | None:
+    env_bin = os.getenv("CACTUS_DEEPSEEK_STREAM_BIN", "").strip()
     candidates = []
     if env_bin:
         candidates.append(Path(env_bin).expanduser())
     candidates.extend([
-        Path(__file__).resolve().parent.parent / "bin" / "kimi_stream",
-        PROJECT_ROOT / "cactus-engine" / "build" / "kimi_stream",
-        PROJECT_ROOT / "build" / "kimi_stream",
-        Path("/tmp/cactus-engine-build/kimi_stream"),
+        Path(__file__).resolve().parent.parent / "bin" / "deepseek_stream",
+        PROJECT_ROOT / "cactus-engine" / "build" / "deepseek_stream",
+        PROJECT_ROOT / "build" / "deepseek_stream",
+        Path("/tmp/cactus-engine-build/deepseek_stream"),
     ])
     for candidate in candidates:
         if candidate.exists() and os.access(candidate, os.X_OK):
@@ -46,22 +51,16 @@ def _find_kimi_stream_binary() -> Path | None:
     return None
 
 
-def _ensure_kimi_stream_binary() -> Path:
-    binary = _find_kimi_stream_binary()
+def _ensure_deepseek_stream_binary() -> Path:
+    binary = _find_deepseek_stream_binary()
     if binary:
         return binary
-    if not (PROJECT_ROOT / "cactus-engine" / "CMakeLists.txt").exists():
-        raise RuntimeError("kimi_stream binary not found; set CACTUS_KIMI_STREAM_BIN to a built runner")
-
     build_dir = Path("/tmp/cactus-engine-build")
-    subprocess.run(
-        ["cmake", "-S", str(PROJECT_ROOT / "cactus-engine"), "-B", str(build_dir)],
-        check=True,
-    )
-    subprocess.run(["cmake", "--build", str(build_dir), "--target", "kimi_stream", "-j", "8"], check=True)
-    binary = build_dir / "kimi_stream"
+    subprocess.run(["cmake", "-S", str(PROJECT_ROOT / "cactus-engine"), "-B", str(build_dir)], check=True)
+    subprocess.run(["cmake", "--build", str(build_dir), "--target", "deepseek_stream", "-j", "8"], check=True)
+    binary = build_dir / "deepseek_stream"
     if not binary.exists():
-        raise RuntimeError("failed to build kimi_stream")
+        raise RuntimeError("failed to build deepseek_stream")
     return binary
 
 
@@ -70,24 +69,9 @@ def _load_tokenizer(model_dir: Path, tokenizer_source: str | None):
         from transformers import AutoTokenizer
         from transformers.utils import logging as transformers_logging
     except Exception as exc:
-        raise RuntimeError("transformers is required for Kimi tokenization") from exc
+        raise RuntimeError("transformers is required for DeepSeek tokenization") from exc
     transformers_logging.set_verbosity_error()
-
-    if tokenizer_source:
-        source = tokenizer_source
-    elif (model_dir / "tiktoken.model").exists():
-        source = str(model_dir)
-    else:
-        source = DEFAULT_KIMI_TOKENIZER
-        cache_root = Path.home() / ".cache" / "huggingface" / "hub" / "models--moonshotai--Kimi-K2.6" / "snapshots"
-        if cache_root.exists():
-            snapshots = sorted(
-                (p for p in cache_root.iterdir() if (p / "tiktoken.model").exists()),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            if snapshots:
-                source = str(snapshots[0])
+    source = tokenizer_source or (str(model_dir) if (model_dir / "tokenizer_config.json").exists() else DEFAULT_DEEPSEEK_TOKENIZER)
     return AutoTokenizer.from_pretrained(source, trust_remote_code=True)
 
 
@@ -99,28 +83,24 @@ def _token_id(tokenizer, text: str) -> int | None:
     return int(ids[0]) if len(ids) == 1 else None
 
 
-def _build_prompt_ids(tokenizer, messages, thinking: bool) -> list[int]:
-    ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
-    if isinstance(ids, Mapping):
-        ids = ids.get("input_ids", [])
-    ids = [int(x) for x in ids]
-    if not thinking:
-        close_think = _token_id(tokenizer, "</think>")
-        if close_think is not None and (not ids or ids[-1] != close_think):
-            ids.append(close_think)
-    return ids
+def _build_prompt_ids(tokenizer, messages) -> list[int]:
+    if hasattr(tokenizer, "apply_chat_template") and getattr(tokenizer, "chat_template", None):
+        ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+        if isinstance(ids, Mapping):
+            ids = ids.get("input_ids", [])
+        return [int(x) for x in ids]
+    text = "\n".join(f"{m['role']}: {m['content']}" for m in messages) + "\nassistant:"
+    return [int(x) for x in tokenizer.encode(text, add_special_tokens=True)]
 
 
 def _parse_kv_line(line: str) -> tuple[str, dict[str, str]]:
     parts = line.strip().split()
-    if not parts:
-        return "", {}
     fields = {}
     for item in parts[1:]:
         if "=" in item:
-            key, value = item.split("=", 1)
-            fields[key] = value
-    return parts[0], fields
+            k, v = item.split("=", 1)
+            fields[k] = v
+    return (parts[0] if parts else ""), fields
 
 
 def _stderr_worker(stream, verbose: bool, out: queue.Queue[str]):
@@ -132,7 +112,7 @@ def _stderr_worker(stream, verbose: bool, out: queue.Queue[str]):
 
 
 def _run_once(binary: Path, model_dir: Path, tokenizer, messages, args) -> str:
-    prompt_ids = _build_prompt_ids(tokenizer, messages, getattr(args, "thinking", False))
+    prompt_ids = _build_prompt_ids(tokenizer, messages)
     max_new = int(getattr(args, "max_new_tokens", None) or 128)
     context = int(getattr(args, "context", None) or max(2048, len(prompt_ids) + max_new + 16))
     temperature = float(getattr(args, "temperature", 0.0))
@@ -140,23 +120,13 @@ def _run_once(binary: Path, model_dir: Path, tokenizer, messages, args) -> str:
     top_k = int(getattr(args, "top_k", 1))
 
     stop_ids = set()
-    for token in ("<|im_end|>", "[EOS]"):
+    for token in ("<｜end▁of▁sentence｜>", "<|im_end|>", "</s>"):
         token_id = _token_id(tokenizer, token)
         if token_id is not None:
             stop_ids.add(token_id)
     eos_id = getattr(tokenizer, "eos_token_id", None)
     if eos_id is not None:
         stop_ids.add(int(eos_id))
-
-    env = os.environ.copy()
-    if not getattr(args, "kimi_fast_kv", False):
-        env["CACTUS_KV_CACHE_FP16"] = "1"
-    else:
-        env.pop("CACTUS_KV_CACHE_FP16", None)
-    if getattr(args, "kimi_moe_prefetch", False):
-        env["CACTUS_MOE_PREFETCH"] = "1"
-    else:
-        env.pop("CACTUS_MOE_PREFETCH", None)
 
     cmd = [
         str(binary),
@@ -172,39 +142,28 @@ def _run_once(binary: Path, model_dir: Path, tokenizer, messages, args) -> str:
     if getattr(args, "kimi_warmup_moe_experts", False):
         cmd.append("--warmup-moe-experts")
 
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        env=env,
-    )
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     stderr_lines: queue.Queue[str] = queue.Queue()
-    thread = threading.Thread(
+    threading.Thread(
         target=_stderr_worker,
         args=(proc.stderr, bool(getattr(args, "verbose", False)), stderr_lines),
         daemon=True,
-    )
-    thread.start()
+    ).start()
 
     pieces: list[str] = []
     token_count = 0
     ready = False
-    started = time.monotonic()
     stats = {}
+    started = time.monotonic()
     assert proc.stdout is not None
     for line in proc.stdout:
         event, fields = _parse_kv_line(line)
         if event == "READY":
             ready = True
-            init_ms = float(fields.get("init_ms", "0"))
-            print_color(BLUE, f"[loaded in {init_ms / 1000.0:.2f}s]")
-            if not getattr(args, "kimi_warmup_moe_experts", False):
-                print("Assistant: ", end="", flush=True)
+            print_color(BLUE, f"[loaded in {float(fields.get('init_ms', '0')) / 1000.0:.2f}s | {fields.get('mode', 'native')}]")
+            print("Assistant: ", end="", flush=True)
         elif event == "WARMUP":
-            warmup_ms = float(fields.get("moe_expert_prefetch_ms", "0"))
-            print_color(BLUE, f"[moe expert prefetch in {warmup_ms / 1000.0:.2f}s]")
+            print_color(BLUE, f"[moe expert prefetch in {float(fields.get('moe_expert_prefetch_ms', '0')) / 1000.0:.2f}s]")
             print("Assistant: ", end="", flush=True)
         elif event == "TOKEN":
             token_id = int(fields["id"])
@@ -222,48 +181,42 @@ def _run_once(binary: Path, model_dir: Path, tokenizer, messages, args) -> str:
         while not stderr_lines.empty():
             buffered.append(stderr_lines.get_nowait())
         if not bool(getattr(args, "verbose", False)) and buffered:
-            sys.stderr.write("".join(buffered[-20:]))
-        raise RuntimeError(f"kimi_stream failed with exit code {rc}")
-
+            sys.stderr.write("".join(buffered[-30:]))
+        raise RuntimeError(f"deepseek_stream failed with exit code {rc}")
     if not ready:
-        raise RuntimeError("kimi_stream exited before reporting READY")
+        raise RuntimeError("deepseek_stream exited before reporting READY")
 
     elapsed = time.monotonic() - started
-    ttft_ms = float(stats.get("ttft_ms", "0"))
-    total_ms = float(stats.get("total_ms", "0"))
-    decode_tps = float(stats.get("decode_tps", "0"))
-    stopped = stats.get("stopped", "0") == "1"
     print()
     print_color(
         GREEN,
-        f"[{token_count} tokens | TTFT {ttft_ms / 1000.0:.2f}s | total {total_ms / 1000.0:.2f}s | "
-        f"decode {decode_tps:.2f} tok/s | wall {elapsed:.2f}s | stopped={stopped}]",
+        f"[{token_count} tokens | TTFT {float(stats.get('ttft_ms', '0')) / 1000.0:.2f}s | "
+        f"total {float(stats.get('total_ms', '0')) / 1000.0:.2f}s | "
+        f"decode {float(stats.get('decode_tps', '0')):.2f} tok/s | wall {elapsed:.2f}s | "
+        f"stopped={stats.get('stopped', '0') == '1'}]",
     )
     return "".join(pieces)
 
 
-def cmd_run_kimi(args) -> int:
+def cmd_run_deepseek(args) -> int:
     model_dir = Path(args.model_id).expanduser().resolve()
-    if not looks_like_kimi_bundle(model_dir):
-        print_color(RED, f"Not a Kimi weight bundle: {model_dir}")
+    if not looks_like_deepseek_bundle(model_dir):
+        print_color(RED, f"Not a DeepSeek V4 weight bundle: {model_dir}")
         return 1
-
     try:
-        binary = _ensure_kimi_stream_binary()
+        binary = _ensure_deepseek_stream_binary()
         tokenizer = _load_tokenizer(model_dir, getattr(args, "tokenizer", None))
     except Exception as exc:
-        print_color(RED, f"Kimi setup failed: {exc}")
+        print_color(RED, f"DeepSeek setup failed: {exc}")
         return 1
 
-    print_color(GREEN, f"Starting Kimi stream with model: {model_dir}")
-    if not getattr(args, "kimi_fast_kv", False):
-        print_color(YELLOW, "Using FP16 KV cache for correctness parity. Pass --kimi-fast-kv for faster approximate KV.")
+    print_color(GREEN, f"Starting DeepSeek V4 native stream with model: {model_dir}")
+    print_color(YELLOW, "Current DeepSeek runner uses full-prefix recompute per generated token; decode cache optimization is separate.")
     print()
 
     messages = []
     if getattr(args, "system", None):
         messages.append({"role": "system", "content": args.system})
-
     initial = getattr(args, "prompt", None)
     if initial:
         messages.append({"role": "user", "content": initial})
@@ -273,7 +226,7 @@ def cmd_run_kimi(args) -> int:
             print()
             return 130
         except Exception as exc:
-            print_color(RED, f"Kimi run failed: {exc}")
+            print_color(RED, f"DeepSeek run failed: {exc}")
             return 1
         messages.append({"role": "assistant", "content": assistant})
         return 0
@@ -293,7 +246,6 @@ def cmd_run_kimi(args) -> int:
             messages = [{"role": "system", "content": args.system}] if getattr(args, "system", None) else []
             print("Conversation reset.")
             continue
-
         messages.append({"role": "user", "content": user})
         try:
             assistant = _run_once(binary, model_dir, tokenizer, messages, args)
@@ -301,7 +253,7 @@ def cmd_run_kimi(args) -> int:
             print()
             return 130
         except Exception as exc:
-            print_color(RED, f"Kimi run failed: {exc}")
+            print_color(RED, f"DeepSeek run failed: {exc}")
             messages.pop()
             return 1
         messages.append({"role": "assistant", "content": assistant})

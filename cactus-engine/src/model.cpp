@@ -1,6 +1,7 @@
 #include "engine.h"
 #include "cactus_graph.h"
 #include "cactus_kernels.h"
+#include "deepseek_v4_model.h"
 #include "kimi_k2_model.h"
 
 #define PICOJSON_USE_INT64
@@ -2500,6 +2501,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (mt == "youtu") model_type = ModelType::YOUTU;
             else if (mt == "needle") model_type = ModelType::NEEDLE;
             else if (mt == "kimi_k2" || mt == "kimi-k2" || mt == "kimi_k25" || mt == "kimi-k25") model_type = ModelType::KIMI_K2;
+            else if (mt == "deepseek_v4" || mt == "deepseek-v4" || mt == "deepseek_v4_flash" || mt == "deepseek-v4-flash") model_type = ModelType::DEEPSEEK_V4;
             else model_type = ModelType::GEMMA4;
         }
         else if (key == "model_variant") {
@@ -2698,9 +2700,13 @@ std::string Config::to_json() const {
 std::unique_ptr<Model> create_model(const std::string& bundle_dir) {
     CACTUS_LOG_DEBUG("model", "Creating model from: " << bundle_dir);
     Config config;
-    if (config.from_json((fs::path(bundle_dir) / "config.txt").string()) &&
-        config.model_type == Config::ModelType::KIMI_K2) {
-        return std::make_unique<KimiK2Model>(config);
+    if (config.from_json((fs::path(bundle_dir) / "config.txt").string())) {
+        if (config.model_type == Config::ModelType::DEEPSEEK_V4) {
+            return std::make_unique<DeepSeekV4Model>(config);
+        }
+        if (config.model_type == Config::ModelType::KIMI_K2) {
+            return std::make_unique<KimiK2Model>(config);
+        }
     }
 
     fs::path manifest = fs::path(bundle_dir) / "components" / "manifest.json";

@@ -1,10 +1,62 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
+#include <algorithm>
 #include <cstring>
 #include <cmath>
 #include <stdexcept>
 #include <vector>
 #include <unordered_map>
+
+namespace {
+void deinterleave_cq_embedding_row(uint32_t bits,
+                                   uint32_t group_size,
+                                   uint32_t num_groups,
+                                   size_t row,
+                                   const uint8_t* packed_interleaved,
+                                   const __fp16* norms_interleaved,
+                                   std::vector<uint8_t>& packed_row,
+                                   std::vector<__fp16>& norms_row) {
+    if (bits != 1 && bits != 2 && bits != 4) {
+        throw std::runtime_error("Interleaved CQ embedding currently supports 1, 2, and 4 bit weights");
+    }
+    const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(bits, group_size);
+    const size_t row_block = row / 4;
+    const size_t row_lane = row % 4;
+    packed_row.assign(static_cast<size_t>(num_groups) * packed_group_bytes, 0);
+    norms_row.assign(num_groups, static_cast<__fp16>(0));
+
+    uint32_t values_per_panel = 0;
+    uint32_t bytes_per_panel_per_row = 4;
+    if (bits == 4) values_per_panel = 8;
+    else if (bits == 2) values_per_panel = 16;
+    else values_per_panel = 32;
+
+    const uint32_t panels_per_group = group_size / values_per_panel;
+    const size_t panel_bytes_all_rows = static_cast<size_t>(bytes_per_panel_per_row) * 4;
+    for (uint32_t g = 0; g < num_groups; ++g) {
+        norms_row[g] = norms_interleaved[(row_block * num_groups + g) * 4 + row_lane];
+        for (uint32_t p = 0; p < panels_per_group; ++p) {
+            const size_t src = ((row_block * num_groups + g) * panels_per_group + p) *
+                               panel_bytes_all_rows +
+                               row_lane * bytes_per_panel_per_row;
+            const size_t dst = static_cast<size_t>(g) * packed_group_bytes +
+                               static_cast<size_t>(p) * bytes_per_panel_per_row;
+            if (bits == 4) {
+                const uint8_t b0 = packed_interleaved[src + 0];
+                const uint8_t b1 = packed_interleaved[src + 1];
+                const uint8_t b2 = packed_interleaved[src + 2];
+                const uint8_t b3 = packed_interleaved[src + 3];
+                packed_row[dst + 0] = static_cast<uint8_t>((b0 & 0x0F) | ((b1 & 0x0F) << 4));
+                packed_row[dst + 1] = static_cast<uint8_t>((b2 & 0x0F) | ((b3 & 0x0F) << 4));
+                packed_row[dst + 2] = static_cast<uint8_t>(((b0 >> 4) & 0x0F) | ((b1 & 0xF0)));
+                packed_row[dst + 3] = static_cast<uint8_t>(((b2 >> 4) & 0x0F) | ((b3 & 0xF0)));
+            } else {
+                std::memcpy(packed_row.data() + dst, packed_interleaved + src, bytes_per_panel_per_row);
+            }
+        }
+    }
+}
+}
 
 void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     if (node.params.backend == ComputeBackend::NPU) {
@@ -188,20 +240,51 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
                     embeddings_buffer.cq_rotation,
                     output + i * hidden_dim);
             } else {
-                cactus_quant_dequantize_hadamard_embedding_row(
-                    PrecisionTraits::cq_bits(emb_prec),
-                    static_cast<uint32_t>(hidden_dim),
-                    static_cast<uint32_t>(embeddings_buffer.group_size),
-                    static_cast<uint32_t>(embeddings_buffer.num_groups),
-                    idx,
-                    embeddings_buffer.data_as<uint8_t>(),
-                    embeddings_buffer.cq_codebook,
-                    embeddings_buffer.cq_norms,
-                    embeddings_buffer.cq_input_scale_recip,
-                    embeddings_buffer.cq_left_signs,
-                    embeddings_buffer.cq_right_signs,
-                    embeddings_buffer.cq_permutation,
-                    output + i * hidden_dim);
+                const uint32_t bits = PrecisionTraits::cq_bits(emb_prec);
+                const bool interleaved =
+                    (embeddings_buffer.cq_flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0;
+                if (interleaved) {
+                    std::vector<uint8_t> packed_row;
+                    std::vector<__fp16> norms_row;
+                    deinterleave_cq_embedding_row(
+                        bits,
+                        static_cast<uint32_t>(embeddings_buffer.group_size),
+                        static_cast<uint32_t>(embeddings_buffer.num_groups),
+                        idx,
+                        embeddings_buffer.data_as<uint8_t>(),
+                        embeddings_buffer.cq_norms,
+                        packed_row,
+                        norms_row);
+                    cactus_quant_dequantize_hadamard_embedding_row(
+                        bits,
+                        static_cast<uint32_t>(hidden_dim),
+                        static_cast<uint32_t>(embeddings_buffer.group_size),
+                        static_cast<uint32_t>(embeddings_buffer.num_groups),
+                        0,
+                        packed_row.data(),
+                        embeddings_buffer.cq_codebook,
+                        norms_row.data(),
+                        embeddings_buffer.cq_input_scale_recip,
+                        embeddings_buffer.cq_left_signs,
+                        embeddings_buffer.cq_right_signs,
+                        embeddings_buffer.cq_permutation,
+                        output + i * hidden_dim);
+                } else {
+                    cactus_quant_dequantize_hadamard_embedding_row(
+                        bits,
+                        static_cast<uint32_t>(hidden_dim),
+                        static_cast<uint32_t>(embeddings_buffer.group_size),
+                        static_cast<uint32_t>(embeddings_buffer.num_groups),
+                        idx,
+                        embeddings_buffer.data_as<uint8_t>(),
+                        embeddings_buffer.cq_codebook,
+                        embeddings_buffer.cq_norms,
+                        embeddings_buffer.cq_input_scale_recip,
+                        embeddings_buffer.cq_left_signs,
+                        embeddings_buffer.cq_right_signs,
+                        embeddings_buffer.cq_permutation,
+                        output + i * hidden_dim);
+                }
             }
             if (num_indices > 16) {
                 const size_t cache_slot = cached_rows.size() / hidden_dim;
@@ -254,8 +337,8 @@ void compute_cat_node(
 
     const auto& first_buffer = get_input(node, 0, nodes, node_index_map);
 
-    if (first_buffer.precision != Precision::FP16) {
-        throw std::runtime_error("Cat operation only supports FP16 precision");
+    if (first_buffer.precision != Precision::FP16 && first_buffer.precision != Precision::FP32) {
+        throw std::runtime_error("Cat operation only supports FP16 or FP32 precision");
     }
 
     std::vector<const __fp16*> input_data_ptrs(node.input_ids.size());
@@ -264,12 +347,37 @@ void compute_cat_node(
     for (size_t i = 0; i < node.input_ids.size(); i++) {
         const auto& buffer = get_input(node, i, nodes, node_index_map);
 
-        if (buffer.precision != Precision::FP16) {
-            throw std::runtime_error("Cat operation only supports FP16 precision");
+        if (buffer.precision != first_buffer.precision) {
+            throw std::runtime_error("Cat operation requires matching input precision");
         }
-
-        input_data_ptrs[i] = buffer.data_as<__fp16>();
         input_shape_ptrs[i] = buffer.shape.data();
+    }
+
+    if (first_buffer.precision == Precision::FP32) {
+        const size_t axis = static_cast<size_t>(node.params.axis);
+        const size_t ndims = node.output_buffer.shape.size();
+        size_t outer = 1;
+        for (size_t d = 0; d < axis; ++d) outer *= node.output_buffer.shape[d];
+        size_t inner = 1;
+        for (size_t d = axis + 1; d < ndims; ++d) inner *= node.output_buffer.shape[d];
+        float* out = node.output_buffer.data_as<float>();
+        for (size_t o = 0; o < outer; ++o) {
+            size_t dst_axis_offset = 0;
+            for (size_t i = 0; i < node.input_ids.size(); ++i) {
+                const auto& buffer = get_input(node, i, nodes, node_index_map);
+                const size_t axis_len = buffer.shape[axis];
+                const float* src = buffer.data_as<float>() + o * axis_len * inner;
+                float* dst = out + (o * node.output_buffer.shape[axis] + dst_axis_offset) * inner;
+                std::copy(src, src + axis_len * inner, dst);
+                dst_axis_offset += axis_len;
+            }
+        }
+        return;
+    }
+
+    for (size_t i = 0; i < node.input_ids.size(); i++) {
+        const auto& buffer = get_input(node, i, nodes, node_index_map);
+        input_data_ptrs[i] = buffer.data_as<__fp16>();
     }
 
     cactus_cat_f16(input_data_ptrs.data(),

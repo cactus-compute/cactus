@@ -20,7 +20,9 @@
 #include <sys/sysctl.h>
 #include <CoreFoundation/CoreFoundation.h>
 #endif
+#ifdef CACTUS_USE_CURL
 #include <curl/curl.h>
+#endif
 #include <dirent.h>
 #include <functional>
 #include <cmath>
@@ -129,7 +131,7 @@ struct CloudConfigurationStateSnapshot {
 };
 
 static std::string new_uuid();
-static std::string format_timestamp(const std::chrono::system_clock::time_point& tp);
+[[maybe_unused]] static std::string format_timestamp(const std::chrono::system_clock::time_point& tp);
 static std::string model_basename(const char* model_path) {
     if (!model_path) return {};
     std::string m(model_path);
@@ -763,7 +765,7 @@ static std::string extract_android_package_from_path(const std::string& path) {
     return "";
 }
 
-static std::string format_timestamp(const std::chrono::system_clock::time_point& tp) {
+[[maybe_unused]] static std::string format_timestamp(const std::chrono::system_clock::time_point& tp) {
     using namespace std::chrono;
     auto secs = time_point_cast<std::chrono::seconds>(tp);
     auto ms = duration_cast<std::chrono::milliseconds>(tp - secs).count();
@@ -900,6 +902,7 @@ static void read_cactus_version() {
     cactus_version = "";
 }
 
+#ifdef CACTUS_USE_CURL
 static void apply_curl_tls_trust(CURL* curl) {
     if (!curl) return;
     const char* ca_bundle = std::getenv("CACTUS_CA_BUNDLE");
@@ -1122,6 +1125,14 @@ static CloudSendResult send_batch_to_cloud(const std::vector<Event>& local, cons
     curl_easy_cleanup(curl);
     return result;
 }
+#else
+static CloudSendResult send_batch_to_cloud(const std::vector<Event>& local, const CloudConfigurationStateSnapshot& snapshot) {
+    CloudSendResult result;
+    (void)local;
+    (void)snapshot;
+    return result;
+}
+#endif
 
 static void write_events_to_cache_in_dir(const std::vector<Event>& local, const std::string& dir) {
     for (const auto &e : local) {
@@ -1361,9 +1372,13 @@ void init(const char* project_id_param, const char* project_scope_param, const c
     }
 
     if (!curl_initialized) {
+#ifdef CACTUS_USE_CURL
         if (curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK) {
             curl_initialized = true;
         }
+#else
+        curl_initialized = true;
+#endif
     }
 
     if (!atexit_registered) {
@@ -1535,7 +1550,9 @@ void shutdown() {
         std::lock_guard<std::mutex> lifecycle_guard(telemetry_mutex);
         if (curl_initialized) {
             curl_initialized = false;
+#ifdef CACTUS_USE_CURL
             curl_global_cleanup();
+#endif
         }
         lifecycle_state = TelemetryLifecycleState::Stopped;
         telemetry_lifecycle_cv.notify_all();

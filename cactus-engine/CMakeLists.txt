@@ -62,6 +62,7 @@ set(ENGINE_SOURCES
     src/complete.cpp
     src/transcribe.cpp
     src/tokenizer.cpp
+    src/deepseek_v4_model.cpp
     src/kimi_k2_model.cpp
 )
 if(APPLE)
@@ -130,6 +131,13 @@ target_compile_options(cactus_engine PRIVATE
 add_executable(kimi_stream tools/kimi_stream.cpp)
 target_link_libraries(kimi_stream PRIVATE cactus_engine)
 target_include_directories(kimi_stream PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+add_executable(deepseek_stream tools/deepseek_stream.cpp)
+target_link_libraries(deepseek_stream PRIVATE cactus_engine)
+target_include_directories(deepseek_stream PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )

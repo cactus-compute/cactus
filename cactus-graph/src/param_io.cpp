@@ -142,6 +142,11 @@ enum class ParamField : uint32_t {
     CachedVScalesPtr,
     MaxCacheSeqLen,
     CacheSinkSize,
+    UseYarn,
+    Inverse,
+    YarnOriginalMaxPositionEmbeddings,
+    YarnBetaFast,
+    YarnBetaSlow,
 };
 
 enum class FieldPersistence {
@@ -189,6 +194,19 @@ const Schema& op_schema(OpType op_type) {
         {OpType::BATCHNORM, {{ParamField::Epsilon, FieldPersistence::Persistent}, {ParamField::Axis, FieldPersistence::Persistent}}},
         {OpType::ROPE, {{ParamField::Theta, FieldPersistence::Persistent}, {ParamField::PositionOffset, FieldPersistence::Persistent}, {ParamField::Backend, FieldPersistence::Persistent}}},
         {OpType::ROPE_GPTJ, {{ParamField::Theta, FieldPersistence::Persistent}, {ParamField::PositionOffset, FieldPersistence::Persistent}, {ParamField::Scalar, FieldPersistence::Persistent}, {ParamField::Backend, FieldPersistence::Persistent}}},
+        {OpType::DSV4_HC_MIX, {{ParamField::Epsilon, FieldPersistence::Persistent}, {ParamField::ChunkSize, FieldPersistence::Persistent}}},
+        {OpType::DSV4_HC_HEAD, {{ParamField::Epsilon, FieldPersistence::Persistent}}},
+        {OpType::DSV4_ROPE, {{ParamField::Theta, FieldPersistence::Persistent}, {ParamField::PositionOffset, FieldPersistence::Persistent}, {ParamField::WindowSize, FieldPersistence::Persistent}, {ParamField::HeadDim, FieldPersistence::Persistent}, {ParamField::UseYarn, FieldPersistence::Persistent}, {ParamField::Scalar, FieldPersistence::Persistent}, {ParamField::YarnOriginalMaxPositionEmbeddings, FieldPersistence::Persistent}, {ParamField::YarnBetaFast, FieldPersistence::Persistent}, {ParamField::YarnBetaSlow, FieldPersistence::Persistent}, {ParamField::Inverse, FieldPersistence::Persistent}}},
+        {OpType::DSV4_SPARSE_ATTENTION, {{ParamField::Scalar, FieldPersistence::Persistent}}},
+        {OpType::DSV4_COMPRESS_HCA, {{ParamField::Epsilon, FieldPersistence::Persistent}, {ParamField::ChunkSize, FieldPersistence::Persistent}}},
+        {OpType::DSV4_COMPRESS_CSA, {{ParamField::Epsilon, FieldPersistence::Persistent}, {ParamField::ChunkSize, FieldPersistence::Persistent}}},
+        {OpType::DSV4_INDEXER_TOPK, {{ParamField::TopK, FieldPersistence::Persistent}, {ParamField::ChunkSize, FieldPersistence::Persistent}, {ParamField::IndexValue, FieldPersistence::Persistent}, {ParamField::Scalar, FieldPersistence::Persistent}}},
+        {OpType::DSV4_ROUTER_TOPK, {{ParamField::NumExperts, FieldPersistence::Persistent}, {ParamField::NumExpertsPerTok, FieldPersistence::Persistent}, {ParamField::Scalar, FieldPersistence::Persistent}, {ParamField::Epsilon, FieldPersistence::Persistent}}},
+        {OpType::DSV4_HASH_ROUTER, {{ParamField::NumExperts, FieldPersistence::Persistent}, {ParamField::NumExpertsPerTok, FieldPersistence::Persistent}, {ParamField::Scalar, FieldPersistence::Persistent}, {ParamField::Epsilon, FieldPersistence::Persistent}}},
+        {OpType::DSV4_MOE_LAYER, {{ParamField::NumExperts, FieldPersistence::Persistent}, {ParamField::NumExpertsPerTok, FieldPersistence::Persistent}, {ParamField::Scalar, FieldPersistence::Persistent}}},
+        {OpType::DSV4_SHARED_EXPERT, {{ParamField::Scalar, FieldPersistence::Persistent}}},
+        {OpType::DSV4_GROUPED_LINEAR, {{ParamField::NumGroups, FieldPersistence::Persistent}}},
+        {OpType::DSV4_RMS_NORM, {{ParamField::Epsilon, FieldPersistence::Persistent}}},
         {OpType::TOPK, {{ParamField::TopK, FieldPersistence::Persistent}}},
         {OpType::ATTENTION, {{ParamField::Scale, FieldPersistence::Persistent}, {ParamField::PositionOffset, FieldPersistence::Persistent}, {ParamField::WindowSize, FieldPersistence::Persistent}, {ParamField::IsCausal, FieldPersistence::Persistent}, {ParamField::AttentionMaskIsAdditive, FieldPersistence::Persistent}, {ParamField::LogitCap, FieldPersistence::Persistent}, {ParamField::Backend, FieldPersistence::Persistent}}},
         {OpType::REL_POS_BIAS, {{ParamField::Scale, FieldPersistence::Persistent}}},
@@ -293,6 +311,11 @@ void write_field(std::ostream& out, ParamField field, const OpParams& params) {
         case ParamField::CacheSeqLen: write_u64(out, static_cast<uint64_t>(params.cache_seq_len)); break;
         case ParamField::HeadDim: write_u64(out, static_cast<uint64_t>(params.head_dim)); break;
         case ParamField::VHeadDim: write_u64(out, static_cast<uint64_t>(params.v_head_dim)); break;
+        case ParamField::UseYarn: write_u32(out, params.use_yarn ? 1u : 0u); break;
+        case ParamField::Inverse: write_u32(out, params.inverse ? 1u : 0u); break;
+        case ParamField::YarnOriginalMaxPositionEmbeddings: write_u64(out, static_cast<uint64_t>(params.yarn_original_max_position_embeddings)); break;
+        case ParamField::YarnBetaFast: write_f32(out, params.yarn_beta_fast); break;
+        case ParamField::YarnBetaSlow: write_f32(out, params.yarn_beta_slow); break;
         case ParamField::CachedKeysInt8Ptr:
         case ParamField::CachedValuesInt8Ptr:
         case ParamField::CachedKScalesPtr:
@@ -357,6 +380,11 @@ void read_field(std::istream& in, ParamField field, OpParams& params) {
         case ParamField::CacheSeqLen: params.cache_seq_len = static_cast<size_t>(read_u64(in)); break;
         case ParamField::HeadDim: params.head_dim = static_cast<size_t>(read_u64(in)); break;
         case ParamField::VHeadDim: params.v_head_dim = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::UseYarn: params.use_yarn = (read_u32(in) != 0); break;
+        case ParamField::Inverse: params.inverse = (read_u32(in) != 0); break;
+        case ParamField::YarnOriginalMaxPositionEmbeddings: params.yarn_original_max_position_embeddings = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::YarnBetaFast: params.yarn_beta_fast = read_f32(in); break;
+        case ParamField::YarnBetaSlow: params.yarn_beta_slow = read_f32(in); break;
         case ParamField::CachedKeysInt8Ptr:
         case ParamField::CachedValuesInt8Ptr:
         case ParamField::CachedKScalesPtr:
