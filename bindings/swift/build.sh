@@ -94,7 +94,7 @@ build_linux_arm_variant() {
     echo "Building Linux ARM artifact bundle variant..."
 
     local out="$BUILD_DIR/linux-arm"
-    local host_os host_arch toolchain_file
+    local host_os host_arch toolchain_file llvm_root
     host_os="$(uname -s)"
     host_arch="$(uname -m)"
     toolchain_file=""
