@@ -439,7 +439,7 @@ def _should_lower_gated_deltanet_with_internal_cache(
     if op not in {"gated_deltanet_prefill", "gated_deltanet_decode"}:
         return False
     component = str(ir.meta.get("component", "") or "").strip().lower()
-    return component in {"decoder_step", "decoder_media_step"} and int(seq_len) == 1
+    return component in {"decoder_prefill_chunk", "decoder_step", "decoder_media_step"}
 
 
 def _gated_deltanet_layer_key(ir: IRGraph, node: IRNode) -> str:
@@ -472,7 +472,7 @@ def _lower_gated_deltanet_initial_state(
     layer_key = f"gdn:{_gated_deltanet_layer_key(ir, node)}"
     gdn_states: dict[str, Tensor] = env.setdefault("__internal_gated_deltanet_cache_states", {})  # type: ignore[assignment]
     if layer_key not in gdn_states:
-        gdn_states[layer_key] = _materialize_constant_tensor(g, torch.zeros(state_shape, dtype=torch.float16))
+        gdn_states[layer_key] = g.recurrent_cache_state(state_shape, dtype=g.FP16)
     return layer_key, gdn_states[layer_key]
 
 
@@ -502,11 +502,21 @@ def _lower_gated_deltanet_conv1d(
         cache_entries.append((layer_key, cache_state, cache_state))
 
     cache_state = conv_states[layer_key]
+    if batch_size != 1:
+        raise NotImplementedError(
+            f"gated_deltanet conv cache lowering currently supports batch_size=1 only, got {batch_size}"
+        )
     x_rows = g.reshape(mixed_qkv, (batch_size * seq_len, mixed_qkv_dim))
-    window = g.conv_cache_append(x_rows, cache_state)
-    window_nlc = g.reshape(window, (batch_size, kernel_size, mixed_qkv_dim))
-    conv_out = g.conv1d_causal(window_nlc, conv_weight, kernel_size=kernel_size, dilation=1)
-    return g.slice(conv_out, axis=1, start=kernel_size - 1, length=1)
+
+    if seq_len == 1:
+        window = g.conv_cache_append(x_rows, cache_state)
+        window_nlc = g.reshape(window, (batch_size, kernel_size, mixed_qkv_dim))
+        conv_out = g.conv1d_causal(window_nlc, conv_weight, kernel_size=kernel_size, dilation=1)
+        return g.slice(conv_out, axis=1, start=kernel_size - 1, length=1)
+
+    conv_out = g.conv1d_causal(mixed_qkv, conv_weight, kernel_size=kernel_size, dilation=1)
+    g.conv_cache_initialize(x_rows, cache_state)
+    return conv_out
 
 
 def _lower_constant_value(
@@ -533,7 +543,7 @@ def _lower_constant_value(
             f"unsupported IR constant type for {value.id}: {type(const).__name__}"
         )
 
-    if tensor_value.numel() == 1:
+    if tensor_value.numel() == 1 and value.shape in {None, ()}:
         return tensor_value.item()
 
     return _materialize_constant_tensor(g, tensor_value)
@@ -865,7 +875,7 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             if len(base_shape) != 4:
                 raise NotImplementedError(f"gqa_repeat_kv alias requires 4D base tensor, got {base_shape}")
             if len(target_shape) != 4:
-                raise NotImplementedError(f"gqa_repeat_kv reshape requires 4D target shape, got {target_shape}")
+                return [g.reshape(_materialize_broadcast_alias(g, source), target_shape)]
             batch, kv_heads, seq_len, head_dim = base_shape
             if target_shape[0] != batch or target_shape[2] != seq_len or target_shape[3] != head_dim:
                 raise NotImplementedError(
@@ -931,15 +941,20 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [g.permute(x, permutation)]
 
     if op == "permute":
-        x = _legalize_for_transpose(g, _tensor(env, node.inputs[0]))
+        source = env[node.inputs[0]]
+        if isinstance(source, BroadcastAlias):
+            x = _materialize_broadcast_alias(g, source)
+        else:
+            x = _tensor(env, node.inputs[0])
+        x = _legalize_for_transpose(g, x)
         permutation = tuple(_normalize_dim(int(dim), len(x.shape)) for dim in node.attrs["permutation"])
         if len(permutation) == 2 and permutation == (1, 0):
             return [g.transpose(x)]
         return [g.permute(x, permutation)]
 
     if op == "matmul":
-        lhs = _tensor(env, node.inputs[0])
-        rhs = _tensor(env, node.inputs[1])
+        lhs = _tensor_or_materialized_alias(g, env, node.inputs[0])
+        rhs = _tensor_or_materialized_alias(g, env, node.inputs[1])
         output_value = ir.values.get(node.outputs[0])
         output_dtype = (
             _map_ir_dtype(output_value.dtype)
@@ -1487,7 +1502,11 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         return [g.cat(reshaped, axis=axis)]
 
     if op == "slice":
-        x = _tensor(env, node.inputs[0])
+        source = env[node.inputs[0]]
+        if isinstance(source, BroadcastAlias):
+            x = _materialize_broadcast_alias(g, source)
+        else:
+            x = _tensor(env, node.inputs[0])
         axis = _normalize_dim(int(node.attrs["axis"]), len(x.shape))
         start = int(node.attrs["start"])
         end = int(node.attrs["end"])
@@ -2138,14 +2157,15 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         )
 
         deltanet_scale = 1.0 / math.sqrt(float(key_dim))
-        if op == "gated_deltanet_decode":
+        if seq_len == 1:
             deltanet_out = g.gated_deltanet_decode(q_4d, k_4d, v_4d, gate_log, beta, initial_state, deltanet_scale)
         else:
             deltanet_out = g.gated_deltanet_prefill(q_4d, k_4d, v_4d, gate_log, beta, initial_state, chunk_size, deltanet_scale)
         if cache_layer_key is not None:
             final_state = g.slice(deltanet_out, axis=1, start=seq_len, length=key_dim)
+            g.recurrent_cache_write(final_state, initial_state)
             cache_entries: list[tuple[str, Tensor, Tensor]] = env.setdefault("__internal_kv_cache_state_entries", [])  # type: ignore[assignment]
-            cache_entries.append((cache_layer_key, initial_state, final_state))
+            cache_entries.append((cache_layer_key, initial_state, initial_state))
 
         y_4d = g.slice(deltanet_out, axis=1, start=0, length=seq_len)
         y_2d = g.reshape(y_4d, (seq_len * num_v_heads, value_dim))
@@ -2237,6 +2257,36 @@ def _tensor(env: dict[str, Any], value_id: str) -> Tensor:
     if not isinstance(value, Tensor):
         raise TypeError(f"expected lowered tensor for {value_id}, got {type(value).__name__}")
     return value
+
+
+def _tensor_or_materialized_alias(g: Graph, env: dict[str, Any], value_id: str) -> Tensor:
+    value = env.get(value_id)
+    if isinstance(value, BroadcastAlias):
+        return _materialize_broadcast_alias(g, value)
+    return _tensor(env, value_id)
+
+
+def _materialize_broadcast_alias(g: Graph, value: BroadcastAlias) -> Tensor:
+    if value.kind != "gqa_repeat_kv":
+        raise TypeError(f"unsupported broadcast alias: {value.kind}")
+    base_shape = tuple(int(dim) for dim in value.tensor.shape)
+    logical_shape = tuple(int(dim) for dim in value.logical_shape)
+    if len(base_shape) != 4 or len(logical_shape) not in {4, 5}:
+        raise TypeError(f"gqa_repeat_kv alias expects 4D->4D/5D shape, got {base_shape} -> {logical_shape}")
+    batch, kv_heads, seq_len, head_dim = base_shape
+    if len(logical_shape) == 5:
+        if logical_shape[0] != batch or logical_shape[1] != kv_heads or logical_shape[3] != seq_len or logical_shape[4] != head_dim:
+            raise TypeError(f"gqa_repeat_kv alias shape mismatch: {base_shape} -> {logical_shape}")
+        base = g.reshape(value.tensor, (batch, kv_heads, 1, seq_len, head_dim))
+        return _lower_repeat(g, base, (1, 1, logical_shape[2], 1, 1))
+    if logical_shape[0] != batch or logical_shape[2] != seq_len or logical_shape[3] != head_dim:
+        raise TypeError(f"gqa_repeat_kv alias shape mismatch: {base_shape} -> {logical_shape}")
+    if logical_shape[1] % max(kv_heads, 1) != 0:
+        raise TypeError(f"gqa_repeat_kv head count mismatch: {base_shape} -> {logical_shape}")
+    repeats = logical_shape[1] // max(kv_heads, 1)
+    expanded = g.reshape(value.tensor, (batch, kv_heads, 1, seq_len, head_dim))
+    repeated = _lower_repeat(g, expanded, (1, 1, repeats, 1, 1))
+    return g.reshape(repeated, logical_shape)
 
 
 def _attention_tensor(env: dict[str, Any], value_id: str) -> Tensor:

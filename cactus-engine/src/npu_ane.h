@@ -57,40 +57,6 @@ private:
     void* impl_;
 };
 
-class ANEPrefill : public NPUPrefill {
-public:
-    ANEPrefill();
-    ~ANEPrefill() override;
-
-    ANEPrefill(const ANEPrefill&) = delete;
-    ANEPrefill& operator=(const ANEPrefill&) = delete;
-
-    ANEPrefill(ANEPrefill&& other) noexcept;
-    ANEPrefill& operator=(ANEPrefill&& other) noexcept;
-
-    bool load(const std::string& model_path) override;
-    bool is_available() const override;
-
-    int get_chunk_size() const override;
-    int get_hidden_dim() const override;
-    int get_num_layers() const override;
-    int get_num_kv_heads() const override;
-    int get_head_dim() const override;
-
-    NPUPrefillDirectResult prefill_chunk_direct(
-        const std::vector<__fp16>& embeddings,
-        int position_offset = 0,
-        const std::string& input_name = "x") override;
-
-private:
-    void* impl_;
-    int chunk_size_ = 256;
-    int hidden_dim_ = 0;
-    int num_layers_ = 0;
-    int num_kv_heads_ = 0;
-    int head_dim_ = 0;
-};
-
 #else
 
 class ANEEncoder : public NPUEncoder {
@@ -124,26 +90,6 @@ public:
         const std::vector<NPUNamedInput>&,
         __fp16*,
         const std::string& = "") override { return 0; }
-};
-
-class ANEPrefill : public NPUPrefill {
-public:
-    ANEPrefill() = default;
-    ~ANEPrefill() override = default;
-
-    bool load(const std::string&) override { return false; }
-    bool is_available() const override { return false; }
-
-    int get_chunk_size() const override { return 0; }
-    int get_hidden_dim() const override { return 0; }
-    int get_num_layers() const override { return 0; }
-    int get_num_kv_heads() const override { return 0; }
-    int get_head_dim() const override { return 0; }
-
-    NPUPrefillDirectResult prefill_chunk_direct(
-        const std::vector<__fp16>&,
-        int = 0,
-        const std::string& = "x") override { return {}; }
 };
 
 #endif // CACTUS_HAS_ANE

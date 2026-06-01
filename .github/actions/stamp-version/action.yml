@@ -1,0 +1,24 @@
+name: Stamp version
+description: Resolve the release version and write python/cactus/_version.py
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        TAG: ${{ github.event.release.tag_name }}
+        INPUT_VERSION: ${{ github.event.inputs.version }}
+      run: |
+        if [ -n "$TAG" ]; then
+          raw="${TAG#v}"
+        elif [ -n "$INPUT_VERSION" ]; then
+          raw="${INPUT_VERSION#v}"
+        else
+          raw=$(sed 's/^v//' CACTUS_VERSION)
+        fi
+        version=$(RAW="$raw" python3 -c 'import os; r=os.environ["RAW"]; print(r + ".0" if r.count(".") == 1 else r)')
+        if [ -z "$version" ]; then
+          echo "::error::No version source available (TAG, INPUT_VERSION, CACTUS_VERSION all empty)"
+          exit 1
+        fi
+        printf '__version__ = "%s"\n' "$version" > python/cactus/_version.py
+        echo "Stamped version: $version"
