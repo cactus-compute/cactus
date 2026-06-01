@@ -145,7 +145,7 @@ build_linux_arm_variant() {
 
 write_package_manifest() {
     cat > "$PACKAGE_DIR/Package.swift" << 'EOF'
-// swift-tools-version: 6.2
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
