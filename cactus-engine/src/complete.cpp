@@ -1,6 +1,7 @@
 #include "../cactus_engine.h"
 #include "cloud.h"
 #include "utils.h"
+#include "minicpm_tools.h"
 #include "telemetry.h"
 #include "cactus_kernels.h"
 #include "wav.h"
@@ -494,7 +495,9 @@ PreparedPrompt prepare_prompt(
         }
     }
 
-    std::string formatted_tools = gemma::format_tools(prompt.tools, true);
+    std::string formatted_tools = tokenizer->uses_xml_tool_calls()
+        ? minicpm::format_tools(prompt.tools)
+        : gemma::format_tools(prompt.tools, true);
 
     {
         std::string full_prompt = tokenizer->format_chat_prompt(
@@ -507,6 +510,12 @@ PreparedPrompt prepare_prompt(
             throw std::runtime_error(full_prompt.substr(6));
         }
         prompt.tokens = tokenizer->encode(full_prompt);
+        if (tokenizer->chat_template_prepends_bos()) {
+            uint32_t bos = tokenizer->get_bos_token();
+            if (prompt.tokens.empty() || prompt.tokens.front() != bos) {
+                prompt.tokens.insert(prompt.tokens.begin(), bos);
+            }
+        }
     }
     prompt.context_token_count = prompt.tokens.size();
     prompt.images = images_from_message(prompt.messages);
@@ -856,7 +865,12 @@ int cactus_complete(
 
         std::string regular_response;
         std::vector<std::string> function_calls;
-        parse_function_calls_from_response(response_text, regular_response, function_calls);
+        if (tokenizer->uses_xml_tool_calls()) {
+            regular_response = response_text;
+            minicpm::parse_function_calls(regular_response, function_calls);
+        } else {
+            parse_function_calls_from_response(response_text, regular_response, function_calls);
+        }
 
         std::string thinking_text;
         if (prompt.model_type == Config::ModelType::GEMMA4 || prompt.options.enable_thinking_if_supported) {

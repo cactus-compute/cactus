@@ -209,9 +209,9 @@ def infer_component_plan_from_config(
             )
 
     if any("causallm" in value for value in architectures):
-        return ComponentPlan(task="causal_lm_logits", components=("decoder",))
+        return ComponentPlan(task="causal_lm_logits", components=("decoder", "decoder_step"))
     if any(token in lowered_id or token in model_type for token in ("qwen", "gemma", "llama", "mistral", "lfm")):
-        return ComponentPlan(task="causal_lm_logits", components=("decoder",))
+        return ComponentPlan(task="causal_lm_logits", components=("decoder", "decoder_step"))
     return None
 
 

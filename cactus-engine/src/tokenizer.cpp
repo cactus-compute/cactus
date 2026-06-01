@@ -1,5 +1,6 @@
 #include "engine.h"
 #include "cactus_kernels.h"
+#include "minicpm_tools.h"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -345,6 +346,10 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
                 model_type_ = ModelType::LFM2;
             } else if (lower_line.find("gemma") != std::string::npos) {
                 model_type_ = ModelType::GEMMA4;
+            } else if (lower_line.find("generic") != std::string::npos ||
+                       lower_line.find("llama") != std::string::npos ||
+                       lower_line.find("minicpm") != std::string::npos) {
+                model_type_ = ModelType::QWEN;
             }
         } else if (lower_line.find("model_variant") != std::string::npos) {
             if (lower_line.find("vlm") != std::string::npos) { model_variant_ = ModelVariant::VLM; }
@@ -376,8 +381,28 @@ std::string Tokenizer::get_default_stop_sequence() const {
     return "<turn|>";
 }
 
+bool Tokenizer::chat_template_prepends_bos() const {
+    size_t start = chat_template_.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return false;
+    if (chat_template_.compare(start, 2, "{{") != 0) return false;
+    size_t close = chat_template_.find("}}", start);
+    if (close == std::string::npos) return false;
+    return chat_template_.find("bos_token", start) < close;
+}
+
+bool Tokenizer::uses_xml_tool_calls() const {
+    return chat_template_.find("<function name=") != std::string::npos;
+}
+
 std::vector<uint32_t> Tokenizer::apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt) const {
-    return encode(format_chat_prompt(messages, add_generation_prompt));
+    std::vector<uint32_t> ids = encode(format_chat_prompt(messages, add_generation_prompt));
+    if (chat_template_prepends_bos()) {
+        uint32_t bos = get_bos_token();
+        if (ids.empty() || ids.front() != bos) {
+            ids.insert(ids.begin(), bos);
+        }
+    }
+    return ids;
 }
 
 std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
@@ -401,12 +426,18 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
         result += "<|im_end|>\n";
     }
 
+    const bool xml_tools = uses_xml_tool_calls();
     for (const auto& msg : messages) {
         std::string role = msg.role;
         if (role == "developer") {
             role = "system";
         } else if (role != "system" && role != "assistant" && role != "tool") {
             role = "user";
+        }
+
+        if (xml_tools && role == "tool") {
+            result += "<|im_start|>user\n<tool_response>\n" + msg.content + "\n</tool_response><|im_end|>\n";
+            continue;
         }
 
         result += "<|im_start|>" + role + "\n";
@@ -429,7 +460,9 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
         result += msg.content;
         if (role == "assistant" && !msg.tool_calls.empty()) {
             for (const auto& tc : msg.tool_calls) {
-                result += format_tool_call_for_prompt(tc.name, tc.arguments, false);
+                result += xml_tools
+                    ? minicpm::render_tool_call(tc.name, tc.arguments)
+                    : format_tool_call_for_prompt(tc.name, tc.arguments, false);
             }
         }
         result += "<|im_end|>\n";

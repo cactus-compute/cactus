@@ -2651,6 +2651,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (mt == "parakeet_tdt" || mt == "parakeet-tdt") model_type = ModelType::PARAKEET_TDT;
             else if (mt == "youtu") model_type = ModelType::YOUTU;
             else if (mt == "needle") model_type = ModelType::NEEDLE;
+            else if (mt == "generic" || mt == "llama" || mt == "minicpm") model_type = ModelType::QWEN;
             else model_type = ModelType::GEMMA4;
         }
         else if (key == "model_variant") {

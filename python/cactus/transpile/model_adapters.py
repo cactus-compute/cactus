@@ -4155,7 +4155,11 @@ def _build_qwen_causal_lm_component_specs(
         decoder = Qwen3CausalLMLogitsAdapter(model, pad_token_id=pad_token_id).eval()
         decoder_step = Qwen3CausalLMStepAdapter(model, pad_token_id=pad_token_id).eval()
     else:
-        return None
+        # Generic causal LMs (plain Llama-style HF models). The Qwen3 step adapter
+        # uses only the standard HF decoder interface (embed_tokens / rotary_emb /
+        # layers / norm / lm_head), so it serves as the generic cached-decode step.
+        decoder = CausalLMLogitsAdapter(model, pad_token_id=pad_token_id).eval()
+        decoder_step = Qwen3CausalLMStepAdapter(model, pad_token_id=pad_token_id).eval()
 
     requested = tuple(components or ("decoder", "decoder_step"))
     requested_set = set(requested)
@@ -5120,7 +5124,7 @@ def build_component_module_specs(
             weights_dir=weights_dir,
             components=components,
         )
-    if family in {"qwen3", "qwen3_5"} and task == "causal_lm_logits":
+    if family in {"qwen3", "qwen3_5", "generic"} and task == "causal_lm_logits":
         return _build_qwen_causal_lm_component_specs(
             model,
             named_tensors=named_tensors,

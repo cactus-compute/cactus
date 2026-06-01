@@ -91,7 +91,7 @@ def resolve_transpile_weights_dir(graph_meta: dict[str, object]) -> str | None:
     return None
 
 
-def _manifest_source_aliases(name: str) -> tuple[str, ...]:
+def _manifest_source_aliases(name: str, *, include_tied_aliases: bool = True) -> tuple[str, ...]:
     aliases: list[str] = []
 
     def _add(candidate: str) -> None:
@@ -124,7 +124,7 @@ def _manifest_source_aliases(name: str) -> tuple[str, ...]:
                 changed = True
                 break
 
-    if unwrapped.endswith("lm_head.weight"):
+    if include_tied_aliases and unwrapped.endswith("lm_head.weight"):
         prefix = unwrapped[: -len("lm_head.weight")]
         for tied_name in (
             f"{prefix}embed_tokens.weight",
@@ -235,13 +235,17 @@ def _flatten_convert_manifest(root_manifest: dict[str, Any]) -> dict[str, object
     flattened: dict[str, object] = {}
     rows = root_manifest.get("weights")
     if not isinstance(rows, list):
-        for name, entry in root_manifest.items():
-            if not isinstance(name, str):
-                continue
-            for alias in _manifest_source_aliases(name):
-                flattened.setdefault(alias, entry)
+        # Two passes: bind each name's own aliases before any tied lm_head→embed_tokens
+        # cross-aliases, so an explicit embed_tokens row wins over the lm_head fallback.
+        for include_tied in (False, True):
+            for name, entry in root_manifest.items():
+                if not isinstance(name, str):
+                    continue
+                for alias in _manifest_source_aliases(name, include_tied_aliases=include_tied):
+                    flattened.setdefault(alias, entry)
         return flattened
 
+    prepared: list[tuple[dict[str, object], list[object]]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -262,11 +266,18 @@ def _flatten_convert_manifest(root_manifest: dict[str, Any]) -> dict[str, object
             "filename": output_name,
             "kind": _manifest_entry_kind(output_name, row.get("kind"), explicit_names),
         }
-        for source_name in explicit_names:
-            if not isinstance(source_name, str) or not source_name:
-                continue
-            for alias in _manifest_source_aliases(source_name):
-                flattened.setdefault(alias, entry)
+        prepared.append((entry, explicit_names))
+
+    # Pass 1 binds each row's own aliases; pass 2 adds tied lm_head→embed_tokens
+    # cross-aliases only where no explicit row already claimed them. This keeps an
+    # untied model's embed_tokens bound to its real file instead of the lm_head file.
+    for include_tied in (False, True):
+        for entry, explicit_names in prepared:
+            for source_name in explicit_names:
+                if not isinstance(source_name, str) or not source_name:
+                    continue
+                for alias in _manifest_source_aliases(source_name, include_tied_aliases=include_tied):
+                    flattened.setdefault(alias, entry)
     return flattened
 
 
