@@ -93,6 +93,7 @@ def create_parser():
     Optional flags:
     --apple                            build for Apple (iOS/macOS)
     --android                          build for Android
+    --swift                            build Swift package
     --python                           build shared lib for Python FFI
 
   -----------------------------------------------------------------
@@ -156,6 +157,8 @@ def create_parser():
                              help="Build for Apple platforms (iOS/macOS)")
     build_group.add_argument("--android", action="store_true",
                              help="Build for Android")
+    build_group.add_argument("--swift", action="store_true",
+                             help="Build Swift package")
     build_group.add_argument("--python", action="store_true",
                              help="Build shared library for Python FFI")
 

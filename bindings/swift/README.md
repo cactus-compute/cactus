@@ -1,16 +1,32 @@
 # Swift Bindings
 
-C module map import of `cactus_engine.h`. Works on iOS and macOS.
+Generated Swift package wrapping `cactus_engine.h`. Works on all Apple platforms, Android, and Linux.
 
 ## Integration
 
+Run this command to generate the local Swift package in this directory.
 ```bash
-cactus build --apple
+cactus build --swift
 ```
 
-**XCFramework**: drag `apple/cactus-ios.xcframework` into Xcode (Embed & Sign).
+**Xcode Project:** Add the generated package to you project from the menu `File > Add Package Dependencies > Add Local...` Then, select the generated package in the menu.
 
-**Static library**: add `apple/libcactus-device.a` to Link Binary With Libraries, copy `module.modulemap` and `cactus_engine.h` into Header Search Paths.
+**Swift Package:** Add the generated package as a local SPM dependency in your `Package.swift`.
+```swift
+dependencies: [
+  .package(path: "<path to generated package>"),
+  // ...
+],
+targets: [
+  .target(
+    name: "YourTarget",
+    dependencies: [
+      .product(name: "CactusShims", package: "CactusShims"),
+      // ...
+    ]
+  )
+]
+```
 
 ## Usage
 
