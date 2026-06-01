@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(CactusKernels LANGUAGES CXX)
 
+include(CheckCXXCompilerFlag)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -30,16 +32,26 @@ target_include_directories(cactus_kernels
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libs
 )
 
+check_cxx_compiler_flag("-march=armv8.2-a+fp16+simd+dotprod+i8mm" CACTUS_HAS_I8MM_FLAG)
+if(CACTUS_HAS_I8MM_FLAG)
+    set(CACTUS_KERNELS_ARCH_FLAGS "-march=armv8.2-a+fp16+simd+dotprod+i8mm")
+else()
+    set(CACTUS_KERNELS_ARCH_FLAGS "-march=armv8.2-a+fp16+simd+dotprod")
+endif()
+
 target_compile_options(cactus_kernels PUBLIC
-    -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -O3
+    ${CACTUS_KERNELS_ARCH_FLAGS} -pthread -O3
 )
 
 target_compile_definitions(cactus_kernels PUBLIC
     __ARM_NEON=1
     __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
     __ARM_FEATURE_DOTPROD=1
-    __ARM_FEATURE_MATMUL_INT8=1
 )
+
+if(CACTUS_HAS_I8MM_FLAG)
+    target_compile_definitions(cactus_kernels PUBLIC __ARM_FEATURE_MATMUL_INT8=1)
+endif()
 
 target_compile_options(cactus_kernels PRIVATE
     -Wall -Wextra -pedantic -Wno-missing-field-initializers

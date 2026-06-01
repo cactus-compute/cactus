@@ -82,6 +82,9 @@ build_slice() {
         -DUSE_NGHTTP2=OFF \
         -DUSE_LIBIDN2=OFF \
         -DUSE_APPLE_IDN=OFF \
+        -DCURL_DISABLE_LDAP=ON \
+        -DCURL_DISABLE_LDAPS=ON \
+        -DCURL_USE_LIBSSH2=OFF \
         -DCURL_USE_OPENSSL=OFF \
         -DHAVE_PIPE2=OFF \
         -DCMAKE_SYSTEM_NAME="$system_name" \
@@ -128,6 +131,9 @@ build_macos() {
         -DUSE_NGHTTP2=OFF \
         -DUSE_LIBIDN2=OFF \
         -DUSE_APPLE_IDN=OFF \
+        -DCURL_DISABLE_LDAP=ON \
+        -DCURL_DISABLE_LDAPS=ON \
+        -DCURL_USE_LIBSSH2=OFF \
         -DCURL_USE_OPENSSL=OFF \
         -DHAVE_PIPE2=OFF \
         -DCMAKE_SYSTEM_NAME=Darwin \

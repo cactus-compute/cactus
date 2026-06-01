@@ -1,0 +1,24 @@
+set(CMAKE_SYSTEM_NAME Linux)
+set(CMAKE_SYSTEM_PROCESSOR aarch64)
+
+set(TOOLCHAIN_ROOT_DEFAULT "/opt/homebrew/opt/aarch64-unknown-linux-gnu/toolchain")
+set(AARCH64_LINUX_GNU_TOOLCHAIN_ROOT "${TOOLCHAIN_ROOT_DEFAULT}" CACHE PATH "Root path of the aarch64 Linux GNU toolchain")
+
+set(CMAKE_C_COMPILER "${AARCH64_LINUX_GNU_TOOLCHAIN_ROOT}/bin/aarch64-unknown-linux-gnu-gcc")
+set(CMAKE_CXX_COMPILER "${AARCH64_LINUX_GNU_TOOLCHAIN_ROOT}/bin/aarch64-unknown-linux-gnu-g++")
+
+set(CMAKE_C_COMPILER_TARGET aarch64-unknown-linux-gnu)
+set(CMAKE_CXX_COMPILER_TARGET aarch64-unknown-linux-gnu)
+
+set(CMAKE_SYSROOT "${AARCH64_LINUX_GNU_TOOLCHAIN_ROOT}/aarch64-unknown-linux-gnu/sysroot")
+
+set(CMAKE_FIND_ROOT_PATH
+    "${CMAKE_SYSROOT}"
+    "${AARCH64_LINUX_GNU_TOOLCHAIN_ROOT}/aarch64-unknown-linux-gnu"
+    "${AARCH64_LINUX_GNU_TOOLCHAIN_ROOT}"
+)
+
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)

@@ -14,20 +14,25 @@ set(_DEPS cactus_engine cactus_graph cactus_kernels)
 
 if(BUILD_SHARED_LIBS)
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/stub.cpp "")
-    add_library(cactus_framework SHARED ${CMAKE_CURRENT_BINARY_DIR}/stub.cpp)
-    set_target_properties(cactus_framework PROPERTIES OUTPUT_NAME cactus)
-    add_dependencies(cactus_framework ${_DEPS})
+    add_library(CXXCactusDarwin SHARED ${CMAKE_CURRENT_BINARY_DIR}/stub.cpp)
+    add_dependencies(CXXCactusDarwin ${_DEPS})
 
-    target_link_options(cactus_framework PRIVATE
+    find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+    find_library(COREML_FRAMEWORK CoreML REQUIRED)
+    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    find_library(SECURITY_FRAMEWORK Security)
+    find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration)
+    find_library(CFNETWORK_FRAMEWORK CFNetwork)
+
+    target_link_options(CXXCactusDarwin PRIVATE
         -force_load $<TARGET_FILE:cactus_engine>
         -force_load $<TARGET_FILE:cactus_graph>
         -force_load $<TARGET_FILE:cactus_kernels>
         -Wl,-dead_strip -flto
     )
 
-    target_link_libraries(cactus_framework PUBLIC
-        "-framework Accelerate" "-framework CoreML" "-framework Foundation"
-        "-framework Security" "-framework SystemConfiguration" "-framework CFNetwork"
+    target_link_libraries(CXXCactusDarwin PUBLIC
+        ${ACCELERATE_FRAMEWORK} ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK}
     )
 
     string(TOLOWER "${CMAKE_OSX_SYSROOT}" _sysroot_lower)
@@ -56,26 +61,39 @@ if(BUILD_SHARED_LIBS)
         set(_CURL "${CACTUS_CURL_ROOT}/macos/libcurl.a")
     endif()
     if(EXISTS "${_CURL}")
-        target_link_libraries(cactus_framework PUBLIC "${_CURL}")
+        if(NOT SECURITY_FRAMEWORK OR NOT CFNETWORK_FRAMEWORK)
+            message(FATAL_ERROR "Required Apple networking frameworks were not found for vendored libcurl linking")
+        endif()
+
+        target_link_libraries(CXXCactusDarwin PUBLIC "${_CURL}")
+        target_link_libraries(CXXCactusDarwin PUBLIC ${SECURITY_FRAMEWORK} ${CFNETWORK_FRAMEWORK})
+
+        if(SYSTEMCONFIGURATION_FRAMEWORK)
+            target_link_libraries(CXXCactusDarwin PUBLIC ${SYSTEMCONFIGURATION_FRAMEWORK})
+        endif()
     endif()
 
-    set_target_properties(cactus_framework PROPERTIES
+    set_target_properties(CXXCactusDarwin PROPERTIES
         FRAMEWORK TRUE
         FRAMEWORK_VERSION A
-        MACOSX_FRAMEWORK_IDENTIFIER com.cactuscompute.cactus
+        MACOSX_FRAMEWORK_IDENTIFIER com.cactuscompute.CXXCactusDarwin
         VERSION 1.0.0
         SOVERSION 1.0.0
         MACOSX_FRAMEWORK_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist"
     )
 
-    add_custom_command(TARGET cactus_framework POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:cactus_framework>/Headers"
+    add_custom_command(TARGET CXXCactusDarwin POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CXXCactusDarwin>/Headers"
         COMMAND ${CMAKE_COMMAND} -E copy
             "${CMAKE_CURRENT_SOURCE_DIR}/../cactus-engine/cactus_engine.h"
-            "$<TARGET_FILE_DIR:cactus_framework>/Headers"
+            "$<TARGET_FILE_DIR:CXXCactusDarwin>/Headers/CXXCactusDarwin.h"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:CXXCactusDarwin>/Modules"
+        COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_CURRENT_SOURCE_DIR}/module.modulemap"
+            "$<TARGET_FILE_DIR:CXXCactusDarwin>/Modules/module.modulemap"
     )
 
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-        target_compile_definitions(cactus_framework PRIVATE TARGET_OS_IPHONE=1)
+        target_compile_definitions(CXXCactusDarwin PRIVATE TARGET_OS_IPHONE=1)
     endif()
 endif()

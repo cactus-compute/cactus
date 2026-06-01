@@ -70,7 +70,6 @@ set(ENGINE_SOURCES
     src/graph_ffi.cpp
     src/rag.cpp
     src/telemetry.cpp
-    src/telemetry_impl.cpp
     src/cloud.cpp
     src/init.cpp
     src/embed.cpp
@@ -78,7 +77,13 @@ set(ENGINE_SOURCES
     src/transcribe.cpp
     src/tokenizer.cpp
 )
-if(APPLE)
+
+if(CACTUS_HAS_CURL)
+    list(APPEND ENGINE_SOURCES src/telemetry_impl.cpp)
+else()
+    list(APPEND ENGINE_SOURCES src/telemetry_stub.cpp)
+endif()
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "watchOS")
     enable_language(OBJCXX)
     list(APPEND ENGINE_SOURCES src/npu_ane.mm)
     set_source_files_properties(src/npu_ane.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
@@ -118,13 +123,24 @@ endif()
 if(APPLE)
     find_library(COREML_FRAMEWORK CoreML REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
-    find_library(SECURITY_FRAMEWORK Security REQUIRED)
-    find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration REQUIRED)
-    find_library(CFNETWORK_FRAMEWORK CFNetwork REQUIRED)
+    find_library(SECURITY_FRAMEWORK Security)
+    find_library(SYSTEMCONFIGURATION_FRAMEWORK SystemConfiguration)
+    find_library(CFNETWORK_FRAMEWORK CFNetwork)
     target_link_libraries(cactus_engine PUBLIC
         ${COREML_FRAMEWORK} ${FOUNDATION_FRAMEWORK}
-        ${SECURITY_FRAMEWORK} ${SYSTEMCONFIGURATION_FRAMEWORK} ${CFNETWORK_FRAMEWORK}
     )
+
+    if(CACTUS_HAS_CURL)
+        if(NOT SECURITY_FRAMEWORK OR NOT CFNETWORK_FRAMEWORK)
+            message(FATAL_ERROR "Required Apple networking frameworks were not found for vendored libcurl linking")
+        endif()
+
+        target_link_libraries(cactus_engine PUBLIC ${SECURITY_FRAMEWORK} ${CFNETWORK_FRAMEWORK})
+
+        if(SYSTEMCONFIGURATION_FRAMEWORK)
+            target_link_libraries(cactus_engine PUBLIC ${SYSTEMCONFIGURATION_FRAMEWORK})
+        endif()
+    endif()
 endif()
 
 # --- Version ---
