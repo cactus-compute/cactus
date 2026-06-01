@@ -311,10 +311,11 @@ echo "Using embed_speaker model path: $device_model_dir/$embed_speaker_model_dir
 echo "Using assets path: $device_assets_dir/assets"
 echo "Using index path: $device_assets_dir/assets"
 
+failures=0
 for test_exe in "${test_executables[@]}"; do
     test_name=$(basename "$test_exe")
 
-    adb -s "$DEVICE_ID" shell "cd $device_test_dir && \
+    if ! adb -s "$DEVICE_ID" shell "cd $device_test_dir && \
         export CACTUS_TEST_MODEL=$device_model_dir/$model_dir && \
         export CACTUS_TEST_TRANSCRIBE_MODEL=$device_model_dir/$transcribe_model_dir && \
         export CACTUS_TEST_WHISPER_MODEL=$device_model_dir/$whisper_model_dir && \
@@ -324,7 +325,15 @@ for test_exe in "${test_executables[@]}"; do
         export CACTUS_TEST_ASSETS=$device_assets_dir/assets && \
         export CACTUS_INDEX_PATH=$device_assets_dir/assets && \
         export CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE} && \
-        ./$test_name"
+        ./$test_name"; then
+        echo "Test executable failed: $test_name"
+        failures=$((failures + 1))
+    fi
 done
+
+if [ "$failures" -ne 0 ]; then
+    echo "$failures test executable(s) failed"
+    exit 1
+fi
 
 echo ""

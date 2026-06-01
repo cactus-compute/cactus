@@ -287,10 +287,19 @@ fi
 
 echo "Found ${#test_executables[@]} test executable(s)"
 
+failures=0
 for executable in "${test_executables[@]}"; do
     exec_name=$(basename "$executable")
-    ./"$exec_name"
+    if ! ./"$exec_name"; then
+        echo "Test executable failed: $exec_name"
+        failures=$((failures + 1))
+    fi
 done
+
+if [ "$failures" -ne 0 ]; then
+    echo "$failures test executable(s) failed"
+    exit 1
+fi
 
 if [ "$EXHAUSTIVE_MODE" = true ]; then
     echo ""
