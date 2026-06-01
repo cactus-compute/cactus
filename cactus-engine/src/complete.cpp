@@ -764,7 +764,10 @@ int cactus_complete(
                 return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, 0.0f, prompt.tokens.size());
             }
             std::string cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
-            CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed before local generation, falling back to local output: " << cloud_error);
+            CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed before local generation: " << cloud_error);
+            handle_error_response(("cloud handoff failed before local generation: " + cloud_error).c_str(),
+                                  response_buffer, buffer_size);
+            return -1;
         }
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());

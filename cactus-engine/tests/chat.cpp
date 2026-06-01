@@ -209,14 +209,19 @@ struct TokenPrinter {
         double ttft_s = saw_first ? std::chrono::duration<double>(first - start).count() : 0.0;
         double decode_s = saw_first ? std::chrono::duration<double>(end - first).count() : total_s;
         double tps = (count > 1 && decode_s > 0.0) ? (count - 1) / decode_s : (total_s > 0.0 ? count / total_s : 0.0);
-        double handoff_pct = std::max(0.0, std::min(100.0, (1.0 - confidence) * 100.0));
         std::cout << "\n[" << count << " tokens | latency: "
                   << std::fixed << std::setprecision(3) << ttft_s
                   << "s | total: " << total_s
-                  << "s | " << std::setprecision(1) << tps << " tok/s"
-                  << " | handoff: " << handoff_pct << "%"
-                  << " | confidence: " << std::max(0.0, std::min(100.0, confidence * 100.0)) << "%"
-                  << " | cloud: " << (cloud_handoff ? "yes" : "no");
+                  << "s | " << std::setprecision(1) << tps << " tok/s";
+        if (confidence >= 0.0) {
+            double handoff_pct = std::max(0.0, std::min(100.0, (1.0 - confidence) * 100.0));
+            std::cout << " | handoff: " << handoff_pct << "%"
+                      << " | confidence: " << std::max(0.0, std::min(100.0, confidence * 100.0)) << "%";
+        } else {
+            std::cout << " | handoff: forced"
+                      << " | confidence: n/a";
+        }
+        std::cout << " | cloud: " << (cloud_handoff ? "yes" : "no");
         if (ram_mb > 0.0) {
             std::cout << " | RAM: " << ram_mb << " MB";
         }
@@ -330,11 +335,15 @@ std::string json_string_value(const std::string& json, const std::string& key) {
     return unescape_json(json.substr(start, end - start));
 }
 
-double json_number_value(const std::string& json, const std::string& key) {
+double json_number_value(const std::string& json, const std::string& key, double fallback = 0.0) {
     std::string needle = "\"" + key + "\":";
     size_t start = json.find(needle);
-    if (start == std::string::npos) return 0.0;
+    if (start == std::string::npos) return fallback;
     start += needle.size();
+    while (start < json.size() && std::isspace(static_cast<unsigned char>(json[start]))) {
+        ++start;
+    }
+    if (json.compare(start, 4, "null") == 0) return fallback;
     char* end = nullptr;
     return std::strtod(json.c_str() + start, &end);
 }
@@ -616,13 +625,13 @@ int main(int argc, char** argv) {
             std::cerr << "Failed to write result JSON: " << result_json << "\n";
         }
         bool cloud_handoff = json_bool_value(response_json, "cloud_handoff");
-        double confidence = json_number_value(response_json, "confidence");
+        double confidence = json_number_value(response_json, "confidence", -1.0);
         double ram_mb = json_number_value(response_json, "ram_usage_mb");
         printer.print_stats(ram_mb, confidence, cloud_handoff);
         std::cout << "\n";
 
         if (rc < 0) {
-            std::cerr << "Error: " << response.data() << "\n";
+            std::cout << "Error: " << response.data() << "\n";
             history.pop_back();
             continue;
         }
