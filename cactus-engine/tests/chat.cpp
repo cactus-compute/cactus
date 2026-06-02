@@ -422,7 +422,7 @@ int main(int argc, char** argv) {
     bool thinking = false;
     bool auto_handoff = true;
     double confidence_threshold = -1.0;
-    int cloud_timeout_ms = 4000;
+    int cloud_timeout_ms = 15000;
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];

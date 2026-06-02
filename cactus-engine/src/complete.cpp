@@ -459,9 +459,8 @@ PreparedPrompt prepare_prompt(
     if (prompt.options.confidence_threshold < 0.0f) {
         if (handle->model->has_handoff_probe()) {
             // The Gemma4 probe returns p_wrong; confidence is 1 - p_wrong.
-            // A conservative default avoids clouding routine prompts just
-            // because the probe is only moderately confident.
-            prompt.options.confidence_threshold = 0.20f;
+            // Route when the probe is less than 50% confident in local output.
+            prompt.options.confidence_threshold = 0.50f;
         } else {
             float model_default = handle->model->get_config().default_cloud_handoff_threshold;
             prompt.options.confidence_threshold = (model_default > 0.0f) ? model_default : 0.7f;
