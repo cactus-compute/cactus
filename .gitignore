@@ -13,6 +13,7 @@
 
 apple/build-*/
 apple/*.xcframework
+apple/*.xcframework.zip
 apple/libcactus*.a
 android/libcactus.so
 android/libcactus.a
@@ -20,6 +21,7 @@ android/libs/
 android/arm64-v8a/
 bindings/flutter/libcactus.so
 bindings/flutter/*.xcframework
+bindings/swift/package
 
 .claude
 .vscode

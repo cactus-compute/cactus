@@ -1,7 +1,7 @@
 # Bindings
 
 - `python/` uses `ctypes`
-- `swift/` uses a C module map
+- `swift/` uses a generated Swift package
 - `kotlin/` uses JNI
 - `flutter/` uses Dart FFI
 - `rust/` uses raw `extern "C"` declarations

@@ -9,12 +9,22 @@ BUILD_STATIC=${BUILD_STATIC:-true}
 BUILD_XCFRAMEWORK=${BUILD_XCFRAMEWORK:-true}
 CACTUS_CURL_ROOT=${CACTUS_CURL_ROOT:-"$ROOT_DIR/cactus-engine/libs/curl"}
 
-if ! command -v cmake &> /dev/null; then
+IOS_DEPLOYMENT_TARGET=${IOS_DEPLOYMENT_TARGET:-13.0}
+TVOS_DEPLOYMENT_TARGET=${TVOS_DEPLOYMENT_TARGET:-13.0}
+WATCHOS_DEPLOYMENT_TARGET=${WATCHOS_DEPLOYMENT_TARGET:-9.0}
+VISIONOS_DEPLOYMENT_TARGET=${VISIONOS_DEPLOYMENT_TARGET:-1.0}
+MACOS_DEPLOYMENT_TARGET=${MACOS_DEPLOYMENT_TARGET:-13.0}
+
+XCFRAMEWORK_PATH="$APPLE_DIR/cactus.xcframework"
+XCFRAMEWORK_ZIP_PATH="$APPLE_DIR/cactus.xcframework.zip"
+LAST_FRAMEWORK_PATH=""
+
+if ! command -v cmake >/dev/null 2>&1; then
     echo "Error: cmake not found, please install it"
     exit 1
 fi
 
-if ! xcode-select -p &> /dev/null; then
+if ! xcode-select -p >/dev/null 2>&1; then
     echo "Error: Xcode command line tools not found"
     echo "Install with: xcode-select --install"
     exit 1
@@ -29,225 +39,219 @@ echo "Static library: $BUILD_STATIC"
 echo "XCFramework: $BUILD_XCFRAMEWORK"
 echo "Vendored libcurl root: $CACTUS_CURL_ROOT"
 
-function cp_headers() {
-    mkdir -p "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers"
-    cp "$ROOT_DIR/cactus-engine/cactus_engine.h" "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/"
-}
-
-function create_ios_xcframework_info_plist() {
-    cat > "$ROOT_DIR/apple/cactus-ios.xcframework/Info.plist" << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>AvailableLibraries</key>
-	<array>
-		<dict>
-			<key>LibraryIdentifier</key>
-			<string>ios-arm64</string>
-			<key>LibraryPath</key>
-			<string>cactus.framework</string>
-			<key>SupportedArchitectures</key>
-			<array>
-				<string>arm64</string>
-			</array>
-			<key>SupportedPlatform</key>
-			<string>ios</string>
-		</dict>
-		<dict>
-			<key>LibraryIdentifier</key>
-			<string>ios-arm64-simulator</string>
-			<key>LibraryPath</key>
-			<string>cactus.framework</string>
-			<key>SupportedArchitectures</key>
-			<array>
-				<string>arm64</string>
-			</array>
-			<key>SupportedPlatform</key>
-			<string>ios</string>
-			<key>SupportedPlatformVariant</key>
-			<string>simulator</string>
-		</dict>
-	</array>
-	<key>CFBundlePackageType</key>
-	<string>XFWK</string>
-	<key>XCFrameworkFormatVersion</key>
-	<string>1.0</string>
-</dict>
-</plist>
-EOF
-}
-
-function create_macos_xcframework_info_plist() {
-    cat > "$ROOT_DIR/apple/cactus-macos.xcframework/Info.plist" << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>AvailableLibraries</key>
-	<array>
-		<dict>
-			<key>LibraryIdentifier</key>
-			<string>macos-arm64</string>
-			<key>LibraryPath</key>
-			<string>cactus.framework</string>
-			<key>SupportedArchitectures</key>
-			<array>
-				<string>arm64</string>
-			</array>
-			<key>SupportedPlatform</key>
-			<string>macos</string>
-		</dict>
-	</array>
-	<key>CFBundlePackageType</key>
-	<string>XFWK</string>
-	<key>XCFrameworkFormatVersion</key>
-	<string>1.0</string>
-</dict>
-</plist>
-EOF
-}
-
-function build_static_library() {
+build_static_library() {
     echo "Building static library for iOS device..."
-    BUILD_DIR="$APPLE_DIR/build-static-device"
-    
-    IOS_SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-    if [ -z "$IOS_SDK_PATH" ] || [ ! -d "$IOS_SDK_PATH" ]; then
+    local build_dir="$APPLE_DIR/build-static-device"
+    local ios_sdk_path
+
+    ios_sdk_path=$(xcrun --sdk iphoneos --show-sdk-path)
+    if [ -z "$ios_sdk_path" ] || [ ! -d "$ios_sdk_path" ]; then
         echo "Error: iOS SDK not found. Make sure Xcode is installed."
         exit 1
     fi
 
-    echo "Using iOS SDK: $IOS_SDK_PATH"
-
     cmake -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
-          -DCMAKE_OSX_SYSROOT="$IOS_SDK_PATH" \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+          -DCMAKE_OSX_SYSROOT="$ios_sdk_path" \
           -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
           -DBUILD_SHARED_LIBS=OFF \
           -DCACTUS_CURL_ROOT="$CACTUS_CURL_ROOT" \
           -S "$APPLE_DIR" \
-          -B "$BUILD_DIR" >/dev/null
+          -B "$build_dir" >/dev/null
 
-    cmake --build "$BUILD_DIR" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
+    cmake --build "$build_dir" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
 
-    mkdir -p "$APPLE_DIR"
-    cp "$BUILD_DIR/libcactus.a" "$APPLE_DIR/libcactus-device.a"
+    cp "$build_dir/libcactus.a" "$APPLE_DIR/libcactus-device.a"
     echo "Device static library built: $APPLE_DIR/libcactus-device.a"
-    
+
     echo "Building static library for iOS simulator..."
-    BUILD_DIR_SIM="$APPLE_DIR/build-static-simulator"
-    
-    IOS_SIM_SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)
-    if [ -z "$IOS_SIM_SDK_PATH" ] || [ ! -d "$IOS_SIM_SDK_PATH" ]; then
+    local build_dir_sim="$APPLE_DIR/build-static-simulator"
+    local ios_sim_sdk_path
+
+    ios_sim_sdk_path=$(xcrun --sdk iphonesimulator --show-sdk-path)
+    if [ -z "$ios_sim_sdk_path" ] || [ ! -d "$ios_sim_sdk_path" ]; then
         echo "Error: iOS Simulator SDK not found. Make sure Xcode is installed."
         exit 1
     fi
 
-    echo "Using iOS Simulator SDK: $IOS_SIM_SDK_PATH"
-
     cmake -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
-          -DCMAKE_OSX_SYSROOT="$IOS_SIM_SDK_PATH" \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+          -DCMAKE_OSX_SYSROOT="$ios_sim_sdk_path" \
           -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
           -DBUILD_SHARED_LIBS=OFF \
           -DCACTUS_CURL_ROOT="$CACTUS_CURL_ROOT" \
           -S "$APPLE_DIR" \
-          -B "$BUILD_DIR_SIM" >/dev/null
+          -B "$build_dir_sim" >/dev/null
 
-    cmake --build "$BUILD_DIR_SIM" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
+    cmake --build "$build_dir_sim" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
 
-    cp "$BUILD_DIR_SIM/libcactus.a" "$APPLE_DIR/libcactus-simulator.a"
+    cp "$build_dir_sim/libcactus.a" "$APPLE_DIR/libcactus-simulator.a"
     echo "Simulator static library built: $APPLE_DIR/libcactus-simulator.a"
 }
 
-function build_framework() {
-    echo "Building framework for $4..."
-    cd "$5"
+build_framework_slice() {
+    local platform_name="$1"
+    local system_name="$2"
+    local sdk_name="$3"
+    local arch="$4"
+    local deployment_target="$5"
+    local build_dir="$6"
+    local sdk_path
+    local framework_path=""
+
+    sdk_path=$(xcrun --sdk "$sdk_name" --show-sdk-path)
+    if [ -z "$sdk_path" ] || [ ! -d "$sdk_path" ]; then
+        echo "Error: SDK $sdk_name not found. Make sure Xcode is installed."
+        exit 1
+    fi
+
+    echo "Building $platform_name ($system_name, $sdk_name, $arch)..."
+
+    rm -rf "$build_dir"
 
     cmake -S "$ROOT_DIR/apple" \
-        -B . \
+        -B "$build_dir" \
         -GXcode \
-        -DCMAKE_SYSTEM_NAME=$1 \
-        -DCMAKE_OSX_ARCHITECTURES="$2" \
-        -DCMAKE_OSX_SYSROOT=$3 \
-        -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+        -DCMAKE_SYSTEM_NAME="$system_name" \
+        -DCMAKE_OSX_ARCHITECTURES="$arch" \
+        -DCMAKE_OSX_SYSROOT="$sdk_path" \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET="$deployment_target" \
         -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
         -DBUILD_SHARED_LIBS=ON \
         -DCACTUS_CURL_ROOT="$CACTUS_CURL_ROOT" \
         -DCMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH=NO \
-        -DCMAKE_IOS_INSTALL_COMBINED=YES >/dev/null
+        -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+        -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
+        -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY="" >/dev/null
 
-    cmake --build . --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null 2>&1
+    cmake --build "$build_dir" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
 
-    DEST_DIR="$ROOT_DIR/apple/$6/$4"
-    
-    # Try different possible framework locations
-    FRAMEWORK_SRC=""
-    if [ -d "$CMAKE_BUILD_TYPE-$3/cactus.framework" ]; then
-        FRAMEWORK_SRC="$CMAKE_BUILD_TYPE-$3/cactus.framework"
-    elif [ -d "$CMAKE_BUILD_TYPE/cactus.framework" ]; then
-        FRAMEWORK_SRC="$CMAKE_BUILD_TYPE/cactus.framework"
+    if [ -d "$build_dir/lib/$CMAKE_BUILD_TYPE/cactus.framework" ]; then
+        framework_path="$build_dir/lib/$CMAKE_BUILD_TYPE/cactus.framework"
+    elif [ -d "$build_dir/$CMAKE_BUILD_TYPE-$sdk_name/cactus.framework" ]; then
+        framework_path="$build_dir/$CMAKE_BUILD_TYPE-$sdk_name/cactus.framework"
+    elif [ -d "$build_dir/$CMAKE_BUILD_TYPE/cactus.framework" ]; then
+        framework_path="$build_dir/$CMAKE_BUILD_TYPE/cactus.framework"
     else
-        # Find the framework in any subdirectory
-        FRAMEWORK_SRC=$(find . -name "cactus.framework" -type d | head -n 1)
+        framework_path=$(find "$build_dir" -path "*cactus.framework" -not -path "*EagerLinkingTBDs*" | head -n 1)
     fi
-    
-    FRAMEWORK_DEST="$DEST_DIR/cactus.framework"
 
-    rm -rf "$DEST_DIR"
-    mkdir -p "$DEST_DIR"
-
-    if [ -n "$FRAMEWORK_SRC" ] && [ -d "$FRAMEWORK_SRC" ]; then
-        cp -R "$FRAMEWORK_SRC" "$FRAMEWORK_DEST"
-        echo "Framework copied from $FRAMEWORK_SRC to $FRAMEWORK_DEST"
-    else
-        echo "Error: Framework not found in build directory"
-        echo "Available files:"
-        find . -name "*.framework" -o -name "libcactus*" 2>/dev/null || true
+    if [ -z "$framework_path" ] || [ ! -d "$framework_path" ]; then
+        echo "Error: cactus.framework not found for $platform_name"
         exit 1
     fi
 
-    cp_headers $6 $4
-
-    rm -rf ./*
-    cd "$ROOT_DIR"
+    LAST_FRAMEWORK_PATH="$framework_path"
 }
 
-function build_ios_xcframework() {
-    echo "Building iOS XCFramework..."
-    
-    rm -rf "$ROOT_DIR/apple/cactus-ios.xcframework"
-    rm -rf "$ROOT_DIR/apple/build-ios" "$ROOT_DIR/apple/build-ios-simulator"
-    mkdir -p "$ROOT_DIR/apple/build-ios" "$ROOT_DIR/apple/build-ios-simulator"
+framework_binary_path() {
+    local framework_path="$1"
 
-    build_framework "iOS" "arm64" "iphoneos" "ios-arm64" "$ROOT_DIR/apple/build-ios" "cactus-ios.xcframework"
-    
-    build_framework "iOS" "arm64" "iphonesimulator" "ios-arm64-simulator" "$ROOT_DIR/apple/build-ios-simulator" "cactus-ios.xcframework"
-
-    create_ios_xcframework_info_plist
-
-    rm -rf "$ROOT_DIR/apple/build-ios" "$ROOT_DIR/apple/build-ios-simulator"
-    
-    echo "iOS XCFramework built: $ROOT_DIR/apple/cactus-ios.xcframework"
+    if [ -f "$framework_path/cactus" ]; then
+        printf '%s\n' "$framework_path/cactus"
+    elif [ -f "$framework_path/Versions/A/cactus" ]; then
+        printf '%s\n' "$framework_path/Versions/A/cactus"
+    else
+        echo "Error: Framework binary not found in $framework_path" >&2
+        exit 1
+    fi
 }
 
-function build_macos_xcframework() {
-    echo "Building macOS XCFramework..."
-    
-    rm -rf "$ROOT_DIR/apple/cactus-macos.xcframework"
-    rm -rf "$ROOT_DIR/apple/build-macos"
-    mkdir -p "$ROOT_DIR/apple/build-macos"
+create_universal_framework() {
+    local source_framework_a="$1"
+    local source_framework_b="$2"
+    local destination_framework="$3"
+    local binary_a
+    local binary_b
+    local destination_binary
 
-    build_framework "Darwin" "arm64" "macosx" "macos-arm64" "$ROOT_DIR/apple/build-macos" "cactus-macos.xcframework"
+    mkdir -p "$(dirname "$destination_framework")"
+    rm -rf "$destination_framework"
+    cp -R "$source_framework_a" "$destination_framework"
 
-    create_macos_xcframework_info_plist
+    binary_a=$(framework_binary_path "$source_framework_a")
+    binary_b=$(framework_binary_path "$source_framework_b")
+    destination_binary=$(framework_binary_path "$destination_framework")
 
-    rm -rf "$ROOT_DIR/apple/build-macos"
-    
-    echo "macOS XCFramework built: $ROOT_DIR/apple/cactus-macos.xcframework"
+    lipo -create "$binary_a" "$binary_b" -output "$destination_binary"
+}
+
+build_combined_xcframework() {
+    echo "Building combined Apple XCFramework..."
+
+    rm -rf "$XCFRAMEWORK_PATH" "$XCFRAMEWORK_ZIP_PATH"
+
+    local build_root="$APPLE_DIR/build-xcframework"
+    local ios_framework
+    local ios_sim_framework
+    local macos_framework
+    local tvos_framework
+    local tvos_sim_framework
+    local watchos_arm64_framework
+    local watchos_arm64_32_framework
+    local watchos_device_framework
+    local watchos_sim_framework
+    local visionos_framework
+    local visionos_sim_framework
+
+    build_framework_slice "iOS" "iOS" "iphoneos" "arm64" "$IOS_DEPLOYMENT_TARGET" "$build_root/ios"
+    ios_framework="$LAST_FRAMEWORK_PATH"
+
+    build_framework_slice "iOS Simulator" "iOS" "iphonesimulator" "arm64" "$IOS_DEPLOYMENT_TARGET" "$build_root/ios-sim"
+    ios_sim_framework="$LAST_FRAMEWORK_PATH"
+
+    build_framework_slice "macOS" "Darwin" "macosx" "arm64" "$MACOS_DEPLOYMENT_TARGET" "$build_root/macos"
+    macos_framework="$LAST_FRAMEWORK_PATH"
+
+    build_framework_slice "tvOS" "tvOS" "appletvos" "arm64" "$TVOS_DEPLOYMENT_TARGET" "$build_root/tvos"
+    tvos_framework="$LAST_FRAMEWORK_PATH"
+
+    build_framework_slice "tvOS Simulator" "tvOS" "appletvsimulator" "arm64" "$TVOS_DEPLOYMENT_TARGET" "$build_root/tvos-sim"
+    tvos_sim_framework="$LAST_FRAMEWORK_PATH"
+
+    build_framework_slice "watchOS arm64" "watchOS" "watchos" "arm64" "$WATCHOS_DEPLOYMENT_TARGET" "$build_root/watchos-arm64"
+    watchos_arm64_framework="$LAST_FRAMEWORK_PATH"
+
+    build_framework_slice "watchOS arm64_32" "watchOS" "watchos" "arm64_32" "$WATCHOS_DEPLOYMENT_TARGET" "$build_root/watchos-arm64_32"
+    watchos_arm64_32_framework="$LAST_FRAMEWORK_PATH"
+
+    watchos_device_framework="$build_root/watchos-device/cactus.framework"
+    create_universal_framework "$watchos_arm64_framework" "$watchos_arm64_32_framework" "$watchos_device_framework"
+
+    build_framework_slice "watchOS Simulator" "watchOS" "watchsimulator" "arm64" "$WATCHOS_DEPLOYMENT_TARGET" "$build_root/watchos-sim"
+    watchos_sim_framework="$LAST_FRAMEWORK_PATH"
+
+    build_framework_slice "visionOS" "visionOS" "xros" "arm64" "$VISIONOS_DEPLOYMENT_TARGET" "$build_root/visionos"
+    visionos_framework="$LAST_FRAMEWORK_PATH"
+
+    build_framework_slice "visionOS Simulator" "visionOS" "xrsimulator" "arm64" "$VISIONOS_DEPLOYMENT_TARGET" "$build_root/visionos-sim"
+    visionos_sim_framework="$LAST_FRAMEWORK_PATH"
+
+    xcodebuild -create-xcframework \
+        -framework "$ios_framework" \
+        -framework "$ios_sim_framework" \
+        -framework "$macos_framework" \
+        -framework "$tvos_framework" \
+        -framework "$tvos_sim_framework" \
+        -framework "$watchos_device_framework" \
+        -framework "$watchos_sim_framework" \
+        -framework "$visionos_framework" \
+        -framework "$visionos_sim_framework" \
+        -output "$XCFRAMEWORK_PATH" >/dev/null
+
+    local macos_framework_dir="$XCFRAMEWORK_PATH/macos-arm64/cactus.framework"
+    if [ -d "$macos_framework_dir/Versions/A" ]; then
+        rm -rf "$macos_framework_dir/Headers" "$macos_framework_dir/Modules"
+        ln -s Versions/A/Headers "$macos_framework_dir/Headers"
+        ln -s Versions/A/Modules "$macos_framework_dir/Modules"
+    fi
+
+    rm -rf "$XCFRAMEWORK_ZIP_PATH"
+    ditto -c -k --norsrc --keepParent "$XCFRAMEWORK_PATH" "$XCFRAMEWORK_ZIP_PATH"
+    echo "Combined XCFramework built: $XCFRAMEWORK_PATH"
+    echo "Combined XCFramework zip: $XCFRAMEWORK_ZIP_PATH"
 }
 
 t0=$(date +%s)
@@ -257,8 +261,7 @@ if [ "$BUILD_STATIC" = "true" ]; then
 fi
 
 if [ "$BUILD_XCFRAMEWORK" = "true" ]; then
-    build_ios_xcframework
-    build_macos_xcframework
+    build_combined_xcframework
 fi
 
 t1=$(date +%s)
@@ -267,14 +270,15 @@ echo "Build complete!"
 echo "Total time: $((t1 - t0)) seconds"
 
 if [ "$BUILD_STATIC" = "true" ]; then
-    rm -rf "$APPLE_DIR/build-static-device" "$APPLE_DIR/build-static-simulator" "$APPLE_DIR/build-static-macos"
+    rm -rf "$APPLE_DIR/build-static-device" "$APPLE_DIR/build-static-simulator"
     echo "Static libraries:"
     echo "  Device: $APPLE_DIR/libcactus-device.a"
     echo "  Simulator: $APPLE_DIR/libcactus-simulator.a"
 fi
 
 if [ "$BUILD_XCFRAMEWORK" = "true" ]; then
-    echo "XCFrameworks:"
-    echo "  iOS: $APPLE_DIR/cactus-ios.xcframework"
-    echo "  macOS: $APPLE_DIR/cactus-macos.xcframework"
+    rm -rf "$APPLE_DIR/build-xcframework"
+    echo "XCFramework:"
+    echo "  Darwin: $XCFRAMEWORK_PATH"
+    echo "  Darwin zip: $XCFRAMEWORK_ZIP_PATH"
 fi

@@ -153,6 +153,8 @@ def cmd_build(args):
         return _build_with_script("apple", "Building Cactus for Apple platforms")
     if args.android:
         return _build_with_script("android", "Building Cactus for Android")
+    if args.swift:
+        return _build_with_script("bindings/swift", "Building Cactus Swift package")
     if args.python:
         return cmd_build_python()
 
@@ -214,8 +216,8 @@ def _build_with_script(subdir, title):
     """Run a platform build.sh script from the given subdirectory."""
     print_color(BLUE, f"{title}...")
 
-    if subdir == "apple" and platform.system() != "Darwin":
-        print_color(RED, "Error: Apple builds require macOS")
+    if subdir in {"apple", "bindings/swift"} and platform.system() != "Darwin":
+        print_color(RED, "Error: Apple and Swift package builds require macOS")
         return 1
 
     build_script = PROJECT_ROOT / subdir / "build.sh"
