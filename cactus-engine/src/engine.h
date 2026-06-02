@@ -58,6 +58,7 @@ struct Config {
     uint32_t vocab_size = 151936;
     uint32_t bos_token_id = 151643;
     uint32_t eos_token_id = 151645;
+    uint32_t decoder_start_token_id = 151643;
     uint32_t num_layers = 28;
     uint32_t hidden_dim = 1024;
     uint32_t ffn_intermediate_dim = 3072;
@@ -652,6 +653,7 @@ private:
         std::vector<std::string> logical_outputs;
         std::vector<Binding> bindings;
         std::vector<CacheStateBinding> cache_states;
+        std::map<std::string, std::string> metadata;
         std::unique_ptr<CactusGraph> graph;
         std::vector<std::vector<uint8_t>> input_buffers;
     };
@@ -676,6 +678,16 @@ private:
     void run_encoder_step(uint32_t token_id, size_t position);
     void run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
                         Precision feature_precision);
+    void reset_encoder_cross_kv_route_state();
+    bool finish_encoder_cross_kv_prepare();
+    bool prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& tokens);
+    bool prepare_encoder_cross_kv_from_audio(const std::vector<float>& audio_features);
+    bool run_encoder_cross_kv_decoder_step(uint32_t token_id, size_t position);
+    std::vector<uint32_t> run_encoder_cross_kv_decode_loop(
+        const std::vector<uint32_t>& decoder_prompt_tokens,
+        size_t max_tokens,
+        const std::vector<std::vector<uint32_t>>& stop_token_sequences,
+        const std::atomic<bool>* should_stop);
     void copy_component_outputs_to_inputs(const Component& source, Component& target);
     void copy_encoder_outputs_to_decoder(const Component& enc);
     void copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index);
@@ -713,8 +725,10 @@ private:
     Component* decoder_ = nullptr;
     Component* decoder_prefill_ = nullptr;
     Component* prefill_encoder_ = nullptr;
-    enum class DecodeRoute { CACHED_STEP, DIRECT_DECODER_STEP, FULL_CONTEXT_TEXT };
+    enum class DecodeRoute { CACHED_STEP, DIRECT_DECODER_STEP, FULL_CONTEXT_TEXT, ENCODER_CROSS_KV_STEP };
     DecodeRoute decode_route_ = DecodeRoute::CACHED_STEP;
+    Component* source_encoder_ = nullptr;
+    Component* decoder_cross_kv_ = nullptr;
     Component* vision_encoder_ = nullptr;
     Component* audio_encoder_ = nullptr;
     Component* lm_encoder_media_step_ = nullptr;
@@ -722,6 +736,8 @@ private:
     Component* lm_encoder_ = nullptr;
     Component* lm_encoder_text_chunk_ = nullptr;
     Component* lm_encoder_media_chunk_ = nullptr;
+    std::string encoder_cross_kv_source_kind_;
+    bool encoder_cross_kv_ready_ = false;
 
     std::string family_;
     std::string npu_audio_encoder_mlpackage_;

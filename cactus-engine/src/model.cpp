@@ -207,20 +207,41 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     }
     std::string encoder_name;
     std::string decoder_name;
+    std::string source_encoder_name;
+    std::string decoder_cross_kv_name;
     std::unordered_set<std::string> required_components;
-    const bool is_whisper_transcription =
-        config_.model_type == Config::ModelType::WHISPER &&
-        components_.count("audio_encoder") &&
-        components_.count("decoder_cross_kv") &&
-        components_.count("decoder_step");
+    for (const auto& [name, comp] : components_) {
+        auto route_it = comp.metadata.find("runtime_route");
+        if (route_it == comp.metadata.end() || route_it->second != "encoder_cross_kv_decoder_step") {
+            continue;
+        }
+        auto role_it = comp.metadata.find("runtime_role");
+        if (role_it == comp.metadata.end()) {
+            continue;
+        }
+        if (role_it->second == "source_encoder") {
+            source_encoder_name = name;
+            auto source_kind_it = comp.metadata.find("source_kind");
+            if (source_kind_it != comp.metadata.end()) {
+                encoder_cross_kv_source_kind_ = source_kind_it->second;
+            }
+        } else if (role_it->second == "decoder_cross_kv") {
+            decoder_cross_kv_name = name;
+        } else if (role_it->second == "decoder_step") {
+            decoder_name = name;
+        }
+    }
+    const bool has_metadata_encoder_cross_kv_route =
+        !source_encoder_name.empty() &&
+        !decoder_cross_kv_name.empty() &&
+        !decoder_name.empty();
     bool has_chunked_prefill = components_.count("lm_encoder_step")
         && components_.count("decoder_media_step")
         && components_.count("lm_encoder_text_chunk")
         && components_.count("decoder_prefill_chunk");
-    if (is_whisper_transcription) {
-        decoder_name = "decoder_step";
-        decode_route_ = DecodeRoute::DIRECT_DECODER_STEP;
-        required_components = {"audio_encoder", "decoder_cross_kv", decoder_name};
+    if (has_metadata_encoder_cross_kv_route) {
+        decode_route_ = DecodeRoute::ENCODER_CROSS_KV_STEP;
+        required_components = {source_encoder_name, decoder_cross_kv_name, decoder_name};
     } else if (has_chunked_prefill) {
         encoder_name = "lm_encoder_step";
         decoder_name = "decoder_media_step";
@@ -259,7 +280,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         decode_route_ = DecodeRoute::DIRECT_DECODER_STEP;
         required_components = {"audio_encoder", decoder_name};
     } else {
-        CACTUS_LOG_ERROR("model", "Bundle missing required components: need lm_encoder_step+decoder_step (LM), audio_encoder+decoder (transcription), or Whisper audio_encoder+decoder_cross_kv+decoder_step");
+        CACTUS_LOG_ERROR("model", "Bundle missing required components: need lm_encoder_step+decoder_step (LM), text_lm_encoder+decoder, audio_encoder+decoder (transcription), or source/audio_encoder+decoder_cross_kv+decoder_step");
         return false;
     }
     for (const auto& optional : {
@@ -276,6 +297,8 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (!load_components(required_components)) return false;
     if (!encoder_name.empty()) encoder_ = &components_.at(encoder_name);
     if (!decoder_name.empty()) decoder_ = &components_.at(decoder_name);
+    if (!source_encoder_name.empty()) source_encoder_ = &components_.at(source_encoder_name);
+    if (!decoder_cross_kv_name.empty()) decoder_cross_kv_ = &components_.at(decoder_cross_kv_name);
     if (components_.count("decoder_prefill_chunk") && components_.at("decoder_prefill_chunk").graph) {
         decoder_prefill_ = &components_.at("decoder_prefill_chunk");
         decoder_prefill_chunk_ = decoder_prefill_;
@@ -291,8 +314,10 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     lm_encoder_media_chunk_ = components_.count("lm_encoder_media_chunk") ? &components_.at("lm_encoder_media_chunk") : nullptr;
     std::vector<Component*> to_bind = {
         encoder_,
+        source_encoder_,
         prefill_encoder_,
         decoder_,
+        decoder_cross_kv_,
         decoder_prefill_,
         vision_encoder_,
         audio_encoder_,
@@ -301,9 +326,6 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         lm_encoder_text_chunk_,
         lm_encoder_media_chunk_,
     };
-    if (components_.count("decoder_cross_kv")) {
-        to_bind.push_back(&components_.at("decoder_cross_kv"));
-    }
     std::unordered_set<Component*> bound;
     for (Component* comp : to_bind) {
         if (!comp || !comp->graph || bound.count(comp)) continue;
@@ -379,6 +401,13 @@ bool Model::load_manifest() {
         if (c.count("logical_outputs")) {
             for (const auto& v : c.at("logical_outputs").get<picojson::array>())
                 comp.logical_outputs.push_back(v.get<std::string>());
+        }
+        if (c.count("metadata") && c.at("metadata").is<picojson::object>()) {
+            for (const auto& mv : c.at("metadata").get<picojson::object>()) {
+                if (mv.second.is<std::string>()) {
+                    comp.metadata[mv.first] = mv.second.get<std::string>();
+                }
+            }
         }
         if (c.count("bound_constant_bindings")) {
             for (const auto& bv : c.at("bound_constant_bindings").get<picojson::array>()) {
@@ -1250,6 +1279,19 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     if (tokens.empty() || !decoder_ || cache_total_seq_len_ != 0) {
         return false;
     }
+    if (decode_route_ == DecodeRoute::ENCODER_CROSS_KV_STEP && encoder_cross_kv_source_kind_ == "text_tokens") {
+        if (!prepare_encoder_cross_kv_from_text(tokens)) {
+            return false;
+        }
+        std::vector<uint32_t> emitted = run_encoder_cross_kv_decode_loop(
+            {config_.decoder_start_token_id},
+            1,
+            {},
+            nullptr);
+        if (emitted.empty()) return false;
+        out_token = emitted.front();
+        return true;
+    }
     if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
@@ -1303,6 +1345,11 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     last_prefill_cache_copy_ms_ = 0.0;
     last_prefill_padding_tokens_ = 0;
     last_prefill_scalar_tail_tokens_ = 0;
+    if (decode_route_ == DecodeRoute::ENCODER_CROSS_KV_STEP && encoder_cross_kv_source_kind_ == "text_tokens") {
+        (void)prepare_decode;
+        prepare_encoder_cross_kv_from_text(tokens);
+        return;
+    }
     if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         if (!context_tokens_.empty()) run_full_context_text();
@@ -1482,6 +1529,139 @@ std::vector<int64_t> qwen3_vl_position_ids(const std::vector<uint32_t>& tokens,
 }
 
 } // namespace
+
+void Model::reset_encoder_cross_kv_route_state() {
+    if (!decoder_) return;
+    reset_component_cache_states(*decoder_);
+    cache_total_seq_len_ = 0;
+    token_history_.clear();
+    encoder_cross_kv_ready_ = false;
+}
+
+bool Model::finish_encoder_cross_kv_prepare() {
+    if (!source_encoder_ || !decoder_cross_kv_ || !decoder_) return false;
+    source_encoder_->graph->execute();
+    copy_component_outputs_to_inputs(*source_encoder_, *decoder_cross_kv_);
+    decoder_cross_kv_->graph->execute();
+    copy_component_outputs_to_inputs(*source_encoder_, *decoder_);
+    copy_component_outputs_to_inputs(*decoder_cross_kv_, *decoder_);
+    encoder_cross_kv_ready_ = true;
+    return true;
+}
+
+bool Model::prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& tokens) {
+    if (!source_encoder_ || !decoder_cross_kv_ || !decoder_ || tokens.empty()) return false;
+    if (encoder_cross_kv_source_kind_ != "text_tokens") return false;
+
+    reset_encoder_cross_kv_route_state();
+    for (auto& buf : source_encoder_->input_buffers) {
+        std::fill(buf.begin(), buf.end(), 0);
+    }
+
+    int ids_idx = input_index(*source_encoder_, "input_ids");
+    if (ids_idx < 0) {
+        CACTUS_LOG_ERROR("model", "source encoder missing input_ids input");
+        return false;
+    }
+    size_t ids_node = static_cast<size_t>(source_encoder_->runtime_input_node_ids[ids_idx]);
+    const auto& ids_desc = source_encoder_->graph->get_output_buffer(ids_node);
+    if (tokens.size() > ids_desc.total_size) {
+        CACTUS_LOG_ERROR("model", "source token count exceeds source encoder capacity");
+        return false;
+    }
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        write_int_input_at(*source_encoder_, "input_ids", i, static_cast<int64_t>(tokens[i]));
+    }
+
+    int mask_idx = input_index(*source_encoder_, "attention_mask");
+    if (mask_idx >= 0) {
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            write_int_input_at(*source_encoder_, "attention_mask", i, 1);
+        }
+    }
+
+    return finish_encoder_cross_kv_prepare();
+}
+
+bool Model::prepare_encoder_cross_kv_from_audio(const std::vector<float>& audio_features) {
+    if (!source_encoder_ || !decoder_cross_kv_ || !decoder_) return false;
+    int feature_idx = input_index(*source_encoder_, "input_features");
+    if (feature_idx < 0) {
+        feature_idx = input_index(*source_encoder_, "audio_features");
+    }
+    if (feature_idx < 0) {
+        CACTUS_LOG_ERROR("model", "audio source encoder missing input_features/audio_features input");
+        return false;
+    }
+
+    reset_encoder_cross_kv_route_state();
+
+    auto& feature_buf = source_encoder_->input_buffers[feature_idx];
+    size_t feature_node = static_cast<size_t>(source_encoder_->runtime_input_node_ids[feature_idx]);
+    const auto& feature_desc = source_encoder_->graph->get_output_buffer(feature_node);
+    write_typed_buffer(
+        feature_buf,
+        feature_desc.precision,
+        audio_features.data(),
+        audio_features.size() * sizeof(float),
+        Precision::FP32);
+
+    return finish_encoder_cross_kv_prepare();
+}
+
+bool Model::run_encoder_cross_kv_decoder_step(uint32_t token_id, size_t position) {
+    if (!encoder_cross_kv_ready_ || !decoder_) return false;
+    int ids_idx = input_index(*decoder_, "decoder_input_ids");
+    const char* ids_name = "decoder_input_ids";
+    if (ids_idx < 0) {
+        ids_idx = input_index(*decoder_, "input_ids");
+        ids_name = "input_ids";
+    }
+    int pos_idx = input_index(*decoder_, "position_ids");
+    if (ids_idx < 0 || pos_idx < 0) {
+        CACTUS_LOG_ERROR("model", "decoder_step missing decoder_input_ids/input_ids or position_ids input");
+        return false;
+    }
+    write_int_input(*decoder_, ids_name, static_cast<int64_t>(token_id));
+    write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
+    decoder_->graph->execute();
+    return true;
+}
+
+std::vector<uint32_t> Model::run_encoder_cross_kv_decode_loop(
+    const std::vector<uint32_t>& decoder_prompt_tokens,
+    size_t max_tokens,
+    const std::vector<std::vector<uint32_t>>& stop_token_sequences,
+    const std::atomic<bool>* should_stop) {
+    std::vector<uint32_t> emitted;
+    if (!encoder_cross_kv_ready_ || decoder_prompt_tokens.empty() || max_tokens == 0) return emitted;
+
+    std::vector<uint32_t> tokens = decoder_prompt_tokens;
+    auto stopped = [&]() {
+        for (const auto& stop_seq : stop_token_sequences) {
+            if (stop_seq.empty() || emitted.size() < stop_seq.size()) continue;
+            if (std::equal(stop_seq.rbegin(), stop_seq.rend(), emitted.rbegin())) return true;
+        }
+        return false;
+    };
+
+    for (size_t i = 0; i < max_tokens; ++i) {
+        if (should_stop && should_stop->load()) break;
+        const size_t start = cache_total_seq_len_ < tokens.size() ? cache_total_seq_len_ : tokens.size() - 1;
+        for (size_t pos = start; pos < tokens.size(); ++pos) {
+            if (!run_encoder_cross_kv_decoder_step(tokens[pos], pos)) return emitted;
+        }
+        cache_total_seq_len_ = tokens.size();
+
+        uint32_t next_token = argmax_last_logits();
+        record_sampled_token(next_token);
+        emitted.push_back(next_token);
+        if (stopped()) break;
+        tokens.push_back(next_token);
+    }
+
+    return emitted;
+}
 
 bool Model::build_lm_encoder_outputs_dynamic_gemma4(
     const std::vector<uint32_t>& tokens,
@@ -2055,6 +2235,26 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
                         size_t /*top_k*/, const std::string& /*profile_file*/, float* out_entropy,
                         float /*min_p*/, float /*repetition_penalty*/) {
     if (tokens.empty()) return 0;
+    if (decode_route_ == DecodeRoute::ENCODER_CROSS_KV_STEP) {
+        if (!encoder_cross_kv_ready_ && encoder_cross_kv_source_kind_ == "text_tokens") {
+            if (!prepare_encoder_cross_kv_from_text(tokens)) return 0;
+            std::vector<uint32_t> emitted = run_encoder_cross_kv_decode_loop(
+                {config_.decoder_start_token_id},
+                1,
+                {},
+                nullptr);
+            if (out_entropy) *out_entropy = 0.0f;
+            return emitted.empty() ? 0 : emitted.front();
+        }
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            if (!run_encoder_cross_kv_decoder_step(tokens[i], cache_total_seq_len_ + i)) return 0;
+        }
+        cache_total_seq_len_ += tokens.size();
+        if (out_entropy) *out_entropy = 0.0f;
+        uint32_t result = argmax_last_logits();
+        record_sampled_token(result);
+        return result;
+    }
     if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
@@ -2089,117 +2289,17 @@ std::vector<uint32_t> Model::transcribe_whisper_seq2seq(
     size_t max_tokens,
     const std::vector<std::vector<uint32_t>>& stop_token_sequences,
     const std::atomic<bool>* should_stop) {
-    std::vector<uint32_t> emitted;
-    if (decoder_prompt_tokens.empty() || max_tokens == 0) return emitted;
-
-    Component* audio_enc = components_.count("audio_encoder") ? &components_.at("audio_encoder") : nullptr;
-    Component* cross_kv = components_.count("decoder_cross_kv") ? &components_.at("decoder_cross_kv") : nullptr;
-    Component* step = components_.count("decoder_step") ? &components_.at("decoder_step") : nullptr;
-    if (!audio_enc || !cross_kv || !step) {
-        CACTUS_LOG_ERROR("model", "Whisper bundle missing audio_encoder, decoder_cross_kv, or decoder_step component");
-        return emitted;
+    if (decoder_prompt_tokens.empty() || max_tokens == 0) return {};
+    if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP || encoder_cross_kv_source_kind_ != "audio_features") {
+        CACTUS_LOG_ERROR("model", "Whisper bundle missing encoder_cross_kv_decoder_step route metadata");
+        return {};
     }
-    if (!bind_runtime_buffers(*audio_enc)) return emitted;
-    if (!bind_runtime_buffers(*cross_kv)) return emitted;
-    if (!bind_runtime_buffers(*step)) return emitted;
-
-    reset_component_cache_states(*step);
-    cache_total_seq_len_ = 0;
-    token_history_.clear();
-
-    const int feat_idx = input_index(*audio_enc, "input_features");
-    if (feat_idx < 0) {
-        CACTUS_LOG_ERROR("model", "Whisper audio_encoder has no input_features input");
-        return emitted;
-    }
-    auto& feat_buf = audio_enc->input_buffers[feat_idx];
-    const size_t feat_node = static_cast<size_t>(audio_enc->runtime_input_node_ids[feat_idx]);
-    const auto& feat_desc = audio_enc->graph->get_output_buffer(feat_node);
-    write_typed_buffer(
-        feat_buf,
-        feat_desc.precision,
-        audio_features.data(),
-        audio_features.size() * sizeof(float),
-        Precision::FP32);
-    audio_enc->graph->execute();
-
-    const int hidden_idx = output_index(*audio_enc, "encoder_hidden_states");
-    if (hidden_idx < 0) {
-        CACTUS_LOG_ERROR("model", "Whisper audio_encoder has no encoder_hidden_states output");
-        return emitted;
-    }
-    const size_t hidden_node = static_cast<size_t>(audio_enc->output_node_ids[hidden_idx]);
-    const auto& hidden_desc = audio_enc->graph->get_output_buffer(hidden_node);
-    const void* hidden_ptr = audio_enc->graph->get_output(hidden_node);
-    if (hidden_ptr == nullptr || hidden_desc.byte_size == 0) {
-        CACTUS_LOG_ERROR("model", "Whisper encoder_hidden_states output is empty");
-        return emitted;
-    }
-
-    const int cross_hidden_idx = input_index(*cross_kv, "encoder_hidden_states");
-    if (cross_hidden_idx < 0) {
-        CACTUS_LOG_ERROR("model", "Whisper decoder_cross_kv missing encoder_hidden_states input");
-        return emitted;
-    }
-    auto& cross_hidden_buf = cross_kv->input_buffers[cross_hidden_idx];
-    const size_t cross_hidden_node = static_cast<size_t>(cross_kv->runtime_input_node_ids[cross_hidden_idx]);
-    const auto& cross_hidden_desc = cross_kv->graph->get_output_buffer(cross_hidden_node);
-    write_typed_buffer(
-        cross_hidden_buf,
-        cross_hidden_desc.precision,
-        hidden_ptr,
-        hidden_desc.byte_size,
-        hidden_desc.precision);
-    cross_kv->graph->execute();
-
-    for (size_t i = 0; i < cross_kv->output_node_ids.size() && i < cross_kv->logical_outputs.size(); ++i) {
-        const std::string& name = cross_kv->logical_outputs[i];
-        int idx = input_index(*step, name);
-        if (idx < 0) continue;
-        const size_t src_node = static_cast<size_t>(cross_kv->output_node_ids[i]);
-        const auto& src_desc = cross_kv->graph->get_output_buffer(src_node);
-        const void* src_ptr = cross_kv->graph->get_output(src_node);
-        if (src_ptr == nullptr || src_desc.byte_size == 0) continue;
-        auto& dst_buf = step->input_buffers[idx];
-        const size_t dst_node = static_cast<size_t>(step->runtime_input_node_ids[idx]);
-        const auto& dst_desc = step->graph->get_output_buffer(dst_node);
-        write_typed_buffer(dst_buf, dst_desc.precision, src_ptr, src_desc.byte_size, src_desc.precision);
-    }
-
-    const int ids_idx = input_index(*step, "decoder_input_ids");
-    const int pos_idx = input_index(*step, "position_ids");
-    if (ids_idx < 0 || pos_idx < 0) {
-        CACTUS_LOG_ERROR("model", "Whisper decoder_step missing decoder_input_ids or position_ids input");
-        return emitted;
-    }
-
-    std::vector<uint32_t> tokens = decoder_prompt_tokens;
-    auto stopped = [&]() {
-        for (const auto& stop_seq : stop_token_sequences) {
-            if (stop_seq.empty() || emitted.size() < stop_seq.size()) continue;
-            if (std::equal(stop_seq.rbegin(), stop_seq.rend(), emitted.rbegin())) return true;
-        }
-        return false;
-    };
-
-    for (size_t i = 0; i < max_tokens; ++i) {
-        if (should_stop && should_stop->load()) break;
-        const size_t start = cache_total_seq_len_ < tokens.size() ? cache_total_seq_len_ : tokens.size() - 1;
-        for (size_t pos = start; pos < tokens.size(); ++pos) {
-            write_int_input(*step, "decoder_input_ids", static_cast<int64_t>(tokens[pos]));
-            write_int_input(*step, "position_ids", static_cast<int64_t>(pos));
-            step->graph->execute();
-        }
-        cache_total_seq_len_ = tokens.size();
-
-        uint32_t next_token = argmax_last_logits();
-        record_sampled_token(next_token);
-        emitted.push_back(next_token);
-        if (stopped()) break;
-        tokens.push_back(next_token);
-    }
-
-    return emitted;
+    if (!prepare_encoder_cross_kv_from_audio(audio_features)) return {};
+    return run_encoder_cross_kv_decode_loop(
+        decoder_prompt_tokens,
+        max_tokens,
+        stop_token_sequences,
+        should_stop);
 }
 
 std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& audio_features) {
@@ -2456,6 +2556,7 @@ std::vector<float> Model::get_audio_embeddings(const std::vector<float>& /*mel_b
 void Model::reset_cache() {
     cache_total_seq_len_ = 0;
     last_logit_position_ = 0;
+    encoder_cross_kv_ready_ = false;
     context_tokens_.clear();
     token_history_.clear();
     media_features_.clear();
@@ -2570,6 +2671,7 @@ bool Config::from_json(const std::string& config_path) {
     }
     
     std::string line;
+    bool decoder_start_token_seen = false;
     while (std::getline(file, line)) {
         if (line.empty() || line[0] == '#') continue;
         
@@ -2587,6 +2689,10 @@ bool Config::from_json(const std::string& config_path) {
         if (key == "vocab_size") vocab_size = static_cast<uint32_t>(std::stoul(value));
         else if (key == "bos_token_id") bos_token_id = static_cast<uint32_t>(std::stoul(value));
         else if (key == "eos_token_id") eos_token_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "decoder_start_token_id") {
+            decoder_start_token_id = static_cast<uint32_t>(std::stoul(value));
+            decoder_start_token_seen = true;
+        }
         else if (key == "num_layers") num_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "hidden_dim") hidden_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "ffn_intermediate_dim") ffn_intermediate_dim = static_cast<uint32_t>(std::stoul(value));
@@ -2828,6 +2934,10 @@ bool Config::from_json(const std::string& config_path) {
             CACTUS_LOG_ERROR("config", "Gemma4 config missing required fields:" << missing);
             return false;
         }
+    }
+
+    if (!decoder_start_token_seen) {
+        decoder_start_token_id = bos_token_id;
     }
 
     return true;

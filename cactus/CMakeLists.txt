@@ -42,6 +42,11 @@ if(APPLE)
     set(_CURL "${CACTUS_CURL_ROOT}/macos/libcurl.a")
     if(EXISTS "${_CURL}")
         target_link_libraries(cactus_shared PRIVATE "${_CURL}")
+    else()
+        find_library(CACTUS_CURL_LIBRARY_MACOS NAMES curl)
+        if(CACTUS_CURL_LIBRARY_MACOS)
+            target_link_libraries(cactus_shared PRIVATE "${CACTUS_CURL_LIBRARY_MACOS}")
+        endif()
     endif()
     target_link_libraries(cactus_shared PRIVATE
         "-framework Accelerate" "-framework CoreML" "-framework Foundation"

@@ -201,12 +201,24 @@ QWEN_PROFILE = ModelProfile(
 )
 
 
+NEEDLE_PROFILE = ModelProfile(
+    family="needle",
+    model_types=("needle",),
+    model_id_markers=("needle",),
+    avoid_native_loader=True,
+    default_task="causal_lm_logits",
+    default_components=("source_encoder", "decoder_cross_kv", "decoder_step"),
+    force_component_pipeline=True,
+)
+
+
 PROFILES: tuple[ModelProfile, ...] = (
     GEMMA4_PROFILE,
     LFM2_PROFILE,
     PARAKEET_TDT_PROFILE,
     WHISPER_PROFILE,
     QWEN_PROFILE,
+    NEEDLE_PROFILE,
 )
 
 
