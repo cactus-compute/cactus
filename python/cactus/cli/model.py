@@ -329,5 +329,13 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     if rc != 0:
         raise RuntimeError(f"Transpilation failed for {model_id}")
 
+    try:
+        from cactus.convert.handoff_probe import export_gemma4_handoff_probe
+
+        if export_gemma4_handoff_probe(output_dir, model_id=model_id):
+            print_color(GREEN, f"Gemma4 cloud handoff probe packaged into {output_dir}")
+    except Exception as e:
+        print_color(YELLOW, f"Warning: failed to package Gemma4 cloud handoff probe: {e}")
+
     print_color(GREEN, f"Model converted and transpiled to {output_dir}")
     return output_dir

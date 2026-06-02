@@ -203,13 +203,19 @@ struct TokenPrinter {
         ++count;
     }
 
-    void print_stats(double ram_mb, double confidence, bool cloud_handoff) const {
+    void print_stats(double ram_mb, double confidence, bool cloud_handoff,
+                     int reported_tokens = -1, double reported_decode_tps = -1.0,
+                     double reported_ttft_ms = -1.0, double reported_total_ms = -1.0) const {
         auto end = std::chrono::steady_clock::now();
         double total_s = std::chrono::duration<double>(end - start).count();
         double ttft_s = saw_first ? std::chrono::duration<double>(first - start).count() : 0.0;
         double decode_s = saw_first ? std::chrono::duration<double>(end - first).count() : total_s;
+        int display_tokens = reported_tokens >= 0 ? reported_tokens : count;
         double tps = (count > 1 && decode_s > 0.0) ? (count - 1) / decode_s : (total_s > 0.0 ? count / total_s : 0.0);
-        std::cout << "\n[" << count << " tokens | latency: "
+        if (reported_decode_tps >= 0.0) tps = reported_decode_tps;
+        if (reported_ttft_ms >= 0.0) ttft_s = reported_ttft_ms / 1000.0;
+        if (reported_total_ms >= 0.0) total_s = reported_total_ms / 1000.0;
+        std::cout << "\n[" << display_tokens << " tokens | latency: "
                   << std::fixed << std::setprecision(3) << ttft_s
                   << "s | total: " << total_s
                   << "s | " << std::setprecision(1) << tps << " tok/s";
@@ -627,7 +633,11 @@ int main(int argc, char** argv) {
         bool cloud_handoff = json_bool_value(response_json, "cloud_handoff");
         double confidence = json_number_value(response_json, "confidence", -1.0);
         double ram_mb = json_number_value(response_json, "ram_usage_mb");
-        printer.print_stats(ram_mb, confidence, cloud_handoff);
+        int decode_tokens = static_cast<int>(json_number_value(response_json, "decode_tokens", -1.0));
+        double decode_tps = json_number_value(response_json, "decode_tps", -1.0);
+        double ttft_ms = json_number_value(response_json, "time_to_first_token_ms", -1.0);
+        double total_ms = json_number_value(response_json, "total_time_ms", -1.0);
+        printer.print_stats(ram_mb, confidence, cloud_handoff, decode_tokens, decode_tps, ttft_ms, total_ms);
         std::cout << "\n";
 
         if (rc < 0) {

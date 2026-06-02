@@ -6,6 +6,7 @@
 #include "wav.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
@@ -456,8 +457,15 @@ PreparedPrompt prepare_prompt(
     prompt.model_type = handle->model->get_config().model_type;
 
     if (prompt.options.confidence_threshold < 0.0f) {
-        float model_default = handle->model->get_config().default_cloud_handoff_threshold;
-        prompt.options.confidence_threshold = (model_default > 0.0f) ? model_default : 0.7f;
+        if (handle->model->has_handoff_probe()) {
+            // The Gemma4 probe returns p_wrong; confidence is 1 - p_wrong.
+            // A conservative default avoids clouding routine prompts just
+            // because the probe is only moderately confident.
+            prompt.options.confidence_threshold = 0.20f;
+        } else {
+            float model_default = handle->model->get_config().default_cloud_handoff_threshold;
+            prompt.options.confidence_threshold = (model_default > 0.0f) ? model_default : 0.7f;
+        }
     }
 
     if (prompt.model_type == Config::ModelType::GEMMA4) {
@@ -697,6 +705,8 @@ int cactus_complete(
         const bool cloud_disabled = env_flag_enabled("CACTUS_DISABLE_CLOUD_HANDOFF");
         const bool cloud_eligible = !cloud_disabled &&
             prompt.options.auto_handoff && (!has_images || prompt.options.handoff_with_images);
+        handle->model->reset_handoff_probe_rollout();
+        const bool defer_local_stream_until_probe = cloud_eligible && handle->model->has_handoff_probe();
         bool pre_generation_cloud_attempted = false;
 
         auto make_cloud_request = [&](const std::string& local_output_hint,
@@ -829,7 +839,9 @@ int cactus_complete(
         entropy.add(first_token_entropy);
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
-            if (!pre_generation_cloud_attempted && confidence < prompt.options.confidence_threshold) {
+            if (!defer_local_stream_until_probe
+                && !pre_generation_cloud_attempted
+                && confidence < prompt.options.confidence_threshold) {
                 CACTUS_LOG_WARN("cloud_handoff", "Cloud handoff triggered before local streaming; waiting up to "
                     << prompt.options.cloud_timeout_ms << " ms before falling back");
                 CloudCompletionResult cloud_result = cloud_complete_request(
@@ -847,7 +859,7 @@ int cactus_complete(
                 CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed before local streaming, falling back to local output: " << cloud_error);
             }
 
-            if (callback) {
+            if (callback && !defer_local_stream_until_probe) {
                 std::string new_text = tokenizer->decode({next_token});
                 callback(new_text.c_str(), next_token, user_data);
             }
@@ -884,7 +896,7 @@ int cactus_complete(
                     break;
                 }
 
-                if (callback) {
+                if (callback && !defer_local_stream_until_probe) {
                     std::string new_text = tokenizer->decode({next_token});
                     callback(new_text.c_str(), next_token, user_data);
                 }
@@ -894,6 +906,14 @@ int cactus_complete(
         }
 
         confidence = entropy.mean_confidence();
+        if (defer_local_stream_until_probe && handle->model->has_handoff_probe_rollout()) {
+            float wrong_probability = handle->model->handoff_probe_wrong_probability();
+            if (std::isfinite(wrong_probability)) {
+                confidence = std::max(0.0f, std::min(1.0f, 1.0f - wrong_probability));
+                CACTUS_LOG_DEBUG("cloud_handoff", "Gemma4 handoff probe p_wrong="
+                    << wrong_probability << " confidence=" << confidence);
+            }
+        }
 
         if (prompt.options.force_tools && !prompt.tools.empty()) {
             handle->model->clear_tool_constraints();
@@ -934,7 +954,32 @@ int cactus_complete(
         std::string primary_response = local_completion;
         std::vector<std::string> primary_function_calls = function_calls;
 
-        const bool handoff_succeeded = false;
+        bool handoff_succeeded = false;
+        if (defer_local_stream_until_probe && !pre_generation_cloud_attempted
+            && confidence < prompt.options.confidence_threshold) {
+            CACTUS_LOG_WARN("cloud_handoff", "Cloud handoff triggered by Gemma4 probe: p_wrong="
+                << (1.0f - confidence) << " confidence=" << confidence
+                << "; waiting up to " << prompt.options.cloud_timeout_ms << " ms");
+            CloudCompletionResult cloud_result = cloud_complete_request(
+                make_cloud_request(local_completion, function_calls),
+                static_cast<long>(prompt.options.cloud_timeout_ms));
+            auto now = std::chrono::high_resolution_clock::now();
+            double elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count() / 1000.0;
+            if (cloud_result.ok && (!cloud_result.response.empty() || !cloud_result.function_calls.empty())) {
+                if (prompt.options.force_tools && !prompt.tools.empty()) {
+                    handle->model->clear_tool_constraints();
+                }
+                return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, confidence, prompt_tokens);
+            }
+            cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
+            CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed after probe handoff, falling back to local output: "
+                << cloud_error);
+        }
+
+        if (callback && defer_local_stream_until_probe && !primary_response.empty()) {
+            callback(primary_response.c_str(), 0, user_data);
+        }
+
         std::string result = construct_response_json(primary_response, primary_function_calls, time_to_first_token,
                                                      total_time_ms, prefill_tps, decode_tps, prompt_tokens,
                                                      completion_tokens, confidence, handoff_succeeded,

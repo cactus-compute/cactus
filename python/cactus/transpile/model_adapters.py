@@ -523,8 +523,10 @@ def _gemma4_text_backbone_forward(
     layer_end: int | None = None,
     apply_norm: bool = True,
     shared_kv_states: dict[int, tuple[torch.Tensor, torch.Tensor]] | None | object = _UNSET,
-) -> torch.Tensor:
+    capture_layer_index: int | None = None,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     hidden_states = inputs_embeds
+    captured_hidden: torch.Tensor | None = None
     layer_types = tuple(dict.fromkeys(getattr(backbone.config, "layer_types", ())))
     position_embeddings = {
         layer_type: backbone.rotary_emb(hidden_states, position_ids, layer_type)
@@ -557,8 +559,15 @@ def _gemma4_text_backbone_forward(
             use_cache=False,
             shared_kv_states=shared_kv_states,
         )
+        if capture_layer_index is not None and layer_index == int(capture_layer_index):
+            captured_hidden = hidden_states
 
-    return backbone.norm(hidden_states) if apply_norm else hidden_states
+    output_hidden = backbone.norm(hidden_states) if apply_norm else hidden_states
+    if capture_layer_index is None:
+        return output_hidden
+    if captured_hidden is None:
+        captured_hidden = hidden_states
+    return output_hidden, captured_hidden
 
 
 def _gemma4_strip_audio_padding(audio_output: object) -> torch.Tensor:
@@ -3130,7 +3139,39 @@ class Gemma4DecoderAdapter(_Gemma4MultimodalComponentBase):
 
 
 class Gemma4DecoderStepAdapter(Gemma4DecoderAdapter):
-    pass
+    def forward(
+        self,
+        inputs_embeds: torch.Tensor,
+        per_layer_inputs: torch.Tensor,
+        position_ids: torch.LongTensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        normalized_per_layer_inputs = per_layer_inputs
+        if normalized_per_layer_inputs.numel() == 0:
+            normalized_per_layer_inputs = None
+        attention_mask = torch.ones(
+            position_ids.shape,
+            dtype=torch.long,
+            device=position_ids.device,
+        )
+        causal_mask_mapping = _gemma4_build_standard_causal_mask_mapping(
+            create_causal_mask=self._create_causal_mask,
+            create_sliding_window_causal_mask=self._create_sliding_window_causal_mask,
+            config=self.backbone.config,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+        )
+        hidden_states, probe_hidden = _gemma4_text_backbone_forward(
+            self.backbone,
+            inputs_embeds=inputs_embeds,
+            per_layer_inputs=normalized_per_layer_inputs,
+            causal_mask_mapping=causal_mask_mapping,
+            position_ids=position_ids,
+            capture_layer_index=28,
+        )
+        logits = self.model.lm_head(hidden_states[:, -1:, :])
+        logits = _gemma4_apply_final_logit_softcapping(self.model, logits)
+        return logits, probe_hidden[:, -1:, :]
 
 
 class Gemma4DecoderPrefillChunkAdapter(Gemma4DecoderAdapter):
@@ -3530,7 +3571,7 @@ def _build_gemma4_multimodal_component_specs(
             module=decoder_step,
             example_inputs=tuple(decoder_step_inputs),
             input_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
-            output_keys=("logits",),
+            output_keys=("logits", "probe_hidden"),
             graph_meta={
                 **common_graph_meta,
                 "component": "decoder_step",

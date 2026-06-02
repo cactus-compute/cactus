@@ -630,6 +630,11 @@ public:
     bool has_vocab_bias() const { return !vocab_bias_.empty(); }
     const std::unordered_map<uint32_t, float>& get_vocab_bias() const { return vocab_bias_; }
 
+    bool has_handoff_probe() const { return handoff_probe_loaded_; }
+    void reset_handoff_probe_rollout() { handoff_probe_hidden_.clear(); }
+    bool has_handoff_probe_rollout() const;
+    float handoff_probe_wrong_probability() const;
+
 private:
     struct Binding {
         int node_id = -1;
@@ -695,6 +700,8 @@ private:
     int input_index(const Component& comp, const std::string& name) const;
     int output_index(const Component& comp, const std::string& name) const;
     uint32_t argmax_last_logits(float* out_uncertainty = nullptr);
+    bool load_handoff_probe();
+    void maybe_capture_handoff_probe_hidden(const Component& comp);
     void run_vision_encoder(const std::string& image_path);
     void run_audio_encoder(const std::vector<float>& audio_features);
     void run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message);
@@ -753,6 +760,24 @@ private:
 
     ToolCallConstrainer tool_constrainer_;
     std::unordered_map<uint32_t, float> vocab_bias_;
+
+    bool handoff_probe_loaded_ = false;
+    uint32_t handoff_probe_feat_dim_ = 0;
+    uint32_t handoff_probe_t_h_ = 0;
+    uint32_t handoff_probe_h1_ = 0;
+    uint32_t handoff_probe_h2_ = 0;
+    std::vector<float> handoff_probe_norm_weight_;
+    std::vector<float> handoff_probe_norm_bias_;
+    std::vector<float> handoff_probe_proj_weight_;
+    std::vector<float> handoff_probe_proj_bias_;
+    std::vector<float> handoff_probe_attn_query_;
+    std::vector<float> handoff_probe_head0_weight_;
+    std::vector<float> handoff_probe_head0_bias_;
+    std::vector<float> handoff_probe_head2_weight_;
+    std::vector<float> handoff_probe_head2_bias_;
+    std::vector<float> handoff_probe_head4_weight_;
+    std::vector<float> handoff_probe_head4_bias_;
+    std::vector<float> handoff_probe_hidden_;
 
     mutable std::vector<DebugNode> debug_nodes_;
 };
