@@ -143,7 +143,16 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
 
     tokenizer_model = tokenizer_json_data.get("model", {}) if tokenizer_json_data else {}
     tokenizer_model_type = str(tokenizer_model.get("type", "")).upper()
-    is_sentencepiece = tokenizer_model_type != "BPE" and model_type in SENTENCEPIECE_MODEL_TYPES
+    is_unigram = tokenizer_model_type == "UNIGRAM"
+    is_sentencepiece = is_unigram or (tokenizer_model_type != "BPE" and model_type in SENTENCEPIECE_MODEL_TYPES)
+
+    # Unigram (e.g. XLM-RoBERTa, used by nomic-embed) carries per-token scores that
+    # the SentencePiece runtime needs for Viterbi segmentation.
+    unigram_scores: dict[int, float] = {}
+    if is_unigram and isinstance(tokenizer_model.get("vocab"), list):
+        for token_id, entry in enumerate(tokenizer_model["vocab"]):
+            if isinstance(entry, (list, tuple)) and len(entry) == 2:
+                unigram_scores[token_id] = float(entry[1])
 
     if tokenizer_model_type == "BPE" and tokenizer_model.get("vocab"):
         vocab = tokenizer_model["vocab"]
@@ -376,8 +385,12 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
     with open(vocab_output, 'w', encoding='utf-8') as f:
         for token_id, token_str in enumerate(id_to_token):
             if token_str:
-                f.write(f"{token_id}\t{token_str}\n")
-    print(f"  Saved tokenizer vocabulary (ID\\ttoken format)")
+                if unigram_scores:
+                    f.write(f"{token_id}\t{token_str}\t{unigram_scores.get(token_id, 0.0)}\n")
+                else:
+                    f.write(f"{token_id}\t{token_str}\n")
+    vocab_fmt = "ID\\ttoken\\tscore" if unigram_scores else "ID\\ttoken"
+    print(f"  Saved tokenizer vocabulary ({vocab_fmt} format)")
 
     special_tokens_output = output_dir / "special_tokens.json"
     with open(special_tokens_output, 'w', encoding='utf-8') as f:
@@ -410,6 +423,9 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
             decoder = "byte_level"
     elif is_sentencepiece:
         tokenizer_type = "sentencepiece"
+        if is_unigram:
+            normalizer = "metaspace"
+            decoder = "replace_metaspace"
 
     tokenizer_config_output = output_dir / "tokenizer_config.txt"
     with open(tokenizer_config_output, 'w') as f:
@@ -422,6 +438,10 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         f.write(f"normalizer={normalizer}\n")
         f.write(f"decoder={decoder}\n")
         f.write(f"byte_fallback={'true' if byte_fallback else 'false'}\n")
+        if is_unigram:
+            f.write("sp_model_type=unigram\n")
+            f.write("sp_add_dummy_prefix=true\n")
+            f.write("sp_byte_fallback=false\n")
 
         if chat_template_data:
             f.write("has_chat_template=true\n")

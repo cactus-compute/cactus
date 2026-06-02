@@ -205,6 +205,18 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         CACTUS_LOG_ERROR("model", "Tokenizer init failed for bundle: " << bundle_dir);
         return false;
     }
+    const bool is_text_embedding =
+        components_.count("text_embedding")
+        && !components_.count("decoder")
+        && !components_.count("decoder_step")
+        && !components_.count("lm_encoder_step");
+    if (is_text_embedding) {
+        // Embedding-only bundle: no decode route; get_embeddings loads the
+        // text_embedding component on demand.
+        cache_max_seq_len_ = context_size;
+        initialized_ = true;
+        return true;
+    }
     std::string encoder_name;
     std::string decoder_name;
     std::unordered_set<std::string> required_components;
@@ -2743,9 +2755,89 @@ void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>&
     }
 }
 
-std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& /*tokens*/, bool /*pooled*/,
-                                          bool /*normalize*/, const std::string& /*profile_file*/) {
-    throw std::runtime_error("Text embeddings not wired up for transpiled bundles yet");
+std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bool pooled,
+                                          bool normalize, const std::string& /*profile_file*/) {
+    if (!components_.count("text_embedding")) {
+        throw std::runtime_error("get_embeddings: bundle has no text_embedding component");
+    }
+    if (tokens.empty()) {
+        throw std::runtime_error("get_embeddings: empty token sequence");
+    }
+    Component* comp = &components_.at("text_embedding");
+    if (!load_component_graph(*comp)) {
+        throw std::runtime_error("get_embeddings: failed to load embedding component graph");
+    }
+
+    // Embedding encoders (nomic / XLM-R) wrap the sequence with BOS/EOS, matching
+    // the reference tokenizer's add_special_tokens behavior.
+    std::vector<uint32_t> wrapped;
+    wrapped.reserve(tokens.size() + 2);
+    if (tokenizer_) wrapped.push_back(tokenizer_->get_bos_token());
+    wrapped.insert(wrapped.end(), tokens.begin(), tokens.end());
+    if (tokenizer_) wrapped.push_back(tokenizer_->get_eos_token());
+
+    int ids_idx = input_index(*comp, "input_ids");
+    if (ids_idx < 0) {
+        throw std::runtime_error("get_embeddings: embedding component missing input_ids");
+    }
+    auto& ids_buf = comp->input_buffers[ids_idx];
+    size_t ids_node = static_cast<size_t>(comp->runtime_input_node_ids[ids_idx]);
+    const auto& ids_desc = comp->graph->get_output_buffer(ids_node);
+    size_t capacity = PrecisionTraits::size_of(ids_desc.precision)
+                        ? ids_buf.size() / PrecisionTraits::size_of(ids_desc.precision) : wrapped.size();
+    size_t n_real = std::min(capacity, wrapped.size());
+    write_tokens_buffer(ids_buf, ids_desc.precision, wrapped, 0);
+
+    int mask_idx = input_index(*comp, "attention_mask");
+    if (mask_idx >= 0) {
+        auto& mb = comp->input_buffers[mask_idx];
+        size_t mnode = static_cast<size_t>(comp->runtime_input_node_ids[mask_idx]);
+        const auto& mdesc = comp->graph->get_output_buffer(mnode);
+        fill_int_buffer(mb, mdesc.precision, 1, n_real);
+    }
+
+    comp->graph->execute();
+
+    if (comp->output_node_ids.empty()) {
+        throw std::runtime_error("get_embeddings: embedding component produced no outputs");
+    }
+    size_t out_node = static_cast<size_t>(comp->output_node_ids[0]);
+    const auto& desc = comp->graph->get_output_buffer(out_node);
+    void* ptr = comp->graph->get_output(out_node);
+    size_t hidden = desc.shape.empty() ? 0 : desc.shape.back();
+    size_t seq = (desc.shape.size() >= 2) ? desc.shape[desc.shape.size() - 2] : 1;
+    if (hidden == 0) {
+        throw std::runtime_error("get_embeddings: embedding output has zero hidden dim");
+    }
+
+    const bool is_fp16 = desc.precision == Precision::FP16;
+    auto read_at = [&](size_t i) -> float {
+        return is_fp16 ? static_cast<float>(reinterpret_cast<const __fp16*>(ptr)[i])
+                       : reinterpret_cast<const float*>(ptr)[i];
+    };
+
+    std::vector<float> result(hidden, 0.0f);
+    if (pooled) {
+        size_t pool_rows = std::min(seq, std::max<size_t>(1, n_real));
+        for (size_t t = 0; t < pool_rows; ++t) {
+            for (size_t h = 0; h < hidden; ++h) result[h] += read_at(t * hidden + h);
+        }
+        for (size_t h = 0; h < hidden; ++h) result[h] /= static_cast<float>(pool_rows);
+    } else {
+        for (size_t h = 0; h < hidden; ++h) result[h] = read_at(h);
+    }
+
+    if (normalize) {
+        double norm = 0.0;
+        for (float v : result) norm += static_cast<double>(v) * v;
+        float inv = static_cast<float>(1.0 / std::max(std::sqrt(norm), 1e-12));
+        for (float& v : result) v *= inv;
+    }
+
+    comp->graph->release_runtime_buffers();
+    comp->graph->release_all_weight_pages();
+    unload_component_graph(*comp);
+    return result;
 }
 
 bool Config::from_json(const std::string& config_path) {
@@ -2837,6 +2929,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (mt == "parakeet_tdt" || mt == "parakeet-tdt") model_type = ModelType::PARAKEET_TDT;
             else if (mt == "youtu") model_type = ModelType::YOUTU;
             else if (mt == "needle") model_type = ModelType::NEEDLE;
+            else if (mt == "bert" || mt == "nomic") model_type = ModelType::NOMIC;
             else model_type = ModelType::GEMMA4;
         }
         else if (key == "model_variant") {

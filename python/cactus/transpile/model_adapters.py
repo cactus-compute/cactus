@@ -4446,6 +4446,120 @@ class EncoderHiddenStatesAdapter(BoundInputAdapter):
         return _extract_tensor_output(outputs, preferred_field="last_hidden_state")
 
 
+def _nomic_rotate_half(x: torch.Tensor) -> torch.Tensor:
+    x1, x2 = x.chunk(2, dim=-1)
+    return torch.cat([-x2, x1], dim=-1)
+
+
+class NomicTextEmbeddingAdapter(torch.nn.Module):
+    """Export-friendly nomic-bert encoder that returns last_hidden_state.
+
+    Reuses the HF submodules (embeddings, layernorms, attention/MLP weights) but
+    reimplements the forward to avoid the HF rotary cache and the data-dependent
+    MoE dispatch (`torch.where`/`index_add_`) which do not survive torch.export.
+    Pooling and L2 normalization are applied downstream in the C++ engine.
+    """
+
+    def __init__(self, model: torch.nn.Module) -> None:
+        super().__init__()
+        for name in ("embeddings", "emb_ln", "encoder"):
+            if not isinstance(getattr(model, name, None), torch.nn.Module):
+                raise NotImplementedError(f"{type(model).__name__} is not a nomic-bert model")
+        self.embeddings = model.embeddings
+        self.emb_ln = model.emb_ln
+        self.encoder = model.encoder
+        config = model.config
+        self.n_heads = int(config.n_head)
+        self.head_dim = int(config.n_embd) // int(config.n_head)
+        self.hidden_dim = int(config.n_embd)
+        self.n_experts = int(getattr(config, "num_experts", 0) or 0)
+        self.top_k = int(getattr(config, "moe_top_k", 0) or 0)
+        self.ffn_dim = int(config.n_inner)
+        self.rope_base = float(getattr(config, "rotary_emb_base", 10000.0) or 10000.0)
+        # Pre-transpose each MoE expert w2 to [hidden, n_experts*ffn] so the second
+        # expert matmul consumes it as a direct linear weight — transposing a packed
+        # quantized weight inside the graph is not lowerable. Idempotent by shape so
+        # repeated adapter construction on the same model is safe.
+        packed_rows = self.n_experts * self.ffn_dim
+        for layer in self.encoder.layers:
+            if getattr(layer, "moe", False):
+                w2 = layer.mlp.experts.mlp.w2
+                if w2.shape[0] == packed_rows:
+                    layer.mlp.experts.mlp.w2 = torch.nn.Parameter(
+                        w2.detach().t().contiguous(), requires_grad=False
+                    )
+
+    def _rope_cos_sin(self, seq_len: int, device, dtype):
+        inv_freq = 1.0 / (self.rope_base ** (torch.arange(0, self.head_dim, 2, device=device, dtype=torch.float32) / self.head_dim))
+        positions = torch.arange(seq_len, device=device, dtype=torch.float32)
+        freqs = positions.unsqueeze(1) * inv_freq.unsqueeze(0)
+        cos = torch.cat([freqs.cos(), freqs.cos()], dim=-1).to(dtype)
+        sin = torch.cat([freqs.sin(), freqs.sin()], dim=-1).to(dtype)
+        return cos, sin
+
+    def _attention(self, layer, hidden_states, additive_mask, cos, sin):
+        batch, seq, _ = hidden_states.shape
+        qkv = layer.attn.Wqkv(hidden_states).view(batch, seq, 3, self.n_heads, self.head_dim)
+        query, key, value = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
+        cos_b = cos[None, :, None, :]
+        sin_b = sin[None, :, None, :]
+        query = query * cos_b + _nomic_rotate_half(query) * sin_b
+        key = key * cos_b + _nomic_rotate_half(key) * sin_b
+        query = query.permute(0, 2, 1, 3)
+        key = key.permute(0, 2, 1, 3)
+        value = value.permute(0, 2, 1, 3)
+        scores = torch.matmul(query, key.transpose(-1, -2)) / (self.head_dim ** 0.5)
+        scores = scores + additive_mask
+        context = torch.matmul(F.softmax(scores, dim=-1), value)
+        context = context.permute(0, 2, 1, 3).reshape(batch, seq, self.hidden_dim)
+        return layer.attn.out_proj(context)
+
+    def _topk_gate(self, weights):
+        # torch.topk does not lower; build the top-k softmax gate via iterative
+        # max + masking (top_k is small). gate[n, e] = softmax weight when expert e
+        # is among the top-k for token n, else 0.
+        neg = torch.finfo(weights.dtype).min
+        remaining = weights
+        gate = weights * 0.0
+        for _ in range(self.top_k):
+            current_max = torch.amax(remaining, dim=-1, keepdim=True)
+            selected = (remaining >= current_max).to(weights.dtype)
+            gate = gate + selected * weights
+            remaining = remaining + selected * neg
+        return gate
+
+    def _moe_mlp(self, moe, hidden_states):
+        # Dense MoE: run all experts via two fused matmuls against the packed
+        # expert weights (no per-expert indexing — slicing a quantized weight is
+        # not lowerable), then gate by scaling each expert's activations. The
+        # gated sum is identical to top-k routing because non-selected experts
+        # have gate 0.
+        batch, seq, _ = hidden_states.shape
+        flat = hidden_states.reshape(-1, self.hidden_dim)
+        weights = moe.router.layer(flat).softmax(dim=-1, dtype=torch.float32)
+        gate = self._topk_gate(weights).to(hidden_states.dtype)
+        all_hidden = F.linear(flat, moe.experts.mlp.w1)  # [tokens, n_experts * ffn]
+        activated = F.gelu(all_hidden).reshape(-1, self.n_experts, self.ffn_dim)
+        activated = activated * gate.unsqueeze(-1)
+        activated = activated.reshape(-1, self.n_experts * self.ffn_dim)
+        # w2 is pre-transposed to [hidden, n_experts*ffn] in __init__.
+        out = F.linear(activated, moe.experts.mlp.w2)
+        out = out + moe.experts.bias
+        return out.reshape(batch, seq, self.hidden_dim)
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        hidden_states = self.emb_ln(self.embeddings.word_embeddings(input_ids))
+        seq_len = input_ids.shape[1]
+        cos, sin = self._rope_cos_sin(seq_len, input_ids.device, hidden_states.dtype)
+        mask_float = attention_mask[:, None, None, :].to(hidden_states.dtype)
+        additive_mask = (mask_float - 1.0) * (-torch.finfo(hidden_states.dtype).min)
+        for layer in self.encoder.layers:
+            hidden_states = layer.norm1(self._attention(layer, hidden_states, additive_mask, cos, sin) + hidden_states)
+            mlp_out = self._moe_mlp(layer.mlp, hidden_states) if layer.moe else layer.mlp(hidden_states)
+            hidden_states = layer.norm2(mlp_out + hidden_states)
+        return hidden_states
+
+
 class WhisperEncoderComponentAdapter(torch.nn.Module):
     def __init__(self, encoder: torch.nn.Module):
         super().__init__()
@@ -4659,6 +4773,9 @@ def _family_key(model: torch.nn.Module) -> str:
         return "lfm2_moe"
     if module_name.startswith("transformers.models.lfm2."):
         return "lfm2"
+    model_type = str(getattr(getattr(model, "config", None), "model_type", "") or "").lower()
+    if "nomic" in module_name.lower() or "nomic" in model_type:
+        return "nomic"
     return "generic"
 
 
@@ -4804,6 +4921,47 @@ def _build_whisper_seq2seq_component_specs(
         )
     )
     return specs
+
+
+def _build_nomic_text_embedding_component_specs(
+    model: torch.nn.Module,
+    *,
+    named_tensors: dict[str, torch.Tensor],
+    weights_dir: str | None = None,
+) -> list[ComponentModuleSpec]:
+    input_ids = named_tensors.get("input_ids")
+    if not isinstance(input_ids, torch.Tensor):
+        raise RuntimeError("nomic text_embedding transpile requires input_ids")
+    attention_mask = named_tensors.get("attention_mask")
+    if not isinstance(attention_mask, torch.Tensor):
+        attention_mask = torch.ones_like(input_ids)
+
+    adapter = NomicTextEmbeddingAdapter(model).eval()
+
+    common_graph_meta = {
+        **_transpile_graph_meta(
+            model,
+            adapter_family="nomic",
+            adapter_type="component_pipeline",
+            input_names=("input_ids", "attention_mask"),
+        ),
+        "task": "text_embedding",
+        "adapter_family": "nomic",
+    }
+    if weights_dir:
+        common_graph_meta["weights_dir"] = weights_dir
+
+    return [
+        ComponentModuleSpec(
+            component="text_embedding",
+            module=adapter,
+            example_inputs=(input_ids, attention_mask),
+            input_keys=("input_ids", "attention_mask"),
+            output_keys=("last_hidden_state",),
+            graph_meta={**common_graph_meta, "component": "text_embedding"},
+            metadata={"family": "nomic", "task": "text_embedding"},
+        )
+    ]
 
 
 def _build_lfm2_causal_lm_component_specs(
@@ -5163,6 +5321,12 @@ def build_component_module_specs(
             inputs_metadata=inputs_metadata,
             weights_dir=weights_dir,
         )
+    if family == "nomic" and task == "text_embedding":
+        return _build_nomic_text_embedding_component_specs(
+            model,
+            named_tensors=named_tensors,
+            weights_dir=weights_dir,
+        )
     return None
 
 
@@ -5289,6 +5453,10 @@ def canonicalize_model_interface(
             input_names=resolved_input_names,
             family=family,
         )
+    elif task == "text_embedding":
+        if not resolved_input_names:
+            resolved_input_names = ("input_ids", "attention_mask")
+        adapter_factory = NomicTextEmbeddingAdapter
     elif task == "audio_classification_logits":
         if not resolved_input_names:
             resolved_input_names = _infer_input_names(

@@ -90,7 +90,9 @@ FP32_SUPPORTED_ALL_INPUT_OPS = {
 }
 
 FP32_SUPPORTED_INPUT_INDICES = {
-    "embedding": {1},
+    # The embedding op dequantizes its weight (input 0) directly (CQ or FP16 when
+    # bound), and indices (input 1) stay integral — neither needs fp16 legalization.
+    "embedding": {0, 1},
 }
 
 FP16_ONLY_OUTPUT_OPS = {

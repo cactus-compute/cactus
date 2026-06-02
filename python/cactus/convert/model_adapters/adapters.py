@@ -349,9 +349,22 @@ class NomicAdapter(FamilyAdapter):
         norm2 = _nomic_layer_suffix(source_name, ".norm2.weight")
         if norm2 is not None:
             return NameMatch(source_name, f"layer_{norm2}_norm2.weights", "language", True, hf_name=source_name, adapter_name=source_name)
+        for suffix, template, transpose in (
+            (".attn.Wqkv.weight", "layer_{i}_attn_qkv.weights", False),
+            (".attn.Wqkv.bias", "layer_{i}_attn_qkv.bias", False),
+            (".mlp.experts.mlp.w1", "layer_{i}_mlp_experts_w1.weights", False),
+            (".mlp.experts.mlp.w2", "layer_{i}_mlp_experts_w2.weights", True),
+        ):
+            layer = _nomic_layer_suffix(source_name, suffix)
+            if layer is not None:
+                return NameMatch(source_name, template.format(i=layer), "language", True, transpose, hf_name=source_name, adapter_name=source_name)
         return cactus_name_for_tensor(source_name, self.family, num_layers)
 
     def policy(self, match: NameMatch, shape: tuple[int, ...], requested_bits: int) -> TensorPolicy:
+        # The MoE router is tiny ([num_experts, hidden]) but decides expert selection;
+        # 4-bit quantizing it corrupts routing, so keep it in FP16.
+        if ".mlp.router.layer.weight" in match.source_name:
+            return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "moe router precision-sensitive")
         policy = super().policy(match, shape, requested_bits)
         if policy.use_gptq and ".mlp.experts.mlp." in match.source_name:
             return replace(policy, use_gptq=False)

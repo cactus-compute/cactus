@@ -7,6 +7,7 @@ from safetensors.torch import load_file
 
 from cactus.convert.cactus_adapters.tensor_io import save_tensor_with_header
 from cactus.convert.export.qdq import convert_qdq
+from cactus.convert.model_adapters.adapters import adapter_for_family
 from cactus.convert.model_adapters.naming import cactus_name_for_tensor, restore_hf_key_for_family
 
 
@@ -289,3 +290,115 @@ def test_parakeet_batchnorm_tracking_tensors_are_ignored():
     match = cactus_name_for_tensor("encoder.layers.0.conv.norm.num_batches_tracked", "parakeet", 24)
     assert match.recognized
     assert match.output_name is None
+
+
+def test_nomic_normalizes_global_tensors():
+    adapter = adapter_for_family("nomic")
+    state = {
+        "embeddings.word_embeddings.weight": torch.ones(4, 3),
+        "embeddings.token_type_embeddings.weight": torch.full((1, 3), 2.0),
+        "emb_ln.weight": torch.arange(3.0),
+        "emb_ln.bias": torch.arange(3.0) + 10,
+    }
+    normalized = adapter.normalize_state_dict(state)
+    assert set(normalized.state_dict) == {"token_embeddings", "embedding_layernorm.weight", "embedding_layernorm.bias"}
+    assert torch.equal(normalized.state_dict["token_embeddings"], torch.full((4, 3), 3.0))
+    assert normalized.provenance["token_embeddings"].source_names == [
+        "embeddings.word_embeddings.weight",
+        "embeddings.token_type_embeddings.weight",
+    ]
+    assert normalized.provenance["token_embeddings"].qdq_restore == "adapter_key"
+    assert adapter.name_tensor("token_embeddings", normalized.state_dict["token_embeddings"], 12).output_name == "token_embeddings.weights"
+    assert adapter.name_tensor("embedding_layernorm.weight", normalized.state_dict["embedding_layernorm.weight"], 12).output_name == "embedding_layernorm.weight"
+
+
+def test_nomic_norm2_weight_uses_runtime_name():
+    adapter = adapter_for_family("nomic")
+    match = adapter.name_tensor("encoder.layers.3.norm2.weight", torch.ones(768), 12)
+    assert match.recognized
+    assert match.output_name == "layer_3_norm2.weights"
+
+
+def test_nomic_keeps_qkv_and_moe_experts_fused():
+    # The v2 transpile path binds graph weights by their HF parameter name, so the
+    # converter emits one fused tensor per HF parameter (no q/k/v or per-expert split).
+    # w2 is stored transposed so the second expert matmul can consume it as a direct
+    # linear weight in the transpiled graph.
+    adapter = adapter_for_family("nomic")
+    adapter.num_experts = 8
+
+    qkv = torch.arange(2304 * 2, dtype=torch.float32).reshape(2304, 2)
+    match = adapter.name_tensor("encoder.layers.0.attn.Wqkv.weight", qkv, 12)
+    emissions = adapter.expand_tensor(match, qkv)
+    assert [e.output_name for e in emissions] == ["layer_0_attn_qkv.weights"]
+    assert tuple(emissions[0].tensor.shape) == (2304, 2)
+
+    w1 = torch.empty(24576, 2)
+    match = adapter.name_tensor("encoder.layers.1.mlp.experts.mlp.w1", w1, 12)
+    emissions = adapter.expand_tensor(match, w1)
+    assert [e.output_name for e in emissions] == ["layer_1_mlp_experts_w1.weights"]
+    assert tuple(emissions[0].tensor.shape) == (24576, 2)
+
+    w2 = torch.empty(24576, 2)
+    match = adapter.name_tensor("encoder.layers.1.mlp.experts.mlp.w2", w2, 12)
+    emissions = adapter.expand_tensor(match, w2)
+    assert [e.output_name for e in emissions] == ["layer_1_mlp_experts_w2.weights"]
+    assert tuple(emissions[0].tensor.shape) == (2, 24576)
+
+
+def test_nomic_qdq_runtime_keys_are_unique(tmp_path):
+    cactus = tmp_path / "cactus"
+    out = tmp_path / "qdq"
+    cactus.mkdir()
+    save_tensor_with_header(torch.ones(2, 3), cactus / "layer_0_attn_q.weights", precision="FP16")
+    save_tensor_with_header(torch.ones(2, 3) * 2, cactus / "layer_0_attn_k.weights", precision="FP16")
+    (cactus / "conversion_manifest.json").write_text(
+        """[
+  {
+    "source_name": "encoder.layers.0.attn.Wqkv.weight",
+    "hf_name": "encoder.layers.0.attn.Wqkv.weight",
+    "adapter_name": "encoder.layers.0.attn.Wqkv.weight",
+    "output_file": "layer_0_attn_q.weights",
+    "shape": [2, 3],
+    "dtype": "torch.float32",
+    "component": "language",
+    "policy": "fallback",
+    "precision": "FP16",
+    "status": "fallback",
+    "required": true,
+    "qdq_restore": "runtime_key",
+    "scale_factor": 1.0
+  },
+  {
+    "source_name": "encoder.layers.0.attn.Wqkv.weight",
+    "hf_name": "encoder.layers.0.attn.Wqkv.weight",
+    "adapter_name": "encoder.layers.0.attn.Wqkv.weight",
+    "output_file": "layer_0_attn_k.weights",
+    "shape": [2, 3],
+    "dtype": "torch.float32",
+    "component": "language",
+    "policy": "fallback",
+    "precision": "FP16",
+    "status": "fallback",
+    "required": true,
+    "qdq_restore": "runtime_key",
+    "scale_factor": 1.0
+  }
+]""",
+        encoding="utf-8",
+    )
+    report = convert_qdq(
+        SimpleNamespace(
+            input=cactus,
+            out=out,
+            dtype="float16",
+            model_family="nomic",
+            shard_size_gb=1.0,
+            row_batch_size=64,
+            tmp_dir=None,
+            force=True,
+        )
+    )
+    tensors = load_file(out / "model.safetensors")
+    assert report["written_count"] == 2
+    assert set(tensors) == {"layer_0_attn_q", "layer_0_attn_k"}

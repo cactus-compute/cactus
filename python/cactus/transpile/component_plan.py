@@ -146,6 +146,13 @@ def infer_component_plan_from_config(
     if profile_plan is not None:
         return profile_plan
 
+    if "nomic" in model_type or "nomic-embed" in lowered_id or any("nomicbert" in value for value in architectures):
+        return ComponentPlan(
+            task="text_embedding",
+            components=("text_embedding",),
+            force_component_pipeline=True,
+        )
+
     if _is_tdt_config(config, model_type, lowered_id):
         return ComponentPlan(
             task="tdt_transcription",

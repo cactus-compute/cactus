@@ -432,3 +432,74 @@ def test_live_transcription_rejects_non_wav(live_server) -> None:
     )
     assert res.status_code == 400
     assert "Only .wav" in json.dumps(res.json())
+
+
+EMBED_TYPES = {"bert", "nomic"}
+
+
+def _find_embed_bundle() -> Path | None:
+    for candidate in sorted(WEIGHTS.iterdir()) if WEIGHTS.exists() else []:
+        if candidate.is_dir() and _valid_bundle(candidate) and _read_model_type(candidate) in EMBED_TYPES:
+            return candidate
+    return None
+
+
+@pytest.fixture(scope="module")
+def embed_server():
+    bundle = _find_embed_bundle()
+    if bundle is None:
+        pytest.skip("No embedding (nomic/bert) bundle under weights/; run `cactus convert nomic-ai/nomic-embed-text-v2-moe`")
+    port = _free_port()
+    proc = _start_server(bundle, port)
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        _wait_ready(proc, base_url)
+        yield base_url, bundle.name
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_live_embeddings_string(embed_server) -> None:
+    base_url, model = embed_server
+    res = httpx.post(
+        f"{base_url}/v1/embeddings",
+        json={"model": model, "input": "Paris is the capital of France."},
+        timeout=60,
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["object"] == "list"
+    assert len(body["data"]) == 1
+    assert body["data"][0]["object"] == "embedding"
+    assert body["data"][0]["index"] == 0
+    assert len(body["data"][0]["embedding"]) > 0
+    assert all(isinstance(x, float) for x in body["data"][0]["embedding"][:8])
+
+
+def test_live_embeddings_list(embed_server) -> None:
+    base_url, model = embed_server
+    res = httpx.post(
+        f"{base_url}/v1/embeddings",
+        json={"model": model, "input": ["hello world", "a second sentence"]},
+        timeout=60,
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()["data"]
+    assert [d["index"] for d in data] == [0, 1]
+    assert len(data[0]["embedding"]) == len(data[1]["embedding"]) > 0
+
+
+def test_live_embeddings_rejects_llm_model(live_server) -> None:
+    base_url, model = live_server
+    res = httpx.post(
+        f"{base_url}/v1/embeddings",
+        json={"model": model, "input": "hello"},
+        timeout=30,
+    )
+    assert res.status_code == 400
+    assert "not an embedding model" in json.dumps(res.json())

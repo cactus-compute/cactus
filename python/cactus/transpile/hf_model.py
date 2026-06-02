@@ -311,6 +311,7 @@ def _write_component_bundle(
         for component in (
             "audio_encoder",
             "vision_encoder",
+            "text_embedding",
             "lm_encoder",
             "lm_encoder_text_chunk",
             "decoder_prefill_chunk",
@@ -1170,6 +1171,8 @@ def _infer_task_from_config(model_id_or_path: str) -> str:
     if isinstance(loss_cfg, dict) and str(loss_cfg.get("loss_name", "") or "").lower() == "tdt":
         return "tdt_transcription"
 
+    if "nomic" in model_type or any("NomicBert" in value for value in architectures):
+        return "text_embedding"
     if any("CausalLM" in value for value in architectures):
         return "causal_lm_logits"
     if any("CTC" in value for value in architectures):
@@ -1180,6 +1183,8 @@ def _infer_task_from_config(model_id_or_path: str) -> str:
         return "seq2seq_transcription"
 
     lowered_id = model_id_or_path.lower()
+    if "nomic-embed" in lowered_id:
+        return "text_embedding"
     if "parakeet-tdt" in lowered_id:
         return "tdt_transcription"
     if "whisper" in lowered_id:
@@ -1739,6 +1744,43 @@ def _prepare_text_inputs(
             "max_new_tokens": int(max_new_tokens),
             "padding_token_id": int(padding_token_id),
             "enable_thinking": bool(enable_thinking_if_supported),
+        },
+    )
+
+
+_NOMIC_EMBED_SEQ_LEN = 256
+
+
+def _prepare_text_embedding_inputs(
+    tokenizer: object,
+    *,
+    prompt: str,
+    input_ids_text: str | None,
+    seq_len: int = _NOMIC_EMBED_SEQ_LEN,
+) -> PreparedInputs:
+    base = _prepare_text_inputs(
+        tokenizer,
+        prompt=prompt,
+        input_ids_text=input_ids_text,
+        max_new_tokens=0,
+    )
+    prompt_input_ids = base.tensors[0]
+    prompt_token_count = int(prompt_input_ids.shape[1])
+    padding_token_id = int(base.metadata.get("padding_token_id", 0))
+    target = max(1, int(seq_len))
+    input_ids = torch.full((1, target), padding_token_id, dtype=torch.long)
+    attention_mask = torch.zeros((1, target), dtype=torch.long)
+    keep = min(prompt_token_count, target)
+    input_ids[:, :keep] = prompt_input_ids[:, :keep]
+    attention_mask[:, :keep] = 1
+    return PreparedInputs(
+        names=("input_ids", "attention_mask"),
+        tensors=(input_ids, attention_mask),
+        metadata={
+            "prompt": prompt,
+            "prompt_token_count": prompt_token_count,
+            "target_token_count": target,
+            "padding_token_id": padding_token_id,
         },
     )
 
@@ -2549,6 +2591,33 @@ def _load_transformers_bundle(
         model = load_tdt_local_model(model_source, torch_dtype=torch_dtype).eval()
         return model_source, None, model, config
 
+    if task == "text_embedding":
+        # nomic-bert weights are produced from the model's remote modeling code
+        # (fused Wqkv / experts.mlp.w1,w2); the transformers-native nomic_bert has a
+        # different architecture, so the remote code is required to match the bundle.
+        remote_kwargs = {**common_kwargs, "trust_remote_code": True}
+        tokenizer = None
+        tokenizer_errors: list[str] = []
+        for source in source_candidates:
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(source, **remote_kwargs)
+                break
+            except Exception as exc:
+                tokenizer_errors.append(f"{source}: {exc}")
+        if tokenizer is None:
+            raise RuntimeError(
+                f"Could not load tokenizer for {model_id}:\n"
+                + "\n".join(tokenizer_errors)
+            )
+        model = AutoModel.from_pretrained(
+            model_source,
+            dtype=torch_dtype,
+            device_map=None,
+            low_cpu_mem_usage=True,
+            **remote_kwargs,
+        ).eval()
+        return model_source, tokenizer, model, config
+
     if task == "causal_lm_logits":
         tokenizer = None
         tokenizer_errors: list[str] = []
@@ -2860,6 +2929,7 @@ def main() -> int:
             "encoder_hidden_states",
             "seq2seq_transcription",
             "tdt_transcription",
+            "text_embedding",
         ),
         help="Transpile task. Use auto to infer from config/model id.",
     )
@@ -3063,6 +3133,19 @@ def main() -> int:
             input_ids_text=args.input_ids.strip() or None,
             max_new_tokens=int(args.max_new_tokens),
             enable_thinking_if_supported=args.enable_thinking,
+        )
+        canonical = canonicalize_model_interface(
+            model,
+            task=task,
+            input_names=prepared.names,
+            weights_dir=weights_dir,
+            inputs_metadata=prepared.metadata,
+        )
+    elif task == "text_embedding":
+        prepared = _prepare_text_embedding_inputs(
+            processor_or_tokenizer,
+            prompt=args.prompt,
+            input_ids_text=args.input_ids.strip() or None,
         )
         canonical = canonicalize_model_interface(
             model,
