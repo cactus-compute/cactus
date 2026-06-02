@@ -12,6 +12,7 @@ set(CACTUS_MBEDTLS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/mbedtls/${ANDROID_ABI}")
 if(NOT EXISTS "${CACTUS_MBEDTLS_ROOT}")
     set(CACTUS_MBEDTLS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../libs/mbedtls/android/${ANDROID_ABI}")
 endif()
+set(CACTUS_XGRAMMAR_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/../cactus-engine/libs/xgrammar/android/${ANDROID_ABI}/libxgrammar.a")
 
 if(NOT TARGET cactus_engine)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../cactus ${CMAKE_CURRENT_BINARY_DIR}/cactus)
@@ -37,6 +38,10 @@ target_link_libraries(cactus_jni PRIVATE ${_DEPS})
 
 find_library(LOG_LIB log)
 target_link_libraries(cactus_jni PRIVATE ${LOG_LIB} android)
+
+if(EXISTS "${CACTUS_XGRAMMAR_LIBRARY}")
+    target_link_libraries(cactus_jni PRIVATE "${CACTUS_XGRAMMAR_LIBRARY}")
+endif()
 
 set(_MBEDTLS "${CACTUS_MBEDTLS_ROOT}/lib/libmbedtls.a")
 set(_MBEDX509 "${CACTUS_MBEDTLS_ROOT}/lib/libmbedx509.a")

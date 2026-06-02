@@ -2,9 +2,6 @@
 #include "cactus_graph.h"
 #include "cactus_kernels.h"
 
-#define PICOJSON_USE_INT64
-#include "picojson.h"
-
 #include <fstream>
 #include <filesystem>
 #include <iomanip>

@@ -10,6 +10,14 @@ endif()
 
 # --- libcurl ---
 set(CACTUS_CURL_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/libs/curl" CACHE PATH "Path to vendored libcurl")
+set(CACTUS_XGRAMMAR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/libs/xgrammar" CACHE PATH "Path to vendored xgrammar")
+
+set(CACTUS_XGRAMMAR_INCLUDE_DIR "${CACTUS_XGRAMMAR_ROOT}/include")
+if(APPLE)
+    set(CACTUS_XGRAMMAR_LIBRARY "${CACTUS_XGRAMMAR_ROOT}/macos/libxgrammar.a")
+else()
+    set(CACTUS_XGRAMMAR_LIBRARY "${CACTUS_XGRAMMAR_ROOT}/linux/aarch64/libxgrammar.a")
+endif()
 
 set(CACTUS_CURL_INCLUDE_DIR "${CACTUS_CURL_ROOT}/include")
 if(APPLE)
@@ -47,6 +55,8 @@ set(ENGINE_SOURCES
     src/bpe.cpp
     src/sp.cpp
     src/constraints.cpp
+    src/grammar.cpp
+    src/grammar_ffi.cpp
     src/model.cpp
     src/model_npu.cpp
     src/engine_image.cpp
@@ -81,12 +91,13 @@ set_target_properties(cactus_engine PROPERTIES
 target_include_directories(cactus_engine
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CACTUS_XGRAMMAR_INCLUDE_DIR}
             ${CMAKE_CURRENT_SOURCE_DIR}/libs
             ${CMAKE_CURRENT_SOURCE_DIR}/../cactus-kernels/src
             ${CMAKE_CURRENT_SOURCE_DIR}/../cactus-kernels/libs
 )
-
 target_link_libraries(cactus_engine PUBLIC cactus_graph)
+target_link_libraries(cactus_engine PRIVATE ${CACTUS_XGRAMMAR_LIBRARY})
 
 # --- curl linking ---
 if(CACTUS_HAS_CURL)

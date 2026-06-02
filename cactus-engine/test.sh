@@ -5,10 +5,11 @@ cd "$(dirname "$0")"
 
 PROJECT_ROOT="$(pwd)/.."
 ASSETS_DIR="$(pwd)/tests/assets"
+ONLY_TEST=""
+NO_REBUILD=0
 
 IOS_MODE=false
 ANDROID_MODE=false
-ONLY_EXEC=""
 MODEL_ARG=""
 
 while [[ $# -gt 0 ]]; do
@@ -23,8 +24,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --only)
             [ -z "${2:-}" ] && echo "Error: --only requires an argument" && exit 1
-            ONLY_EXEC="$2"
+            ONLY_TEST="$2"
             shift 2
+            ;;
+        --no-rebuild)
+            NO_REBUILD=1
+            shift
             ;;
         --model)
             [ -z "${2:-}" ] && echo "Error: --model requires an argument" && exit 1
@@ -40,12 +45,12 @@ done
 MODEL_DIR="${CACTUS_TEST_MODEL:-${MODEL_ARG:-$PROJECT_ROOT/weights/gemma-4-e2b-it}}"
 
 if [ "$IOS_MODE" = true ]; then
-    export CACTUS_TEST_ONLY="$ONLY_EXEC"
+    export CACTUS_TEST_ONLY="$ONLY_TEST"
     exec "$(pwd)/tests/ios/run.sh" "$MODEL_DIR"
 fi
 
 if [ "$ANDROID_MODE" = true ]; then
-    export CACTUS_TEST_ONLY="$ONLY_EXEC"
+    export CACTUS_TEST_ONLY="$ONLY_TEST"
     exec "$(pwd)/tests/android/run.sh" "$MODEL_DIR"
 fi
 
@@ -58,19 +63,23 @@ fi
 echo "Building and testing cactus-engine..."
 echo "Model: $MODEL_DIR"
 
-cd "$PROJECT_ROOT/cactus"
-rm -rf build
-mkdir -p build
-cd build
-cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null 2>&1
-make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+if [ "$NO_REBUILD" -eq 0 ]; then
+    cd "$PROJECT_ROOT/cactus"
+    rm -rf build
+    mkdir -p build
+    cd build
+    cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null 2>&1
+    make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-cd "$PROJECT_ROOT/cactus-engine/tests"
-rm -rf build
-mkdir -p build
-cd build
-cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null 2>&1
-make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+    cd "$PROJECT_ROOT/cactus-engine/tests"
+    rm -rf build
+    mkdir -p build
+    cd build
+    cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null 2>&1
+    make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+else
+    cd "$PROJECT_ROOT/cactus-engine/tests/build"
+fi
 
 echo ""
 export CACTUS_TEST_MODEL="$MODEL_DIR"
@@ -78,15 +87,13 @@ export CACTUS_TEST_ASSETS="$ASSETS_DIR"
 export CACTUS_INDEX_PATH="$ASSETS_DIR"
 
 FAILED=0
-
-if [ -n "$ONLY_EXEC" ]; then
-    target="./test_$ONLY_EXEC"
-    if [ -x "$target" ]; then
-        ./"$target" || FAILED=1
-    else
-        echo "Test not found: $target"
-        FAILED=1
+if [ -n "$ONLY_TEST" ]; then
+    TEST_BIN="test_${ONLY_TEST}"
+    if [ ! -x "$TEST_BIN" ]; then
+        echo "Test binary not found: $TEST_BIN"
+        exit 1
     fi
+    ./"$TEST_BIN" || FAILED=1
 else
     for test_bin in test_*; do
         [ -x "$test_bin" ] && ./"$test_bin" || FAILED=1

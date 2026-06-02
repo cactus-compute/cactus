@@ -49,4 +49,7 @@ tests/assets/test_wav_info.txt
 vision_activations.json
 gemma-4-eap-extras/
 .githooks/
+*.cg
+
+**/*/compile_commands.json
 ruy

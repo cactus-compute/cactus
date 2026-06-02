@@ -6,6 +6,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 set(CACTUS_ENGINE_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(CACTUS_PROJECT_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+set(CACTUS_XGRAMMAR_INCLUDE_DIR ${CACTUS_ENGINE_ROOT}/libs/xgrammar/include)
+if(APPLE)
+    set(CACTUS_XGRAMMAR_LIBRARY ${CACTUS_ENGINE_ROOT}/libs/xgrammar/macos/libxgrammar.a)
+else()
+    set(CACTUS_XGRAMMAR_LIBRARY ${CACTUS_ENGINE_ROOT}/libs/xgrammar/linux/aarch64/libxgrammar.a)
+endif()
 
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
@@ -38,9 +44,10 @@ else()
 endif()
 
 function(cactus_link_target target_name)
-    target_link_libraries(${target_name} PRIVATE ${CACTUS_LIB})
+    target_link_libraries(${target_name} PRIVATE ${CACTUS_LIB} ${CACTUS_XGRAMMAR_LIBRARY})
     target_include_directories(${target_name} PRIVATE
         ${CACTUS_ENGINE_ROOT}
+        ${CACTUS_XGRAMMAR_INCLUDE_DIR}
         ${CACTUS_PROJECT_ROOT}/cactus-graph
         ${CACTUS_PROJECT_ROOT}/cactus-kernels
         ${CACTUS_PROJECT_ROOT}/cactus-kernels/src

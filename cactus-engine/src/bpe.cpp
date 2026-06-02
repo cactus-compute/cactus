@@ -63,7 +63,6 @@ bool BPETokenizer::load_vocabulary_mmap(const std::string& vocab_file, const std
     std::string line;
     token_to_id_.clear();
     id_to_token_.clear();
-    special_tokens_.clear();
     const bool use_id_tab_vocab =
         runtime_config_.vocab_format == TokenizerRuntimeConfig::VocabFormat::ID_TAB_TOKEN;
 
@@ -156,7 +155,7 @@ bool BPETokenizer::load_vocabulary_mmap(const std::string& vocab_file, const std
             priority++;
         }
     }
-    
+
     auto is_whitespace_only = [](const std::string& s) {
         if (s.empty()) return false;
         for (char c : s) {

@@ -36,6 +36,11 @@ mkdir -p build
 cd build
 
 cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null 2>&1
+
+if [ -f compile_commands.json ]; then
+    ln -sfn ../cactus/build/compile_commands.json ../../cactus-engine/compile_commands.json
+fi
+
 make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
 echo "Cactus library built successfully!"

@@ -10,6 +10,15 @@
 #include <atomic>
 #include <limits>
 
+#include <picojson/picojson.h>
+#include <xgrammar/compiler.h>
+#include <xgrammar/config.h>
+#include <xgrammar/exception.h>
+#include <xgrammar/grammar.h>
+#include <xgrammar/matcher.h>
+#include <xgrammar/object.h>
+#include <xgrammar/tokenizer_info.h>
+
 #include "cactus_graph.h"
 
 class CactusGraph;
@@ -97,7 +106,7 @@ struct Config {
     float rescale_factor = 0.00392156862745098f;
     float image_mean = 0.5f;
     float image_std = 0.5f;
-    
+
     uint32_t downsample_factor = 2;
     uint32_t min_tiles = 2;
     uint32_t max_tiles = 10;
@@ -230,6 +239,97 @@ struct Config {
     std::string to_json() const;
 };
 
+class Tokenizer;
+
+class GrammarVocabulary {
+public:
+    static GrammarVocabulary from_model_dir(const std::string& model_dir);
+    static GrammarVocabulary from_tokenizer(const Tokenizer& tokenizer);
+    GrammarVocabulary(xgrammar::TokenizerInfo tokenizer_info);
+
+    bool add_prefix_space() const;
+    size_t vocab_size() const;
+    const std::vector<uint32_t>& stop_token_ids() const;
+    const xgrammar::TokenizerInfo& raw_value() const;
+
+private:
+    xgrammar::TokenizerInfo tokenizer_info;
+    std::vector<uint32_t> stop_token_ids_;
+};
+
+class Grammar {
+public:
+    Grammar();
+    Grammar(xgrammar::Grammar raw_grammar);
+    ~Grammar() = default;
+
+    static Grammar ebnf(const std::string& ebnf, const std::string& start_symbol = "root");
+    static Grammar epsilon();
+    static Grammar json();
+    static Grammar universal();
+    static Grammar json_schema(
+        const std::string& json_schema,
+        bool any_whitespace = true,
+        int indent = 2,
+        std::pair<std::string, std::string> separators = {",", ":"},
+        bool strict_mode = true,
+        int max_whitespace_count = -1
+    );
+    static Grammar regex(const std::string& regex);
+    static Grammar structural_tag(const std::string& structural_tag_json, const GrammarVocabulary* vocab = nullptr);
+    static Grammar unite(const std::vector<Grammar>& grammars);
+    static Grammar concatenate(const std::vector<Grammar>& grammars);
+    static Grammar optional(const Grammar& grammar);
+    static Grammar star(const Grammar& grammar);
+    static Grammar repeat(const Grammar& grammar, int count);
+    static Grammar repeat_range(const Grammar& grammar, int min_count, int max_count);
+
+    bool is_empty() const;
+    std::string ebnf() const;
+
+    const xgrammar::Grammar& raw_value() const;
+
+private:
+    xgrammar::Grammar grammar;
+};
+
+class GrammarMatcher;
+
+class GrammarEngine {
+public:
+    GrammarEngine(const GrammarVocabulary& vocab);
+    ~GrammarEngine() = default;
+
+    GrammarMatcher compile_matcher(const Grammar& grammar);
+
+private:
+    xgrammar::GrammarCompiler compiler;
+    xgrammar::TokenizerInfo tokenizer_info;
+};
+
+class GrammarMatcher {
+public:
+    GrammarMatcher(
+        xgrammar::GrammarMatcher matcher,
+        xgrammar::CompiledGrammar compiled_grammar,
+        xgrammar::TokenizerInfo tokenizer_info
+    );
+    ~GrammarMatcher() = default;
+
+    Grammar grammar() const;
+    void rollback(int tokens = 1);
+    void reset();
+    GrammarMatcher fork() const;
+    bool is_completed() const;
+    bool is_terminated() const;
+    bool accept(uint32_t token_id, bool log_rejection = false);
+    bool next_bitmask(std::vector<int32_t>& bitmask, size_t logits_buffer_size);
+
+private:
+    xgrammar::GrammarMatcher matcher;
+    xgrammar::CompiledGrammar compiled_grammar;
+    xgrammar::TokenizerInfo tokenizer_info;
+};
 
 
 struct MergeRule {
@@ -237,7 +337,7 @@ struct MergeRule {
     std::string second;
     std::string merged;
     uint32_t priority;
-    
+
     MergeRule(const std::string& f, const std::string& s, const std::string& m, uint32_t p)
         : first(f), second(s), merged(m), priority(p) {}
 };
@@ -278,6 +378,12 @@ struct TokenizerRuntimeConfig {
     bool has_chat_template = false;
 };
 
+struct TokenizerJsonMetadata {
+    picojson::value decoder;
+    picojson::value normalizer;
+    picojson::value pre_tokenizer;
+};
+
 TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_file);
 void load_special_tokens_map(const std::string& config_file, std::unordered_map<std::string, uint32_t>& special_tokens);
 std::vector<std::string> split_with_special_tokens(const std::string& text, const std::unordered_map<std::string, uint32_t>& special_tokens);
@@ -304,6 +410,8 @@ inline std::string extract_json_string(const std::string& json, size_t& pos) {
 
 class Tokenizer {
 public:
+    static std::unique_ptr<Tokenizer> from_model_dir(const std::string& model_dir);
+
     virtual ~Tokenizer() = default;
 
     virtual std::vector<uint32_t> encode(const std::string& text) const = 0;
@@ -316,11 +424,13 @@ public:
     virtual uint32_t get_unk_token() const = 0;
     virtual uint32_t get_bos_token() const = 0;
     virtual uint32_t get_eos_token() const = 0;
+    virtual const std::vector<std::string>& get_encoded_vocab() const = 0;
     virtual bool has_chat_template() const { return has_chat_template_; }
     std::string get_default_stop_sequence() const;
+    const TokenizerJsonMetadata& tokenizer_json_metadata() const { return tokenizer_json_metadata_; }
 
     virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
-    
+
     uint32_t get_image_token_id() const { return image_token_id_; }
     uint32_t get_fake_token_id() const { return fake_token_id_; }
     uint32_t get_global_img_token_id() const { return global_img_token_id_; }
@@ -335,7 +445,7 @@ protected:
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
     bool has_chat_template_ = false;
     std::string chat_template_;
-    
+
     uint32_t image_token_id_ = 396;
     uint32_t fake_token_id_ = 49189;
     uint32_t global_img_token_id_ = 49152;
@@ -347,9 +457,12 @@ protected:
     uint32_t vision_image_size_ = 768;
     size_t image_soft_token_count_ = 0;
     TokenizerRuntimeConfig runtime_config_;
+    TokenizerJsonMetadata tokenizer_json_metadata_;
+    std::unordered_map<std::string, uint32_t> special_tokens_;
 
     void detect_model_type(const std::string& config_path);
     void load_chat_template(const std::string& template_file);
+    void load_tokenizer_json_data(const std::string& tokenizer_json_path);
     std::string format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
@@ -370,12 +483,13 @@ public:
     uint32_t get_unk_token() const override { return unk_token_id_; }
     uint32_t get_bos_token() const override { return bos_token_id_; }
     uint32_t get_eos_token() const override { return eos_token_id_; }
+    const std::vector<std::string>& get_encoded_vocab() const override { return id_to_token_; }
 
 private:
     std::unordered_map<std::string, uint32_t> token_to_id_;
     std::vector<std::string> id_to_token_;
     std::vector<MergeRule> merge_rules_;
-    std::unordered_map<std::string, uint32_t> merge_map_;  
+    std::unordered_map<std::string, uint32_t> merge_map_;
 
     uint32_t vocab_size_;
     uint32_t unk_token_id_;
@@ -390,20 +504,19 @@ private:
 
     std::vector<std::string> apply_bpe(const std::vector<std::string>& tokens) const;
     std::pair<int, uint32_t> find_best_merge_fast(const std::vector<std::string>& tokens) const;
-    
+
     std::string bytes_to_unicode(const std::string& text) const;
     std::string unicode_to_bytes(const std::string& text) const;
     std::vector<std::string> byte_level_split(const std::string& text) const;
     std::vector<std::string> utf8_split(const std::string& text) const;
 
     void cleanup_mmap();
-    
+
 private:
     mutable std::unordered_map<uint8_t, std::string> byte_to_unicode_;
     mutable std::unordered_map<std::string, uint8_t> unicode_to_byte_;
     void init_byte_mappings() const;
 
-    std::unordered_map<std::string, uint32_t> special_tokens_;
     std::vector<std::string> split_with_special_tokens(const std::string& text) const;
     void load_special_tokens(const std::string& config_file);
 };
@@ -422,6 +535,7 @@ public:
     uint32_t get_unk_token() const override { return unk_token_id_; }
     uint32_t get_bos_token() const override { return bos_token_id_; }
     uint32_t get_eos_token() const override { return eos_token_id_; }
+    const std::vector<std::string>& get_encoded_vocab() const override { return id_to_token_; }
 
 private:
     struct TrieNode {
@@ -457,12 +571,9 @@ private:
 
     void cleanup_mmap();
 
-    std::unordered_map<std::string, uint32_t> special_tokens_;
     std::vector<std::string> split_with_special_tokens(const std::string& text) const;
     void load_special_tokens(const std::string& config_file);
 };
-
-
 
 class ToolCallConstrainer {
 public:
@@ -587,7 +698,7 @@ public:
                                                      const std::atomic<bool>* should_stop = nullptr);
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
-                                       bool normalize = false, const std::string& profile_file = "");
+                                      bool normalize = false, const std::string& profile_file = "");
 
     std::vector<float> get_image_embeddings(const std::string& image_path);
 
@@ -602,7 +713,7 @@ public:
     }
 
     double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end,
-                                        size_t context, size_t* tokens_scored);
+                                       size_t context, size_t* tokens_scored);
 
     void set_cache_window(size_t window_size, size_t sink_size = 4);
     size_t get_cache_size() const { return cache_total_seq_len_; }

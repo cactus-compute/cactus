@@ -19,6 +19,11 @@ extern "C" {
 
 typedef void* cactus_model_t;
 typedef void* cactus_index_t;
+typedef void* cactus_stream_transcribe_t;
+typedef void* cactus_grammar_t;
+typedef void* cactus_grammar_vocabulary_t;
+typedef void* cactus_grammar_engine_t;
+typedef void* cactus_grammar_matcher_t;
 typedef void (*cactus_token_callback)(const char* token, uint32_t token_id, void* user_data);
 
 CACTUS_FFI_EXPORT cactus_model_t cactus_init(
@@ -197,7 +202,7 @@ typedef uint64_t cactus_node_t;
 typedef struct {
     int32_t precision;
     size_t rank;
-    size_t shape[8]; 
+    size_t shape[8];
     size_t num_elements;
     size_t byte_size;
 } cactus_tensor_info_t;
@@ -436,6 +441,78 @@ CACTUS_FFI_EXPORT int cactus_graph_get_output_ptr(cactus_graph_t graph,
 cactus_node_t node, void** out_ptr);
 CACTUS_FFI_EXPORT int cactus_graph_get_output_info(cactus_graph_t graph,
 cactus_node_t node, cactus_tensor_info_t* out_info);
+
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_ebnf(const char* ebnf, const char* start_symbol);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_json();
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_empty();
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_epsilon();
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_universal();
+
+typedef struct cactus_grammar_json_schema_options_t {
+    bool any_whitespace;                    // negates indent and separators if true
+    int indent;
+    const char* separators[2];
+    bool strict_mode;
+    int max_whitespace_count;               // -1 means no limit
+} cactus_grammar_json_schema_options_t;
+
+CACTUS_FFI_EXPORT cactus_grammar_json_schema_options_t cactus_grammar_json_schema_default_options(void);
+
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_json_schema(
+    const char* json_schema,
+    cactus_grammar_json_schema_options_t options
+);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_regex(const char* regex);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_init_structural_tag(
+    const char* structural_tag_json,
+    cactus_grammar_vocabulary_t vocabulary    // optional
+);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_union(cactus_grammar_t* grammars, size_t num_grammars);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_concatenate(cactus_grammar_t* grammars, size_t num_grammars);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_optional(cactus_grammar_t grammar);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_star(cactus_grammar_t grammar);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_repeat(cactus_grammar_t grammar, int count);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_repeat_range(
+    cactus_grammar_t grammar,
+    int min_count,
+    int max_count                           // -1 means unlimited
+);
+CACTUS_FFI_EXPORT int cactus_grammar_get_ebnf(cactus_grammar_t grammar, char* buffer, size_t buffer_size);
+CACTUS_FFI_EXPORT int cactus_grammar_is_empty(cactus_grammar_t grammar);
+CACTUS_FFI_EXPORT void cactus_grammar_destroy(cactus_grammar_t grammar);
+
+CACTUS_FFI_EXPORT cactus_grammar_engine_t cactus_grammar_engine_init(cactus_grammar_vocabulary_t vocabulary);
+CACTUS_FFI_EXPORT void cactus_grammar_engine_destroy(cactus_grammar_engine_t engine);
+CACTUS_FFI_EXPORT cactus_grammar_matcher_t cactus_grammar_engine_compile_matcher(
+    cactus_grammar_engine_t engine,
+    cactus_grammar_t grammar
+);
+
+CACTUS_FFI_EXPORT cactus_grammar_vocabulary_t cactus_grammar_vocabulary_init(const char* model_path);
+CACTUS_FFI_EXPORT cactus_grammar_vocabulary_t cactus_grammar_vocabulary_init_from_model(cactus_model_t model);
+CACTUS_FFI_EXPORT int cactus_grammar_vocabulary_get_add_prefix_space(cactus_grammar_vocabulary_t vocabulary);
+CACTUS_FFI_EXPORT size_t cactus_grammar_vocabulary_get_size(cactus_grammar_vocabulary_t vocabulary);
+CACTUS_FFI_EXPORT int cactus_grammar_vocabulary_get_stop_token_ids(
+    cactus_grammar_vocabulary_t vocabulary,
+    uint32_t* buffer,
+    size_t buffer_size,
+    size_t* out_token_count
+);
+CACTUS_FFI_EXPORT void cactus_grammar_vocabulary_destroy(cactus_grammar_vocabulary_t vocabulary);
+
+CACTUS_FFI_EXPORT void cactus_grammar_matcher_destroy(cactus_grammar_matcher_t matcher);
+CACTUS_FFI_EXPORT void cactus_grammar_matcher_reset(cactus_grammar_matcher_t matcher);
+CACTUS_FFI_EXPORT void cactus_grammar_matcher_rollback(cactus_grammar_matcher_t matcher, int tokens);
+CACTUS_FFI_EXPORT cactus_grammar_matcher_t cactus_grammar_matcher_fork(cactus_grammar_matcher_t matcher);
+CACTUS_FFI_EXPORT cactus_grammar_t cactus_grammar_matcher_get_grammar(cactus_grammar_matcher_t matcher);
+CACTUS_FFI_EXPORT int cactus_grammar_matcher_is_completed(cactus_grammar_matcher_t matcher);
+CACTUS_FFI_EXPORT int cactus_grammar_matcher_is_terminated(cactus_grammar_matcher_t matcher);
+CACTUS_FFI_EXPORT int cactus_grammar_matcher_accept(cactus_grammar_matcher_t matcher, uint32_t token_id);
+CACTUS_FFI_EXPORT int cactus_grammar_matcher_next_bitmask(
+    cactus_grammar_matcher_t matcher,
+    int32_t* bitmask,
+    size_t logits_buffer_size
+);
 
 #ifdef __cplusplus
 }

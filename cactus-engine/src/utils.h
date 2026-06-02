@@ -1,6 +1,7 @@
 #ifndef CACTUS_UTILS_H
 #define CACTUS_UTILS_H
 
+#include "../cactus_engine.h"
 #include "engine.h"
 #include "cactus_kernels.h"
 #include <string>
@@ -43,7 +44,7 @@ inline size_t get_memory_footprint_bytes() {
     PROCESS_MEMORY_COUNTERS_EX pmc;
     if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc)))
         return pmc.PrivateUsage;
-        
+
 #elif defined(__linux__) || defined(__ANDROID__)
     std::ifstream statm("/proc/self/statm");
     if (statm.is_open()) {
@@ -834,16 +835,16 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
     std::vector<cactus::engine::ChatMessage> messages;
     out_image_paths.clear();
     if (out_audio_paths) out_audio_paths->clear();
-    
+
     size_t pos = json.find('[');
     if (pos == std::string::npos) {
         throw std::runtime_error("Invalid JSON: expected array");
     }
-    
+
     pos = json.find('{', pos);
     while (pos != std::string::npos) {
         cactus::engine::ChatMessage msg;
-        
+
         size_t obj_start = pos;
         int brace_count = 1;
         size_t obj_end = obj_start + 1;
@@ -855,25 +856,25 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
 
         size_t role_pos = json.find("\"role\"", pos);
         if (role_pos == std::string::npos || role_pos >= obj_end) break;
-        
+
         size_t role_start = json.find('"', role_pos + 6) + 1;
         size_t role_end = json.find('"', role_start);
         msg.role = json.substr(role_start, role_end - role_start);
-        
+
         size_t content_pos = json.find("\"content\"", role_end);
         if (content_pos != std::string::npos && content_pos < obj_end) {
             size_t content_start = json.find('"', content_pos + 9) + 1;
             size_t content_end = content_start;
-            
+
             while (content_end < json.length()) {
                 content_end = json.find('"', content_end);
                 if (content_end == std::string::npos) break;
                 if (json[content_end - 1] != '\\') break;
                 content_end++;
             }
-            
+
             msg.content = json.substr(content_start, content_end - content_start);
-            
+
             size_t escape_pos = 0;
             while ((escape_pos = msg.content.find("\\n", escape_pos)) != std::string::npos) {
                 msg.content.replace(escape_pos, 2, "\n");
@@ -885,7 +886,7 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
                 escape_pos += 1;
             }
         }
-        
+
         auto parse_path_array = [&](const char* key, std::vector<std::string>& dest,
                                     std::vector<std::string>* out_paths) {
             size_t key_pos = json.find(key, pos);
@@ -996,31 +997,31 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
 
 inline std::vector<ToolFunction> parse_tools_json(const std::string& json) {
     std::vector<ToolFunction> tools;
-    
+
     if (json.empty()) return tools;
-    
+
     size_t pos = json.find('[');
     if (pos == std::string::npos) return tools;
-    
+
     pos = json.find("\"function\"", pos);
     while (pos != std::string::npos) {
         ToolFunction tool;
         size_t next_search = pos + 1;
-        
+
         size_t name_pos = json.find("\"name\"", pos);
         if (name_pos != std::string::npos) {
             size_t name_start = json.find('"', name_pos + 6) + 1;
             size_t name_end = json.find('"', name_start);
             tool.name = json.substr(name_start, name_end - name_start);
         }
-        
+
         size_t desc_pos = json.find("\"description\"", pos);
         if (desc_pos != std::string::npos) {
             size_t desc_start = json.find('"', desc_pos + 13) + 1;
             size_t desc_end = json.find('"', desc_start);
             tool.description = json.substr(desc_start, desc_end - desc_start);
         }
-        
+
         size_t params_pos = json.find("\"parameters\"", pos);
         if (params_pos != std::string::npos) {
             size_t params_start = json.find('{', params_pos);
@@ -1736,6 +1737,8 @@ inline std::vector<float> pcm_to_float(const uint8_t* pcm_buffer, size_t pcm_buf
         out[i] = static_cast<float>(samples[i]) / 32768.0f;
     return out;
 }
+
+cactus_grammar_vocabulary_t make_grammar_vocabulary_from_tokenizer(const cactus::engine::Tokenizer& tokenizer);
 
 } // namespace ffi
 } // namespace cactus

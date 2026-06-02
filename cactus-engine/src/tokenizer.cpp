@@ -11,6 +11,23 @@ namespace engine {
 
 namespace {
 
+bool has_merges(const std::string& merges_file) {
+    std::ifstream merges_check(merges_file);
+    if (!merges_check.is_open()) {
+        return false;
+    }
+
+    std::string line;
+    int line_count = 0;
+    while (std::getline(merges_check, line) && line_count < 10) {
+        if (!line.empty() && line[0] != '#') {
+            return true;
+        }
+        ++line_count;
+    }
+    return false;
+}
+
 std::string format_tool_call_for_prompt(const std::string& name, const std::string& arguments, bool gemma4) {
     if (gemma4) {
         return "\n<|tool_call>\ncall:" + name + "(" + arguments + ")\n<tool_call|>\n";
@@ -153,6 +170,59 @@ bool parse_added_token_entry(const std::string& object, std::string& token_conte
     return true;
 }
 
+void parse_tokenizer_json_data(
+    const std::string& content,
+    TokenizerJsonMetadata& metadata,
+    std::unordered_map<std::string, uint32_t>& special_tokens
+) {
+    special_tokens.clear();
+
+    picojson::value root;
+    const std::string err = picojson::parse(root, content);
+    if (!err.empty() || !root.is<picojson::object>()) {
+        return;
+    }
+
+    const auto& tokenizer_obj = root.get<picojson::object>();
+    auto load_tokenizer_obj_field = [&](const char* key, picojson::value& out) {
+        auto it = tokenizer_obj.find(key);
+        if (it != tokenizer_obj.end()) {
+            out = it->second;
+        }
+    };
+
+    load_tokenizer_obj_field("decoder", metadata.decoder);
+    load_tokenizer_obj_field("normalizer", metadata.normalizer);
+    load_tokenizer_obj_field("pre_tokenizer", metadata.pre_tokenizer);
+
+    auto added_tokens_it = tokenizer_obj.find("added_tokens");
+    if (added_tokens_it == tokenizer_obj.end() || !added_tokens_it->second.is<picojson::array>()) {
+        return;
+    }
+
+    for (const auto& added_token : added_tokens_it->second.get<picojson::array>()) {
+        if (!added_token.is<picojson::object>()) continue;
+        const auto& added_token_obj = added_token.get<picojson::object>();
+
+        auto special_it = added_token_obj.find("special");
+        if (special_it == added_token_obj.end() || !special_it->second.is<bool>() || !special_it->second.get<bool>()) {
+            continue;
+        }
+
+        auto content_it = added_token_obj.find("content");
+        auto id_it = added_token_obj.find("id");
+        if (content_it == added_token_obj.end() || id_it == added_token_obj.end()) {
+            continue;
+        }
+        if (!content_it->second.is<std::string>() || !id_it->second.is<int64_t>()) {
+            continue;
+        }
+
+        special_tokens[content_it->second.get<std::string>()] =
+            static_cast<uint32_t>(id_it->second.get<int64_t>());
+    }
+}
+
 void load_tokenizer_json_added_special_tokens(
     const std::string& tokenizer_json_path,
     std::unordered_map<std::string, uint32_t>& special_tokens) {
@@ -235,6 +305,40 @@ TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_f
     }
 
     return config;
+}
+
+std::unique_ptr<Tokenizer> Tokenizer::from_model_dir(const std::string& model_dir) {
+    const std::string vocab_file = model_dir + "/vocab.txt";
+    const std::string merges_file = model_dir + "/merges.txt";
+    const std::string config_file = model_dir + "/tokenizer_config.txt";
+
+    TokenizerRuntimeConfig runtime_config = load_tokenizer_runtime_config(config_file);
+
+    std::unique_ptr<Tokenizer> tokenizer;
+    if (runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::BPE ||
+        (runtime_config.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::UNKNOWN && has_merges(merges_file))) {
+        tokenizer = std::make_unique<BPETokenizer>();
+    } else {
+        tokenizer = std::make_unique<SPTokenizer>();
+    }
+
+    tokenizer->load_tokenizer_json_data(model_dir + "/tokenizer.json");
+
+    if (!tokenizer->load_vocabulary_with_config(vocab_file, merges_file, config_file)) {
+        return nullptr;
+    }
+    return tokenizer;
+}
+
+void Tokenizer::load_tokenizer_json_data(const std::string& tokenizer_json_path) {
+    tokenizer_json_metadata_ = {};
+    special_tokens_.clear();
+
+    std::ifstream file(tokenizer_json_path);
+    if (!file.is_open()) return;
+
+    const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    parse_tokenizer_json_data(content, tokenizer_json_metadata_, special_tokens_);
 }
 
 void load_special_tokens_map(const std::string& config_file, std::unordered_map<std::string, uint32_t>& special_tokens) {
