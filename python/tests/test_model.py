@@ -33,12 +33,6 @@ def _find_asset(name):
 _TEST_IMAGE = _find_asset("test_monkey.png")
 _TEST_AUDIO = _find_asset("test.wav")
 
-_TEXT_EMBED_NOT_IMPLEMENTED = (
-    "VLM bundles have no text_embedding component; text embeddings are covered by "
-    "TestNomicEmbedding against a dedicated embedding model."
-)
-
-
 class TestVLMModel(unittest.TestCase):
 
     @classmethod
@@ -57,12 +51,6 @@ class TestVLMModel(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertTrue(result.get("success", False))
         self.assertGreater(len(result.get("response", "")), 0)
-
-    @unittest.skip(_TEXT_EMBED_NOT_IMPLEMENTED)
-    def test_text_embedding(self):
-        embedding = cactus_embed(self.model, "Hello world", True)
-        self.assertIsInstance(embedding, list)
-        self.assertGreater(len(embedding), 0)
 
     @unittest.skipUnless(_TEST_IMAGE is not None, "test_monkey.png not found")
     def test_image_embedding(self):
