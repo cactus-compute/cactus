@@ -4177,6 +4177,92 @@ class Qwen3CausalLMStepAdapter(torch.nn.Module):
         }
 
 
+class Qwen3LMEncoderStepAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        self.backbone = model.model
+
+    def forward(self, input_ids: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        inputs_embeds = self.backbone.embed_tokens(input_ids)
+        return inputs_embeds, position_ids.to(dtype=torch.int64)
+
+    def get_transpile_metadata(self):
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.backbone,
+                    adapter_family="qwen3",
+                    adapter_type=type(self).__name__,
+                    input_names=("input_ids", "position_ids"),
+                ),
+            }
+        }
+
+
+class Qwen3LMEncoderTextChunkAdapter(Qwen3LMEncoderStepAdapter):
+    pass
+
+
+class Qwen3EmbedsCausalLMStepAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        self.model = model
+        self.backbone = model.model
+
+    def forward(self, inputs_embeds: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        seq_len = int(inputs_embeds.shape[1])
+        allowed_positions = torch.tril(
+            torch.ones((seq_len, seq_len), dtype=torch.bool, device=inputs_embeds.device),
+        ).view(1, 1, seq_len, seq_len)
+        allowed_values = torch.zeros(
+            (1, 1, seq_len, seq_len),
+            dtype=inputs_embeds.dtype,
+            device=inputs_embeds.device,
+        )
+        blocked_values = torch.ones(
+            (1, 1, seq_len, seq_len),
+            dtype=inputs_embeds.dtype,
+            device=inputs_embeds.device,
+        ) * torch.finfo(inputs_embeds.dtype).min
+        causal_mask = torch.where(allowed_positions, allowed_values, blocked_values)
+
+        hidden_states = inputs_embeds
+        text_position_ids = position_ids.to(dtype=torch.int64)
+        position_embeddings = self.backbone.rotary_emb(hidden_states, text_position_ids)
+        for decoder_layer in self.backbone.layers[: self.backbone.config.num_hidden_layers]:
+            hidden_states = decoder_layer(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=causal_mask,
+                position_ids=text_position_ids,
+                past_key_values=None,
+                use_cache=False,
+            )
+        hidden_states = self.backbone.norm(hidden_states)
+        return self.model.lm_head(hidden_states[:, -1:, :])
+
+    def get_transpile_metadata(self):
+        sliding_window = getattr(self.backbone.config, "sliding_window", None)
+        layer_types = list(getattr(self.backbone.config, "layer_types", []))
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.model,
+                    adapter_family="qwen3",
+                    adapter_type=type(self).__name__,
+                    input_names=("inputs_embeds", "position_ids"),
+                ),
+                "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
+                "layer_types": tuple(layer_types),
+                "sliding_window": None if sliding_window is None else int(sliding_window),
+            }
+        }
+
+
+class Qwen3EmbedsCausalLMPrefillChunkAdapter(Qwen3EmbedsCausalLMStepAdapter):
+    pass
+
+
 def _build_qwen_causal_lm_component_specs(
     model: torch.nn.Module,
     *,
@@ -4205,6 +4291,14 @@ def _build_qwen_causal_lm_component_specs(
         "task": "causal_lm_logits",
         "adapter_family": family,
     }
+
+    chunk_components = {"lm_encoder_step", "lm_encoder_text_chunk", "decoder_media_step", "decoder_prefill_chunk"}
+    wants_chunked = bool(chunk_components & requested_set)
+    if wants_chunked and family != "qwen3":
+        raise RuntimeError(
+            f"text chunked-prefill components are only supported for the qwen3 family, got {family}"
+        )
+
     specs: list[ComponentModuleSpec] = []
     if "decoder" in requested_set:
         specs.append(ComponentModuleSpec(
@@ -4237,6 +4331,85 @@ def _build_qwen_causal_lm_component_specs(
             },
             metadata={"family": family, "task": "causal_lm_logits"},
         ))
+
+    if wants_chunked:
+        lm_encoder_step = Qwen3LMEncoderStepAdapter(model).eval()
+        lm_encoder_text_chunk = Qwen3LMEncoderTextChunkAdapter(model).eval()
+        decoder_media_step = Qwen3EmbedsCausalLMStepAdapter(model).eval()
+        decoder_prefill_chunk = Qwen3EmbedsCausalLMPrefillChunkAdapter(model).eval()
+        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
+        prefill_chunk_size = max(1, int(os.environ.get("CACTUS_QWEN_PREFILL_CHUNK", "128") or "128"))
+        prefill_chunk_size = min(prefill_chunk_size, int(input_ids.shape[1]))
+        chunk_input_ids = input_ids[:, :prefill_chunk_size].contiguous()
+        chunk_position_ids = torch.arange(
+            prefill_chunk_size,
+            dtype=torch.long,
+            device=input_ids.device,
+        ).unsqueeze(0).expand(int(input_ids.shape[0]), -1).contiguous()
+        with torch.no_grad():
+            chunk_embeds, chunk_pos_out = lm_encoder_text_chunk(chunk_input_ids, chunk_position_ids)
+        step_input_ids = input_ids[:, :1]
+        step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
+        with torch.no_grad():
+            step_embeds, step_pos_out = lm_encoder_step(step_input_ids, step_position_ids)
+
+        if "lm_encoder_step" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="lm_encoder_step",
+                module=lm_encoder_step,
+                example_inputs=(step_input_ids, step_position_ids),
+                input_keys=("input_ids", "position_ids"),
+                output_keys=("inputs_embeds", "position_ids"),
+                graph_meta={**common_graph_meta, "component": "lm_encoder_step"},
+                metadata={"family": family, "task": "causal_lm_logits"},
+            ))
+        if "lm_encoder_text_chunk" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="lm_encoder_text_chunk",
+                module=lm_encoder_text_chunk,
+                example_inputs=(chunk_input_ids, chunk_position_ids),
+                input_keys=("input_ids", "position_ids"),
+                output_keys=("inputs_embeds", "position_ids"),
+                graph_meta={**common_graph_meta, "component": "lm_encoder_text_chunk"},
+                metadata={"family": family, "task": "causal_lm_logits"},
+            ))
+        if "decoder_prefill_chunk" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="decoder_prefill_chunk",
+                module=decoder_prefill_chunk,
+                example_inputs=(chunk_embeds, chunk_pos_out),
+                input_keys=("inputs_embeds", "position_ids"),
+                output_keys=("logits",),
+                graph_meta={
+                    **common_graph_meta,
+                    "component": "decoder_prefill_chunk",
+                    "use_internal_kv_cache": True,
+                    "use_internal_conv_cache": True,
+                    "use_internal_gated_deltanet_cache": True,
+                    "max_cache_seq_len": max_cache_seq_len,
+                    "cache_sink_size": 4,
+                    "prefill_chunk_size": prefill_chunk_size,
+                },
+                metadata={"family": family, "task": "causal_lm_logits"},
+            ))
+        if "decoder_media_step" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="decoder_media_step",
+                module=decoder_media_step,
+                example_inputs=(step_embeds, step_pos_out),
+                input_keys=("inputs_embeds", "position_ids"),
+                output_keys=("logits",),
+                graph_meta={
+                    **common_graph_meta,
+                    "component": "decoder_media_step",
+                    "use_internal_kv_cache": True,
+                    "use_internal_conv_cache": True,
+                    "use_internal_gated_deltanet_cache": True,
+                    "max_cache_seq_len": max_cache_seq_len,
+                    "cache_sink_size": 4,
+                },
+                metadata={"family": family, "task": "causal_lm_logits"},
+            ))
     return specs
 
 
