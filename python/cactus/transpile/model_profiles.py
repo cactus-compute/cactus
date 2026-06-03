@@ -29,6 +29,7 @@ class ModelProfile:
     text_only_component: str | None = None
     default_task: str | None = None
     default_components: tuple[str, ...] = ()
+    default_max_new_tokens: int | None = None
     needs_image: bool = False
     needs_audio: bool = False
     force_component_pipeline: bool = False
@@ -208,6 +209,7 @@ NEEDLE_PROFILE = ModelProfile(
     avoid_native_loader=True,
     default_task="causal_lm_logits",
     default_components=("source_encoder", "decoder_cross_kv", "decoder_step"),
+    default_max_new_tokens=1022,
     force_component_pipeline=True,
 )
 
