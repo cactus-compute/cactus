@@ -15,6 +15,7 @@
 #include <dirent.h>
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -24,6 +25,24 @@
 
 namespace cactus {
 namespace engine {
+
+std::vector<uint32_t> parse_config_uint_list(const std::string& value) {
+    std::vector<uint32_t> numbers;
+    size_t pos = 0;
+    while (pos < value.size()) {
+        while (pos < value.size() && !std::isdigit(static_cast<unsigned char>(value[pos]))) {
+            ++pos;
+        }
+        if (pos >= value.size()) break;
+        size_t end = pos;
+        while (end < value.size() && std::isdigit(static_cast<unsigned char>(value[end]))) {
+            ++end;
+        }
+        numbers.push_back(static_cast<uint32_t>(std::stoul(value.substr(pos, end - pos))));
+        pos = end;
+    }
+    return numbers;
+}
 
 float read_scalar_value(Precision precision, const uint8_t* data, size_t index) {
     const uint8_t* ptr = data + PrecisionTraits::byte_offset_of(precision, index);
@@ -2826,6 +2845,7 @@ bool Config::from_json(const std::string& config_path) {
             decoder_start_token_id = static_cast<uint32_t>(std::stoul(value));
             decoder_start_token_seen = true;
         }
+        else if (key == "decoder_prompt_token_ids") decoder_prompt_token_ids = parse_config_uint_list(value);
         else if (key == "num_layers") num_layers = static_cast<uint32_t>(std::stoul(value));
         else if (key == "hidden_dim") hidden_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "ffn_intermediate_dim") ffn_intermediate_dim = static_cast<uint32_t>(std::stoul(value));

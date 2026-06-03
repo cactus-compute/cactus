@@ -4827,7 +4827,6 @@ def _build_whisper_seq2seq_component_specs(
     target_token_count = int(metadata.get("target_token_count", len(decoder_prompt_ids)) or len(decoder_prompt_ids))
     target_token_count = max(target_token_count, len(decoder_prompt_ids))
     pad_token_id = int(metadata.get("pad_token_id", getattr(getattr(model, "config", None), "pad_token_id", 0)) or 0)
-
     encoder_adapter = WhisperEncoderComponentAdapter(encoder).eval()
     decoder_cross_kv_adapter = WhisperDecoderCrossKVComponentAdapter(decoder).eval()
     decoder_step_adapter = WhisperDecoderStepWithCrossKVComponentAdapter(
@@ -4868,7 +4867,7 @@ def _build_whisper_seq2seq_component_specs(
         cross_kv_input_keys=("encoder_hidden_states",),
         cross_kv_output_keys=cross_kv_output_keys,
         decoder_step_module=decoder_step_adapter,
-        decoder_step_inputs=(decoder_input_ids[:, :1], step_position_ids, *decoder_cross_kv),
+        decoder_step_inputs=(decoder_input_ids, step_position_ids, *decoder_cross_kv),
         decoder_step_input_keys=("decoder_input_ids", "position_ids", *cross_kv_output_keys),
         common_graph_meta=common_graph_meta,
         family="whisper",
@@ -4925,28 +4924,6 @@ def _build_needle_causal_lm_component_specs(
     step_position_ids = torch.zeros_like(decoder_input_ids, dtype=torch.int64)
     cross_kv_output_keys = _cross_kv_output_keys(len(cross_kv) // 2)
 
-    requested = tuple(components or ("source_encoder", "decoder_cross_kv", "decoder_step"))
-    requested_set = set(requested)
-    unknown = requested_set - {"source_encoder", "decoder_cross_kv", "decoder_step"}
-    if unknown:
-        raise RuntimeError(f"unsupported Needle components requested: {', '.join(sorted(unknown))}")
-
-    expanded_components: list[str] = []
-
-    def _require(component: str) -> None:
-        if component not in expanded_components:
-            expanded_components.append(component)
-
-    if "decoder_step" in requested_set:
-        _require("source_encoder")
-        _require("decoder_cross_kv")
-        _require("decoder_step")
-    if "decoder_cross_kv" in requested_set:
-        _require("source_encoder")
-        _require("decoder_cross_kv")
-    if "source_encoder" in requested_set:
-        _require("source_encoder")
-
     common_graph_meta = {
         **_transpile_graph_meta(
             model,
@@ -4960,7 +4937,8 @@ def _build_needle_causal_lm_component_specs(
     if weights_dir:
         common_graph_meta["weights_dir"] = weights_dir
 
-    specs = _encoder_cross_kv_step_specs(
+    del components
+    return _encoder_cross_kv_step_specs(
         source_component="source_encoder",
         source_module=source_encoder,
         source_inputs=(input_ids, attention_mask),
@@ -4985,11 +4963,6 @@ def _build_needle_causal_lm_component_specs(
             "cross_kv_input_layout": "bthd",
         },
     )
-    return [
-        spec
-        for spec in specs
-        if spec.component in set(expanded_components)
-    ]
 
 
 def _build_lfm2_causal_lm_component_specs(

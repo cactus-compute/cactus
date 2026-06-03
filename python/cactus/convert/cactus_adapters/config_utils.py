@@ -265,6 +265,12 @@ def extract_whisper_config(config):
     attention_heads = int(cfg_get(config, 'decoder_attention_heads', cfg_get(config, 'encoder_attention_heads', 0)))
     encoder_layers = int(cfg_get(config, 'encoder_layers', cfg_get(config, 'num_encoder_layers', 0)))
     decoder_layers = int(cfg_get(config, 'decoder_layers', cfg_get(config, 'num_decoder_layers', 0)))
+    decoder_start_token_id = int(cfg_get(config, 'decoder_start_token_id', cfg_get(config, 'bos_token_id', 0)) or 0)
+    decoder_prompt_token_ids = [decoder_start_token_id]
+    forced_decoder_ids = cfg_get(config, 'forced_decoder_ids', None) or []
+    for item in sorted(forced_decoder_ids, key=lambda pair: int(pair[0]) if isinstance(pair, (list, tuple)) and pair else 0):
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            decoder_prompt_token_ids.append(int(item[1]))
     return {
         'vocab_size': int(cfg_get(config, 'vocab_size', 0)),
         'hidden_dim': hidden_dim,
@@ -282,7 +288,8 @@ def extract_whisper_config(config):
         'pad_token_id': int(cfg_get(config, 'pad_token_id', 0)),
         'bos_token_id': int(cfg_get(config, 'bos_token_id', 0)),
         'eos_token_id': int(cfg_get(config, 'eos_token_id', 0)),
-        'decoder_start_token_id': int(cfg_get(config, 'decoder_start_token_id', cfg_get(config, 'bos_token_id', 0)) or 0),
+        'decoder_start_token_id': decoder_start_token_id,
+        'decoder_prompt_token_ids': decoder_prompt_token_ids,
         'tie_word_embeddings': bool(cfg_get(config, 'tie_word_embeddings', True)),
     }
 

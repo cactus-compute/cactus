@@ -1,6 +1,5 @@
 #include "../cactus_engine.h"
 #include "cloud.h"
-#include "needle_tools.h"
 #include "utils.h"
 #include "telemetry.h"
 #include "cactus_kernels.h"
@@ -98,17 +97,10 @@ void strip_thinking_from_cache(CactusModelHandle* handle,
 }
 
 void setup_tool_constraints(CactusModelHandle* handle, const std::vector<ToolFunction>& tools,
-                            bool force_tools, float& temperature,
-                            const std::unordered_map<std::string, std::string>* needle_name_map = nullptr) {
+                            bool force_tools, float& temperature) {
     if (!force_tools || tools.empty()) return;
 
-    auto specs = build_tool_constraint_specs(tools);
-    if (needle_name_map && !needle_name_map->empty()) {
-        for (auto& spec : specs) {
-            spec.name = needle::to_snake_case(spec.name);
-        }
-    }
-    handle->model->set_tool_constraints(specs);
+    handle->model->set_tool_constraints(build_tool_constraint_specs(tools));
 
     if (temperature == 0.0f) {
         temperature = 0.01f;
@@ -241,135 +233,9 @@ std::vector<std::string> extract_schema_required(const std::string& schema) {
     return required;
 }
 
-std::string compact_json_preserving_strings(const std::string& json) {
-    std::string compact;
-    compact.reserve(json.size());
-    bool in_str = false;
-    bool esc = false;
-    size_t pos = 0;
-    while (pos < json.size()) {
-        unsigned char ch = static_cast<unsigned char>(json[pos]);
-        if (in_str) {
-            if (esc) {
-                compact += static_cast<char>(ch);
-                esc = false;
-            } else if (ch == '\\') {
-                compact += '\\';
-                esc = true;
-            } else if (ch == '"') {
-                compact += '"';
-                in_str = false;
-            } else if (ch >= 0x80) {
-                uint32_t cp = 0;
-                int extra = 0;
-                if ((ch & 0xE0) == 0xC0) { cp = ch & 0x1F; extra = 1; }
-                else if ((ch & 0xF0) == 0xE0) { cp = ch & 0x0F; extra = 2; }
-                else if ((ch & 0xF8) == 0xF0) { cp = ch & 0x07; extra = 3; }
-                else {
-                    compact += static_cast<char>(ch);
-                    pos++;
-                    continue;
-                }
-                for (int e = 0; e < extra && pos + 1 < json.size(); e++) {
-                    pos++;
-                    cp = (cp << 6) | (static_cast<unsigned char>(json[pos]) & 0x3F);
-                }
-                if (cp <= 0xFFFF) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", cp);
-                    compact += buf;
-                } else {
-                    cp -= 0x10000;
-                    char buf[14];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x\\u%04x",
-                                  0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF));
-                    compact += buf;
-                }
-            } else {
-                compact += static_cast<char>(ch);
-            }
-        } else {
-            if (ch == '"') {
-                in_str = true;
-                compact += '"';
-            } else if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
-                compact += static_cast<char>(ch);
-            }
-        }
-        pos++;
-    }
-    return compact;
-}
-
-std::string rewrite_needle_tool_names_to_snake_case(
-    const std::string& raw,
-    std::unordered_map<std::string, std::string>& name_map) {
-    std::string result;
-    result.reserve(raw.size());
-    const std::string name_key = "\"name\":";
-    size_t pos = 0;
-
-    while (pos < raw.size()) {
-        size_t found = raw.find(name_key, pos);
-        if (found == std::string::npos) {
-            result.append(raw, pos, raw.size() - pos);
-            break;
-        }
-        result.append(raw, pos, found + name_key.size() - pos);
-        pos = found + name_key.size();
-
-        while (pos < raw.size() && (raw[pos] == ' ' || raw[pos] == '\t' ||
-               raw[pos] == '\n' || raw[pos] == '\r')) {
-            result += raw[pos++];
-        }
-        if (pos >= raw.size() || raw[pos] != '"') {
-            if (pos < raw.size()) {
-                result += raw[pos++];
-            }
-            continue;
-        }
-        result += raw[pos++];
-
-        size_t name_start = pos;
-        bool escaped = false;
-        while (pos < raw.size()) {
-            if (escaped) {
-                escaped = false;
-                pos++;
-                continue;
-            }
-            if (raw[pos] == '\\') {
-                escaped = true;
-                pos++;
-                continue;
-            }
-            if (raw[pos] == '"') break;
-            pos++;
-        }
-        std::string original_name = raw.substr(name_start, pos - name_start);
-        std::string snake_name = needle::to_snake_case(original_name);
-        name_map[snake_name] = original_name;
-        result += snake_name;
-    }
-
-    return result;
-}
-
 std::string serialize_needle_tools(const std::vector<ToolFunction>& tools,
-                                   const char* raw_tools_json,
-                                   std::unordered_map<std::string, std::string>& name_map) {
-    name_map.clear();
-
-    if (raw_tools_json && std::strlen(raw_tools_json) > 2) {
-        std::string raw(raw_tools_json);
-        bool is_needle_format = raw.find("\"parameters\"") != std::string::npos &&
-                                raw.find("\"schema\"") == std::string::npos &&
-                                raw.find("\"type\":\"function\"") == std::string::npos;
-        if (is_needle_format) {
-            return compact_json_preserving_strings(
-                rewrite_needle_tool_names_to_snake_case(raw, name_map));
-        }
-    }
+                                   const char* raw_tools_json) {
+    (void)raw_tools_json;
 
     if (tools.empty()) return "[]";
 
@@ -377,10 +243,8 @@ std::string serialize_needle_tools(const std::vector<ToolFunction>& tools,
     oss << "[";
     for (size_t i = 0; i < tools.size(); ++i) {
         if (i > 0) oss << ",";
-        std::string snake_name = needle::to_snake_case(tools[i].name);
-        name_map[snake_name] = tools[i].name;
 
-        oss << "{\"name\":\"" << escape_json_string(snake_name) << "\"";
+        oss << "{\"name\":\"" << escape_json_string(tools[i].name) << "\"";
         if (!tools[i].description.empty()) {
             oss << ",\"description\":\"" << escape_json_string(tools[i].description) << "\"";
         }
@@ -548,8 +412,6 @@ struct PreparedPrompt {
 
     std::vector<std::vector<float>> audio_features;
     size_t audio_num_frames = 0;
-    std::unordered_map<std::string, std::string> needle_name_map;
-
     bool has_images() const {
         return std::any_of(images.begin(), images.end(),
             [](const auto& msg_imgs) { return !msg_imgs.empty(); });
@@ -720,38 +582,25 @@ PreparedPrompt prepare_prompt(
 
     std::string formatted_tools;
     if (prompt.model_type == Config::ModelType::NEEDLE) {
-        formatted_tools = serialize_needle_tools(prompt.tools, tools_json, prompt.needle_name_map);
+        formatted_tools = serialize_needle_tools(prompt.tools, tools_json);
     } else {
         formatted_tools = gemma::format_tools(prompt.tools, true);
     }
 
     if (apply_tool_constraints) {
-        if (prompt.model_type == Config::ModelType::NEEDLE) {
-            setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools,
-                                   prompt.options.temperature, &prompt.needle_name_map);
-        } else {
-            setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools, prompt.options.temperature);
-        }
+        setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools, prompt.options.temperature);
     }
 
-    if (prompt.model_type == Config::ModelType::NEEDLE) {
-        std::string query_text = needle::format_query_text(prompt.messages);
-        prompt.tokens = tokenizer->encode(query_text);
-        auto suffix_tokens = tokenizer->encode("<tools>" + formatted_tools);
-        prompt.tokens.insert(prompt.tokens.end(), suffix_tokens.begin(), suffix_tokens.end());
-        prompt.tokens.push_back(tokenizer->get_eos_token());
-    } else {
-        std::string full_prompt = tokenizer->format_chat_prompt(
-            prompt.messages,
-            add_generation_prompt,
-            formatted_tools,
-            prompt.options.enable_thinking_if_supported
-        );
-        if (full_prompt.find("ERROR:") == 0) {
-            throw std::runtime_error(full_prompt.substr(6));
-        }
-        prompt.tokens = tokenizer->encode(full_prompt);
+    std::string full_prompt = tokenizer->format_chat_prompt(
+        prompt.messages,
+        add_generation_prompt,
+        formatted_tools,
+        prompt.options.enable_thinking_if_supported
+    );
+    if (full_prompt.find("ERROR:") == 0) {
+        throw std::runtime_error(full_prompt.substr(6));
     }
+    prompt.tokens = tokenizer->encode(full_prompt);
     prompt.context_token_count = prompt.tokens.size();
     prompt.images = images_from_message(prompt.messages);
     return prompt;
@@ -1101,10 +950,6 @@ int cactus_complete(
         std::string regular_response;
         std::vector<std::string> function_calls;
         parse_function_calls_from_response(response_text, regular_response, function_calls);
-
-        if (prompt.model_type == Config::ModelType::NEEDLE) {
-            needle::restore_tool_names(function_calls, prompt.needle_name_map);
-        }
 
         std::string thinking_text;
         if (prompt.model_type == Config::ModelType::GEMMA4 || prompt.options.enable_thinking_if_supported) {

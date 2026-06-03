@@ -1,6 +1,5 @@
 #include "engine.h"
 #include "cactus_kernels.h"
-#include "needle_tools.h"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -11,6 +10,25 @@ namespace cactus {
 namespace engine {
 
 namespace {
+
+std::string format_needle_query_text(const std::vector<ChatMessage>& messages) {
+    std::string system_text;
+    std::string user_query;
+
+    for (const auto& msg : messages) {
+        if (msg.role == "system" || msg.role == "developer") {
+            if (!system_text.empty()) system_text += "\n";
+            system_text += msg.content;
+        } else if (msg.role == "user") {
+            user_query = msg.content;
+        }
+    }
+
+    if (user_query.empty() && !messages.empty()) user_query = messages.back().content;
+    if (system_text.empty()) return user_query;
+    if (user_query.empty()) return system_text;
+    return system_text + "\n\n" + user_query;
+}
 
 std::string format_tool_call_for_prompt(const std::string& name, const std::string& arguments, bool gemma4) {
     if (gemma4) {
@@ -462,7 +480,7 @@ std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& message
 std::string Tokenizer::format_needle_style(const std::vector<ChatMessage>& messages, bool /*add_generation_prompt*/,
                                            const std::string& tools_json) const {
     std::string serialized_tools = tools_json.empty() ? "[]" : tools_json;
-    return needle::format_query_text(messages) + "<tools>" + serialized_tools + "</s>";
+    return format_needle_query_text(messages) + "<tools>" + serialized_tools + "</s>";
 }
 
 std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,

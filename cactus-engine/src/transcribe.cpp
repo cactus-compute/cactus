@@ -235,7 +235,7 @@ int cactus_transcribe(
         if (prompt && prompt[0] != '\0') {
             tokens = tokenizer->encode(prompt);
         } else if (is_whisper) {
-            tokens = tokenizer->encode("<|startoftranscript|><|en|><|transcribe|><|notimestamps|>");
+            tokens = handle->model->get_config().decoder_prompt_token_ids;
         }
 
         if (tokens.empty() && is_whisper) {

@@ -61,6 +61,7 @@ struct Config {
     uint32_t bos_token_id = 151643;
     uint32_t eos_token_id = 151645;
     uint32_t decoder_start_token_id = 151643;
+    std::vector<uint32_t> decoder_prompt_token_ids;
     uint32_t num_layers = 28;
     uint32_t hidden_dim = 1024;
     uint32_t ffn_intermediate_dim = 3072;
@@ -660,7 +661,6 @@ public:
     bool has_npu_vision_encoder() const { return npu_vision_encoder_ != nullptr; }
 
     bool load_npu_source_encoder(const std::string& model_path);
-    bool has_npu_source_encoder() const { return npu_source_encoder_ != nullptr; }
 
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
