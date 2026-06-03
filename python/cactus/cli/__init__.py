@@ -193,6 +193,12 @@ def create_parser():
                             help="Optional path to save transpiled bundle results as JSON")
     run_parser.add_argument("--thinking", action="store_true",
                             help="Enable thinking/reasoning for models that support it")
+    run_parser.add_argument("--no-cloud-handoff", action="store_true",
+                            help="Disable automatic cloud handoff for this run")
+    run_parser.add_argument("--confidence-threshold", type=float, default=None,
+                            help="Confidence threshold below which local completions may hand off to cloud")
+    run_parser.add_argument("--cloud-timeout-ms", type=int, default=None,
+                            help="Maximum time to wait for cloud handoff before falling back locally")
 
     # ── transcribe ────────────────────────────────────────────────────
     transcribe_parser = subparsers.add_parser("transcribe", help="Download ASR model and run transcription",

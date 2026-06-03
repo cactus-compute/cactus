@@ -812,7 +812,7 @@ inline void handle_error_response(const std::string& error_message, char* respon
     json << "\"cloud_handoff\":false,";
     json << "\"response\":null,";
     json << "\"function_calls\":[],";
-    json << "\"confidence\":0.0,";
+    json << "\"confidence\":null,";
     json << "\"time_to_first_token_ms\":0.0,";
     json << "\"total_time_ms\":0.0,";
     json << "\"prefill_tps\":0.0,";

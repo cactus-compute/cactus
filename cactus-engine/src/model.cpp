@@ -265,6 +265,171 @@ Model::Model(const Config& config) : config_(config) {}
 
 Model::~Model() = default;
 
+namespace {
+
+bool read_exact(std::ifstream& in, void* data, size_t bytes) {
+    in.read(static_cast<char*>(data), static_cast<std::streamsize>(bytes));
+    return static_cast<size_t>(in.gcount()) == bytes;
+}
+
+bool read_float_vector(std::ifstream& in, std::vector<float>& out, size_t count) {
+    out.resize(count);
+    return read_exact(in, out.data(), count * sizeof(float));
+}
+
+float relu(float x) {
+    return x > 0.0f ? x : 0.0f;
+}
+
+} // namespace
+
+bool Model::load_handoff_probe() {
+    fs::path path = fs::path(bundle_dir_) / "handoff_probe.bin";
+    if (!fs::exists(path)) return false;
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) return false;
+
+    char magic[8] = {};
+    uint32_t version = 0;
+    if (!read_exact(in, magic, sizeof(magic)) || std::string(magic, sizeof(magic)) != std::string("CHP10P6\0", 8)) {
+        CACTUS_LOG_WARN("cloud_handoff", "Ignoring invalid handoff probe header at " << path);
+        return false;
+    }
+    if (!read_exact(in, &version, sizeof(version))
+        || !read_exact(in, &handoff_probe_feat_dim_, sizeof(handoff_probe_feat_dim_))
+        || !read_exact(in, &handoff_probe_t_h_, sizeof(handoff_probe_t_h_))
+        || !read_exact(in, &handoff_probe_h1_, sizeof(handoff_probe_h1_))
+        || !read_exact(in, &handoff_probe_h2_, sizeof(handoff_probe_h2_))) {
+        CACTUS_LOG_WARN("cloud_handoff", "Ignoring truncated handoff probe header at " << path);
+        return false;
+    }
+    if (version != 1 || handoff_probe_feat_dim_ == 0 || handoff_probe_t_h_ == 0
+        || handoff_probe_h1_ == 0 || handoff_probe_h2_ == 0) {
+        CACTUS_LOG_WARN("cloud_handoff", "Ignoring unsupported handoff probe metadata at " << path);
+        return false;
+    }
+
+    const size_t feat = handoff_probe_feat_dim_;
+    const size_t th = handoff_probe_t_h_;
+    const size_t h1 = handoff_probe_h1_;
+    const size_t h2 = handoff_probe_h2_;
+    bool ok = true;
+    ok = ok && read_float_vector(in, handoff_probe_norm_weight_, feat);
+    ok = ok && read_float_vector(in, handoff_probe_norm_bias_, feat);
+    ok = ok && read_float_vector(in, handoff_probe_proj_weight_, th * feat);
+    ok = ok && read_float_vector(in, handoff_probe_proj_bias_, th);
+    ok = ok && read_float_vector(in, handoff_probe_attn_query_, th);
+    ok = ok && read_float_vector(in, handoff_probe_head0_weight_, h1 * th);
+    ok = ok && read_float_vector(in, handoff_probe_head0_bias_, h1);
+    ok = ok && read_float_vector(in, handoff_probe_head2_weight_, h2 * h1);
+    ok = ok && read_float_vector(in, handoff_probe_head2_bias_, h2);
+    ok = ok && read_float_vector(in, handoff_probe_head4_weight_, h2);
+    ok = ok && read_float_vector(in, handoff_probe_head4_bias_, 1);
+    if (!ok) {
+        CACTUS_LOG_WARN("cloud_handoff", "Ignoring truncated handoff probe weights at " << path);
+        return false;
+    }
+
+    handoff_probe_hidden_.clear();
+    handoff_probe_loaded_ = true;
+    CACTUS_LOG_INFO("cloud_handoff", "Loaded Gemma4 v10p6 handoff probe from " << path);
+    return true;
+}
+
+bool Model::has_handoff_probe_rollout() const {
+    return handoff_probe_loaded_
+        && handoff_probe_feat_dim_ > 0
+        && handoff_probe_hidden_.size() >= static_cast<size_t>(handoff_probe_feat_dim_);
+}
+
+void Model::maybe_capture_handoff_probe_hidden(const Component& comp) {
+    if (!handoff_probe_loaded_ || handoff_probe_feat_dim_ == 0) return;
+    int idx = output_index(comp, "probe_hidden");
+    if (idx < 0 || static_cast<size_t>(idx) >= comp.output_node_ids.size()) return;
+    size_t node = static_cast<size_t>(comp.output_node_ids[idx]);
+    const auto& desc = comp.graph->get_output_buffer(node);
+    if (desc.total_size < handoff_probe_feat_dim_) return;
+    size_t rows = desc.total_size / handoff_probe_feat_dim_;
+    if (rows == 0) return;
+    size_t row = rows - 1;
+    const auto* data = static_cast<const uint8_t*>(comp.graph->get_output(node));
+    if (!data) return;
+    size_t base = row * static_cast<size_t>(handoff_probe_feat_dim_);
+    for (size_t i = 0; i < handoff_probe_feat_dim_; ++i) {
+        handoff_probe_hidden_.push_back(read_scalar_value(desc.precision, data, base + i));
+    }
+}
+
+float Model::handoff_probe_wrong_probability() const {
+    if (!has_handoff_probe_rollout()) return std::numeric_limits<float>::quiet_NaN();
+
+    const size_t feat = handoff_probe_feat_dim_;
+    const size_t th = handoff_probe_t_h_;
+    const size_t h1 = handoff_probe_h1_;
+    const size_t h2 = handoff_probe_h2_;
+    const size_t tokens = std::min<size_t>(handoff_probe_hidden_.size() / feat, 1024);
+    if (tokens == 0) return std::numeric_limits<float>::quiet_NaN();
+
+    std::vector<float> projected(tokens * th);
+    std::vector<float> scores(tokens);
+    for (size_t t = 0; t < tokens; ++t) {
+        const float* x = handoff_probe_hidden_.data() + t * feat;
+        double mean = 0.0;
+        for (size_t i = 0; i < feat; ++i) mean += x[i];
+        mean /= static_cast<double>(feat);
+        double var = 0.0;
+        for (size_t i = 0; i < feat; ++i) {
+            double d = static_cast<double>(x[i]) - mean;
+            var += d * d;
+        }
+        var /= static_cast<double>(feat);
+        float inv_std = static_cast<float>(1.0 / std::sqrt(var + 1e-5));
+
+        for (size_t j = 0; j < th; ++j) {
+            double acc = handoff_probe_proj_bias_[j];
+            const float* w = handoff_probe_proj_weight_.data() + j * feat;
+            for (size_t i = 0; i < feat; ++i) {
+                float xn = (x[i] - static_cast<float>(mean)) * inv_std;
+                xn = xn * handoff_probe_norm_weight_[i] + handoff_probe_norm_bias_[i];
+                acc += static_cast<double>(w[i]) * xn;
+            }
+            float u = relu(static_cast<float>(acc));
+            projected[t * th + j] = u;
+            scores[t] += u * handoff_probe_attn_query_[j];
+        }
+        scores[t] /= std::sqrt(static_cast<float>(th));
+    }
+
+    float max_score = *std::max_element(scores.begin(), scores.end());
+    double denom = 0.0;
+    for (float s : scores) denom += std::exp(static_cast<double>(s - max_score));
+    std::vector<float> pooled(th, 0.0f);
+    for (size_t t = 0; t < tokens; ++t) {
+        float alpha = static_cast<float>(std::exp(static_cast<double>(scores[t] - max_score)) / denom);
+        const float* u = projected.data() + t * th;
+        for (size_t j = 0; j < th; ++j) pooled[j] += alpha * u[j];
+    }
+
+    std::vector<float> y1(h1);
+    for (size_t i = 0; i < h1; ++i) {
+        double acc = handoff_probe_head0_bias_[i];
+        const float* w = handoff_probe_head0_weight_.data() + i * th;
+        for (size_t j = 0; j < th; ++j) acc += static_cast<double>(w[j]) * pooled[j];
+        y1[i] = relu(static_cast<float>(acc));
+    }
+    std::vector<float> y2(h2);
+    for (size_t i = 0; i < h2; ++i) {
+        double acc = handoff_probe_head2_bias_[i];
+        const float* w = handoff_probe_head2_weight_.data() + i * h1;
+        for (size_t j = 0; j < h1; ++j) acc += static_cast<double>(w[j]) * y1[j];
+        y2[i] = relu(static_cast<float>(acc));
+    }
+    double logit = handoff_probe_head4_bias_[0];
+    for (size_t j = 0; j < h2; ++j) logit += static_cast<double>(handoff_probe_head4_weight_[j]) * y2[j];
+    return static_cast<float>(1.0 / (1.0 + std::exp(-logit)));
+}
+
 bool Model::init(const std::string& bundle_dir, size_t context_size,
                  const std::string& /*system_prompt*/, bool /*do_warmup*/) {
     if (initialized_) return true;
@@ -281,6 +446,18 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (!setup_tokenizer()) {
         CACTUS_LOG_ERROR("model", "Tokenizer init failed for bundle: " << bundle_dir);
         return false;
+    }
+    const bool is_text_embedding =
+        components_.count("text_embedding")
+        && !components_.count("decoder")
+        && !components_.count("decoder_step")
+        && !components_.count("lm_encoder_step");
+    if (is_text_embedding) {
+        // Embedding-only bundle: no decode route; get_embeddings loads the
+        // text_embedding component on demand.
+        cache_max_seq_len_ = context_size;
+        initialized_ = true;
+        return true;
     }
     std::string encoder_name;
     std::string decoder_name;
@@ -438,6 +615,11 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         if (!load_npu_source_encoder(full_path)) {
             CACTUS_LOG_WARN("model", "NPU source encoder load failed for " << full_path << "; falling back to CPU");
         }
+    }
+    if (load_handoff_probe() && decoder_ && output_index(*decoder_, "probe_hidden") < 0) {
+        CACTUS_LOG_WARN("cloud_handoff", "Handoff probe is packaged, but decoder_step does not expose probe_hidden; "
+            "reconvert Gemma4 to enable probe-based handoff");
+        handoff_probe_loaded_ = false;
     }
 
     initialized_ = true;
@@ -669,11 +851,13 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/) {
         write_int_input(*decoder_, "input_ids", static_cast<int64_t>(token_id));
         write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
         decoder_->graph->execute();
+        maybe_capture_handoff_probe_hidden(*decoder_);
         return;
     }
     run_encoder_step(token_id, position);
     copy_component_outputs_to_inputs(*encoder_, *decoder_);
     decoder_->graph->execute();
+    maybe_capture_handoff_probe_hidden(*decoder_);
 }
 
 void Model::run_encoder_step(uint32_t token_id, size_t position) {
@@ -1192,22 +1376,94 @@ void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t f
     decoder_->graph->execute();
 }
 
+namespace {
+void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
+                        const void* src_data, size_t src_bytes, Precision src_prec);
+}  // namespace
+
 void Model::run_vision_encoder(const std::string& image_path) {
     if (!vision_encoder_) return;
     if (!load_component_graph(*vision_encoder_)) {
         throw std::runtime_error("failed to load vision_encoder");
     }
-    Gemma4ImagePreprocessed prep = preprocess_gemma4_image(image_path, config_);
-    if (has_npu_vision_encoder() && vision_encode_via_npu(prep.pixel_values)) {
-        return;
+
+    auto write_int_buffer_typed = [&](int idx, const int64_t* src, size_t src_count) {
+        auto& buf = vision_encoder_->input_buffers[idx];
+        size_t node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[idx]);
+        const auto& desc = vision_encoder_->graph->get_output_buffer(node);
+        const size_t elem = PrecisionTraits::size_of(desc.precision);
+        const size_t cap = elem ? buf.size() / elem : 0;
+        const size_t n = std::min(cap, src_count);
+        for (size_t i = 0; i < n; ++i) {
+            int64_t v = src[i];
+            switch (desc.precision) {
+                case Precision::FP32: reinterpret_cast<float*>(buf.data())[i] = static_cast<float>(v); break;
+                case Precision::FP16: reinterpret_cast<__fp16*>(buf.data())[i] = static_cast<__fp16>(v); break;
+                case Precision::INT8: reinterpret_cast<int8_t*>(buf.data())[i] = static_cast<int8_t>(v); break;
+                default:
+                    if (elem == 8) reinterpret_cast<int64_t*>(buf.data())[i] = v;
+                    else if (elem == 4) reinterpret_cast<int32_t*>(buf.data())[i] = static_cast<int32_t>(v);
+                    break;
+            }
+        }
+        if (n < cap) std::memset(buf.data() + n * elem, 0, (cap - n) * elem);
+    };
+
+    if (family_ == "lfm2_vl") {
+        Lfm2VlImagePreprocessed prep = preprocess_lfm2_vl_image(image_path, config_);
+        if (has_npu_vision_encoder() && vision_encode_via_npu(prep.pixel_values)) {
+            return;
+        }
+        int pv_idx = input_index(*vision_encoder_, "pixel_values");
+        if (pv_idx >= 0) {
+            auto& pv_buf = vision_encoder_->input_buffers[pv_idx];
+            size_t pv_node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[pv_idx]);
+            const auto& pv_desc = vision_encoder_->graph->get_output_buffer(pv_node);
+            write_typed_buffer(pv_buf, pv_desc.precision,
+                               prep.pixel_values.data(),
+                               prep.pixel_values.size() * sizeof(float),
+                               Precision::FP32);
+        }
+        int pm_idx = input_index(*vision_encoder_, "pixel_attention_mask");
+        if (pm_idx >= 0) {
+            write_int_buffer_typed(pm_idx, prep.pixel_attention_mask.data(),
+                                   prep.pixel_attention_mask.size());
+        }
+    } else if (family_ == "qwen3_5" || family_ == "qwen3_vl" || config_.model_type == Config::ModelType::QWEN) {
+        Qwen3VlImagePreprocessed prep = preprocess_qwen3_vl_image(image_path, config_);
+        int pv_idx = input_index(*vision_encoder_, "pixel_values");
+        if (pv_idx < 0) {
+            throw std::runtime_error("Qwen3-VL vision_encoder missing pixel_values input");
+        }
+        auto& pv_buf = vision_encoder_->input_buffers[pv_idx];
+        size_t pv_node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[pv_idx]);
+        const auto& pv_desc = vision_encoder_->graph->get_output_buffer(pv_node);
+        write_typed_buffer(pv_buf, pv_desc.precision,
+                           prep.pixel_values.data(),
+                           prep.pixel_values.size() * sizeof(float),
+                           Precision::FP32);
+    } else {
+        Gemma4ImagePreprocessed prep = preprocess_gemma4_image(image_path, config_);
+        if (has_npu_vision_encoder() && vision_encode_via_npu(prep.pixel_values)) {
+            return;
+        }
+        int pv_idx = input_index(*vision_encoder_, "pixel_values");
+        if (pv_idx >= 0) {
+            auto& pv_buf = vision_encoder_->input_buffers[pv_idx];
+            size_t pv_node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[pv_idx]);
+            const auto& pv_desc = vision_encoder_->graph->get_output_buffer(pv_node);
+            write_typed_buffer(pv_buf, pv_desc.precision,
+                               prep.pixel_values.data(),
+                               prep.pixel_values.size() * sizeof(float),
+                               Precision::FP32);
+        }
+        int pp_idx = input_index(*vision_encoder_, "pixel_position_ids");
+        if (pp_idx >= 0) {
+            write_int_buffer_typed(pp_idx, prep.pixel_position_ids.data(),
+                                   prep.pixel_position_ids.size());
+        }
     }
-    if (!load_component_graph(*vision_encoder_)) {
-        throw std::runtime_error("failed to load vision_encoder");
-    }
-    write_bytes_input(*vision_encoder_, "pixel_values", prep.pixel_values.data(),
-                      prep.pixel_values.size() * sizeof(float));
-    write_bytes_input(*vision_encoder_, "pixel_position_ids", prep.pixel_position_ids.data(),
-                      prep.pixel_position_ids.size() * sizeof(int64_t));
+
     vision_encoder_->graph->execute();
     for (size_t i = 0; i < vision_encoder_->output_node_ids.size() && i < vision_encoder_->logical_outputs.size(); ++i) {
         const std::string& name = vision_encoder_->logical_outputs[i];
@@ -1345,7 +1601,7 @@ void Model::run_audio_encoder(const std::vector<float>& audio_features) {
     }
 }
 
-uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row) {
+uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float* out_uncertainty) {
     size_t out_node = static_cast<size_t>(comp.output_node_ids.empty() ? 0 : comp.output_node_ids[0]);
     const auto& desc = comp.graph->get_output_buffer(out_node);
     void* ptr = comp.graph->get_output(out_node);
@@ -1368,30 +1624,40 @@ uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row) {
         if (vocab_it != vocab_bias_.end()) value += vocab_it->second;
         return value;
     };
+    float second_v = -std::numeric_limits<float>::infinity();
+    auto observe_logit = [&](size_t i, float v) {
+        v = score_with_bias(i, v);
+        if (v > best_v) {
+            second_v = best_v;
+            best_v = v;
+            best = static_cast<uint32_t>(i);
+        } else if (v > second_v) {
+            second_v = v;
+        }
+    };
     if (desc.precision == Precision::FP32) {
         float* p = static_cast<float*>(ptr) + row_off;
-        for (size_t i = 0; i < vocab; ++i) {
-            float v = score_with_bias(i, p[i]);
-            if (v > best_v) { best_v = v; best = static_cast<uint32_t>(i); }
-        }
+        for (size_t i = 0; i < vocab; ++i) observe_logit(i, p[i]);
     } else if (desc.precision == Precision::FP16) {
         __fp16* p = static_cast<__fp16*>(ptr) + row_off;
-        for (size_t i = 0; i < vocab; ++i) {
-            float v = score_with_bias(i, static_cast<float>(p[i]));
-            if (v > best_v) { best_v = v; best = static_cast<uint32_t>(i); }
-        }
+        for (size_t i = 0; i < vocab; ++i) observe_logit(i, static_cast<float>(p[i]));
     } else {
         int8_t* p = static_cast<int8_t*>(ptr) + row_off;
-        for (size_t i = 0; i < vocab; ++i) {
-            float v = score_with_bias(i, static_cast<float>(p[i]));
-            if (v > best_v) { best_v = v; best = static_cast<uint32_t>(i); }
+        for (size_t i = 0; i < vocab; ++i) observe_logit(i, static_cast<float>(p[i]));
+    }
+    if (out_uncertainty) {
+        float confidence = 1.0f;
+        if (std::isfinite(best_v) && std::isfinite(second_v)) {
+            float margin = std::max(-60.0f, std::min(60.0f, best_v - second_v));
+            confidence = 1.0f / (1.0f + std::exp(-margin));
         }
+        *out_uncertainty = std::max(0.0f, std::min(1.0f, 1.0f - confidence));
     }
     return best;
 }
 
-uint32_t Model::argmax_last_logits() {
-    return argmax_component_logits(*decoder_);
+uint32_t Model::argmax_last_logits(float* out_uncertainty) {
+    return argmax_component_logits(*decoder_, std::numeric_limits<size_t>::max(), out_uncertainty);
 }
 
 bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token) {
@@ -2411,8 +2677,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
         cache_total_seq_len_ = context_tokens_.size();
-        if (out_entropy) *out_entropy = 0.0f;
-        uint32_t result = argmax_last_logits();
+        uint32_t result = argmax_last_logits(out_entropy);
         record_sampled_token(result);
         return result;
     }
@@ -2421,8 +2686,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
     }
     run_step(tokens.back(), cache_total_seq_len_ + tokens.size() - 1, /*read_logits=*/true);
     cache_total_seq_len_ += tokens.size();
-    if (out_entropy) *out_entropy = 0.0f;
-    uint32_t result = argmax_last_logits();
+    uint32_t result = argmax_last_logits(out_entropy);
     record_sampled_token(result);
     return result;
 }
@@ -2697,12 +2961,126 @@ uint32_t Model::decode_with_images(const std::vector<uint32_t>& tokens, const st
     return decode(tokens, temperature, top_p, top_k, profile_file, out_entropy, min_p, repetition_penalty);
 }
 
-std::vector<float> Model::get_image_embeddings(const std::string& /*image_path*/) {
-    throw std::runtime_error("Image embeddings not wired up for transpiled bundles yet");
+namespace {
+
+std::vector<float> pool_and_normalize_media_feature(
+    const std::vector<uint8_t>& bytes,
+    const std::vector<size_t>& shape,
+    Precision precision,
+    const std::string& source
+) {
+    const size_t elem_size = PrecisionTraits::size_of(precision);
+    if (elem_size == 0 || bytes.empty() || shape.empty()) {
+        throw std::runtime_error(source + " produced empty feature output");
+    }
+    const size_t total_elems = bytes.size() / elem_size;
+    const size_t hidden_dim = shape.back();
+    if (hidden_dim == 0 || total_elems == 0 || total_elems % hidden_dim != 0) {
+        throw std::runtime_error(source + " feature shape inconsistent with hidden_dim");
+    }
+
+    std::vector<float> fp32(total_elems);
+    switch (precision) {
+        case Precision::FP32:
+            std::memcpy(fp32.data(), bytes.data(), total_elems * sizeof(float));
+            break;
+        case Precision::FP16:
+            Quantization::fp16_to_fp32(reinterpret_cast<const __fp16*>(bytes.data()), fp32.data(), total_elems);
+            break;
+        case Precision::INT8:
+            Quantization::int8_to_fp32(reinterpret_cast<const int8_t*>(bytes.data()), fp32.data(), total_elems, 1.0f);
+            break;
+        default:
+            throw std::runtime_error(source + " feature precision not supported for embeddings");
+    }
+
+    const size_t n_rows = total_elems / hidden_dim;
+    std::vector<float> pooled(hidden_dim, 0.0f);
+    for (size_t r = 0; r < n_rows; ++r) {
+        const float* src = fp32.data() + r * hidden_dim;
+        for (size_t d = 0; d < hidden_dim; ++d) pooled[d] += src[d];
+    }
+    const float inv = 1.0f / static_cast<float>(n_rows);
+    for (float& v : pooled) v *= inv;
+
+    float norm_sq = 0.0f;
+    for (float v : pooled) norm_sq += v * v;
+    if (norm_sq > 1e-12f) {
+        const float inv_norm = 1.0f / std::sqrt(norm_sq);
+        for (float& v : pooled) v *= inv_norm;
+    }
+    return pooled;
 }
 
-std::vector<float> Model::get_audio_embeddings(const std::vector<float>& /*mel_bins*/) {
-    throw std::runtime_error("Audio embeddings not wired up for transpiled bundles yet");
+}  // namespace
+
+std::vector<float> Model::get_image_embeddings(const std::string& image_path) {
+    if (!vision_encoder_) {
+        throw std::runtime_error("Model has no vision_encoder component");
+    }
+    if (vision_encoder_->logical_outputs.empty()) {
+        throw std::runtime_error("vision_encoder has no logical outputs");
+    }
+    const std::string output_name = vision_encoder_->logical_outputs[0];
+
+    run_vision_encoder(image_path);
+
+    auto bytes_it = media_features_.find(output_name);
+    auto shape_it = media_feature_shapes_.find(output_name);
+    auto prec_it = media_feature_precisions_.find(output_name);
+    if (bytes_it == media_features_.end() || shape_it == media_feature_shapes_.end()
+        || prec_it == media_feature_precisions_.end()) {
+        throw std::runtime_error("vision_encoder produced no output for '" + output_name + "'");
+    }
+
+    std::vector<float> embedding = pool_and_normalize_media_feature(
+        bytes_it->second, shape_it->second, prec_it->second, "vision_encoder");
+
+    for (const std::string& name : vision_encoder_->logical_outputs) {
+        media_features_.erase(name);
+        media_feature_shapes_.erase(name);
+        media_feature_precisions_.erase(name);
+    }
+    // run_vision_encoder unloads the graph; restore so subsequent paths that
+    // assume the encoder is loaded (e.g. transcribe_*) keep working.
+    load_component_graph(*vision_encoder_);
+    return embedding;
+}
+
+std::vector<float> Model::get_audio_embeddings(const std::vector<float>& mel_bins) {
+    if (!audio_encoder_) {
+        throw std::runtime_error("Model has no audio_encoder component");
+    }
+    if (mel_bins.empty()) {
+        throw std::runtime_error("Empty audio features");
+    }
+    if (audio_encoder_->logical_outputs.empty()) {
+        throw std::runtime_error("audio_encoder has no logical outputs");
+    }
+    const std::string output_name = audio_encoder_->logical_outputs[0];
+
+    run_audio_encoder_messages({mel_bins});
+
+    auto bytes_it = media_features_.find(output_name);
+    auto shape_it = media_feature_shapes_.find(output_name);
+    auto prec_it = media_feature_precisions_.find(output_name);
+    if (bytes_it == media_features_.end() || shape_it == media_feature_shapes_.end()
+        || prec_it == media_feature_precisions_.end()) {
+        throw std::runtime_error("audio_encoder produced no output for '" + output_name + "'");
+    }
+
+    std::vector<float> embedding = pool_and_normalize_media_feature(
+        bytes_it->second, shape_it->second, prec_it->second, "audio_encoder");
+
+    for (const std::string& name : audio_encoder_->logical_outputs) {
+        media_features_.erase(name);
+        media_feature_shapes_.erase(name);
+        media_feature_precisions_.erase(name);
+    }
+    // run_audio_encoder_messages unloads the graph; restore so subsequent
+    // transcribe_* paths (which assume the encoder stays loaded) work.
+    load_component_graph(*audio_encoder_);
+    return embedding;
 }
 
 void Model::reset_cache() {
@@ -2810,9 +3188,89 @@ void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>&
     }
 }
 
-std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& /*tokens*/, bool /*pooled*/,
-                                          bool /*normalize*/, const std::string& /*profile_file*/) {
-    return {};
+std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bool pooled,
+                                          bool normalize, const std::string& /*profile_file*/) {
+    if (!components_.count("text_embedding")) {
+        throw std::runtime_error("get_embeddings: bundle has no text_embedding component");
+    }
+    if (tokens.empty()) {
+        throw std::runtime_error("get_embeddings: empty token sequence");
+    }
+    Component* comp = &components_.at("text_embedding");
+    if (!load_component_graph(*comp)) {
+        throw std::runtime_error("get_embeddings: failed to load embedding component graph");
+    }
+
+    // Embedding encoders (nomic / XLM-R) wrap the sequence with BOS/EOS, matching
+    // the reference tokenizer's add_special_tokens behavior.
+    std::vector<uint32_t> wrapped;
+    wrapped.reserve(tokens.size() + 2);
+    if (tokenizer_) wrapped.push_back(tokenizer_->get_bos_token());
+    wrapped.insert(wrapped.end(), tokens.begin(), tokens.end());
+    if (tokenizer_) wrapped.push_back(tokenizer_->get_eos_token());
+
+    int ids_idx = input_index(*comp, "input_ids");
+    if (ids_idx < 0) {
+        throw std::runtime_error("get_embeddings: embedding component missing input_ids");
+    }
+    auto& ids_buf = comp->input_buffers[ids_idx];
+    size_t ids_node = static_cast<size_t>(comp->runtime_input_node_ids[ids_idx]);
+    const auto& ids_desc = comp->graph->get_output_buffer(ids_node);
+    size_t capacity = PrecisionTraits::size_of(ids_desc.precision)
+                        ? ids_buf.size() / PrecisionTraits::size_of(ids_desc.precision) : wrapped.size();
+    size_t n_real = std::min(capacity, wrapped.size());
+    write_tokens_buffer(ids_buf, ids_desc.precision, wrapped, 0);
+
+    int mask_idx = input_index(*comp, "attention_mask");
+    if (mask_idx >= 0) {
+        auto& mb = comp->input_buffers[mask_idx];
+        size_t mnode = static_cast<size_t>(comp->runtime_input_node_ids[mask_idx]);
+        const auto& mdesc = comp->graph->get_output_buffer(mnode);
+        fill_int_buffer(mb, mdesc.precision, 1, n_real);
+    }
+
+    comp->graph->execute();
+
+    if (comp->output_node_ids.empty()) {
+        throw std::runtime_error("get_embeddings: embedding component produced no outputs");
+    }
+    size_t out_node = static_cast<size_t>(comp->output_node_ids[0]);
+    const auto& desc = comp->graph->get_output_buffer(out_node);
+    void* ptr = comp->graph->get_output(out_node);
+    size_t hidden = desc.shape.empty() ? 0 : desc.shape.back();
+    size_t seq = (desc.shape.size() >= 2) ? desc.shape[desc.shape.size() - 2] : 1;
+    if (hidden == 0) {
+        throw std::runtime_error("get_embeddings: embedding output has zero hidden dim");
+    }
+
+    const bool is_fp16 = desc.precision == Precision::FP16;
+    auto read_at = [&](size_t i) -> float {
+        return is_fp16 ? static_cast<float>(reinterpret_cast<const __fp16*>(ptr)[i])
+                       : reinterpret_cast<const float*>(ptr)[i];
+    };
+
+    std::vector<float> result(hidden, 0.0f);
+    if (pooled) {
+        size_t pool_rows = std::min(seq, std::max<size_t>(1, n_real));
+        for (size_t t = 0; t < pool_rows; ++t) {
+            for (size_t h = 0; h < hidden; ++h) result[h] += read_at(t * hidden + h);
+        }
+        for (size_t h = 0; h < hidden; ++h) result[h] /= static_cast<float>(pool_rows);
+    } else {
+        for (size_t h = 0; h < hidden; ++h) result[h] = read_at(h);
+    }
+
+    if (normalize) {
+        double norm = 0.0;
+        for (float v : result) norm += static_cast<double>(v) * v;
+        float inv = static_cast<float>(1.0 / std::max(std::sqrt(norm), 1e-12));
+        for (float& v : result) v *= inv;
+    }
+
+    comp->graph->release_runtime_buffers();
+    comp->graph->release_all_weight_pages();
+    unload_component_graph(*comp);
+    return result;
 }
 
 bool Config::from_json(const std::string& config_path) {
@@ -2910,6 +3368,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (mt == "parakeet_tdt" || mt == "parakeet-tdt") model_type = ModelType::PARAKEET_TDT;
             else if (mt == "youtu") model_type = ModelType::YOUTU;
             else if (mt == "needle") model_type = ModelType::NEEDLE;
+            else if (mt == "bert" || mt == "nomic") model_type = ModelType::NOMIC;
             else model_type = ModelType::GEMMA4;
         }
         else if (key == "model_variant") {

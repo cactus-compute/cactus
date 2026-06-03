@@ -33,12 +33,6 @@ def _find_asset(name):
 _TEST_IMAGE = _find_asset("test_monkey.png")
 _TEST_AUDIO = _find_asset("test.wav")
 
-_EMBED_NOT_IMPLEMENTED = (
-    "Embeddings are not wired up for transpiled bundles in the v2 engine "
-    "(Model::get_embeddings stub + image/audio embed paths gated)."
-)
-
-
 class TestVLMModel(unittest.TestCase):
 
     @classmethod
@@ -58,13 +52,7 @@ class TestVLMModel(unittest.TestCase):
         self.assertTrue(result.get("success", False))
         self.assertGreater(len(result.get("response", "")), 0)
 
-    @unittest.skip(_EMBED_NOT_IMPLEMENTED)
-    def test_text_embedding(self):
-        embedding = cactus_embed(self.model, "Hello world", True)
-        self.assertIsInstance(embedding, list)
-        self.assertGreater(len(embedding), 0)
-
-    @unittest.skip(_EMBED_NOT_IMPLEMENTED)
+    @unittest.skipUnless(_TEST_IMAGE is not None, "test_monkey.png not found")
     def test_image_embedding(self):
         embedding = cactus_image_embed(self.model, str(_TEST_IMAGE))
         self.assertIsInstance(embedding, list)
@@ -111,11 +99,78 @@ class TestWhisperModel(unittest.TestCase):
         self.assertTrue(result.get("success", False))
         self.assertGreater(len(result.get("response", "")), 0)
 
-    @unittest.skip(_EMBED_NOT_IMPLEMENTED)
+    @unittest.skipUnless(_TEST_AUDIO is not None, "test.wav not found")
     def test_audio_embedding(self):
         embedding = cactus_audio_embed(self.model, str(_TEST_AUDIO))
         self.assertIsInstance(embedding, list)
         self.assertGreater(len(embedding), 0)
+
+
+def _cosine(a, b):
+    import math
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb + 1e-12)
+
+
+class TestNomicEmbedding(unittest.TestCase):
+    MODEL_ID = "nomic-ai/nomic-embed-text-v2-moe"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.weights_dir = ensure_bundle(cls.MODEL_ID)
+        cls.model = cactus_init(str(cls.weights_dir), None, False)
+
+    @classmethod
+    def tearDownClass(cls):
+        cactus_destroy(cls.model)
+
+    def test_text_embedding_shape_and_determinism(self):
+        v1 = cactus_embed(self.model, "Paris is the capital of France.", True)
+        v2 = cactus_embed(self.model, "Paris is the capital of France.", True)
+        self.assertIsInstance(v1, list)
+        self.assertGreater(len(v1), 0)
+        self.assertEqual(len(v1), len(v2))
+        self.assertLess(max(abs(a - b) for a, b in zip(v1, v2)), 1e-5)
+
+    def test_retrieval_discrimination(self):
+        query = cactus_embed(self.model, "search_query: What is the capital of France?", True)
+        relevant = cactus_embed(self.model, "search_document: Paris is the capital of France.", True)
+        unrelated = cactus_embed(self.model, "search_document: The Great Barrier Reef is off Australia.", True)
+        self.assertGreater(_cosine(query, relevant), _cosine(query, unrelated))
+
+    def test_hf_parity(self):
+        try:
+            import torch
+            import torch.nn.functional as F
+            from transformers import AutoModel, AutoTokenizer
+        except ImportError:
+            self.skipTest("transformers/torch not available for HF parity check")
+
+        texts = [
+            "search_query: What is the capital of France?",
+            "search_document: Paris is the capital and largest city of France.",
+            "search_document: The Great Barrier Reef is located off Australia.",
+        ]
+        cactus_vecs = [cactus_embed(self.model, t, True) for t in texts]
+
+        tok = AutoTokenizer.from_pretrained(self.MODEL_ID)
+        hf = AutoModel.from_pretrained(self.MODEL_ID, trust_remote_code=True, torch_dtype=torch.float32).eval()
+
+        def hf_embed(text):
+            enc = tok(text, return_tensors="pt", truncation=True, max_length=256)
+            with torch.no_grad():
+                hs = hf(**enc).last_hidden_state
+            mask = enc["attention_mask"][..., None].float()
+            pooled = (hs * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+            return F.normalize(pooled, p=2, dim=1)[0].tolist()
+
+        for text, cactus_vec in zip(texts, cactus_vecs):
+            cos = _cosine(cactus_vec, hf_embed(text))
+            print(f"\n  HF parity cos ({text[:30]}...): {cos:.4f}")
+            # CQ4-quantized weights vs FP reference; FP parity is ~1.0 (see plan notes).
+            self.assertGreater(cos, 0.85)
 
 
 if __name__ == "__main__":

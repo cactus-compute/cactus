@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from .bindings.cactus import (
     cactus_complete,
     cactus_destroy,
+    cactus_embed,
     cactus_get_last_error,
     cactus_init,
     cactus_reset,
@@ -30,6 +31,7 @@ LOGGER = logging.getLogger(__name__)
 
 LLM_MODEL_TYPES = {"gemma", "gemma3n", "gemma4", "lfm2", "qwen", "qwen3p5", "needle", "youtu"}
 STT_MODEL_TYPES = {"whisper", "parakeet_tdt", "parakeet-tdt"}
+EMBED_MODEL_TYPES = {"bert", "nomic"}
 
 
 @dataclass(frozen=True)
@@ -253,6 +255,11 @@ class ChatRequest(Permissive):
     tool_choice: str | ToolChoiceObject | None = None
 
 
+class EmbeddingRequest(Permissive):
+    model: str
+    input: str | list[str]
+
+
 def _flatten_message(msg: ChatMessage) -> dict[str, Any]:
     out: dict[str, Any] = {"role": msg.role}
     if isinstance(msg.content, list):
@@ -460,7 +467,19 @@ def create_app(
         PROJECT_ROOT / "weights" if is_repo_checkout() else Path.home() / ".cache" / "cactus" / "weights"
     )
     registry = ModelRegistry(root, extra_model=model_path)
-    selected = registry.default_llm(default_model)
+    if default_model is not None:
+        selected = registry.models.get(default_model)
+        if selected is None:
+            raise RuntimeError(f"Requested model '{default_model}' is not a valid v2 Cactus bundle")
+    else:
+        try:
+            selected = registry.default_llm()
+        except RuntimeError:
+            # No LLM available — allow serving a non-LLM bundle (e.g. an embedding model).
+            available = sorted(registry.models.values(), key=lambda info: info.id)
+            if not available:
+                raise
+            selected = available[0]
     manager = ModelManager(registry, max_warm=max_warm)
 
     @asynccontextmanager
@@ -580,5 +599,42 @@ def create_app(
                 ],
             }
         return {"text": text}
+
+    @app.post("/v1/embeddings")
+    async def create_embeddings(request: Request, req: EmbeddingRequest):
+        reg: ModelRegistry = request.app.state.registry
+        info = reg.require(req.model)
+        if info.model_type not in EMBED_MODEL_TYPES:
+            raise HTTPException(status_code=400, detail=f"Model '{req.model}' is not an embedding model")
+        inputs = [req.input] if isinstance(req.input, str) else list(req.input)
+        if not inputs:
+            raise HTTPException(status_code=400, detail="'input' must not be empty")
+        mgr: ModelManager = request.app.state.manager
+
+        def _embed_all(handle) -> list[list[float]]:
+            vectors = []
+            for text in inputs:
+                cactus_reset(handle)
+                vectors.append(cactus_embed(handle, text, True))
+            return vectors
+
+        async with mgr.acquire(req.model) as slot:
+            async with slot.lock:
+                try:
+                    vectors = await asyncio.get_running_loop().run_in_executor(
+                        None, lambda: _embed_all(slot.handle)
+                    )
+                except Exception as exc:
+                    raise HTTPException(status_code=500, detail=str(exc))
+        data = [
+            {"object": "embedding", "index": i, "embedding": vector}
+            for i, vector in enumerate(vectors)
+        ]
+        return {
+            "object": "list",
+            "data": data,
+            "model": req.model,
+            "usage": {"prompt_tokens": 0, "total_tokens": 0},
+        }
 
     return app

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>
@@ -202,16 +203,31 @@ struct TokenPrinter {
         ++count;
     }
 
-    void print_stats(double ram_mb) const {
+    void print_stats(double ram_mb, double confidence, bool cloud_handoff,
+                     int reported_tokens = -1, double reported_decode_tps = -1.0,
+                     double reported_ttft_ms = -1.0, double reported_total_ms = -1.0) const {
         auto end = std::chrono::steady_clock::now();
         double total_s = std::chrono::duration<double>(end - start).count();
         double ttft_s = saw_first ? std::chrono::duration<double>(first - start).count() : 0.0;
         double decode_s = saw_first ? std::chrono::duration<double>(end - first).count() : total_s;
+        int display_tokens = reported_tokens >= 0 ? reported_tokens : count;
         double tps = (count > 1 && decode_s > 0.0) ? (count - 1) / decode_s : (total_s > 0.0 ? count / total_s : 0.0);
-        std::cout << "\n[" << count << " tokens | latency: "
+        if (reported_decode_tps >= 0.0) tps = reported_decode_tps;
+        if (reported_ttft_ms >= 0.0) ttft_s = reported_ttft_ms / 1000.0;
+        if (reported_total_ms >= 0.0) total_s = reported_total_ms / 1000.0;
+        std::cout << "\n[" << display_tokens << " tokens | latency: "
                   << std::fixed << std::setprecision(3) << ttft_s
                   << "s | total: " << total_s
                   << "s | " << std::setprecision(1) << tps << " tok/s";
+        if (confidence >= 0.0) {
+            double handoff_pct = std::max(0.0, std::min(100.0, (1.0 - confidence) * 100.0));
+            std::cout << " | handoff: " << handoff_pct << "%"
+                      << " | confidence: " << std::max(0.0, std::min(100.0, confidence * 100.0)) << "%";
+        } else {
+            std::cout << " | handoff: forced"
+                      << " | confidence: n/a";
+        }
+        std::cout << " | cloud: " << (cloud_handoff ? "yes" : "no");
         if (ram_mb > 0.0) {
             std::cout << " | RAM: " << ram_mb << " MB";
         }
@@ -325,13 +341,28 @@ std::string json_string_value(const std::string& json, const std::string& key) {
     return unescape_json(json.substr(start, end - start));
 }
 
-double json_number_value(const std::string& json, const std::string& key) {
+double json_number_value(const std::string& json, const std::string& key, double fallback = 0.0) {
     std::string needle = "\"" + key + "\":";
     size_t start = json.find(needle);
-    if (start == std::string::npos) return 0.0;
+    if (start == std::string::npos) return fallback;
     start += needle.size();
+    while (start < json.size() && std::isspace(static_cast<unsigned char>(json[start]))) {
+        ++start;
+    }
+    if (json.compare(start, 4, "null") == 0) return fallback;
     char* end = nullptr;
     return std::strtod(json.c_str() + start, &end);
+}
+
+bool json_bool_value(const std::string& json, const std::string& key) {
+    std::string needle = "\"" + key + "\":";
+    size_t start = json.find(needle);
+    if (start == std::string::npos) return false;
+    start += needle.size();
+    while (start < json.size() && std::isspace(static_cast<unsigned char>(json[start]))) {
+        ++start;
+    }
+    return json.compare(start, 4, "true") == 0;
 }
 
 std::string build_messages(const std::string& system_prompt,
@@ -365,12 +396,16 @@ void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>]"
               << " [--prompt <text>] [--input-ids <ids>] [--max-new-tokens <n>]"
-              << " [--result-json <path>] [--thinking]\n";
+              << " [--result-json <path>] [--thinking] [--no-cloud-handoff]"
+              << " [--confidence-threshold <value>] [--cloud-timeout-ms <ms>]\n";
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
+    std::cout << std::unitbuf;
+    std::cerr << std::unitbuf;
+
     if (argc < 2) {
         print_usage(argv[0]);
         return 1;
@@ -385,6 +420,9 @@ int main(int argc, char** argv) {
     std::string result_json;
     int max_new_tokens = kMaxTokens;
     bool thinking = false;
+    bool auto_handoff = true;
+    double confidence_threshold = -1.0;
+    int cloud_timeout_ms = 15000;
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -404,6 +442,12 @@ int main(int argc, char** argv) {
             result_json = argv[++i];
         } else if (arg == "--thinking") {
             thinking = true;
+        } else if (arg == "--no-cloud-handoff") {
+            auto_handoff = false;
+        } else if (arg == "--confidence-threshold" && i + 1 < argc) {
+            confidence_threshold = std::atof(argv[++i]);
+        } else if (arg == "--cloud-timeout-ms" && i + 1 < argc) {
+            cloud_timeout_ms = std::max(0, std::atoi(argv[++i]));
         }
     }
 
@@ -556,7 +600,9 @@ int main(int argc, char** argv) {
         std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
             + std::to_string(max_new_tokens)
             + ",\"enable_thinking_if_supported\":" + (thinking ? "true" : "false")
-            + ",\"auto_handoff\":false,\"confidence_threshold\":0.0"
+            + ",\"auto_handoff\":" + (auto_handoff ? "true" : "false")
+            + ",\"confidence_threshold\":" + std::to_string(confidence_threshold)
+            + ",\"cloud_timeout_ms\":" + std::to_string(cloud_timeout_ms)
             + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
 
         if (!current_image.empty()) std::cout << "[image: " << current_image << "]\n";
@@ -584,12 +630,18 @@ int main(int argc, char** argv) {
         if (!result_json.empty() && !write_text_file(result_json, response_json)) {
             std::cerr << "Failed to write result JSON: " << result_json << "\n";
         }
+        bool cloud_handoff = json_bool_value(response_json, "cloud_handoff");
+        double confidence = json_number_value(response_json, "confidence", -1.0);
         double ram_mb = json_number_value(response_json, "ram_usage_mb");
-        printer.print_stats(ram_mb);
+        int decode_tokens = static_cast<int>(json_number_value(response_json, "decode_tokens", -1.0));
+        double decode_tps = json_number_value(response_json, "decode_tps", -1.0);
+        double ttft_ms = json_number_value(response_json, "time_to_first_token_ms", -1.0);
+        double total_ms = json_number_value(response_json, "total_time_ms", -1.0);
+        printer.print_stats(ram_mb, confidence, cloud_handoff, decode_tokens, decode_tps, ttft_ms, total_ms);
         std::cout << "\n";
 
         if (rc < 0) {
-            std::cerr << "Error: " << response.data() << "\n";
+            std::cout << "Error: " << response.data() << "\n";
             history.pop_back();
             continue;
         }

@@ -250,3 +250,50 @@ def test_parakeet_adapter_conv_transform_is_scoped():
     untouched, transform = adapter.transform_tensor(other, torch.randn(4, 4))
     assert transform == "none"
     assert untouched.shape == (4, 4)
+
+
+def _nomic_cfg() -> dict[str, object]:
+    return {
+        "model_type": "nomic_bert",
+        "vocab_size": 250048,
+        "n_embd": 768,
+        "n_head": 12,
+        "n_layer": 12,
+        "n_inner": 3072,
+        "n_positions": 2048,
+        "num_experts": 8,
+        "moe_top_k": 2,
+        "moe_every_n_layers": 2,
+    }
+
+
+def test_nomic_detection_and_runtime_config():
+    adapter = adapter_for_family("nomic")
+    assert detect_family(_nomic_cfg(), "auto") == "nomic"
+    assert adapter.runtime_model_type() == "bert"
+    runtime = adapter.runtime_config(_nomic_cfg())
+    assert runtime["num_layers"] == 12
+    assert runtime["hidden_dim"] == 768
+    assert runtime["attention_heads"] == 12
+    assert runtime["num_experts"] == 8
+    assert runtime["num_experts_per_tok"] == 2
+    assert runtime["moe_every_n_layers"] == 2
+
+
+def test_nomic_uses_gptq_only_for_hookable_linear_modules():
+    adapter = adapter_for_family("nomic")
+    qkv_match = adapter.name_tensor("encoder.layers.0.attn.Wqkv.weight", torch.empty(2304, 768), 12)
+    qkv_policy = adapter.policy(qkv_match, (768, 768), 4)
+    assert qkv_policy.use_gptq
+    assert adapter.module_target_name("encoder.layers.0.attn.Wqkv.weight", None) == "encoder.layers.0.attn.Wqkv"
+
+    expert_match = adapter.name_tensor("encoder.layers.1.mlp.experts.mlp.w1", torch.empty(24576, 768), 12)
+    expert_policy = adapter.policy(expert_match, (3072, 768), 4)
+    assert not expert_policy.use_gptq
+    assert adapter.module_target_name("encoder.layers.1.mlp.experts.mlp.w1", None) is None
+
+
+def test_nomic_router_stays_fp16():
+    adapter = adapter_for_family("nomic")
+    match = adapter.name_tensor("encoder.layers.1.mlp.router.layer.weight", torch.empty(8, 768), 12)
+    assert adapter.policy(match, (8, 768), 4).precision == "FP16"

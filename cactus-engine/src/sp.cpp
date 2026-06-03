@@ -235,8 +235,11 @@ std::string SPTokenizer::preprocess_text(const std::string& text) const {
     }
 
     std::string processed = "";
+    if (sp_add_dummy_prefix_) processed += "\xE2\x96\x81";
 
-    for (size_t i = text.find_first_not_of(" "); i < text.length(); i++) {
+    size_t start = text.find_first_not_of(" ");
+    if (start == std::string::npos) return processed;
+    for (size_t i = start; i < text.length(); i++) {
         char c = text[i];
         if (c == ' ') {
             processed += "▁";

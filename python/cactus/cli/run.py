@@ -46,11 +46,15 @@ def cmd_run(args):
         ("--input-ids", args.input_ids),
         ("--max-new-tokens", args.max_new_tokens),
         ("--result-json", args.result_json),
+        ("--confidence-threshold", args.confidence_threshold),
+        ("--cloud-timeout-ms", args.cloud_timeout_ms),
     ):
         if value is not None:
             cmd.extend([flag, str(value)])
     if args.thinking:
         cmd.append("--thinking")
+    if args.no_cloud_handoff:
+        cmd.append("--no-cloud-handoff")
 
     print_color(GREEN, f"Starting Cactus Chat with model: {bundle_dir}")
     print()

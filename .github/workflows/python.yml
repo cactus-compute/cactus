@@ -28,9 +28,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e "python/[dev]"
+        run: pip install -e "python/[dev,serve]"
 
       - name: Run tests
         run: |
           cd python
-          pytest tests/ -v --ignore=tests/test_model.py
+          pytest tests/ -v \
+            --ignore=tests/test_model.py \
+            --ignore=tests/test_server_live.py
