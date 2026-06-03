@@ -4746,6 +4746,7 @@ def _encoder_cross_kv_step_specs(
     task: str,
     max_cache_seq_len: int,
     cache_sink_size: int = 0,
+    decoder_step_graph_meta: dict[str, object] | None = None,
 ) -> list[ComponentModuleSpec]:
     return [
         _component_spec(
@@ -4784,6 +4785,7 @@ def _encoder_cross_kv_step_specs(
                 "use_internal_kv_cache": True,
                 "max_cache_seq_len": max_cache_seq_len,
                 "cache_sink_size": cache_sink_size,
+                **(decoder_step_graph_meta or {}),
             },
             runtime_role="decoder_step",
         ),
@@ -4976,6 +4978,12 @@ def _build_needle_causal_lm_component_specs(
         family="needle",
         task="causal_lm_logits",
         max_cache_seq_len=max(16, int(input_ids.shape[1])),
+        decoder_step_graph_meta={
+            "external_cross_kv_cache_inputs": True,
+            "cross_kv_input_start_index": 3,
+            "cross_kv_input_count": len(cross_kv_output_keys),
+            "cross_kv_input_layout": "bthd",
+        },
     )
     return [
         spec

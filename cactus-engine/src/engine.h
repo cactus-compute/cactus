@@ -19,7 +19,9 @@ namespace npu {
 
 struct NPUNamedInput {
     std::string name;
-    const __fp16* data;
+    enum class DataType { FP16, INT32 };
+    const void* data;
+    DataType data_type = DataType::FP16;
     std::vector<int> shape;
 };
 
@@ -331,7 +333,7 @@ public:
     size_t get_image_soft_token_count() const { return image_soft_token_count_; }
 
 protected:
-    enum class ModelType { UNKNOWN, GEMMA4, QWEN, LFM2 };
+    enum class ModelType { UNKNOWN, GEMMA4, QWEN, LFM2, NEEDLE };
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -355,6 +357,7 @@ protected:
     std::string format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
+    std::string format_needle_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
 class BPETokenizer : public Tokenizer {
@@ -475,7 +478,8 @@ public:
         GEMMA_IN_FUNC_NAME,
         GEMMA_EXPECT_BRACE,
         GEMMA_IN_ARGUMENTS,
-        GEMMA_EXPECT_END
+        GEMMA_EXPECT_END,
+        NEEDLE_START
     };
 
     void init(Config::ModelType model_type,
@@ -528,6 +532,41 @@ private:
     void add_tokens_for_prefix_string(const std::string& prefix, std::unordered_set<uint32_t>& token_set);
     void tokenize_function_names(bool quote_names);
     void init_common_tokens();
+
+    bool is_needle() const { return model_type_ == Config::ModelType::NEEDLE; }
+    enum class NeedleJsonState {
+        FREE,
+        IN_NAME,
+        IN_ARG_KEY
+    };
+    struct NeedleTrieNode {
+        std::unordered_map<char, std::unique_ptr<NeedleTrieNode>> children;
+        bool is_terminal = false;
+    };
+
+    NeedleJsonState needle_json_state_ = NeedleJsonState::FREE;
+    std::string needle_buffer_;
+    std::string needle_constrained_buf_;
+    std::string needle_current_function_;
+    bool needle_in_arguments_ = false;
+    int needle_arguments_depth_ = 0;
+    int needle_nesting_depth_ = 0;
+    bool needle_in_string_value_ = false;
+    bool needle_prev_char_escape_ = false;
+    std::unique_ptr<NeedleTrieNode> needle_name_trie_;
+    std::unordered_map<std::string, std::unique_ptr<NeedleTrieNode>> needle_param_tries_;
+    std::vector<std::string> needle_token_strings_;
+    std::unordered_map<char, std::vector<uint32_t>> needle_token_index_;
+
+    void init_needle_constraints();
+    void reset_needle_constraints();
+    void feed_needle_text(const std::string& text);
+    void feed_needle_char(char ch);
+    bool needle_at_arg_key_start() const;
+    bool needle_is_value_string_start() const;
+    void needle_insert_word(NeedleTrieNode* root, const std::string& word);
+    const NeedleTrieNode* needle_get_trie_node(const NeedleTrieNode* root, const std::string& prefix) const;
+    bool needle_check_token_valid(const std::string& token_text, const NeedleTrieNode* trie_node) const;
 };
 
 class Model {
@@ -620,6 +659,9 @@ public:
     bool load_npu_vision_encoder(const std::string& model_path);
     bool has_npu_vision_encoder() const { return npu_vision_encoder_ != nullptr; }
 
+    bool load_npu_source_encoder(const std::string& model_path);
+    bool has_npu_source_encoder() const { return npu_source_encoder_ != nullptr; }
+
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
 
@@ -680,6 +722,7 @@ private:
                         Precision feature_precision);
     void reset_encoder_cross_kv_route_state();
     bool finish_encoder_cross_kv_prepare();
+    bool finish_encoder_cross_kv_prepare_after_source();
     bool prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& tokens);
     bool prepare_encoder_cross_kv_from_audio(const std::vector<float>& audio_features);
     bool run_encoder_cross_kv_decoder_step(uint32_t token_id, size_t position);
@@ -689,6 +732,7 @@ private:
         const std::vector<std::vector<uint32_t>>& stop_token_sequences,
         const std::atomic<bool>* should_stop);
     void copy_component_outputs_to_inputs(const Component& source, Component& target);
+    bool copy_cross_kv_outputs_to_decoder_cache_inputs(const Component& source, Component& target, size_t source_len);
     void copy_encoder_outputs_to_decoder(const Component& enc);
     void copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index);
     void copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target, size_t token_offset);
@@ -738,16 +782,20 @@ private:
     Component* lm_encoder_media_chunk_ = nullptr;
     std::string encoder_cross_kv_source_kind_;
     bool encoder_cross_kv_ready_ = false;
+    size_t encoder_cross_kv_source_len_ = 0;
 
     std::string family_;
     std::string npu_audio_encoder_mlpackage_;
     std::string npu_vision_encoder_mlpackage_;
+    std::string npu_source_encoder_mlpackage_;
 
     std::unique_ptr<npu::NPUEncoder> npu_audio_encoder_;
     std::unique_ptr<npu::NPUEncoder> npu_vision_encoder_;
+    std::unique_ptr<npu::NPUEncoder> npu_source_encoder_;
 
     bool audio_encode_via_npu(const std::vector<float>& audio_features);
     bool vision_encode_via_npu(const std::vector<float>& pixel_values);
+    bool source_encode_via_npu(const std::vector<uint32_t>& tokens);
 
     std::map<std::string, std::vector<uint8_t>> media_features_;
     std::map<std::string, std::vector<size_t>> media_feature_shapes_;

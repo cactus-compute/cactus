@@ -1,5 +1,6 @@
 #include "engine.h"
 #include "cactus_kernels.h"
+#include "needle_tools.h"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -339,7 +340,9 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
         std::transform(lower_line.begin(), lower_line.end(), lower_line.begin(), ::tolower);
 
         if (lower_line.find("model_type") != std::string::npos) {
-            if (lower_line.find("qwen") != std::string::npos) {
+            if (lower_line.find("needle") != std::string::npos) {
+                model_type_ = ModelType::NEEDLE;
+            } else if (lower_line.find("qwen") != std::string::npos) {
                 model_type_ = ModelType::QWEN;
             } else if (lower_line.find("lfm2") != std::string::npos) {
                 model_type_ = ModelType::LFM2;
@@ -370,6 +373,9 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
 }
 
 std::string Tokenizer::get_default_stop_sequence() const {
+    if (model_type_ == ModelType::NEEDLE) {
+        return "";
+    }
     if (model_type_ == ModelType::QWEN || model_type_ == ModelType::LFM2) {
         return "<|im_end|>";
     }
@@ -387,6 +393,9 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
     }
     if (model_type_ == ModelType::LFM2) {
         return format_lfm2_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
+    }
+    if (model_type_ == ModelType::NEEDLE) {
+        return format_needle_style(messages, add_generation_prompt, tools_json);
     }
     return format_gemma4_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
 }
@@ -448,6 +457,12 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
 std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
                                          const std::string& tools_json, bool enable_thinking_if_supported) const {
     return "<|startoftext|>" + format_qwen_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
+}
+
+std::string Tokenizer::format_needle_style(const std::vector<ChatMessage>& messages, bool /*add_generation_prompt*/,
+                                           const std::string& tools_json) const {
+    std::string serialized_tools = tools_json.empty() ? "[]" : tools_json;
+    return needle::format_query_text(messages) + "<tools>" + serialized_tools + "</s>";
 }
 
 std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,

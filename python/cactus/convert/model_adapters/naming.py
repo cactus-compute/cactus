@@ -249,11 +249,25 @@ def _parakeet_tdt_predictor_match(name: str) -> str | None:
     return None
 
 
+def _needle_gate_match(name: str) -> str | None:
+    m = re.fullmatch(r"model\.encoder\.layers\.(\d+)\.attn_gate", name)
+    if m:
+        return f"encoder_layer_{int(m.group(1))}_attn_gate.weights"
+    m = re.fullmatch(r"model\.decoder\.layers\.(\d+)\.(self_attn_gate|cross_attn_gate)", name)
+    if m:
+        return f"layer_{int(m.group(1))}_{m.group(2)}.weights"
+    return None
+
+
 def _suffix_layer_match(name: str, i: int, family: str) -> tuple[str, bool] | None:
     if family == "whisper":
         return _whisper_layer_match(name, i)
     if family in {"parakeet", "parakeet_tdt"}:
         out = _parakeet_layer_match(name, i)
+        if out:
+            return out, False
+    if family == "needle":
+        out = _needle_gate_match(name)
         if out:
             return out, False
     prefixes = [p.format(i=i) for p in wp.LAYER_PREFIXES] + [f"h.{i}."]
@@ -267,13 +281,21 @@ def _suffix_layer_match(name: str, i: int, family: str) -> tuple[str, bool] | No
                     rx = re.escape(pat).replace(r"\{channel\}", r"(\d+)")
                     m = re.fullmatch(rx, suffix)
                     if m:
-                        return out_name.format(channel=m.group(1)), transpose
+                        matched_out = out_name.format(channel=m.group(1))
+                        if family == "needle" and p == f"model.encoder.layers.{i}.":
+                            matched_out = matched_out.replace(f"layer_{i}_", f"encoder_layer_{i}_", 1)
+                        return matched_out, transpose
                 elif suffix == pat:
-                    return out_name, transpose
+                    matched_out = out_name
+                    if family == "needle" and p == f"model.encoder.layers.{i}.":
+                        matched_out = matched_out.replace(f"layer_{i}_", f"encoder_layer_{i}_", 1)
+                    return matched_out, transpose
         if suffix.endswith(".weight"):
-            return f"layer_{i}_{suffix[:-7].replace('.', '_')}.weights", False
+            prefix = f"encoder_layer_{i}_" if family == "needle" and p == f"model.encoder.layers.{i}." else f"layer_{i}_"
+            return f"{prefix}{suffix[:-7].replace('.', '_')}.weights", False
         if suffix.endswith(".bias"):
-            return f"layer_{i}_{suffix[:-5].replace('.', '_')}.bias", False
+            prefix = f"encoder_layer_{i}_" if family == "needle" and p == f"model.encoder.layers.{i}." else f"layer_{i}_"
+            return f"{prefix}{suffix[:-5].replace('.', '_')}.bias", False
     return None
 
 

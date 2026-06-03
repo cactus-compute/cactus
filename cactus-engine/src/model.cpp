@@ -84,6 +84,64 @@ bool copy_component_tensor(CactusGraph& source_graph,
     return true;
 }
 
+struct CrossKVCacheMetadata {
+    uint64_t current_seq_len;
+    uint64_t max_seq_len;
+    uint64_t num_kv_heads;
+    uint64_t head_dim;
+    uint64_t sink_size;
+    uint64_t reserved[3];
+};
+
+static_assert(sizeof(CrossKVCacheMetadata) == 64, "CrossKVCacheMetadata must be 64 bytes");
+
+size_t cross_kv_cache_buffer_size(size_t max_seq, size_t kv_heads, size_t head_dim) {
+    size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+    return sizeof(CrossKVCacheMetadata) + max_seq * kv_heads * head_dim +
+           max_seq * kv_heads * num_groups * sizeof(float);
+}
+
+bool write_cross_kv_cache_buffer(const BufferDesc& src_desc,
+                                 const void* src_ptr,
+                                 const BufferDesc& dst_desc,
+                                 std::vector<uint8_t>& dst_buffer,
+                                 size_t source_len,
+                                 const std::string& name) {
+    if (src_desc.precision != Precision::FP16 || dst_desc.precision != Precision::INT8) return false;
+    if (src_desc.shape.size() != 4) return false;
+
+    const size_t max_seq = src_desc.shape[1];
+    const size_t kv_heads = src_desc.shape[2];
+    const size_t head_dim = src_desc.shape[3];
+    const size_t expected_bytes = cross_kv_cache_buffer_size(max_seq, kv_heads, head_dim);
+    if (dst_buffer.size() < expected_bytes || dst_desc.byte_size < expected_bytes) {
+        CACTUS_LOG_ERROR("model", "cross-KV cache input buffer is too small for " << name);
+        return false;
+    }
+
+    source_len = std::min(source_len, max_seq);
+    std::fill(dst_buffer.begin(), dst_buffer.end(), 0);
+    auto* meta = reinterpret_cast<CrossKVCacheMetadata*>(dst_buffer.data());
+    meta->current_seq_len = static_cast<uint64_t>(source_len);
+    meta->max_seq_len = static_cast<uint64_t>(max_seq);
+    meta->num_kv_heads = static_cast<uint64_t>(kv_heads);
+    meta->head_dim = static_cast<uint64_t>(head_dim);
+    meta->sink_size = 0;
+
+    if (source_len == 0) return true;
+    auto* int8_base = reinterpret_cast<int8_t*>(dst_buffer.data() + sizeof(CrossKVCacheMetadata));
+    const size_t int8_bytes = max_seq * kv_heads * head_dim;
+    auto* scale_base = reinterpret_cast<float*>(dst_buffer.data() + sizeof(CrossKVCacheMetadata) + int8_bytes);
+    cactus_quantize_kv_fp16_to_int8(
+        static_cast<const __fp16*>(src_ptr),
+        int8_base,
+        scale_base,
+        source_len,
+        kv_heads,
+        head_dim);
+    return true;
+}
+
 void ConvCache::init(size_t layers, size_t hidden_dim, size_t window_len, Precision model_precision) {
     num_layers = layers;
     hidden_size = hidden_dim;
@@ -356,6 +414,12 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
             CACTUS_LOG_WARN("model", "NPU vision encoder load failed for " << full_path << "; falling back to CPU");
         }
     }
+    if (!npu_source_encoder_mlpackage_.empty()) {
+        std::string full_path = bundle_dir + "/" + npu_source_encoder_mlpackage_;
+        if (!load_npu_source_encoder(full_path)) {
+            CACTUS_LOG_WARN("model", "NPU source encoder load failed for " << full_path << "; falling back to CPU");
+        }
+    }
 
     initialized_ = true;
     return true;
@@ -379,6 +443,9 @@ bool Model::load_manifest() {
     }
     if (obj.count("npu_vision_encoder") && obj.at("npu_vision_encoder").is<std::string>()) {
         npu_vision_encoder_mlpackage_ = obj.at("npu_vision_encoder").get<std::string>();
+    }
+    if (obj.count("npu_source_encoder") && obj.at("npu_source_encoder").is<std::string>()) {
+        npu_source_encoder_mlpackage_ = obj.at("npu_source_encoder").get<std::string>();
     }
     if (!obj.count("components")) return false;
     for (const auto& cv : obj.at("components").get<picojson::array>()) {
@@ -611,6 +678,28 @@ void Model::copy_component_outputs_to_inputs(const Component& source, Component&
             throw std::runtime_error("component output/input precision mismatch for " + out_name);
         }
     }
+}
+
+bool Model::copy_cross_kv_outputs_to_decoder_cache_inputs(const Component& source, Component& target, size_t source_len) {
+    bool copied_any = false;
+    for (size_t i = 0; i < source.output_node_ids.size() && i < source.logical_outputs.size(); ++i) {
+        const std::string& out_name = source.logical_outputs[i];
+        if (out_name.rfind("cross_k_", 0) != 0 && out_name.rfind("cross_v_", 0) != 0) {
+            continue;
+        }
+        int dst_idx = input_index(target, out_name);
+        if (dst_idx < 0) continue;
+        size_t src_node = static_cast<size_t>(source.output_node_ids[i]);
+        const auto& src_desc = source.graph->get_output_buffer(src_node);
+        const void* src_ptr = source.graph->get_output(src_node);
+        size_t dst_node = static_cast<size_t>(target.runtime_input_node_ids[dst_idx]);
+        const auto& dst_desc = target.graph->get_output_buffer(dst_node);
+        if (!write_cross_kv_cache_buffer(src_desc, src_ptr, dst_desc, target.input_buffers[dst_idx], source_len, out_name)) {
+            return false;
+        }
+        copied_any = true;
+    }
+    return copied_any;
 }
 
 void Model::copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index) {
@@ -1252,18 +1341,32 @@ uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row) {
     size_t row_off = row * vocab;
     uint32_t best = 0;
     float best_v = -std::numeric_limits<float>::infinity();
+    const auto& tool_bias = tool_constrainer_.get_bias();
+    auto score_with_bias = [&](size_t token_id, float value) {
+        auto tool_it = tool_bias.find(static_cast<uint32_t>(token_id));
+        if (tool_it != tool_bias.end()) value += tool_it->second;
+        auto vocab_it = vocab_bias_.find(static_cast<uint32_t>(token_id));
+        if (vocab_it != vocab_bias_.end()) value += vocab_it->second;
+        return value;
+    };
     if (desc.precision == Precision::FP32) {
         float* p = static_cast<float*>(ptr) + row_off;
-        for (size_t i = 0; i < vocab; ++i) if (p[i] > best_v) { best_v = p[i]; best = static_cast<uint32_t>(i); }
+        for (size_t i = 0; i < vocab; ++i) {
+            float v = score_with_bias(i, p[i]);
+            if (v > best_v) { best_v = v; best = static_cast<uint32_t>(i); }
+        }
     } else if (desc.precision == Precision::FP16) {
         __fp16* p = static_cast<__fp16*>(ptr) + row_off;
         for (size_t i = 0; i < vocab; ++i) {
-            float v = static_cast<float>(p[i]);
+            float v = score_with_bias(i, static_cast<float>(p[i]));
             if (v > best_v) { best_v = v; best = static_cast<uint32_t>(i); }
         }
     } else {
         int8_t* p = static_cast<int8_t*>(ptr) + row_off;
-        for (size_t i = 0; i < vocab; ++i) if (p[i] > best_v) { best_v = static_cast<float>(p[i]); best = static_cast<uint32_t>(i); }
+        for (size_t i = 0; i < vocab; ++i) {
+            float v = score_with_bias(i, static_cast<float>(p[i]));
+            if (v > best_v) { best_v = v; best = static_cast<uint32_t>(i); }
+        }
     }
     return best;
 }
@@ -1280,11 +1383,17 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
         return false;
     }
     if (decode_route_ == DecodeRoute::ENCODER_CROSS_KV_STEP && encoder_cross_kv_source_kind_ == "text_tokens") {
-        if (!prepare_encoder_cross_kv_from_text(tokens)) {
+        std::vector<uint32_t> source_tokens = tokens;
+        std::vector<uint32_t> decoder_seed = {config_.decoder_start_token_id};
+        if (!source_tokens.empty() && source_tokens.back() == config_.decoder_start_token_id) {
+            decoder_seed = {source_tokens.back()};
+            source_tokens.pop_back();
+        }
+        if (!prepare_encoder_cross_kv_from_text(source_tokens)) {
             return false;
         }
         std::vector<uint32_t> emitted = run_encoder_cross_kv_decode_loop(
-            {config_.decoder_start_token_id},
+            decoder_seed,
             1,
             {},
             nullptr);
@@ -1536,6 +1645,7 @@ void Model::reset_encoder_cross_kv_route_state() {
     cache_total_seq_len_ = 0;
     token_history_.clear();
     encoder_cross_kv_ready_ = false;
+    encoder_cross_kv_source_len_ = 0;
 }
 
 bool Model::finish_encoder_cross_kv_prepare() {
@@ -1544,7 +1654,19 @@ bool Model::finish_encoder_cross_kv_prepare() {
     copy_component_outputs_to_inputs(*source_encoder_, *decoder_cross_kv_);
     decoder_cross_kv_->graph->execute();
     copy_component_outputs_to_inputs(*source_encoder_, *decoder_);
-    copy_component_outputs_to_inputs(*decoder_cross_kv_, *decoder_);
+    if (!copy_cross_kv_outputs_to_decoder_cache_inputs(*decoder_cross_kv_, *decoder_, encoder_cross_kv_source_len_)) {
+        copy_component_outputs_to_inputs(*decoder_cross_kv_, *decoder_);
+    }
+    encoder_cross_kv_ready_ = true;
+    return true;
+}
+
+bool Model::finish_encoder_cross_kv_prepare_after_source() {
+    if (!decoder_cross_kv_ || !decoder_) return false;
+    decoder_cross_kv_->graph->execute();
+    if (!copy_cross_kv_outputs_to_decoder_cache_inputs(*decoder_cross_kv_, *decoder_, encoder_cross_kv_source_len_)) {
+        copy_component_outputs_to_inputs(*decoder_cross_kv_, *decoder_);
+    }
     encoder_cross_kv_ready_ = true;
     return true;
 }
@@ -1569,6 +1691,7 @@ bool Model::prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& toke
         CACTUS_LOG_ERROR("model", "source token count exceeds source encoder capacity");
         return false;
     }
+    encoder_cross_kv_source_len_ = tokens.size();
     for (size_t i = 0; i < tokens.size(); ++i) {
         write_int_input_at(*source_encoder_, "input_ids", i, static_cast<int64_t>(tokens[i]));
     }
@@ -1578,6 +1701,10 @@ bool Model::prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& toke
         for (size_t i = 0; i < tokens.size(); ++i) {
             write_int_input_at(*source_encoder_, "attention_mask", i, 1);
         }
+    }
+
+    if (source_encode_via_npu(tokens)) {
+        return finish_encoder_cross_kv_prepare_after_source();
     }
 
     return finish_encoder_cross_kv_prepare();
@@ -2237,9 +2364,15 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
     if (tokens.empty()) return 0;
     if (decode_route_ == DecodeRoute::ENCODER_CROSS_KV_STEP) {
         if (!encoder_cross_kv_ready_ && encoder_cross_kv_source_kind_ == "text_tokens") {
-            if (!prepare_encoder_cross_kv_from_text(tokens)) return 0;
+            std::vector<uint32_t> source_tokens = tokens;
+            std::vector<uint32_t> decoder_seed = {config_.decoder_start_token_id};
+            if (!source_tokens.empty() && source_tokens.back() == config_.decoder_start_token_id) {
+                decoder_seed = {source_tokens.back()};
+                source_tokens.pop_back();
+            }
+            if (!prepare_encoder_cross_kv_from_text(source_tokens)) return 0;
             std::vector<uint32_t> emitted = run_encoder_cross_kv_decode_loop(
-                {config_.decoder_start_token_id},
+                decoder_seed,
                 1,
                 {},
                 nullptr);
