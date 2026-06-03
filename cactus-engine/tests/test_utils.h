@@ -31,6 +31,20 @@ private:
 
 namespace EngineTestUtils {
 
+// Reference rotate_half RoPE for a single vector (double-precision oracle for kv_compress tests),
+// mirroring norms_rope.cpp / the Python fixture generator.
+inline std::vector<float> rope_reference(const std::vector<float>& v, double pos, double theta) {
+    size_t d = v.size(), half = d / 2;
+    std::vector<float> o(d);
+    for (size_t i = 0; i < half; ++i) {
+        double inv = std::pow(theta, -(2.0 * (double)i) / (double)d);
+        double a = pos * inv, c = std::cos(a), s = std::sin(a);
+        o[i] = (float)(v[i] * c - v[i + half] * s);
+        o[i + half] = (float)(v[i + half] * c + v[i] * s);
+    }
+    return o;
+}
+
 struct Timer {
     std::chrono::high_resolution_clock::time_point start;
     Timer();

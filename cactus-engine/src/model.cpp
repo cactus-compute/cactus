@@ -362,6 +362,11 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         CACTUS_LOG_ERROR("model", "Failed to load config.txt from: " << bundle_dir);
         return false;
     }
+    // Runtime KV-compression override (test/eval only; bundle config unchanged). Unset => OFF
+    // (current behavior). CACTUS_KV_COMPRESS=<signal>:<budget_frac> for one-shot-at-prefill
+    // (e.g. keydiff:0.25); CACTUS_KV_COMPRESS_ROLL=<trigger_len>:<target_len> for rolling
+    // bounded (e.g. 4096:2048). ROLL takes precedence when both are set.
+    apply_kv_compress_env_override();
     if (!load_manifest()) {
         CACTUS_LOG_ERROR("model", "Failed to load bundle manifest from: " << bundle_dir);
         return false;
@@ -1552,6 +1557,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
             out_token = argmax_last_logits();
             record_sampled_token(out_token);
             last_prefill_scalar_tail_tokens_ = 1;
+            maybe_roll_compact();
             return true;
         }
         cache_total_seq_len_ += chunked.logical_tokens;
@@ -1567,6 +1573,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
         out_token = argmax_last_logits();
     }
     record_sampled_token(out_token);
+    maybe_roll_compact();
     return true;
 }
 
@@ -1587,6 +1594,27 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
         ++cache_total_seq_len_;
     }
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
+
+    if (prepare_decode && config_.kv_compress) {
+        if (config_.kv_compress_trigger_len > 0) {
+            // NOTE: rolling compaction does NOT fire mid-chunk. It runs here at
+            // prefill-completion and once per decode step, so a single prompt grows to its
+            // full n tokens before this completion-time compaction bounds it back to target_len.
+            // Rolling bounded mode: compact if the prefilled prompt crossed trigger_len.
+            maybe_roll_compact();
+        } else {
+            cactus::kvcompress::Params p;
+            p.enabled = true;
+            p.budget_frac = config_.kv_compress_budget_frac;
+            p.recent_frac = config_.kv_compress_recent_frac;
+            p.sink = config_.kv_compress_sink;
+            p.signal = (config_.kv_compress_signal == "manifold")
+                           ? cactus::kvcompress::Signal::MANIFOLD
+                           : cactus::kvcompress::Signal::KEYDIFF;
+            p.manifold_window = config_.kv_compress_manifold_window;
+            compress_kv_cache_keydiff(p);
+        }
+    }
 }
 
 void Model::prefill_with_images(const std::vector<uint32_t>& tokens,
@@ -2339,6 +2367,9 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
     }
     run_step(tokens.back(), cache_total_seq_len_ + tokens.size() - 1, /*read_logits=*/true);
     cache_total_seq_len_ += tokens.size();
+    // Rolling bounded cache: if generation advanced the cache to trigger_len, compact to
+    // target_len before the next step. No-op unless kv_compress + trigger_len > 0.
+    maybe_roll_compact();
     uint32_t result = argmax_last_logits(out_entropy);
     record_sampled_token(result);
     return result;
@@ -2940,6 +2971,132 @@ void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>&
     }
 }
 
+void Model::apply_kv_compress_env_override() {
+    const char* oneshot = std::getenv("CACTUS_KV_COMPRESS");
+    const char* roll = std::getenv("CACTUS_KV_COMPRESS_ROLL");
+    config_.parse_kv_compress_override(oneshot, roll);
+}
+
+std::vector<size_t> Model::compressible_layers() const {
+    size_t shared = (config_.num_kv_shared_layers == Config::UNSET_U32)
+                        ? 0 : config_.num_kv_shared_layers;
+    return cactus::kvcompress::physical_compressible_layers(
+        config_.layer_types, config_.num_layers, shared);
+}
+
+void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) {
+    if (!params.enabled || !decoder_) return;
+
+    struct CacheHeader {
+        uint64_t current_seq_len;
+        uint64_t max_seq_len;
+        uint64_t num_kv_heads;
+        uint64_t head_dim;
+        uint64_t sink_size;
+        uint64_t reserved[3];
+    };
+    constexpr size_t kHeaderBytes = 64;
+    static_assert(sizeof(CacheHeader) == kHeaderBytes, "CacheHeader layout mismatch");
+
+    std::vector<size_t> layers = compressible_layers();
+    // Subset compression (e.g. Gemma physical set {4,9}) renumbers only some layers, but the
+    // engine has a SINGLE global position counter (cache_total_seq_len_). If only a subset is
+    // compacted, the non-compacted layers still hold n tokens while the counter would be set to
+    // B, so they RoPE the next decode query at the wrong offset -> silent corruption. Physical
+    // subset-renumbering needs per-layer position tracking, which this engine cannot represent.
+    // Only proceed when EVERY layer is compressible (the Qwen all-global case).
+    if (layers.size() != config_.num_layers) {
+        CACTUS_LOG_WARN("kv_compress",
+            "subset compression unsupported (needs per-layer positions); disabled for this model");
+        return;
+    }
+    std::set<size_t> compressible(layers.begin(), layers.end());
+    const double rope_theta = static_cast<double>(config_.rope_theta);
+
+    Component& comp = *decoder_;
+    if (!comp.graph) return;
+    // Capture the compacted length (B, identical across all layers) from the keep-set itself,
+    // not from a header we just mutated, so the global position counter stays consistent.
+    size_t new_seq_len = 0;
+    bool have_new_seq_len = false;
+    for (size_t li = 0; li < comp.cache_states.size(); ++li) {
+        if (!compressible.count(li)) continue;
+        const auto& cs = comp.cache_states[li];
+        if (cs.key_node_id < 0 || cs.value_node_id < 0) continue;
+
+        const auto& kdesc = comp.graph->get_output_buffer(static_cast<size_t>(cs.key_node_id));
+        const auto& vdesc = comp.graph->get_output_buffer(static_cast<size_t>(cs.value_node_id));
+        if (kdesc.byte_size <= kHeaderBytes || vdesc.byte_size <= kHeaderBytes) continue;
+        void* kraw = comp.graph->get_output(static_cast<size_t>(cs.key_node_id));
+        void* vraw = comp.graph->get_output(static_cast<size_t>(cs.value_node_id));
+        if (!kraw || !vraw) continue;
+
+        auto* khdr = static_cast<CacheHeader*>(kraw);
+        auto* vhdr = static_cast<CacheHeader*>(vraw);
+        size_t n = khdr->current_seq_len;
+        size_t kv_heads = khdr->num_kv_heads;
+        size_t head_dim = khdr->head_dim;
+        if (n == 0 || kv_heads == 0 || head_dim == 0) continue;
+
+        if (kdesc.precision == Precision::FP16) {
+            auto* kbase = reinterpret_cast<uint16_t*>(static_cast<char*>(kraw) + kHeaderBytes);
+            auto* vbase = reinterpret_cast<uint16_t*>(static_cast<char*>(vraw) + kHeaderBytes);
+            auto kept = cactus::kvcompress::keepsets_from_fp16(
+                kbase, n, kv_heads, head_dim, rope_theta, params);
+            cactus::kvcompress::compact_fp16(kbase, vbase, kv_heads, head_dim, kept, rope_theta);
+            size_t B = kept.empty() ? 0 : kept[0].size();
+            khdr->current_seq_len = B;
+            vhdr->current_seq_len = B;
+            new_seq_len = B;
+            have_new_seq_len = true;
+        } else if (kdesc.precision == Precision::INT8) {
+            size_t max_seq = khdr->max_seq_len;
+            // Dequantize + un-RoPE K to derive keep-sets (post-RoPE int8 -> pre-RoPE float).
+            auto* k_i8 = reinterpret_cast<int8_t*>(static_cast<char*>(kraw) + kHeaderBytes);
+            auto* k_sc = reinterpret_cast<float*>(static_cast<char*>(kraw) + kHeaderBytes +
+                                                  max_seq * kv_heads * head_dim);
+            auto* v_i8 = reinterpret_cast<int8_t*>(static_cast<char*>(vraw) + kHeaderBytes);
+            auto* v_sc = reinterpret_cast<float*>(static_cast<char*>(vraw) + kHeaderBytes +
+                                                  max_seq * kv_heads * head_dim);
+            auto kept = cactus::kvcompress::keepsets_from_int8(
+                k_i8, k_sc, n, kv_heads, head_dim, KV_QUANT_GROUP_SIZE, rope_theta, params);
+            cactus::kvcompress::compact_int8(k_i8, k_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,
+                                             kept, rope_theta, /*renumber=*/true);
+            cactus::kvcompress::compact_int8(v_i8, v_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,
+                                             kept, rope_theta, /*renumber=*/false);
+            size_t B = kept.empty() ? 0 : kept[0].size();
+            khdr->current_seq_len = B;
+            vhdr->current_seq_len = B;
+            new_seq_len = B;
+            have_new_seq_len = true;
+        }
+    }
+
+    // Every layer was compacted to the same B (guarded above). Decode appends at B: subsequent
+    // positions are B, B+1, ... (renumbered window).
+    if (have_new_seq_len) cache_total_seq_len_ = new_seq_len;
+}
+
+void Model::maybe_roll_compact() {
+    if (!config_.kv_compress || config_.kv_compress_trigger_len <= 0) return;
+    if (cache_total_seq_len_ < static_cast<size_t>(config_.kv_compress_trigger_len)) return;
+
+    cactus::kvcompress::Params p;
+    p.enabled = true;
+    p.budget_frac = config_.kv_compress_budget_frac;
+    p.recent_frac = config_.kv_compress_recent_frac;
+    p.sink = config_.kv_compress_sink;
+    p.signal = (config_.kv_compress_signal == "manifold")
+                   ? cactus::kvcompress::Signal::MANIFOLD
+                   : cactus::kvcompress::Signal::KEYDIFF;
+    p.manifold_window = config_.kv_compress_manifold_window;
+    // Absolute target: KeyDiff-keep the best target_len tokens (sink + recent + distinctive
+    // middle), renumber survivors to 0..target_len-1. compress_kv_cache_keydiff sets the global
+    // position counter to that B, so the cache stays bounded at <= trigger_len across cycles.
+    p.abs_budget = config_.kv_compress_target_len;
+    compress_kv_cache_keydiff(p);
+}
+
 std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bool pooled,
                                           bool normalize, const std::string& /*profile_file*/) {
     if (!components_.count("text_embedding")) {
@@ -3126,6 +3283,14 @@ bool Config::from_json(const std::string& config_path) {
             else model_variant = ModelVariant::DEFAULT;
         }
         else if (key == "conv_L_cache") conv_L_cache = static_cast<size_t>(std::stoul(value));
+        else if (key == "kv_compress") kv_compress = (value == "true" || value == "1");
+        else if (key == "kv_compress_budget_frac") kv_compress_budget_frac = std::stof(value);
+        else if (key == "kv_compress_recent_frac") kv_compress_recent_frac = std::stof(value);
+        else if (key == "kv_compress_sink") kv_compress_sink = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "kv_compress_signal") kv_compress_signal = value;
+        else if (key == "kv_compress_manifold_window") kv_compress_manifold_window = static_cast<int32_t>(std::stol(value));
+        else if (key == "kv_compress_trigger_len") kv_compress_trigger_len = static_cast<int32_t>(std::stol(value));
+        else if (key == "kv_compress_target_len") kv_compress_target_len = static_cast<int32_t>(std::stol(value));
         else if (key == "layer_types") {
             layer_types.clear();
             std::string sanitized;
@@ -3294,7 +3459,55 @@ bool Config::from_json(const std::string& config_path) {
         }
     }
 
+    validate_kv_compress();
     return true;
+}
+
+bool Config::parse_kv_compress_override(const char* oneshot, const char* roll) {
+    if (roll && *roll) {
+        std::string s(roll);
+        size_t colon = s.find(':');
+        if (colon == std::string::npos) {
+            CACTUS_LOG_WARN("kv_compress", "CACTUS_KV_COMPRESS_ROLL must be <trigger_len>:<target_len>, got: " << s);
+            return false;
+        }
+        kv_compress = true;
+        kv_compress_signal = "keydiff";
+        kv_compress_trigger_len = static_cast<int32_t>(std::stol(s.substr(0, colon)));
+        kv_compress_target_len = static_cast<int32_t>(std::stol(s.substr(colon + 1)));
+        validate_kv_compress();
+        CACTUS_LOG_INFO("kv_compress", "rolling override: trigger_len=" << kv_compress_trigger_len
+            << " target_len=" << kv_compress_target_len);
+        return true;
+    }
+    if (oneshot && *oneshot) {
+        std::string s(oneshot);
+        size_t colon = s.find(':');
+        if (colon == std::string::npos) {
+            CACTUS_LOG_WARN("kv_compress", "CACTUS_KV_COMPRESS must be <signal>:<budget_frac>, got: " << s);
+            return false;
+        }
+        kv_compress = true;
+        kv_compress_signal = s.substr(0, colon);
+        kv_compress_budget_frac = std::stof(s.substr(colon + 1));
+        kv_compress_trigger_len = 0;
+        kv_compress_target_len = 0;
+        CACTUS_LOG_INFO("kv_compress", "one-shot override: signal=" << kv_compress_signal
+            << " budget_frac=" << kv_compress_budget_frac);
+        return true;
+    }
+    return false;
+}
+
+void Config::validate_kv_compress() {
+    if (kv_compress_trigger_len <= 0) return;
+    if (kv_compress_target_len <= 0 || kv_compress_target_len >= kv_compress_trigger_len) {
+        CACTUS_LOG_WARN("kv_compress", "invalid rolling config (target_len=" << kv_compress_target_len
+            << ", trigger_len=" << kv_compress_trigger_len
+            << "): require 0 < target_len < trigger_len; disabling rolling compaction");
+        kv_compress_trigger_len = 0;
+        kv_compress_target_len = 0;
+    }
 }
 
 std::string Config::to_json() const {
