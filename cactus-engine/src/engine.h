@@ -173,17 +173,13 @@ struct Config {
     std::vector<std::string> layer_types;
     size_t conv_L_cache = 0;
 
-    bool kv_compress = false;                 // master switch (default OFF -> exact no-op)
-    float kv_compress_budget_frac = 0.25f;
+    // Rolling bounded KV compaction (default ON, 4096 -> 2048). Override at runtime with
+    // CACTUS_KV_COMPRESS_AT (trigger) / CACTUS_KV_COMPRESS_TO (target); CACTUS_KV_COMPRESS_AT=0 disables.
+    bool kv_compress = true;
     float kv_compress_recent_frac = 0.30f;
     uint32_t kv_compress_sink = 4;
-    std::string kv_compress_signal = "keydiff";
-    int32_t kv_compress_manifold_window = 512;
-    // Rolling bounded cache: when trigger_len > 0, whenever the live KV seq-len reaches
-    // trigger_len, KeyDiff-compact to the best target_len tokens (absolute budget) and continue.
-    // 0/0 keeps the legacy one-shot-at-end-of-prefill behavior driven by budget_frac.
-    int32_t kv_compress_trigger_len = 0;
-    int32_t kv_compress_target_len = 0;
+    int32_t kv_compress_trigger_len = 4096;
+    int32_t kv_compress_target_len = 2048;
 
     uint32_t altup_num_inputs = 4;
     uint32_t laurel_rank = 64;
@@ -241,14 +237,10 @@ struct Config {
 
     bool from_json(const std::string& json_path);
     std::string to_json() const;
-    // Degenerate-config guard for rolling compaction: if kv_compress_trigger_len > 0, require
-    // 0 < kv_compress_target_len < kv_compress_trigger_len. Otherwise warn and disable rolling
-    // (treat as trigger_len = 0). Called after from_json and after any runtime override.
+    // Disable rolling unless 0 < kv_compress_target_len < kv_compress_trigger_len (when trigger > 0).
     void validate_kv_compress();
-    // Parse runtime override strings onto this config (nullptr = unset). `oneshot` is
-    // "<signal>:<budget_frac>" (e.g. "keydiff:0.25"); `roll` is "<trigger_len>:<target_len>"
-    // (e.g. "4096:2048"). roll takes precedence. Returns true if any override was applied.
-    bool parse_kv_compress_override(const char* oneshot, const char* roll);
+    // Apply CACTUS_KV_COMPRESS_AT / CACTUS_KV_COMPRESS_TO overrides (nullptr = unset). Returns true if applied.
+    bool parse_kv_compress_override(const char* trigger_env, const char* target_env);
 };
 
 
@@ -642,18 +634,14 @@ public:
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
 
-    // KeyDiff KV compression: at end of prefill, per compressible (layer, kv-head) keep a
-    // budget of survivors (sink + recent + top KeyDiff geometry), physically compact, and
-    // RoPE-renumber to contiguous positions 0..B-1. Default OFF via Config::kv_compress.
+    // Rolling KeyDiff compaction: keep abs_budget survivors per (layer, kv-head), renumber to
+    // 0..B-1; refuses unless every layer is compressible. See impl for the full contract.
     void compress_kv_cache_keydiff(const cactus::kvcompress::Params& params);
-    // Rolling bounded compaction: if kv_compress_trigger_len > 0 and the live KV seq-len has
-    // reached it, KeyDiff-compact to kv_compress_target_len (absolute budget) and renumber.
-    // No-op when kv_compress is off or trigger_len <= 0. Called after prefill and each decode.
+    // Compact to kv_compress_target_len once the live KV seq-len reaches kv_compress_trigger_len.
     void maybe_roll_compact();
-    // Layer indices (cache_states order) that are physically compressible: Qwen = all;
-    // Gemma = full/global layers that are not KV-shared sources/consumers.
+    // Layer indices (cache_states order) that are physically compressible.
     std::vector<size_t> compressible_layers() const;
-    // Apply CACTUS_KV_COMPRESS / CACTUS_KV_COMPRESS_ROLL env overrides onto config_ (test/eval).
+    // Apply CACTUS_KV_COMPRESS_AT / CACTUS_KV_COMPRESS_TO env overrides onto config_.
     void apply_kv_compress_env_override();
 
     void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);

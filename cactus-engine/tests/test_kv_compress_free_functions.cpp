@@ -15,33 +15,14 @@ using namespace cactus::kvcompress;
 
 namespace {
 
-constexpr size_t kHeaderBytes = 64;
+using Header = cactus::kvcompress::CacheHeader;
+constexpr size_t kHeaderBytes = sizeof(Header);
 constexpr size_t kGroupSize = 32;  // KV_QUANT_GROUP_SIZE
-
-struct Header {
-    uint64_t current_seq_len;
-    uint64_t max_seq_len;
-    uint64_t num_kv_heads;
-    uint64_t head_dim;
-    uint64_t sink_size;
-    uint64_t reserved[3];
-};
 
 float f16_to_f32(uint16_t u) { __fp16 v; std::memcpy(&v, &u, 2); return static_cast<float>(v); }
 uint16_t f32_to_f16(float f) { __fp16 v = static_cast<__fp16>(f); uint16_t u; std::memcpy(&u, &v, 2); return u; }
 
-// rotate_half RoPE on a float row, matching the reference / norms_rope.cpp.
-std::vector<float> rope_row(const std::vector<float>& v, double pos, double theta) {
-    size_t d = v.size(), half = d / 2;
-    std::vector<float> o(d);
-    for (size_t i = 0; i < half; ++i) {
-        double inv = std::pow(theta, -(2.0 * (double)i) / (double)d);
-        double a = pos * inv, c = std::cos(a), s = std::sin(a);
-        o[i] = (float)(v[i] * c - v[i + half] * s);
-        o[i + half] = (float)(v[i + half] * c + v[i] * s);
-    }
-    return o;
-}
+using EngineTestUtils::rope_reference;
 
 // Build an FP16 cache buffer: 64B header + [max_seq][kv_heads][head_dim] fp16. Returns the
 // raw buffer; `pre_rope[h][t][d]` is the planted pre-RoPE key, stored post-RoPE at position t.
@@ -63,13 +44,9 @@ std::vector<char> make_fp16_cache(size_t n, size_t max_seq, size_t kv_heads, siz
                 v[d] = std::cos(0.07f * (hh + 1) * (t + 2) + 0.2f * d);
             }
             pre_rope[hh][t] = k; values[hh][t] = v;
-            std::vector<float> kr = rope_row(k, (double)t, theta);
-            for (size_t d = 0; d < head_dim; ++d) {
+            std::vector<float> kr = rope_reference(k, (double)t, theta);
+            for (size_t d = 0; d < head_dim; ++d)
                 rows[(t * kv_heads + hh) * head_dim + d] = f32_to_f16(kr[d]);
-                // value stored at the SAME slot but in a separate value buffer; reuse k buffer
-                // layout for V in a parallel buffer (built by caller). Here we only fill K.
-                (void)v;
-            }
         }
     return buf;
 }
@@ -110,7 +87,7 @@ bool test_compact_fp16_cache() {
         for (size_t rank = 0; rank < B; ++rank) {
             int abs_pos = kept[h][rank];
             // Expected K at slot `rank` = rope(pre_rope[h][abs_pos], rank).
-            std::vector<float> expK = rope_row(pre[h][abs_pos], (double)rank, theta);
+            std::vector<float> expK = rope_reference(pre[h][abs_pos], (double)rank, theta);
             const uint16_t* kdst = krows + (rank * kv_heads + h) * head_dim;
             const uint16_t* vdst = vrows + (rank * kv_heads + h) * head_dim;
             for (size_t d = 0; d < head_dim; ++d) {
@@ -123,7 +100,7 @@ bool test_compact_fp16_cache() {
 }
 
 bool test_dense_check_full_budget() {
-    // budget_frac=1.0 -> keep all indices in order; renumber maps rank==abs_pos so RoPE delta
+    // abs_budget == n -> keep all indices in order; renumber maps rank==abs_pos so RoPE delta
     // is 0 -> the K rows are byte-identical and V unchanged.
     const size_t n = 40, max_seq = 64, kv_heads = 2, head_dim = 16;
     const double theta = 1000000.0;
@@ -134,8 +111,7 @@ bool test_dense_check_full_budget() {
     auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
     auto* vrows = reinterpret_cast<uint16_t*>(vbuf.data() + kHeaderBytes);
 
-    Params p; p.enabled = true; p.budget_frac = 1.0f; p.recent_frac = 0.3f; p.sink = 4;
-    p.signal = Signal::KEYDIFF;
+    Params p; p.recent_frac = 0.3f; p.sink = 4; p.abs_budget = (int)n;
     auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, theta, p);
     for (auto& k : kept) if (k.size() != n) return false;  // B == n
     compact_fp16(krows, vrows, kv_heads, head_dim, kept, theta);
@@ -153,90 +129,12 @@ bool test_rope_renumber_contiguous() {
     std::vector<float> pre(head_dim);
     for (size_t d = 0; d < head_dim; ++d) pre[d] = std::sin(0.4 * d) + 0.1 * d;
     int abs_pos = 137; size_t rank = 5;
-    std::vector<float> at_abs = rope_row(pre, (double)abs_pos, theta);
-    std::vector<float> at_rank = rope_row(pre, (double)rank, theta);
+    std::vector<float> at_abs = rope_reference(pre, (double)abs_pos, theta);
+    std::vector<float> at_rank = rope_reference(pre, (double)rank, theta);
     std::vector<float> delta = at_abs;
     rope_rotate_row(delta.data(), head_dim, theta, (double)rank - (double)abs_pos);
     for (size_t d = 0; d < head_dim; ++d)
         if (std::abs(delta[d] - at_rank[d]) > 1e-3f) return false;
-    return true;
-}
-
-// Mirror Model::compress_kv_cache_keydiff's master gate: only touch the cache when enabled.
-// Returns true if compaction ran. Operates on an FP16 K/V cache pair in place.
-bool run_compress_if_enabled(uint16_t* krows, uint16_t* vrows, size_t n, size_t kv_heads,
-                             size_t head_dim, double theta, const Params& p) {
-    if (!p.enabled) return false;  // the Model gate early-returns here -> exact no-op.
-    auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, theta, p);
-    compact_fp16(krows, vrows, kv_heads, head_dim, kept, theta);
-    return true;
-}
-
-bool test_compress_noop_when_disabled() {
-    // Strengthened: assert the cache bytes are ACTUALLY unchanged when disabled, and ACTUALLY
-    // changed when enabled with a real (<1.0 budget) keep-set. Not a tautology on the flag.
-    const size_t n = 50, max_seq = 96, kv_heads = 2, head_dim = 16;
-    const double theta = 1000000.0;
-    std::vector<std::vector<std::vector<float>>> pre, vals;
-    auto kbuf = make_fp16_cache(n, max_seq, kv_heads, head_dim, theta, pre, vals);
-    auto vbuf = make_fp16_value_cache(n, max_seq, kv_heads, head_dim, vals);
-    std::vector<char> kbuf0 = kbuf, vbuf0 = vbuf;
-    auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
-    auto* vrows = reinterpret_cast<uint16_t*>(vbuf.data() + kHeaderBytes);
-    size_t live = n * kv_heads * head_dim * sizeof(uint16_t);
-
-    Params off; off.enabled = false; off.budget_frac = 0.25f; off.recent_frac = 0.3f; off.sink = 4;
-    bool ran_off = run_compress_if_enabled(krows, vrows, n, kv_heads, head_dim, theta, off);
-    if (ran_off) return false;
-    // Disabled => byte-identical.
-    if (std::memcmp(kbuf.data(), kbuf0.data(), kbuf.size()) != 0) return false;
-    if (std::memcmp(vbuf.data(), vbuf0.data(), vbuf.size()) != 0) return false;
-
-    Params on; on.enabled = true; on.budget_frac = 0.25f; on.recent_frac = 0.3f; on.sink = 4;
-    on.signal = Signal::KEYDIFF;
-    bool ran_on = run_compress_if_enabled(krows, vrows, n, kv_heads, head_dim, theta, on);
-    if (!ran_on) return false;
-    // Enabled with budget < 1.0 => the live region must actually change (real keep-set applied).
-    bool kchanged = std::memcmp(kbuf.data() + kHeaderBytes, kbuf0.data() + kHeaderBytes, live) != 0;
-    bool vchanged = std::memcmp(vbuf.data() + kHeaderBytes, vbuf0.data() + kHeaderBytes, live) != 0;
-    return kchanged && vchanged;
-}
-
-bool test_subset_compression_rejected() {
-    // BLOCKER guard: Model::compress_kv_cache_keydiff only proceeds when EVERY layer is
-    // compressible (compressible_layers().size() == num_layers). A strict subset (Gemma {4,9})
-    // must be rejected as a no-op, because the single global position counter can't represent
-    // per-layer lengths. Here we exercise the exact predicate the guard uses + show the cache
-    // stays untouched on the reject path.
-    const size_t num_layers = 35;
-    std::vector<std::string> gemma;
-    for (int i = 0; i < (int)num_layers; ++i) gemma.push_back(((i + 1) % 5 == 0) ? "global" : "sliding");
-    auto gset = physical_compressible_layers(gemma, num_layers, 20);
-    bool gemma_is_subset = gset.size() != num_layers;        // guard => reject (no-op)
-    if (!gemma_is_subset) return false;
-
-    std::vector<std::string> qwen(28, "full_attention");
-    auto qset = physical_compressible_layers(qwen, 28, 0);
-    bool qwen_full = qset.size() == 28;                       // guard => accept (compress)
-    if (!qwen_full) return false;
-
-    // Behavioral: on the reject path the cache must be byte-identical (compaction skipped).
-    const size_t n = 40, max_seq = 64, kv_heads = 2, head_dim = 16;
-    const double theta = 1000000.0;
-    std::vector<std::vector<std::vector<float>>> pre, vals;
-    auto kbuf = make_fp16_cache(n, max_seq, kv_heads, head_dim, theta, pre, vals);
-    auto vbuf = make_fp16_value_cache(n, max_seq, kv_heads, head_dim, vals);
-    std::vector<char> kbuf0 = kbuf, vbuf0 = vbuf;
-    auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
-    auto* vrows = reinterpret_cast<uint16_t*>(vbuf.data() + kHeaderBytes);
-    Params p; p.enabled = true; p.budget_frac = 0.25f; p.recent_frac = 0.3f; p.sink = 4;
-    if (gemma_is_subset) {
-        // guard fires -> we do NOT compact (mirrors Model's early return).
-    } else {
-        run_compress_if_enabled(krows, vrows, n, kv_heads, head_dim, theta, p);
-    }
-    if (std::memcmp(kbuf.data(), kbuf0.data(), kbuf.size()) != 0) return false;
-    if (std::memcmp(vbuf.data(), vbuf0.data(), vbuf.size()) != 0) return false;
     return true;
 }
 
@@ -252,8 +150,7 @@ bool test_fp16_storage_round_trip() {
     auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
     auto* vrows = reinterpret_cast<uint16_t*>(vbuf.data() + kHeaderBytes);
 
-    Params p; p.enabled = true; p.budget_frac = 0.25f; p.recent_frac = 0.3f; p.sink = 4;
-    p.signal = Signal::KEYDIFF;
+    Params p; p.recent_frac = 0.3f; p.sink = 4; p.abs_budget = 16;
     auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, theta, p);
     compact_fp16(krows, vrows, kv_heads, head_dim, kept, theta);
 
@@ -261,7 +158,7 @@ bool test_fp16_storage_round_trip() {
     for (size_t h = 0; h < kv_heads; ++h) {
         for (size_t rank = 0; rank < kept[h].size(); ++rank) {
             int abs_pos = kept[h][rank];
-            std::vector<float> expK = rope_row(pre[h][abs_pos], (double)rank, theta);
+            std::vector<float> expK = rope_reference(pre[h][abs_pos], (double)rank, theta);
             const uint16_t* kdst = krows + (rank * kv_heads + h) * head_dim;
             const uint16_t* vdst = vrows + (rank * kv_heads + h) * head_dim;
             for (size_t d = 0; d < head_dim; ++d) {
@@ -318,7 +215,7 @@ bool test_compact_int8_cache() {
             std::vector<float> k(head_dim), v(head_dim);
             for (size_t d = 0; d < head_dim; ++d) { k[d] = std::sin(0.1 * (h + 1) * (t + 1) + 0.2 * d); v[d] = std::cos(0.05 * (t + 1) + 0.1 * d); }
             pre[h][t] = k; vals[h][t] = v;
-            std::vector<float> kr = rope_row(k, (double)t, theta);
+            std::vector<float> kr = rope_reference(k, (double)t, theta);
             quant_row(kr, k_i8.data() + t * int8_stride + h * head_dim, k_sc.data() + t * scale_stride + h * groups);
             quant_row(v, v_i8.data() + t * int8_stride + h * head_dim, v_sc.data() + t * scale_stride + h * groups);
         }
@@ -332,7 +229,7 @@ bool test_compact_int8_cache() {
     for (size_t h = 0; h < kv_heads; ++h)
         for (size_t rank = 0; rank < B; ++rank) {
             int abs_pos = kept[h][rank];
-            std::vector<float> expK = rope_row(pre[h][abs_pos], (double)rank, theta);
+            std::vector<float> expK = rope_reference(pre[h][abs_pos], (double)rank, theta);
             const int8_t* kd = k_i8.data() + rank * int8_stride + h * head_dim;
             const float* ks = k_sc.data() + rank * scale_stride + h * groups;
             const int8_t* vd = v_i8.data() + rank * int8_stride + h * head_dim;
@@ -353,7 +250,7 @@ bool test_compact_int8_cache() {
 size_t roll_compact_once(uint16_t* krows, uint16_t* vrows, Header* khdr, Header* vhdr,
                          size_t kv_heads, size_t head_dim, double theta, int target_len) {
     size_t n = khdr->current_seq_len;
-    Params p; p.enabled = true; p.recent_frac = 0.30f; p.sink = 4; p.signal = Signal::KEYDIFF;
+    Params p; p.recent_frac = 0.30f; p.sink = 4;
     p.abs_budget = target_len;  // absolute budget -> keep exactly min(target_len, n) per head
     auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, theta, p);
     compact_fp16(krows, vrows, kv_heads, head_dim, kept, theta);
@@ -397,7 +294,7 @@ bool test_rolling_bounded_compaction() {
                     for (size_t d = 0; d < head_dim; ++d)
                         k[d] = std::sin(0.05 * (h + 1) + 0.3 * d) + 0.01f * std::sin(0.01 * t);
                 }
-                std::vector<float> kr = rope_row(k, (double)t, theta);
+                std::vector<float> kr = rope_reference(k, (double)t, theta);
                 std::vector<float> vr(head_dim);
                 for (size_t d = 0; d < head_dim; ++d) vr[d] = std::cos(0.07 * (t + 1) + 0.2 * d);
                 for (size_t d = 0; d < head_dim; ++d) {
@@ -453,10 +350,10 @@ bool test_rolling_bounded_compaction() {
 }
 
 bool test_config_parse_rolling_fields() {
-    // Config::from_json parses a key=value file. Defaults are 0/0 (legacy one-shot, no rolling).
+    // Config::from_json parses a key=value file. Rolling is the default (4096 -> 2048).
     cactus::engine::Config def;
-    if (def.kv_compress_trigger_len != 0 || def.kv_compress_target_len != 0) return false;
-    if (def.kv_compress) return false;
+    if (!def.kv_compress) return false;
+    if (def.kv_compress_trigger_len != 4096 || def.kv_compress_target_len != 2048) return false;
 
     char tmpl[] = "/tmp/cactus_kvcfg_XXXXXX";
     int fd = mkstemp(tmpl);
@@ -478,30 +375,46 @@ bool test_config_parse_rolling_fields() {
     return cfg.kv_compress && cfg.kv_compress_trigger_len == 4096 && cfg.kv_compress_target_len == 2048;
 }
 
-bool test_trigger_zero_no_rolling() {
-    // trigger_len == 0 (default) => the rolling gate never fires, mirroring Model::maybe_roll_compact's
-    // early return. A cache grown well past any threshold stays byte-identical (no compaction).
-    cactus::engine::Config cfg;  // defaults: kv_compress=false, trigger_len=0, target_len=0
-    bool gate_open = cfg.kv_compress && cfg.kv_compress_trigger_len > 0;
-    if (gate_open) return false;
-
+bool test_trigger_zero_gates_rolling() {
+    // The rolling gate (Model::maybe_roll_compact): fire iff kv_compress && trigger_len > 0 &&
+    // current_seq_len >= trigger_len. Drive the SAME compactor under both arms on identical caches:
+    // trigger_len == 0 must skip (cache byte-identical); a reached trigger must compact (len -> target,
+    // bytes change). The skip assertion is meaningful only against this proven mutation.
     const size_t n = 5000, kv_heads = 2, head_dim = 16, max_seq = 5008;
     const double theta = 1000000.0;
-    std::vector<char> kbuf(kHeaderBytes + max_seq * kv_heads * head_dim * sizeof(uint16_t), 0);
-    std::vector<char> vbuf(kbuf.size(), 0);
-    auto* khdr = reinterpret_cast<Header*>(kbuf.data());
-    *khdr = Header{n, max_seq, kv_heads, head_dim, 4, {0, 0, 0}};
-    auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
-    for (size_t i = 0; i < n * kv_heads * head_dim; ++i) krows[i] = f32_to_f16(0.01f * (i % 97));
-    std::vector<char> kbuf0 = kbuf, vbuf0 = vbuf;
 
-    // Gate closed => no compaction call at all => bytes unchanged and length unchanged.
-    if (gate_open) roll_compact_once(krows, reinterpret_cast<uint16_t*>(vbuf.data() + kHeaderBytes),
-                                     khdr, reinterpret_cast<Header*>(vbuf.data()),
-                                     kv_heads, head_dim, theta, 2048);
-    if (khdr->current_seq_len != n) return false;
-    if (std::memcmp(kbuf.data(), kbuf0.data(), kbuf.size()) != 0) return false;
-    if (std::memcmp(vbuf.data(), vbuf0.data(), vbuf.size()) != 0) return false;
+    auto fresh_cache = [&]() {
+        std::vector<char> buf(kHeaderBytes + max_seq * kv_heads * head_dim * sizeof(uint16_t), 0);
+        *reinterpret_cast<Header*>(buf.data()) = Header{n, max_seq, kv_heads, head_dim, 4, {0, 0, 0}};
+        auto* rows = reinterpret_cast<uint16_t*>(buf.data() + kHeaderBytes);
+        for (size_t i = 0; i < n * kv_heads * head_dim; ++i) rows[i] = f32_to_f16(0.01f * (i % 97));
+        return buf;
+    };
+    auto roll_if_gated = [&](cactus::engine::Config& cfg, std::vector<char>& kbuf, std::vector<char>& vbuf) {
+        auto* khdr = reinterpret_cast<Header*>(kbuf.data());
+        bool fire = cfg.kv_compress && cfg.kv_compress_trigger_len > 0 &&
+                    khdr->current_seq_len >= (size_t)cfg.kv_compress_trigger_len;
+        if (fire)
+            roll_compact_once(reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes),
+                              reinterpret_cast<uint16_t*>(vbuf.data() + kHeaderBytes), khdr,
+                              reinterpret_cast<Header*>(vbuf.data()), kv_heads, head_dim, theta,
+                              cfg.kv_compress_target_len);
+    };
+
+    // Gate closed (trigger_len == 0): caller skips => cache byte-identical, length unchanged.
+    cactus::engine::Config off; off.kv_compress_trigger_len = 0; off.kv_compress_target_len = 0;
+    std::vector<char> k_off = fresh_cache(), v_off(k_off.size(), 0), k_off0 = k_off, v_off0 = v_off;
+    roll_if_gated(off, k_off, v_off);
+    if (reinterpret_cast<Header*>(k_off.data())->current_seq_len != n) return false;
+    if (std::memcmp(k_off.data(), k_off0.data(), k_off.size()) != 0) return false;
+    if (std::memcmp(v_off.data(), v_off0.data(), v_off.size()) != 0) return false;
+
+    // Gate open (trigger reached): the same compactor compacts to target_len and rewrites bytes.
+    cactus::engine::Config on; on.kv_compress_trigger_len = 4096; on.kv_compress_target_len = 2048;
+    std::vector<char> k_on = fresh_cache(), v_on(k_on.size(), 0), k_on0 = k_on;
+    roll_if_gated(on, k_on, v_on);
+    if (reinterpret_cast<Header*>(k_on.data())->current_seq_len != 2048) return false;
+    if (std::memcmp(k_on.data(), k_on0.data(), k_on.size()) == 0) return false;
     return true;
 }
 
@@ -530,45 +443,45 @@ bool test_degenerate_rolling_config_disabled() {
 }
 
 bool test_env_override_parse() {
-    // parse_kv_compress_override maps the env strings onto Config Params exactly.
-    // Unset => no-op (OFF preserved).
+    // parse_kv_compress_override maps CACTUS_KV_COMPRESS_AT / CACTUS_KV_COMPRESS_TO onto Config.
+    // Unset => no override; the rolling default (4096 -> 2048) is preserved.
     cactus::engine::Config off;
     if (off.parse_kv_compress_override(nullptr, nullptr)) return false;
-    if (off.kv_compress) return false;
+    if (!off.kv_compress || off.kv_compress_trigger_len != 4096 || off.kv_compress_target_len != 2048) return false;
 
-    // One-shot: "<signal>:<budget_frac>".
-    cactus::engine::Config os;
-    if (!os.parse_kv_compress_override("keydiff:0.25", nullptr)) return false;
-    if (!os.kv_compress || os.kv_compress_signal != "keydiff") return false;
-    if (std::abs(os.kv_compress_budget_frac - 0.25f) > 1e-6f) return false;
-    if (os.kv_compress_trigger_len != 0 || os.kv_compress_target_len != 0) return false;
+    // Both vars override.
+    cactus::engine::Config both;
+    if (!both.parse_kv_compress_override("3000", "1000")) return false;
+    if (!both.kv_compress || both.kv_compress_trigger_len != 3000 || both.kv_compress_target_len != 1000) return false;
 
-    // Rolling: "<trigger_len>:<target_len>" (takes precedence over one-shot).
-    cactus::engine::Config roll;
-    if (!roll.parse_kv_compress_override("keydiff:0.25", "4096:2048")) return false;
-    if (!roll.kv_compress) return false;
-    if (roll.kv_compress_trigger_len != 4096 || roll.kv_compress_target_len != 2048) return false;
+    // Setting only one keeps the other's default.
+    cactus::engine::Config one;
+    if (!one.parse_kv_compress_override(nullptr, "1500")) return false;
+    if (one.kv_compress_trigger_len != 4096 || one.kv_compress_target_len != 1500) return false;
 
-    // Rolling with degenerate values is disabled by the validate guard inside the parser.
+    // CACTUS_KV_COMPRESS_AT=0 disables.
+    cactus::engine::Config disabled;
+    if (!disabled.parse_kv_compress_override("0", nullptr)) return false;
+    if (disabled.kv_compress) return false;
+
+    // Degenerate (target >= trigger) disabled by the validate guard.
     cactus::engine::Config bad;
-    if (!bad.parse_kv_compress_override(nullptr, "2048:4096")) return false;
+    if (!bad.parse_kv_compress_override("2048", "4096")) return false;
     if (bad.kv_compress_trigger_len != 0 || bad.kv_compress_target_len != 0) return false;
     return true;
 }
 
 int main() {
-    TestUtils::TestRunner runner("KV Compress Integration Tests");
+    TestUtils::TestRunner runner("KV Compress Free-Function Tests");
     runner.run_test("compact_fp16_cache", test_compact_fp16_cache());
     runner.run_test("dense_check_full_budget", test_dense_check_full_budget());
     runner.run_test("rope_renumber_contiguous", test_rope_renumber_contiguous());
-    runner.run_test("compress_noop_when_disabled", test_compress_noop_when_disabled());
-    runner.run_test("subset_compression_rejected", test_subset_compression_rejected());
     runner.run_test("fp16_storage_round_trip", test_fp16_storage_round_trip());
     runner.run_test("gemma_layer_selection", test_gemma_layer_selection());
     runner.run_test("compact_int8_cache", test_compact_int8_cache());
     runner.run_test("rolling_bounded_compaction", test_rolling_bounded_compaction());
     runner.run_test("config_parse_rolling_fields", test_config_parse_rolling_fields());
-    runner.run_test("trigger_zero_no_rolling", test_trigger_zero_no_rolling());
+    runner.run_test("trigger_zero_gates_rolling", test_trigger_zero_gates_rolling());
     runner.run_test("degenerate_rolling_config_disabled", test_degenerate_rolling_config_disabled());
     runner.run_test("env_override_parse", test_env_override_parse());
     runner.print_summary();

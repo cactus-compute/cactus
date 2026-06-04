@@ -362,10 +362,9 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         CACTUS_LOG_ERROR("model", "Failed to load config.txt from: " << bundle_dir);
         return false;
     }
-    // Runtime KV-compression override (test/eval only; bundle config unchanged). Unset => OFF
-    // (current behavior). CACTUS_KV_COMPRESS=<signal>:<budget_frac> for one-shot-at-prefill
-    // (e.g. keydiff:0.25); CACTUS_KV_COMPRESS_ROLL=<trigger_len>:<target_len> for rolling
-    // bounded (e.g. 4096:2048). ROLL takes precedence when both are set.
+    // Runtime KV-compression override (bundle config unchanged). Rolling bounded compaction is the
+    // default (4096 -> 2048); CACTUS_KV_COMPRESS_AT (trigger) / CACTUS_KV_COMPRESS_TO (target) tune
+    // it, and CACTUS_KV_COMPRESS_AT=0 disables it.
     apply_kv_compress_env_override();
     if (!load_manifest()) {
         CACTUS_LOG_ERROR("model", "Failed to load bundle manifest from: " << bundle_dir);
@@ -1600,25 +1599,10 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     }
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
 
-    if (prepare_decode && config_.kv_compress) {
-        if (config_.kv_compress_trigger_len > 0) {
-            // NOTE: rolling compaction does NOT fire mid-chunk. It runs here at
-            // prefill-completion and once per decode step, so a single prompt grows to its
-            // full n tokens before this completion-time compaction bounds it back to target_len.
-            // Rolling bounded mode: compact if the prefilled prompt crossed trigger_len.
-            maybe_roll_compact();
-        } else {
-            cactus::kvcompress::Params p;
-            p.enabled = true;
-            p.budget_frac = config_.kv_compress_budget_frac;
-            p.recent_frac = config_.kv_compress_recent_frac;
-            p.sink = config_.kv_compress_sink;
-            p.signal = (config_.kv_compress_signal == "manifold")
-                           ? cactus::kvcompress::Signal::MANIFOLD
-                           : cactus::kvcompress::Signal::KEYDIFF;
-            p.manifold_window = config_.kv_compress_manifold_window;
-            compress_kv_cache_keydiff(p);
-        }
+    if (prepare_decode) {
+        // Rolling bounded compaction (self-guards on kv_compress + trigger_len). Does NOT fire
+        // mid-chunk: the prompt grows to its full length here, then this bounds it to target_len.
+        maybe_roll_compact();
     }
 }
 
@@ -2977,9 +2961,8 @@ void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>&
 }
 
 void Model::apply_kv_compress_env_override() {
-    const char* oneshot = std::getenv("CACTUS_KV_COMPRESS");
-    const char* roll = std::getenv("CACTUS_KV_COMPRESS_ROLL");
-    config_.parse_kv_compress_override(oneshot, roll);
+    config_.parse_kv_compress_override(std::getenv("CACTUS_KV_COMPRESS_AT"),
+                                       std::getenv("CACTUS_KV_COMPRESS_TO"));
 }
 
 std::vector<size_t> Model::compressible_layers() const {
@@ -2989,19 +2972,15 @@ std::vector<size_t> Model::compressible_layers() const {
         config_.layer_types, config_.num_layers, shared);
 }
 
+// Rolling KeyDiff compaction: keep params.abs_budget survivors per (layer, kv-head) -- attention
+// sink + recent window + the most distinctive middle tokens by KeyDiff key geometry -- physically
+// compact them and renumber their RoPE positions to a contiguous window 0..B-1. Refuses (no-op
+// with a warning) unless EVERY layer is compressible, since the engine tracks a single global
+// position counter and a subset compaction would desync the non-compacted layers.
 void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) {
-    if (!params.enabled || !decoder_) return;
-
-    struct CacheHeader {
-        uint64_t current_seq_len;
-        uint64_t max_seq_len;
-        uint64_t num_kv_heads;
-        uint64_t head_dim;
-        uint64_t sink_size;
-        uint64_t reserved[3];
-    };
-    constexpr size_t kHeaderBytes = 64;
-    static_assert(sizeof(CacheHeader) == kHeaderBytes, "CacheHeader layout mismatch");
+    if (!decoder_) return;
+    using cactus::kvcompress::CacheHeader;
+    constexpr size_t kHeaderBytes = sizeof(CacheHeader);
 
     std::vector<size_t> layers = compressible_layers();
     // Subset compression (e.g. Gemma physical set {4,9}) renumbers only some layers, but the
@@ -3015,7 +2994,6 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             "subset compression unsupported (needs per-layer positions); disabled for this model");
         return;
     }
-    std::set<size_t> compressible(layers.begin(), layers.end());
     const double rope_theta = static_cast<double>(config_.rope_theta);
 
     Component& comp = *decoder_;
@@ -3025,7 +3003,6 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
     size_t new_seq_len = 0;
     bool have_new_seq_len = false;
     for (size_t li = 0; li < comp.cache_states.size(); ++li) {
-        if (!compressible.count(li)) continue;
         const auto& cs = comp.cache_states[li];
         if (cs.key_node_id < 0 || cs.value_node_id < 0) continue;
 
@@ -3041,7 +3018,7 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         size_t n = khdr->current_seq_len;
         size_t kv_heads = khdr->num_kv_heads;
         size_t head_dim = khdr->head_dim;
-        if (n == 0 || kv_heads == 0 || head_dim == 0) continue;
+        if (kv_heads == 0 || head_dim == 0) continue;
 
         if (kdesc.precision == Precision::FP16) {
             auto* kbase = reinterpret_cast<uint16_t*>(static_cast<char*>(kraw) + kHeaderBytes);
@@ -3083,21 +3060,15 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
 }
 
 void Model::maybe_roll_compact() {
+    // Only reached from the causal-LM generation path (complete.cpp -> prefill/decode). STT models
+    // transcribe via transcribe.cpp with their own decode loops and never call this, and multimodal
+    // vision/audio encoder passes aren't on this path either -- so no model-type gate is needed.
     if (!config_.kv_compress || config_.kv_compress_trigger_len <= 0) return;
     if (cache_total_seq_len_ < static_cast<size_t>(config_.kv_compress_trigger_len)) return;
 
     cactus::kvcompress::Params p;
-    p.enabled = true;
-    p.budget_frac = config_.kv_compress_budget_frac;
     p.recent_frac = config_.kv_compress_recent_frac;
     p.sink = config_.kv_compress_sink;
-    p.signal = (config_.kv_compress_signal == "manifold")
-                   ? cactus::kvcompress::Signal::MANIFOLD
-                   : cactus::kvcompress::Signal::KEYDIFF;
-    p.manifold_window = config_.kv_compress_manifold_window;
-    // Absolute target: KeyDiff-keep the best target_len tokens (sink + recent + distinctive
-    // middle), renumber survivors to 0..target_len-1. compress_kv_cache_keydiff sets the global
-    // position counter to that B, so the cache stays bounded at <= trigger_len across cycles.
     p.abs_budget = config_.kv_compress_target_len;
     compress_kv_cache_keydiff(p);
 }
@@ -3289,11 +3260,8 @@ bool Config::from_json(const std::string& config_path) {
         }
         else if (key == "conv_L_cache") conv_L_cache = static_cast<size_t>(std::stoul(value));
         else if (key == "kv_compress") kv_compress = (value == "true" || value == "1");
-        else if (key == "kv_compress_budget_frac") kv_compress_budget_frac = std::stof(value);
         else if (key == "kv_compress_recent_frac") kv_compress_recent_frac = std::stof(value);
         else if (key == "kv_compress_sink") kv_compress_sink = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "kv_compress_signal") kv_compress_signal = value;
-        else if (key == "kv_compress_manifold_window") kv_compress_manifold_window = static_cast<int32_t>(std::stol(value));
         else if (key == "kv_compress_trigger_len") kv_compress_trigger_len = static_cast<int32_t>(std::stol(value));
         else if (key == "kv_compress_target_len") kv_compress_target_len = static_cast<int32_t>(std::stol(value));
         else if (key == "layer_types") {
@@ -3468,40 +3436,24 @@ bool Config::from_json(const std::string& config_path) {
     return true;
 }
 
-bool Config::parse_kv_compress_override(const char* oneshot, const char* roll) {
-    if (roll && *roll) {
-        std::string s(roll);
-        size_t colon = s.find(':');
-        if (colon == std::string::npos) {
-            CACTUS_LOG_WARN("kv_compress", "CACTUS_KV_COMPRESS_ROLL must be <trigger_len>:<target_len>, got: " << s);
-            return false;
-        }
-        kv_compress = true;
-        kv_compress_signal = "keydiff";
-        kv_compress_trigger_len = static_cast<int32_t>(std::stol(s.substr(0, colon)));
-        kv_compress_target_len = static_cast<int32_t>(std::stol(s.substr(colon + 1)));
-        validate_kv_compress();
-        CACTUS_LOG_INFO("kv_compress", "rolling override: trigger_len=" << kv_compress_trigger_len
-            << " target_len=" << kv_compress_target_len);
-        return true;
-    }
-    if (oneshot && *oneshot) {
-        std::string s(oneshot);
-        size_t colon = s.find(':');
-        if (colon == std::string::npos) {
-            CACTUS_LOG_WARN("kv_compress", "CACTUS_KV_COMPRESS must be <signal>:<budget_frac>, got: " << s);
-            return false;
-        }
-        kv_compress = true;
-        kv_compress_signal = s.substr(0, colon);
-        kv_compress_budget_frac = std::stof(s.substr(colon + 1));
+bool Config::parse_kv_compress_override(const char* trigger_env, const char* target_env) {
+    const bool has_trigger = trigger_env && *trigger_env;
+    const bool has_target = target_env && *target_env;
+    if (!has_trigger && !has_target) return false;
+    if (has_trigger) kv_compress_trigger_len = static_cast<int32_t>(std::stol(trigger_env));
+    if (has_target) kv_compress_target_len = static_cast<int32_t>(std::stol(target_env));
+    if (kv_compress_trigger_len <= 0) {
+        kv_compress = false;
         kv_compress_trigger_len = 0;
         kv_compress_target_len = 0;
-        CACTUS_LOG_INFO("kv_compress", "one-shot override: signal=" << kv_compress_signal
-            << " budget_frac=" << kv_compress_budget_frac);
+        CACTUS_LOG_INFO("kv_compress", "rolling compaction disabled (CACTUS_KV_COMPRESS_AT <= 0)");
         return true;
     }
-    return false;
+    kv_compress = true;
+    validate_kv_compress();
+    CACTUS_LOG_INFO("kv_compress", "rolling override: trigger_len=" << kv_compress_trigger_len
+        << " target_len=" << kv_compress_target_len);
+    return true;
 }
 
 void Config::validate_kv_compress() {
