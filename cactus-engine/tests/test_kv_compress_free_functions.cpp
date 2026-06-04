@@ -65,6 +65,21 @@ std::vector<char> make_fp16_value_cache(size_t n, size_t max_seq, size_t kv_head
     return buf;
 }
 
+// Independent oracle quantizer (mirrors quants.cpp / compact_int8's convention: scale floored
+// 1e-10, roundf, clamp [-128,127]). Kept separate from production requant so the tests don't
+// validate it against itself.
+void quantize_row(const std::vector<float>& row, int8_t* dst, float* sc,
+                  size_t head_dim, size_t group_size) {
+    size_t groups = (head_dim + group_size - 1) / group_size;
+    for (size_t g = 0; g < groups; ++g) {
+        size_t lo = g * group_size, hi = std::min(head_dim, lo + group_size);
+        float amax = 0.f; for (size_t d = lo; d < hi; ++d) amax = std::max(amax, std::fabs(row[d]));
+        float scale = amax / 127.f; if (scale < 1e-10f) scale = 1e-10f; sc[g] = scale;
+        float inv = 1.f / scale;
+        for (size_t d = lo; d < hi; ++d) { int32_t q = (int32_t)std::roundf(row[d] * inv); q = std::max(-128, std::min(127, q)); dst[d] = (int8_t)q; }
+    }
+}
+
 }  // namespace
 
 bool test_compact_fp16_cache() {
@@ -199,16 +214,8 @@ bool test_compact_int8_cache() {
     std::vector<int8_t> k_i8(max_seq * int8_stride, 0), v_i8(max_seq * int8_stride, 0);
     std::vector<float> k_sc(max_seq * scale_stride, 0.f), v_sc(max_seq * scale_stride, 0.f);
 
-    // Match the engine KV quant convention (quants.cpp): scale floored at 1e-10, roundf,
-    // clamp [-128,127] -- same as compact_int8's re-quant path.
     auto quant_row = [&](const std::vector<float>& row, int8_t* dst, float* sc) {
-        for (size_t g = 0; g < groups; ++g) {
-            size_t lo = g * kGroupSize, hi = std::min(head_dim, lo + kGroupSize);
-            float amax = 0.f; for (size_t d = lo; d < hi; ++d) amax = std::max(amax, std::fabs(row[d]));
-            float scale = amax / 127.f; if (scale < 1e-10f) scale = 1e-10f; sc[g] = scale;
-            float inv = 1.f / scale;
-            for (size_t d = lo; d < hi; ++d) { int32_t q = (int32_t)std::roundf(row[d] * inv); q = std::max(-128, std::min(127, q)); dst[d] = (int8_t)q; }
-        }
+        quantize_row(row, dst, sc, head_dim, kGroupSize);
     };
     for (size_t h = 0; h < kv_heads; ++h)
         for (size_t t = 0; t < n; ++t) {
@@ -471,6 +478,197 @@ bool test_env_override_parse() {
     return true;
 }
 
+// --- Sliding-window re-rope (single position frame) -------------------------------------------
+
+bool test_rerope_recent_fp16_uniform() {
+    // Rotate recent rows [sink, n) by a uniform (negative) delta: each recent row now reads as
+    // rope(pre, t+delta); sink rows [0, sink) stay byte-identical. Uses the LOCAL theta.
+    const size_t n = 40, max_seq = 64, kv_heads = 2, head_dim = 16, sink = 4;
+    const double theta = 10000.0, delta = -7.0;
+    std::vector<std::vector<std::vector<float>>> pre, vals;
+    auto kbuf = make_fp16_cache(n, max_seq, kv_heads, head_dim, theta, pre, vals);  // header sink_size=4
+    auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
+    std::vector<uint16_t> sink_before(krows, krows + sink * kv_heads * head_dim);
+
+    rerope_recent_fp16(krows, kv_heads, head_dim, sink, n, theta, delta);
+
+    if (std::memcmp(krows, sink_before.data(), sink_before.size() * sizeof(uint16_t)) != 0) return false;
+    for (size_t t = sink; t < n; ++t)
+        for (size_t h = 0; h < kv_heads; ++h) {
+            std::vector<float> exp = rope_reference(pre[h][t], (double)t + delta, theta);
+            const uint16_t* r = krows + (t * kv_heads + h) * head_dim;
+            for (size_t d = 0; d < head_dim; ++d)
+                if (std::abs(f16_to_f32(r[d]) - exp[d]) > 5e-2f) return false;
+        }
+    return true;
+}
+
+namespace {
+// Build an int8 K cache storing rope(pre, t, theta) per group for t in [0,n).
+void build_int8_key_cache(size_t n, size_t kv_heads, size_t head_dim, double theta,
+                          std::vector<std::vector<std::vector<float>>>& pre,
+                          std::vector<int8_t>& k_i8, std::vector<float>& k_sc) {
+    size_t groups = (head_dim + kGroupSize - 1) / kGroupSize;
+    size_t int8_stride = kv_heads * head_dim, scale_stride = kv_heads * groups;
+    pre.assign(kv_heads, std::vector<std::vector<float>>(n));
+    k_i8.assign(n * int8_stride, 0); k_sc.assign(n * scale_stride, 0.f);
+    for (size_t h = 0; h < kv_heads; ++h)
+        for (size_t t = 0; t < n; ++t) {
+            std::vector<float> k(head_dim);
+            for (size_t d = 0; d < head_dim; ++d) k[d] = std::sin(0.1 * (h + 1) * (t + 1) + 0.2 * d);
+            pre[h][t] = k;
+            std::vector<float> kr = rope_reference(k, (double)t, theta);
+            quantize_row(kr, k_i8.data() + t * int8_stride + h * head_dim,
+                         k_sc.data() + t * scale_stride + h * groups, head_dim, kGroupSize);
+        }
+}
+}  // namespace
+
+bool test_rerope_recent_int8() {
+    const size_t n = 40, kv_heads = 2, head_dim = 32, sink = 4;
+    const double theta = 10000.0, delta = -9.0;
+    size_t groups = (head_dim + kGroupSize - 1) / kGroupSize;
+    size_t int8_stride = kv_heads * head_dim, scale_stride = kv_heads * groups;
+    std::vector<std::vector<std::vector<float>>> pre;
+    std::vector<int8_t> k_i8; std::vector<float> k_sc;
+    build_int8_key_cache(n, kv_heads, head_dim, theta, pre, k_i8, k_sc);
+
+    std::vector<int8_t> sink_i8(k_i8.begin(), k_i8.begin() + sink * int8_stride);
+    std::vector<float> sink_sc(k_sc.begin(), k_sc.begin() + sink * scale_stride);
+    rerope_recent_int8(k_i8.data(), k_sc.data(), kv_heads, head_dim, kGroupSize, sink, n, theta, delta);
+
+    if (std::memcmp(k_i8.data(), sink_i8.data(), sink_i8.size()) != 0) return false;
+    if (std::memcmp(k_sc.data(), sink_sc.data(), sink_sc.size() * sizeof(float)) != 0) return false;
+    for (size_t h = 0; h < kv_heads; ++h)
+        for (size_t t = sink; t < n; ++t) {
+            std::vector<float> exp = rope_reference(pre[h][t], (double)t + delta, theta);
+            const int8_t* kd = k_i8.data() + t * int8_stride + h * head_dim;
+            const float* ks = k_sc.data() + t * scale_stride + h * groups;
+            for (size_t d = 0; d < head_dim; ++d)
+                if (std::abs((float)kd[d] * ks[d / kGroupSize] - exp[d]) > 0.05f) return false;
+        }
+    return true;
+}
+
+bool test_rotate_int8_row_matches_inline() {
+    // Refactor safety: the factored rotate_int8_row must be bitwise-identical to the old inline
+    // dequant -> rope_rotate_row -> per-group requant.
+    const size_t head_dim = 32; const double theta = 10000.0, delta = -9.0;
+    size_t groups = (head_dim + kGroupSize - 1) / kGroupSize;
+    std::vector<float> pre(head_dim);
+    for (size_t d = 0; d < head_dim; ++d) pre[d] = std::sin(0.3 * d) + 0.1 * d;
+    std::vector<float> stored = rope_reference(pre, 21.0, theta);
+    std::vector<int8_t> a_i8(head_dim), b_i8(head_dim);
+    std::vector<float> a_sc(groups), b_sc(groups);
+    quantize_row(stored, a_i8.data(), a_sc.data(), head_dim, kGroupSize);
+    b_i8 = a_i8; b_sc = a_sc;
+
+    // Path A: literal old inline sequence.
+    std::vector<float> row(head_dim);
+    for (size_t d = 0; d < head_dim; ++d) row[d] = (float)a_i8[d] * a_sc[d / kGroupSize];
+    rope_rotate_row(row.data(), head_dim, theta, delta);
+    quantize_row(row, a_i8.data(), a_sc.data(), head_dim, kGroupSize);
+    // Path B: factored helper.
+    rotate_int8_row(b_i8.data(), b_sc.data(), head_dim, kGroupSize, theta, delta);
+
+    return std::memcmp(a_i8.data(), b_i8.data(), head_dim) == 0
+        && std::memcmp(a_sc.data(), b_sc.data(), groups * sizeof(float)) == 0;
+}
+
+bool test_sliding_plus_global_rolling() {
+    // Cross-layer single-frame invariant over 3 cycles: a GLOBAL cache compacts+renumbers to B and
+    // a SLIDING cache re-ropes its recent rows by -Δ (Δ = old_total - B), so a shared query at
+    // position B matches both. Global distinctive token survives; sliding sink stays; sliding
+    // recent rows track to (t - sum Δ) within fp16 tolerance across cycles.
+    const size_t kv_heads = 2, head_dim = 16, sink = 4;
+    const double gtheta = 1000000.0, ltheta = 10000.0;
+
+    // --- Global: one keydiff compaction, distinctive token must survive + renumber to 0..B-1. ---
+    {
+        const size_t n = 60, max_seq = 96;
+        std::vector<std::vector<std::vector<float>>> pre, vals;
+        auto kbuf = make_fp16_cache(n, max_seq, kv_heads, head_dim, gtheta, pre, vals);
+        auto vbuf = make_fp16_value_cache(n, max_seq, kv_heads, head_dim, vals);
+        auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
+        auto* vrows = reinterpret_cast<uint16_t*>(vbuf.data() + kHeaderBytes);
+        Params p; p.recent_frac = 0.3f; p.sink = sink; p.abs_budget = 16;
+        auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, gtheta, p);
+        size_t B = kept[0].size();
+        compact_fp16(krows, vrows, kv_heads, head_dim, kept, gtheta);
+        for (auto& k : kept) if (k.size() != B) return false;            // uniform B across heads
+        for (size_t h = 0; h < kv_heads; ++h)                            // global survivors renumber to 0..B-1
+            for (size_t rank = 0; rank < B; ++rank) {
+                std::vector<float> exp = rope_reference(pre[h][kept[h][rank]], (double)rank, gtheta);
+                const uint16_t* r = krows + (rank * kv_heads + h) * head_dim;
+                for (size_t d = 0; d < head_dim; ++d)
+                    if (std::abs(f16_to_f32(r[d]) - exp[d]) > 5e-2f) return false;
+            }
+    }
+
+    // --- Sliding: re-rope recent rows by -Δ over 3 cycles, with Δ derived from a global cycle. ---
+    const size_t n = 16, max_seq = 32;
+    std::vector<std::vector<std::vector<float>>> pre, vals;
+    auto kbuf = make_fp16_cache(n, max_seq, kv_heads, head_dim, ltheta, pre, vals);
+    auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
+    std::vector<uint16_t> sink_before(krows, krows + sink * kv_heads * head_dim);
+
+    const size_t old_total = 30, B = 12;       // a representative global cycle
+    const double Delta = (double)(old_total - B);
+    double accum = 0.0;
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        rerope_recent_fp16(krows, kv_heads, head_dim, sink, n, ltheta, -Delta);
+        accum -= Delta;
+    }
+    if (std::memcmp(krows, sink_before.data(), sink_before.size() * sizeof(uint16_t)) != 0) return false;
+    for (size_t t = sink; t < n; ++t)
+        for (size_t h = 0; h < kv_heads; ++h) {
+            std::vector<float> exp = rope_reference(pre[h][t], (double)t + accum, ltheta);
+            const uint16_t* r = krows + (t * kv_heads + h) * head_dim;
+            for (size_t d = 0; d < head_dim; ++d)
+                if (std::abs(f16_to_f32(r[d]) - exp[d]) > 8e-2f) return false;   // looser: 3-cycle drift
+        }
+    return true;
+}
+
+bool test_rerope_local_theta_used() {
+    // The sliding re-rope must use the LOCAL theta: rotating with the wrong (global) theta does NOT
+    // recover the expected position. Pins the orchestration's theta choice as load-bearing.
+    const size_t n = 24, max_seq = 32, kv_heads = 1, head_dim = 16, sink = 4;
+    const double ltheta = 10000.0, gtheta = 1000000.0, delta = -5.0;
+    std::vector<std::vector<std::vector<float>>> pre, vals;
+    auto kbuf = make_fp16_cache(n, max_seq, kv_heads, head_dim, ltheta, pre, vals);
+    std::vector<char> kbuf2 = kbuf;
+    auto* a = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
+    auto* b = reinterpret_cast<uint16_t*>(kbuf2.data() + kHeaderBytes);
+
+    rerope_recent_fp16(a, kv_heads, head_dim, sink, n, ltheta, delta);   // correct
+    rerope_recent_fp16(b, kv_heads, head_dim, sink, n, gtheta, delta);   // wrong theta
+
+    bool correct_ok = true, wrong_differs = false;
+    for (size_t t = sink; t < n; ++t) {
+        std::vector<float> exp = rope_reference(pre[0][t], (double)t + delta, ltheta);
+        const uint16_t* ra = a + (t * kv_heads) * head_dim;
+        const uint16_t* rb = b + (t * kv_heads) * head_dim;
+        for (size_t d = 0; d < head_dim; ++d) {
+            if (std::abs(f16_to_f32(ra[d]) - exp[d]) > 5e-2f) correct_ok = false;
+            if (std::abs(f16_to_f32(rb[d]) - exp[d]) > 5e-2f) wrong_differs = true;
+        }
+    }
+    return correct_ok && wrong_differs;
+}
+
+bool test_rerope_zero_delta_noop() {
+    const size_t n = 20, max_seq = 32, kv_heads = 2, head_dim = 16, sink = 4;
+    const double theta = 10000.0;
+    std::vector<std::vector<std::vector<float>>> pre, vals;
+    auto kbuf = make_fp16_cache(n, max_seq, kv_heads, head_dim, theta, pre, vals);
+    std::vector<char> before = kbuf;
+    auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
+    rerope_recent_fp16(krows, kv_heads, head_dim, sink, n, theta, 0.0);   // zero delta
+    rerope_recent_fp16(krows, kv_heads, head_dim, n, n, theta, -3.0);     // empty range hi<=lo
+    return kbuf == before;
+}
+
 int main() {
     TestUtils::TestRunner runner("KV Compress Free-Function Tests");
     runner.run_test("compact_fp16_cache", test_compact_fp16_cache());
@@ -479,6 +677,12 @@ int main() {
     runner.run_test("fp16_storage_round_trip", test_fp16_storage_round_trip());
     runner.run_test("gemma_layer_selection", test_gemma_layer_selection());
     runner.run_test("compact_int8_cache", test_compact_int8_cache());
+    runner.run_test("rerope_recent_fp16_uniform", test_rerope_recent_fp16_uniform());
+    runner.run_test("rerope_recent_int8", test_rerope_recent_int8());
+    runner.run_test("rotate_int8_row_matches_inline", test_rotate_int8_row_matches_inline());
+    runner.run_test("sliding_plus_global_rolling", test_sliding_plus_global_rolling());
+    runner.run_test("rerope_local_theta_used", test_rerope_local_theta_used());
+    runner.run_test("rerope_zero_delta_noop", test_rerope_zero_delta_noop());
     runner.run_test("rolling_bounded_compaction", test_rolling_bounded_compaction());
     runner.run_test("config_parse_rolling_fields", test_config_parse_rolling_fields());
     runner.run_test("trigger_zero_gates_rolling", test_trigger_zero_gates_rolling());

@@ -49,6 +49,12 @@ std::vector<int> keepset_for_head(const float* scores, size_t n, const Params& p
 // In-place delta rotation of one key row of length head_dim by `delta_pos`.
 void rope_rotate_row(float* row, size_t head_dim, double rope_theta, double delta_pos);
 
+// INT8 analog of rope_rotate_row: dequantize one quantized key row (int8 * per-group scale),
+// rotate by `delta_pos`, and re-quantize in place. `scale` is the row's [groups] scales,
+// groups = ceil(head_dim/group_size).
+void rotate_int8_row(int8_t* int8, float* scale, size_t head_dim, size_t group_size,
+                     double rope_theta, double delta_pos);
+
 // Recover the pre-RoPE keys for one kv-head from post-RoPE rows. `post_rope` is
 // [n][head_dim], rows at absolute positions 0..n-1. Writes pre_rope [n][head_dim].
 void unrope_head(const float* post_rope, size_t n, size_t head_dim, double rope_theta,
@@ -76,6 +82,16 @@ void compact_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads,
                   size_t head_dim, size_t group_size,
                   const std::vector<std::vector<int>>& kept_per_head, double rope_theta,
                   bool renumber);
+
+// Sliding-window re-rope (single position frame). Rotate the recent K rows [lo, hi) in place by
+// `delta_pos` (typically negative) so a windowed cache tracks the renumbered global frontier after
+// compaction. Rows [0, lo) (the attention sink) are left fixed; V is never rotated. `rope_theta` is
+// the LOCAL theta for sliding layers. No-op when delta_pos == 0 or hi <= lo. The int8 variant takes
+// the K int8 region + its per-group scales (same layout as compact_int8).
+void rerope_recent_fp16(uint16_t* key_rows, size_t kv_heads, size_t head_dim,
+                        size_t lo, size_t hi, double rope_theta, double delta_pos);
+void rerope_recent_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads, size_t head_dim,
+                        size_t group_size, size_t lo, size_t hi, double rope_theta, double delta_pos);
 
 // Build per-head keep-sets for one layer from POST-RoPE FP16 key rows: un-RoPE -> score ->
 // keepset_for_head. Returns n_kv_heads lists, each length B.

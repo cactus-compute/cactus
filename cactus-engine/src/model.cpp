@@ -2983,26 +2983,22 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
     constexpr size_t kHeaderBytes = sizeof(CacheHeader);
 
     std::vector<size_t> layers = compressible_layers();
-    // Subset compression (e.g. Gemma physical set {4,9}) renumbers only some layers, but the
-    // engine has a SINGLE global position counter (cache_total_seq_len_). If only a subset is
-    // compacted, the non-compacted layers still hold n tokens while the counter would be set to
-    // B, so they RoPE the next decode query at the wrong offset -> silent corruption. Physical
-    // subset-renumbering needs per-layer position tracking, which this engine cannot represent.
-    // Only proceed when EVERY layer is compressible (the Qwen all-global case).
-    if (layers.size() != config_.num_layers) {
-        CACTUS_LOG_WARN("kv_compress",
-            "subset compression unsupported (needs per-layer positions); disabled for this model");
-        return;
-    }
+    if (layers.empty()) return;  // no global layers to anchor the compressed frame
+    std::set<size_t> compressible(layers.begin(), layers.end());
     const double rope_theta = static_cast<double>(config_.rope_theta);
+    // Sliding-window layers re-rope into the compressed frame with their LOCAL theta (pass 2).
+    const double rope_local_theta = (config_.rope_local_base_freq == Config::UNSET_F32)
+        ? rope_theta : static_cast<double>(config_.rope_local_base_freq);
+    const size_t old_total = cache_total_seq_len_;  // pre-compaction compressed frontier (for Δ)
 
     Component& comp = *decoder_;
     if (!comp.graph) return;
-    // Capture the compacted length (B, identical across all layers) from the keep-set itself,
-    // not from a header we just mutated, so the global position counter stays consistent.
+    // Pass 1: compact + renumber the global (full-attention) layers to 0..B-1. B is identical across
+    // them; capture it from the keep-set, not a header we just mutated.
     size_t new_seq_len = 0;
     bool have_new_seq_len = false;
     for (size_t li = 0; li < comp.cache_states.size(); ++li) {
+        if (!compressible.count(li)) continue;  // global layers only
         const auto& cs = comp.cache_states[li];
         if (cs.key_node_id < 0 || cs.value_node_id < 0) continue;
 
@@ -3054,8 +3050,42 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         }
     }
 
-    // Every layer was compacted to the same B (guarded above). Decode appends at B: subsequent
-    // positions are B, B+1, ... (renumbered window).
+    // Pass 2: re-rope the sliding-window layers' recent K rows by -Δ (Δ = old frontier − B) so they
+    // track the renumbered global frontier in the same (compressed) position frame. RoPE is relative,
+    // so a uniform shift preserves all query·key offsets. Sink rows [0, sink_size) stay fixed.
+    const size_t Delta = (have_new_seq_len && old_total >= new_seq_len) ? old_total - new_seq_len : 0;
+    if (Delta > 0) {
+        const double dpos = -static_cast<double>(Delta);
+        for (size_t li = 0; li < comp.cache_states.size(); ++li) {
+            if (compressible.count(li)) continue;  // sliding (non-compressible) layers only
+            const auto& cs = comp.cache_states[li];
+            if (cs.key_node_id < 0) continue;
+            const auto& kdesc = comp.graph->get_output_buffer(static_cast<size_t>(cs.key_node_id));
+            if (kdesc.byte_size <= kHeaderBytes) continue;
+            void* kraw = comp.graph->get_output(static_cast<size_t>(cs.key_node_id));
+            if (!kraw) continue;
+            auto* khdr = static_cast<CacheHeader*>(kraw);
+            size_t kv_heads = khdr->num_kv_heads, head_dim = khdr->head_dim;
+            if (kv_heads == 0 || head_dim == 0) continue;
+            size_t hi = khdr->current_seq_len;
+            size_t lo = std::min<size_t>(khdr->sink_size, hi);
+            if (kdesc.precision == Precision::FP16) {
+                auto* kbase = reinterpret_cast<uint16_t*>(static_cast<char*>(kraw) + kHeaderBytes);
+                cactus::kvcompress::rerope_recent_fp16(kbase, kv_heads, head_dim, lo, hi,
+                                                       rope_local_theta, dpos);
+            } else if (kdesc.precision == Precision::INT8) {
+                size_t max_seq = khdr->max_seq_len;
+                auto* k_i8 = reinterpret_cast<int8_t*>(static_cast<char*>(kraw) + kHeaderBytes);
+                auto* k_sc = reinterpret_cast<float*>(static_cast<char*>(kraw) + kHeaderBytes +
+                                                      max_seq * kv_heads * head_dim);
+                cactus::kvcompress::rerope_recent_int8(k_i8, k_sc, kv_heads, head_dim,
+                                                       KV_QUANT_GROUP_SIZE, lo, hi, rope_local_theta, dpos);
+            }
+        }
+    }
+
+    // Global layers were compacted to B; the next decode query uses position_ids = B for ALL layers
+    // (global renumbered, sliding shifted into the same frame).
     if (have_new_seq_len) cache_total_seq_len_ = new_seq_len;
 }
 

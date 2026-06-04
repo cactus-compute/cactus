@@ -134,6 +134,27 @@ inline double renumber_delta(int abs_pos, size_t rank) {
     return static_cast<double>(rank) - static_cast<double>(abs_pos);
 }
 
+// Quantize one float row into int8 + per-group scales, matching the engine's KV quant convention
+// (quantize_group_fp16_to_int8 in cactus-kernels/src/quants.cpp): scale floored at 1e-10,
+// round-to-nearest via roundf, clamp to [-128, 127]. groups = ceil(head_dim/group_size).
+void requant_row(const float* row, int8_t* dst, float* dsc, size_t head_dim, size_t group_size) {
+    size_t groups = (head_dim + group_size - 1) / group_size;
+    for (size_t g = 0; g < groups; ++g) {
+        size_t lo = g * group_size, hi = std::min(head_dim, lo + group_size);
+        float amax = 0.0f;
+        for (size_t d = lo; d < hi; ++d) amax = std::max(amax, std::fabs(row[d]));
+        float scale = amax / 127.0f;
+        if (scale < 1e-10f) scale = 1e-10f;
+        dsc[g] = scale;
+        float inv = 1.0f / scale;
+        for (size_t d = lo; d < hi; ++d) {
+            int32_t q = static_cast<int32_t>(std::roundf(row[d] * inv));
+            q = std::max(-128, std::min(127, q));
+            dst[d] = static_cast<int8_t>(q);
+        }
+    }
+}
+
 // Per-head KeyDiff keep-set pipeline shared by the fp16 and int8 entry points. `fill_post(h, post)`
 // gathers head h's post-RoPE rows into `post` ([n][head_dim]); the rest (un-RoPE -> score -> keepset)
 // is identical regardless of storage precision.
@@ -198,26 +219,43 @@ void compact_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads,
                 rope_rotate_row(row.data(), head_dim, rope_theta, renumber_delta(abs_pos, rank));
             int8_t* dst = int8_rows + rank * int8_stride + h * head_dim;
             float* dsc = scale_rows + rank * scale_stride + h * groups;
-            for (size_t g = 0; g < groups; ++g) {
-                size_t lo = g * group_size, hi = std::min(head_dim, lo + group_size);
-                // Match the engine's KV quantization convention (quantize_group_fp16_to_int8 in
-                // cactus-kernels/src/quants.cpp): scale floored at 1e-10, round-to-nearest via
-                // roundf, clamp to [-128, 127]. Keeps re-quantized rows consistent with how the
-                // rest of the engine writes the int8 cache.
-                float amax = 0.0f;
-                for (size_t d = lo; d < hi; ++d) amax = std::max(amax, std::fabs(row[d]));
-                float scale = amax / 127.0f;
-                if (scale < 1e-10f) scale = 1e-10f;
-                dsc[g] = scale;
-                float inv = 1.0f / scale;
-                for (size_t d = lo; d < hi; ++d) {
-                    int32_t q = static_cast<int32_t>(std::roundf(row[d] * inv));
-                    q = std::max(-128, std::min(127, q));
-                    dst[d] = static_cast<int8_t>(q);
-                }
-            }
+            requant_row(row.data(), dst, dsc, head_dim, group_size);
         }
     }
+}
+
+void rotate_int8_row(int8_t* int8, float* scale, size_t head_dim, size_t group_size,
+                     double rope_theta, double delta_pos) {
+    std::vector<float> row(head_dim);
+    for (size_t d = 0; d < head_dim; ++d) row[d] = static_cast<float>(int8[d]) * scale[d / group_size];
+    rope_rotate_row(row.data(), head_dim, rope_theta, delta_pos);
+    requant_row(row.data(), int8, scale, head_dim, group_size);
+}
+
+void rerope_recent_fp16(uint16_t* key_rows_u, size_t kv_heads, size_t head_dim,
+                        size_t lo, size_t hi, double rope_theta, double delta_pos) {
+    if (delta_pos == 0.0 || hi <= lo) return;
+    __fp16* key_rows = reinterpret_cast<__fp16*>(key_rows_u);
+    std::vector<float> row(head_dim);
+    for (size_t t = lo; t < hi; ++t)
+        for (size_t h = 0; h < kv_heads; ++h) {
+            __fp16* r = key_rows + (t * kv_heads + h) * head_dim;
+            for (size_t d = 0; d < head_dim; ++d) row[d] = r[d];
+            rope_rotate_row(row.data(), head_dim, rope_theta, delta_pos);
+            for (size_t d = 0; d < head_dim; ++d) r[d] = static_cast<__fp16>(row[d]);
+        }
+}
+
+void rerope_recent_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads, size_t head_dim,
+                        size_t group_size, size_t lo, size_t hi, double rope_theta, double delta_pos) {
+    if (delta_pos == 0.0 || hi <= lo) return;
+    size_t groups = (head_dim + group_size - 1) / group_size;
+    size_t int8_stride = kv_heads * head_dim, scale_stride = kv_heads * groups;
+    for (size_t t = lo; t < hi; ++t)
+        for (size_t h = 0; h < kv_heads; ++h)
+            rotate_int8_row(int8_rows + t * int8_stride + h * head_dim,
+                            scale_rows + t * scale_stride + h * groups,
+                            head_dim, group_size, rope_theta, delta_pos);
 }
 
 std::vector<std::vector<int>> keepsets_from_fp16(const uint16_t* key_rows_u, size_t n,
