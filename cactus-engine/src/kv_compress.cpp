@@ -2,11 +2,26 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <numeric>
 #include <set>
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#define CACTUS_KV_NEON 1
+#else
+#define CACTUS_KV_NEON 0
+#endif
+
 namespace cactus {
 namespace kvcompress {
+
+namespace {
+// Toggled off by tests to exercise/compare the scalar fallback on a NEON build.
+bool g_use_simd = true;
+}
+
+void kv_set_simd(bool on) { g_use_simd = on; }
 
 namespace {
 
@@ -164,10 +179,33 @@ void requant_row(const float* row, int8_t* dst, float* dsc, size_t head_dim, siz
     }
 }
 
+void dequant_row(const int8_t* src, const float* scale, size_t head_dim, size_t group_size,
+                 float* out) {
+#if CACTUS_KV_NEON
+    if (g_use_simd) {
+        size_t groups = (head_dim + group_size - 1) / group_size;
+        for (size_t g = 0; g < groups; ++g) {
+            size_t lo = g * group_size, hi = std::min(head_dim, lo + group_size);
+            float32x4_t scv = vdupq_n_f32(scale[g]);
+            size_t d = lo;
+            for (; d + 4 <= hi; d += 4) {
+                int32_t four;
+                std::memcpy(&four, src + d, 4);
+                int16x8_t i16 = vmovl_s8(vreinterpret_s8_s32(vdup_n_s32(four)));
+                vst1q_f32(out + d, vmulq_f32(vcvtq_f32_s32(vmovl_s16(vget_low_s16(i16))), scv));
+            }
+            for (; d < hi; ++d) out[d] = static_cast<float>(src[d]) * scale[g];
+        }
+        return;
+    }
+#endif
+    for (size_t d = 0; d < head_dim; ++d) out[d] = static_cast<float>(src[d]) * scale[d / group_size];
+}
+
 void rotate_int8_row_rot(int8_t* int8, float* scale, size_t head_dim, size_t group_size,
                          const RopeRotation& rot) {
     std::vector<float> row(head_dim);
-    for (size_t d = 0; d < head_dim; ++d) row[d] = static_cast<float>(int8[d]) * scale[d / group_size];
+    dequant_row(int8, scale, head_dim, group_size, row.data());
     rope_apply(row.data(), rot);
     requant_row(row.data(), int8, scale, head_dim, group_size);
 }
@@ -236,7 +274,7 @@ void compact_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads,
             size_t src_t = static_cast<size_t>(abs_pos);
             const int8_t* src = int8_rows + src_t * int8_stride + h * head_dim;
             const float* ssc = scale_rows + src_t * scale_stride + h * groups;
-            for (size_t d = 0; d < head_dim; ++d) row[d] = static_cast<float>(src[d]) * ssc[d / group_size];
+            dequant_row(src, ssc, head_dim, group_size, row.data());
             if (renumber)
                 rope_apply(row.data(), rope_rot(inv, renumber_delta(abs_pos, rank)));
             int8_t* dst = int8_rows + rank * int8_stride + h * head_dim;
@@ -312,8 +350,7 @@ std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const 
         for (size_t t = 0; t < n; ++t) {
             const int8_t* src = int8_rows + t * int8_stride + h * head_dim;
             const float* ssc = scale_rows + t * scale_stride + h * groups;
-            for (size_t d = 0; d < head_dim; ++d)
-                post[t * head_dim + d] = static_cast<float>(src[d]) * ssc[d / group_size];
+            dequant_row(src, ssc, head_dim, group_size, post + t * head_dim);
         }
     });
 }

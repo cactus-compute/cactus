@@ -26,6 +26,9 @@ struct CacheHeader {
 };
 static_assert(sizeof(CacheHeader) == 64, "CacheHeader must be 64 bytes");
 
+// Test hook: force the scalar fallback to compare against the NEON path on a NEON build.
+void kv_set_simd(bool on);
+
 // KeyDiff per-token score for one (layer, kv-head): s_i = -cos(k_i, mean(k)).
 // keys: row-major [n][head_dim] (pre-RoPE). out: [n].
 void keydiff_score(const float* keys, size_t n, size_t head_dim, float* out);

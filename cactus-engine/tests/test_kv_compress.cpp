@@ -628,6 +628,43 @@ bool test_rerope_zero_delta_noop() {
     return kbuf == before;
 }
 
+// dequant_row's NEON path must match the scalar fallback, via int8 compact and the int8 keep-set fill.
+bool test_dequant_simd_matches_scalar() {
+    const size_t n = 64, max_seq = 96, kv_heads = 4, head_dim = 128;
+    const double theta = 1000000.0;
+    size_t groups = (head_dim + kGroupSize - 1) / kGroupSize;
+    size_t int8_stride = kv_heads * head_dim, scale_stride = kv_heads * groups;
+    Params p; p.recent_frac = 0.30f; p.sink = 4; p.abs_budget = 32;
+
+    std::vector<int8_t> k8(max_seq * int8_stride, 0), v8(max_seq * int8_stride, 0);
+    std::vector<float> ks(max_seq * scale_stride, 0.f), vs(max_seq * scale_stride, 0.f);
+    for (size_t h = 0; h < kv_heads; ++h)
+        for (size_t t = 0; t < n; ++t) {
+            std::vector<float> k(head_dim), v(head_dim);
+            for (size_t d = 0; d < head_dim; ++d) { k[d] = std::sin(0.1 * (h + 1) * (t + 1) + 0.2 * d); v[d] = std::cos(0.05 * (t + 1) + 0.1 * d); }
+            std::vector<float> kr = rope_reference(k, (double)t, theta);
+            quantize_row(kr, k8.data() + t * int8_stride + h * head_dim, ks.data() + t * scale_stride + h * groups, head_dim, kGroupSize);
+            quantize_row(v, v8.data() + t * int8_stride + h * head_dim, vs.data() + t * scale_stride + h * groups, head_dim, kGroupSize);
+        }
+    std::vector<std::vector<int>> kept = {{0, 5, 11, 22}, {1, 4, 13, 26}, {2, 8, 17, 30}, {3, 9, 19, 40}};
+
+    auto compact = [&](bool simd) {
+        kv_set_simd(simd);
+        std::vector<int8_t> a = k8;
+        std::vector<float> b = ks;
+        compact_int8(a.data(), b.data(), kv_heads, head_dim, kGroupSize, kept, theta, true);
+        a.insert(a.end(), reinterpret_cast<int8_t*>(b.data()), reinterpret_cast<int8_t*>(b.data() + b.size()));
+        return a;
+    };
+    auto keepsets = [&](bool simd) {
+        kv_set_simd(simd);
+        return keepsets_from_int8(k8.data(), ks.data(), n, kv_heads, head_dim, kGroupSize, theta, p);
+    };
+    bool ok = compact(true) == compact(false) && keepsets(true) == keepsets(false);
+    kv_set_simd(true);
+    return ok;
+}
+
 int main() {
     TestUtils::TestRunner runner("KV Compress Free-Function Tests");
     runner.run_test("compact_fp16_cache", test_compact_fp16_cache());
@@ -647,6 +684,7 @@ int main() {
     runner.run_test("trigger_zero_gates_rolling", test_trigger_zero_gates_rolling());
     runner.run_test("degenerate_rolling_config_disabled", test_degenerate_rolling_config_disabled());
     runner.run_test("env_override_parse", test_env_override_parse());
+    runner.run_test("dequant_simd_matches_scalar", test_dequant_simd_matches_scalar());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
