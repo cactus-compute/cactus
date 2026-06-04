@@ -97,8 +97,7 @@ std::vector<int> keepset_for_head(const float* scores, size_t n, const Params& p
 
 namespace {
 
-// Per-dim-pair cos/sin for a fixed delta_pos. inv_freq (the pow) and the trig are built once here
-// so a row loop over a uniform delta -- or many rows sharing one inv_freq -- avoids recomputing them.
+// Precomputed cos/sin per dim-pair, built once so row loops don't recompute pow/trig.
 struct RopeRot { std::vector<double> cos, sin; };
 
 std::vector<double> rope_inv_freq(size_t head_dim, double rope_theta) {
