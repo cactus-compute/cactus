@@ -1,0 +1,2536 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="TurboQuant compresses KV cache to 1-3 bits. We introduce TurboQuant-H, a simplified offline variant using Hadamard rotation and per-group Lloyd-Max codebooks, applied to per-layer embedding tables where it matters most: models where embeddings are 60%+ of total weight storage.">
+      
+      
+        <meta name="author" content="Karen Mosoyan & Henry Ndubuaku">
+      
+      
+        <link rel="canonical" href="https://docs.cactuscompute.com/v2.0/blog/turboquant-h/">
+      
+      
+        <link rel="prev" href="../">
+      
+      
+        <link rel="next" href="../gemma4/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/logo_white.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.5">
+    
+    
+      
+        <title>TurboQuant-H: Hadamard Rotation for 2-Bit Embedding Quantization - Cactus Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/custom.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="white">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#turboquant-h-hadamard-rotation-for-2-bit-embedding-quantization" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+          <aside class="md-banner md-banner--warning">
+            <div class="md-banner__inner md-grid md-typeset">
+              
+  You're not viewing the latest version.
+  <a href="../../..">
+    <strong>Click here to go to latest.</strong>
+  </a>
+
+            </div>
+            <script>var el=document.querySelector("[data-md-component=outdated]"),base=new URL("../.."),outdated=__md_get("__outdated",sessionStorage,base);!0===outdated&&el&&(el.hidden=!1)</script>
+          </aside>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Cactus Docs" class="md-header__button md-logo" aria-label="Cactus Docs" data-md-component="logo">
+      
+  <img src="../../assets/logo_white.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Cactus Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              TurboQuant-H: Hadamard Rotation for 2-Bit Embedding Quantization
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="white"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="black"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/cactus-compute/cactus" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cactus-compute/cactus
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../docs/quickstart/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Quickstart
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../docs/choose-bindings/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Choose Your Binding
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../react-native/" class="md-tabs__link">
+          
+  
+  
+  Bindings
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../docs/cactus_engine/" class="md-tabs__link">
+          
+  
+  
+  Core APIs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../docs/cactus_quants/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Cactus Quants
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../docs/cactus_hybrid/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Hybrid Inference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../docs/cactus_transpiler/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Transpiler
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../docs/finetuning/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../CONTRIBUTING/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+  Blog
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Cactus Docs" class="md-nav__button md-logo" aria-label="Cactus Docs" data-md-component="logo">
+      
+  <img src="../../assets/logo_white.png" alt="logo">
+
+    </a>
+    Cactus Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/cactus-compute/cactus" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cactus-compute/cactus
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/choose-bindings/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Choose Your Binding
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bindings
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Bindings
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../react-native/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    React Native
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../python/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../swift/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Swift
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../kotlin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kotlin
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../flutter/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Flutter
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../rust/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rust
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core APIs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Core APIs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/cactus_engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engine API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/cactus_graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Graph API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/cactus_kernels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kernels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/cactus_index/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Index API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/cactus_quants/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cactus Quants
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/cactus_hybrid/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid Inference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/cactus_transpiler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Transpiler
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/finetuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Fine-tuning & Deployment
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs/compatibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime Compatibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_11" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blog
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_11">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Blog
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    All Posts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TurboQuant-H
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TurboQuant-H
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#abstract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Abstract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Introduction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-background-per-layer-embeddings-dominate-model-storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Background: Per-Layer Embeddings Dominate Model Storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-turboquant-h" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. TurboQuant-H
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. TurboQuant-H">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-comparison-with-turboquant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Comparison with TurboQuant
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-formal-description" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Formal Description
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-the-quantization-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 The Quantization Pipeline
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-design-decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Design Decisions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Results
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Results">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-perplexity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Perplexity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-disk-footprint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Disk Footprint
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-inference-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Inference Path
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Inference Path">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-before-cactus-default" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Before (Cactus default)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-after-cactus-turboquant-h" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 After (Cactus TurboQuant-H)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-overhead-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Overhead Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-related-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Related Work
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Next Steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#try-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Try It
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#citation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Citation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See Also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gemma4/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gemma 4 on Cactus
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hybrid_transcription/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid Transcription
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lfm2_24b_a2b/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LFM2-24B on Mac
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../parakeet/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parakeet CTC 1.1B
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lfm2.5_350m/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LFM-2.5-350m
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#abstract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Abstract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-introduction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Introduction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-background-per-layer-embeddings-dominate-model-storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Background: Per-Layer Embeddings Dominate Model Storage
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-turboquant-h" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. TurboQuant-H
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. TurboQuant-H">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-comparison-with-turboquant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Comparison with TurboQuant
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-formal-description" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Formal Description
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-the-quantization-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 The Quantization Pipeline
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-design-decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Design Decisions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Results
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Results">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-perplexity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Perplexity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-disk-footprint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Disk Footprint
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-inference-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Inference Path
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Inference Path">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-before-cactus-default" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Before (Cactus default)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-after-cactus-turboquant-h" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 After (Cactus TurboQuant-H)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-overhead-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Overhead Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-related-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Related Work
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Next Steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#try-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Try It
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#citation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Citation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See Also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="turboquant-h-hadamard-rotation-for-2-bit-embedding-quantization">TurboQuant-H: Hadamard Rotation for 2-Bit Embedding Quantization<a class="headerlink" href="#turboquant-h-hadamard-rotation-for-2-bit-embedding-quantization" title="Permanent link">&para;</a></h1>
+<p><em>By Karen Mosoyan &amp; Henry Ndubuaku</em></p>
+<p><em>(karen@cactuscompute.com, henry@cactuscompute.com)</em></p>
+<h2 id="abstract">Abstract<a class="headerlink" href="#abstract" title="Permanent link">&para;</a></h2>
+<p>TurboQuant (Zandieh et al., ICLR 2026) compresses KV cache vectors to 1-3 bits via random orthogonal rotation, optimal scalar quantization, and QJL bias correction. We introduce <strong>TurboQuant-H</strong>, a simplified offline variant that replaces random rotation with Hadamard rotation, uses per-group Lloyd-Max codebooks, and drops the QJL correction stage. We apply TurboQuant-H to per-layer input (PLI) embedding tables in Gemma 4 E2B, where embeddings constitute 60.6% of total model weight. On Gemma 4 E2B, TurboQuant-H compresses PLI weights from 2,496 MB to 624 MB (4x) at 2.125 effective bits per dimension, reducing total LLM storage by 40% (4,790 MB → 2,918 MB) with a perplexity increase of 0.06 (1.85 → 1.91) and no measured speed regression.</p>
+<h2 id="1-introduction">1. Introduction<a class="headerlink" href="#1-introduction" title="Permanent link">&para;</a></h2>
+<p>TurboQuant (ICLR 2026) compresses KV cache vectors to 1-3 bits with near-zero quality loss. The technique is elegant: rotate vectors with a random orthogonal matrix, exploit the resulting Beta distribution to apply optimal scalar quantizers per coordinate, then correct inner product bias with a 1-bit QJL residual. The paper demonstrates quality neutrality at 3.5 bits and marginal degradation at 2.5 bits on Llama-3.1-8B and Ministral-7B.</p>
+<p>But TurboQuant was designed for KV cache, vectors generated at runtime during inference. There's a catch: mobile devices and wearables need small models, which we found to significantly degrade when KV cache goes below INT4. We in fact keep KV cache at INT8 on Cactus to ensure correctness. This makes applying TurboQuant to Cactus KV workloads tricky.</p>
+<p>However, with the emergence of per-layer embedding architectures (each layer has its own embedding lookup), these embeddings dominate the parameter count of models like the Gemma E-series. For instance, Gemma E2B has 2.3B effective parameters but 5.1B total, because the per-layer embeddings alone account for the difference. That bloats memory and storage footprint by more than 2x. There is a need to re-visit embedding quantisation.</p>
+<h2 id="2-background-per-layer-embeddings-dominate-model-storage">2. Background: Per-Layer Embeddings Dominate Model Storage<a class="headerlink" href="#2-background-per-layer-embeddings-dominate-model-storage" title="Permanent link">&para;</a></h2>
+<p>Most quantization research focuses on linear layer weights and activations. Embeddings are treated as untouchable lookup tables, typically kept at FP16 or at best INT8 while everything else goes to INT4. This made sense when embeddings were a small fraction of total parameters. That assumption broke with per-layer embedding architectures.</p>
+<p>Gemma 4 E2B uses AltUp, a technique where each of the 35 transformer layers gets its own embedding projection from the 262K-token vocabulary. Instead of one shared embedding table, you have a shared table plus a per-layer table. The numbers on Cactus's current INT4 weights:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Size</th>
+<th>% of Model</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>token_embeddings</code> (shared)</td>
+<td>408 MB</td>
+<td>8.7%</td>
+</tr>
+<tr>
+<td><code>embed_tokens_per_layer</code> (35 layers)</td>
+<td>2,496 MB</td>
+<td>52.1%</td>
+</tr>
+<tr>
+<td><strong>Total embedding storage</strong></td>
+<td><strong>2,904 MB</strong></td>
+<td><strong>60.6%</strong></td>
+</tr>
+<tr>
+<td>All other weights (attention, FFN, norms, encoders)</td>
+<td>1,886 MB</td>
+<td>39.4%</td>
+</tr>
+<tr>
+<td><strong>Total model</strong></td>
+<td><strong>4,790 MB</strong></td>
+<td>100%</td>
+</tr>
+</tbody>
+</table>
+<p>The per-layer embedding table is 2.5 GB. More than half the model. This is not unique to Gemma 4. The AltUp design pattern, where per-layer vocabulary projections replace a single shared embedding, is becoming standard for models that need large vocabularies (262K tokens for multilingual coverage) without proportionally large hidden dimensions. Gemma 3n uses the same architecture. Any model that follows this pattern will be embedding-dominated.</p>
+<h2 id="3-turboquant-h">3. TurboQuant-H<a class="headerlink" href="#3-turboquant-h" title="Permanent link">&para;</a></h2>
+<p>TurboQuant-H shares the core insight from TurboQuant; rotation concentrates coordinates into a well-behaved distribution, enabling aggressive scalar quantization, but simplifies the pipeline for offline weight quantization.</p>
+<h3 id="31-comparison-with-turboquant">3.1 Comparison with TurboQuant<a class="headerlink" href="#31-comparison-with-turboquant" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>TurboQuant (Zandieh et al.)</th>
+<th>TurboQuant-H (this work)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Target</strong></td>
+<td>KV cache (runtime activations)</td>
+<td>Embedding weight tables (offline)</td>
+</tr>
+<tr>
+<td><strong>Rotation</strong></td>
+<td>Random orthogonal matrix via QR of Gaussian, <span class="arithmatex">\(O(d^2)\)</span></td>
+<td>Normalized Hadamard matrix, <span class="arithmatex">\(O(N \log N)\)</span>, symmetric = self-inverse</td>
+</tr>
+<tr>
+<td><strong>Quantizer</strong></td>
+<td>Per-coordinate scalar quantizer (precomputed for Beta distribution)</td>
+<td>Per-position Lloyd-Max codebook (trained on actual weight distribution)</td>
+</tr>
+<tr>
+<td><strong>Codebook</strong></td>
+<td>Implicit (quantization levels derived from Beta CDF)</td>
+<td>Explicit FP16 centroids per position group (0.125 bits overhead at group-128)</td>
+</tr>
+<tr>
+<td><strong>Bias correction</strong></td>
+<td>Two-stage: MSE quantizer at <span class="arithmatex">\(b-1\)</span> bits + 1-bit QJL residual</td>
+<td>Single-stage: no QJL correction</td>
+</tr>
+<tr>
+<td><strong>When it runs</strong></td>
+<td>Every forward pass during inference</td>
+<td>Once during weight conversion</td>
+</tr>
+<tr>
+<td><strong>Bit width</strong></td>
+<td>2.5-bit and 3.5-bit</td>
+<td>2-bit (+0.125 codebook overhead ≈ 2.125 effective)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32-formal-description">3.2 Formal Description<a class="headerlink" href="#32-formal-description" title="Permanent link">&para;</a></h3>
+<p>Let <span class="arithmatex">\(\mathbf{E} \in \mathbb{R}^{V \times D}\)</span> be the PLI embedding matrix with vocabulary size <span class="arithmatex">\(V = 262{,}144\)</span> and embedding dimension <span class="arithmatex">\(D = 8{,}190\)</span>. We partition each row into <span class="arithmatex">\(P = \lceil D/G \rceil = 64\)</span> positional groups of <span class="arithmatex">\(G = 128\)</span> contiguous elements. The <span class="arithmatex">\(p\)</span>-th positional group of vocabulary row <span class="arithmatex">\(v\)</span> is denoted <span class="arithmatex">\(\mathbf{x}_{v,p} \in \mathbb{R}^G\)</span>.</p>
+<p><strong>Quantization</strong> (offline, during weight conversion):</p>
+<p><strong>Step 1: Hadamard rotation.</strong> For each row <span class="arithmatex">\(v\)</span> and position <span class="arithmatex">\(p\)</span>, rotate:</p>
+<div class="arithmatex">\[\hat{\mathbf{x}}_{v,p} = \bar{\mathbf{H}}_G \cdot \mathbf{x}_{v,p}\]</div>
+<p>where <span class="arithmatex">\(\bar{\mathbf{H}}_G = \frac{1}{\sqrt{G}} \mathbf{H}_G\)</span> is the <span class="arithmatex">\(G \times G\)</span> normalized Hadamard matrix, satisfying <span class="arithmatex">\(\bar{\mathbf{H}}_G^T \bar{\mathbf{H}}_G = \mathbf{I}\)</span> and <span class="arithmatex">\(\bar{\mathbf{H}}_G = \bar{\mathbf{H}}_G^T\)</span>. The <span class="arithmatex">\(\frac{1}{\sqrt{G}}\)</span> normalization ensures the transform is its own inverse.</p>
+<p><strong>Step 2: Codebook training.</strong> For each positional group <span class="arithmatex">\(p \in \{1, \ldots, P\}\)</span>, collect the rotated values from all <span class="arithmatex">\(V\)</span> vocabulary rows and train a Lloyd-Max codebook <span class="arithmatex">\(\mathcal{C}_p = \{c_1, c_2, c_3, c_4\}\)</span> (at <span class="arithmatex">\(b = 2\)</span> bits, 4 centroids) by minimizing:</p>
+<div class="arithmatex">\[\mathcal{C}_p^* = \arg\min_{\mathcal{C}} \sum_{v=1}^{V} \sum_{i=1}^{G} \min_{c \in \mathcal{C}} \left( \hat{x}_{v,p,i} - c \right)^2\]</div>
+<p>This trains each codebook on <span class="arithmatex">\(V \times G = 262{,}144 \times 128 \approx 33.6\text{M}\)</span> data points, giving the Lloyd-Max algorithm sufficient statistics for accurate centroid placement. Each positional group gets its own codebook because the weight distributions vary across positions in the embedding dimension. We tried a single joint codebook shared across all positions; per-position was consistently better.</p>
+<p>The codebook values are stored at FP16 (16 bits per centroid), contributing:</p>
+<div class="arithmatex">\[\frac{2^b \cdot 16}{G} = \frac{4 \cdot 16}{128} = 0.125 \text{ bits/element overhead}\]</div>
+<p><strong>Step 3: Quantize by proximity.</strong> Each rotated element maps to its nearest centroid:</p>
+<div class="arithmatex">\[q_{v,p,i} = \arg\min_{j \in \{1,\ldots,2^b\}} \left| \hat{x}_{v,p,i} - c_j \right|\]</div>
+<p>Store the 2-bit indices <span class="arithmatex">\(q_{v,p,i}\)</span> and the <span class="arithmatex">\(P = 64\)</span> FP16 codebooks <span class="arithmatex">\(\{\mathcal{C}_1, \ldots, \mathcal{C}_P\}\)</span>.</p>
+<p><strong>Dequantization</strong> (at inference):</p>
+<div class="arithmatex">\[\tilde{\mathbf{x}}_{v,p} = \bar{\mathbf{H}}_G \cdot \text{scatter}(\mathcal{C}_p, \mathbf{q}_{v,p})\]</div>
+<p>where <span class="arithmatex">\(\text{scatter}(\mathcal{C}_p, \mathbf{q}_{v,p})_i = c_{q_{v,p,i}}\)</span> maps indices back to centroids. Since <span class="arithmatex">\(\bar{\mathbf{H}}_G\)</span> is symmetric and orthogonal, the inverse rotation is the same forward transform. No transpose is needed.</p>
+<p><strong>Effective bit rate:</strong></p>
+<div class="arithmatex">\[b_{\text{eff}} = b + \frac{2^b \cdot 16}{G} = 2 + 0.125 = 2.125 \text{ bits/element}\]</div>
+<h3 id="33-the-quantization-pipeline">3.3 The Quantization Pipeline<a class="headerlink" href="#33-the-quantization-pipeline" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>QUANTIZATION (offline, during cactus convert)
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>==============================================
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>PLI Matrix E  (262K x 8190)
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>      |
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>      v
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>+-----------------------+
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>| Partition into        |  Each row -&gt; 64 positional groups
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>| groups of G=128       |  of 128 contiguous elements
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>+-----------+-----------+
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>            |
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>            v
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>+-----------------------+
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>| Hadamard rotation     |  x_hat = (1/sqrt(G)) * H_128 * x
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>| per group             |  O(G log G) butterfly
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>+-----------+-----------+
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>            |
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>            v
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>+-----------------------+
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>| Lloyd-Max codebook    |  Train 4 centroids (2-bit) per position
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>| per position          |  across all 262K vocab rows
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>|                       |  C_p = {c1, c2, c3, c4} in FP16
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>+-----------+-----------+
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>            |
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>            v
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>+-----------------------+
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>| Quantize by           |  q = argmin_j |x_hat_i - c_j|
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>| proximity             |  Store 2-bit indices per element
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>+-----------+-----------+
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>            |
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>            v
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>Output: 2-bit index tensor + 64 FP16 codebooks
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>Effective: 2.125 bits/element
+<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>
+<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>DEQUANTIZATION (at inference, per token)
+<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>=========================================
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>Token IDs
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a>      |
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a>      v
+<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a>+-----------------------+
+<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a>| Gather 2-bit indices  |  Look up row from compressed table
+<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a>| + codebook per pos.   |  ~3.8x less bandwidth than INT8
+<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a>+-----------+-----------+
+<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a>            |
+<a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a>            v
+<a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a>+-----------------------+
+<a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a>| Scatter codebook      |  Replace 2-bit indices with FP16
+<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a>| values                |  centroid values from C_p
+<a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a>+-----------+-----------+
+<a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a>            |
+<a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a>            v
+<a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a>+-----------------------+
+<a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a>| Hadamard rotation     |  x_tilde = (1/sqrt(G)) * H_128 * scatter(...)
+<a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a>| (same as forward,     |  H_bar is symmetric: H_bar = H_bar^T = H_bar^-1
+<a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a>|  no transpose needed) |  O(G log G) butterfly per group
+<a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a>+-----------+-----------+
+<a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>            |
+<a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a>            v
+<a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>FP16 embedding -&gt; feed to transformer layer
+</code></pre></div>
+<h3 id="34-design-decisions">3.4 Design Decisions<a class="headerlink" href="#34-design-decisions" title="Permanent link">&para;</a></h3>
+<p><strong>Why Hadamard instead of random orthogonal?</strong> The normalized Hadamard matrix <span class="arithmatex">\(\bar{\mathbf{H}}_G = \frac{1}{\sqrt{G}} \mathbf{H}_G\)</span> is deterministic, <span class="arithmatex">\(O(N \log N)\)</span> to apply via the butterfly factorization (same structure as the FFT), and its own inverse (<span class="arithmatex">\(\bar{\mathbf{H}} = \bar{\mathbf{H}}^T = \bar{\mathbf{H}}^{-1}\)</span>). For offline weight quantization we don't need the data-oblivious guarantees of a random rotation, we have full access to the weight data at conversion time. The Hadamard rotation still concentrates coordinates, which is all we need to make low-bit scalar quantization work. Note: the unnormalized Hadamard satisfies <span class="arithmatex">\(\mathbf{H}\mathbf{H}^T = G \cdot \mathbf{I}\)</span>, so the <span class="arithmatex">\(\frac{1}{\sqrt{G}}\)</span> factor is essential for the self-inverse property.</p>
+<p><strong>Why no QJL correction?</strong> TurboQuant's second stage exists because MSE-optimal quantizers introduce multiplicative bias in inner product estimation. At 1-bit, <span class="arithmatex">\(\mathbb{E}[\langle \mathbf{y}, Q(\mathbf{x}) \rangle] = \frac{2}{\pi} \langle \mathbf{y}, \mathbf{x} \rangle\)</span>, a 36% shrinkage. The QJL residual corrects this at the cost of 1 additional bit per dimension. But we're quantizing at 2 bits with a trained codebook, not a precomputed scalar quantizer. The per-position Lloyd-Max codebook already minimizes distortion over the actual weight distribution, and the Hadamard rotation ensures the codebook sees well-spread inputs. At 2 bits with group-128, the inner product bias is small enough that the downstream perplexity impact is negligible (PPL 1.91 vs 1.85). Adding QJL would cost an extra bit per dimension for a correction that isn't needed at this operating point.</p>
+<p><strong>Why per-position codebooks instead of per-coordinate?</strong> TurboQuant can use a single precomputed quantizer because random rotation makes all coordinates identically distributed (each coordinate of a uniform unit-sphere vector follows a known distribution that converges to <span class="arithmatex">\(\mathcal{N}(0, 1/d)\)</span> in high dimensions). Hadamard rotation concentrates coordinates but doesn't make them identically distributed — there are structured patterns from the butterfly network. Per-position codebooks (one codebook per group of 128 dimensions, trained across all 262K vocabulary rows at that position) adapt to these patterns. We tried a single joint codebook shared across all positions; per-position was consistently better.</p>
+<p><strong>Why group size 128?</strong> We swept group sizes from 32 to 512. The qualitative tradeoffs:</p>
+<table>
+<thead>
+<tr>
+<th>Group size</th>
+<th>Codebook overhead (bits/elem)</th>
+<th>Hadamard cost</th>
+<th>Quality</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>32</td>
+<td>0.500</td>
+<td>fastest</td>
+<td>degraded (high overhead eats bit budget)</td>
+</tr>
+<tr>
+<td>64</td>
+<td>0.250</td>
+<td>fast</td>
+<td>good</td>
+</tr>
+<tr>
+<td><strong>128</strong></td>
+<td><strong>0.125</strong></td>
+<td><strong>fast</strong></td>
+<td><strong>best (sweet spot)</strong></td>
+</tr>
+<tr>
+<td>256</td>
+<td>0.063</td>
+<td>moderate</td>
+<td>slightly worse (less uniform within group)</td>
+</tr>
+<tr>
+<td>512</td>
+<td>0.031</td>
+<td>slow</td>
+<td>worse (distribution spreads too thin)</td>
+</tr>
+</tbody>
+</table>
+<p>Group-128 gives 0.125 bits overhead, a fast butterfly, and the best quality. Detailed per-group-size PPL numbers are a target for future work.</p>
+<h2 id="4-results">4. Results<a class="headerlink" href="#4-results" title="Permanent link">&para;</a></h2>
+<h3 id="41-perplexity">4.1 Perplexity<a class="headerlink" href="#41-perplexity" title="Permanent link">&para;</a></h3>
+<p>Evaluated on Gemma 4 E2B. Evaluation set: 128 self-generated WildChat-1M completions from our <code>trajectories.jsonl</code> calibration set, completion-only NLL, 24,438 scored tokens.</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Avg bits</th>
+<th>PPL</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HuggingFace BF16</td>
+<td>16</td>
+<td>1.2892</td>
+</tr>
+<tr>
+<td>Cactus default (INT4 linears + INT8 PLI + INT8 token-emb)</td>
+<td>~6.3</td>
+<td>1.8547</td>
+</tr>
+<tr>
+<td><strong>Cactus + TurboQuant-H PLI</strong></td>
+<td><strong>~3.8</strong></td>
+<td><strong>1.9111</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Perplexity moves from 1.85 to 1.91. A delta of 0.06 PPL on a 24K-token eval set, within noise for practical use. No measured speed regression.</p>
+<h3 id="42-disk-footprint">4.2 Disk Footprint<a class="headerlink" href="#42-disk-footprint" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Size (MB)</th>
+<th>Factor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HuggingFace FP16 snapshot</td>
+<td>~10,240</td>
+<td>1.00×</td>
+</tr>
+<tr>
+<td>Cactus default (INT4 linears + INT8 PLI + INT8 emb)</td>
+<td>~4,790</td>
+<td>0.47×</td>
+</tr>
+<tr>
+<td><strong>Cactus + TurboQuant-H PLI</strong></td>
+<td><strong>2,918</strong></td>
+<td><strong>0.29×</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The PLI table specifically: <strong>2,496 MB → 624 MB, a 4× reduction.</strong></p>
+<p>Total LLM weight reduction: <strong>40%</strong> from the Cactus baseline. Including the vision and audio encoders (untouched by this change), the overall model reduction is <strong>30%</strong>.</p>
+<p>For Gemma 4 E2B, that's the difference between a 4.8 GB model and a 2.9 GB model. On a 4 GB RAM Android device, that's the difference between fitting and not fitting.</p>
+<p>For Gemma-270m, where the embedding table (295M params) is larger than all other weights combined, we expect the same technique to cut total model size roughly in half. Validation on Gemma-270m is planned future work.</p>
+<h2 id="5-inference-path">5. Inference Path<a class="headerlink" href="#5-inference-path" title="Permanent link">&para;</a></h2>
+<h3 id="51-before-cactus-default">5.1 Before (Cactus default)<a class="headerlink" href="#51-before-cactus-default" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>token_ids → gather from INT8 table → dequantize to FP16 → feed to transformer
+</code></pre></div>
+<h3 id="52-after-cactus-turboquant-h">5.2 After (Cactus TurboQuant-H)<a class="headerlink" href="#52-after-cactus-turboquant-h" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>token_ids → gather 2-bit indices → scatter codebook → Hadamard rotation → FP16 → transformer
+</code></pre></div>
+<h3 id="53-overhead-analysis">5.3 Overhead Analysis<a class="headerlink" href="#53-overhead-analysis" title="Permanent link">&para;</a></h3>
+<p>The Hadamard butterfly on a group of <span class="arithmatex">\(G = 128\)</span> elements has <span class="arithmatex">\(\log_2(G) = 7\)</span> stages. Each stage performs <span class="arithmatex">\(G/2 = 64\)</span> add/subtract pairs (the butterfly operations). Over 7 stages that is <span class="arithmatex">\(7 \times 64 = 448\)</span> add/sub operations per group. On ARM NEON (128-bit SIMD, 8 FP16 lanes), each stage processes the group in <span class="arithmatex">\(G / (2 \times 8) = 8\)</span> vector instructions, giving <span class="arithmatex">\(7 \times 8 = 56\)</span> vector operations per group.</p>
+<p>For a single PLI embedding row of <span class="arithmatex">\(D = 8{,}190\)</span> elements:</p>
+<div class="arithmatex">\[\text{Groups per row} = \lceil 8190 / 128 \rceil = 64\]</div>
+<div class="arithmatex">\[\text{Total vector ops} = 64 \times 56 = 3{,}584\]</div>
+<p>At one vector add/sub per cycle on a 2 GHz A15 NEON unit, this completes in under 2 microseconds per embedding lookup. The gather from a table that is <span class="arithmatex">\(8 / 2.125 \approx 3.8\times\)</span> smaller in memory more than compensates for the rotation cost in bandwidth savings.</p>
+<h2 id="6-related-work">6. Related Work<a class="headerlink" href="#6-related-work" title="Permanent link">&para;</a></h2>
+<p><strong>TurboQuant</strong> (Zandieh et al., ICLR 2026) introduced data-oblivious vector quantization with random rotation and QJL correction for KV cache compression, achieving near-optimal distortion rates within a constant factor of <span class="arithmatex">\(\approx 2.7\)</span> from information-theoretic lower bounds.</p>
+<p><strong>QuIP#</strong> (Tseng et al., 2024) uses the randomized Hadamard transform for weight quantization of linear layers, but does not address embedding tables or per-layer embeddings.</p>
+<p><strong>GPTQ, AWQ</strong> focus on linear layer weight quantization with calibration data. These methods do not handle embedding tables, which are pure lookup operations with no gradient flow during inference.</p>
+<p>To our knowledge, TurboQuant-H is the first application of rotation-based vector quantization specifically to per-layer embedding tables, which is where the technique yields the largest storage benefit due to the embedding-dominated weight distribution in AltUp architectures.</p>
+<h2 id="7-next-steps">7. Next Steps<a class="headerlink" href="#7-next-steps" title="Permanent link">&para;</a></h2>
+<p>This is a research preview of ongoing work at Cactus. Here's what's coming:</p>
+<ol>
+<li><strong>Downstream task validation.</strong> The 0.06 PPL increase is promising, but we're running full evals (MMLU, IFEval, GPQA) across Gemma-270m, Gemma 3n, and Gemma 4 E4B to confirm TurboQuant-H holds up on real tasks, not just perplexity.</li>
+<li><strong>Extend to shared <code>token_embeddings</code>.</strong> TurboQuant-H currently targets PLI tables only. Applying it to the shared embedding table (408 MB) is straightforward and would push total compression further.</li>
+<li><strong>Quantitative group size sweep.</strong> Section 3.4 reports qualitative tradeoffs. We're collecting per-group-size PPL numbers to give a rigorous recommendation.</li>
+<li><strong>1-bit with QJL correction.</strong> At 1-bit, the theoretical compression reaches 8x on PLI tables. We're evaluating whether reintroducing the QJL residual stage at this extreme bit width recovers enough quality to be practical.</li>
+<li><strong>Ship TurboQuant-H weights.</strong> Integrate the quantization path into <code>cactus convert</code> and publish pre-quantized weights on HuggingFace for all supported Gemma E-series models.</li>
+</ol>
+<h2 id="try-it">Try It<a class="headerlink" href="#try-it" title="Permanent link">&para;</a></h2>
+<p>Run Gemma 4 today on Cactus:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>brew<span class="w"> </span>install<span class="w"> </span>cactus-compute/cactus/cactus
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>cactus<span class="w"> </span>run<span class="w"> </span>google/gemma-4-E2B-it
+</code></pre></div>
+<p>TurboQuant-H PLI weights will ship in an upcoming release. If you're working on embedding quantization or have thoughts on extending this to the shared token embedding table, open an issue on <a href="https://github.com/cactus-compute/cactus">GitHub</a>.</p>
+<h2 id="citation">Citation<a class="headerlink" href="#citation" title="Permanent link">&para;</a></h2>
+<p>If you use TurboQuant-H in your research, please cite:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nc">@article</span><span class="p">{</span><span class="nl">turboquant-h</span><span class="p">,</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="na">title</span><span class="w">     </span><span class="p">=</span><span class="w"> </span><span class="s">{TurboQuant-H: Hadamard Rotation for 2-Bit Embedding</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="s">               Quantization in Embedding-Dominated Models}</span><span class="p">,</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="na">author</span><span class="w">    </span><span class="p">=</span><span class="w"> </span><span class="s">{Mosoyan, Karen and Ndubuaku, Henry}</span><span class="p">,</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="na">year</span><span class="w">      </span><span class="p">=</span><span class="w"> </span><span class="s">{2026}</span><span class="p">,</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="na">url</span><span class="w">       </span><span class="p">=</span><span class="w"> </span><span class="s">{https://docs.cactuscompute.com/latest/blog/turboquant-h/}</span><span class="p">,</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="na">note</span><span class="w">      </span><span class="p">=</span><span class="w"> </span><span class="s">{Cactus Compute Research Preview}</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="p">}</span>
+</code></pre></div>
+<h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Zandieh, Daliri, Hadian, Mirrokni. <a href="https://arxiv.org/abs/2504.19874">TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate</a>. ICLR 2026.</li>
+<li>Tseng et al. QuIP#: Even Better LLM Quantization with Hadamard Incoherence and Lattice Codebooks. 2024.</li>
+<li>Google Gemma Team. Gemma 3n / Gemma 4 Technical Reports. 2026.</li>
+</ul>
+<h2 id="see-also">See Also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../gemma4/">Gemma 4 on Cactus</a> — Day-one multimodal support with vision, audio, and hybrid inference</li>
+<li><a href="../lfm2.5_350m/">LFM-2.5-350m on Cactus</a> — INT8 quantization deep dive and zero-copy loading</li>
+<li><a href="../../docs/cactus_engine/">Cactus Engine API</a> — Full C API reference</li>
+</ul>
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../" class="md-footer__link md-footer__link--prev" aria-label="Previous: All Posts">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                All Posts
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../gemma4/" class="md-footer__link md-footer__link--next" aria-label="Next: Gemma 4 on Cactus">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Gemma 4 on Cactus
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/cactus-compute/cactus" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://www.reddit.com/r/cactuscompute/" target="_blank" rel="noopener" title="www.reddit.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M0 256C0 114.6 114.6 0 256 0s256 114.6 256 256-114.6 256-256 256H37.1c-13.7 0-20.5-16.5-10.9-26.2L75 437C28.7 390.7 0 326.7 0 256m349.6-102.4c23.6 0 42.7-19.1 42.7-42.7s-19.1-42.7-42.7-42.7c-20.6 0-37.8 14.6-41.8 34-34.5 3.7-61.4 33-61.4 68.4v.2c-37.5 1.6-71.8 12.3-99 29.1-10.1-7.8-22.8-12.5-36.5-12.5-33 0-59.8 26.8-59.8 59.8 0 24 14.1 44.6 34.4 54.1 2 69.4 77.6 125.2 170.6 125.2s168.7-55.9 170.6-125.3c20.2-9.6 34.1-30.2 34.1-54 0-33-26.8-59.8-59.8-59.8-13.7 0-26.3 4.6-36.4 12.4-27.4-17-62.1-27.7-100-29.1v-.2c0-25.4 18.9-46.5 43.4-49.9 4.4 18.8 21.3 32.8 41.5 32.8zm-172.5 93.3c16.7 0 29.5 17.6 28.5 39.3s-13.5 29.6-30.3 29.6-31.4-8.8-30.4-30.5S160.3 247 177 247zm190.1 38.3c1 21.7-13.7 30.5-30.4 30.5s-29.3-7.9-30.3-29.6 11.8-39.3 28.5-39.3 31.2 16.6 32.1 38.3zm-48.1 56.7c-10.3 24.6-34.6 41.9-63 41.9s-52.7-17.3-63-41.9c-1.2-2.9.8-6.2 3.9-6.5 18.4-1.9 38.3-2.9 59.1-2.9s40.7 1 59.1 2.9c3.1.3 5.1 3.6 3.9 6.5"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "search.suggest", "search.highlight", "content.code.copy", "content.tabs.link", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
