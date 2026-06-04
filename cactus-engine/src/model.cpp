@@ -3463,6 +3463,7 @@ void Config::validate_kv_compress() {
         CACTUS_LOG_WARN("kv_compress", "invalid rolling config (target_len=" << kv_compress_target_len
             << ", trigger_len=" << kv_compress_trigger_len
             << "): require 0 < target_len < trigger_len; disabling rolling compaction");
+        kv_compress = false;
         kv_compress_trigger_len = 0;
         kv_compress_target_len = 0;
     }
