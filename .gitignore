@@ -50,13 +50,3 @@ vision_activations.json
 gemma-4-eap-extras/
 .githooks/
 ruy
-
-# The MLX research harness under experiments/ stays untracked, but the C++ KV-compress
-# math tests depend on the fixture generator + one small fixture, so track exactly those.
-experiments/*
-!experiments/niah/
-experiments/niah/*
-!experiments/niah/gen_kv_compress_fixtures.py
-!experiments/niah/fixtures/
-experiments/niah/fixtures/*
-!experiments/niah/fixtures/kv_compress_fixtures.json
