@@ -2814,6 +2814,7 @@ std::vector<float> Model::get_audio_embeddings(const std::vector<float>& mel_bin
 
 void Model::reset_cache() {
     cache_total_seq_len_ = 0;
+    cache_renumbered_ = false;
     last_logit_position_ = 0;
     context_tokens_.clear();
     token_history_.clear();
@@ -2830,6 +2831,10 @@ void Model::reset_cache() {
 void Model::set_cache_window(size_t /*window_size*/, size_t /*sink_size*/) {}
 
 void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) {
+    // Ranges are absolute token positions; a renumbered (compacted) cache no longer maps them, so
+    // skip the cache edit -- the caller still erases processed_tokens.
+    if (cache_renumbered_) return;
+
     size_t total_removed = 0;
     for (const auto& r : ranges) total_removed += r.second;
     if (cache_total_seq_len_ >= total_removed)
@@ -3044,7 +3049,7 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
     }
 
     // All layers now share the same compressed frame, so the next decode query uses position_ids = B.
-    if (have_new_seq_len) cache_total_seq_len_ = new_seq_len;
+    if (have_new_seq_len) { cache_total_seq_len_ = new_seq_len; cache_renumbered_ = true; }
 }
 
 void Model::maybe_roll_compact() {

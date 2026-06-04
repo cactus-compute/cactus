@@ -765,6 +765,7 @@ private:
     std::unique_ptr<Tokenizer> tokenizer_;
     bool initialized_ = false;
     size_t cache_total_seq_len_ = 0;
+    bool cache_renumbered_ = false;
     size_t cache_max_seq_len_ = 4096;
     size_t last_logit_position_ = 0;
     double last_prefill_cache_copy_ms_ = 0.0;
