@@ -42,8 +42,12 @@ void rope_rotate_row(float* row, size_t head_dim, double rope_theta, double delt
 void rotate_int8_row(int8_t* int8, float* scale, size_t head_dim, size_t group_size,
                      double rope_theta, double delta_pos);
 
-void unrope_head(const float* post_rope, size_t n, size_t head_dim, double rope_theta,
-                 float* pre_rope);
+// Precomputed cos/sin per dim-pair for a fixed RoPE delta.
+struct RopeRotation { std::vector<double> cos, sin; };
+
+// Un-rope rotations for positions [0, n) at (head_dim, theta): row t rotates by -t. Built once and
+// shared across a compaction's keep-set scoring -- all compressible (global) layers share theta.
+std::vector<RopeRotation> unrope_table(size_t n, size_t head_dim, double rope_theta);
 
 // Per-head compaction: gather survivors in rank order, renumber K to 0..B-1, gather V unchanged.
 // kept_per_head[h] is head h's survivor indices (length B); rows point past the header, [max_seq][kv_heads][head_dim].
@@ -64,12 +68,22 @@ void rerope_recent_fp16(uint16_t* key_rows, size_t kv_heads, size_t head_dim,
 void rerope_recent_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads, size_t head_dim,
                         size_t group_size, size_t lo, size_t hi, double rope_theta, double delta_pos);
 
-// Per-head keep-sets for one layer from POST-RoPE FP16 key rows: un-RoPE -> score -> keepset.
+// Per-head keep-sets for one layer from POST-RoPE FP16 key rows: un-RoPE -> score -> keepset. The
+// theta overload builds the un-rope table itself; pass a shared table to reuse it across layers.
+std::vector<std::vector<int>> keepsets_from_fp16(const uint16_t* key_rows, size_t n,
+                                                 size_t kv_heads, size_t head_dim,
+                                                 const std::vector<RopeRotation>& unrope,
+                                                 const Params& p);
 std::vector<std::vector<int>> keepsets_from_fp16(const uint16_t* key_rows, size_t n,
                                                  size_t kv_heads, size_t head_dim,
                                                  double rope_theta, const Params& p);
 
 // As keepsets_from_fp16 but dequantizing the INT8 K buffer first; scale_rows [max_seq][kv_heads*groups].
+std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const float* scale_rows,
+                                                 size_t n, size_t kv_heads, size_t head_dim,
+                                                 size_t group_size,
+                                                 const std::vector<RopeRotation>& unrope,
+                                                 const Params& p);
 std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const float* scale_rows,
                                                  size_t n, size_t kv_heads, size_t head_dim,
                                                  size_t group_size, double rope_theta,

@@ -2948,6 +2948,9 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
     // B is identical across the compacted layers; capture it from the keep-set, not a mutated header.
     size_t new_seq_len = 0;
     bool have_new_seq_len = false;
+    // The un-rope table is identical across compressible layers (all global, same theta/dims), so
+    // build it once on the first such layer and reuse it for every layer's keep-set scoring.
+    std::vector<cactus::kvcompress::RopeRotation> unrope;
     for (size_t li = 0; li < comp.cache_states.size(); ++li) {
         if (!compressible.count(li)) continue;
         const auto& cs = comp.cache_states[li];
@@ -2969,12 +2972,13 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         size_t kv_heads = khdr->num_kv_heads;
         size_t head_dim = khdr->head_dim;
         if (kv_heads == 0 || head_dim == 0) continue;
+        if (unrope.empty()) unrope = cactus::kvcompress::unrope_table(n, head_dim, rope_theta);
 
         if (kdesc.precision == Precision::FP16) {
             auto* kbase = reinterpret_cast<uint16_t*>(static_cast<char*>(kraw) + kHeaderBytes);
             auto* vbase = reinterpret_cast<uint16_t*>(static_cast<char*>(vraw) + kHeaderBytes);
             auto kept = cactus::kvcompress::keepsets_from_fp16(
-                kbase, n, kv_heads, head_dim, rope_theta, params);
+                kbase, n, kv_heads, head_dim, unrope, params);
             cactus::kvcompress::compact_fp16(kbase, vbase, kv_heads, head_dim, kept, rope_theta);
             size_t B = kept.empty() ? 0 : kept[0].size();
             khdr->current_seq_len = B;
@@ -2990,7 +2994,7 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             auto* v_sc = reinterpret_cast<float*>(static_cast<char*>(vraw) + kHeaderBytes +
                                                   max_seq * kv_heads * head_dim);
             auto kept = cactus::kvcompress::keepsets_from_int8(
-                k_i8, k_sc, n, kv_heads, head_dim, KV_QUANT_GROUP_SIZE, rope_theta, params);
+                k_i8, k_sc, n, kv_heads, head_dim, KV_QUANT_GROUP_SIZE, unrope, params);
             cactus::kvcompress::compact_int8(k_i8, k_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,
                                              kept, rope_theta, /*renumber=*/true);
             cactus::kvcompress::compact_int8(v_i8, v_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,

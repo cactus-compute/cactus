@@ -97,9 +97,6 @@ std::vector<int> keepset_for_head(const float* scores, size_t n, const Params& p
 
 namespace {
 
-// Precomputed cos/sin per dim-pair, built once so row loops don't recompute pow/trig.
-struct RopeRot { std::vector<double> cos, sin; };
-
 std::vector<double> rope_inv_freq(size_t head_dim, double rope_theta) {
     std::vector<double> inv(head_dim / 2);
     for (size_t i = 0; i < inv.size(); ++i)
@@ -107,8 +104,8 @@ std::vector<double> rope_inv_freq(size_t head_dim, double rope_theta) {
     return inv;
 }
 
-RopeRot rope_rot(const std::vector<double>& inv_freq, double delta_pos) {
-    RopeRot r;
+RopeRotation rope_rot(const std::vector<double>& inv_freq, double delta_pos) {
+    RopeRotation r;
     r.cos.resize(inv_freq.size());
     r.sin.resize(inv_freq.size());
     for (size_t i = 0; i < inv_freq.size(); ++i) {
@@ -119,7 +116,7 @@ RopeRot rope_rot(const std::vector<double>& inv_freq, double delta_pos) {
     return r;
 }
 
-void rope_apply(float* row, const RopeRot& r) {
+void rope_apply(float* row, const RopeRotation& r) {
     size_t half = r.cos.size();
     for (size_t i = 0; i < half; ++i) {
         double x1 = row[i], x2 = row[i + half];
@@ -134,15 +131,11 @@ void rope_rotate_row(float* row, size_t head_dim, double rope_theta, double delt
     rope_apply(row, rope_rot(rope_inv_freq(head_dim, rope_theta), delta_pos));
 }
 
-void unrope_head(const float* post_rope, size_t n, size_t head_dim, double rope_theta,
-                 float* pre_rope) {
+std::vector<RopeRotation> unrope_table(size_t n, size_t head_dim, double rope_theta) {
     auto inv = rope_inv_freq(head_dim, rope_theta);
-    for (size_t t = 0; t < n; ++t) {
-        const float* src = post_rope + t * head_dim;
-        float* dst = pre_rope + t * head_dim;
-        for (size_t d = 0; d < head_dim; ++d) dst[d] = src[d];
-        rope_apply(dst, rope_rot(inv, -static_cast<double>(t)));
-    }
+    std::vector<RopeRotation> table(n);
+    for (size_t t = 0; t < n; ++t) table[t] = rope_rot(inv, -static_cast<double>(t));
+    return table;
 }
 
 namespace {
@@ -172,7 +165,7 @@ void requant_row(const float* row, int8_t* dst, float* dsc, size_t head_dim, siz
 }
 
 void rotate_int8_row_rot(int8_t* int8, float* scale, size_t head_dim, size_t group_size,
-                         const RopeRot& rot) {
+                         const RopeRotation& rot) {
     std::vector<float> row(head_dim);
     for (size_t d = 0; d < head_dim; ++d) row[d] = static_cast<float>(int8[d]) * scale[d / group_size];
     rope_apply(row.data(), rot);
@@ -182,13 +175,19 @@ void rotate_int8_row_rot(int8_t* int8, float* scale, size_t head_dim, size_t gro
 // fill_post(h, post) gathers head h's post-RoPE rows; scoring is shared across fp16/int8.
 template <typename FillPost>
 std::vector<std::vector<int>> keepsets_per_head(size_t n, size_t kv_heads, size_t head_dim,
-                                                double rope_theta, const Params& p, FillPost fill_post) {
+                                                const std::vector<RopeRotation>& unrope,
+                                                const Params& p, FillPost fill_post) {
     std::vector<float> post(n * head_dim), pre(n * head_dim), scores(n);
     std::vector<std::vector<int>> out;
     out.reserve(kv_heads);
     for (size_t h = 0; h < kv_heads; ++h) {
         fill_post(h, post.data());
-        unrope_head(post.data(), n, head_dim, rope_theta, pre.data());
+        for (size_t t = 0; t < n; ++t) {
+            const float* src = post.data() + t * head_dim;
+            float* dst = pre.data() + t * head_dim;
+            for (size_t d = 0; d < head_dim; ++d) dst[d] = src[d];
+            rope_apply(dst, unrope[t]);
+        }
         keydiff_score(pre.data(), n, head_dim, scores.data());
         out.push_back(keepset_for_head(scores.data(), n, p));
     }
@@ -257,7 +256,7 @@ void rerope_recent_fp16(uint16_t* key_rows_u, size_t kv_heads, size_t head_dim,
                         size_t lo, size_t hi, double rope_theta, double delta_pos) {
     if (delta_pos == 0.0 || hi <= lo) return;
     __fp16* key_rows = reinterpret_cast<__fp16*>(key_rows_u);
-    RopeRot rot = rope_rot(rope_inv_freq(head_dim, rope_theta), delta_pos);
+    RopeRotation rot = rope_rot(rope_inv_freq(head_dim, rope_theta), delta_pos);
     std::vector<float> row(head_dim);
     for (size_t t = lo; t < hi; ++t)
         for (size_t h = 0; h < kv_heads; ++h) {
@@ -273,7 +272,7 @@ void rerope_recent_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads, s
     if (delta_pos == 0.0 || hi <= lo) return;
     size_t groups = (head_dim + group_size - 1) / group_size;
     size_t int8_stride = kv_heads * head_dim, scale_stride = kv_heads * groups;
-    RopeRot rot = rope_rot(rope_inv_freq(head_dim, rope_theta), delta_pos);
+    RopeRotation rot = rope_rot(rope_inv_freq(head_dim, rope_theta), delta_pos);
     for (size_t t = lo; t < hi; ++t)
         for (size_t h = 0; h < kv_heads; ++h)
             rotate_int8_row_rot(int8_rows + t * int8_stride + h * head_dim,
@@ -283,12 +282,38 @@ void rerope_recent_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads, s
 
 std::vector<std::vector<int>> keepsets_from_fp16(const uint16_t* key_rows_u, size_t n,
                                                  size_t kv_heads, size_t head_dim,
-                                                 double rope_theta, const Params& p) {
+                                                 const std::vector<RopeRotation>& unrope,
+                                                 const Params& p) {
     const __fp16* key_rows = reinterpret_cast<const __fp16*>(key_rows_u);
-    return keepsets_per_head(n, kv_heads, head_dim, rope_theta, p, [&](size_t h, float* post) {
+    return keepsets_per_head(n, kv_heads, head_dim, unrope, p, [&](size_t h, float* post) {
         for (size_t t = 0; t < n; ++t) {
             const __fp16* src = key_rows + (t * kv_heads + h) * head_dim;
             for (size_t d = 0; d < head_dim; ++d) post[t * head_dim + d] = src[d];
+        }
+    });
+}
+
+std::vector<std::vector<int>> keepsets_from_fp16(const uint16_t* key_rows, size_t n,
+                                                 size_t kv_heads, size_t head_dim,
+                                                 double rope_theta, const Params& p) {
+    return keepsets_from_fp16(key_rows, n, kv_heads, head_dim,
+                              unrope_table(n, head_dim, rope_theta), p);
+}
+
+std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const float* scale_rows,
+                                                 size_t n, size_t kv_heads, size_t head_dim,
+                                                 size_t group_size,
+                                                 const std::vector<RopeRotation>& unrope,
+                                                 const Params& p) {
+    size_t groups = (head_dim + group_size - 1) / group_size;
+    size_t int8_stride = kv_heads * head_dim;
+    size_t scale_stride = kv_heads * groups;
+    return keepsets_per_head(n, kv_heads, head_dim, unrope, p, [&](size_t h, float* post) {
+        for (size_t t = 0; t < n; ++t) {
+            const int8_t* src = int8_rows + t * int8_stride + h * head_dim;
+            const float* ssc = scale_rows + t * scale_stride + h * groups;
+            for (size_t d = 0; d < head_dim; ++d)
+                post[t * head_dim + d] = static_cast<float>(src[d]) * ssc[d / group_size];
         }
     });
 }
@@ -297,17 +322,8 @@ std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const 
                                                  size_t n, size_t kv_heads, size_t head_dim,
                                                  size_t group_size, double rope_theta,
                                                  const Params& p) {
-    size_t groups = (head_dim + group_size - 1) / group_size;
-    size_t int8_stride = kv_heads * head_dim;
-    size_t scale_stride = kv_heads * groups;
-    return keepsets_per_head(n, kv_heads, head_dim, rope_theta, p, [&](size_t h, float* post) {
-        for (size_t t = 0; t < n; ++t) {
-            const int8_t* src = int8_rows + t * int8_stride + h * head_dim;
-            const float* ssc = scale_rows + t * scale_stride + h * groups;
-            for (size_t d = 0; d < head_dim; ++d)
-                post[t * head_dim + d] = static_cast<float>(src[d]) * ssc[d / group_size];
-        }
-    });
+    return keepsets_from_int8(int8_rows, scale_rows, n, kv_heads, head_dim, group_size,
+                              unrope_table(n, head_dim, rope_theta), p);
 }
 
 bool is_sliding_layer(const std::vector<std::string>& layer_types, size_t li) {
