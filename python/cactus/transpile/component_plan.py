@@ -28,6 +28,18 @@ def _plan_from_profile(
     if config is not None and profile.needs_image:
         has_vision = _has_dict_config(config, "vision_config", "visual_config", "image_config")
         if not has_vision:
+            # Text-only causal LM (no vision). qwen3 defaults to the chunked-prefill component
+            # pipeline (#687: ~5x faster prefill, identical output); the chunk adapters are qwen3
+            # only, so other families stay on the monolithic decoder. Key on the architecture
+            # ("Qwen3ForCausalLM") since the bundle config's model_type collapses to "qwen".
+            architectures = [str(a).lower() for a in (config.get("architectures") or ())]
+            if any("qwen3forcausallm" in a for a in architectures):
+                return ComponentPlan(
+                    task="causal_lm_logits",
+                    components=("decoder_step", "lm_encoder_step", "lm_encoder_text_chunk",
+                                "decoder_prefill_chunk", "decoder_media_step"),
+                    force_component_pipeline=True,
+                )
             return ComponentPlan(
                 task="causal_lm_logits",
                 components=("decoder", "decoder_step"),
