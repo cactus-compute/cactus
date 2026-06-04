@@ -1072,26 +1072,31 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     size_t effective_chunk = chunk_size > 0 ? std::min(chunk_size, component_tokens) : component_tokens;
     if (effective_chunk != component_tokens) effective_chunk = component_tokens;
     size_t whole_chunks_end = (tokens.size() / effective_chunk) * effective_chunk;
-    const bool has_recurrent_state = [&]() {
+    auto any_cache_node = [&](auto predicate) {
         if (!decoder_prefill_->graph) return false;
         for (const auto& state : decoder_prefill_->cache_states) {
             for (int node_id : {state.key_node_id, state.value_node_id}) {
                 if (node_id < 0) continue;
-                if (decoder_prefill_->graph->get_node_op_type(static_cast<size_t>(node_id))
-                    == OpType::RECURRENT_CACHE_STATE) {
-                    return true;
-                }
+                if (predicate(static_cast<size_t>(node_id))) return true;
             }
         }
         return false;
-    }();
+    };
+    const bool has_recurrent_state = any_cache_node([&](size_t id) {
+        return decoder_prefill_->graph->get_node_op_type(id) == OpType::RECURRENT_CACHE_STATE;
+    });
     if (has_recurrent_state && whole_chunks_end > effective_chunk) {
         whole_chunks_end = effective_chunk;
     }
+    const bool has_sliding_window_cache = any_cache_node([&](size_t id) {
+        return decoder_prefill_->graph->get_node_op_type(id) == OpType::KV_CACHE_STATE
+            && decoder_prefill_->graph->get_node_window_size(id) > 0;
+    });
     const size_t tail_tokens = tokens.size() - whole_chunks_end;
     const size_t padding_cutoff = std::max<size_t>(1, effective_chunk / 16);
     const bool pad_tail = family_ != "lfm2_vl"
         && !has_recurrent_state
+        && !has_sliding_window_cache
         && tail_tokens >= padding_cutoff;
     const size_t executable_tokens = whole_chunks_end + (pad_tail ? effective_chunk : 0);
     if (executable_tokens == 0) {
