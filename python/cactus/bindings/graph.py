@@ -659,6 +659,27 @@ class Graph:
             raise RuntimeError("graph_softmax failed")
         return self._tensor_from_node(out.value)
 
+    def sample(self, x, temperature=0.6, top_p=0.95, top_k=20, bitmask=None):
+        x = self._ensure_tensor(x)
+        bitmask_arr = self._coerce_bitmask(bitmask)
+        bitmask_ptr = None
+        if bitmask_arr is not None:
+            bitmask_ptr = bitmask_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint32))
+
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_sample(
+            self.h,
+            cactus_node_t(x.id),
+            ctypes.c_float(float(temperature)),
+            ctypes.c_float(float(top_p)),
+            ctypes.c_size_t(int(top_k)),
+            bitmask_ptr,
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError("graph_sample failed")
+        return self._tensor_from_node(out.value)
+
     def attention(self, query, key, value, scale, is_causal=True, position_offset=0, window_size=0,
                   backend=CPU, mask=None, additive_mask=False):
         query = self._ensure_tensor(query)
@@ -1131,17 +1152,6 @@ class Graph:
             raise RuntimeError("graph_moe_layer_ungated failed")
         return self._tensor_from_node(out.value)
 
-    def sample(self, logits, temperature=1.0, top_p=1.0, top_k=0):
-        logits = self._ensure_tensor(logits)
-        out = cactus_node_t()
-        rc = _lib.cactus_graph_sample(
-            self.h, cactus_node_t(logits.id), ctypes.c_float(float(temperature)),
-            ctypes.c_float(float(top_p)), ctypes.c_size_t(int(top_k)), ctypes.byref(out)
-        )
-        if rc != 0:
-            raise RuntimeError("graph_sample failed")
-        return self._tensor_from_node(out.value)
-
     def scatter_topk(self, indices, values, num_classes):
         indices = self._ensure_tensor(indices)
         values = self._ensure_tensor(values)
@@ -1332,6 +1342,14 @@ class Graph:
             raise RuntimeError("unsupported precision")
         return arr
 
+    def _coerce_bitmask(self, bitmask):
+        if bitmask is None:
+            return None
+        arr = np.ascontiguousarray(np.asarray(bitmask), dtype=np.uint32)
+        if arr.ndim != 1:
+            raise ValueError("bitmask must be a 1D sequence of uint32 words")
+        return arr
+
 
 class Tensor:
     def __init__(self, g, node_id, shape, dtype):
@@ -1476,6 +1494,9 @@ class Tensor:
     
     def softmax(self, axis=-1):
         return self.g.softmax(self, axis)
+
+    def sample(self, temperature=0.6, top_p=0.95, top_k=20, bitmask=None):
+        return self.g.sample(self, temperature=temperature, top_p=top_p, top_k=top_k, bitmask=bitmask)
 
     def glu(self, axis=-1):
         return self.g.glu(self, axis=axis)

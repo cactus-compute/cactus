@@ -18,6 +18,7 @@ void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     const float* bias_values = node.params.bias_values.empty() ? nullptr : node.params.bias_values.data();
     const uint32_t* bias_indices = node.params.bias_indices.empty() ? nullptr : node.params.bias_indices.data();
     size_t bias_count = node.params.bias_values.size();
+    const uint32_t* bitmask = node.params.bitmask.empty() ? nullptr : node.params.bitmask.data();
 
     if (logits_buffer.shape.size() != 2) {
         throw std::runtime_error("Sample expects 2D logits tensor [seq_len, vocab_size]");
@@ -31,11 +32,13 @@ void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         const __fp16* logits_fp16 = logits_buffer.data_as<__fp16>();
         cactus_sample_f16_ex(logits_fp16 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
                              vocab_size, temperature, top_p, min_p, repetition_penalty, top_k, random_seed,
+                             bitmask,
                              bias_values, bias_indices, bias_count);
     } else {
         const float* logits_fp32 = logits_buffer.data_as<float>();
         cactus_sample_f32_ex(logits_fp32 + last_token_offset, node.output_buffer.data_as<uint32_t>(),
                              vocab_size, temperature, top_p, min_p, repetition_penalty, top_k, random_seed,
+                             bitmask,
                              bias_values, bias_indices, bias_count);
     }
 }

@@ -59,6 +59,7 @@ if(BUILD_TESTING OR CACTUS_BUILD_TESTS)
         tests/test_elementwise.cpp
         tests/test_matmul.cpp
         tests/test_attention.cpp
+        tests/test_sample.cpp
         tests/test_reduce.cpp
         tests/test_conv.cpp
         tests/test_quant.cpp

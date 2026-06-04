@@ -258,7 +258,7 @@ namespace {
         }
         return node;
     }
-    
+
 
 } // namespace
 

@@ -706,6 +706,7 @@ void cactus_sample_f32(
     float top_p,
     size_t top_k,
     size_t random_seed,
+    const uint32_t* bitmask = nullptr,
     const float* bias_values = nullptr,
     const uint32_t* bias_indices = nullptr,
     size_t bias_count = 0);
@@ -718,6 +719,7 @@ void cactus_sample_f16(
     float top_p,
     size_t top_k,
     size_t random_seed,
+    const uint32_t* bitmask = nullptr,
     const float* bias_values = nullptr,
     const uint32_t* bias_indices = nullptr,
     size_t bias_count = 0);
@@ -732,6 +734,7 @@ void cactus_sample_f32_ex(
     float repetition_penalty,
     size_t top_k,
     size_t random_seed,
+    const uint32_t* bitmask = nullptr,
     const float* bias_values = nullptr,
     const uint32_t* bias_indices = nullptr,
     size_t bias_count = 0);
@@ -746,6 +749,7 @@ void cactus_sample_f16_ex(
     float repetition_penalty,
     size_t top_k,
     size_t random_seed,
+    const uint32_t* bitmask = nullptr,
     const float* bias_values = nullptr,
     const uint32_t* bias_indices = nullptr,
     size_t bias_count = 0);

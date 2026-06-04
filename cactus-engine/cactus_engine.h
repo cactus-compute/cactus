@@ -421,7 +421,8 @@ CACTUS_FFI_EXPORT int cactus_graph_moe_layer_ungated(
     size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, int32_t activation, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_sample(
-    cactus_graph_t graph, cactus_node_t logits, float temperature, float top_p, size_t top_k, cactus_node_t* out);
+    cactus_graph_t graph, cactus_node_t logits, float temperature, float top_p, size_t top_k,
+    const uint32_t* bitmask, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scatter_topk(
     cactus_graph_t graph, cactus_node_t indices, cactus_node_t values, size_t num_classes, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_persistent(

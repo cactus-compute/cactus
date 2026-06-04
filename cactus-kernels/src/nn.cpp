@@ -3,6 +3,7 @@
 #include <arm_neon.h>
 #include <cmath>
 #include <algorithm>
+#include <cstdint>
 #include <vector>
 #include <cstring>
 #include <limits>
@@ -134,7 +135,7 @@ void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t num_element
         CactusThreading::Thresholds::SCALAR_EXPENSIVE,
         [&](size_t start_idx, size_t end_idx) {
 
-            constexpr size_t SIMD = 8; 
+            constexpr size_t SIMD = 8;
             size_t vec_end = start_idx + ((end_idx - start_idx) / SIMD) * SIMD;
 
             for (size_t i = start_idx; i < vec_end; i += SIMD) {
@@ -536,19 +537,31 @@ void cactus_softmax_f16(
         });
 }
 
+template <typename T>
+void apply_bitmask(std::vector<T>& filtered_logits, const uint32_t* bitmask, size_t vocab_size) {
+    if (!bitmask) return;
+    for (size_t i = 0; i < vocab_size; ++i) {
+        const uint8_t bit = ((reinterpret_cast<const uint8_t *>(bitmask))[i / 8] >> (i & 7)) & 1;
+        if (!bit) filtered_logits[i] = -std::numeric_limits<T>::infinity();
+    }
+}
+
 void cactus_sample_f32(const float* logits, uint32_t* output, size_t vocab_size,
                        float temperature, float top_p, size_t top_k, size_t random_seed,
+                       const uint32_t* bitmask,
                        const float* bias_values, const uint32_t* bias_indices,
                        size_t bias_count) {
     cactus_sample_f32_ex(logits, output, vocab_size,
                          temperature, top_p, 0.15f, 1.1f,
                          top_k, random_seed,
+                         bitmask,
                          bias_values, bias_indices, bias_count);
 }
 
 void cactus_sample_f32_ex(const float* logits, uint32_t* output, size_t vocab_size,
                           float temperature, float top_p, float min_p, float repetition_penalty,
                           size_t top_k, size_t random_seed,
+                          const uint32_t* bitmask,
                           const float* bias_values, const uint32_t* bias_indices,
                           size_t bias_count) {
     if (vocab_size == 0) {
@@ -570,6 +583,8 @@ void cactus_sample_f32_ex(const float* logits, uint32_t* output, size_t vocab_si
         }
     }
 
+    apply_bitmask(filtered_logits, bitmask, vocab_size);
+
     if (temperature == 0.0f) {
         auto it = std::max_element(filtered_logits.begin(), filtered_logits.end());
         output[0] = static_cast<uint32_t>(std::distance(filtered_logits.begin(), it));
@@ -583,16 +598,16 @@ void cactus_sample_f32_ex(const float* logits, uint32_t* output, size_t vocab_si
     }
 
     (void)repetition_penalty;
-    
+
     if (top_k > 0) {
         std::vector<std::pair<float, size_t>> logit_pairs;
         logit_pairs.reserve(vocab_size);
         for (size_t i = 0; i < vocab_size; ++i) {
             logit_pairs.emplace_back(filtered_logits[i], i);
         }
-        std::sort(logit_pairs.begin(), logit_pairs.end(), 
+        std::sort(logit_pairs.begin(), logit_pairs.end(),
                   [](const auto& a, const auto& b) { return a.first > b.first; });
-        
+
         if (top_k < vocab_size) {
             float kth_value = logit_pairs[top_k - 1].first;
             for (size_t i = 0; i < vocab_size; ++i) {
@@ -602,7 +617,7 @@ void cactus_sample_f32_ex(const float* logits, uint32_t* output, size_t vocab_si
             }
         }
     }
-    
+
     if (min_p > 0.0f) {
         float max_logit = *std::max_element(filtered_logits.begin(), filtered_logits.end());
         if (!std::isinf(max_logit)) {
@@ -681,13 +696,13 @@ void cactus_sample_f32_ex(const float* logits, uint32_t* output, size_t vocab_si
             }
         }
     }
-    
+
     float max_logit = *std::max_element(filtered_logits.begin(), filtered_logits.end());
     if (std::isinf(max_logit)) {
         output[0] = 0;
         return;
     }
-    
+
     std::vector<float> probs(vocab_size);
     float sum = 0.0f;
     for (size_t i = 0; i < vocab_size; ++i) {
@@ -698,21 +713,21 @@ void cactus_sample_f32_ex(const float* logits, uint32_t* output, size_t vocab_si
             sum += probs[i];
         }
     }
-    
+
     if (sum == 0.0f) {
         output[0] = 0;
         return;
     }
-    
+
     for (size_t i = 0; i < vocab_size; ++i) {
         probs[i] /= sum;
     }
-    
+
     uint32_t actual_seed = (random_seed == 0) ? std::random_device{}() : random_seed;
     std::mt19937 gen(actual_seed);
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
     float sample = dist(gen);
-    
+
     float cumulative = 0.0f;
     for (size_t i = 0; i < vocab_size; ++i) {
         cumulative += probs[i];
@@ -721,30 +736,33 @@ void cactus_sample_f32_ex(const float* logits, uint32_t* output, size_t vocab_si
             return;
         }
     }
-    
+
     for (size_t i = vocab_size; i > 0; --i) {
         if (probs[i-1] > 0.0f) {
             output[0] = static_cast<uint32_t>(i-1);
             return;
         }
     }
-    
+
     output[0] = 0;
 }
 
 void cactus_sample_f16(const __fp16* logits, uint32_t* output, size_t vocab_size,
                        float temperature, float top_p, size_t top_k, size_t random_seed,
+                       const uint32_t* bitmask,
                        const float* bias_values, const uint32_t* bias_indices,
                        size_t bias_count) {
     cactus_sample_f16_ex(logits, output, vocab_size,
                          temperature, top_p, 0.15f, 1.1f,
                          top_k, random_seed,
+                         bitmask,
                          bias_values, bias_indices, bias_count);
 }
 
 void cactus_sample_f16_ex(const __fp16* logits, uint32_t* output, size_t vocab_size,
                           float temperature, float top_p, float min_p, float repetition_penalty,
                           size_t top_k, size_t random_seed,
+                          const uint32_t* bitmask,
                           const float* bias_values, const uint32_t* bias_indices,
                           size_t bias_count) {
     if (vocab_size == 0) {
@@ -765,6 +783,8 @@ void cactus_sample_f16_ex(const __fp16* logits, uint32_t* output, size_t vocab_s
             }
         }
     }
+
+    apply_bitmask(filtered_logits, bitmask, vocab_size);
 
     if (temperature == 0.0f) {
         auto it = std::max_element(filtered_logits.begin(), filtered_logits.end());
@@ -872,7 +892,7 @@ void cactus_sample_f16_ex(const __fp16* logits, uint32_t* output, size_t vocab_s
         bool threshold_reached = false;
         for (size_t i = 0; i < sorted_logits.size(); ++i) {
             cumulative_prob += temp_probs[i];
-            if (cumulative_prob > top_p && i > 0) { 
+            if (cumulative_prob > top_p && i > 0) {
                 threshold_reached = true;
             }
             if (threshold_reached) {
@@ -886,21 +906,21 @@ void cactus_sample_f16_ex(const __fp16* logits, uint32_t* output, size_t vocab_s
             }
             indices_to_remove[0] = false;
         }
-        
+
         for (size_t i = 0; i < sorted_logits.size(); ++i) {
             if (indices_to_remove[i]) {
                 filtered_logits[sorted_logits[i].second] = neg_inf;
             }
         }
     }
-    
+
     __fp16 max_logit = *std::max_element(filtered_logits.begin(), filtered_logits.end());
     __fp16 neg_inf = static_cast<__fp16>(-std::numeric_limits<float>::infinity());
     if (max_logit == neg_inf) {
         output[0] = 0;
         return;
     }
-    
+
     std::vector<float> probs(vocab_size);
     float sum = 0.0f;
     for (size_t i = 0; i < vocab_size; ++i) {

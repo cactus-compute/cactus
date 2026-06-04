@@ -603,10 +603,6 @@ _lib.cactus_graph_moe_layer_ungated.argtypes = [
     ctypes.c_size_t, ctypes.c_size_t, ctypes.c_bool, ctypes.c_float, ctypes.c_float, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_moe_layer_ungated.restype = ctypes.c_int
-_lib.cactus_graph_sample.argtypes = [
-    cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.c_float, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
-]
-_lib.cactus_graph_sample.restype = ctypes.c_int
 _lib.cactus_graph_scatter_topk.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
@@ -621,6 +617,17 @@ _lib.cactus_graph_is_populated.argtypes = [
 _lib.cactus_graph_is_populated.restype = ctypes.c_int
 _lib.cactus_graph_invalidate_persistent.argtypes = [cactus_graph_t, cactus_node_t]
 _lib.cactus_graph_invalidate_persistent.restype = ctypes.c_int
+
+_lib.cactus_graph_sample.argtypes = [
+    cactus_graph_t,
+    cactus_node_t,
+    ctypes.c_float,
+    ctypes.c_float,
+    ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_uint32),
+    ctypes.POINTER(cactus_node_t),
+]
+_lib.cactus_graph_sample.restype = ctypes.c_int
 
 _lib.cactus_graph_execute.argtypes = [cactus_graph_t]
 _lib.cactus_graph_execute.restype = ctypes.c_int

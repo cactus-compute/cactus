@@ -147,6 +147,52 @@ bool test_graph_save_load() {
     }
 }
 
+bool test_graph_sample_bitmask_save_load() {
+    try {
+        const std::string filename = "test_graph_sample_bitmask.cg";
+
+        CactusGraph graph;
+        size_t logits = graph.input({1, 4}, Precision::FP32);
+        const std::vector<uint32_t> bitmask = {0b1111u};
+        graph.sample(logits, 0.0f, 1.0f, 0, {}, bitmask);
+
+        graph.save(filename);
+
+        GraphFile::SerializedGraph sg = GraphFile::load_graph(filename);
+
+        auto sample_it = std::find_if(
+            sg.nodes.begin(),
+            sg.nodes.end(),
+            [](const auto& node) { return node.op_type == OpType::SAMPLE; }
+        );
+
+        if (sample_it == sg.nodes.end() || sg.graph_inputs.empty() || sg.graph_outputs.empty()) {
+            std::remove(filename.c_str());
+            return false;
+        }
+
+        if (sample_it->params.bitmask != bitmask) {
+            std::remove(filename.c_str());
+            return false;
+        }
+
+        CactusGraph loaded = CactusGraph::load(filename);
+        std::vector<float> logits_data = {1.0f, 10.0f, 5.0f, 3.0f};
+        const size_t loaded_input = runtime_id_from_serialized_index(sg.graph_inputs[0]);
+        const size_t loaded_output = runtime_id_from_serialized_index(sg.graph_outputs[0]);
+        loaded.set_input(loaded_input, logits_data.data(), Precision::FP32);
+        loaded.execute();
+
+        uint32_t output = *static_cast<uint32_t*>(loaded.get_output(loaded_output));
+
+        std::remove(filename.c_str());
+        return output == 1;
+    } catch (const std::exception& e) {
+        std::cout << "[graph_sample_bitmask_save_load] exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 bool test_graph_save_load_roundtrip_execution() {
     try {
         const std::string filename = "test_graph_save_load_roundtrip.cg";
@@ -481,6 +527,7 @@ int main() {
 
     runner.run_test("Node Save/Load", test_node_save_load());
     runner.run_test("Graph Save/Load", test_graph_save_load());
+    runner.run_test("Graph Sample Bitmask Save/Load", test_graph_sample_bitmask_save_load());
     runner.run_test("Graph Save/Load Roundtrip Execution", test_graph_save_load_roundtrip_execution());
     runner.run_test("Graph Save/Load Supported Ops Roundtrip", test_graph_save_load_supported_ops_roundtrip());
     runner.run_test("Graph Save For Inspection", test_graph_save_for_inspection());

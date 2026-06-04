@@ -1373,11 +1373,17 @@ int cactus_graph_moe_layer_ungated(cactus_graph_t graph, cactus_node_t hidden, c
     }
 }
 
-int cactus_graph_sample(cactus_graph_t graph, cactus_node_t logits, float temperature, float top_p, size_t top_k, cactus_node_t* out) {
+int cactus_graph_sample(cactus_graph_t graph, cactus_node_t logits, float temperature, float top_p, size_t top_k,
+                        const uint32_t* bitmask, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_sample");
     try {
         std::unordered_map<uint32_t, float> empty_bias;
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.sample(static_cast<size_t>(logits), temperature, top_p, top_k, empty_bias));
+        std::vector<uint32_t> sample_bitmask;
+        if (bitmask) {
+            const auto& logits_shape = as_graph(graph)->graph.get_output_buffer(static_cast<size_t>(logits)).shape;
+            sample_bitmask.assign(bitmask, bitmask + (logits_shape.back() + 31) / 32);
+        }
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.sample(static_cast<size_t>(logits), temperature, top_p, top_k, empty_bias, sample_bitmask));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();

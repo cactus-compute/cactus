@@ -115,6 +115,7 @@ enum class ParamField : uint32_t {
     MinP,
     RepetitionPenalty,
     RandomSeed,
+    Bitmask,
     BiasIndices,
     BiasValues,
     NormalizeRouting,
@@ -239,7 +240,7 @@ const Schema& op_schema(OpType op_type) {
         {OpType::CONV1D_K3, {{ParamField::Stride, FieldPersistence::Persistent}}},
         {OpType::CONV1D_K7S3, {{ParamField::Stride, FieldPersistence::Persistent}}},
         {OpType::CONV1D, {{ParamField::Stride, FieldPersistence::Persistent}}},
-        {OpType::SAMPLE, {{ParamField::Temperature, FieldPersistence::Persistent}, {ParamField::TopP, FieldPersistence::Persistent}, {ParamField::MinP, FieldPersistence::Persistent}, {ParamField::RepetitionPenalty, FieldPersistence::Persistent}, {ParamField::TopK, FieldPersistence::Persistent}, {ParamField::RandomSeed, FieldPersistence::Persistent}, {ParamField::BiasIndices, FieldPersistence::Persistent}, {ParamField::BiasValues, FieldPersistence::Persistent}}},
+        {OpType::SAMPLE, {{ParamField::Temperature, FieldPersistence::Persistent}, {ParamField::TopP, FieldPersistence::Persistent}, {ParamField::MinP, FieldPersistence::Persistent}, {ParamField::RepetitionPenalty, FieldPersistence::Persistent}, {ParamField::TopK, FieldPersistence::Persistent}, {ParamField::RandomSeed, FieldPersistence::Persistent}, {ParamField::Bitmask, FieldPersistence::Persistent}, {ParamField::BiasIndices, FieldPersistence::Persistent}, {ParamField::BiasValues, FieldPersistence::Persistent}}},
     };
 
     auto it = kSchemas.find(op_type);
@@ -272,6 +273,7 @@ void write_field(std::ostream& out, ParamField field, const OpParams& params) {
         case ParamField::MinP: write_f32(out, params.min_p); break;
         case ParamField::RepetitionPenalty: write_f32(out, params.repetition_penalty); break;
         case ParamField::RandomSeed: write_u64(out, static_cast<uint64_t>(params.random_seed)); break;
+        case ParamField::Bitmask: write_u32_vector(out, params.bitmask); break;
         case ParamField::BiasIndices: write_u32_vector(out, params.bias_indices); break;
         case ParamField::BiasValues: write_f32_vector(out, params.bias_values); break;
         case ParamField::NormalizeRouting: write_u32(out, params.normalize_routing ? 1u : 0u); break;
@@ -336,6 +338,7 @@ void read_field(std::istream& in, ParamField field, OpParams& params) {
         case ParamField::MinP: params.min_p = read_f32(in); break;
         case ParamField::RepetitionPenalty: params.repetition_penalty = read_f32(in); break;
         case ParamField::RandomSeed: params.random_seed = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::Bitmask: params.bitmask = read_u32_vector(in); break;
         case ParamField::BiasIndices: params.bias_indices = read_u32_vector(in); break;
         case ParamField::BiasValues: params.bias_values = read_f32_vector(in); break;
         case ParamField::NormalizeRouting: params.normalize_routing = (read_u32(in) != 0); break;
