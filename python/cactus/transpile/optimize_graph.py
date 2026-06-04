@@ -367,9 +367,8 @@ def fuse_rope(graph: IRGraph) -> bool:
 
 
 def precompute_rope_tables(graph: IRGraph) -> bool:
-    """Replace the runtime ``cos/sin(position * inv_freq)`` rope angle with an
-    fp64-precomputed fp16 table gathered by position id (the fp16 angle matmul
-    cannot represent positions > 2048, randomising cos/sin past long context)."""
+    """Replace the runtime cos/sin(position * inv_freq) rope angle with an fp64-precomputed fp16 table
+    gathered by position id, fixing fp16's inability to represent angles past ~2048 in long context."""
 
     changed = False
     for node_id in list(graph.order):

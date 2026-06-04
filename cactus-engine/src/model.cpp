@@ -3003,10 +3003,8 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         }
     }
 
-    // Shift the non-compacted layers' recent K rows by -Δ (Δ = old frontier − B) into the same
-    // compressed frame; RoPE is relative, so a uniform shift preserves all query·key offsets, and
-    // sink rows stay fixed. Each layer shifts with its OWN theta: sliding layers use the local theta,
-    // while KV-shared global *source* layers (excluded from compaction, e.g. Gemma) keep the global theta.
+    // Shift non-compacted layers' recent K rows by -Δ into the compressed frame (RoPE is relative, so a
+    // uniform shift preserves q·k offsets); each uses its own theta -- local for sliding, global for shared sources.
     const size_t Delta = (have_new_seq_len && old_total >= new_seq_len) ? old_total - new_seq_len : 0;
     if (Delta > 0) {
         const double dpos = -static_cast<double>(Delta);

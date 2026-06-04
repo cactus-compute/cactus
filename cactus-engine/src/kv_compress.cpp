@@ -10,10 +10,8 @@ namespace kvcompress {
 
 namespace {
 
-// Python/numpy round half-to-even (not std::round's half-away-from-zero). recent_frac arrives as
-// float and widens to a slightly-off double (0.30f -> 0.30000001...) which can flip an exact half
-// boundary (0.3*15 = 4.5 vs 0.30000001*15 = 4.50000018), so snap near-halves before rounding to
-// match the Python double reference.
+// Round half-to-even like numpy. recent_frac widens from float to a slightly-off double, so snap
+// near-halves first to avoid flipping an exact .5 boundary the Python reference keeps.
 long py_round(double x) {
     double twice = x * 2.0;
     double twice_rounded = std::nearbyint(twice);
@@ -145,8 +143,7 @@ void requant_row(const float* row, int8_t* dst, float* dsc, size_t head_dim, siz
     }
 }
 
-// `fill_post(h, post)` gathers head h's post-RoPE rows into `post` ([n][head_dim]); the rest is
-// shared across storage precisions.
+// fill_post(h, post) gathers head h's post-RoPE rows; scoring is shared across fp16/int8.
 template <typename FillPost>
 std::vector<std::vector<int>> keepsets_per_head(size_t n, size_t kv_heads, size_t head_dim,
                                                 double rope_theta, const Params& p, FillPost fill_post) {

@@ -633,7 +633,6 @@ public:
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
 
-    // Keep abs_budget survivors per (layer, kv-head) and renumber to 0..B-1.
     void compress_kv_cache_keydiff(const cactus::kvcompress::Params& params);
     void maybe_roll_compact();
     std::vector<size_t> compressible_layers() const;
