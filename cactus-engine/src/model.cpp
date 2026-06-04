@@ -362,9 +362,6 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         CACTUS_LOG_ERROR("model", "Failed to load config.txt from: " << bundle_dir);
         return false;
     }
-    // Runtime KV-compression override (bundle config unchanged). Rolling bounded compaction is the
-    // default (4096 -> 2048); CACTUS_KV_COMPRESS_AT (trigger) / CACTUS_KV_COMPRESS_TO (target) tune
-    // it, and CACTUS_KV_COMPRESS_AT=0 disables it.
     apply_kv_compress_env_override();
     if (!load_manifest()) {
         CACTUS_LOG_ERROR("model", "Failed to load bundle manifest from: " << bundle_dir);
@@ -1571,8 +1568,7 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
 
     if (prepare_decode) {
-        // Rolling bounded compaction (self-guards on kv_compress + trigger_len). Does NOT fire
-        // mid-chunk: the prompt grows to its full length here, then this bounds it to target_len.
+        // After the prompt reaches full length here -- never mid-chunk -- bound it to target_len.
         maybe_roll_compact();
     }
 }
@@ -2318,8 +2314,6 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
     }
     run_step(tokens.back(), cache_total_seq_len_ + tokens.size() - 1, /*read_logits=*/true);
     cache_total_seq_len_ += tokens.size();
-    // Rolling bounded cache: if generation advanced the cache to trigger_len, compact to
-    // target_len before the next step. No-op unless kv_compress + trigger_len > 0.
     maybe_roll_compact();
     uint32_t result = argmax_last_logits(out_entropy);
     record_sampled_token(result);
@@ -2934,38 +2928,32 @@ std::vector<size_t> Model::compressible_layers() const {
         config_.layer_types, config_.num_layers, shared);
 }
 
-// Rolling KeyDiff compaction: keep params.abs_budget survivors per (layer, kv-head) -- attention
-// sink + recent window + the most distinctive middle tokens by KeyDiff key geometry -- physically
-// compact them and renumber their RoPE positions to a contiguous window 0..B-1. Refuses (no-op
-// with a warning) unless EVERY layer is compressible, since the engine tracks a single global
-// position counter and a subset compaction would desync the non-compacted layers.
+// Keep params.abs_budget survivors per (layer, kv-head) -- sink + recent + most distinctive middle
+// tokens by KeyDiff -- compact them, and renumber RoPE positions to a contiguous window 0..B-1.
 void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) {
     if (!decoder_) return;
     using cactus::kvcompress::CacheHeader;
     constexpr size_t kHeaderBytes = sizeof(CacheHeader);
 
     std::vector<size_t> layers = compressible_layers();
-    if (layers.empty()) return;  // no global layers to anchor the compressed frame
+    if (layers.empty()) return;
     std::set<size_t> compressible(layers.begin(), layers.end());
     const double rope_theta = static_cast<double>(config_.rope_theta);
-    // Sliding-window layers re-rope into the compressed frame with their LOCAL theta (pass 2).
     const double rope_local_theta = (config_.rope_local_base_freq == Config::UNSET_F32)
         ? rope_theta : static_cast<double>(config_.rope_local_base_freq);
-    const size_t old_total = cache_total_seq_len_;  // pre-compaction compressed frontier (for Δ)
+    const size_t old_total = cache_total_seq_len_;
 
     Component& comp = *decoder_;
     if (!comp.graph) return;
-    // Pass 1: compact + renumber the global (full-attention) layers to 0..B-1. B is identical across
-    // them; capture it from the keep-set, not a header we just mutated.
+    // B is identical across the compacted layers; capture it from the keep-set, not a mutated header.
     size_t new_seq_len = 0;
     bool have_new_seq_len = false;
     for (size_t li = 0; li < comp.cache_states.size(); ++li) {
-        if (!compressible.count(li)) continue;  // global layers only
+        if (!compressible.count(li)) continue;
         const auto& cs = comp.cache_states[li];
         if (cs.key_node_id < 0 || cs.value_node_id < 0) continue;
-        // Only attention KV caches. Hybrid models (LFM2) put conv + gated-deltanet recurrent cache
-        // states in the same list (different / header-less layout); KeyDiff would corrupt them and
-        // read out of bounds, so skip anything that is not a KV_CACHE_STATE.
+        // Skip non-KV caches: hybrid models (LFM2) interleave header-less conv/recurrent states
+        // here, which KeyDiff would corrupt and read out of bounds.
         if (comp.graph->get_node_op_type(static_cast<size_t>(cs.key_node_id)) != OpType::KV_CACHE_STATE) continue;
 
         const auto& kdesc = comp.graph->get_output_buffer(static_cast<size_t>(cs.key_node_id));
@@ -2995,7 +2983,6 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             have_new_seq_len = true;
         } else if (kdesc.precision == Precision::INT8) {
             size_t max_seq = khdr->max_seq_len;
-            // Dequantize + un-RoPE K to derive keep-sets (post-RoPE int8 -> pre-RoPE float).
             auto* k_i8 = reinterpret_cast<int8_t*>(static_cast<char*>(kraw) + kHeaderBytes);
             auto* k_sc = reinterpret_cast<float*>(static_cast<char*>(kraw) + kHeaderBytes +
                                                   max_seq * kv_heads * head_dim);
@@ -3016,19 +3003,18 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         }
     }
 
-    // Pass 2: re-rope the non-compacted layers' recent K rows by -Δ (Δ = old frontier − B) so they
-    // track the renumbered global frontier in the same (compressed) position frame. RoPE is relative,
-    // so a uniform shift preserves all query·key offsets. Sink rows [0, sink_size) stay fixed. Each
-    // layer shifts with its OWN theta: sliding layers use the local theta; full-attention layers that
-    // were excluded from compaction (KV-shared global *source* layers, e.g. Gemma) keep the global theta.
+    // Shift the non-compacted layers' recent K rows by -Δ (Δ = old frontier − B) into the same
+    // compressed frame; RoPE is relative, so a uniform shift preserves all query·key offsets, and
+    // sink rows stay fixed. Each layer shifts with its OWN theta: sliding layers use the local theta,
+    // while KV-shared global *source* layers (excluded from compaction, e.g. Gemma) keep the global theta.
     const size_t Delta = (have_new_seq_len && old_total >= new_seq_len) ? old_total - new_seq_len : 0;
     if (Delta > 0) {
         const double dpos = -static_cast<double>(Delta);
         for (size_t li = 0; li < comp.cache_states.size(); ++li) {
-            if (compressible.count(li)) continue;  // skip the layers compacted in pass 1
+            if (compressible.count(li)) continue;
             const auto& cs = comp.cache_states[li];
             if (cs.key_node_id < 0) continue;
-            if (comp.graph->get_node_op_type(static_cast<size_t>(cs.key_node_id)) != OpType::KV_CACHE_STATE) continue;  // skip conv/recurrent caches
+            if (comp.graph->get_node_op_type(static_cast<size_t>(cs.key_node_id)) != OpType::KV_CACHE_STATE) continue;
             const auto& kdesc = comp.graph->get_output_buffer(static_cast<size_t>(cs.key_node_id));
             if (kdesc.byte_size <= kHeaderBytes) continue;
             void* kraw = comp.graph->get_output(static_cast<size_t>(cs.key_node_id));
@@ -3055,15 +3041,11 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         }
     }
 
-    // Global layers were compacted to B; the next decode query uses position_ids = B for ALL layers
-    // (global renumbered, sliding shifted into the same frame).
+    // All layers now share the same compressed frame, so the next decode query uses position_ids = B.
     if (have_new_seq_len) cache_total_seq_len_ = new_seq_len;
 }
 
 void Model::maybe_roll_compact() {
-    // Only reached from the causal-LM generation path (complete.cpp -> prefill/decode). STT models
-    // transcribe via transcribe.cpp with their own decode loops and never call this, and multimodal
-    // vision/audio encoder passes aren't on this path either -- so no model-type gate is needed.
     if (!config_.kv_compress || config_.kv_compress_trigger_len <= 0) return;
     if (cache_total_seq_len_ < static_cast<size_t>(config_.kv_compress_trigger_len)) return;
 

@@ -31,8 +31,7 @@ private:
 
 namespace EngineTestUtils {
 
-// Reference rotate_half RoPE for a single vector (double-precision oracle for kv_compress tests),
-// mirroring norms_rope.cpp / the Python fixture generator.
+// Double-precision rotate_half RoPE oracle for kv_compress tests (mirrors norms_rope.cpp).
 inline std::vector<float> rope_reference(const std::vector<float>& v, double pos, double theta) {
     size_t d = v.size(), half = d / 2;
     std::vector<float> o(d);

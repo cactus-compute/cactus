@@ -237,9 +237,8 @@ struct Config {
 
     bool from_json(const std::string& json_path);
     std::string to_json() const;
-    // Disable rolling unless 0 < kv_compress_target_len < kv_compress_trigger_len (when trigger > 0).
+    // Disable rolling unless 0 < target < trigger (when trigger > 0).
     void validate_kv_compress();
-    // Apply CACTUS_KV_COMPRESS_AT / CACTUS_KV_COMPRESS_TO overrides (nullptr = unset). Returns true if applied.
     bool parse_kv_compress_override(const char* trigger_env, const char* target_env);
 };
 
@@ -634,14 +633,10 @@ public:
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
 
-    // Rolling KeyDiff compaction: keep abs_budget survivors per (layer, kv-head), renumber to
-    // 0..B-1; refuses unless every layer is compressible. See impl for the full contract.
+    // Keep abs_budget survivors per (layer, kv-head) and renumber to 0..B-1.
     void compress_kv_cache_keydiff(const cactus::kvcompress::Params& params);
-    // Compact to kv_compress_target_len once the live KV seq-len reaches kv_compress_trigger_len.
     void maybe_roll_compact();
-    // Layer indices (cache_states order) that are physically compressible.
     std::vector<size_t> compressible_layers() const;
-    // Apply CACTUS_KV_COMPRESS_AT / CACTUS_KV_COMPRESS_TO env overrides onto config_.
     void apply_kv_compress_env_override();
 
     void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);

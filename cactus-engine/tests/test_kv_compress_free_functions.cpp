@@ -24,8 +24,7 @@ uint16_t f32_to_f16(float f) { __fp16 v = static_cast<__fp16>(f); uint16_t u; st
 
 using EngineTestUtils::rope_reference;
 
-// Build an FP16 cache buffer: 64B header + [max_seq][kv_heads][head_dim] fp16. Returns the
-// raw buffer; `pre_rope[h][t][d]` is the planted pre-RoPE key, stored post-RoPE at position t.
+// `pre_rope[h][t][d]` is the planted pre-RoPE key, stored post-RoPE at position t.
 std::vector<char> make_fp16_cache(size_t n, size_t max_seq, size_t kv_heads, size_t head_dim,
                                   double theta, std::vector<std::vector<std::vector<float>>>& pre_rope,
                                   std::vector<std::vector<std::vector<float>>>& values) {
@@ -65,9 +64,7 @@ std::vector<char> make_fp16_value_cache(size_t n, size_t max_seq, size_t kv_head
     return buf;
 }
 
-// Independent oracle quantizer (mirrors quants.cpp / compact_int8's convention: scale floored
-// 1e-10, roundf, clamp [-128,127]). Kept separate from production requant so the tests don't
-// validate it against itself.
+// Independent oracle quantizer, kept separate from production requant so tests don't self-validate.
 void quantize_row(const std::vector<float>& row, int8_t* dst, float* sc,
                   size_t head_dim, size_t group_size) {
     size_t groups = (head_dim + group_size - 1) / group_size;
@@ -91,7 +88,6 @@ bool test_compact_fp16_cache() {
     auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
     auto* vrows = reinterpret_cast<uint16_t*>(vbuf.data() + kHeaderBytes);
 
-    // Heterogeneous per-head keep-sets (different indices, same length B).
     std::vector<std::vector<int>> kept = {
         {0, 5, 10, 20, 30, 59}, {1, 4, 12, 25, 40, 58}, {0, 2, 15, 33, 50, 55}};
     size_t B = kept[0].size();
@@ -101,7 +97,6 @@ bool test_compact_fp16_cache() {
     for (size_t h = 0; h < kv_heads; ++h) {
         for (size_t rank = 0; rank < B; ++rank) {
             int abs_pos = kept[h][rank];
-            // Expected K at slot `rank` = rope(pre_rope[h][abs_pos], rank).
             std::vector<float> expK = rope_reference(pre[h][abs_pos], (double)rank, theta);
             const uint16_t* kdst = krows + (rank * kv_heads + h) * head_dim;
             const uint16_t* vdst = vrows + (rank * kv_heads + h) * head_dim;
@@ -115,8 +110,7 @@ bool test_compact_fp16_cache() {
 }
 
 bool test_dense_check_full_budget() {
-    // abs_budget == n -> keep all indices in order; renumber maps rank==abs_pos so RoPE delta
-    // is 0 -> the K rows are byte-identical and V unchanged.
+    // abs_budget == n keeps every index in order, so renumber delta is 0 and the buffer is unchanged.
     const size_t n = 40, max_seq = 64, kv_heads = 2, head_dim = 16;
     const double theta = 1000000.0;
     std::vector<std::vector<std::vector<float>>> pre, vals;
@@ -128,10 +122,9 @@ bool test_dense_check_full_budget() {
 
     Params p; p.recent_frac = 0.3f; p.sink = 4; p.abs_budget = (int)n;
     auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, theta, p);
-    for (auto& k : kept) if (k.size() != n) return false;  // B == n
+    for (auto& k : kept) if (k.size() != n) return false;
     compact_fp16(krows, vrows, kv_heads, head_dim, kept, theta);
 
-    // Byte-identical over the live region.
     size_t live = n * kv_heads * head_dim * sizeof(uint16_t);
     if (std::memcmp(kbuf.data() + kHeaderBytes, kbuf0.data() + kHeaderBytes, live) != 0) return false;
     if (std::memcmp(vbuf.data() + kHeaderBytes, vbuf0.data() + kHeaderBytes, live) != 0) return false;
@@ -139,7 +132,7 @@ bool test_dense_check_full_budget() {
 }
 
 bool test_rope_renumber_contiguous() {
-    // Route-B delta rotation: rope(stored_post_rope_at_abs, rank - abs) == rope(pre, rank).
+    // rope(stored_post_rope_at_abs, rank - abs) == rope(pre, rank).
     const size_t head_dim = 16; const double theta = 1000000.0;
     std::vector<float> pre(head_dim);
     for (size_t d = 0; d < head_dim; ++d) pre[d] = std::sin(0.4 * d) + 0.1 * d;
@@ -154,9 +147,7 @@ bool test_rope_renumber_contiguous() {
 }
 
 bool test_fp16_storage_round_trip() {
-    // Write pre-RoPE -> post-RoPE into an fp16 cache, compact+renumber, read back, and compare
-    // each survivor against the reference rope(pre, rank) within fp16 tolerance. Exercises the
-    // full fp16 storage path (f32->f16 store, gather, delta-rotate, f16->f16 write-back).
+    // Each survivor must read back as rope(pre, rank) within fp16 tolerance.
     const size_t n = 64, max_seq = 128, kv_heads = 2, head_dim = 16;
     const double theta = 1000000.0;
     std::vector<std::vector<std::vector<float>>> pre, vals;
@@ -186,38 +177,32 @@ bool test_fp16_storage_round_trip() {
 }
 
 bool test_gemma_layer_selection() {
-    // Qwen: all 28 layers (full_attention), no KV sharing.
     std::vector<std::string> qwen(28, "full_attention");
     auto q = physical_compressible_layers(qwen, 28, 0);
     if (q.size() != 28) return false;
     for (size_t i = 0; i < 28; ++i) if (q[i] != i) return false;
 
-    // Gemma4-e2b: layer_types sliding/global, num_layers=35, num_kv_shared=20 -> {4,9}.
     std::vector<std::string> g;
     for (int i = 0; i < 35; ++i) g.push_back(((i + 1) % 5 == 0) ? "global" : "sliding");
     auto gg = physical_compressible_layers(g, 35, 20);
     std::vector<size_t> expect = {4, 9};
     if (gg != expect) return false;
 
-    // Pass-2 re-rope theta is chosen per layer via is_sliding_layer (NOT compressibility): sliding
-    // layers shift with the local theta, full-attention layers with the global theta. Layer 14 is a
-    // global KV-shared *source* -- excluded from compaction (not in {4,9}) yet must keep global theta.
-    if (is_sliding_layer(g, 14)) return false;   // global source -> global theta (the fix)
-    if (is_sliding_layer(g, 4)) return false;    // compacted global -> global theta
-    if (!is_sliding_layer(g, 3)) return false;   // sliding -> local theta
-    for (size_t i = 0; i < 28; ++i) if (is_sliding_layer(qwen, i)) return false;  // all-global Qwen
+    // Pass-2 theta follows is_sliding_layer, NOT compressibility: layer 14 is a global KV-shared
+    // *source* excluded from compaction (not in {4,9}) yet must still re-rope with the global theta.
+    if (is_sliding_layer(g, 14)) return false;
+    if (is_sliding_layer(g, 4)) return false;
+    if (!is_sliding_layer(g, 3)) return false;
+    for (size_t i = 0; i < 28; ++i) if (is_sliding_layer(qwen, i)) return false;
     return true;
 }
 
 bool test_compact_int8_cache() {
-    // INT8: gather + renumber K, gather V (no rotation); dequant of compacted survivor ~ the
-    // expected renumbered/gathered value.
     const size_t n = 50, max_seq = 96, kv_heads = 2, head_dim = 32;
     const double theta = 1000000.0;
     size_t groups = (head_dim + kGroupSize - 1) / kGroupSize;
     size_t int8_stride = kv_heads * head_dim, scale_stride = kv_heads * groups;
 
-    // Build pre-RoPE keys + values, then store post-RoPE K quantized per group.
     std::vector<std::vector<std::vector<float>>> pre(kv_heads, std::vector<std::vector<float>>(n));
     std::vector<std::vector<std::vector<float>>> vals(kv_heads, std::vector<std::vector<float>>(n));
     std::vector<int8_t> k_i8(max_seq * int8_stride, 0), v_i8(max_seq * int8_stride, 0);
@@ -260,14 +245,12 @@ bool test_compact_int8_cache() {
     return ok;
 }
 
-// Mirror Model::maybe_roll_compact: when the live seq-len reaches trigger_len, KeyDiff-keep the
-// best target_len tokens (absolute budget), renumber survivors to 0..B-1, set header len = B.
-// Returns B (the new bounded length). Operates on an FP16 K/V cache pair in place.
+// Mirrors Model::maybe_roll_compact on an in-place FP16 K/V pair; returns the new bounded length B.
 size_t roll_compact_once(uint16_t* krows, uint16_t* vrows, Header* khdr, Header* vhdr,
                          size_t kv_heads, size_t head_dim, double theta, int target_len) {
     size_t n = khdr->current_seq_len;
     Params p; p.recent_frac = 0.30f; p.sink = 4;
-    p.abs_budget = target_len;  // absolute budget -> keep exactly min(target_len, n) per head
+    p.abs_budget = target_len;
     auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, theta, p);
     compact_fp16(krows, vrows, kv_heads, head_dim, kept, theta);
     size_t B = kept.empty() ? 0 : kept[0].size();
@@ -277,9 +260,7 @@ size_t roll_compact_once(uint16_t* krows, uint16_t* vrows, Header* khdr, Header*
 }
 
 bool test_rolling_bounded_compaction() {
-    // Drive the compactor across repeated thresholds on a synthetic cache, exactly as the rolling
-    // bounded path does: grow to trigger_len -> compact to target_len -> grow again -> compact.
-    // Asserts the cache stays bounded <= trigger_len, positions renumber to 0..B-1 each cycle, and
+    // Grow to trigger_len -> compact to target_len -> repeat, asserting the cache stays bounded and
     // a planted distinctive mid-token survives every compaction.
     const int trigger_len = 4096, target_len = 2048;
     const size_t kv_heads = 2, head_dim = 16, max_seq = trigger_len + 8;
@@ -294,12 +275,11 @@ bool test_rolling_bounded_compaction() {
     auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
     auto* vrows = reinterpret_cast<uint16_t*>(vbuf.data() + kHeaderBytes);
 
-    // A strongly distinctive pre-RoPE key direction (centroid-opposite) that KeyDiff must keep.
+    // A centroid-opposite direction that KeyDiff must keep.
     std::vector<float> distinctive(head_dim);
     for (size_t d = 0; d < head_dim; ++d) distinctive[d] = (d % 2 == 0 ? -1.0f : 1.0f) * 4.0f;
 
-    // Append fresh post-RoPE rows for positions [from, to) for every head. The token at
-    // `plant_abs` (if in range) is the distinctive one; the rest cluster on a common centroid.
+    // The token at `plant_abs` is the distinctive one; the rest cluster on a common centroid.
     auto append = [&](size_t from, size_t to, long plant_abs) {
         for (size_t t = from; t < to; ++t)
             for (size_t h = 0; h < kv_heads; ++h) {
@@ -320,14 +300,12 @@ bool test_rolling_bounded_compaction() {
             }
     };
 
-    // Does any survivor row (un-RoPE'd at its rank) match the planted distinctive direction?
     auto distinctive_survives = [&](size_t B) -> bool {
         for (size_t h = 0; h < kv_heads; ++h)
             for (size_t rank = 0; rank < B; ++rank) {
                 std::vector<float> pre(head_dim);
                 const uint16_t* src = krows + (rank * kv_heads + h) * head_dim;
                 for (size_t d = 0; d < head_dim; ++d) pre[d] = f16_to_f32(src[d]);
-                // The row is stored as rope(pre, rank); un-RoPE by -rank to recover pre.
                 rope_rotate_row(pre.data(), head_dim, theta, -(double)rank);
                 double dot = 0, na = 0, nb = 0;
                 for (size_t d = 0; d < head_dim; ++d) {
@@ -341,32 +319,25 @@ bool test_rolling_bounded_compaction() {
     bool ok = true;
     const int cycles = 3;
     for (int c = 0; c < cycles; ++c) {
-        size_t start = khdr->current_seq_len;            // survivors carried over from last cycle
-        long plant_abs = (c == 0) ? (trigger_len / 2) : -1;  // plant once; must persist after that
+        size_t start = khdr->current_seq_len;
+        long plant_abs = (c == 0) ? (trigger_len / 2) : -1;
         append(start, (size_t)trigger_len, plant_abs);
         khdr->current_seq_len = trigger_len;
         vhdr->current_seq_len = trigger_len;
 
-        // The distinctive token must be present BEFORE the first compaction renumbers it.
         if (c == 0 && !distinctive_survives(trigger_len)) ok = false;
 
         size_t B = roll_compact_once(krows, vrows, khdr, vhdr, kv_heads, head_dim, theta, target_len);
-        if (B != (size_t)target_len) ok = false;                 // absolute budget honored
-        if (khdr->current_seq_len > (size_t)trigger_len) ok = false;  // bounded
-        if (khdr->current_seq_len != (size_t)target_len) ok = false;  // header set to B
-
-        // Renumbering: survivor K rows must read back as rope(pre, rank). We verify via the
-        // un-RoPE-at-rank == direction check for the planted token, and that rows are dense
-        // (positions 0..B-1 populated, no gaps) by re-reading the live region length.
-        if (!distinctive_survives(B)) ok = false;                // distinctive persists each cycle
+        if (B != (size_t)target_len) ok = false;
+        if (khdr->current_seq_len > (size_t)trigger_len) ok = false;
+        if (khdr->current_seq_len != (size_t)target_len) ok = false;
+        if (!distinctive_survives(B)) ok = false;
     }
-    // After all cycles the cache is still bounded at target_len, never exceeding trigger_len.
     if (khdr->current_seq_len != (size_t)target_len) ok = false;
     return ok;
 }
 
 bool test_config_parse_rolling_fields() {
-    // Config::from_json parses a key=value file. Rolling is the default (4096 -> 2048).
     cactus::engine::Config def;
     if (!def.kv_compress) return false;
     if (def.kv_compress_trigger_len != 4096 || def.kv_compress_target_len != 2048) return false;
@@ -377,8 +348,7 @@ bool test_config_parse_rolling_fields() {
     ::close(fd);
     {
         std::ofstream f(tmpl);
-        // model_type=qwen avoids the Gemma4-only required-field validation; we only assert the
-        // new kv_compress rolling fields round-trip through the key=value parser.
+        // model_type=qwen avoids the Gemma4-only required-field validation.
         f << "model_type=qwen\n"
           << "kv_compress=true\n"
           << "kv_compress_trigger_len=4096\n"
@@ -392,10 +362,7 @@ bool test_config_parse_rolling_fields() {
 }
 
 bool test_trigger_zero_gates_rolling() {
-    // The rolling gate (Model::maybe_roll_compact): fire iff kv_compress && trigger_len > 0 &&
-    // current_seq_len >= trigger_len. Drive the SAME compactor under both arms on identical caches:
-    // trigger_len == 0 must skip (cache byte-identical); a reached trigger must compact (len -> target,
-    // bytes change). The skip assertion is meaningful only against this proven mutation.
+    // The maybe_roll_compact gate fires iff kv_compress && trigger_len > 0 && seq_len >= trigger_len.
     const size_t n = 5000, kv_heads = 2, head_dim = 16, max_seq = 5008;
     const double theta = 1000000.0;
 
@@ -417,7 +384,7 @@ bool test_trigger_zero_gates_rolling() {
                               cfg.kv_compress_target_len);
     };
 
-    // Gate closed (trigger_len == 0): caller skips => cache byte-identical, length unchanged.
+    // Gate closed: cache byte-identical, length unchanged.
     cactus::engine::Config off; off.kv_compress_trigger_len = 0; off.kv_compress_target_len = 0;
     std::vector<char> k_off = fresh_cache(), v_off(k_off.size(), 0), k_off0 = k_off, v_off0 = v_off;
     roll_if_gated(off, k_off, v_off);
@@ -425,7 +392,7 @@ bool test_trigger_zero_gates_rolling() {
     if (std::memcmp(k_off.data(), k_off0.data(), k_off.size()) != 0) return false;
     if (std::memcmp(v_off.data(), v_off0.data(), v_off.size()) != 0) return false;
 
-    // Gate open (trigger reached): the same compactor compacts to target_len and rewrites bytes.
+    // Gate open: compacts to target_len and rewrites bytes.
     cactus::engine::Config on; on.kv_compress_trigger_len = 4096; on.kv_compress_target_len = 2048;
     std::vector<char> k_on = fresh_cache(), v_on(k_on.size(), 0), k_on0 = k_on;
     roll_if_gated(on, k_on, v_on);
@@ -435,8 +402,7 @@ bool test_trigger_zero_gates_rolling() {
 }
 
 bool test_degenerate_rolling_config_disabled() {
-    // validate_kv_compress(): when trigger_len > 0, require 0 < target_len < trigger_len.
-    // Bad configs must disable rolling (trigger_len/target_len reset to 0); good configs survive.
+    // validate_kv_compress requires 0 < target_len < trigger_len; bad configs reset both to 0.
     auto disabled = [](int trig, int targ) {
         cactus::engine::Config c;
         c.kv_compress = true;
@@ -445,11 +411,10 @@ bool test_degenerate_rolling_config_disabled() {
         c.validate_kv_compress();
         return c.kv_compress_trigger_len == 0 && c.kv_compress_target_len == 0;
     };
-    if (!disabled(4096, 0)) return false;        // target_len <= 0
-    if (!disabled(4096, 4096)) return false;     // target_len == trigger_len
-    if (!disabled(2048, 4096)) return false;     // target_len > trigger_len
-    if (!disabled(4096, -1)) return false;       // negative target_len
-    // Valid config is untouched.
+    if (!disabled(4096, 0)) return false;
+    if (!disabled(4096, 4096)) return false;
+    if (!disabled(2048, 4096)) return false;
+    if (!disabled(4096, -1)) return false;
     cactus::engine::Config ok;
     ok.kv_compress = true;
     ok.kv_compress_trigger_len = 4096;
@@ -459,13 +424,10 @@ bool test_degenerate_rolling_config_disabled() {
 }
 
 bool test_env_override_parse() {
-    // parse_kv_compress_override maps CACTUS_KV_COMPRESS_AT / CACTUS_KV_COMPRESS_TO onto Config.
-    // Unset => no override; the rolling default (4096 -> 2048) is preserved.
     cactus::engine::Config off;
     if (off.parse_kv_compress_override(nullptr, nullptr)) return false;
     if (!off.kv_compress || off.kv_compress_trigger_len != 4096 || off.kv_compress_target_len != 2048) return false;
 
-    // Both vars override.
     cactus::engine::Config both;
     if (!both.parse_kv_compress_override("3000", "1000")) return false;
     if (!both.kv_compress || both.kv_compress_trigger_len != 3000 || both.kv_compress_target_len != 1000) return false;
@@ -475,12 +437,10 @@ bool test_env_override_parse() {
     if (!one.parse_kv_compress_override(nullptr, "1500")) return false;
     if (one.kv_compress_trigger_len != 4096 || one.kv_compress_target_len != 1500) return false;
 
-    // CACTUS_KV_COMPRESS_AT=0 disables.
     cactus::engine::Config disabled;
     if (!disabled.parse_kv_compress_override("0", nullptr)) return false;
     if (disabled.kv_compress) return false;
 
-    // Degenerate (target >= trigger) disabled by the validate guard.
     cactus::engine::Config bad;
     if (!bad.parse_kv_compress_override("2048", "4096")) return false;
     if (bad.kv_compress_trigger_len != 0 || bad.kv_compress_target_len != 0) return false;
@@ -490,12 +450,11 @@ bool test_env_override_parse() {
 // --- Sliding-window re-rope (single position frame) -------------------------------------------
 
 bool test_rerope_recent_fp16_uniform() {
-    // Rotate recent rows [sink, n) by a uniform (negative) delta: each recent row now reads as
-    // rope(pre, t+delta); sink rows [0, sink) stay byte-identical. Uses the LOCAL theta.
+    // After a delta shift each recent row reads as rope(pre, t+delta); sink rows stay byte-identical.
     const size_t n = 40, max_seq = 64, kv_heads = 2, head_dim = 16, sink = 4;
     const double theta = 10000.0, delta = -7.0;
     std::vector<std::vector<std::vector<float>>> pre, vals;
-    auto kbuf = make_fp16_cache(n, max_seq, kv_heads, head_dim, theta, pre, vals);  // header sink_size=4
+    auto kbuf = make_fp16_cache(n, max_seq, kv_heads, head_dim, theta, pre, vals);
     auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
     std::vector<uint16_t> sink_before(krows, krows + sink * kv_heads * head_dim);
 
@@ -513,7 +472,6 @@ bool test_rerope_recent_fp16_uniform() {
 }
 
 namespace {
-// Build an int8 K cache storing rope(pre, t, theta) per group for t in [0,n).
 void build_int8_key_cache(size_t n, size_t kv_heads, size_t head_dim, double theta,
                           std::vector<std::vector<std::vector<float>>>& pre,
                           std::vector<int8_t>& k_i8, std::vector<float>& k_sc) {
@@ -560,8 +518,7 @@ bool test_rerope_recent_int8() {
 }
 
 bool test_rotate_int8_row_matches_inline() {
-    // Refactor safety: the factored rotate_int8_row must be bitwise-identical to the old inline
-    // dequant -> rope_rotate_row -> per-group requant.
+    // rotate_int8_row must be bitwise-identical to the inline dequant -> rotate -> requant sequence.
     const size_t head_dim = 32; const double theta = 10000.0, delta = -9.0;
     size_t groups = (head_dim + kGroupSize - 1) / kGroupSize;
     std::vector<float> pre(head_dim);
@@ -572,12 +529,10 @@ bool test_rotate_int8_row_matches_inline() {
     quantize_row(stored, a_i8.data(), a_sc.data(), head_dim, kGroupSize);
     b_i8 = a_i8; b_sc = a_sc;
 
-    // Path A: literal old inline sequence.
     std::vector<float> row(head_dim);
     for (size_t d = 0; d < head_dim; ++d) row[d] = (float)a_i8[d] * a_sc[d / kGroupSize];
     rope_rotate_row(row.data(), head_dim, theta, delta);
     quantize_row(row, a_i8.data(), a_sc.data(), head_dim, kGroupSize);
-    // Path B: factored helper.
     rotate_int8_row(b_i8.data(), b_sc.data(), head_dim, kGroupSize, theta, delta);
 
     return std::memcmp(a_i8.data(), b_i8.data(), head_dim) == 0
@@ -585,14 +540,11 @@ bool test_rotate_int8_row_matches_inline() {
 }
 
 bool test_sliding_plus_global_rolling() {
-    // Cross-layer single-frame invariant over 3 cycles: a GLOBAL cache compacts+renumbers to B and
-    // a SLIDING cache re-ropes its recent rows by -Δ (Δ = old_total - B), so a shared query at
-    // position B matches both. Global distinctive token survives; sliding sink stays; sliding
-    // recent rows track to (t - sum Δ) within fp16 tolerance across cycles.
+    // A global cache renumbers survivors to 0..B-1 while a sliding cache re-ropes its recent rows by
+    // -Δ (Δ = old_total - B), keeping both in the same compressed frame across 3 cycles.
     const size_t kv_heads = 2, head_dim = 16, sink = 4;
     const double gtheta = 1000000.0, ltheta = 10000.0;
 
-    // --- Global: one keydiff compaction, distinctive token must survive + renumber to 0..B-1. ---
     {
         const size_t n = 60, max_seq = 96;
         std::vector<std::vector<std::vector<float>>> pre, vals;
@@ -604,8 +556,8 @@ bool test_sliding_plus_global_rolling() {
         auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, gtheta, p);
         size_t B = kept[0].size();
         compact_fp16(krows, vrows, kv_heads, head_dim, kept, gtheta);
-        for (auto& k : kept) if (k.size() != B) return false;            // uniform B across heads
-        for (size_t h = 0; h < kv_heads; ++h)                            // global survivors renumber to 0..B-1
+        for (auto& k : kept) if (k.size() != B) return false;
+        for (size_t h = 0; h < kv_heads; ++h)
             for (size_t rank = 0; rank < B; ++rank) {
                 std::vector<float> exp = rope_reference(pre[h][kept[h][rank]], (double)rank, gtheta);
                 const uint16_t* r = krows + (rank * kv_heads + h) * head_dim;
@@ -614,14 +566,13 @@ bool test_sliding_plus_global_rolling() {
             }
     }
 
-    // --- Sliding: re-rope recent rows by -Δ over 3 cycles, with Δ derived from a global cycle. ---
     const size_t n = 16, max_seq = 32;
     std::vector<std::vector<std::vector<float>>> pre, vals;
     auto kbuf = make_fp16_cache(n, max_seq, kv_heads, head_dim, ltheta, pre, vals);
     auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
     std::vector<uint16_t> sink_before(krows, krows + sink * kv_heads * head_dim);
 
-    const size_t old_total = 30, B = 12;       // a representative global cycle
+    const size_t old_total = 30, B = 12;
     const double Delta = (double)(old_total - B);
     double accum = 0.0;
     for (int cycle = 0; cycle < 3; ++cycle) {
@@ -634,14 +585,13 @@ bool test_sliding_plus_global_rolling() {
             std::vector<float> exp = rope_reference(pre[h][t], (double)t + accum, ltheta);
             const uint16_t* r = krows + (t * kv_heads + h) * head_dim;
             for (size_t d = 0; d < head_dim; ++d)
-                if (std::abs(f16_to_f32(r[d]) - exp[d]) > 8e-2f) return false;   // looser: 3-cycle drift
+                if (std::abs(f16_to_f32(r[d]) - exp[d]) > 8e-2f) return false;   // looser for 3-cycle drift
         }
     return true;
 }
 
 bool test_rerope_local_theta_used() {
-    // The sliding re-rope must use the LOCAL theta: rotating with the wrong (global) theta does NOT
-    // recover the expected position. Pins the orchestration's theta choice as load-bearing.
+    // The sliding re-rope must use the LOCAL theta; the wrong (global) theta misses the position.
     const size_t n = 24, max_seq = 32, kv_heads = 1, head_dim = 16, sink = 4;
     const double ltheta = 10000.0, gtheta = 1000000.0, delta = -5.0;
     std::vector<std::vector<std::vector<float>>> pre, vals;
@@ -650,7 +600,7 @@ bool test_rerope_local_theta_used() {
     auto* a = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
     auto* b = reinterpret_cast<uint16_t*>(kbuf2.data() + kHeaderBytes);
 
-    rerope_recent_fp16(a, kv_heads, head_dim, sink, n, ltheta, delta);   // correct
+    rerope_recent_fp16(a, kv_heads, head_dim, sink, n, ltheta, delta);   // correct theta
     rerope_recent_fp16(b, kv_heads, head_dim, sink, n, gtheta, delta);   // wrong theta
 
     bool correct_ok = true, wrong_differs = false;

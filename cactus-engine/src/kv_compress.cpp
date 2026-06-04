@@ -10,24 +10,22 @@ namespace kvcompress {
 
 namespace {
 
-// Python's round()/numpy round half-to-even. round(recent_frac*B) must match the reference
-// exactly, so reproduce banker's rounding rather than std::round (which rounds half away from
-// zero). recent_frac arrives as float and widens to a slightly-off double (e.g. 0.30f ->
-// 0.30000001...), which can flip the rounding of an exact half boundary (0.3*15 = 4.5 but
-// 0.30000001*15 = 4.50000018). Snap values within a tiny epsilon of a half-integer back onto it
-// before banker's rounding so the result matches the Python double reference exactly.
+// Python/numpy round half-to-even (not std::round's half-away-from-zero). recent_frac arrives as
+// float and widens to a slightly-off double (0.30f -> 0.30000001...) which can flip an exact half
+// boundary (0.3*15 = 4.5 vs 0.30000001*15 = 4.50000018), so snap near-halves before rounding to
+// match the Python double reference.
 long py_round(double x) {
     double twice = x * 2.0;
     double twice_rounded = std::nearbyint(twice);
     if (std::fabs(twice - twice_rounded) < 1e-6) x = twice_rounded * 0.5;
-    double r = std::nearbyint(x);  // honors the default FE_TONEAREST (round-half-to-even)
+    double r = std::nearbyint(x);  // FE_TONEAREST default == round-half-to-even
     return static_cast<long>(r);
 }
 
 }  // namespace
 
 void keydiff_score(const float* keys, size_t n, size_t head_dim, float* out) {
-    // mu = mean key; s_i = -cos(k_i, mu). Computed in double to match the float64 reference.
+    // s_i = -cos(k_i, mean(k)), in double to match the float64 reference.
     std::vector<double> mu(head_dim, 0.0);
     for (size_t i = 0; i < n; ++i) {
         const float* k = keys + i * head_dim;
@@ -66,8 +64,7 @@ std::vector<int> keepset_for_head(const float* scores, size_t n, const Params& p
     for (long i = static_cast<long>(n) - n_recent; i < static_cast<long>(n); ++i)
         if (i >= 0) reserved.insert(i);
 
-    // Reserved may exceed B (large recent_frac + sink on a tight budget): keep sink first,
-    // then the most-recent tokens, until B.
+    // Reserved can exceed B on a tight budget: keep sink first, then most-recent, until B.
     if (static_cast<long>(reserved.size()) > B) {
         std::vector<long> ordered;
         for (long i = 0; i < sink; ++i) ordered.push_back(i);
@@ -82,7 +79,6 @@ std::vector<int> keepset_for_head(const float* scores, size_t n, const Params& p
     std::set<long> keep(reserved);
     long remaining = B - static_cast<long>(keep.size());
     if (remaining > 0) {
-        // argsort(-scores, kind="stable"): descending score, ties broken by ascending index.
         std::vector<long> order(n);
         std::iota(order.begin(), order.end(), 0L);
         std::stable_sort(order.begin(), order.end(), [&](long a, long b) {
@@ -101,9 +97,6 @@ std::vector<int> keepset_for_head(const float* scores, size_t n, const Params& p
     return result;
 }
 
-// --------------------------------------------------------------------------- //
-// RoPE (rotate_half) helpers                                                   //
-// --------------------------------------------------------------------------- //
 void rope_rotate_row(float* row, size_t head_dim, double rope_theta, double delta_pos) {
     size_t half = head_dim / 2;
     for (size_t i = 0; i < half; ++i) {
@@ -128,15 +121,12 @@ void unrope_head(const float* post_rope, size_t n, size_t head_dim, double rope_
 
 namespace {
 
-// Net renumber rotation for a survivor at absolute position `abs_pos` -> rank: rotate the
-// stored post-RoPE row by (rank - abs_pos). Equivalent to un-RoPE then re-RoPE at rank.
 inline double renumber_delta(int abs_pos, size_t rank) {
     return static_cast<double>(rank) - static_cast<double>(abs_pos);
 }
 
-// Quantize one float row into int8 + per-group scales, matching the engine's KV quant convention
-// (quantize_group_fp16_to_int8 in cactus-kernels/src/quants.cpp): scale floored at 1e-10,
-// round-to-nearest via roundf, clamp to [-128, 127]. groups = ceil(head_dim/group_size).
+// Matches the engine's KV quant convention (quantize_group_fp16_to_int8 in
+// cactus-kernels/src/quants.cpp): scale floored at 1e-10, roundf, clamp to [-128, 127].
 void requant_row(const float* row, int8_t* dst, float* dsc, size_t head_dim, size_t group_size) {
     size_t groups = (head_dim + group_size - 1) / group_size;
     for (size_t g = 0; g < groups; ++g) {
@@ -155,9 +145,8 @@ void requant_row(const float* row, int8_t* dst, float* dsc, size_t head_dim, siz
     }
 }
 
-// Per-head KeyDiff keep-set pipeline shared by the fp16 and int8 entry points. `fill_post(h, post)`
-// gathers head h's post-RoPE rows into `post` ([n][head_dim]); the rest (un-RoPE -> score -> keepset)
-// is identical regardless of storage precision.
+// `fill_post(h, post)` gathers head h's post-RoPE rows into `post` ([n][head_dim]); the rest is
+// shared across storage precisions.
 template <typename FillPost>
 std::vector<std::vector<int>> keepsets_per_head(size_t n, size_t kv_heads, size_t head_dim,
                                                 double rope_theta, const Params& p, FillPost fill_post) {
@@ -187,7 +176,6 @@ void compact_fp16(uint16_t* key_rows_u, uint16_t* val_rows_u, size_t kv_heads, s
             const __fp16* ksrc = key_rows + (static_cast<size_t>(abs_pos) * kv_heads + h) * head_dim;
             const __fp16* vsrc = val_rows + (static_cast<size_t>(abs_pos) * kv_heads + h) * head_dim;
             for (size_t d = 0; d < head_dim; ++d) { krow[d] = ksrc[d]; vrow[d] = vsrc[d]; }
-            // Renumber K: rotate post-RoPE row by (rank - abs_pos). V is not rotated.
             rope_rotate_row(krow.data(), head_dim, rope_theta, renumber_delta(abs_pos, rank));
             __fp16* kdst = key_rows + (rank * kv_heads + h) * head_dim;
             __fp16* vdst = val_rows + (rank * kv_heads + h) * head_dim;
