@@ -1,8 +1,10 @@
 #include "engine.h"
+#include <string_view>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <map>
 
 extern "C" {
@@ -1012,6 +1014,83 @@ std::string Tokenizer::format_youtu_style(const std::vector<ChatMessage>& messag
     }
 
     return result;
+}
+
+
+
+bool parse_byte_fallback_piece(std::string_view piece, uint8_t* out_byte) {
+    if (piece.size() != 6) return false;
+    if (piece[0] != '<' || piece[1] != '0' || piece[2] != 'x' || piece[5] != '>') return false;
+    auto hex_value = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+        return -1;
+    };
+    int hi = hex_value(piece[3]);
+    int lo = hex_value(piece[4]);
+    if (hi < 0 || lo < 0) return false;
+    *out_byte = static_cast<uint8_t>((hi << 4) | lo);
+    return true;
+}
+
+namespace {
+
+bool is_valid_utf8(const std::string& s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        uint8_t b = static_cast<uint8_t>(s[i]);
+        size_t n;
+        if (b < 0x80) n = 1;
+        else if ((b & 0xE0) == 0xC0) n = 2;
+        else if ((b & 0xF0) == 0xE0) n = 3;
+        else if ((b & 0xF8) == 0xF0) n = 4;
+        else return false;
+        if (i + n > s.size()) return false;
+        for (size_t k = 1; k < n; k++) {
+            if ((static_cast<uint8_t>(s[i + k]) & 0xC0) != 0x80) return false;
+        }
+        i += n;
+    }
+    return true;
+}
+
+}
+
+std::string reassemble_byte_fallback(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    std::string pending;
+
+    auto flush_pending = [&]() {
+        if (pending.empty()) return;
+        if (is_valid_utf8(pending)) {
+            out += pending;
+        } else {
+            for (unsigned char raw : pending) {
+                char buf[7];
+                std::snprintf(buf, sizeof(buf), "<0x%02X>", raw);
+                out += buf;
+            }
+        }
+        pending.clear();
+    };
+
+    size_t i = 0;
+    while (i < text.size()) {
+        uint8_t byte_value;
+        if (i + 6 <= text.size() &&
+            parse_byte_fallback_piece(std::string_view(text.data() + i, 6), &byte_value)) {
+            pending.push_back(static_cast<char>(byte_value));
+            i += 6;
+        } else {
+            flush_pending();
+            out.push_back(text[i]);
+            i++;
+        }
+    }
+    flush_pending();
+    return out;
 }
 
 } // namespace engine

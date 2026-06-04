@@ -496,7 +496,11 @@ std::string SPTokenizer::decode(const std::vector<uint32_t>& tokens) const {
             raw += piece;
         }
     }
-    return postprocess_text(raw);
+    std::string result = postprocess_text(raw);
+    if (runtime_config_.byte_fallback) {
+        result = reassemble_byte_fallback(result);
+    }
+    return result;
 }
 
 void SPTokenizer::load_special_tokens(const std::string& config_file) {

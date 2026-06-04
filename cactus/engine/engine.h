@@ -6,6 +6,7 @@
 #include <unordered_set>
 #include <memory>
 #include <cstdint>
+#include <string_view>
 
 #include "../graph/graph.h"
 
@@ -293,6 +294,9 @@ struct TokenizerRuntimeConfig {
 TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_file);
 void load_special_tokens_map(const std::string& config_file, std::unordered_map<std::string, uint32_t>& special_tokens);
 std::vector<std::string> split_with_special_tokens(const std::string& text, const std::unordered_map<std::string, uint32_t>& special_tokens);
+
+bool parse_byte_fallback_piece(std::string_view piece, uint8_t* out_byte);
+std::string reassemble_byte_fallback(const std::string& text);
 
 inline std::string extract_json_string(const std::string& json, size_t& pos) {
     std::string value;
