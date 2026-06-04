@@ -25,7 +25,7 @@ long py_round(double x) {
 }  // namespace
 
 void keydiff_score(const float* keys, size_t n, size_t head_dim, float* out) {
-    // s_i = -cos(k_i, mean(k)), in double to match the float64 reference.
+    // double accumulation matches the float64 reference.
     std::vector<double> mu(head_dim, 0.0);
     for (size_t i = 0; i < n; ++i) {
         const float* k = keys + i * head_dim;
