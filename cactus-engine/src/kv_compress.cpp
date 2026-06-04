@@ -140,6 +140,22 @@ void rope_apply(float* row, const RopeRotation& r) {
     }
 }
 
+// Apply the inverse rotation (negate the table angle): re-rope by +t given the un-rope table[t].
+void rope_apply_conj(float* row, const RopeRotation& r) {
+    size_t half = r.cos.size();
+    for (size_t i = 0; i < half; ++i) {
+        double x1 = row[i], x2 = row[i + half];
+        row[i] = static_cast<float>(x1 * r.cos[i] + x2 * r.sin[i]);
+        row[i + half] = static_cast<float>(x2 * r.cos[i] - x1 * r.sin[i]);
+    }
+}
+
+size_t max_kept_index(const std::vector<std::vector<int>>& kept) {
+    size_t m = 0;
+    for (const auto& kh : kept) for (int idx : kh) m = std::max(m, static_cast<size_t>(idx));
+    return m;
+}
+
 }  // namespace
 
 void rope_rotate_row(float* row, size_t head_dim, double rope_theta, double delta_pos) {
@@ -154,10 +170,6 @@ std::vector<RopeRotation> unrope_table(size_t n, size_t head_dim, double rope_th
 }
 
 namespace {
-
-inline double renumber_delta(int abs_pos, size_t rank) {
-    return static_cast<double>(rank) - static_cast<double>(abs_pos);
-}
 
 // Matches the engine's KV quant convention (quantize_group_fp16_to_int8 in
 // cactus-kernels/src/quants.cpp): scale floored at 1e-10, roundf, clamp to [-128, 127].
@@ -235,10 +247,10 @@ std::vector<std::vector<int>> keepsets_per_head(size_t n, size_t kv_heads, size_
 }  // namespace
 
 void compact_fp16(uint16_t* key_rows_u, uint16_t* val_rows_u, size_t kv_heads, size_t head_dim,
-                  const std::vector<std::vector<int>>& kept_per_head, double rope_theta) {
+                  const std::vector<std::vector<int>>& kept_per_head,
+                  const std::vector<RopeRotation>& unrope) {
     __fp16* key_rows = reinterpret_cast<__fp16*>(key_rows_u);
     __fp16* val_rows = reinterpret_cast<__fp16*>(val_rows_u);
-    auto inv = rope_inv_freq(head_dim, rope_theta);
     std::vector<float> krow(head_dim), vrow(head_dim);
     for (size_t h = 0; h < kv_heads; ++h) {
         const std::vector<int>& kept = kept_per_head[h];
@@ -247,7 +259,9 @@ void compact_fp16(uint16_t* key_rows_u, uint16_t* val_rows_u, size_t kv_heads, s
             const __fp16* ksrc = key_rows + (static_cast<size_t>(abs_pos) * kv_heads + h) * head_dim;
             const __fp16* vsrc = val_rows + (static_cast<size_t>(abs_pos) * kv_heads + h) * head_dim;
             for (size_t d = 0; d < head_dim; ++d) { krow[d] = ksrc[d]; vrow[d] = vsrc[d]; }
-            rope_apply(krow.data(), rope_rot(inv, renumber_delta(abs_pos, rank)));
+            // renumber abs_pos -> rank: un-rope by -abs_pos then re-rope by +rank (no per-row trig)
+            rope_apply(krow.data(), unrope[static_cast<size_t>(abs_pos)]);
+            rope_apply_conj(krow.data(), unrope[rank]);
             __fp16* kdst = key_rows + (rank * kv_heads + h) * head_dim;
             __fp16* vdst = val_rows + (rank * kv_heads + h) * head_dim;
             for (size_t d = 0; d < head_dim; ++d) {
@@ -258,14 +272,19 @@ void compact_fp16(uint16_t* key_rows_u, uint16_t* val_rows_u, size_t kv_heads, s
     }
 }
 
+void compact_fp16(uint16_t* key_rows, uint16_t* val_rows, size_t kv_heads, size_t head_dim,
+                  const std::vector<std::vector<int>>& kept_per_head, double rope_theta) {
+    compact_fp16(key_rows, val_rows, kv_heads, head_dim, kept_per_head,
+                 unrope_table(max_kept_index(kept_per_head) + 1, head_dim, rope_theta));
+}
+
 void compact_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads,
                   size_t head_dim, size_t group_size,
-                  const std::vector<std::vector<int>>& kept_per_head, double rope_theta,
-                  bool renumber) {
+                  const std::vector<std::vector<int>>& kept_per_head,
+                  const std::vector<RopeRotation>& unrope, bool renumber) {
     size_t groups = (head_dim + group_size - 1) / group_size;
     size_t int8_stride = kv_heads * head_dim;
     size_t scale_stride = kv_heads * groups;
-    auto inv = rope_inv_freq(head_dim, rope_theta);
     std::vector<float> row(head_dim);
     for (size_t h = 0; h < kv_heads; ++h) {
         const std::vector<int>& kept = kept_per_head[h];
@@ -275,13 +294,24 @@ void compact_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads,
             const int8_t* src = int8_rows + src_t * int8_stride + h * head_dim;
             const float* ssc = scale_rows + src_t * scale_stride + h * groups;
             dequant_row(src, ssc, head_dim, group_size, row.data());
-            if (renumber)
-                rope_apply(row.data(), rope_rot(inv, renumber_delta(abs_pos, rank)));
+            if (renumber) {  // un-rope by -abs_pos then re-rope by +rank (no per-row trig)
+                rope_apply(row.data(), unrope[static_cast<size_t>(abs_pos)]);
+                rope_apply_conj(row.data(), unrope[rank]);
+            }
             int8_t* dst = int8_rows + rank * int8_stride + h * head_dim;
             float* dsc = scale_rows + rank * scale_stride + h * groups;
             requant_row(row.data(), dst, dsc, head_dim, group_size);
         }
     }
+}
+
+void compact_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads,
+                  size_t head_dim, size_t group_size,
+                  const std::vector<std::vector<int>>& kept_per_head, double rope_theta,
+                  bool renumber) {
+    std::vector<RopeRotation> unrope;
+    if (renumber) unrope = unrope_table(max_kept_index(kept_per_head) + 1, head_dim, rope_theta);
+    compact_int8(int8_rows, scale_rows, kv_heads, head_dim, group_size, kept_per_head, unrope, renumber);
 }
 
 void rotate_int8_row(int8_t* int8, float* scale, size_t head_dim, size_t group_size,

@@ -54,11 +54,20 @@ std::vector<RopeRotation> unrope_table(size_t n, size_t head_dim, double rope_th
 
 // Per-head compaction: gather survivors in rank order, renumber K to 0..B-1, gather V unchanged.
 // kept_per_head[h] is head h's survivor indices (length B); rows point past the header, [max_seq][kv_heads][head_dim].
+// Renumber re-ropes via the un-rope table (un-rope by -abs_pos then re-rope by +rank), so pass the
+// shared table to avoid per-survivor cos/sin; the theta overload builds it from the kept indices.
+void compact_fp16(uint16_t* key_rows, uint16_t* val_rows, size_t kv_heads, size_t head_dim,
+                  const std::vector<std::vector<int>>& kept_per_head,
+                  const std::vector<RopeRotation>& unrope);
 void compact_fp16(uint16_t* key_rows, uint16_t* val_rows, size_t kv_heads, size_t head_dim,
                   const std::vector<std::vector<int>>& kept_per_head, double rope_theta);
 
-// INT8 analog of compact_fp16 (K or V). renumber=true (K) rotates each gathered row by (rank - abs);
+// INT8 analog of compact_fp16 (K or V). renumber=true (K) re-ropes each gathered row to its new rank;
 // false (V) gathers as-is. scales are [max_seq][kv_heads*groups], groups = ceil(head_dim/group_size).
+void compact_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads,
+                  size_t head_dim, size_t group_size,
+                  const std::vector<std::vector<int>>& kept_per_head,
+                  const std::vector<RopeRotation>& unrope, bool renumber);
 void compact_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads,
                   size_t head_dim, size_t group_size,
                   const std::vector<std::vector<int>>& kept_per_head, double rope_theta,

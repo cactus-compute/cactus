@@ -2979,7 +2979,7 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             auto* vbase = reinterpret_cast<uint16_t*>(static_cast<char*>(vraw) + kHeaderBytes);
             auto kept = cactus::kvcompress::keepsets_from_fp16(
                 kbase, n, kv_heads, head_dim, unrope, params);
-            cactus::kvcompress::compact_fp16(kbase, vbase, kv_heads, head_dim, kept, rope_theta);
+            cactus::kvcompress::compact_fp16(kbase, vbase, kv_heads, head_dim, kept, unrope);
             size_t B = kept.empty() ? 0 : kept[0].size();
             khdr->current_seq_len = B;
             vhdr->current_seq_len = B;
@@ -2996,9 +2996,9 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             auto kept = cactus::kvcompress::keepsets_from_int8(
                 k_i8, k_sc, n, kv_heads, head_dim, KV_QUANT_GROUP_SIZE, unrope, params);
             cactus::kvcompress::compact_int8(k_i8, k_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,
-                                             kept, rope_theta, /*renumber=*/true);
+                                             kept, unrope, /*renumber=*/true);
             cactus::kvcompress::compact_int8(v_i8, v_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,
-                                             kept, rope_theta, /*renumber=*/false);
+                                             kept, unrope, /*renumber=*/false);
             size_t B = kept.empty() ? 0 : kept[0].size();
             khdr->current_seq_len = B;
             vhdr->current_seq_len = B;
