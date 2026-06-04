@@ -287,12 +287,13 @@ std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const 
     });
 }
 
+bool is_sliding_layer(const std::vector<std::string>& layer_types, size_t li) {
+    return li < layer_types.size() && layer_types[li].find("sliding") != std::string::npos;
+}
+
 std::vector<size_t> physical_compressible_layers(const std::vector<std::string>& layer_types,
                                                  size_t num_layers, size_t num_kv_shared) {
-    auto is_full = [&](size_t i) {
-        if (i >= layer_types.size()) return true;
-        return layer_types[i].find("sliding") == std::string::npos;
-    };
+    auto is_full = [&](size_t i) { return !is_sliding_layer(layer_types, i); };
     std::vector<size_t> full;
     for (size_t i = 0; i < num_layers; ++i) if (is_full(i)) full.push_back(i);
 

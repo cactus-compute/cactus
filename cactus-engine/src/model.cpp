@@ -3016,14 +3016,16 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         }
     }
 
-    // Pass 2: re-rope the sliding-window layers' recent K rows by -Δ (Δ = old frontier − B) so they
+    // Pass 2: re-rope the non-compacted layers' recent K rows by -Δ (Δ = old frontier − B) so they
     // track the renumbered global frontier in the same (compressed) position frame. RoPE is relative,
-    // so a uniform shift preserves all query·key offsets. Sink rows [0, sink_size) stay fixed.
+    // so a uniform shift preserves all query·key offsets. Sink rows [0, sink_size) stay fixed. Each
+    // layer shifts with its OWN theta: sliding layers use the local theta; full-attention layers that
+    // were excluded from compaction (KV-shared global *source* layers, e.g. Gemma) keep the global theta.
     const size_t Delta = (have_new_seq_len && old_total >= new_seq_len) ? old_total - new_seq_len : 0;
     if (Delta > 0) {
         const double dpos = -static_cast<double>(Delta);
         for (size_t li = 0; li < comp.cache_states.size(); ++li) {
-            if (compressible.count(li)) continue;  // sliding (non-compressible) layers only
+            if (compressible.count(li)) continue;  // skip the layers compacted in pass 1
             const auto& cs = comp.cache_states[li];
             if (cs.key_node_id < 0) continue;
             if (comp.graph->get_node_op_type(static_cast<size_t>(cs.key_node_id)) != OpType::KV_CACHE_STATE) continue;  // skip conv/recurrent caches
@@ -3036,17 +3038,19 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             if (kv_heads == 0 || head_dim == 0) continue;
             size_t hi = khdr->current_seq_len;
             size_t lo = std::min<size_t>(khdr->sink_size, hi);
+            const double layer_theta = cactus::kvcompress::is_sliding_layer(config_.layer_types, li)
+                ? rope_local_theta : rope_theta;
             if (kdesc.precision == Precision::FP16) {
                 auto* kbase = reinterpret_cast<uint16_t*>(static_cast<char*>(kraw) + kHeaderBytes);
                 cactus::kvcompress::rerope_recent_fp16(kbase, kv_heads, head_dim, lo, hi,
-                                                       rope_local_theta, dpos);
+                                                       layer_theta, dpos);
             } else if (kdesc.precision == Precision::INT8) {
                 size_t max_seq = khdr->max_seq_len;
                 auto* k_i8 = reinterpret_cast<int8_t*>(static_cast<char*>(kraw) + kHeaderBytes);
                 auto* k_sc = reinterpret_cast<float*>(static_cast<char*>(kraw) + kHeaderBytes +
                                                       max_seq * kv_heads * head_dim);
                 cactus::kvcompress::rerope_recent_int8(k_i8, k_sc, kv_heads, head_dim,
-                                                       KV_QUANT_GROUP_SIZE, lo, hi, rope_local_theta, dpos);
+                                                       KV_QUANT_GROUP_SIZE, lo, hi, layer_theta, dpos);
             }
         }
     }

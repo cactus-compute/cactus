@@ -197,7 +197,16 @@ bool test_gemma_layer_selection() {
     for (int i = 0; i < 35; ++i) g.push_back(((i + 1) % 5 == 0) ? "global" : "sliding");
     auto gg = physical_compressible_layers(g, 35, 20);
     std::vector<size_t> expect = {4, 9};
-    return gg == expect;
+    if (gg != expect) return false;
+
+    // Pass-2 re-rope theta is chosen per layer via is_sliding_layer (NOT compressibility): sliding
+    // layers shift with the local theta, full-attention layers with the global theta. Layer 14 is a
+    // global KV-shared *source* -- excluded from compaction (not in {4,9}) yet must keep global theta.
+    if (is_sliding_layer(g, 14)) return false;   // global source -> global theta (the fix)
+    if (is_sliding_layer(g, 4)) return false;    // compacted global -> global theta
+    if (!is_sliding_layer(g, 3)) return false;   // sliding -> local theta
+    for (size_t i = 0; i < 28; ++i) if (is_sliding_layer(qwen, i)) return false;  // all-global Qwen
+    return true;
 }
 
 bool test_compact_int8_cache() {

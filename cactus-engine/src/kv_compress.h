@@ -107,6 +107,12 @@ std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const 
                                                  size_t group_size, double rope_theta,
                                                  const Params& p);
 
+// True if layer `li` is a sliding-window (local) layer. Its key cache re-ropes with the LOCAL
+// theta during compaction; full-attention layers -- including KV-shared global *source* layers
+// that are excluded from compaction yet still ride the renumbered frame -- return false and
+// re-rope with the GLOBAL theta. Out-of-range (empty layer_types -> Qwen) is full/global.
+bool is_sliding_layer(const std::vector<std::string>& layer_types, size_t li);
+
 // Physically-compressible layer indices, mirroring MLX compressible_layers(physical=True).
 // `layer_types` token contains "sliding" for local layers; everything else is full/global.
 // Empty layer_types -> all layers full (Qwen). num_kv_shared drops the shared consumer
