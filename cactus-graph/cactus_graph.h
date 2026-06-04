@@ -717,6 +717,7 @@ public:
 private:
     size_t binary_broadcast_op(OpType op, size_t input1, size_t input2);
     size_t reduction_op(OpType op, size_t input, int axis);
+    size_t attach_conv_bias(size_t node, size_t bias, size_t expected_size, const char* op_name);
     static CactusGraph from_serialized(const GraphFile::SerializedGraph& serialized);
     size_t next_node_id_;
     std::vector<std::unique_ptr<GraphFile::MappedFile>> mapped_files_;

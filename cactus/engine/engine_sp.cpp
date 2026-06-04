@@ -1,0 +1,507 @@
+#include "engine.h"
+#include <cassert>
+#include <cstdio>
+#include <fstream>
+#include <limits>
+#include <sstream>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <iostream>
+
+namespace cactus {
+namespace engine {
+
+SPTokenizer::SPTokenizer()
+    : trie_root_(std::make_unique<TrieNode>()),
+      vocab_size_(0),
+      unk_token_id_(3),
+      bos_token_id_(2),
+      eos_token_id_(1),
+      pad_token_id_(0),
+      vocab_mmap_ptr_(nullptr),
+      vocab_mmap_size_(0) {
+    has_chat_template_ = false;
+}
+
+SPTokenizer::~SPTokenizer() {
+    cleanup_mmap();
+}
+
+void SPTokenizer::cleanup_mmap() {
+    if (vocab_mmap_ptr_ && vocab_mmap_ptr_ != MAP_FAILED) {
+        munmap(vocab_mmap_ptr_, vocab_mmap_size_);
+        vocab_mmap_ptr_ = nullptr;
+    }
+}
+
+bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, const std::string& /*merges_file*/, const std::string& config_file) {
+    runtime_config_ = load_tokenizer_runtime_config(config_file);
+    std::string config_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/config.txt";
+    detect_model_type(config_path);
+    
+    std::ifstream vocab_stream(vocab_file);
+    if (!vocab_stream.is_open()) return false;
+
+    token_to_id_.clear();
+    id_to_token_.clear();
+    token_scores_.clear();
+
+    std::string first_line;
+    std::getline(vocab_stream, first_line);
+    vocab_stream.seekg(0);  
+
+    bool is_id_token_format = false;
+    if (!first_line.empty()) {
+        is_id_token_format = (std::isdigit(first_line[0]) &&
+                              first_line.find('\t') != std::string::npos);
+    }
+
+    if (is_id_token_format) {
+        std::string line = "";
+        while (std::getline(vocab_stream, line)) {
+            std::string token = "";
+            uint32_t id = UINT32_MAX;
+
+            std::istringstream iss(line);
+            if (iss >> id) {
+                if (std::getline(iss, token)) {
+                    if (!token.empty() && token[0] == '\t') {
+                        token = token.substr(1);
+                    }
+                }
+                
+                if (token.empty()) {
+                    auto last_pos = vocab_stream.tellg();
+                    while (std::getline(vocab_stream, line)) {
+                        if (!line.empty()) {
+                            break;
+                        }
+                        token += '\n';
+                        last_pos = vocab_stream.tellg();
+                    }
+                    vocab_stream.seekg(last_pos);
+                }
+            }
+            
+            if (!token.empty() && id != UINT32_MAX) {
+                float score = -static_cast<float>(id);
+                size_t tab_in_token = token.find('\t');
+                if (tab_in_token != std::string::npos) {
+                    std::string score_str = token.substr(tab_in_token + 1);
+                    if (!score_str.empty()) score = std::stof(score_str);
+                    token = token.substr(0, tab_in_token);
+                }
+                token_to_id_[token] = id;
+                if (id >= id_to_token_.size()) {
+                    id_to_token_.resize(id + 1);
+                    token_scores_.resize(id + 1, 0.0f);
+                }
+                id_to_token_[id] = token;
+                token_scores_[id] = score;
+            }
+        }
+        vocab_size_ = id_to_token_.size();
+    } else {
+        std::string line;
+        uint32_t id = 0;
+
+        vocab_stream.seekg(0); 
+        while (std::getline(vocab_stream, line)) {
+            token_to_id_[line] = id;
+            id_to_token_.push_back(line);
+            token_scores_.push_back(0.0f);
+            id++;
+        }
+        vocab_size_ = id;
+    }
+
+    vocab_stream.close();
+    
+    build_trie();
+    
+    std::ifstream config_stream(config_file);
+    if (config_stream.is_open()) {
+        std::string config_line;
+        while (std::getline(config_stream, config_line)) {
+            if (config_line.empty() || config_line[0] == '#') continue;
+            
+            size_t eq_pos = config_line.find('=');
+            if (eq_pos == std::string::npos) continue;
+            
+            std::string key = config_line.substr(0, eq_pos);
+            std::string value = config_line.substr(eq_pos + 1);
+            
+            key.erase(0, key.find_first_not_of(" \t"));
+            key.erase(key.find_last_not_of(" \t") + 1);
+            value.erase(0, value.find_first_not_of(" \t"));
+            value.erase(value.find_last_not_of(" \t") + 1);
+            
+            if (key == "eos_token_id") {
+                eos_token_id_ = std::stoul(value);
+            } else if (key == "pad_token_id") {
+                pad_token_id_ = std::stoul(value);
+            } else if (key == "unk_token_id") {
+                unk_token_id_ = std::stoul(value);
+            } else if (key == "bos_token_id") {
+                bos_token_id_ = std::stoul(value);
+            } else if (key == "sp_model_type") {
+                sp_bpe_mode_ = (value == "bpe" || value == "BPE");
+            } else if (key == "sp_add_dummy_prefix") {
+                sp_add_dummy_prefix_ = (value == "true" || value == "1");
+            } else if (key == "sp_byte_fallback") {
+                sp_byte_fallback_ = (value == "true" || value == "1");
+            }
+        }
+    }
+    
+    std::string special_tokens_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/special_tokens.json";
+    load_special_tokens(special_tokens_path);
+
+    std::string template_path = config_file.substr(0, config_file.find_last_of("/\\")) + "/chat_template.jinja2";
+    load_chat_template(template_path);
+
+    return true;
+}
+
+void SPTokenizer::build_trie() {
+    for (uint32_t id = 0; id < id_to_token_.size(); ++id) {
+        const std::string& token = id_to_token_[id];
+        if (token.empty()) continue;
+        
+        std::u32string u32_token;
+        size_t pos = 0;
+        while (pos < token.length()) {
+            char32_t codepoint = 0;
+            unsigned char byte = token[pos];
+
+            if (byte < 0x80) {
+                codepoint = byte;
+                pos++;
+            } else if ((byte & 0xE0) == 0xC0) {
+                if (pos + 1 < token.length()) {
+                    codepoint = ((byte & 0x1F) << 6) | (token[pos + 1] & 0x3F);
+                    pos += 2;
+                } else break;
+            } else if ((byte & 0xF0) == 0xE0) {
+                if (pos + 2 < token.length()) {
+                    codepoint = ((byte & 0x0F) << 12) |
+                               ((token[pos + 1] & 0x3F) << 6) |
+                               (token[pos + 2] & 0x3F);
+                    pos += 3;
+                } else break;
+            } else if ((byte & 0xF8) == 0xF0) {
+                if (pos + 3 < token.length()) {
+                    codepoint = ((byte & 0x07) << 18) |
+                               ((token[pos + 1] & 0x3F) << 12) |
+                               ((token[pos + 2] & 0x3F) << 6) |
+                               (token[pos + 3] & 0x3F);
+                    pos += 4;
+                } else break;
+            } else {
+                pos++;
+                continue;
+            }
+
+            u32_token.push_back(codepoint);
+        }
+
+        if (u32_token.empty()) continue;
+        
+        TrieNode* current = trie_root_.get();
+        for (char32_t ch : u32_token) {
+            if (current->children.find(ch) == current->children.end()) {
+                current->children[ch] = std::make_unique<TrieNode>();
+            }
+            current = current->children[ch].get();
+        }
+        current->token_id = static_cast<int32_t>(id);
+        current->score = token_scores_[id];
+    }
+}
+
+std::string SPTokenizer::preprocess_text(const std::string& text) const {
+    if (text.empty()) return text;
+
+    if (sp_bpe_mode_) {
+        std::string processed;
+        if (sp_add_dummy_prefix_) processed += "\xE2\x96\x81";
+        for (char c : text) {
+            if (c == ' ') processed += "\xE2\x96\x81";
+            else processed += c;
+        }
+        return processed;
+    }
+
+    std::string processed = "";
+    if (model_type_ == ModelType::BERT) {
+        processed = "▁";
+    }
+
+    for (size_t i = text.find_first_not_of(" "); i < text.length(); i++) {
+        char c = text[i];
+        if (c == ' ') {
+            processed += "▁";
+        } else {
+            processed += c;
+        }
+    }
+
+    return processed;
+}
+
+std::string SPTokenizer::postprocess_text(const std::string& text) const {
+    std::string result;
+    size_t i = 0;
+    while (i < text.length()) {
+        if (i + 2 < text.length() && 
+            static_cast<unsigned char>(text[i]) == 0xE2 &&
+            static_cast<unsigned char>(text[i+1]) == 0x96 &&
+            static_cast<unsigned char>(text[i+2]) == 0x81) {
+            result += ' ';
+            i += 3;
+        } else {
+            result += text[i];
+            i++;
+        }
+    }
+    if (!result.empty() && result[0] == ' ') {
+        result = result.substr(1);
+    }
+    return result;
+}
+
+std::vector<std::pair<std::string, uint32_t>> SPTokenizer::tokenize_with_trie(const std::string& text) const {
+    std::vector<std::pair<std::string, uint32_t>> result;
+    
+    std::u32string u32_text;
+    size_t pos = 0;
+    while (pos < text.length()) {
+        char32_t codepoint = 0;
+        unsigned char byte = text[pos];
+
+        if (byte < 0x80) {
+            codepoint = byte;
+            pos++;
+        } else if ((byte & 0xE0) == 0xC0) {
+            if (pos + 1 < text.length()) {
+                codepoint = ((byte & 0x1F) << 6) | (text[pos + 1] & 0x3F);
+                pos += 2;
+            } else break;
+        } else if ((byte & 0xF0) == 0xE0) {
+            if (pos + 2 < text.length()) {
+                codepoint = ((byte & 0x0F) << 12) |
+                           ((text[pos + 1] & 0x3F) << 6) |
+                           (text[pos + 2] & 0x3F);
+                pos += 3;
+            } else break;
+        } else if ((byte & 0xF8) == 0xF0) {
+            if (pos + 3 < text.length()) {
+                codepoint = ((byte & 0x07) << 18) |
+                           ((text[pos + 1] & 0x3F) << 12) |
+                           ((text[pos + 2] & 0x3F) << 6) |
+                           (text[pos + 3] & 0x3F);
+                pos += 4;
+            } else break;
+        } else {
+            pos++;
+            continue;
+        }
+
+        u32_text.push_back(codepoint);
+    }
+
+    if (u32_text.empty()) {
+        result.push_back({text, unk_token_id_});
+        return result;
+    }
+
+    pos = 0;
+    while (pos < u32_text.length()) {
+        TrieNode* current = trie_root_.get();
+        size_t best_match_len = 0;
+        int32_t best_token_id = -1;
+        
+        for (size_t len = 0; pos + len < u32_text.length(); ++len) {
+            char32_t ch = u32_text[pos + len];
+            if (current->children.find(ch) == current->children.end()) {
+                break;
+            }
+            current = current->children[ch].get();
+            if (current->token_id >= 0) {
+                best_match_len = len + 1;
+                best_token_id = current->token_id;
+            }
+        }
+        
+        if (best_match_len > 0) {
+            std::u32string u32_token = u32_text.substr(pos, best_match_len);
+            
+            std::string token;
+            for (char32_t cp : u32_token) {
+                if (cp < 0x80) {
+                    token.push_back(static_cast<char>(cp));
+                } else if (cp < 0x800) {
+                    token.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                    token.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                } else if (cp < 0x10000) {
+                    token.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                    token.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                    token.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                } else {
+                    token.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+                    token.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+                    token.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                    token.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                }
+            }
+            result.push_back({token, static_cast<uint32_t>(best_token_id)});
+            pos += best_match_len;
+        } else {
+            char32_t cp = u32_text[pos];
+            std::string char_str;
+            if (cp < 0x80) {
+                char_str.push_back(static_cast<char>(cp));
+            } else if (cp < 0x800) {
+                char_str.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                char_str.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            } else if (cp < 0x10000) {
+                char_str.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                char_str.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                char_str.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            } else {
+                char_str.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+                char_str.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+                char_str.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                char_str.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+            }
+            result.push_back({char_str, unk_token_id_});
+            pos++;
+        }
+    }
+    
+    return result;
+}
+
+std::vector<uint32_t> SPTokenizer::tokenize_with_bpe(const std::string& text) const {
+    std::vector<std::string> symbols;
+    for (size_t i = 0; i < text.size(); ) {
+        size_t char_len = 1;
+        unsigned char byte = static_cast<unsigned char>(text[i]);
+        if ((byte & 0xE0) == 0xC0) char_len = 2;
+        else if ((byte & 0xF0) == 0xE0) char_len = 3;
+        else if ((byte & 0xF8) == 0xF0) char_len = 4;
+        if (i + char_len <= text.size()) symbols.push_back(text.substr(i, char_len));
+        i += char_len;
+    }
+
+    while (symbols.size() > 1) {
+        int best_index = -1;
+        float best_score = -std::numeric_limits<float>::infinity();
+        for (size_t i = 0; i + 1 < symbols.size(); ++i) {
+            auto it = token_to_id_.find(symbols[i] + symbols[i + 1]);
+            if (it == token_to_id_.end()) continue;
+            float score = it->second < token_scores_.size()
+                ? token_scores_[it->second]
+                : -static_cast<float>(it->second);
+            if (score > best_score) { best_score = score; best_index = static_cast<int>(i); }
+        }
+        if (best_index < 0) break;
+        symbols[best_index] += symbols[best_index + 1];
+        symbols.erase(symbols.begin() + best_index + 1);
+    }
+
+    std::vector<uint32_t> result;
+    for (const auto& symbol : symbols) {
+        auto it = token_to_id_.find(symbol);
+        if (it != token_to_id_.end()) { result.push_back(it->second); continue; }
+        if (sp_byte_fallback_) {
+            for (unsigned char b : symbol) {
+                char buf[7]; std::snprintf(buf, sizeof(buf), "<0x%02X>", b);
+                auto byte_it = token_to_id_.find(buf);
+                result.push_back(byte_it != token_to_id_.end() ? byte_it->second : unk_token_id_);
+            }
+            continue;
+        }
+        result.push_back(unk_token_id_);
+    }
+    return result;
+}
+
+std::vector<std::string> SPTokenizer::split_with_special_tokens(const std::string& text) const {
+    return cactus::engine::split_with_special_tokens(text, special_tokens_);
+}
+
+std::vector<uint32_t> SPTokenizer::encode(const std::string& text) const {
+    if (text.empty()) return {};
+
+    auto text_segments = split_with_special_tokens(text);
+    std::vector<uint32_t> token_ids;
+
+    for (const auto& segment : text_segments) {
+        auto special_it = special_tokens_.find(segment);
+        if (special_it != special_tokens_.end()) {
+            token_ids.push_back(special_it->second);
+        } else {
+            std::string processed = preprocess_text(segment);
+            if (processed.empty()) continue;
+
+            if (sp_bpe_mode_) {
+                auto ids = tokenize_with_bpe(processed);
+                token_ids.insert(token_ids.end(), ids.begin(), ids.end());
+            } else {
+                auto token_pairs = tokenize_with_trie(processed);
+                for (const auto& [token, id] : token_pairs) {
+                    token_ids.push_back(id);
+                }
+            }
+        }
+    }
+
+    return token_ids;
+}
+
+std::string SPTokenizer::decode(const std::vector<uint32_t>& tokens) const {
+    if (tokens.size() == 1) {
+        if (tokens[0] >= id_to_token_.size()) return {};
+        const std::string& piece = id_to_token_[tokens[0]];
+        unsigned int byte_val;
+        if (piece.size() == 6 && std::sscanf(piece.c_str(), "<0x%02X>", &byte_val) == 1) {
+            return std::string(1, static_cast<char>(byte_val));
+        }
+        std::string result;
+        for (size_t i = 0; i < piece.length(); ) {
+            if (i + 2 < piece.length() &&
+                static_cast<unsigned char>(piece[i])   == 0xE2 &&
+                static_cast<unsigned char>(piece[i+1]) == 0x96 &&
+                static_cast<unsigned char>(piece[i+2]) == 0x81) {
+                result += ' ';
+                i += 3;
+            } else {
+                result += piece[i++];
+            }
+        }
+        return result;
+    }
+
+    std::string raw;
+    for (uint32_t token_id : tokens) {
+        if (token_id >= id_to_token_.size()) continue;
+        const std::string& piece = id_to_token_[token_id];
+        unsigned int byte_val;
+        if (piece.size() == 6 && std::sscanf(piece.c_str(), "<0x%02X>", &byte_val) == 1) {
+            raw.push_back(static_cast<char>(byte_val));
+        } else {
+            raw += piece;
+        }
+    }
+    return postprocess_text(raw);
+}
+
+void SPTokenizer::load_special_tokens(const std::string& config_file) {
+    load_special_tokens_map(config_file, special_tokens_);
+}
+
+} // namespace engine
+} // namespace cactus

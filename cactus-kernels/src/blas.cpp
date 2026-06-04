@@ -27,7 +27,7 @@ static inline void increment_coords(size_t* coords, const size_t* shape, size_t 
 enum class BroadcastOp { ADD, SUB, MUL, DIV };
 
 template<BroadcastOp Op>
-static inline float16x8_t broadcast_op_vec(float16x8_t a, float16x8_t b) {
+static inline float16x8_t binop_vec(float16x8_t a, float16x8_t b) {
     if constexpr (Op == BroadcastOp::ADD) return vaddq_f16(a, b);
     else if constexpr (Op == BroadcastOp::SUB) return vsubq_f16(a, b);
     else if constexpr (Op == BroadcastOp::MUL) return vmulq_f16(a, b);
@@ -35,11 +35,35 @@ static inline float16x8_t broadcast_op_vec(float16x8_t a, float16x8_t b) {
 }
 
 template<BroadcastOp Op>
-static inline __fp16 broadcast_op_scalar(__fp16 a, __fp16 b) {
+static inline __fp16 binop_scalar(__fp16 a, __fp16 b) {
     if constexpr (Op == BroadcastOp::ADD) return a + b;
     else if constexpr (Op == BroadcastOp::SUB) return a - b;
     else if constexpr (Op == BroadcastOp::MUL) return a * b;
     else return a / b;
+}
+
+template<BroadcastOp Op>
+static void elementwise_binop_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements) {
+    const bool use_streaming = num_elements >= STREAMING_STORE_THRESHOLD;
+    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t start_idx, size_t end_idx) {
+            constexpr size_t SIMD_WIDTH = 8;
+            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
+
+            if (use_streaming) {
+                for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
+                    stream_store_f16x8(&output[i], binop_vec<Op>(vld1q_f16(&a[i]), vld1q_f16(&b[i])));
+                }
+            } else {
+                for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
+                    vst1q_f16(&output[i], binop_vec<Op>(vld1q_f16(&a[i]), vld1q_f16(&b[i])));
+                }
+            }
+
+            for (size_t i = vectorized_end; i < end_idx; ++i) {
+                output[i] = binop_scalar<Op>(a[i], b[i]);
+            }
+        });
 }
 
 template<BroadcastOp Op>
@@ -85,7 +109,7 @@ static void broadcast_op_optimized(const __fp16* a, const __fp16* b, __fp16* out
                     const bool use_stream = total_elements >= STREAMING_STORE_THRESHOLD;
 
                     if (a_inner_broadcast && b_inner_broadcast) {
-                        __fp16 result = broadcast_op_scalar<Op>(a[a_base], b[b_base]);
+                        __fp16 result = binop_scalar<Op>(a[a_base], b[b_base]);
                         float16x8_t result_vec = vdupq_n_f16(result);
                         if (use_stream) {
                             for (size_t i = 0; i < vec_end; i += 8) {
@@ -105,16 +129,16 @@ static void broadcast_op_optimized(const __fp16* a, const __fp16* b, __fp16* out
                         if (use_stream) {
                             for (size_t i = 0; i < vec_end; i += 8) {
                                 float16x8_t b_vec = vld1q_f16(b_ptr + i);
-                                stream_store_f16x8(out_ptr + i, broadcast_op_vec<Op>(a_vec, b_vec));
+                                stream_store_f16x8(out_ptr + i, binop_vec<Op>(a_vec, b_vec));
                             }
                         } else {
                             for (size_t i = 0; i < vec_end; i += 8) {
                                 float16x8_t b_vec = vld1q_f16(b_ptr + i);
-                                vst1q_f16(out_ptr + i, broadcast_op_vec<Op>(a_vec, b_vec));
+                                vst1q_f16(out_ptr + i, binop_vec<Op>(a_vec, b_vec));
                             }
                         }
                         for (size_t i = vec_end; i < inner_size; ++i) {
-                            out_ptr[i] = broadcast_op_scalar<Op>(a[a_base], b_ptr[i]);
+                            out_ptr[i] = binop_scalar<Op>(a[a_base], b_ptr[i]);
                         }
                     } else if (b_inner_broadcast) {
                         const __fp16* a_ptr = a + a_base;
@@ -122,16 +146,16 @@ static void broadcast_op_optimized(const __fp16* a, const __fp16* b, __fp16* out
                         if (use_stream) {
                             for (size_t i = 0; i < vec_end; i += 8) {
                                 float16x8_t a_vec = vld1q_f16(a_ptr + i);
-                                stream_store_f16x8(out_ptr + i, broadcast_op_vec<Op>(a_vec, b_vec));
+                                stream_store_f16x8(out_ptr + i, binop_vec<Op>(a_vec, b_vec));
                             }
                         } else {
                             for (size_t i = 0; i < vec_end; i += 8) {
                                 float16x8_t a_vec = vld1q_f16(a_ptr + i);
-                                vst1q_f16(out_ptr + i, broadcast_op_vec<Op>(a_vec, b_vec));
+                                vst1q_f16(out_ptr + i, binop_vec<Op>(a_vec, b_vec));
                             }
                         }
                         for (size_t i = vec_end; i < inner_size; ++i) {
-                            out_ptr[i] = broadcast_op_scalar<Op>(a_ptr[i], b[b_base]);
+                            out_ptr[i] = binop_scalar<Op>(a_ptr[i], b[b_base]);
                         }
                     } else {
                         const __fp16* a_ptr = a + a_base;
@@ -140,17 +164,17 @@ static void broadcast_op_optimized(const __fp16* a, const __fp16* b, __fp16* out
                             for (size_t i = 0; i < vec_end; i += 8) {
                                 float16x8_t a_vec = vld1q_f16(a_ptr + i);
                                 float16x8_t b_vec = vld1q_f16(b_ptr + i);
-                                stream_store_f16x8(out_ptr + i, broadcast_op_vec<Op>(a_vec, b_vec));
+                                stream_store_f16x8(out_ptr + i, binop_vec<Op>(a_vec, b_vec));
                             }
                         } else {
                             for (size_t i = 0; i < vec_end; i += 8) {
                                 float16x8_t a_vec = vld1q_f16(a_ptr + i);
                                 float16x8_t b_vec = vld1q_f16(b_ptr + i);
-                                vst1q_f16(out_ptr + i, broadcast_op_vec<Op>(a_vec, b_vec));
+                                vst1q_f16(out_ptr + i, binop_vec<Op>(a_vec, b_vec));
                             }
                         }
                         for (size_t i = vec_end; i < inner_size; ++i) {
-                            out_ptr[i] = broadcast_op_scalar<Op>(a_ptr[i], b_ptr[i]);
+                            out_ptr[i] = binop_scalar<Op>(a_ptr[i], b_ptr[i]);
                         }
                     }
 
@@ -176,7 +200,7 @@ static void broadcast_op_optimized(const __fp16* a, const __fp16* b, __fp16* out
                     size_t a_idx = compute_linear_index(coords.data(), a_strides, ndim);
                     size_t b_idx = compute_linear_index(coords.data(), b_strides, ndim);
 
-                    output[linear_idx] = broadcast_op_scalar<Op>(a[a_idx], b[b_idx]);
+                    output[linear_idx] = binop_scalar<Op>(a[a_idx], b[b_idx]);
 
                     increment_coords(coords.data(), output_shape, ndim);
                 }
@@ -185,40 +209,7 @@ static void broadcast_op_optimized(const __fp16* a, const __fp16* b, __fp16* out
 }
 
 void cactus_add_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements) {
-    const bool use_streaming = num_elements >= STREAMING_STORE_THRESHOLD;
-    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::ELEMENT_WISE,
-        [&](size_t start_idx, size_t end_idx) {
-            constexpr size_t SIMD_WIDTH = 8;
-            constexpr size_t UNROLL = 4;
-            const size_t unrolled_end = start_idx + ((end_idx - start_idx) / (SIMD_WIDTH * UNROLL)) * (SIMD_WIDTH * UNROLL);
-            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
-
-            if (use_streaming) {
-                for (size_t i = start_idx; i < unrolled_end; i += SIMD_WIDTH * UNROLL) {
-                    __builtin_prefetch(&a[i + 256], 0, 0);
-                    __builtin_prefetch(&b[i + 256], 0, 0);
-                    float16x8_t v0 = vaddq_f16(vld1q_f16(&a[i]), vld1q_f16(&b[i]));
-                    float16x8_t v1 = vaddq_f16(vld1q_f16(&a[i + 8]), vld1q_f16(&b[i + 8]));
-                    float16x8_t v2 = vaddq_f16(vld1q_f16(&a[i + 16]), vld1q_f16(&b[i + 16]));
-                    float16x8_t v3 = vaddq_f16(vld1q_f16(&a[i + 24]), vld1q_f16(&b[i + 24]));
-                    stream_store_f16x8(&output[i], v0);
-                    stream_store_f16x8(&output[i + 8], v1);
-                    stream_store_f16x8(&output[i + 16], v2);
-                    stream_store_f16x8(&output[i + 24], v3);
-                }
-                for (size_t i = unrolled_end; i < vectorized_end; i += SIMD_WIDTH) {
-                    stream_store_f16x8(&output[i], vaddq_f16(vld1q_f16(&a[i]), vld1q_f16(&b[i])));
-                }
-            } else {
-                for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                    vst1q_f16(&output[i], vaddq_f16(vld1q_f16(&a[i]), vld1q_f16(&b[i])));
-                }
-            }
-
-            for (size_t i = vectorized_end; i < end_idx; ++i) {
-                output[i] = a[i] + b[i];
-            }
-        });
+    elementwise_binop_f16<BroadcastOp::ADD>(a, b, output, num_elements);
 }
 
 void cactus_add_f16_clipped(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements) {
@@ -262,57 +253,11 @@ void cactus_add_f16_clipped(const __fp16* a, const __fp16* b, __fp16* output, si
 }
 
 void cactus_subtract_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements) {
-    const bool use_streaming = num_elements >= STREAMING_STORE_THRESHOLD;
-    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::ELEMENT_WISE,
-        [&](size_t start_idx, size_t end_idx) {
-            constexpr size_t SIMD_WIDTH = 8;
-            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
-
-            if (use_streaming) {
-                for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                    float16x8_t a_vec = vld1q_f16(&a[i]);
-                    float16x8_t b_vec = vld1q_f16(&b[i]);
-                    stream_store_f16x8(&output[i], vsubq_f16(a_vec, b_vec));
-                }
-            } else {
-                for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                    float16x8_t a_vec = vld1q_f16(&a[i]);
-                    float16x8_t b_vec = vld1q_f16(&b[i]);
-                    vst1q_f16(&output[i], vsubq_f16(a_vec, b_vec));
-                }
-            }
-
-            for (size_t i = vectorized_end; i < end_idx; ++i) {
-                output[i] = a[i] - b[i];
-            }
-        });
+    elementwise_binop_f16<BroadcastOp::SUB>(a, b, output, num_elements);
 }
 
 void cactus_multiply_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements) {
-    const bool use_streaming = num_elements >= STREAMING_STORE_THRESHOLD;
-    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::ELEMENT_WISE,
-        [&](size_t start_idx, size_t end_idx) {
-            constexpr size_t SIMD_WIDTH = 8;
-            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
-
-            if (use_streaming) {
-                for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                    float16x8_t a_vec = vld1q_f16(&a[i]);
-                    float16x8_t b_vec = vld1q_f16(&b[i]);
-                    stream_store_f16x8(&output[i], vmulq_f16(a_vec, b_vec));
-                }
-            } else {
-                for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                    float16x8_t a_vec = vld1q_f16(&a[i]);
-                    float16x8_t b_vec = vld1q_f16(&b[i]);
-                    vst1q_f16(&output[i], vmulq_f16(a_vec, b_vec));
-                }
-            }
-
-            for (size_t i = vectorized_end; i < end_idx; ++i) {
-                output[i] = a[i] * b[i];
-            }
-        });
+    elementwise_binop_f16<BroadcastOp::MUL>(a, b, output, num_elements);
 }
 
 void cactus_add_scaled_f16(const __fp16* base, const __fp16* src, __fp16* output, size_t num_elements, float scale) {
@@ -341,30 +286,7 @@ void cactus_add_scaled_f16(const __fp16* base, const __fp16* src, __fp16* output
 }
 
 void cactus_divide_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements) {
-    const bool use_streaming = num_elements >= STREAMING_STORE_THRESHOLD;
-    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::ELEMENT_WISE,
-        [&](size_t start_idx, size_t end_idx) {
-            constexpr size_t SIMD_WIDTH = 8;
-            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
-
-            if (use_streaming) {
-                for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                    float16x8_t a_vec = vld1q_f16(&a[i]);
-                    float16x8_t b_vec = vld1q_f16(&b[i]);
-                    stream_store_f16x8(&output[i], vdivq_f16(a_vec, b_vec));
-                }
-            } else {
-                for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
-                    float16x8_t a_vec = vld1q_f16(&a[i]);
-                    float16x8_t b_vec = vld1q_f16(&b[i]);
-                    vst1q_f16(&output[i], vdivq_f16(a_vec, b_vec));
-                }
-            }
-
-            for (size_t i = vectorized_end; i < end_idx; ++i) {
-                output[i] = a[i] / b[i];
-            }
-        });
+    elementwise_binop_f16<BroadcastOp::DIV>(a, b, output, num_elements);
 }
 
 void cactus_add_broadcast_f16(const __fp16* a, const __fp16* b, __fp16* output,

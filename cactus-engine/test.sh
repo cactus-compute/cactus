@@ -37,7 +37,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-MODEL_DIR="${CACTUS_TEST_MODEL:-${MODEL_ARG:-$PROJECT_ROOT/weights/gemma-4-e2b-it}}"
+MODEL_DIR="${CACTUS_TEST_MODEL:-${MODEL_ARG:-$PROJECT_ROOT/weights/LFM2-VL-450M}}"
 
 if [ "$IOS_MODE" = true ]; then
     export CACTUS_TEST_ONLY="$ONLY_EXEC"

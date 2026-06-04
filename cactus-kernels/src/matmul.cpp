@@ -680,8 +680,6 @@ __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
         const uint32_t n_vecs = gs / 16;
         const size_t n_start4 = cache_block * 4;
 
-        // Set up per-row state once. Avoids the 1KB exp4 stack temporary that
-        // the previous structure forced.
         const uint8_t* row_ptrs[4];
         bool row_valid[4];
         for (size_t ni = 0; ni < 4; ++ni) {
@@ -696,8 +694,6 @@ __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
             }
         }
 
-        // Stream: unpack 4 rows' chunks and interleave + store in lockstep.
-        // Each iteration keeps 4 (or 8 with wider) int8x16_t in registers, no stack temp.
         uint32_t v = 0;
         for (; v + 1 < n_vecs; v += 2) {
             int8x16_t r0a, r0b, r1a, r1b, r2a, r2b, r3a, r3b;
@@ -794,9 +790,6 @@ __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
                     const float32x4_t scale2 = vmulq_n_f32(vld1q_f32(norm_stack2), act_scale);
                     const float32x4_t scale3 = vmulq_n_f32(vld1q_f32(norm_stack3), act_scale);
 
-                    // Fuse the int32->fp32 convert, scale multiply, and acc accumulation
-                    // into a single vfma per output quad. Saves the tmp[16] roundtrip and
-                    // the 16-element scalar add loop the compiler couldn't vectorize.
                     vst1q_f32(acc + 0,  vfmaq_f32(vld1q_f32(acc + 0),  vcvtq_f32_s32(dot0), scale0));
                     vst1q_f32(acc + 4,  vfmaq_f32(vld1q_f32(acc + 4),  vcvtq_f32_s32(dot1), scale1));
                     vst1q_f32(acc + 8,  vfmaq_f32(vld1q_f32(acc + 8),  vcvtq_f32_s32(dot2), scale2));
@@ -982,34 +975,29 @@ void cactus_quant_2bit_gemv(
     });
 }
 
-void cactus_quant_4bit_gemm(
+template<uint32_t Bits, typename Decoder>
+static void cactus_quant_Nbit_gemm_impl(
     const CactusQuantMatrix* W,
     const __fp16* A,
     uint32_t M,
-    __fp16* C) {
+    __fp16* C,
+    uint32_t gs_align) {
     if (!cactus_quant_valid_common(W, A, C) || M == 0) return;
-    if (W->bits != 4 || (W->group_size % 16) != 0) return;
+    if (W->bits != Bits || (W->group_size % gs_align) != 0) return;
     thread_local std::vector<__fp16> code_basis_buf;
     if (code_basis_buf.size() < static_cast<size_t>(M) * W->K) {
         code_basis_buf.resize(static_cast<size_t>(M) * W->K);
     }
     cactus_quant_transform_hadamard_activations(*W, A, M, code_basis_buf.data());
-    cactus_quant_group_gemm<4>(*W, code_basis_buf.data(), M, C, CactusTQ4ScaledDecoder(*W));
+    cactus_quant_group_gemm<Bits>(*W, code_basis_buf.data(), M, C, Decoder(*W));
 }
 
-void cactus_quant_2bit_gemm(
-    const CactusQuantMatrix* W,
-    const __fp16* A,
-    uint32_t M,
-    __fp16* C) {
-    if (!cactus_quant_valid_common(W, A, C) || M == 0) return;
-    if (W->bits != 2 || (W->group_size % 8) != 0) return;
-    thread_local std::vector<__fp16> code_basis_buf;
-    if (code_basis_buf.size() < static_cast<size_t>(M) * W->K) {
-        code_basis_buf.resize(static_cast<size_t>(M) * W->K);
-    }
-    cactus_quant_transform_hadamard_activations(*W, A, M, code_basis_buf.data());
-    cactus_quant_group_gemm<2>(*W, code_basis_buf.data(), M, C, CactusTQ2ScaledDecoder(*W));
+void cactus_quant_4bit_gemm(const CactusQuantMatrix* W, const __fp16* A, uint32_t M, __fp16* C) {
+    cactus_quant_Nbit_gemm_impl<4, CactusTQ4ScaledDecoder>(W, A, M, C, 16);
+}
+
+void cactus_quant_2bit_gemm(const CactusQuantMatrix* W, const __fp16* A, uint32_t M, __fp16* C) {
+    cactus_quant_Nbit_gemm_impl<2, CactusTQ2ScaledDecoder>(W, A, M, C, 8);
 }
 
 
@@ -1127,19 +1115,8 @@ void cactus_quant_1bit_gemv(
     });
 }
 
-void cactus_quant_1bit_gemm(
-    const CactusQuantMatrix* W,
-    const __fp16* A,
-    uint32_t M,
-    __fp16* C) {
-    if (!cactus_quant_valid_common(W, A, C) || M == 0) return;
-    if (W->bits != 1 || (W->group_size % 8) != 0) return;
-    thread_local std::vector<__fp16> code_basis_buf;
-    if (code_basis_buf.size() < static_cast<size_t>(M) * W->K) {
-        code_basis_buf.resize(static_cast<size_t>(M) * W->K);
-    }
-    cactus_quant_transform_hadamard_activations(*W, A, M, code_basis_buf.data());
-    cactus_quant_group_gemm<1>(*W, code_basis_buf.data(), M, C, CactusTQ1ScaledDecoder(*W));
+void cactus_quant_1bit_gemm(const CactusQuantMatrix* W, const __fp16* A, uint32_t M, __fp16* C) {
+    cactus_quant_Nbit_gemm_impl<1, CactusTQ1ScaledDecoder>(W, A, M, C, 8);
 }
 
 
@@ -1249,19 +1226,8 @@ void cactus_quant_3bit_gemv(
     });
 }
 
-void cactus_quant_3bit_gemm(
-    const CactusQuantMatrix* W,
-    const __fp16* A,
-    uint32_t M,
-    __fp16* C) {
-    if (!cactus_quant_valid_common(W, A, C) || M == 0) return;
-    if (W->bits != 3 || (W->group_size % 8) != 0) return;
-    thread_local std::vector<__fp16> code_basis_buf;
-    if (code_basis_buf.size() < static_cast<size_t>(M) * W->K) {
-        code_basis_buf.resize(static_cast<size_t>(M) * W->K);
-    }
-    cactus_quant_transform_hadamard_activations(*W, A, M, code_basis_buf.data());
-    cactus_quant_group_gemm<3>(*W, code_basis_buf.data(), M, C, CactusTQ3ScaledDecoder(*W));
+void cactus_quant_3bit_gemm(const CactusQuantMatrix* W, const __fp16* A, uint32_t M, __fp16* C) {
+    cactus_quant_Nbit_gemm_impl<3, CactusTQ3ScaledDecoder>(W, A, M, C, 8);
 }
 
 static inline float tq_quantize_codebook_i8(const __fp16* codebook, int8_t* cb_i8, uint32_t cb_size) {

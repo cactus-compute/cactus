@@ -21,9 +21,9 @@ def is_repo_checkout():
     return _looks_like_project_root(PROJECT_ROOT)
 
 
-DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
-DEFAULT_TEST_MODEL_ID = "google/gemma-4-E2B-it"
-DEFAULT_ASR_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
+DEFAULT_MODEL_ID = "LiquidAI/LFM2-VL-450M"
+DEFAULT_TEST_MODEL_ID = "LiquidAI/LFM2-VL-450M"
+DEFAULT_ASR_MODEL_ID = "openai/whisper-base"
 
 
 RED = '\033[0;31m'

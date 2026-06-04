@@ -38,6 +38,8 @@ bool test_multiple_outputs() {
     size_t mul_result = fixture.graph().scalar_multiply(input_a, 2.0f);
     size_t combine_result = fixture.graph().add(add_result, mul_result);
 
+    fixture.graph().retain_outputs({static_cast<int>(add_result), static_cast<int>(mul_result)});
+
     std::vector<__fp16> data_a = {1, 2, 3};
     fixture.set_input_data(input_a, data_a);
     fixture.execute();

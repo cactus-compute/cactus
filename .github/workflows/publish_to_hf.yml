@@ -1,0 +1,153 @@
+name: Publish to Hugging Face
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model to publish (leave empty to publish all)
+        required: false
+        type: string
+      version:
+        description: Version tag
+        required: true
+        type: string
+      org:
+        description: Organization
+        required: false
+        default: Cactus-Compute
+        type: string
+      int4:
+        description: Export INT4
+        required: false
+        type: boolean
+        default: false
+      int8:
+        description: Export INT8
+        required: false
+        type: boolean
+        default: false
+      fp16:
+        description: Export FP16
+        required: false
+        type: boolean
+        default: false
+      apple:
+        description: Export Apple weights
+        required: false
+        type: boolean
+        default: false
+      pipeline_tag:
+        description: Pipeline tag (e.g. text-generation)
+        required: false
+        type: string
+      tags:
+        description: Comma-separated tags (e.g. completion,tools)
+        required: false
+        type: string
+      description:
+        description: Model description
+        required: false
+        type: string
+      branch:
+        description: Branch override (uses version tag if empty)
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: macos-latest
+    steps:
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || steps.version.outputs.tag }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: cactus-compute/cactus-pro
+          token: ${{ secrets.CACTUS_PRO_TOKEN }}
+          path: cactus-pro
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r python/requirements.txt
+
+      - name: Publish models
+        run: |
+          cd python
+          ORG="${{ github.event.inputs.org || 'Cactus-Compute' }}"
+          VERSION="${{ steps.version.outputs.tag }}"
+
+          publish_model() {
+            local model=$1 int4=$2 int8=$3 fp16=$4 apple=$5 pipeline_tag=$6 tags=$7 description="${8:-}"
+            local FLAGS=(--version "$VERSION" --org "$ORG" --model "$model")
+            [ "$int4" == "true" ] && FLAGS+=(--int4)
+            [ "$int8" == "true" ] && FLAGS+=(--int8)
+            [ "$fp16" == "true" ] && FLAGS+=(--fp16)
+            [ "$apple" == "true" ] && FLAGS+=(--apple)
+            [ -n "$pipeline_tag" ] && FLAGS+=(--pipeline-tag "$pipeline_tag")
+            [ -n "$tags" ] && FLAGS+=(--tags "$tags")
+            set +e
+            python -m src.publish_to_hf --task export_model "${FLAGS[@]}" --description "$description"
+            local rc=$?
+            set -e
+            return $rc
+          }
+
+          if [ -n "${{ github.event.inputs.model }}" ]; then
+            publish_model \
+              "${{ github.event.inputs.model }}" \
+              "${{ github.event.inputs.int4 }}" \
+              "${{ github.event.inputs.int8 }}" \
+              "${{ github.event.inputs.fp16 }}" \
+              "${{ github.event.inputs.apple }}" \
+              "${{ github.event.inputs.pipeline_tag }}" \
+              "${{ github.event.inputs.tags }}" \
+              "${{ github.event.inputs.description }}"
+          else
+            FAILED_MODELS=()
+            while read -r config; do
+              model=$(echo "$config" | jq -r '.model')
+              int4=$(echo "$config" | jq -r '.int4')
+              int8=$(echo "$config" | jq -r '.int8')
+              fp16=$(echo "$config" | jq -r '.fp16')
+              apple=$(echo "$config" | jq -r '.apple')
+              pipeline_tag=$(echo "$config" | jq -r '.pipeline_tag // ""')
+              tags=$(echo "$config" | jq -r 'if .tags then .tags | join(",") else "" end')
+              description=$(echo "$config" | jq -r '.description // ""')
+              if ! publish_model "$model" "$int4" "$int8" "$fp16" "$apple" "$pipeline_tag" "$tags" "$description"; then
+                echo "::error::Failed to publish $model"
+                FAILED_MODELS+=("$model")
+              fi
+            done < <(jq -c '.[]' "$GITHUB_WORKSPACE/models.json")
+
+            if [ ${#FAILED_MODELS[@]} -gt 0 ]; then
+              echo "::error::Failed models: ${FAILED_MODELS[*]}"
+              exit 1
+            fi
+          fi
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HUB_DISABLE_XET: "1"
+
+      - name: Update organization README
+        if: "!github.event.inputs.model"
+        run: |
+          cd python
+          ORG="${{ github.event.inputs.org || 'Cactus-Compute' }}"
+          python -m src.publish_to_hf --task update_org_readme --org "$ORG"
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}

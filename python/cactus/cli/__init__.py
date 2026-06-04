@@ -45,7 +45,7 @@ def create_parser():
 
   cactus run <model>                   chat playground for any model
                                        auto-converts and transpiles if needed
-                                       default model: google/gemma-4-E2B-it
+                                       default model: LiquidAI/LFM2-VL-450M
 
     Optional flags:
     --image <path>                     image file for VLM inference
@@ -59,7 +59,7 @@ def create_parser():
   -----------------------------------------------------------------
 
   cactus transcribe [model]            speech-to-text transcription
-                                       default model: nvidia/parakeet-tdt-0.6b-v3
+                                       default model: openai/whisper-base
 
     Optional flags:
     --file <audio.wav>                 audio file to transcribe
@@ -111,7 +111,7 @@ def create_parser():
                                        all must pass for contributions
 
     Optional flags:
-    --model <model>                    default: google/gemma-4-E2B-it
+    --model <model>                    default: LiquidAI/LFM2-VL-450M
     --token <token>                    HuggingFace API token
     --suite <name>                     run a specific test suite
     --reconvert                        force reconversion from source
