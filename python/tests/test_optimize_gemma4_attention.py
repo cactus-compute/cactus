@@ -1,7 +1,11 @@
+import torch
+
+from cactus.transpile.canonicalize.utils import rebuild_graph
 from cactus.transpile.graph_ir import IRGraph
 from cactus.transpile.graph_ir import IRNode
 from cactus.transpile.graph_ir import IRValue
 from cactus.transpile.optimize_graph import normalize_gemma4_decoder_attention_semantics
+from cactus.transpile.optimize_graph import precompute_rope_tables
 
 
 def test_normalize_gemma4_full_attention_uses_sequence_window_compat() -> None:
@@ -222,3 +226,52 @@ def test_normalize_gemma4_attention_elides_logical_fp16_mask() -> None:
     assert graph.nodes["attn"].inputs == ["query", "key", "value"]
     assert graph.nodes["attn"].attrs["is_causal"] is True
     assert graph.nodes["attn"].attrs["window_size"] == 512
+
+
+def test_precompute_rope_tables_replaces_runtime_angle_with_fp16_lookup() -> None:
+    head_dim = 8
+    max_seq = 4096
+    theta = 10000.0
+    inv_freq = 1.0 / (theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
+
+    graph = IRGraph(
+        values={
+            "positions": IRValue(id="positions", shape=(1, 4), dtype="int32"),
+            "angle": IRValue(id="angle", shape=(1, 4, head_dim // 2), dtype="fp32", producer="matmul"),
+            "emb": IRValue(id="emb", shape=(1, 4, head_dim), dtype="fp32", producer="cat"),
+            "cos": IRValue(id="cos", shape=(1, 4, head_dim), dtype="fp32", producer="cos_node"),
+        },
+        nodes={
+            "matmul": IRNode(id="matmul", op="matmul", inputs=["positions", "inv_freq"], outputs=["angle"]),
+            "cat": IRNode(id="cat", op="cat", inputs=["angle", "angle"], outputs=["emb"], attrs={"dim": -1}),
+            "cos_node": IRNode(
+                id="cos_node", op="scalar_cos", inputs=["emb"], outputs=["cos"],
+                meta={"component": "decoder"},
+            ),
+        },
+        order=["matmul", "cat", "cos_node"],
+        inputs=["positions"],
+        outputs=["cos"],
+        constants={"inv_freq": inv_freq},
+        meta={"component": "decoder", "max_cache_seq_len": max_seq},
+    )
+    rebuild_graph(graph)
+
+    assert precompute_rope_tables(graph) is True
+
+    cos_node = graph.nodes["cos_node"]
+    assert cos_node.op == "embedding"
+    table_id, position_id = cos_node.inputs
+    assert table_id.startswith("c_rope_table_")
+    assert position_id == "positions"
+
+    table = graph.constants[table_id]
+    assert table.dtype == torch.float16
+    assert tuple(table.shape) == (max_seq, head_dim)
+    assert graph.values["cos"].dtype == "fp16"
+
+    # Positions past the fp16-angle range (>2048) stay distinct/representable in the table.
+    positions = torch.arange(max_seq, dtype=torch.float64).reshape(max_seq, 1)
+    freqs = positions * inv_freq.to(torch.float64).reshape(1, -1)
+    expected = torch.cos(torch.cat((freqs, freqs), dim=-1)).to(torch.float16)
+    assert torch.equal(table[[0, 1, 2049, max_seq - 1]], expected[[0, 1, 2049, max_seq - 1]])
