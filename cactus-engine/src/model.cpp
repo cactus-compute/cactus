@@ -3001,6 +3001,10 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         if (!compressible.count(li)) continue;  // global layers only
         const auto& cs = comp.cache_states[li];
         if (cs.key_node_id < 0 || cs.value_node_id < 0) continue;
+        // Only attention KV caches. Hybrid models (LFM2) put conv + gated-deltanet recurrent cache
+        // states in the same list (different / header-less layout); KeyDiff would corrupt them and
+        // read out of bounds, so skip anything that is not a KV_CACHE_STATE.
+        if (comp.graph->get_node_op_type(static_cast<size_t>(cs.key_node_id)) != OpType::KV_CACHE_STATE) continue;
 
         const auto& kdesc = comp.graph->get_output_buffer(static_cast<size_t>(cs.key_node_id));
         const auto& vdesc = comp.graph->get_output_buffer(static_cast<size_t>(cs.value_node_id));
@@ -3060,6 +3064,7 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             if (compressible.count(li)) continue;  // sliding (non-compressible) layers only
             const auto& cs = comp.cache_states[li];
             if (cs.key_node_id < 0) continue;
+            if (comp.graph->get_node_op_type(static_cast<size_t>(cs.key_node_id)) != OpType::KV_CACHE_STATE) continue;  // skip conv/recurrent caches
             const auto& kdesc = comp.graph->get_output_buffer(static_cast<size_t>(cs.key_node_id));
             if (kdesc.byte_size <= kHeaderBytes) continue;
             void* kraw = comp.graph->get_output(static_cast<size_t>(cs.key_node_id));
