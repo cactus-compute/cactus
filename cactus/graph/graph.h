@@ -341,7 +341,6 @@ struct OpParams {
     float temperature = 1.0f;
     float top_p = 1.0f;
     float min_p = 0.15f;
-    float repetition_penalty = 1.1f;
     size_t top_k = 0;
     size_t random_seed = 0;
     
@@ -640,7 +639,7 @@ public:
 
     size_t sample(size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,
                   const std::unordered_map<uint32_t, float>& logit_bias = {});
-    size_t sample_with_options(size_t logits, float temperature, float top_p, float min_p, float repetition_penalty,
+    size_t sample_with_options(size_t logits, float temperature, float top_p, float min_p,
                                size_t top_k, const std::unordered_map<uint32_t, float>& logit_bias = {});
     
     size_t concat(size_t input1, size_t input2, int axis = 0);

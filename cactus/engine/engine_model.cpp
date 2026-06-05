@@ -300,7 +300,7 @@ size_t Model::sample_token(CactusGraph* gb, size_t logits_node_id, float tempera
             combined_bias[tok] -= log_penalty;
         }
     }
-    return gb->sample_with_options(logits_node_id, temperature, top_p, min_p, 1.0f, top_k, combined_bias);
+    return gb->sample_with_options(logits_node_id, temperature, top_p, min_p, top_k, combined_bias);
 }
 
 void Model::compute_entropy(CactusGraph* gb, size_t logits_node_id, float* out_entropy) {

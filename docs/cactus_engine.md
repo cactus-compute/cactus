@@ -495,6 +495,8 @@ int cactus_transcribe(
     "temperature": 0.0,
     "top_p": 0.0,
     "top_k": 0,
+    "min_p": 0.15,
+    "repetition_penalty": 1.1,
     "use_vad": true,
     "cloud_handoff_threshold": 0.0,
     "custom_vocabulary": ["word1", "word2"],
@@ -508,6 +510,8 @@ int cactus_transcribe(
 | `temperature` | float | 0.0 | Sampling temperature |
 | `top_p` | float | 0.0 | Top-p (nucleus) sampling |
 | `top_k` | int | 0 | Top-k sampling |
+| `min_p` | float | 0.15 | Minimum probability threshold relative to max probability |
+| `repetition_penalty` | float | 1.1 | Penalize previously generated tokens (1.0 disables) |
 | `use_vad` | bool | true | Split audio using voice activity detection before transcribing |
 | `cloud_handoff_threshold` | float | model default | Maximum token entropy norm above which cloud handoff is flagged |
 | `custom_vocabulary` | array | [] | Words or phrases to boost recognition probability |
