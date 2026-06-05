@@ -62,9 +62,9 @@ cp "$BUILD_DIR/lib/libcactus.so" "$ANDROID_DIR/" 2>/dev/null || \
    cp "$BUILD_DIR/libcactus.so" "$ANDROID_DIR" 2>/dev/null || \
    { echo "Error: Could not find libcactus.so"; exit 1; }
 
-cp "$BUILD_DIR/lib/libcactus_static.a" "$ANDROID_DIR/libcactus.a" 2>/dev/null || \
-   cp "$BUILD_DIR/libcactus_static.a" "$ANDROID_DIR/libcactus.a" 2>/dev/null || \
-   { echo "Warning: Could not find libcactus_static.a"; }
+cp "$BUILD_DIR/lib/libcactus.a" "$ANDROID_DIR/libcactus.a" 2>/dev/null || \
+   cp "$BUILD_DIR/libcactus.a" "$ANDROID_DIR/libcactus.a" 2>/dev/null || \
+   { echo "Warning: Could not find libcactus.a"; }
 
 echo "Build complete!"
 echo "Shared library location: $ANDROID_DIR/libcactus.so"

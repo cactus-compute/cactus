@@ -20,19 +20,19 @@ Install Cactus and run your first on-device AI completion.
 
 === "Kotlin"
 
-    --8<-- "android/README.md:install"
+    --8<-- "kotlin/README.md:install"
 
     ### Platform Integration
 
-    --8<-- "android/README.md:integration"
+    --8<-- "kotlin/README.md:integration"
 
 === "Swift"
 
-    --8<-- "apple/README.md:install"
+    --8<-- "swift/README.md:install"
 
     ### Platform Integration
 
-    --8<-- "apple/README.md:integration"
+    --8<-- "swift/README.md:integration"
 
 === "Python"
 
@@ -116,11 +116,11 @@ Install Cactus and run your first on-device AI completion.
 
 === "Kotlin"
 
-    --8<-- "android/README.md:example"
+    --8<-- "kotlin/README.md:example"
 
 === "Swift"
 
-    --8<-- "apple/README.md:example"
+    --8<-- "swift/README.md:example"
 
 === "Python"
 
@@ -129,27 +129,30 @@ Install Cactus and run your first on-device AI completion.
 === "Rust"
 
     ```rust
-    use cactus_sys::*;
     use std::ffi::CString;
+    use std::os::raw::c_char;
+
+    mod cactus;
 
     unsafe {
         let model_path = CString::new("path/to/weight/folder").unwrap();
-        let model = cactus_init(model_path.as_ptr(), std::ptr::null(), false);
+        let model = cactus::cactus_init(model_path.as_ptr(), std::ptr::null(), false);
 
         let messages = CString::new(
             r#"[{"role": "user", "content": "What is the capital of France?"}]"#
         ).unwrap();
 
         let mut response = vec![0u8; 4096];
-        cactus_complete(
+        cactus::cactus_complete(
             model, messages.as_ptr(),
-            response.as_mut_ptr() as *mut i8, 4096,
+            response.as_mut_ptr() as *mut c_char, response.len(),
             std::ptr::null(), std::ptr::null(),
             None, std::ptr::null_mut(),
+            std::ptr::null(), 0,
         );
 
         println!("{}", String::from_utf8_lossy(&response));
-        cactus_destroy(model);
+        cactus::cactus_destroy(model);
     }
     ```
 

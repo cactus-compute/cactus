@@ -9,6 +9,7 @@
 *.cg
 
 !cactus-engine/libs/curl/**/*.a
+!libs/curl/**/*.a
 !android/mbedtls/**/*.a
 
 apple/build-*/
@@ -25,7 +26,6 @@ bindings/flutter/*.xcframework
 .vscode
 .DS_Store
 
-__pycache__
 __pycache__/
 *.pyc
 *.egg-info

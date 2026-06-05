@@ -13,8 +13,13 @@ on:
       - python/README.md
       - apple/README.md
       - android/README.md
+      - bindings/README.md
       - bindings/flutter/README.md
+      - bindings/kotlin/README.md
+      - bindings/python/README.md
+      - bindings/react-native/README.md
       - bindings/rust/README.md
+      - bindings/swift/README.md
       - README.md
   workflow_call:
     inputs:

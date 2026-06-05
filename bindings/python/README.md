@@ -1,6 +1,6 @@
 # Python Bindings
 
-ctypes FFI bindings to `cactus_engine.h`.
+ctypes FFI bindings to `cactus_engine.h`. The package source lives at [`/python/`](/python/).
 
 ## Integration
 

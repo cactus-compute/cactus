@@ -4,9 +4,12 @@ Raw `extern "C"` declarations for `cactus_engine.h`.
 
 ## Integration
 
+<!-- --8<-- [start:install] -->
 ```bash
 cactus build
 ```
+<!-- --8<-- [end:install] -->
+
 
 1. Copy `cactus.rs` into your project
 2. Link against `libcactus.a` in your `build.rs`:
