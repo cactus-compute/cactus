@@ -1,5 +1,5 @@
 #include <jni.h>
-#include "cactus.h"
+#include "cactus_engine.h"
 
 struct TokenCallbackContext {
     JavaVM* jvm;
