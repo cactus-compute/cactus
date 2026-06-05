@@ -39,8 +39,8 @@ Pick the right one for your platform and use case:
 - **[Python](/python/)** -- Module-level FFI bindings, mirrors the C API
 - **[Swift](/bindings/swift/)** -- XCFramework for iOS/macOS with NPU support
 - **[Kotlin](/bindings/kotlin/)** -- JNI bindings + Kotlin Multiplatform support
-- **[Flutter](/flutter/)** -- Dart FFI bindings for Android, iOS, and macOS
-- **[Rust](/rust/)** -- Auto-generated FFI bindings via bindgen
+- **[Flutter](/bindings/flutter/)** -- Dart FFI bindings for Android, iOS, and macOS
+- **[Rust](/bindings/rust/)** -- Raw `extern "C"` FFI declarations
 - **[C++ / Engine API](/docs/cactus_engine.md)** -- Direct C FFI for maximum control
 
 ## Getting Started

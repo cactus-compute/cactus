@@ -203,7 +203,7 @@ int main() {
 }
 ```
 
-### 6. Use the [Rust Binding](/rust/)
+### 6. Use the [Rust Binding](/bindings/rust/)
 
 Add `cactus-sys` to your `Cargo.toml` and call the FFI bindings directly:
 
@@ -292,7 +292,7 @@ println("Final: $finalResult")
 cactusDestroy(model)
 ```
 
-### 9. Use the [Flutter Binding](/flutter/)
+### 9. Use the [Flutter Binding](/bindings/flutter/)
 
 The Flutter binding brings Cactus transcription to iOS, macOS, and Android:
 

@@ -77,5 +77,5 @@ Check out the open-source engine and documentation on GitHub.
 - [Python Binding](/python/) — Python bindings
 - [Swift Binding](/bindings/swift/) — Swift API
 - [Kotlin Binding](/bindings/kotlin/) — Kotlin API
-- [Flutter Binding](/flutter/) — Flutter bindings
+- [Flutter Binding](/bindings/flutter/) — Flutter bindings
 - [LFM2 24B Review](/blog/lfm2_24b_a2b.md) — Running large MoE models locally with Cactus

@@ -2,7 +2,7 @@
 
 - `python/` uses `ctypes`
 - `swift/` uses a C module map
-- `kotlin/` uses JNI
+- `kotlin/` uses JNI on Android and Kotlin/Native cinterop on iOS (KMP)
 - `flutter/` uses Dart FFI
 - `rust/` uses raw `extern "C"` declarations
 - `react-native/` contains a thin React Native bridge backed by the raw Kotlin and Swift bindings

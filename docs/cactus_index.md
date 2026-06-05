@@ -570,4 +570,4 @@ cactus_index_destroy(new_index);
 - [Python Binding](/python/) — Python bindings with vector index support
 - [Swift Binding](/bindings/swift/) — Swift vector index functions
 - [Kotlin Binding](/bindings/kotlin/) — Kotlin vector index functions
-- [Flutter Binding](/flutter/) — Dart vector index functions
+- [Flutter Binding](/bindings/flutter/) — Dart vector index functions

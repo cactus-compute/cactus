@@ -4,18 +4,23 @@ Dart FFI bindings to `cactus_engine.h`.
 
 ## Integration
 
+<!-- --8<-- [start:install] -->
 ```bash
 cactus build --apple
 cactus build --android
 ```
+<!-- --8<-- [end:install] -->
 
+<!-- --8<-- [start:integration] -->
 1. Copy `libcactus.so` to `jniLibs/arm64-v8a/` (Android)
 2. Add `cactus-ios.xcframework` to your Xcode project (iOS)
 3. Copy `cactus.dart` into your Dart source tree
 4. Add `ffi` to `pubspec.yaml`
+<!-- --8<-- [end:integration] -->
 
 ## Usage
 
+<!-- --8<-- [start:example] -->
 ```dart
 import 'cactus.dart';
 import 'package:ffi/ffi.dart';
@@ -32,3 +37,4 @@ calloc.free(msgs);
 calloc.free(buf);
 cactusDestroy(model);
 ```
+<!-- --8<-- [end:example] -->

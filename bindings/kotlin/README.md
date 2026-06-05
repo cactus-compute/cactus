@@ -4,13 +4,18 @@ JNI bridge to `cactus_engine.h` for Android, with KMP support for iOS.
 
 ## Android Integration
 
+<!-- --8<-- [start:install] -->
 ```bash
 cactus build --android
 ```
+<!-- --8<-- [end:install] -->
 
+<!-- --8<-- [start:integration] -->
 1. Copy `android/libcactus.so` to `app/src/main/jniLibs/arm64-v8a/`
 2. Copy `Cactus.kt` to your Kotlin source tree
+<!-- --8<-- [end:integration] -->
 
+<!-- --8<-- [start:example] -->
 ```kotlin
 val handle = CactusJNI.nativeInit("/path/to/model", null, false)
 val buf = ByteArray(65536)
@@ -18,6 +23,7 @@ CactusJNI.nativeComplete(handle, messagesJson, buf, null, null, null, null)
 val response = String(buf, 0, buf.indexOf(0))
 CactusJNI.nativeDestroy(handle)
 ```
+<!-- --8<-- [end:example] -->
 
 ## Kotlin Multiplatform
 
@@ -53,6 +59,6 @@ kotlin {
 
 ```kotlin
 val model = cactusInit("/path/to/model", null, false)
-val result = cactusComplete(model, messagesJson, null, null, null)
+val result = cactusComplete(model, messagesJson, null, null, null, null)
 cactusDestroy(model)
 ```

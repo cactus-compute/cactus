@@ -144,7 +144,6 @@ def _ensure_chat_binary(project_root, lib_path):
     build_args = argparse.Namespace(
         apple=False,
         android=False,
-        flutter=False,
         python=False,
     )
     result = cmd_build(build_args)
@@ -723,8 +722,6 @@ def cmd_build(args):
         return cmd_build_apple(args)
     if getattr(args, 'android', False):
         return cmd_build_android(args)
-    if getattr(args, 'flutter', False):
-        return cmd_build_flutter(args)
     if getattr(args, 'python', False):
         return cmd_build_python(args)
 
@@ -931,30 +928,6 @@ def cmd_build_android(args):
         return 1
 
     print_color(GREEN, "Android build complete!")
-    return 0
-
-
-def cmd_build_flutter(args):
-    """Build Cactus for Flutter (iOS, macOS, Android)."""
-    print_color(BLUE, "Building Cactus for Flutter...")
-    print("=" * 32)
-
-    build_script = PROJECT_ROOT / "flutter" / "build.sh"
-    if not build_script.exists():
-        print_color(RED, f"Error: build.sh not found at {build_script}")
-        return 1
-
-    result = run_command(str(build_script), cwd=PROJECT_ROOT / "flutter", check=False)
-    if result.returncode != 0:
-        print_color(RED, "Flutter build failed")
-        return 1
-
-    print_color(GREEN, "Flutter build complete!")
-    print()
-    print("Output:")
-    print(f"  flutter/libcactus.so")
-    print(f"  flutter/cactus-ios.xcframework")
-    print(f"  flutter/cactus-macos.xcframework")
     return 0
 
 
@@ -1974,7 +1947,6 @@ def create_parser():
     Optional flags:
     --apple                            build for Apple (iOS/macOS)
     --android                          build for Android
-    --flutter                          build for Flutter (all platforms)
     --python                           build shared lib for Python FFI
 
   -----------------------------------------------------------------
@@ -2059,8 +2031,6 @@ def create_parser():
                               help='Build for Apple platforms (iOS/macOS)')
     build_parser.add_argument('--android', action='store_true',
                               help='Build for Android')
-    build_parser.add_argument('--flutter', action='store_true',
-                              help='Build for Flutter (iOS, macOS, Android)')
     build_parser.add_argument('--python', action='store_true',
                               help='Build shared library for Python FFI')
 

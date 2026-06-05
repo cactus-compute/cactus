@@ -1344,5 +1344,5 @@ void cactus_telemetry_shutdown(void);
 - [Python Binding](/python/) — Python bindings for the Engine API
 - [Swift Binding](/bindings/swift/) — Swift bindings for iOS and macOS
 - [Kotlin Binding](/bindings/kotlin/) — Kotlin Multiplatform bindings
-- [Flutter Binding](/flutter/) — Dart FFI bindings for mobile apps
-- [Rust Binding](/rust/) — Rust FFI bindings via bindgen
+- [Flutter Binding](/bindings/flutter/) — Dart FFI bindings for mobile apps
+- [Rust Binding](/bindings/rust/) — Raw `extern "C"` FFI declarations

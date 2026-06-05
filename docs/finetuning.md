@@ -86,13 +86,12 @@ cactus build --apple
 Build complete!
 Total time: 58 seconds
 Static libraries:
-  Device: /Users/henry/Desktop/cactus/apple/libcactus-device.a
-  Simulator: /Users/henry/Desktop/cactus/apple/libcactus-simulator.a
+  Device: <repo>/apple/libcactus-device.a
+  Simulator: <repo>/apple/libcactus-simulator.a
 XCFrameworks:
-  iOS: /Users/henry/Desktop/cactus/apple/cactus-ios.xcframework
-  macOS: /Users/henry/Desktop/cactus/apple/cactus-macos.xcframework
+  iOS: <repo>/apple/cactus-ios.xcframework
+  macOS: <repo>/apple/cactus-macos.xcframework
 Apple build complete!
-(venv) henry@Henrys-MacBook-Air cactus %
 ```
 
 Link `cactus-ios.xcframework` to your Xcode project, then:
@@ -141,10 +140,9 @@ cactus build --android
 ```
 ```bash
 Build complete!
-Shared library location: /Users/henry/Desktop/cactus/android/libcactus.so
-Static library location: /Users/henry/Desktop/cactus/android/libcactus.a
+Shared library location: <repo>/android/libcactus.so
+Static library location: <repo>/android/libcactus.a
 Android build complete!
-(venv) henry@Henrys-MacBook-Air cactus %
 ```
 
 Copy `libcactus.so` to `app/src/main/jniLibs/arm64-v8a/`, then:
