@@ -2,6 +2,7 @@
 #include "../src/kv_compress.h"
 #include "../src/engine.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -447,8 +448,6 @@ bool test_env_override_parse() {
     return true;
 }
 
-// --- Sliding-window re-rope (single position frame) -------------------------------------------
-
 bool test_rerope_recent_fp16_uniform() {
     // After a delta shift each recent row reads as rope(pre, t+delta); sink rows stay byte-identical.
     const size_t n = 40, max_seq = 64, kv_heads = 2, head_dim = 16, sink = 4;
@@ -665,6 +664,92 @@ bool test_dequant_simd_matches_scalar() {
     return ok;
 }
 
+bool test_keepset_protect_union() {
+    // A low-score position KeyDiff would evict is force-kept via Params::protect.
+    const size_t n = 64;
+    std::vector<float> scores(n);
+    for (size_t i = 0; i < n; ++i) scores[i] = 0.01f * static_cast<float>(i);
+    Params p; p.sink = 4; p.recent_frac = 0.25f; p.abs_budget = 24;
+    const int special = 9;
+
+    auto base = keepset_for_head(scores.data(), n, p);
+    if (std::find(base.begin(), base.end(), special) != base.end()) return false;
+
+    p.protect = {special};
+    auto prot = keepset_for_head(scores.data(), n, p);
+    if (std::find(prot.begin(), prot.end(), special) == prot.end()) return false;
+    if (prot.size() != 24) return false;
+    for (int i = 0; i < 4; ++i)
+        if (std::find(prot.begin(), prot.end(), i) == prot.end()) return false;
+    return true;
+}
+
+bool test_rolling_protect_survives() {
+    // A token KeyDiff would evict survives each compaction cycle when re-protected.
+    const int trigger_len = 256, target_len = 128;
+    const size_t kv_heads = 2, head_dim = 16, max_seq = trigger_len + 8;
+    const double theta = 1000000.0;
+
+    std::vector<char> kbuf(kHeaderBytes + max_seq * kv_heads * head_dim * sizeof(uint16_t), 0);
+    std::vector<char> vbuf(kbuf.size(), 0);
+    auto* khdr = reinterpret_cast<Header*>(kbuf.data());
+    auto* vhdr = reinterpret_cast<Header*>(vbuf.data());
+    *khdr = Header{0, max_seq, kv_heads, head_dim, 4, {0, 0, 0}};
+    *vhdr = *khdr;
+    auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
+    auto* vrows = reinterpret_cast<uint16_t*>(vbuf.data() + kHeaderBytes);
+
+    std::vector<float> special_v(head_dim);
+    for (size_t d = 0; d < head_dim; ++d) special_v[d] = (d % 2 ? -3.0f : 3.0f);
+
+    auto append = [&](size_t from, size_t to, long special_abs) {
+        for (size_t t = from; t < to; ++t)
+            for (size_t h = 0; h < kv_heads; ++h) {
+                std::vector<float> k(head_dim);
+                for (size_t d = 0; d < head_dim; ++d) k[d] = std::sin(0.05 * (h + 1) + 0.3 * d);
+                std::vector<float> kr = rope_reference(k, (double)t, theta);
+                std::vector<float> vr(head_dim);
+                if ((long)t == special_abs) vr = special_v;
+                else for (size_t d = 0; d < head_dim; ++d) vr[d] = std::cos(0.07 * (t + 1) + 0.2 * d);
+                for (size_t d = 0; d < head_dim; ++d) {
+                    krows[(t * kv_heads + h) * head_dim + d] = f32_to_f16(kr[d]);
+                    vrows[(t * kv_heads + h) * head_dim + d] = f32_to_f16(vr[d]);
+                }
+            }
+    };
+
+    auto special_rank = [&]() -> long {
+        for (size_t r = 0; r < khdr->current_seq_len; ++r) {
+            const uint16_t* v = vrows + (r * kv_heads + 0) * head_dim;
+            double dot = 0, na = 0, nb = 0;
+            for (size_t d = 0; d < head_dim; ++d) {
+                float x = f16_to_f32(v[d]); dot += x * special_v[d]; na += x * x; nb += special_v[d] * special_v[d];
+            }
+            if (dot / (std::sqrt(na) * std::sqrt(nb) + 1e-9) > 0.99) return (long)r;
+        }
+        return -1;
+    };
+
+    long special_pos = trigger_len / 2;
+    for (int c = 0; c < 3; ++c) {
+        size_t start = khdr->current_seq_len;
+        append(start, (size_t)trigger_len, c == 0 ? special_pos : -1);
+        khdr->current_seq_len = trigger_len;
+        vhdr->current_seq_len = trigger_len;
+
+        Params p; p.sink = 4; p.recent_frac = 0.30f; p.abs_budget = target_len;
+        p.protect = {(int)special_pos};
+        auto kept = keepsets_from_fp16(krows, (size_t)trigger_len, kv_heads, head_dim, theta, p);
+        compact_fp16(krows, vrows, kv_heads, head_dim, kept, theta);
+        khdr->current_seq_len = kept[0].size();
+        vhdr->current_seq_len = kept[0].size();
+
+        special_pos = special_rank();
+        if (special_pos < 0) return false;
+    }
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("KV Compress Free-Function Tests");
     runner.run_test("compact_fp16_cache", test_compact_fp16_cache());
@@ -685,6 +770,8 @@ int main() {
     runner.run_test("degenerate_rolling_config_disabled", test_degenerate_rolling_config_disabled());
     runner.run_test("env_override_parse", test_env_override_parse());
     runner.run_test("dequant_simd_matches_scalar", test_dequant_simd_matches_scalar());
+    runner.run_test("keepset_protect_union", test_keepset_protect_union());
+    runner.run_test("rolling_protect_survives", test_rolling_protect_survives());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

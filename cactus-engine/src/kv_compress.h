@@ -13,6 +13,7 @@ struct Params {
     float  recent_frac = 0.30f;
     size_t sink        = 4;
     int    abs_budget  = 0;       // keep budget B = min(max(1, abs_budget), n) per (layer, kv-head)
+    std::vector<int> protect;     // positions always kept (special tokens)
 };
 
 // 64-byte KV cache header mirroring cactus-graph CacheMetadata.

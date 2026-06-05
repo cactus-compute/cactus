@@ -1498,6 +1498,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     if (tokens.empty() || !decoder_ || cache_total_seq_len_ != 0) {
         return false;
     }
+    cache_token_ids_ = tokens;
     if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
@@ -1557,6 +1558,7 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         if (!context_tokens_.empty()) run_full_context_text();
         cache_total_seq_len_ = context_tokens_.size();
+        cache_token_ids_ = context_tokens_;
         return;
     }
     ChunkedPrefillResult chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), prepare_decode);
@@ -1565,6 +1567,7 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
         run_step(tokens[i], cache_total_seq_len_, /*read_logits=*/false);
         ++cache_total_seq_len_;
     }
+    cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
 
     if (prepare_decode) {
@@ -2294,6 +2297,7 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
         run_step(t, pos, false);
     }
     cache_total_seq_len_ += tokens.size();
+    cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
     (void)profile_file;
 }
 
@@ -2305,6 +2309,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
         cache_total_seq_len_ = context_tokens_.size();
+        cache_token_ids_ = context_tokens_;
         uint32_t result = argmax_last_logits(out_entropy);
         record_sampled_token(result);
         return result;
@@ -2314,6 +2319,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
     }
     run_step(tokens.back(), cache_total_seq_len_ + tokens.size() - 1, /*read_logits=*/true);
     cache_total_seq_len_ += tokens.size();
+    cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
     maybe_roll_compact();
     uint32_t result = argmax_last_logits(out_entropy);
     record_sampled_token(result);
@@ -2817,6 +2823,7 @@ void Model::reset_cache() {
     cache_renumbered_ = false;
     last_logit_position_ = 0;
     context_tokens_.clear();
+    cache_token_ids_.clear();
     token_history_.clear();
     media_features_.clear();
     media_feature_shapes_.clear();
@@ -2948,11 +2955,24 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         ? rope_theta : static_cast<double>(config_.rope_local_base_freq);
     const size_t old_total = cache_total_seq_len_;
 
+    // Force-keep special-token rows.
+    cactus::kvcompress::Params params_local = params;
+    bool preserve = config_.kv_compress_preserve_special;
+    if (const char* e = std::getenv("CACTUS_KV_PRESERVE_SPECIAL")) preserve = (std::atoi(e) != 0);
+    const bool map_valid = cache_token_ids_.size() == old_total && media_features_.empty();
+    if (preserve && map_valid) {
+        if (special_ids_.empty() && tokenizer_) special_ids_ = tokenizer_->special_token_ids();
+        for (size_t pos = 0; pos < cache_token_ids_.size(); ++pos)
+            if (special_ids_.count(cache_token_ids_[pos])) params_local.protect.push_back(static_cast<int>(pos));
+    }
+
     Component& comp = *decoder_;
     if (!comp.graph) return;
     // B is identical across the compacted layers; capture it from the keep-set, not a mutated header.
     size_t new_seq_len = 0;
     bool have_new_seq_len = false;
+    std::vector<int> canonical_keep;
+    bool canonical_captured = false;
     // The un-rope table is identical across compressible layers (all global, same theta/dims), so
     // build it once on the first such layer and reuse it for every layer's keep-set scoring.
     std::vector<cactus::kvcompress::RopeRotation> unrope;
@@ -2983,7 +3003,8 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             auto* kbase = reinterpret_cast<uint16_t*>(static_cast<char*>(kraw) + kHeaderBytes);
             auto* vbase = reinterpret_cast<uint16_t*>(static_cast<char*>(vraw) + kHeaderBytes);
             auto kept = cactus::kvcompress::keepsets_from_fp16(
-                kbase, n, kv_heads, head_dim, unrope, params);
+                kbase, n, kv_heads, head_dim, unrope, params_local);
+            if (!canonical_captured) { canonical_keep = kept.empty() ? std::vector<int>{} : kept[0]; canonical_captured = true; }
             cactus::kvcompress::compact_fp16(kbase, vbase, kv_heads, head_dim, kept, unrope);
             size_t B = kept.empty() ? 0 : kept[0].size();
             khdr->current_seq_len = B;
@@ -2999,7 +3020,8 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             auto* v_sc = reinterpret_cast<float*>(static_cast<char*>(vraw) + kHeaderBytes +
                                                   max_seq * kv_heads * head_dim);
             auto kept = cactus::kvcompress::keepsets_from_int8(
-                k_i8, k_sc, n, kv_heads, head_dim, KV_QUANT_GROUP_SIZE, unrope, params);
+                k_i8, k_sc, n, kv_heads, head_dim, KV_QUANT_GROUP_SIZE, unrope, params_local);
+            if (!canonical_captured) { canonical_keep = kept.empty() ? std::vector<int>{} : kept[0]; canonical_captured = true; }
             cactus::kvcompress::compact_int8(k_i8, k_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,
                                              kept, unrope, /*renumber=*/true);
             cactus::kvcompress::compact_int8(v_i8, v_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,
@@ -3049,7 +3071,19 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
     }
 
     // All layers now share the same compressed frame, so the next decode query uses position_ids = B.
-    if (have_new_seq_len) { cache_total_seq_len_ = new_seq_len; cache_renumbered_ = true; }
+    if (have_new_seq_len) {
+        cache_total_seq_len_ = new_seq_len;
+        cache_renumbered_ = true;
+        if (map_valid && canonical_captured) {
+            std::vector<uint32_t> compacted;
+            compacted.reserve(canonical_keep.size());
+            for (int idx : canonical_keep)
+                if (idx >= 0 && idx < static_cast<int>(cache_token_ids_.size())) compacted.push_back(cache_token_ids_[idx]);
+            cache_token_ids_ = std::move(compacted);
+        } else {
+            cache_token_ids_.clear();
+        }
+    }
 }
 
 void Model::maybe_roll_compact() {
@@ -3254,6 +3288,7 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "kv_compress_sink") kv_compress_sink = static_cast<uint32_t>(std::stoul(value));
         else if (key == "kv_compress_trigger_len") kv_compress_trigger_len = static_cast<int32_t>(std::stol(value));
         else if (key == "kv_compress_target_len") kv_compress_target_len = static_cast<int32_t>(std::stol(value));
+        else if (key == "kv_compress_preserve_special") kv_compress_preserve_special = (value == "true" || value == "1");
         else if (key == "layer_types") {
             layer_types.clear();
             std::string sanitized;

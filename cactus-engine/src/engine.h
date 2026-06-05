@@ -180,6 +180,7 @@ struct Config {
     uint32_t kv_compress_sink = 4;
     int32_t kv_compress_trigger_len = 4096;
     int32_t kv_compress_target_len = 2048;
+    bool kv_compress_preserve_special = true;
 
     uint32_t altup_num_inputs = 4;
     uint32_t laurel_rank = 64;
@@ -328,6 +329,7 @@ public:
     virtual uint32_t get_unk_token() const = 0;
     virtual uint32_t get_bos_token() const = 0;
     virtual uint32_t get_eos_token() const = 0;
+    virtual std::unordered_set<uint32_t> special_token_ids() const { return {}; }
     virtual bool has_chat_template() const { return has_chat_template_; }
     std::string get_default_stop_sequence() const;
 
@@ -382,6 +384,11 @@ public:
     uint32_t get_unk_token() const override { return unk_token_id_; }
     uint32_t get_bos_token() const override { return bos_token_id_; }
     uint32_t get_eos_token() const override { return eos_token_id_; }
+    std::unordered_set<uint32_t> special_token_ids() const override {
+        std::unordered_set<uint32_t> ids;
+        for (const auto& kv : special_tokens_) ids.insert(kv.second);
+        return ids;
+    }
 
 private:
     std::unordered_map<std::string, uint32_t> token_to_id_;
@@ -434,6 +441,11 @@ public:
     uint32_t get_unk_token() const override { return unk_token_id_; }
     uint32_t get_bos_token() const override { return bos_token_id_; }
     uint32_t get_eos_token() const override { return eos_token_id_; }
+    std::unordered_set<uint32_t> special_token_ids() const override {
+        std::unordered_set<uint32_t> ids;
+        for (const auto& kv : special_tokens_) ids.insert(kv.second);
+        return ids;
+    }
 
 private:
     struct TrieNode {
@@ -766,6 +778,8 @@ private:
     bool initialized_ = false;
     size_t cache_total_seq_len_ = 0;
     bool cache_renumbered_ = false;
+    std::vector<uint32_t> cache_token_ids_;        // token id per cache row (canonical head-0 view)
+    std::unordered_set<uint32_t> special_ids_;     // special-token ids force-kept during compaction
     size_t cache_max_seq_len_ = 4096;
     size_t last_logit_position_ = 0;
     double last_prefill_cache_copy_ms_ = 0.0;

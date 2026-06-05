@@ -72,15 +72,18 @@ std::vector<int> keepset_for_head(const float* scores, size_t n, const Params& p
     long n_recent = std::min<long>(py_round(static_cast<double>(p.recent_frac) * static_cast<double>(B)),
                                    static_cast<long>(n));
 
+    auto in_range = [&](int idx) { return idx >= 0 && idx < static_cast<long>(n); };
     std::set<long> reserved;
     for (long i = 0; i < sink; ++i) reserved.insert(i);
+    for (int idx : p.protect) if (in_range(idx)) reserved.insert(static_cast<long>(idx));
     for (long i = static_cast<long>(n) - n_recent; i < static_cast<long>(n); ++i)
         if (i >= 0) reserved.insert(i);
 
-    // Reserved can exceed B on a tight budget: keep sink first, then most-recent, until B.
+    // Reserved may exceed B: keep sink, protected, then recent, until B.
     if (static_cast<long>(reserved.size()) > B) {
         std::vector<long> ordered;
         for (long i = 0; i < sink; ++i) ordered.push_back(i);
+        for (int idx : p.protect) if (in_range(idx)) ordered.push_back(static_cast<long>(idx));
         for (long i = static_cast<long>(n) - 1; i >= sink; --i) ordered.push_back(i);
         reserved.clear();
         for (long i : ordered) {
