@@ -5,7 +5,7 @@ pub type CactusIndexT = *mut c_void;
 pub type CactusTokenCallback = Option<unsafe extern "C" fn(token: *const c_char, token_id: u32, user_data: *mut c_void)>;
 pub type CactusLogCallback = Option<unsafe extern "C" fn(level: c_int, component: *const c_char, message: *const c_char, user_data: *mut c_void)>;
 
-extern "C" {
+unsafe extern "C" {
     pub fn cactus_init(model_path: *const c_char, corpus_dir: *const c_char, cache_index: bool) -> CactusModelT;
     pub fn cactus_destroy(model: CactusModelT);
     pub fn cactus_reset(model: CactusModelT);
