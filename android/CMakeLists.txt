@@ -19,7 +19,7 @@ endif()
 
 set(_DEPS cactus_engine cactus_graph cactus_kernels)
 
-add_library(cactus_jni SHARED ${CMAKE_CURRENT_SOURCE_DIR}/../bindings/kotlin/cactus_jni.cpp)
+add_library(cactus_jni SHARED ${CMAKE_CURRENT_SOURCE_DIR}/cactus_jni.cpp)
 
 set_target_properties(cactus_jni PROPERTIES
     OUTPUT_NAME cactus
