@@ -831,8 +831,14 @@ void Model::move_cache_states(Component& source, Component& target, size_t logic
         if (src.layer_key != dst.layer_key) {
             throw std::runtime_error("prefill and step cache layer mismatch: " + src.layer_key + " != " + dst.layer_key);
         }
+        int moved_src = -1, moved_dst = -1;
         for (auto [src_node, dst_node] : {std::pair<int, int>{src.key_node_id, dst.key_node_id}, std::pair<int, int>{src.value_node_id, dst.value_node_id}}) {
             if (src_node < 0 || dst_node < 0) continue;
+            // Conv/recurrent caches serialize one node as both key and value; moving it twice would
+            // steal the already-emptied source buffer and leave the destination blank.
+            if (src_node == moved_src && dst_node == moved_dst) continue;
+            moved_src = src_node;
+            moved_dst = dst_node;
             target.graph->steal_cache_buffer(static_cast<size_t>(dst_node), *source.graph, static_cast<size_t>(src_node));
             if (target.graph->get_node_op_type(static_cast<size_t>(dst_node)) == OpType::KV_CACHE_STATE &&
                 logical_current != std::numeric_limits<size_t>::max()) {
@@ -2836,7 +2842,8 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         ? rope_theta : static_cast<double>(config_.rope_local_base_freq);
     const size_t old_total = cache_total_seq_len_;
 
-    // Force-keep special-token rows.
+    // Force-keep special-token rows. Best-effort: protect is anchored to head 0's keep set, so
+    // per-head KeyDiff divergence can still drop a mid-context special from other heads across cycles.
     cactus::kvcompress::Params params_local = params;
     bool preserve = config_.kv_compress_preserve_special;
     if (const char* e = std::getenv("CACTUS_KV_PRESERVE_SPECIAL")) preserve = (std::atoi(e) != 0);
@@ -2849,6 +2856,18 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
 
     Component& comp = *decoder_;
     if (!comp.graph) return;
+    // Compaction strides K and V by one head_dim; if any compressible layer has a different V dim
+    // (MLA-style), skip the whole pass so we never shrink some layers while leaving others stale.
+    for (size_t li = 0; li < comp.cache_states.size(); ++li) {
+        if (!compressible.count(li)) continue;
+        const auto& cs = comp.cache_states[li];
+        if (cs.key_node_id < 0 || cs.value_node_id < 0) continue;
+        if (comp.graph->get_node_op_type(static_cast<size_t>(cs.key_node_id)) != OpType::KV_CACHE_STATE) continue;
+        void* kraw = comp.graph->get_output(static_cast<size_t>(cs.key_node_id));
+        void* vraw = comp.graph->get_output(static_cast<size_t>(cs.value_node_id));
+        if (!kraw || !vraw) continue;
+        if (static_cast<CacheHeader*>(vraw)->head_dim != static_cast<CacheHeader*>(kraw)->head_dim) return;
+    }
     // B is identical across the compacted layers; capture it from the keep-set, not a mutated header.
     size_t new_seq_len = 0;
     bool have_new_seq_len = false;
