@@ -430,7 +430,6 @@ size_t SpecialRowTracker::max_reserved(size_t layer, size_t sink,
                                        const std::vector<int>& appended) const {
     const auto& heads = protect(layer);
     if (heads.empty()) {
-        // No tracked rows yet: only sink and the appended specials beyond sink count.
         size_t extra = 0;
         for (int r : appended) if (static_cast<size_t>(r) >= sink) ++extra;
         return sink + extra;

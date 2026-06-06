@@ -2842,13 +2842,12 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         ? rope_theta : static_cast<double>(config_.rope_local_base_freq);
     const size_t old_total = cache_total_seq_len_;
 
-    // Per-head protect: each head re-keeps its own special rows (a single head-0 view drifts across cycles).
     cactus::kvcompress::Params params_local = params;
     bool preserve = config_.kv_compress_preserve_special;
     if (const char* e = std::getenv("CACTUS_KV_PRESERVE_SPECIAL")) preserve = (std::atoi(e) != 0);
     const bool map_valid = cache_token_ids_.size() == old_total && media_features_.empty();
     const bool per_head_protect = preserve && map_valid && special_rows_.valid();
-    // Special rows appended since the last compaction (still head-aligned in cache_token_ids_).
+    // cache_token_ids_ past tracked_len is still head-aligned, so specials there apply to every head.
     std::vector<int> appended_special;
     if (per_head_protect) {
         if (special_ids_.empty() && tokenizer_) special_ids_ = tokenizer_->special_token_ids();
@@ -2858,7 +2857,7 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
 
     Component& comp = *decoder_;
     if (!comp.graph) return;
-    // Preflight before mutating: skip the pass if any layer's V dim differs from K (MLA), or a head
+    // Skip the whole pass (before mutating) if any layer's V dim differs from K (MLA), or a head
     // can't fit sink + all its specials in the budget.
     const size_t protect_budget = params.abs_budget > 0 ? static_cast<size_t>(params.abs_budget) : 0;
     for (size_t li = 0; li < comp.cache_states.size(); ++li) {
@@ -2985,7 +2984,6 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
     if (have_new_seq_len) {
         cache_total_seq_len_ = new_seq_len;
         cache_renumbered_ = true;
-        // An untracked compaction diverged the heads; disable per-head protect afterward.
         if (per_head_protect) special_rows_.set_tracked_len(new_seq_len);
         else special_rows_.invalidate();
         if (map_valid && canonical_captured) {

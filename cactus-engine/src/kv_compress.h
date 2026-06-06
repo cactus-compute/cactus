@@ -70,8 +70,8 @@ void rerope_recent_fp16(uint16_t* key_rows, size_t kv_heads, size_t head_dim,
 void rerope_recent_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads, size_t head_dim,
                         size_t group_size, size_t lo, size_t hi, double rope_theta, double delta_pos);
 
-// Per-head keep-sets from POST-RoPE keys: un-RoPE -> score -> keepset.
-// protect_per_head (sized to kv_heads) overrides Params::protect per head; empty -> shared protect.
+// Per-head keep-sets from POST-RoPE keys. protect_per_head (sized to kv_heads) overrides
+// Params::protect per head; empty -> shared protect.
 std::vector<std::vector<int>> keepsets_from_fp16(const uint16_t* key_rows, size_t n,
                                                  size_t kv_heads, size_t head_dim,
                                                  const std::vector<RopeRotation>& unrope,
@@ -92,29 +92,21 @@ std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const 
                                                  size_t group_size, double rope_theta,
                                                  const Params& p);
 
-// New ranks of `rows` after a keep-set gather: {r : kept[r] in rows}, ascending. Both inputs sorted.
 std::vector<int> remap_rows_through_kept(const std::vector<int>& rows, const std::vector<int>& kept);
 
-// Per-(compressible layer, head) special-token rows so compaction re-protects each head's own
-// specials across cycles (keep sets diverge per head). Pure row-index bookkeeping.
+// Per-(compressible layer, head) special rows; lets compaction re-protect each head's own specials.
 class SpecialRowTracker {
 public:
     void clear() { tracked_len_ = 0; layer_rows_.clear(); valid_ = true; }
     size_t tracked_len() const { return tracked_len_; }
     void set_tracked_len(size_t len) { tracked_len_ = len; }
-
-    // An untracked compaction diverged the heads; disable and drop the now-stale rows until clear().
     bool valid() const { return valid_; }
     void invalidate() { valid_ = false; layer_rows_.clear(); }
 
-    // Append head-aligned special rows (>= tracked_len) to `layer`; does not advance tracked_len.
+    // appended_rows must be >= tracked_len (the still head-aligned region).
     void add_appended(size_t layer, size_t kv_heads, const std::vector<int>& appended_rows);
-
     const std::vector<std::vector<int>>& protect(size_t layer) const;
-
-    // max over heads of |[0,sink) U rows[h] U appended| -- rows a compaction must reserve.
     size_t max_reserved(size_t layer, size_t sink, const std::vector<int>& appended) const;
-
     void remap(size_t layer, const std::vector<std::vector<int>>& kept_per_head);
 
 private:

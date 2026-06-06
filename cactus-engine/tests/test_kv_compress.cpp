@@ -805,14 +805,12 @@ bool test_sliding_layer_fixed_capacity() {
 }
 
 bool test_special_rows_remap_through_kept() {
-    // New ranks are the positions in `kept` whose value is a tracked row.
     std::vector<int> rows = {3, 7, 10};
-    std::vector<int> kept = {0, 3, 5, 7, 9, 10, 12};  // 3->rank1, 7->rank3, 10->rank5
+    std::vector<int> kept = {0, 3, 5, 7, 9, 10, 12};
     return remap_rows_through_kept(rows, kept) == std::vector<int>{1, 3, 5};
 }
 
 bool test_per_head_protect_keeps_specials() {
-    // Each head reserves its OWN protected rows, even mid-context ones KeyDiff would evict.
     const double theta = 1000000.0;
     const size_t n = 64, kv_heads = 3, head_dim = 16;
     std::vector<std::vector<std::vector<float>>> pre, val;
@@ -821,7 +819,7 @@ bool test_per_head_protect_keeps_specials() {
     Params p; p.sink = 4; p.recent_frac = 0.30f; p.abs_budget = 24;
     auto unrope = unrope_table(n, head_dim, theta);
     std::vector<std::vector<int>> protect(kv_heads);
-    for (size_t h = 0; h < kv_heads; ++h) protect[h] = {static_cast<int>(20 + h)};  // distinct middle row per head
+    for (size_t h = 0; h < kv_heads; ++h) protect[h] = {static_cast<int>(20 + h)};
     auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, unrope, p, protect);
     if (kept.size() != kv_heads) return false;
     for (size_t h = 0; h < kv_heads; ++h)
@@ -833,31 +831,28 @@ bool test_preflight_specials_exceed_budget() {
     SpecialRowTracker tracked;
     std::vector<int> rows;
     for (int r = 0; r < 50; ++r) rows.push_back(r);
-    tracked.add_appended(/*layer=*/0, /*kv_heads=*/2, rows);  // 50 specials in each head
+    tracked.add_appended(0, 2, rows);
     SpecialRowTracker untracked;
-    // sink=4: |[0,4) U rows| = 50 either way; exceeds a budget of 40.
     return tracked.max_reserved(0, 4, {}) == 50 && tracked.max_reserved(0, 4, {}) > 40 &&
            untracked.max_reserved(0, 4, rows) == 50 && untracked.max_reserved(0, 4, rows) > 40;
 }
 
 bool test_empty_protect_per_head_uses_params_fallback() {
-    // Empty protect_per_head must fall back to Params::protect (no stale per-head rows leak in).
     const double theta = 1000000.0;
     const size_t n = 64, kv_heads = 3, head_dim = 16;
     std::vector<std::vector<std::vector<float>>> pre, val;
     auto kbuf = make_fp16_cache(n, n, kv_heads, head_dim, theta, pre, val);
     auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
-    Params p; p.sink = 4; p.recent_frac = 0.30f; p.abs_budget = 24; p.protect = {25};  // global middle protect
+    Params p; p.sink = 4; p.recent_frac = 0.30f; p.abs_budget = 24; p.protect = {25};
     auto unrope = unrope_table(n, head_dim, theta);
     auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, unrope, p, /*protect_per_head=*/{});
     if (kept.size() != kv_heads) return false;
     for (size_t h = 0; h < kv_heads; ++h)
-        if (std::find(kept[h].begin(), kept[h].end(), 25) == kept[h].end()) return false;  // global protect honored in every head
+        if (std::find(kept[h].begin(), kept[h].end(), 25) == kept[h].end()) return false;
     return true;
 }
 
 bool test_all_heads_keep_special_across_cycles() {
-    // A tracked mid-context special must survive in EVERY head across compactions, despite per-head divergence.
     const int trigger_len = 256, target_len = 128;
     const size_t kv_heads = 4, head_dim = 16, max_seq = trigger_len + 8;
     const double theta = 1000000.0;
@@ -913,7 +908,7 @@ bool test_all_heads_keep_special_across_cycles() {
         append(start, static_cast<size_t>(trigger_len));
         khdr->current_seq_len = trigger_len; vhdr->current_seq_len = trigger_len;
         std::vector<int> appended;
-        if (c == 0) appended.push_back(static_cast<int>(special_abs));  // head-aligned special in the appended region
+        if (c == 0) appended.push_back(static_cast<int>(special_abs));
         tracker.add_appended(0, kv_heads, appended);
         auto kept = keepsets_from_fp16(krows, static_cast<size_t>(trigger_len), kv_heads, head_dim,
                                        unrope, p, tracker.protect(0));
@@ -928,8 +923,8 @@ bool test_all_heads_keep_special_across_cycles() {
     bool diverged = false;
     for (size_t h = 0; h < kv_heads; ++h) {
         long r = special_rank(h);
-        if (r < 0) return false;          // special must survive in every head
-        if (r != r0) diverged = true;     // and heads keep it at different ranks (a real per-head scenario)
+        if (r < 0) return false;
+        if (r != r0) diverged = true;  // ranks differ across heads -> a real per-head scenario, not trivially aligned
     }
     return diverged;
 }
