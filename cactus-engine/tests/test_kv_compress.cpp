@@ -841,8 +841,7 @@ bool test_preflight_specials_exceed_budget() {
 }
 
 bool test_empty_protect_per_head_uses_params_fallback() {
-    // When protect_per_head is empty, every head must fall back to Params::protect (so a disabled
-    // tracker can't leak stale per-head rows into the keep set).
+    // Empty protect_per_head must fall back to Params::protect (no stale per-head rows leak in).
     const double theta = 1000000.0;
     const size_t n = 64, kv_heads = 3, head_dim = 16;
     std::vector<std::vector<std::vector<float>>> pre, val;
@@ -858,8 +857,7 @@ bool test_empty_protect_per_head_uses_params_fallback() {
 }
 
 bool test_all_heads_keep_special_across_cycles() {
-    // Per-head KeyDiff keeps different middle rows per head; a tracked mid-context special must
-    // survive in EVERY head across multiple compactions (head-0-anchored protect would drop it).
+    // A tracked mid-context special must survive in EVERY head across compactions, despite per-head divergence.
     const int trigger_len = 256, target_len = 128;
     const size_t kv_heads = 4, head_dim = 16, max_seq = trigger_len + 8;
     const double theta = 1000000.0;

@@ -834,8 +834,7 @@ void Model::move_cache_states(Component& source, Component& target, size_t logic
         int moved_src = -1, moved_dst = -1;
         for (auto [src_node, dst_node] : {std::pair<int, int>{src.key_node_id, dst.key_node_id}, std::pair<int, int>{src.value_node_id, dst.value_node_id}}) {
             if (src_node < 0 || dst_node < 0) continue;
-            // Conv/recurrent caches serialize one node as both key and value; moving it twice would
-            // steal the already-emptied source buffer and leave the destination blank.
+            // Conv/recurrent caches share one node for key and value; move it only once.
             if (src_node == moved_src && dst_node == moved_dst) continue;
             moved_src = src_node;
             moved_dst = dst_node;
@@ -2843,15 +2842,13 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         ? rope_theta : static_cast<double>(config_.rope_local_base_freq);
     const size_t old_total = cache_total_seq_len_;
 
-    // Force-keep special-token rows. Per-head: each head re-protects its own special rows so KeyDiff
-    // divergence can't drop a mid-context special from some heads across cycles. Disabled (best-effort
-    // off) when the token map is unusable (media) or a prior untracked compaction diverged the heads.
+    // Per-head protect: each head re-keeps its own special rows (a single head-0 view drifts across cycles).
     cactus::kvcompress::Params params_local = params;
     bool preserve = config_.kv_compress_preserve_special;
     if (const char* e = std::getenv("CACTUS_KV_PRESERVE_SPECIAL")) preserve = (std::atoi(e) != 0);
     const bool map_valid = cache_token_ids_.size() == old_total && media_features_.empty();
     const bool per_head_protect = preserve && map_valid && special_rows_.valid();
-    // Head-aligned special rows appended since the last compaction (still accurate in cache_token_ids_).
+    // Special rows appended since the last compaction (still head-aligned in cache_token_ids_).
     std::vector<int> appended_special;
     if (per_head_protect) {
         if (special_ids_.empty() && tokenizer_) special_ids_ = tokenizer_->special_token_ids();
@@ -2861,9 +2858,8 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
 
     Component& comp = *decoder_;
     if (!comp.graph) return;
-    // Preflight before mutating anything: skip the whole pass if (a) any compressible layer's V dim
-    // differs from its K dim (MLA -- would corrupt value rows), or (b) a head can't fit sink + all its
-    // specials in the budget (we never silently drop a special to make room).
+    // Preflight before mutating: skip the pass if any layer's V dim differs from K (MLA), or a head
+    // can't fit sink + all its specials in the budget.
     const size_t protect_budget = params.abs_budget > 0 ? static_cast<size_t>(params.abs_budget) : 0;
     for (size_t li = 0; li < comp.cache_states.size(); ++li) {
         if (!compressible.count(li)) continue;
@@ -2989,8 +2985,7 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
     if (have_new_seq_len) {
         cache_total_seq_len_ = new_seq_len;
         cache_renumbered_ = true;
-        // The special-row sets were remapped per layer above; advance to the compacted length. A
-        // compaction that ran without per-head tracking diverged the heads, so disable it afterward.
+        // An untracked compaction diverged the heads; disable per-head protect afterward.
         if (per_head_protect) special_rows_.set_tracked_len(new_seq_len);
         else special_rows_.invalidate();
         if (map_valid && canonical_captured) {
