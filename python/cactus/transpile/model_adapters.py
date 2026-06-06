@@ -63,12 +63,20 @@ def _model_name_or_path(model: torch.nn.Module) -> str:
 
 
 def _transpile_graph_meta(model: torch.nn.Module, *, adapter_family: str, adapter_type: str, input_names: tuple[str, ...]) -> dict[str, object]:
-    return {
+    meta: dict[str, object] = {
         "adapter_family": adapter_family,
         "adapter_type": adapter_type,
         "model_name_or_path": _model_name_or_path(model),
         "input_names": input_names,
     }
+    # Rope-table precompute falls back to this on components that don't reserve a KV cache.
+    for candidate in _config_candidates_for_context_length(model):
+        for key in ("max_position_embeddings", "context_length", "model_max_length", "n_positions"):
+            value = _config_int_value(candidate, key)
+            if value is not None:
+                meta["max_position_embeddings"] = value
+                return meta
+    return meta
 
 
 def _extract_tensor_output(output: object, *, preferred_field: str | None = None) -> torch.Tensor:
