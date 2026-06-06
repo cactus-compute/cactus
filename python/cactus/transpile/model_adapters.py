@@ -5304,7 +5304,7 @@ def _build_lfm2_causal_lm_component_specs(
     if "decoder_step" in requested_set:
         step_input_ids = input_ids[:, :1]
         step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
-        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
+        max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
         specs.append(ComponentModuleSpec(
             component="decoder_step",
             module=decoder_step,
