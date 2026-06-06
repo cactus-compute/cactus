@@ -529,7 +529,9 @@ void compute_recurrent_cache_write_node(
 void CactusGraph::steal_cache_buffer(size_t dst_node, CactusGraph& src, size_t src_node) {
     auto& dst = nodes_[node_index_map_.at(dst_node)];
     auto& s = src.nodes_[src.node_index_map_.at(src_node)];
-    assert(dst->op_type == s->op_type && dst->output_buffer.precision == s->output_buffer.precision);
+    // Only op_type is invariant here; the moved buffer carries its own (runtime) precision, which
+    // may differ from dst's not-yet-executed baked precision (e.g. CACTUS_KV_CACHE_FP16).
+    assert(dst->op_type == s->op_type);
     dst->output_buffer = std::move(s->output_buffer);
 }
 
