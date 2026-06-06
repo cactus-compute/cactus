@@ -1,13 +1,5 @@
 package com.cactus
 
-fun interface CactusTokenCallback {
-    fun onToken(token: String, tokenId: Int)
-}
-
-fun interface CactusLogCallback {
-    fun onLog(level: Int, component: String, message: String)
-}
-
 expect fun cactusInit(modelPath: String, corpusDir: String?, cacheIndex: Boolean): Long
 expect fun cactusDestroy(handle: Long)
 expect fun cactusReset(handle: Long)
