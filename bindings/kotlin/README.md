@@ -12,7 +12,7 @@ cactus build --android
 
 <!-- --8<-- [start:integration] -->
 1. Copy `android/libcactus.so` to `app/src/main/jniLibs/arm64-v8a/`
-2. Copy `Cactus.kt` to your Kotlin source tree
+2. Copy `Cactus.kt` and `CactusCallbacks.kt` to your Kotlin source tree
 <!-- --8<-- [end:integration] -->
 
 <!-- --8<-- [start:example] -->
@@ -29,6 +29,7 @@ CactusJNI.nativeDestroy(handle)
 
 ```
 commonMain/  Cactus.common.kt     expect declarations
+commonMain/  CactusCallbacks.kt   shared callback interfaces
 androidMain/ Cactus.android.kt    actual via JNI
 iosMain/     Cactus.ios.kt        actual via cinterop
 ```
