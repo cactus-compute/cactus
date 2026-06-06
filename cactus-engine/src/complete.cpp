@@ -525,8 +525,6 @@ PrefillResult do_prefill(
     const PreparedPrompt& prompt,
     const std::vector<uint32_t>& target_tokens
 ) {
-    // Compaction renumbers the cache, which the Gemma4 thinking-token strip can't follow; disable it
-    // for thinking requests until the strip is compaction-aware.
     handle->model->set_compaction_suppressed(
         prompt.model_type == Config::ModelType::GEMMA4 && prompt.options.enable_thinking_if_supported);
 

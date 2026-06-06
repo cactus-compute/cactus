@@ -90,8 +90,6 @@ inline bool use_fp16_kv_cache() {
 
 constexpr size_t kInitialCacheEntries = 256;
 
-// Reallocate the cache to capacity new_max (grow or shrink), preserving the occupied rows and
-// relocating the int8 scale region (whose offset depends on capacity). new_max must hold current_seq.
 inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     auto* meta = get_meta(buf);
     size_t cur = meta->max_seq_len;
