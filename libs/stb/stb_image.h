@@ -3418,6 +3418,7 @@ static int stbi__parse_uncompressed_block(stbi__zbuf *a)
    if (a->zbuffer + len > a->zbuffer_end) return stbi__err("read past buffer","Corrupt PNG");
    if (a->zout + len > a->zout_end)
       if (!stbi__zexpand(a, a->zout, len)) return 0;
+   if (a->zout_end - a->zout < len) return stbi__err("output buffer overflow","Corrupt PNG");
    memcpy(a->zout, a->zbuffer, len);
    a->zbuffer += len;
    a->zout += len;
