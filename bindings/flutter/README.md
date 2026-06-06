@@ -14,8 +14,9 @@ cactus build --android
 <!-- --8<-- [start:integration] -->
 1. Copy `libcactus.so` to `jniLibs/arm64-v8a/` (Android)
 2. Add `cactus-ios.xcframework` to your Xcode project (iOS)
-3. Copy `cactus.dart` into your Dart source tree
-4. Add `ffi` to `pubspec.yaml`
+3. Add `cactus-macos.xcframework` to your Xcode project (macOS)
+4. Copy `cactus.dart` into your Dart source tree
+5. Add `ffi` to `pubspec.yaml`
 <!-- --8<-- [end:integration] -->
 
 ## Usage

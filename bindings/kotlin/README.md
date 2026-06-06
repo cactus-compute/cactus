@@ -2,6 +2,8 @@
 
 JNI bridge to `cactus_engine.h` for Android, with KMP support for iOS.
 
+The JNI bridge itself (`android/cactus_jni.cpp`, compiled into `libcactus.so`) is JVM-language-agnostic. Java consumers can use it by writing an equivalent `CactusJNI.java` with `native` declarations matching the signatures in `Cactus.kt` — same library, same `Java_com_cactus_CactusJNI_*` symbols.
+
 ## Android Integration
 
 <!-- --8<-- [start:install] -->
