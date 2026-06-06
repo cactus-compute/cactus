@@ -804,6 +804,10 @@ int cactus_complete(
             }
         }
 
+        // Set before the fast path, which bypasses do_prefill. See do_prefill for the rationale.
+        handle->model->set_compaction_suppressed(
+            prompt.model_type == Config::ModelType::GEMMA4 && prompt.options.enable_thinking_if_supported);
+
         bool first_token_from_prefill = false;
         if (!has_images && !has_audio && handle->processed_tokens.empty()) {
             reset_cache(handle);
