@@ -2880,6 +2880,10 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
     // The un-rope table is identical across compressible layers (all global, same theta/dims), so
     // build it once on the first such layer and reuse it for every layer's keep-set scoring.
     std::vector<cactus::kvcompress::RopeRotation> unrope;
+    // Reclaim capacity a long prefill grew into: shrink each compacted layer to the smallest power of
+    // two >= trigger, which holds the decode occupancy oscillation [target, trigger] without re-growing.
+    size_t shrink_cap = 1;
+    while (shrink_cap < static_cast<size_t>(config_.kv_compress_trigger_len)) shrink_cap <<= 1;
     for (size_t li = 0; li < comp.cache_states.size(); ++li) {
         if (!compressible.count(li)) continue;
         const auto& cs = comp.cache_states[li];
@@ -2942,6 +2946,8 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             new_seq_len = B;
             have_new_seq_len = true;
         }
+        comp.graph->shrink_cache_buffer(static_cast<size_t>(cs.key_node_id), shrink_cap);
+        comp.graph->shrink_cache_buffer(static_cast<size_t>(cs.value_node_id), shrink_cap);
     }
 
     // Shift non-compacted layers' recent K rows by -Δ into the compressed frame (RoPE is relative, so a

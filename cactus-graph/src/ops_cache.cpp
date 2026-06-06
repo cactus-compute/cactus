@@ -90,40 +90,48 @@ inline bool use_fp16_kv_cache() {
 
 constexpr size_t kInitialCacheEntries = 256;
 
-inline bool grow_cache_buffer(BufferDesc& buf, size_t needed, size_t ceiling) {
+// Reallocate the cache to capacity new_max (grow or shrink), preserving the occupied rows and
+// relocating the int8 scale region (whose offset depends on capacity). new_max must hold current_seq.
+inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     auto* meta = get_meta(buf);
     size_t cur = meta->max_seq_len;
+    const size_t current_seq = meta->current_seq_len;
+    if (new_max == cur || new_max < current_seq) return false;
+
+    const size_t kv_heads = meta->num_kv_heads;
+    const size_t hdim = meta->head_dim;
+    const bool fp16_cache = buf.precision == Precision::FP16;
+
+    size_t total = fp16_cache ? fp16_cache_elements(new_max, kv_heads, hdim)
+                              : cache_buffer_size(new_max, kv_heads, hdim);
+    BufferDesc resized({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
+    resized.allocate();
+    std::memset(resized.get_data(), 0, resized.byte_size);
+
+    std::memcpy(resized.get_data(), buf.get_data(), sizeof(CacheMetadata));
+    if (fp16_cache) {
+        std::memcpy(get_fp16_data(resized), get_fp16_data(buf),
+                    current_seq * kv_heads * hdim * sizeof(__fp16));
+    } else {
+        std::memcpy(get_int8_data(resized), get_int8_data(buf), current_seq * kv_heads * hdim);
+        const size_t groups = (hdim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+        std::memcpy(get_scales(resized, new_max, kv_heads, hdim),
+                    get_scales(buf, cur, kv_heads, hdim),
+                    current_seq * kv_heads * groups * sizeof(float));
+    }
+    get_meta(resized)->max_seq_len = new_max;
+    buf = std::move(resized);
+    return true;
+}
+
+inline bool grow_cache_buffer(BufferDesc& buf, size_t needed, size_t ceiling) {
+    size_t cur = get_meta(buf)->max_seq_len;
     if (needed <= cur || cur >= ceiling) return false;
     size_t new_max = cur;
     while (new_max < needed) new_max <<= 1;
     if (new_max > ceiling) new_max = ceiling;
     if (new_max <= cur) return false;
-
-    const size_t kv_heads = meta->num_kv_heads;
-    const size_t hdim = meta->head_dim;
-    const size_t current_seq = meta->current_seq_len;
-    const bool fp16_cache = buf.precision == Precision::FP16;
-
-    size_t total = fp16_cache ? fp16_cache_elements(new_max, kv_heads, hdim)
-                              : cache_buffer_size(new_max, kv_heads, hdim);
-    BufferDesc grown({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
-    grown.allocate();
-    std::memset(grown.get_data(), 0, grown.byte_size);
-
-    std::memcpy(grown.get_data(), buf.get_data(), sizeof(CacheMetadata));
-    if (fp16_cache) {
-        std::memcpy(get_fp16_data(grown), get_fp16_data(buf),
-                    current_seq * kv_heads * hdim * sizeof(__fp16));
-    } else {
-        std::memcpy(get_int8_data(grown), get_int8_data(buf), current_seq * kv_heads * hdim);
-        const size_t groups = (hdim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-        std::memcpy(get_scales(grown, new_max, kv_heads, hdim),
-                    get_scales(buf, cur, kv_heads, hdim),
-                    current_seq * kv_heads * groups * sizeof(float));
-    }
-    get_meta(grown)->max_seq_len = new_max;
-    buf = std::move(grown);
-    return true;
+    return resize_cache_buffer(buf, new_max);
 }
 
 } // namespace
@@ -524,5 +532,14 @@ void CactusGraph::steal_cache_buffer(size_t dst_node, CactusGraph& src, size_t s
     // Buffer carries its own runtime precision (may be fp16); only op_type is invariant pre-move.
     assert(dst->op_type == s->op_type);
     dst->output_buffer = std::move(s->output_buffer);
+}
+
+void CactusGraph::shrink_cache_buffer(size_t node_id, size_t new_capacity) {
+    auto& buf = nodes_[node_index_map_.at(node_id)]->output_buffer;
+    if (!buf.get_data()) return;
+    auto* meta = get_meta(buf);
+    size_t target = std::max<size_t>(new_capacity, meta->current_seq_len);
+    if (target >= meta->max_seq_len) return;
+    resize_cache_buffer(buf, target);
 }
 

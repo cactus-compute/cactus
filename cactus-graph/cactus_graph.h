@@ -709,6 +709,7 @@ public:
     OpType get_node_op_type(size_t node_id) const;
     size_t get_node_window_size(size_t node_id) const;
     void steal_cache_buffer(size_t dst_node, CactusGraph& src, size_t src_node);
+    void shrink_cache_buffer(size_t node_id, size_t new_capacity);
     void allocate_buffers();
     size_t get_node_count() const;
 

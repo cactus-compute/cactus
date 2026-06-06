@@ -929,6 +929,49 @@ bool test_all_heads_keep_special_across_cycles() {
     return diverged;
 }
 
+bool test_shrink_cache_buffer_preserves_rows() {
+    CactusGraph gb;
+    const size_t kv_heads = 2, head_dim = 64, ceiling = 100000, chunk = 300;
+    const size_t groups = (head_dim + kGroupSize - 1) / kGroupSize;
+    const size_t int8_stride = kv_heads * head_dim, scale_stride = kv_heads * groups;
+    size_t new_kv = gb.input({chunk, kv_heads, head_dim}, Precision::FP16);
+    size_t state = gb.kv_cache_state(ceiling, kv_heads, head_dim, /*window*/0, /*sink*/4);
+    size_t append = gb.kv_cache_append(new_kv, state, /*window*/0, /*sink*/4);
+    gb.retain_outputs({static_cast<int>(state), static_cast<int>(append)});
+
+    std::vector<float> expect;
+    auto val = [](size_t row, size_t c) { return std::sin(0.013 * row + 0.07 * c); };
+    std::vector<uint16_t> in(chunk * int8_stride);
+    for (size_t r = 0; r < chunk; ++r)
+        for (size_t c = 0; c < int8_stride; ++c) {
+            float v = static_cast<float>(val(r, c));
+            in[r * int8_stride + c] = f32_to_f16(v);
+            expect.push_back(v);
+        }
+    gb.set_input(new_kv, in.data(), Precision::FP16);
+    gb.execute();  // appends 300 -> grows 256->512, occupancy 300
+
+    auto* hdr = reinterpret_cast<Header*>(gb.get_output(state));
+    if (hdr->max_seq_len != 512 || hdr->current_seq_len != 300) return false;
+
+    gb.shrink_cache_buffer(state, 256);  // clamped up to occupancy 300
+    hdr = reinterpret_cast<Header*>(gb.get_output(state));
+    if (hdr->max_seq_len != 300 || hdr->current_seq_len != 300) return false;
+
+    const auto* base = static_cast<const char*>(gb.get_output(state));
+    const int8_t* i8 = reinterpret_cast<const int8_t*>(base + kHeaderBytes);
+    const float* sc = reinterpret_cast<const float*>(base + kHeaderBytes + 300 * int8_stride);
+    bool ok = true;
+    for (size_t r = 0; r < 300 && ok; ++r)
+        for (size_t h = 0; h < kv_heads; ++h)
+            for (size_t d = 0; d < head_dim; ++d) {
+                float dq = static_cast<float>(i8[r * int8_stride + h * head_dim + d]) *
+                           sc[r * scale_stride + h * groups + d / kGroupSize];
+                if (std::abs(dq - expect[r * int8_stride + h * head_dim + d]) > 0.05f) ok = false;
+            }
+    return ok;
+}
+
 int main() {
     TestUtils::TestRunner runner("KV Compress Free-Function Tests");
     runner.run_test("cache_starts_small_and_grows", test_cache_starts_small_and_grows());
@@ -958,6 +1001,7 @@ int main() {
     runner.run_test("preflight_specials_exceed_budget", test_preflight_specials_exceed_budget());
     runner.run_test("empty_protect_per_head_uses_params_fallback", test_empty_protect_per_head_uses_params_fallback());
     runner.run_test("all_heads_keep_special_across_cycles", test_all_heads_keep_special_across_cycles());
+    runner.run_test("shrink_cache_buffer_preserves_rows", test_shrink_cache_buffer_preserves_rows());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
