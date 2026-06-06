@@ -229,10 +229,13 @@ void rotate_int8_row_rot(int8_t* int8, float* scale, size_t head_dim, size_t gro
 template <typename FillPost>
 std::vector<std::vector<int>> keepsets_per_head(size_t n, size_t kv_heads, size_t head_dim,
                                                 const std::vector<RopeRotation>& unrope,
-                                                const Params& p, FillPost fill_post) {
+                                                const Params& p, FillPost fill_post,
+                                                const std::vector<std::vector<int>>& protect_per_head) {
+    const bool per_head_protect = protect_per_head.size() == kv_heads;
     std::vector<float> post(n * head_dim), pre(n * head_dim), scores(n);
     std::vector<std::vector<int>> out;
     out.reserve(kv_heads);
+    Params ph = p;
     for (size_t h = 0; h < kv_heads; ++h) {
         fill_post(h, post.data());
         for (size_t t = 0; t < n; ++t) {
@@ -242,7 +245,8 @@ std::vector<std::vector<int>> keepsets_per_head(size_t n, size_t kv_heads, size_
             rope_apply(dst, unrope[t]);
         }
         keydiff_score(pre.data(), n, head_dim, scores.data());
-        out.push_back(keepset_for_head(scores.data(), n, p));
+        if (per_head_protect) ph.protect = protect_per_head[h];
+        out.push_back(keepset_for_head(scores.data(), n, per_head_protect ? ph : p));
     }
     return out;
 }
@@ -354,14 +358,15 @@ void rerope_recent_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads, s
 std::vector<std::vector<int>> keepsets_from_fp16(const uint16_t* key_rows_u, size_t n,
                                                  size_t kv_heads, size_t head_dim,
                                                  const std::vector<RopeRotation>& unrope,
-                                                 const Params& p) {
+                                                 const Params& p,
+                                                 const std::vector<std::vector<int>>& protect_per_head) {
     const __fp16* key_rows = reinterpret_cast<const __fp16*>(key_rows_u);
     return keepsets_per_head(n, kv_heads, head_dim, unrope, p, [&](size_t h, float* post) {
         for (size_t t = 0; t < n; ++t) {
             const __fp16* src = key_rows + (t * kv_heads + h) * head_dim;
             for (size_t d = 0; d < head_dim; ++d) post[t * head_dim + d] = src[d];
         }
-    });
+    }, protect_per_head);
 }
 
 std::vector<std::vector<int>> keepsets_from_fp16(const uint16_t* key_rows, size_t n,
@@ -375,7 +380,8 @@ std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const 
                                                  size_t n, size_t kv_heads, size_t head_dim,
                                                  size_t group_size,
                                                  const std::vector<RopeRotation>& unrope,
-                                                 const Params& p) {
+                                                 const Params& p,
+                                                 const std::vector<std::vector<int>>& protect_per_head) {
     size_t groups = (head_dim + group_size - 1) / group_size;
     size_t int8_stride = kv_heads * head_dim;
     size_t scale_stride = kv_heads * groups;
@@ -385,7 +391,7 @@ std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const 
             const float* ssc = scale_rows + t * scale_stride + h * groups;
             dequant_row(src, ssc, head_dim, group_size, post + t * head_dim);
         }
-    });
+    }, protect_per_head);
 }
 
 std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const float* scale_rows,
@@ -394,6 +400,56 @@ std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const 
                                                  const Params& p) {
     return keepsets_from_int8(int8_rows, scale_rows, n, kv_heads, head_dim, group_size,
                               unrope_table(n, head_dim, rope_theta), p);
+}
+
+std::vector<int> remap_rows_through_kept(const std::vector<int>& rows, const std::vector<int>& kept) {
+    std::vector<int> out;
+    size_t i = 0;
+    for (size_t rank = 0; rank < kept.size(); ++rank) {
+        while (i < rows.size() && rows[i] < kept[rank]) ++i;
+        if (i < rows.size() && rows[i] == kept[rank]) out.push_back(static_cast<int>(rank));
+    }
+    return out;
+}
+
+void SpecialRowTracker::add_appended(size_t layer, size_t kv_heads,
+                                     const std::vector<int>& appended_rows) {
+    if (layer_rows_.size() <= layer) layer_rows_.resize(layer + 1);
+    auto& heads = layer_rows_[layer];
+    if (heads.empty()) heads.resize(kv_heads);
+    for (auto& rows : heads)
+        rows.insert(rows.end(), appended_rows.begin(), appended_rows.end());  // appended >= existing, stays sorted
+}
+
+const std::vector<std::vector<int>>& SpecialRowTracker::protect(size_t layer) const {
+    static const std::vector<std::vector<int>> kEmpty;
+    return layer < layer_rows_.size() ? layer_rows_[layer] : kEmpty;
+}
+
+size_t SpecialRowTracker::max_reserved(size_t layer, size_t sink,
+                                       const std::vector<int>& appended) const {
+    const auto& heads = protect(layer);
+    if (heads.empty()) {
+        // No tracked rows yet: only sink and the appended specials beyond sink count.
+        size_t extra = 0;
+        for (int r : appended) if (static_cast<size_t>(r) >= sink) ++extra;
+        return sink + extra;
+    }
+    size_t worst = 0;
+    for (const auto& rows : heads) {
+        size_t count = sink;
+        for (int r : rows) if (static_cast<size_t>(r) >= sink) ++count;
+        for (int r : appended) if (static_cast<size_t>(r) >= sink) ++count;
+        worst = std::max(worst, count);
+    }
+    return worst;
+}
+
+void SpecialRowTracker::remap(size_t layer, const std::vector<std::vector<int>>& kept_per_head) {
+    if (layer >= layer_rows_.size()) return;
+    auto& heads = layer_rows_[layer];
+    for (size_t h = 0; h < heads.size() && h < kept_per_head.size(); ++h)
+        heads[h] = remap_rows_through_kept(heads[h], kept_per_head[h]);
 }
 
 bool is_sliding_layer(const std::vector<std::string>& layer_types, size_t li) {

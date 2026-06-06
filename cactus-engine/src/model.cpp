@@ -2711,6 +2711,7 @@ void Model::reset_cache() {
     last_logit_position_ = 0;
     context_tokens_.clear();
     cache_token_ids_.clear();
+    special_rows_.clear();
     token_history_.clear();
     media_features_.clear();
     media_feature_shapes_.clear();
@@ -2842,22 +2843,28 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         ? rope_theta : static_cast<double>(config_.rope_local_base_freq);
     const size_t old_total = cache_total_seq_len_;
 
-    // Force-keep special-token rows. Best-effort: protect is anchored to head 0's keep set, so
-    // per-head KeyDiff divergence can still drop a mid-context special from other heads across cycles.
+    // Force-keep special-token rows. Per-head: each head re-protects its own special rows so KeyDiff
+    // divergence can't drop a mid-context special from some heads across cycles. Disabled (best-effort
+    // off) when the token map is unusable (media) or a prior untracked compaction diverged the heads.
     cactus::kvcompress::Params params_local = params;
     bool preserve = config_.kv_compress_preserve_special;
     if (const char* e = std::getenv("CACTUS_KV_PRESERVE_SPECIAL")) preserve = (std::atoi(e) != 0);
     const bool map_valid = cache_token_ids_.size() == old_total && media_features_.empty();
-    if (preserve && map_valid) {
+    const bool per_head_protect = preserve && map_valid && special_rows_.valid();
+    // Head-aligned special rows appended since the last compaction (still accurate in cache_token_ids_).
+    std::vector<int> appended_special;
+    if (per_head_protect) {
         if (special_ids_.empty() && tokenizer_) special_ids_ = tokenizer_->special_token_ids();
-        for (size_t pos = 0; pos < cache_token_ids_.size(); ++pos)
-            if (special_ids_.count(cache_token_ids_[pos])) params_local.protect.push_back(static_cast<int>(pos));
+        for (size_t r = special_rows_.tracked_len(); r < old_total && r < cache_token_ids_.size(); ++r)
+            if (special_ids_.count(cache_token_ids_[r])) appended_special.push_back(static_cast<int>(r));
     }
 
     Component& comp = *decoder_;
     if (!comp.graph) return;
-    // Compaction strides K and V by one head_dim; if any compressible layer has a different V dim
-    // (MLA-style), skip the whole pass so we never shrink some layers while leaving others stale.
+    // Preflight before mutating anything: skip the whole pass if (a) any compressible layer's V dim
+    // differs from its K dim (MLA -- would corrupt value rows), or (b) a head can't fit sink + all its
+    // specials in the budget (we never silently drop a special to make room).
+    const size_t protect_budget = params.abs_budget > 0 ? static_cast<size_t>(params.abs_budget) : 0;
     for (size_t li = 0; li < comp.cache_states.size(); ++li) {
         if (!compressible.count(li)) continue;
         const auto& cs = comp.cache_states[li];
@@ -2867,6 +2874,8 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         void* vraw = comp.graph->get_output(static_cast<size_t>(cs.value_node_id));
         if (!kraw || !vraw) continue;
         if (static_cast<CacheHeader*>(vraw)->head_dim != static_cast<CacheHeader*>(kraw)->head_dim) return;
+        if (per_head_protect && protect_budget > 0 &&
+            special_rows_.max_reserved(li, params.sink, appended_special) > protect_budget) return;
     }
     // B is identical across the compacted layers; capture it from the keep-set, not a mutated header.
     size_t new_seq_len = 0;
@@ -2899,13 +2908,17 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         if (kv_heads == 0 || head_dim == 0) continue;
         if (unrope.empty()) unrope = cactus::kvcompress::unrope_table(n, head_dim, rope_theta);
 
+        if (per_head_protect) special_rows_.add_appended(li, kv_heads, appended_special);
+        const std::vector<std::vector<int>>& pph = special_rows_.protect(li);
+
         if (kdesc.precision == Precision::FP16) {
             auto* kbase = reinterpret_cast<uint16_t*>(static_cast<char*>(kraw) + kHeaderBytes);
             auto* vbase = reinterpret_cast<uint16_t*>(static_cast<char*>(vraw) + kHeaderBytes);
             auto kept = cactus::kvcompress::keepsets_from_fp16(
-                kbase, n, kv_heads, head_dim, unrope, params_local);
+                kbase, n, kv_heads, head_dim, unrope, params_local, pph);
             if (!canonical_captured) { canonical_keep = kept.empty() ? std::vector<int>{} : kept[0]; canonical_captured = true; }
             cactus::kvcompress::compact_fp16(kbase, vbase, kv_heads, head_dim, kept, unrope);
+            if (per_head_protect) special_rows_.remap(li, kept);
             size_t B = kept.empty() ? 0 : kept[0].size();
             khdr->current_seq_len = B;
             vhdr->current_seq_len = B;
@@ -2920,12 +2933,13 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             auto* v_sc = reinterpret_cast<float*>(static_cast<char*>(vraw) + kHeaderBytes +
                                                   max_seq * kv_heads * head_dim);
             auto kept = cactus::kvcompress::keepsets_from_int8(
-                k_i8, k_sc, n, kv_heads, head_dim, KV_QUANT_GROUP_SIZE, unrope, params_local);
+                k_i8, k_sc, n, kv_heads, head_dim, KV_QUANT_GROUP_SIZE, unrope, params_local, pph);
             if (!canonical_captured) { canonical_keep = kept.empty() ? std::vector<int>{} : kept[0]; canonical_captured = true; }
             cactus::kvcompress::compact_int8(k_i8, k_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,
                                              kept, unrope, /*renumber=*/true);
             cactus::kvcompress::compact_int8(v_i8, v_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,
                                              kept, unrope, /*renumber=*/false);
+            if (per_head_protect) special_rows_.remap(li, kept);
             size_t B = kept.empty() ? 0 : kept[0].size();
             khdr->current_seq_len = B;
             vhdr->current_seq_len = B;
@@ -2974,6 +2988,10 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
     if (have_new_seq_len) {
         cache_total_seq_len_ = new_seq_len;
         cache_renumbered_ = true;
+        // The special-row sets were remapped per layer above; advance to the compacted length. A
+        // compaction that ran without per-head tracking diverged the heads, so disable it afterward.
+        if (per_head_protect) special_rows_.set_tracked_len(new_seq_len);
+        else special_rows_.invalidate();
         if (map_valid && canonical_captured) {
             std::vector<uint32_t> compacted;
             compacted.reserve(canonical_keep.size());

@@ -804,6 +804,121 @@ bool test_sliding_layer_fixed_capacity() {
     return hdr->max_seq_len == window + sink + 1;
 }
 
+bool test_special_rows_remap_through_kept() {
+    // New ranks are the positions in `kept` whose value is a tracked row.
+    std::vector<int> rows = {3, 7, 10};
+    std::vector<int> kept = {0, 3, 5, 7, 9, 10, 12};  // 3->rank1, 7->rank3, 10->rank5
+    return remap_rows_through_kept(rows, kept) == std::vector<int>{1, 3, 5};
+}
+
+bool test_per_head_protect_keeps_specials() {
+    // Each head reserves its OWN protected rows, even mid-context ones KeyDiff would evict.
+    const double theta = 1000000.0;
+    const size_t n = 64, kv_heads = 3, head_dim = 16;
+    std::vector<std::vector<std::vector<float>>> pre, val;
+    auto kbuf = make_fp16_cache(n, n, kv_heads, head_dim, theta, pre, val);
+    auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
+    Params p; p.sink = 4; p.recent_frac = 0.30f; p.abs_budget = 24;
+    auto unrope = unrope_table(n, head_dim, theta);
+    std::vector<std::vector<int>> protect(kv_heads);
+    for (size_t h = 0; h < kv_heads; ++h) protect[h] = {static_cast<int>(20 + h)};  // distinct middle row per head
+    auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, unrope, p, protect);
+    if (kept.size() != kv_heads) return false;
+    for (size_t h = 0; h < kv_heads; ++h)
+        if (std::find(kept[h].begin(), kept[h].end(), static_cast<int>(20 + h)) == kept[h].end()) return false;
+    return true;
+}
+
+bool test_preflight_specials_exceed_budget() {
+    SpecialRowTracker tracked;
+    std::vector<int> rows;
+    for (int r = 0; r < 50; ++r) rows.push_back(r);
+    tracked.add_appended(/*layer=*/0, /*kv_heads=*/2, rows);  // 50 specials in each head
+    SpecialRowTracker untracked;
+    // sink=4: |[0,4) U rows| = 50 either way; exceeds a budget of 40.
+    return tracked.max_reserved(0, 4, {}) == 50 && tracked.max_reserved(0, 4, {}) > 40 &&
+           untracked.max_reserved(0, 4, rows) == 50 && untracked.max_reserved(0, 4, rows) > 40;
+}
+
+bool test_all_heads_keep_special_across_cycles() {
+    // Per-head KeyDiff keeps different middle rows per head; a tracked mid-context special must
+    // survive in EVERY head across multiple compactions (head-0-anchored protect would drop it).
+    const int trigger_len = 256, target_len = 128;
+    const size_t kv_heads = 4, head_dim = 16, max_seq = trigger_len + 8;
+    const double theta = 1000000.0;
+    std::vector<char> kbuf(kHeaderBytes + max_seq * kv_heads * head_dim * sizeof(uint16_t), 0);
+    std::vector<char> vbuf(kbuf.size(), 0);
+    auto* khdr = reinterpret_cast<Header*>(kbuf.data());
+    auto* vhdr = reinterpret_cast<Header*>(vbuf.data());
+    *khdr = Header{0, max_seq, kv_heads, head_dim, 4, {0, 0, 0}};
+    *vhdr = *khdr;
+    auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
+    auto* vrows = reinterpret_cast<uint16_t*>(vbuf.data() + kHeaderBytes);
+
+    auto special_val = [&](size_t h) {
+        std::vector<float> v(head_dim);
+        for (size_t d = 0; d < head_dim; ++d) v[d] = (d % 2 ? -2.0f : 2.0f) * static_cast<float>(h + 1);
+        return v;
+    };
+    const long special_abs = trigger_len / 2;  // a MIDDLE position (not sink, not recent)
+    auto append = [&](size_t from, size_t to) {
+        for (size_t t = from; t < to; ++t)
+            for (size_t h = 0; h < kv_heads; ++h) {
+                std::vector<float> k(head_dim);
+                // Special key is non-distinctive (KeyDiff would evict it); other rows differ per (h,t).
+                for (size_t d = 0; d < head_dim; ++d)
+                    k[d] = (static_cast<long>(t) == special_abs) ? 0.01f
+                                                                 : std::sin(0.11 * (h + 1) * (t + 1) + 0.3 * d) + 0.05 * d;
+                std::vector<float> kr = rope_reference(k, static_cast<double>(t), theta);
+                std::vector<float> vr(head_dim);
+                if (static_cast<long>(t) == special_abs) vr = special_val(h);
+                else for (size_t d = 0; d < head_dim; ++d) vr[d] = std::cos(0.07 * (t + 1) + 0.2 * d);
+                for (size_t d = 0; d < head_dim; ++d) {
+                    krows[(t * kv_heads + h) * head_dim + d] = f32_to_f16(kr[d]);
+                    vrows[(t * kv_heads + h) * head_dim + d] = f32_to_f16(vr[d]);
+                }
+            }
+    };
+    auto special_rank = [&](size_t h) -> long {
+        std::vector<float> sv = special_val(h);
+        for (size_t r = 0; r < khdr->current_seq_len; ++r) {
+            const uint16_t* v = vrows + (r * kv_heads + h) * head_dim;
+            double dot = 0, na = 0, nb = 0;
+            for (size_t d = 0; d < head_dim; ++d) { float x = f16_to_f32(v[d]); dot += x * sv[d]; na += x * x; nb += sv[d] * sv[d]; }
+            if (dot / (std::sqrt(na) * std::sqrt(nb) + 1e-9) > 0.99) return static_cast<long>(r);
+        }
+        return -1;
+    };
+
+    SpecialRowTracker tracker;
+    Params p; p.sink = 4; p.recent_frac = 0.30f; p.abs_budget = target_len;
+    auto unrope = unrope_table(trigger_len, head_dim, theta);
+    for (int c = 0; c < 3; ++c) {
+        size_t start = khdr->current_seq_len;
+        append(start, static_cast<size_t>(trigger_len));
+        khdr->current_seq_len = trigger_len; vhdr->current_seq_len = trigger_len;
+        std::vector<int> appended;
+        if (c == 0) appended.push_back(static_cast<int>(special_abs));  // head-aligned special in the appended region
+        tracker.add_appended(0, kv_heads, appended);
+        auto kept = keepsets_from_fp16(krows, static_cast<size_t>(trigger_len), kv_heads, head_dim,
+                                       unrope, p, tracker.protect(0));
+        compact_fp16(krows, vrows, kv_heads, head_dim, kept, theta);
+        tracker.remap(0, kept);
+        size_t B = kept.empty() ? 0 : kept[0].size();
+        khdr->current_seq_len = B; vhdr->current_seq_len = B;
+        tracker.set_tracked_len(B);
+    }
+    long r0 = special_rank(0);
+    if (r0 < 0) return false;
+    bool diverged = false;
+    for (size_t h = 0; h < kv_heads; ++h) {
+        long r = special_rank(h);
+        if (r < 0) return false;          // special must survive in every head
+        if (r != r0) diverged = true;     // and heads keep it at different ranks (a real per-head scenario)
+    }
+    return diverged;
+}
+
 int main() {
     TestUtils::TestRunner runner("KV Compress Free-Function Tests");
     runner.run_test("cache_starts_small_and_grows", test_cache_starts_small_and_grows());
@@ -828,6 +943,10 @@ int main() {
     runner.run_test("dequant_simd_matches_scalar", test_dequant_simd_matches_scalar());
     runner.run_test("keepset_protect_union", test_keepset_protect_union());
     runner.run_test("rolling_protect_survives", test_rolling_protect_survives());
+    runner.run_test("special_rows_remap_through_kept", test_special_rows_remap_through_kept());
+    runner.run_test("per_head_protect_keeps_specials", test_per_head_protect_keeps_specials());
+    runner.run_test("preflight_specials_exceed_budget", test_preflight_specials_exceed_budget());
+    runner.run_test("all_heads_keep_special_across_cycles", test_all_heads_keep_special_across_cycles());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

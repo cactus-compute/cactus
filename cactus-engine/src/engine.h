@@ -781,6 +781,7 @@ private:
     bool cache_renumbered_ = false;
     std::vector<uint32_t> cache_token_ids_;        // token id per cache row (canonical head-0 view)
     std::unordered_set<uint32_t> special_ids_;     // special-token ids force-kept during compaction
+    cactus::kvcompress::SpecialRowTracker special_rows_;  // per-(layer,head) special rows for compaction protect
     size_t cache_max_seq_len_ = 4096;
     size_t last_logit_position_ = 0;
     double last_prefill_cache_copy_ms_ = 0.0;

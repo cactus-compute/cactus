@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace cactus {
@@ -70,10 +71,13 @@ void rerope_recent_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads, s
                         size_t group_size, size_t lo, size_t hi, double rope_theta, double delta_pos);
 
 // Per-head keep-sets from POST-RoPE keys: un-RoPE -> score -> keepset.
+// protect_per_head (when sized to kv_heads) overrides Params::protect for each head, so every head
+// reserves its own special rows; empty -> use the shared Params::protect for all heads.
 std::vector<std::vector<int>> keepsets_from_fp16(const uint16_t* key_rows, size_t n,
                                                  size_t kv_heads, size_t head_dim,
                                                  const std::vector<RopeRotation>& unrope,
-                                                 const Params& p);
+                                                 const Params& p,
+                                                 const std::vector<std::vector<int>>& protect_per_head = {});
 std::vector<std::vector<int>> keepsets_from_fp16(const uint16_t* key_rows, size_t n,
                                                  size_t kv_heads, size_t head_dim,
                                                  double rope_theta, const Params& p);
@@ -82,11 +86,48 @@ std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const 
                                                  size_t n, size_t kv_heads, size_t head_dim,
                                                  size_t group_size,
                                                  const std::vector<RopeRotation>& unrope,
-                                                 const Params& p);
+                                                 const Params& p,
+                                                 const std::vector<std::vector<int>>& protect_per_head = {});
 std::vector<std::vector<int>> keepsets_from_int8(const int8_t* int8_rows, const float* scale_rows,
                                                  size_t n, size_t kv_heads, size_t head_dim,
                                                  size_t group_size, double rope_theta,
                                                  const Params& p);
+
+// New ranks of `rows` after a keep-set gather: {r : kept[r] in rows}, ascending. Both inputs sorted.
+std::vector<int> remap_rows_through_kept(const std::vector<int>& rows, const std::vector<int>& kept);
+
+// Tracks, per compressible KV layer and head, the cache rows holding special tokens, so rolling
+// compaction can re-protect every head's own specials across cycles (per-head keep sets diverge,
+// so a single head-0 view is not enough). Pure bookkeeping over row indices; no engine deps.
+class SpecialRowTracker {
+public:
+    void clear() { tracked_len_ = 0; layer_rows_.clear(); valid_ = true; }
+    size_t tracked_len() const { return tracked_len_; }
+    void set_tracked_len(size_t len) { tracked_len_ = len; }
+
+    // A compaction that ran without per-head tracking diverged the heads; the head-0 token view can
+    // no longer rebuild per-head truth, so disable tracking until the next clear().
+    bool valid() const { return valid_; }
+    void invalidate() { valid_ = false; }
+
+    // Append head-aligned special rows (rows >= tracked_len, identical across heads) to `layer`,
+    // sizing it to kv_heads on first touch. Does not advance tracked_len.
+    void add_appended(size_t layer, size_t kv_heads, const std::vector<int>& appended_rows);
+
+    // Per-head protected rows for a layer (empty if untracked).
+    const std::vector<std::vector<int>>& protect(size_t layer) const;
+
+    // max over heads of |[0,sink) U rows[h] U appended| -- the rows a compaction must reserve.
+    size_t max_reserved(size_t layer, size_t sink, const std::vector<int>& appended) const;
+
+    // After compacting `layer`, remap each head's special rows through its keep set.
+    void remap(size_t layer, const std::vector<std::vector<int>>& kept_per_head);
+
+private:
+    size_t tracked_len_ = 0;
+    bool valid_ = true;
+    std::vector<std::vector<std::vector<int>>> layer_rows_;  // [layer][head] -> sorted rows
+};
 
 // Sliding (local) vs full-attention; selects local vs global theta.
 bool is_sliding_layer(const std::vector<std::string>& layer_types, size_t li);
