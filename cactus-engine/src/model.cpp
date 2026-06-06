@@ -834,8 +834,6 @@ void Model::move_cache_states(Component& source, Component& target, size_t logic
         for (auto [src_node, dst_node] : {std::pair<int, int>{src.key_node_id, dst.key_node_id}, std::pair<int, int>{src.value_node_id, dst.value_node_id}}) {
             if (src_node < 0 || dst_node < 0) continue;
             target.graph->steal_cache_buffer(static_cast<size_t>(dst_node), *source.graph, static_cast<size_t>(src_node));
-            // KV caches carry a CacheMetadata header whose current_seq_len may need truncating to
-            // the logical handoff length (e.g. dropping padded tail rows).
             if (target.graph->get_node_op_type(static_cast<size_t>(dst_node)) == OpType::KV_CACHE_STATE &&
                 logical_current != std::numeric_limits<size_t>::max()) {
                 auto* meta = static_cast<uint64_t*>(target.graph->get_output(static_cast<size_t>(dst_node)));
@@ -1405,8 +1403,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     if (decoder_prefill_) {
         chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), true);
         if (chunked.logical_tokens == tokens.size() && chunked.padding_tokens > 0 && tokens.size() > 0) {
-            // run_chunked_prefill already moved the cache into the step component; drop the padded
-            // last row and re-run the true last token on the step decoder for correct logits.
+            // Cache already moved into the step component; drop the padded last row and re-run it for logits.
             set_cache_current_len(*decoder_, tokens.size() - 1);
             cache_total_seq_len_ = tokens.size() - 1;
             run_step(tokens.back(), cache_total_seq_len_, true);

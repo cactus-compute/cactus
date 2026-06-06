@@ -751,8 +751,6 @@ bool test_rolling_protect_survives() {
     return true;
 }
 
-// A global KV layer starts small (not the baked ceiling) and doubles as tokens append; every
-// stored row must survive the scales-region relocation (the growable cache's key invariant).
 bool test_cache_starts_small_and_grows() {
     CactusGraph gb;
     const size_t kv_heads = 2, head_dim = 64, ceiling = 100000, chunk = 100;
@@ -764,7 +762,7 @@ bool test_cache_starts_small_and_grows() {
     gb.retain_outputs({static_cast<int>(state), static_cast<int>(append)});
 
     bool ok = true;
-    std::vector<float> expect;  // value per (global row, channel)
+    std::vector<float> expect;
     auto val = [](size_t row, size_t c) { return std::sin(0.013 * row + 0.07 * c); };
     for (size_t step = 0; step < 3; ++step) {
         std::vector<uint16_t> in(chunk * int8_stride);
@@ -780,7 +778,7 @@ bool test_cache_starts_small_and_grows() {
     }
 
     const auto* hdr = reinterpret_cast<const Header*>(gb.get_output(state));
-    if (hdr->max_seq_len != 512) ok = false;          // 300 rows forced 256 -> 512
+    if (hdr->max_seq_len != 512) ok = false;
     if (hdr->current_seq_len != 300) ok = false;
 
     const auto* base = static_cast<const char*>(gb.get_output(state));
@@ -796,7 +794,6 @@ bool test_cache_starts_small_and_grows() {
     return ok;
 }
 
-// A sliding-window layer gets a fixed window-sized buffer, never the baked ceiling.
 bool test_sliding_layer_fixed_capacity() {
     CactusGraph gb;
     const size_t kv_heads = 2, head_dim = 64, ceiling = 100000, window = 512, sink = 4;

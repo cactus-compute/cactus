@@ -88,11 +88,8 @@ inline bool use_fp16_kv_cache() {
     return cached;
 }
 
-// Initial KV-cache capacity; the buffer doubles up to the baked ceiling as tokens accrue.
 constexpr size_t kInitialCacheEntries = 256;
 
-// Double a KV cache buffer to hold `needed` rows (capped at `ceiling`), relocating the int8
-// scales region and preserving stored rows. Returns true if reallocated.
 inline bool grow_cache_buffer(BufferDesc& buf, size_t needed, size_t ceiling) {
     auto* meta = get_meta(buf);
     size_t cur = meta->max_seq_len;
@@ -141,7 +138,6 @@ void compute_kv_cache_state_node(
     size_t ceiling = node.params.max_cache_seq_len;
     size_t window = node.params.window_size;
     bool sliding = window > 0 && window < ceiling;
-    // Sliding layers need a fixed window-sized buffer; global layers start small and grow.
     size_t max_seq = sliding ? std::min(ceiling, window + node.params.cache_sink_size + 1)
                              : std::min(ceiling, kInitialCacheEntries);
     size_t kv_heads = node.params.num_kv_heads;
@@ -183,8 +179,6 @@ void compute_kv_cache_append_node(
     size_t int8_stride = kv_heads * hdim;
     size_t scale_stride = kv_heads * num_groups;
 
-    // Global layers (no effective sliding window) grow the buffer to fit; capped at the baked
-    // ceiling, beyond which the eviction path below takes over. Sliding layers stay fixed.
     size_t ceiling = nodes[node_index_map.at(node.input_ids[1])]->params.max_cache_seq_len;
     bool sliding = node.params.window_size > 0 && node.params.window_size < ceiling;
     if (!sliding && current_len + new_seq_len > max_len) {
@@ -524,13 +518,10 @@ void compute_recurrent_cache_write_node(
     std::memcpy(cache_buf.get_data(), src.get_data(), src.byte_size);
 }
 
-// Move a cache buffer from another graph's node into this one (no copy); the source node is left
-// empty and reallocates small on its next execute.
 void CactusGraph::steal_cache_buffer(size_t dst_node, CactusGraph& src, size_t src_node) {
     auto& dst = nodes_[node_index_map_.at(dst_node)];
     auto& s = src.nodes_[src.node_index_map_.at(src_node)];
-    // Only op_type is invariant here; the moved buffer carries its own (runtime) precision, which
-    // may differ from dst's not-yet-executed baked precision (e.g. CACTUS_KV_CACHE_FP16).
+    // Buffer carries its own runtime precision (may be fp16); only op_type is invariant pre-move.
     assert(dst->op_type == s->op_type);
     dst->output_buffer = std::move(s->output_buffer);
 }
