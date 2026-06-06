@@ -46,6 +46,9 @@ def test_cmd_run_forwards_chunked_bundle_flags(monkeypatch, tmp_path: Path) -> N
         max_new_tokens=4,
         result_json=str(result_json),
         thinking=False,
+        no_cloud_handoff=False,
+        confidence_threshold=None,
+        cloud_timeout_ms=None,
     )
 
     assert run_mod.cmd_run(args) == 0
