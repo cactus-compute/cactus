@@ -37,11 +37,11 @@ function cp_headers() {
 }
 
 function create_ios_xcframework_info_plist() {
-    cp "$ROOT_DIR/apple/cactus-ios.xcframework.Info.plist" "$ROOT_DIR/apple/cactus-ios.xcframework/Info.plist"
+    cp "$ROOT_DIR/apple/cactus-ios.Info.plist" "$ROOT_DIR/apple/cactus-ios.xcframework/Info.plist"
 }
 
 function create_macos_xcframework_info_plist() {
-    cp "$ROOT_DIR/apple/cactus-macos.xcframework.Info.plist" "$ROOT_DIR/apple/cactus-macos.xcframework/Info.plist"
+    cp "$ROOT_DIR/apple/cactus-macos.Info.plist" "$ROOT_DIR/apple/cactus-macos.xcframework/Info.plist"
 }
 
 function build_static_library() {
