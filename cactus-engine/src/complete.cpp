@@ -804,7 +804,6 @@ int cactus_complete(
             }
         }
 
-        // Set before the fast path, which bypasses do_prefill. See do_prefill for the rationale.
         handle->model->set_compaction_suppressed(
             prompt.model_type == Config::ModelType::GEMMA4 && prompt.options.enable_thinking_if_supported);
 
