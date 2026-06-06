@@ -2908,8 +2908,9 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
         if (kv_heads == 0 || head_dim == 0) continue;
         if (unrope.empty()) unrope = cactus::kvcompress::unrope_table(n, head_dim, rope_theta);
 
+        static const std::vector<std::vector<int>> kNoProtect;
         if (per_head_protect) special_rows_.add_appended(li, kv_heads, appended_special);
-        const std::vector<std::vector<int>>& pph = special_rows_.protect(li);
+        const std::vector<std::vector<int>>& pph = per_head_protect ? special_rows_.protect(li) : kNoProtect;
 
         if (kdesc.precision == Precision::FP16) {
             auto* kbase = reinterpret_cast<uint16_t*>(static_cast<char*>(kraw) + kHeaderBytes);

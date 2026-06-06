@@ -106,9 +106,9 @@ public:
     void set_tracked_len(size_t len) { tracked_len_ = len; }
 
     // A compaction that ran without per-head tracking diverged the heads; the head-0 token view can
-    // no longer rebuild per-head truth, so disable tracking until the next clear().
+    // no longer rebuild per-head truth, so disable tracking and drop the now-stale rows until clear().
     bool valid() const { return valid_; }
-    void invalidate() { valid_ = false; }
+    void invalidate() { valid_ = false; layer_rows_.clear(); }
 
     // Append head-aligned special rows (rows >= tracked_len, identical across heads) to `layer`,
     // sizing it to kv_heads on first touch. Does not advance tracked_len.

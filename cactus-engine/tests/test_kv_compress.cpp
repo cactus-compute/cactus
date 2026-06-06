@@ -840,6 +840,23 @@ bool test_preflight_specials_exceed_budget() {
            untracked.max_reserved(0, 4, rows) == 50 && untracked.max_reserved(0, 4, rows) > 40;
 }
 
+bool test_empty_protect_per_head_uses_params_fallback() {
+    // When protect_per_head is empty, every head must fall back to Params::protect (so a disabled
+    // tracker can't leak stale per-head rows into the keep set).
+    const double theta = 1000000.0;
+    const size_t n = 64, kv_heads = 3, head_dim = 16;
+    std::vector<std::vector<std::vector<float>>> pre, val;
+    auto kbuf = make_fp16_cache(n, n, kv_heads, head_dim, theta, pre, val);
+    auto* krows = reinterpret_cast<uint16_t*>(kbuf.data() + kHeaderBytes);
+    Params p; p.sink = 4; p.recent_frac = 0.30f; p.abs_budget = 24; p.protect = {25};  // global middle protect
+    auto unrope = unrope_table(n, head_dim, theta);
+    auto kept = keepsets_from_fp16(krows, n, kv_heads, head_dim, unrope, p, /*protect_per_head=*/{});
+    if (kept.size() != kv_heads) return false;
+    for (size_t h = 0; h < kv_heads; ++h)
+        if (std::find(kept[h].begin(), kept[h].end(), 25) == kept[h].end()) return false;  // global protect honored in every head
+    return true;
+}
+
 bool test_all_heads_keep_special_across_cycles() {
     // Per-head KeyDiff keeps different middle rows per head; a tracked mid-context special must
     // survive in EVERY head across multiple compactions (head-0-anchored protect would drop it).
@@ -946,6 +963,7 @@ int main() {
     runner.run_test("special_rows_remap_through_kept", test_special_rows_remap_through_kept());
     runner.run_test("per_head_protect_keeps_specials", test_per_head_protect_keeps_specials());
     runner.run_test("preflight_specials_exceed_budget", test_preflight_specials_exceed_budget());
+    runner.run_test("empty_protect_per_head_uses_params_fallback", test_empty_protect_per_head_uses_params_fallback());
     runner.run_test("all_heads_keep_special_across_cycles", test_all_heads_keep_special_across_cycles());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
