@@ -57,7 +57,8 @@ class FusionConfig:
     enable_dense_mlp_tq_fused: bool = True
 
 
-def optimize_graph(graph: IRGraph, *, max_passes: int = 8, config: FusionConfig | None = None) -> IRGraph:
+def optimize_graph(graph: IRGraph, *, max_passes: int = 8, config: FusionConfig | None = None,
+                   precompute_rope: bool = True) -> IRGraph:
     config = config or FusionConfig()
     verify_ir(graph)
     canonicalize_exported_graph(graph)
@@ -108,7 +109,7 @@ def optimize_graph(graph: IRGraph, *, max_passes: int = 8, config: FusionConfig 
             break
         canonicalize_exported_graph(graph)
 
-    if precompute_rope_tables(graph):
+    if precompute_rope and precompute_rope_tables(graph):
         canonicalize_exported_graph(graph)
 
     annotate_gold_patterns(graph)
