@@ -517,7 +517,9 @@ int main(int argc, char** argv) {
         std::string input;
         if (auto_send) {
             auto_send = false;
-            input = initial_prompt.empty() ? "Describe the attached input." : initial_prompt;
+            if (!initial_prompt.empty()) input = initial_prompt;
+            else if (!current_image.empty()) input = "Describe this image.";
+            else input = "Transcribe or respond to this audio.";
             std::cout << "You: " << input << "\n";
         } else {
             std::cout << "You: " << std::flush;
