@@ -644,6 +644,7 @@ public:
 
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
+    void set_compaction_suppressed(bool v) { compaction_suppressed_ = v; }
 
     void compress_kv_cache_keydiff(const cactus::kvcompress::Params& params);
     void maybe_roll_compact();
@@ -779,6 +780,7 @@ private:
     bool initialized_ = false;
     size_t cache_total_seq_len_ = 0;
     bool cache_renumbered_ = false;
+    bool compaction_suppressed_ = false;           // Gemma4 thinking strips prior thoughts, which renumbering breaks
     std::vector<uint32_t> cache_token_ids_;        // token id per cache row (canonical head-0 view)
     std::unordered_set<uint32_t> special_ids_;     // special-token ids force-kept during compaction
     cactus::kvcompress::SpecialRowTracker special_rows_;  // per-(layer,head) special rows for compaction protect

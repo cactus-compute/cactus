@@ -2999,6 +2999,7 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
 }
 
 void Model::maybe_roll_compact() {
+    if (compaction_suppressed_) return;
     if (!config_.kv_compress || config_.kv_compress_trigger_len <= 0) return;
     if (cache_total_seq_len_ < static_cast<size_t>(config_.kv_compress_trigger_len)) return;
 
