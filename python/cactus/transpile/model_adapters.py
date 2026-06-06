@@ -4429,7 +4429,7 @@ def _build_qwen_causal_lm_component_specs(
         lm_encoder_text_chunk = Qwen3LMEncoderTextChunkAdapter(model).eval()
         decoder_media_step = Qwen3EmbedsCausalLMStepAdapter(model).eval()
         decoder_prefill_chunk = Qwen3EmbedsCausalLMPrefillChunkAdapter(model).eval()
-        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
+        max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
         prefill_chunk_size = max(1, int(os.environ.get("CACTUS_QWEN_PREFILL_CHUNK", "128") or "128"))
         prefill_chunk_size = min(prefill_chunk_size, int(input_ids.shape[1]))
         chunk_input_ids = input_ids[:, :prefill_chunk_size].contiguous()
