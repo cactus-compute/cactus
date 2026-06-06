@@ -35,7 +35,7 @@ Pick the right one for your platform and use case:
 
 ## Binding Documentation
 
-- **[React Native](https://github.com/cactus-compute/cactus-react-native)** -- npm package with React hooks (`useCactusLM`)
+- **[React Native](/bindings/react-native/)** -- Native bridge modules over the C API for iOS and Android
 - **[Python](/python/)** -- Module-level FFI bindings, mirrors the C API
 - **[Swift](/bindings/swift/)** -- XCFramework for iOS/macOS with NPU support
 - **[Kotlin](/bindings/kotlin/)** -- JNI bindings + Kotlin Multiplatform support

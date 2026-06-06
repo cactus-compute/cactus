@@ -35,28 +35,7 @@ cp android/README.md site_docs/android/README.md
 cp bindings/flutter/README.md site_docs/flutter/README.md
 cp bindings/swift/README.md site_docs/swift/README.md
 cp bindings/kotlin/README.md site_docs/kotlin/README.md
-
-mkdir -p site_docs/react-native
-if curl -sfL "https://raw.githubusercontent.com/cactus-compute/cactus-react-native/main/README.md" -o site_docs/react-native/README.md; then
-
-  {
-    echo '!!! info "Independent release cycle"'
-    echo '    The React Native binding releases independently from the Cactus engine.'
-    echo '    Check the [releases page](https://github.com/cactus-compute/cactus-react-native/releases) for the latest compatible version.'
-    echo ''
-    cat site_docs/react-native/README.md
-  } > site_docs/react-native/README.tmp && mv site_docs/react-native/README.tmp site_docs/react-native/README.md
- 
-  mkdir -p site_docs/react-native/assets
-  curl -sfL "https://raw.githubusercontent.com/cactus-compute/cactus-react-native/main/assets/logo.png" -o site_docs/react-native/assets/logo.png 2>/dev/null || true
-  echo "Fetched React Native README"
-else
-  echo "# React Native Binding" > site_docs/react-native/README.md
-  echo "" >> site_docs/react-native/README.md
-  echo "See [cactus-react-native on GitHub](https://github.com/cactus-compute/cactus-react-native) for full documentation." >> site_docs/react-native/README.md
-  echo "Warning: Could not fetch React Native README, using fallback"
-fi
-
+cp bindings/react-native/README.md site_docs/react-native/README.md
 cp bindings/rust/README.md site_docs/rust/README.md
 
 if [ -d blog ] && ls blog/*.md >/dev/null 2>&1; then

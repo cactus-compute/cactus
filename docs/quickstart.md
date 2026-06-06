@@ -6,9 +6,11 @@ Install Cactus and run your first on-device AI completion.
 
 === "React Native"
 
-    ```bash
-    npm install cactus-react-native react-native-nitro-modules
-    ```
+    --8<-- "react-native/README.md:install"
+
+    ### Platform Integration
+
+    --8<-- "react-native/README.md:integration"
 
 === "Flutter"
 
@@ -79,36 +81,7 @@ Install Cactus and run your first on-device AI completion.
 
 === "React Native"
 
-    ```tsx
-    import { useCactusLM } from 'cactus-react-native';
-
-    const App = () => {
-      const cactusLM = useCactusLM();
-
-      useEffect(() => {
-        if (!cactusLM.isDownloaded) {
-          cactusLM.download();
-        }
-      }, []);
-
-      const handleGenerate = () => {
-        cactusLM.complete({
-          messages: [{ role: 'user', content: 'What is the capital of France?' }],
-        });
-      };
-
-      if (cactusLM.isDownloading) {
-        return <Text>Downloading: {Math.round(cactusLM.downloadProgress * 100)}%</Text>;
-      }
-
-      return (
-        <>
-          <Button onPress={handleGenerate} title="Generate" />
-          <Text>{cactusLM.completion}</Text>
-        </>
-      );
-    };
-    ```
+    --8<-- "react-native/README.md:example"
 
 === "Flutter"
 

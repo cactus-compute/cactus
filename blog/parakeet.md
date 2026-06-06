@@ -205,7 +205,7 @@ int main() {
 
 ### 6. Use the [Rust Binding](/bindings/rust/)
 
-Add `cactus-sys` to your `Cargo.toml` and call the FFI bindings directly:
+Copy `cactus.rs` into your project (see [the README](/bindings/rust/)), link `libcactus.a` from `cactus build`, and call the FFI bindings directly:
 
 ```rust
 use std::ffi::CString;
