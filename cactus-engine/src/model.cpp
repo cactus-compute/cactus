@@ -821,7 +821,7 @@ bool Model::cache_states_compatible(const Component& source, const Component& ta
     return true;
 }
 
-void Model::copy_cache_states(const Component& source, Component& target, size_t logical_current) {
+void Model::move_cache_states(Component& source, Component& target, size_t logical_current) {
     if (source.cache_states.empty() || source.cache_states.size() != target.cache_states.size()) {
         throw std::runtime_error("prefill and step cache states are not compatible");
     }
@@ -832,149 +832,31 @@ void Model::copy_cache_states(const Component& source, Component& target, size_t
             throw std::runtime_error("prefill and step cache layer mismatch: " + src.layer_key + " != " + dst.layer_key);
         }
         for (auto [src_node, dst_node] : {std::pair<int, int>{src.key_node_id, dst.key_node_id}, std::pair<int, int>{src.value_node_id, dst.value_node_id}}) {
-            const auto& src_desc = source.graph->get_output_buffer(static_cast<size_t>(src_node));
-            const auto& dst_desc = target.graph->get_output_buffer(static_cast<size_t>(dst_node));
-            if (src_desc.precision != dst_desc.precision) {
-                std::ostringstream oss;
-                oss << "prefill and step cache precision mismatch at layer " << src.layer_key
-                    << ": " << static_cast<int>(src_desc.precision)
-                    << " vs " << static_cast<int>(dst_desc.precision);
-                throw std::runtime_error(oss.str());
+            if (src_node < 0 || dst_node < 0) continue;
+            target.graph->steal_cache_buffer(static_cast<size_t>(dst_node), *source.graph, static_cast<size_t>(src_node));
+            // KV caches carry a CacheMetadata header whose current_seq_len may need truncating to
+            // the logical handoff length (e.g. dropping padded tail rows).
+            if (target.graph->get_node_op_type(static_cast<size_t>(dst_node)) == OpType::KV_CACHE_STATE &&
+                logical_current != std::numeric_limits<size_t>::max()) {
+                auto* meta = static_cast<uint64_t*>(target.graph->get_output(static_cast<size_t>(dst_node)));
+                if (meta && logical_current < meta[0]) {
+                    meta[4] = std::min<uint64_t>(meta[4], logical_current);
+                    meta[0] = logical_current;
+                }
             }
-            void* src_ptr = source.graph->get_output(static_cast<size_t>(src_node));
-            void* dst_ptr = target.graph->get_output(static_cast<size_t>(dst_node));
+        }
+    }
+}
 
-            const OpType src_op = source.graph->get_node_op_type(static_cast<size_t>(src_node));
-            const OpType dst_op = target.graph->get_node_op_type(static_cast<size_t>(dst_node));
-            if (src_op != dst_op) {
-                throw std::runtime_error(
-                    "cache state op_type mismatch between prefill and step at layer "
-                    + src.layer_key);
-            }
-            if (src_op == OpType::RECURRENT_CACHE_STATE) {
-                if (src_desc.byte_size != dst_desc.byte_size) {
-                    throw std::runtime_error(
-                        "recurrent cache buffer shape mismatch between prefill and step at layer "
-                        + src.layer_key);
-                }
-                std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
-                continue;
-            }
-            if (src_op == OpType::CONV_CACHE_STATE) {
-                if (src_desc.byte_size != dst_desc.byte_size) {
-                    throw std::runtime_error(
-                        "conv cache buffer shape mismatch between prefill and step at layer "
-                        + src.layer_key);
-                }
-                std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
-                continue;
-            }
-            if (src_desc.byte_size == dst_desc.byte_size && logical_current == std::numeric_limits<size_t>::max()) {
-                std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
-                continue;
-            }
-            if (src_desc.precision == Precision::INT8) {
-                auto* src_meta = static_cast<uint64_t*>(src_ptr);
-                auto* dst_meta = static_cast<uint64_t*>(dst_ptr);
-                const size_t src_current = static_cast<size_t>(src_meta[0]);
-                const size_t effective_current = std::min(src_current, logical_current);
-                const size_t src_max = static_cast<size_t>(src_meta[1]);
-                const size_t kv_heads = static_cast<size_t>(src_meta[2]);
-                const size_t head_dim = static_cast<size_t>(src_meta[3]);
-                const size_t sink = static_cast<size_t>(src_meta[4]);
-                if (src_max == 0 || kv_heads == 0 || head_dim == 0) {
-                    throw std::runtime_error("prefill cache metadata is not initialized for layer " + src.layer_key);
-                }
-                const size_t groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-                const size_t int8_stride = kv_heads * head_dim;
-                const size_t scale_stride = kv_heads * groups;
-                const size_t row_bytes = int8_stride + scale_stride * sizeof(float);
-                const size_t dst_max = (dst_desc.byte_size - 64) / row_bytes;
-                if (dst_max == 0) {
-                    throw std::runtime_error("step cache capacity is zero for layer " + src.layer_key);
-                }
-                const size_t dst_current = std::min(effective_current, dst_max);
-                dst_meta[0] = dst_current;
-                dst_meta[1] = dst_max;
-                dst_meta[2] = kv_heads;
-                dst_meta[3] = head_dim;
-                dst_meta[4] = std::min(sink, dst_current);
-                std::memset(static_cast<char*>(dst_ptr) + 64, 0, dst_desc.byte_size - 64);
-
-                const auto* src_i8 = static_cast<const int8_t*>(src_ptr) + 64;
-                const auto* src_scales = reinterpret_cast<const float*>(
-                    static_cast<const char*>(src_ptr) + 64 + src_max * int8_stride);
-                auto* dst_i8 = static_cast<int8_t*>(dst_ptr) + 64;
-                auto* dst_scales = reinterpret_cast<float*>(
-                    static_cast<char*>(dst_ptr) + 64 + dst_max * int8_stride);
-                auto copy_rows = [&](size_t dst_row, size_t src_row, size_t rows) {
-                    if (rows == 0) return;
-                    std::memcpy(
-                        dst_i8 + dst_row * int8_stride,
-                        src_i8 + src_row * int8_stride,
-                        rows * int8_stride);
-                    std::memcpy(
-                        dst_scales + dst_row * scale_stride,
-                        src_scales + src_row * scale_stride,
-                        rows * scale_stride * sizeof(float));
-                };
-                if (effective_current <= dst_max) {
-                    copy_rows(0, 0, effective_current);
-                } else {
-                    const size_t copied_sink = std::min(sink, dst_max);
-                    const size_t tail_rows = dst_max - copied_sink;
-                    copy_rows(0, 0, copied_sink);
-                    if (tail_rows > 0) copy_rows(copied_sink, effective_current - tail_rows, tail_rows);
-                }
-                continue;
-            }
-            if (PrecisionTraits::is_cq(src_desc.precision) || src_desc.byte_size < 64 || dst_desc.byte_size < 64) {
-                std::ostringstream oss;
-                oss << "prefill and step cache buffer mismatch at layer " << src.layer_key
-                    << ": " << src_desc.byte_size << " bytes vs " << dst_desc.byte_size << " bytes";
-                throw std::runtime_error(oss.str());
-            }
-
-            auto* src_meta = static_cast<uint64_t*>(src_ptr);
-            auto* dst_meta = static_cast<uint64_t*>(dst_ptr);
-            const size_t src_current = static_cast<size_t>(src_meta[0]);
-            const size_t effective_current = std::min(src_current, logical_current);
-            const size_t src_max = static_cast<size_t>(src_meta[1]);
-            const size_t kv_heads = static_cast<size_t>(src_meta[2]);
-            const size_t head_dim = static_cast<size_t>(src_meta[3]);
-            const size_t sink = static_cast<size_t>(src_meta[4]);
-            if (src_max == 0 || kv_heads == 0 || head_dim == 0) {
-                throw std::runtime_error("prefill cache metadata is not initialized for layer " + src.layer_key);
-            }
-            const size_t row_bytes = kv_heads * head_dim * PrecisionTraits::size_of(src_desc.precision);
-            const size_t dst_max = (dst_desc.byte_size - 64) / row_bytes;
-            if (dst_max == 0) {
-                throw std::runtime_error("step cache capacity is zero for layer " + src.layer_key);
-            }
-            const size_t dst_current = std::min(effective_current, dst_max);
-            dst_meta[0] = dst_current;
-            dst_meta[1] = dst_max;
-            dst_meta[2] = kv_heads;
-            dst_meta[3] = head_dim;
-            dst_meta[4] = std::min(sink, dst_current);
-            std::memset(static_cast<char*>(dst_ptr) + 64, 0, dst_desc.byte_size - 64);
-            const auto* src_rows = static_cast<const char*>(src_ptr) + 64;
-            auto* dst_rows = static_cast<char*>(dst_ptr) + 64;
-            if (effective_current <= dst_max) {
-                std::memcpy(dst_rows, src_rows, effective_current * row_bytes);
-            } else {
-                const size_t copied_sink = std::min(sink, dst_max);
-                const size_t tail_rows = dst_max - copied_sink;
-                if (copied_sink > 0) {
-                    std::memcpy(dst_rows, src_rows, copied_sink * row_bytes);
-                }
-                if (tail_rows > 0) {
-                    std::memcpy(
-                        dst_rows + copied_sink * row_bytes,
-                        src_rows + (effective_current - tail_rows) * row_bytes,
-                        tail_rows * row_bytes);
-                }
-            }
+void Model::set_cache_current_len(Component& comp, size_t len) {
+    for (const auto& state : comp.cache_states) {
+        for (int node_id : {state.key_node_id, state.value_node_id}) {
+            if (node_id < 0) continue;
+            if (comp.graph->get_node_op_type(static_cast<size_t>(node_id)) != OpType::KV_CACHE_STATE) continue;
+            auto* meta = static_cast<uint64_t*>(comp.graph->get_output(static_cast<size_t>(node_id)));
+            if (!meta || len >= meta[0]) continue;
+            meta[4] = std::min<uint64_t>(meta[4], len);
+            meta[0] = len;
         }
     }
 }
@@ -1129,7 +1011,7 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
             std::fill(decoder_->input_buffers[i].begin(), decoder_->input_buffers[i].end(), 0);
         }
         auto copy_start = std::chrono::high_resolution_clock::now();
-        copy_cache_states(*decoder_prefill_, *decoder_, start_position + result.logical_tokens);
+        move_cache_states(*decoder_prefill_, *decoder_, start_position + result.logical_tokens);
         auto copy_end = std::chrono::high_resolution_clock::now();
         last_prefill_cache_copy_ms_ = std::chrono::duration_cast<std::chrono::microseconds>(copy_end - copy_start).count() / 1000.0;
     }
@@ -1523,7 +1405,9 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     if (decoder_prefill_) {
         chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), true);
         if (chunked.logical_tokens == tokens.size() && chunked.padding_tokens > 0 && tokens.size() > 0) {
-            copy_cache_states(*decoder_prefill_, *decoder_, tokens.size() - 1);
+            // run_chunked_prefill already moved the cache into the step component; drop the padded
+            // last row and re-run the true last token on the step decoder for correct logits.
+            set_cache_current_len(*decoder_, tokens.size() - 1);
             cache_total_seq_len_ = tokens.size() - 1;
             run_step(tokens.back(), cache_total_seq_len_, true);
             ++cache_total_seq_len_;
@@ -2151,7 +2035,7 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         decoder_prefill_chunk_->graph->execute();
     }
     if (whole_chunks_end > 0 && decoder_ != nullptr) {
-        copy_cache_states(*decoder_prefill_chunk_, *decoder_);
+        move_cache_states(*decoder_prefill_chunk_, *decoder_);
         decoder_prefill_chunk_->graph->release_runtime_buffers();
         unload_component_graph(*decoder_prefill_chunk_);
     }

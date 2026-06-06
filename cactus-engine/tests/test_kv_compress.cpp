@@ -1,6 +1,7 @@
 #include "test_utils.h"
 #include "../src/kv_compress.h"
 #include "../src/engine.h"
+#include "cactus_graph.h"
 
 #include <algorithm>
 #include <cmath>
@@ -750,8 +751,66 @@ bool test_rolling_protect_survives() {
     return true;
 }
 
+// A global KV layer starts small (not the baked ceiling) and doubles as tokens append; every
+// stored row must survive the scales-region relocation (the growable cache's key invariant).
+bool test_cache_starts_small_and_grows() {
+    CactusGraph gb;
+    const size_t kv_heads = 2, head_dim = 64, ceiling = 100000, chunk = 100;
+    const size_t groups = (head_dim + kGroupSize - 1) / kGroupSize;
+    const size_t int8_stride = kv_heads * head_dim, scale_stride = kv_heads * groups;
+    size_t new_kv = gb.input({chunk, kv_heads, head_dim}, Precision::FP16);
+    size_t state = gb.kv_cache_state(ceiling, kv_heads, head_dim, /*window*/0, /*sink*/4);
+    size_t append = gb.kv_cache_append(new_kv, state, /*window*/0, /*sink*/4);
+    gb.retain_outputs({static_cast<int>(state), static_cast<int>(append)});
+
+    bool ok = true;
+    std::vector<float> expect;  // value per (global row, channel)
+    auto val = [](size_t row, size_t c) { return std::sin(0.013 * row + 0.07 * c); };
+    for (size_t step = 0; step < 3; ++step) {
+        std::vector<uint16_t> in(chunk * int8_stride);
+        for (size_t r = 0; r < chunk; ++r)
+            for (size_t c = 0; c < int8_stride; ++c) {
+                float v = static_cast<float>(val(step * chunk + r, c));
+                in[r * int8_stride + c] = f32_to_f16(v);
+                expect.push_back(v);
+            }
+        gb.set_input(new_kv, in.data(), Precision::FP16);
+        gb.execute();
+        if (step == 0 && reinterpret_cast<Header*>(gb.get_output(state))->max_seq_len != 256) ok = false;
+    }
+
+    const auto* hdr = reinterpret_cast<const Header*>(gb.get_output(state));
+    if (hdr->max_seq_len != 512) ok = false;          // 300 rows forced 256 -> 512
+    if (hdr->current_seq_len != 300) ok = false;
+
+    const auto* base = static_cast<const char*>(gb.get_output(state));
+    const int8_t* i8 = reinterpret_cast<const int8_t*>(base + kHeaderBytes);
+    const float* sc = reinterpret_cast<const float*>(base + kHeaderBytes + 512 * int8_stride);
+    for (size_t r = 0; r < 300 && ok; ++r)
+        for (size_t h = 0; h < kv_heads; ++h)
+            for (size_t d = 0; d < head_dim; ++d) {
+                float dq = static_cast<float>(i8[r * int8_stride + h * head_dim + d]) *
+                           sc[r * scale_stride + h * groups + d / kGroupSize];
+                if (std::abs(dq - expect[r * int8_stride + h * head_dim + d]) > 0.05f) ok = false;
+            }
+    return ok;
+}
+
+// A sliding-window layer gets a fixed window-sized buffer, never the baked ceiling.
+bool test_sliding_layer_fixed_capacity() {
+    CactusGraph gb;
+    const size_t kv_heads = 2, head_dim = 64, ceiling = 100000, window = 512, sink = 4;
+    size_t state = gb.kv_cache_state(ceiling, kv_heads, head_dim, window, sink);
+    gb.retain_outputs({static_cast<int>(state)});
+    gb.execute();
+    auto* hdr = reinterpret_cast<Header*>(gb.get_output(state));
+    return hdr->max_seq_len == window + sink + 1;
+}
+
 int main() {
     TestUtils::TestRunner runner("KV Compress Free-Function Tests");
+    runner.run_test("cache_starts_small_and_grows", test_cache_starts_small_and_grows());
+    runner.run_test("sliding_layer_fixed_capacity", test_sliding_layer_fixed_capacity());
     runner.run_test("compact_fp16_cache", test_compact_fp16_cache());
     runner.run_test("dense_check_full_budget", test_dense_check_full_budget());
     runner.run_test("rope_renumber_contiguous", test_rope_renumber_contiguous());

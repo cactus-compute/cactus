@@ -714,7 +714,8 @@ private:
     void copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index);
     void copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target, size_t token_offset);
     bool cache_states_compatible(const Component& source, const Component& target) const;
-    void copy_cache_states(const Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
+    void move_cache_states(Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
+    void set_cache_current_len(Component& comp, size_t len);
     void reset_component_cache_states(Component& comp);
     size_t component_chunk_tokens(const Component& comp, const std::string& input_name) const;
     size_t component_output_tokens(const Component& comp, const std::string& output_name) const;
