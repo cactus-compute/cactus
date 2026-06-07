@@ -333,8 +333,7 @@ def _build_chat_response(result: dict[str, Any], model_id: str, request_id: str)
     has_tool_calls = bool(tool_calls)
     prefill = int(result.get("prefill_tokens") or 0)
     decode = int(result.get("decode_tokens") or 0)
-    content = result.get("response", "")
-    message: dict[str, Any] = {"role": "assistant", "content": None if has_tool_calls else content}
+    message: dict[str, Any] = {"role": "assistant", "content": None if has_tool_calls else result.get("response", "")}
     if has_tool_calls:
         message["tool_calls"] = tool_calls
     return {

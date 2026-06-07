@@ -229,8 +229,6 @@ struct Config {
     uint32_t audio_fft_length = 1024;
     uint32_t audio_token_id = 0;
     bool audio_fft_overdrive = false;
-    uint32_t channel_open_token_id = 100;
-    uint32_t channel_close_token_id = 101;
 
     static bool is_gemma_family(ModelType t) {
         return t == ModelType::GEMMA || t == ModelType::GEMMA3N || t == ModelType::GEMMA4;

@@ -3225,8 +3225,6 @@ bool Config::from_json(const std::string& config_path) {
             audio_fft_length = audio_fft_overdrive ? 1024u : 512u;
         }
         else if (key == "audio_token_id") audio_token_id = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "channel_open_token_id") channel_open_token_id = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "channel_close_token_id") channel_close_token_id = static_cast<uint32_t>(std::stoul(value));
         else if (key == "activation_sparsity_ppf") {
             activation_sparsity_ppf.clear();
             std::stringstream ss(value);
