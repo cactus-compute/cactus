@@ -135,11 +135,13 @@ prefill throughput, decode throughput, RAM, and token counts.
 cactus benchmark LiquidAI/LFM2-VL-450M \
   --profile short_chat \
   --profile long_prefill \
+  --sweep-token-counts 512,2048,4096 \
   --iterations 5 \
   --warmup 2 \
   --max-tokens 128 \
   --output runs/lfm2_vl.jsonl \
-  --summary-json runs/lfm2_vl_summary.json
+  --summary-json runs/lfm2_vl_summary.json \
+  --markdown-report runs/lfm2_vl_report.md
 ```
 
 Custom profiles can be checked into a PR so reviewers can rerun the exact same
@@ -161,6 +163,19 @@ prompt shapes:
 
 ```bash
 cactus benchmark ./weights/lfm2-vl --profiles-file profiles.json --output bench.jsonl
+```
+
+Compare two summary files to catch regressions before sending a runtime change
+for review:
+
+```bash
+cactus benchmark \
+  --compare runs/main_summary.json runs/pr_summary.json \
+  --compare-metric time_to_first_token_ms \
+  --compare-metric decode_tps \
+  --regression-threshold 5 \
+  --fail-on-regression \
+  --markdown-report runs/regression_report.md
 ```
 
 ### Prefill

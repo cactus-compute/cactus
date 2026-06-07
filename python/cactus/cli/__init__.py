@@ -187,6 +187,9 @@ def create_parser():
     --warmup <n>                       warmup runs per profile
     --output <path>                    write raw JSONL measurements
     --summary-json <path>              write grouped p50/p95 summary
+    --markdown-report <path>           write a human-readable report
+    --sweep-token-counts 512,2048      add synthetic context profiles
+    --compare base.json cand.json      compare summaries for regressions
 
   -----------------------------------------------------------------
 
@@ -331,6 +334,20 @@ def create_parser():
                                   help="Path to write per-run JSONL measurements")
     benchmark_parser.add_argument("--summary-json",
                                   help="Path to write grouped summary JSON")
+    benchmark_parser.add_argument("--markdown-report",
+                                  help="Path to write a Markdown benchmark report")
+    benchmark_parser.add_argument("--sweep-token-counts",
+                                  help="Comma-separated synthetic context lengths to add as profiles")
+    benchmark_parser.add_argument("--compare", nargs=2, metavar=("BASELINE", "CANDIDATE"),
+                                  help="Compare two summary JSON files instead of running a benchmark")
+    benchmark_parser.add_argument("--compare-metric", action="append",
+                                  help="Metric to compare. Repeat to compare multiple metrics.")
+    benchmark_parser.add_argument("--compare-stat", default="p50", choices=["mean", "p50", "p95", "min", "max"],
+                                  help="Summary statistic to compare (default: p50)")
+    benchmark_parser.add_argument("--regression-threshold", type=float, default=5.0,
+                                  help="Allowed percent regression before flagging (default: 5.0)")
+    benchmark_parser.add_argument("--fail-on-regression", action="store_true",
+                                  help="Exit non-zero when --compare finds a regression")
     benchmark_parser.add_argument("--token", help="HuggingFace API token")
     benchmark_parser.add_argument("--reconvert", action="store_true",
                                   help="Force conversion from source")

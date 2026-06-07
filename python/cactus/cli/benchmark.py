@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import platform
 import statistics
+import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -50,6 +53,9 @@ METRIC_FIELDS = (
     "total_tokens",
 )
 
+LOWER_IS_BETTER = {"time_to_first_token_ms", "total_time_ms", "ram_usage_mb"}
+DEFAULT_COMPARE_METRICS = ("time_to_first_token_ms", "total_time_ms", "prefill_tps", "decode_tps")
+
 
 @dataclass(frozen=True)
 class BenchmarkProfile:
@@ -95,6 +101,54 @@ def load_profiles(path: str | None, names: set[str] | None, base_options: dict[s
     return profiles
 
 
+def _parse_int_list(raw: str | None) -> list[int]:
+    if not raw:
+        return []
+    values = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        value = int(part)
+        if value <= 0:
+            raise ValueError("Sweep token counts must be positive")
+        values.append(value)
+    return values
+
+
+def build_sweep_profiles(token_counts: list[int], base_options: dict[str, Any]) -> list[BenchmarkProfile]:
+    profiles = []
+    seed = "Cactus local inference regression profile. "
+    for count in token_counts:
+        words = (seed.split() * ((count // len(seed.split())) + 1))[:count]
+        profiles.append(BenchmarkProfile(
+            name=f"context_sweep_{count}",
+            messages=[{
+                "role": "user",
+                "content": " ".join(words) + "\n\nReturn one short sentence about the bottleneck.",
+            }],
+            options=dict(base_options),
+        ))
+    return profiles
+
+
+def collect_environment(model_id: str, bundle_dir: Path | str | None) -> dict[str, Any]:
+    try:
+        from cactus import __version__ as cactus_version
+    except Exception:
+        cactus_version = None
+    return {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "model_id": model_id,
+        "bundle_dir": str(bundle_dir) if bundle_dir is not None else None,
+        "cactus_version": cactus_version,
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+    }
+
+
 def _percentile(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
@@ -108,7 +162,7 @@ def _percentile(values: list[float], pct: float) -> float:
     return ordered[lower] * (1 - weight) + ordered[upper] * weight
 
 
-def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
+def summarize_results(results: Iterable[dict[str, Any]], metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in results:
         if row.get("phase") == "measure" and row.get("success"):
@@ -128,7 +182,10 @@ def summarize_results(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
                     "max": max(values),
                 }
         summaries.append({"profile": profile, "runs": len(rows), "metrics": metrics})
-    return {"profiles": summaries}
+    summary = {"profiles": summaries}
+    if metadata is not None:
+        summary["environment"] = metadata
+    return summary
 
 
 def _run_once(runtime, model, profile: BenchmarkProfile, *, phase: str, iteration: int) -> dict[str, Any]:
@@ -162,7 +219,7 @@ def _run_once(runtime, model, profile: BenchmarkProfile, *, phase: str, iteratio
 
 
 def run_benchmark(runtime, model, profiles: list[BenchmarkProfile], *, warmup: int, iterations: int,
-                  reset_between: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                  reset_between: bool, metadata: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     rows = []
     for profile in profiles:
         for i in range(warmup):
@@ -173,7 +230,91 @@ def run_benchmark(runtime, model, profiles: list[BenchmarkProfile], *, warmup: i
             if reset_between:
                 runtime.cactus_reset(model)
             rows.append(_run_once(runtime, model, profile, phase="measure", iteration=i))
-    return rows, summarize_results(rows)
+    return rows, summarize_results(rows, metadata=metadata)
+
+
+def _profile_metric(summary: dict[str, Any], profile: str, metric: str, stat: str) -> float | None:
+    for item in summary.get("profiles", []):
+        if item.get("profile") != profile:
+            continue
+        value = item.get("metrics", {}).get(metric, {}).get(stat)
+        return float(value) if isinstance(value, (int, float)) else None
+    return None
+
+
+def compare_summaries(baseline: dict[str, Any], candidate: dict[str, Any], *,
+                      metrics: list[str], stat: str, threshold_pct: float) -> dict[str, Any]:
+    profiles = sorted({
+        item.get("profile")
+        for source in (baseline, candidate)
+        for item in source.get("profiles", [])
+        if item.get("profile")
+    })
+    rows = []
+    for profile in profiles:
+        for metric in metrics:
+            base_value = _profile_metric(baseline, profile, metric, stat)
+            cand_value = _profile_metric(candidate, profile, metric, stat)
+            if base_value is None or cand_value is None or base_value == 0:
+                continue
+            change_pct = ((cand_value - base_value) / abs(base_value)) * 100.0
+            lower_is_better = metric in LOWER_IS_BETTER
+            regression = change_pct > threshold_pct if lower_is_better else change_pct < -threshold_pct
+            rows.append({
+                "profile": profile,
+                "metric": metric,
+                "stat": stat,
+                "baseline": base_value,
+                "candidate": cand_value,
+                "change_pct": change_pct,
+                "lower_is_better": lower_is_better,
+                "regression": regression,
+            })
+    return {
+        "threshold_pct": threshold_pct,
+        "regressions": [row for row in rows if row["regression"]],
+        "comparisons": rows,
+    }
+
+
+def render_markdown(summary: dict[str, Any], comparison: dict[str, Any] | None = None) -> str:
+    lines = ["# Cactus benchmark report", ""]
+    env = summary.get("environment") or {}
+    if env:
+        lines.extend([
+            "## Environment",
+            "",
+            "| Field | Value |",
+            "| --- | --- |",
+        ])
+        for key in ("created_at", "model_id", "bundle_dir", "cactus_version", "python", "platform", "machine", "processor"):
+            if env.get(key) is not None:
+                lines.append(f"| {key} | {env[key]} |")
+        lines.append("")
+
+    lines.extend(["## Summary", "", "| Profile | Runs | TTFT p50 ms | Decode p50 tok/s | Prefill p50 tok/s | RAM p50 MB |", "| --- | ---: | ---: | ---: | ---: | ---: |"])
+    for item in summary.get("profiles", []):
+        metrics = item.get("metrics", {})
+        def p50(name: str) -> float:
+            return float(metrics.get(name, {}).get("p50", 0.0))
+        lines.append(
+            f"| {item.get('profile')} | {item.get('runs', 0)} | "
+            f"{p50('time_to_first_token_ms'):.2f} | {p50('decode_tps'):.2f} | "
+            f"{p50('prefill_tps'):.2f} | {p50('ram_usage_mb'):.2f} |"
+        )
+    lines.append("")
+
+    if comparison is not None:
+        lines.extend(["## Regression comparison", "", "| Profile | Metric | Baseline | Candidate | Change | Result |", "| --- | --- | ---: | ---: | ---: | --- |"])
+        for row in comparison.get("comparisons", []):
+            result = "regression" if row["regression"] else "ok"
+            lines.append(
+                f"| {row['profile']} | {row['metric']} {row['stat']} | "
+                f"{row['baseline']:.3f} | {row['candidate']:.3f} | "
+                f"{row['change_pct']:.2f}% | {result} |"
+            )
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _write_jsonl(path: str | None, rows: list[dict[str, Any]]) -> None:
@@ -194,7 +335,28 @@ def _write_summary(path: str | None, summary: dict[str, Any]) -> None:
     target.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _load_summary(path: str) -> dict[str, Any]:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 def cmd_benchmark(args):
+    if args.compare:
+        baseline = _load_summary(args.compare[0])
+        candidate = _load_summary(args.compare[1])
+        metrics = args.compare_metric or list(DEFAULT_COMPARE_METRICS)
+        comparison = compare_summaries(
+            baseline,
+            candidate,
+            metrics=metrics,
+            stat=args.compare_stat,
+            threshold_pct=args.regression_threshold,
+        )
+        report = render_markdown(candidate, comparison)
+        if args.markdown_report:
+            Path(args.markdown_report).write_text(report, encoding="utf-8")
+        print(report)
+        return 1 if args.fail_on_regression and comparison["regressions"] else 0
+
     from .model import TranspileOptions, ensure_bundle, resolve_bundle_dir
     from ..bindings import cactus as runtime
 
@@ -206,6 +368,7 @@ def cmd_benchmark(args):
 
     try:
         profiles = load_profiles(args.profiles_file, set(args.profile or []), base_options)
+        profiles.extend(build_sweep_profiles(_parse_int_list(args.sweep_token_counts), base_options))
     except ValueError as exc:
         print_color(RED, str(exc))
         return 1
@@ -233,6 +396,7 @@ def cmd_benchmark(args):
             warmup=args.warmup,
             iterations=args.iterations,
             reset_between=not args.keep_cache,
+            metadata=collect_environment(args.model_id, bundle_dir),
         )
     finally:
         if model is not None:
@@ -240,6 +404,8 @@ def cmd_benchmark(args):
 
     _write_jsonl(args.output, rows)
     _write_summary(args.summary_json, summary)
+    if args.markdown_report:
+        Path(args.markdown_report).write_text(render_markdown(summary), encoding="utf-8")
 
     print_color(GREEN, f"Benchmarked {len(profiles)} profile(s), {args.iterations} measured run(s) each")
     for item in summary["profiles"]:
