@@ -123,6 +123,46 @@ if result["cloud_handoff"]:
 }
 ```
 
+## Benchmarking
+
+Use `cactus benchmark` when comparing inference changes across devices,
+quantization settings, or long-context profiles. It runs warmups, resets the KV
+cache between runs by default, records every trial as JSONL, and writes a grouped
+summary with mean, p50, p95, min, and max values for TTFT, total latency,
+prefill throughput, decode throughput, RAM, and token counts.
+
+```bash
+cactus benchmark LiquidAI/LFM2-VL-450M \
+  --profile short_chat \
+  --profile long_prefill \
+  --iterations 5 \
+  --warmup 2 \
+  --max-tokens 128 \
+  --output runs/lfm2_vl.jsonl \
+  --summary-json runs/lfm2_vl_summary.json
+```
+
+Custom profiles can be checked into a PR so reviewers can rerun the exact same
+prompt shapes:
+
+```json
+{
+  "profiles": [
+    {
+      "name": "long_context_decode",
+      "messages": [
+        {"role": "user", "content": "Repeat your benchmark context here..."}
+      ],
+      "options": {"max_tokens": 128, "temperature": 0.0}
+    }
+  ]
+}
+```
+
+```bash
+cactus benchmark ./weights/lfm2-vl --profiles-file profiles.json --output bench.jsonl
+```
+
 ### Prefill
 
 Pre-processes input text and populates the KV cache without generating output tokens. This reduces latency for subsequent calls to `cactus_complete`.

@@ -22,6 +22,7 @@ from .test import cmd_test, COMPONENTS
 from .convert import cmd_convert, cmd_transpile
 from .run import cmd_run
 from .list import cmd_list
+from .benchmark import cmd_benchmark
 
 from .auth import cmd_auth
 from .clean import cmd_clean
@@ -174,7 +175,25 @@ def create_parser():
     --android                          run on connected Android
     --enable-telemetry                 send cloud telemetry (off by default)
 
+  -----------------------------------------------------------------
+
+  cactus benchmark <model>             run repeatable local inference profiles
+                                       writes per-run JSONL and summary JSON
+
+    Optional flags:
+    --profile <name>                   run one built-in or file profile
+    --profiles-file <path>             JSON list of benchmark profiles
+    --iterations <n>                   measured runs per profile
+    --warmup <n>                       warmup runs per profile
+    --output <path>                    write raw JSONL measurements
+    --summary-json <path>              write grouped p50/p95 summary
+
+  -----------------------------------------------------------------
+
   cactus clean                         delete build artifacts
+
+  -----------------------------------------------------------------
+
   cactus --help                        show this help
 
   -----------------------------------------------------------------
@@ -291,6 +310,31 @@ def create_parser():
     test_parser.add_argument("--enable-telemetry", action="store_true",
                              help="Enable cloud telemetry (disabled by default in tests)")
 
+    benchmark_parser = subparsers.add_parser("benchmark", help="Run repeatable local inference benchmark profiles")
+    benchmark_parser.add_argument("model_id", nargs="?", default=DEFAULT_MODEL_ID,
+                                  help=f"Model or prepared bundle to benchmark (default: {DEFAULT_MODEL_ID})")
+    benchmark_parser.add_argument("--profile", action="append",
+                                  help="Profile name to run. Repeat to select multiple profiles.")
+    benchmark_parser.add_argument("--profiles-file",
+                                  help="JSON file with benchmark profiles")
+    benchmark_parser.add_argument("--iterations", type=int, default=3,
+                                  help="Measured runs per profile (default: 3)")
+    benchmark_parser.add_argument("--warmup", type=int, default=1,
+                                  help="Warmup runs per profile (default: 1)")
+    benchmark_parser.add_argument("--max-tokens", type=int, default=64,
+                                  help="Generation token limit for benchmark runs (default: 64)")
+    benchmark_parser.add_argument("--temperature", type=float, default=0.0,
+                                  help="Sampling temperature for benchmark runs (default: 0.0)")
+    benchmark_parser.add_argument("--keep-cache", action="store_true",
+                                  help="Do not reset the KV cache between runs")
+    benchmark_parser.add_argument("--output",
+                                  help="Path to write per-run JSONL measurements")
+    benchmark_parser.add_argument("--summary-json",
+                                  help="Path to write grouped summary JSON")
+    benchmark_parser.add_argument("--token", help="HuggingFace API token")
+    benchmark_parser.add_argument("--reconvert", action="store_true",
+                                  help="Force conversion from source")
+
     auth_parser = subparsers.add_parser("auth", help="Manage cloud API key")
     auth_parser.add_argument("--clear", action="store_true",
                              help="Remove the saved API key")
@@ -398,6 +442,7 @@ _COMMANDS = {
     "transcribe": cmd_transcribe,
     "test":       cmd_test,
     "list":       cmd_list,
+    "benchmark":  cmd_benchmark,
 
     "auth":           cmd_auth,
     "clean":          cmd_clean,
