@@ -54,16 +54,8 @@ if(APPLE)
     target_link_libraries(cactus_kernels PUBLIC ${ACCELERATE_FRAMEWORK})
 endif()
 
-if(BUILD_TESTING OR CACTUS_BUILD_TESTS)
-    set(TEST_SOURCES
-        tests/test_elementwise.cpp
-        tests/test_matmul.cpp
-        tests/test_attention.cpp
-        tests/test_reduce.cpp
-        tests/test_conv.cpp
-        tests/test_quant.cpp
-        tests/test_dsp.cpp
-    )
+if((BUILD_TESTING OR CACTUS_BUILD_TESTS) AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    file(GLOB TEST_SOURCES "tests/test_*.cpp")
     foreach(TEST_SRC ${TEST_SOURCES})
         get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
         add_executable(${TEST_NAME} ${TEST_SRC})
