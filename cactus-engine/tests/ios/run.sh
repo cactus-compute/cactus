@@ -357,10 +357,11 @@ if [ "$device_type" = "simulator" ]; then
         "SIMCTL_CHILD_CACTUS_TEST_ASSETS=assets"
         "SIMCTL_CHILD_CACTUS_INDEX_PATH=assets"
         "SIMCTL_CHILD_CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE:-1}"
-        "SIMCTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_ONLY:-}"
+        "SIMCTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_SUITE:-}"
     )
 
     env "${sim_env[@]}" xcrun simctl launch --console-pty "$device_uuid" "$bundle_id"
+    SUITE_EXIT=$?
 else
     echo "Installing on: $device_name"
 
@@ -383,11 +384,12 @@ else
         "DEVICECTL_CHILD_CACTUS_TEST_ASSETS=assets"
         "DEVICECTL_CHILD_CACTUS_INDEX_PATH=assets"
         "DEVICECTL_CHILD_CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE:-1}"
-        "DEVICECTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_ONLY:-}"
+        "DEVICECTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_SUITE:-}"
     )
 
     env "${device_env[@]}" \
-    xcrun devicectl device process launch --device "$device_uuid" "$bundle_id" 2>&1 || true
+        xcrun devicectl device process launch --device "$device_uuid" "$bundle_id" 2>&1
+    SUITE_EXIT=$?
 
     echo "Waiting for tests to complete..."
     max_wait=300
@@ -415,6 +417,11 @@ else
         --domain-type appDataContainer \
         --source Documents/cactus_test.log \
         --destination "$log_dir/cactus_test.log" 2>/dev/null || true
+    xcrun devicectl device copy from --device "$device_uuid" \
+        --domain-identifier "$bundle_id" \
+        --domain-type appDataContainer \
+        --source Documents/cactus_test.exitcode \
+        --destination "$log_dir/exitcode" 2>/dev/null || true
 
     if [ -f "$log_dir/cactus_test.log" ]; then
         echo "=== Device Test Output ==="
@@ -423,8 +430,21 @@ else
     else
         echo "Could not retrieve test logs from device"
     fi
+
+    if [ -f "$log_dir/exitcode" ]; then
+        SUITE_EXIT=$(tr -d '[:space:]' < "$log_dir/exitcode")
+        [[ "$SUITE_EXIT" =~ ^[0-9]+$ ]] || SUITE_EXIT=1
+    else
+        echo "Could not retrieve exit-code marker from device"
+        SUITE_EXIT=1
+    fi
     rm -rf "$log_dir"
 fi
 
 echo ""
-echo "Tests complete."
+if [ "${SUITE_EXIT:-1}" -eq 0 ]; then
+    echo "All tests passed."
+else
+    echo "Some tests failed."
+fi
+exit "${SUITE_EXIT:-1}"

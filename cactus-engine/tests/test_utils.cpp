@@ -24,10 +24,6 @@ void TestRunner::log_performance(const std::string& test_name, const std::string
     std::cout << "⚡PERF │ " << std::left << std::setw(38) << test_name << " │ " << details << "\n";
 }
 
-void TestRunner::log_skip(const std::string& test_name, const std::string& reason) {
-    std::cout << "⊘ SKIP │ " << std::left << std::setw(25) << test_name << " │ " << reason << "\n";
-}
-
 void TestRunner::print_summary() {
     std::cout << "────────────────────────────────────────────────────────────────────────────────────────\n";
     if (all_passed())

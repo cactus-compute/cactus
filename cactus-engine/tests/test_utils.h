@@ -17,7 +17,6 @@ public:
     TestRunner(const std::string& suite_name);
     void run_test(const std::string& test_name, bool result);
     void log_performance(const std::string& test_name, const std::string& details);
-    void log_skip(const std::string& test_name, const std::string& reason);
     void print_summary();
     bool all_passed() const;
 
