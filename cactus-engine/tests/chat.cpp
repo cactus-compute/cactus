@@ -680,7 +680,8 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        std::string assistant = json_string_value(response_json, "response");
+        std::string assistant = json_string_value(response_json, "context_response");
+        if (assistant.empty()) assistant = json_string_value(response_json, "response");
         history.push_back({"assistant", assistant});
         current_image.clear();
         current_audio.clear();
