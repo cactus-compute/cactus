@@ -77,23 +77,6 @@ std::vector<ToolConstraintSpec> build_tool_constraint_specs(const std::vector<To
     return specs;
 }
 
-void strip_thinking_from_cache(CactusModelHandle* handle,
-                               const std::vector<uint32_t>& generated_tokens,
-                               size_t prompt_len) {
-    const auto& cfg = handle->model->get_config();
-    uint32_t open_id = cfg.channel_open_token_id;
-    uint32_t close_id = cfg.channel_close_token_id;
-    auto ranges = find_channel_token_ranges(generated_tokens, prompt_len,
-                                            open_id, close_id);
-    if (ranges.empty()) return;
-
-    handle->model->remove_thinking_tokens(ranges);
-    for (auto it = ranges.rbegin(); it != ranges.rend(); ++it) {
-        auto start = handle->processed_tokens.begin() + it->first;
-        handle->processed_tokens.erase(start, start + it->second);
-    }
-}
-
 void setup_tool_constraints(CactusModelHandle* handle, const std::vector<ToolFunction>& tools,
                            bool force_tools, float& temperature) {
     if (!force_tools || tools.empty()) return;
@@ -525,9 +508,6 @@ PrefillResult do_prefill(
     const PreparedPrompt& prompt,
     const std::vector<uint32_t>& target_tokens
 ) {
-    handle->model->set_compaction_suppressed(
-        prompt.model_type == Config::ModelType::GEMMA4 && prompt.options.enable_thinking_if_supported);
-
     PrefillResult result = {};
     bool has_images = prompt.has_images();
     bool has_audio = prompt.has_audio();
@@ -802,9 +782,6 @@ int cactus_complete(
             }
         }
 
-        handle->model->set_compaction_suppressed(
-            prompt.model_type == Config::ModelType::GEMMA4 && prompt.options.enable_thinking_if_supported);
-
         bool first_token_from_prefill = false;
         if (!has_images && !has_audio && handle->processed_tokens.empty()) {
             reset_cache(handle);
@@ -924,10 +901,6 @@ int cactus_complete(
             handle->model->clear_tool_constraints();
         }
 
-        if (prompt.model_type == Config::ModelType::GEMMA4 && prompt.options.enable_thinking_if_supported && !generated_tokens.empty()) {
-            strip_thinking_from_cache(handle, generated_tokens, prompt.tokens.size());
-        }
-
         auto end_time = std::chrono::high_resolution_clock::now();
         double total_time_ms = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
 
@@ -945,7 +918,7 @@ int cactus_complete(
         std::string thinking_text;
         if (prompt.model_type == Config::ModelType::GEMMA4 || prompt.options.enable_thinking_if_supported) {
             std::string stripped_content;
-            strip_thinking_block(regular_response, thinking_text, stripped_content);
+            partition_thinking_response(regular_response, thinking_text, stripped_content);
             regular_response = stripped_content;
             if (!prompt.options.enable_thinking_if_supported) {
                 thinking_text.clear();
@@ -988,7 +961,7 @@ int cactus_complete(
         std::string result = construct_response_json(primary_response, primary_function_calls, time_to_first_token,
                                                      total_time_ms, prefill_tps, decode_tps, prompt_tokens,
                                                      completion_tokens, confidence, handoff_succeeded,
-                                                     thinking_text);
+                                                     thinking_text, {}, response_text);
 
         if (result.length() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);

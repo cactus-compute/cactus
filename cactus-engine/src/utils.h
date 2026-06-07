@@ -1534,30 +1534,6 @@ inline void parse_function_calls_from_response(const std::string& response_text,
     }
 }
 
-inline std::vector<std::pair<size_t, size_t>> find_channel_token_ranges(
-    const std::vector<uint32_t>& tokens, size_t offset,
-    uint32_t channel_open_id, uint32_t channel_close_id) {
-    std::vector<std::pair<size_t, size_t>> ranges;
-    size_t pos = 0;
-    while (pos < tokens.size()) {
-        if (tokens[pos] != channel_open_id) {
-            pos++;
-            continue;
-        }
-
-        size_t block_start = pos;
-        pos++;
-        while (pos < tokens.size() && tokens[pos] != channel_close_id) {
-            pos++;
-        }
-        if (pos < tokens.size()) {
-            pos++;
-        }
-        ranges.push_back({offset + block_start, pos - block_start});
-    }
-    return ranges;
-}
-
 inline void strip_tag_blocks(std::string& text, std::string& extracted,
                              const std::string& open_tag, const std::string& close_tag) {
     std::string result;
@@ -1592,7 +1568,7 @@ inline void strip_tag_blocks(std::string& text, std::string& extracted,
     text = result;
 }
 
-inline void strip_thinking_block(const std::string& input, std::string& thinking, std::string& content) {
+inline void partition_thinking_response(const std::string& input, std::string& thinking, std::string& content) {
     thinking.clear();
     content = input;
 
@@ -1634,13 +1610,17 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            float confidence = 0.0f,
                                            bool cloud_handoff = false,
                                            const std::string& thinking = "",
-                                           const std::vector<TranscriptSegment>& segments = {}) {
+                                           const std::vector<TranscriptSegment>& segments = {},
+                                           const std::string& context_response = "") {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
     json << "\"error\":null,";
     json << "\"cloud_handoff\":" << (cloud_handoff ? "true" : "false") << ",";
     json << "\"response\":\"" << escape_json_string(regular_response) << "\",";
+    if (!context_response.empty()) {
+        json << "\"context_response\":\"" << escape_json_string(context_response) << "\",";
+    }
     if (!thinking.empty()) {
         json << "\"thinking\":\"" << escape_json_string(thinking) << "\",";
     }

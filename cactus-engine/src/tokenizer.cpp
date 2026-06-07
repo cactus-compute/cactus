@@ -471,27 +471,6 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
         result += "<turn|>\n";
     }
 
-    auto strip_channel = [](const std::string& text) -> std::string {
-        const std::string open_tag = "<|channel>";
-        const std::string close_tag = "<channel|>";
-        std::string out;
-        size_t pos = 0;
-        while (pos < text.size()) {
-            size_t open_pos = text.find(open_tag, pos);
-            if (open_pos == std::string::npos) {
-                out += text.substr(pos);
-                break;
-            }
-            out += text.substr(pos, open_pos - pos);
-            size_t close_pos = text.find(close_tag, open_pos + open_tag.size());
-            if (close_pos == std::string::npos) {
-                break;
-            }
-            pos = close_pos + close_tag.size();
-        }
-        return out;
-    };
-
     auto compute_soft_tokens = [&](const std::string& image_path) -> size_t {
         int w = 0, h = 0, c = 0;
         unsigned char* data = cactus_image_load(image_path.c_str(), &w, &h, &c, 3);
@@ -516,7 +495,7 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
         std::string role = (msg.role == "assistant") ? "model" : msg.role;
         result += "<|turn>" + role + "\n";
         if (role == "model") {
-            result += strip_channel(msg.content);
+            result += msg.content;
             if (!msg.tool_calls.empty()) {
                 for (const auto& tc : msg.tool_calls) {
                     result += format_tool_call_for_prompt(tc.name, tc.arguments, true);
