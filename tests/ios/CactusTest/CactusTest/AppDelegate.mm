@@ -19,7 +19,6 @@ extern int test_exhaustive_main();
 extern int test_gemma4_audio_main();
 extern int test_gemma4_audio_layers_main();
 extern int test_gemma4_suite_main();
-extern int test_gemma4_thinking_main();
 extern int test_gemma4_vision_main();
 extern int test_graph_main();
 extern int test_index_main();
@@ -182,7 +181,6 @@ static void asr_token_callback(const char* token, uint32_t, void*) {
         if (should_run("gemma4_audio")) test_gemma4_audio_main();
         if (should_run("gemma4_audio_layers")) test_gemma4_audio_layers_main();
         if (should_run("gemma4_suite")) test_gemma4_suite_main();
-        if (should_run("gemma4_thinking")) test_gemma4_thinking_main();
         if (should_run("gemma4_vision")) test_gemma4_vision_main();
         if (should_run("graph")) test_graph_main();
         if (should_run("index")) test_index_main();
