@@ -1,4 +1,3 @@
-"""CQ archive discovery, download, and validation utilities."""
 from __future__ import annotations
 
 import hashlib
@@ -16,16 +15,25 @@ from pathlib import Path
 from typing import Iterable
 
 
-CQ_BITS_RE = re.compile(r"-cq([1-4])$", re.IGNORECASE)
+CQ_VARIANT_RE = re.compile(r"-cq([1-4])(?:-([a-z]+))?$", re.IGNORECASE)
 ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
+
+
+def variant_suffix(bits: int, platform: str | None) -> str:
+    return f"cq{bits}-{platform.lower()}" if platform else f"cq{bits}"
 
 
 @dataclass(frozen=True)
 class CqArchive:
     filename: str
     bits: int
+    platform: str | None = None  # None = generic CPU bundle
     size: int | None = None
     sha256: str | None = None
+
+    @property
+    def suffix(self) -> str:
+        return variant_suffix(self.bits, self.platform)
 
 
 @dataclass(frozen=True)
@@ -38,7 +46,7 @@ class CqResolution:
 
 def suggested_cq_repo(model_id: str) -> str:
     name = str(model_id).strip().replace("_", "-").split("/")[-1]
-    name = re.sub(r"-cq\d*$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"-cq\d*(?:-[a-z]+)?$", "", name, flags=re.IGNORECASE)
     return f"Cactus-Compute/{name}"
 
 
@@ -49,15 +57,22 @@ def archive_stem(filename: str) -> str:
     return filename
 
 
-def parse_cq_bits(filename: str) -> int | None:
+def parse_cq_variant(filename: str) -> tuple[int, str | None] | None:
     stem = archive_stem(Path(filename).name)
-    m = CQ_BITS_RE.search(stem)
-    return int(m.group(1)) if m else None
+    m = CQ_VARIANT_RE.search(stem)
+    if not m:
+        return None
+    platform = m.group(2).lower() if m.group(2) else None
+    return int(m.group(1)), platform
 
 
 def is_supported_archive(filename: str) -> bool:
     lower = filename.lower()
     return any(lower.endswith(suffix) for suffix in ARCHIVE_SUFFIXES)
+
+
+def _platform_sort_key(platform: str | None) -> tuple[int, str]:
+    return (0, "") if platform is None else (1, platform)
 
 
 def archives_from_repo_files(repo_files: Iterable[str], sizes: dict[str, int] | None = None,
@@ -68,24 +83,26 @@ def archives_from_repo_files(repo_files: Iterable[str], sizes: dict[str, int] | 
     for filename in repo_files:
         if not is_supported_archive(filename):
             continue
-        bits = parse_cq_bits(filename)
-        if bits is None:
+        variant = parse_cq_variant(filename)
+        if variant is None:
             continue
-        archives.append(CqArchive(filename=filename, bits=bits,
+        bits, platform = variant
+        archives.append(CqArchive(filename=filename, bits=bits, platform=platform,
                                   size=sizes.get(filename), sha256=sha256s.get(filename)))
-    return tuple(sorted(archives, key=lambda a: a.bits))
+    return tuple(sorted(archives, key=lambda a: (a.bits, _platform_sort_key(a.platform))))
 
 
 def resolve_archive(repo_id: str, local_name: str, archives: Iterable[CqArchive],
-                    bits: int) -> CqResolution:
+                    bits: int, platform: str | None = None) -> CqResolution:
     available = tuple(archives)
     if not available:
         raise RuntimeError(f"No CQ archives found in {repo_id}")
 
-    match = next((a for a in available if a.bits == bits), None)
+    wanted = variant_suffix(bits, platform)
+    match = next((a for a in available if a.bits == bits and a.platform == platform), None)
     if not match:
-        choices = ", ".join(f"cq{a.bits}" for a in available)
-        raise RuntimeError(f"cq{bits} not found in {repo_id}. Available: {choices}")
+        choices = ", ".join(a.suffix for a in available)
+        raise RuntimeError(f"{wanted} not found in {repo_id}. Available: {choices}")
 
     return CqResolution(
         repo_id=repo_id,
@@ -150,11 +167,17 @@ def promote_single_root(output_dir: Path) -> None:
     nested.rmdir()
 
 
-def validate_extracted_cq(output_dir: Path) -> None:
-    required = ("config.txt", "token_embeddings.weights", "vocab.txt", "tokenizer_config.txt")
+def validate_extracted_bundle(output_dir: Path) -> None:
+    required = (
+        "config.txt",
+        "token_embeddings.weights",
+        "vocab.txt",
+        "tokenizer_config.txt",
+        "components/manifest.json",
+    )
     missing = [name for name in required if not (output_dir / name).exists()]
     if missing:
-        raise RuntimeError(f"Downloaded CQ package is missing required file(s): {', '.join(missing)}")
+        raise RuntimeError(f"Downloaded bundle is missing required file(s): {', '.join(missing)}")
 
     tokenizer_config = {}
     for line in (output_dir / "tokenizer_config.txt").read_text(encoding="utf-8").splitlines():
@@ -171,7 +194,7 @@ def validate_extracted_cq(output_dir: Path) -> None:
 
     missing_sidecars = [name for name in optional_required if not (output_dir / name).exists()]
     if missing_sidecars:
-        raise RuntimeError(f"Downloaded CQ package is missing tokenizer sidecar file(s): {', '.join(missing_sidecars)}")
+        raise RuntimeError(f"Downloaded bundle is missing tokenizer sidecar file(s): {', '.join(missing_sidecars)}")
 
 
 def sha256_file(path: Path) -> str:
@@ -234,16 +257,16 @@ def write_download_metadata(output_dir: Path, resolution: CqResolution, archive_
 
 
 def download_cq_archive(resolution: CqResolution, output_dir: Path, *, token=None,
-                        revision=None, force=False, dry_run=False) -> Path:
+                        revision=None, reconvert=False, dry_run=False) -> Path:
     if dry_run:
         return output_dir
 
-    if output_dir.exists() and force:
+    if output_dir.exists() and reconvert:
         shutil.rmtree(output_dir)
-    if output_dir.exists() and (output_dir / "config.txt").exists():
+    if output_dir.exists() and (output_dir / "components" / "manifest.json").exists():
         return output_dir
     if output_dir.exists() and any(output_dir.iterdir()):
-        raise RuntimeError(f"Output directory already exists and is not a complete CQ package: {output_dir}")
+        raise RuntimeError(f"Output directory already exists and is not a complete bundle: {output_dir}")
 
     try:
         from huggingface_hub import hf_hub_download
@@ -267,7 +290,7 @@ def download_cq_archive(resolution: CqResolution, output_dir: Path, *, token=Non
         tmp_dir = Path(tmp)
         safe_extract_archive(archive_path, tmp_dir)
         promote_single_root(tmp_dir)
-        validate_extracted_cq(tmp_dir)
+        validate_extracted_bundle(tmp_dir)
         write_download_metadata(tmp_dir, resolution, archive_path)
         if output_dir.exists():
             shutil.rmtree(output_dir)
@@ -307,7 +330,10 @@ def list_hf_cq_archives(repo_id: str, *, token=None, revision=None) -> tuple[CqA
                 sha256s[filename] = lfs["sha256"]
         return archives_from_repo_files(files, sizes=sizes, sha256s=sha256s)
 
-    info = HfApi().model_info(repo_id, revision=revision, token=token, files_metadata=True)
+    try:
+        info = HfApi().model_info(repo_id, revision=revision, token=token, files_metadata=True)
+    except Exception as exc:
+        raise RuntimeError(f"could not query {repo_id} on huggingface.co: {exc}") from exc
     files = []
     sizes = {}
     sha256s = {}

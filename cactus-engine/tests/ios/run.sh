@@ -360,8 +360,17 @@ if [ "$device_type" = "simulator" ]; then
         "SIMCTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_SUITE:-}"
     )
 
-    env "${sim_env[@]}" xcrun simctl launch --console-pty "$device_uuid" "$bundle_id"
-    SUITE_EXIT=$?
+    env "${sim_env[@]}" xcrun simctl launch --console-pty --terminate-running-process "$device_uuid" "$bundle_id"
+
+    data_container=$(xcrun simctl get_app_container "$device_uuid" "$bundle_id" data 2>/dev/null || true)
+    exitcode_file="$data_container/Documents/cactus_test.exitcode"
+    if [ -n "$data_container" ] && [ -f "$exitcode_file" ]; then
+        SUITE_EXIT=$(tr -d '[:space:]' < "$exitcode_file")
+        [[ "$SUITE_EXIT" =~ ^[0-9]+$ ]] || SUITE_EXIT=1
+    else
+        echo "Could not retrieve exit-code marker from simulator"
+        SUITE_EXIT=1
+    fi
 else
     echo "Installing on: $device_name"
 

@@ -8,7 +8,6 @@ from pathlib import Path
 from .common import GREEN, PROJECT_ROOT, YELLOW, print_color
 
 
-# ── Weight download / conversion ──────────────────────────────────────
 
 
 def _convert_from_source(model_id, *, bits, token, weights_dir):
@@ -20,7 +19,6 @@ def _convert_from_source(model_id, *, bits, token, weights_dir):
         "convert", "--model", model_id,
         "--out", str(weights_dir),
         "--bits", str(bits),
-        "--force",
     ]
     if token:
         cq_args.extend(["--token", token])
@@ -31,12 +29,7 @@ def _convert_from_source(model_id, *, bits, token, weights_dir):
 
 
 def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=None):
-    """Return path to CQ weights dir, downloading or converting as needed.
-
-    Fast path: pull a pre-converted CQ archive from huggingface.co/Cactus-Compute.
-    Fallback: ``--reconvert`` or no archive available → build from source.
-    """
-    from .download import get_weights_dir, download_cq_weights
+    from .download import get_weights_dir
 
     weights_dir = Path(output_dir) if output_dir else get_weights_dir(model_id)
 
@@ -48,18 +41,9 @@ def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=
         print_color(GREEN, f"Model weights found at {weights_dir}")
         return weights_dir
 
-    if not reconvert:
-        try:
-            return download_cq_weights(
-                model_id, bits=bits, token=token, output_dir=weights_dir,
-            )
-        except (RuntimeError, OSError) as exc:
-            print(f"  Pre-converted CQ not available ({exc})")
-
     return _convert_from_source(model_id, bits=bits, token=token, weights_dir=weights_dir)
 
 
-# ── Transpile spec helpers ────────────────────────────────────────────
 
 _DEFAULT_MULTIMODAL_PROMPT = (
     "Respond with 2 lines. The first should be a description of the image, "
@@ -78,7 +62,6 @@ class _TranspileSpec:
 
 
 def _spec_from_plan(plan):
-    """Convert a ComponentPlan into a _TranspileSpec."""
     return _TranspileSpec(
         task=plan.task,
         components=tuple(plan.components or ()),
@@ -89,7 +72,6 @@ def _spec_from_plan(plan):
 
 
 def _infer_transpile_spec(*, task, plan):
-    """Determine transpile parameters from task + component plan."""
     if task != "auto":
         if plan is not None and task == plan.task:
             return _spec_from_plan(plan)
@@ -114,7 +96,6 @@ def _infer_transpile_spec(*, task, plan):
 
 
 def _default_max_new_tokens(task):
-    """Sensible token budget per task type."""
     return {
         "seq2seq_transcription": 128,
         "multimodal_causal_lm_logits": 512,
@@ -141,7 +122,6 @@ def _default_audio_asset():
 
 
 def _remove_stale_transpile_artifacts(output_dir):
-    """Clean old transpile outputs before re-transpiling."""
     for relative in (
         "components",
         "transpile_entrypoints.json",
@@ -163,7 +143,6 @@ def _remove_stale_transpile_artifacts(output_dir):
 
 
 def _has_transpiled_bundle(path):
-    """Check if path contains a transpiled bundle."""
     return (path / "components" / "manifest.json").exists()
 
 
@@ -173,23 +152,17 @@ _AUDIO_TASKS = frozenset({
 })
 
 
-# ── Bundle preparation (weights + transpile) ──────────────────────────
 
 
 def resolve_bundle_dir(model_id):
     path = Path(model_id).expanduser()
-    if not path.is_dir():
-        return None
-    if (path / "components" / "manifest.json").exists():
+    if path.is_dir() and (path / "components" / "manifest.json").exists():
         return path
-    if path.name == "components" and (path / "manifest.json").exists():
-        return path.parent
     return None
 
 
 @dataclass(frozen=True)
 class TranspileOptions:
-    """Transpile-phase parameters for ensure_bundle."""
     task: str = "auto"
     prompt: str | None = None
     image_files: list[str] | None = None
@@ -208,8 +181,6 @@ class TranspileOptions:
 
 def ensure_bundle(model_id, *, bits=4, token=None,
                   reconvert=False, output_dir=None, transpile=None):
-    """Return path to transpiled bundle, creating it if needed.
-    """
     from .download import get_weights_dir
     from .transpile import run_transpile
     from cactus.transpile.component_plan import infer_component_plan_from_output
@@ -221,22 +192,18 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     else:
         output_dir = get_weights_dir(model_id)
 
-    # Step 1: ensure CQ weights exist
     ensure_weights(
         model_id, bits=bits, token=token,
         reconvert=reconvert, output_dir=output_dir,
     )
 
-    # Step 2: skip if already transpiled
     if _has_transpiled_bundle(output_dir):
         return output_dir
 
-    # Step 3: infer transpile spec from converted output
     plan = infer_component_plan_from_output(str(output_dir), model_id=model_id)
     spec = _infer_transpile_spec(task=opts.task, plan=plan)
     _remove_stale_transpile_artifacts(output_dir)
 
-    # Step 4: resolve defaults for prompt, images, audio
     spec_prompt = opts.prompt
     spec_image_files = list(opts.image_files or [])
     spec_audio_file = opts.audio_file
@@ -276,7 +243,6 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     if effective_components is None and spec.components:
         effective_components = ",".join(spec.components)
 
-    # Handle audio-only tasks
     used_default_audio = False
     if spec.task in _AUDIO_TASKS and not spec_audio_file:
         spec_audio_file = _default_audio_asset()
@@ -290,7 +256,6 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     elif spec.task in _AUDIO_TASKS and not spec_audio_file:
         raise RuntimeError(f"{spec.task} transpile requires --audio-file.")
 
-    # Step 5: build transpile args and call run_transpile
     effective_max_new_tokens = opts.max_new_tokens or _default_max_new_tokens(spec.task)
 
     extra_args = [

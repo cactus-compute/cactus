@@ -369,7 +369,7 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
 
     try {
         auto* handle = new CactusModelHandle();
-        handle->model = create_model(model_path);
+        handle->model = create_model(model_path_str);
         handle->model_name = model_name;
 
         if (!handle->model) {
