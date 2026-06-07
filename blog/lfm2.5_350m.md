@@ -65,7 +65,7 @@ Both lock you into a vendor-specific format that may not support your model arch
 CPU is the universal target. Every ARM device, flagship, budget, wearable, Raspberry Pi, and most recent ones support DOTPROD or I8MM extensions. 
 A single well-optimized CPU codepath works everywhere, the main challenge is energy-inefficiency compared to NPU.
 
-ARM is also closing this gap. The progression from NEON to DOTPROD to I8MM to SME2 reflects a deliberate push to bring matrix-processing efficiency onto the CPU itself. Each generation narrows the energy and throughput gap with dedicated NPUs. SME2, available on Apple's M4 and upcoming ARMv9.2 cores, adds streaming matrix operations that approach NPU-class efficiency for INT8 workloads while remaining fully programmable. Cactus already compiles SME2 codepaths where available. The bet is that general-purpose CPU silicon will continue absorbing the capabilities that once justified a separate accelerator.
+ARM is also closing this gap. The progression from NEON to DOTPROD to I8MM to SME2 reflects a deliberate push to bring matrix-processing efficiency onto the CPU itself. Each generation narrows the energy and throughput gap with dedicated NPUs. SME2, landing on upcoming ARMv9.2-A cores, adds streaming matrix operations that approach NPU-class efficiency for INT8 workloads while remaining fully programmable. The bet is that general-purpose CPU silicon will continue absorbing the capabilities that once justified a separate accelerator.
 
 ## Why Single Core for Decode
 
@@ -186,7 +186,7 @@ The choice often comes down to small models that fit everywhere but are too weak
 Cactus exists because we took on this specific slice of the problem; I spent the last few years building foundation models and inference for tiny devices. 
 The team's approach is systematic: profile every major ARM variant, write dedicated kernel paths for each ISA extension tier (NEON, DOTPROD, I8MM, SME2), 
 design the model format around the worst-case memory behavior (Android's mmap limitations), and test on real production devices, not emulators. 
-This it not-trivial; battling with chip manufactures with different brand visions, model developers chasing benchmarks over useability and more. 
+This is not trivial; battling with chip manufacturers with different brand visions, model developers chasing benchmarks over usability and more. 
 
 The result is that businesses shipping with Cactus don't need to worry about inference failing silently on a budget Samsung, or a model that's accurate on benchmarks but too large for half their install base. 
 The kernel, the format, and the quantization strategy are all designed so that the same model file works correctly across the full device spectrum, with predictable RAM, predictable speed, and predictable quality.
