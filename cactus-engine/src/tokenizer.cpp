@@ -426,6 +426,10 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
                 if (is_lfm2) result += "\n";
             }
         }
+        // Replicating generation prompt so the kv cache can and is re-used across turns.
+        if (role == "assistant" && chat_template_.find("<think>") != std::string::npos) {
+            result += msg.content.find("</think>") != std::string::npos ? "<think>\n" : "<think>\n\n</think>\n\n";
+        }
         result += msg.content;
         if (role == "assistant" && !msg.tool_calls.empty()) {
             for (const auto& tc : msg.tool_calls) {
