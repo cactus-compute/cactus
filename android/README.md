@@ -16,8 +16,8 @@ bash android/build.sh
 
 ## Output
 
-- `libcactus.so` — Shared library (JNI, for Android apps)
-- `libcactus.a` — Static library (for native test binaries)
+- `libcactus_engine.so` — Shared library (JNI, for Android apps)
+- `libcactus_engine.a` — Static library (for native test binaries)
 
 ## Options
 

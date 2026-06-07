@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 
 final DynamicLibrary _lib = (Platform.isAndroid || Platform.isLinux)
-    ? DynamicLibrary.open('libcactus.so')
+    ? DynamicLibrary.open('libcactus_engine.so')
     : DynamicLibrary.process();
 
 typedef CactusModelT = Pointer<Void>;

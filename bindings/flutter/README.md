@@ -12,7 +12,7 @@ cactus build --android
 <!-- --8<-- [end:install] -->
 
 <!-- --8<-- [start:integration] -->
-1. Copy `libcactus.so` to `jniLibs/arm64-v8a/` (Android)
+1. Copy `libcactus_engine.so` to `jniLibs/arm64-v8a/` (Android)
 2. Add `cactus-ios.xcframework` to your Xcode project (iOS)
 3. Add `cactus-macos.xcframework` to your Xcode project (macOS)
 4. Copy `cactus.dart` into your Dart source tree

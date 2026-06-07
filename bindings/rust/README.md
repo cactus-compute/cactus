@@ -12,11 +12,11 @@ cactus build
 
 
 1. Copy `cactus.rs` into your project
-2. Link against `libcactus.a` in your `build.rs`:
+2. Link against `libcactus_engine.a` in your `build.rs`:
 
 ```rust
 println!("cargo:rustc-link-lib=static=cactus");
-println!("cargo:rustc-link-search=native=/path/to/cactus/cactus/build");
+println!("cargo:rustc-link-search=native=/path/to/cactus/cactus-engine/build");
 ```
 
 ## Usage

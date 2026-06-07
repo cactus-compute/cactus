@@ -47,7 +47,7 @@ jobs:
 
       - name: Build libcactus + engine tests
         run: |
-          bash cactus/build.sh
+          bash cactus-engine/build.sh
           cd cactus-engine/tests
           rm -rf build && mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release

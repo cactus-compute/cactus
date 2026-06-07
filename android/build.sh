@@ -59,14 +59,14 @@ cmake -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
 
 cmake --build "$BUILD_DIR" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
 
-cp "$BUILD_DIR/lib/libcactus.so" "$ANDROID_DIR/" 2>/dev/null || \
-   cp "$BUILD_DIR/libcactus.so" "$ANDROID_DIR" 2>/dev/null || \
-   { echo "Error: Could not find libcactus.so"; exit 1; }
+cp "$BUILD_DIR/lib/libcactus_engine.so" "$ANDROID_DIR/" 2>/dev/null || \
+   cp "$BUILD_DIR/libcactus_engine.so" "$ANDROID_DIR" 2>/dev/null || \
+   { echo "Error: Could not find libcactus_engine.so"; exit 1; }
 
-cp "$BUILD_DIR/lib/libcactus.a" "$ANDROID_DIR/libcactus.a" 2>/dev/null || \
-   cp "$BUILD_DIR/libcactus.a" "$ANDROID_DIR/libcactus.a" 2>/dev/null || \
-   { echo "Warning: Could not find libcactus.a"; }
+cp "$BUILD_DIR/lib/libcactus_engine.a" "$ANDROID_DIR/libcactus_engine.a" 2>/dev/null || \
+   cp "$BUILD_DIR/libcactus_engine.a" "$ANDROID_DIR/libcactus_engine.a" 2>/dev/null || \
+   { echo "Warning: Could not find libcactus_engine.a"; }
 
 echo "Build complete!"
-echo "Shared library location: $ANDROID_DIR/libcactus.so"
-echo "Static library location: $ANDROID_DIR/libcactus.a"
+echo "Shared library location: $ANDROID_DIR/libcactus_engine.so"
+echo "Static library location: $ANDROID_DIR/libcactus_engine.a"

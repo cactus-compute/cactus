@@ -70,8 +70,8 @@ function build_static_library() {
     cmake --build "$BUILD_DIR" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
 
     mkdir -p "$APPLE_DIR"
-    cp "$BUILD_DIR/libcactus.a" "$APPLE_DIR/libcactus-device.a"
-    echo "Device static library built: $APPLE_DIR/libcactus-device.a"
+    cp "$BUILD_DIR/libcactus_engine.a" "$APPLE_DIR/libcactus_engine-device.a"
+    echo "Device static library built: $APPLE_DIR/libcactus_engine-device.a"
     
     echo "Building static library for iOS simulator..."
     BUILD_DIR_SIM="$APPLE_DIR/build-static-simulator"
@@ -96,8 +96,8 @@ function build_static_library() {
 
     cmake --build "$BUILD_DIR_SIM" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
 
-    cp "$BUILD_DIR_SIM/libcactus.a" "$APPLE_DIR/libcactus-simulator.a"
-    echo "Simulator static library built: $APPLE_DIR/libcactus-simulator.a"
+    cp "$BUILD_DIR_SIM/libcactus_engine.a" "$APPLE_DIR/libcactus_engine-simulator.a"
+    echo "Simulator static library built: $APPLE_DIR/libcactus_engine-simulator.a"
 }
 
 function build_framework() {
@@ -206,8 +206,8 @@ echo "Total time: $((t1 - t0)) seconds"
 if [ "$BUILD_STATIC" = "true" ]; then
     rm -rf "$APPLE_DIR/build-static-device" "$APPLE_DIR/build-static-simulator" "$APPLE_DIR/build-static-macos"
     echo "Static libraries:"
-    echo "  Device: $APPLE_DIR/libcactus-device.a"
-    echo "  Simulator: $APPLE_DIR/libcactus-simulator.a"
+    echo "  Device: $APPLE_DIR/libcactus_engine-device.a"
+    echo "  Simulator: $APPLE_DIR/libcactus_engine-simulator.a"
 fi
 
 if [ "$BUILD_XCFRAMEWORK" = "true" ]; then
