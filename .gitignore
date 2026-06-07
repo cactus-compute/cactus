@@ -29,9 +29,11 @@ bindings/flutter/*.xcframework
 __pycache__/
 *.pyc
 *.egg-info
+.pytest_cache/
 venv
 
 weights/
+transpiled/
 stage/
 python/dist/
 python/cactus/bin/
@@ -44,8 +46,6 @@ site_docs/
 notes.txt
 profile.txt
 *_profile.txt
-tests/plan.md
-tests/assets/test_wav_info.txt
 vision_activations.json
 gemma-4-eap-extras/
 .githooks/
