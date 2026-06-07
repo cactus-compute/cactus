@@ -104,27 +104,25 @@ void Gemma4VisionModel::load_weights_to_graph(CactusGraph* gb) {
     vision_weights_.patch_input_proj = gb->mmap_weights(resolve("vision_patch_embedder_input_proj.weights"));
     vision_weights_.position_table = gb->mmap_weights(resolve("vision_patch_embedder_position_embedding_table.weights"));
 
-    if (!use_npu_encoder_) {
-        vision_weights_.layers.resize(config_.vision_num_layers);
-        for (uint32_t i = 0; i < config_.vision_num_layers; i++) {
-            auto& layer = vision_weights_.layers[i];
-            std::string prefix = resolve("vision_encoder_layers_" + std::to_string(i) + "_");
+    vision_weights_.layers.resize(config_.vision_num_layers);
+    for (uint32_t i = 0; i < config_.vision_num_layers; i++) {
+        auto& layer = vision_weights_.layers[i];
+        std::string prefix = resolve("vision_encoder_layers_" + std::to_string(i) + "_");
 
-            layer.attn_q_weight = gb->mmap_weights(prefix + "self_attn_q_proj.weights");
-            layer.attn_k_weight = gb->mmap_weights(prefix + "self_attn_k_proj.weights");
-            layer.attn_v_weight = gb->mmap_weights(prefix + "self_attn_v_proj.weights");
-            layer.attn_output_weight = gb->mmap_weights(prefix + "self_attn_o_proj.weights");
-            layer.attn_q_norm = gb->mmap_weights(prefix + "self_attn_q_norm.weights");
-            layer.attn_k_norm = gb->mmap_weights(prefix + "self_attn_k_norm.weights");
-            layer.input_layernorm = gb->mmap_weights(prefix + "input_layernorm.weights");
-            layer.post_attention_layernorm = gb->mmap_weights(prefix + "post_attention_layernorm.weights");
-            layer.pre_feedforward_layernorm = gb->mmap_weights(prefix + "pre_feedforward_layernorm.weights");
-            layer.post_feedforward_layernorm = gb->mmap_weights(prefix + "post_feedforward_layernorm.weights");
-            layer.mlp_gate_proj = gb->mmap_weights(prefix + "mlp_gate_proj.weights");
-            layer.mlp_up_proj = gb->mmap_weights(prefix + "mlp_up_proj.weights");
-            layer.mlp_down_proj = gb->mmap_weights(prefix + "mlp_down_proj.weights");
-            layer.layer_scalar = std::filesystem::exists(prefix + "layer_scalar.weights") ? gb->mmap_weights(prefix + "layer_scalar.weights") : 0;
-        }
+        layer.attn_q_weight = gb->mmap_weights(prefix + "self_attn_q_proj.weights");
+        layer.attn_k_weight = gb->mmap_weights(prefix + "self_attn_k_proj.weights");
+        layer.attn_v_weight = gb->mmap_weights(prefix + "self_attn_v_proj.weights");
+        layer.attn_output_weight = gb->mmap_weights(prefix + "self_attn_o_proj.weights");
+        layer.attn_q_norm = gb->mmap_weights(prefix + "self_attn_q_norm.weights");
+        layer.attn_k_norm = gb->mmap_weights(prefix + "self_attn_k_norm.weights");
+        layer.input_layernorm = gb->mmap_weights(prefix + "input_layernorm.weights");
+        layer.post_attention_layernorm = gb->mmap_weights(prefix + "post_attention_layernorm.weights");
+        layer.pre_feedforward_layernorm = gb->mmap_weights(prefix + "pre_feedforward_layernorm.weights");
+        layer.post_feedforward_layernorm = gb->mmap_weights(prefix + "post_feedforward_layernorm.weights");
+        layer.mlp_gate_proj = gb->mmap_weights(prefix + "mlp_gate_proj.weights");
+        layer.mlp_up_proj = gb->mmap_weights(prefix + "mlp_up_proj.weights");
+        layer.mlp_down_proj = gb->mmap_weights(prefix + "mlp_down_proj.weights");
+        layer.layer_scalar = std::filesystem::exists(prefix + "layer_scalar.weights") ? gb->mmap_weights(prefix + "layer_scalar.weights") : 0;
     }
 
     vision_weights_.embed_vision_proj = gb->mmap_weights(resolve("embed_vision_proj.weights"));
