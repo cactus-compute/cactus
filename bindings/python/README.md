@@ -1,20 +1,10 @@
 # Python Bindings
 
-ctypes FFI bindings to `cactus_engine.h`. The package source lives at [`/python/`](/python/).
+ctypes FFI to `cactus_engine.h`. The binding module lives at
+[`/python/cactus/bindings/cactus.py`](/python/cactus/bindings/cactus.py).
 
-## Integration
+It loads `libcactus_engine.{so,dylib}` from `/python/cactus/bin/`, populated by
+`cactus build --python`.
 
-```bash
-cactus build --python
-pip install -e python/
-```
-
-## Usage
-
-```python
-from cactus.bindings import cactus
-
-model = cactus.cactus_init("/path/to/model", None, False)
-response = cactus.cactus_complete(model, messages_json, None, None, None)
-cactus.cactus_destroy(model)
-```
+For installation, the high-level API, the CLI, the server, and the transpiler,
+see [`/python/README.md`](/python/).

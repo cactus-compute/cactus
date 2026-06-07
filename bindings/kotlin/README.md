@@ -42,8 +42,8 @@ iosMain/     Cactus.ios.kt        actual via cinterop
 kotlin {
     androidTarget()
 
-    listOf(iosArm64(), iosSimulatorArm64()).forEach {
-        it.compilations.getByName("main") {
+    listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
+        target.compilations.getByName("main") {
             cinterops {
                 val cactus by creating {
                     defFile("src/nativeInterop/cinterop/cactus.def")
@@ -51,8 +51,9 @@ kotlin {
                 }
             }
         }
-        it.binaries.framework {
-            linkerOpts("-L/path/to/cactus/apple", "-lcactus-device")
+        val libSuffix = if (target.name == "iosSimulatorArm64") "simulator" else "device"
+        target.binaries.framework {
+            linkerOpts("-L/path/to/cactus/apple", "-lcactus_engine-$libSuffix")
         }
     }
 }

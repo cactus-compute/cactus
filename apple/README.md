@@ -1,6 +1,6 @@
 # Apple Build
 
-Builds `libcactus` for iOS and macOS.
+Builds `libcactus_engine` for iOS and macOS.
 
 ## Usage
 

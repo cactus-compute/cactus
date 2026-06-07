@@ -29,7 +29,7 @@ cactus build --android
 import Cactus from './index';
 
 const handle = await Cactus.init('/path/to/model', null, false);
-const result = await Cactus.complete(handle, messagesJson, null, null, null);
+const result = await Cactus.complete(handle, messagesJson, null, null, null, false);
 await Cactus.destroy(handle);
 ```
 <!-- --8<-- [end:example] -->

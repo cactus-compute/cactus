@@ -179,7 +179,7 @@ cactus_destroy(model)
 
 ### 5. Use the [C API](/docs/cactus_engine.md)
 
-The C API is the base layer all other bindings build on. Link against `libcactus` and include the FFI header:
+The C API is the base layer all other bindings build on. Link against `libcactus_engine` and include the FFI header:
 
 ```c
 #include "cactus_engine.h"
@@ -205,7 +205,7 @@ int main() {
 
 ### 6. Use the [Rust Binding](/bindings/rust/)
 
-Copy `cactus.rs` into your project (see [the README](/bindings/rust/)), link `libcactus.a` from `cactus build`, and call the FFI bindings directly:
+Copy `cactus.rs` into your project (see [the README](/bindings/rust/)), link `libcactus_engine.a` from `cactus build`, and call the FFI bindings directly:
 
 ```rust
 use std::ffi::CString;

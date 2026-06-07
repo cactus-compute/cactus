@@ -1,6 +1,6 @@
 # Android Build
 
-Builds `libcactus` for Android (arm64-v8a).
+Builds `libcactus_engine` for Android (arm64-v8a).
 
 ## Usage
 

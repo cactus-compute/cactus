@@ -131,8 +131,8 @@ Cactus supports React Native, Flutter, Swift, Kotlin, Python, Rust, and C++. Pic
 | Swift (iOS/macOS) | [cactus-swift](https://cactus.dev/swift/) | XCFramework with NPU support |
 | Kotlin (Android) | [cactus-kotlin](https://cactus.dev/kotlin/) | JNI + Kotlin Multiplatform |
 | Python | [cactus-ai](https://cactus.dev/python/) | `pip install cactus-ai` |
-| Rust | [Rust bindings](https://cactus.dev/rust/) | Copy `cactus.rs`, link `libcactus.a` |
-| C++ | [cactus.h](https://cactus.dev/docs/cactus_engine/) | Single header, link `libcactus.a` |
+| Rust | [Rust bindings](https://cactus.dev/rust/) | Copy `cactus.rs`, link `libcactus_engine.a` |
+| C++ | [cactus.h](https://cactus.dev/docs/cactus_engine/) | Single header, link `libcactus_engine.a` |
 
 Full quickstart with code examples for every binding: [cactus.dev/docs/quickstart](https://cactus.dev/docs/quickstart/)
 
