@@ -4,6 +4,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import fields
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -131,7 +133,7 @@ def write_fp16_weights_manifest(
         save_tensor_with_header(np.asarray(value), weights_root / filename, precision="FP16")
         manifest[name] = {"filename": filename, "kind": "weight"}
     manifest_path = weights_root / "weights_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    _atomic_write_text(manifest_path, json.dumps(manifest, indent=2) + "\n")
     return manifest_path
 
 
@@ -195,14 +197,31 @@ def _resolve_components_manifest(bundle_dir_or_manifest: str | Path) -> Path:
     raise FileNotFoundError(f"JAX user graph bundle manifest not found: {path}")
 
 
+def _reject_relative_escape(value: str, *, field: str) -> None:
+    """Reject relative manifest entries that try to escape via `..`. Absolute
+    paths are a legitimate workflow (shared weights cache) and stay allowed."""
+    if not value:
+        return
+    p = Path(value)
+    if p.is_absolute():
+        return
+    if any(part == ".." for part in p.parts):
+        raise RuntimeError(
+            f"refusing to follow bundle manifest relative path with '..' segments: "
+            f"{field}={value}"
+        )
+
+
 def _resolve_manifest_path(root: Path, value: object) -> str:
     if not isinstance(value, str) or not value:
         return str(root)
+    _reject_relative_escape(value, field="manifest path")
     path = Path(value).expanduser()
     return str(path if path.is_absolute() else root / path)
 
 
 def _resolve_weight_path(root: Path, weights_dir: str, value: str) -> str:
+    _reject_relative_escape(value, field="weight path")
     path = Path(value).expanduser()
     if path.is_absolute():
         return str(path)
@@ -283,9 +302,25 @@ def _ir_graph_to_dict(graph: IRGraph) -> dict[str, object]:
     }
 
 
-def _write_json(path: Path, payload: dict[str, object]) -> None:
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text to path via tempfile + os.replace so a crash mid-write
+    cannot leave a half-written file the next loader would choke on."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    _atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def build_jax_user_graph_bundle(
@@ -530,7 +565,7 @@ def _write_jax_user_graph_bundle(
         "weights_manifest": str(weights_root / "weights_manifest.json"),
     }
     manifest_path = component_root / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    _atomic_write_text(manifest_path, json.dumps(manifest, indent=2) + "\n")
 
     return JaxUserGraphBundleResult(
         bundle=bundle,

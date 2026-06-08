@@ -6,8 +6,8 @@ Pick the right one for your platform and use case:
 
 |  | React Native | Flutter | Kotlin | Swift | Python | Rust | CLI | C++ |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Platforms** | iOS, Android | iOS, Android, macOS | Android, iOS (KMP) | iOS, macOS | Arm Linux, macOS | All | macOS, Linux | All |
-| **Install** | npm | build | build | build | build | cargo | brew / source | header |
+| **Platforms** | iOS, Android | iOS, Android, macOS | Android, iOS (KMP) | iOS, macOS | Arm Linux, macOS | Arm Linux, macOS | macOS, Arm Linux | Arm Linux, macOS, iOS, Android |
+| **Install** | build / source | build | build | build | pip | build / source | brew / source | header |
 | **LLM** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **Streaming** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **Vision** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |

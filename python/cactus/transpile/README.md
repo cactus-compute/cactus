@@ -57,30 +57,18 @@ Two important details:
 - The CLI only has an explicit `--execute-after-transpile` flag; most other
   transpile options are forwarded as unknown args to `hf_model.py`.
 
-### `cactus run-transpiled`
+### `cactus run`
 
-Saved bundles are executed through `cmd_run_transpiled()` in `python/cactus/cli/transpile.py`:
+`cactus run <model-id-or-bundle-path>` is the single user-facing entry. Resolution
+order (`python/cactus/cli/run.py:_resolve_or_fetch_bundle`):
 
-```python
-def cmd_run_transpiled(args):
-    transpile_lib = _ensure_python_runtime_library()
-    os.environ["CACTUS_LIB_PATH"] = str(transpile_lib)
-    from .transpile.component_bundle_runtime import run_transpiled_bundle
+1. `<arg>` is an existing path with `components/manifest.json` → run as-is.
+2. Cached download at `transpiled/<model>-cq<bits>[-<platform>]/` → run.
+3. Fresh download from `huggingface.co/Cactus-Compute` via `download_bundle`.
+4. Fallback: local `ensure_bundle` (convert + transpile for custom models not on HF).
 
-    result = run_transpiled_bundle(
-        bundle_dir,
-        audio_file=getattr(args, "audio_file", None) or getattr(args, "audio", None),
-        image_files=tuple(image_values),
-        prompt=getattr(args, "prompt", None),
-        input_ids=getattr(args, "input_ids", None),
-        weights_dir=getattr(args, "weights_dir", None),
-        system_prompt=getattr(args, "system", None),
-        enable_thinking=bool(getattr(args, "thinking", False)),
-    )
-```
-
-`cactus run <path>` also auto-detects transpiled bundles by looking for a
-`manifest.json` and dispatches to the same runtime path.
+Bundle handoff is to the native `run` binary (`python/cactus/bin/run`), which
+loads the bundle via `cactus_init()`.
 
 ## End-To-End Timeline
 
@@ -512,7 +500,7 @@ Gemma4 gets extra handling in this pass:
 ## 12. Lower IR Into A Cactus `Graph`
 
 `lower.py` is the last compiler stage. It maps `IRValue`s and `IRNode`s into the
-runtime `Graph` object from `cactus.bindings.graph`.
+runtime `Graph` object from `cactus.bindings.cactus`.
 
 The high-level structure is:
 
@@ -665,55 +653,20 @@ unless `--skip-reference-compare` is set.
 
 ## 15. Run A Saved Bundle Later
 
-`component_bundle_runtime.py` is the runtime-side loader for saved bundles.
+Saved bundles are executed by the native C++ `run` binary, not by Python. The
+Python CLI just resolves the bundle path and exec's the binary:
 
-The public entry is:
-
-```python
-def run_transpiled_bundle(bundle_dir_or_manifest, *, audio_file=None, image_files=(), prompt=None, input_ids=None, weights_dir=None, ...):
-    bundle_root, manifest = load_component_bundle_manifest(bundle_dir_or_manifest)
-    component_graphs, manifest = load_saved_component_graphs(
-        bundle_dir_or_manifest,
-        weights_dir=resolved_weights_dir,
-    )
-    ...
+```
+cactus run <bundle-path>
+  → python/cactus/cli/run.py:cmd_run
+  → subprocess.run([run_bin, bundle_dir, ...])
+  → run invokes cactus_init(bundle_dir) from libcactus_engine
 ```
 
-There are two ways a saved component can be reloaded:
-
-1. Load a serialized `.cactus` graph and rebind its constants.
-2. Rebuild from saved raw/optimized IR JSON and re-run lowering.
-
-That second path is handled by `_load_component_graph_from_ir()`:
-
-```python
-ir_graph = _deserialize_saved_ir_graph(...)
-if use_raw_ir:
-    canonicalize_exported_graph(ir_graph)
-    optimize_graph(ir_graph)
-else:
-    if family == "gemma4" and component in {"decoder", "decoder_step"}:
-        optimize_graph(ir_graph)
-transpiled = transpile_preoptimized_ir(ir_graph)
-```
-
-So saved IR artifacts are not just for inspection; they are also a fallback loading
-format that can be re-lowered on demand.
-
-### Bound constant rebinding at runtime
-
-The runtime loader reattaches Cactus `.weights` tensor files with
-`graph.set_external_input(...)`:
-
-```python
-tensor = graph._tensor_from_node(node_id)
-graph.set_external_input(tensor, int(tensor_file.data.ctypes.data), dtype=tensor_file.precision)
-...
-if tensor_file.scales is not None and tensor_file.group_size > 0:
-    _lib.cactus_graph_set_grouped_scales(...)
-```
-
-That is why the binding manifests are essential.
+The runtime reads `components/manifest.json` from the bundle directory, mmaps
+the `.weights` files, and loads the serialized `.cactus` graphs. Per-platform
+`.mlpackage` files (Apple CoreML / future vendor accelerators) are dispatched
+to the matching hardware when present.
 
 ## Major Situations And How They Are Handled
 
@@ -844,7 +797,6 @@ Notes:
 | --- | --- |
 | `audio_preprocess.py` | WAV loading, resampling, generic log-mel extraction, Cactus audio frontend wrappers, Parakeet-native features, Gemma4-native audio features. |
 | `capture_pytorch.py` | `torch.export` capture wrapper, export-safe kwargs injection, metadata collection, shape propagation, and `CapturedModel` creation. |
-| `component_bundle_runtime.py` | Loader and executor for saved transpiled bundles; reloads `.cactus` graphs or re-lowers saved IR, then runs task-specific bundle executors. |
 | `component_partition.py` | Heuristic component labeling of IR nodes/values and subgraph extraction into `audio_encoder` / `vision_encoder` / `lm_encoder` / `decoder`. |
 | `component_pipeline.py` | Capture/optimize/lower loop for one component spec, plus runtime execution of a staged pipeline of components. |
 | `graph_ir.py` | Definitions for `IRValue`, `IRNode`, `IRGraph`, deep-copy behavior, and IR consistency verification. |
@@ -993,36 +945,32 @@ python -m cactus.transpile.hf_model --help
 
 ## 3. Run A Saved Transpiled Bundle
 
-Use the bundle root directory or a `manifest.json` path:
+Use the bundle root directory:
 
 ```bash
-cactus run-transpiled /path/to/transpiled/model
+cactus run /path/to/transpiled/model
 ```
-
-For direct bundle execution, audio input is passed with `--file`. The `--audio`
-flag belongs to `cactus run`, which may forward into the same runtime after
-bundle auto-detection.
 
 ### Text causal LM bundle
 
 ```bash
-cactus run-transpiled /path/to/transpiled/model \
+cactus run /path/to/transpiled/model \
   --prompt "The capital of France is"
 ```
 
 Or pass token ids directly:
 
 ```bash
-cactus run-transpiled /path/to/transpiled/model \
+cactus run /path/to/transpiled/model \
   --input-ids 2,13,42
 ```
 
 ### Multimodal Gemma4 bundle
 
 ```bash
-cactus run-transpiled /path/to/transpiled/model \
-  --image-file /path/to/image.jpg \
-  --file /path/to/audio.wav \
+cactus run /path/to/transpiled/model \
+  --image /path/to/image.jpg \
+  --audio /path/to/audio.wav \
   --prompt "What do you observe?" \
   --system "Answer concisely."
 ```
@@ -1030,42 +978,21 @@ cactus run-transpiled /path/to/transpiled/model \
 ### Audio encoder / transcription bundle
 
 ```bash
-cactus run-transpiled /path/to/transpiled/model \
-  --file /path/to/sample.wav
-```
-
-### Bundles with bound weights
-
-If the bundle expects converted mmap weights, pass the weights directory when the
-saved paths are not directly reachable:
-
-```bash
-cactus run-transpiled /path/to/transpiled/model \
-  --weights-dir /path/to/converted_weights \
-  --prompt "Hello"
+cactus run /path/to/transpiled/model \
+  --audio /path/to/sample.wav
 ```
 
 ### Save result payload
 
 ```bash
-cactus run-transpiled /path/to/transpiled/model \
+cactus run /path/to/transpiled/model \
   --prompt "Hello" \
   --result-json ./result.json
 ```
 
-## 4. `cactus run` Also Works
-
-`cactus run` detects transpiled bundles automatically:
-
-```bash
-cactus run /path/to/transpiled/model --prompt "Hello"
-```
-
-If you are passing media through `cactus run`, use `--image` and `--audio`
-rather than `run-transpiled`'s direct `--file` audio flag.
-
-Internally, `cli.py` checks whether the path contains a transpiled manifest and
-redirects to `cmd_run_transpiled()`.
+Internally, `cli/run.py:_resolve_or_fetch_bundle` checks whether the positional
+argument is a local path with `components/manifest.json` and dispatches the
+native `run` binary against it.
 
 ## Current Runtime Limitations
 
@@ -1074,8 +1001,8 @@ As of the current code:
 - Saved bundle execution is implemented for `causal_lm_logits`,
   `multimodal_causal_lm_logits`, `encoder_hidden_states`, and
   `tdt_transcription`.
-- `ctc_logits` can be transpiled, but `run_transpiled_bundle()` does not currently
-  implement a saved-bundle executor for that task.
+- `ctc_logits` can be transpiled, but the runtime does not currently implement
+  a saved-bundle executor for that task.
 - The component pipeline is model-family-specific; it is not a universal split-IR
   path.
 
@@ -1106,6 +1033,6 @@ If you only want the high-level lifecycle, it is:
    materializes everything else.
 10. The script writes `raw_ir.json`, `optimized_ir.json`, `graph.cactus`, and
     `components/manifest.json`.
-11. `cactus run-transpiled` later reloads those artifacts with
-    `component_bundle_runtime.py`, rebinds external tensors, and executes the
-    task-specific bundle runner.
+11. `cactus run` later resolves the bundle path and invokes the native `run`
+    binary, which mmaps the weights, loads the serialized graph, and runs it
+    via `cactus_init()` + `cactus_complete()` (see `cactus-engine`).

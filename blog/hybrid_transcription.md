@@ -47,7 +47,7 @@ As a Mac user, you can pull down the CLI and test the latency and accuracy local
 
 ```bash
 brew install cactus-compute/cactus/cactus
-cactus transcribe
+cactus transcribe --file path/to/audio.wav
 ```
 
 ## Built for the Edge, from the Ground Up

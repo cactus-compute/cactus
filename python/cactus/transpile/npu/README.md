@@ -1,7 +1,10 @@
 # NPU Transpiler Pipeline
 
 Emits CoreML `.mlpackage`s so the runtime engine can dispatch through the
-Apple Neural Engine. Triggered by `cactus convert --npu`. Runtime side:
+Apple Neural Engine. Triggered by `--npu` on the underlying transpile script
+(`python -m cactus.transpile.hf_model --npu …`), or programmatically via
+`TranspileOptions(npu=True)` in `cli/model.py`. The flag is not yet
+surfaced on the user-facing `cactus transpile` CLI. Runtime side:
 `cactus-engine/src/model_npu.cpp`.
 
 **Scope: audio + vision encoders only.** Text-decoder prefill is
@@ -9,8 +12,8 @@ intentionally *not* on NPU — CPU prefill is the supported path.
 
 | Entry point | Emits | manifest key | Runtime dispatch |
 |---|---|---|---|
-| `run_encoder_pipeline` → `audio.py` | audio encoder | `npu_audio_encoder` | `audio_encode_via_npu` |
-| `run_encoder_pipeline` → `vision.py` | vision encoder | `npu_vision_encoder` | `vision_encode_via_npu` |
+| `run_encoder_pipeline` → `emit_audio_encoder_mlpackage` (audio.py) | audio encoder | `npu_audio_encoder` | `audio_encode_via_npu` |
+| `run_encoder_pipeline` → `emit_vision_encoder_mlpackage` (vision.py) | vision encoder | `npu_vision_encoder` | `vision_encode_via_npu` |
 
 `run_encoder_pipeline` reuses the exact `ComponentModuleSpec` adapter
 modules + example inputs the graph transpiler captures, so the NPU encoder

@@ -62,8 +62,8 @@ def _candidate_model_dir_names(model_name_or_path: str) -> list[str]:
 def _default_weights_dir_for_model_name(model_name_or_path: str) -> str | None:
     if not model_name_or_path:
         return None
-    from ..cli.download import _weights_root
-    root = _weights_root()
+    from ..cli.common import weights_root
+    root = weights_root()
     for model_dir_name in _candidate_model_dir_names(model_name_or_path):
         candidate = root / model_dir_name
         if candidate.exists():
@@ -276,10 +276,10 @@ def _load_weights_manifest(root: Path) -> dict[str, object]:
         return {}
     try:
         loaded_manifest = json.loads(manifest_path.read_text())
-    except Exception:
-        return {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"corrupt weights_manifest.json at {manifest_path}: {exc}") from exc
     if not isinstance(loaded_manifest, dict):
-        return {}
+        raise RuntimeError(f"weights_manifest.json at {manifest_path} is not a JSON object")
     return _flatten_convert_manifest(loaded_manifest)
 
 

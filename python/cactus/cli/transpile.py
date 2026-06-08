@@ -37,14 +37,20 @@ def run_transpile(model_id, *, extra_args, execute_after_transpile=False,
 
     extra_args = list(extra_args or [])
     command = [sys.executable, "-m", "cactus.transpile.hf_model", "--model-id", model_id]
+    default_weights_dir = get_weights_dir(model_id)
+    if not default_weights_dir.name:
+        print_color(RED, f"Error: cannot derive a unique output dir from model_id {model_id!r}.")
+        print_color(YELLOW, "Pass --weights-dir and --artifact-dir explicitly.")
+        return 1
     if not _extra_args_has_option(extra_args, "--weights-dir"):
-        default_weights_dir = get_weights_dir(model_id)
         if _weights_dir_looks_transpile_ready(default_weights_dir):
             command.extend(["--weights-dir", str(default_weights_dir)])
         elif not allow_unconverted_weights:
             print_color(RED, "Error: transpilation requires converted Cactus CQ weights.")
             print_color(YELLOW, f"Run conversion first: cactus convert {model_id}")
             return 1
+    if not _extra_args_has_option(extra_args, "--artifact-dir"):
+        command.extend(["--artifact-dir", str(default_weights_dir)])
 
     if allow_unconverted_weights:
         command.append("--allow-unconverted-weights")

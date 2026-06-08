@@ -1,5 +1,4 @@
 #include "test_utils.h"
-#include <fstream>
 #include <cstdlib>
 #include <iostream>
 
@@ -15,16 +14,6 @@ static const char* g_options = R"({
     })";
 
 bool test_vlm_multiturn() {
-    std::string model_path_str(g_model_path ? g_model_path : "");
-
-    std::string vision_file = model_path_str + "/vision_patch_embedder_input_proj.weights";
-    std::ifstream vf(vision_file);
-    if (!vf.good()) {
-        std::cout << "Skipping VLM multi-turn test: vision weights not found." << std::endl;
-        return true;
-    }
-    vf.close();
-
     std::cout << "\n╔══════════════════════════════════════════╗\n"
               << "║       VLM MULTI-TURN TEST                ║\n"
               << "╚══════════════════════════════════════════╝\n";
@@ -107,35 +96,8 @@ bool test_prefill_invalidated_on_message_change_vlm() {
               << "║" << std::setw(42) << std::left << " PREFILL INVALIDATION (VLM) TEST" << "║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    std::string model_path_str(g_model_path ? g_model_path : "");
-    std::string vision_file = model_path_str + "/vision_patch_embedder_input_proj.weights";
-    std::ifstream vf(vision_file);
-    if (!vf.good()) {
-        std::cout << "⊘ SKIP │ Vision weights not found\n";
-        return true;
-    }
-    vf.close();
-
-    if (!g_assets_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_ASSETS not set\n";
-        return true;
-    }
-
     std::string prefill_img_path = std::string(g_assets_path) + "/test_monkey.png";
-    std::ifstream imgf(prefill_img_path);
-    if (!imgf.good()) {
-        std::cout << "⊘ SKIP │ test_monkey.png not found\n";
-        return true;
-    }
-    imgf.close();
-
     std::string complete_img_path = std::string(g_assets_path) + "/test_thing.png";
-    std::ifstream imgf2(complete_img_path);
-    if (!imgf2.good()) {
-        std::cout << "⊘ SKIP │ test_thing.png not found\n";
-        return true;
-    }
-    imgf2.close();
 
     cactus_model_t model = cactus_init(g_model_path, nullptr, false);
     if (!model) {
@@ -197,35 +159,8 @@ bool test_prefill_with_images() {
               << "║" << std::setw(42) << std::left << "      PREFILL WITH IMAGES TEST" << "║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    std::string model_path_str(g_model_path ? g_model_path : "");
-    std::string vision_file = model_path_str + "/vision_patch_embedder_input_proj.weights";
-    std::ifstream vf(vision_file);
-    if (!vf.good()) {
-        std::cout << "⊘ SKIP │ Vision weights not found\n";
-        return true;
-    }
-    vf.close();
-
-    if (!g_assets_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_ASSETS not set\n";
-        return true;
-    }
-
     std::string prefill_img_path = std::string(g_assets_path) + "/test_monkey.png";
-    std::ifstream imgf(prefill_img_path);
-    if (!imgf.good()) {
-        std::cout << "⊘ SKIP │ test_monkey.png not found\n";
-        return true;
-    }
-    imgf.close();
-
     std::string extension_img_path = std::string(g_assets_path) + "/test_thing.png";
-    std::ifstream imgf2(extension_img_path);
-    if (!imgf2.good()) {
-        std::cout << "⊘ SKIP │ test_thing.png not found\n";
-        return true;
-    }
-    imgf2.close();
 
     cactus_model_t model = cactus_init(g_model_path, nullptr, false);
     if (!model) {
@@ -302,35 +237,8 @@ bool test_prefill_prefix_extension_reuse_vlm() {
               << "║" << std::setw(42) << std::left << "  PREFILL PREFIX EXTENSION (VLM)" << "║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    std::string model_path_str(g_model_path ? g_model_path : "");
-    std::string vision_file = model_path_str + "/vision_patch_embedder_input_proj.weights";
-    std::ifstream vf(vision_file);
-    if (!vf.good()) {
-        std::cout << "⊘ SKIP │ Vision weights not found\n";
-        return true;
-    }
-    vf.close();
-
-    if (!g_assets_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_ASSETS not set\n";
-        return true;
-    }
-
     std::string base_img_path = std::string(g_assets_path) + "/test_monkey.png";
-    std::ifstream imgf(base_img_path);
-    if (!imgf.good()) {
-        std::cout << "⊘ SKIP │ test_monkey.png not found\n";
-        return true;
-    }
-    imgf.close();
-
     std::string extension_img_path = std::string(g_assets_path) + "/test_thing.png";
-    std::ifstream imgf2(extension_img_path);
-    if (!imgf2.good()) {
-        std::cout << "⊘ SKIP │ test_thing.png not found\n";
-        return true;
-    }
-    imgf2.close();
 
     cactus_model_t model = cactus_init(g_model_path, nullptr, false);
     if (!model) {

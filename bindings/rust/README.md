@@ -10,13 +10,12 @@ cactus build
 ```
 <!-- --8<-- [end:install] -->
 
-
-1. Copy `cactus.rs` into your project
-2. Link against `libcactus.a` in your `build.rs`:
+Copy [`cactus.rs`](cactus.rs) into your project (it carries its own `#[link]`
+attributes) and point Cargo at the build directory:
 
 ```rust
-println!("cargo:rustc-link-lib=static=cactus");
-println!("cargo:rustc-link-search=native=/path/to/cactus/cactus/build");
+// build.rs
+println!("cargo:rustc-link-search=native=/path/to/cactus/cactus-engine/build");
 ```
 
 ## Usage
@@ -27,11 +26,24 @@ use std::os::raw::c_char;
 
 mod cactus;
 
-unsafe {
-    let path = CString::new("/path/to/model").unwrap();
-    let model = cactus::cactus_init(path.as_ptr(), std::ptr::null(), false);
-    let mut buf = vec![0i8; 65536];
-    cactus::cactus_complete(model, msgs.as_ptr(), buf.as_mut_ptr() as *mut c_char, buf.len(), std::ptr::null(), std::ptr::null(), None, std::ptr::null_mut(), std::ptr::null(), 0);
-    cactus::cactus_destroy(model);
+fn main() {
+    unsafe {
+        let path = CString::new("/path/to/model").unwrap();
+        let model = cactus::cactus_init(path.as_ptr(), std::ptr::null(), false);
+
+        let messages = CString::new(r#"[{"role":"user","content":"Hello"}]"#).unwrap();
+        let mut response = vec![0u8; 65536];
+        cactus::cactus_complete(
+            model,
+            messages.as_ptr(),
+            response.as_mut_ptr() as *mut c_char,
+            response.len(),
+            std::ptr::null(), std::ptr::null(),
+            None, std::ptr::null_mut(),
+            std::ptr::null(), 0,
+        );
+
+        cactus::cactus_destroy(model);
+    }
 }
 ```

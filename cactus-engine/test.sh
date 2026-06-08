@@ -1,6 +1,5 @@
 #!/bin/bash
 set -e
-
 cd "$(dirname "$0")"
 
 PROJECT_ROOT="$(pwd)/.."
@@ -8,89 +7,78 @@ ASSETS_DIR="$(pwd)/tests/assets"
 
 IOS_MODE=false
 ANDROID_MODE=false
-ONLY_EXEC=""
-MODEL_ARG=""
+SUITE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --ios)
-            IOS_MODE=true
-            shift
-            ;;
-        --android)
-            ANDROID_MODE=true
-            shift
-            ;;
-        --only)
-            [ -z "${2:-}" ] && echo "Error: --only requires an argument" && exit 1
-            ONLY_EXEC="$2"
-            shift 2
-            ;;
-        --model)
-            [ -z "${2:-}" ] && echo "Error: --model requires an argument" && exit 1
-            MODEL_ARG="$2"
-            shift 2
-            ;;
-        *)
-            shift
-            ;;
+        --ios)     IOS_MODE=true; shift ;;
+        --android) ANDROID_MODE=true; shift ;;
+        --suite)   SUITE="${2:?--suite needs an argument}"; shift 2 ;;
+        --model)   CACTUS_TEST_MODEL="${2:?--model needs an argument}"; shift 2 ;;
+        --transcription-model) CACTUS_TEST_TRANSCRIPTION_MODEL="${2:?--transcription-model needs an argument}"; shift 2 ;;
+        *) echo "Unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
-MODEL_DIR="${CACTUS_TEST_MODEL:-${MODEL_ARG:-$PROJECT_ROOT/weights/LFM2-VL-450M}}"
+resolve_bundle_dir() {
+    local model="$1" label="$2"
+    if [ -z "$model" ]; then
+        echo "Error: --$label is required. Run engine tests via the CLI (cactus test ...) which sets it." >&2
+        exit 2
+    fi
+    local dir
+    if [[ "$model" == /* || "$model" == ./* ]]; then
+        dir="$model"
+    else
+        dir="$PROJECT_ROOT/weights/$(basename "$model" | tr '[:upper:]' '[:lower:]')"
+    fi
+    if [ ! -f "$dir/components/manifest.json" ]; then
+        echo "Bundle missing at $dir. Run: cactus transpile $model" >&2
+        exit 1
+    fi
+    echo "$dir"
+}
+
+BUNDLE_DIR="$(resolve_bundle_dir "$CACTUS_TEST_MODEL" "model")"
+TRANSCRIPTION_BUNDLE_DIR="$(resolve_bundle_dir "$CACTUS_TEST_TRANSCRIPTION_MODEL" "transcription-model")"
 
 if [ "$IOS_MODE" = true ]; then
-    export CACTUS_TEST_ONLY="$ONLY_EXEC"
-    exec "$(pwd)/tests/ios/run.sh" "$MODEL_DIR"
+    export CACTUS_TEST_MODEL="$BUNDLE_DIR" CACTUS_TEST_TRANSCRIPTION_MODEL="$TRANSCRIPTION_BUNDLE_DIR" CACTUS_TEST_SUITE="$SUITE"
+    exec "$(pwd)/tests/ios/run.sh"
 fi
-
 if [ "$ANDROID_MODE" = true ]; then
-    export CACTUS_TEST_ONLY="$ONLY_EXEC"
-    exec "$(pwd)/tests/android/run.sh" "$MODEL_DIR"
+    export CACTUS_TEST_MODEL="$BUNDLE_DIR" CACTUS_TEST_TRANSCRIPTION_MODEL="$TRANSCRIPTION_BUNDLE_DIR" CACTUS_TEST_SUITE="$SUITE"
+    exec "$(pwd)/tests/android/run.sh"
 fi
 
-if [ ! -d "$MODEL_DIR" ]; then
-    echo "Model weights not found at $MODEL_DIR"
-    echo "Set CACTUS_TEST_MODEL or download weights first."
-    exit 1
-fi
-
-echo "Building and testing cactus-engine..."
-echo "Model: $MODEL_DIR"
-
-cd "$PROJECT_ROOT/cactus"
-rm -rf build
-mkdir -p build
-cd build
-cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null 2>&1
-make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+echo "Model:                $CACTUS_TEST_MODEL"
+echo "Bundle:               $BUNDLE_DIR"
+echo "Transcription model:  $CACTUS_TEST_TRANSCRIPTION_MODEL"
+echo "Transcription bundle: $TRANSCRIPTION_BUNDLE_DIR"
 
 cd "$PROJECT_ROOT/cactus-engine/tests"
-rm -rf build
-mkdir -p build
-cd build
-cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null 2>&1
-make -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+rm -rf build && mkdir build && cd build
+cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null
+make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
-echo ""
-export CACTUS_TEST_MODEL="$MODEL_DIR"
+export CACTUS_TEST_MODEL="$BUNDLE_DIR"
+export CACTUS_TEST_TRANSCRIPTION_MODEL="$TRANSCRIPTION_BUNDLE_DIR"
 export CACTUS_TEST_ASSETS="$ASSETS_DIR"
 export CACTUS_INDEX_PATH="$ASSETS_DIR"
 
 FAILED=0
-
-if [ -n "$ONLY_EXEC" ]; then
-    target="./test_$ONLY_EXEC"
+if [ -n "$SUITE" ]; then
+    target="./test_$SUITE"
     if [ -x "$target" ]; then
-        ./"$target" || FAILED=1
+        "$target" || FAILED=1
     else
-        echo "Test not found: $target"
+        echo "Test not found: $target" >&2
         FAILED=1
     fi
 else
-    for test_bin in test_*; do
-        [ -x "$test_bin" ] && ./"$test_bin" || FAILED=1
+    for t in ./test_*; do
+        [ -x "$t" ] || continue
+        "$t" || FAILED=1
     done
 fi
-
 exit $FAILED

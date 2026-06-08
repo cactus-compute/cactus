@@ -2,7 +2,7 @@
 
 JNI bridge to `cactus_engine.h` for Android, with KMP support for iOS.
 
-The JNI bridge itself (`android/cactus_jni.cpp`, compiled into `libcactus.so`) is JVM-language-agnostic. Java consumers can use it by writing an equivalent `CactusJNI.java` with `native` declarations matching the signatures in `Cactus.kt` — same library, same `Java_com_cactus_CactusJNI_*` symbols.
+The JNI bridge itself (`android/cactus_jni.cpp`, compiled into `libcactus_engine.so`) is JVM-language-agnostic. Java consumers can use it by writing an equivalent `CactusJNI.java` with `native` declarations matching the signatures in `Cactus.kt` — same library, same `Java_com_cactus_CactusJNI_*` symbols.
 
 ## Android Integration
 
@@ -13,7 +13,7 @@ cactus build --android
 <!-- --8<-- [end:install] -->
 
 <!-- --8<-- [start:integration] -->
-1. Copy `android/libcactus.so` to `app/src/main/jniLibs/arm64-v8a/`
+1. Copy `android/libcactus_engine.so` to `app/src/main/jniLibs/arm64-v8a/`
 2. Copy `Cactus.kt` and `CactusCallbacks.kt` to your Kotlin source tree
 <!-- --8<-- [end:integration] -->
 
@@ -42,8 +42,8 @@ iosMain/     Cactus.ios.kt        actual via cinterop
 kotlin {
     androidTarget()
 
-    listOf(iosArm64(), iosSimulatorArm64()).forEach {
-        it.compilations.getByName("main") {
+    listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
+        target.compilations.getByName("main") {
             cinterops {
                 val cactus by creating {
                     defFile("src/nativeInterop/cinterop/cactus.def")
@@ -51,8 +51,9 @@ kotlin {
                 }
             }
         }
-        it.binaries.framework {
-            linkerOpts("-L/path/to/cactus/apple", "-lcactus-device")
+        val libSuffix = if (target.name == "iosSimulatorArm64") "simulator" else "device"
+        target.binaries.framework {
+            linkerOpts("-L/path/to/cactus/apple", "-lcactus_engine-$libSuffix")
         }
     }
 }

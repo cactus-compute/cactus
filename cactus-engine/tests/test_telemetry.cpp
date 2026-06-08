@@ -48,12 +48,6 @@ std::string random_project_id() {
     return std::string(buf);
 }
 
-enum class CloudTelemetryTestResult {
-    Passed,
-    Failed,
-    Skipped,
-};
-
 bool test_record_many_then_flush() {
     const std::string cache_dir = make_temp_dir("cactus_record_many_flush");
 
@@ -155,6 +149,12 @@ bool test_record_and_flush_race_no_deadlock() {
 
     return all_completed && event_count == expected_event_count;
 }
+
+enum class CloudTelemetryTestResult {
+    Passed,
+    Failed,
+    Skipped,
+};
 
 CloudTelemetryTestResult test_cloud_upload_record_then_flush() {
     const char* no_cloud_tele = std::getenv("CACTUS_NO_CLOUD_TELE");

@@ -13,7 +13,7 @@ cactus build --apple
 <!-- --8<-- [start:integration] -->
 **XCFramework**: drag `apple/cactus-ios.xcframework` (or `apple/cactus-macos.xcframework`) into Xcode (Embed & Sign). The framework bundles `cactus_engine.h`, so `import cactus` works directly.
 
-**Static library**: link `apple/libcactus-device.a` (or `apple/libcactus-simulator.a`), copy `bindings/swift/module.modulemap` into your project, and add `cactus-engine/` to Header Search Paths so the module map can find `cactus_engine.h`.
+**Static library**: link `apple/libcactus_engine-device.a` (or `apple/libcactus_engine-simulator.a`), copy `bindings/swift/module.modulemap` into your project, and add `cactus-engine/` to Header Search Paths so the module map can find `cactus_engine.h`.
 <!-- --8<-- [end:integration] -->
 
 ## Usage

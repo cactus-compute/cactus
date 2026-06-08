@@ -212,43 +212,55 @@ def capture_model(model, args, kwargs=None, *, strict=True) -> CapturedModel:
     if not normalized_args and not normalized_kwargs:
         raise ValueError("capture_model requires example args or kwargs")
 
-    model = model.eval()
-    example_args, example_kwargs = _clone_examples(normalized_args, normalized_kwargs)
-    transpile_metadata = _collect_transpile_metadata(model, example_args, example_kwargs)
-
+    # nn.Module.eval() is an in-place mutation on the caller's model. Remember
+    # the prior training flag so capture failures don't leave the caller's
+    # module silently in eval mode.
+    was_training = bool(getattr(model, "training", False))
+    model.eval()
     try:
-        with _suppress_transformers_model_output_registration():
-            ep = export(model, args=example_args, kwargs=example_kwargs, strict=strict)
-    except Exception as exc:
-        raise CapturePhaseError(
-            "export",
-            f"torch.export failed for model={type(model).__name__} strict={strict}: {exc}",
-            cause=exc,
-        ) from exc
-    from cactus.transpile.import_ir import import_captured_to_ir
+        example_args, example_kwargs = _clone_examples(normalized_args, normalized_kwargs)
+        transpile_metadata = _collect_transpile_metadata(model, example_args, example_kwargs)
 
-    import_graph_module = _prepare_import_graph_module(ep, example_args, example_kwargs)
+        try:
+            with _suppress_transformers_model_output_registration():
+                ep = export(model, args=example_args, kwargs=example_kwargs, strict=strict)
+        except Exception as exc:
+            raise CapturePhaseError(
+                "export",
+                f"torch.export failed for model={type(model).__name__} strict={strict}: {exc}",
+                cause=exc,
+            ) from exc
+        from cactus.transpile.import_ir import import_captured_to_ir
 
-    raw_captured = CapturedModel(
-        exported_program=ep,
-        graph_module=import_graph_module,
-        graph=import_graph_module.graph,
-        state_dict=dict(ep.state_dict),
-        ir_graph=IRGraph(values={}, nodes={}, order=[], inputs=[], outputs=[]),
-        source_module=model,
-        example_args=example_args,
-        example_kwargs=example_kwargs,
-        strict=strict,
-        transpile_metadata=transpile_metadata,
-    )
-    try:
-        ir_graph = import_captured_to_ir(raw_captured, strict=strict)
-    except Exception as exc:
-        raise CapturePhaseError(
-            "import",
-            f"failed to import exported graph to IR for model={type(model).__name__} strict={strict}: {exc}",
-            cause=exc,
-        ) from exc
+        import_graph_module = _prepare_import_graph_module(ep, example_args, example_kwargs)
+
+        raw_captured = CapturedModel(
+            exported_program=ep,
+            graph_module=import_graph_module,
+            graph=import_graph_module.graph,
+            state_dict=dict(ep.state_dict),
+            ir_graph=IRGraph(values={}, nodes={}, order=[], inputs=[], outputs=[]),
+            source_module=model,
+            example_args=example_args,
+            example_kwargs=example_kwargs,
+            strict=strict,
+            transpile_metadata=transpile_metadata,
+        )
+        try:
+            ir_graph = import_captured_to_ir(raw_captured, strict=strict)
+        except Exception as exc:
+            raise CapturePhaseError(
+                "import",
+                f"failed to import exported graph to IR for model={type(model).__name__} strict={strict}: {exc}",
+                cause=exc,
+            ) from exc
+    except Exception:
+        if was_training:
+            try:
+                model.train()
+            except Exception:
+                pass
+        raise
 
     return CapturedModel(
         exported_program=ep,
@@ -361,5 +373,3 @@ def dump_graph(captured: CapturedModel, *, include_meta: bool = True) -> str:
     return "\n".join(lines)
 
 
-def print_graph(captured: CapturedModel, *, include_meta: bool = True) -> None:
-    print(dump_graph(captured, include_meta=include_meta))

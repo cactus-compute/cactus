@@ -1,7 +1,6 @@
 #include "test_utils.h"
 #include <cstdlib>
 #include <iostream>
-#include <dirent.h>
 #include <algorithm>
 #include <cctype>
 
@@ -37,43 +36,7 @@ bool test_rag() {
               << "║              RAG TEST                    ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    if (!g_model_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_MODEL not set\n";
-        return true;
-    }
-
-    if (!g_assets_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_ASSETS not set\n";
-        return true;
-    }
-
     std::string corpus_dir = std::string(g_assets_path) + "/rag_corpus";
-
-    DIR* dir = opendir(corpus_dir.c_str());
-    if (!dir) {
-        std::cout << "⊘ SKIP │ RAG corpus directory not found at " << corpus_dir << "\n";
-        return true;
-    }
-
-    bool has_corpus_files = false;
-    struct dirent* entry;
-    while ((entry = readdir(dir)) != nullptr) {
-        std::string name = entry->d_name;
-        if (name.size() > 4 && name.substr(name.size() - 4) == ".txt") {
-            has_corpus_files = true;
-            break;
-        }
-        if (name.size() > 3 && name.substr(name.size() - 3) == ".md") {
-            has_corpus_files = true;
-            break;
-        }
-    }
-    closedir(dir);
-
-    if (!has_corpus_files) {
-        std::cout << "⊘ SKIP │ No .txt or .md files found in " << corpus_dir << "\n";
-        return true;
-    }
 
     std::cout << "├─ Corpus dir: " << corpus_dir << "\n";
     std::cout << "├─ Initializing model with RAG...\n";

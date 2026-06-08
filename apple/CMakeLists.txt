@@ -7,7 +7,7 @@ set(CMAKE_BUILD_TYPE Release CACHE STRING "")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 if(NOT TARGET cactus_engine)
-    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../cactus ${CMAKE_CURRENT_BINARY_DIR}/cactus)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../cactus-engine ${CMAKE_CURRENT_BINARY_DIR}/cactus-engine)
 endif()
 
 set(_DEPS cactus_engine cactus_graph cactus_kernels)

@@ -2,12 +2,17 @@ import os
 import subprocess
 from pathlib import Path
 
-from .common import is_repo_checkout, print_color, RED, GREEN
+from .common import apply_cloud_api_key_env, print_color, resolve_binary, RED, GREEN
 
 
 def cmd_transcribe(args):
     from .model import ensure_bundle, resolve_bundle_dir, TranspileOptions
-    from .config_utils import CactusConfig
+
+    audio_path = Path(args.audio_file).expanduser()
+    if not audio_path.is_file():
+        print_color(RED, f"Audio file not found: {audio_path}")
+        return 1
+    args.audio_file = str(audio_path)
 
     if args.no_cloud_tele:
         os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
@@ -17,14 +22,10 @@ def cmd_transcribe(args):
     else:
         os.environ.pop("CACTUS_FORCE_HANDOFF", None)
 
-    api_key = CactusConfig().get_api_key()
-    if api_key:
-        os.environ["CACTUS_CLOUD_KEY"] = api_key
+    apply_cloud_api_key_env()
 
     bundle_dir = resolve_bundle_dir(args.model_id)
-    if bundle_dir is not None:
-        print_color(GREEN, f"Using local model: {bundle_dir}")
-    else:
+    if bundle_dir is None:
         try:
             bundle_dir = ensure_bundle(
                 args.model_id,
@@ -36,16 +37,15 @@ def cmd_transcribe(args):
             print_color(RED, f"Model setup failed: {e}")
             return 1
 
-    asr = Path(__file__).resolve().parent.parent / "bin" / "asr"
-    if is_repo_checkout() and not asr.exists():
-        print_color(RED, "ASR binary not found. Run `cactus build` first.")
+    binary = resolve_binary("transcribe")
+    if binary is None:
         return 1
 
-    cmd = [str(asr), str(bundle_dir), args.audio_file]
+    cmd = [str(binary), str(bundle_dir), args.audio_file]
     if args.language:
         cmd.extend(["--language", args.language])
 
-    print_color(GREEN, f"Starting Cactus ASR with model: {args.model_id}")
+    print_color(GREEN, f"Starting Cactus transcription with model: {args.model_id}")
     print()
 
     return subprocess.run(cmd).returncode

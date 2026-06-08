@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
-import subprocess
-import shutil
+import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -21,53 +20,66 @@ def is_repo_checkout():
     return _looks_like_project_root(PROJECT_ROOT)
 
 
+def weights_root() -> Path:
+    if is_repo_checkout():
+        return PROJECT_ROOT / "weights"
+    return Path.home() / ".cache" / "cactus" / "weights"
+
+
+def transpiled_root() -> Path:
+    if is_repo_checkout():
+        return PROJECT_ROOT / "transpiled"
+    return Path.home() / ".cache" / "cactus" / "transpiled"
+
+
 DEFAULT_MODEL_ID = "LiquidAI/LFM2-VL-450M"
-DEFAULT_TEST_MODEL_ID = "LiquidAI/LFM2-VL-450M"
-DEFAULT_ASR_MODEL_ID = "openai/whisper-base"
+DEFAULT_TRANSCRIPTION_MODEL_ID = "openai/whisper-base"
+
+
+# Add a new vendor accelerator by appending its name here.
+SUPPORTED_PLATFORMS: tuple[str, ...] = ("apple",)
 
 
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
 YELLOW = '\033[1;33m'
 BLUE = '\033[0;34m'
+CYAN = '\033[1;36m'
 NC = '\033[0m'
 
 
+def _color_enabled():
+    if os.environ.get("NO_COLOR"):
+        return False
+    return sys.stdout.isatty()
+
+
 def print_color(color, message):
-    """Print a message with ANSI color codes."""
-    print(f"{color}{message}{NC}")
+    if _color_enabled():
+        print(f"{color}{message}{NC}")
+    else:
+        print(message)
 
 
 def mask_key(key):
     return key[:4] + "..." + key[-4:] if len(key) >= 8 else "***"
 
 
-def check_command(cmd):
-    """Check if a command is available in PATH."""
-    return shutil.which(cmd) is not None
+BIN_DIR = SCRIPT_DIR.parent / "bin"
 
 
-def run_command(cmd, cwd=None):
-    if isinstance(cmd, str):
-        cmd = [cmd]
-    return subprocess.run(cmd, cwd=cwd)
-
-
-def prompt_for_api_key(config):
-    """Prompt user to set Cactus Cloud API key if not already configured."""
-    api_key = config.get_api_key()
+def apply_cloud_api_key_env() -> None:
+    from .config_utils import CactusConfig
+    api_key = CactusConfig().get_api_key()
     if api_key:
-        return api_key
+        os.environ["CACTUS_CLOUD_KEY"] = api_key
 
-    print("\n" + "="*50)
-    print("  Cactus Cloud Setup (Optional)")
-    print("="*50 + "\n")
-    print("Get your cloud key at \033[1;36mhttps://www.cactuscompute.com/dashboard/api-keys\033[0m")
-    print("to enable automatic cloud fallback.\n")
 
-    api_key = input("Your Cactus Cloud key (press Enter to skip): ").strip()
-    if api_key:
-        config.set_api_key(api_key)
-        print_color(GREEN, f"API key saved: {mask_key(api_key)}")
-    print()
-    return api_key
+def resolve_binary(name):
+    path = BIN_DIR / name
+    if path.exists():
+        return path
+    print_color(RED, f"{name} binary not found at {path}.")
+    if is_repo_checkout():
+        print_color(RED, "Run `cactus build` first.")
+    return None

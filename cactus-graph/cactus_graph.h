@@ -806,4 +806,268 @@ namespace GraphFile {
     };
 }
 
+#if __GNUC__ >= 4
+    #define CACTUS_FFI_EXPORT __attribute__((visibility("default")))
+#else
+    #define CACTUS_FFI_EXPORT
+#endif
+
+extern std::string last_error_message;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef void* cactus_graph_t;
+typedef uint64_t cactus_node_t;
+
+typedef struct {
+    int32_t precision;
+    size_t rank;
+    size_t shape[8];
+    size_t num_elements;
+    size_t byte_size;
+} cactus_tensor_info_t;
+
+CACTUS_FFI_EXPORT const char* cactus_get_last_error(void);
+
+CACTUS_FFI_EXPORT cactus_graph_t cactus_graph_create(void);
+CACTUS_FFI_EXPORT void cactus_graph_destroy(cactus_graph_t graph);
+CACTUS_FFI_EXPORT int cactus_graph_hard_reset(cactus_graph_t graph);
+
+CACTUS_FFI_EXPORT int cactus_graph_save(cactus_graph_t graph, const char* filename);
+CACTUS_FFI_EXPORT cactus_graph_t cactus_graph_load(const char* filename);
+
+CACTUS_FFI_EXPORT int cactus_graph_input(
+    cactus_graph_t graph, const size_t* shape, size_t rank, int32_t precision,
+cactus_node_t* out_node);
+
+CACTUS_FFI_EXPORT int cactus_graph_set_input(
+    cactus_graph_t graph, cactus_node_t node, const void* data, int32_t
+precision);
+CACTUS_FFI_EXPORT int cactus_graph_set_external_input(
+    cactus_graph_t graph, cactus_node_t node, void* data, int32_t precision);
+CACTUS_FFI_EXPORT int cactus_graph_mark_embedded_input(
+    cactus_graph_t graph, cactus_node_t node);
+
+CACTUS_FFI_EXPORT int cactus_graph_precision_cast(
+    cactus_graph_t graph, cactus_node_t input, int32_t target_precision, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_add(cactus_graph_t graph, cactus_node_t a,
+cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_add_clipped(cactus_graph_t graph, cactus_node_t a,
+cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_subtract(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_multiply(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_divide(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_not_equal(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_scalar_add(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_subtract(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_multiply(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_divide(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_not_equal(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_exp(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_sqrt(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_cos(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_sin(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_log(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_abs(cactus_graph_t graph, cactus_node_t x,
+cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_pow(cactus_graph_t graph, cactus_node_t x,
+float exponent, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_view(
+    cactus_graph_t graph, cactus_node_t x, const size_t* shape, size_t rank,
+cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_flatten(
+    cactus_graph_t graph, cactus_node_t x, int32_t start_dim, int32_t end_dim,
+cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_reshape(
+    cactus_graph_t graph, cactus_node_t x, const size_t* shape, size_t rank, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_transpose(
+    cactus_graph_t graph, cactus_node_t x, int32_t backend, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_transpose_n(
+    cactus_graph_t graph, cactus_node_t x, const size_t* permutation, size_t rank, int32_t backend, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_slice(
+    cactus_graph_t graph, cactus_node_t x, int32_t axis, size_t start, size_t length, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_index(
+    cactus_graph_t graph, cactus_node_t x, size_t index_value, int32_t dim, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_sum(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_mean(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_variance(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_min(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_max(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_cumsum(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_concat(
+    cactus_graph_t graph, cactus_node_t a, cactus_node_t b, int32_t axis,
+cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_cat(
+    cactus_graph_t graph, const cactus_node_t* nodes, size_t count, int32_t
+axis, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_matmul(
+    cactus_graph_t graph, cactus_node_t a, cactus_node_t b, bool pretransposed_rhs, int32_t backend, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_gather(
+    cactus_graph_t graph, cactus_node_t tensor, cactus_node_t indices, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_embedding_from_tensor(
+    cactus_graph_t graph, cactus_node_t embedding_tensor, cactus_node_t indices, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_embedding_from_file(
+    cactus_graph_t graph, const char* filename, cactus_node_t indices, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_mmap_embeddings(
+    cactus_graph_t graph, const char* filename, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_mmap_weights(
+    cactus_graph_t graph, const char* filename, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_bind_mmap_weights(
+    cactus_graph_t graph, cactus_node_t node, const char* filename);
+CACTUS_FFI_EXPORT int cactus_graph_bilinear_interpolation(
+    cactus_graph_t graph, cactus_node_t pos_embeds, size_t dst_height, size_t dst_width, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_release_weight_pages(cactus_graph_t graph, cactus_node_t node);
+CACTUS_FFI_EXPORT int cactus_graph_prefetch_weight_pages(cactus_graph_t graph, cactus_node_t node);
+CACTUS_FFI_EXPORT int cactus_graph_release_all_weight_pages(cactus_graph_t graph);
+
+CACTUS_FFI_EXPORT int cactus_graph_relu(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_silu(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_gelu(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_gelu_erf(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_sigmoid(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_tanh(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_glu(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_layernorm(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, cactus_node_t bias, float epsilon, bool has_bias, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_groupnorm(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, cactus_node_t bias, size_t num_groups, float epsilon, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_batchnorm(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, cactus_node_t bias, cactus_node_t running_mean, cactus_node_t running_var, int32_t axis, float epsilon, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_topk(cactus_graph_t graph, cactus_node_t input, size_t k, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_rms_norm(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, float epsilon, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_rope(
+    cactus_graph_t graph, cactus_node_t input, float theta, size_t position_offset, int32_t backend, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_rope_gptj(
+    cactus_graph_t graph, cactus_node_t input, float theta, size_t position_offset, size_t rot_dim, int32_t backend, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_softmax(cactus_graph_t graph, cactus_node_t input, int32_t axis, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_attention(
+    cactus_graph_t graph, cactus_node_t query, cactus_node_t key, cactus_node_t value, float scale, bool is_causal, size_t position_offset, size_t window_size, int32_t backend, bool use_mask, cactus_node_t mask, bool additive_mask, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_rel_pos_bias(
+    cactus_graph_t graph, cactus_node_t query, cactus_node_t relative_key, float scale, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_attention_int8_hybrid(
+    cactus_graph_t graph, cactus_node_t query, cactus_node_t key_new, cactus_node_t value_new, float scale, size_t position_offset,
+    const int8_t* cached_keys, const int8_t* cached_values, const float* k_scales, const float* v_scales,
+    size_t cache_len, size_t num_kv_heads, size_t head_dim, size_t window_size, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_kv_cache_state(
+    cactus_graph_t graph, size_t max_seq_len, size_t num_kv_heads, size_t head_dim, size_t window_size, size_t sink_size, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_kv_cache_append(
+    cactus_graph_t graph, cactus_node_t new_kv, cactus_node_t cache_state, size_t window_size, size_t sink_size, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_attention_cached(
+    cactus_graph_t graph, cactus_node_t query, cactus_node_t key_new, cactus_node_t value_new,
+    cactus_node_t k_cache_state, cactus_node_t v_cache_state,
+    float scale, size_t position_offset, size_t window_size, size_t v_head_dim, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_conv_cache_state(
+    cactus_graph_t graph, size_t window_size, size_t hidden_dim, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv_cache_append(
+    cactus_graph_t graph, cactus_node_t new_data, cactus_node_t cache_state, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv_cache_initialize(
+    cactus_graph_t graph, cactus_node_t rows, cactus_node_t cache_state, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_recurrent_cache_state(
+    cactus_graph_t graph, const size_t* shape, size_t shape_len, int precision, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_recurrent_cache_write(
+    cactus_graph_t graph, cactus_node_t new_value, cactus_node_t cache_input, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_rfft(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_irfft(
+    cactus_graph_t graph, cactus_node_t input, size_t output_length, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_mel_filter_bank(
+    cactus_graph_t graph, size_t num_frequency_bins, size_t num_mel_filters,
+    float min_frequency, float max_frequency, size_t sampling_rate,
+    int norm_type, int scale_type, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_spectrogram(
+    cactus_graph_t graph, cactus_node_t waveform, cactus_node_t mel_filters,
+    size_t frame_length, size_t hop_length, size_t fft_length,
+    float power, bool center, int pad_mode,
+    float mel_floor, int log_mel_mode,
+    float dither, float preemphasis, bool remove_dc_offset,
+    cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_image_preprocess(
+    cactus_graph_t graph, cactus_node_t pixel_input,
+    int src_width, int src_height, int target_width, int target_height,
+    int patch_size, int channels, float rescale_factor,
+    const float* mean, const float* std_dev, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_conv1d_causal(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, size_t kernel_size, size_t dilation, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv1d_k3(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, size_t stride, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv1d_k7s3(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, cactus_node_t bias, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv1d(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, size_t stride, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv1d_same_depthwise_k9(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv1d_pointwise(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv2d_k3s2p1(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv2d_depthwise_k3s2p1(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv2d_pointwise_1x1(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_lstm_cell(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t h_prev, cactus_node_t c_prev, cactus_node_t weight_ih, cactus_node_t weight_hh, cactus_node_t bias_ih, cactus_node_t bias_hh, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_gated_deltanet_decode(
+    cactus_graph_t graph, cactus_node_t query, cactus_node_t key, cactus_node_t value, cactus_node_t gate_log, cactus_node_t beta, cactus_node_t initial_state, float scale, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_gated_deltanet_prefill(
+    cactus_graph_t graph, cactus_node_t query, cactus_node_t key, cactus_node_t value, cactus_node_t gate_log, cactus_node_t beta, cactus_node_t initial_state, size_t chunk_size, float scale, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_stft(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, size_t stride, size_t num_fft_bins, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_altup_predict(
+    cactus_graph_t graph, cactus_node_t coefs, const cactus_node_t* streams, size_t num_streams, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_altup_correct(
+    cactus_graph_t graph, cactus_node_t coefs, cactus_node_t innovation, const cactus_node_t* predictions, size_t num_predictions, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_gaussian_topk(
+    cactus_graph_t graph, cactus_node_t input, float ppf, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_moe_layer_gated(
+    cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
+    const cactus_node_t* w1_weights, const cactus_node_t* w3_weights, const cactus_node_t* w2_weights,
+    size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_moe_layer_ungated(
+    cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
+    const cactus_node_t* w1_weights, const cactus_node_t* w2_weights,
+    size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, int32_t activation, cactus_node_t* out);
+
+CACTUS_FFI_EXPORT int cactus_graph_sample(
+    cactus_graph_t graph, cactus_node_t logits, float temperature, float top_p, size_t top_k, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scatter_topk(
+    cactus_graph_t graph, cactus_node_t indices, cactus_node_t values, size_t num_classes, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_persistent(
+    cactus_graph_t graph, cactus_node_t source_node, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_is_populated(
+    cactus_graph_t graph, cactus_node_t persistent_node, int32_t* out_is_populated);
+CACTUS_FFI_EXPORT int cactus_graph_invalidate_persistent(
+    cactus_graph_t graph, cactus_node_t persistent_node);
+
+CACTUS_FFI_EXPORT int cactus_graph_execute(cactus_graph_t graph);
+CACTUS_FFI_EXPORT int cactus_graph_get_output_ptr(cactus_graph_t graph,
+cactus_node_t node, void** out_ptr);
+CACTUS_FFI_EXPORT int cactus_graph_get_output_info(cactus_graph_t graph,
+cactus_node_t node, cactus_tensor_info_t* out_info);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif

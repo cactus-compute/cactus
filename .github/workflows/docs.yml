@@ -28,9 +28,17 @@ on:
         required: false
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -41,7 +49,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: pip install "mkdocs==1.6.1" "mkdocs-material==9.7.5" "mike==2.1.4"

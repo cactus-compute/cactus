@@ -4,9 +4,17 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: dco-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dco-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     name: DCO Check
     steps:
       - name: Checkout

@@ -179,7 +179,7 @@ options = json.dumps({
     "auto_handoff": True
 })
 messages = json.dumps([{"role": "user", "content": "Explain quantum entanglement"}])
-result = json.loads(cactus_complete(model, messages, options, None, None))
+result = cactus_complete(model, messages, options, None, None)
 
 if result["cloud_handoff"]:
     print("Answered by cloud")

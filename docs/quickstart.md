@@ -55,14 +55,15 @@ Install Cactus and run your first on-device AI completion.
     **From Source (macOS):**
 
     ```bash
-    git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
+    brew install cmake
+    git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup && cactus build --python
     ```
 
     **From Source (Linux):**
 
     ```bash
     sudo apt-get install python3 python3-venv python3-pip cmake build-essential libcurl4-openssl-dev
-    git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
+    git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup && cactus build --python
     ```
 
 === "C++"
@@ -70,7 +71,7 @@ Install Cactus and run your first on-device AI completion.
     Include the Cactus header in your project:
 
     ```cpp
-    #include <cactus.h>
+    #include <cactus_engine.h>
     ```
 
     See the [Cactus repository](https://github.com/cactus-compute/cactus) for CMake build instructions.
@@ -107,38 +108,40 @@ Install Cactus and run your first on-device AI completion.
 
     mod cactus;
 
-    unsafe {
-        let model_path = CString::new("path/to/weight/folder").unwrap();
-        let model = cactus::cactus_init(model_path.as_ptr(), std::ptr::null(), false);
+    fn main() {
+        unsafe {
+            let model_path = CString::new("path/to/weight/folder").unwrap();
+            let model = cactus::cactus_init(model_path.as_ptr(), std::ptr::null(), false);
 
-        let messages = CString::new(
-            r#"[{"role": "user", "content": "What is the capital of France?"}]"#
-        ).unwrap();
+            let messages = CString::new(
+                r#"[{"role": "user", "content": "What is the capital of France?"}]"#
+            ).unwrap();
 
-        let mut response = vec![0u8; 4096];
-        cactus::cactus_complete(
-            model, messages.as_ptr(),
-            response.as_mut_ptr() as *mut c_char, response.len(),
-            std::ptr::null(), std::ptr::null(),
-            None, std::ptr::null_mut(),
-            std::ptr::null(), 0,
-        );
+            let mut response = vec![0u8; 4096];
+            cactus::cactus_complete(
+                model, messages.as_ptr(),
+                response.as_mut_ptr() as *mut c_char, response.len(),
+                std::ptr::null(), std::ptr::null(),
+                None, std::ptr::null_mut(),
+                std::ptr::null(), 0,
+            );
 
-        println!("{}", String::from_utf8_lossy(&response));
-        cactus::cactus_destroy(model);
+            println!("{}", String::from_utf8_lossy(&response));
+            cactus::cactus_destroy(model);
+        }
     }
     ```
 
 === "CLI"
 
     ```bash
-    cactus run <model-name>
+    cactus run <model|path>
     ```
 
 === "C++"
 
     ```cpp
-    #include <cactus.h>
+    #include <cactus_engine.h>
 
     cactus_model_t model = cactus_init(
         "path/to/weight/folder",

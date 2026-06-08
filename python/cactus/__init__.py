@@ -2,13 +2,14 @@
 
 from ._version import __version__
 
-from .cli.download import ensure_model, get_weights_dir, get_model_dir_name
+from .cli.download import ensure_model, get_weights_dir, get_bundle_dir, get_model_dir_name
 from .cli import main
 
 __all__ = [
     "__version__",
     "ensure_model",
     "get_weights_dir",
+    "get_bundle_dir",
     "get_model_dir_name",
     "main",
     "Graph",
@@ -49,10 +50,7 @@ _FFI_NAMES = frozenset(n for n in __all__ if n.startswith("cactus_"))
 
 
 def __getattr__(name):
-    if name in ("Graph", "Tensor"):
-        from .bindings import graph
-        return getattr(graph, name)
-    if name in _FFI_NAMES:
+    if name in ("Graph", "Tensor") or name in _FFI_NAMES:
         from .bindings import cactus
         return getattr(cactus, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

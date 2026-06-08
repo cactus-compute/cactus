@@ -3,6 +3,9 @@ from types import SimpleNamespace
 import asyncio
 
 import pytest
+
+pytest.importorskip("fastapi")
+
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -118,8 +121,12 @@ def test_streaming_completion_error_terminates(tmp_path: Path, monkeypatch) -> N
             body = "".join(res.iter_text())
 
     assert res.status_code == 200
-    assert "event: error" in body
+    # OpenAI streaming spec carries errors in a `data:` JSON line, not in
+    # `event:` lines. We also emit a final chunk with finish_reason so
+    # clients don't hang before [DONE].
+    assert '"error"' in body
     assert "boom" in body
+    assert '"finish_reason": "stop"' in body
     assert "data: [DONE]" in body
 
 
