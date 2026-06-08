@@ -60,18 +60,20 @@ def collect_text_hessians(model, tokenizer, texts: list[str], target_names: set[
         handles.append(module.register_forward_pre_hook(hook))
     if not handles or not texts:
         return stats
-    model.eval()
-    model.to(device)
-    with torch.no_grad():
-        for text in texts:
-            batch = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length)
-            batch = {k: v.to(device) for k, v in batch.items()}
-            try:
-                model(**batch)
-            except Exception:
-                continue
-    for h in handles:
-        h.remove()
+    try:
+        model.eval()
+        model.to(device)
+        with torch.no_grad():
+            for text in texts:
+                batch = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length)
+                batch = {k: v.to(device) for k, v in batch.items()}
+                try:
+                    model(**batch)
+                except Exception:
+                    continue
+    finally:
+        for h in handles:
+            h.remove()
     for name, count in list(stats.samples.items()):
         if count > 0:
             stats.hessians[name] = stats.hessians[name] / float(count)

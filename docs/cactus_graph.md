@@ -197,18 +197,22 @@ size_t glu_out = graph.glu(input, axis);      // Gated Linear Unit
 ```
 
 #### Convolution Operations
+
+Each conv has two overloads: with and without bias.
+
 ```cpp
-// 1D convolutions
-size_t conv1d_out = graph.conv1d(input, weight, has_bias, bias, stride);
-size_t conv1d_k3_out = graph.conv1d_k3(input, weight, stride);
-size_t conv1d_causal = graph.conv1d_causal(input, weight, kernel_size, dilation);
-size_t conv1d_pointwise = graph.conv1d_pointwise(input, weight, has_bias, bias);
-size_t conv1d_depthwise = graph.conv1d_same_depthwise_k9(input, weight, has_bias, bias);
+// 1D convolutions (no bias / with bias overloads)
+size_t conv1d_out         = graph.conv1d(input, weight, stride);
+size_t conv1d_with_bias   = graph.conv1d(input, weight, bias, stride);
+size_t conv1d_k3_out      = graph.conv1d_k3(input, weight, stride);
+size_t conv1d_causal      = graph.conv1d_causal(input, weight, kernel_size, dilation);
+size_t conv1d_pointwise   = graph.conv1d_pointwise(input, weight);            // or (input, weight, bias)
+size_t conv1d_depthwise   = graph.conv1d_same_depthwise_k9(input, weight);    // or (input, weight, bias)
 
 // 2D convolutions
-size_t conv2d_out = graph.conv2d_k3s2p1(input, weight, has_bias, bias);
-size_t conv2d_dw = graph.conv2d_depthwise_k3s2p1(input, weight, has_bias, bias);
-size_t conv2d_pw = graph.conv2d_pointwise_1x1(input, weight, has_bias, bias);
+size_t conv2d_out = graph.conv2d_k3s2p1(input, weight);           // or (input, weight, bias)
+size_t conv2d_dw  = graph.conv2d_depthwise_k3s2p1(input, weight); // or (input, weight, bias)
+size_t conv2d_pw  = graph.conv2d_pointwise_1x1(input, weight);    // or (input, weight, bias)
 ```
 
 #### Normalization
@@ -226,11 +230,13 @@ size_t deltanet_prefill = graph.gated_deltanet_prefill(query, key, value, gate_l
 
 #### Mixture of Experts (MoE)
 ```cpp
-size_t moe_gated = graph.moe_layer_gated(hidden, routing_probs, topk_indices,
+// Gated SwiGLU MoE: pass three weight sets (w1=gate, w3=up, w2=down)
+size_t moe_gated = graph.moe_layer(hidden, routing_probs, topk_indices,
     w1_weights, w3_weights, w2_weights,
     num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor);
 
-size_t moe_ungated = graph.moe_layer_ungated(hidden, routing_probs, topk_indices,
+// Ungated MoE: pass two weight sets (w1=up, w2=down) and the activation explicitly
+size_t moe_ungated = graph.moe_layer(hidden, routing_probs, topk_indices,
     w1_weights, w2_weights,
     num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor, activation);
 ```
@@ -302,7 +308,12 @@ size_t interpolated = graph.bilinear_interpolation(pos_embeds, dst_height, dst_w
 
 #### Sampling
 ```cpp
+// Defaults: temperature=0.6, top_p=0.95, top_k=20
 size_t sampled = graph.sample(logits, temperature, top_p, top_k);
+
+// With per-token bias map and repetition penalty / min_p:
+size_t sampled_ext = graph.sample_with_options(
+    logits, temperature, top_p, min_p, repetition_penalty, top_k, /*logit_bias=*/{});
 ```
 
 ## Advanced Features
@@ -328,7 +339,6 @@ size_t result = graph.add(a, b);  // {2,3} -> {2,2,3}
 ```cpp
 size_t int8_tensor = graph.input({4}, Precision::INT8);
 size_t fp16_tensor = graph.precision_cast(int8_tensor, Precision::FP16);
-graph.set_quantization_scale(node_id, scale);
 ```
 
 ### Graph Persistence
@@ -359,14 +369,15 @@ loaded.execute();
 GraphFile::save_node(graph, node_id, "output.bin");
 ```
 
-#### Loading Nodes
+#### Loading Graphs
 ```cpp
-CactusGraph new_graph;
-auto loaded = GraphFile::load_into_graph(new_graph, "output.bin");
-size_t node_id = loaded.node_id;
-std::vector<size_t> shape = loaded.shape;
-Precision precision = loaded.precision;
+CactusGraph loaded = GraphFile::load_graph("graph.cactus");
 ```
+
+The `GraphFile` namespace currently exposes `save_graph`, `load_graph`, and
+`save_node`. There is no per-node loader; reload a saved subgraph by
+serializing the parent graph with `save_graph` and reading it back with
+`load_graph`.
 
 ### Graph Management
 
@@ -504,8 +515,7 @@ Add a builder method in `cactus-graph/src/builder.cpp` and its declaration in
 Follow the pattern of existing builder methods, e.g. for a new "relu" op:
 ```cpp
 size_t CactusGraph::relu(size_t input) {
-    OpParams params;
-    return add_node(OpType::RELU, {input}, params);
+    return add_node(OpType::RELU, {input}, {});
 }
 ```
 3. ** Implement the op in the execution engine **
@@ -513,14 +523,14 @@ Implement the kernel or graph op code in the relevant file, usually in `cactus-k
 Register the new op in the dispatch table in `cactus-graph/src/execute.cpp` for the supported backends (CPU, NPU)
 
 4. ** Export op in FFI bindings **
-- header: `cactus-engine/cactus_engine.h`
-- implementation: `cactus-engine/src/graph_ffi.cpp`
+- header: `cactus-graph/cactus_graph.h` (in the `extern "C"` block)
+- implementation: `cactus-graph/src/graph_ffi.cpp`
 
 5. ** Add python ctypes declaration ** 
 Add `_lib.cactus_graph_my_new_op.argtypes/restype` in `python/cactus/bindings/cactus.py`
 
 6. ** Add python graph wrapper ** 
-Add `Graph.my_new_op(...)` in `python/cactus/bindings/graph.py`, and optionally a Tensor
+Add `Graph.my_new_op(...)` in `python/cactus/bindings/cactus.py`, and optionally a Tensor
   convenience method.
 
 7. ** Add serialization schema entry if needed **
@@ -544,7 +554,7 @@ The syntax pattern there is:
 }},
 ```
 8. ** Add test coverage **
-Add unit tests to `tests/test_graph.cpp` covering the native graph function, and 
+Add unit tests to `cactus-graph/tests/test_graph.cpp` covering the native graph function, and
 add python tests in `python/tests/test_graph.py` covering the Python API and end-to-end execution.
 
 and then support those fields in `write_field(...)` / `read_field(...)`.
@@ -569,10 +579,10 @@ try {
 ```cpp
 CactusGraph graph;
 size_t x = graph.input({batch, dim}, Precision::FP16);
-x = graph.linear(x, weight1, bias1);
+x = graph.add(graph.matmul(x, weight1), bias1);
 x = graph.gelu(x);
 x = graph.layernorm(x, ln_weight1, ln_bias1);
-x = graph.linear(x, weight2, bias2);
+x = graph.add(graph.matmul(x, weight2), bias2);
 ```
 
 ### Residual Connections

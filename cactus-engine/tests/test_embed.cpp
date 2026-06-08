@@ -5,7 +5,7 @@
 using namespace EngineTestUtils;
 
 static const char* g_model_path = std::getenv("CACTUS_TEST_MODEL");
-static const char* g_transcribe_model_path = std::getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
+static const char* g_transcription_model_path = std::getenv("CACTUS_TEST_TRANSCRIPTION_MODEL");
 static const char* g_assets_path = std::getenv("CACTUS_TEST_ASSETS");
 
 bool test_embeddings() {
@@ -18,15 +18,20 @@ bool test_embeddings() {
 
     const char* texts[] = {"My name is Henry Ndubuaku", "Your name is Henry Ndubuaku"};
     std::vector<float> emb1(2048), emb2(2048);
-    size_t dim1, dim2;
+    size_t dim1 = 0, dim2 = 0;
 
     Timer t1;
-    cactus_embed(model, texts[0], emb1.data(), emb1.size() * sizeof(float), &dim1, true);
+    int rc1 = cactus_embed(model, texts[0], emb1.data(), emb1.size() * sizeof(float), &dim1, true);
     double time1 = t1.elapsed_ms();
 
     Timer t2;
-    cactus_embed(model, texts[1], emb2.data(), emb2.size() * sizeof(float), &dim2, true);
+    int rc2 = cactus_embed(model, texts[1], emb2.data(), emb2.size() * sizeof(float), &dim2, true);
     double time2 = t2.elapsed_ms();
+
+    if (rc1 < 0 || rc2 < 0 || dim1 == 0 || dim1 != dim2 || dim1 > emb1.size()) {
+        cactus_destroy(model);
+        return false;
+    }
 
     float similarity = 0;
     for (size_t i = 0; i < dim1; ++i) {
@@ -48,32 +53,19 @@ static bool test_image_embeddings() {
               << "║         IMAGE EMBEDDING TEST             ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    if (!g_model_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_MODEL not set\n";
-        return true;
-    }
-
     std::string image_path = std::string(g_assets_path) + "/test_monkey.png";
     const size_t buffer_size = 1024 * 1024 * 4;
     std::vector<float> embeddings(buffer_size / sizeof(float));
     size_t embedding_dim = 0;
 
     cactus_model_t model = cactus_init(g_model_path, nullptr, false);
-    if (!model) {
-        std::cout << "⊘ SKIP │ Model doesn't support image embeddings\n";
-        return true;
-    }
+    if (!model) return false;
 
     Timer t;
     int result = cactus_image_embed(model, image_path.c_str(), embeddings.data(), buffer_size, &embedding_dim);
     double elapsed = t.elapsed_ms();
 
     cactus_destroy(model);
-
-    if (result == -1) {
-        std::cout << "⊘ SKIP │ Model doesn't support image embeddings\n";
-        return true;
-    }
 
     std::cout << "├─ Embedding dim: " << embedding_dim << "\n"
               << "└─ Time: " << std::fixed << std::setprecision(2) << elapsed << "ms" << std::endl;
@@ -86,20 +78,12 @@ static bool test_audio_embeddings() {
               << "║         AUDIO EMBEDDING TEST             ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    if (!g_transcribe_model_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_TRANSCRIBE_MODEL not set\n";
-        return true;
-    }
-
     const size_t buffer_size = 1024 * 1024;
     std::vector<float> embeddings(buffer_size / sizeof(float));
     size_t embedding_dim = 0;
 
-    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
-    if (!model) {
-        std::cout << "⊘ SKIP │ Failed to init audio model\n";
-        return true;
-    }
+    cactus_model_t model = cactus_init(g_transcription_model_path, nullptr, false);
+    if (!model) return false;
 
     std::string audio_path = std::string(g_assets_path) + "/test.wav";
     Timer t;
@@ -107,11 +91,6 @@ static bool test_audio_embeddings() {
     double elapsed = t.elapsed_ms();
 
     cactus_destroy(model);
-
-    if (result == -1) {
-        std::cout << "⊘ SKIP │ Model doesn't support audio embeddings\n";
-        return true;
-    }
 
     std::cout << "├─ Embedding dim: " << embedding_dim << "\n"
               << "└─ Time: " << std::fixed << std::setprecision(2) << elapsed << "ms" << std::endl;

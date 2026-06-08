@@ -27,18 +27,11 @@ set_target_properties(cactus_kernels PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(cactus_kernels
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
            ${CMAKE_CURRENT_SOURCE_DIR}/src
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libs
+           ${CMAKE_CURRENT_SOURCE_DIR}/libs
 )
 
 target_compile_options(cactus_kernels PUBLIC
     -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -O3
-)
-
-target_compile_definitions(cactus_kernels PUBLIC
-    __ARM_NEON=1
-    __ARM_FEATURE_FP16_VECTOR_ARITHMETIC=1
-    __ARM_FEATURE_DOTPROD=1
-    __ARM_FEATURE_MATMUL_INT8=1
 )
 
 target_compile_options(cactus_kernels PRIVATE
@@ -50,20 +43,11 @@ target_compile_options(cactus_kernels PRIVATE
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     target_compile_definitions(cactus_kernels PUBLIC ACCELERATE_NEW_LAPACK)
-    find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
-    target_link_libraries(cactus_kernels PUBLIC ${ACCELERATE_FRAMEWORK})
+    target_link_libraries(cactus_kernels PUBLIC "-framework Accelerate")
 endif()
 
-if(BUILD_TESTING OR CACTUS_BUILD_TESTS)
-    set(TEST_SOURCES
-        tests/test_elementwise.cpp
-        tests/test_matmul.cpp
-        tests/test_attention.cpp
-        tests/test_reduce.cpp
-        tests/test_conv.cpp
-        tests/test_quant.cpp
-        tests/test_dsp.cpp
-    )
+if((BUILD_TESTING OR CACTUS_BUILD_TESTS) AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    file(GLOB TEST_SOURCES "tests/test_*.cpp")
     foreach(TEST_SRC ${TEST_SOURCES})
         get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
         add_executable(${TEST_NAME} ${TEST_SRC})

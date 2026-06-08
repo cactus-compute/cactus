@@ -5,12 +5,12 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CACTUS_CURL_ROOT="${CACTUS_CURL_ROOT:-$PROJECT_ROOT/cactus-engine/libs/curl}"
 export CACTUS_CURL_ROOT
 
-MODEL_NAME="$1"
-
-if [ -z "$MODEL_NAME" ]; then
-    echo "Usage: run.sh <model_weights_path>"
-    exit 1
-fi
+for var in CACTUS_TEST_MODEL CACTUS_TEST_TRANSCRIPTION_MODEL; do
+    if [ -z "${!var:-}" ] || [ ! -d "${!var}" ]; then
+        echo "Error: $var must point to a prepared bundle (got: '${!var:-}')" >&2
+        exit 1
+    fi
+done
 
 echo "Running Cactus tests on Android..."
 echo "============================"
@@ -182,9 +182,6 @@ if ! adb -s "$DEVICE_ID" shell echo "test" &>/dev/null; then
     exit 1
 fi
 
-echo ""
-echo "Step 2: Building Cactus static library for Android..."
-
 if [ -z "$ANDROID_NDK_HOME" ]; then
     if [ -n "$ANDROID_HOME" ]; then
         ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME/ndk/"* 2>/dev/null | sort -V | tail -1)
@@ -201,27 +198,15 @@ fi
 
 cmake_toolchain="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
 android_platform=${ANDROID_PLATFORM:-android-21}
-android_lib_build_dir="$PROJECT_ROOT/android/build"
 n_jobs=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
 
-cmake -DCMAKE_TOOLCHAIN_FILE="$cmake_toolchain" \
-      -DANDROID_ABI="arm64-v8a" \
-      -DANDROID_PLATFORM="$android_platform" \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DCACTUS_CURL_ROOT="$CACTUS_CURL_ROOT" \
-      -S "$PROJECT_ROOT/android" \
-      -B "$android_lib_build_dir" >/dev/null
+echo ""
+echo "Step 2: Building Cactus library for Android..."
 
-if ! cmake --build "$android_lib_build_dir" --target cactus -j "$n_jobs" >/dev/null; then
-    echo "Failed to build Cactus static library"
+if ! "$PROJECT_ROOT/android/build.sh"; then
+    echo "Failed to build Cactus library"
     exit 1
 fi
-
-if [ ! -f "$android_lib_build_dir/cactus/libcactus.a" ]; then
-    echo "Static library not found at $android_lib_build_dir/cactus/libcactus.a"
-    exit 1
-fi
-echo "Static library built: $android_lib_build_dir/cactus/libcactus.a"
 
 echo ""
 echo "Step 3: Building Android tests..."
@@ -237,6 +222,7 @@ if ! cmake -S "$android_test_dir" -B "$android_build_dir" \
     -DANDROID_ABI="arm64-v8a" \
     -DANDROID_PLATFORM="$android_platform" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCACTUS_CURL_ROOT="$CACTUS_CURL_ROOT" \
     -DCMAKE_RULE_MESSAGES=OFF \
     -DCMAKE_VERBOSE_MAKEFILE=OFF; then
     echo "Failed to configure tests"
@@ -259,13 +245,13 @@ fi
 test_executables=()
 for test_exe in "${all_test_executables[@]}"; do
     test_name=$(basename "$test_exe" | sed 's/^test_//')
-    if [ -z "${CACTUS_TEST_ONLY:-}" ] || [ "$test_name" = "$CACTUS_TEST_ONLY" ]; then
+    if [ -z "${CACTUS_TEST_SUITE:-}" ] || [ "$test_name" = "$CACTUS_TEST_SUITE" ]; then
         test_executables+=("$test_exe")
     fi
 done
 
 if [ ${#test_executables[@]} -eq 0 ]; then
-    echo "No test executables match filter: $CACTUS_TEST_ONLY"
+    echo "No test executables match filter: $CACTUS_TEST_SUITE"
     exit 1
 fi
 
@@ -274,36 +260,53 @@ echo "Found ${#test_executables[@]} test executable(s)"
 echo ""
 echo "Step 4: Deploying to device..."
 
-model_src="$MODEL_NAME"
-model_dir=$(basename "$model_src")
+model_dir=$(basename "$CACTUS_TEST_MODEL")
+transcription_dir=$(basename "$CACTUS_TEST_TRANSCRIPTION_MODEL")
 assets_src="$PROJECT_ROOT/cactus-engine/tests/assets"
 
 device_test_dir="/data/local/tmp/cactus_tests"
 device_model_dir="/data/local/tmp/cactus_models"
 device_assets_dir="/data/local/tmp/cactus_assets"
 
+adb -s "$DEVICE_ID" shell "rm -rf $device_test_dir $device_model_dir $device_assets_dir"
 adb -s "$DEVICE_ID" shell "mkdir -p $device_test_dir $device_model_dir $device_assets_dir"
 
 echo "Pushing model weights..."
-adb -s "$DEVICE_ID" push "$model_src" "$device_model_dir/"
+if ! adb -s "$DEVICE_ID" push "$CACTUS_TEST_MODEL" "$device_model_dir/" >/dev/null; then
+    echo "Failed to push model weights"
+    exit 1
+fi
+
+echo "Pushing transcription model..."
+if ! adb -s "$DEVICE_ID" push "$CACTUS_TEST_TRANSCRIPTION_MODEL" "$device_model_dir/" >/dev/null; then
+    echo "Failed to push transcription model"
+    exit 1
+fi
 
 if [ -d "$assets_src" ]; then
     echo "Pushing test assets..."
-    adb -s "$DEVICE_ID" push "$assets_src" "$device_assets_dir/"
+    if ! adb -s "$DEVICE_ID" push "$assets_src" "$device_assets_dir/" >/dev/null; then
+        echo "Failed to push test assets"
+        exit 1
+    fi
 fi
 
 echo "Pushing test executables..."
 for test_exe in "${test_executables[@]}"; do
     test_name=$(basename "$test_exe")
-    adb -s "$DEVICE_ID" push "$test_exe" "$device_test_dir/"
+    if ! adb -s "$DEVICE_ID" push "$test_exe" "$device_test_dir/" >/dev/null; then
+        echo "Failed to push $test_name"
+        exit 1
+    fi
     adb -s "$DEVICE_ID" shell "chmod +x $device_test_dir/$test_name"
 done
 
 echo ""
 echo "Step 5: Running tests..."
 echo "------------------------"
-echo "Using model path: $device_model_dir/$model_dir"
-echo "Using assets path: $device_assets_dir/assets"
+echo "Using model path:               $device_model_dir/$model_dir"
+echo "Using transcription model path: $device_model_dir/$transcription_dir"
+echo "Using assets path:              $device_assets_dir/assets"
 
 FAILED=0
 for test_exe in "${test_executables[@]}"; do
@@ -313,6 +316,7 @@ for test_exe in "${test_executables[@]}"; do
 
     if ! adb -s "$DEVICE_ID" shell "cd $device_test_dir && \
         export CACTUS_TEST_MODEL=$device_model_dir/$model_dir && \
+        export CACTUS_TEST_TRANSCRIPTION_MODEL=$device_model_dir/$transcription_dir && \
         export CACTUS_TEST_ASSETS=$device_assets_dir/assets && \
         export CACTUS_INDEX_PATH=$device_assets_dir/assets && \
         export CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE:-1} && \

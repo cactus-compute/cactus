@@ -1,6 +1,6 @@
 # Apple Build
 
-Builds `libcactus` for iOS and macOS.
+Builds `libcactus_engine` for iOS and macOS.
 
 ## Usage
 
@@ -16,8 +16,8 @@ bash apple/build.sh
 
 ## Output
 
-- `libcactus-device.a` — iOS device (arm64)
-- `libcactus-simulator.a` — iOS simulator (arm64)
+- `libcactus_engine-device.a` — iOS device (arm64)
+- `libcactus_engine-simulator.a` — iOS simulator (arm64)
 - `cactus-ios.xcframework/` — iOS XCFramework (device + simulator)
 - `cactus-macos.xcframework/` — macOS XCFramework (arm64)
 

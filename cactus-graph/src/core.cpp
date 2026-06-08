@@ -87,7 +87,16 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
       num_groups(other.num_groups),
       activation_scales_data(other.activation_scales_data),
       owned_activation_scales(std::move(other.owned_activation_scales)),
-      num_rows_for_activation_scales(other.num_rows_for_activation_scales) {
+      num_rows_for_activation_scales(other.num_rows_for_activation_scales),
+      cq_codebook(other.cq_codebook),
+      cq_input_scale(other.cq_input_scale),
+      cq_input_scale_recip(other.cq_input_scale_recip),
+      cq_norms(other.cq_norms),
+      cq_left_signs(other.cq_left_signs),
+      cq_right_signs(other.cq_right_signs),
+      cq_permutation(other.cq_permutation),
+      cq_rotation(other.cq_rotation),
+      cq_flags(other.cq_flags) {
     other.total_size = 0;
     other.byte_size = 0;
     other.external_data = nullptr;
@@ -96,6 +105,15 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
     other.num_groups = 0;
     other.activation_scales_data = nullptr;
     other.num_rows_for_activation_scales = 0;
+    other.cq_codebook = nullptr;
+    other.cq_input_scale = nullptr;
+    other.cq_input_scale_recip = nullptr;
+    other.cq_norms = nullptr;
+    other.cq_left_signs = nullptr;
+    other.cq_right_signs = nullptr;
+    other.cq_permutation = nullptr;
+    other.cq_rotation = nullptr;
+    other.cq_flags = 0;
 }
 
 BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
@@ -116,6 +134,15 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
         activation_scales_data = other.activation_scales_data;
         owned_activation_scales = std::move(other.owned_activation_scales);
         num_rows_for_activation_scales = other.num_rows_for_activation_scales;
+        cq_codebook = other.cq_codebook;
+        cq_input_scale = other.cq_input_scale;
+        cq_input_scale_recip = other.cq_input_scale_recip;
+        cq_norms = other.cq_norms;
+        cq_left_signs = other.cq_left_signs;
+        cq_right_signs = other.cq_right_signs;
+        cq_permutation = other.cq_permutation;
+        cq_rotation = other.cq_rotation;
+        cq_flags = other.cq_flags;
 
         other.total_size = 0;
         other.byte_size = 0;
@@ -125,6 +152,15 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
         other.num_groups = 0;
         other.activation_scales_data = nullptr;
         other.num_rows_for_activation_scales = 0;
+        other.cq_codebook = nullptr;
+        other.cq_input_scale = nullptr;
+        other.cq_input_scale_recip = nullptr;
+        other.cq_norms = nullptr;
+        other.cq_left_signs = nullptr;
+        other.cq_right_signs = nullptr;
+        other.cq_permutation = nullptr;
+        other.cq_rotation = nullptr;
+        other.cq_flags = 0;
     }
     return *this;
 }

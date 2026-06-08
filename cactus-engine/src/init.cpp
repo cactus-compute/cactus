@@ -335,8 +335,6 @@ static bool load_corpus_index(CactusModelHandle* handle, const std::string& corp
     }
 }
 
-std::string last_error_message;
-
 bool matches_stop_sequence(const std::vector<uint32_t>& generated_tokens,
                            const std::vector<std::vector<uint32_t>>& stop_sequences) {
     for (const auto& stop_seq : stop_sequences) {
@@ -350,10 +348,6 @@ bool matches_stop_sequence(const std::vector<uint32_t>& generated_tokens,
 }
 
 extern "C" {
-
-const char* cactus_get_last_error() {
-    return last_error_message.c_str();
-}
 
 cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool cache_index) {
     constexpr size_t DEFAULT_CONTEXT_SIZE = 512;  // matches default sliding window size
@@ -375,7 +369,7 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
 
     try {
         auto* handle = new CactusModelHandle();
-        handle->model = create_model(model_path);
+        handle->model = create_model(model_path_str);
         handle->model_name = model_name;
 
         if (!handle->model) {

@@ -1,5 +1,5 @@
 #include <jni.h>
-#include "cactus.h"
+#include "cactus_engine.h"
 
 struct TokenCallbackContext {
     JavaVM* jvm;
@@ -23,12 +23,13 @@ static void token_callback_bridge(const char* token, uint32_t token_id, void* us
     bool attached = false;
     jint status = ctx->jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
     if (status == JNI_EDETACHED) {
-        ctx->jvm->AttachCurrentThread(&env, nullptr);
+        if (ctx->jvm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
         attached = true;
     }
-    jstring jtoken = env->NewStringUTF(token);
+    if (!env) return;
+    jstring jtoken = token ? env->NewStringUTF(token) : nullptr;
     env->CallVoidMethod(ctx->callback, ctx->method, jtoken, static_cast<jint>(token_id));
-    env->DeleteLocalRef(jtoken);
+    if (jtoken) env->DeleteLocalRef(jtoken);
     if (attached) ctx->jvm->DetachCurrentThread();
 }
 
@@ -38,14 +39,15 @@ static void log_callback_bridge(int level, const char* component, const char* me
     bool attached = false;
     jint status = ctx->jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
     if (status == JNI_EDETACHED) {
-        ctx->jvm->AttachCurrentThread(&env, nullptr);
+        if (ctx->jvm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
         attached = true;
     }
-    jstring jcomponent = env->NewStringUTF(component);
-    jstring jmessage = env->NewStringUTF(message);
+    if (!env) return;
+    jstring jcomponent = component ? env->NewStringUTF(component) : nullptr;
+    jstring jmessage = message ? env->NewStringUTF(message) : nullptr;
     env->CallVoidMethod(ctx->callback, ctx->method, static_cast<jint>(level), jcomponent, jmessage);
-    env->DeleteLocalRef(jcomponent);
-    env->DeleteLocalRef(jmessage);
+    if (jcomponent) env->DeleteLocalRef(jcomponent);
+    if (jmessage) env->DeleteLocalRef(jmessage);
     if (attached) ctx->jvm->DetachCurrentThread();
 }
 
@@ -610,6 +612,11 @@ Java_com_cactus_CactusJNI_nativeLogSetCallback(JNIEnv* env, jobject, jobject cal
     env->GetJavaVM(&jvm);
     jclass cls = env->GetObjectClass(callback);
     jmethodID method = env->GetMethodID(cls, "onLog", "(ILjava/lang/String;Ljava/lang/String;)V");
+    if (!method) {
+        env->ExceptionClear();
+        cactus_log_set_callback(nullptr, nullptr);
+        return;
+    }
     g_log_callback_ctx = new LogCallbackContext{jvm, env->NewGlobalRef(callback), method};
     cactus_log_set_callback(log_callback_bridge, g_log_callback_ctx);
 }
@@ -628,6 +635,10 @@ Java_com_cactus_CactusJNI_nativeSetTelemetryEnvironment(JNIEnv* env, jobject,
 
 JNIEXPORT void JNICALL
 Java_com_cactus_CactusJNI_nativeSetAppId(JNIEnv* env, jobject, jstring appId) {
+    if (!appId) {
+        cactus_set_app_id(nullptr);
+        return;
+    }
     const char* id = env->GetStringUTFChars(appId, nullptr);
     cactus_set_app_id(id);
     env->ReleaseStringUTFChars(appId, id);

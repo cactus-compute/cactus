@@ -47,7 +47,7 @@ A low-latency AI engine for mobile devices & wearables.
 ## Cactus Engine
 
 ```cpp
-#include "cactus.h"
+#include "cactus_engine.h"
 
 cactus_model_t model = cactus_init(
     "path/to/weight/folder",
@@ -102,7 +102,7 @@ Example response from Gemma3-270m
 ## Cactus Graph
 
 ```cpp
-#include "cactus.h"
+#include "cactus_graph.h"
 
 CactusGraph graph;
 auto a = graph.input({2, 3}, Precision::FP16);
@@ -227,67 +227,84 @@ cactus build               # default static lib
 ## Using this repo
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                                                                              │
-│ Step 0: if on Linux (Ubuntu/Debian)                                          │
-│ sudo apt-get install python3 python3-venv python3-pip cmake                  │
-│   build-essential libcurl4-openssl-dev                                       │
-│                                                                              │
-│ Step 1: clone and setup                                                      │
-│ git clone https://github.com/cactus-compute/cactus && cd cactus              │
-│ source ./setup                                                               │
-│                                                                              │
-│ Step 2: use the commands                                                     │
-│──────────────────────────────────────────────────────────────────────────────│
-│                                                                              │
-│  cactus auth                         manage Cloud API key                    │
-│    --status                          show key status                         │
-│    --clear                           remove saved key                        │
-│                                                                              │
-│  cactus run [model]                  chat playground (gemma-4-E2B-it)        │
-│    --image <path>                    image file for VLM inference            │
-│    --audio <path>                    audio file (WAV) for audio chat         │
-│    --system <prompt>                 system prompt                           │
-│    --prompt <text>                   send prompt immediately                 │
-│    --thinking                        enable thinking/reasoning mode          │
-│    --token <token>                   HF token (gated models)                 │
-│    --reconvert                       force reconversion from source          │
-│                                                                              │
-│  cactus transcribe [model]           speech-to-text (parakeet-tdt-0.6b-v3)   │
-│    --file <audio.wav>                audio file to transcribe (required)     │
-│    --language <code>                 language code (default: en)             │
-│    --token <token>                   HF token (gated models)                 │
-│    --reconvert                       force reconversion from source          │
-│                                                                              │
-│  cactus download <model>          fetch pre-converted CQ from Cactus-Compute │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)            │
-│    --token <token>                   HuggingFace API token                   │
-│                                                                              │
-│  cactus convert <model> [dir]        convert model to CQ format              │
-│                                      (pre-converted if available, else       │
-│                                      built from source)                      │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)            │
-│    --token <token>                   HuggingFace API token                   │
-│    --reconvert                       force build from source                 │
-│                                                                              │
-│  cactus build                        build for ARM → build/libcactus.a       │
-│    --apple                           Apple (iOS/macOS)                       │
-│    --android                         Android                                 │
-│    --python                          shared lib for Python FFI               │
-│                                                                              │
-│  cactus test                         run unit tests and benchmarks           │
-│    --model <model>                   default: google/gemma-4-E2B-it          │
-│    --suite <name>                    run a specific suite (llm, vlm, stt,    │
-│                                      embed, rag, graph, index, kernel, etc.) │
-│    --token <token>                   HuggingFace API token                   │
-│    --reconvert                       force reconversion from source          │
-│    --ios                             run on connected iPhone                 │
-│    --android                         run on connected Android                │
-│                                                                              │
-│  cactus clean                        remove all build artifacts              │
-│  cactus --help                       show all commands and flags             │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                │
+│ Step 0: if on Linux (Ubuntu/Debian)                                            │
+│ sudo apt-get install python3 python3-venv python3-pip cmake                    │
+│   build-essential libcurl4-openssl-dev                                         │
+│                                                                                │
+│ Step 1: clone and setup                                                        │
+│ git clone https://github.com/cactus-compute/cactus && cd cactus                │
+│ source ./setup                                                                 │
+│                                                                                │
+│ Step 2: use the commands                                                       │
+│────────────────────────────────────────────────────────────────────────────────│
+│                                                                                │
+│  cactus auth                         manage cloud API key                      │
+│    --status                          show key status                           │
+│    --clear                           remove saved key                          │
+│                                                                                │
+│  cactus run <model|path>             run a model (downloads if needed)         │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --platform cpu|apple              target accelerator (default: cpu)         │
+│    --image <path>                    image file for VLM inference              │
+│    --audio <path>                    audio file for audio chat                 │
+│    --system <prompt>                 system prompt                             │
+│    --prompt <text>                   send prompt immediately                   │
+│    --thinking                        enable thinking/reasoning mode            │
+│    --token <token>                   HuggingFace token (gated models)          │
+│    --reconvert                       force local convert+transpile fallback    │
+│                                                                                │
+│  cactus transcribe [model]           transcribe audio with a model             │
+│    --file <audio.wav>                audio file to transcribe (required)       │
+│    --language <code>                 language code (default: en)               │
+│    --token <token>                   HuggingFace token (gated models)          │
+│    --reconvert                       force reconversion from source            │
+│                                                                                │
+│  cactus download <model>             download a pre-built bundle               │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --platform cpu|apple              target accelerator (default: cpu)         │
+│    --token <token>                   HuggingFace token                         │
+│                                                                                │
+│  cactus convert <model> [dir]        convert HuggingFace weights to CQ         │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --token <token>                   HuggingFace token                         │
+│    --reconvert                       force build from source                   │
+│    --lora <path>                     merge a LoRA adapter before converting    │
+│                                                                                │
+│  cactus transpile <model>            build a runnable bundle from CQ weights   │
+│    --weights-dir <path>              path to CQ weights (default: lookup)      │
+│    --task <auto|...>                 force task type (default: auto)           │
+│    --artifact-dir <path>             bundle output (default: weights/<model>)  │
+│                                                                                │
+│  cactus serve [model]                OpenAI-compatible local HTTP server       │
+│    --host <addr>                     bind address (default: 127.0.0.1)         │
+│    --port <port>                     port (default: 8080)                      │
+│                                                                                │
+│  cactus list                         list local converted weights and bundles  │
+│                                                                                │
+│  cactus build                        build cactus libraries                    │
+│    --apple                           Apple (iOS/macOS)                         │
+│    --android                         Android                                   │
+│    --python                          shared lib for Python FFI                 │
+│                                                                                │
+│  cactus test                         run the test suite                        │
+│    --component <name>                kernels | graph | engine | all            │
+│                                      (default: all)                            │
+│    --model <hf-id>                   default: LiquidAI/LFM2-VL-450M            │
+│    --transcription-model <hf-id>     default: openai/whisper-base              │
+│    --suite <name>                    run a single test suite (resolved         │
+│                                      across components; e.g. performance       │
+│                                      → kernels + graph, llm → engine)          │
+│    --list                            list components and suites                │
+│    --ios                             run on connected iPhone                   │
+│    --android                         run on connected Android                  │
+│    --enable-telemetry                send cloud telemetry (off by default)     │
+│                                                                                │
+│  cactus clean                        delete build artifacts                    │
+│  cactus --help                       show this help                            │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Maintaining Organisations

@@ -296,20 +296,23 @@ def _translate_tools(tools: list[Tool] | None, tool_choice) -> tuple[list[dict[s
     return translated, tool_choice == "required"
 
 
-def _make_tool_calls(function_calls: list[Any]) -> list[dict[str, Any]]:
+def _make_tool_calls(function_calls: list[Any], *, with_index: bool = False) -> list[dict[str, Any]]:
     out = []
-    for call in function_calls:
+    for i, call in enumerate(function_calls):
         if not isinstance(call, dict):
             continue
         args = call.get("arguments", {})
-        out.append({
+        entry: dict[str, Any] = {
             "id": f"call_{uuid.uuid4().hex[:24]}",
             "type": "function",
             "function": {
                 "name": call.get("name", ""),
                 "arguments": json.dumps(args) if isinstance(args, dict) else str(args),
             },
-        })
+        }
+        if with_index:
+            entry["index"] = len(out)
+        out.append(entry)
     return out
 
 
@@ -341,7 +344,6 @@ def _build_chat_response(result: dict[str, Any], model_id: str, request_id: str)
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model_id,
-        "system_fingerprint": None,
         "choices": [{
             "index": 0,
             "message": message,
@@ -391,7 +393,6 @@ async def _stream_completion(manager: ModelManager, req: ChatRequest, request_id
         "object": "chat.completion.chunk",
         "created": created,
         "model": req.model,
-        "system_fingerprint": None,
         "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "logprobs": None, "finish_reason": None}],
     })
 
@@ -405,7 +406,6 @@ async def _stream_completion(manager: ModelManager, req: ChatRequest, request_id
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": req.model,
-                "system_fingerprint": None,
                 "choices": [{"index": 0, "delta": {"content": value}, "logprobs": None, "finish_reason": None}],
             })
         elif kind == "done":
@@ -414,12 +414,23 @@ async def _stream_completion(manager: ModelManager, req: ChatRequest, request_id
 
     await task
     if error is not None:
-        yield f"event: error\ndata: {json.dumps({'error': str(error)})}\n\n"
+        # OpenAI streaming spec embeds errors in a `data:` line with an `error`
+        # object; clients (openai-python, vercel ai) parse `event:` lines as
+        # comments. We also emit a final chunk so the client gets a
+        # finish_reason before [DONE] and never hangs.
+        yield f"data: {json.dumps({'error': {'message': str(error), 'type': 'server_error'}})}\n\n"
+        yield _event({
+            "id": request_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": req.model,
+            "choices": [{"index": 0, "delta": {}, "logprobs": None, "finish_reason": "stop"}],
+        })
         yield "data: [DONE]\n\n"
         return
 
-    function_calls = result.get("function_calls") or []
-    tool_calls = _make_tool_calls(function_calls)
+    function_calls = (result or {}).get("function_calls") or []
+    tool_calls = _make_tool_calls(function_calls, with_index=True)
     finish_reason = "tool_calls" if tool_calls else "stop"
     if tool_calls:
         yield _event({
@@ -427,7 +438,6 @@ async def _stream_completion(manager: ModelManager, req: ChatRequest, request_id
             "object": "chat.completion.chunk",
             "created": created,
             "model": req.model,
-            "system_fingerprint": None,
             "choices": [{"index": 0, "delta": {"tool_calls": tool_calls}, "logprobs": None, "finish_reason": None}],
         })
     final = {
@@ -435,12 +445,11 @@ async def _stream_completion(manager: ModelManager, req: ChatRequest, request_id
         "object": "chat.completion.chunk",
         "created": created,
         "model": req.model,
-        "system_fingerprint": None,
         "choices": [{"index": 0, "delta": {}, "logprobs": None, "finish_reason": finish_reason}],
         "usage": {
-            "prompt_tokens": int(result.get("prefill_tokens") or 0),
-            "completion_tokens": int(result.get("decode_tokens") or 0),
-            "total_tokens": int(result.get("total_tokens") or 0),
+            "prompt_tokens": int((result or {}).get("prefill_tokens") or 0),
+            "completion_tokens": int((result or {}).get("decode_tokens") or 0),
+            "total_tokens": int((result or {}).get("total_tokens") or 0),
         },
     }
     yield _event(final)
@@ -591,10 +600,13 @@ def create_app(
             return {
                 "task": "transcribe",
                 "language": language or "",
-                "duration": segments[-1]["end"] if segments else 0.0,
+                "duration": float(segments[-1].get("end", 0.0)) if segments else 0.0,
                 "text": text,
                 "segments": [
-                    {"id": i, "start": seg["start"], "end": seg["end"], "text": seg["text"]}
+                    {"id": i,
+                     "start": float(seg.get("start", 0.0)),
+                     "end": float(seg.get("end", 0.0)),
+                     "text": seg.get("text", "")}
                     for i, seg in enumerate(segments)
                 ],
             }

@@ -1,6 +1,7 @@
 #include "test_utils.h"
 #include <vector>
 #include <cmath>
+#include <cstring>
 #include <random>
 
 using namespace TestUtils;

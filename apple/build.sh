@@ -1,4 +1,5 @@
-#!/bin/bash -e
+#!/bin/bash
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -32,80 +33,16 @@ echo "Vendored libcurl root: $CACTUS_CURL_ROOT"
 function cp_headers() {
     mkdir -p "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers"
     cp "$ROOT_DIR/cactus-engine/cactus_engine.h" "$ROOT_DIR/apple/$1/$2/cactus.framework/Headers/"
+    mkdir -p "$ROOT_DIR/apple/$1/$2/cactus.framework/Modules"
+    cp "$ROOT_DIR/apple/module.modulemap" "$ROOT_DIR/apple/$1/$2/cactus.framework/Modules/"
 }
 
 function create_ios_xcframework_info_plist() {
-    cat > "$ROOT_DIR/apple/cactus-ios.xcframework/Info.plist" << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>AvailableLibraries</key>
-	<array>
-		<dict>
-			<key>LibraryIdentifier</key>
-			<string>ios-arm64</string>
-			<key>LibraryPath</key>
-			<string>cactus.framework</string>
-			<key>SupportedArchitectures</key>
-			<array>
-				<string>arm64</string>
-			</array>
-			<key>SupportedPlatform</key>
-			<string>ios</string>
-		</dict>
-		<dict>
-			<key>LibraryIdentifier</key>
-			<string>ios-arm64-simulator</string>
-			<key>LibraryPath</key>
-			<string>cactus.framework</string>
-			<key>SupportedArchitectures</key>
-			<array>
-				<string>arm64</string>
-			</array>
-			<key>SupportedPlatform</key>
-			<string>ios</string>
-			<key>SupportedPlatformVariant</key>
-			<string>simulator</string>
-		</dict>
-	</array>
-	<key>CFBundlePackageType</key>
-	<string>XFWK</string>
-	<key>XCFrameworkFormatVersion</key>
-	<string>1.0</string>
-</dict>
-</plist>
-EOF
+    cp "$ROOT_DIR/apple/cactus-ios.Info.plist" "$ROOT_DIR/apple/cactus-ios.xcframework/Info.plist"
 }
 
 function create_macos_xcframework_info_plist() {
-    cat > "$ROOT_DIR/apple/cactus-macos.xcframework/Info.plist" << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>AvailableLibraries</key>
-	<array>
-		<dict>
-			<key>LibraryIdentifier</key>
-			<string>macos-arm64</string>
-			<key>LibraryPath</key>
-			<string>cactus.framework</string>
-			<key>SupportedArchitectures</key>
-			<array>
-				<string>arm64</string>
-			</array>
-			<key>SupportedPlatform</key>
-			<string>macos</string>
-		</dict>
-	</array>
-	<key>CFBundlePackageType</key>
-	<string>XFWK</string>
-	<key>XCFrameworkFormatVersion</key>
-	<string>1.0</string>
-</dict>
-</plist>
-EOF
+    cp "$ROOT_DIR/apple/cactus-macos.Info.plist" "$ROOT_DIR/apple/cactus-macos.xcframework/Info.plist"
 }
 
 function build_static_library() {
@@ -133,8 +70,8 @@ function build_static_library() {
     cmake --build "$BUILD_DIR" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
 
     mkdir -p "$APPLE_DIR"
-    cp "$BUILD_DIR/libcactus.a" "$APPLE_DIR/libcactus-device.a"
-    echo "Device static library built: $APPLE_DIR/libcactus-device.a"
+    cp "$BUILD_DIR/libcactus_engine.a" "$APPLE_DIR/libcactus_engine-device.a"
+    echo "Device static library built: $APPLE_DIR/libcactus_engine-device.a"
     
     echo "Building static library for iOS simulator..."
     BUILD_DIR_SIM="$APPLE_DIR/build-static-simulator"
@@ -159,8 +96,8 @@ function build_static_library() {
 
     cmake --build "$BUILD_DIR_SIM" --config "$CMAKE_BUILD_TYPE" -j "$n_cpu" >/dev/null
 
-    cp "$BUILD_DIR_SIM/libcactus.a" "$APPLE_DIR/libcactus-simulator.a"
-    echo "Simulator static library built: $APPLE_DIR/libcactus-simulator.a"
+    cp "$BUILD_DIR_SIM/libcactus_engine.a" "$APPLE_DIR/libcactus_engine-simulator.a"
+    echo "Simulator static library built: $APPLE_DIR/libcactus_engine-simulator.a"
 }
 
 function build_framework() {
@@ -269,8 +206,8 @@ echo "Total time: $((t1 - t0)) seconds"
 if [ "$BUILD_STATIC" = "true" ]; then
     rm -rf "$APPLE_DIR/build-static-device" "$APPLE_DIR/build-static-simulator" "$APPLE_DIR/build-static-macos"
     echo "Static libraries:"
-    echo "  Device: $APPLE_DIR/libcactus-device.a"
-    echo "  Simulator: $APPLE_DIR/libcactus-simulator.a"
+    echo "  Device: $APPLE_DIR/libcactus_engine-device.a"
+    echo "  Simulator: $APPLE_DIR/libcactus_engine-simulator.a"
 fi
 
 if [ "$BUILD_XCFRAMEWORK" = "true" ]; then

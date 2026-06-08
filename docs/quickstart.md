@@ -6,9 +6,11 @@ Install Cactus and run your first on-device AI completion.
 
 === "React Native"
 
-    ```bash
-    npm install cactus-react-native react-native-nitro-modules
-    ```
+    --8<-- "react-native/README.md:install"
+
+    ### Platform Integration
+
+    --8<-- "react-native/README.md:integration"
 
 === "Flutter"
 
@@ -20,19 +22,19 @@ Install Cactus and run your first on-device AI completion.
 
 === "Kotlin"
 
-    --8<-- "android/README.md:install"
+    --8<-- "kotlin/README.md:install"
 
     ### Platform Integration
 
-    --8<-- "android/README.md:integration"
+    --8<-- "kotlin/README.md:integration"
 
 === "Swift"
 
-    --8<-- "apple/README.md:install"
+    --8<-- "swift/README.md:install"
 
     ### Platform Integration
 
-    --8<-- "apple/README.md:integration"
+    --8<-- "swift/README.md:integration"
 
 === "Python"
 
@@ -53,14 +55,15 @@ Install Cactus and run your first on-device AI completion.
     **From Source (macOS):**
 
     ```bash
-    git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
+    brew install cmake
+    git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup && cactus build --python
     ```
 
     **From Source (Linux):**
 
     ```bash
     sudo apt-get install python3 python3-venv python3-pip cmake build-essential libcurl4-openssl-dev
-    git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup
+    git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup && cactus build --python
     ```
 
 === "C++"
@@ -68,7 +71,7 @@ Install Cactus and run your first on-device AI completion.
     Include the Cactus header in your project:
 
     ```cpp
-    #include <cactus.h>
+    #include <cactus_engine.h>
     ```
 
     See the [Cactus repository](https://github.com/cactus-compute/cactus) for CMake build instructions.
@@ -79,36 +82,7 @@ Install Cactus and run your first on-device AI completion.
 
 === "React Native"
 
-    ```tsx
-    import { useCactusLM } from 'cactus-react-native';
-
-    const App = () => {
-      const cactusLM = useCactusLM();
-
-      useEffect(() => {
-        if (!cactusLM.isDownloaded) {
-          cactusLM.download();
-        }
-      }, []);
-
-      const handleGenerate = () => {
-        cactusLM.complete({
-          messages: [{ role: 'user', content: 'What is the capital of France?' }],
-        });
-      };
-
-      if (cactusLM.isDownloading) {
-        return <Text>Downloading: {Math.round(cactusLM.downloadProgress * 100)}%</Text>;
-      }
-
-      return (
-        <>
-          <Button onPress={handleGenerate} title="Generate" />
-          <Text>{cactusLM.completion}</Text>
-        </>
-      );
-    };
-    ```
+    --8<-- "react-native/README.md:example"
 
 === "Flutter"
 
@@ -116,11 +90,11 @@ Install Cactus and run your first on-device AI completion.
 
 === "Kotlin"
 
-    --8<-- "android/README.md:example"
+    --8<-- "kotlin/README.md:example"
 
 === "Swift"
 
-    --8<-- "apple/README.md:example"
+    --8<-- "swift/README.md:example"
 
 === "Python"
 
@@ -129,40 +103,45 @@ Install Cactus and run your first on-device AI completion.
 === "Rust"
 
     ```rust
-    use cactus_sys::*;
     use std::ffi::CString;
+    use std::os::raw::c_char;
 
-    unsafe {
-        let model_path = CString::new("path/to/weight/folder").unwrap();
-        let model = cactus_init(model_path.as_ptr(), std::ptr::null(), false);
+    mod cactus;
 
-        let messages = CString::new(
-            r#"[{"role": "user", "content": "What is the capital of France?"}]"#
-        ).unwrap();
+    fn main() {
+        unsafe {
+            let model_path = CString::new("path/to/weight/folder").unwrap();
+            let model = cactus::cactus_init(model_path.as_ptr(), std::ptr::null(), false);
 
-        let mut response = vec![0u8; 4096];
-        cactus_complete(
-            model, messages.as_ptr(),
-            response.as_mut_ptr() as *mut i8, 4096,
-            std::ptr::null(), std::ptr::null(),
-            None, std::ptr::null_mut(),
-        );
+            let messages = CString::new(
+                r#"[{"role": "user", "content": "What is the capital of France?"}]"#
+            ).unwrap();
 
-        println!("{}", String::from_utf8_lossy(&response));
-        cactus_destroy(model);
+            let mut response = vec![0u8; 4096];
+            cactus::cactus_complete(
+                model, messages.as_ptr(),
+                response.as_mut_ptr() as *mut c_char, response.len(),
+                std::ptr::null(), std::ptr::null(),
+                None, std::ptr::null_mut(),
+                std::ptr::null(), 0,
+            );
+
+            println!("{}", String::from_utf8_lossy(&response));
+            cactus::cactus_destroy(model);
+        }
     }
     ```
 
 === "CLI"
 
     ```bash
-    cactus run <model-name>
+    cactus run <model|path>
     ```
 
 === "C++"
 
     ```cpp
-    #include <cactus.h>
+    #include <cactus_engine.h>
 
     cactus_model_t model = cactus_init(
         "path/to/weight/folder",

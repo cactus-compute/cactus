@@ -31,7 +31,7 @@ void cactus_add_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t n);
 void cactus_subtract_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t n);
 void cactus_multiply_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t n);
 void cactus_divide_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t n);
-void cactus_add_clipped_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t n);
+void cactus_add_f16_clipped(const __fp16* a, const __fp16* b, __fp16* output, size_t n);
 void cactus_add_scaled_f16(const __fp16* base, const __fp16* src, __fp16* output, size_t n, float scale);
 ```
 
@@ -156,7 +156,7 @@ void cactus_attention_f16(
     size_t batch_size, size_t seq_len, size_t kv_seq_len,
     size_t num_q_heads, size_t num_kv_heads, size_t head_dim,
     float scale,
-    const __fp16* mask = nullptr,
+    const __fp16* mask,
     size_t position_offset = 0,
     size_t window_size = 0,       // 0 = full context, >0 = sliding window
     bool is_causal = true,
@@ -431,30 +431,39 @@ void cactus_gaussian_topk_f16(const __fp16* input, __fp16* output,
 
 ```
 cactus-kernels/
-  cactus_kernels.h       # public API (this file)
-  threading.h            # thread pool utilities
+  cactus_kernels.h          # public API (this file)
   libs/
-    stb_image.h          # vendored image loading
-    stb_image_resize2.h  # vendored image resizing
+    stb_image.h             # vendored image loading
+    stb_image_resize2.h     # vendored image resizing
   src/
-    arithmetic.cpp       # element-wise ops, broadcast, reductions
-    matmul.cpp           # FP16 GEMM
-    quant.cpp            # CQ 1-4 bit GEMV/GEMM, dequantization
-    attention.cpp        # attention kernels (FP16, hybrid INT8/FP16)
-    activations.cpp      # relu, silu, gelu, sigmoid, tanh, glu, clamp
-    norm.cpp             # rms_norm, layer_norm, batchnorm, softmax
-    conv.cpp             # conv1d, conv2d variants
-    sample.cpp           # top-k/top-p/min-p sampling
-    dsp.cpp              # rfft, irfft, mel filter bank, spectrogram
-    image.cpp            # image load/resize/normalize/patches
-    rope.cpp             # rotary position embedding
-    transpose.cpp        # 2D and N-D transpose
-    lstm.cpp             # LSTM cell, BiLSTM sequence
-    deltanet.cpp         # gated DeltaNet decode/prefill
-    wav.h                # WAV file loading + 16kHz resampling
+    threading.h             # thread pool utilities
+    wav.h                   # WAV file loading + 16 kHz resampling
+    attention.cpp           # attention kernels (FP16)
+    attention_hybrid.cpp    # hybrid INT8/FP16 attention
+    blas.cpp                # BLAS-backed paths
+    conv.cpp                # conv1d variants
+    conv2d.cpp              # conv2d variants
+    dsp.cpp                 # rfft, irfft, mel filter bank, spectrogram, STFT
+    fused.cpp               # fused op kernels
+    image.cpp               # image load/resize/normalize/patches
+    lstm.cpp                # LSTM cell, BiLSTM sequence
+    matmul.cpp              # FP16/INT8 GEMM
+    nn.cpp                  # activations (relu/silu/gelu/...), glu, clamp
+    norms_rope.cpp          # rms_norm, layer_norm, RoPE
+    quants.cpp              # CQ 1-4 bit GEMV/GEMM, dequantization
+    reduce.cpp              # reductions (sum/mean/var/min/max + axis variants)
+    scalar.cpp              # scalar elementwise ops
   tests/
-    test_kernels.cpp     # 36 tests across 7 suites
-    test_utils.h         # test runner, fp16 comparison helpers
+    test_utils.h            # test runner, fp16 comparison helpers
+    test_attention.cpp
+    test_conv.cpp
+    test_dsp.cpp
+    test_elementwise.cpp
+    test_matmul.cpp
+    test_performance.cpp    # perf benchmarks (run via `cactus test --suite performance`)
+    test_quant.cpp
+    test_reduce.cpp
+    android/                # on-device test runner for Android
 ```
 
 ## See Also

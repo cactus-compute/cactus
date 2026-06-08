@@ -6,7 +6,11 @@ on:
     paths:
       - docs/**
       - blog/**
+      - assets/**
       - mkdocs.yml
+      - CACTUS_VERSION
+      - CONTRIBUTING.md
+      - DCO.md
       - .github/assemble-docs.sh
       - .github/docs-overrides/**
       - .github/workflows/docs.yml
@@ -14,7 +18,10 @@ on:
       - apple/README.md
       - android/README.md
       - bindings/flutter/README.md
+      - bindings/kotlin/README.md
+      - bindings/react-native/README.md
       - bindings/rust/README.md
+      - bindings/swift/README.md
       - README.md
   workflow_call:
     inputs:
@@ -23,9 +30,17 @@ on:
         required: false
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
@@ -36,7 +51,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: pip install "mkdocs==1.6.1" "mkdocs-material==9.7.5" "mike==2.1.4"

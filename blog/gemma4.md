@@ -126,16 +126,16 @@ Cactus supports React Native, Flutter, Swift, Kotlin, Python, Rust, and C++. Pic
 
 | Platform | Binding | Install |
 |---|---|---|
-| React Native | [cactus-react-native](https://github.com/cactus-compute/cactus-react-native) | `npm install cactus-react-native` |
-| Flutter | [cactus-flutter](https://cactus.dev/flutter/) | Dart FFI bindings |
-| Swift (iOS/macOS) | [cactus-swift](https://cactus.dev/swift/) | XCFramework with NPU support |
-| Kotlin (Android) | [cactus-kotlin](https://cactus.dev/kotlin/) | JNI + Kotlin Multiplatform |
-| Python | [cactus-ai](https://cactus.dev/python/) | `pip install cactus-ai` |
-| Rust | [cactus-sys](https://cactus.dev/rust/) | `cargo add cactus-sys` |
-| C++ | [cactus.h](https://cactus.dev/docs/cactus_engine/) | Single header, link `libcactus.a` |
+| React Native | [React Native bindings](/bindings/react-native/) | Native bridge over the C API |
+| Flutter | [cactus-flutter](/bindings/flutter/) | Dart FFI bindings |
+| Swift (iOS/macOS) | [cactus-swift](/bindings/swift/) | XCFramework with NPU support |
+| Kotlin (Android) | [cactus-kotlin](/bindings/kotlin/) | JNI + Kotlin Multiplatform |
+| Python | [cactus-compute](/python/) | `pip install cactus-compute` |
+| Rust | [Rust bindings](/bindings/rust/) | Copy `cactus.rs`, link `libcactus_engine.a` |
+| C++ | [cactus.h](/docs/cactus_engine.md) | Single header, link `libcactus_engine.a` |
 
-Full quickstart with code examples for every binding: [cactus.dev/docs/quickstart](https://cactus.dev/docs/quickstart/)
+Full quickstart with code examples for every binding: [Quickstart](/docs/quickstart.md)
 
-Pre-quantized weights for Gemma 4 and 30+ other models: [huggingface.co/cactus-compute](https://huggingface.co/cactus-compute)
+Pre-quantized weights for Gemma 4 and 30+ other models: [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute)
 
 If you're building something with on-device multimodal AI (voice agents, VR interfaces, local-first apps) we want to hear about it. Open an issue on [GitHub](https://github.com/cactus-compute/cactus), or just start building.

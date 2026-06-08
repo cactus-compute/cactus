@@ -94,6 +94,21 @@ bool test_transpose_2d_f16() {
     return true;
 }
 
+bool test_fast_tanh_f32x4() {
+    constexpr float TOL = 1e-5f;
+    for (int i = -10000; i <= 10000; ++i) {
+        float x = 0.001f * static_cast<float>(i);
+        float32x4_t r = fast_tanh_f32x4(vdupq_n_f32(x));
+        float lanes[4];
+        vst1q_f32(lanes, r);
+        float want = std::tanh(x);
+        for (int k = 0; k < 4; ++k) {
+            if (std::fabs(lanes[k] - want) > TOL) return false;
+        }
+    }
+    return true;
+}
+
 bool run_benchmarks() {
     auto bench_binary = [](const char* label, void(*fn)(const __fp16*, const __fp16*, __fp16*, size_t)) {
         const size_t n = 1024 * 1024;
@@ -168,6 +183,7 @@ int main() {
     runner.run_test("add_clipped_f16", test_add_clipped_f16());
     runner.run_test("scalar_ops_f16", test_scalar_ops_f16());
     runner.run_test("transpose_2d_f16", test_transpose_2d_f16());
+    runner.run_test("fast_tanh_f32x4", test_fast_tanh_f32x4());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

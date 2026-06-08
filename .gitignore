@@ -1,11 +1,8 @@
 **/build/
-**/build_inc/
 *.a
 *.so
 *.dylib
 *.bin
-*.gguf
-*.npy
 *.cg
 
 !cactus-engine/libs/curl/**/*.a
@@ -13,40 +10,21 @@
 
 apple/build-*/
 apple/*.xcframework
-apple/libcactus*.a
-android/libcactus.so
-android/libcactus.a
-android/libs/
-android/arm64-v8a/
-bindings/flutter/libcactus.so
-bindings/flutter/*.xcframework
 
 .claude
 .vscode
 .DS_Store
 
-__pycache__
 __pycache__/
 *.pyc
 *.egg-info
+.pytest_cache/
 venv
 
 weights/
-stage/
+transpiled/
 python/dist/
 python/cactus/bin/
 python/cactus/bindings/lib/
-.cache/
-tmp
 site/
 site_docs/
-
-notes.txt
-profile.txt
-*_profile.txt
-tests/plan.md
-tests/assets/test_wav_info.txt
-vision_activations.json
-gemma-4-eap-extras/
-.githooks/
-ruy

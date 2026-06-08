@@ -1,5 +1,4 @@
 framework module cactus {
-    umbrella header "cactus_ffi.h"
+    header "cactus_engine.h"
     export *
-    module * { export * }
 }

@@ -26,11 +26,11 @@ class VisionEncoderWrapper(torch.nn.Module):
 def _import_coremltools() -> Any:
     try:
         import coremltools as ct
-        from .coremltools_patches import apply_all_coremltools_patches
-        apply_all_coremltools_patches()
-        return ct
-    except Exception:
-        return None
+    except ImportError as exc:
+        raise RuntimeError("--npu requires `pip install coremltools`") from exc
+    from .coremltools_patches import apply_all_coremltools_patches
+    apply_all_coremltools_patches()
+    return ct
 
 
 def _apply_weight_quantization(mlmodel: Any, bits: int) -> Any:
@@ -65,9 +65,6 @@ def emit_vision_encoder_mlpackage(
     quantize_bits: int | None = None,
 ) -> str | None:
     ct = _import_coremltools()
-    if ct is None:
-        print("npu.vision: coremltools not installed; skipping mlpackage emit")
-        return None
 
     wrapper = VisionEncoderWrapper(vision_module, baked_inputs)
     wrapper.eval()

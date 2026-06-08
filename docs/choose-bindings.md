@@ -6,8 +6,8 @@ Pick the right one for your platform and use case:
 
 |  | React Native | Flutter | Kotlin | Swift | Python | Rust | CLI | C++ |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **Platforms** | iOS, Android | iOS, Android, macOS | Android, iOS (KMP) | iOS, macOS | Arm Linux, macOS | All | macOS, Linux | All |
-| **Install** | npm | build | build | build | build | cargo | brew / source | header |
+| **Platforms** | iOS, Android | iOS, Android, macOS | Android, iOS (KMP) | iOS, macOS | Arm Linux, macOS | Arm Linux, macOS | macOS, Arm Linux | Arm Linux, macOS, iOS, Android |
+| **Install** | build / source | build | build | build | pip | build / source | brew / source | header |
 | **LLM** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **Streaming** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **Vision** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
@@ -35,12 +35,12 @@ Pick the right one for your platform and use case:
 
 ## Binding Documentation
 
-- **[React Native](https://github.com/cactus-compute/cactus-react-native)** -- npm package with React hooks (`useCactusLM`)
+- **[React Native](/bindings/react-native/)** -- Native bridge modules over the C API for iOS and Android
 - **[Python](/python/)** -- Module-level FFI bindings, mirrors the C API
 - **[Swift](/bindings/swift/)** -- XCFramework for iOS/macOS with NPU support
 - **[Kotlin](/bindings/kotlin/)** -- JNI bindings + Kotlin Multiplatform support
-- **[Flutter](/flutter/)** -- Dart FFI bindings for Android, iOS, and macOS
-- **[Rust](/rust/)** -- Auto-generated FFI bindings via bindgen
+- **[Flutter](/bindings/flutter/)** -- Dart FFI bindings for Android, iOS, and macOS
+- **[Rust](/bindings/rust/)** -- Raw `extern "C"` FFI declarations
 - **[C++ / Engine API](/docs/cactus_engine.md)** -- Direct C FFI for maximum control
 
 ## Getting Started

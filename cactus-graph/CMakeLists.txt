@@ -23,6 +23,8 @@ add_library(cactus_graph STATIC
     src/ops_cache.cpp
     src/ops_dsp.cpp
     src/ops_image.cpp
+    src/graph_ffi.cpp
+    src/last_error.cpp
 )
 
 set_target_properties(cactus_graph PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -40,7 +42,7 @@ target_compile_options(cactus_graph PRIVATE
     $<$<CXX_COMPILER_ID:GNU>:-Wno-pedantic>
 )
 
-if(BUILD_TESTING OR CACTUS_BUILD_TESTS)
+if((BUILD_TESTING OR CACTUS_BUILD_TESTS) AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     file(GLOB TEST_SOURCES "tests/test_*.cpp")
     foreach(TEST_SRC ${TEST_SOURCES})
         get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)

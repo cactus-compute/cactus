@@ -2959,7 +2959,7 @@ def main() -> int:
         default=32,
         help=(
             "For causal_lm_logits bundles, preallocate prompt-plus-generation context "
-            "so run-transpiled can do greedy autoregressive decoding."
+            "so the saved bundle can do greedy autoregressive decoding."
         ),
     )
     parser.add_argument(

@@ -34,21 +34,19 @@ def _patched_cdll_getattr(self: ctypes.CDLL, name: str):
         return missing
 
 
-def _load_runtime_modules():
-    if "cactus.bindings.cactus" in sys.modules and "cactus.bindings.graph" in sys.modules:
-        return sys.modules["cactus.bindings.cactus"], sys.modules["cactus.bindings.graph"]
+def _load_runtime_module():
+    if "cactus.bindings.cactus" in sys.modules:
+        return sys.modules["cactus.bindings.cactus"]
 
     ctypes.CDLL.__getattr__ = _patched_cdll_getattr
     try:
-        cactus_module = importlib.import_module("cactus.bindings.cactus")
-        graph_module = importlib.import_module("cactus.bindings.graph")
+        return importlib.import_module("cactus.bindings.cactus")
     finally:
         ctypes.CDLL.__getattr__ = _ORIG_CDLL_GETATTR
-    return cactus_module, graph_module
 
 
-def _patch_graph_runtime(graph_module, cactus_module) -> None:
-    Graph = graph_module.Graph
+def _patch_graph_runtime(cactus_module) -> None:
+    Graph = cactus_module.Graph
     if getattr(Graph, "_transpile_runtime_compat_patched", False):
         return
 
@@ -345,7 +343,7 @@ def _patch_graph_runtime(graph_module, cactus_module) -> None:
     Graph._transpile_runtime_compat_patched = True
 
 
-_cactus_module, _graph_module = _load_runtime_modules()
+_cactus_module = _load_runtime_module()
 
 if hasattr(_cactus_module, "_lib"):
     _lib_obj = _cactus_module._lib
@@ -368,11 +366,11 @@ if hasattr(_cactus_module, "_lib"):
         ]
         _lib_obj.cactus_graph_gather.restype = ctypes.c_int
 
-_patch_graph_runtime(_graph_module, _cactus_module)
+_patch_graph_runtime(_cactus_module)
 
 _lib = _cactus_module._lib
 _err = _cactus_module._err
 cactus_node_t = _cactus_module.cactus_node_t
 cactus_tensor_info_t = _cactus_module.cactus_tensor_info_t
-Graph = _graph_module.Graph
-Tensor = _graph_module.Tensor
+Graph = _cactus_module.Graph
+Tensor = _cactus_module.Tensor

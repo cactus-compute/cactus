@@ -1,13 +1,7 @@
 from pathlib import Path
 
-from .common import BLUE, GREEN, RED, PROJECT_ROOT, is_repo_checkout, print_color
+from .common import BLUE, GREEN, RED, YELLOW, print_color, weights_root
 from .download import get_weights_dir
-
-
-def _weights_root() -> Path:
-    if is_repo_checkout():
-        return PROJECT_ROOT / "weights"
-    return Path.home() / ".cache" / "cactus" / "weights"
 
 
 def _resolve_model_arg(model: str | None) -> tuple[Path | None, str | None]:
@@ -16,7 +10,7 @@ def _resolve_model_arg(model: str | None) -> tuple[Path | None, str | None]:
     path = Path(model).expanduser()
     if path.is_dir():
         return path, path.name
-    candidate = _weights_root() / model
+    candidate = weights_root() / model
     if candidate.is_dir():
         return candidate, candidate.name
     hf_candidate = get_weights_dir(model)
@@ -34,7 +28,7 @@ def cmd_serve(args):
     model_path, model_name = _resolve_model_arg(args.model)
     if args.model and model_path is None:
         print_color(RED, f"Error: model not found: {args.model}")
-        print("Prepare a v2 bundle first with `cactus run <model>` or `cactus convert <model>`.")
+        print("Prepare a v2 bundle first with `cactus run <model>` (or `cactus convert <model>` then `cactus transpile <model>`).")
         return 1
     if model_path is not None and not _is_valid_bundle(model_path):
         print_color(RED, f"Error: not a valid v2 Cactus bundle: {model_path}")
@@ -55,17 +49,19 @@ def cmd_serve(args):
 
     try:
         application = create_app(
-            weights_root=_weights_root(),
+            weights_root=weights_root(),
             model_path=model_path,
             default_model=model_name,
         )
     except RuntimeError as exc:
         print_color(RED, f"Error: {exc}")
-        print("Prepare a v2 bundle first with `cactus run <model>` or `cactus convert <model>`.")
+        print("Prepare a v2 bundle first with `cactus run <model>` (or `cactus convert <model>` then `cactus transpile <model>`).")
         return 1
 
     models = sorted(application.state.registry.models)
     print_color(GREEN, f"Available models: {', '.join(models)}")
+    if args.host not in {"127.0.0.1", "localhost", "::1"}:
+        print_color(YELLOW, f"Warning: binding to {args.host} exposes the server beyond loopback; no auth is enforced.")
     print_color(BLUE, f"Starting server on {args.host}:{args.port}")
     uvicorn.run(application, host=args.host, port=args.port, log_level="info")
     return 0
