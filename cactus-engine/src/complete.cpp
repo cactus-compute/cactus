@@ -14,7 +14,6 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -98,7 +97,7 @@ void strip_thinking_from_cache(CactusModelHandle* handle,
 }
 
 void setup_tool_constraints(CactusModelHandle* handle, const std::vector<ToolFunction>& tools,
-                            bool force_tools, float& temperature) {
+                           bool force_tools, float& temperature) {
     if (!force_tools || tools.empty()) return;
 
     handle->model->set_tool_constraints(build_tool_constraint_specs(tools));
@@ -234,10 +233,7 @@ std::vector<std::string> extract_schema_required(const std::string& schema) {
     return required;
 }
 
-std::string serialize_needle_tools(const std::vector<ToolFunction>& tools,
-                                   const char* raw_tools_json) {
-    (void)raw_tools_json;
-
+std::string serialize_needle_tools(const std::vector<ToolFunction>& tools) {
     if (tools.empty()) return "[]";
 
     std::ostringstream oss;
@@ -413,6 +409,7 @@ struct PreparedPrompt {
 
     std::vector<std::vector<float>> audio_features;
     size_t audio_num_frames = 0;
+
     bool has_images() const {
         return std::any_of(images.begin(), images.end(),
             [](const auto& msg_imgs) { return !msg_imgs.empty(); });
@@ -589,7 +586,7 @@ PreparedPrompt prepare_prompt(
 
     std::string formatted_tools;
     if (prompt.model_type == Config::ModelType::NEEDLE) {
-        formatted_tools = serialize_needle_tools(prompt.tools, tools_json);
+        formatted_tools = serialize_needle_tools(prompt.tools);
     } else {
         formatted_tools = gemma::format_tools(prompt.tools, true);
     }

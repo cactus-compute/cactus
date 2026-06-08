@@ -4829,7 +4829,7 @@ def _family_key(model: torch.nn.Module) -> str:
         return "lfm2_moe"
     if module_name.startswith("transformers.models.lfm2."):
         return "lfm2"
-    model_type = str(getattr(getattr(model, "config", None), "model_type", "") or "").strip().lower()
+    model_type = str(getattr(getattr(model, "config", None), "model_type", "") or "").lower()
     if model_type == "needle":
         return "needle"
     if "nomic" in module_name.lower() or "nomic" in model_type:
@@ -4859,7 +4859,6 @@ def _component_spec(
     family: str,
     task: str,
     graph_meta: dict[str, object] | None = None,
-    metadata: dict[str, object] | None = None,
     runtime_role: str | None = None,
     source_kind: str | None = None,
 ) -> ComponentModuleSpec:
@@ -4869,8 +4868,6 @@ def _component_spec(
         component_metadata["runtime_role"] = runtime_role
     if source_kind is not None:
         component_metadata["source_kind"] = source_kind
-    if metadata:
-        component_metadata.update(metadata)
     return ComponentModuleSpec(
         component=component,
         module=module,
@@ -4901,7 +4898,6 @@ def _encoder_cross_kv_step_specs(
     family: str,
     task: str,
     max_cache_seq_len: int,
-    cache_sink_size: int = 0,
     decoder_step_graph_meta: dict[str, object] | None = None,
 ) -> list[ComponentModuleSpec]:
     return [
@@ -4940,7 +4936,7 @@ def _encoder_cross_kv_step_specs(
             graph_meta={
                 "use_internal_kv_cache": True,
                 "max_cache_seq_len": max_cache_seq_len,
-                "cache_sink_size": cache_sink_size,
+                "cache_sink_size": 0,
                 **(decoder_step_graph_meta or {}),
             },
             runtime_role="decoder_step",
@@ -5048,7 +5044,6 @@ def _build_needle_causal_lm_component_specs(
     *,
     named_tensors: dict[str, torch.Tensor],
     weights_dir: str | None = None,
-    components: tuple[str, ...] | None = None,
 ) -> list[ComponentModuleSpec] | None:
     input_ids = named_tensors.get("input_ids")
     if input_ids is None:
@@ -5093,7 +5088,6 @@ def _build_needle_causal_lm_component_specs(
     if weights_dir:
         common_graph_meta["weights_dir"] = weights_dir
 
-    del components
     return _encoder_cross_kv_step_specs(
         source_component="source_encoder",
         source_module=source_encoder,
@@ -5509,7 +5503,6 @@ def build_component_module_specs(
             model,
             named_tensors=named_tensors,
             weights_dir=weights_dir,
-            components=components,
         )
     if family == "parakeet_tdt" and task == "tdt_transcription":
         from cactus.transpile.tdt_runtime import build_parakeet_tdt_component_specs

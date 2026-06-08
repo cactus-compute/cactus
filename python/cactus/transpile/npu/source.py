@@ -6,8 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .audio import _apply_weight_quantization
-from .audio import _import_coremltools
+from .audio import _apply_weight_quantization, _import_coremltools
 
 
 class SourceEncoderWrapper(torch.nn.Module):
@@ -42,9 +41,6 @@ def emit_source_encoder_mlpackage(
     quantize_bits: int | None = None,
 ) -> str | None:
     ct = _import_coremltools()
-    if ct is None:
-        print("npu.source: coremltools not installed; skipping mlpackage emit")
-        return None
     if not example_inputs:
         print("npu.source: source_encoder spec has no example inputs; skipping")
         return None
