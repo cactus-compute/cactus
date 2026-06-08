@@ -15,6 +15,14 @@ bool use_fp16_kv_cache_for_builder() {
 
 } // namespace
 
+size_t CactusGraph::attach_conv_bias(size_t node, size_t bias, size_t expected_size, const char* op_name) {
+    const auto& b = get_output_buffer(bias);
+    if (b.total_size != expected_size)
+        throw std::runtime_error(std::string(op_name) + " bias size mismatch");
+    nodes_[node_index_map_[node]]->input_ids.push_back(bias);
+    return node;
+}
+
 size_t CactusGraph::input(const std::vector<size_t>& shape, Precision precision) {
     return add_node(OpType::INPUT, {}, shape, {.output_precision = precision});
 }
@@ -631,12 +639,7 @@ size_t CactusGraph::conv1d_same_depthwise_k9(size_t input, size_t weight) {
 
 size_t CactusGraph::conv1d_same_depthwise_k9(size_t input, size_t weight, size_t bias) {
     size_t node = conv1d_same_depthwise_k9(input, weight);
-    const auto& b = get_output_buffer(bias);
-    if (b.total_size != get_output_buffer(input).shape[2])
-        throw std::runtime_error("conv1d_same_depthwise_k9 bias size mismatch");
-    auto& n = *nodes_[node_index_map_[node]];
-    n.input_ids.push_back(bias);
-    return node;
+    return attach_conv_bias(node, bias, get_output_buffer(input).shape[2], "conv1d_same_depthwise_k9");
 }
 
 size_t CactusGraph::conv1d_pointwise(size_t input, size_t weight) {
@@ -659,12 +662,7 @@ size_t CactusGraph::conv1d_pointwise(size_t input, size_t weight) {
 
 size_t CactusGraph::conv1d_pointwise(size_t input, size_t weight, size_t bias) {
     size_t node = conv1d_pointwise(input, weight);
-    const auto& b = get_output_buffer(bias);
-    if (b.total_size != get_output_buffer(node).shape[2])
-        throw std::runtime_error("conv1d_pointwise bias size mismatch");
-    auto& n = *nodes_[node_index_map_[node]];
-    n.input_ids.push_back(bias);
-    return node;
+    return attach_conv_bias(node, bias, get_output_buffer(node).shape[2], "conv1d_pointwise");
 }
 
 size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight) {
@@ -701,11 +699,7 @@ size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight) {
 
 size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight, size_t bias) {
     size_t node = conv2d_k3s2p1(input, weight);
-    const auto& b = get_output_buffer(bias);
-    if (b.total_size != get_output_buffer(node).shape[1])
-        throw std::runtime_error("conv2d_k3s2p1 bias size mismatch");
-    nodes_[node_index_map_[node]]->input_ids.push_back(bias);
-    return node;
+    return attach_conv_bias(node, bias, get_output_buffer(node).shape[1], "conv2d_k3s2p1");
 }
 
 size_t CactusGraph::conv2d_depthwise_k3s2p1(size_t input, size_t weight) {
@@ -746,11 +740,7 @@ size_t CactusGraph::conv2d_depthwise_k3s2p1(size_t input, size_t weight) {
 
 size_t CactusGraph::conv2d_depthwise_k3s2p1(size_t input, size_t weight, size_t bias) {
     size_t node = conv2d_depthwise_k3s2p1(input, weight);
-    const auto& b = get_output_buffer(bias);
-    if (b.total_size != get_output_buffer(node).shape[1])
-        throw std::runtime_error("conv2d_depthwise_k3s2p1 bias size mismatch");
-    nodes_[node_index_map_[node]]->input_ids.push_back(bias);
-    return node;
+    return attach_conv_bias(node, bias, get_output_buffer(node).shape[1], "conv2d_depthwise_k3s2p1");
 }
 
 size_t CactusGraph::conv2d_pointwise_1x1(size_t input, size_t weight) {
@@ -792,11 +782,7 @@ size_t CactusGraph::conv2d_pointwise_1x1(size_t input, size_t weight) {
 
 size_t CactusGraph::conv2d_pointwise_1x1(size_t input, size_t weight, size_t bias) {
     size_t node = conv2d_pointwise_1x1(input, weight);
-    const auto& b = get_output_buffer(bias);
-    if (b.total_size != get_output_buffer(node).shape[1])
-        throw std::runtime_error("conv2d_pointwise_1x1 bias size mismatch");
-    nodes_[node_index_map_[node]]->input_ids.push_back(bias);
-    return node;
+    return attach_conv_bias(node, bias, get_output_buffer(node).shape[1], "conv2d_pointwise_1x1");
 }
 
 size_t CactusGraph::lstm_cell(size_t input, size_t h_prev, size_t c_prev, size_t weight_ih, size_t weight_hh, size_t bias_ih, size_t bias_hh) {
@@ -1383,11 +1369,7 @@ size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight) {
 
 size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight, size_t bias) {
     size_t node = conv2d_k3s1p1(input, weight);
-    const auto& b = get_output_buffer(bias);
-    if (b.total_size != get_output_buffer(node).shape[1])
-        throw std::runtime_error("conv2d_k3s1p1 bias size mismatch");
-    nodes_[node_index_map_[node]]->input_ids.push_back(bias);
-    return node;
+    return attach_conv_bias(node, bias, get_output_buffer(node).shape[1], "conv2d_k3s1p1");
 }
 
 size_t CactusGraph::stats_pool(size_t input) {

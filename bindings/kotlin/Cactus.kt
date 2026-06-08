@@ -2,7 +2,7 @@ package com.cactus
 
 object CactusJNI {
     init {
-        System.loadLibrary("cactus")
+        System.loadLibrary("cactus_engine")
     }
 
     @JvmStatic external fun nativeInit(modelPath: String, corpusDir: String?, cacheIndex: Boolean): Long

@@ -49,31 +49,19 @@ void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
         [&](size_t start_idx, size_t end_idx) {
             constexpr size_t SIMD_WIDTH = 8;
             const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
-            const float32x4_t one_f32 = vdupq_n_f32(1.0f);
 
             for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                 float16x8_t x = vld1q_f16(&input[i]);
-
                 float32x4_t x_low = vcvt_f32_f16(vget_low_f16(x));
                 float32x4_t x_high = vcvt_f32_f16(vget_high_f16(x));
-
-                float32x4_t exp_low = fast_exp_f32x4(vnegq_f32(x_low));
-                float32x4_t exp_high = fast_exp_f32x4(vnegq_f32(x_high));
-
-                float32x4_t sigmoid_low = vdivq_f32(one_f32, vaddq_f32(one_f32, exp_low));
-                float32x4_t sigmoid_high = vdivq_f32(one_f32, vaddq_f32(one_f32, exp_high));
-
-                float32x4_t silu_low = vmulq_f32(x_low, sigmoid_low);
-                float32x4_t silu_high = vmulq_f32(x_high, sigmoid_high);
-
-                float16x8_t silu = vcombine_f16(vcvt_f16_f32(silu_low), vcvt_f16_f32(silu_high));
-                vst1q_f16(&output[i], silu);
+                float32x4_t silu_low = vmulq_f32(x_low, fast_sigmoid_f32x4(x_low));
+                float32x4_t silu_high = vmulq_f32(x_high, fast_sigmoid_f32x4(x_high));
+                vst1q_f16(&output[i], vcombine_f16(vcvt_f16_f32(silu_low), vcvt_f16_f32(silu_high)));
             }
 
             for (size_t i = vectorized_end; i < end_idx; ++i) {
                 float x_f32 = static_cast<float>(input[i]);
-                float sigmoid = 1.0f / (1.0f + expf(-x_f32));
-                output[i] = static_cast<__fp16>(x_f32 * sigmoid);
+                output[i] = static_cast<__fp16>(x_f32 / (1.0f + expf(-x_f32)));
             }
         });
 }
@@ -189,28 +177,17 @@ void cactus_sigmoid_f16(const __fp16* input, __fp16* output, size_t num_elements
         [&](size_t start_idx, size_t end_idx) {
             constexpr size_t SIMD_WIDTH = 8;
             const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
-            const float32x4_t one_f32 = vdupq_n_f32(1.0f);
 
             for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
                 float16x8_t x = vld1q_f16(&input[i]);
-
-                float32x4_t x_low = vcvt_f32_f16(vget_low_f16(x));
-                float32x4_t x_high = vcvt_f32_f16(vget_high_f16(x));
-
-                float32x4_t exp_low = fast_exp_f32x4(vnegq_f32(x_low));
-                float32x4_t exp_high = fast_exp_f32x4(vnegq_f32(x_high));
-
-                float32x4_t sigmoid_low = vdivq_f32(one_f32, vaddq_f32(one_f32, exp_low));
-                float32x4_t sigmoid_high = vdivq_f32(one_f32, vaddq_f32(one_f32, exp_high));
-
-                float16x8_t sigmoid = vcombine_f16(vcvt_f16_f32(sigmoid_low), vcvt_f16_f32(sigmoid_high));
-                vst1q_f16(&output[i], sigmoid);
+                float32x4_t s_low = fast_sigmoid_f32x4(vcvt_f32_f16(vget_low_f16(x)));
+                float32x4_t s_high = fast_sigmoid_f32x4(vcvt_f32_f16(vget_high_f16(x)));
+                vst1q_f16(&output[i], vcombine_f16(vcvt_f16_f32(s_low), vcvt_f16_f32(s_high)));
             }
 
             for (size_t i = vectorized_end; i < end_idx; ++i) {
                 float x_f32 = static_cast<float>(input[i]);
-                float sigmoid = 1.0f / (1.0f + expf(-x_f32));
-                output[i] = static_cast<__fp16>(sigmoid);
+                output[i] = static_cast<__fp16>(1.0f / (1.0f + expf(-x_f32)));
             }
         });
 }
@@ -255,8 +232,6 @@ void cactus_glu_f16(
 
     CactusThreading::parallel_for(rows, CactusThreading::Thresholds::ELEMENT_WISE,
         [&](size_t row_start, size_t row_end) {
-            const float32x4_t one = vdupq_n_f32(1.0f);
-
             for (size_t row = row_start; row < row_end; ++row) {
                 const size_t outer_idx = row / split_size;
                 const size_t split_idx = row - outer_idx * split_size;
@@ -274,16 +249,9 @@ void cactus_glu_f16(
 
                     const float32x4_t a_lo = vcvt_f32_f16(vget_low_f16(av));
                     const float32x4_t a_hi = vcvt_f32_f16(vget_high_f16(av));
-                    const float32x4_t b_lo = vcvt_f32_f16(vget_low_f16(bv));
-                    const float32x4_t b_hi = vcvt_f32_f16(vget_high_f16(bv));
 
-                    const float32x4_t exp_lo = fast_exp_f32x4(vnegq_f32(b_lo));
-                    const float32x4_t exp_hi = fast_exp_f32x4(vnegq_f32(b_hi));
-                    const float32x4_t gate_lo = vdivq_f32(one, vaddq_f32(one, exp_lo));
-                    const float32x4_t gate_hi = vdivq_f32(one, vaddq_f32(one, exp_hi));
-
-                    const float32x4_t y_lo = vmulq_f32(a_lo, gate_lo);
-                    const float32x4_t y_hi = vmulq_f32(a_hi, gate_hi);
+                    const float32x4_t y_lo = vmulq_f32(a_lo, fast_sigmoid_f32x4(vcvt_f32_f16(vget_low_f16(bv))));
+                    const float32x4_t y_hi = vmulq_f32(a_hi, fast_sigmoid_f32x4(vcvt_f32_f16(vget_high_f16(bv))));
                     vst1q_f16(y + i, vcombine_f16(vcvt_f16_f32(y_lo), vcvt_f16_f32(y_hi)));
                 }
 
@@ -309,8 +277,6 @@ void cactus_glu_f32(
 
     CactusThreading::parallel_for(rows, CactusThreading::Thresholds::ELEMENT_WISE,
         [&](size_t row_start, size_t row_end) {
-            const float32x4_t one = vdupq_n_f32(1.0f);
-
             for (size_t row = row_start; row < row_end; ++row) {
                 const size_t outer_idx = row / split_size;
                 const size_t split_idx = row - outer_idx * split_size;
@@ -324,10 +290,7 @@ void cactus_glu_f32(
                 size_t i = 0;
                 for (; i + 4 <= inner_size; i += 4) {
                     const float32x4_t av = vld1q_f32(a + i);
-                    const float32x4_t bv = vld1q_f32(b + i);
-                    const float32x4_t expv = fast_exp_f32x4(vnegq_f32(bv));
-                    const float32x4_t gate = vdivq_f32(one, vaddq_f32(one, expv));
-                    vst1q_f32(y + i, vmulq_f32(av, gate));
+                    vst1q_f32(y + i, vmulq_f32(av, fast_sigmoid_f32x4(vld1q_f32(b + i))));
                 }
 
                 for (; i < inner_size; ++i) {
@@ -336,6 +299,76 @@ void cactus_glu_f32(
                 }
             }
         });
+}
+
+static void batchnorm_apply_f16(
+    const __fp16* input, __fp16* output,
+    const float* scale, const float* shift,
+    size_t channels, size_t inner_size, size_t rows
+) {
+    CactusThreading::parallel_for(rows, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t row_start, size_t row_end) {
+            for (size_t row = row_start; row < row_end; ++row) {
+                const size_t c = row % channels;
+                const float32x4_t scv = vdupq_n_f32(scale[c]);
+                const float32x4_t shv = vdupq_n_f32(shift[c]);
+
+                const __fp16* x = input + row * inner_size;
+                __fp16* y = output + row * inner_size;
+
+                size_t i = 0;
+                for (; i + 8 <= inner_size; i += 8) {
+                    const float16x8_t xv = vld1q_f16(x + i);
+                    float32x4_t lo = vfmaq_f32(shv, vcvt_f32_f16(vget_low_f16(xv)), scv);
+                    float32x4_t hi = vfmaq_f32(shv, vcvt_f32_f16(vget_high_f16(xv)), scv);
+                    vst1q_f16(y + i, vcombine_f16(vcvt_f16_f32(lo), vcvt_f16_f32(hi)));
+                }
+
+                for (; i < inner_size; ++i) {
+                    y[i] = static_cast<__fp16>(static_cast<float>(x[i]) * scale[c] + shift[c]);
+                }
+            }
+        });
+}
+
+static void batchnorm_apply_f32(
+    const float* input, float* output,
+    const float* scale, const float* shift,
+    size_t channels, size_t inner_size, size_t rows
+) {
+    CactusThreading::parallel_for(rows, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t row_start, size_t row_end) {
+            for (size_t row = row_start; row < row_end; ++row) {
+                const size_t c = row % channels;
+                const float32x4_t scv = vdupq_n_f32(scale[c]);
+                const float32x4_t shv = vdupq_n_f32(shift[c]);
+
+                const float* x = input + row * inner_size;
+                float* y = output + row * inner_size;
+
+                size_t i = 0;
+                for (; i + 4 <= inner_size; i += 4) {
+                    vst1q_f32(y + i, vfmaq_f32(shv, vld1q_f32(x + i), scv));
+                }
+
+                for (; i < inner_size; ++i) {
+                    y[i] = x[i] * scale[c] + shift[c];
+                }
+            }
+        });
+}
+
+static void batchnorm_precompute(
+    const float* weight, const float* bias,
+    const float* running_mean, const float* running_var,
+    float* scale, float* shift,
+    size_t channels, float epsilon
+) {
+    for (size_t c = 0; c < channels; ++c) {
+        const float inv_std = 1.0f / std::sqrt(running_var[c] + epsilon);
+        scale[c] = weight[c] * inv_std;
+        shift[c] = bias[c] - running_mean[c] * scale[c];
+    }
 }
 
 void cactus_batchnorm_f16(
@@ -351,42 +384,9 @@ void cactus_batchnorm_f16(
     float epsilon
 ) {
     if (outer_size == 0 || channels == 0 || inner_size == 0) return;
-
-    std::vector<float> scale(channels);
-    std::vector<float> shift(channels);
-    for (size_t c = 0; c < channels; ++c) {
-        const float inv_std = 1.0f / std::sqrt(running_var[c] + epsilon);
-        scale[c] = weight[c] * inv_std;
-        shift[c] = bias[c] - running_mean[c] * scale[c];
-    }
-
-    const size_t rows = outer_size * channels;
-    CactusThreading::parallel_for(rows, CactusThreading::Thresholds::ELEMENT_WISE,
-        [&](size_t row_start, size_t row_end) {
-            for (size_t row = row_start; row < row_end; ++row) {
-                const size_t c = row % channels;
-                const float32x4_t scv = vdupq_n_f32(scale[c]);
-                const float32x4_t shv = vdupq_n_f32(shift[c]);
-
-                const __fp16* x = input + row * inner_size;
-                __fp16* y = output + row * inner_size;
-
-                size_t i = 0;
-                for (; i + 8 <= inner_size; i += 8) {
-                    const float16x8_t xv = vld1q_f16(x + i);
-                    float32x4_t lo = vcvt_f32_f16(vget_low_f16(xv));
-                    float32x4_t hi = vcvt_f32_f16(vget_high_f16(xv));
-                    lo = vfmaq_f32(shv, lo, scv);
-                    hi = vfmaq_f32(shv, hi, scv);
-                    const float16x8_t yv = vcombine_f16(vcvt_f16_f32(lo), vcvt_f16_f32(hi));
-                    vst1q_f16(y + i, yv);
-                }
-
-                for (; i < inner_size; ++i) {
-                    y[i] = static_cast<__fp16>(static_cast<float>(x[i]) * scale[c] + shift[c]);
-                }
-            }
-        });
+    std::vector<float> scale(channels), shift(channels);
+    batchnorm_precompute(weight, bias, running_mean, running_var, scale.data(), shift.data(), channels, epsilon);
+    batchnorm_apply_f16(input, output, scale.data(), shift.data(), channels, inner_size, outer_size * channels);
 }
 
 void cactus_batchnorm_f32(
@@ -402,37 +402,9 @@ void cactus_batchnorm_f32(
     float epsilon
 ) {
     if (outer_size == 0 || channels == 0 || inner_size == 0) return;
-
-    std::vector<float> scale(channels);
-    std::vector<float> shift(channels);
-    for (size_t c = 0; c < channels; ++c) {
-        const float inv_std = 1.0f / std::sqrt(running_var[c] + epsilon);
-        scale[c] = weight[c] * inv_std;
-        shift[c] = bias[c] - running_mean[c] * scale[c];
-    }
-
-    const size_t rows = outer_size * channels;
-    CactusThreading::parallel_for(rows, CactusThreading::Thresholds::ELEMENT_WISE,
-        [&](size_t row_start, size_t row_end) {
-            for (size_t row = row_start; row < row_end; ++row) {
-                const size_t c = row % channels;
-                const float32x4_t scv = vdupq_n_f32(scale[c]);
-                const float32x4_t shv = vdupq_n_f32(shift[c]);
-
-                const float* x = input + row * inner_size;
-                float* y = output + row * inner_size;
-
-                size_t i = 0;
-                for (; i + 4 <= inner_size; i += 4) {
-                    const float32x4_t xv = vld1q_f32(x + i);
-                    vst1q_f32(y + i, vfmaq_f32(shv, xv, scv));
-                }
-
-                for (; i < inner_size; ++i) {
-                    y[i] = x[i] * scale[c] + shift[c];
-                }
-            }
-        });
+    std::vector<float> scale(channels), shift(channels);
+    batchnorm_precompute(weight, bias, running_mean, running_var, scale.data(), shift.data(), channels, epsilon);
+    batchnorm_apply_f32(input, output, scale.data(), shift.data(), channels, inner_size, outer_size * channels);
 }
 
 void kernel_softmax_f16_single(const __fp16* input, __fp16* output, size_t vocab_size) {
@@ -752,195 +724,11 @@ void cactus_sample_f16_ex(const __fp16* logits, uint32_t* output, size_t vocab_s
         return;
     }
 
-    const bool has_bias = bias_values && bias_indices && bias_count > 0;
+    std::vector<float> logits_f32(vocab_size);
+    cactus_fp16_to_fp32(logits, logits_f32.data(), vocab_size);
 
-    std::vector<__fp16> filtered_logits(vocab_size);
-    std::memcpy(filtered_logits.data(), logits, vocab_size * sizeof(__fp16));
-
-    if (has_bias) {
-        for (size_t i = 0; i < bias_count; ++i) {
-            uint32_t idx = bias_indices[i];
-            if (idx < vocab_size) {
-                filtered_logits[idx] = static_cast<__fp16>(static_cast<float>(filtered_logits[idx]) + bias_values[i]);
-            }
-        }
-    }
-
-    if (temperature == 0.0f) {
-        auto it = std::max_element(filtered_logits.begin(), filtered_logits.end());
-        output[0] = static_cast<uint32_t>(std::distance(filtered_logits.begin(), it));
-        return;
-    }
-
-    if (temperature > 0) {
-        __fp16 inv_temp = static_cast<__fp16>(1.0f / temperature);
-        float16x8_t inv_temp_vec = vdupq_n_f16(inv_temp);
-        size_t i = 0;
-        for (; i + 8 <= vocab_size; i += 8) {
-            float16x8_t logits_vec = vld1q_f16(&filtered_logits[i]);
-            float16x8_t scaled = vmulq_f16(logits_vec, inv_temp_vec);
-            vst1q_f16(&filtered_logits[i], scaled);
-        }
-        for (; i < vocab_size; ++i) {
-            filtered_logits[i] = filtered_logits[i] * inv_temp;
-        }
-    }
-
-    (void)repetition_penalty;
-
-    if (top_k > 0) {
-        std::vector<std::pair<__fp16, size_t>> logit_pairs;
-        logit_pairs.reserve(vocab_size);
-        for (size_t i = 0; i < vocab_size; ++i) {
-            logit_pairs.emplace_back(filtered_logits[i], i);
-        }
-        std::partial_sort(logit_pairs.begin(),
-                         logit_pairs.begin() + std::min(top_k, vocab_size),
-                         logit_pairs.end(),
-                         [](const auto& a, const auto& b) { return a.first > b.first; });
-
-        if (top_k < vocab_size) {
-            __fp16 kth_value = logit_pairs[top_k - 1].first;
-            __fp16 neg_inf = static_cast<__fp16>(-std::numeric_limits<float>::infinity());
-            for (size_t i = 0; i < vocab_size; ++i) {
-                if (filtered_logits[i] < kth_value) {
-                    filtered_logits[i] = neg_inf;
-                }
-            }
-        }
-    }
-
-    if (min_p > 0.0f) {
-        float max_logit = -std::numeric_limits<float>::infinity();
-        for (size_t i = 0; i < vocab_size; ++i) {
-            max_logit = std::max(max_logit, static_cast<float>(filtered_logits[i]));
-        }
-        if (!std::isinf(max_logit)) {
-            std::vector<float> temp_probs(vocab_size);
-            float sum = 0.0f;
-            for (size_t i = 0; i < vocab_size; ++i) {
-                float v = static_cast<float>(filtered_logits[i]);
-                if (!std::isinf(v)) {
-                    temp_probs[i] = std::exp(v - max_logit);
-                    sum += temp_probs[i];
-                } else {
-                    temp_probs[i] = 0.0f;
-                }
-            }
-            if (sum > 0.0f) {
-                for (float& p : temp_probs) p /= sum;
-                float max_prob = *std::max_element(temp_probs.begin(), temp_probs.end());
-                float threshold = max_prob * min_p;
-                __fp16 neg_inf = static_cast<__fp16>(-std::numeric_limits<float>::infinity());
-                for (size_t i = 0; i < vocab_size; ++i) {
-                    if (temp_probs[i] < threshold) {
-                        filtered_logits[i] = neg_inf;
-                    }
-                }
-            }
-        }
-    }
-
-    if (top_p > 0.0f && top_p < 1.0f) {
-        std::vector<std::pair<__fp16, size_t>> sorted_logits;
-        sorted_logits.reserve(vocab_size);
-        __fp16 neg_inf = static_cast<__fp16>(-std::numeric_limits<float>::infinity());
-        for (size_t i = 0; i < vocab_size; ++i) {
-            if (filtered_logits[i] != neg_inf) {
-                sorted_logits.emplace_back(filtered_logits[i], i);
-            }
-        }
-        std::sort(sorted_logits.begin(), sorted_logits.end(),
-                  [](const auto& a, const auto& b) { return a.first > b.first; });
-
-        __fp16 max_logit = sorted_logits.empty() ? static_cast<__fp16>(0.0f) : sorted_logits[0].first;
-        std::vector<float> temp_probs;
-        temp_probs.reserve(sorted_logits.size());
-        float sum = 0.0f;
-        for (const auto& pair : sorted_logits) {
-            float prob = std::exp(static_cast<float>(pair.first - max_logit));
-            temp_probs.push_back(prob);
-            sum += prob;
-        }
-
-        for (float& prob : temp_probs) {
-            prob /= sum;
-        }
-
-        float cumulative_prob = 0.0f;
-        std::vector<bool> indices_to_remove(sorted_logits.size(), false);
-        bool threshold_reached = false;
-        for (size_t i = 0; i < sorted_logits.size(); ++i) {
-            cumulative_prob += temp_probs[i];
-            if (cumulative_prob > top_p && i > 0) { 
-                threshold_reached = true;
-            }
-            if (threshold_reached) {
-                indices_to_remove[i] = true;
-            }
-        }
-
-        if (!indices_to_remove.empty()) {
-            for (size_t i = 1; i < indices_to_remove.size(); ++i) {
-                indices_to_remove[i] = indices_to_remove[i-1] || indices_to_remove[i];
-            }
-            indices_to_remove[0] = false;
-        }
-        
-        for (size_t i = 0; i < sorted_logits.size(); ++i) {
-            if (indices_to_remove[i]) {
-                filtered_logits[sorted_logits[i].second] = neg_inf;
-            }
-        }
-    }
-    
-    __fp16 max_logit = *std::max_element(filtered_logits.begin(), filtered_logits.end());
-    __fp16 neg_inf = static_cast<__fp16>(-std::numeric_limits<float>::infinity());
-    if (max_logit == neg_inf) {
-        output[0] = 0;
-        return;
-    }
-    
-    std::vector<float> probs(vocab_size);
-    float sum = 0.0f;
-    for (size_t i = 0; i < vocab_size; ++i) {
-        if (filtered_logits[i] == neg_inf) {
-            probs[i] = 0.0f;
-        } else {
-            probs[i] = std::exp(static_cast<float>(filtered_logits[i] - max_logit));
-            sum += probs[i];
-        }
-    }
-
-    if (sum == 0.0f) {
-        output[0] = 0;
-        return;
-    }
-
-    for (size_t i = 0; i < vocab_size; ++i) {
-        probs[i] /= sum;
-    }
-
-    uint32_t actual_seed = (random_seed == 0) ? std::random_device{}() : random_seed;
-    std::mt19937 gen(actual_seed);
-    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-    float sample = dist(gen);
-
-    float cumulative = 0.0f;
-    for (size_t i = 0; i < vocab_size; ++i) {
-        cumulative += probs[i];
-        if (cumulative >= sample) {
-            output[0] = static_cast<uint32_t>(i);
-            return;
-        }
-    }
-
-    for (size_t i = vocab_size; i > 0; --i) {
-        if (probs[i-1] > 0.0f) {
-            output[0] = static_cast<uint32_t>(i-1);
-            return;
-        }
-    }
-
-    output[0] = 0;
+    cactus_sample_f32_ex(logits_f32.data(), output, vocab_size,
+                         temperature, top_p, min_p, repetition_penalty,
+                         top_k, random_seed,
+                         bias_values, bias_indices, bias_count);
 }

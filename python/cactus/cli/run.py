@@ -2,42 +2,37 @@ import os
 import subprocess
 from pathlib import Path
 
-from .common import print_color, is_repo_checkout, RED, GREEN
+from .common import GREEN, RED, YELLOW, apply_cloud_api_key_env, print_color, resolve_binary
 
 
-def cmd_run(args):
-    from .model import ensure_bundle, resolve_bundle_dir, TranspileOptions
-    from .config_utils import CactusConfig
+def cmd_run(args) -> int:
+    from .download import resolve_platform
 
     if args.no_cloud_tele:
         os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
+    apply_cloud_api_key_env()
 
-    api_key = CactusConfig().get_api_key()
-    if api_key:
-        os.environ["CACTUS_CLOUD_KEY"] = api_key
+    if args.image:
+        args.image = str(Path(args.image).expanduser())
+    if args.audio:
+        args.audio = str(Path(args.audio).expanduser())
+    if args.result_json:
+        args.result_json = str(Path(args.result_json).expanduser())
 
-    bundle_dir = resolve_bundle_dir(args.model_id)
+    platform = resolve_platform(args.platform)
+    bundle_dir = _resolve_or_fetch_bundle(
+        args.model_id, bits=args.bits, platform=platform,
+        token=args.token, reconvert=args.reconvert,
+        image=args.image, audio=args.audio,
+    )
     if bundle_dir is None:
-        try:
-            bundle_dir = ensure_bundle(
-                args.model_id,
-                token=args.token,
-                reconvert=args.reconvert,
-                transpile=TranspileOptions(
-                    image_files=[args.image] if args.image else None,
-                    audio_file=args.audio,
-                ),
-            )
-        except RuntimeError as e:
-            print_color(RED, f"Model setup failed: {e}")
-            return 1
-
-    chat = Path(__file__).resolve().parent.parent / "bin" / "chat"
-    if is_repo_checkout() and not chat.exists():
-        print_color(RED, "Chat binary not found. Run `cactus build` first.")
         return 1
 
-    cmd = [str(chat), str(bundle_dir)]
+    binary = resolve_binary("run")
+    if binary is None:
+        return 1
+
+    cmd = [str(binary), str(bundle_dir)]
     for flag, value in (
         ("--system", args.system),
         ("--prompt", args.prompt),
@@ -56,7 +51,37 @@ def cmd_run(args):
     if args.no_cloud_handoff:
         cmd.append("--no-cloud-handoff")
 
-    print_color(GREEN, f"Starting Cactus Chat with model: {bundle_dir}")
+    print_color(GREEN, f"Running: {bundle_dir}")
     print()
-
     return subprocess.run(cmd).returncode
+
+
+def _resolve_or_fetch_bundle(model_id, *, bits, platform, token, reconvert, image, audio):
+    from .download import download_bundle, get_bundle_dir
+    from .model import TranspileOptions, ensure_bundle, resolve_bundle_dir
+
+    local = resolve_bundle_dir(model_id)
+    if local is not None:
+        return local
+
+    cached = get_bundle_dir(model_id, bits=bits, platform=platform)
+    if (cached / "components" / "manifest.json").exists() and not reconvert:
+        return cached
+
+    if not reconvert:
+        try:
+            return download_bundle(model_id, bits=bits, platform=platform, token=token, reconvert=reconvert)
+        except (RuntimeError, OSError) as exc:
+            print_color(YELLOW, f"HF download unavailable ({exc}); building locally")
+
+    try:
+        return ensure_bundle(
+            model_id, bits=bits, token=token, reconvert=reconvert,
+            transpile=TranspileOptions(
+                image_files=[image] if image else None,
+                audio_file=audio,
+            ),
+        )
+    except RuntimeError as exc:
+        print_color(RED, f"Model setup failed: {exc}")
+        return None

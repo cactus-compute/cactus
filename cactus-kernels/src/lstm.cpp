@@ -165,61 +165,18 @@ static void apply_lstm_gates_f16(
     __fp16* __restrict h,
     size_t hidden_size
 ) {
-    constexpr size_t W = 8;
-    const size_t simd_end = (hidden_size / W) * W;
-    const float32x4_t one = vdupq_n_f32(1.0f);
+    const size_t gate_size = 4 * hidden_size;
+    std::vector<float> gates_f32(gate_size);
+    std::vector<float> c_f32(hidden_size);
+    std::vector<float> h_f32(hidden_size);
 
-    for (size_t i = 0; i < simd_end; i += W) {
-        float16x8_t i_raw = vld1q_f16(gates + i);
-        float16x8_t f_raw = vld1q_f16(gates + hidden_size + i);
-        float16x8_t g_raw = vld1q_f16(gates + 2 * hidden_size + i);
-        float16x8_t o_raw = vld1q_f16(gates + 3 * hidden_size + i);
+    cactus_fp16_to_fp32(gates, gates_f32.data(), gate_size);
+    cactus_fp16_to_fp32(c, c_f32.data(), hidden_size);
 
-        float32x4_t il = vcvt_f32_f16(vget_low_f16(i_raw));
-        float32x4_t ih = vcvt_f32_f16(vget_high_f16(i_raw));
-        float16x8_t i_act = vcombine_f16(
-            vcvt_f16_f32(vdivq_f32(one, vaddq_f32(one, fast_exp_f32x4(vnegq_f32(il))))),
-            vcvt_f16_f32(vdivq_f32(one, vaddq_f32(one, fast_exp_f32x4(vnegq_f32(ih))))));
+    apply_lstm_gates_f32(gates_f32.data(), c_f32.data(), h_f32.data(), hidden_size);
 
-        float32x4_t fl = vcvt_f32_f16(vget_low_f16(f_raw));
-        float32x4_t fh = vcvt_f32_f16(vget_high_f16(f_raw));
-        float16x8_t f_act = vcombine_f16(
-            vcvt_f16_f32(vdivq_f32(one, vaddq_f32(one, fast_exp_f32x4(vnegq_f32(fl))))),
-            vcvt_f16_f32(vdivq_f32(one, vaddq_f32(one, fast_exp_f32x4(vnegq_f32(fh))))));
-
-        float32x4_t gl = vcvt_f32_f16(vget_low_f16(g_raw));
-        float32x4_t gh = vcvt_f32_f16(vget_high_f16(g_raw));
-        float16x8_t g_act = vcombine_f16(
-            vcvt_f16_f32(fast_tanh_f32x4(gl)),
-            vcvt_f16_f32(fast_tanh_f32x4(gh)));
-
-        float32x4_t ol = vcvt_f32_f16(vget_low_f16(o_raw));
-        float32x4_t oh = vcvt_f32_f16(vget_high_f16(o_raw));
-        float16x8_t o_act = vcombine_f16(
-            vcvt_f16_f32(vdivq_f32(one, vaddq_f32(one, fast_exp_f32x4(vnegq_f32(ol))))),
-            vcvt_f16_f32(vdivq_f32(one, vaddq_f32(one, fast_exp_f32x4(vnegq_f32(oh))))));
-
-        float16x8_t c_prev = vld1q_f16(c + i);
-        float16x8_t c_new = vfmaq_f16(vmulq_f16(f_act, c_prev), i_act, g_act);
-        vst1q_f16(c + i, c_new);
-
-        float32x4_t cl = vcvt_f32_f16(vget_low_f16(c_new));
-        float32x4_t ch = vcvt_f32_f16(vget_high_f16(c_new));
-        float16x8_t c_tanh = vcombine_f16(
-            vcvt_f16_f32(fast_tanh_f32x4(cl)),
-            vcvt_f16_f32(fast_tanh_f32x4(ch)));
-        vst1q_f16(h + i, vmulq_f16(o_act, c_tanh));
-    }
-
-    for (size_t i = simd_end; i < hidden_size; ++i) {
-        float ig = 1.0f / (1.0f + expf(-static_cast<float>(gates[i])));
-        float fg = 1.0f / (1.0f + expf(-static_cast<float>(gates[hidden_size + i])));
-        float gg = tanhf(static_cast<float>(gates[2 * hidden_size + i]));
-        float og = 1.0f / (1.0f + expf(-static_cast<float>(gates[3 * hidden_size + i])));
-        float cv = fg * static_cast<float>(c[i]) + ig * gg;
-        c[i] = static_cast<__fp16>(cv);
-        h[i] = static_cast<__fp16>(og * tanhf(cv));
-    }
+    cactus_fp32_to_fp16(c_f32.data(), c, hidden_size);
+    cactus_fp32_to_fp16(h_f32.data(), h, hidden_size);
 }
 
 static inline float hsum_f16x8_f32(float16x8_t v) {
@@ -299,25 +256,11 @@ static void lstm_gemv_f16_neon(
 #endif
 
 static inline void fp16_to_fp32_neon(const __fp16* src, float* dst, size_t n) {
-    size_t i = 0;
-    for (; i + 8 <= n; i += 8) {
-        float16x8_t v = vld1q_f16(src + i);
-        vst1q_f32(dst + i, vcvt_f32_f16(vget_low_f16(v)));
-        vst1q_f32(dst + i + 4, vcvt_f32_f16(vget_high_f16(v)));
-    }
-    for (; i < n; ++i)
-        dst[i] = static_cast<float>(src[i]);
+    cactus_fp16_to_fp32(src, dst, n);
 }
 
 static inline void fp32_to_fp16_neon(const float* src, __fp16* dst, size_t n) {
-    size_t i = 0;
-    for (; i + 8 <= n; i += 8) {
-        float32x4_t lo = vld1q_f32(src + i);
-        float32x4_t hi = vld1q_f32(src + i + 4);
-        vst1q_f16(dst + i, vcombine_f16(vcvt_f16_f32(lo), vcvt_f16_f32(hi)));
-    }
-    for (; i < n; ++i)
-        dst[i] = static_cast<__fp16>(src[i]);
+    cactus_fp32_to_fp16(src, dst, n);
 }
 
 void cactus_bilstm_sequence_f16(

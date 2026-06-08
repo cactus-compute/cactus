@@ -11,7 +11,7 @@ The Cactus Index provides a clean C FFI (Foreign Function Interface) for integra
 ## Getting Started
 
 The index uses memory-mapped files:
-- `index.bin`: Embeddings (FP16) and metadata pointers
+- `index.bin`: Embeddings (FP16) plus per-doc offsets into `data.bin`
 - `data.bin`: Document content and metadata (UTF-8)
 
 All embeddings are automatically normalized to unit length
@@ -570,4 +570,4 @@ cactus_index_destroy(new_index);
 - [Python Binding](/python/) — Python bindings with vector index support
 - [Swift Binding](/bindings/swift/) — Swift vector index functions
 - [Kotlin Binding](/bindings/kotlin/) — Kotlin vector index functions
-- [Flutter Binding](/flutter/) — Dart vector index functions
+- [Flutter Binding](/bindings/flutter/) — Dart vector index functions

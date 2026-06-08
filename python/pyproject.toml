@@ -39,7 +39,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "httpx>=0.25.0"]
+dev = ["pytest>=8.0", "httpx>=0.25.0", "einops>=0.7"]
+lora = ["peft>=0.15"]
 serve = ["fastapi>=0.100.0", "uvicorn>=0.20.0", "python-multipart>=0.0.5"]
 
 [project.urls]
@@ -64,7 +65,7 @@ include = ["cactus*"]
 
 [tool.setuptools.package-data]
 "cactus.bindings" = ["lib/*.dylib", "lib/*.so"]
-"cactus" = ["bin/chat", "bin/asr", "assets/*"]
+"cactus" = ["bin/run", "bin/transcribe", "assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

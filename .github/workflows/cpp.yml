@@ -1,0 +1,42 @@
+name: Unit Tests
+
+on:
+  pull_request:
+    paths:
+      - cactus-kernels/**
+      - cactus-graph/**
+      - .github/workflows/cpp.yml
+  push:
+    branches: [main]
+    paths:
+      - cactus-kernels/**
+      - cactus-graph/**
+      - .github/workflows/cpp.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            deps: brew install ccache ninja
+          - os: ubuntu-24.04-arm
+            deps: sudo apt-get update && sudo apt-get install -y cmake build-essential libcurl4-openssl-dev ccache ninja-build
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: ${{ matrix.deps }}
+      - name: Run kernel tests
+        run: bash cactus-kernels/test.sh
+      - name: Run graph tests
+        run: bash cactus-graph/test.sh

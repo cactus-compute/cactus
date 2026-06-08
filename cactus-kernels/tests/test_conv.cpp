@@ -6,7 +6,7 @@ using namespace TestUtils;
 
 bool test_conv1d_k3() {
     const size_t N = 1, L = 32, C_in = 8, C_out = 16, stride = 1;
-    const size_t L_out = (L - 3) / stride + 1;
+    const size_t L_out = ((L - 1) / stride) + 1;
     std::vector<__fp16> input(N * L * C_in), weight(C_out * 3 * C_in), output(N * L_out * C_out);
     fill_random_fp16(input, -0.5f, 0.5f);
     fill_random_fp16(weight, -0.5f, 0.5f);
@@ -89,7 +89,7 @@ bool test_maxpool1d() {
 bool run_benchmarks() {
     {
         const size_t N = 1, L = 3000, C_in = 80, C_out = 512, stride = 1;
-        const size_t L_out = (L - 3) / stride + 1;
+        const size_t L_out = ((L - 1) / stride) + 1;
         std::vector<__fp16> input(N * L * C_in), weight(C_out * 3 * C_in), output(N * L_out * C_out);
         fill_random_fp16(input, -0.5f, 0.5f);
         fill_random_fp16(weight, -0.5f, 0.5f);

@@ -1,10 +1,6 @@
-#include "../cactus_engine.h"
-#include "utils.h"
-#include "cactus_graph.h"
+#include "../cactus_graph.h"
 #include <vector>
 #include <unordered_map>
-
-using namespace cactus::ffi;
 
 struct GraphHandle {
     CactusGraph graph;

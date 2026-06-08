@@ -286,14 +286,14 @@ class TestCliParser:
         assert args.bits == 4
 
     def test_run_command(self):
-        args = self.parser.parse_args(["run", "gemma4", "--prompt", "hi"])
+        args = self.parser.parse_args(["run", "google/gemma-4-E2B-it", "--prompt", "hi"])
         assert args.command == "run"
-        assert args.model_id == "gemma4"
+        assert args.model_id == "google/gemma-4-E2B-it"
         assert args.prompt == "hi"
 
     def test_run_command_chunked_bundle_flags(self):
         args = self.parser.parse_args([
-            "run", "bundle",
+            "run", "Foo/Bar",
             "--audio", "audio.wav",
             "--image", "image.png",
             "--input-ids", "1,2,3",
@@ -308,9 +308,9 @@ class TestCliParser:
         assert args.result_json == "result.json"
 
     def test_convert_command(self):
-        args = self.parser.parse_args(["convert", "qwen", "--bits", "2"])
+        args = self.parser.parse_args(["convert", "Qwen/Qwen3-0.6B", "--bits", "2"])
         assert args.command == "convert"
-        assert args.model_id == "qwen"
+        assert args.model_id == "Qwen/Qwen3-0.6B"
         assert args.bits == 2
 
     def test_build_command(self):
@@ -322,10 +322,18 @@ class TestCliParser:
         args = self.parser.parse_args(["test", "--suite", "llm"])
         assert args.command == "test"
         assert args.suite == "llm"
+        assert args.component == "all"
 
-    def test_test_command_default_suite(self):
+    def test_test_command_component(self):
+        args = self.parser.parse_args(["test", "--component", "kernels"])
+        assert args.command == "test"
+        assert args.component == "kernels"
+        assert args.suite is None
+
+    def test_test_command_defaults(self):
         args = self.parser.parse_args(["test"])
         assert args.command == "test"
+        assert args.component == "all"
         assert args.suite is None
 
     def test_auth_command(self):
@@ -341,9 +349,31 @@ class TestCliParser:
         args = self.parser.parse_args([])
         assert args.command is None
 
-    def test_transpile_not_exposed(self):
+    def test_transpile_registered(self):
+        args = self.parser.parse_args(["transpile", "google/gemma-4-E2B-it"])
+        assert args.command == "transpile"
+        assert args.model_id == "google/gemma-4-E2B-it"
+
+    def test_run_rejects_bare_name(self):
+        import pytest
         with pytest.raises(SystemExit):
-            self.parser.parse_args(["transpile", "gemma4"])
+            self.parser.parse_args(["run", "whisper-base", "--prompt", "hi"])
+
+    def test_run_accepts_local_bundle_path(self):
+        args = self.parser.parse_args(["run", "/tmp/bundle", "--prompt", "hi"])
+        assert args.command == "run"
+        assert args.model_id == "/tmp/bundle"
+        assert args.prompt == "hi"
+
+    def test_run_platform_flag(self):
+        args = self.parser.parse_args(["run", "Foo/Bar", "--platform", "apple"])
+        assert args.platform == "apple"
+        assert args.bits == 4
+
+    def test_download_platform_flag(self):
+        args = self.parser.parse_args(["download", "Foo/Bar", "--platform", "cpu", "--bits", "2"])
+        assert args.platform == "cpu"
+        assert args.bits == 2
 
 
 

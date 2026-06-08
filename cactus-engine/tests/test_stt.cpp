@@ -6,7 +6,7 @@
 
 using namespace EngineTestUtils;
 
-static const char* g_model_path = std::getenv("CACTUS_TEST_MODEL");
+static const char* g_transcription_model_path = std::getenv("CACTUS_TEST_TRANSCRIPTION_MODEL");
 static const char* g_assets_path = std::getenv("CACTUS_TEST_ASSETS");
 
 bool test_transcription() {
@@ -14,16 +14,7 @@ bool test_transcription() {
               << "║        TRANSCRIPTION TEST                 ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    if (!g_model_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_MODEL not set\n";
-        return true;
-    }
-    if (!g_assets_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_ASSETS not set\n";
-        return true;
-    }
-
-    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
+    cactus_model_t model = cactus_init(g_transcription_model_path, nullptr, false);
     if (!model) {
         std::cerr << "[✗] Failed to initialize model\n";
         return false;
@@ -67,16 +58,7 @@ bool test_transcription_pcm() {
               << "║      TRANSCRIPTION PCM TEST               ║\n"
               << "╚══════════════════════════════════════════╝\n";
 
-    if (!g_model_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_MODEL not set\n";
-        return true;
-    }
-    if (!g_assets_path) {
-        std::cout << "⊘ SKIP │ CACTUS_TEST_ASSETS not set\n";
-        return true;
-    }
-
-    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
+    cactus_model_t model = cactus_init(g_transcription_model_path, nullptr, false);
     if (!model) {
         std::cerr << "[✗] Failed to initialize model\n";
         return false;

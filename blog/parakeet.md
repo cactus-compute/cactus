@@ -158,17 +158,11 @@ cactus download nvidia/parakeet-ctc-1.1b
 For integrating Parakeet into your own applications, use the Python FFI bindings directly:
 
 ```python
-import json
 from cactus import cactus_init, cactus_transcribe, cactus_destroy
 
 model = cactus_init("weights/parakeet-ctc-1.1b", None, False)
 
-result = json.loads(
-    cactus_transcribe(model, "/path/to/audio.wav", None, None, None, None)
-)
-
-if not result["success"]:
-    raise RuntimeError(result["error"])
+result = cactus_transcribe(model, "/path/to/audio.wav")
 
 print("\n\nFinal transcript:")
 print(result["response"])
@@ -179,7 +173,7 @@ cactus_destroy(model)
 
 ### 5. Use the [C API](/docs/cactus_engine.md)
 
-The C API is the base layer all other bindings build on. Link against `libcactus` and include the FFI header:
+The C API is the base layer all other bindings build on. Link against `libcactus_engine` and include the FFI header:
 
 ```c
 #include "cactus_engine.h"
@@ -203,9 +197,9 @@ int main() {
 }
 ```
 
-### 6. Use the [Rust Binding](/rust/)
+### 6. Use the [Rust Binding](/bindings/rust/)
 
-Add `cactus-sys` to your `Cargo.toml` and call the FFI bindings directly:
+Copy `cactus.rs` into your project (see [the README](/bindings/rust/)), link `libcactus_engine.a` from `cactus build`, and call the FFI bindings directly:
 
 ```rust
 use std::ffi::CString;
@@ -250,19 +244,8 @@ The Swift binding exposes top-level functions that map directly to the C FFI:
 import Foundation
 
 let model = try cactusInit("weights/parakeet-ctc-1.1b", nil, false)
-
-// File-based transcription
 let resultJson = try cactusTranscribe(model, "/path/to/audio.wav", nil, nil, nil, nil)
 print(resultJson)
-
-// Streaming transcription
-let stream = try cactusStreamTranscribeStart(model, "{\"min_chunk_size\": 16000}")
-// Feed PCM chunks from your audio source (16-bit, 16kHz, mono)
-let partial = try cactusStreamTranscribeProcess(stream, audioChunk)
-print("Partial: \(partial)")
-
-let finalResult = try cactusStreamTranscribeStop(stream)
-print("Final: \(finalResult)")
 
 cactusDestroy(model)
 ```
@@ -275,24 +258,13 @@ The Kotlin binding exposes top-level functions that map directly to the C FFI:
 import com.cactus.*
 
 val model = cactusInit("weights/parakeet-ctc-1.1b", null, false)
-
-// File-based transcription
 val resultJson = cactusTranscribe(model, "/path/to/audio.wav", null, null, null, null)
 println(resultJson)
-
-// Streaming transcription
-val stream = cactusStreamTranscribeStart(model, "{\"min_chunk_size\": 16000}")
-// Feed PCM chunks from your audio source (16-bit, 16kHz, mono)
-val partial = cactusStreamTranscribeProcess(stream, audioChunk)
-println("Partial: $partial")
-
-val finalResult = cactusStreamTranscribeStop(stream)
-println("Final: $finalResult")
 
 cactusDestroy(model)
 ```
 
-### 9. Use the [Flutter Binding](/flutter/)
+### 9. Use the [Flutter Binding](/bindings/flutter/)
 
 The Flutter binding brings Cactus transcription to iOS, macOS, and Android:
 
@@ -300,18 +272,8 @@ The Flutter binding brings Cactus transcription to iOS, macOS, and Android:
 import 'cactus.dart';
 
 final model = cactusInit('weights/parakeet-ctc-1.1b', null, false);
-
-// File-based transcription
 final resultJson = cactusTranscribe(model, '/path/to/audio.wav', null, null, null, null);
 print(resultJson);
-
-// Streaming transcription
-final stream = cactusStreamTranscribeStart(model, '{"min_chunk_size": 16000}');
-final partial = cactusStreamTranscribeProcess(stream, audioChunk);
-print('Partial: $partial');
-
-final finalResult = cactusStreamTranscribeStop(stream);
-print('Final: $finalResult');
 
 cactusDestroy(model);
 ```

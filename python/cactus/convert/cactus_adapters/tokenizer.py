@@ -7,11 +7,7 @@ except ImportError:
     hf_hub_download = None
 
 SENTENCEPIECE_MODEL_TYPES = {
-    'gemma', 'gemma3n', 'llama', 'smol', 'bert', 't5',
-}
-
-SENTENCEPIECE_MODEL_TYPES = {
-    'gemma', 'gemma3n', 'llama', 'gemma4', 'smol', 'bert', 't5',
+    'gemma', 'gemma3n', 'gemma4', 'llama', 'smol', 'bert', 't5',
 }
 
 BPE_MODEL_TYPES = {

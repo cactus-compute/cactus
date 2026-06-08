@@ -536,18 +536,8 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
 namespace cactus {
 namespace ffi {
 
-inline std::string escape_json_string(const std::string& s) {
-    std::ostringstream o;
-    for (char c : s) {
-        if (c == '"') o << "\\\"";
-        else if (c == '\n') o << "\\n";
-        else if (c == '\r') o << "\\r";
-        else if (c == '\t') o << "\\t";
-        else if (c == '\\') o << "\\\\";
-        else o << c;
-    }
-    return o.str();
-}
+// Defined in json_escape.h — included here for backward compatibility
+#include "json_escape.h"
 
 
 inline std::string trim_string(const std::string& s) {

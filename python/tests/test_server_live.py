@@ -437,18 +437,19 @@ def test_live_transcription_rejects_non_wav(live_server) -> None:
 EMBED_TYPES = {"bert", "nomic"}
 
 
-def _find_embed_bundle() -> Path | None:
+def _find_embed_bundle() -> Path:
     for candidate in sorted(WEIGHTS.iterdir()) if WEIGHTS.exists() else []:
         if candidate.is_dir() and _valid_bundle(candidate) and _read_model_type(candidate) in EMBED_TYPES:
             return candidate
-    return None
+    raise RuntimeError(
+        "No embedding (nomic/bert) bundle under weights/; "
+        "run `cactus convert nomic-ai/nomic-embed-text-v2-moe`"
+    )
 
 
 @pytest.fixture(scope="module")
 def embed_server():
     bundle = _find_embed_bundle()
-    if bundle is None:
-        pytest.skip("No embedding (nomic/bert) bundle under weights/; run `cactus convert nomic-ai/nomic-embed-text-v2-moe`")
     port = _free_port()
     proc = _start_server(bundle, port)
     base_url = f"http://127.0.0.1:{port}"

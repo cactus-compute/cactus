@@ -866,21 +866,26 @@ void Model::run_encoder_step(uint32_t token_id, size_t position) {
     encoder_->graph->execute();
 }
 
-void Model::copy_component_outputs_to_inputs(const Component& source, Component& target) {
-    for (size_t i = 0; i < source.output_node_ids.size() && i < source.logical_outputs.size(); ++i) {
-        const std::string& out_name = source.logical_outputs[i];
-        int dst_idx = input_index(target, out_name);
-        if (dst_idx < 0) continue;
-        size_t src_node = static_cast<size_t>(source.output_node_ids[i]);
-        const auto& src_desc = source.graph->get_output_buffer(src_node);
-        size_t dst_node = static_cast<size_t>(target.runtime_input_node_ids[dst_idx]);
-        const auto& dst_desc = target.graph->get_output_buffer(dst_node);
-        std::fill(target.input_buffers[dst_idx].begin(), target.input_buffers[dst_idx].end(), 0);
-        size_t elements = std::min(src_desc.total_size, dst_desc.total_size);
-        if (!copy_component_tensor(*source.graph, src_desc, src_node, dst_desc, target.input_buffers[dst_idx], 0, elements, out_name)) {
-            throw std::runtime_error("component output/input precision mismatch for " + out_name);
-        }
+#define FOR_EACH_MATCHED_OUTPUT(source, target, body) \
+    for (size_t _i = 0; _i < (source).output_node_ids.size() && _i < (source).logical_outputs.size(); ++_i) { \
+        const std::string& out_name = (source).logical_outputs[_i]; \
+        int dst_idx = input_index((target), out_name); \
+        if (dst_idx < 0) continue; \
+        size_t src_node = static_cast<size_t>((source).output_node_ids[_i]); \
+        const auto& src_desc = (source).graph->get_output_buffer(src_node); \
+        size_t dst_node = static_cast<size_t>((target).runtime_input_node_ids[dst_idx]); \
+        const auto& dst_desc = (target).graph->get_output_buffer(dst_node); \
+        auto& dst_buf = (target).input_buffers[dst_idx]; \
+        body \
     }
+
+void Model::copy_component_outputs_to_inputs(const Component& source, Component& target) {
+    FOR_EACH_MATCHED_OUTPUT(source, target, {
+        std::fill(dst_buf.begin(), dst_buf.end(), 0);
+        size_t elements = std::min(src_desc.total_size, dst_desc.total_size);
+        if (!copy_component_tensor(*source.graph, src_desc, src_node, dst_desc, dst_buf, 0, elements, out_name))
+            throw std::runtime_error("component output/input precision mismatch for " + out_name);
+    })
 }
 
 bool Model::copy_cross_kv_outputs_to_decoder_cache_inputs(const Component& source, Component& target, size_t source_len) {
@@ -906,74 +911,40 @@ bool Model::copy_cross_kv_outputs_to_decoder_cache_inputs(const Component& sourc
 }
 
 void Model::copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index) {
-    for (size_t i = 0; i < source.output_node_ids.size() && i < source.logical_outputs.size(); ++i) {
-        const std::string& out_name = source.logical_outputs[i];
-        int dst_idx = input_index(target, out_name);
-        if (dst_idx < 0) continue;
-        size_t src_node = static_cast<size_t>(source.output_node_ids[i]);
-        const auto& src_desc = source.graph->get_output_buffer(src_node);
-        size_t dst_node = static_cast<size_t>(target.runtime_input_node_ids[dst_idx]);
-        const auto& dst_desc = target.graph->get_output_buffer(dst_node);
+    FOR_EACH_MATCHED_OUTPUT(source, target, {
         size_t chunk_tokens = component_chunk_tokens(target, out_name);
-        if (chunk_tokens <= token_index || chunk_tokens == 0) {
+        if (chunk_tokens <= token_index || chunk_tokens == 0)
             throw std::runtime_error("chunk prefill token index exceeds input capacity for " + out_name);
-        }
-        if (dst_desc.total_size % chunk_tokens != 0) {
+        if (dst_desc.total_size % chunk_tokens != 0)
             throw std::runtime_error("chunk prefill input shape is not token-aligned for " + out_name);
-        }
         size_t elements_per_token = dst_desc.total_size / chunk_tokens;
-        if (src_desc.total_size != elements_per_token) {
+        if (src_desc.total_size != elements_per_token)
             throw std::runtime_error("component output/input token shape mismatch for " + out_name);
-        }
-        if (!copy_component_tensor(
-                *source.graph,
-                src_desc,
-                src_node,
-                dst_desc,
-                target.input_buffers[dst_idx],
-                token_index * elements_per_token,
-                src_desc.total_size,
-                out_name)) {
+        if (!copy_component_tensor(*source.graph, src_desc, src_node, dst_desc,
+                dst_buf, token_index * elements_per_token, src_desc.total_size, out_name))
             throw std::runtime_error("component output/input precision mismatch for " + out_name);
-        }
-    }
+    })
 }
 
 void Model::copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target, size_t token_offset) {
-    for (size_t i = 0; i < source.output_node_ids.size() && i < source.logical_outputs.size(); ++i) {
-        const std::string& out_name = source.logical_outputs[i];
-        int dst_idx = input_index(target, out_name);
-        if (dst_idx < 0) continue;
-        size_t src_node = static_cast<size_t>(source.output_node_ids[i]);
-        const auto& src_desc = source.graph->get_output_buffer(src_node);
-        size_t dst_node = static_cast<size_t>(target.runtime_input_node_ids[dst_idx]);
-        const auto& dst_desc = target.graph->get_output_buffer(dst_node);
+    FOR_EACH_MATCHED_OUTPUT(source, target, {
         size_t src_tokens = component_output_tokens(source, out_name);
         size_t dst_tokens = component_chunk_tokens(target, out_name);
-        if (src_tokens == 0 || dst_tokens == 0 || token_offset + src_tokens > dst_tokens) {
+        if (src_tokens == 0 || dst_tokens == 0 || token_offset + src_tokens > dst_tokens)
             throw std::runtime_error("chunk prefill output range exceeds input capacity for " + out_name);
-        }
-        if (src_desc.total_size % src_tokens != 0 || dst_desc.total_size % dst_tokens != 0) {
+        if (src_desc.total_size % src_tokens != 0 || dst_desc.total_size % dst_tokens != 0)
             throw std::runtime_error("chunk prefill output/input shape is not token-aligned for " + out_name);
-        }
         size_t src_elements_per_token = src_desc.total_size / src_tokens;
         size_t dst_elements_per_token = dst_desc.total_size / dst_tokens;
-        if (src_elements_per_token != dst_elements_per_token) {
+        if (src_elements_per_token != dst_elements_per_token)
             throw std::runtime_error("component output/input token shape mismatch for " + out_name);
-        }
-        if (!copy_component_tensor(
-                *source.graph,
-                src_desc,
-                src_node,
-                dst_desc,
-                target.input_buffers[dst_idx],
-                token_offset * dst_elements_per_token,
-                src_desc.total_size,
-                out_name)) {
+        if (!copy_component_tensor(*source.graph, src_desc, src_node, dst_desc,
+                dst_buf, token_offset * dst_elements_per_token, src_desc.total_size, out_name))
             throw std::runtime_error("component output/input precision mismatch for " + out_name);
-        }
-    }
+    })
 }
+
+#undef FOR_EACH_MATCHED_OUTPUT
 
 bool Model::cache_states_compatible(const Component& source, const Component& target) const {
     if (source.cache_states.empty() || source.cache_states.size() != target.cache_states.size()) return false;
@@ -1802,62 +1773,53 @@ void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
     }
 }
 
-void fill_int_buffer(std::vector<uint8_t>& buf, Precision prec, int64_t value, size_t count) {
-    const size_t elem = PrecisionTraits::size_of(prec);
-    const size_t cap = elem ? buf.size() / elem : 0;
-    const size_t n = std::min(cap, count);
-    for (size_t i = 0; i < n; ++i) {
-        switch (prec) {
-            case Precision::FP32: reinterpret_cast<float*>(buf.data())[i] = static_cast<float>(value); break;
-            case Precision::FP16: reinterpret_cast<__fp16*>(buf.data())[i] = static_cast<__fp16>(value); break;
-            case Precision::INT8: reinterpret_cast<int8_t*>(buf.data())[i] = static_cast<int8_t>(value); break;
-            default: reinterpret_cast<int64_t*>(buf.data())[i] = value; break;
+static inline void write_int_element(uint8_t* buf, Precision prec, size_t index, int64_t v) {
+    switch (prec) {
+        case Precision::FP32: reinterpret_cast<float*>(buf)[index] = static_cast<float>(v); break;
+        case Precision::FP16: reinterpret_cast<__fp16*>(buf)[index] = static_cast<__fp16>(v); break;
+        case Precision::INT8: reinterpret_cast<int8_t*>(buf)[index] = static_cast<int8_t>(v); break;
+        default: {
+            size_t elem = PrecisionTraits::size_of(prec);
+            if (elem == 8) reinterpret_cast<int64_t*>(buf)[index] = v;
+            else if (elem == 4) reinterpret_cast<int32_t*>(buf)[index] = static_cast<int32_t>(v);
+            break;
         }
     }
-    if (n < cap) {
-        std::memset(buf.data() + n * elem, 0, (cap - n) * elem);
+}
+
+static inline size_t typed_buf_capacity(const std::vector<uint8_t>& buf, Precision prec) {
+    size_t elem = PrecisionTraits::size_of(prec);
+    return elem ? buf.size() / elem : 0;
+}
+
+static inline void zero_fill_remainder(std::vector<uint8_t>& buf, Precision prec, size_t written, size_t cap) {
+    if (written < cap) {
+        size_t elem = PrecisionTraits::size_of(prec);
+        std::memset(buf.data() + written * elem, 0, (cap - written) * elem);
     }
+}
+
+void fill_int_buffer(std::vector<uint8_t>& buf, Precision prec, int64_t value, size_t count) {
+    const size_t cap = typed_buf_capacity(buf, prec);
+    const size_t n = std::min(cap, count);
+    for (size_t i = 0; i < n; ++i) write_int_element(buf.data(), prec, i, value);
+    zero_fill_remainder(buf, prec, n, cap);
 }
 
 void write_tokens_buffer(std::vector<uint8_t>& buf, Precision prec,
                          const std::vector<uint32_t>& tokens, size_t offset) {
-    const size_t elem = PrecisionTraits::size_of(prec);
-    const size_t cap = elem ? buf.size() / elem : 0;
+    const size_t cap = typed_buf_capacity(buf, prec);
     const size_t avail = (offset < tokens.size()) ? (tokens.size() - offset) : 0;
     const size_t n = std::min(cap, avail);
-    for (size_t i = 0; i < n; ++i) {
-        int64_t v = static_cast<int64_t>(tokens[offset + i]);
-        switch (prec) {
-            case Precision::FP32: reinterpret_cast<float*>(buf.data())[i] = static_cast<float>(v); break;
-            case Precision::FP16: reinterpret_cast<__fp16*>(buf.data())[i] = static_cast<__fp16>(v); break;
-            case Precision::INT8: reinterpret_cast<int8_t*>(buf.data())[i] = static_cast<int8_t>(v); break;
-            default: reinterpret_cast<int64_t*>(buf.data())[i] = v; break;
-        }
-    }
-    if (n < cap) {
-        std::memset(buf.data() + n * elem, 0, (cap - n) * elem);
-    }
+    for (size_t i = 0; i < n; ++i) write_int_element(buf.data(), prec, i, static_cast<int64_t>(tokens[offset + i]));
+    zero_fill_remainder(buf, prec, n, cap);
 }
 
 void write_int_vector_buffer(std::vector<uint8_t>& buf, Precision prec, const std::vector<int64_t>& values) {
-    const size_t elem = PrecisionTraits::size_of(prec);
-    const size_t cap = elem ? buf.size() / elem : 0;
+    const size_t cap = typed_buf_capacity(buf, prec);
     const size_t n = std::min(cap, values.size());
-    for (size_t i = 0; i < n; ++i) {
-        int64_t v = values[i];
-        switch (prec) {
-            case Precision::FP32: reinterpret_cast<float*>(buf.data())[i] = static_cast<float>(v); break;
-            case Precision::FP16: reinterpret_cast<__fp16*>(buf.data())[i] = static_cast<__fp16>(v); break;
-            case Precision::INT8: reinterpret_cast<int8_t*>(buf.data())[i] = static_cast<int8_t>(v); break;
-            default:
-                if (elem == 8) reinterpret_cast<int64_t*>(buf.data())[i] = v;
-                else if (elem == 4) reinterpret_cast<int32_t*>(buf.data())[i] = static_cast<int32_t>(v);
-                break;
-        }
-    }
-    if (n < cap) {
-        std::memset(buf.data() + n * elem, 0, (cap - n) * elem);
-    }
+    for (size_t i = 0; i < n; ++i) write_int_element(buf.data(), prec, i, values[i]);
+    zero_fill_remainder(buf, prec, n, cap);
 }
 
 std::vector<int64_t> qwen3_vl_position_ids(const std::vector<uint32_t>& tokens,

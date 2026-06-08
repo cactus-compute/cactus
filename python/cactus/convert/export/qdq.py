@@ -18,7 +18,6 @@ from scipy.linalg import hadamard
 
 from ..model_adapters.detection import detect_family
 from ..model_adapters.adapters import adapter_for_family
-from ..model_adapters.naming import restore_hf_key_for_family
 
 CACTUS_MAGIC = b"CACT"
 HEADER_SIZE = 84
@@ -447,13 +446,6 @@ def load_conversion_manifest(cactus_root: Path) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         raise ValueError(f"{path}: expected list")
     return rows
-
-
-def output_key_for_row(row: dict[str, Any], family: str) -> str:
-    key = row.get("hf_name") or row.get("source_name")
-    if not key:
-        raise ValueError(f"manifest row has no hf/source key: {row}")
-    return restore_hf_key_for_family(str(key), family)
 
 
 def output_keys_for_row(row: dict[str, Any], family: str) -> list[str]:

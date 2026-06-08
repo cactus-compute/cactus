@@ -8,7 +8,7 @@ keywords: ["Python package", "Python bindings", "on-device AI", "Python FFI", "e
 
 Python bindings for Cactus Engine via FFI. Auto-installed when you run `source ./setup`.
 
-> **Model weights:** Pre-converted weights for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
+> **Model bundles:** Pre-built runtime bundles for all supported models at [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
 
 ## Getting Started
 
@@ -20,9 +20,9 @@ cactus build --python
 <!-- --8<-- [end:install] -->
 
 ```bash
-# Download models (CLI)
+# Download pre-built bundles (defaults to the generic CPU variant)
 cactus download LiquidAI/LFM2-VL-450M
-cactus download openai/whisper-small
+cactus download openai/whisper-small --platform apple   # CoreML/NPU variant
 
 # Optional: set your Cactus Cloud API key for automatic cloud fallback
 cactus auth
@@ -36,12 +36,12 @@ from cactus import ensure_model
 from cactus import cactus_init, cactus_complete, cactus_destroy
 import json
 
-# Downloads weights from HuggingFace if not already present
-weights = ensure_model("LiquidAI/LFM2-VL-450M")
+# Downloads the pre-built bundle from HuggingFace if not already present
+bundle = ensure_model("LiquidAI/LFM2-VL-450M")
 
-model = cactus_init(str(weights), None, False)
+model = cactus_init(str(bundle), None, False)
 messages = json.dumps([{"role": "user", "content": "What is 2+2?"}])
-result = json.loads(cactus_complete(model, messages, None, None, None))
+result = cactus_complete(model, messages, None, None, None)
 print(result["response"])
 cactus_destroy(model)
 ```
@@ -53,16 +53,17 @@ All functions are module-level and mirror the C FFI directly. Handles are plain 
 
 ### Model Downloads
 
-Download pre-converted weights programmatically (no CLI needed):
+Download pre-built bundles programmatically (no CLI needed):
 
 ```python
-from cactus import ensure_model, get_weights_dir
+from cactus import ensure_model, get_bundle_dir
 
-# ensure_model downloads if missing, returns Path to weights dir
-weights = ensure_model("openai/whisper-tiny")
+# ensure_model downloads the pre-built bundle if missing, returns its Path
+bundle = ensure_model("openai/whisper-tiny")
 
-# Or check / download manually
-weights_dir = get_weights_dir("openai/whisper-tiny")  # -> Path("weights/whisper-tiny")
+# Or resolve the expected on-disk location explicitly
+bundle_dir = get_bundle_dir("openai/whisper-tiny", bits=4, platform=None)
+# -> Path("transpiled/whisper-tiny-cq4")  (or `-cq4-apple` with platform="apple")
 ```
 
 ### Init / Lifecycle
@@ -77,17 +78,17 @@ cactus_get_last_error() -> str | None
 
 ### Completion
 
-Returns a JSON string with `success`, `error`, `cloud_handoff`, `response`, optional `thinking` (only present when the model emits chain-of-thought content, placed before `function_calls`), `function_calls`, `segments` (always `[]` for completion — populated only in transcription responses), `confidence`, timing stats (`time_to_first_token_ms`, `total_time_ms`, `prefill_tps`, `decode_tps`, `ram_usage_mb`), and token counts (`prefill_tokens`, `decode_tokens`, `total_tokens`).
+Returns a `dict` with `success`, `error`, `cloud_handoff`, `response`, optional `thinking` (only present when the model emits chain-of-thought content, placed before `function_calls`), `function_calls`, `segments` (always `[]` for completion — populated only in transcription responses), `confidence`, timing stats (`time_to_first_token_ms`, `total_time_ms`, `prefill_tps`, `decode_tps`, `ram_usage_mb`), and token counts (`prefill_tokens`, `decode_tokens`, `total_tokens`).
 
 ```python
-result_json = cactus_complete(
+result = cactus_complete(
     model: int,
     messages_json: str,              # JSON array of {role, content}
     options_json: str | None,        # optional inference options
     tools_json: str | None,          # optional tool definitions
     callback: Callable[[str, int], None] | None,  # streaming token callback
     pcm_data: list[int] | None = None              # optional raw audio bytes
-) -> str
+) -> dict
 ```
 
 ```python
@@ -95,7 +96,7 @@ result_json = cactus_complete(
 options = json.dumps({"max_tokens": 256, "temperature": 0.7})
 def on_token(token, token_id): print(token, end="", flush=True)
 
-result = json.loads(cactus_complete(model, messages_json, options, None, on_token))
+result = cactus_complete(model, messages_json, options, None, on_token)
 if result["cloud_handoff"]:
     # response already contains cloud result
     pass
@@ -169,7 +170,7 @@ completion_messages = json.dumps([
     {"role": "assistant", "content": "It's sunny and 72°F in Paris!"},
     {"role": "user", "content": "What about SF?"}
 ])
-result = json.loads(cactus_complete(model, completion_messages, None, tools, None))
+result = cactus_complete(model, completion_messages, None, tools, None)
 ```
 
 **Response format:**
@@ -186,17 +187,17 @@ result = json.loads(cactus_complete(model, completion_messages, None, tools, Non
 
 ### Transcription
 
-Returns a JSON string. Use `json.loads()` to access the `response` field (transcribed text), the `segments` array (timestamped segments as `{"start": <sec>, "end": <sec>, "text": "<str>"}` — Whisper: phrase-level from timestamp tokens; Parakeet TDT: word-level from frame timing; Parakeet CTC and Moonshine: one segment per transcription window (consecutive VAD speech regions up to 30s)), and other metadata.
+Returns a `dict` with the `response` field (transcribed text), the `segments` array (timestamped segments as `{"start": <sec>, "end": <sec>, "text": "<str>"}` — Whisper: phrase-level from timestamp tokens; Parakeet TDT: word-level from frame timing; Parakeet CTC and Moonshine: one segment per transcription window (consecutive VAD speech regions up to 30s)), and other metadata.
 
 ```python
-result_json = cactus_transcribe(
+result = cactus_transcribe(
     model: int,
     audio_path: str | None,
     prompt: str | None,
     options_json: str | None,
     callback: Callable[[str, int], None] | None,
-    pcm_data: bytes | None
-) -> str
+    pcm_data: list[int] | bytes | None
+) -> dict
 ```
 
 **Custom vocabulary** biases the decoder toward domain-specific words (supported for Whisper and Moonshine models). Pass `custom_vocabulary` and `vocabulary_boost` in `options_json`:
@@ -206,11 +207,11 @@ options = json.dumps({
     "custom_vocabulary": ["Omeprazole", "HIPAA", "Cactus"],
     "vocabulary_boost": 3.0
 })
-result = json.loads(cactus_transcribe(model, "medical_notes.wav", None, options, None, None))
+result = cactus_transcribe(model, "medical_notes.wav", None, options, None, None)
 ```
 
 ```python
-result = json.loads(cactus_transcribe(model, "/path/to/audio.wav", None, None, None, None))
+result = cactus_transcribe(model, "/path/to/audio.wav", None, None, None, None)
 print(result["response"])
 for seg in result["segments"]:
     print(f"[{seg['start']:.3f}s - {seg['end']:.3f}s] {seg['text']}")
@@ -227,30 +228,17 @@ embedding = cactus_audio_embed(model: int, audio_path: str) -> list[float]
 ### Tokenization
 
 ```python
-tokens     = cactus_tokenize(model: int, text: str) -> list[int]
-result_json = cactus_score_window(model: int, tokens: list[int], start: int, end: int, context: int) -> str
+tokens = cactus_tokenize(model: int, text: str) -> list[int]
+result = cactus_score_window(model: int, tokens: list[int], start: int, end: int, context: int) -> dict
 ```
-
-### Detect Language
-
-```python
-result_json = cactus_detect_language(
-    model: int,
-    audio_path: str | None,
-    options_json: str | None,
-    pcm_data: bytes | None
-) -> str
-```
-
-Returns a JSON string with fields: `success`, `error`, `language` (BCP-47 code), `language_token`, `token_id`, `confidence`, `entropy`, `total_time_ms`, `ram_usage_mb`.
 
 ### RAG
 
 ```python
-result_json = cactus_rag_query(model: int, query: str, top_k: int) -> str
+result = cactus_rag_query(model: int, query: str, top_k: int) -> dict
 ```
 
-Returns a JSON string with a `chunks` array. Each chunk has `score` (float), `source` (str, from document metadata), and `content` (str):
+Returns a `dict` with a `chunks` array. Each chunk has `score` (float), `source` (str, from document metadata), and `content` (str):
 
 ```json
 {
@@ -267,8 +255,8 @@ index = cactus_index_init(index_dir: str, embedding_dim: int) -> int
 cactus_index_add(index: int, ids: list[int], documents: list[str],
                  metadatas: list[str] | None, embeddings: list[list[float]])
 cactus_index_delete(index: int, ids: list[int])
-result_json = cactus_index_get(index: int, ids: list[int]) -> str
-result_json = cactus_index_query(index: int, embedding: list[float], options_json: str | None) -> str
+result = cactus_index_get(index: int, ids: list[int]) -> dict
+result = cactus_index_query(index: int, embedding: list[float], options_json: str | None) -> dict
 cactus_index_compact(index: int)
 cactus_index_destroy(index: int)
 ```
@@ -285,7 +273,7 @@ cactus_log_set_callback(callback: Callable[[int, str, str], None] | None)
 ### Telemetry
 
 ```python
-cactus_set_telemetry_environment(cache_location: str)
+cactus_set_telemetry_environment(framework: str, cache_location: str | None, version: str | None)
 cactus_set_app_id(app_id: str)
 cactus_telemetry_flush()
 cactus_telemetry_shutdown()
@@ -303,7 +291,7 @@ messages = json.dumps([{
     "content": "Describe this image",
     "images": ["path/to/image.png"]
 }])
-result = json.loads(cactus_complete(model, messages, None, None, None))
+result = cactus_complete(model, messages, None, None, None)
 print(result["response"])
 ```
 
@@ -317,7 +305,7 @@ messages = json.dumps([{
     "content": "Transcribe the audio.",
     "audio": ["path/to/audio.wav"]
 }])
-result = json.loads(cactus_complete(model, messages, None, None, None))
+result = cactus_complete(model, messages, None, None, None)
 print(result["response"])
 
 # Combined vision + audio
@@ -327,7 +315,7 @@ messages = json.dumps([{
     "images": ["path/to/image.png"],
     "audio": ["path/to/audio.wav"]
 }])
-result = json.loads(cactus_complete(model, messages, None, None, None))
+result = cactus_complete(model, messages, None, None, None)
 ```
 
 ## Compute Graph
@@ -335,7 +323,7 @@ result = json.loads(cactus_complete(model, messages, None, None, None))
 The `Graph` API provides a tensor computation graph for building and executing dataflow pipelines on the Cactus kernel layer:
 
 ```python
-from cactus.bindings.graph import Graph
+from cactus.bindings.cactus import Graph
 import numpy as np
 
 g = Graph()
@@ -361,10 +349,8 @@ python python/test.py        # compact output
 python python/test.py -v     # verbose
 ```
 
-Tests are in `python/tests/`:
-
-- `test_graph.py` — Graph elementwise, composed, tensor, activation, and softmax ops
-- `test_model.py` — VLM completion/embeddings, Whisper transcription/embeddings (auto-downloads weights if missing)
+Tests are in `python/tests/` — bindings, CLI, server, graph, model, transpile,
+and component-partition coverage. Add a new `test_*.py` to extend.
 
 ## See Also
 

@@ -59,12 +59,15 @@ def _load_hf(model_id_or_path: str, device: str):
     try:
         cfg = AutoConfig.from_pretrained(model_id_or_path, trust_remote_code=True, local_files_only=Path(model_id_or_path).exists())
     except Exception:
-        if Path(model_id_or_path).exists():
-            cfg_path = Path(model_id_or_path) / "config.json"
-        else:
-            from huggingface_hub import hf_hub_download
-            cfg_path = Path(hf_hub_download(model_id_or_path, "config.json", cache_dir=_hf_cache_dir()))
-        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        try:
+            if Path(model_id_or_path).exists():
+                cfg_path = Path(model_id_or_path) / "config.json"
+            else:
+                from huggingface_hub import hf_hub_download
+                cfg_path = Path(hf_hub_download(model_id_or_path, "config.json", cache_dir=_hf_cache_dir()))
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"Could not load model {model_id_or_path!r}: {exc}") from exc
     family = detect_family(cfg, "auto")
     adapter = adapter_for_family(family)
     processor = adapter.load_processor(model_id_or_path)

@@ -21,7 +21,7 @@ def generate_app_delegate(output_path, test_files)
   extern_declarations = test_names.map { |name| "extern int #{name}_main();" }.join("\n")
   test_calls = test_names.map { |name|
     filter_name = name.sub(/^test_/, '')
-    "        if (should_run(\"#{filter_name}\")) #{name}_main();"
+    "        if (should_run(\"#{filter_name}\")) failed |= (#{name}_main() != 0);"
   }.join("\n")
 
   app_delegate_content = <<~OBJC
@@ -29,7 +29,7 @@ def generate_app_delegate(output_path, test_files)
 #import "AppDelegate.h"
 #import <TargetConditionals.h>
 #import <unistd.h>
-#include "cactus.h"
+#include "cactus_engine.h"
 #include <string>
 
 #{extern_declarations}
@@ -73,6 +73,7 @@ def generate_app_delegate(output_path, test_files)
 
     NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_MODEL")];
+    [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_TRANSCRIPTION_MODEL")];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_ASSETS")];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -82,9 +83,12 @@ def generate_app_delegate(output_path, test_files)
             return filter.empty() || filter == name;
         };
 
+        int failed = 0;
         #{test_calls}
 
-        exit(0);
+        FILE* f = fopen("cactus_test.exitcode", "w");
+        if (f) { fprintf(f, "%d\\n", failed); fclose(f); }
+        exit(failed);
     });
 
     return YES;
@@ -163,13 +167,12 @@ end
 
 apple_dir = File.join(project_root, 'apple')
 static_lib_path = device_type == 'simulator' ?
-  File.join(apple_dir, 'libcactus-simulator.a') :
-  File.join(apple_dir, 'libcactus-device.a')
+  File.join(apple_dir, 'libcactus_engine-simulator.a') :
+  File.join(apple_dir, 'libcactus_engine-device.a')
 
 fail_with("Static library not found at: #{static_lib_path}") unless File.exist?(static_lib_path)
 puts "Using static library: #{static_lib_path}"
 
-cactus_dir = File.join(project_root, 'cactus')
 cactus_engine_dir = File.join(project_root, 'cactus-engine')
 cactus_graph_dir = File.join(project_root, 'cactus-graph')
 cactus_kernels_dir = File.join(project_root, 'cactus-kernels')
@@ -203,7 +206,7 @@ end
 
 target.build_configurations.each do |config|
   config.build_settings['HEADER_SEARCH_PATHS'] ||= ['$(inherited)']
-  [tests_root, cactus_dir, cactus_engine_dir, cactus_graph_dir, cactus_kernels_dir, File.join(cactus_kernels_dir, 'src')].each do |path|
+  [tests_root, cactus_engine_dir, cactus_graph_dir, cactus_kernels_dir, File.join(cactus_kernels_dir, 'src')].each do |path|
     config.build_settings['HEADER_SEARCH_PATHS'] << path unless config.build_settings['HEADER_SEARCH_PATHS'].include?(path)
   end
   if curl_root && !curl_root.empty?

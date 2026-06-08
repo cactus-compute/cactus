@@ -3,7 +3,6 @@ name: Build
 on:
   pull_request:
     paths:
-      - cactus/**
       - cactus-engine/**
       - cactus-graph/**
       - cactus-kernels/**
@@ -13,7 +12,6 @@ on:
   push:
     branches: [main]
     paths:
-      - cactus/**
       - cactus-engine/**
       - cactus-graph/**
       - cactus-kernels/**
@@ -25,13 +23,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   apple:
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - run: bash cactus/build.sh
+      - run: bash cactus-engine/build.sh
       - run: BUILD_STATIC=true BUILD_XCFRAMEWORK=false bash apple/build.sh
       - run: bash android/build.sh
 
@@ -41,4 +43,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y cmake build-essential libcurl4-openssl-dev
-      - run: bash cactus/build.sh
+      - run: bash cactus-engine/build.sh

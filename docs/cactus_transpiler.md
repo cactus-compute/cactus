@@ -55,7 +55,7 @@ cactus convert ./classifier.pt ./classifier-cactus --bits 4
 cactus transpile ./classifier.pt --weights-dir ./classifier-cactus
 
 # Run the transpiled bundle
-cactus run ./transpiled/classifier
+cactus run ./classifier-cactus
 ```
 
 That's it. The output is a self-contained bundle with memory-mapped weights that
@@ -198,7 +198,7 @@ cactus convert google/gemma-4-E2B-it ./gemma4-weights --bits 4
 cactus transpile google/gemma-4-E2B-it --weights-dir ./gemma4-weights
 
 # 3. Run
-cactus run ./transpiled/google/gemma-4-E2B-it --prompt "Hello!"
+cactus run ./gemma4-weights --prompt "Hello!"
 ```
 
 ### Text Models
@@ -240,26 +240,28 @@ cactus transpile nvidia/parakeet-tdt-0.6b-v3 \
 
 ## Running Saved Bundles
 
-Transpiled bundles are saved to `./transpiled/<model>/` by default. Run them later
-without re-transpiling:
+Transpiled bundles are saved to `./weights/<model>/` by default (alongside their CQ
+weights). Run them later without re-transpiling:
 
 ```bash
 # Text
-cactus run ./transpiled/Qwen_Qwen3-0.6B --prompt "Write a haiku"
+cactus run ./weights/qwen3-0.6b --prompt "Write a haiku"
 
 # Multimodal
-cactus run-transpiled ./transpiled/google/gemma-4-E2B-it \
-  --image-file photo.jpg \
-  --file speech.wav \
+cactus run ./weights/gemma-4-e2b-it \
+  --image photo.jpg \
+  --audio speech.wav \
   --prompt "What do you see?"
 
 # Audio
-cactus run-transpiled ./transpiled/nvidia/parakeet-tdt-0.6b-v3 \
-  --file meeting.wav
+cactus run ./weights/parakeet-tdt-0.6b-v3 \
+  --audio meeting.wav
 ```
 
-`cactus run` auto-detects transpiled bundles by looking for a `manifest.json` in the
-directory.
+`cactus run` accepts either a HuggingFace model id (downloads the bundle) or a
+local bundle directory path (detected by the presence of
+`components/manifest.json`). The standalone `run-transpiled` subcommand was
+removed — `cactus run` handles both cases.
 
 ---
 
@@ -270,7 +272,7 @@ You can also drive the transpiler from Python:
 ```python
 from cactus.transpile.capture_pytorch import capture_model
 from cactus.transpile.lower import transpile_ir
-from cactus.bindings.graph import Graph
+from cactus.bindings.cactus import Graph
 import torch
 import numpy as np
 
@@ -385,7 +387,7 @@ component. Use `loaded.reset()` between independent generations.
 A transpiled bundle looks like this:
 
 ```
-transpiled/<model>/
+weights/<model>/
   raw_ir.json              # IR before optimization (debugging)
   optimized_ir.json        # IR after fusion passes (debugging)
   graph.cactus             # serialized runtime graph
@@ -420,34 +422,56 @@ cactus transpile <model-id-or-path> [options]
 
 | Option | Description |
 |--------|-------------|
-| `--weights-dir <path>` | Path to converted Cactus weights (required) |
-| `--task <task>` | Force task type (`auto` by default) |
-| `--prompt <text>` | Example text prompt for capture |
-| `--image-file <path>` | Example image for multimodal capture |
-| `--audio-file <path>` | Example audio for multimodal/speech capture |
-| `--artifact-dir <path>` | Output directory (default: `./transpiled/<model>`) |
+| `--weights-dir <path>` | Path to converted CQ weights (default: `weights/<model_name>`) |
+| `--task <name>` | Force task type (default: `auto` — inferred from weights). Choices: `causal_lm_logits`, `multimodal_causal_lm_logits`, `ctc_logits`, `encoder_hidden_states`, `seq2seq_transcription`, `tdt_transcription` |
+| `--prompt <text>` | Representative prompt for shape capture |
+| `--image-file <path>` | Representative image (repeatable) |
+| `--audio-file <path>` | Representative audio file |
+| `--max-new-tokens <N>` | Generation room to preallocate for causal decode graphs |
+| `--artifact-dir <path>` | Output directory (default: `weights/<model>`) |
 | `--execute-after-transpile` | Run the graph after saving |
 | `--skip-reference-compare` | Skip PyTorch vs transpiled comparison |
-| `--component-pipeline auto\|on\|off` | Control component splitting |
+| `--component-pipeline auto\|on\|off` | Use split component graph transpilation when supported |
+| `--components <list>` | Comma-separated component subset for component-pipeline models |
+| `--trust-remote-code` | Allow HF remote code during the transpile phase |
+| `--local-files-only` | Require HF files to already be local |
+| `--allow-unconverted-weights` | Transpile against an unconverted source checkpoint |
 | `--no-fuse-rms-norm` | Disable RMSNorm fusion |
 | `--no-fuse-rope` | Disable RoPE fusion |
 | `--no-fuse-attention` | Disable attention fusion |
 
-### `cactus run-transpiled`
+NPU emission (CoreML `.mlpackage`s for Apple Silicon audio/vision encoders) is
+implemented on the underlying `python -m cactus.transpile.hf_model` script
+(`--npu`, `--npu-quantize`, `--npu-audio-quantize`, `--npu-vision-quantize`)
+but is not yet exposed on the user-facing `cactus transpile` argparser.
+
+### `cactus run`
 
 ```bash
-cactus run-transpiled <bundle-dir> [options]
+cactus run <model-id-or-bundle-path> [options]
 ```
+
+`model_id` may be a HuggingFace model id (downloads the matching bundle from
+huggingface.co/Cactus-Compute) or a local path to a bundle directory.
 
 | Option | Description |
 |--------|-------------|
+| `--bits 1\|2\|3\|4` | CQ quantization bits when downloading (default: 4) |
+| `--platform cpu\|apple` | Target accelerator (default: cpu — generic ARM) |
+| `--token <token>` | HuggingFace token (gated models) |
 | `--prompt <text>` | Input prompt |
 | `--input-ids <ids>` | Comma-separated token IDs |
-| `--file <path>` | Audio file for speech bundles |
-| `--image-file <path>` | Image file for multimodal bundles |
-| `--weights-dir <path>` | Override weight directory |
+| `--image <path>` | Image file for multimodal bundles |
+| `--audio <path>` | Audio file for speech / audio bundles |
 | `--system <prompt>` | System prompt |
-| `--thinking` | Enable chain-of-thought mode |
+| `--thinking` | Enable thinking / reasoning mode |
+| `--max-new-tokens <N>` | Max tokens to generate |
+| `--result-json <path>` | Save bundle result payload to JSON |
+| `--no-cloud-handoff` | Disable automatic cloud handoff |
+| `--confidence-threshold <f>` | Confidence threshold below which to hand off to cloud |
+| `--cloud-timeout-ms <N>` | Max wait time for cloud handoff |
+| `--no-cloud-tele` | Disable cloud telemetry (write to cache only) |
+| `--reconvert` | Force local convert+transpile fallback |
 
 ---
 

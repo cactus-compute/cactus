@@ -1,4 +1,7 @@
-from .common import print_color, mask_key, GREEN
+import getpass
+import sys
+
+from .common import print_color, mask_key, CYAN, GREEN, NC, YELLOW
 
 
 def cmd_auth(args):
@@ -21,9 +24,13 @@ def cmd_auth(args):
     if args.status:
         return 0
 
+    if not sys.stdin.isatty():
+        print_color(YELLOW, "stdin is not a TTY; refusing interactive key entry. Set CACTUS_CLOUD_KEY env var instead.")
+        return 0
+
     print()
-    print("Get your cloud key at \033[1;36mhttps://www.cactuscompute.com/dashboard/api-keys\033[0m")
-    new_key = input("Enter new API key (press Enter to skip): ").strip()
+    print(f"Get your cloud key at {CYAN}https://www.cactuscompute.com/dashboard/api-keys{NC}")
+    new_key = getpass.getpass("Enter new API key (press Enter to skip): ").strip()
     if new_key:
         config.set_api_key(new_key)
         print_color(GREEN, f"API key saved: {mask_key(new_key)}")

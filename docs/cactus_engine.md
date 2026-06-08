@@ -22,11 +22,15 @@ cactus download openai/whisper-small
 cactus auth
 ```
 
-`cactus download` fetches pre-converted CQ weights from
+`cactus download` fetches a **pre-built runtime bundle** (CQ weights + serialized
+graph + manifest) from
 [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute) into
-`weights/<model>` and they can be loaded directly via `cactus_init()`. For
-models without a pre-converted archive, use `cactus convert <model>` to build
-them from source.
+`transpiled/<model>-cq<bits>[-<platform>]/`. Defaults to the generic CPU
+bundle; pass `--platform apple` for the Apple Silicon variant. The result
+can be loaded directly via `cactus_init()`.
+
+For models not on Cactus-Compute, build a bundle from source with
+`cactus convert <model>` followed by `cactus transpile <model>`.
 
 ## Types
 
@@ -171,7 +175,7 @@ int cactus_complete(
 | `include_stop_sequences` | bool | false | Include stop sequence tokens in the response |
 | `force_tools` | bool | false | Constrain output to tool call format |
 | `tool_rag_top_k` | int | 2 | Select top-k relevant tools via Tool RAG (0 = disabled, use all tools) |
-| `confidence_threshold` | float | 0.7 | Minimum confidence for local generation; triggers cloud_handoff when below |
+| `confidence_threshold` | float | model-dependent | Minimum confidence for local generation; triggers cloud_handoff when below. Resolved in this order: `0.5` if the bundle ships a `handoff_probe.bin`; else the model's `default_cloud_handoff_threshold` (Gemma 4 = `0.92`); else `0.7`. |
 | `auto_handoff` | bool | true | Automatically attempt cloud handoff when confidence is low |
 | `cloud_timeout_ms` | int | 15000 | Timeout in milliseconds for cloud handoff requests |
 | `handoff_with_images` | bool | true | Allow cloud handoff for requests that include images |
@@ -466,6 +470,24 @@ if (result >= 0) {
 }
 ```
 
+### `cactus_benchmark_tokens`
+Runs a prefill + decode benchmark on the given prompt tokens and returns timing JSON
+(prefill ms, decode ms, tokens/sec). Useful for measuring inference performance on
+a specific model + device without running the full chat loop.
+
+```c
+int cactus_benchmark_tokens(
+    cactus_model_t model,
+    const uint32_t* prompt_tokens,
+    size_t prompt_token_len,
+    size_t decode_token_len,
+    char* response_buffer,
+    size_t buffer_size
+);
+```
+
+Returns the number of bytes written to `response_buffer` on success, `-1` on error.
+
 ### `cactus_transcribe`
 Transcribes audio to text. Supports Whisper, Moonshine, and Parakeet models. Supports both file-based and buffer-based audio input.
 
@@ -574,7 +596,7 @@ int result = cactus_transcribe(whisper, NULL, NULL,
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `max_tokens` | int | 448 | Maximum tokens to generate |
+| `max_tokens` | int | auto | Maximum tokens to generate. When unset, scales with audio length (`audio_sec × 20` for Whisper, `× 30` for Parakeet), then clamped to the Whisper decoder ceiling of 448. |
 | `custom_vocabulary` | array | [] | List of words or phrases to bias the decoder toward. Useful for proper nouns, acronyms, medical terms, and domain-specific jargon. |
 | `vocabulary_boost` | float | 5.0 | Logit bias strength applied to tokens from `custom_vocabulary`. Clamped to 0.0–20.0. Higher values make the listed words more likely to appear. |
 
@@ -592,70 +614,6 @@ int result = cactus_transcribe(whisper, "medical_notes.wav", NULL,
                                 NULL, 0);
 if (result > 0) {
     printf("Transcription: %s\n", response);
-}
-```
-
-### `cactus_detect_language`
-Detects the spoken language in an audio file or PCM buffer.
-
-```c
-int cactus_detect_language(
-    cactus_model_t model,           // Model handle (must be Whisper model)
-    const char* audio_file_path,    // Path to WAV file (16-bit PCM) - can be NULL if using pcm_buffer
-    char* response_buffer,          // Buffer for response JSON
-    size_t buffer_size,             // Size of response buffer
-    const char* options_json,       // Optional options (can be NULL)
-    const uint8_t* pcm_buffer,      // Optional raw PCM audio buffer (can be NULL if using file)
-    size_t pcm_buffer_size          // Size of PCM buffer in bytes (must be even and >= 2)
-);
-```
-
-**Returns:** Number of bytes written to response_buffer on success, negative value on error
-
-**Note:** Exactly one of `audio_file_path` or `pcm_buffer` must be provided; passing both or neither returns -1. The file path must point to a 16-bit PCM WAV file. The `pcm_buffer` must contain 16-bit signed PCM samples at 16 kHz and `pcm_buffer_size` must be even and at least 2. Only Whisper models are supported; passing any other model type returns -1.
-
-**Options Format:**
-```json
-{
-    "use_vad": true
-}
-```
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `use_vad` | bool | true | Filter audio through VAD before language detection (requires model initialized with a VAD component) |
-
-**Response Format:**
-```json
-{
-    "success": true,
-    "error": null,
-    "language": "en",
-    "language_token": "<|en|>",
-    "token_id": 50259,
-    "confidence": 0.9812,
-    "entropy": 0.0188,
-    "total_time_ms": 234.56,
-    "ram_usage_mb": 512.34
-}
-```
-
-- `language`: ISO 639-1 language code, or `"unknown"` if detection failed
-- `language_token`: Raw token text emitted by the model for the language (e.g. `"<|en|>"`)
-- `token_id`: Vocabulary token ID of the language token
-- `confidence`: Detection confidence (0.0–1.0), derived as `1.0 - entropy`
-- `entropy`: Normalized entropy of the sampled token
-- `total_time_ms`: Total detection time in milliseconds
-- `ram_usage_mb`: Current process RAM usage
-
-**Example:**
-```c
-cactus_model_t whisper = cactus_init("../../weights/whisper-small", NULL, false);
-
-char response[1024];
-int result = cactus_detect_language(whisper, "audio.wav", response, sizeof(response), NULL, NULL, 0);
-if (result >= 0) {
-    printf("Detected language: %s\n", response);
 }
 ```
 
@@ -1229,20 +1187,6 @@ int find_similar_image(cactus_model_t model, const char* query,
 }
 ```
 
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CACTUS_KV_WINDOW_SIZE` | 512 | Sliding window size for KV cache |
-| `CACTUS_KV_SINK_SIZE` | 4 | Number of attention sink tokens to preserve |
-
-**Example:**
-```bash
-export CACTUS_KV_WINDOW_SIZE=1024
-export CACTUS_KV_SINK_SIZE=8
-./my_app
-```
-
 ## Best Practices
 
 1. **Always Check Return Values**: Functions return negative values on error
@@ -1272,7 +1216,6 @@ Common error scenarios:
 2. **Streaming for UX**: Use callbacks for responsive user interfaces
 3. **Early Stopping**: Use `cactus_stop()` to avoid unnecessary generation
 4. **Batch Embeddings**: When possible, process multiple texts in sequence without resetting
-5. **KV Cache Tuning**: Adjust `CACTUS_KV_WINDOW_SIZE` based on your context needs
 
 ## Logging
 
@@ -1344,5 +1287,5 @@ void cactus_telemetry_shutdown(void);
 - [Python Binding](/python/) — Python bindings for the Engine API
 - [Swift Binding](/bindings/swift/) — Swift bindings for iOS and macOS
 - [Kotlin Binding](/bindings/kotlin/) — Kotlin Multiplatform bindings
-- [Flutter Binding](/flutter/) — Dart FFI bindings for mobile apps
-- [Rust Binding](/rust/) — Rust FFI bindings via bindgen
+- [Flutter Binding](/bindings/flutter/) — Dart FFI bindings for mobile apps
+- [Rust Binding](/bindings/rust/) — Raw `extern "C"` FFI declarations

@@ -9,6 +9,45 @@
 
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
+
+static void conv2d_k3_weights_to_f32(
+    const __fp16* weight, float* W_f32,
+    size_t C_out, size_t C_in
+) {
+    const size_t col_K = C_in * 9;
+    for (size_t oc = 0; oc < C_out; ++oc)
+        for (size_t ic = 0; ic < C_in; ++ic)
+            for (size_t kh = 0; kh < 3; ++kh)
+                for (size_t kw = 0; kw < 3; ++kw)
+                    W_f32[oc * col_K + ic * 9 + kh * 3 + kw] =
+                        static_cast<float>(weight[((oc * C_in + ic) * 3 + kh) * 3 + kw]);
+}
+
+static void conv2d_gemm_bias_convert(
+    const float* W_f32, const float* col, const float* bias_f32,
+    __fp16* Yn, size_t C_out, size_t col_K, size_t spatial
+) {
+    std::vector<float> Y_f32(C_out * spatial);
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                static_cast<int>(C_out), static_cast<int>(spatial), static_cast<int>(col_K),
+                1.0f, W_f32, static_cast<int>(col_K),
+                col, static_cast<int>(spatial),
+                0.0f, Y_f32.data(), static_cast<int>(spatial));
+
+    for (size_t oc = 0; oc < C_out; ++oc) {
+        const float b = bias_f32[oc];
+        const float* src = Y_f32.data() + oc * spatial;
+        __fp16* dst = Yn + oc * spatial;
+        size_t i = 0;
+        for (; i + 8 <= spatial; i += 8) {
+            float32x4_t v0 = vaddq_f32(vld1q_f32(src + i),     vdupq_n_f32(b));
+            float32x4_t v1 = vaddq_f32(vld1q_f32(src + i + 4), vdupq_n_f32(b));
+            vst1q_f16(dst + i, vcombine_f16(vcvt_f16_f32(v0), vcvt_f16_f32(v1)));
+        }
+        for (; i < spatial; ++i)
+            dst[i] = static_cast<__fp16>(src[i] + b);
+    }
+}
 #endif
 
 void cactus_conv2d_f16_k3s2p1_nchw(
@@ -29,12 +68,7 @@ void cactus_conv2d_f16_k3s2p1_nchw(
         const size_t spatial = H_out * W_out;
         const size_t col_K = C_in * 9;
         std::vector<float> W_f32(C_out * col_K);
-        for (size_t oc = 0; oc < C_out; ++oc)
-            for (size_t ic = 0; ic < C_in; ++ic)
-                for (size_t kh = 0; kh < 3; ++kh)
-                    for (size_t kw = 0; kw < 3; ++kw)
-                        W_f32[oc * col_K + ic * 9 + kh * 3 + kw] =
-                            static_cast<float>(weight[((oc * C_in + ic) * 3 + kh) * 3 + kw]);
+        conv2d_k3_weights_to_f32(weight, W_f32.data(), C_out, C_in);
 
         std::vector<float> bias_f32(C_out, 0.0f);
         if (bias)
@@ -42,7 +76,6 @@ void cactus_conv2d_f16_k3s2p1_nchw(
                 bias_f32[i] = static_cast<float>(bias[i]);
 
         std::vector<float> col(col_K * spatial);
-        std::vector<float> Y_f32(C_out * spatial);
 
         for (size_t n = 0; n < N; ++n) {
             const __fp16* Xn = input + n * C_in * H * W;
@@ -71,25 +104,7 @@ void cactus_conv2d_f16_k3s2p1_nchw(
                 }
             }
 
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                        static_cast<int>(C_out), static_cast<int>(spatial), static_cast<int>(col_K),
-                        1.0f, W_f32.data(), static_cast<int>(col_K),
-                        col.data(), static_cast<int>(spatial),
-                        0.0f, Y_f32.data(), static_cast<int>(spatial));
-
-            for (size_t oc = 0; oc < C_out; ++oc) {
-                const float b = bias_f32[oc];
-                const float* src = Y_f32.data() + oc * spatial;
-                __fp16* dst = Yn + oc * spatial;
-                size_t i = 0;
-                for (; i + 8 <= spatial; i += 8) {
-                    float32x4_t v0 = vaddq_f32(vld1q_f32(src + i),     vdupq_n_f32(b));
-                    float32x4_t v1 = vaddq_f32(vld1q_f32(src + i + 4), vdupq_n_f32(b));
-                    vst1q_f16(dst + i, vcombine_f16(vcvt_f16_f32(v0), vcvt_f16_f32(v1)));
-                }
-                for (; i < spatial; ++i)
-                    dst[i] = static_cast<__fp16>(src[i] + b);
-            }
+            conv2d_gemm_bias_convert(W_f32.data(), col.data(), bias_f32.data(), Yn, C_out, col_K, spatial);
         }
         return;
     }
@@ -493,34 +508,24 @@ void cactus_conv2d_f16_k3s1p1_nchw(
 #ifdef __APPLE__
     const size_t col_K = C_in * 9;
     std::vector<float> W_f32(C_out * col_K);
-    for (size_t oc = 0; oc < C_out; ++oc) {
-        for (size_t ic = 0; ic < C_in; ++ic) {
-            for (size_t kh = 0; kh < 3; ++kh) {
-                for (size_t kw = 0; kw < 3; ++kw) {
-                    W_f32[oc * col_K + ic * 9 + kh * 3 + kw] =
-                        static_cast<float>(weight[((oc * C_in + ic) * 3 + kh) * 3 + kw]);
-                }
-            }
-        }
-    }
+    conv2d_k3_weights_to_f32(weight, W_f32.data(), C_out, C_in);
 
     std::vector<float> bias_f32(C_out, 0.0f);
-    if (bias) {
+    if (bias)
         for (size_t i = 0; i < C_out; ++i)
             bias_f32[i] = static_cast<float>(bias[i]);
-    }
 
-    std::vector<float> col(col_K * H_out * W_out);
-    std::vector<float> Y_f32(C_out * H_out * W_out);
+    const size_t spatial = H_out * W_out;
+    std::vector<float> col(col_K * spatial);
 
     for (size_t n = 0; n < N; ++n) {
         const __fp16* Xn = input + n * C_in * H * W;
-        __fp16* Yn = output + n * C_out * H_out * W_out;
+        __fp16* Yn = output + n * C_out * spatial;
 
         for (size_t ic = 0; ic < C_in; ++ic) {
             for (size_t kh = 0; kh < 3; ++kh) {
                 for (size_t kw = 0; kw < 3; ++kw) {
-                    float* dst = col.data() + (ic * 9 + kh * 3 + kw) * H_out * W_out;
+                    float* dst = col.data() + (ic * 9 + kh * 3 + kw) * spatial;
                     for (size_t oh = 0; oh < H_out; ++oh) {
                         ptrdiff_t ih = static_cast<ptrdiff_t>(oh) + static_cast<ptrdiff_t>(kh) - 1;
                         float* dst_row = dst + oh * W_out;
@@ -546,25 +551,7 @@ void cactus_conv2d_f16_k3s1p1_nchw(
             }
         }
 
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    static_cast<int>(C_out), static_cast<int>(H_out * W_out), static_cast<int>(col_K),
-                    1.0f, W_f32.data(), static_cast<int>(col_K),
-                    col.data(), static_cast<int>(H_out * W_out),
-                    0.0f, Y_f32.data(), static_cast<int>(H_out * W_out));
-
-        for (size_t oc = 0; oc < C_out; ++oc) {
-            float b = bias_f32[oc];
-            const float* src = Y_f32.data() + oc * H_out * W_out;
-            __fp16* dst = Yn + oc * H_out * W_out;
-            size_t i = 0;
-            for (; i + 8 <= H_out * W_out; i += 8) {
-                float32x4_t v0 = vaddq_f32(vld1q_f32(src + i), vdupq_n_f32(b));
-                float32x4_t v1 = vaddq_f32(vld1q_f32(src + i + 4), vdupq_n_f32(b));
-                vst1q_f16(dst + i, vcombine_f16(vcvt_f16_f32(v0), vcvt_f16_f32(v1)));
-            }
-            for (; i < H_out * W_out; ++i)
-                dst[i] = static_cast<__fp16>(src[i] + b);
-        }
+        conv2d_gemm_bias_convert(W_f32.data(), col.data(), bias_f32.data(), Yn, C_out, col_K, spatial);
     }
 
 #else

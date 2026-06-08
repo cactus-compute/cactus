@@ -5,7 +5,15 @@ pub type CactusIndexT = *mut c_void;
 pub type CactusTokenCallback = Option<unsafe extern "C" fn(token: *const c_char, token_id: u32, user_data: *mut c_void)>;
 pub type CactusLogCallback = Option<unsafe extern "C" fn(level: c_int, component: *const c_char, message: *const c_char, user_data: *mut c_void)>;
 
-extern "C" {
+#[cfg_attr(target_os = "macos", link(name = "Accelerate", kind = "framework"))]
+#[cfg_attr(target_os = "macos", link(name = "CoreML", kind = "framework"))]
+#[cfg_attr(target_os = "macos", link(name = "Foundation", kind = "framework"))]
+#[cfg_attr(target_os = "macos", link(name = "Security", kind = "framework"))]
+#[cfg_attr(target_os = "macos", link(name = "SystemConfiguration", kind = "framework"))]
+#[cfg_attr(target_os = "macos", link(name = "CFNetwork", kind = "framework"))]
+#[cfg_attr(target_os = "macos", link(name = "curl"))]
+#[link(name = "cactus_engine", kind = "static")]
+unsafe extern "C" {
     pub fn cactus_init(model_path: *const c_char, corpus_dir: *const c_char, cache_index: bool) -> CactusModelT;
     pub fn cactus_destroy(model: CactusModelT);
     pub fn cactus_reset(model: CactusModelT);

@@ -19,19 +19,9 @@ from cactus import (
 from cactus.cli.model import ensure_bundle
 
 
-def _find_asset(name):
-    for candidate in (
-        PROJECT_ROOT / "python" / "cactus" / "assets" / name,
-        PROJECT_ROOT / "cactus-engine" / "tests" / "assets" / name,
-        PROJECT_ROOT / "tests" / "assets" / name,
-    ):
-        if candidate.exists():
-            return candidate
-    return None
-
-
-_TEST_IMAGE = _find_asset("test_monkey.png")
-_TEST_AUDIO = _find_asset("test.wav")
+_ASSETS_DIR = PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
+_TEST_IMAGE = _ASSETS_DIR / "test_monkey.png"
+_TEST_AUDIO = _ASSETS_DIR / "test.wav"
 
 class TestVLMModel(unittest.TestCase):
 
@@ -52,13 +42,11 @@ class TestVLMModel(unittest.TestCase):
         self.assertTrue(result.get("success", False))
         self.assertGreater(len(result.get("response", "")), 0)
 
-    @unittest.skipUnless(_TEST_IMAGE is not None, "test_monkey.png not found")
     def test_image_embedding(self):
         embedding = cactus_image_embed(self.model, str(_TEST_IMAGE))
         self.assertIsInstance(embedding, list)
         self.assertGreater(len(embedding), 0)
 
-    @unittest.skipUnless(_TEST_IMAGE is not None, "test_monkey.png not found")
     def test_vlm_image_completion(self):
         messages = [{
             "role": "user",
@@ -83,7 +71,6 @@ class TestWhisperModel(unittest.TestCase):
     def tearDownClass(cls):
         cactus_destroy(cls.model)
 
-    @unittest.skipUnless(_TEST_AUDIO is not None, "test.wav not found")
     def test_transcription(self):
         prompt = "<|startoftranscript|><|en|><|transcribe|><|notimestamps|>"
         result = cactus_transcribe(
@@ -99,7 +86,6 @@ class TestWhisperModel(unittest.TestCase):
         self.assertTrue(result.get("success", False))
         self.assertGreater(len(result.get("response", "")), 0)
 
-    @unittest.skipUnless(_TEST_AUDIO is not None, "test.wav not found")
     def test_audio_embedding(self):
         embedding = cactus_audio_embed(self.model, str(_TEST_AUDIO))
         self.assertIsInstance(embedding, list)
@@ -141,12 +127,9 @@ class TestNomicEmbedding(unittest.TestCase):
         self.assertGreater(_cosine(query, relevant), _cosine(query, unrelated))
 
     def test_hf_parity(self):
-        try:
-            import torch
-            import torch.nn.functional as F
-            from transformers import AutoModel, AutoTokenizer
-        except ImportError:
-            self.skipTest("transformers/torch not available for HF parity check")
+        import torch
+        import torch.nn.functional as F
+        from transformers import AutoModel, AutoTokenizer
 
         texts = [
             "search_query: What is the capital of France?",

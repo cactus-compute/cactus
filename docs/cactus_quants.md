@@ -183,23 +183,30 @@ Three patterns are visible:
 
 ## Using CQ Weights
 
-CQ weights are produced by `cactus convert` and consumed by the Cactus runtime:
+CQ weights are produced by `cactus convert`. The runtime bundle (graph + manifest)
+is then built from those weights with `cactus transpile`, and run via
+`cactus run`:
 
 ```bash
-# Convert at 4-bit (default)
+# 1. Convert at 4-bit (default)
 cactus convert google/gemma-4-E2B-it ./gemma4-weights
 
-# Convert at 2-bit
+# 1'. Convert at 2-bit
 cactus convert google/gemma-4-E2B-it ./gemma4-weights --bits 2
 
-# Run
-cactus run ./gemma4-weights
+# 2. Build the runtime bundle from the CQ weights
+cactus transpile google/gemma-4-E2B-it \
+    --weights-dir ./gemma4-weights --artifact-dir ./gemma4-bundle
+
+# 3. Run (pass either a HF model id or a bundle path)
+cactus run ./gemma4-bundle
 ```
 
-Pre-converted CQ weights for all supported models are available at
-[huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute).
+For models on huggingface.co/Cactus-Compute, you can skip the convert+transpile
+steps entirely: `cactus run <model-id>` will fetch the pre-built bundle (or fall
+back to local convert+transpile if no bundle is published), then run.
 
-The CQ kernel implementation lives in `cactus-kernels/src/quant.cpp`. At inference,
+The CQ matmul kernels live in `cactus-kernels/src/matmul.cpp`. At inference,
 the kernel applies the inverse Hadamard rotation to the FP16 activation (not the weight),
 then performs a fused codebook-lookup + norm-scale + matmul in a single NEON pass.
 

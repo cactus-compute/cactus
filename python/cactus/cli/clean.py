@@ -22,28 +22,22 @@ def cmd_clean(args):
         else:
             print(f"Not found: {path}")
 
-    remove_if_exists(PROJECT_ROOT / "cactus" / "build")
-
     remove_if_exists(PROJECT_ROOT / "android" / "build")
-    remove_if_exists(PROJECT_ROOT / "android" / "libs")
-    remove_if_exists(PROJECT_ROOT / "android" / "arm64-v8a")
 
-    remove_if_exists(PROJECT_ROOT / "apple" / "build")
+    for apple_build in sorted((PROJECT_ROOT / "apple").glob("build*")):
+        remove_if_exists(apple_build)
 
-    remove_if_exists(PROJECT_ROOT / "tests" / "build")
+    remove_if_exists(PROJECT_ROOT / "cactus-engine" / "build")
+    remove_if_exists(PROJECT_ROOT / "cactus-engine" / "tests" / "build")
+    remove_if_exists(PROJECT_ROOT / "cactus-graph" / "build")
+    remove_if_exists(PROJECT_ROOT / "cactus-kernels" / "build")
 
     remove_if_exists(PROJECT_ROOT / "python" / "cactus" / "bin")
 
     remove_if_exists(PROJECT_ROOT / "venv")
 
     remove_if_exists(PROJECT_ROOT / "weights")
-
-    telemetry_cache = Path.home() / "Library" / "Caches" / "cactus" / "telemetry"
-    if telemetry_cache.exists():
-        print(f"Removing telemetry cache: {telemetry_cache}")
-        shutil.rmtree(telemetry_cache)
-    else:
-        print(f"Telemetry cache not found: {telemetry_cache}")
+    remove_if_exists(PROJECT_ROOT / "transpiled")
 
     print()
     print("Removing compiled libraries and frameworks...")
@@ -106,6 +100,13 @@ def cmd_clean(args):
             shutil.rmtree(egg_dir)
             egg_count += 1
     print(f"Removed {egg_count} .egg-info directories" if egg_count else "No .egg-info directories found")
+
+    pytest_cache_count = 0
+    for cache_dir in PROJECT_ROOT.rglob(".pytest_cache"):
+        if cache_dir.is_dir():
+            shutil.rmtree(cache_dir)
+            pytest_cache_count += 1
+    print(f"Removed {pytest_cache_count} .pytest_cache directories" if pytest_cache_count else "No .pytest_cache directories found")
 
     print()
     print_color(GREEN, "Clean complete!")

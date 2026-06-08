@@ -1,4 +1,5 @@
 #include "telemetry.h"
+#include "json_escape.h"
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -797,32 +798,6 @@ static std::string format_timestamp(const std::chrono::system_clock::time_point&
     return true;
 }
 
-static std::string escape_json_string(const char* str) {
-    if (!str) return "";
-    std::string result;
-    result.reserve(std::strlen(str));
-    for (const char* p = str; *p; ++p) {
-        switch (*p) {
-            case '"':  result += "\\\""; break;
-            case '\\': result += "\\\\"; break;
-            case '\b': result += "\\b"; break;
-            case '\f': result += "\\f"; break;
-            case '\n': result += "\\n"; break;
-            case '\r': result += "\\r"; break;
-            case '\t': result += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(*p) < 0x20) {
-                    char buf[7];
-                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(*p));
-                    result += buf;
-                } else {
-                    result += *p;
-                }
-                break;
-        }
-    }
-    return result;
-}
 
 static void collect_device_info() {
     struct utsname u;

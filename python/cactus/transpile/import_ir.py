@@ -240,7 +240,7 @@ def import_captured_to_ir(captured: Any, *, strict: bool = True) -> IRGraph:
 
             if node.op == "call_function":
                 torch_op = format_target(node)
-                if "wrap_with_set_grad_enabled" in torch_op:
+                if torch_op.endswith(".wrap_with_set_grad_enabled") or torch_op == "wrap_with_set_grad_enabled":
                     _inline_wrap_with_set_grad_enabled(node, shape, dtype)
                     continue
                 if torch_op == "<built-in function getitem>":
@@ -249,7 +249,13 @@ def import_captured_to_ir(captured: Any, *, strict: bool = True) -> IRGraph:
                         index_value = extract_literals(node.args[1])
                         if not isinstance(index_value, int):
                             raise NotImplementedError(f"unsupported tuple getitem index: {node.args!r}")
-                        ctx.alias_values[node.name] = ctx.tuple_aliases[source.name][index_value]
+                        alias_seq = ctx.tuple_aliases[source.name]
+                        if index_value < 0 or index_value >= len(alias_seq):
+                            raise NotImplementedError(
+                                f"tuple getitem index {index_value} out of range for "
+                                f"inlined subgraph {source.name!r} (size {len(alias_seq)})"
+                            )
+                        ctx.alias_values[node.name] = alias_seq[index_value]
                         continue
                 import_call_function(ir, node, ctx, shape=shape, dtype=dtype, torch_op=torch_op)
                 continue
