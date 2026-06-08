@@ -2527,7 +2527,7 @@ component. Use <code>loaded.reset()</code> between independent generations.</p>
 <a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>  optimized_ir.json        # IR after fusion passes (debugging)
 <a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>  graph.cactus             # serialized runtime graph
 <a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>  graph_bindings.json      # weight binding metadata
-<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>  result.json              # execution results (if --execute)
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>  result.json              # execution results (if --execute-after-transpile)
 <a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>  components/              # for multimodal models
 <a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>    manifest.json          # component order, input/output names
 <a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>    vision_encoder/
@@ -2626,10 +2626,9 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 </tr>
 </tbody>
 </table>
-<p>NPU emission (CoreML <code>.mlpackage</code>s for Apple Silicon audio/vision encoders) is
-implemented on the underlying <code>python -m cactus.transpile.hf_model</code> script
-(<code>--npu</code>, <code>--npu-quantize</code>, <code>--npu-audio-quantize</code>, <code>--npu-vision-quantize</code>)
-but is not yet exposed on the user-facing <code>cactus transpile</code> argparser.</p>
+<p>NPU emission (CoreML <code>.mlpackage</code>s for Apple Silicon audio and vision encoders)
+is available through the <code>--npu</code>, <code>--npu-quantize</code>, <code>--npu-audio-quantize</code>, and
+<code>--npu-vision-quantize</code> flags on <code>cactus transpile</code>.</p>
 <h3 id="cactus-run"><code>cactus run</code><a class="headerlink" href="#cactus-run" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>cactus<span class="w"> </span>run<span class="w"> </span>&lt;model-id-or-bundle-path&gt;<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
 </code></pre></div>
@@ -2723,7 +2722,7 @@ tested adapters for:</p>
 </thead>
 <tbody>
 <tr>
-<td>Gemma 3/3n/4</td>
+<td>Gemma 3/4</td>
 <td>text, multimodal</td>
 <td>yes (vision + audio + LM + decoder)</td>
 </tr>
@@ -2739,11 +2738,6 @@ tested adapters for:</p>
 </tr>
 <tr>
 <td>Whisper</td>
-<td>encoder</td>
-<td>no</td>
-</tr>
-<tr>
-<td>Moonshine</td>
 <td>encoder</td>
 <td>no</td>
 </tr>

@@ -1553,10 +1553,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#loading-graphs_1" class="md-nav__link">
+  <a href="#graphfile-namespace" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Loading Graphs
+        GraphFile Namespace
       
     </span>
   </a>
@@ -2998,10 +2998,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#loading-graphs_1" class="md-nav__link">
+  <a href="#graphfile-namespace" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Loading Graphs
+        GraphFile Namespace
       
     </span>
   </a>
@@ -3548,8 +3548,9 @@
 <h4 id="saving-nodes">Saving Nodes<a class="headerlink" href="#saving-nodes" title="Permanent link">&para;</a></h4>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a><span class="n">GraphFile</span><span class="o">::</span><span class="n">save_node</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span><span class="w"> </span><span class="n">node_id</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;output.bin&quot;</span><span class="p">);</span>
 </code></pre></div>
-<h4 id="loading-graphs_1">Loading Graphs<a class="headerlink" href="#loading-graphs_1" title="Permanent link">&para;</a></h4>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a><span class="n">CactusGraph</span><span class="w"> </span><span class="n">loaded</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">GraphFile</span><span class="o">::</span><span class="n">load_graph</span><span class="p">(</span><span class="s">&quot;graph.cactus&quot;</span><span class="p">);</span>
+<h4 id="graphfile-namespace">GraphFile Namespace<a class="headerlink" href="#graphfile-namespace" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a><span class="n">GraphFile</span><span class="o">::</span><span class="n">SerializedGraph</span><span class="w"> </span><span class="n">serialized</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">GraphFile</span><span class="o">::</span><span class="n">load_graph</span><span class="p">(</span><span class="s">&quot;graph.cactus&quot;</span><span class="p">);</span>
+<a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a><span class="n">CactusGraph</span><span class="w"> </span><span class="n">loaded</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">CactusGraph</span><span class="o">::</span><span class="n">from_serialized</span><span class="p">(</span><span class="n">serialized</span><span class="p">);</span>
 </code></pre></div>
 <p>The <code>GraphFile</code> namespace currently exposes <code>save_graph</code>, <code>load_graph</code>, and
 <code>save_node</code>. There is no per-node loader; reload a saved subgraph by

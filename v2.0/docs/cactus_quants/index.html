@@ -2229,7 +2229,7 @@ is then built from those weights with <code>cactus transpile</code>, and run via
 steps entirely: <code>cactus run &lt;model-id&gt;</code> will fetch the pre-built bundle (or fall
 back to local convert+transpile if no bundle is published), then run.</p>
 <p>The CQ matmul kernels live in <code>cactus-kernels/src/matmul.cpp</code>. At inference,
-the kernel applies the inverse Hadamard rotation to the FP16 activation (not the weight),
+the kernel applies a Walsh-Hadamard transform to the FP16 activation (not the weight),
 then performs a fused codebook-lookup + norm-scale + matmul in a single NEON pass.</p>
 <h2 id="see-also">See Also<a class="headerlink" href="#see-also" title="Permanent link">&para;</a></h2>
 <ul>
