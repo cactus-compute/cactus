@@ -70,8 +70,7 @@ void rerope_recent_fp16(uint16_t* key_rows, size_t kv_heads, size_t head_dim,
 void rerope_recent_int8(int8_t* int8_rows, float* scale_rows, size_t kv_heads, size_t head_dim,
                         size_t group_size, size_t lo, size_t hi, double rope_theta, double delta_pos);
 
-// Per-head keep-sets from POST-RoPE keys. protect_per_head (sized to kv_heads) overrides
-// Params::protect per head; empty -> shared protect.
+// Per-head keep-sets from POST-RoPE keys. protect_per_head overrides Params::protect; empty -> shared.
 std::vector<std::vector<int>> keepsets_from_fp16(const uint16_t* key_rows, size_t n,
                                                  size_t kv_heads, size_t head_dim,
                                                  const std::vector<RopeRotation>& unrope,
