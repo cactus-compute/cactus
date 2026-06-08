@@ -2061,7 +2061,7 @@ routed to the cloud. The response JSON indicates whether handoff occurred:</p>
 <a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="s2">&quot;auto_handoff&quot;</span><span class="p">:</span> <span class="kc">True</span>
 <a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="p">})</span>
 <a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">messages</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">([{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="s2">&quot;Explain quantum entanglement&quot;</span><span class="p">}])</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">result</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">cactus_complete</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">messages</span><span class="p">,</span> <span class="n">options</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">))</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">result</span> <span class="o">=</span> <span class="n">cactus_complete</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">messages</span><span class="p">,</span> <span class="n">options</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
 <a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>
 <a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="k">if</span> <span class="n">result</span><span class="p">[</span><span class="s2">&quot;cloud_handoff&quot;</span><span class="p">]:</span>
 <a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Answered by cloud&quot;</span><span class="p">)</span>
@@ -2073,7 +2073,7 @@ routed to the cloud. The response JSON indicates whether handoff occurred:</p>
 <ul>
 <li><a href="../cactus_engine/">Cactus Engine API</a> — <code>confidence_threshold</code> and <code>auto_handoff</code> options</li>
 <li><a href="../cactus_quants/">Cactus Quants</a> — Quantization that the probe works across</li>
-<li><a href="/blog/gemma4.md">Gemma 4 on Cactus</a> — The base model used for hybrid inference</li>
+<li><a href="../../blog/gemma4/">Gemma 4 on Cactus</a> — The base model used for hybrid inference</li>
 </ul>
 
 

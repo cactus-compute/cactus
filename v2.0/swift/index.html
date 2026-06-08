@@ -1601,8 +1601,8 @@
 <h2 id="integration">Integration<a class="headerlink" href="#integration" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cactus<span class="w"> </span>build<span class="w"> </span>--apple
 </code></pre></div>
-<p><strong>XCFramework</strong>: drag <code>apple/cactus-ios.xcframework</code> into Xcode (Embed &amp; Sign).</p>
-<p><strong>Static library</strong>: add <code>apple/libcactus-device.a</code> to Link Binary With Libraries, copy <code>module.modulemap</code> and <code>cactus_engine.h</code> into Header Search Paths.</p>
+<p><strong>XCFramework</strong>: drag <code>apple/cactus-ios.xcframework</code> (or <code>apple/cactus-macos.xcframework</code>) into Xcode (Embed &amp; Sign). The framework bundles <code>cactus_engine.h</code>, so <code>import cactus</code> works directly.</p>
+<p><strong>Static library</strong>: link <code>apple/libcactus_engine-device.a</code> (or <code>apple/libcactus_engine-simulator.a</code>), copy <code>bindings/swift/module.modulemap</code> into your project, and add <code>cactus-engine/</code> to Header Search Paths so the module map can find <code>cactus_engine.h</code>.</p>
 <h2 id="usage">Usage<a class="headerlink" href="#usage" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kd">import</span><span class="w"> </span><span class="nc">cactus</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>

@@ -2010,7 +2010,7 @@
 <p>The Cactus Index provides a clean C FFI (Foreign Function Interface) for integrating a vector database into various applications. This documentation covers all available functions, their parameters, and usage examples.</p>
 <h2 id="getting-started">Getting Started<a class="headerlink" href="#getting-started" title="Permanent link">&para;</a></h2>
 <p>The index uses memory-mapped files:
-- <code>index.bin</code>: Embeddings (FP16) and metadata pointers
+- <code>index.bin</code>: Embeddings (FP16) plus per-doc offsets into <code>data.bin</code>
 - <code>data.bin</code>: Document content and metadata (UTF-8)</p>
 <p>All embeddings are automatically normalized to unit length</p>
 <h2 id="types">Types<a class="headerlink" href="#types" title="Permanent link">&para;</a></h2>

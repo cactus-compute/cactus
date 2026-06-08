@@ -1936,7 +1936,7 @@ Qualcomm's QNN SDK has similar restrictions (limited quantisation scheme support
 Both lock you into a vendor-specific format that may not support your model architecture at all, and neither works on budget devices that lack the NPU entirely.</p>
 <p>CPU is the universal target. Every ARM device, flagship, budget, wearable, Raspberry Pi, and most recent ones support DOTPROD or I8MM extensions. 
 A single well-optimized CPU codepath works everywhere, the main challenge is energy-inefficiency compared to NPU.</p>
-<p>ARM is also closing this gap. The progression from NEON to DOTPROD to I8MM to SME2 reflects a deliberate push to bring matrix-processing efficiency onto the CPU itself. Each generation narrows the energy and throughput gap with dedicated NPUs. SME2, available on Apple's M4 and upcoming ARMv9.2 cores, adds streaming matrix operations that approach NPU-class efficiency for INT8 workloads while remaining fully programmable. Cactus already compiles SME2 codepaths where available. The bet is that general-purpose CPU silicon will continue absorbing the capabilities that once justified a separate accelerator.</p>
+<p>ARM is also closing this gap. The progression from NEON to DOTPROD to I8MM to SME2 reflects a deliberate push to bring matrix-processing efficiency onto the CPU itself. Each generation narrows the energy and throughput gap with dedicated NPUs. SME2, landing on upcoming ARMv9.2-A cores, adds streaming matrix operations that approach NPU-class efficiency for INT8 workloads while remaining fully programmable. The bet is that general-purpose CPU silicon will continue absorbing the capabilities that once justified a separate accelerator.</p>
 <h2 id="why-single-core-for-decode">Why Single Core for Decode<a class="headerlink" href="#why-single-core-for-decode" title="Permanent link">&para;</a></h2>
 <p>Decode is memory-bandwidth-bound. For a 350M INT8 model, each decode step reads roughly 355 MB of weights to produce a single token.
 On an iPhone 17 Pro with ~60 GB/s memory bandwidth, the theoretical maximum decode speed is around 169 tok/sec,
@@ -2105,7 +2105,7 @@ The choice often comes down to small models that fit everywhere but are too weak
 <p>Cactus exists because we took on this specific slice of the problem; I spent the last few years building foundation models and inference for tiny devices. 
 The team's approach is systematic: profile every major ARM variant, write dedicated kernel paths for each ISA extension tier (NEON, DOTPROD, I8MM, SME2), 
 design the model format around the worst-case memory behavior (Android's mmap limitations), and test on real production devices, not emulators. 
-This it not-trivial; battling with chip manufactures with different brand visions, model developers chasing benchmarks over useability and more. </p>
+This is not trivial; battling with chip manufacturers with different brand visions, model developers chasing benchmarks over usability and more. </p>
 <p>The result is that businesses shipping with Cactus don't need to worry about inference failing silently on a budget Samsung, or a model that's accurate on benchmarks but too large for half their install base. 
 The kernel, the format, and the quantization strategy are all designed so that the same model file works correctly across the full device spectrum, with predictable RAM, predictable speed, and predictable quality.
 On-device market is quite noisy, with hobbyists driving decisions, but production use is largely unsolved, Cactus is a bit unconventional but rightfully so. </p>

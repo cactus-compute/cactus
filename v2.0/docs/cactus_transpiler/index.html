@@ -1351,10 +1351,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#cactus-run-transpiled" class="md-nav__link">
+  <a href="#cactus-run" class="md-nav__link">
     <span class="md-ellipsis">
       
-        cactus run-transpiled
+        cactus run
       
     </span>
   </a>
@@ -2091,10 +2091,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#cactus-run-transpiled" class="md-nav__link">
+  <a href="#cactus-run" class="md-nav__link">
     <span class="md-ellipsis">
       
-        cactus run-transpiled
+        cactus run
       
     </span>
   </a>
@@ -2197,7 +2197,7 @@ that loads with zero-copy memory mapping.</p>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>./classifier.pt<span class="w"> </span>--weights-dir<span class="w"> </span>./classifier-cactus
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Run the transpiled bundle</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>cactus<span class="w"> </span>run<span class="w"> </span>./transpiled/classifier
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>cactus<span class="w"> </span>run<span class="w"> </span>./classifier-cactus
 </code></pre></div>
 <p>That's it. The output is a self-contained bundle with memory-mapped weights that
 loads in milliseconds on any ARM device.</p>
@@ -2367,7 +2367,7 @@ and weight binding metadata.</p>
 <a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>--weights-dir<span class="w"> </span>./gemma4-weights
 <a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
 <a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># 3. Run</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>cactus<span class="w"> </span>run<span class="w"> </span>./transpiled/google/gemma-4-E2B-it<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">&quot;Hello!&quot;</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>cactus<span class="w"> </span>run<span class="w"> </span>./gemma4-weights<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">&quot;Hello!&quot;</span>
 </code></pre></div>
 <h3 id="text-models">Text Models<a class="headerlink" href="#text-models" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>Qwen/Qwen3-0.6B<span class="w"> </span>./qwen3-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span>
@@ -2396,29 +2396,31 @@ and optimized:</p>
 </code></pre></div>
 <hr />
 <h2 id="running-saved-bundles">Running Saved Bundles<a class="headerlink" href="#running-saved-bundles" title="Permanent link">&para;</a></h2>
-<p>Transpiled bundles are saved to <code>./transpiled/&lt;model&gt;/</code> by default. Run them later
-without re-transpiling:</p>
+<p>Transpiled bundles are saved to <code>./weights/&lt;model&gt;/</code> by default (alongside their CQ
+weights). Run them later without re-transpiling:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Text</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>cactus<span class="w"> </span>run<span class="w"> </span>./transpiled/Qwen_Qwen3-0.6B<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">&quot;Write a haiku&quot;</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>cactus<span class="w"> </span>run<span class="w"> </span>./weights/qwen3-0.6b<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">&quot;Write a haiku&quot;</span>
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
 <a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Multimodal</span>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>cactus<span class="w"> </span>run-transpiled<span class="w"> </span>./transpiled/google/gemma-4-E2B-it<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span>--image-file<span class="w"> </span>photo.jpg<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span>--file<span class="w"> </span>speech.wav<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>cactus<span class="w"> </span>run<span class="w"> </span>./weights/gemma-4-e2b-it<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span>--image<span class="w"> </span>photo.jpg<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span>--audio<span class="w"> </span>speech.wav<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">  </span>--prompt<span class="w"> </span><span class="s2">&quot;What do you see?&quot;</span>
 <a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>
 <a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="c1"># Audio</span>
-<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>cactus<span class="w"> </span>run-transpiled<span class="w"> </span>./transpiled/nvidia/parakeet-tdt-0.6b-v3<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="w">  </span>--file<span class="w"> </span>meeting.wav
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>cactus<span class="w"> </span>run<span class="w"> </span>./weights/parakeet-tdt-0.6b-v3<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="w">  </span>--audio<span class="w"> </span>meeting.wav
 </code></pre></div>
-<p><code>cactus run</code> auto-detects transpiled bundles by looking for a <code>manifest.json</code> in the
-directory.</p>
+<p><code>cactus run</code> accepts either a HuggingFace model id (downloads the bundle) or a
+local bundle directory path (detected by the presence of
+<code>components/manifest.json</code>). The standalone <code>run-transpiled</code> subcommand was
+removed — <code>cactus run</code> handles both cases.</p>
 <hr />
 <h2 id="using-the-python-api-directly">Using the Python API Directly<a class="headerlink" href="#using-the-python-api-directly" title="Permanent link">&para;</a></h2>
 <p>You can also drive the transpiler from Python:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.capture_pytorch</span><span class="w"> </span><span class="kn">import</span> <span class="n">capture_model</span>
 <a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.lower</span><span class="w"> </span><span class="kn">import</span> <span class="n">transpile_ir</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.bindings.graph</span><span class="w"> </span><span class="kn">import</span> <span class="n">Graph</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.bindings.cactus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Graph</span>
 <a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
 <a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
@@ -2520,7 +2522,7 @@ component. Use <code>loaded.reset()</code> between independent generations.</p>
 <hr />
 <h2 id="artifact-layout">Artifact Layout<a class="headerlink" href="#artifact-layout" title="Permanent link">&para;</a></h2>
 <p>A transpiled bundle looks like this:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>transpiled/&lt;model&gt;/
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>weights/&lt;model&gt;/
 <a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>  raw_ir.json              # IR before optimization (debugging)
 <a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>  optimized_ir.json        # IR after fusion passes (debugging)
 <a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>  graph.cactus             # serialized runtime graph
@@ -2556,27 +2558,31 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 <tbody>
 <tr>
 <td><code>--weights-dir &lt;path&gt;</code></td>
-<td>Path to converted Cactus weights (required)</td>
+<td>Path to converted CQ weights (default: <code>weights/&lt;model_name&gt;</code>)</td>
 </tr>
 <tr>
-<td><code>--task &lt;task&gt;</code></td>
-<td>Force task type (<code>auto</code> by default)</td>
+<td><code>--task &lt;name&gt;</code></td>
+<td>Force task type (default: <code>auto</code> — inferred from weights). Choices: <code>causal_lm_logits</code>, <code>multimodal_causal_lm_logits</code>, <code>ctc_logits</code>, <code>encoder_hidden_states</code>, <code>seq2seq_transcription</code>, <code>tdt_transcription</code></td>
 </tr>
 <tr>
 <td><code>--prompt &lt;text&gt;</code></td>
-<td>Example text prompt for capture</td>
+<td>Representative prompt for shape capture</td>
 </tr>
 <tr>
 <td><code>--image-file &lt;path&gt;</code></td>
-<td>Example image for multimodal capture</td>
+<td>Representative image (repeatable)</td>
 </tr>
 <tr>
 <td><code>--audio-file &lt;path&gt;</code></td>
-<td>Example audio for multimodal/speech capture</td>
+<td>Representative audio file</td>
+</tr>
+<tr>
+<td><code>--max-new-tokens &lt;N&gt;</code></td>
+<td>Generation room to preallocate for causal decode graphs</td>
 </tr>
 <tr>
 <td><code>--artifact-dir &lt;path&gt;</code></td>
-<td>Output directory (default: <code>./transpiled/&lt;model&gt;</code>)</td>
+<td>Output directory (default: <code>weights/&lt;model&gt;</code>)</td>
 </tr>
 <tr>
 <td><code>--execute-after-transpile</code></td>
@@ -2588,7 +2594,23 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 </tr>
 <tr>
 <td><code>--component-pipeline auto\|on\|off</code></td>
-<td>Control component splitting</td>
+<td>Use split component graph transpilation when supported</td>
+</tr>
+<tr>
+<td><code>--components &lt;list&gt;</code></td>
+<td>Comma-separated component subset for component-pipeline models</td>
+</tr>
+<tr>
+<td><code>--trust-remote-code</code></td>
+<td>Allow HF remote code during the transpile phase</td>
+</tr>
+<tr>
+<td><code>--local-files-only</code></td>
+<td>Require HF files to already be local</td>
+</tr>
+<tr>
+<td><code>--allow-unconverted-weights</code></td>
+<td>Transpile against an unconverted source checkpoint</td>
 </tr>
 <tr>
 <td><code>--no-fuse-rms-norm</code></td>
@@ -2604,9 +2626,15 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 </tr>
 </tbody>
 </table>
-<h3 id="cactus-run-transpiled"><code>cactus run-transpiled</code><a class="headerlink" href="#cactus-run-transpiled" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>cactus<span class="w"> </span>run-transpiled<span class="w"> </span>&lt;bundle-dir&gt;<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
+<p>NPU emission (CoreML <code>.mlpackage</code>s for Apple Silicon audio/vision encoders) is
+implemented on the underlying <code>python -m cactus.transpile.hf_model</code> script
+(<code>--npu</code>, <code>--npu-quantize</code>, <code>--npu-audio-quantize</code>, <code>--npu-vision-quantize</code>)
+but is not yet exposed on the user-facing <code>cactus transpile</code> argparser.</p>
+<h3 id="cactus-run"><code>cactus run</code><a class="headerlink" href="#cactus-run" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>cactus<span class="w"> </span>run<span class="w"> </span>&lt;model-id-or-bundle-path&gt;<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
 </code></pre></div>
+<p><code>model_id</code> may be a HuggingFace model id (downloads the matching bundle from
+huggingface.co/Cactus-Compute) or a local path to a bundle directory.</p>
 <table>
 <thead>
 <tr>
@@ -2616,6 +2644,18 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 </thead>
 <tbody>
 <tr>
+<td><code>--bits 1\|2\|3\|4</code></td>
+<td>CQ quantization bits when downloading (default: 4)</td>
+</tr>
+<tr>
+<td><code>--platform cpu\|apple</code></td>
+<td>Target accelerator (default: cpu — generic ARM)</td>
+</tr>
+<tr>
+<td><code>--token &lt;token&gt;</code></td>
+<td>HuggingFace token (gated models)</td>
+</tr>
+<tr>
 <td><code>--prompt &lt;text&gt;</code></td>
 <td>Input prompt</td>
 </tr>
@@ -2624,16 +2664,12 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 <td>Comma-separated token IDs</td>
 </tr>
 <tr>
-<td><code>--file &lt;path&gt;</code></td>
-<td>Audio file for speech bundles</td>
-</tr>
-<tr>
-<td><code>--image-file &lt;path&gt;</code></td>
+<td><code>--image &lt;path&gt;</code></td>
 <td>Image file for multimodal bundles</td>
 </tr>
 <tr>
-<td><code>--weights-dir &lt;path&gt;</code></td>
-<td>Override weight directory</td>
+<td><code>--audio &lt;path&gt;</code></td>
+<td>Audio file for speech / audio bundles</td>
 </tr>
 <tr>
 <td><code>--system &lt;prompt&gt;</code></td>
@@ -2641,7 +2677,35 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 </tr>
 <tr>
 <td><code>--thinking</code></td>
-<td>Enable chain-of-thought mode</td>
+<td>Enable thinking / reasoning mode</td>
+</tr>
+<tr>
+<td><code>--max-new-tokens &lt;N&gt;</code></td>
+<td>Max tokens to generate</td>
+</tr>
+<tr>
+<td><code>--result-json &lt;path&gt;</code></td>
+<td>Save bundle result payload to JSON</td>
+</tr>
+<tr>
+<td><code>--no-cloud-handoff</code></td>
+<td>Disable automatic cloud handoff</td>
+</tr>
+<tr>
+<td><code>--confidence-threshold &lt;f&gt;</code></td>
+<td>Confidence threshold below which to hand off to cloud</td>
+</tr>
+<tr>
+<td><code>--cloud-timeout-ms &lt;N&gt;</code></td>
+<td>Max wait time for cloud handoff</td>
+</tr>
+<tr>
+<td><code>--no-cloud-tele</code></td>
+<td>Disable cloud telemetry (write to cache only)</td>
+</tr>
+<tr>
+<td><code>--reconvert</code></td>
+<td>Force local convert+transpile fallback</td>
 </tr>
 </tbody>
 </table>

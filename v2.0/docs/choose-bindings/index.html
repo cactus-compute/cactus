@@ -1640,18 +1640,18 @@
 <td style="text-align: center;">Android, iOS (KMP)</td>
 <td style="text-align: center;">iOS, macOS</td>
 <td style="text-align: center;">Arm Linux, macOS</td>
-<td style="text-align: center;">All</td>
-<td style="text-align: center;">macOS, Linux</td>
-<td style="text-align: center;">All</td>
+<td style="text-align: center;">Arm Linux, macOS</td>
+<td style="text-align: center;">macOS, Arm Linux</td>
+<td style="text-align: center;">Arm Linux, macOS, iOS, Android</td>
 </tr>
 <tr>
 <td><strong>Install</strong></td>
-<td style="text-align: center;">npm</td>
+<td style="text-align: center;">build / source</td>
 <td style="text-align: center;">build</td>
 <td style="text-align: center;">build</td>
 <td style="text-align: center;">build</td>
-<td style="text-align: center;">build</td>
-<td style="text-align: center;">cargo</td>
+<td style="text-align: center;">pip</td>
+<td style="text-align: center;">build / source</td>
 <td style="text-align: center;">brew / source</td>
 <td style="text-align: center;">header</td>
 </tr>
@@ -1771,12 +1771,12 @@
 </div>
 <h2 id="binding-documentation">Binding Documentation<a class="headerlink" href="#binding-documentation" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong><a href="https://github.com/cactus-compute/cactus-react-native">React Native</a></strong> -- npm package with React hooks (<code>useCactusLM</code>)</li>
+<li><strong><a href="../../react-native/">React Native</a></strong> -- Native bridge modules over the C API for iOS and Android</li>
 <li><strong><a href="../../python/">Python</a></strong> -- Module-level FFI bindings, mirrors the C API</li>
 <li><strong><a href="../../swift/">Swift</a></strong> -- XCFramework for iOS/macOS with NPU support</li>
 <li><strong><a href="../../kotlin/">Kotlin</a></strong> -- JNI bindings + Kotlin Multiplatform support</li>
 <li><strong><a href="../../flutter/">Flutter</a></strong> -- Dart FFI bindings for Android, iOS, and macOS</li>
-<li><strong><a href="../../rust/">Rust</a></strong> -- Auto-generated FFI bindings via bindgen</li>
+<li><strong><a href="../../rust/">Rust</a></strong> -- Raw <code>extern "C"</code> FFI declarations</li>
 <li><strong><a href="../cactus_engine/">C++ / Engine API</a></strong> -- Direct C FFI for maximum control</li>
 </ul>
 <h2 id="getting-started">Getting Started<a class="headerlink" href="#getting-started" title="Permanent link">&para;</a></h2>
