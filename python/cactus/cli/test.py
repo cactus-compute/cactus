@@ -2,7 +2,7 @@ import os
 import subprocess
 
 from .common import (
-    BLUE, DEFAULT_ASR_MODEL_ID, DEFAULT_MODEL_ID, PROJECT_ROOT, RED,
+    BLUE, DEFAULT_MODEL_ID, PROJECT_ROOT, RED,
     apply_cloud_api_key_env, print_color,
 )
 
@@ -29,8 +29,7 @@ def _component_args(component, args):
     if args.suite:
         cmd.extend(["--suite", args.suite])
     if component == "engine":
-        default = DEFAULT_ASR_MODEL_ID if args.suite == "stt" else DEFAULT_MODEL_ID
-        cmd.extend(["--model", args.model_id or default])
+        cmd.extend(["--model", args.model_id or DEFAULT_MODEL_ID])
         if args.android:
             cmd.append("--android")
         if args.ios:

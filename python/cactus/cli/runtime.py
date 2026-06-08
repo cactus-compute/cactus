@@ -59,9 +59,13 @@ def _link_python_runtime_library(*, static_lib, library_path):
     if library_path.exists():
         library_path.unlink()
 
+    compiler_name = "clang++" if platform.system() == "Darwin" else "g++"
+    compiler = shutil.which(compiler_name)
+    if compiler is None:
+        raise RuntimeError(f"{compiler_name} is not installed; cannot link libcactus_engine")
+
     exported_symbols = _public_cactus_api_symbols(static_lib)
     if platform.system() == "Darwin":
-        compiler = shutil.which("clang++") or shutil.which("c++")
         command = [
             compiler,
             "-dynamiclib",
@@ -78,7 +82,6 @@ def _link_python_runtime_library(*, static_lib, library_path):
             "-framework", "CFNetwork",
         ]
     else:
-        compiler = shutil.which("g++") or shutil.which("c++")
         command = [
             compiler,
             "-shared",

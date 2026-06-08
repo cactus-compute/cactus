@@ -91,7 +91,7 @@ def create_parser():
     --status                           show key status
     --clear                            remove saved key
 
-  cactus run <model|path>              run a model (downloads if needed)
+  cactus run [model|path]              run a model (default: {DEFAULT_MODEL_ID})
     --bits 1|2|3|4                     CQ quantization (default: 4)
     --platform {_PLATFORM_PIPE:<22}  target accelerator (default: cpu)
     --image <path>                     image file for VLM inference
@@ -108,7 +108,7 @@ def create_parser():
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force reconversion from source
 
-  cactus download <model>              download a pre-built bundle
+  cactus download [model]              download a pre-built bundle (default: {DEFAULT_MODEL_ID})
     --bits 1|2|3|4                     CQ quantization (default: 4)
     --platform {_PLATFORM_PIPE:<22}  target accelerator (default: cpu)
     --token <token>                    HuggingFace token
@@ -120,9 +120,9 @@ def create_parser():
     --lora <path>                      merge a LoRA adapter before converting
 
   cactus transpile <model>             build a runnable bundle from CQ weights
-    --weights-dir <path>               path to CQ weights (default: lookup)
+    --weights-dir <path>               path to CQ weights (default: weights/<model>)
     --task <auto|...>                  force task type (default: auto)
-    --artifact-dir <path>              write bundle here (default: ./transpiled)
+    --artifact-dir <path>              write bundle here (default: weights/<model>)
 
   cactus serve [model]                 OpenAI-compatible local HTTP server
     --host <addr>                      bind address (default: 127.0.0.1)
@@ -138,7 +138,7 @@ def create_parser():
   cactus test                          run the test suite
     --component <name>                 kernels | graph | engine | all
                                        (default: all)
-    --model <hf-id>                    default: Qwen/Qwen3-0.6B
+    --model <hf-id>                    default: {DEFAULT_MODEL_ID}
     --suite <name>                     run a single test suite from any
                                        component (kernels, graph, or engine)
     --list                             list components and suites
@@ -314,7 +314,7 @@ def create_parser():
     transpile_parser.add_argument("--execute-after-transpile", action="store_true",
                                   help="Run a reference execution against the produced bundle after transpiling")
     transpile_parser.add_argument("--artifact-dir",
-                                  help="Output directory (default: ./transpiled/<model>)")
+                                  help="Output directory (default: weights/<model>)")
     transpile_parser.add_argument("--skip-reference-compare", action="store_true",
                                   help="Skip PyTorch vs transpiled output comparison")
     transpile_parser.add_argument("--no-fuse-rms-norm", action="store_true",
