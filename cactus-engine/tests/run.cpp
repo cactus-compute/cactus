@@ -585,7 +585,7 @@ int main(int argc, char** argv) {
             }
             input = record_prompt.empty() ? "Transcribe or respond to this audio." : record_prompt;
 #else
-            std::cerr << "Recording requires SDL2, but this chat binary was built without SDL2.\n";
+            std::cerr << "Recording requires SDL2, but this binary was built without SDL2.\n";
             continue;
 #endif
         }

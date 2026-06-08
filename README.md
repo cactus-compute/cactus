@@ -275,7 +275,7 @@ cactus build               # default static lib
 │  cactus transpile <model>            build a runnable bundle from CQ weights   │
 │    --weights-dir <path>              path to CQ weights (default: lookup)      │
 │    --task <auto|...>                 force task type (default: auto)           │
-│    --artifact-dir <path>             write bundle here (default: ./transpiled) │
+│    --artifact-dir <path>             bundle output (default: weights/<model>)  │
 │                                                                                │
 │  cactus serve [model]                OpenAI-compatible local HTTP server       │
 │    --host <addr>                     bind address (default: 127.0.0.1)         │
@@ -291,7 +291,8 @@ cactus build               # default static lib
 │  cactus test                         run the test suite                        │
 │    --component <name>                kernels | graph | engine | all            │
 │                                      (default: all)                            │
-│    --model <hf-id>                   default: Qwen/Qwen3-0.6B                  │
+│    --model <hf-id>                   default: LiquidAI/LFM2-VL-450M            │
+│    --transcription-model <hf-id>     default: openai/whisper-base              │
 │    --suite <name>                    run a single test suite (resolved         │
 │                                      across components; e.g. performance       │
 │                                      → kernels + graph, llm → engine)          │

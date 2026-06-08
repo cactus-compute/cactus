@@ -67,7 +67,7 @@ order (`python/cactus/cli/run.py:_resolve_or_fetch_bundle`):
 3. Fresh download from `huggingface.co/Cactus-Compute` via `download_bundle`.
 4. Fallback: local `ensure_bundle` (convert + transpile for custom models not on HF).
 
-Bundle handoff is to the native `chat` binary (`python/cactus/bin/chat`), which
+Bundle handoff is to the native `run` binary (`python/cactus/bin/run`), which
 loads the bundle via `cactus_init()`.
 
 ## End-To-End Timeline
@@ -653,14 +653,14 @@ unless `--skip-reference-compare` is set.
 
 ## 15. Run A Saved Bundle Later
 
-Saved bundles are executed by the native C++ `chat` binary, not by Python. The
+Saved bundles are executed by the native C++ `run` binary, not by Python. The
 Python CLI just resolves the bundle path and exec's the binary:
 
 ```
 cactus run <bundle-path>
   → python/cactus/cli/run.py:cmd_run
-  → subprocess.run([chat_bin, bundle_dir, ...])
-  → chat invokes cactus_init(bundle_dir) from libcactus_engine
+  → subprocess.run([run_bin, bundle_dir, ...])
+  → run invokes cactus_init(bundle_dir) from libcactus_engine
 ```
 
 The runtime reads `components/manifest.json` from the bundle directory, mmaps
@@ -992,7 +992,7 @@ cactus run /path/to/transpiled/model \
 
 Internally, `cli/run.py:_resolve_or_fetch_bundle` checks whether the positional
 argument is a local path with `components/manifest.json` and dispatches the
-native `chat` binary against it.
+native `run` binary against it.
 
 ## Current Runtime Limitations
 
@@ -1033,6 +1033,6 @@ If you only want the high-level lifecycle, it is:
    materializes everything else.
 10. The script writes `raw_ir.json`, `optimized_ir.json`, `graph.cactus`, and
     `components/manifest.json`.
-11. `cactus run` later resolves the bundle path and invokes the native `chat`
+11. `cactus run` later resolves the bundle path and invokes the native `run`
     binary, which mmaps the weights, loads the serialized graph, and runs it
     via `cactus_init()` + `cactus_complete()` (see `cactus-engine`).

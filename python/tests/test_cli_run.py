@@ -12,9 +12,9 @@ def test_cmd_run_forwards_chunked_bundle_flags(monkeypatch, tmp_path: Path) -> N
     (bundle_dir / "components" / "manifest.json").write_text("{}", encoding="utf-8")
 
     fake_bin = tmp_path / "bin"
-    fake_chat = fake_bin / "chat"
+    fake_run = fake_bin / "run"
     fake_bin.mkdir(parents=True)
-    fake_chat.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_run.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     monkeypatch.setattr(common_mod, "BIN_DIR", fake_bin)
 
     image_file = tmp_path / "image.png"
@@ -25,11 +25,11 @@ def test_cmd_run_forwards_chunked_bundle_flags(monkeypatch, tmp_path: Path) -> N
 
     calls = []
 
-    def fake_run(cmd):
+    def fake_subprocess_run(cmd):
         calls.append(cmd)
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(run_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(run_mod.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(run_mod, "_resolve_or_fetch_bundle", lambda *a, **k: bundle_dir)
 
     args = Namespace(
@@ -55,7 +55,7 @@ def test_cmd_run_forwards_chunked_bundle_flags(monkeypatch, tmp_path: Path) -> N
     assert run_mod.cmd_run(args) == 0
     assert len(calls) == 1
     cmd = calls[0]
-    assert cmd[:2] == [str(fake_chat), str(bundle_dir)]
+    assert cmd[:2] == [str(fake_run), str(bundle_dir)]
     assert cmd[cmd.index("--prompt") + 1] == "hi"
     assert cmd[cmd.index("--image") + 1] == str(image_file)
     assert cmd[cmd.index("--audio") + 1] == str(audio_file)

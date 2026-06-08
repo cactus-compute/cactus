@@ -150,8 +150,22 @@ bool test_record_and_flush_race_no_deadlock() {
     return all_completed && event_count == expected_event_count;
 }
 
-bool test_cloud_upload_record_then_flush() {
+enum class CloudTelemetryTestResult {
+    Passed,
+    Failed,
+    Skipped,
+};
+
+CloudTelemetryTestResult test_cloud_upload_record_then_flush() {
+    const char* no_cloud_tele = std::getenv("CACTUS_NO_CLOUD_TELE");
+    if (no_cloud_tele && no_cloud_tele[0] != '\0') {
+        return CloudTelemetryTestResult::Skipped;
+    }
+
     const std::string telemetry_key = cactus::ffi::resolve_cloud_api_key(nullptr);
+    if (telemetry_key.empty()) {
+        return CloudTelemetryTestResult::Skipped;
+    }
 
     const std::string cache_dir = make_temp_dir("cactus_cloud_telemetry");
     const std::string completion_log = cache_dir + "/completion.log";
@@ -170,7 +184,7 @@ bool test_cloud_upload_record_then_flush() {
     std::remove(completion_log.c_str());
     rmdir(cache_dir.c_str());
 
-    return cached_count == 0;
+    return cached_count == 0 ? CloudTelemetryTestResult::Passed : CloudTelemetryTestResult::Failed;
 }
 
 int main() {
@@ -178,7 +192,12 @@ int main() {
     runner.run_test("Record many then Flush", test_record_many_then_flush());
     runner.run_test("Shutdown then Reinit", test_shutdown_then_reinit_then_record());
     runner.run_test("Record and Flush Race", test_record_and_flush_race_no_deadlock());
-    runner.run_test("Cloud record + Flush", test_cloud_upload_record_then_flush());
+    CloudTelemetryTestResult cloud_result = test_cloud_upload_record_then_flush();
+    if (cloud_result == CloudTelemetryTestResult::Skipped) {
+        runner.log_skip("Cloud record + Flush", "--enable-telemetry and resolved cloud key (env/cache) required");
+    } else {
+        runner.run_test("Cloud record + Flush", cloud_result == CloudTelemetryTestResult::Passed);
+    }
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

@@ -28,11 +28,11 @@ def cmd_run(args) -> int:
     if bundle_dir is None:
         return 1
 
-    chat = resolve_binary("chat")
-    if chat is None:
+    binary = resolve_binary("run")
+    if binary is None:
         return 1
 
-    cmd = [str(chat), str(bundle_dir)]
+    cmd = [str(binary), str(bundle_dir)]
     for flag, value in (
         ("--system", args.system),
         ("--prompt", args.prompt),
@@ -68,10 +68,11 @@ def _resolve_or_fetch_bundle(model_id, *, bits, platform, token, reconvert, imag
     if (cached / "components" / "manifest.json").exists() and not reconvert:
         return cached
 
-    try:
-        return download_bundle(model_id, bits=bits, platform=platform, token=token, reconvert=reconvert)
-    except (RuntimeError, OSError) as exc:
-        print_color(YELLOW, f"HF download unavailable ({exc}); building locally")
+    if not reconvert:
+        try:
+            return download_bundle(model_id, bits=bits, platform=platform, token=token, reconvert=reconvert)
+        except (RuntimeError, OSError) as exc:
+            print_color(YELLOW, f"HF download unavailable ({exc}); building locally")
 
     try:
         return ensure_bundle(

@@ -5,7 +5,7 @@
 using namespace EngineTestUtils;
 
 static const char* g_model_path = std::getenv("CACTUS_TEST_MODEL");
-static const char* g_transcribe_model_path = std::getenv("CACTUS_TEST_TRANSCRIBE_MODEL");
+static const char* g_transcription_model_path = std::getenv("CACTUS_TEST_TRANSCRIPTION_MODEL");
 static const char* g_assets_path = std::getenv("CACTUS_TEST_ASSETS");
 
 bool test_embeddings() {
@@ -82,7 +82,7 @@ static bool test_audio_embeddings() {
     std::vector<float> embeddings(buffer_size / sizeof(float));
     size_t embedding_dim = 0;
 
-    cactus_model_t model = cactus_init(g_transcribe_model_path, nullptr, false);
+    cactus_model_t model = cactus_init(g_transcription_model_path, nullptr, false);
     if (!model) return false;
 
     std::string audio_path = std::string(g_assets_path) + "/test.wav";

@@ -33,7 +33,7 @@ def transpiled_root() -> Path:
 
 
 DEFAULT_MODEL_ID = "LiquidAI/LFM2-VL-450M"
-DEFAULT_ASR_MODEL_ID = "openai/whisper-base"
+DEFAULT_TRANSCRIPTION_MODEL_ID = "openai/whisper-base"
 
 
 # Add a new vendor accelerator by appending its name here.

@@ -4,7 +4,7 @@ import argparse
 from .. import __version__
 from .common import (
     DEFAULT_MODEL_ID,
-    DEFAULT_ASR_MODEL_ID,
+    DEFAULT_TRANSCRIPTION_MODEL_ID,
     SUPPORTED_PLATFORMS,
 )
 from .download import cmd_download
@@ -139,6 +139,7 @@ def create_parser():
     --component <name>                 kernels | graph | engine | all
                                        (default: all)
     --model <hf-id>                    default: {DEFAULT_MODEL_ID}
+    --transcription-model <hf-id>      default: {DEFAULT_TRANSCRIPTION_MODEL_ID}
     --suite <name>                     run a single test suite from any
                                        component (kernels, graph, or engine)
     --list                             list components and suites
@@ -221,9 +222,9 @@ def create_parser():
 
     transcribe_parser = subparsers.add_parser("transcribe", help="Transcribe audio with a model",
                                               parents=[_telemetry_parent()])
-    transcribe_parser.add_argument("model_id", nargs="?", default=DEFAULT_ASR_MODEL_ID,
+    transcribe_parser.add_argument("model_id", nargs="?", default=DEFAULT_TRANSCRIPTION_MODEL_ID,
                                    type=_hf_id_or_path,
-                                   help=f"HuggingFace model id (default: {DEFAULT_ASR_MODEL_ID})")
+                                   help=f"HuggingFace model id (default: {DEFAULT_TRANSCRIPTION_MODEL_ID})")
     transcribe_parser.add_argument("--file", dest="audio_file", required=True,
                                    help="Audio file to transcribe (WAV)")
     transcribe_parser.add_argument("--language", default="en",
@@ -248,7 +249,10 @@ def create_parser():
                              help="Component to test (default: all)")
     test_parser.add_argument("--model", dest="model_id", default=None,
                              type=_hf_id_or_path,
-                             help="HF model ID for engine tests")
+                             help=f"HF model ID under test (default: {DEFAULT_MODEL_ID})")
+    test_parser.add_argument("--transcription-model", dest="transcription_model_id", default=None,
+                             type=_hf_id_or_path,
+                             help=f"HF transcription model ID under test (default: {DEFAULT_TRANSCRIPTION_MODEL_ID})")
     test_parser.add_argument("--suite", default=None,
                              help="Run a single test suite by name; resolved across all components (e.g. llm → engine, performance → kernels + graph)")
     test_parser.add_argument("--list", action="store_true",

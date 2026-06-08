@@ -76,4 +76,4 @@ jobs:
         run: |
           source venv/bin/activate
           MODEL="${{ github.event.inputs.model || matrix.model }}"
-          ./cactus-engine/test.sh --model "$MODEL"
+          python3 -m cactus test --component engine --model "$MODEL"

@@ -73,6 +73,7 @@ def generate_app_delegate(output_path, test_files)
 
     NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_MODEL")];
+    [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_TRANSCRIPTION_MODEL")];
     [self copyFromBundle:bundlePath toDocuments:getenv("CACTUS_TEST_ASSETS")];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{

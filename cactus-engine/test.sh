@@ -8,7 +8,6 @@ ASSETS_DIR="$(pwd)/tests/assets"
 IOS_MODE=false
 ANDROID_MODE=false
 SUITE=""
-CACTUS_TEST_MODEL=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -16,38 +15,46 @@ while [[ $# -gt 0 ]]; do
         --android) ANDROID_MODE=true; shift ;;
         --suite)   SUITE="${2:?--suite needs an argument}"; shift 2 ;;
         --model)   CACTUS_TEST_MODEL="${2:?--model needs an argument}"; shift 2 ;;
+        --transcription-model) CACTUS_TEST_TRANSCRIPTION_MODEL="${2:?--transcription-model needs an argument}"; shift 2 ;;
         *) echo "Unknown arg: $1" >&2; exit 2 ;;
     esac
 done
 
-if [ -z "$CACTUS_TEST_MODEL" ]; then
-    echo "Error: --model is required. Run engine tests via the CLI (cactus test ...) which sets it." >&2
-    exit 2
-fi
-export CACTUS_TEST_MODEL
+resolve_bundle_dir() {
+    local model="$1" label="$2"
+    if [ -z "$model" ]; then
+        echo "Error: --$label is required. Run engine tests via the CLI (cactus test ...) which sets it." >&2
+        exit 2
+    fi
+    local dir
+    if [[ "$model" == /* || "$model" == ./* ]]; then
+        dir="$model"
+    else
+        dir="$PROJECT_ROOT/weights/$(basename "$model" | tr '[:upper:]' '[:lower:]')"
+    fi
+    if [ ! -f "$dir/components/manifest.json" ]; then
+        echo "Bundle missing at $dir. Run: cactus transpile $model" >&2
+        exit 1
+    fi
+    echo "$dir"
+}
 
-if [[ "$CACTUS_TEST_MODEL" == /* || "$CACTUS_TEST_MODEL" == ./* ]]; then
-    BUNDLE_DIR="$CACTUS_TEST_MODEL"
-else
-    BUNDLE_DIR="$PROJECT_ROOT/weights/$(basename "$CACTUS_TEST_MODEL" | tr '[:upper:]' '[:lower:]')"
-fi
-
-if [ ! -f "$BUNDLE_DIR/components/manifest.json" ]; then
-    echo "Bundle missing at $BUNDLE_DIR. Run: cactus transpile $CACTUS_TEST_MODEL" >&2
-    exit 1
-fi
+BUNDLE_DIR="$(resolve_bundle_dir "$CACTUS_TEST_MODEL" "model")"
+TRANSCRIPTION_BUNDLE_DIR="$(resolve_bundle_dir "$CACTUS_TEST_TRANSCRIPTION_MODEL" "transcription-model")"
 
 if [ "$IOS_MODE" = true ]; then
-    export CACTUS_TEST_MODEL="$BUNDLE_DIR" CACTUS_TEST_SUITE="$SUITE"
-    exec "$(pwd)/tests/ios/run.sh" "$BUNDLE_DIR"
+    export CACTUS_TEST_MODEL="$BUNDLE_DIR" CACTUS_TEST_TRANSCRIPTION_MODEL="$TRANSCRIPTION_BUNDLE_DIR" CACTUS_TEST_SUITE="$SUITE"
+    exec "$(pwd)/tests/ios/run.sh"
 fi
 if [ "$ANDROID_MODE" = true ]; then
-    export CACTUS_TEST_MODEL="$BUNDLE_DIR" CACTUS_TEST_SUITE="$SUITE"
-    exec "$(pwd)/tests/android/run.sh" "$BUNDLE_DIR"
+    export CACTUS_TEST_MODEL="$BUNDLE_DIR" CACTUS_TEST_TRANSCRIPTION_MODEL="$TRANSCRIPTION_BUNDLE_DIR" CACTUS_TEST_SUITE="$SUITE"
+    exec "$(pwd)/tests/android/run.sh"
 fi
 
-echo "Model:  $CACTUS_TEST_MODEL"
-echo "Bundle: $BUNDLE_DIR"
+echo "Model:                $CACTUS_TEST_MODEL"
+echo "Bundle:               $BUNDLE_DIR"
+echo "Transcription model:  $CACTUS_TEST_TRANSCRIPTION_MODEL"
+echo "Transcription bundle: $TRANSCRIPTION_BUNDLE_DIR"
 
 cd "$PROJECT_ROOT/cactus-engine/tests"
 rm -rf build && mkdir build && cd build
@@ -55,6 +62,7 @@ cmake .. -DCMAKE_RULE_MESSAGES=OFF -DCMAKE_VERBOSE_MAKEFILE=OFF > /dev/null
 make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 
 export CACTUS_TEST_MODEL="$BUNDLE_DIR"
+export CACTUS_TEST_TRANSCRIPTION_MODEL="$TRANSCRIPTION_BUNDLE_DIR"
 export CACTUS_TEST_ASSETS="$ASSETS_DIR"
 export CACTUS_INDEX_PATH="$ASSETS_DIR"
 

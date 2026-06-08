@@ -5,12 +5,12 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CACTUS_CURL_ROOT="${CACTUS_CURL_ROOT:-$PROJECT_ROOT/cactus-engine/libs/curl}"
 export CACTUS_CURL_ROOT
 
-MODEL_NAME="$1"
-
-if [ -z "$MODEL_NAME" ]; then
-    echo "Usage: run.sh <model_weights_path>"
-    exit 1
-fi
+for var in CACTUS_TEST_MODEL CACTUS_TEST_TRANSCRIPTION_MODEL; do
+    if [ -z "${!var:-}" ] || [ ! -d "${!var}" ]; then
+        echo "Error: $var must point to a prepared bundle (got: '${!var:-}')" >&2
+        exit 1
+    fi
+done
 
 echo "Running Cactus tests on Android..."
 echo "============================"
@@ -260,14 +260,9 @@ echo "Found ${#test_executables[@]} test executable(s)"
 echo ""
 echo "Step 4: Deploying to device..."
 
-model_src="$MODEL_NAME"
-model_dir=$(basename "$model_src")
+model_dir=$(basename "$CACTUS_TEST_MODEL")
+transcription_dir=$(basename "$CACTUS_TEST_TRANSCRIPTION_MODEL")
 assets_src="$PROJECT_ROOT/cactus-engine/tests/assets"
-
-if [ ! -d "$model_src" ]; then
-    echo "Error: model weights not found at $model_src"
-    exit 1
-fi
 
 device_test_dir="/data/local/tmp/cactus_tests"
 device_model_dir="/data/local/tmp/cactus_models"
@@ -277,8 +272,14 @@ adb -s "$DEVICE_ID" shell "rm -rf $device_test_dir $device_model_dir $device_ass
 adb -s "$DEVICE_ID" shell "mkdir -p $device_test_dir $device_model_dir $device_assets_dir"
 
 echo "Pushing model weights..."
-if ! adb -s "$DEVICE_ID" push "$model_src" "$device_model_dir/" >/dev/null; then
+if ! adb -s "$DEVICE_ID" push "$CACTUS_TEST_MODEL" "$device_model_dir/" >/dev/null; then
     echo "Failed to push model weights"
+    exit 1
+fi
+
+echo "Pushing transcription model..."
+if ! adb -s "$DEVICE_ID" push "$CACTUS_TEST_TRANSCRIPTION_MODEL" "$device_model_dir/" >/dev/null; then
+    echo "Failed to push transcription model"
     exit 1
 fi
 
@@ -303,8 +304,9 @@ done
 echo ""
 echo "Step 5: Running tests..."
 echo "------------------------"
-echo "Using model path: $device_model_dir/$model_dir"
-echo "Using assets path: $device_assets_dir/assets"
+echo "Using model path:               $device_model_dir/$model_dir"
+echo "Using transcription model path: $device_model_dir/$transcription_dir"
+echo "Using assets path:              $device_assets_dir/assets"
 
 FAILED=0
 for test_exe in "${test_executables[@]}"; do
@@ -314,6 +316,7 @@ for test_exe in "${test_executables[@]}"; do
 
     if ! adb -s "$DEVICE_ID" shell "cd $device_test_dir && \
         export CACTUS_TEST_MODEL=$device_model_dir/$model_dir && \
+        export CACTUS_TEST_TRANSCRIPTION_MODEL=$device_model_dir/$transcription_dir && \
         export CACTUS_TEST_ASSETS=$device_assets_dir/assets && \
         export CACTUS_INDEX_PATH=$device_assets_dir/assets && \
         export CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE:-1} && \

@@ -2,7 +2,7 @@ import os
 import subprocess
 
 from .common import (
-    BLUE, DEFAULT_MODEL_ID, PROJECT_ROOT, RED,
+    BLUE, DEFAULT_MODEL_ID, DEFAULT_TRANSCRIPTION_MODEL_ID, PROJECT_ROOT, RED,
     apply_cloud_api_key_env, print_color,
 )
 
@@ -30,6 +30,7 @@ def _component_args(component, args):
         cmd.extend(["--suite", args.suite])
     if component == "engine":
         cmd.extend(["--model", args.model_id or DEFAULT_MODEL_ID])
+        cmd.extend(["--transcription-model", args.transcription_model_id or DEFAULT_TRANSCRIPTION_MODEL_ID])
         if args.android:
             cmd.append("--android")
         if args.ios:

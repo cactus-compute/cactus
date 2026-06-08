@@ -130,7 +130,7 @@ but to see performance on any device while testing,
 run cactus tests by plugging any iphone to your Mac then running:
 
 ```bash
-cactus test --model <model-path-or-name> --ios
+cactus test --model <model-path-or-name> --transcription-model <model-path-or-name> --ios
 ```
 
 Cactus demo apps will eventually expand to using your custom fine-tunes.
@@ -178,7 +178,7 @@ but to see performance on any device while testing,
 run cactus tests by plugging any android phone to your Mac then running:
 
 ```bash
-cactus test --model <model-path-or-name> --android
+cactus test --model <model-path-or-name> --transcription-model <model-path-or-name> --android
 ```
 
 Cactus demo apps will eventually expand to using your custom fine-tunes.

@@ -37,15 +37,15 @@ def cmd_transcribe(args):
             print_color(RED, f"Model setup failed: {e}")
             return 1
 
-    asr = resolve_binary("asr")
-    if asr is None:
+    binary = resolve_binary("transcribe")
+    if binary is None:
         return 1
 
-    cmd = [str(asr), str(bundle_dir), args.audio_file]
+    cmd = [str(binary), str(bundle_dir), args.audio_file]
     if args.language:
         cmd.extend(["--language", args.language])
 
-    print_color(GREEN, f"Starting Cactus ASR with model: {args.model_id}")
+    print_color(GREEN, f"Starting Cactus transcription with model: {args.model_id}")
     print()
 
     return subprocess.run(cmd).returncode

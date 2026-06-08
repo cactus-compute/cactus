@@ -5,12 +5,12 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CACTUS_CURL_ROOT="${CACTUS_CURL_ROOT:-$PROJECT_ROOT/cactus-engine/libs/curl}"
 export CACTUS_CURL_ROOT
 
-MODEL_NAME="$1"
-
-if [ -z "$MODEL_NAME" ]; then
-    echo "Usage: run.sh <model_weights_path>"
-    exit 1
-fi
+for var in CACTUS_TEST_MODEL CACTUS_TEST_TRANSCRIPTION_MODEL; do
+    if [ -z "${!var:-}" ] || [ ! -d "${!var}" ]; then
+        echo "Error: $var must point to a prepared bundle (got: '${!var:-}')" >&2
+        exit 1
+    fi
+done
 
 echo "Running Cactus tests on iOS..."
 echo "============================"
@@ -309,19 +309,21 @@ fi
 echo ""
 echo "Step 5: Bundling model weights and assets..."
 
-model_src="$MODEL_NAME"
-model_dir=$(basename "$model_src")
+model_dir=$(basename "$CACTUS_TEST_MODEL")
+transcription_dir=$(basename "$CACTUS_TEST_TRANSCRIPTION_MODEL")
 assets_src="$PROJECT_ROOT/cactus-engine/tests/assets"
-
-if [ ! -d "$model_src" ]; then
-    echo "Error: model weights not found at $model_src"
-    exit 1
-fi
 
 echo "Copying model weights to app bundle..."
 rm -rf "$app_path/$model_dir"
-if ! cp -R "$model_src" "$app_path/"; then
-    echo "Error: Could not copy model weights from $model_src"
+if ! cp -R "$CACTUS_TEST_MODEL" "$app_path/"; then
+    echo "Error: Could not copy model weights from $CACTUS_TEST_MODEL"
+    exit 1
+fi
+
+echo "Copying transcription model to app bundle..."
+rm -rf "$app_path/$transcription_dir"
+if ! cp -R "$CACTUS_TEST_TRANSCRIPTION_MODEL" "$app_path/"; then
+    echo "Error: Could not copy transcription model from $CACTUS_TEST_TRANSCRIPTION_MODEL"
     exit 1
 fi
 
@@ -349,11 +351,13 @@ if [ "$device_type" = "simulator" ]; then
     fi
 
     echo "Launching tests..."
-    echo "Using model path: $model_dir"
-    echo "Using assets path: assets"
+    echo "Using model path:               $model_dir"
+    echo "Using transcription model path: $transcription_dir"
+    echo "Using assets path:              assets"
 
     sim_env=(
         "SIMCTL_CHILD_CACTUS_TEST_MODEL=$model_dir"
+        "SIMCTL_CHILD_CACTUS_TEST_TRANSCRIPTION_MODEL=$transcription_dir"
         "SIMCTL_CHILD_CACTUS_TEST_ASSETS=assets"
         "SIMCTL_CHILD_CACTUS_INDEX_PATH=assets"
         "SIMCTL_CHILD_CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE:-1}"
@@ -385,11 +389,13 @@ else
 
     echo "Launching tests..."
     echo "(Logs will be fetched from device after completion)"
-    echo "Using model path: $model_dir"
-    echo "Using assets path: assets"
+    echo "Using model path:               $model_dir"
+    echo "Using transcription model path: $transcription_dir"
+    echo "Using assets path:              assets"
 
     device_env=(
         "DEVICECTL_CHILD_CACTUS_TEST_MODEL=$model_dir"
+        "DEVICECTL_CHILD_CACTUS_TEST_TRANSCRIPTION_MODEL=$transcription_dir"
         "DEVICECTL_CHILD_CACTUS_TEST_ASSETS=assets"
         "DEVICECTL_CHILD_CACTUS_INDEX_PATH=assets"
         "DEVICECTL_CHILD_CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE:-1}"
