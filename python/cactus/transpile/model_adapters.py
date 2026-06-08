@@ -5283,6 +5283,7 @@ def _build_lfm2_causal_lm_component_specs(
     named_tensors: dict[str, torch.Tensor],
     weights_dir: str | None = None,
     components: tuple[str, ...] | None = None,
+    cache_context_length: str | int | None = None,
 ) -> list[ComponentModuleSpec] | None:
     input_ids = named_tensors.get("input_ids")
     if input_ids is None:
@@ -5623,6 +5624,7 @@ def build_component_module_specs(
             named_tensors=named_tensors,
             weights_dir=weights_dir,
             components=components,
+            cache_context_length=cache_context_length,
         )
     if family == "parakeet_tdt" and task == "tdt_transcription":
         from cactus.transpile.tdt_runtime import build_parakeet_tdt_component_specs
