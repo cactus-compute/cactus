@@ -176,7 +176,7 @@ void ToolCallConstrainer::feed_needle_char(char ch) {
         }
     }
 
-    if (needle_buffer_.size() >= 8 &&
+    if (needle_buffer_.size() >= 8 && !needle_in_arguments_ &&
         needle_buffer_.compare(needle_buffer_.size() - 8, 8, "\"name\":\"") == 0) {
         needle_json_state_ = NeedleJsonState::IN_NAME;
         needle_constrained_buf_.clear();
@@ -235,6 +235,13 @@ void ToolCallConstrainer::init_needle_constraints() {
         for (uint32_t token_id = 0; token_id < vocab_size; ++token_id) {
             if (token_id == pad || token_id == eos || token_id == bos || token_id == unk) continue;
             std::string decoded = tokenizer_->decode({token_id});
+            if (decoded.size() == 1) {
+                unsigned char b = static_cast<unsigned char>(decoded[0]);
+                if (b >= 0x80) {
+                    decoded.assign({static_cast<char>(0xC0 | (b >> 6)),
+                                    static_cast<char>(0x80 | (b & 0x3F))});
+                }
+            }
             needle_token_strings_[token_id] = decoded;
             if (!decoded.empty()) needle_token_index_[decoded.front()].push_back(token_id);
         }
@@ -250,12 +257,6 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
     comma_tokens_.clear();
 
     init_common_tokens();
-
-    if (is_needle()) {
-        gemma_call_start_tokens_.clear();
-        add_tokens_for_string("<tool_call>", gemma_call_start_tokens_);
-        return;
-    }
 
     gemma_call_start_tokens_.clear();
     gemma_call_end_tokens_.clear();
@@ -290,7 +291,8 @@ void ToolCallConstrainer::init(Config::ModelType model_type,
     generated_text_.clear();
     brace_depth_ = 0;
     in_argument_string_ = false;
-    active_ = !function_names_.empty() && tokenizer != nullptr;
+    const bool model_supported = is_needle() || Config::is_gemma_family(model_type_);
+    active_ = model_supported && !function_names_.empty() && tokenizer != nullptr;
 
     reset_needle_constraints();
     state_ = is_needle() ? State::NEEDLE_START : State::GEMMA_START;
@@ -314,20 +316,8 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
     generated_text_ += decoded_text;
 
     if (is_needle()) {
-        switch (state_) {
-            case State::NEEDLE_START:
-                if (generated_text_.find("<tool_call>") != std::string::npos) {
-                    state_ = State::DONE;
-                    generated_text_.clear();
-                }
-                break;
-            case State::DONE:
-                feed_needle_text(decoded_text);
-                generated_text_.clear();
-                break;
-            default:
-                break;
-        }
+        feed_needle_text(decoded_text);
+        generated_text_.clear();
         compute_bias();
         return;
     }
@@ -424,58 +414,44 @@ void ToolCallConstrainer::compute_bias() {
     }
 
     if (is_needle()) {
-        switch (state_) {
-            case State::NEEDLE_START:
-                for (uint32_t t : gemma_call_start_tokens_) {
-                    current_bias_[t] = FORCE_BIAS;
-                }
-                if (tokenizer_) {
-                    current_bias_[tokenizer_->get_eos_token()] = FORCE_BIAS;
-                }
-                break;
+        if (needle_json_state_ == NeedleJsonState::FREE) return;
 
-            default: {
-                if (needle_json_state_ == NeedleJsonState::FREE) break;
+        const NeedleTrieNode* trie_node = nullptr;
+        if (needle_json_state_ == NeedleJsonState::IN_NAME) {
+            trie_node = needle_get_trie_node(needle_name_trie_.get(), needle_constrained_buf_);
+        } else if (needle_json_state_ == NeedleJsonState::IN_ARG_KEY) {
+            auto it = needle_param_tries_.find(needle_current_function_);
+            if (it != needle_param_tries_.end()) {
+                trie_node = needle_get_trie_node(it->second.get(), needle_constrained_buf_);
+            }
+        }
+        if (!trie_node) return;
 
-                const NeedleTrieNode* trie_node = nullptr;
-                if (needle_json_state_ == NeedleJsonState::IN_NAME) {
-                    trie_node = needle_get_trie_node(needle_name_trie_.get(), needle_constrained_buf_);
-                } else if (needle_json_state_ == NeedleJsonState::IN_ARG_KEY) {
-                    auto it = needle_param_tries_.find(needle_current_function_);
-                    if (it != needle_param_tries_.end()) {
-                        trie_node = needle_get_trie_node(it->second.get(), needle_constrained_buf_);
-                    }
+        std::vector<bool> valid_tokens(needle_token_strings_.size(), false);
+        bool has_valid = false;
+        auto mark_valid_tokens = [&](char first_char) {
+            auto idx_it = needle_token_index_.find(first_char);
+            if (idx_it == needle_token_index_.end()) return;
+            for (uint32_t token_id : idx_it->second) {
+                if (!valid_tokens[token_id] &&
+                    needle_check_token_valid(needle_token_strings_[token_id], trie_node)) {
+                    valid_tokens[token_id] = true;
+                    has_valid = true;
                 }
-                if (!trie_node) break;
+            }
+        };
 
-                std::vector<bool> valid_tokens(needle_token_strings_.size(), false);
-                bool has_valid = false;
-                auto mark_valid_tokens = [&](char first_char) {
-                    auto idx_it = needle_token_index_.find(first_char);
-                    if (idx_it == needle_token_index_.end()) return;
-                    for (uint32_t token_id : idx_it->second) {
-                        if (!valid_tokens[token_id] &&
-                            needle_check_token_valid(needle_token_strings_[token_id], trie_node)) {
-                            valid_tokens[token_id] = true;
-                            has_valid = true;
-                        }
-                    }
-                };
+        for (const auto& [first_char, _] : trie_node->children) {
+            mark_valid_tokens(first_char);
+        }
+        if (trie_node->is_terminal) {
+            mark_valid_tokens('"');
+        }
+        if (!has_valid) return;
 
-                for (const auto& [first_char, _] : trie_node->children) {
-                    mark_valid_tokens(first_char);
-                }
-                if (trie_node->is_terminal) {
-                    mark_valid_tokens('"');
-                }
-                if (!has_valid) break;
-
-                for (size_t token_id = 0; token_id < valid_tokens.size(); ++token_id) {
-                    if (!valid_tokens[token_id]) {
-                        current_bias_[static_cast<uint32_t>(token_id)] = NEEDLE_BLOCK_BIAS;
-                    }
-                }
-                break;
+        for (size_t token_id = 0; token_id < valid_tokens.size(); ++token_id) {
+            if (!valid_tokens[token_id]) {
+                current_bias_[static_cast<uint32_t>(token_id)] = NEEDLE_BLOCK_BIAS;
             }
         }
         return;
