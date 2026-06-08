@@ -207,7 +207,7 @@ steps entirely: `cactus run <model-id>` will fetch the pre-built bundle (or fall
 back to local convert+transpile if no bundle is published), then run.
 
 The CQ matmul kernels live in `cactus-kernels/src/matmul.cpp`. At inference,
-the kernel applies the inverse Hadamard rotation to the FP16 activation (not the weight),
+the kernel applies a Walsh-Hadamard transform to the FP16 activation (not the weight),
 then performs a fused codebook-lookup + norm-scale + matmul in a single NEON pass.
 
 ## See Also

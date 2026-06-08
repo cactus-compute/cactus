@@ -441,9 +441,9 @@ cactus-kernels/
     attention.cpp           # attention kernels (FP16)
     attention_hybrid.cpp    # hybrid INT8/FP16 attention
     blas.cpp                # BLAS-backed paths
-    conv.cpp                # conv1d variants
+    conv.cpp                # conv1d variants, STFT
     conv2d.cpp              # conv2d variants
-    dsp.cpp                 # rfft, irfft, mel filter bank, spectrogram, STFT
+    dsp.cpp                 # rfft, irfft, mel filter bank, spectrogram
     fused.cpp               # fused op kernels
     image.cpp               # image load/resize/normalize/patches
     lstm.cpp                # LSTM cell, BiLSTM sequence
@@ -460,10 +460,8 @@ cactus-kernels/
     test_dsp.cpp
     test_elementwise.cpp
     test_matmul.cpp
-    test_performance.cpp    # perf benchmarks (run via `cactus test --suite performance`)
     test_quant.cpp
     test_reduce.cpp
-    android/                # on-device test runner for Android
 ```
 
 ## See Also

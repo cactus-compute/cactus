@@ -16,6 +16,7 @@ from cactus.transpile.lower import TranspiledGraph
 from cactus.transpile.lower import transpile_preoptimized_ir
 from cactus.transpile.optimize_graph import FusionConfig
 from cactus.transpile.optimize_graph import optimize_graph
+from cactus.transpile.optimize_graph import precompute_rope_tables
 
 
 @dataclass
@@ -96,8 +97,12 @@ def capture_component_spec(
     raw_ir_graph = copy.deepcopy(captured.ir_graph)
     optimized_ir_graph = copy.deepcopy(captured.ir_graph)
     canonicalize_exported_graph(optimized_ir_graph)
-    optimize_graph(optimized_ir_graph, config=fusion_config)
-    transpiled_graph = transpile_preoptimized_ir(copy.deepcopy(optimized_ir_graph))
+    optimize_graph(optimized_ir_graph, config=fusion_config, precompute_rope=False)
+    # Bake rope tables only into the lowered graph.cactus; the saved optimized IR stays un-baked.
+    lowered_ir = copy.deepcopy(optimized_ir_graph)
+    if precompute_rope_tables(lowered_ir):
+        canonicalize_exported_graph(lowered_ir)
+    transpiled_graph = transpile_preoptimized_ir(lowered_ir)
     if len(spec.output_keys) != len(transpiled_graph.outputs):
         raise ValueError(
             f"component {spec.component} declared {len(spec.output_keys)} output keys but lowered "

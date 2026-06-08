@@ -20,8 +20,10 @@ def test_cmd_run_forwards_chunked_bundle_flags(monkeypatch, tmp_path: Path) -> N
     image_file = tmp_path / "image.png"
     audio_file = tmp_path / "audio.wav"
     result_json = tmp_path / "result.json"
+    input_ids_file = tmp_path / "tokens.txt"
     image_file.write_bytes(b"image")
     audio_file.write_bytes(b"audio")
+    input_ids_file.write_text("1 2 3", encoding="utf-8")
 
     calls = []
 
@@ -44,6 +46,7 @@ def test_cmd_run_forwards_chunked_bundle_flags(monkeypatch, tmp_path: Path) -> N
         image=str(image_file),
         audio=str(audio_file),
         input_ids="1,2,3",
+        input_ids_file=str(input_ids_file),
         max_new_tokens=4,
         result_json=str(result_json),
         confidence_threshold=None,
@@ -60,5 +63,6 @@ def test_cmd_run_forwards_chunked_bundle_flags(monkeypatch, tmp_path: Path) -> N
     assert cmd[cmd.index("--image") + 1] == str(image_file)
     assert cmd[cmd.index("--audio") + 1] == str(audio_file)
     assert cmd[cmd.index("--input-ids") + 1] == "1,2,3"
+    assert cmd[cmd.index("--input-ids-file") + 1] == str(input_ids_file)
     assert cmd[cmd.index("--max-new-tokens") + 1] == "4"
     assert cmd[cmd.index("--result-json") + 1] == str(result_json)

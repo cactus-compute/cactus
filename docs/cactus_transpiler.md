@@ -392,7 +392,7 @@ weights/<model>/
   optimized_ir.json        # IR after fusion passes (debugging)
   graph.cactus             # serialized runtime graph
   graph_bindings.json      # weight binding metadata
-  result.json              # execution results (if --execute)
+  result.json              # execution results (if --execute-after-transpile)
   components/              # for multimodal models
     manifest.json          # component order, input/output names
     vision_encoder/
@@ -440,10 +440,9 @@ cactus transpile <model-id-or-path> [options]
 | `--no-fuse-rope` | Disable RoPE fusion |
 | `--no-fuse-attention` | Disable attention fusion |
 
-NPU emission (CoreML `.mlpackage`s for Apple Silicon audio/vision encoders) is
-implemented on the underlying `python -m cactus.transpile.hf_model` script
-(`--npu`, `--npu-quantize`, `--npu-audio-quantize`, `--npu-vision-quantize`)
-but is not yet exposed on the user-facing `cactus transpile` argparser.
+NPU emission (CoreML `.mlpackage`s for Apple Silicon audio and vision encoders)
+is available through the `--npu`, `--npu-quantize`, `--npu-audio-quantize`, and
+`--npu-vision-quantize` flags on `cactus transpile`.
 
 ### `cactus run`
 
@@ -482,11 +481,10 @@ tested adapters for:
 
 | Family | Tasks | Component Split |
 |--------|-------|-----------------|
-| Gemma 3/3n/4 | text, multimodal | yes (vision + audio + LM + decoder) |
+| Gemma 3/4 | text, multimodal | yes (vision + audio + LM + decoder) |
 | Qwen 3/3.5 | text, vision | no |
 | LFM2/2.5 | text, vision | no |
 | Whisper | encoder | no |
-| Moonshine | encoder | no |
 | Parakeet CTC | encoder | no |
 | Parakeet TDT | transcription | yes (encoder + decoder) |
 

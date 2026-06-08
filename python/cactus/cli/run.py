@@ -39,6 +39,7 @@ def cmd_run(args) -> int:
         ("--image", args.image),
         ("--audio", args.audio),
         ("--input-ids", args.input_ids),
+        ("--input-ids-file", args.input_ids_file),
         ("--max-new-tokens", args.max_new_tokens),
         ("--result-json", args.result_json),
         ("--confidence-threshold", args.confidence_threshold),

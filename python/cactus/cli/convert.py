@@ -147,6 +147,8 @@ def cmd_transpile(args):
             extra_args.extend(["--npu-audio-quantize", str(args.npu_audio_quantize)])
         if args.npu_vision_quantize is not None:
             extra_args.extend(["--npu-vision-quantize", str(args.npu_vision_quantize)])
+    if args.cache_context_length is not None:
+        extra_args.extend(["--cache-context-length", str(args.cache_context_length)])
 
     return run_transpile(
         args.model_id,

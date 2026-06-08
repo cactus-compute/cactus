@@ -181,6 +181,7 @@ class TranspileOptions:
     npu_quantize: int | None = None
     npu_audio_quantize: int | None = None
     npu_vision_quantize: int | None = None
+    cache_context_length: str | int | None = None
 
 
 def ensure_bundle(model_id, *, bits=4, token=None,
@@ -293,6 +294,8 @@ def ensure_bundle(model_id, *, bits=4, token=None,
             extra_args.extend(["--npu-audio-quantize", str(int(opts.npu_audio_quantize))])
         if opts.npu_vision_quantize is not None:
             extra_args.extend(["--npu-vision-quantize", str(int(opts.npu_vision_quantize))])
+    if opts.cache_context_length is not None:
+        extra_args.extend(["--cache-context-length", str(opts.cache_context_length)])
 
     rc = run_transpile(model_id, extra_args=extra_args)
     if rc != 0:

@@ -369,9 +369,10 @@ loaded.execute();
 GraphFile::save_node(graph, node_id, "output.bin");
 ```
 
-#### Loading Graphs
+#### GraphFile Namespace
 ```cpp
-CactusGraph loaded = GraphFile::load_graph("graph.cactus");
+GraphFile::SerializedGraph serialized = GraphFile::load_graph("graph.cactus");
+CactusGraph loaded = CactusGraph::from_serialized(serialized);
 ```
 
 The `GraphFile` namespace currently exposes `save_graph`, `load_graph`, and

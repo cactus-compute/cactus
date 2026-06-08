@@ -12,6 +12,7 @@
 #include <iostream>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -301,7 +302,11 @@ bool file_exists(const std::string& path) {
 
 std::vector<uint32_t> parse_token_ids(const std::string& text) {
     std::vector<uint32_t> tokens;
-    std::stringstream ss(text);
+    std::string normalized = text;
+    for (char& ch : normalized) {
+        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') ch = ',';
+    }
+    std::stringstream ss(normalized);
     std::string part;
     while (std::getline(ss, part, ',')) {
         size_t start = part.find_first_not_of(" \t\r\n");
@@ -316,6 +321,16 @@ std::vector<uint32_t> parse_token_ids(const std::string& text) {
         tokens.push_back(static_cast<uint32_t>(parsed));
     }
     return tokens;
+}
+
+bool read_text_file(const std::string& path, std::string& text) {
+    std::ifstream in(path);
+    if (!in) return false;
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    if (!in.good() && !in.eof()) return false;
+    text = buffer.str();
+    return true;
 }
 
 bool write_text_file(const std::string& path, const std::string& text) {
@@ -395,7 +410,7 @@ std::string build_messages(const std::string& system_prompt,
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>]"
-              << " [--prompt <text>] [--input-ids <ids>] [--max-new-tokens <n>]"
+              << " [--prompt <text>] [--input-ids <ids>] [--input-ids-file <path>] [--max-new-tokens <n>]"
               << " [--result-json <path>] [--thinking] [--no-cloud-handoff]"
               << " [--confidence-threshold <value>] [--cloud-timeout-ms <ms>]\n";
 }
@@ -417,6 +432,7 @@ int main(int argc, char** argv) {
     std::string current_audio;
     std::string initial_prompt;
     std::string input_ids;
+    std::string input_ids_file;
     std::string result_json;
     int max_new_tokens = kMaxTokens;
     bool thinking = false;
@@ -436,6 +452,8 @@ int main(int argc, char** argv) {
             initial_prompt = argv[++i];
         } else if (arg == "--input-ids" && i + 1 < argc) {
             input_ids = argv[++i];
+        } else if (arg == "--input-ids-file" && i + 1 < argc) {
+            input_ids_file = expand_tilde(argv[++i]);
         } else if (arg == "--max-new-tokens" && i + 1 < argc) {
             max_new_tokens = std::max(0, std::atoi(argv[++i]));
         } else if (arg == "--result-json" && i + 1 < argc) {
@@ -458,6 +476,20 @@ int main(int argc, char** argv) {
     if (!current_audio.empty() && !file_exists(current_audio)) {
         std::cerr << "Audio file not found: " << current_audio << "\n";
         return 1;
+    }
+    if (!input_ids.empty() && !input_ids_file.empty()) {
+        std::cerr << "Use either --input-ids or --input-ids-file, not both\n";
+        return 1;
+    }
+    if (!input_ids_file.empty()) {
+        if (!file_exists(input_ids_file)) {
+            std::cerr << "Input ids file not found: " << input_ids_file << "\n";
+            return 1;
+        }
+        if (!read_text_file(input_ids_file, input_ids)) {
+            std::cerr << "Failed to read input ids file: " << input_ids_file << "\n";
+            return 1;
+        }
     }
 
     std::cout << "Loading model from " << model_path << "...\n";
@@ -517,7 +549,9 @@ int main(int argc, char** argv) {
         std::string input;
         if (auto_send) {
             auto_send = false;
-            input = initial_prompt.empty() ? "Describe the attached input." : initial_prompt;
+            if (!initial_prompt.empty()) input = initial_prompt;
+            else if (!current_image.empty()) input = "Describe this image.";
+            else input = "Transcribe or respond to this audio.";
             std::cout << "You: " << input << "\n";
         } else {
             std::cout << "You: " << std::flush;
@@ -646,7 +680,8 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        std::string assistant = json_string_value(response_json, "response");
+        std::string assistant = json_string_value(response_json, "context_response");
+        if (assistant.empty()) assistant = json_string_value(response_json, "response");
         history.push_back({"assistant", assistant});
         current_image.clear();
         current_audio.clear();

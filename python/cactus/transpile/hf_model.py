@@ -2972,6 +2972,11 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--cache-context-length",
+        default="auto",
+        help="KV cache context length for cached decode graphs. Use auto to read the model config.",
+    )
+    parser.add_argument(
         "--audio-file",
         default="",
         help="Path to a WAV file for audio or multimodal tasks.",
@@ -3276,6 +3281,7 @@ def main() -> int:
         weights_dir=weights_dir,
         inputs_metadata=prepared.metadata,
         components=requested_components,
+        cache_context_length=args.cache_context_length,
     )
     use_component_pipeline = False
     if args.component_pipeline == "on":

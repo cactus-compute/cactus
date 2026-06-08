@@ -1,9 +1,71 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from cactus import cli
 from cactus.cli import convert as convert_cli
+from cactus.transpile.model_adapters import _cache_context_length
+
+
+class _ConfigWithText:
+    def get_text_config(self):
+        return SimpleNamespace(max_position_embeddings=128000)
+
+
+def test_cache_context_length_uses_explicit_value() -> None:
+    model = SimpleNamespace(config=SimpleNamespace(max_position_embeddings=40960))
+
+    assert _cache_context_length(
+        model,
+        input_seq_len=2048,
+        cache_context_length="32768",
+        fallback_extra_tokens=512,
+    ) == 32768
+
+
+def test_cache_context_length_reads_top_level_config() -> None:
+    model = SimpleNamespace(config=SimpleNamespace(max_position_embeddings=40960))
+
+    assert _cache_context_length(
+        model,
+        input_seq_len=2048,
+        cache_context_length=None,
+        fallback_extra_tokens=512,
+    ) == 40960
+
+
+def test_cache_context_length_reads_text_config() -> None:
+    model = SimpleNamespace(config=_ConfigWithText())
+
+    assert _cache_context_length(
+        model,
+        input_seq_len=2048,
+        cache_context_length="auto",
+        fallback_extra_tokens=512,
+    ) == 128000
+
+
+def test_cache_context_length_falls_back_to_capture_size() -> None:
+    model = SimpleNamespace(config=SimpleNamespace())
+
+    assert _cache_context_length(
+        model,
+        input_seq_len=2048,
+        cache_context_length=None,
+        fallback_extra_tokens=512,
+    ) == 2560
+
+
+def test_cache_context_length_rejects_non_positive_explicit_value() -> None:
+    with pytest.raises(ValueError):
+        _cache_context_length(
+            SimpleNamespace(config=SimpleNamespace()),
+            input_seq_len=2048,
+            cache_context_length="0",
+            fallback_extra_tokens=512,
+        )
 
 
 def test_cmd_convert_does_not_transpile(monkeypatch, tmp_path: Path) -> None:

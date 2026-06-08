@@ -11,6 +11,7 @@
 #include <limits>
 
 #include "cactus_graph.h"
+#include "kv_compress.h"
 
 class CactusGraph;
 
@@ -176,6 +177,15 @@ struct Config {
     std::vector<std::string> layer_types;
     size_t conv_L_cache = 0;
 
+    // Rolling bounded KV compaction (default ON, 4096 -> 2048). Override at runtime with
+    // CACTUS_KV_COMPRESS_AT (trigger) / CACTUS_KV_COMPRESS_TO (target); CACTUS_KV_COMPRESS_AT=0 disables.
+    bool kv_compress = true;
+    float kv_compress_recent_frac = 0.30f;
+    uint32_t kv_compress_sink = 4;
+    int32_t kv_compress_trigger_len = 4096;
+    int32_t kv_compress_target_len = 2048;
+    bool kv_compress_preserve_special = true;
+
     uint32_t altup_num_inputs = 4;
     uint32_t laurel_rank = 64;
     static constexpr uint32_t UNSET_U32 = UINT32_MAX;
@@ -223,8 +233,6 @@ struct Config {
     uint32_t audio_fft_length = 1024;
     uint32_t audio_token_id = 0;
     bool audio_fft_overdrive = false;
-    uint32_t channel_open_token_id = 100;
-    uint32_t channel_close_token_id = 101;
 
     static bool is_gemma_family(ModelType t) {
         return t == ModelType::GEMMA || t == ModelType::GEMMA3N || t == ModelType::GEMMA4;
@@ -232,6 +240,9 @@ struct Config {
 
     bool from_json(const std::string& json_path);
     std::string to_json() const;
+    // Disable rolling unless 0 < target < trigger (when trigger > 0).
+    void validate_kv_compress();
+    bool parse_kv_compress_override(const char* trigger_env, const char* target_env);
 };
 
 
@@ -320,6 +331,7 @@ public:
     virtual uint32_t get_unk_token() const = 0;
     virtual uint32_t get_bos_token() const = 0;
     virtual uint32_t get_eos_token() const = 0;
+    virtual std::unordered_set<uint32_t> special_token_ids() const { return {}; }
     virtual bool has_chat_template() const { return has_chat_template_; }
     std::string get_default_stop_sequence() const;
 
@@ -375,6 +387,11 @@ public:
     uint32_t get_unk_token() const override { return unk_token_id_; }
     uint32_t get_bos_token() const override { return bos_token_id_; }
     uint32_t get_eos_token() const override { return eos_token_id_; }
+    std::unordered_set<uint32_t> special_token_ids() const override {
+        std::unordered_set<uint32_t> ids;
+        for (const auto& kv : special_tokens_) ids.insert(kv.second);
+        return ids;
+    }
 
 private:
     std::unordered_map<std::string, uint32_t> token_to_id_;
@@ -427,6 +444,11 @@ public:
     uint32_t get_unk_token() const override { return unk_token_id_; }
     uint32_t get_bos_token() const override { return bos_token_id_; }
     uint32_t get_eos_token() const override { return eos_token_id_; }
+    std::unordered_set<uint32_t> special_token_ids() const override {
+        std::unordered_set<uint32_t> ids;
+        for (const auto& kv : special_tokens_) ids.insert(kv.second);
+        return ids;
+    }
 
 private:
     struct TrieNode {
@@ -664,6 +686,11 @@ public:
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
 
+    void compress_kv_cache_keydiff(const cactus::kvcompress::Params& params);
+    void maybe_roll_compact();
+    std::vector<size_t> compressible_layers() const;
+    void apply_kv_compress_env_override();
+
     void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
     void clear_tool_constraints();
     void update_tool_constraints(uint32_t token_id);
@@ -741,7 +768,8 @@ private:
     void copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index);
     void copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target, size_t token_offset);
     bool cache_states_compatible(const Component& source, const Component& target) const;
-    void copy_cache_states(const Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
+    void move_cache_states(Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
+    void set_cache_current_len(Component& comp, size_t len);
     void reset_component_cache_states(Component& comp);
     size_t component_chunk_tokens(const Component& comp, const std::string& input_name) const;
     size_t component_output_tokens(const Component& comp, const std::string& output_name) const;
@@ -812,6 +840,9 @@ private:
     std::unique_ptr<Tokenizer> tokenizer_;
     bool initialized_ = false;
     size_t cache_total_seq_len_ = 0;
+    std::vector<uint32_t> cache_token_ids_;        // token id per cache row (canonical head-0 view)
+    std::unordered_set<uint32_t> special_ids_;     // special-token ids force-kept during compaction
+    cactus::kvcompress::SpecialRowTracker special_rows_;  // per-(layer,head) special rows for compaction protect
     size_t cache_max_seq_len_ = 4096;
     size_t last_logit_position_ = 0;
     double last_prefill_cache_copy_ms_ = 0.0;

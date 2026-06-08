@@ -63,12 +63,20 @@ def _model_name_or_path(model: torch.nn.Module) -> str:
 
 
 def _transpile_graph_meta(model: torch.nn.Module, *, adapter_family: str, adapter_type: str, input_names: tuple[str, ...]) -> dict[str, object]:
-    return {
+    meta: dict[str, object] = {
         "adapter_family": adapter_family,
         "adapter_type": adapter_type,
         "model_name_or_path": _model_name_or_path(model),
         "input_names": input_names,
     }
+    # Rope-table precompute falls back to this on components that don't reserve a KV cache.
+    for candidate in _config_candidates_for_context_length(model):
+        for key in ("max_position_embeddings", "context_length", "model_max_length", "n_positions"):
+            value = _config_int_value(candidate, key)
+            if value is not None:
+                meta["max_position_embeddings"] = value
+                return meta
+    return meta
 
 
 def _extract_tensor_output(output: object, *, preferred_field: str | None = None) -> torch.Tensor:
@@ -290,6 +298,97 @@ def _gemma4_text_config(multimodal_backbone: torch.nn.Module) -> object:
     return config
 
 
+def _parse_cache_context_length(value: str | int | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "auto"}:
+            return None
+        parsed = int(normalized)
+    else:
+        parsed = int(value)
+    if parsed <= 0:
+        raise ValueError("--cache-context-length must be a positive integer or auto")
+    return parsed
+
+
+def _config_int_value(config: object, key: str) -> int | None:
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        raw_value = config.get(key)
+    else:
+        raw_value = getattr(config, key, None)
+    if raw_value is None:
+        return None
+    parsed = int(raw_value)
+    return parsed if parsed > 0 else None
+
+
+def _config_candidates_for_context_length(model: torch.nn.Module) -> tuple[object, ...]:
+    candidates: list[object] = []
+    seen: set[int] = set()
+
+    def _add(candidate: object) -> None:
+        if candidate is None:
+            return
+        candidate_id = id(candidate)
+        if candidate_id in seen:
+            return
+        seen.add(candidate_id)
+        candidates.append(candidate)
+
+    for owner in (
+        model,
+        getattr(model, "model", None),
+        getattr(getattr(model, "model", None), "language_model", None),
+    ):
+        config = getattr(owner, "config", None)
+        _add(config)
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            _add(get_text_config())
+        for attr in ("text_config", "llm_config", "language_config", "decoder_config"):
+            _add(getattr(config, attr, None))
+
+    return tuple(candidates)
+
+
+def _cache_context_length(
+    model: torch.nn.Module,
+    *,
+    input_seq_len: int,
+    cache_context_length: str | int | None,
+    fallback_extra_tokens: int,
+) -> int:
+    explicit_length = _parse_cache_context_length(cache_context_length)
+    if explicit_length is not None:
+        return explicit_length
+
+    for candidate in _config_candidates_for_context_length(model):
+        for key in ("max_position_embeddings", "context_length", "model_max_length", "n_positions"):
+            value = _config_int_value(candidate, key)
+            if value is not None:
+                return value
+    return input_seq_len + int(fallback_extra_tokens)
+
+
+def _max_cache_seq_len(
+    model: torch.nn.Module,
+    input_ids: torch.Tensor,
+    cache_context_length: str | int | None,
+    *,
+    fallback_extra_tokens: int,
+) -> int:
+    return max(1024, _cache_context_length(
+        model,
+        input_seq_len=int(input_ids.shape[1]),
+        cache_context_length=cache_context_length,
+        fallback_extra_tokens=fallback_extra_tokens,
+    ))
+
+
 def _gemma4_special_token_ids(multimodal_backbone: torch.nn.Module) -> tuple[int, int, int]:
     config = getattr(multimodal_backbone, "config", None)
     text_config = _gemma4_text_config(multimodal_backbone)
@@ -407,9 +506,9 @@ def _gemma4_text_attention_forward(
     query_states = apply_rotary_pos_emb(query_states, cos, sin, unsqueeze_dim=2)
     query_states = query_states.transpose(1, 2)
 
-    kv_shared_layer_index = getattr(attn, "kv_shared_layer_index", None)
-    if bool(getattr(attn, "is_kv_shared_layer", False)) and kv_shared_layer_index in shared_kv_states:
-        key_states, value_states = shared_kv_states[int(kv_shared_layer_index)]
+    kv_shared_key = getattr(attn, "layer_type", getattr(attn, "kv_shared_layer_index", None))
+    if bool(getattr(attn, "is_kv_shared_layer", False)) and kv_shared_key in shared_kv_states:
+        key_states, value_states = shared_kv_states[kv_shared_key]
         key_states = key_states.to(query_states.device)
         value_states = value_states.to(query_states.device)
     else:
@@ -424,10 +523,9 @@ def _gemma4_text_attention_forward(
         value_states = value_states.transpose(1, 2)
 
         layer_idx = getattr(attn, "layer_idx", None)
-        if layer_idx is not None and (
-            bool(getattr(attn, "store_full_length_kv", False))
-            or not bool(getattr(attn, "is_kv_shared_layer", False))
-        ):
+        if bool(getattr(attn, "store_full_length_kv", False)):
+            shared_kv_states[kv_shared_key] = (key_states, value_states)
+        elif layer_idx is not None and not bool(getattr(attn, "is_kv_shared_layer", False)):
             shared_kv_states[int(layer_idx)] = (key_states, value_states)
 
     attention_interface = eager_attention_forward
@@ -3249,6 +3347,7 @@ def _build_gemma4_multimodal_component_specs(
     named_tensors: dict[str, torch.Tensor],
     weights_dir: str | None,
     components: tuple[str, ...] | None = None,
+    cache_context_length: str | int | None = None,
 ) -> list[ComponentModuleSpec]:
     pixel_values = named_tensors["pixel_values"]
     pixel_position_ids = named_tensors.get("pixel_position_ids")
@@ -3467,7 +3566,7 @@ def _build_gemma4_multimodal_component_specs(
             graph_meta={**common_graph_meta, "component": "lm_encoder"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
         ))
-    cache_seq_len = max(1024, int(input_ids.shape[1]) + 256)
+    cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=256)
     prefill_chunk_size = max(1, int(os.environ.get("CACTUS_GEMMA4_PREFILL_CHUNK", "128") or "128"))
     prefill_chunk_size = min(prefill_chunk_size, int(input_ids.shape[1]))
     if "decoder" in expanded_components:
@@ -4177,12 +4276,99 @@ class Qwen3CausalLMStepAdapter(torch.nn.Module):
         }
 
 
+class Qwen3LMEncoderStepAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        self.backbone = model.model
+
+    def forward(self, input_ids: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        inputs_embeds = self.backbone.embed_tokens(input_ids)
+        return inputs_embeds, position_ids.to(dtype=torch.int64)
+
+    def get_transpile_metadata(self):
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.backbone,
+                    adapter_family="qwen3",
+                    adapter_type=type(self).__name__,
+                    input_names=("input_ids", "position_ids"),
+                ),
+            }
+        }
+
+
+class Qwen3LMEncoderTextChunkAdapter(Qwen3LMEncoderStepAdapter):
+    pass
+
+
+class Qwen3EmbedsCausalLMStepAdapter(torch.nn.Module):
+    def __init__(self, model: torch.nn.Module):
+        super().__init__()
+        self.model = model
+        self.backbone = model.model
+
+    def forward(self, inputs_embeds: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
+        seq_len = int(inputs_embeds.shape[1])
+        allowed_positions = torch.tril(
+            torch.ones((seq_len, seq_len), dtype=torch.bool, device=inputs_embeds.device),
+        ).view(1, 1, seq_len, seq_len)
+        allowed_values = torch.zeros(
+            (1, 1, seq_len, seq_len),
+            dtype=inputs_embeds.dtype,
+            device=inputs_embeds.device,
+        )
+        blocked_values = torch.ones(
+            (1, 1, seq_len, seq_len),
+            dtype=inputs_embeds.dtype,
+            device=inputs_embeds.device,
+        ) * torch.finfo(inputs_embeds.dtype).min
+        causal_mask = torch.where(allowed_positions, allowed_values, blocked_values)
+
+        hidden_states = inputs_embeds
+        text_position_ids = position_ids.to(dtype=torch.int64)
+        position_embeddings = self.backbone.rotary_emb(hidden_states, text_position_ids)
+        for decoder_layer in self.backbone.layers[: self.backbone.config.num_hidden_layers]:
+            hidden_states = decoder_layer(
+                hidden_states,
+                position_embeddings=position_embeddings,
+                attention_mask=causal_mask,
+                position_ids=text_position_ids,
+                past_key_values=None,
+                use_cache=False,
+            )
+        hidden_states = self.backbone.norm(hidden_states)
+        return self.model.lm_head(hidden_states[:, -1:, :])
+
+    def get_transpile_metadata(self):
+        sliding_window = getattr(self.backbone.config, "sliding_window", None)
+        layer_types = list(getattr(self.backbone.config, "layer_types", []))
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.model,
+                    adapter_family="qwen3",
+                    adapter_type=type(self).__name__,
+                    input_names=("inputs_embeds", "position_ids"),
+                ),
+                "num_hidden_layers": int(self.backbone.config.num_hidden_layers),
+                "layer_types": tuple(layer_types),
+                "sliding_window": None if sliding_window is None else int(sliding_window),
+            }
+        }
+
+
+class Qwen3EmbedsCausalLMPrefillChunkAdapter(Qwen3EmbedsCausalLMStepAdapter):
+    pass
+
+
 def _build_qwen_causal_lm_component_specs(
     model: torch.nn.Module,
     *,
     named_tensors: dict[str, torch.Tensor],
     weights_dir: str | None = None,
     components: tuple[str, ...] | None = None,
+    cache_context_length: str | int | None = None,
 ) -> list[ComponentModuleSpec] | None:
     input_ids = named_tensors.get("input_ids")
     if input_ids is None:
@@ -4205,6 +4391,14 @@ def _build_qwen_causal_lm_component_specs(
         "task": "causal_lm_logits",
         "adapter_family": family,
     }
+
+    chunk_components = {"lm_encoder_step", "lm_encoder_text_chunk", "decoder_media_step", "decoder_prefill_chunk"}
+    wants_chunked = bool(chunk_components & requested_set)
+    if wants_chunked and family != "qwen3":
+        raise RuntimeError(
+            f"text chunked-prefill components are only supported for the qwen3 family, got {family}"
+        )
+
     specs: list[ComponentModuleSpec] = []
     if "decoder" in requested_set:
         specs.append(ComponentModuleSpec(
@@ -4219,7 +4413,7 @@ def _build_qwen_causal_lm_component_specs(
     if "decoder_step" in requested_set:
         step_input_ids = input_ids[:, :1]
         step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
-        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
+        max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
         specs.append(ComponentModuleSpec(
             component="decoder_step",
             module=decoder_step,
@@ -4237,6 +4431,85 @@ def _build_qwen_causal_lm_component_specs(
             },
             metadata={"family": family, "task": "causal_lm_logits"},
         ))
+
+    if wants_chunked:
+        lm_encoder_step = Qwen3LMEncoderStepAdapter(model).eval()
+        lm_encoder_text_chunk = Qwen3LMEncoderTextChunkAdapter(model).eval()
+        decoder_media_step = Qwen3EmbedsCausalLMStepAdapter(model).eval()
+        decoder_prefill_chunk = Qwen3EmbedsCausalLMPrefillChunkAdapter(model).eval()
+        max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
+        prefill_chunk_size = max(1, int(os.environ.get("CACTUS_QWEN_PREFILL_CHUNK", "128") or "128"))
+        prefill_chunk_size = min(prefill_chunk_size, int(input_ids.shape[1]))
+        chunk_input_ids = input_ids[:, :prefill_chunk_size].contiguous()
+        chunk_position_ids = torch.arange(
+            prefill_chunk_size,
+            dtype=torch.long,
+            device=input_ids.device,
+        ).unsqueeze(0).expand(int(input_ids.shape[0]), -1).contiguous()
+        with torch.no_grad():
+            chunk_embeds, chunk_pos_out = lm_encoder_text_chunk(chunk_input_ids, chunk_position_ids)
+        step_input_ids = input_ids[:, :1]
+        step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
+        with torch.no_grad():
+            step_embeds, step_pos_out = lm_encoder_step(step_input_ids, step_position_ids)
+
+        if "lm_encoder_step" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="lm_encoder_step",
+                module=lm_encoder_step,
+                example_inputs=(step_input_ids, step_position_ids),
+                input_keys=("input_ids", "position_ids"),
+                output_keys=("inputs_embeds", "position_ids"),
+                graph_meta={**common_graph_meta, "component": "lm_encoder_step"},
+                metadata={"family": family, "task": "causal_lm_logits"},
+            ))
+        if "lm_encoder_text_chunk" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="lm_encoder_text_chunk",
+                module=lm_encoder_text_chunk,
+                example_inputs=(chunk_input_ids, chunk_position_ids),
+                input_keys=("input_ids", "position_ids"),
+                output_keys=("inputs_embeds", "position_ids"),
+                graph_meta={**common_graph_meta, "component": "lm_encoder_text_chunk"},
+                metadata={"family": family, "task": "causal_lm_logits"},
+            ))
+        if "decoder_prefill_chunk" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="decoder_prefill_chunk",
+                module=decoder_prefill_chunk,
+                example_inputs=(chunk_embeds, chunk_pos_out),
+                input_keys=("inputs_embeds", "position_ids"),
+                output_keys=("logits",),
+                graph_meta={
+                    **common_graph_meta,
+                    "component": "decoder_prefill_chunk",
+                    "use_internal_kv_cache": True,
+                    "use_internal_conv_cache": True,
+                    "use_internal_gated_deltanet_cache": True,
+                    "max_cache_seq_len": max_cache_seq_len,
+                    "cache_sink_size": 4,
+                    "prefill_chunk_size": prefill_chunk_size,
+                },
+                metadata={"family": family, "task": "causal_lm_logits"},
+            ))
+        if "decoder_media_step" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="decoder_media_step",
+                module=decoder_media_step,
+                example_inputs=(step_embeds, step_pos_out),
+                input_keys=("inputs_embeds", "position_ids"),
+                output_keys=("logits",),
+                graph_meta={
+                    **common_graph_meta,
+                    "component": "decoder_media_step",
+                    "use_internal_kv_cache": True,
+                    "use_internal_conv_cache": True,
+                    "use_internal_gated_deltanet_cache": True,
+                    "max_cache_seq_len": max_cache_seq_len,
+                    "cache_sink_size": 4,
+                },
+                metadata={"family": family, "task": "causal_lm_logits"},
+            ))
     return specs
 
 
@@ -4246,6 +4519,7 @@ def _build_qwen3_5_multimodal_component_specs(
     named_tensors: dict[str, torch.Tensor],
     weights_dir: str | None,
     components: tuple[str, ...] | None = None,
+    cache_context_length: str | int | None = None,
 ) -> list[ComponentModuleSpec] | None:
     input_ids = named_tensors.get("input_ids")
     attention_mask = named_tensors.get("attention_mask")
@@ -4330,6 +4604,7 @@ def _build_qwen3_5_multimodal_component_specs(
         "task": "multimodal_causal_lm_logits",
         "adapter_family": "qwen3_5",
     }
+    max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
     specs: list[ComponentModuleSpec] = []
     if "vision_encoder" in expanded_components:
         specs.append(ComponentModuleSpec(
@@ -4390,7 +4665,6 @@ def _build_qwen3_5_multimodal_component_specs(
     if "decoder_prefill_chunk" in expanded_components:
         if prefill_decoder_inputs is None:
             raise RuntimeError("Qwen3.5 decoder_prefill_chunk spec requires precomputed text chunk decoder inputs")
-        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
         specs.append(ComponentModuleSpec(
             component="decoder_prefill_chunk",
             module=decoder_prefill_chunk,
@@ -4414,7 +4688,6 @@ def _build_qwen3_5_multimodal_component_specs(
             raise RuntimeError("Qwen3.5 decoder_media_step spec requires precomputed decoder inputs")
         step_inputs_embeds = decoder_inputs[0][:, :1, :]
         step_position_ids = decoder_inputs[2][:, :, :1]
-        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
         specs.append(ComponentModuleSpec(
             component="decoder_media_step",
             module=decoder_media_step,
@@ -4435,7 +4708,6 @@ def _build_qwen3_5_multimodal_component_specs(
     if "decoder_step" in expanded_components:
         step_input_ids = input_ids[:, :1]
         step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
-        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
         specs.append(ComponentModuleSpec(
             component="decoder_step",
             module=decoder_step,
@@ -5162,6 +5434,7 @@ def _build_lfm2_causal_lm_component_specs(
     named_tensors: dict[str, torch.Tensor],
     weights_dir: str | None = None,
     components: tuple[str, ...] | None = None,
+    cache_context_length: str | int | None = None,
 ) -> list[ComponentModuleSpec] | None:
     input_ids = named_tensors.get("input_ids")
     if input_ids is None:
@@ -5191,7 +5464,7 @@ def _build_lfm2_causal_lm_component_specs(
     if "decoder_step" in requested_set:
         step_input_ids = input_ids[:, :1]
         step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
-        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
+        max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
         specs.append(ComponentModuleSpec(
             component="decoder_step",
             module=decoder_step,
@@ -5218,6 +5491,7 @@ def _build_lfm2_vl_multimodal_component_specs(
     named_tensors: dict[str, torch.Tensor],
     weights_dir: str | None,
     components: tuple[str, ...] | None = None,
+    cache_context_length: str | int | None = None,
 ) -> list[ComponentModuleSpec]:
     input_ids = named_tensors["input_ids"]
     attention_mask = named_tensors["attention_mask"]
@@ -5319,6 +5593,7 @@ def _build_lfm2_vl_multimodal_component_specs(
         "task": "multimodal_causal_lm_logits",
         "adapter_family": "lfm2_vl",
     }
+    max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
     specs: list[ComponentModuleSpec] = []
     if "vision_encoder" in expanded_components:
         specs.append(ComponentModuleSpec(
@@ -5411,7 +5686,6 @@ def _build_lfm2_vl_multimodal_component_specs(
             if image_features is None:
                 image_features = vision_encoder(pixel_values, spatial_shapes, pixel_attention_mask)
             decoder_inputs = lm_encoder(input_ids, attention_mask, image_features)
-        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
         specs.append(ComponentModuleSpec(
             component="decoder_prefill_chunk",
             module=decoder_last_token,
@@ -5433,7 +5707,6 @@ def _build_lfm2_vl_multimodal_component_specs(
             if image_features is None:
                 image_features = vision_encoder(pixel_values, spatial_shapes, pixel_attention_mask)
             decoder_inputs = lm_encoder(input_ids, attention_mask, image_features)
-        max_cache_seq_len = max(1024, int(input_ids.shape[1]) + 512)
         specs.append(ComponentModuleSpec(
             component="decoder_step",
             module=decoder_last_token,
@@ -5461,6 +5734,7 @@ def build_component_module_specs(
     weights_dir: str | None = None,
     inputs_metadata: dict[str, object] | None = None,
     components: tuple[str, ...] | None = None,
+    cache_context_length: str | int | None = None,
 ) -> list[ComponentModuleSpec] | None:
     family = _family_key(model)
     if family == "qwen3_5" and task == "multimodal_causal_lm_logits":
@@ -5469,6 +5743,7 @@ def build_component_module_specs(
             named_tensors=named_tensors,
             weights_dir=weights_dir,
             components=components,
+            cache_context_length=cache_context_length,
         )
     if family in {"qwen3", "qwen3_5"} and task == "causal_lm_logits":
         return _build_qwen_causal_lm_component_specs(
@@ -5476,6 +5751,7 @@ def build_component_module_specs(
             named_tensors=named_tensors,
             weights_dir=weights_dir,
             components=components,
+            cache_context_length=cache_context_length,
         )
     if family == "gemma4" and task == "multimodal_causal_lm_logits":
         return _build_gemma4_multimodal_component_specs(
@@ -5483,6 +5759,7 @@ def build_component_module_specs(
             named_tensors=named_tensors,
             weights_dir=weights_dir,
             components=components,
+            cache_context_length=cache_context_length,
         )
     if family == "lfm2_vl" and task == "multimodal_causal_lm_logits":
         return _build_lfm2_vl_multimodal_component_specs(
@@ -5490,6 +5767,7 @@ def build_component_module_specs(
             named_tensors=named_tensors,
             weights_dir=weights_dir,
             components=components,
+            cache_context_length=cache_context_length,
         )
     if family == "lfm2" and task == "causal_lm_logits":
         return _build_lfm2_causal_lm_component_specs(
@@ -5497,6 +5775,7 @@ def build_component_module_specs(
             named_tensors=named_tensors,
             weights_dir=weights_dir,
             components=components,
+            cache_context_length=cache_context_length,
         )
     if family == "needle" and task == "causal_lm_logits":
         return _build_needle_causal_lm_component_specs(

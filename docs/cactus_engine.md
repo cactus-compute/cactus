@@ -489,11 +489,11 @@ int cactus_benchmark_tokens(
 Returns the number of bytes written to `response_buffer` on success, `-1` on error.
 
 ### `cactus_transcribe`
-Transcribes audio to text. Supports Whisper, Moonshine, and Parakeet models. Supports both file-based and buffer-based audio input.
+Transcribes audio to text using Whisper or Parakeet TDT models. Supports both file-based and buffer-based audio input.
 
 ```c
 int cactus_transcribe(
-    cactus_model_t model,           // Model handle (Whisper, Moonshine, or Parakeet model)
+    cactus_model_t model,           // Model handle (Whisper or Parakeet TDT model)
     const char* audio_file_path,    // Path to WAV file (16-bit PCM) - can be NULL if using pcm_buffer
     const char* prompt,             // Optional prompt to guide transcription (can be NULL)
     char* response_buffer,          // Buffer for response JSON
@@ -513,27 +513,13 @@ int cactus_transcribe(
 **Options Format:**
 ```json
 {
-    "max_tokens": 448,
-    "temperature": 0.0,
-    "top_p": 0.0,
-    "top_k": 0,
-    "use_vad": true,
-    "cloud_handoff_threshold": 0.0,
-    "custom_vocabulary": ["word1", "word2"],
-    "vocabulary_boost": 5.0
+    "max_tokens": 448
 }
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `max_tokens` | int | auto | Maximum tokens to generate; defaults to an estimate based on audio length |
-| `temperature` | float | 0.0 | Sampling temperature |
-| `top_p` | float | 0.0 | Top-p (nucleus) sampling |
-| `top_k` | int | 0 | Top-k sampling |
-| `use_vad` | bool | true | Split audio using voice activity detection before transcribing |
-| `cloud_handoff_threshold` | float | model default | Maximum token entropy norm above which cloud handoff is flagged |
-| `custom_vocabulary` | array | [] | Words or phrases to boost recognition probability |
-| `vocabulary_boost` | float | 5.0 | Log-probability bias for custom_vocabulary tokens (0.0–20.0) |
+| `max_tokens` | int | auto | Maximum tokens to generate. When unset, it defaults to the larger of 100 and an audio-length estimate (`audio_sec × 20` for Whisper, `audio_sec × 30` for Parakeet). For Whisper the result is then capped so the prompt tokens plus generated tokens fit the decoder's 448-position limit. |
 
 **Response Format:**
 ```json
@@ -543,10 +529,8 @@ int cactus_transcribe(
     "cloud_handoff": false,
     "response": "Transcribed text here.",
     "function_calls": [],
-    "segments": [
-        {"start": 0.0, "end": 2.5, "text": "Transcribed text here."}
-    ],
-    "confidence": 0.92,
+    "segments": [],
+    "confidence": 1.0,
     "time_to_first_token_ms": 120.0,
     "total_time_ms": 450.0,
     "prefill_tps": 50.0,
@@ -559,8 +543,8 @@ int cactus_transcribe(
 ```
 
 - `response`: Full transcription text
-- `segments`: Array of `{"start": float, "end": float, "text": string}` objects with timestamps (seconds). Whisper produces phrase-level segments from timestamp tokens; Parakeet TDT produces word-level segments from native TDT frame timing; Parakeet CTC and Moonshine produce one segment per transcription window (consecutive VAD speech regions grouped up to 30 seconds), with `start`/`end` reflecting the window's boundaries in the source audio.
-- `cloud_handoff`: true when `cloud_handoff_threshold > 0`, the transcribed text is non-empty and longer than 5 characters, and the peak token entropy norm exceeded `cloud_handoff_threshold`
+- `segments`: Always empty for the current native transcription paths
+- `cloud_handoff`: Always false for transcription
 
 **Example (file-based):**
 ```c
@@ -583,38 +567,6 @@ char response[16384];
 int result = cactus_transcribe(whisper, NULL, NULL,
                                 response, sizeof(response), NULL, NULL, NULL,
                                 pcm_data, pcm_size);
-```
-
-**Transcription Options Format:**
-```json
-{
-    "max_tokens": 100,
-    "custom_vocabulary": ["Omeprazole", "HIPAA", "Cactus"],
-    "vocabulary_boost": 3.0
-}
-```
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `max_tokens` | int | auto | Maximum tokens to generate. When unset, scales with audio length (`audio_sec × 20` for Whisper, `× 30` for Parakeet), then clamped to the Whisper decoder ceiling of 448. |
-| `custom_vocabulary` | array | [] | List of words or phrases to bias the decoder toward. Useful for proper nouns, acronyms, medical terms, and domain-specific jargon. |
-| `vocabulary_boost` | float | 5.0 | Logit bias strength applied to tokens from `custom_vocabulary`. Clamped to 0.0–20.0. Higher values make the listed words more likely to appear. |
-
-**Note:** Custom vocabulary biasing is supported for Whisper and Moonshine models. Each vocabulary entry is tokenized into sub-tokens and the boost is applied per-token at each decoder step.
-
-**Example (with custom vocabulary):**
-```c
-cactus_model_t whisper = cactus_init("../../weights/whisper-small", NULL, false);
-
-const char* options = "{\"custom_vocabulary\": [\"Omeprazole\", \"HIPAA\", \"Cactus\"], \"vocabulary_boost\": 3.0}";
-
-char response[16384];
-int result = cactus_transcribe(whisper, "medical_notes.wav", NULL,
-                                response, sizeof(response), options, NULL, NULL,
-                                NULL, 0);
-if (result > 0) {
-    printf("Transcription: %s\n", response);
-}
 ```
 
 ### `cactus_embed`

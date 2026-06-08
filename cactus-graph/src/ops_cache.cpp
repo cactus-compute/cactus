@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <limits>
 #include <cstdlib>
+#include <cassert>
 
 namespace {
 
@@ -87,6 +88,50 @@ inline bool use_fp16_kv_cache() {
     return cached;
 }
 
+constexpr size_t kInitialCacheEntries = 256;
+
+inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
+    auto* meta = get_meta(buf);
+    size_t cur = meta->max_seq_len;
+    const size_t current_seq = meta->current_seq_len;
+    if (new_max == cur || new_max < current_seq) return false;
+
+    const size_t kv_heads = meta->num_kv_heads;
+    const size_t hdim = meta->head_dim;
+    const bool fp16_cache = buf.precision == Precision::FP16;
+
+    size_t total = fp16_cache ? fp16_cache_elements(new_max, kv_heads, hdim)
+                              : cache_buffer_size(new_max, kv_heads, hdim);
+    BufferDesc resized({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
+    resized.allocate();
+    std::memset(resized.get_data(), 0, resized.byte_size);
+
+    std::memcpy(resized.get_data(), buf.get_data(), sizeof(CacheMetadata));
+    if (fp16_cache) {
+        std::memcpy(get_fp16_data(resized), get_fp16_data(buf),
+                    current_seq * kv_heads * hdim * sizeof(__fp16));
+    } else {
+        std::memcpy(get_int8_data(resized), get_int8_data(buf), current_seq * kv_heads * hdim);
+        const size_t groups = (hdim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+        std::memcpy(get_scales(resized, new_max, kv_heads, hdim),
+                    get_scales(buf, cur, kv_heads, hdim),
+                    current_seq * kv_heads * groups * sizeof(float));
+    }
+    get_meta(resized)->max_seq_len = new_max;
+    buf = std::move(resized);
+    return true;
+}
+
+inline bool grow_cache_buffer(BufferDesc& buf, size_t needed, size_t ceiling) {
+    size_t cur = get_meta(buf)->max_seq_len;
+    if (needed <= cur || cur >= ceiling) return false;
+    size_t new_max = cur;
+    while (new_max < needed) new_max <<= 1;
+    if (new_max > ceiling) new_max = ceiling;
+    if (new_max <= cur) return false;
+    return resize_cache_buffer(buf, new_max);
+}
+
 } // namespace
 
 void compute_kv_cache_state_node(
@@ -96,7 +141,11 @@ void compute_kv_cache_state_node(
 
     if (node.output_buffer.get_data()) return;
 
-    size_t max_seq = node.params.max_cache_seq_len;
+    size_t ceiling = node.params.max_cache_seq_len;
+    size_t window = node.params.window_size;
+    bool sliding = window > 0 && window < ceiling;
+    size_t max_seq = sliding ? std::min(ceiling, window + node.params.cache_sink_size + 1)
+                             : std::min(ceiling, kInitialCacheEntries);
     size_t kv_heads = node.params.num_kv_heads;
     size_t hdim = node.params.head_dim;
     const bool fp16_cache = use_fp16_kv_cache();
@@ -136,12 +185,20 @@ void compute_kv_cache_append_node(
     size_t int8_stride = kv_heads * hdim;
     size_t scale_stride = kv_heads * num_groups;
 
+    size_t ceiling = nodes[node_index_map.at(node.input_ids[1])]->params.max_cache_seq_len;
+    bool sliding = node.params.window_size > 0 && node.params.window_size < ceiling;
+    if (!sliding && current_len + new_seq_len > max_len) {
+        if (grow_cache_buffer(cache_buf, current_len + new_seq_len, ceiling)) {
+            meta = get_meta(cache_buf);
+            max_len = meta->max_seq_len;
+        }
+    }
+
     if (cache_buf.precision == Precision::FP16) {
         size_t stride = kv_heads * hdim;
         __fp16* fp16_base = get_fp16_data(cache_buf);
         const __fp16* source = new_kv.data_as<__fp16>();
-        size_t window = node.params.window_size;
-        if (window == 0) window = max_len;
+        size_t window = sliding ? node.params.window_size : max_len;
 
         size_t new_total = current_len + new_seq_len;
         bool needs_eviction = new_total > window;
@@ -185,8 +242,7 @@ void compute_kv_cache_append_node(
     int8_t* int8_base = get_int8_data(cache_buf);
     float* scale_base = get_scales(cache_buf, max_len, kv_heads, hdim);
 
-    size_t window = node.params.window_size;
-    if (window == 0) window = max_len;
+    size_t window = sliding ? node.params.window_size : max_len;
 
     size_t new_total = current_len + new_seq_len;
     bool needs_eviction = new_total > window;
@@ -467,3 +523,21 @@ void compute_recurrent_cache_write_node(
     auto& cache_buf = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
     std::memcpy(cache_buf.get_data(), src.get_data(), src.byte_size);
 }
+
+void CactusGraph::steal_cache_buffer(size_t dst_node, CactusGraph& src, size_t src_node) {
+    auto& dst = nodes_[node_index_map_.at(dst_node)];
+    auto& s = src.nodes_[src.node_index_map_.at(src_node)];
+    // Buffer carries its own runtime precision (may be fp16); only op_type is invariant pre-move.
+    assert(dst->op_type == s->op_type);
+    dst->output_buffer = std::move(s->output_buffer);
+}
+
+void CactusGraph::shrink_cache_buffer(size_t node_id, size_t new_capacity) {
+    auto& buf = nodes_[node_index_map_.at(node_id)]->output_buffer;
+    if (!buf.get_data()) return;
+    auto* meta = get_meta(buf);
+    size_t target = std::max<size_t>(new_capacity, meta->current_seq_len);
+    if (target >= meta->max_seq_len) return;
+    resize_cache_buffer(buf, target);
+}
+

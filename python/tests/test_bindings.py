@@ -244,6 +244,7 @@ class TestTranspileOptions:
         assert opts.system_prompt is None
         assert opts.trust_remote_code is False
         assert opts.local_files_only is False
+        assert opts.cache_context_length is None
 
     def test_custom_values(self):
         from cactus.cli.model import TranspileOptions
@@ -252,11 +253,13 @@ class TestTranspileOptions:
             prompt="Hello",
             max_new_tokens=256,
             trust_remote_code=True,
+            cache_context_length="131072",
         )
         assert opts.task == "causal_lm_logits"
         assert opts.prompt == "Hello"
         assert opts.max_new_tokens == 256
         assert opts.trust_remote_code is True
+        assert opts.cache_context_length == "131072"
 
     def test_frozen(self):
         from cactus.cli.model import TranspileOptions
@@ -297,6 +300,7 @@ class TestCliParser:
             "--audio", "audio.wav",
             "--image", "image.png",
             "--input-ids", "1,2,3",
+            "--input-ids-file", "tokens.txt",
             "--max-new-tokens", "4",
             "--result-json", "result.json",
         ])
@@ -304,6 +308,7 @@ class TestCliParser:
         assert args.audio == "audio.wav"
         assert args.image == "image.png"
         assert args.input_ids == "1,2,3"
+        assert args.input_ids_file == "tokens.txt"
         assert args.max_new_tokens == 4
         assert args.result_json == "result.json"
 

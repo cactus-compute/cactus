@@ -15,6 +15,7 @@ set(ENGINE_SOURCES
     src/sp.cpp
     src/constraints.cpp
     src/model.cpp
+    src/kv_compress.cpp
     src/model_npu.cpp
     src/engine_image.cpp
     src/index.cpp

@@ -439,6 +439,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         CACTUS_LOG_ERROR("model", "Failed to load config.txt from: " << bundle_dir);
         return false;
     }
+    apply_kv_compress_env_override();
     if (!load_manifest()) {
         CACTUS_LOG_ERROR("model", "Failed to load bundle manifest from: " << bundle_dir);
         return false;
@@ -957,7 +958,7 @@ bool Model::cache_states_compatible(const Component& source, const Component& ta
     return true;
 }
 
-void Model::copy_cache_states(const Component& source, Component& target, size_t logical_current) {
+void Model::move_cache_states(Component& source, Component& target, size_t logical_current) {
     if (source.cache_states.empty() || source.cache_states.size() != target.cache_states.size()) {
         throw std::runtime_error("prefill and step cache states are not compatible");
     }
@@ -967,150 +968,35 @@ void Model::copy_cache_states(const Component& source, Component& target, size_t
         if (src.layer_key != dst.layer_key) {
             throw std::runtime_error("prefill and step cache layer mismatch: " + src.layer_key + " != " + dst.layer_key);
         }
+        int moved_src = -1, moved_dst = -1;
         for (auto [src_node, dst_node] : {std::pair<int, int>{src.key_node_id, dst.key_node_id}, std::pair<int, int>{src.value_node_id, dst.value_node_id}}) {
-            const auto& src_desc = source.graph->get_output_buffer(static_cast<size_t>(src_node));
-            const auto& dst_desc = target.graph->get_output_buffer(static_cast<size_t>(dst_node));
-            if (src_desc.precision != dst_desc.precision) {
-                std::ostringstream oss;
-                oss << "prefill and step cache precision mismatch at layer " << src.layer_key
-                    << ": " << static_cast<int>(src_desc.precision)
-                    << " vs " << static_cast<int>(dst_desc.precision);
-                throw std::runtime_error(oss.str());
+            if (src_node < 0 || dst_node < 0) continue;
+            // Conv/recurrent caches share one node for key and value; move it only once.
+            if (src_node == moved_src && dst_node == moved_dst) continue;
+            moved_src = src_node;
+            moved_dst = dst_node;
+            target.graph->steal_cache_buffer(static_cast<size_t>(dst_node), *source.graph, static_cast<size_t>(src_node));
+            if (target.graph->get_node_op_type(static_cast<size_t>(dst_node)) == OpType::KV_CACHE_STATE &&
+                logical_current != std::numeric_limits<size_t>::max()) {
+                auto* meta = static_cast<uint64_t*>(target.graph->get_output(static_cast<size_t>(dst_node)));
+                if (meta && logical_current < meta[0]) {
+                    meta[4] = std::min<uint64_t>(meta[4], logical_current);
+                    meta[0] = logical_current;
+                }
             }
-            void* src_ptr = source.graph->get_output(static_cast<size_t>(src_node));
-            void* dst_ptr = target.graph->get_output(static_cast<size_t>(dst_node));
+        }
+    }
+}
 
-            const OpType src_op = source.graph->get_node_op_type(static_cast<size_t>(src_node));
-            const OpType dst_op = target.graph->get_node_op_type(static_cast<size_t>(dst_node));
-            if (src_op != dst_op) {
-                throw std::runtime_error(
-                    "cache state op_type mismatch between prefill and step at layer "
-                    + src.layer_key);
-            }
-            if (src_op == OpType::RECURRENT_CACHE_STATE) {
-                if (src_desc.byte_size != dst_desc.byte_size) {
-                    throw std::runtime_error(
-                        "recurrent cache buffer shape mismatch between prefill and step at layer "
-                        + src.layer_key);
-                }
-                std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
-                continue;
-            }
-            if (src_op == OpType::CONV_CACHE_STATE) {
-                if (src_desc.byte_size != dst_desc.byte_size) {
-                    throw std::runtime_error(
-                        "conv cache buffer shape mismatch between prefill and step at layer "
-                        + src.layer_key);
-                }
-                std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
-                continue;
-            }
-            if (src_desc.byte_size == dst_desc.byte_size && logical_current == std::numeric_limits<size_t>::max()) {
-                std::memcpy(dst_ptr, src_ptr, src_desc.byte_size);
-                continue;
-            }
-            if (src_desc.precision == Precision::INT8) {
-                auto* src_meta = static_cast<uint64_t*>(src_ptr);
-                auto* dst_meta = static_cast<uint64_t*>(dst_ptr);
-                const size_t src_current = static_cast<size_t>(src_meta[0]);
-                const size_t effective_current = std::min(src_current, logical_current);
-                const size_t src_max = static_cast<size_t>(src_meta[1]);
-                const size_t kv_heads = static_cast<size_t>(src_meta[2]);
-                const size_t head_dim = static_cast<size_t>(src_meta[3]);
-                const size_t sink = static_cast<size_t>(src_meta[4]);
-                if (src_max == 0 || kv_heads == 0 || head_dim == 0) {
-                    throw std::runtime_error("prefill cache metadata is not initialized for layer " + src.layer_key);
-                }
-                const size_t groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-                const size_t int8_stride = kv_heads * head_dim;
-                const size_t scale_stride = kv_heads * groups;
-                const size_t row_bytes = int8_stride + scale_stride * sizeof(float);
-                const size_t dst_max = (dst_desc.byte_size - 64) / row_bytes;
-                if (dst_max == 0) {
-                    throw std::runtime_error("step cache capacity is zero for layer " + src.layer_key);
-                }
-                const size_t dst_current = std::min(effective_current, dst_max);
-                dst_meta[0] = dst_current;
-                dst_meta[1] = dst_max;
-                dst_meta[2] = kv_heads;
-                dst_meta[3] = head_dim;
-                dst_meta[4] = std::min(sink, dst_current);
-                std::memset(static_cast<char*>(dst_ptr) + 64, 0, dst_desc.byte_size - 64);
-
-                const auto* src_i8 = static_cast<const int8_t*>(src_ptr) + 64;
-                const auto* src_scales = reinterpret_cast<const float*>(
-                    static_cast<const char*>(src_ptr) + 64 + src_max * int8_stride);
-                auto* dst_i8 = static_cast<int8_t*>(dst_ptr) + 64;
-                auto* dst_scales = reinterpret_cast<float*>(
-                    static_cast<char*>(dst_ptr) + 64 + dst_max * int8_stride);
-                auto copy_rows = [&](size_t dst_row, size_t src_row, size_t rows) {
-                    if (rows == 0) return;
-                    std::memcpy(
-                        dst_i8 + dst_row * int8_stride,
-                        src_i8 + src_row * int8_stride,
-                        rows * int8_stride);
-                    std::memcpy(
-                        dst_scales + dst_row * scale_stride,
-                        src_scales + src_row * scale_stride,
-                        rows * scale_stride * sizeof(float));
-                };
-                if (effective_current <= dst_max) {
-                    copy_rows(0, 0, effective_current);
-                } else {
-                    const size_t copied_sink = std::min(sink, dst_max);
-                    const size_t tail_rows = dst_max - copied_sink;
-                    copy_rows(0, 0, copied_sink);
-                    if (tail_rows > 0) copy_rows(copied_sink, effective_current - tail_rows, tail_rows);
-                }
-                continue;
-            }
-            if (PrecisionTraits::is_cq(src_desc.precision) || src_desc.byte_size < 64 || dst_desc.byte_size < 64) {
-                std::ostringstream oss;
-                oss << "prefill and step cache buffer mismatch at layer " << src.layer_key
-                    << ": " << src_desc.byte_size << " bytes vs " << dst_desc.byte_size << " bytes";
-                throw std::runtime_error(oss.str());
-            }
-
-            auto* src_meta = static_cast<uint64_t*>(src_ptr);
-            auto* dst_meta = static_cast<uint64_t*>(dst_ptr);
-            const size_t src_current = static_cast<size_t>(src_meta[0]);
-            const size_t effective_current = std::min(src_current, logical_current);
-            const size_t src_max = static_cast<size_t>(src_meta[1]);
-            const size_t kv_heads = static_cast<size_t>(src_meta[2]);
-            const size_t head_dim = static_cast<size_t>(src_meta[3]);
-            const size_t sink = static_cast<size_t>(src_meta[4]);
-            if (src_max == 0 || kv_heads == 0 || head_dim == 0) {
-                throw std::runtime_error("prefill cache metadata is not initialized for layer " + src.layer_key);
-            }
-            const size_t row_bytes = kv_heads * head_dim * PrecisionTraits::size_of(src_desc.precision);
-            const size_t dst_max = (dst_desc.byte_size - 64) / row_bytes;
-            if (dst_max == 0) {
-                throw std::runtime_error("step cache capacity is zero for layer " + src.layer_key);
-            }
-            const size_t dst_current = std::min(effective_current, dst_max);
-            dst_meta[0] = dst_current;
-            dst_meta[1] = dst_max;
-            dst_meta[2] = kv_heads;
-            dst_meta[3] = head_dim;
-            dst_meta[4] = std::min(sink, dst_current);
-            std::memset(static_cast<char*>(dst_ptr) + 64, 0, dst_desc.byte_size - 64);
-            const auto* src_rows = static_cast<const char*>(src_ptr) + 64;
-            auto* dst_rows = static_cast<char*>(dst_ptr) + 64;
-            if (effective_current <= dst_max) {
-                std::memcpy(dst_rows, src_rows, effective_current * row_bytes);
-            } else {
-                const size_t copied_sink = std::min(sink, dst_max);
-                const size_t tail_rows = dst_max - copied_sink;
-                if (copied_sink > 0) {
-                    std::memcpy(dst_rows, src_rows, copied_sink * row_bytes);
-                }
-                if (tail_rows > 0) {
-                    std::memcpy(
-                        dst_rows + copied_sink * row_bytes,
-                        src_rows + (effective_current - tail_rows) * row_bytes,
-                        tail_rows * row_bytes);
-                }
-            }
+void Model::set_cache_current_len(Component& comp, size_t len) {
+    for (const auto& state : comp.cache_states) {
+        for (int node_id : {state.key_node_id, state.value_node_id}) {
+            if (node_id < 0) continue;
+            if (comp.graph->get_node_op_type(static_cast<size_t>(node_id)) != OpType::KV_CACHE_STATE) continue;
+            auto* meta = static_cast<uint64_t*>(comp.graph->get_output(static_cast<size_t>(node_id)));
+            if (!meta || len >= meta[0]) continue;
+            meta[4] = std::min<uint64_t>(meta[4], len);
+            meta[0] = len;
         }
     }
 }
@@ -1180,26 +1066,31 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     size_t effective_chunk = chunk_size > 0 ? std::min(chunk_size, component_tokens) : component_tokens;
     if (effective_chunk != component_tokens) effective_chunk = component_tokens;
     size_t whole_chunks_end = (tokens.size() / effective_chunk) * effective_chunk;
-    const bool has_recurrent_state = [&]() {
+    auto any_cache_node = [&](auto predicate) {
         if (!decoder_prefill_->graph) return false;
         for (const auto& state : decoder_prefill_->cache_states) {
             for (int node_id : {state.key_node_id, state.value_node_id}) {
                 if (node_id < 0) continue;
-                if (decoder_prefill_->graph->get_node_op_type(static_cast<size_t>(node_id))
-                    == OpType::RECURRENT_CACHE_STATE) {
-                    return true;
-                }
+                if (predicate(static_cast<size_t>(node_id))) return true;
             }
         }
         return false;
-    }();
+    };
+    const bool has_recurrent_state = any_cache_node([&](size_t id) {
+        return decoder_prefill_->graph->get_node_op_type(id) == OpType::RECURRENT_CACHE_STATE;
+    });
     if (has_recurrent_state && whole_chunks_end > effective_chunk) {
         whole_chunks_end = effective_chunk;
     }
+    const bool has_sliding_window_cache = any_cache_node([&](size_t id) {
+        return decoder_prefill_->graph->get_node_op_type(id) == OpType::KV_CACHE_STATE
+            && decoder_prefill_->graph->get_node_window_size(id) > 0;
+    });
     const size_t tail_tokens = tokens.size() - whole_chunks_end;
     const size_t padding_cutoff = std::max<size_t>(1, effective_chunk / 16);
     const bool pad_tail = family_ != "lfm2_vl"
         && !has_recurrent_state
+        && !has_sliding_window_cache
         && tail_tokens >= padding_cutoff;
     const size_t executable_tokens = whole_chunks_end + (pad_tail ? effective_chunk : 0);
     if (executable_tokens == 0) {
@@ -1260,7 +1151,7 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
             std::fill(decoder_->input_buffers[i].begin(), decoder_->input_buffers[i].end(), 0);
         }
         auto copy_start = std::chrono::high_resolution_clock::now();
-        copy_cache_states(*decoder_prefill_, *decoder_, start_position + result.logical_tokens);
+        move_cache_states(*decoder_prefill_, *decoder_, start_position + result.logical_tokens);
         auto copy_end = std::chrono::high_resolution_clock::now();
         last_prefill_cache_copy_ms_ = std::chrono::duration_cast<std::chrono::microseconds>(copy_end - copy_start).count() / 1000.0;
     }
@@ -1657,6 +1548,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
         out_token = emitted.front();
         return true;
     }
+    cache_token_ids_ = tokens;
     if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
@@ -1681,13 +1573,15 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     if (decoder_prefill_) {
         chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), true);
         if (chunked.logical_tokens == tokens.size() && chunked.padding_tokens > 0 && tokens.size() > 0) {
-            copy_cache_states(*decoder_prefill_, *decoder_, tokens.size() - 1);
+            // Cache already moved into the step component; drop the padded last row and re-run it for logits.
+            set_cache_current_len(*decoder_, tokens.size() - 1);
             cache_total_seq_len_ = tokens.size() - 1;
             run_step(tokens.back(), cache_total_seq_len_, true);
             ++cache_total_seq_len_;
             out_token = argmax_last_logits();
             record_sampled_token(out_token);
             last_prefill_scalar_tail_tokens_ = 1;
+            maybe_roll_compact();
             return true;
         }
         cache_total_seq_len_ += chunked.logical_tokens;
@@ -1703,6 +1597,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
         out_token = argmax_last_logits();
     }
     record_sampled_token(out_token);
+    maybe_roll_compact();
     return true;
 }
 
@@ -1719,6 +1614,7 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         if (!context_tokens_.empty()) run_full_context_text();
         cache_total_seq_len_ = context_tokens_.size();
+        cache_token_ids_ = context_tokens_;
         return;
     }
     ChunkedPrefillResult chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), prepare_decode);
@@ -1727,7 +1623,13 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
         run_step(tokens[i], cache_total_seq_len_, /*read_logits=*/false);
         ++cache_total_seq_len_;
     }
+    cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
+
+    if (prepare_decode) {
+        // After the prompt reaches full length here -- never mid-chunk -- bound it to target_len.
+        maybe_roll_compact();
+    }
 }
 
 void Model::prefill_with_images(const std::vector<uint32_t>& tokens,
@@ -2456,7 +2358,7 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         decoder_prefill_chunk_->graph->execute();
     }
     if (whole_chunks_end > 0 && decoder_ != nullptr) {
-        copy_cache_states(*decoder_prefill_chunk_, *decoder_);
+        move_cache_states(*decoder_prefill_chunk_, *decoder_);
         decoder_prefill_chunk_->graph->release_runtime_buffers();
         unload_component_graph(*decoder_prefill_chunk_);
     }
@@ -2602,6 +2504,7 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
         run_step(t, pos, false);
     }
     cache_total_seq_len_ += tokens.size();
+    cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
     (void)profile_file;
 }
 
@@ -2639,6 +2542,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
         cache_total_seq_len_ = context_tokens_.size();
+        cache_token_ids_ = context_tokens_;
         uint32_t result = argmax_last_logits(out_entropy);
         record_sampled_token(result);
         return result;
@@ -2648,6 +2552,8 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
     }
     run_step(tokens.back(), cache_total_seq_len_ + tokens.size() - 1, /*read_logits=*/true);
     cache_total_seq_len_ += tokens.size();
+    cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
+    maybe_roll_compact();
     uint32_t result = argmax_last_logits(out_entropy);
     record_sampled_token(result);
     return result;
@@ -3050,6 +2956,8 @@ void Model::reset_cache() {
     last_logit_position_ = 0;
     encoder_cross_kv_ready_ = false;
     context_tokens_.clear();
+    cache_token_ids_.clear();
+    special_rows_.clear();
     token_history_.clear();
     media_features_.clear();
     media_feature_shapes_.clear();
@@ -3063,91 +2971,202 @@ void Model::reset_cache() {
 
 void Model::set_cache_window(size_t /*window_size*/, size_t /*sink_size*/) {}
 
-void Model::remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges) {
-    size_t total_removed = 0;
-    for (const auto& r : ranges) total_removed += r.second;
-    if (cache_total_seq_len_ >= total_removed)
-        cache_total_seq_len_ -= total_removed;
-    else
-        cache_total_seq_len_ = 0;
+void Model::apply_kv_compress_env_override() {
+    config_.parse_kv_compress_override(std::getenv("CACTUS_KV_COMPRESS_AT"),
+                                       std::getenv("CACTUS_KV_COMPRESS_TO"));
+}
 
-    struct CacheHeader {
-        uint64_t current_seq_len;
-        uint64_t max_seq_len;
-        uint64_t num_kv_heads;
-        uint64_t head_dim;
-        uint64_t sink_size;
-        uint64_t reserved[3];
-    };
-    constexpr size_t kHeaderBytes = 64;
-    static_assert(sizeof(CacheHeader) == kHeaderBytes, "CacheHeader layout mismatch");
+std::vector<size_t> Model::compressible_layers() const {
+    size_t shared = (config_.num_kv_shared_layers == Config::UNSET_U32)
+                        ? 0 : config_.num_kv_shared_layers;
+    return cactus::kvcompress::physical_compressible_layers(
+        config_.layer_types, config_.num_layers, shared);
+}
 
-    auto sorted_ranges = ranges;
-    std::sort(sorted_ranges.begin(), sorted_ranges.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
+// Keep params.abs_budget survivors per (layer, kv-head) -- sink + recent + most distinctive middle
+// tokens by KeyDiff -- compact them, and renumber RoPE positions to a contiguous window 0..B-1.
+void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) {
+    if (!decoder_) return;
+    using cactus::kvcompress::CacheHeader;
+    constexpr size_t kHeaderBytes = sizeof(CacheHeader);
 
-    for (auto& kv : components_) {
-        Component& comp = kv.second;
-        if (!comp.graph) continue;
-        for (const auto& cs : comp.cache_states) {
-            for (int node_id : {cs.key_node_id, cs.value_node_id}) {
-                if (node_id < 0) continue;
-                const auto& desc = comp.graph->get_output_buffer(static_cast<size_t>(node_id));
-                if (desc.byte_size <= kHeaderBytes || !desc.get_data()) continue;
-                void* raw = comp.graph->get_output(static_cast<size_t>(node_id));
-                if (!raw) continue;
-                auto* hdr = static_cast<CacheHeader*>(raw);
-                size_t cur = hdr->current_seq_len;
-                if (cur == 0) continue;
-                size_t kv_heads = hdr->num_kv_heads;
-                size_t hdim = hdr->head_dim;
-                if (kv_heads == 0 || hdim == 0) continue;
-                size_t token_elems = kv_heads * hdim;
-                size_t num_groups = (hdim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-                size_t token_scales = kv_heads * num_groups;
-                size_t max_seq = hdr->max_seq_len;
+    std::vector<size_t> layers = compressible_layers();
+    if (layers.empty()) return;
+    std::set<size_t> compressible(layers.begin(), layers.end());
+    const double rope_theta = static_cast<double>(config_.rope_theta);
+    const double rope_local_theta = (config_.rope_local_base_freq == Config::UNSET_F32)
+        ? rope_theta : static_cast<double>(config_.rope_local_base_freq);
+    const size_t old_total = cache_total_seq_len_;
 
-                size_t new_len = cur;
-                if (desc.precision == Precision::FP16) {
-                    auto* base = reinterpret_cast<__fp16*>(static_cast<char*>(raw) + kHeaderBytes);
-                    for (auto it = sorted_ranges.rbegin(); it != sorted_ranges.rend(); ++it) {
-                        size_t start = it->first;
-                        if (start >= new_len) continue;
-                        size_t count = std::min(it->second, new_len - start);
-                        size_t tail_start = start + count;
-                        size_t tail_count = new_len - tail_start;
-                        if (tail_count > 0) {
-                            std::memmove(base + start * token_elems,
-                                         base + tail_start * token_elems,
-                                         tail_count * token_elems * sizeof(__fp16));
-                        }
-                        new_len -= count;
-                    }
-                } else {
-                    auto* int8_base = reinterpret_cast<int8_t*>(static_cast<char*>(raw) + kHeaderBytes);
-                    auto* scale_base = reinterpret_cast<float*>(static_cast<char*>(raw) + kHeaderBytes +
-                                                                max_seq * kv_heads * hdim);
-                    for (auto it = sorted_ranges.rbegin(); it != sorted_ranges.rend(); ++it) {
-                        size_t start = it->first;
-                        if (start >= new_len) continue;
-                        size_t count = std::min(it->second, new_len - start);
-                        size_t tail_start = start + count;
-                        size_t tail_count = new_len - tail_start;
-                        if (tail_count > 0) {
-                            std::memmove(int8_base + start * token_elems,
-                                         int8_base + tail_start * token_elems,
-                                         tail_count * token_elems);
-                            std::memmove(scale_base + start * token_scales,
-                                         scale_base + tail_start * token_scales,
-                                         tail_count * token_scales * sizeof(float));
-                        }
-                        new_len -= count;
-                    }
-                }
-                hdr->current_seq_len = new_len;
+    cactus::kvcompress::Params params_local = params;
+    bool preserve = config_.kv_compress_preserve_special;
+    if (const char* e = std::getenv("CACTUS_KV_PRESERVE_SPECIAL")) preserve = (std::atoi(e) != 0);
+    const bool map_valid = cache_token_ids_.size() == old_total && media_features_.empty();
+    const bool per_head_protect = preserve && map_valid && special_rows_.valid();
+    // cache_token_ids_ past tracked_len is still head-aligned, so specials there apply to every head.
+    std::vector<int> appended_special;
+    if (per_head_protect) {
+        if (special_ids_.empty() && tokenizer_) special_ids_ = tokenizer_->special_token_ids();
+        for (size_t r = special_rows_.tracked_len(); r < old_total && r < cache_token_ids_.size(); ++r)
+            if (special_ids_.count(cache_token_ids_[r])) appended_special.push_back(static_cast<int>(r));
+    }
+
+    Component& comp = *decoder_;
+    if (!comp.graph) return;
+    // Skip the whole pass (before mutating) if any layer's V dim differs from K (MLA), or a head
+    // can't fit sink + all its specials in the budget.
+    const size_t protect_budget = params.abs_budget > 0 ? static_cast<size_t>(params.abs_budget) : 0;
+    for (size_t li = 0; li < comp.cache_states.size(); ++li) {
+        if (!compressible.count(li)) continue;
+        const auto& cs = comp.cache_states[li];
+        if (cs.key_node_id < 0 || cs.value_node_id < 0) continue;
+        if (comp.graph->get_node_op_type(static_cast<size_t>(cs.key_node_id)) != OpType::KV_CACHE_STATE) continue;
+        void* kraw = comp.graph->get_output(static_cast<size_t>(cs.key_node_id));
+        void* vraw = comp.graph->get_output(static_cast<size_t>(cs.value_node_id));
+        if (!kraw || !vraw) continue;
+        if (static_cast<CacheHeader*>(vraw)->head_dim != static_cast<CacheHeader*>(kraw)->head_dim) return;
+        if (per_head_protect && protect_budget > 0 &&
+            special_rows_.max_reserved(li, params.sink, appended_special) > protect_budget) return;
+    }
+    // B is identical across the compacted layers; capture it from the keep-set, not a mutated header.
+    size_t new_seq_len = 0;
+    bool have_new_seq_len = false;
+    std::vector<int> canonical_keep;
+    bool canonical_captured = false;
+    // The un-rope table is identical across compressible layers (all global, same theta/dims), so
+    // build it once on the first such layer and reuse it for every layer's keep-set scoring.
+    std::vector<cactus::kvcompress::RopeRotation> unrope;
+    // Reclaim capacity a long prefill grew into; next_pow2(trigger) still fits the decode oscillation.
+    size_t shrink_cap = 1;
+    while (shrink_cap < static_cast<size_t>(config_.kv_compress_trigger_len)) shrink_cap <<= 1;
+    for (size_t li = 0; li < comp.cache_states.size(); ++li) {
+        if (!compressible.count(li)) continue;
+        const auto& cs = comp.cache_states[li];
+        if (cs.key_node_id < 0 || cs.value_node_id < 0) continue;
+        // Skip non-KV caches: hybrid models (LFM2) interleave header-less conv/recurrent states
+        // here, which KeyDiff would corrupt and read out of bounds.
+        if (comp.graph->get_node_op_type(static_cast<size_t>(cs.key_node_id)) != OpType::KV_CACHE_STATE) continue;
+
+        const auto& kdesc = comp.graph->get_output_buffer(static_cast<size_t>(cs.key_node_id));
+        const auto& vdesc = comp.graph->get_output_buffer(static_cast<size_t>(cs.value_node_id));
+        if (kdesc.byte_size <= kHeaderBytes || vdesc.byte_size <= kHeaderBytes) continue;
+        void* kraw = comp.graph->get_output(static_cast<size_t>(cs.key_node_id));
+        void* vraw = comp.graph->get_output(static_cast<size_t>(cs.value_node_id));
+        if (!kraw || !vraw) continue;
+
+        auto* khdr = static_cast<CacheHeader*>(kraw);
+        auto* vhdr = static_cast<CacheHeader*>(vraw);
+        size_t n = khdr->current_seq_len;
+        size_t kv_heads = khdr->num_kv_heads;
+        size_t head_dim = khdr->head_dim;
+        if (kv_heads == 0 || head_dim == 0) continue;
+        if (unrope.empty()) unrope = cactus::kvcompress::unrope_table(n, head_dim, rope_theta);
+
+        static const std::vector<std::vector<int>> kNoProtect;
+        if (per_head_protect) special_rows_.add_appended(li, kv_heads, appended_special);
+        const std::vector<std::vector<int>>& pph = per_head_protect ? special_rows_.protect(li) : kNoProtect;
+
+        if (kdesc.precision == Precision::FP16) {
+            auto* kbase = reinterpret_cast<uint16_t*>(static_cast<char*>(kraw) + kHeaderBytes);
+            auto* vbase = reinterpret_cast<uint16_t*>(static_cast<char*>(vraw) + kHeaderBytes);
+            auto kept = cactus::kvcompress::keepsets_from_fp16(
+                kbase, n, kv_heads, head_dim, unrope, params_local, pph);
+            if (!canonical_captured) { canonical_keep = kept.empty() ? std::vector<int>{} : kept[0]; canonical_captured = true; }
+            cactus::kvcompress::compact_fp16(kbase, vbase, kv_heads, head_dim, kept, unrope);
+            if (per_head_protect) special_rows_.remap(li, kept);
+            size_t B = kept.empty() ? 0 : kept[0].size();
+            khdr->current_seq_len = B;
+            vhdr->current_seq_len = B;
+            new_seq_len = B;
+            have_new_seq_len = true;
+        } else if (kdesc.precision == Precision::INT8) {
+            size_t max_seq = khdr->max_seq_len;
+            auto* k_i8 = reinterpret_cast<int8_t*>(static_cast<char*>(kraw) + kHeaderBytes);
+            auto* k_sc = reinterpret_cast<float*>(static_cast<char*>(kraw) + kHeaderBytes +
+                                                  max_seq * kv_heads * head_dim);
+            auto* v_i8 = reinterpret_cast<int8_t*>(static_cast<char*>(vraw) + kHeaderBytes);
+            auto* v_sc = reinterpret_cast<float*>(static_cast<char*>(vraw) + kHeaderBytes +
+                                                  max_seq * kv_heads * head_dim);
+            auto kept = cactus::kvcompress::keepsets_from_int8(
+                k_i8, k_sc, n, kv_heads, head_dim, KV_QUANT_GROUP_SIZE, unrope, params_local, pph);
+            if (!canonical_captured) { canonical_keep = kept.empty() ? std::vector<int>{} : kept[0]; canonical_captured = true; }
+            cactus::kvcompress::compact_int8(k_i8, k_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,
+                                             kept, unrope, /*renumber=*/true);
+            cactus::kvcompress::compact_int8(v_i8, v_sc, kv_heads, head_dim, KV_QUANT_GROUP_SIZE,
+                                             kept, unrope, /*renumber=*/false);
+            if (per_head_protect) special_rows_.remap(li, kept);
+            size_t B = kept.empty() ? 0 : kept[0].size();
+            khdr->current_seq_len = B;
+            vhdr->current_seq_len = B;
+            new_seq_len = B;
+            have_new_seq_len = true;
+        }
+        comp.graph->shrink_cache_buffer(static_cast<size_t>(cs.key_node_id), shrink_cap);
+        comp.graph->shrink_cache_buffer(static_cast<size_t>(cs.value_node_id), shrink_cap);
+    }
+
+    // Shift non-compacted layers' recent K rows by -Δ into the compressed frame (RoPE is relative, so a
+    // uniform shift preserves q·k offsets); each uses its own theta -- local for sliding, global for shared sources.
+    const size_t Delta = (have_new_seq_len && old_total >= new_seq_len) ? old_total - new_seq_len : 0;
+    if (Delta > 0) {
+        const double dpos = -static_cast<double>(Delta);
+        for (size_t li = 0; li < comp.cache_states.size(); ++li) {
+            if (compressible.count(li)) continue;
+            const auto& cs = comp.cache_states[li];
+            if (cs.key_node_id < 0) continue;
+            if (comp.graph->get_node_op_type(static_cast<size_t>(cs.key_node_id)) != OpType::KV_CACHE_STATE) continue;
+            const auto& kdesc = comp.graph->get_output_buffer(static_cast<size_t>(cs.key_node_id));
+            if (kdesc.byte_size <= kHeaderBytes) continue;
+            void* kraw = comp.graph->get_output(static_cast<size_t>(cs.key_node_id));
+            if (!kraw) continue;
+            auto* khdr = static_cast<CacheHeader*>(kraw);
+            size_t kv_heads = khdr->num_kv_heads, head_dim = khdr->head_dim;
+            if (kv_heads == 0 || head_dim == 0) continue;
+            size_t hi = khdr->current_seq_len;
+            size_t lo = std::min<size_t>(khdr->sink_size, hi);
+            const double layer_theta = cactus::kvcompress::is_sliding_layer(config_.layer_types, li)
+                ? rope_local_theta : rope_theta;
+            if (kdesc.precision == Precision::FP16) {
+                auto* kbase = reinterpret_cast<uint16_t*>(static_cast<char*>(kraw) + kHeaderBytes);
+                cactus::kvcompress::rerope_recent_fp16(kbase, kv_heads, head_dim, lo, hi,
+                                                       layer_theta, dpos);
+            } else if (kdesc.precision == Precision::INT8) {
+                size_t max_seq = khdr->max_seq_len;
+                auto* k_i8 = reinterpret_cast<int8_t*>(static_cast<char*>(kraw) + kHeaderBytes);
+                auto* k_sc = reinterpret_cast<float*>(static_cast<char*>(kraw) + kHeaderBytes +
+                                                      max_seq * kv_heads * head_dim);
+                cactus::kvcompress::rerope_recent_int8(k_i8, k_sc, kv_heads, head_dim,
+                                                       KV_QUANT_GROUP_SIZE, lo, hi, layer_theta, dpos);
             }
         }
     }
+
+    // All layers now share the same compressed frame, so the next decode query uses position_ids = B.
+    if (have_new_seq_len) {
+        cache_total_seq_len_ = new_seq_len;
+        if (per_head_protect) special_rows_.set_tracked_len(new_seq_len);
+        else special_rows_.invalidate();
+        if (map_valid && canonical_captured) {
+            std::vector<uint32_t> compacted;
+            compacted.reserve(canonical_keep.size());
+            for (int idx : canonical_keep)
+                if (idx >= 0 && idx < static_cast<int>(cache_token_ids_.size())) compacted.push_back(cache_token_ids_[idx]);
+            cache_token_ids_ = std::move(compacted);
+        } else {
+            cache_token_ids_.clear();
+        }
+    }
+}
+
+void Model::maybe_roll_compact() {
+    if (!config_.kv_compress || config_.kv_compress_trigger_len <= 0) return;
+    if (cache_total_seq_len_ < static_cast<size_t>(config_.kv_compress_trigger_len)) return;
+
+    cactus::kvcompress::Params p;
+    p.recent_frac = config_.kv_compress_recent_frac;
+    p.sink = config_.kv_compress_sink;
+    p.abs_budget = config_.kv_compress_target_len;
+    compress_kv_cache_keydiff(p);
 }
 
 std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bool pooled,
@@ -3342,6 +3361,12 @@ bool Config::from_json(const std::string& config_path) {
             else model_variant = ModelVariant::DEFAULT;
         }
         else if (key == "conv_L_cache") conv_L_cache = static_cast<size_t>(std::stoul(value));
+        else if (key == "kv_compress") kv_compress = (value == "true" || value == "1");
+        else if (key == "kv_compress_recent_frac") kv_compress_recent_frac = std::stof(value);
+        else if (key == "kv_compress_sink") kv_compress_sink = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "kv_compress_trigger_len") kv_compress_trigger_len = static_cast<int32_t>(std::stol(value));
+        else if (key == "kv_compress_target_len") kv_compress_target_len = static_cast<int32_t>(std::stol(value));
+        else if (key == "kv_compress_preserve_special") kv_compress_preserve_special = (value == "true" || value == "1");
         else if (key == "layer_types") {
             layer_types.clear();
             std::string sanitized;
@@ -3454,8 +3479,6 @@ bool Config::from_json(const std::string& config_path) {
             audio_fft_length = audio_fft_overdrive ? 1024u : 512u;
         }
         else if (key == "audio_token_id") audio_token_id = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "channel_open_token_id") channel_open_token_id = static_cast<uint32_t>(std::stoul(value));
-        else if (key == "channel_close_token_id") channel_close_token_id = static_cast<uint32_t>(std::stoul(value));
         else if (key == "activation_sparsity_ppf") {
             activation_sparsity_ppf.clear();
             std::stringstream ss(value);
@@ -3514,7 +3537,40 @@ bool Config::from_json(const std::string& config_path) {
         decoder_start_token_id = bos_token_id;
     }
 
+    validate_kv_compress();
     return true;
+}
+
+bool Config::parse_kv_compress_override(const char* trigger_env, const char* target_env) {
+    const bool has_trigger = trigger_env && *trigger_env;
+    const bool has_target = target_env && *target_env;
+    if (!has_trigger && !has_target) return false;
+    if (has_trigger) kv_compress_trigger_len = static_cast<int32_t>(std::stol(trigger_env));
+    if (has_target) kv_compress_target_len = static_cast<int32_t>(std::stol(target_env));
+    if (kv_compress_trigger_len <= 0) {
+        kv_compress = false;
+        kv_compress_trigger_len = 0;
+        kv_compress_target_len = 0;
+        CACTUS_LOG_INFO("kv_compress", "rolling compaction disabled (CACTUS_KV_COMPRESS_AT <= 0)");
+        return true;
+    }
+    kv_compress = true;
+    validate_kv_compress();
+    CACTUS_LOG_INFO("kv_compress", "rolling override: trigger_len=" << kv_compress_trigger_len
+        << " target_len=" << kv_compress_target_len);
+    return true;
+}
+
+void Config::validate_kv_compress() {
+    if (kv_compress_trigger_len <= 0) return;
+    if (kv_compress_target_len <= 0 || kv_compress_target_len >= kv_compress_trigger_len) {
+        CACTUS_LOG_WARN("kv_compress", "invalid rolling config (target_len=" << kv_compress_target_len
+            << ", trigger_len=" << kv_compress_trigger_len
+            << "): require 0 < target_len < trigger_len; disabling rolling compaction");
+        kv_compress = false;
+        kv_compress_trigger_len = 0;
+        kv_compress_target_len = 0;
+    }
 }
 
 std::string Config::to_json() const {

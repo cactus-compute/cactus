@@ -234,6 +234,8 @@ def create_parser():
                             help="Initial prompt to send immediately")
     run_parser.add_argument("--input-ids", default=None,
                             help="Comma-separated token ids for transpiled causal-LM bundles")
+    run_parser.add_argument("--input-ids-file", default=None,
+                            help="File containing token ids for transpiled causal-LM bundles")
     run_parser.add_argument("--max-new-tokens", type=_positive_int, default=None,
                             help="Maximum tokens to generate for transpiled causal-LM bundles")
     run_parser.add_argument("--result-json", default=None,
@@ -381,6 +383,8 @@ def create_parser():
                                   help="NPU audio encoder quant: 0=fp16, 4=int4, 8=int8 (default: 8)")
     transpile_parser.add_argument("--npu-vision-quantize", type=int, choices=[0, 4, 8], default=None,
                                   help="NPU vision encoder quant: 0=fp16, 4=int4, 8=int8 (default: 0; int4 degrades Gemma4 vision)")
+    transpile_parser.add_argument("--cache-context-length", default=None,
+                                  help="KV cache context length for cached decode graphs (default: model config)")
 
     return parser
 
