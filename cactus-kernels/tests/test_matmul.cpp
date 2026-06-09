@@ -6,6 +6,8 @@
 
 using namespace TestUtils;
 
+static uint8_t unpack_index(const uint8_t* base, uint32_t bits, uint32_t k);
+
 struct SyntheticCQ {
     uint32_t bits, K, N, group_size, num_groups;
     std::vector<__fp16> codebook;
@@ -52,6 +54,8 @@ struct SyntheticCQ {
 
     std::vector<int8_t> expanded_buf;
     std::vector<float> norm_f32_buf;
+    std::vector<uint8_t> expanded_sme_buf;
+    std::vector<float> norm_sme_buf;
 
     void preexpand() {
         int8_t cb_i8[16] = {};
@@ -130,6 +134,101 @@ struct SyntheticCQ {
                     nd[ni] = (n_start+ni < N) ? static_cast<float>(norms[(n_start+ni)*num_groups+g]) * cb_sc : 0.f;
             }
         }
+
+        // Cache the SME packed-nibble layout (built once from the original packed indices):
+        // expanded_sme[SB64][num_groups][nkg][128B] — nibble j of a kg-block = expanded byte j of
+        // the int8 panel [4 vectors][16 ch][4 K] (vector v = channels 16v..16v+15, low nibble
+        // first). Expanded in-engine via LUTI4/ZT0 (table = cb_i8). norm_sme[SB64][num_groups][64]
+        // (cb_scale folded; padded channels stay 0 to kill LUTI4's nonzero index-0 lookups).
+        const uint32_t nkg = group_size / 4;
+        const size_t SB64 = (size_t(N) + 63) / 64;
+        expanded_sme_buf.assign(SB64 * num_groups * nkg * 128, 0);
+        norm_sme_buf.assign(SB64 * num_groups * 64, 0.f);
+        for (size_t sb = 0; sb < SB64; ++sb)
+            for (uint32_t g = 0; g < num_groups; ++g) {
+                uint8_t* wbase = expanded_sme_buf.data() + (sb * num_groups + g) * nkg * 128;
+                float* nbase = norm_sme_buf.data() + (sb * num_groups + g) * 64;
+                for (uint32_t kg = 0; kg < nkg; ++kg)
+                    for (uint32_t b = 0; b < 256; ++b) {        // expanded byte index in the kg-panel
+                        const uint32_t v = b / 64, ch = (b % 64) / 4, kc = b % 4;
+                        const size_t n = sb * 64 + v * 16 + ch;
+                        if (n >= N) continue;
+                        const uint8_t* row = packed.data() + (n * num_groups + g) * pgb;
+                        const uint8_t idx = unpack_index(row, bits, kg * 4 + kc);
+                        uint8_t& dst = wbase[kg * 128 + b / 2];
+                        dst = (b & 1u) ? static_cast<uint8_t>(dst | (idx << 4))
+                                       : static_cast<uint8_t>(dst | idx);
+                    }
+                for (uint32_t c = 0; c < 64; ++c) {
+                    const size_t n = sb * 64 + c;
+                    if (n < N) nbase[c] = static_cast<float>(norms[n * num_groups + g]) * cb_sc;
+                }
+            }
+    }
+
+    // INTERLEAVED_4ROW encoding (CQ4): exact inverse of the shipped decoder
+    // (tq_preexpand_weights_interleaved / cactus_quant_4bit_gemv_interleaved). Panel per (nb,g) of
+    // 4*pgb bytes; 16-byte columns; column word r = row r; per 8-byte half: low nibbles = k 0-3,
+    // high nibbles = k 4-7 of the half's K-range. norms_il[(nb*ng+g)*4 + r] = norms[n][g].
+    std::vector<uint8_t> packed_il;
+    std::vector<__fp16> norms_il;
+    std::vector<uint8_t> esme_il_buf;
+    std::vector<float> nsme_il_buf;
+
+    void make_interleaved() {
+        if (bits != 4 || (N % 4) != 0) return;
+        const uint32_t pgb = cactus_quant_packed_group_bytes(4, group_size);
+        const size_t NB = N / 4;
+        packed_il.assign(NB * num_groups * 4 * (size_t)pgb, 0);
+        norms_il.resize(NB * num_groups * 4);
+        for (size_t nb = 0; nb < NB; ++nb)
+            for (uint32_t g = 0; g < num_groups; ++g) {
+                uint8_t* panel = packed_il.data() + (nb * num_groups + g) * 4 * (size_t)pgb;
+                for (uint32_t r = 0; r < 4; ++r) {
+                    const size_t n = nb * 4 + r;
+                    const uint8_t* row = packed.data() + (n * num_groups + g) * pgb;
+                    for (uint32_t v = 0; v < group_size / 16; ++v)
+                        for (uint32_t b = 0; b < 4; ++b) {
+                            auto idx = [&](uint32_t k) { return unpack_index(row, 4, k); };
+                            panel[(2 * v) * 16 + r * 4 + b] =
+                                (uint8_t)(idx(16 * v + b) | (idx(16 * v + 4 + b) << 4));
+                            panel[(2 * v + 1) * 16 + r * 4 + b] =
+                                (uint8_t)(idx(16 * v + 8 + b) | (idx(16 * v + 12 + b) << 4));
+                        }
+                    norms_il[(nb * num_groups + g) * 4 + r] = norms[n * num_groups + g];
+                }
+            }
+    }
+
+    CactusQuantMatrix matrix_interleaved() {
+        if (packed_il.empty()) make_interleaved();
+        return CactusQuantMatrix{
+            .bits = bits, .K = K, .N = N,
+            .group_size = group_size, .num_groups = num_groups,
+            .flags = CACTUS_QUANT_FLAG_INTERLEAVED_4ROW,
+            .codebook = codebook.data(),
+            .input_scale = input_scale.data(),
+            .input_scale_recip = input_scale_recip.data(),
+            .norms = norms_il.data(),
+            .packed_indices = packed_il.data(),
+            .left_signs = left_signs.data(),
+            .right_signs = right_signs.data(),
+            .permutation = permutation.data(),
+            .rotation = nullptr,
+            .expanded = nullptr,
+            .norm_f32 = nullptr,
+            .expanded_sme = esme_il_buf.empty() ? nullptr : esme_il_buf.data(),
+            .norm_sme = nsme_il_buf.empty() ? nullptr : nsme_il_buf.data(),
+        };
+    }
+
+    // Build the SME cache from the INTERLEAVED matrix through the production builder.
+    void preexpand_il() {
+        CactusQuantMatrix W = matrix_interleaved();
+        const size_t SB64 = ((size_t)N + 63) / 64;
+        esme_il_buf.resize(SB64 * num_groups * (size_t)(group_size / 4) * 128);
+        nsme_il_buf.resize(SB64 * num_groups * 64);
+        cactus_quant_build_sme_cache(&W, esme_il_buf.data(), nsme_il_buf.data());
     }
 
     CactusQuantMatrix matrix() const {
@@ -148,6 +247,8 @@ struct SyntheticCQ {
             .rotation = nullptr,
             .expanded = expanded_buf.empty() ? nullptr : expanded_buf.data(),
             .norm_f32 = norm_f32_buf.empty() ? nullptr : norm_f32_buf.data(),
+            .expanded_sme = expanded_sme_buf.empty() ? nullptr : expanded_sme_buf.data(),
+            .norm_sme = norm_sme_buf.empty() ? nullptr : norm_sme_buf.data(),
         };
     }
 };
@@ -256,12 +357,313 @@ bool test_cq_correctness(uint32_t bits) {
 
     double mse = compute_mse(ref.data(), y_f16.data(), N);
     
-    double threshold = 0.1; 
+    double threshold = 0.1;
     if (mse > threshold) {
         std::cerr << "  cq" << bits << " MSE=" << mse << " > " << threshold << "\n";
         return false;
     }
     return true;
+}
+
+// ── Backend variant validation (NEON vs SME2) ────────────────────────────────────────────────
+// Forces a specific backend (1=NEON, 2=SME2) through the real cactus_quant_matmul dispatch and
+// validates against the SAME FP32 reference oracle. preexpand() is required so the expanded-INT8
+// SDOT/SMOPA path is selected (the path the SME2 kernel hooks into).
+static bool test_cq_backend(uint32_t bits, int backend, double& mse_out) {
+    const uint32_t K = 1024, N = 64, gs = 128;
+    SyntheticCQ cq(bits, K, N, gs, 123);
+    cq.preexpand();
+    CactusQuantMatrix mat = cq.matrix();
+
+    std::mt19937 gen(77);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<float> x_f32(K);
+    for (auto& v : x_f32) v = dist(gen);
+    std::vector<float> ref(N, 0.f);
+    cq_reference_gemv_f32(cq, x_f32.data(), ref.data());
+
+    std::vector<__fp16> x_f16(K), y_f16(N, static_cast<__fp16>(0));
+    for (size_t i = 0; i < K; i++) x_f16[i] = static_cast<__fp16>(x_f32[i]);
+
+    cactus_quant_set_backend(backend);
+    cactus_quant_matmul(&mat, x_f16.data(), 1, y_f16.data());
+    cactus_quant_set_backend(0);
+
+    mse_out = compute_mse(ref.data(), y_f16.data(), N);
+    return mse_out <= 0.1;
+}
+
+// GEMM (M>1) variant: validates the SME2 GEMM tile path vs a per-row FP32 reference.
+static bool test_cq_gemm_backend(uint32_t bits, uint32_t M, uint32_t N, int backend, double& mse_out) {
+    const uint32_t K = 512, gs = 128;
+    SyntheticCQ cq(bits, K, N, gs, 321);
+    cq.preexpand();
+    CactusQuantMatrix mat = cq.matrix();
+
+    std::mt19937 gen(91);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<float> X(static_cast<size_t>(M) * K);
+    for (auto& v : X) v = dist(gen);
+
+    std::vector<float> ref(static_cast<size_t>(M) * N, 0.f);
+    for (uint32_t m = 0; m < M; m++)
+        cq_reference_gemv_f32(cq, X.data() + static_cast<size_t>(m) * K, ref.data() + static_cast<size_t>(m) * N);
+
+    std::vector<__fp16> Xf(static_cast<size_t>(M) * K), Yf(static_cast<size_t>(M) * N, static_cast<__fp16>(0));
+    for (size_t i = 0; i < static_cast<size_t>(M) * K; i++) Xf[i] = static_cast<__fp16>(X[i]);
+
+    cactus_quant_set_backend(backend);
+    cactus_quant_matmul(&mat, Xf.data(), M, Yf.data());
+    cactus_quant_set_backend(0);
+
+    mse_out = compute_mse(ref.data(), Yf.data(), static_cast<size_t>(M) * N);
+    return mse_out <= 0.1;
+}
+
+// ── Orthogonal-rotation CQ4 (the Gemma lm_head format) ──────────────────────────────────────
+// Oracle: y[n] = norm[n] * sum_i cb[idx(n,i)] * (a_scaled @ R)[i], fp32. Gates the incumbent and
+// the new SME virtual-group kernel against the same reference, plus head-to-head agreement.
+static bool test_orth_sme(double& mse_inc, double& mse_sme) {
+    const uint32_t K = 1536, N = 1024, VGS = 128, VNG = K / VGS;
+    std::mt19937 gen(2024);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<__fp16> codebook(16), isr(K), norms(N), rot((size_t)K * K), rot_t((size_t)K * K);
+    for (auto& v : codebook) v = (__fp16)dist(gen);
+    for (auto& v : isr) v = (__fp16)(0.7f + 0.3f * dist(gen));
+    for (auto& v : norms) v = (__fp16)(dist(gen) * 0.05f);
+    for (size_t i = 0; i < rot.size(); i++) rot[i] = (__fp16)(dist(gen) * 0.04f);
+    for (uint32_t k = 0; k < K; k++)
+        for (uint32_t i = 0; i < K; i++) rot_t[(size_t)i * K + k] = rot[(size_t)k * K + i];
+    std::vector<uint8_t> packed((size_t)N * K / 2);
+    for (auto& v : packed) v = (uint8_t)(gen() & 0xFF);
+    std::vector<__fp16> x(K);
+    for (auto& v : x) v = (__fp16)dist(gen);
+
+    // fp32 oracle
+    std::vector<float> ar(K, 0.f), ref(N);
+    for (uint32_t k = 0; k < K; k++) {
+        float a = (float)x[k] * (float)isr[k];
+        for (uint32_t i = 0; i < K; i++) ar[i] += a * (float)rot[(size_t)k * K + i];
+    }
+    for (uint32_t n = 0; n < N; n++) {
+        const uint8_t* row = packed.data() + (size_t)n * K / 2;
+        float acc = 0.f;
+        for (uint32_t i = 0; i < K; i++)
+            acc += (float)codebook[unpack_index(row, 4, i)] * ar[i];
+        ref[n] = acc * (float)norms[n];
+    }
+
+    // incumbent
+    CactusQuantMatrix Wo{ .bits = 4, .K = K, .N = N, .group_size = K, .num_groups = 1,
+        .flags = CACTUS_QUANT_FLAG_ORTHOGONAL, .codebook = codebook.data(), .input_scale = nullptr,
+        .input_scale_recip = isr.data(), .norms = norms.data(), .packed_indices = packed.data(),
+        .left_signs = nullptr, .right_signs = nullptr, .permutation = nullptr,
+        .rotation = rot.data(), .expanded = nullptr, .norm_f32 = nullptr,
+        .expanded_sme = nullptr, .norm_sme = nullptr };
+    std::vector<__fp16> y_inc(N);
+    cactus_quant_orthogonal_matmul(&Wo, x.data(), 1, y_inc.data());
+    mse_inc = compute_mse(ref.data(), y_inc.data(), N);
+
+    // virtual-group view + production cache builder + new kernel
+    std::vector<__fp16> norms_rep((size_t)N * VNG);
+    for (uint32_t n = 0; n < N; n++)
+        for (uint32_t g = 0; g < VNG; g++) norms_rep[(size_t)n * VNG + g] = norms[n];
+    CactusQuantMatrix W2 = Wo;
+    W2.flags = 0; W2.group_size = VGS; W2.num_groups = VNG; W2.norms = norms_rep.data();
+    const size_t SB64 = (N + 63) / 64;
+    std::vector<uint8_t> esme(SB64 * VNG * (VGS / 4) * 128);
+    std::vector<float> nsme(SB64 * VNG * 64);
+    cactus_quant_build_sme_cache(&W2, esme.data(), nsme.data());
+    W2.expanded_sme = esme.data(); W2.norm_sme = nsme.data();
+    std::vector<__fp16> y_sme(N);
+    cactus_quant_orth_sme_gemv(&W2, rot_t.data(), isr.data(), x.data(), y_sme.data());
+    mse_sme = compute_mse(ref.data(), y_sme.data(), N);
+    return mse_inc <= 0.1 && mse_sme <= 0.1 && mse_sme <= mse_inc * 4 + 1e-4;
+}
+
+// ── Interleaved-4row (PRODUCTION format) tests ───────────────────────────────────────────────
+// CQ4 interleaved vs the FP32 oracle, through the real dispatch (backend 1 = production NEON
+// interleaved kernel; backend 2 = SME hybrid over the production-built cache).
+static bool test_cq4_interleaved(int backend, double& mse_out) {
+    const uint32_t K = 1024, N = 192, gs = 128;   // 192 = 3 super-blocks: exercises multi-SB stealing
+    SyntheticCQ cq(4, K, N, gs, 777);
+    cq.preexpand_il();
+    CactusQuantMatrix mat = cq.matrix_interleaved();
+
+    std::mt19937 gen(31);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<float> x_f32(K);
+    for (auto& v : x_f32) v = dist(gen);
+    std::vector<float> ref(N, 0.f);
+    cq_reference_gemv_f32(cq, x_f32.data(), ref.data());
+
+    std::vector<__fp16> x_f16(K), y(N, (__fp16)0);
+    for (size_t i = 0; i < K; i++) x_f16[i] = (__fp16)x_f32[i];
+    cactus_quant_set_backend(backend);
+    cactus_quant_matmul(&mat, x_f16.data(), 1, y.data());
+    cactus_quant_set_backend(0);
+    mse_out = compute_mse(ref.data(), y.data(), N);
+    return mse_out <= 0.1;
+}
+
+// Batched orthogonal embedding-row dequant must match the per-row reference for both packed
+// layouts (row-major nibbles + interleaved-4row). Any random byte stream is a valid nibble
+// stream, so the fixture is random packed data + random codebook/norms/rotation.
+static bool test_orth_embed_rows() {
+    const uint32_t K = 256, vocab = 64;
+    std::mt19937 gen(99);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<uint8_t> packed(static_cast<size_t>(vocab) * K / 2);
+    for (auto& b : packed) b = static_cast<uint8_t>(gen() & 0xFF);
+    std::vector<__fp16> codebook(16), rotation(static_cast<size_t>(K) * K), scale_recip(K);
+    std::vector<__fp16> norms(vocab);
+    for (auto& v : codebook) v = static_cast<__fp16>(dist(gen));
+    for (auto& v : rotation) v = static_cast<__fp16>(dist(gen) * 0.06f);
+    for (auto& v : scale_recip) v = static_cast<__fp16>(0.9f + 0.2f * std::fabs(dist(gen)));
+    for (auto& v : norms) v = static_cast<__fp16>(0.5f + std::fabs(dist(gen)));
+    const uint32_t rows[5] = {5, 9, 63, 0, 17};
+    for (uint32_t flags : {0u, (uint32_t)CACTUS_QUANT_FLAG_INTERLEAVED_4ROW}) {
+        std::vector<__fp16> ref(5 * K), got(5 * K);
+        for (int u = 0; u < 5; ++u)
+            cactus_quant_dequantize_orthogonal_embedding_row(
+                4, K, rows[u], packed.data(), codebook.data(), norms.data(),
+                scale_recip.data(), rotation.data(), flags, ref.data() + (size_t)u * K);
+        cactus_quant_dequantize_orthogonal_embedding_rows(
+            4, K, rows, 5, packed.data(), codebook.data(), norms.data(),
+            scale_recip.data(), rotation.data(), flags, got.data());
+        double mx = 0;
+        for (size_t i = 0; i < ref.size(); ++i)
+            mx = std::max(mx, (double)std::fabs((float)ref[i] - (float)got[i]));
+        if (mx > 1e-2) {
+            std::cerr << "  orth_embed_rows flags=" << flags << " max_err=" << mx << "\n";
+            return false;
+        }
+    }
+    return true;
+}
+
+// The SME cache must be byte-identical whether built from row-major or interleaved weights.
+static bool test_esme_layout_invariance() {
+    const uint32_t K = 512, N = 128, gs = 128;
+    SyntheticCQ cq(4, K, N, gs, 555);
+    CactusQuantMatrix w_rm = cq.matrix();
+    cq.preexpand_il();
+    const size_t SB64 = (N + 63) / 64;
+    std::vector<uint8_t> esme_rm(SB64 * cq.num_groups * (gs / 4) * 128);
+    std::vector<float> nsme_rm(SB64 * cq.num_groups * 64);
+    cactus_quant_build_sme_cache(&w_rm, esme_rm.data(), nsme_rm.data());
+    bool ok = esme_rm == cq.esme_il_buf && nsme_rm == cq.nsme_il_buf;
+    if (!ok) std::cerr << "  esme layout invariance FAILED\n";
+    return ok;
+}
+
+// Production-format bench: interleaved fixtures at Gemma 4 E2B shapes; baseline = the shipped
+// interleaved NEON GEMV. Alternating best-of (NEON fades thermally; SME holds).
+static void print_il_comparison() {
+    if (!cactus_quant_sme_available()) return;
+    std::cout << "── INTERLEAVED CQ4 GEMV: SME2 hybrid vs PRODUCTION NEON (gemma shapes) ─────────────\n";
+    struct Shape { const char* name; uint32_t K, N; int iters; };
+    Shape shapes[] = {
+        {"il-cq4 1x1536x6144 (ffn)", 1536, 6144, 30},
+        {"il-cq4 1x1536x12288 (gate_up)", 1536, 12288, 20},
+        {"il-cq4 1x2048x1536 (o_proj)", 2048, 1536, 30},
+        {"il-cq4 1x1536x2048 (q_proj)", 1536, 2048, 30},
+        {"il-cq4 1x6144x1536 (down)", 6144, 1536, 30},
+        {"il-cq4 1x1536x262144 (lm_head)", 1536, 262144, 6},
+    };
+    for (auto& sh : shapes) {
+        SyntheticCQ cq(4, sh.K, sh.N, 128);
+        cq.preexpand_il();
+        CactusQuantMatrix mat = cq.matrix_interleaved();
+        std::vector<__fp16> x(sh.K), y(sh.N);
+        fill_random_fp16(x, -1.f, 1.f);
+        auto run_ms = [&](int backend) {
+            cactus_quant_set_backend(backend);
+            cactus_quant_matmul(&mat, x.data(), 1, y.data());
+            Timer t;
+            for (int i = 0; i < sh.iters; i++) cactus_quant_matmul(&mat, x.data(), 1, y.data());
+            double ms = t.elapsed_ms() / sh.iters;
+            cactus_quant_set_backend(0);
+            return ms;
+        };
+        double ms_n = 1e30, ms_s = 1e30;
+        for (int round = 0; round < 5; round++) {
+            ms_n = std::min(ms_n, run_ms(1));
+            ms_s = std::min(ms_s, run_ms(2));
+        }
+        double gn = (2.0 * sh.K * sh.N) / (ms_n * 1e6), gs2 = (2.0 * sh.K * sh.N) / (ms_s * 1e6);
+        std::cout << "  " << std::left << std::setw(31) << sh.name
+                  << " NEON-il " << std::fixed << std::setprecision(1) << gn << " GF"
+                  << " | SME2 " << gs2 << " GF"
+                  << " | " << std::setprecision(2) << (gs2 / gn) << "x  (best of 5x" << sh.iters << ")\n";
+    }
+}
+
+// Head-to-head GFLOPS: NEON SDOT vs SME2 SMOPA for CQ4 GEMV (forced backends).
+static void print_sme_comparison() {
+    if (!cactus_quant_sme_available()) return;
+    std::cout << "── SME2 vs NEON (CQ4 GEMV, forced backend) ─────────────────────────────────────────\n";
+    struct Shape { const char* name; uint32_t K, N, gs; };
+    Shape shapes[] = {
+        {"cq4 1x1024x1024", 1024, 1024, 128},
+        {"cq4 1x2304x9216", 2304, 9216, 128},
+    };
+    for (auto& sh : shapes) {
+        SyntheticCQ cq(4, sh.K, sh.N, sh.gs);
+        cq.preexpand();
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> x(sh.K), y(sh.N);
+        fill_random_fp16(x, -1.f, 1.f);
+        // Alternating rounds + best-of: run-to-run noise (E-core scheduling, thermal/clock drift)
+        // exceeds the kernel deltas, so a single timed run cannot rank backends. Min-of-5 alternating
+        // rounds measures each backend's attainable speed under identical conditions.
+        auto run_ms = [&](int backend, int iters) -> double {
+            cactus_quant_set_backend(backend);
+            cactus_quant_matmul(&mat, x.data(), 1, y.data());  // warmup
+            Timer t;
+            for (int i = 0; i < iters; i++) cactus_quant_matmul(&mat, x.data(), 1, y.data());
+            double ms = t.elapsed_ms() / iters;
+            cactus_quant_set_backend(0);
+            return ms;
+        };
+        double ms_neon = 1e30, ms_sme = 1e30;
+        for (int round = 0; round < 5; round++) {
+            ms_neon = std::min(ms_neon, run_ms(1, 30));
+            ms_sme  = std::min(ms_sme,  run_ms(2, 30));
+        }
+        double g_neon = (2.0 * sh.K * sh.N) / (ms_neon * 1e6);
+        double g_sme  = (2.0 * sh.K * sh.N) / (ms_sme  * 1e6);
+        std::cout << "  " << std::left << std::setw(20) << sh.name
+                  << " NEON " << std::fixed << std::setprecision(1) << g_neon << " GFLOPS"
+                  << " | SME2 " << g_sme << " GFLOPS"
+                  << " | " << std::setprecision(2) << (g_sme / g_neon) << "x  (best of 5x30)\n";
+    }
+    // GEMM crossover (M>1): the path where the 16x16 ZA tile is fully utilized.
+    for (uint32_t M : {4u, 16u, 32u, 64u, 128u, 256u}) {
+        const uint32_t K = 1024, N = 1024, gs = 128;
+        SyntheticCQ cq(4, K, N, gs);
+        cq.preexpand();
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> A(static_cast<size_t>(M) * K), Cc(static_cast<size_t>(M) * N);
+        fill_random_fp16(A, -1.f, 1.f);
+        auto bench = [&](int backend) -> double {
+            cactus_quant_set_backend(backend);
+            cactus_quant_matmul(&mat, A.data(), M, Cc.data());  // warmup
+            const int iters = 8;
+            Timer t;
+            for (int i = 0; i < iters; i++) cactus_quant_matmul(&mat, A.data(), M, Cc.data());
+            double ms = t.elapsed_ms() / iters;
+            cactus_quant_set_backend(0);
+            return ms;
+        };
+        double mn = bench(1), msme = bench(2);
+        double gn = (2.0 * M * K * N) / (mn * 1e6), gsme = (2.0 * M * K * N) / (msme * 1e6);
+        std::string label = "cq4 M" + std::to_string(M) + " 1024x1024";
+        std::cout << "  " << std::left << std::setw(20) << label
+                  << " NEON " << std::fixed << std::setprecision(1) << gn << " GFLOPS"
+                  << " | SME2 " << gsme << " GFLOPS"
+                  << " | " << std::setprecision(2) << (gsme / gn) << "x\n";
+    }
 }
 
 bool run_benchmarks() {
@@ -509,9 +911,53 @@ int main() {
     runner.run_test("matmul_cq2", test_cq_correctness(2));
     runner.run_test("matmul_cq3", test_cq_correctness(3));
     runner.run_test("matmul_cq4", test_cq_correctness(4));
+
+    // ── SME2 variant registry: validate the SME2 backend through the real cactus_quant_matmul ──
+    if (cactus_quant_sme_available()) {
+        for (uint32_t bits : {1u, 2u, 3u, 4u}) {
+            double mse_sme = 0.0;
+            bool ok = test_cq_backend(bits, 2, mse_sme);
+            runner.run_test(std::string("matmul_cq") + std::to_string(bits) + "[sme2]", ok);
+            if (!ok) std::cerr << "    cq" << bits << "[sme2] MSE=" << mse_sme << "\n";
+        }
+        // GEMM (M>1) variant: M tail (20 -> 16+4) and N tail (72 -> 4 super-blocks + 8 valid) for CQ4.
+        struct GemmCase { uint32_t M, N; };
+        for (GemmCase gc : {GemmCase{5, 64}, GemmCase{20, 64}, GemmCase{20, 72}, GemmCase{64, 256}}) {
+            double mse_g = 0.0;
+            bool ok = test_cq_gemm_backend(4, gc.M, gc.N, 2, mse_g);
+            runner.run_test(std::string("matmul_cq4_M") + std::to_string(gc.M) +
+                            "_N" + std::to_string(gc.N) + "[sme2]", ok);
+            if (!ok) std::cerr << "    cq4 M=" << gc.M << " N=" << gc.N << "[sme2] MSE=" << mse_g << "\n";
+        }
+        {
+            double mi = 0, ms = 0;
+            bool orth_ok = test_orth_sme(mi, ms);
+            runner.run_test("matmul_cq4_orth[sme2]", orth_ok);
+            if (!orth_ok) std::cerr << "    orth mse_incumbent=" << mi << " mse_sme=" << ms << "\n";
+        }
+        {
+            double m1 = 0, m2 = 0;
+            runner.run_test("matmul_cq4_il[neon]", test_cq4_interleaved(1, m1));
+            runner.run_test("matmul_cq4_il[sme2]", test_cq4_interleaved(2, m2));
+            runner.run_test("esme_layout_invariance", test_esme_layout_invariance());
+            runner.run_test("orth_embed_rows_batched", test_orth_embed_rows());
+        }
+        // GEMM path is bits-agnostic (consumes expanded INT8 weights) — validate CQ1-3 too.
+        for (uint32_t b : {1u, 2u, 3u}) {
+            double mse_g = 0.0;
+            bool ok = test_cq_gemm_backend(b, 20, 64, 2, mse_g);
+            runner.run_test(std::string("matmul_cq") + std::to_string(b) + "_gemm[sme2]", ok);
+            if (!ok) std::cerr << "    cq" << b << " gemm[sme2] MSE=" << mse_g << "\n";
+        }
+    } else {
+        std::cout << "  (SME2 unavailable on this CPU — SME2 variant tests skipped)\n";
+    }
+
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     print_mse_report();
+    print_sme_comparison();
+    print_il_comparison();
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

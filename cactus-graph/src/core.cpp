@@ -96,7 +96,8 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
       cq_right_signs(other.cq_right_signs),
       cq_permutation(other.cq_permutation),
       cq_rotation(other.cq_rotation),
-      cq_flags(other.cq_flags) {
+      cq_flags(other.cq_flags),
+      sme_cache(std::move(other.sme_cache)) {
     other.total_size = 0;
     other.byte_size = 0;
     other.external_data = nullptr;
@@ -143,6 +144,7 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
         cq_permutation = other.cq_permutation;
         cq_rotation = other.cq_rotation;
         cq_flags = other.cq_flags;
+        sme_cache = std::move(other.sme_cache);
 
         other.total_size = 0;
         other.byte_size = 0;

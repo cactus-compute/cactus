@@ -1,6 +1,9 @@
 #include "../cactus_kernels.h"
 #include "threading.h"
+#include "matmul_simd.h"
 #include <arm_neon.h>
+#include <atomic>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
@@ -648,34 +651,13 @@ __attribute__((always_inline)) static inline void tq_expand_i8_32(
 }
 
 template<uint32_t Bits>
-__attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
-    const CactusQuantMatrix* W,
-    const __fp16* code_basis,
-    __fp16* y) {
-    static_assert(Bits >= 1 && Bits <= 4);
+static void cactus_quant_sdot_packed_blocks(
+    const CactusQuantMatrix* W, const int8_t* act_i8, const float* act_scales,
+    const int8x16_t cb_lut, const float cb_scale,
+    size_t block_start, size_t block_end, __fp16* y) {
+    constexpr size_t INT8_TILE_N = 16;
     const uint32_t gs = W->group_size;
     const uint32_t pgb = cactus_quant_packed_group_bytes(Bits, gs);
-    constexpr uint32_t cb_size = 1u << Bits;
-
-    constexpr size_t INT8_TILE_N = 16;
-    const size_t int8_n_blocks = (W->N + INT8_TILE_N - 1) / INT8_TILE_N;
-
-    thread_local std::vector<int8_t> act_i8_buf;
-    thread_local std::vector<float> act_scales_buf;
-    if (act_i8_buf.size() < W->K) act_i8_buf.resize(W->K);
-    if (act_scales_buf.size() < W->num_groups) act_scales_buf.resize(W->num_groups);
-    for (uint32_t g = 0; g < W->num_groups; ++g) {
-        act_scales_buf[g] = tq_quantize_group_i8(
-            code_basis + static_cast<size_t>(g) * gs,
-            act_i8_buf.data() + static_cast<size_t>(g) * gs, gs);
-    }
-    const int8_t* act_i8 = act_i8_buf.data();
-    const float* act_scales = act_scales_buf.data();
-
-    int8_t cb_i8[16] = {};
-    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, cb_size);
-    const int8x16_t cb_lut = vld1q_s8(cb_i8);
-
     auto expand_group4 = [&](size_t cache_block, uint32_t g, int8_t* dst, float* norm_scale) {
         const uint32_t n_vecs = gs / 16;
         const size_t n_start4 = cache_block * 4;
@@ -720,7 +702,7 @@ __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
         }
     };
 
-    cactus_quant_parallel_ranges(int8_n_blocks, 16, [&](size_t block_start, size_t block_end) {
+
         for (size_t block = block_start; block < block_end; ++block) {
             const size_t n_start = block * INT8_TILE_N;
             const size_t actual_n = std::min(INT8_TILE_N, static_cast<size_t>(W->N) - n_start);
@@ -834,6 +816,52 @@ __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
                 y[n_start + ni] = static_cast<__fp16>(acc[ni]);
             }
         }
+}
+
+// Runtime-bits front-end for callers outside the templated GEMV (the hybrid NEON workers).
+static void cactus_quant_sdot_packed_blocks_rt(
+    const CactusQuantMatrix* W, const int8_t* act_i8, const float* act_scales,
+    const int8x16_t cb_lut, const float cb_scale,
+    size_t block_start, size_t block_end, __fp16* y) {
+    switch (W->bits) {
+        case 1: cactus_quant_sdot_packed_blocks<1>(W, act_i8, act_scales, cb_lut, cb_scale, block_start, block_end, y); break;
+        case 2: cactus_quant_sdot_packed_blocks<2>(W, act_i8, act_scales, cb_lut, cb_scale, block_start, block_end, y); break;
+        case 3: cactus_quant_sdot_packed_blocks<3>(W, act_i8, act_scales, cb_lut, cb_scale, block_start, block_end, y); break;
+        default: cactus_quant_sdot_packed_blocks<4>(W, act_i8, act_scales, cb_lut, cb_scale, block_start, block_end, y); break;
+    }
+}
+
+template<uint32_t Bits>
+__attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
+    const CactusQuantMatrix* W,
+    const __fp16* code_basis,
+    __fp16* y) {
+    static_assert(Bits >= 1 && Bits <= 4);
+    const uint32_t gs = W->group_size;
+    const uint32_t pgb = cactus_quant_packed_group_bytes(Bits, gs);
+    constexpr uint32_t cb_size = 1u << Bits;
+
+    constexpr size_t INT8_TILE_N = 16;
+    const size_t int8_n_blocks = (W->N + INT8_TILE_N - 1) / INT8_TILE_N;
+
+    thread_local std::vector<int8_t> act_i8_buf;
+    thread_local std::vector<float> act_scales_buf;
+    if (act_i8_buf.size() < W->K) act_i8_buf.resize(W->K);
+    if (act_scales_buf.size() < W->num_groups) act_scales_buf.resize(W->num_groups);
+    for (uint32_t g = 0; g < W->num_groups; ++g) {
+        act_scales_buf[g] = tq_quantize_group_i8(
+            code_basis + static_cast<size_t>(g) * gs,
+            act_i8_buf.data() + static_cast<size_t>(g) * gs, gs);
+    }
+    const int8_t* act_i8 = act_i8_buf.data();
+    const float* act_scales = act_scales_buf.data();
+
+    int8_t cb_i8[16] = {};
+    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, cb_size);
+    const int8x16_t cb_lut = vld1q_s8(cb_i8);
+
+    cactus_quant_parallel_ranges(int8_n_blocks, 16, [&](size_t b0, size_t b1) {
+        cactus_quant_sdot_packed_blocks<Bits>(W, act_i8, act_scales, cb_lut, cb_scale, b0, b1, y);
     });
 }
 
@@ -1476,6 +1504,530 @@ static void tq_preexpand_weights(
     }
 }
 
+
+// Build the SME2 packed cache (CactusQuantMatrix::expanded_sme / norm_sme) from a weight matrix in
+// EITHER the row-major or the INTERLEAVED_4ROW packed layout. Reuses the shipped preexpanders as
+// the single source of layout truth: expand to int8 (cb_i8 values), then reverse-map values back
+// to codebook indices (any index with an equal cb_i8 value dequantizes identically, so the map is
+// exact by construction). One-time per weight matrix; called from the graph layer at first use.
+void cactus_quant_build_sme_cache(const CactusQuantMatrix* W, uint8_t* esme_out, float* nsme_out) {
+    const uint32_t bits = W->bits;
+    const uint32_t gs = W->group_size;
+    const uint32_t ng = W->num_groups;
+    const uint32_t N = W->N;
+    const uint32_t pgb = cactus_quant_packed_group_bytes(bits, gs);
+    const size_t N_blocks = (static_cast<size_t>(N) + 3) / 4;
+    const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
+    const uint32_t nkg = gs / 4;
+
+    int8_t cb_i8[16] = {};
+    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 1u << bits);
+    const int8x16_t cb_lut = vld1q_s8(cb_i8);
+
+    std::vector<int8_t> w_il(N_blocks * ng * static_cast<size_t>(gs) * 4);
+    std::vector<float> n_f32(N_blocks * ng * 4);
+    if (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW)
+        tq_preexpand_weights_interleaved(W, bits, ng, gs, pgb, cb_lut, cb_scale,
+                                         N_blocks, w_il.data(), n_f32.data());
+    else
+        tq_preexpand_weights(W, bits, ng, gs, pgb, cb_lut, cb_scale,
+                             N_blocks, w_il.data(), n_f32.data());
+
+    uint8_t inv[256];
+    bool seen[256] = {};
+    std::memset(inv, 0, sizeof inv);
+    for (uint32_t i = 0; i < (1u << bits); ++i) {
+        const uint8_t v = static_cast<uint8_t>(cb_i8[i]) ^ 0x80u;  // value+128
+        if (!seen[v]) { seen[v] = true; inv[v] = static_cast<uint8_t>(i); }
+    }
+
+    std::memset(esme_out, 0, SB64 * ng * static_cast<size_t>(nkg) * 128);
+    for (size_t sb = 0; sb < SB64; ++sb)
+        for (uint32_t g = 0; g < ng; ++g) {
+            uint8_t* dst = esme_out + (sb * ng + g) * static_cast<size_t>(nkg) * 128;
+            for (uint32_t kg = 0; kg < nkg; ++kg)
+                for (uint32_t b = 0; b < 256; ++b) {
+                    const uint32_t v = b / 64, ch = (b % 64) / 4, kc = b % 4;
+                    const size_t n = sb * 64 + v * 16 + ch;
+                    if (n >= N) continue;                  // padded channel: idx 0, norm 0
+                    const size_t nb = n / 4, ni = n % 4;
+                    const uint32_t k = kg * 4 + kc;
+                    const uint32_t v2 = k / 16, c = (k % 16) / 4, kc2 = k % 4;
+                    const int8_t val = w_il[((nb * ng + g) * static_cast<size_t>(gs)) * 4
+                                            + static_cast<size_t>(v2) * 64 + c * 16 + ni * 4 + kc2];
+                    const uint8_t idx = inv[static_cast<uint8_t>(val) ^ 0x80u];
+                    uint8_t& d = dst[kg * 128 + b / 2];
+                    d = (b & 1u) ? static_cast<uint8_t>(d | (idx << 4))
+                                 : static_cast<uint8_t>(d | idx);
+                }
+            float* nd = nsme_out + (sb * ng + g) * 64;
+            for (uint32_t c = 0; c < 64; ++c) {
+                const size_t n = sb * 64 + c;
+                nd[c] = (n < N) ? n_f32[(n / 4 * ng + g) * 4 + (n % 4)] : 0.f;
+            }
+        }
+}
+
+// ── SME2 backend control + CQ GEMV path (M=1) ────────────────────────────────────────────────
+// Runtime backend override for testing/benchmarking the SME2 path against NEON:
+//   0 = auto (production dispatch), 1 = force NEON, 2 = force SME2 (when available).
+static std::atomic<int> g_cactus_quant_backend{[] {
+    const char* e = getenv("CACTUS_QUANT_BACKEND");   // 0=auto, 1=force NEON, 2=force SME
+    return e ? atoi(e) : 0;
+}()};
+
+int cactus_quant_set_backend(int backend) {
+    g_cactus_quant_backend.store(backend, std::memory_order_relaxed);
+    return cpu_has_sme2() ? 1 : 0;
+}
+int cactus_quant_sme_available(void) { return cpu_has_sme2() ? 1 : 0; }
+int cactus_quant_sme_orth_enabled(void) {
+    return (cpu_has_sme2() &&
+            g_cactus_quant_backend.load(std::memory_order_relaxed) != 1) ? 1 : 0;
+}
+int cactus_quant_sme_attn_enabled(void) {
+    static const int env_on = [] {
+        const char* e = getenv("CACTUS_SME_ATTENTION");   // 0 disables the SME prefill attention path
+        return e ? atoi(e) : 1;
+    }();
+    return (env_on && cpu_has_sme2() &&
+            g_cactus_quant_backend.load(std::memory_order_relaxed) != 1) ? 1 : 0;
+}
+
+static inline bool cactus_quant_use_sme_gemv(bool has_expanded_layout, bool has_sdot_group_layout) {
+    // SMOPA-based GEMV is correct but under-utilizes ZA (1 active row of 16) — perf-deferred. It is
+    // only taken when explicitly forced (backend==2); auto mode keeps the tuned NEON SDOT path.
+    if (g_cactus_quant_backend.load(std::memory_order_relaxed) != 2) return false;
+    return has_expanded_layout && has_sdot_group_layout && cpu_has_sme2();
+}
+
+// SME2 CQ GEMV: reuses the entire NEON preamble (Hadamard transform, per-group INT8 activation
+// quantization, codebook->INT8, expanded weights, pre-scaled norm_f32) and replaces ONLY the
+// per-group INT8 dot-product with an SMOPA accumulate (cactus_sme_cq_gemv_4col_s8). The integer
+// partials are bit-identical to the SDOT inner loop, so this FP rescale matches the reference.
+static void cactus_quant_sme_gemv_blocks(
+    const CactusQuantMatrix* W, const int8_t* act_i8, const float* act_scales,
+    const int8_t* w_il, const float* n_f32, uint32_t num_groups, uint32_t gs,
+    size_t N_blocks, __fp16* C) {
+    const uint32_t N = W->N;
+    cactus_quant_parallel_ranges(N_blocks, 8, [&](size_t block_start, size_t block_end) {
+        std::vector<int32_t> partials(static_cast<size_t>(num_groups) * 4);
+        for (size_t nb = block_start; nb < block_end; ++nb) {
+            const size_t nb_off = nb * num_groups;
+            const int8_t* w_block = w_il + nb_off * static_cast<size_t>(gs) * 4;
+            cactus_sme_cq_gemv_4col_s8(act_i8, w_block, partials.data(), num_groups, gs);
+
+            float32x4_t acc = vdupq_n_f32(0.f);
+            for (uint32_t g = 0; g < num_groups; ++g) {
+                int32x4_t p = vld1q_s32(partials.data() + static_cast<size_t>(g) * 4);
+                float32x4_t s = vmulq_n_f32(vld1q_f32(n_f32 + (nb_off + g) * 4), act_scales[g]);
+                acc = vmlaq_f32(acc, vcvtq_f32_s32(p), s);
+            }
+            float tmp[4];
+            vst1q_f32(tmp, acc);
+            const size_t n_start = nb * 4;
+            const size_t valid = std::min<size_t>(4, static_cast<size_t>(N) - n_start);
+            for (size_t c = 0; c < valid; ++c) C[n_start + c] = static_cast<__fp16>(tmp[c]);
+        }
+    });
+}
+
+// Hybrid NEON+SME GEMV gate. Needs the packed cache (W->expanded_sme) and enough work: on small
+// shapes the call is dominated by fixed costs (pool wake, streaming-mode entries, ZT0 loads) and
+// the weights fit in L2, so SME's halved-byte stream buys nothing — NEON wins there. Backend 2
+// (force SME) bypasses the size policy so tests/benchmarks can exercise the leaf on any shape.
+static inline bool cactus_quant_use_sme_gemv_svdot(const CactusQuantMatrix* W, bool has_sdot_group_layout) {
+    if (!has_sdot_group_layout) return false;
+    if (W->expanded_sme == nullptr || W->norm_sme == nullptr) return false;
+    if (!cpu_has_sme2()) return false;
+    const int backend = g_cactus_quant_backend.load(std::memory_order_relaxed);
+    if (backend == 1) return false;                 // force NEON
+    if (backend == 2) return true;                  // force SME (tests/benchmarks exercise the leaf)
+    // Auto policy from interleaved-fixture measurements vs the production NEON kernel (re-measured
+    // after the spin-join dispatch fix): hybrid wins 2.8-3.2x on K-heavy GEMVs (down/o_proj —
+    // NEON-il collapses to 60-170 GF there), 1.4-1.6x on N-heavy >= 3M elements (q_proj 1.41x,
+    // ffn 1.51x, gate_up 1.62x), ~1.1x lm_head (DRAM-capped). Below 3M elements NEON keeps winning
+    // (L2-resident, dispatch-dominated).
+    const size_t kn = static_cast<size_t>(W->K) * W->N;
+    return kn >= (3u << 20);
+}
+
+// Auto-dispatch policy for the SME2 GEMM. With the packed cache (expanded_sme) the fused LUTI4
+// SMOPA driver beats NEON at EVERY M on M4 Pro (cq4, K=N=1024: M=4 3.0x, M=32 3.6x, M=128 2.8x,
+// M=256 2.4x) -> the fused gate enables it for all M>1 when the cache exists. Without the cache
+// only the legacy gather-based SMOPA path is available, which wins only for M>=128 (~1.1x).
+static inline bool cactus_quant_use_sme_gemm(uint32_t M) {
+    const int backend = g_cactus_quant_backend.load(std::memory_order_relaxed);
+    if (backend == 1) return false;
+    if (!cpu_has_sme2()) return false;
+    if (backend == 2) return true;
+    return M >= 128;   // legacy gather-path threshold
+}
+
+static inline bool cactus_quant_use_sme_gemm_fused(const CactusQuantMatrix* W) {
+    const int backend = g_cactus_quant_backend.load(std::memory_order_relaxed);
+    if (backend == 1) return false;
+    if (!cpu_has_sme2()) return false;
+    if (W->expanded_sme == nullptr || W->norm_sme == nullptr) return false;
+    return true;       // wins at every measured M>1 (3.0-3.6x mid-M, 2.4x at M=256)
+}
+
+// SME2 CQ GEMM (M>1): mirrors the M>1 NEON preamble (Hadamard, per-(m,g) INT8 act quant, expanded
+// weights, norm_f32) and replaces the dot-products with full-tile 16-row x 16-col SMOPA. The four
+// 4-channel 'expanded' panels are gathered (4x 16-byte memcpy) into contiguous 16-channel SMOPA
+// panels once, amortized over all M-blocks. The streaming leaf returns raw int32 partials; the FP
+// rescale (per (m,g) act_scale and norm) runs here, matching the SDOT path numerically.
+static void cactus_quant_sme_gemm_tiles(
+    const CactusQuantMatrix* W, const int8_t* act_i8, const float* act_scales,
+    const int8_t* w_il, const float* n_f32, uint32_t M, uint32_t num_groups, uint32_t gs,
+    size_t N_blocks, __fp16* C) {
+    const uint32_t N = W->N;
+    const uint32_t K = W->K;
+    constexpr uint32_t TILE_M = 16;
+    const size_t M_blocks = (M + TILE_M - 1) / TILE_M;
+    const size_t nkg = gs / 4;
+    const size_t SB = (static_cast<size_t>(N) + 15) / 16;            // 16-channel super-blocks
+    const size_t panel_bytes = static_cast<size_t>(num_groups) * nkg * 64;
+
+    // Gather weights + norms into 16-channel SMOPA panels once (shared across all M-blocks).
+    std::vector<int8_t> w_sme(SB * panel_bytes);
+    std::vector<float> n_sme(SB * num_groups * 16);
+    for (size_t sb = 0; sb < SB; ++sb) {
+        for (uint32_t g = 0; g < num_groups; ++g) {
+            int8_t* wdst_g = w_sme.data() + sb * panel_bytes + static_cast<size_t>(g) * nkg * 64;
+            for (size_t kg = 0; kg < nkg; ++kg) {
+                int8_t* dst = wdst_g + kg * 64;
+                for (uint32_t sub = 0; sub < 4; ++sub) {
+                    const size_t b = sb * 4 + sub;
+                    if (b < N_blocks) {
+                        const int8_t* src = w_il + (b * num_groups + g) * static_cast<size_t>(gs) * 4 + kg * 16;
+                        std::memcpy(dst + sub * 16, src, 16);
+                    } else {
+                        std::memset(dst + sub * 16, 0, 16);
+                    }
+                }
+            }
+            float* nd = n_sme.data() + (sb * num_groups + g) * 16;
+            for (uint32_t sub = 0; sub < 4; ++sub) {
+                const size_t b = sb * 4 + sub;
+                if (b < N_blocks) std::memcpy(nd + sub * 4, n_f32 + (b * num_groups + g) * 4, 4 * sizeof(float));
+                else { nd[sub*4+0]=nd[sub*4+1]=nd[sub*4+2]=nd[sub*4+3]=0.f; }
+            }
+        }
+    }
+
+    cactus_quant_parallel_ranges(M_blocks, 1, [&](size_t mb_start, size_t mb_end) {
+        std::vector<int8_t> act_packed(static_cast<size_t>(num_groups) * gs * 16);
+        std::vector<int32_t> partials(static_cast<size_t>(num_groups) * 16 * 16);
+        for (size_t mb = mb_start; mb < mb_end; ++mb) {
+            const uint32_t m0 = static_cast<uint32_t>(mb) * TILE_M;
+            const uint32_t m_rows = std::min<uint32_t>(TILE_M, M - m0);
+
+            // Pack acts -> [g][kg][i][c]; rows >= m_rows stay zero.
+            std::fill(act_packed.begin(), act_packed.end(), int8_t(0));
+            for (uint32_t g = 0; g < num_groups; ++g) {
+                int8_t* gbase = act_packed.data() + static_cast<size_t>(g) * gs * 16;
+                for (uint32_t i = 0; i < m_rows; ++i) {
+                    const int8_t* src = act_i8 + static_cast<size_t>(m0 + i) * K + static_cast<size_t>(g) * gs;
+                    for (size_t kg = 0; kg < nkg; ++kg)
+                        std::memcpy(gbase + kg * 64 + static_cast<size_t>(i) * 4, src + kg * 4, 4);
+                }
+            }
+
+            for (size_t sb = 0; sb < SB; ++sb) {
+                const int8_t* w_panel = w_sme.data() + sb * panel_bytes;
+                cactus_sme_cq_gemm_16x16_s8(act_packed.data(), w_panel, partials.data(),
+                                            num_groups, gs, m_rows);
+
+                const size_t n_start = sb * 16;
+                const uint32_t valid_n = std::min<uint32_t>(16, N - static_cast<uint32_t>(n_start));
+                const float* nbase = n_sme.data() + sb * num_groups * 16;
+                for (uint32_t i = 0; i < m_rows; ++i) {
+                    float acc[16] = {0.f};
+                    for (uint32_t g = 0; g < num_groups; ++g) {
+                        const float as = act_scales[static_cast<size_t>(m0 + i) * num_groups + g];
+                        const float* nf = nbase + static_cast<size_t>(g) * 16;
+                        const int32_t* pp = partials.data() + (static_cast<size_t>(g) * 16 + i) * 16;
+                        for (uint32_t c = 0; c < 16; ++c) acc[c] += static_cast<float>(pp[c]) * as * nf[c];
+                    }
+                    __fp16* crow = C + static_cast<size_t>(m0 + i) * N + n_start;
+                    for (uint32_t c = 0; c < valid_n; ++c) crow[c] = static_cast<__fp16>(acc[c]);
+                }
+            }
+        }
+    });
+}
+
+static void cactus_quant_interleaved4_gemv_blocks(
+    const CactusQuantMatrix* W, const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved, const int8_t* act_i8, const float* act_scales,
+    const int8x16_t cb_lut, const float cb_scale,
+    size_t block_start, size_t block_end, __fp16* y);
+
+// Fused hybrid GEMV (M=1) over the packed cache: one pool dispatch = (A) group-parallel Hadamard
+// + int8 act quantize, barrier, (B) dynamic super-block stealing with SME workers on the LUTI4
+// partials leaf and NEON workers on expand-from-packed SDOT. For INTERLEAVED_4ROW weights the NEON
+// from-packed path does not apply (row-major layout assumption), so all workers run SME there.
+static void cactus_quant_sme_gemv_fused(const CactusQuantMatrix* W, const __fp16* A, __fp16* C) {
+    const uint32_t gs = W->group_size;
+    const uint32_t num_groups = W->num_groups;
+    const uint32_t codebook_size = 1u << W->bits;
+        const uint32_t N = W->N;
+        const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
+        auto& pool = CactusThreading::get_thread_pool();
+        const size_t nt = std::min(pool.num_workers(), SB64);
+
+        static thread_local std::vector<int8_t> tl_h_act_i8;
+        static thread_local std::vector<float> tl_h_act_scales;
+        if (tl_h_act_i8.size() < W->K) tl_h_act_i8.resize(W->K);
+        if (tl_h_act_scales.size() < num_groups) tl_h_act_scales.resize(num_groups);
+        int8_t* act_i8 = tl_h_act_i8.data();
+        float* act_scales = tl_h_act_scales.data();
+
+        int8_t cb_i8[16] = {};
+        const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, codebook_size);
+        const int8x16_t cb_lut = vld1q_s8(cb_i8);
+        alignas(16) uint8_t zt[64] = {};
+        for (int i = 0; i < 16; ++i) zt[4 * i] = static_cast<uint8_t>(cb_i8[i]);
+        const float* nsme = W->norm_sme;
+
+        // Per-(sb) SME partial rescale: int32 partials -> fp16 C, NEON, outside streaming mode.
+        auto rescale_sb = [&](const int32_t* psb, size_t sb) {
+            float32x4_t acc[16];
+            for (int v = 0; v < 16; ++v) acc[v] = vdupq_n_f32(0.f);
+            const float* nsb = nsme + sb * num_groups * 64;
+            for (uint32_t g = 0; g < num_groups; ++g) {
+                const float32x4_t as = vdupq_n_f32(act_scales[g]);
+                const int32_t* pp = psb + static_cast<size_t>(g) * 64;
+                const float* nf = nsb + static_cast<size_t>(g) * 64;
+                for (int v = 0; v < 16; ++v)
+                    acc[v] = vmlaq_f32(acc[v],
+                        vmulq_f32(vcvtq_f32_s32(vld1q_s32(pp + v * 4)), as),
+                        vld1q_f32(nf + v * 4));
+            }
+            const size_t n_start = sb * 64;
+            const uint32_t valid = std::min<uint32_t>(64, N - static_cast<uint32_t>(n_start));
+            float tmp[64];
+            for (int v = 0; v < 16; ++v) vst1q_f32(tmp + v * 4, acc[v]);
+            for (uint32_t c = 0; c < valid; ++c) C[n_start + c] = static_cast<__fp16>(tmp[c]);
+        };
+        auto phase_a_group = [&](uint32_t g) {
+            __fp16 basis[256];                  // gs <= 256 (same bound as the transform's tmp)
+            cactus_quant_transform_hadamard_group(*W, A + static_cast<size_t>(g) * gs, g, basis);
+            act_scales[g] = tq_quantize_group_i8(basis, act_i8 + static_cast<size_t>(g) * gs, gs);
+        };
+
+        if (nt <= 1) {                          // tiny N (e.g. correctness tests): serial SME
+            for (uint32_t g = 0; g < num_groups; ++g) phase_a_group(g);
+            static thread_local std::vector<int32_t> tl_partials1;
+            if (tl_partials1.size() < SB64 * num_groups * 64) tl_partials1.resize(SB64 * num_groups * 64);
+            cactus_sme_cq_gemv_luti4_s8(act_i8, W->expanded_sme, zt, tl_partials1.data(),
+                                        num_groups, gs, 0, static_cast<uint32_t>(SB64));
+            for (size_t sb = 0; sb < SB64; ++sb)
+                rescale_sb(tl_partials1.data() + sb * num_groups * 64, sb);
+            return;
+        }
+
+        static const size_t k_sme_env = [] {
+            const char* e = getenv("CACTUS_SME_GEMV_WORKERS");
+            return e ? static_cast<size_t>(atoi(e)) : static_cast<size_t>(4);
+        }();
+        // NEON co-workers consume the NATIVE packed layout (second independent weight stream):
+        // row-major weights use the row-major from-packed SDOT; INTERLEAVED_4ROW CQ4 uses the
+        // production interleaved block processor. Other interleaved bit-widths: all-SME.
+        const bool interleaved = (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0;
+        const bool il_neon_ok = interleaved && W->bits == 4 && (W->N % 4) == 0;
+        const size_t k_sme = (interleaved && !il_neon_ok) ? nt : std::min(k_sme_env, nt - 1);
+        const size_t n16_blocks = (static_cast<size_t>(N) + 15) / 16;
+        const size_t n4_blocks = static_cast<size_t>(N) / 4;
+
+        std::atomic<uint32_t> ga{0};            // phase A group grab
+        std::atomic<uint32_t> a_done{0};        // phase A completion (release/acquire barrier)
+        std::atomic<uint32_t> next{0};          // phase B super-block grab
+        std::atomic<uint32_t> done{0};          // worker completion (spin-join, no cv wake)
+        auto worker = [&](size_t wid) {
+            for (uint32_t g; (g = ga.fetch_add(1, std::memory_order_relaxed)) < num_groups; ) {
+                phase_a_group(g);
+                a_done.fetch_add(1, std::memory_order_release);
+            }
+            while (a_done.load(std::memory_order_acquire) < num_groups) { /* spin */ }
+
+            thread_local std::vector<int32_t> tl_partials;
+            for (;;) {
+                const uint32_t seen = next.load(std::memory_order_relaxed);
+                if (seen >= SB64) break;
+                const uint32_t want = (SB64 - seen > 4u * nt) ? 4u : 1u;
+                const uint32_t sb = next.fetch_add(want, std::memory_order_relaxed);
+                if (sb >= SB64) break;
+                const uint32_t cnt = std::min<uint32_t>(want, static_cast<uint32_t>(SB64) - sb);
+                if (wid < k_sme) {
+                    const size_t need = static_cast<size_t>(cnt) * num_groups * 64;
+                    if (tl_partials.size() < need) tl_partials.resize(need);
+                    cactus_sme_cq_gemv_luti4_s8(act_i8, W->expanded_sme, zt, tl_partials.data(),
+                                                num_groups, gs, sb, cnt);
+                    for (uint32_t s = 0; s < cnt; ++s)
+                        rescale_sb(tl_partials.data() + static_cast<size_t>(s) * num_groups * 64,
+                                   static_cast<size_t>(sb) + s);
+                } else if (il_neon_ok) {
+                    cactus_quant_interleaved4_gemv_blocks(
+                        W, W->packed_indices, W->norms, act_i8, act_scales, cb_lut, cb_scale,
+                        static_cast<size_t>(sb) * 16,
+                        std::min<size_t>(static_cast<size_t>(sb + cnt) * 16, n4_blocks), C);
+                } else {
+                    cactus_quant_sdot_packed_blocks_rt(
+                        W, act_i8, act_scales, cb_lut, cb_scale,
+                        static_cast<size_t>(sb) * 4,
+                        std::min<size_t>(static_cast<size_t>(sb + cnt) * 4, n16_blocks), C);
+                }
+            }
+        };
+        // Main participates as worker 0 (the SME role: zero wake latency, and early SME issue
+        // matters most) and spin-joins its own counter — skipping the wait_all cv sleep saves a
+        // main-thread wake per call (~5-10us, material at decode's ~10 hybrid calls/layer).
+        pool.enqueue_n_threads(nt - 1, nt - 1, [&](size_t wid, size_t) {
+            worker(wid + 1);
+            done.fetch_add(1, std::memory_order_release);
+        });
+        worker(0);
+        while (done.load(std::memory_order_acquire) < nt - 1) { /* spin */ }
+}
+
+// SME2 orthogonal-rotation CQ4 GEMV (the Gemma lm_head: ONE weight matrix, gs == K, per-row
+// norms, fp16 K x K rotation). Mapped onto the standard hybrid via VIRTUAL 128-wide groups —
+// mathematically exact regrouping (norms constant across subgroups; row-major nibbles already
+// subgroup-contiguous). W2 is the virtual-group view (group_size=128, num_groups=K/128,
+// norms = per-row norms replicated across groups, expanded_sme/norm_sme from the cache).
+// Phase A: each work item g computes A_rot[g*128 .. g*128+127] = a_scaled . rot_t rows (fp32
+// accumulate, matching the incumbent) and int8-quantizes its own group. Phase B: identical hybrid
+// (SME LUTI4 partials leaf + row-major from-packed NEON co-workers).
+void cactus_quant_orth_sme_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t,
+                                const __fp16* input_scale_recip, const __fp16* A, __fp16* C) {
+    const uint32_t K = W2->K;
+    const uint32_t N = W2->N;
+    const uint32_t gs = W2->group_size;
+    const uint32_t num_groups = W2->num_groups;
+    const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
+    auto& pool = CactusThreading::get_thread_pool();
+    const size_t nt = std::max<size_t>(1, std::min(pool.num_workers(), SB64));
+
+    static thread_local std::vector<__fp16> tl_a_scaled;
+    static thread_local std::vector<int8_t> tl_o_act_i8;
+    static thread_local std::vector<float> tl_o_act_scales;
+    if (tl_a_scaled.size() < K) tl_a_scaled.resize(K);
+    if (tl_o_act_i8.size() < K) tl_o_act_i8.resize(K);
+    if (tl_o_act_scales.size() < num_groups) tl_o_act_scales.resize(num_groups);
+    __fp16* a_scaled = tl_a_scaled.data();
+    int8_t* act_i8 = tl_o_act_i8.data();
+    float* act_scales = tl_o_act_scales.data();
+    for (uint32_t k = 0; k < K; ++k)
+        a_scaled[k] = static_cast<__fp16>(static_cast<float>(A[k]) *
+            (input_scale_recip ? static_cast<float>(input_scale_recip[k]) : 1.f));
+
+    int8_t cb_i8[16] = {};
+    const float cb_scale = tq_quantize_codebook_i8(W2->codebook, cb_i8, 1u << W2->bits);
+    const int8x16_t cb_lut = vld1q_s8(cb_i8);
+    alignas(16) uint8_t zt[64] = {};
+    for (int i = 0; i < 16; ++i) zt[4 * i] = static_cast<uint8_t>(cb_i8[i]);
+    const float* nsme = W2->norm_sme;
+
+    auto rescale_sb = [&](const int32_t* psb, size_t sb) {
+        float32x4_t acc[16];
+        for (int v = 0; v < 16; ++v) acc[v] = vdupq_n_f32(0.f);
+        const float* nsb = nsme + sb * num_groups * 64;
+        for (uint32_t g = 0; g < num_groups; ++g) {
+            const float32x4_t as = vdupq_n_f32(act_scales[g]);
+            const int32_t* pp = psb + static_cast<size_t>(g) * 64;
+            const float* nf = nsb + static_cast<size_t>(g) * 64;
+            for (int v = 0; v < 16; ++v)
+                acc[v] = vmlaq_f32(acc[v],
+                    vmulq_f32(vcvtq_f32_s32(vld1q_s32(pp + v * 4)), as),
+                    vld1q_f32(nf + v * 4));
+        }
+        const size_t n_start = sb * 64;
+        const uint32_t valid = std::min<uint32_t>(64, N - static_cast<uint32_t>(n_start));
+        float tmp[64];
+        for (int v = 0; v < 16; ++v) vst1q_f32(tmp + v * 4, acc[v]);
+        for (uint32_t c = 0; c < valid; ++c) C[n_start + c] = static_cast<__fp16>(tmp[c]);
+    };
+    // rotate-and-quantize one virtual group: A_rot[i] = sum_k a_scaled[k]*R[k][i] = dot(a_scaled, rot_t[i])
+    auto phase_a_group = [&](uint32_t g) {
+        __fp16 basis[128];
+        for (uint32_t j = 0; j < gs; ++j) {
+            const __fp16* rt = rot_t + (static_cast<size_t>(g) * gs + j) * K;
+            float32x4_t s0 = vdupq_n_f32(0.f), s1 = vdupq_n_f32(0.f);
+            for (uint32_t k = 0; k < K; k += 8) {
+                float16x8_t av = vld1q_f16(a_scaled + k);
+                float16x8_t rv = vld1q_f16(rt + k);
+                s0 = vfmaq_f32(s0, vcvt_f32_f16(vget_low_f16(av)), vcvt_f32_f16(vget_low_f16(rv)));
+                s1 = vfmaq_f32(s1, vcvt_f32_f16(vget_high_f16(av)), vcvt_f32_f16(vget_high_f16(rv)));
+            }
+            basis[j] = static_cast<__fp16>(vaddvq_f32(vaddq_f32(s0, s1)));
+        }
+        act_scales[g] = tq_quantize_group_i8(basis, act_i8 + static_cast<size_t>(g) * gs, gs);
+    };
+
+    if (nt <= 1) {
+        for (uint32_t g = 0; g < num_groups; ++g) phase_a_group(g);
+        static thread_local std::vector<int32_t> tl_op1;
+        if (tl_op1.size() < SB64 * num_groups * 64) tl_op1.resize(SB64 * num_groups * 64);
+        cactus_sme_cq_gemv_luti4_s8(act_i8, W2->expanded_sme, zt, tl_op1.data(),
+                                    num_groups, gs, 0, static_cast<uint32_t>(SB64));
+        for (size_t sb = 0; sb < SB64; ++sb)
+            rescale_sb(tl_op1.data() + sb * num_groups * 64, sb);
+        return;
+    }
+
+    static const size_t k_sme_env = [] {
+        const char* e = getenv("CACTUS_SME_GEMV_WORKERS");
+        return e ? static_cast<size_t>(atoi(e)) : static_cast<size_t>(4);
+    }();
+    const size_t k_sme = std::min(k_sme_env, nt - 1);
+    const size_t n16_blocks = (static_cast<size_t>(N) + 15) / 16;
+
+    std::atomic<uint32_t> ga{0};
+    std::atomic<uint32_t> a_done{0};
+    std::atomic<uint32_t> next{0};
+    std::atomic<uint32_t> done{0};
+    auto worker = [&](size_t wid) {
+        for (uint32_t g; (g = ga.fetch_add(1, std::memory_order_relaxed)) < num_groups; ) {
+            phase_a_group(g);
+            a_done.fetch_add(1, std::memory_order_release);
+        }
+        while (a_done.load(std::memory_order_acquire) < num_groups) { /* spin */ }
+        thread_local std::vector<int32_t> tl_partials;
+        for (;;) {
+            const uint32_t seen = next.load(std::memory_order_relaxed);
+            if (seen >= SB64) break;
+            const uint32_t want = (SB64 - seen > 4u * nt) ? 4u : 1u;
+            const uint32_t sb = next.fetch_add(want, std::memory_order_relaxed);
+            if (sb >= SB64) break;
+            const uint32_t cnt = std::min<uint32_t>(want, static_cast<uint32_t>(SB64) - sb);
+            if (wid < k_sme) {
+                const size_t need = static_cast<size_t>(cnt) * num_groups * 64;
+                if (tl_partials.size() < need) tl_partials.resize(need);
+                cactus_sme_cq_gemv_luti4_s8(act_i8, W2->expanded_sme, zt, tl_partials.data(),
+                                            num_groups, gs, sb, cnt);
+                for (uint32_t s2 = 0; s2 < cnt; ++s2)
+                    rescale_sb(tl_partials.data() + static_cast<size_t>(s2) * num_groups * 64,
+                               static_cast<size_t>(sb) + s2);
+            } else {
+                cactus_quant_sdot_packed_blocks_rt(
+                    W2, act_i8, act_scales, cb_lut, cb_scale,
+                    static_cast<size_t>(sb) * 4,
+                    std::min<size_t>(static_cast<size_t>(sb + cnt) * 4, n16_blocks), C);
+            }
+        }
+    };
+    // Main participates as SME worker 0 + spin-join (no wait_all cv sleep) — see gemv_fused.
+    // (nt >= 2 here: the nt <= 1 case took the serial path above.)
+    pool.enqueue_n_threads(nt - 1, nt - 1, [&](size_t wid, size_t) {
+        worker(wid + 1);
+        done.fetch_add(1, std::memory_order_release);
+    });
+    worker(0);
+    while (done.load(std::memory_order_acquire) < nt - 1) { /* spin */ }
+}
+
 void cactus_quant_matmul(
     const CactusQuantMatrix* W,
     const __fp16* A,
@@ -1483,6 +2035,13 @@ void cactus_quant_matmul(
     __fp16* C) {
     if (W != nullptr && (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0) {
         cactus_quant_orthogonal_matmul(W, A, M, C);
+        return;
+    }
+    // Packed-cache SME2 GEMV takes precedence over the interleaved/from-packed NEON GEMV
+    // dispatches below (real-model weight buffers carry no pre-expanded int8, so without this the
+    // M=1 path would never reach the hybrid).
+    if (W != nullptr && M == 1 && cactus_quant_use_sme_gemv_svdot(W, (W->group_size % 32) == 0)) {
+        cactus_quant_sme_gemv_fused(W, A, C);
         return;
     }
     if (W != nullptr && M == 1
@@ -1530,6 +2089,11 @@ void cactus_quant_matmul(
             return;
         }
 
+        if (cactus_quant_use_sme_gemv_svdot(W, has_sdot_group_layout)) {
+            cactus_quant_sme_gemv_fused(W, A, C);
+            return;
+        }
+
         const size_t act_size = W->K;
         static thread_local std::vector<__fp16> tl_code_basis;
         if (tl_code_basis.size() < act_size) tl_code_basis.resize(act_size);
@@ -1568,6 +2132,15 @@ void cactus_quant_matmul(
                                  N_blocks, w_il_buf.data(), n_f32_buf.data());
             w_il = w_il_buf.data();
             n_f32 = n_f32_buf.data();
+        }
+
+        // Legacy SMOPA GEMV (perf-deferred): only without the packed cache — with expanded_sme
+        // present, the hybrid NEON+SME LUTI4 path below handles backend 2.
+        if (W->expanded_sme == nullptr &&
+            cactus_quant_use_sme_gemv(has_expanded_layout, has_sdot_group_layout)) {
+            cactus_quant_sme_gemv_blocks(W, act_i8, act_scales, w_il, n_f32,
+                                         num_groups, gs, N_blocks, C);
+            return;
         }
 
         auto& pool = CactusThreading::get_thread_pool();
@@ -1674,6 +2247,141 @@ void cactus_quant_matmul(
         return;
     }
 
+    // Fused SME2 GEMM over the packed cache. One pool dispatch: (A) per-(M-tile, group) Hadamard +
+    // int8 quantize + SMOPA act-pack, barrier, (B) dynamic work-stealing over (M-tile x super-block)
+    // pairs -- M_tiles*SB64 units keep all workers busy at mid M (the old driver parallelized over
+    // M-tiles only: M=32 -> 2 workers). The leaf reads esme_packed via LUTI4 (no per-call weight
+    // gather, half the weight bytes) and stores raw partials; rescale runs in NEON per pair.
+    if (cactus_quant_use_sme_gemm_fused(W)) {
+        const uint32_t N = W->N;
+        const uint32_t K = W->K;
+        const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
+        constexpr uint32_t TILE_M16 = 16;
+        const size_t M_tiles = (M + TILE_M16 - 1) / TILE_M16;
+        const size_t total_pairs = M_tiles * SB64;
+
+        std::vector<int8_t> act_packed(M_tiles * num_groups * static_cast<size_t>(gs) * 16);
+        std::vector<float> act_scales(static_cast<size_t>(M) * num_groups);
+
+        int8_t cb_i8[16] = {};
+        const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, codebook_size);
+        (void)cb_scale;
+        alignas(16) uint8_t zt[64] = {};
+        for (int i2 = 0; i2 < 16; ++i2) zt[4 * i2] = static_cast<uint8_t>(cb_i8[i2]);
+        const float* nsme = W->norm_sme;
+
+        auto& pool = CactusThreading::get_thread_pool();
+        const size_t nt = std::max<size_t>(1, std::min(pool.num_workers(), total_pairs));
+        const uint32_t total_a = static_cast<uint32_t>(M_tiles * num_groups);
+
+        auto phase_a_item = [&](uint32_t item) {
+            const uint32_t mt = item / num_groups;
+            const uint32_t g = item % num_groups;
+            int8_t rowq[16][256];                       // gs <= 256
+            for (uint32_t r = 0; r < 16; ++r) {
+                const uint32_t m = mt * TILE_M16 + r;
+                if (m < M) {
+                    __fp16 basis[256];
+                    cactus_quant_transform_hadamard_group(
+                        *W, A + static_cast<size_t>(m) * K + static_cast<size_t>(g) * gs, g, basis);
+                    act_scales[static_cast<size_t>(m) * num_groups + g] =
+                        tq_quantize_group_i8(basis, rowq[r], gs);
+                } else {
+                    std::memset(rowq[r], 0, gs);
+                }
+            }
+            int8_t* dst = act_packed.data() + (static_cast<size_t>(mt) * num_groups + g) * gs * 16;
+            for (uint32_t kg = 0; kg < gs / 4; ++kg)
+                for (uint32_t r = 0; r < 16; ++r)
+                    std::memcpy(dst + static_cast<size_t>(kg) * 64 + r * 4, rowq[r] + kg * 4, 4);
+        };
+        auto run_pair = [&](size_t pair, int32_t* partials) {
+            const size_t mt = pair / SB64;
+            const size_t sb = pair % SB64;
+            cactus_sme_cq_gemm_luti4_s8(
+                act_packed.data() + (mt * num_groups) * static_cast<size_t>(gs) * 16,
+                W->expanded_sme + sb * num_groups * static_cast<size_t>(gs / 4) * 128,
+                zt, partials, num_groups, gs);
+            const uint32_t m_rows = std::min<uint32_t>(TILE_M16, M - static_cast<uint32_t>(mt) * TILE_M16);
+            const uint32_t valid_n = std::min<uint32_t>(64, N - static_cast<uint32_t>(sb) * 64);
+            const float* nsb = nsme + sb * num_groups * 64;
+            for (uint32_t r = 0; r < m_rows; ++r) {
+                const uint32_t m = static_cast<uint32_t>(mt) * TILE_M16 + r;
+                float32x4_t acc[16];
+                for (int v = 0; v < 16; ++v) acc[v] = vdupq_n_f32(0.f);
+                for (uint32_t g = 0; g < num_groups; ++g) {
+                    const float32x4_t as = vdupq_n_f32(act_scales[static_cast<size_t>(m) * num_groups + g]);
+                    const int32_t* pp = partials + (static_cast<size_t>(g) * 16 + r) * 64;
+                    const float* nf = nsb + static_cast<size_t>(g) * 64;
+                    for (int v = 0; v < 16; ++v)
+                        acc[v] = vmlaq_f32(acc[v],
+                            vmulq_f32(vcvtq_f32_s32(vld1q_s32(pp + v * 4)), as),
+                            vld1q_f32(nf + v * 4));
+                }
+                float tmp[64];
+                for (int v = 0; v < 16; ++v) vst1q_f32(tmp + v * 4, acc[v]);
+                __fp16* crow = C + static_cast<size_t>(m) * N + sb * 64;
+                for (uint32_t c = 0; c < valid_n; ++c) crow[c] = static_cast<__fp16>(tmp[c]);
+            }
+        };
+
+        if (nt <= 1) {
+            for (uint32_t i2 = 0; i2 < total_a; ++i2) phase_a_item(i2);
+            std::vector<int32_t> partials(static_cast<size_t>(num_groups) * 16 * 64);
+            for (size_t p2 = 0; p2 < total_pairs; ++p2) run_pair(p2, partials.data());
+            return;
+        }
+
+        // CACTUS_SME_PROF=1: accumulate per-worker core-time of phase A (act prep, incl. barrier
+        // spin) vs phase B (SME pairs) across the process; dumped at exit. Decides whether NEON
+        // phase-B co-workers can pay.
+        static const bool prof_on = [] {
+            const char* e = getenv("CACTUS_SME_PROF");
+            return e && atoi(e) != 0;
+        }();
+        static std::atomic<uint64_t> prof_a_ns{0}, prof_b_ns{0}, prof_calls{0};
+        if (prof_on) {
+            static std::once_flag prof_once;
+            std::call_once(prof_once, [] {
+                atexit([] {
+                    fprintf(stderr, "[sme-gemm-prof] calls=%llu phaseA_core_ms=%.1f phaseB_core_ms=%.1f\n",
+                            (unsigned long long)prof_calls.load(),
+                            prof_a_ns.load() / 1e6, prof_b_ns.load() / 1e6);
+                });
+            });
+            prof_calls.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        std::atomic<uint32_t> ga{0};
+        std::atomic<uint32_t> a_done{0};
+        std::atomic<size_t> next{0};
+        pool.enqueue_n_threads(nt, nt, [&](size_t, size_t) {
+            const auto tA0 = prof_on ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
+            for (uint32_t i2; (i2 = ga.fetch_add(1, std::memory_order_relaxed)) < total_a; ) {
+                phase_a_item(i2);
+                a_done.fetch_add(1, std::memory_order_release);
+            }
+            while (a_done.load(std::memory_order_acquire) < total_a) { /* spin */ }
+            const auto tB0 = prof_on ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
+            thread_local std::vector<int32_t> tl_partials;
+            if (tl_partials.size() < static_cast<size_t>(num_groups) * 16 * 64)
+                tl_partials.resize(static_cast<size_t>(num_groups) * 16 * 64);
+            for (size_t p2; (p2 = next.fetch_add(1, std::memory_order_relaxed)) < total_pairs; )
+                run_pair(p2, tl_partials.data());
+            if (prof_on) {
+                const auto tB1 = std::chrono::steady_clock::now();
+                prof_a_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(tB0 - tA0).count(),
+                                    std::memory_order_relaxed);
+                prof_b_ns.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(tB1 - tB0).count(),
+                                    std::memory_order_relaxed);
+            }
+        });
+        pool.wait_all();
+        return;
+    }
+
     const size_t act_size = static_cast<size_t>(M) * W->K;
     std::vector<__fp16> heap_code_basis(act_size);
     __fp16* code_basis_ptr = heap_code_basis.data();
@@ -1708,6 +2416,12 @@ void cactus_quant_matmul(
                          N_blocks, w_il_buf.data(), n_f32_buf.data());
     const int8_t* w_il = w_il_buf.data();
     const float* n_f32 = n_f32_buf.data();
+
+    if (cactus_quant_use_sme_gemm(M)) {
+        cactus_quant_sme_gemm_tiles(W, act_i8_ptr, act_scales_ptr, w_il, n_f32,
+                                    M, num_groups, gs, N_blocks, C);
+        return;
+    }
 
     const size_t M_blocks = (M + TILE_M - 1) / TILE_M;
     const size_t total_tiles = M_blocks * N_blocks;
@@ -1911,6 +2625,80 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
         float scale = input_scale_recip ? static_cast<float>(input_scale_recip[j]) : 1.0f;
         out_row[j] = static_cast<__fp16>(acc * norm * scale);
     }
+}
+
+// Batched variant: dequantize + un-rotate num_rows embedding rows in ONE pass. The per-row
+// version above is a serial scalar K^2 matvec (~2.4M scalar FMAs per row at K=1536) and was a
+// top prefill term for Gemma per-layer embeddings; this one keeps the same fp32-accumulate math
+// (norm folded into the fp32 dq operand) but vectorizes the dot 8-wide and parallelizes over
+// (row, 64-output-channel) blocks.
+void cactus_quant_dequantize_orthogonal_embedding_rows(
+    uint32_t bits,
+    uint32_t K,
+    const uint32_t* rows,
+    uint32_t num_rows,
+    const uint8_t* packed_base,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const __fp16* rotation,
+    uint32_t flags,
+    __fp16* out_rows) {
+    if (!packed_base || !codebook || !norms || !rotation || !out_rows || !rows) return;
+    if (bits == 0 || bits > 4 || K == 0 || (K % 8) != 0 || num_rows == 0) return;
+
+    const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(bits, K);
+    const bool interleaved = (flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0;
+    if (interleaved && bits != 4) return;
+
+    std::vector<float> dq(static_cast<size_t>(num_rows) * K);
+    for (uint32_t u = 0; u < num_rows; ++u) {
+        const size_t row = rows[u];
+        const float norm = interleaved
+            ? static_cast<float>(norms[(row / 4) * 4 + (row & 3u)])
+            : static_cast<float>(norms[row]);
+        float* d = dq.data() + static_cast<size_t>(u) * K;
+        if (interleaved) {
+            const size_t panel_bytes = static_cast<size_t>(4) * packed_group_bytes;
+            const uint8_t* panel = packed_base + (row / 4) * panel_bytes;
+            for (uint32_t i = 0; i < K; ++i) {
+                const uint32_t chunk = i / 8;
+                const uint32_t sub = i & 7u;
+                const uint8_t b = panel[chunk * 16 + (row & 3u) * 4 + (sub & 3u)];
+                const uint32_t idx = (sub & 4u) ? (b >> 4) : (b & 0x0F);
+                d[i] = static_cast<float>(codebook[idx]) * norm;
+            }
+        } else {
+            const uint8_t* packed = packed_base + row * packed_group_bytes;
+            for (uint32_t i = 0; i < K; ++i)
+                d[i] = static_cast<float>(codebook[tq_extract_idx(packed, i, bits)]) * norm;
+        }
+    }
+
+    constexpr uint32_t JBLK = 64;
+    const uint32_t jblocks = (K + JBLK - 1) / JBLK;
+    CactusThreading::parallel_for(static_cast<size_t>(num_rows) * jblocks,
+        CactusThreading::ParallelConfig{8, 4},
+        [&](size_t start, size_t end) {
+            for (size_t item = start; item < end; ++item) {
+                const uint32_t u = static_cast<uint32_t>(item / jblocks);
+                const uint32_t j0 = static_cast<uint32_t>(item % jblocks) * JBLK;
+                const uint32_t j1 = std::min(j0 + JBLK, K);
+                const float* d = dq.data() + static_cast<size_t>(u) * K;
+                __fp16* out = out_rows + static_cast<size_t>(u) * K;
+                for (uint32_t j = j0; j < j1; ++j) {
+                    const __fp16* rrow = rotation + static_cast<size_t>(j) * K;
+                    float32x4_t acc0 = vdupq_n_f32(0.0f), acc1 = vdupq_n_f32(0.0f);
+                    for (uint32_t i = 0; i < K; i += 8) {
+                        float16x8_t r = vld1q_f16(rrow + i);
+                        acc0 = vfmaq_f32(acc0, vcvt_f32_f16(vget_low_f16(r)), vld1q_f32(d + i));
+                        acc1 = vfmaq_f32(acc1, vcvt_f32_f16(vget_high_f16(r)), vld1q_f32(d + i + 4));
+                    }
+                    const float scale = input_scale_recip ? static_cast<float>(input_scale_recip[j]) : 1.0f;
+                    out[j] = static_cast<__fp16>(vaddvq_f32(vaddq_f32(acc0, acc1)) * scale);
+                }
+            }
+        });
 }
 
 static inline uint32_t tq_extract_interleaved_4row_4bit(
@@ -2160,50 +2948,19 @@ void cactus_quant_orthogonal_matmul(
         });
 }
 
-void cactus_quant_4bit_gemv_interleaved(
-    const CactusQuantMatrix* W,
-    const uint8_t* packed_interleaved,
-    const __fp16* norms_interleaved,
-    const __fp16* x,
-    __fp16* y) {
-    if (!cactus_quant_valid_common(W, x, y)) return;
-    if (W->bits != 4) return;
-    if (W->N % 4 != 0) return;
-    if ((W->group_size % 32) != 0) return;
-    if (W->group_size > 256) return;
-
+// Per-block-range core of the interleaved-4row CQ4 GEMV (post-preamble): consumes pre-quantized
+// activations + the interleaved packed panels directly. Shared by the standalone GEMV below and
+// the fused hybrid's NEON co-workers (production bundles ship this layout).
+static void cactus_quant_interleaved4_gemv_blocks(
+    const CactusQuantMatrix* W, const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved, const int8_t* act_i8, const float* act_scales,
+    const int8x16_t cb_lut, const float cb_scale,
+    size_t block_start, size_t block_end, __fp16* y) {
     const uint32_t gs = W->group_size;
     const uint32_t pgb = cactus_quant_packed_group_bytes(4, gs);
     const uint32_t num_groups = W->num_groups;
-
-    thread_local std::vector<__fp16> code_basis_buf;
-    if (code_basis_buf.size() < W->K) code_basis_buf.resize(W->K);
-    cactus_quant_transform_hadamard_activations(*W, x, 1, code_basis_buf.data());
-    const __fp16* code_basis = code_basis_buf.data();
-
-    thread_local std::vector<int8_t> act_i8_buf;
-    thread_local std::vector<float> act_scales_buf;
-    if (act_i8_buf.size() < W->K) act_i8_buf.resize(W->K);
-    if (act_scales_buf.size() < num_groups) act_scales_buf.resize(num_groups);
-    for (uint32_t g = 0; g < num_groups; ++g) {
-        act_scales_buf[g] = tq_quantize_group_i8(
-            code_basis + static_cast<size_t>(g) * gs,
-            act_i8_buf.data() + static_cast<size_t>(g) * gs, gs);
-    }
-    const int8_t* act_i8 = act_i8_buf.data();
-    const float* act_scales = act_scales_buf.data();
-
-    int8_t cb_i8[16] = {};
-    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 16);
-    const int8x16_t cb_lut = vld1q_s8(cb_i8);
-
     const size_t panel_bytes = 4 * pgb;
-    const size_t N_blocks = W->N / 4;
-    const size_t N_tiles_4 = N_blocks / 4;       // groups of 4 n_blocks = 16 outputs
-
     const uint8x16_t lo_mask = vdupq_n_u8(0x0F);
-
-    cactus_quant_parallel_ranges(N_blocks, 64, [&](size_t block_start, size_t block_end) {
         size_t nb = block_start;
         size_t aligned_end = (block_end / 2) * 2;
 
@@ -2288,8 +3045,52 @@ void cactus_quant_4bit_gemv_interleaved(
             }
             vst1_f16(y + nb * 4, vcvt_f16_f32(acc));
         }
+}
+
+void cactus_quant_4bit_gemv_interleaved(
+    const CactusQuantMatrix* W,
+    const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved,
+    const __fp16* x,
+    __fp16* y) {
+    if (!cactus_quant_valid_common(W, x, y)) return;
+    if (W->bits != 4) return;
+    if (W->N % 4 != 0) return;
+    if ((W->group_size % 32) != 0) return;
+    if (W->group_size > 256) return;
+
+    const uint32_t gs = W->group_size;
+    const uint32_t pgb = cactus_quant_packed_group_bytes(4, gs);
+    const uint32_t num_groups = W->num_groups;
+
+    thread_local std::vector<__fp16> code_basis_buf;
+    if (code_basis_buf.size() < W->K) code_basis_buf.resize(W->K);
+    cactus_quant_transform_hadamard_activations(*W, x, 1, code_basis_buf.data());
+    const __fp16* code_basis = code_basis_buf.data();
+
+    thread_local std::vector<int8_t> act_i8_buf;
+    thread_local std::vector<float> act_scales_buf;
+    if (act_i8_buf.size() < W->K) act_i8_buf.resize(W->K);
+    if (act_scales_buf.size() < num_groups) act_scales_buf.resize(num_groups);
+    for (uint32_t g = 0; g < num_groups; ++g) {
+        act_scales_buf[g] = tq_quantize_group_i8(
+            code_basis + static_cast<size_t>(g) * gs,
+            act_i8_buf.data() + static_cast<size_t>(g) * gs, gs);
+    }
+    const int8_t* act_i8 = act_i8_buf.data();
+    const float* act_scales = act_scales_buf.data();
+
+    int8_t cb_i8[16] = {};
+    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 16);
+    const int8x16_t cb_lut = vld1q_s8(cb_i8);
+
+    const size_t N_blocks = W->N / 4;
+
+    cactus_quant_parallel_ranges(N_blocks, 64, [&](size_t block_start, size_t block_end) {
+        cactus_quant_interleaved4_gemv_blocks(W, packed_interleaved, norms_interleaved,
+                                              act_i8, act_scales, cb_lut, cb_scale,
+                                              block_start, block_end, y);
     });
-    (void)N_tiles_4;
 }
 
 void cactus_quant_3bit_gemv_interleaved(
@@ -2450,6 +3251,7 @@ void cactus_quant_2bit_gemv_interleaved(
         }
     });
 }
+
 
 void cactus_quant_1bit_gemv_interleaved(
     const CactusQuantMatrix* W,

@@ -223,6 +223,21 @@ private:
     size_t round_up_size(size_t size) const;
 };
 
+// One-time SME2 packed-weight cache for a CQ buffer (see CactusQuantMatrix::expanded_sme).
+// Held by shared_ptr so buffer copies share it; built lazily at first matmul via
+// cactus_quant_build_sme_cache. ~K*N/2 bytes per weight matrix.
+struct CactusSmeCache {
+    std::vector<uint8_t> packed;
+    std::vector<float> norms;
+    // Orthogonal (lm_head) extras: K x K fp16 rotation transposed + per-row norms replicated
+    // across the K/128 virtual groups (see cactus_quant_orth_sme_gemv).
+    std::vector<__fp16> rot_t;
+    std::vector<__fp16> norms_rep;
+    uint32_t virt_ng = 0;
+    std::once_flag once;
+    bool ready = false;
+};
+
 struct BufferDesc {
     std::vector<size_t> shape;
     size_t total_size;
@@ -237,6 +252,7 @@ struct BufferDesc {
 
     void* activation_scales_data = nullptr;
     std::unique_ptr<char[]> owned_activation_scales;
+    mutable std::shared_ptr<CactusSmeCache> sme_cache;
     size_t num_rows_for_activation_scales = 0;
 
     BufferDesc();
@@ -265,7 +281,54 @@ struct BufferDesc {
     const __fp16* cq_rotation = nullptr;
     uint32_t cq_flags = 0;
 
+    // Lazily build the SME2 packed cache for this weight buffer (no-op on non-SME hardware or
+    // unsupported group sizes; orthogonal weights get a virtual-group view + transposed rotation
+    // for the SME lm_head path). Thread-safe; heavy work runs once.
+    void ensure_sme_cache() const {
+        if (sme_cache && sme_cache->ready) return;
+        if (!cpu_has_sme2()) return;
+        if (group_size <= 0 || (group_size % 32) != 0) return;
+        const uint32_t bits = PrecisionTraits::cq_bits(precision);
+        if (bits < 1 || bits > 4) return;
+        const bool orth = (cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0;
+        if (orth) {
+            // lm_head shape only: single group spanning K, fp16 rotation, row-major nibbles.
+            CactusQuantMatrix W = to_cq_matrix();
+            if (bits != 4 || !cq_rotation || W.num_groups != 1 || W.group_size != W.K ||
+                (W.K % 128) != 0 || (cq_flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW)) return;
+        }
+        {
+            static std::mutex create_mu;
+            std::lock_guard<std::mutex> lk(create_mu);
+            if (!sme_cache) sme_cache = std::make_shared<CactusSmeCache>();
+        }
+        std::call_once(sme_cache->once, [&] {
+            CactusQuantMatrix W = to_cq_matrix();
+            if (orth) {
+                // Virtual 128-wide regrouping (exact: norms constant across subgroups).
+                const uint32_t vng = W.K / 128;
+                sme_cache->virt_ng = vng;
+                sme_cache->norms_rep.resize(static_cast<size_t>(W.N) * vng);
+                for (size_t n = 0; n < W.N; ++n)
+                    for (uint32_t g = 0; g < vng; ++g)
+                        sme_cache->norms_rep[n * vng + g] = cq_norms[n];
+                sme_cache->rot_t.resize(static_cast<size_t>(W.K) * W.K);
+                for (size_t k = 0; k < W.K; ++k)
+                    for (size_t i = 0; i < W.K; ++i)
+                        sme_cache->rot_t[i * W.K + k] = cq_rotation[k * W.K + i];
+                W.flags = 0; W.group_size = 128; W.num_groups = vng;
+                W.norms = sme_cache->norms_rep.data();
+            }
+            const size_t SB64 = (static_cast<size_t>(W.N) + 63) / 64;
+            sme_cache->packed.resize(SB64 * W.num_groups * static_cast<size_t>(W.group_size / 4) * 128);
+            sme_cache->norms.resize(SB64 * W.num_groups * 64);
+            cactus_quant_build_sme_cache(&W, sme_cache->packed.data(), sme_cache->norms.data());
+            sme_cache->ready = true;
+        });
+    }
+
     CactusQuantMatrix to_cq_matrix() const {
+        const bool sme_ready = sme_cache && sme_cache->ready;
         return CactusQuantMatrix{
             .bits = PrecisionTraits::cq_bits(precision),
             .K = static_cast<uint32_t>(shape.size() >= 2 ? shape[1] : shape[0]),
@@ -284,6 +347,8 @@ struct BufferDesc {
             .rotation = cq_rotation,
             .expanded = nullptr,
             .norm_f32 = nullptr,
+            .expanded_sme = sme_ready ? sme_cache->packed.data() : nullptr,
+            .norm_sme = sme_ready ? sme_cache->norms.data() : nullptr,
         };
     }
 

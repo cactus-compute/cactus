@@ -221,6 +221,14 @@ struct CactusQuantMatrix {
     const __fp16* rotation;
     const int8_t* expanded;
     const float* norm_f32;
+    // Optional SME2 cache: PACKED 4-bit codebook indices re-laid into 64-channel super-block panels
+    // ([SB64][num_groups][gs/4][128B]; nibble j of a kg-block = expanded byte j of the int8 panel
+    // [4 vectors][16 ch][4 K], vector v = channels 16v..16v+15, low nibble first) + matching norms
+    // ([SB64][num_groups][64] float, cb_scale folded; padded channels have norm 0). Expanded
+    // in-engine via LUTI4/ZT0 (table = cb_i8). Built once (model-load / preexpand); feeds the SME2
+    // GEMV. Null -> SME2 falls back to NEON.
+    const uint8_t* expanded_sme;
+    const float* norm_sme;
 };
 
 uint32_t cactus_quant_packed_group_bytes(uint32_t bits, uint32_t group_size);
@@ -281,6 +289,27 @@ void cactus_quant_orthogonal_matmul(
     uint32_t M,
     __fp16* C);
 
+// Build the SME2 packed cache for a CQ weight matrix (row-major or INTERLEAVED_4ROW source
+// layout). esme_out: SB64*num_groups*(group_size/4)*128 bytes (SB64 = ceil(N/64)); nsme_out:
+// SB64*num_groups*64 floats. See CactusQuantMatrix::expanded_sme.
+void cactus_quant_build_sme_cache(const CactusQuantMatrix* W, uint8_t* esme_out, float* nsme_out);
+
+// SME2 orthogonal-rotation CQ4 GEMV (lm_head). W2 = virtual-group view of the orthogonal matrix
+// (group_size=128, num_groups=K/128, norms replicated per group, expanded_sme/norm_sme set);
+// rot_t = K x K fp16 rotation TRANSPOSED (rot_t[i][k] = R[k][i]).
+void cactus_quant_orth_sme_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t,
+                                const __fp16* input_scale_recip, const __fp16* A, __fp16* C);
+
+// SME2 backend control (testing/benchmarking). backend: 0=auto, 1=force NEON, 2=force SME2.
+// Returns 1 if SME2 is available on this CPU, else 0. cactus_quant_matmul honors the override.
+int cactus_quant_set_backend(int backend);
+// 1 when the SME orthogonal lm_head path should be used (SME2 present, backend != force-NEON).
+int cactus_quant_sme_orth_enabled(void);
+// 1 when the SME prefill-attention path should be used (SME2 present, backend != force-NEON,
+// CACTUS_SME_ATTENTION env not set to 0).
+int cactus_quant_sme_attn_enabled(void);
+int cactus_quant_sme_available(void);
+
 void cactus_quant_4bit_gemv_interleaved(
     const CactusQuantMatrix* W,
     const uint8_t* packed_interleaved,
@@ -335,6 +364,21 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
     const __fp16* rotation,
     uint32_t flags,
     __fp16* out_row);
+
+// Batched + parallelized version of the above for num_rows unique rows (same fp32-accumulate
+// math; the per-row variant is a serial scalar K^2 matvec). out_rows: [num_rows][K].
+void cactus_quant_dequantize_orthogonal_embedding_rows(
+    uint32_t bits,
+    uint32_t K,
+    const uint32_t* rows,
+    uint32_t num_rows,
+    const uint8_t* packed_base,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const __fp16* rotation,
+    uint32_t flags,
+    __fp16* out_rows);
 
 void cactus_rms_norm_f16(
     const __fp16* input,

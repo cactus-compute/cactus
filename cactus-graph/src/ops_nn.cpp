@@ -53,11 +53,27 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         const __fp16* lhs = lhs_buffer.data_as<__fp16>();
         __fp16* output = node.output_buffer.data_as<__fp16>();
 
+        rhs_buffer.ensure_sme_cache();
         CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
-        if (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
-            cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
-        else
+        if (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) {
+            auto& sc = rhs_buffer.sme_cache;
+            if (M == 1 && sc && sc->ready && sc->virt_ng > 0
+                && cactus_quant_sme_orth_enabled()) {
+                CactusQuantMatrix W2 = mat;
+                W2.flags = 0;
+                W2.group_size = 128;
+                W2.num_groups = sc->virt_ng;
+                W2.norms = sc->norms_rep.data();
+                W2.expanded_sme = sc->packed.data();
+                W2.norm_sme = sc->norms.data();
+                cactus_quant_orth_sme_gemv(&W2, sc->rot_t.data(), mat.input_scale_recip,
+                                           lhs, output);
+            } else {
+                cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
+            }
+        } else {
             cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
+        }
     } else {
         if (lhs_buffer.precision != Precision::FP16) {
             throw std::runtime_error("FP16 matmul requires FP16 activations (got precision " + std::to_string(static_cast<int>(lhs_buffer.precision)) + ")");
@@ -115,10 +131,25 @@ namespace {
         }
 
         if (PrecisionTraits::is_cq(rhs_buffer.precision) && rhs_buffer.group_size > 0) {
+            rhs_buffer.ensure_sme_cache();
             CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
-            if (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
-                cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
-            else
+            if (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) {
+                auto& sc = rhs_buffer.sme_cache;
+                if (M == 1 && sc && sc->ready && sc->virt_ng > 0
+                    && cactus_quant_sme_orth_enabled()) {
+                    CactusQuantMatrix W2 = mat;
+                    W2.flags = 0;
+                    W2.group_size = 128;
+                    W2.num_groups = sc->virt_ng;
+                    W2.norms = sc->norms_rep.data();
+                    W2.expanded_sme = sc->packed.data();
+                    W2.norm_sme = sc->norms.data();
+                    cactus_quant_orth_sme_gemv(&W2, sc->rot_t.data(), mat.input_scale_recip,
+                                               lhs, output);
+                } else {
+                    cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
+                }
+            } else
                 cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
             return;
         }
@@ -342,8 +373,11 @@ void compute_dense_mlp_tq_fused_node(GraphNode& node, const std::vector<std::uni
     __fp16* prod = prod_buf.data();
     __fp16* output = node.output_buffer.data_as<__fp16>();
 
+    gate_buffer.ensure_sme_cache();
     CactusQuantMatrix gate_mat = gate_buffer.to_cq_matrix();
+    up_buffer.ensure_sme_cache();
     CactusQuantMatrix up_mat = up_buffer.to_cq_matrix();
+    down_buffer.ensure_sme_cache();
     CactusQuantMatrix down_mat = down_buffer.to_cq_matrix();
     const bool use_safe_product_scale = node.params.scalar != 0.0f && node.params.scalar != 1.0f;
     const bool trace_dense_mlp = std::getenv("CACTUS_TRACE_DENSE_MLP") != nullptr;
