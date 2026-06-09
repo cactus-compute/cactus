@@ -100,17 +100,25 @@ numbers above.*
 > auto-disabled). The kernel_utils.h segfault attributed to this patch was
 > root-caused to the engine/bundle format mismatch above, not the patch.
 >
-> **Pixel caveat (unit runs ~40% below its May recordings):** this unit
-> benches uniformly below its May-era recordings — 4-core gemma @512ctx/100dec
-> 6.9 vs 12.1, single-core 5.0 vs 8.66, prefill 47 vs 70 — across both engine
-> vintages (May 26 vs current main A/B'd equal), charge states (fixed a
-> "Charge connected device" source-role drain mid-session; charging recovered
-> only ~0.1–3 tps), and core configs, always with framework Thermal Status 0.
-> Engine, harness, scheduling policy, and charging are all eliminated by
-> experiment; mid cores (cpu4–6) sit at 357–787 MHz mid-inference while cpu7
-> runs 2.94 GHz. Remaining suspect is a platform-level cap (memory-bus DVFS /
-> power HAL) — MIF devfreq clocks are unreadable without root, so resolving it
-> needs a userdebug build. The Samsung, same harness and binaries, reproduces
-> and exceeds its May recordings. Before benching: verify `dumpsys battery`
-> shows `powered: true`.
+> **Pixel caveat (unit runs ~35–45% below older recordings):** this unit
+> benches uniformly below older Pixel 10a recordings (gemma @512: ~8.7
+> single-thread, ~12 multi-core load-aware). Eliminated by experiment, each
+> with measurements: engine vintage (May 26 vs current main A/B'd equal),
+> threadpool spin (made it worse), scheduling policy (present and active),
+> charging (fixed a "Charge connected device" source-role drain; ~5% recovery),
+> battery saver (off), thermal (Status 0, cooled), OS update (March build
+> throughout), CPU clocks (cpu7 verified 2.94 GHz under load), worker count and
+> core selection (sweep: 1 worker on cpu7 5.6 ≈ 1 worker on cpu4 5.7 ≈ 4
+> workers 6.9 — core-invariant ⇒ memory-bandwidth-bound ceiling), pool
+> overhead, reboot (no change), and screen-on boost (no change). Conclusion:
+> the unit's memory subsystem currently delivers ~2/3 of the older recordings'
+> bandwidth; confirming why needs a userdebug build (MIF devfreq is unreadable
+> unrooted). The older reference numbers are from a different recording
+> session/unit state, not reproducible here today. Samsung, same harness and
+> binaries, reproduces and exceeds its May recordings.
+>
+> Side-finding for cactus-v2: pool workers pin to `performance_cores[i % n]`
+> in CPU-index order (prime core last), so reduced worker counts select the
+> slowest perf cores — 2 workers on the two mid cores scored 2.3 tps decode
+> vs 6.9 with 4. Order performance cores by capacity descending.
 
