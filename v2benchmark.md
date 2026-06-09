@@ -44,10 +44,61 @@ Source: local `tests/bench/e2e_results.csv` (CQ4 run).
 
 ## Android
 
-Cactus-only run at 512-token decode budget. _Pending — to be filled by the
-on-device run (see `Android test` branch)._
+Cactus-only, CPU, 512-token decode budget (`tests/android-e2e`, branch
+`android-test`). Engine: **cactus-v2 @ `01e6a704`** (= current `main`; includes
+chunked prefill from #686), built from a clean worktree and linked statically
+into `e2e_bench`. Cloud handoff and telemetry disabled
+(`CACTUS_DISABLE_CLOUD_HANDOFF=1 CACTUS_NO_CLOUD_TELE=1`) — both make network
+calls mid-round and pollute timings. Means across 3 measured rounds (1 warmup).
+
+> **Engine format note:** these CQ4 transpiled bundles (header precision 6) are
+> only readable by the cactus-v2 engine. The old in-repo engine mis-reads them
+> as int8 and segfaults at load — that, not device throttling, caused all
+> earlier crashes/slow runs. The earlier "Pixel adb-shell frequency cap" note
+> was wrong: with a clean engine link the Pixel runs at full clocks under adb.
+
+### Canonical prompt (same as Mac run; ~30 tokens, padded to one 128-token prefill chunk)
+
+| Device | SoC | Model | Prefill TPS* | Decode TPS | TTFT (ms) |
+|--------|-----|-------|-------------:|-----------:|----------:|
+| Samsung SM-S942U1 | Snapdragon 8 Elite | qwen3-0.6b     | 50.3 | 37.0 |  597 |
+| Samsung SM-S942U1 | Snapdragon 8 Elite | gemma-4-e2b-it | 18.9 | 16.9 | 1498 |
+| Pixel 10a         | Tensor G4          | qwen3-0.6b     | 20.8 | 23.7 | 1447 |
+| Pixel 10a         | Tensor G4          | gemma-4-e2b-it |  7.2 |  6.7 | 3916 |
+
+*\*Prefill TPS on this prompt is padding-taxed: the transpiled
+`decoder_prefill_chunk` graph is fixed at 128 tokens, so a ~30-token prompt
+pays a full chunk's compute (≈4.3× understatement). Applies equally to the Mac
+numbers above.*
+
+### Long prompt (~548 tokens = 5 prefill chunks; true chunked-prefill throughput)
 
 | Device | Model | Prefill TPS | Decode TPS | TTFT (ms) |
 |--------|-------|------------:|-----------:|----------:|
-| _TBD_  | qwen3-0.6b  | — | — | — |
-| _TBD_  | gemma3-270m | — | — | — |
+| Samsung | qwen3-0.6b     | 127.6 | 29.7 |  4297 |
+| Samsung | gemma-4-e2b-it | 107.4 | 13.8 |  5092 |
+| Pixel   | qwen3-0.6b     |  52.2 | 18.3 | 10489 |
+| Pixel   | gemma-4-e2b-it |  43.3 |  6.1 | 12594 |
+
+> **Run-state sensitivity:** device state dominates phone numbers. The Samsung
+> rows were measured cool and on power (the representative state); back-to-back
+> hot runs read 20–30% lower (e.g. qwen3 decode 28.3 hot vs 37.0 cool). An
+> interleaved A/B confirmed the May 26 and current-main engines decode within
+> noise of each other at matched state (27.6 vs 27.5 tps, Samsung qwen3) — no
+> engine regression. Cool-state gemma decode (16.9) matches the best May-era
+> scheduler-study recordings (14.6–16.5 @ 100-token decode).
+>
+> **Pixel caveat (unit runs ~40% below its May recordings):** this unit
+> benches uniformly below its May-era recordings — 4-core gemma @512ctx/100dec
+> 6.9 vs 12.1, single-core 5.0 vs 8.66, prefill 47 vs 70 — across both engine
+> vintages (May 26 vs current main A/B'd equal), charge states (fixed a
+> "Charge connected device" source-role drain mid-session; charging recovered
+> only ~0.1–3 tps), and core configs, always with framework Thermal Status 0.
+> Engine, harness, scheduling policy, and charging are all eliminated by
+> experiment; mid cores (cpu4–6) sit at 357–787 MHz mid-inference while cpu7
+> runs 2.94 GHz. Remaining suspect is a platform-level cap (memory-bus DVFS /
+> power HAL) — MIF devfreq clocks are unreadable without root, so resolving it
+> needs a userdebug build. The Samsung, same harness and binaries, reproduces
+> and exceeds its May recordings. Before benching: verify `dumpsys battery`
+> shows `powered: true`.
+

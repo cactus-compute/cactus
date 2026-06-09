@@ -2,8 +2,12 @@ cmake_minimum_required(VERSION 3.16)
 project(CactusE2EAndroid LANGUAGES CXX)
 
 # Minimal cactus-only e2e decode-tps benchmark for Android (arm64-v8a).
-# Reuses the e2e bench sources from ../bench and links the prebuilt
-# Android libcactus.a produced by ../../android/build.sh.
+# Reuses the e2e bench sources from ../bench.
+#
+# The CQ4 transpiled bundles (precision code 6, group-128, packed 4-bit) are
+# only readable by the cactus-v2 engine; this repo's engine predates that
+# format and segfaults loading them. Link against the prebuilt cactus-v2
+# Android archives instead (same C FFI: cactus_init/cactus_complete/...).
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
@@ -16,55 +20,44 @@ set(REPO_ROOT   ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(BENCH_DIR   ${CMAKE_CURRENT_SOURCE_DIR}/../bench)
 set(CACTUS_ROOT ${REPO_ROOT}/cactus)
 
-set(CACTUS_LIB     ${REPO_ROOT}/android/libcactus.a)
-set(CURL_LIB       ${REPO_ROOT}/libs/curl/android/${ANDROID_ABI}/libcurl.a)
-set(MBEDTLS_ROOT   ${REPO_ROOT}/android/mbedtls/${ANDROID_ABI})
+set(CACTUS_V2_ROOT "$ENV{HOME}/Documents/Desert/cactus-v2" CACHE PATH "cactus-v2 repo root")
+set(V2_BUILD       ${CACTUS_V2_ROOT}/android/build)
+# Archive layout changed upstream: post-June builds nest module archives under
+# cactus-engine/, older builds put four flat archives in android/build.
+if(EXISTS ${V2_BUILD}/cactus-engine/libcactus_engine_core.a)
+    set(V2_LIBS
+        ${V2_BUILD}/libcactus_engine.a
+        ${V2_BUILD}/cactus-engine/libcactus_engine_core.a
+        ${V2_BUILD}/cactus-engine/cactus-graph/libcactus_graph.a
+        ${V2_BUILD}/cactus-engine/cactus-graph/cactus-kernels/libcactus_kernels.a)
+else()
+    set(V2_LIBS
+        ${V2_BUILD}/libcactus.a
+        ${V2_BUILD}/libcactus_engine.a
+        ${V2_BUILD}/libcactus_graph.a
+        ${V2_BUILD}/libcactus_kernels.a)
+endif()
+set(CURL_LIB       ${CACTUS_V2_ROOT}/cactus-engine/libs/curl/android/${ANDROID_ABI}/libcurl.a)
+set(MBEDTLS_ROOT   ${CACTUS_V2_ROOT}/android/mbedtls/${ANDROID_ABI})
 
-foreach(_lib "${CACTUS_LIB}" "${CURL_LIB}"
+foreach(_lib ${V2_LIBS} "${CURL_LIB}"
              "${MBEDTLS_ROOT}/lib/libmbedtls.a"
              "${MBEDTLS_ROOT}/lib/libmbedx509.a"
              "${MBEDTLS_ROOT}/lib/libmbedcrypto.a")
     if(NOT EXISTS "${_lib}")
-        message(FATAL_ERROR "Missing required library: ${_lib} (run ../../android/build.sh first)")
+        message(FATAL_ERROR "Missing required library: ${_lib} (build cactus-v2/android first)")
     endif()
 endforeach()
-
-# libcactus.a's kernel_matmul.o is compiled with -DCACTUS_COMPILE_I8MM/SME2 and
-# references the i8mm/sme2 kernels, but CMake does not archive OBJECT-library
-# sources into a STATIC lib, so those kernels are missing from libcactus.a.
-# Compile them directly into the executable (with their own -march flags) so the
-# fast prefill GEMM / decode GEMV paths resolve and actually run on-device.
-set(KERNEL_DIR ${CACTUS_ROOT}/kernel)
-
-add_library(bench_i8mm OBJECT ${KERNEL_DIR}/kernel_i8mm.cpp)
-target_include_directories(bench_i8mm PRIVATE ${CACTUS_ROOT} ${KERNEL_DIR})
-target_compile_options(bench_i8mm PRIVATE
-    -O3 -DNDEBUG -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread)
-target_compile_definitions(bench_i8mm PRIVATE
-    CACTUS_COMPILE_I8MM __ARM_FEATURE_MATMUL_INT8=1 PLATFORM_CPU_ONLY=1)
-set_target_properties(bench_i8mm PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-add_library(bench_sme2 OBJECT ${KERNEL_DIR}/kernel_sme2.cpp)
-target_include_directories(bench_sme2 PRIVATE ${CACTUS_ROOT} ${KERNEL_DIR})
-target_compile_options(bench_sme2 PRIVATE
-    -O3 -DNDEBUG -march=armv9.2-a+nosve+nosve2+sme2 -pthread)
-target_compile_definitions(bench_sme2 PRIVATE
-    CACTUS_COMPILE_SME2 PLATFORM_CPU_ONLY=1)
-set_target_properties(bench_sme2 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_executable(e2e_bench
     ${BENCH_DIR}/e2e_bench.cpp
     ${BENCH_DIR}/e2e_driver.cpp
     ${BENCH_DIR}/e2e_backend_cactus.cpp
-    $<TARGET_OBJECTS:bench_i8mm>
-    $<TARGET_OBJECTS:bench_sme2>
 )
 
 target_include_directories(e2e_bench PRIVATE
     ${BENCH_DIR}
     ${CACTUS_ROOT}
-    ${REPO_ROOT}/libs/curl/include
-    ${MBEDTLS_ROOT}/include
 )
 
 target_compile_options(e2e_bench PRIVATE
@@ -73,9 +66,11 @@ target_compile_options(e2e_bench PRIVATE
 
 find_library(LOG_LIB log)
 
-# Link order: exe objects -> cactus -> curl -> mbedtls.
+# start/end-group: the v2 module archives have circular references.
 target_link_libraries(e2e_bench PRIVATE
-    ${CACTUS_LIB}
+    -Wl,--start-group
+    ${V2_LIBS}
+    -Wl,--end-group
     ${CURL_LIB}
     ${MBEDTLS_ROOT}/lib/libmbedtls.a
     ${MBEDTLS_ROOT}/lib/libmbedx509.a

@@ -1,6 +1,7 @@
 #!/bin/bash
 # Build the cactus-only e2e decode-tps benchmark for Android (arm64-v8a).
-# Builds the Android libcactus.a first (unless --skip-cactus), then the bench.
+# Links the prebuilt cactus-v2 Android archives (see CMakeLists.txt) — the
+# only engine that reads the CQ4 transpiled bundles.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,8 +9,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 
 ANDROID_PLATFORM=${ANDROID_PLATFORM:-android-24}
-SKIP_CACTUS=0
-[[ "${1:-}" == "--skip-cactus" ]] && SKIP_CACTUS=1
 
 # Locate NDK (env var, Android SDK, or homebrew cask).
 if [ -z "${ANDROID_NDK_HOME:-}" ]; then
@@ -26,11 +25,6 @@ if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -f "$ANDROID_NDK_HOME/build/cmake/andro
     exit 1
 fi
 echo "Using NDK: $ANDROID_NDK_HOME"
-
-if [ "$SKIP_CACTUS" -eq 0 ]; then
-    echo "==> Building Android libcactus.a"
-    ANDROID_NDK_HOME="$ANDROID_NDK_HOME" bash "$REPO_ROOT/android/build.sh"
-fi
 
 echo "==> Configuring + building e2e_bench"
 cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" \

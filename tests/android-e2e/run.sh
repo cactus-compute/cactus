@@ -18,7 +18,7 @@ BIN="$SCRIPT_DIR/build/e2e_bench"
 
 # Model name -> local cactus bundle dir.
 MODELS=("qwen3-0.6b:$REPO_ROOT/weights/qwen3-0.6b"
-        "gemma3-270m:$REPO_ROOT/weights/gemma-3-270m-it")
+        "gemma-4-e2b-it:$REPO_ROOT/weights/gemma-4-e2b-it")
 
 ADB=(adb)
 [ -n "$SERIAL" ] && ADB=(adb -s "$SERIAL")
@@ -54,7 +54,9 @@ printf "%b" "$CFG" > "$TMP_CFG"
 rm -f "$TMP_CFG"
 
 echo "==> Running e2e_bench (max-tokens=$MAX_TOKENS, rounds=$ROUNDS)"
-"${ADB[@]}" shell "cd $DEVICE_DIR && ./e2e_bench \
+# Disable the Gemma4 cloud-handoff probe and cloud telemetry: both make
+# network calls mid-round and pollute prefill/decode timings.
+"${ADB[@]}" shell "cd $DEVICE_DIR && CACTUS_DISABLE_CLOUD_HANDOFF=1 CACTUS_NO_CLOUD_TELE=1 ./e2e_bench \
     --model-config $DEVICE_DIR/e2e_models_android.json \
     --backends cactus \
     --rounds $ROUNDS \
