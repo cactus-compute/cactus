@@ -27,6 +27,7 @@
 #include <chrono>
 #include <string>
 #include <cstdio>
+#include <cstdlib>
 
 constexpr size_t NEON_VECTOR_SIZE = 16;
 constexpr size_t STREAMING_STORE_THRESHOLD = 32768;
@@ -282,6 +283,20 @@ namespace CactusThreading {
     class ThreadPool {
     private:
         static constexpr size_t MAX_WORKERS = 16;
+#if defined(__ANDROID__)
+        // Spin iterations a free worker polls for the next task before blocking.
+        // Sized to bridge the inter-task gap within a token so workers stay
+        // resident and the EAS governor keeps the perf cores clocked up.
+        // Tunable via CACTUS_POOL_SPIN (0 disables spinning entirely).
+        static size_t spin_budget() {
+            static const size_t v = [] {
+                const char* e = std::getenv("CACTUS_POOL_SPIN");
+                return e ? static_cast<size_t>(std::strtoul(e, nullptr, 10))
+                         : static_cast<size_t>(1u << 14);
+            }();
+            return v;
+        }
+#endif
 
         std::vector<std::thread> workers;
         std::deque<std::function<void()>> tasks;
@@ -297,7 +312,33 @@ namespace CactusThreading {
         void worker_thread() {
             while (true) {
                 std::function<void()> task;
-                {
+                bool got = false;
+
+#if defined(__ANDROID__)
+                // A token fires hundreds of tiny back-to-back parallel sections.
+                // Blocking on the condvar between them deschedules the worker, so
+                // the util-driven (sched_pixel/EAS) governor downclocks the perf
+                // cores. Spin briefly first: during active inference the next task
+                // arrives within microseconds, so workers stay resident and the
+                // cores stay clocked. `yield` is only a hint, so the scheduler can
+                // still preempt us under real contention; when work truly stops we
+                // fall through to the blocking wait below (no busy-wait when idle).
+                for (size_t i = 0, budget = spin_budget(); i < budget; ++i) {
+                    std::unique_lock<std::mutex> lock(mutex, std::try_to_lock);
+                    if (lock.owns_lock()) {
+                        if (stop && tasks.empty()) return;
+                        if (!tasks.empty()) {
+                            task = std::move(tasks.front());
+                            tasks.pop_front();
+                            got = true;
+                            break;
+                        }
+                    }
+                    __asm__ __volatile__("yield");
+                }
+#endif
+
+                if (!got) {
                     std::unique_lock<std::mutex> lock(mutex);
                     work_available.wait(lock, [this] {
                         return stop || !tasks.empty();
