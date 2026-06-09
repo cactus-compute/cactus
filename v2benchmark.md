@@ -202,3 +202,29 @@ Mechanism ledger, all measured:
   16× dynamic chunking is the optimal response to parked mids, not the bug.
 - **Next real lever:** restructure the GEMV LUT expansion to cut tbl ops
   per byte (kernel project), or control the platform state (root/userdebug).
+
+### SOLVED: Pixel decode target achieved — orthogonal LM-head layout was the bottleneck
+
+Final Pixel numbers at the exact spec (512-token zero-padding prefill + 32
+decode, cool, charged), 7 runs across two sessions:
+
+| Model | Decode TPS | Prefill TPS |
+|-------|-----------:|------------:|
+| gemma-4-e2b-it | **10.91–11.19** (mean 11.05) | **74.6–77.1** |
+| qwen3-0.6b     | 21.7–22.3 | 60.7–71.0 |
+
+Root cause (simpleperf-attributed): gemma's tied 201 MB `token_embeddings`
+LM head carries `FLAG_ORTHOGONAL_ROTATION` and took the full-width orthogonal
+matmul path — **33% of all decode cycles for 17% of the weight bytes** (the
+interleaved sdot path it bypassed is ~2.4× more efficient per byte). Fix =
+the previously unmerged cactus-v2 branch `feature/cq4-interleaved-lmhead`
+(commit 44f532e2, May 25): INTERLEAVED_4ROW storage + dispatch for orthogonal
+output heads, plus its artifact patcher
+(`python -m cactus.convert.interleave_orthogonal_cq4`) applied to
+`token_embeddings.weights` (header flags 2 → 6). Stacked with the 4-block
+GEMV widening (+4%), decode went 7.25 → 11.05 (+52%). cactus-kernels
+test_matmul (5/5) and cactus-graph test_ops (24/24, incl. the branch's
+interleaved-orthogonal cases) pass. Assembled on cactus-v2 branch
+`g4-gemv-tuning` (f9b47cbe + cherry-pick 2fc9613d) — merging that branch and
+repacking shipped CQ4 artifacts with orthogonal output heads is the
+production rollout.
