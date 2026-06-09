@@ -134,4 +134,13 @@ numbers above.*
 > in CPU-index order (prime core last), so reduced worker counts select the
 > slowest perf cores — 2 workers on the two mid cores scored 2.3 tps decode
 > vs 6.9 with 4. Order performance cores by capacity descending.
+>
+> **Prime-core-only measurement (Pixel, taskset cpu7 + 1 worker):** qwen3
+> decode 32.4 canonical / 27.3 @512-seq — **+37–49% over the 4-core default**
+> (23.7 / 18.3); prefill no worse (55.4 vs 52.2 @512-seq). gemma: 5.8 / 5.5 —
+> −10–13% vs 4-core (6.7 / 6.1). Small-model decode fires hundreds of tiny
+> barrier-terminated parallel sections per second; parked mid cores act as
+> stragglers, so one fast core wins outright. Suggests size-gated worker
+> participation in cactus-v2: small parallel sections → prime worker only,
+> large GEMM chunks → all cores.
 
