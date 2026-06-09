@@ -88,17 +88,30 @@ numbers above.*
 > engine regression. Cool-state gemma decode (16.9) matches the best May-era
 > scheduler-study recordings (14.6–16.5 @ 100-token decode).
 >
-> **Threadpool spin fix — measured with/without, and rejected:** the adaptive
-> spin-then-block worker patch (commit 88679112, ported to the cactus-v2 pool)
-> was A/B'd on the Pixel, gemma @545ctx/100dec, interleaved spin→no-spin→spin:
-> **with fix 5.4 / 4.8 decode tps; without 6.6** — spinning costs ~20% on this
-> power-constrained SoC (forcing 4 cores busy splits the power budget and slows
-> the prime core). The earlier "3.8→14 tps" validation was an artifact of an
-> ODR-corrupted binary (old-repo kernel objects overriding v2 pool symbols with
-> a different class layout). The fix is therefore NOT applied; these tables are
-> the no-spin configuration. Samsung was never eligible (8 perf cores → spin
-> auto-disabled). The kernel_utils.h segfault attributed to this patch was
-> root-caused to the engine/bundle format mismatch above, not the patch.
+> **Threadpool spin fix — measured with/without on both devices, and
+> rejected.** The adaptive spin-then-block worker patch (commit 88679112,
+> ported to the cactus-v2 pool; spin active only when ≤4 perf-core workers)
+> was measured at the canonical spec, both models, both devices
+> (decode tps, 512×3):
+>
+> | Device / model | With fix | Without fix | Δ |
+> |---|---:|---:|---|
+> | Pixel qwen3-0.6b | 11.4 | 23.7 | −52% |
+> | Pixel gemma-4-e2b | 5.1 | 6.7 | −24% |
+> | Samsung qwen3-0.6b | 35.7 | 37.0 | −3% (spin gated off) |
+> | Samsung gemma-4-e2b | 16.7 | 16.9 | −1% (spin gated off) |
+>
+> Plus an interleaved A/B (Pixel gemma @545ctx/100dec): 5.4/4.8 with vs 6.6
+> without. Spinning splits the power budget on the power-constrained 1+3-core
+> Tensor and slows the prime core; the smaller model is hit hardest (more
+> parallel sections/s → more spin windows). The Samsung rows demonstrate the
+> adaptive gate: at 8 perf-core workers spin disables itself and nothing
+> regresses. The earlier "3.8→14 tps" validation was an artifact of an
+> ODR-corrupted binary (old-repo kernel objects overriding v2 pool symbols
+> with a different class layout). Final configuration: NO spin — the main
+> tables above are the no-spin numbers. The kernel_utils.h segfault attributed
+> to this patch was root-caused to the engine/bundle format mismatch above,
+> not the patch.
 >
 > **Pixel caveat (unit runs ~35–45% below older recordings):** this unit
 > benches uniformly below older Pixel 10a recordings (gemma @512: ~8.7
