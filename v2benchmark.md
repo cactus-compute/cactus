@@ -176,3 +176,29 @@ Findings, each measured:
 - `cactus_complete` path costs ~4% decode vs the raw-token fixture; its
   prefill readings additionally suffer the padding tax (50.7 apparent vs 74.5
   fixture at the same true workload).
+
+### Pixel decode-ceiling investigation (512-prefill + 32-decode spec)
+
+Stable at spec (cool, charged, standard state): **decode 7.2–7.4, prefill
+73–78**. Best observed: **decode 8.84/8.83 with prefill 82–90** in a
+platform boost state that appeared in two consecutive runs but resisted
+three replication attempts (30s mid-core warm, single 3-min warmer run,
+10-min load soak — the soak instead degraded runs to 6.6 via thermals).
+Mechanism ledger, all measured:
+
+- **Single-core kernel ceiling:** the interleaved CQ4 GEMV runs ~8.8 GB/s
+  effective on cpu7 (vs 26–29 GB/s streaming memcpy on the same core) —
+  X4 SIMD issue rate on the vqtbl+vdot LUT-expansion mix is the wall.
+  Same kernel on Samsung's Oryon: 2.4× — matches the device decode ratio.
+  Single-core ≥9 tps is arithmetically impossible on this silicon today;
+  the old 8.7 single recording implies the favorable platform state.
+- **Kernel patch (+4%, committed to cactus-v2 `g4-gemv-tuning` f9b47cbe):**
+  4-block stream widening + boundary prefetch, 7.01→7.25 multi / 5.76→6.06
+  single, test_matmul passes.
+- **Scheduling levers all measured dead:** spin (every budget 512–16384,
+  monotonic harm), static chunk splits (mult 1/2/4 all worse than 16),
+  worker no-pin (EAS sends workers to LITTLE cores, 2.8 tps), self-uclamp
+  (EPERM), min_freq writes (denied). Pool duty ~1.3/5 threads running —
+  16× dynamic chunking is the optimal response to parked mids, not the bug.
+- **Next real lever:** restructure the GEMV LUT expansion to cut tbl ops
+  per byte (kernel project), or control the platform state (root/userdebug).
