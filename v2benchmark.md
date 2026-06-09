@@ -88,6 +88,18 @@ numbers above.*
 > engine regression. Cool-state gemma decode (16.9) matches the best May-era
 > scheduler-study recordings (14.6–16.5 @ 100-token decode).
 >
+> **Threadpool spin fix — measured with/without, and rejected:** the adaptive
+> spin-then-block worker patch (commit 88679112, ported to the cactus-v2 pool)
+> was A/B'd on the Pixel, gemma @545ctx/100dec, interleaved spin→no-spin→spin:
+> **with fix 5.4 / 4.8 decode tps; without 6.6** — spinning costs ~20% on this
+> power-constrained SoC (forcing 4 cores busy splits the power budget and slows
+> the prime core). The earlier "3.8→14 tps" validation was an artifact of an
+> ODR-corrupted binary (old-repo kernel objects overriding v2 pool symbols with
+> a different class layout). The fix is therefore NOT applied; these tables are
+> the no-spin configuration. Samsung was never eligible (8 perf cores → spin
+> auto-disabled). The kernel_utils.h segfault attributed to this patch was
+> root-caused to the engine/bundle format mismatch above, not the patch.
+>
 > **Pixel caveat (unit runs ~40% below its May recordings):** this unit
 > benches uniformly below its May-era recordings — 4-core gemma @512ctx/100dec
 > 6.9 vs 12.1, single-core 5.0 vs 8.66, prefill 47 vs 70 — across both engine
