@@ -144,3 +144,35 @@ numbers above.*
 > participation in cactus-v2: small parallel sections → prime worker only,
 > large GEMM chunks → all cores.
 
+
+## Pixel exact-spec fixture results (512-token prefill + 32 decode)
+
+`cactus_benchmark_tokens` fixture (raw token IDs, zero padding,
+`cactus-v2/tests/android/cactus_llm_bench.cpp`), gemma-4-e2b-it, Pixel 10a at
+optimal device state (100% battery, AC, cool). Engine: cactus-v2 main.
+
+| Config | Prefill TPS | Decode TPS |
+|--------|------------:|-----------:|
+| default (4 workers, chunk×16)    | **74.5–78.2** | **7.1–7.5** |
+| native 1 thread (inline on cpu7) | 68–71 | 5.9 |
+| May 26 engine, default           | 72.8–74.7 | 7.1–8.0 |
+| chunk×4 / ×2 / ×1                | 56 / 44 / 24 | 6.5 / 5.6 / 3.2 |
+
+Findings, each measured:
+- **Prefill parity achieved**: 74.5+ vs the ~70 May multi-core recording;
+  single-thread prefill (69) is ~2× the old single-thread recording (35).
+- **Decode ceiling ~7.5** on this unit in every configuration; the old 8.7
+  (1-thread) / 12.1 (multi) recordings are unreachable today. Both engine
+  vintages identical → not software.
+- Compute-bound prefill at/above parity while bandwidth-bound decode is
+  uniformly ~35% below the old recordings → cores healthy, effective DRAM
+  throughput is the limiter. Streaming-read microbench: Pixel cpu7 23–29 GB/s
+  vs Samsung prime 69–73 GB/s — the 2.4× ratio matches the cross-device gemma
+  decode ratio (16.9 vs 6.7), confirming decode is single-core-bandwidth-bound.
+- Pool duty sampling: ~1.3 of 5 threads running on average — the 16× dynamic
+  chunking concentrates work on the hot prime; reducing the multiplier is
+  monotonically worse (slow mids become section stragglers), so the current
+  distribution is optimal given parked mids.
+- `cactus_complete` path costs ~4% decode vs the raw-token fixture; its
+  prefill readings additionally suffer the padding tax (50.7 apparent vs 74.5
+  fixture at the same true workload).
