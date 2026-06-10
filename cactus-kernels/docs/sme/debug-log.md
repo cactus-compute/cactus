@@ -471,3 +471,30 @@ Format per entry: `## YYYY-MM-DD [milestone] title` → Hypothesis / Experiment 
   the [sme2] correctness tests keep covering the leaf (test_orth_sme pins 4 explicitly).
 - GOTCHA CORRECTED: "NEON-il collapses on K-heavy GEMV" -> file-layout artifact; superseded by
   the esme-NEON numbers above.
+
+## 2026-06-10 [MOBILE THREAD BUDGET RESTORED — budget beats saturation; SME GEMV par-in-budget]
+- USER CONTEXT: the legacy kernels' low thread counts were DELIBERATE mobile/battery policy, not
+  a bug. Restored the original budgets in the fused drivers: GEMV nt = ceil(N/256) (kv 2,
+  o_proj/down 6, gate_up/lm_head pool-capped — the exact legacy formula), GEMM nt = M-tiles,
+  embedding lookups ~3 threads at decode. SME workers live INSIDE the budget (replace NEON
+  workers, never add threads). Latency fixes that add no threads stay (fused dispatch, parallel
+  phase A on the same woken set, spin-join).
+- **Budget BEATS saturation E2E:** decode 52.6-52.7 tok/s + TTFT ~1990ms at ORIGINAL thread
+  counts vs ~50-51 / 2100-2200 for the all-cores configs — and the evening's bimodal run
+  collapses vanished (over-saturation was causing them). Battery policy costs nothing on M4;
+  it pays.
+- **k-sweep at budgeted threads (kernel, best-of alternating):** k=2 SME workers win K-heavy
+  (o_proj 216->260 GF +20%, down 324->399 +23%) and gate_up (+11%); par on ffn/q_proj; lose on
+  tiny shapes (kv nt=2: per-call SME overhead) and DRAM-bound lm_head. Auto policy shipped:
+  k = 2 when nt >= 4 && N < 65536, else 0; lm_head/orth driver 0; CACTUS_SME_GEMV_WORKERS or
+  setter overrides; backend 2 clamps >= 1 for leaf test coverage.
+- **E2E at matched budget: budget-SME-auto vs budget-NEON = decode +0.2%, TTFT +0.2% (par).**
+  The per-shape kernel wins wash out E2E on M4 Pro. Honest decode position: the FORMAT + driver
+  are the decode win (+29.7% vs legacy at the same thread counts); the SME GEMV leaf is
+  kernel-positive on K-heavy but E2E-neutral here. SME's meaningful decode levers: M>1 decode
+  via MTP drafting (fused GEMM 2.4-3.6x applies directly), long-context decode attention
+  (~3ms/step at 1k ctx and growing), and re-tuning k on phone SoCs where per-core NEON is
+  weaker relative to the SME unit.
+- **Final shipped numbers vs legacy production (same thread budget): decode 40.6 -> 52.7
+  (+29.7%), TTFT 2875 -> 1993 (-30.7%), prefill 371 -> 536 (+44%), physical footprint -1.2 GB.**
+  61/61 tests; temp-0 coherent.

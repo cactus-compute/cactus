@@ -1586,16 +1586,16 @@ int cactus_quant_set_sme_gemv_workers(int n) {
     g_sme_gemv_workers.store(n, std::memory_order_relaxed);
     return cpu_has_sme2() ? 1 : 0;
 }
-static inline size_t cactus_quant_sme_gemv_workers(void) {
+// Returns the explicit SME GEMV worker override (setter wins over env), or -1 for the
+// measured per-shape auto policy (see cactus_quant_sme_gemv_fused).
+static inline int cactus_quant_sme_gemv_workers(void) {
     const int o = g_sme_gemv_workers.load(std::memory_order_relaxed);
-    if (o >= 0) return static_cast<size_t>(o);
-    static const size_t env_default = [] {
+    if (o >= 0) return o;
+    static const int env_override = [] {
         const char* e = getenv("CACTUS_SME_GEMV_WORKERS");
-        // Default 0: with the single cache format, pure NEON wins every M=1 shape under
-        // sustained E2E load (see the dispatch comment in cactus_quant_sme_gemv_fused).
-        return e ? static_cast<size_t>(atoi(e)) : static_cast<size_t>(0);
+        return e ? atoi(e) : -1;
     }();
-    return env_default;
+    return env_override;
 }
 int cactus_quant_sme_enabled(void) {
     return (cpu_has_sme2() &&
@@ -1872,7 +1872,12 @@ static void cactus_quant_sme_gemv_fused(const CactusQuantMatrix* W, const __fp16
         const uint32_t N = W->N;
         const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
         auto& pool = CactusThreading::get_thread_pool();
-        const size_t nt = std::min(pool.num_workers(), SB64);
+        // Thread BUDGET matches the original mobile-conscious policy (ceil(N/256) = one thread
+        // per 64 four-channel blocks): battery > saturation. SME workers live INSIDE this
+        // budget, replacing NEON workers — never adding threads. kv_proj: 2, o_proj/down: 6,
+        // gate_up/lm_head: pool-capped, exactly as the legacy kernels chose.
+        const size_t nt_budget = std::max<size_t>(1, (SB64 + 3) / 4);
+        const size_t nt = std::min(pool.num_workers(), std::min(nt_budget, SB64));
 
         static thread_local std::vector<int8_t> tl_h_act_i8;
         static thread_local std::vector<float> tl_h_act_scales;
@@ -1926,20 +1931,22 @@ static void cactus_quant_sme_gemv_fused(const CactusQuantMatrix* W, const __fp16
             return;
         }
 
-        const size_t k_sme_env = cactus_quant_sme_gemv_workers();
-        // NEON co-workers consume the SAME cache as the SME leaf (single runtime weight format —
-        // no second weight stream through the mmap'd file). AUTO default is 0 SME workers:
-        // measured E2E against the same-format NEON baseline, the queue-limited SME GEMV leaf
-        // nets NEGATIVE under sustained decode (pure esme-NEON 51.4 tok/s vs hybrid 44.8 on
-        // Gemma 4 E2B) even though bursty kernel benches show per-shape wins (down 1.3x). The
-        // old "NEON collapses on K-heavy" rule was a FILE-layout artifact — esme-NEON has no
-        // such collapse (o_proj 57 -> 210 GF). SME stays where it wins: the fused M>1 GEMM and
-        // prefill attention. CACTUS_SME_GEMV_WORKERS / the setter re-enables SME GEMV workers
-        // for experiments and other silicon; backend 2 forces >= 1 so tests cover the leaf.
+        const int k_sme_ov = cactus_quant_sme_gemv_workers();
+        // SME workers WITHIN the mobile thread budget (they replace NEON workers, never add
+        // threads — and one SME worker drives the shared matrix unit at ~9.6 NEON cores' GEMV
+        // throughput, the perf/watt case for SME on mobile). Measured at budgeted threads:
+        // k=2 wins K-heavy (o_proj +20%, down +23%) and gate_up (+11%), is par on ffn/q_proj,
+        // and LOSES on tiny shapes (kv_proj, nt=2: SME per-call overhead doesn't amortize) and
+        // the DRAM-bound lm_head — hence the nt/size gates. CACTUS_SME_GEMV_WORKERS or the
+        // setter overrides; backend 2 forces >= 1 so tests cover the streaming leaf.
         const int backend_now = g_cactus_quant_backend.load(std::memory_order_relaxed);
-        const size_t k_sme = (backend_now == 2)
-            ? std::max<size_t>(1, std::min(k_sme_env, nt - 1))
-            : std::min(k_sme_env, nt - 1);
+        size_t k_sme;
+        if (backend_now == 2)
+            k_sme = std::max<size_t>(1, std::min<size_t>(k_sme_ov > 0 ? k_sme_ov : 2, nt - 1));
+        else if (k_sme_ov >= 0)
+            k_sme = std::min<size_t>(k_sme_ov, nt - 1);
+        else
+            k_sme = (nt >= 4 && W->N < 65536) ? std::min<size_t>(2, nt - 1) : 0;
 
         std::atomic<uint32_t> ga{0};            // phase A group grab
         std::atomic<uint32_t> a_done{0};        // phase A completion (release/acquire barrier)
@@ -2073,8 +2080,9 @@ void cactus_quant_orth_sme_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t
         return;
     }
 
-    const size_t k_sme_env = cactus_quant_sme_gemv_workers();
-    const size_t k_sme = std::min(k_sme_env, nt - 1);
+    const int k_sme_ov = cactus_quant_sme_gemv_workers();
+    // lm_head auto policy: 0 SME workers (DRAM-bound; measured par-at-best for the SME leaf).
+    const size_t k_sme = (k_sme_ov >= 0) ? std::min<size_t>(k_sme_ov, nt - 1) : 0;
 
     std::atomic<uint32_t> ga{0};
     std::atomic<uint32_t> a_done{0};
@@ -2362,7 +2370,9 @@ void cactus_quant_matmul(
         const float* nsme = W->norm_sme;
 
         auto& pool = CactusThreading::get_thread_pool();
-        const size_t nt = std::max<size_t>(1, std::min(pool.num_workers(), total_pairs));
+        // Same thread budget as the original M>1 NEON GEMM (one thread per 16-row M-tile).
+        const size_t nt = std::max<size_t>(1,
+            std::min(pool.num_workers(), std::min(M_tiles, total_pairs)));
         const uint32_t total_a = static_cast<uint32_t>(M_tiles * num_groups);
 
         auto phase_a_item = [&](uint32_t item) {
@@ -2760,8 +2770,10 @@ void cactus_quant_dequantize_orthogonal_embedding_rows(
 
     constexpr uint32_t JBLK = 64;
     const uint32_t jblocks = (K + JBLK - 1) / JBLK;
+    // Conservative parallelism (mobile thread budget): ~8 j-blocks per thread caps decode-time
+    // single-row lookups at ~3 threads while large prefill batches still spread out.
     CactusThreading::parallel_for(static_cast<size_t>(num_rows) * jblocks,
-        CactusThreading::ParallelConfig{8, 4},
+        CactusThreading::ParallelConfig{16, 8},
         [&](size_t start, size_t end) {
             for (size_t item = start; item < end; ++item) {
                 const uint32_t u = static_cast<uint32_t>(item / jblocks);

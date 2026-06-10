@@ -622,20 +622,21 @@ static void print_il_comparison() {
         // pure NEON over the SAME cache format (backend 0, 0 SME workers) vs the production
         // hybrid (backend 0, default workers). Hybrid speedup is reported against the
         // same-format NEON baseline — the honest comparison now that NEON also runs on esme.
-        double ms_f = 1e30, ms_n = 1e30, ms_h = 1e30;
+        double ms_f = 1e30, ms_n = 1e30, ms_h = 1e30, ms_h2 = 1e30;
         for (int round = 0; round < 5; round++) {
             ms_f = std::min(ms_f, run_ms(1, -1));
             ms_n = std::min(ms_n, run_ms(0, 0));
-            ms_h = std::min(ms_h, run_ms(0, 4));   // hybrid: explicit 4 SME workers
+            ms_h = std::min(ms_h, run_ms(0, 1));   // 1 SME worker within the thread budget
+            ms_h2 = std::min(ms_h2, run_ms(0, 2)); // 2 SME workers within the thread budget
         }
         const double fl = 2.0 * sh.K * sh.N;
-        double gf = fl / (ms_f * 1e6), gn = fl / (ms_n * 1e6), gh = fl / (ms_h * 1e6);
+        double gf = fl / (ms_f * 1e6), gn = fl / (ms_n * 1e6);
+        double gh = fl / (ms_h * 1e6), gh2 = fl / (ms_h2 * 1e6);
         std::cout << "  " << std::left << std::setw(31) << sh.name
-                  << " file-NEON " << std::fixed << std::setprecision(1) << gf << " GF"
-                  << " | esme-NEON " << gn << " GF"
-                  << " | HYBRID " << gh << " GF"
-                  << " | " << std::setprecision(2) << (gh / gn) << "x vs same-format NEON  (best of 5x"
-                  << sh.iters << ")\n";
+                  << " file-NEON " << std::fixed << std::setprecision(1) << gf
+                  << " | k0 " << gn << " | k1 " << gh << " | k2 " << gh2 << " GF"
+                  << " | k1/k0 " << std::setprecision(2) << (gh / gn)
+                  << "x  (budgeted threads, best of 5x" << sh.iters << ")\n";
     }
 }
 

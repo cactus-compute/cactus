@@ -51,6 +51,14 @@ re-derived.
 | M7/ATTN | SME prefill attention (cached-int8 segment: flat-scale QK seg + u8 USMOPA AV per-block) | **done ✅✅** | **4.6× global / 2.7× sliding** @ gemma shape (3.76→0.81ms / 2.23→0.83ms) | attention_hybrid.cpp `cactus_attention_sme_prefill`; gate hd%64==0, qg=32, pos≥cache; differential+oracle test in test_attention.cpp; see debug-log 2026-06-09 attn entries |
 | SVE2 | Android/Linux fallback (svmmla/svusmmla) | designed (research/sve2-android-fallback.md) | — | not built — needs Android/QEMU to validate; out of CQ4-on-M4 scope |
 
+**MOBILE THREAD BUDGET (2026-06-10 final): budget beats saturation.** Original thread policy
+restored (GEMV ceil(N/256), GEMM M-tiles); SME workers live inside the budget (k=2 on nt≥4
+non-giant shapes — kernel-wins K-heavy +20-23%, E2E par on M4). **Shipped vs legacy production
+at the same thread counts: decode 40.6→52.7 tok/s (+29.7%), TTFT 2875→1993ms (−30.7%), prefill
++44%, footprint −1.2GB** — and the budgeted configs are more stable than saturation (bimodal
+collapses gone). SME's durable wins: the format, fused M>1 GEMM, prefill attention; decode SME
+levers ahead: MTP (M>1 decode), long-ctx attention, phone-SoC retune via CACTUS_SME_GEMV_WORKERS.
+
 **SAME-FORMAT BASELINE + DEFAULT RETUNE (2026-06-10): best E2E of the campaign.** esme-NEON
 beats the file kernels everywhere (K-heavy "collapse" was a file-layout artifact: o_proj 57→210
 GF), and beats the SME GEMV hybrid E2E under sustained decode — auto now runs 0 SME GEMV workers
