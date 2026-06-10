@@ -104,7 +104,7 @@ bool test_record_and_flush_race_no_deadlock() {
     cactus::telemetry::init("telemetry-test-project", "race-test", nullptr);
 
     constexpr int producer_tasks = 8;
-    constexpr int records_per_task = 200;
+    constexpr int records_per_task = 120;  // keep total (960) under the 1000-event offline-cache cap so the no-loss check stays exact
     constexpr int flusher_tasks = 4;
     constexpr int flushes_per_task = 40;
     constexpr int expected_event_count = producer_tasks * records_per_task;
