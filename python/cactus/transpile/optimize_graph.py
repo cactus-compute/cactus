@@ -54,7 +54,9 @@ class FusionConfig:
     enable_attention_block: bool = True
     enable_conv_module: bool = True
     enable_add_clipped: bool = True
-    enable_dense_mlp_tq_fused: bool = True
+    # Opt-in: measured -15% decode on Tensor G4 vs the unfused graph (+2% on M4); the
+    # node was unreachable for convert-produced bundles before the panel suffix existed.
+    enable_dense_mlp_tq_fused: bool = False
 
 
 def optimize_graph(graph: IRGraph, *, max_passes: int = 8, config: FusionConfig | None = None,

@@ -3064,6 +3064,7 @@ def main() -> int:
     parser.add_argument("--no-fuse-attention", action="store_true")
     parser.add_argument("--no-fuse-attention-block", action="store_true")
     parser.add_argument("--no-fuse-add-clipped", action="store_true")
+    parser.add_argument("--fuse-dense-mlp-tq", action="store_true")
     parser.add_argument(
         "--skip-execute",
         action="store_true",
@@ -3301,6 +3302,7 @@ def main() -> int:
                 enable_attention=not args.no_fuse_attention,
                 enable_attention_block=not args.no_fuse_attention_block,
                 enable_add_clipped=not args.no_fuse_add_clipped,
+                enable_dense_mlp_tq_fused=args.fuse_dense_mlp_tq,
             ),
             weights_dir=weights_dir,
             artifact_dir=artifact_dir,
@@ -3345,6 +3347,7 @@ def main() -> int:
         enable_attention=not args.no_fuse_attention,
         enable_attention_block=not args.no_fuse_attention_block,
         enable_add_clipped=not args.no_fuse_add_clipped,
+        enable_dense_mlp_tq_fused=args.fuse_dense_mlp_tq,
     )
 
     print("canonicalize_begin=true", flush=True)
