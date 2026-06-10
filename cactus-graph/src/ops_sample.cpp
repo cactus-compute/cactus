@@ -25,6 +25,9 @@ void compute_sample_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 
     size_t seq_len = logits_buffer.shape[0];
     size_t vocab_size = logits_buffer.shape[1];
+    if (seq_len == 0) {
+        throw std::runtime_error("Sample requires seq_len >= 1");
+    }
     size_t last_token_offset = (seq_len - 1) * vocab_size;
 
     if (logits_buffer.precision == Precision::FP16) {
@@ -49,6 +52,9 @@ void compute_topk_node(GraphNode& node, const std::vector<std::unique_ptr<GraphN
     size_t k = node.params.top_k;
     size_t batch_size = input_buffer.shape[0];
     size_t feature_size = input_buffer.shape[1];
+    if (k > feature_size) {
+        throw std::runtime_error("TopK k exceeds feature dimension");
+    }
     size_t block_size = batch_size * k;
 
     std::vector<float> input_float(input_buffer.total_size);
