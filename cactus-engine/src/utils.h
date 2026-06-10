@@ -532,6 +532,7 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
     size_t top_k);
 
 #include "gemma_tools.h"
+#include "chat_tools.h"
 
 namespace cactus {
 namespace ffi {
@@ -1502,6 +1503,8 @@ inline void parse_function_calls_from_response(const std::string& response_text,
     function_calls.clear();
 
     gemma::parse_function_calls(regular_response, function_calls);
+    chat_tools::extract_qwen_tool_calls(regular_response, function_calls);
+    chat_tools::extract_lfm2_tool_calls(regular_response, function_calls);
 
     const char* FUNCTION_CALL_MARKER = "\"function_call\"";
     size_t search_pos = 0;

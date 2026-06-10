@@ -329,6 +329,8 @@ public:
     virtual uint32_t get_eos_token() const = 0;
     virtual std::unordered_set<uint32_t> special_token_ids() const { return {}; }
     virtual bool has_chat_template() const { return has_chat_template_; }
+    bool is_qwen_family() const { return model_type_ == ModelType::QWEN; }
+    bool is_lfm2_family() const { return model_type_ == ModelType::LFM2; }
     std::string get_default_stop_sequence() const;
 
     virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
