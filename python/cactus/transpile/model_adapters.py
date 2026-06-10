@@ -29,6 +29,10 @@ except Exception:
         _GEMMA4_CREATE_BIDIRECTIONAL_MASK = None
 
 
+class UnsupportedComponentsError(RuntimeError):
+    pass
+
+
 @dataclass
 class CanonicalizedModel:
     module: torch.nn.Module
@@ -4698,7 +4702,7 @@ def _build_qwen_causal_lm_component_specs(
     chunk_components = {"lm_encoder_step", "lm_encoder_text_chunk", "decoder_media_step", "decoder_prefill_chunk", "decoder_embed_chunk"}
     wants_chunked = bool(chunk_components & requested_set)
     if wants_chunked and family != "qwen3":
-        raise RuntimeError(
+        raise UnsupportedComponentsError(
             f"text chunked-prefill components are only supported for the qwen3 family, got {family}"
         )
 

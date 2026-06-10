@@ -47,6 +47,7 @@ from cactus.transpile.lower import _lower_input_value
 from cactus.transpile.lower import _lower_ir_node
 from cactus.transpile.lower import _lookup_weight_binding
 from cactus.transpile.media_limits import resize_static_image
+from cactus.transpile.model_adapters import UnsupportedComponentsError
 from cactus.transpile.model_adapters import build_component_module_specs
 from cactus.transpile.model_adapters import canonicalize_model_interface
 from cactus.transpile.model_profiles import multimodal_context_tokens_for_model_type
@@ -3324,15 +3325,35 @@ def main() -> int:
             for component in str(args.components).split(",")
             if component.strip()
         )
-    component_specs = build_component_module_specs(
-        model,
+    plan_derived_components = False
+    if requested_components is None and task == "causal_lm_logits":
+        inferred_plan = infer_component_plan_from_config(
+            _load_config_json(args.model_id), model_id=args.model_id
+        )
+        if (
+            inferred_plan is not None
+            and inferred_plan.task == task
+            and inferred_plan.force_component_pipeline
+            and inferred_plan.components
+        ):
+            requested_components = tuple(inferred_plan.components)
+            plan_derived_components = True
+    spec_kwargs = dict(
         task=task,
         named_tensors=_named_tensor_store(prepared),
         weights_dir=weights_dir,
         inputs_metadata=prepared.metadata,
-        components=requested_components,
         cache_context_length=args.cache_context_length,
     )
+    try:
+        component_specs = build_component_module_specs(
+            model, components=requested_components, **spec_kwargs
+        )
+    except UnsupportedComponentsError as exc:
+        if not plan_derived_components:
+            raise
+        print(f"warning: dropping inferred component plan ({exc}); using builder defaults", file=sys.stderr)
+        component_specs = build_component_module_specs(model, components=None, **spec_kwargs)
     use_component_pipeline = False
     if args.component_pipeline == "on":
         if component_specs is None:
