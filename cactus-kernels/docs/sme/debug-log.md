@@ -415,3 +415,35 @@ Format per entry: `## YYYY-MM-DD [milestone] title` → Hypothesis / Experiment 
   isolated via CACTUS_PROFILE_FILE: SME-IL min 0.98ms vs NEON-IL incumbent min 1.20ms (-19%),
   means within thermal noise (machine saturated); DRAM floor ~0.77ms (192MB nibbles/call) — the
   lm_head is bandwidth-capped, SME min sits ~25% above floor.
+
+## 2026-06-10 [SINGLE RUNTIME WEIGHT FORMAT — esme serves NEON too; -1.2GB physical footprint]
+- PROBLEM (user): demand paging keeps the packed .weights file bytes resident (NEON co-workers +
+  small-shape GEMVs streamed them every token) ON TOP of the materialized esme cache -> ~2x
+  weight RAM.
+- **Fix 1 — NEON-over-esme kernel** (cactus_quant_esme_gemv_blocks): esme nibbles expand (lo
+  nibble first) to the classic SDOT panel order [4 vec][16 ch][4 K]; and/shr/2xtbl/2xzip/2xdot
+  per 16 B (9 ops vs the file kernel's 7 — the zips are structural: LUTI4's identity nibble
+  mapping pins the order, and planar nibble packing would move the zips into the SME queue).
+  16 independent accumulators recover the ILP. NOTE: a vqtbl2q "mask-free" variant is INVALID
+  (tbl2 indexes only 0..31; raw bytes reach 255) — caught by the test suite.
+- **Fix 2 — single dispatch**: use_sme_gemv_svdot is now cache-present => fused driver always;
+  k_sme sized in-driver (>=3M elements -> min(env,nt-1), below -> 0 = pure esme-NEON). Hybrid +
+  orth co-workers consume esme. M>1 fused GEMM already esme-only. Kernel A/B: parity-or-better
+  everywhere incl. pure-NEON small shape (kv_proj 1536x512: esme-NEON 71.6 GF vs file 55.6 =
+  1.29x); hybrid ratios unchanged within thermal noise (o_proj 3.17x, down 2.93x, gate_up 1.51x).
+- **Fix 3 — page release**: BufferDesc::mmap_backed (set by io.cpp loaders) +
+  cactus_quant_release_packed_pages (madvise DONTNEED, page-aligned interior of the packed
+  region) after cache build. backend=1 skips builds entirely (cactus_quant_sme_enabled) — the
+  A/B baseline stays pure file-kernel and refaults work.
+- **Fix 4 — GOTCHA: per-component cache duplication.** Every graph component (prefill chunk,
+  decode step, ...) maps the same weight FILE separately -> distinct BufferDescs AND distinct
+  mmap addresses; per-desc caches built the entire esme cache PER COMPONENT (measured 2x, 554
+  builds for 277 weights) and the 2nd build re-faulted just-released pages. Fix: process-wide
+  weak_ptr registry keyed by BufferDesc::weight_key = FNV-1a of the resolved weight path (data
+  pointers do NOT identify a weight across components). 554 -> 277 builds/releases.
+- **Measured (gemma-4-e2b-it, backend 0): physical footprint at the same late-decode moment
+  4.9 GB -> 3.7 GB (-1.2 GB ~= released packed pages ~0.65 GB + deduped cache copy ~0.55 GB);
+  max RSS 5992 -> 5018 MB.** Perf parity: alternating old-vs-new binary decode 48.9 vs 49.2
+  tok/s (excl. one bimodal outlier), TTFT slightly better; 61/61 tests; temp-0 coherent.
+- CACTUS_RAM_DEBUG=1 logs each release. Build-transient peak remains (w_il int8 temp in the
+  builder, lm_head ~400 MB) — streaming the cache build is the noted follow-up.

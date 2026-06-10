@@ -10,6 +10,12 @@
 #include <cmath>
 #include <stdexcept>
 #include <vector>
+#include <cerrno>
+#include <cstdio>
+#if !defined(_WIN32)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -818,18 +824,6 @@ static void cactus_quant_sdot_packed_blocks(
         }
 }
 
-// Runtime-bits front-end for callers outside the templated GEMV (the hybrid NEON workers).
-static void cactus_quant_sdot_packed_blocks_rt(
-    const CactusQuantMatrix* W, const int8_t* act_i8, const float* act_scales,
-    const int8x16_t cb_lut, const float cb_scale,
-    size_t block_start, size_t block_end, __fp16* y) {
-    switch (W->bits) {
-        case 1: cactus_quant_sdot_packed_blocks<1>(W, act_i8, act_scales, cb_lut, cb_scale, block_start, block_end, y); break;
-        case 2: cactus_quant_sdot_packed_blocks<2>(W, act_i8, act_scales, cb_lut, cb_scale, block_start, block_end, y); break;
-        case 3: cactus_quant_sdot_packed_blocks<3>(W, act_i8, act_scales, cb_lut, cb_scale, block_start, block_end, y); break;
-        default: cactus_quant_sdot_packed_blocks<4>(W, act_i8, act_scales, cb_lut, cb_scale, block_start, block_end, y); break;
-    }
-}
 
 template<uint32_t Bits>
 __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
@@ -1585,6 +1579,36 @@ int cactus_quant_sme_orth_enabled(void) {
     return (cpu_has_sme2() &&
             g_cactus_quant_backend.load(std::memory_order_relaxed) != 1) ? 1 : 0;
 }
+int cactus_quant_sme_enabled(void) {
+    return (cpu_has_sme2() &&
+            g_cactus_quant_backend.load(std::memory_order_relaxed) != 1) ? 1 : 0;
+}
+// Release the mmap'd packed-weight pages once the SME cache is the runtime format (clean
+// file-backed pages: refault from disk if a file-layout path runs again, e.g. forced-NEON A/B).
+// Only the packed region is dropped — norms/codebook/rotation that follow it stay resident.
+void cactus_quant_release_packed_pages(const CactusQuantMatrix* W) {
+#if !defined(_WIN32)
+    if (!W || !W->packed_indices) return;
+    const uint32_t pgb = cactus_quant_packed_group_bytes(W->bits, W->group_size);
+    const size_t bytes = (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW)
+        ? ((static_cast<size_t>(W->N) + 3) / 4) * W->num_groups * static_cast<size_t>(4) * pgb
+        : static_cast<size_t>(W->N) * W->num_groups * static_cast<size_t>(pgb);
+    const size_t page = static_cast<size_t>(getpagesize());
+    const uintptr_t p0 = reinterpret_cast<uintptr_t>(W->packed_indices);
+    const uintptr_t lo = (p0 + page - 1) & ~(page - 1);
+    const uintptr_t hi = (p0 + bytes) & ~(page - 1);
+    static const bool dbg = [] { const char* e = getenv("CACTUS_RAM_DEBUG"); return e && atoi(e); }();
+    if (hi > lo) {
+        const int rc = madvise(reinterpret_cast<void*>(lo), hi - lo, MADV_DONTNEED);
+        if (dbg) fprintf(stderr, "[ram] release N=%u K=%u bytes=%zu rc=%d errno=%d\n",
+                         W->N, W->K, bytes, rc, rc ? errno : 0);
+    } else if (dbg) {
+        fprintf(stderr, "[ram] release skipped (sub-page) N=%u K=%u\n", W->N, W->K);
+    }
+#else
+    (void)W;
+#endif
+}
 int cactus_quant_sme_attn_enabled(void) {
     static const int env_on = [] {
         const char* e = getenv("CACTUS_SME_ATTENTION");   // 0 disables the SME prefill attention path
@@ -1643,13 +1667,12 @@ static inline bool cactus_quant_use_sme_gemv_svdot(const CactusQuantMatrix* W, b
     const int backend = g_cactus_quant_backend.load(std::memory_order_relaxed);
     if (backend == 1) return false;                 // force NEON
     if (backend == 2) return true;                  // force SME (tests/benchmarks exercise the leaf)
-    // Auto policy from interleaved-fixture measurements vs the production NEON kernel (re-measured
-    // after the spin-join dispatch fix): hybrid wins 2.8-3.2x on K-heavy GEMVs (down/o_proj —
-    // NEON-il collapses to 60-170 GF there), 1.4-1.6x on N-heavy >= 3M elements (q_proj 1.41x,
-    // ffn 1.51x, gate_up 1.62x), ~1.1x lm_head (DRAM-capped). Below 3M elements NEON keeps winning
-    // (L2-resident, dispatch-dominated).
-    const size_t kn = static_cast<size_t>(W->K) * W->N;
-    return kn >= (3u << 20);
+    // With the cache present the fused driver is always the dispatch: it sizes its SME worker
+    // share by shape (down to 0 = pure NEON co-workers over the cache, which matches the file
+    // kernels' throughput), so no file-layout kernel runs in auto mode and the mmap'd packed
+    // pages can stay released. Measured policy inside the driver: SME workers pay only above
+    // ~3M weight elements (down/o_proj 2.8-3.2x, q_proj/ffn/gate_up 1.4-1.6x, lm_head ~1.1x).
+    return true;
 }
 
 // Auto-dispatch policy for the SME2 GEMM. With the packed cache (expanded_sme) the fused LUTI4
@@ -1764,6 +1787,62 @@ static void cactus_quant_interleaved4_gemv_blocks(
     const int8x16_t cb_lut, const float cb_scale,
     size_t block_start, size_t block_end, __fp16* y);
 
+// NEON co-worker over the SME cache layout — the SINGLE materialized runtime weight format.
+// esme nibbles (low nibble first) expand to the classic SDOT panel order [4 vec][16 ch][4 K]:
+// every 16 expanded bytes are 4 channels x 4 K, so vzip(lo,hi) + vqtbl1q over the int8 codebook
+// + vdotq_laneq reproduce the production NEON GEMV math straight from the cache. With NEON and
+// SME sharing this one format, the mmap'd packed file pages are released after the cache build
+// (no second implicitly-resident weight copy via demand paging).
+static void cactus_quant_esme_gemv_blocks(
+    const CactusQuantMatrix* W, const int8_t* act_i8, const float* act_scales,
+    const int8x16_t cb_lut, size_t sb_start, size_t sb_end, __fp16* C) {
+    const uint32_t gs = W->group_size;
+    const uint32_t ng = W->num_groups;
+    const uint32_t N = W->N;
+    const uint32_t nkg = gs / 4;
+    const size_t g_stride = static_cast<size_t>(nkg) * 128;
+    const size_t sb_stride = static_cast<size_t>(ng) * g_stride;
+    const uint8x16_t lo_mask = vdupq_n_u8(0x0F);
+
+    for (size_t sb = sb_start; sb < sb_end; ++sb) {
+        alignas(16) float facc[64] = {};
+        const uint8_t* sbp = W->expanded_sme + sb * sb_stride;
+        const float* nsb = W->norm_sme + sb * static_cast<size_t>(ng) * 64;
+        for (uint32_t g = 0; g < ng; ++g) {
+            const uint8_t* gp = sbp + static_cast<size_t>(g) * g_stride;
+            const int8_t* ag = act_i8 + static_cast<size_t>(g) * gs;
+            int32x4_t acc[16];
+            for (int v = 0; v < 16; ++v) acc[v] = vdupq_n_s32(0);
+            for (uint32_t kq = 0; kq < nkg; kq += 4) {       // gs % 16 == 0 (cache gate: gs % 32 == 0)
+                const int8x16_t av = vld1q_s8(ag + static_cast<size_t>(kq) * 4);
+                #define CACTUS_ESME_KG(J) do { \
+                    const uint8_t* p_ = gp + (static_cast<size_t>(kq) + (J)) * 128; \
+                    for (int c2 = 0; c2 < 8; ++c2) { \
+                        const uint8x16_t raw_ = vld1q_u8(p_ + c2 * 16); \
+                        const int8x16_t lov_ = vqtbl1q_s8(cb_lut, vandq_u8(raw_, lo_mask)); \
+                        const int8x16_t hiv_ = vqtbl1q_s8(cb_lut, vshrq_n_u8(raw_, 4)); \
+                        acc[c2 * 2 + 0] = vdotq_laneq_s32(acc[c2 * 2 + 0], \
+                            vzip1q_s8(lov_, hiv_), av, (J)); \
+                        acc[c2 * 2 + 1] = vdotq_laneq_s32(acc[c2 * 2 + 1], \
+                            vzip2q_s8(lov_, hiv_), av, (J)); \
+                    } } while (0)
+                CACTUS_ESME_KG(0); CACTUS_ESME_KG(1); CACTUS_ESME_KG(2); CACTUS_ESME_KG(3);
+                #undef CACTUS_ESME_KG
+            }
+            const float32x4_t as = vdupq_n_f32(act_scales[g]);
+            const float* nf = nsb + static_cast<size_t>(g) * 64;
+            for (int v = 0; v < 16; ++v) {
+                float32x4_t f = vld1q_f32(facc + v * 4);
+                f = vfmaq_f32(f, vmulq_f32(vcvtq_f32_s32(acc[v]), as), vld1q_f32(nf + v * 4));
+                vst1q_f32(facc + v * 4, f);
+            }
+        }
+        const size_t n0 = sb * 64;
+        const uint32_t valid = static_cast<uint32_t>(std::min<size_t>(64, N - n0));
+        for (uint32_t c = 0; c < valid; ++c) C[n0 + c] = static_cast<__fp16>(facc[c]);
+    }
+}
+
 // Fused hybrid GEMV (M=1) over the packed cache: one pool dispatch = (A) group-parallel Hadamard
 // + int8 act quantize, barrier, (B) dynamic super-block stealing with SME workers on the LUTI4
 // partials leaf and NEON workers on expand-from-packed SDOT. For INTERLEAVED_4ROW weights the NEON
@@ -1786,6 +1865,7 @@ static void cactus_quant_sme_gemv_fused(const CactusQuantMatrix* W, const __fp16
 
         int8_t cb_i8[16] = {};
         const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, codebook_size);
+        (void)cb_scale;                          // folded into norm_sme at cache build
         const int8x16_t cb_lut = vld1q_s8(cb_i8);
         alignas(16) uint8_t zt[64] = {};
         for (int i = 0; i < 16; ++i) zt[4 * i] = static_cast<uint8_t>(cb_i8[i]);
@@ -1832,14 +1912,15 @@ static void cactus_quant_sme_gemv_fused(const CactusQuantMatrix* W, const __fp16
             const char* e = getenv("CACTUS_SME_GEMV_WORKERS");
             return e ? static_cast<size_t>(atoi(e)) : static_cast<size_t>(4);
         }();
-        // NEON co-workers consume the NATIVE packed layout (second independent weight stream):
-        // row-major weights use the row-major from-packed SDOT; INTERLEAVED_4ROW CQ4 uses the
-        // production interleaved block processor. Other interleaved bit-widths: all-SME.
-        const bool interleaved = (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0;
-        const bool il_neon_ok = interleaved && W->bits == 4 && (W->N % 4) == 0;
-        const size_t k_sme = (interleaved && !il_neon_ok) ? nt : std::min(k_sme_env, nt - 1);
-        const size_t n16_blocks = (static_cast<size_t>(N) + 15) / 16;
-        const size_t n4_blocks = static_cast<size_t>(N) / 4;
+        // NEON co-workers consume the SAME cache as the SME leaf (single runtime weight format —
+        // no second weight stream through the mmap'd file). SME workers only pay above ~3M weight
+        // elements (kernel A/Bs: below that the call is fixed-cost dominated and NEON wins), so
+        // smaller cached shapes run every worker as a NEON co-worker (k_sme = 0). backend 2
+        // bypasses the size policy so tests/benchmarks exercise the leaf on any shape.
+        const size_t kn = static_cast<size_t>(W->K) * W->N;
+        const int backend_now = g_cactus_quant_backend.load(std::memory_order_relaxed);
+        const size_t k_sme = (backend_now == 2 || kn >= (3u << 20))
+            ? std::min(k_sme_env, nt - 1) : 0;
 
         std::atomic<uint32_t> ga{0};            // phase A group grab
         std::atomic<uint32_t> a_done{0};        // phase A completion (release/acquire barrier)
@@ -1868,16 +1949,9 @@ static void cactus_quant_sme_gemv_fused(const CactusQuantMatrix* W, const __fp16
                     for (uint32_t s = 0; s < cnt; ++s)
                         rescale_sb(tl_partials.data() + static_cast<size_t>(s) * num_groups * 64,
                                    static_cast<size_t>(sb) + s);
-                } else if (il_neon_ok) {
-                    cactus_quant_interleaved4_gemv_blocks(
-                        W, W->packed_indices, W->norms, act_i8, act_scales, cb_lut, cb_scale,
-                        static_cast<size_t>(sb) * 16,
-                        std::min<size_t>(static_cast<size_t>(sb + cnt) * 16, n4_blocks), C);
                 } else {
-                    cactus_quant_sdot_packed_blocks_rt(
-                        W, act_i8, act_scales, cb_lut, cb_scale,
-                        static_cast<size_t>(sb) * 4,
-                        std::min<size_t>(static_cast<size_t>(sb + cnt) * 4, n16_blocks), C);
+                    cactus_quant_esme_gemv_blocks(W, act_i8, act_scales, cb_lut,
+                                                  sb, static_cast<size_t>(sb) + cnt, C);
                 }
             }
         };
@@ -1927,6 +2001,7 @@ void cactus_quant_orth_sme_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t
 
     int8_t cb_i8[16] = {};
     const float cb_scale = tq_quantize_codebook_i8(W2->codebook, cb_i8, 1u << W2->bits);
+    (void)cb_scale;                              // folded into norm_sme at cache build
     const int8x16_t cb_lut = vld1q_s8(cb_i8);
     alignas(16) uint8_t zt[64] = {};
     for (int i = 0; i < 16; ++i) zt[4 * i] = static_cast<uint8_t>(cb_i8[i]);
@@ -1984,7 +2059,6 @@ void cactus_quant_orth_sme_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t
         return e ? static_cast<size_t>(atoi(e)) : static_cast<size_t>(4);
     }();
     const size_t k_sme = std::min(k_sme_env, nt - 1);
-    const size_t n4_blocks = static_cast<size_t>(N) / 4;
 
     std::atomic<uint32_t> ga{0};
     std::atomic<uint32_t> a_done{0};
@@ -2013,13 +2087,9 @@ void cactus_quant_orth_sme_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t
                     rescale_sb(tl_partials.data() + static_cast<size_t>(s2) * num_groups * 64,
                                static_cast<size_t>(sb) + s2);
             } else {
-                // NEON co-worker on the native INTERLEAVED_4ROW panels — the virtual 128-wide
-                // group view is byte-exact on this layout (panels are k-chunk-ordered), so the
-                // production interleaved block processor consumes W2 directly.
-                cactus_quant_interleaved4_gemv_blocks(
-                    W2, W2->packed_indices, W2->norms, act_i8, act_scales, cb_lut, cb_scale,
-                    static_cast<size_t>(sb) * 16,
-                    std::min<size_t>(static_cast<size_t>(sb + cnt) * 16, n4_blocks), C);
+                // NEON co-worker over the SAME cache as the SME leaf (single runtime format).
+                cactus_quant_esme_gemv_blocks(W2, act_i8, act_scales, cb_lut,
+                                              sb, static_cast<size_t>(sb) + cnt, C);
             }
         }
     };

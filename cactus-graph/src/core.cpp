@@ -97,6 +97,8 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
       cq_permutation(other.cq_permutation),
       cq_rotation(other.cq_rotation),
       cq_flags(other.cq_flags),
+      mmap_backed(other.mmap_backed),
+      weight_key(other.weight_key),
       sme_cache(std::move(other.sme_cache)) {
     other.total_size = 0;
     other.byte_size = 0;
@@ -144,6 +146,8 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
         cq_permutation = other.cq_permutation;
         cq_rotation = other.cq_rotation;
         cq_flags = other.cq_flags;
+        mmap_backed = other.mmap_backed;
+        weight_key = other.weight_key;
         sme_cache = std::move(other.sme_cache);
 
         other.total_size = 0;

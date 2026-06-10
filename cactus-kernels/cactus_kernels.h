@@ -308,6 +308,13 @@ int cactus_quant_sme_orth_enabled(void);
 // 1 when the SME prefill-attention path should be used (SME2 present, backend != force-NEON,
 // CACTUS_SME_ATTENTION env not set to 0).
 int cactus_quant_sme_attn_enabled(void);
+// 1 when SME runtime paths (and the SME weight cache build) should be used at all
+// (SME2 present, backend != force-NEON).
+int cactus_quant_sme_enabled(void);
+// Release the mmap'd packed-weight pages of W (madvise DONTNEED on the page-aligned interior
+// of the packed region only). Call ONLY for file-backed weights, after the SME cache is built —
+// the cache is then the single runtime weight format for both SME and NEON workers.
+void cactus_quant_release_packed_pages(const CactusQuantMatrix* W);
 int cactus_quant_sme_available(void);
 
 void cactus_quant_4bit_gemv_interleaved(

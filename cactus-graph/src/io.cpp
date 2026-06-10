@@ -420,6 +420,14 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
         if (mapped_file->is_interleaved_4row()) {
             buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
         }
+        buffer.mmap_backed = true;
+        // Stable identity across graph components mapping the same weight file: lets the SME
+        // cache registry share ONE cache per weight (FNV-1a of the resolved path).
+        {
+            uint64_t h = 1469598103934665603ull;
+            for (char c : resolved_filename) { h ^= static_cast<unsigned char>(c); h *= 1099511628211ull; }
+            buffer.weight_key = h;
+        }
     } else if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
         buffer.group_size = mapped_file->group_size();
         buffer.num_groups = mapped_file->num_groups();
@@ -484,6 +492,14 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
         }
         if (mapped_file->is_interleaved_4row()) {
             buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+        }
+        buffer.mmap_backed = true;
+        // Stable identity across graph components mapping the same weight file: lets the SME
+        // cache registry share ONE cache per weight (FNV-1a of the resolved path).
+        {
+            uint64_t h = 1469598103934665603ull;
+            for (char c : resolved_filename) { h ^= static_cast<unsigned char>(c); h *= 1099511628211ull; }
+            buffer.weight_key = h;
         }
     }
 
@@ -567,6 +583,14 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
         }
         if (mapped_file->is_interleaved_4row()) {
             buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+        }
+        buffer.mmap_backed = true;
+        // Stable identity across graph components mapping the same weight file: lets the SME
+        // cache registry share ONE cache per weight (FNV-1a of the resolved path).
+        {
+            uint64_t h = 1469598103934665603ull;
+            for (char c : resolved_filename) { h ^= static_cast<unsigned char>(c); h *= 1099511628211ull; }
+            buffer.weight_key = h;
         }
     } else if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
         buffer.group_size = mapped_file->group_size();

@@ -597,6 +597,7 @@ static void print_il_comparison() {
         {"il-cq4 1x1536x2048 (q_proj)", 1536, 2048, 30},
         {"il-cq4 1x6144x1536 (down)", 6144, 1536, 30},
         {"il-cq4 1x1536x262144 (lm_head)", 1536, 262144, 6},
+        {"il-cq4 1x1536x512 (kv_proj)", 1536, 512, 60},
     };
     for (auto& sh : shapes) {
         SyntheticCQ cq(4, sh.K, sh.N, 128);
@@ -613,15 +614,17 @@ static void print_il_comparison() {
             cactus_quant_set_backend(0);
             return ms;
         };
+        // backend 0 = production auto over the single cache format (hybrid >= 3M weight
+        // elements, pure esme-NEON co-workers below); backend 1 = legacy file-layout kernel.
         double ms_n = 1e30, ms_s = 1e30;
         for (int round = 0; round < 5; round++) {
             ms_n = std::min(ms_n, run_ms(1));
-            ms_s = std::min(ms_s, run_ms(2));
+            ms_s = std::min(ms_s, run_ms(0));
         }
         double gn = (2.0 * sh.K * sh.N) / (ms_n * 1e6), gs2 = (2.0 * sh.K * sh.N) / (ms_s * 1e6);
         std::cout << "  " << std::left << std::setw(31) << sh.name
                   << " NEON-il " << std::fixed << std::setprecision(1) << gn << " GF"
-                  << " | SME2 " << gs2 << " GF"
+                  << " | AUTO(esme) " << gs2 << " GF"
                   << " | " << std::setprecision(2) << (gs2 / gn) << "x  (best of 5x" << sh.iters << ")\n";
     }
 }

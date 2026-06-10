@@ -63,7 +63,7 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
                 W2.flags = CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
                 W2.group_size = 128;
                 W2.num_groups = sc->virt_ng;
-                W2.norms = sc->norms_rep.data();
+                W2.norms = mat.norms;   // co-workers read norm_sme; norms_rep is freed post-build
                 W2.expanded_sme = sc->packed.data();
                 W2.norm_sme = sc->norms.data();
                 cactus_quant_orth_sme_gemv(&W2, sc->rot_t.data(), mat.input_scale_recip,
@@ -141,7 +141,7 @@ namespace {
                     W2.flags = CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
                     W2.group_size = 128;
                     W2.num_groups = sc->virt_ng;
-                    W2.norms = sc->norms_rep.data();
+                    W2.norms = mat.norms;   // co-workers read norm_sme; norms_rep is freed post-build
                     W2.expanded_sme = sc->packed.data();
                     W2.norm_sme = sc->norms.data();
                     cactus_quant_orth_sme_gemv(&W2, sc->rot_t.data(), mat.input_scale_recip,

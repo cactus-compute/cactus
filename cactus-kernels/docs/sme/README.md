@@ -51,6 +51,13 @@ re-derived.
 | M7/ATTN | SME prefill attention (cached-int8 segment: flat-scale QK seg + u8 USMOPA AV per-block) | **done ✅✅** | **4.6× global / 2.7× sliding** @ gemma shape (3.76→0.81ms / 2.23→0.83ms) | attention_hybrid.cpp `cactus_attention_sme_prefill`; gate hd%64==0, qg=32, pos≥cache; differential+oracle test in test_attention.cpp; see debug-log 2026-06-09 attn entries |
 | SVE2 | Android/Linux fallback (svmmla/svusmmla) | designed (research/sve2-android-fallback.md) | — | not built — needs Android/QEMU to validate; out of CQ4-on-M4 scope |
 
+**SINGLE RUNTIME WEIGHT FORMAT (2026-06-10): physical footprint 4.9 -> 3.7 GB (−1.2 GB).**
+NEON co-workers + small-shape GEMVs now consume the esme cache directly
+(cactus_quant_esme_gemv_blocks; parity-or-better vs the file kernels), the packed file pages are
+madvise-released after the one-time build, backend=1 skips builds, and the cache is deduped
+across graph components via a weak_ptr registry keyed by weight-file identity (was built 2x —
+once per component). See debug-log 2026-06-10 + the two new gotchas.
+
 **IL4ROW ORTH lm_head (2026-06-09 late):** the production lm_head format is ORTH+INTERLEAVED_4ROW
 (row-major orth was a transpiler bug, retired). The virtual 128-group regrouping is byte-exact on
 IL too (k-chunk-ordered panels) — ensure_sme_cache now requires IL, the orth driver uses

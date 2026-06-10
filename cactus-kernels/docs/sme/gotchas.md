@@ -154,3 +154,23 @@ GEMV-sized calls (~30-90us) this is 20-30% of the call. Fix pattern (gemv_fused/
 enqueue nt-1 workers, MAIN runs worker 0 inline (also the earliest SME issuer — zero wake
 latency), spin-join an own atomic done counter. Kernel-level: o_proj 149->194 GF, gate_up
 588->707 GF, q_proj 145->192 GF — same integer compute, 21/21 green.
+
+## Graph components duplicate weight buffers — per-BufferDesc caches multiply RAM
+Each transpiled graph component (decoder_prefill_chunk, decoder_step, ...) maps the same weight
+FILE independently: same weight => MULTIPLE BufferDescs with DIFFERENT mmap addresses. Anything
+cached per BufferDesc (the SME weight cache, before 2026-06-10) is built and stored once PER
+COMPONENT (measured 2x RAM + double build time + refaulting freshly-madvised pages). Pointers do
+not identify weights — key shared per-weight state by BufferDesc::weight_key (FNV-1a of the
+resolved weight path, set by the io.cpp loaders) via the weak_ptr registry in ensure_sme_cache.
+
+## Single runtime weight format: NEON-over-esme costs 2 zips per 16 B — and that's the floor
+The esme nibble order is pinned by LUTI4's identity nibble->byte mapping, so NEON consumption
+needs vzip1/vzip2 to restore byte order (9 ops/16 B vs 7 for the file layout). Do NOT try:
+(a) vqtbl2q on raw bytes to skip the vand — tbl2 indexes only 0..31, raw bytes reach 255
+    (returns 0 for most lanes; caught by tests);
+(b) planar nibble packing to give NEON zip-free order — it moves the zips INTO the SME queue
+    (svzip per 128 B), the scarce resource.
+16 independent SDOT accumulators + the fused-driver wins (spin-join, one dispatch) keep
+esme-NEON at parity-or-better vs the file kernels (kv_proj 1.29x, hybrid ratios unchanged), so
+the packed file pages can be released after the cache build (-1.2 GB physical footprint on
+Gemma 4 E2B).

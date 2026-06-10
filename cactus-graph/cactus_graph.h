@@ -280,13 +280,19 @@ struct BufferDesc {
     const uint32_t* cq_permutation = nullptr;
     const __fp16* cq_rotation = nullptr;
     uint32_t cq_flags = 0;
+    // True when external data points into a read-only file mapping (weights loaded via
+    // MappedFile) — required before releasing packed pages after the SME cache build.
+    bool mmap_backed = false;
+    // Stable per-weight-file identity (hash of resolved path; 0 = none). Graph components map
+    // the same weight file independently, so data pointers do NOT identify a weight.
+    uint64_t weight_key = 0;
 
     // Lazily build the SME2 packed cache for this weight buffer (no-op on non-SME hardware or
     // unsupported group sizes; orthogonal weights get a virtual-group view + transposed rotation
     // for the SME lm_head path). Thread-safe; heavy work runs once.
     void ensure_sme_cache() const {
         if (sme_cache && sme_cache->ready) return;
-        if (!cpu_has_sme2()) return;
+        if (!cactus_quant_sme_enabled()) return;   // also skips builds under forced-NEON A/B
         if (group_size <= 0 || (group_size % 32) != 0) return;
         const uint32_t bits = PrecisionTraits::cq_bits(precision);
         if (bits < 1 || bits > 4) return;
@@ -300,10 +306,22 @@ struct BufferDesc {
                 (W.K % 128) != 0 || (W.N % 4) != 0 ||
                 (cq_flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) == 0) return;
         }
-        {
-            static std::mutex create_mu;
-            std::lock_guard<std::mutex> lk(create_mu);
-            if (!sme_cache) sme_cache = std::make_shared<CactusSmeCache>();
+        if (!sme_cache) {
+            // Process-wide registry keyed by the mmap'd weight bytes: every graph component
+            // holds its own BufferDesc for the same weight file, and per-desc caches would
+            // duplicate the entire SME cache once per component (measured 2x on Gemma) and
+            // re-fault the released file pages. weak_ptr keeps lifetime with the buffers.
+            static std::mutex reg_mu;
+            static std::unordered_map<const void*, std::weak_ptr<CactusSmeCache>> registry;
+            const void* key = weight_key
+                ? reinterpret_cast<const void*>(weight_key) : get_data();
+            std::lock_guard<std::mutex> lk(reg_mu);
+            auto& slot = registry[key];
+            sme_cache = slot.lock();
+            if (!sme_cache) {
+                sme_cache = std::make_shared<CactusSmeCache>();
+                slot = sme_cache;
+            }
         }
         std::call_once(sme_cache->once, [&] {
             CactusQuantMatrix W = to_cq_matrix();
@@ -332,6 +350,19 @@ struct BufferDesc {
             sme_cache->packed.resize(SB64 * W.num_groups * static_cast<size_t>(W.group_size / 4) * 128);
             sme_cache->norms.resize(SB64 * W.num_groups * 64);
             cactus_quant_build_sme_cache(&W, sme_cache->packed.data(), sme_cache->norms.data());
+            if (orth) {
+                // Builder input only — runtime kernels read norm_sme (norms.data()) instead.
+                sme_cache->norms_rep.clear();
+                sme_cache->norms_rep.shrink_to_fit();
+            }
+            if (mmap_backed) {
+                // Single-format RAM policy: the cache is now the runtime weight layout for BOTH
+                // the SME leaves and the NEON co-workers, so drop the demand-paged packed file
+                // bytes (clean pages; they refault from disk only on file-layout paths such as
+                // forced-NEON A/B or embedding row gathers).
+                CactusQuantMatrix W0 = to_cq_matrix();
+                cactus_quant_release_packed_pages(&W0);
+            }
             sme_cache->ready = true;
         });
     }
