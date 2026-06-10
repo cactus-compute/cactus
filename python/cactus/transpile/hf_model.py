@@ -302,6 +302,7 @@ def _write_component_bundle(
     optimized_component_graphs: dict[str, IRGraph],
     transpiled_component_graphs: dict[str, TranspiledGraph] | None = None,
     component_io_signatures: dict[str, dict[str, tuple[str, ...]]] | None = None,
+    component_metadata: dict[str, dict[str, object]] | None = None,
     graph_filename: str = "graph.cactus",
     npu_encoder_mlpackages: dict[str, str] | None = None,
 ) -> Path:
@@ -309,6 +310,7 @@ def _write_component_bundle(
     component_order = [
         component
         for component in (
+            "source_encoder",
             "audio_encoder",
             "vision_encoder",
             "text_embedding",
@@ -316,6 +318,7 @@ def _write_component_bundle(
             "lm_encoder_text_chunk",
             "decoder_prefill_chunk",
             "decoder",
+            "decoder_cross_kv",
             "lm_encoder_step",
             "lm_encoder_media_step",
             "decoder_media_step",
@@ -389,6 +392,7 @@ def _write_component_bundle(
                 "outputs": list(graph_for_signature.outputs),
                 "logical_inputs": list((component_io_signatures or {}).get(component, {}).get("input_keys", ())),
                 "logical_outputs": list((component_io_signatures or {}).get(component, {}).get("output_keys", ())),
+                "metadata": _serialize_json_compatible((component_metadata or {}).get(component, {})),
                 "node_count": len(graph_for_signature.order),
                 "weight_binding_count": _count_weight_bindings(graph_for_signature),
                 "runtime_input_node_ids": [] if transpiled_graph is None else [int(tensor.id) for tensor in transpiled_graph.runtime_inputs],
@@ -591,6 +595,10 @@ def _run_component_pipeline_transpile(
         }
         for name, captured in captured_components.items()
     }
+    component_metadata = {
+        name: dict(captured.metadata)
+        for name, captured in captured_components.items()
+    }
 
     raw_ir_nodes = sum(len(graph.order) for graph in raw_component_graphs.values())
     optimized_ir_nodes = sum(len(graph.order) for graph in optimized_component_graphs.values())
@@ -707,6 +715,7 @@ def _run_component_pipeline_transpile(
             optimized_component_graphs=optimized_component_graphs,
             transpiled_component_graphs=transpiled_component_graphs,
             component_io_signatures=component_io_signatures,
+            component_metadata=component_metadata,
             graph_filename=args.graph_filename,
             npu_encoder_mlpackages=npu_encoder_mlpackages,
         )

@@ -104,9 +104,9 @@ def transpile_preoptimized_ir(ir: IRGraph) -> TranspiledGraph:
     bound_constant_bindings: list[dict[str, object]] = []
     bound_constant_value_ids: dict[int, str] = {}
 
-    for value_id in ir.inputs:
+    for input_index, value_id in enumerate(ir.inputs):
         value = ir.values[value_id]
-        tensor = _lower_input_value(g, value)
+        tensor = _lower_input_value(g, value, ir=ir, input_index=input_index)
         env[value_id] = tensor
         runtime_inputs.append(tensor)
 
@@ -171,9 +171,45 @@ def transpile_preoptimized_ir(ir: IRGraph) -> TranspiledGraph:
     )
 
 
-def _lower_input_value(g: Graph, value: IRValue) -> Tensor:
+def _cross_kv_cache_buffer_elements(max_seq_len: int, num_kv_heads: int, head_dim: int) -> int:
+    kv_quant_group_size = 32
+    num_groups = (int(head_dim) + kv_quant_group_size - 1) // kv_quant_group_size
+    kv_values = int(max_seq_len) * int(num_kv_heads) * int(head_dim)
+    kv_scales = int(max_seq_len) * int(num_kv_heads) * num_groups * 4
+    return int(64 + kv_values + kv_scales)
+
+
+def _external_cross_kv_cache_input_indices(ir: IRGraph) -> set[int]:
+    if not bool(ir.meta.get("external_cross_kv_cache_inputs", False)):
+        return set()
+    start = int(ir.meta.get("cross_kv_input_start_index", -1))
+    count = int(ir.meta.get("cross_kv_input_count", 0))
+    if start < 0 or count <= 0:
+        return set()
+    return set(range(start, start + count))
+
+
+def _is_external_cross_kv_cache_value(ir: IRGraph, value_id: str) -> bool:
+    return any(
+        input_value_id == value_id and input_index in _external_cross_kv_cache_input_indices(ir)
+        for input_index, input_value_id in enumerate(ir.inputs)
+    )
+
+
+def _lower_input_value(g: Graph, value: IRValue, *, ir: IRGraph | None = None, input_index: int | None = None) -> Tensor:
     if value.shape is None or value.dtype is None:
         raise ValueError(f"IR input missing shape or dtype: {value.id}")
+    if ir is not None and input_index is not None and input_index in _external_cross_kv_cache_input_indices(ir):
+        shape = tuple(int(dim) for dim in value.shape)
+        if len(shape) != 4:
+            raise ValueError(f"external cross-KV cache input expects original rank-4 K/V tensor, got {shape}")
+        layout = str(ir.meta.get("cross_kv_input_layout", "bthd") or "bthd").lower()
+        if layout == "bhsd":
+            max_seq_len, num_kv_heads, head_dim = shape[2], shape[1], shape[3]
+        else:
+            max_seq_len, num_kv_heads, head_dim = shape[1], shape[2], shape[3]
+        cache_elements = _cross_kv_cache_buffer_elements(max_seq_len, num_kv_heads, head_dim)
+        return g.input(shape=(cache_elements,), dtype=Graph.INT8)
     return g.input(shape=value.shape, dtype=_map_ir_dtype(value.dtype))
 
 
@@ -1173,6 +1209,42 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         value = _attention_tensor(env, node.inputs[2])
         if q_layout != "bthd":
             query = g.permute(query, (0, 2, 1, 3))
+        if _is_external_cross_kv_cache_value(ir, node.inputs[1]) and _is_external_cross_kv_cache_value(ir, node.inputs[2]):
+            key_value = ir.values.get(node.inputs[1])
+            value_value = ir.values.get(node.inputs[2])
+            if key_value is None or value_value is None or key_value.shape is None or value_value.shape is None:
+                raise ValueError("external cross-KV cache attention requires original key/value shapes")
+            key_shape = tuple(int(dim) for dim in key_value.shape)
+            value_shape = tuple(int(dim) for dim in value_value.shape)
+            if len(key_shape) != 4 or len(value_shape) != 4:
+                raise ValueError(f"external cross-KV cache attention expects rank-4 key/value tensors, got {key_shape} and {value_shape}")
+            if k_layout == "bhsd":
+                num_kv_heads, head_dim = key_shape[1], key_shape[3]
+            else:
+                num_kv_heads, head_dim = key_shape[2], key_shape[3]
+            v_head_dim = value_shape[3]
+            dummy_key = _materialize_constant_tensor(
+                g,
+                torch.zeros((1, 1, int(num_kv_heads), int(head_dim)), dtype=torch.float16),
+            )
+            dummy_value = _materialize_constant_tensor(
+                g,
+                torch.zeros((1, 1, int(num_kv_heads), int(v_head_dim)), dtype=torch.float16),
+            )
+            out = g.attention_cached(
+                query,
+                dummy_key,
+                dummy_value,
+                key,
+                value,
+                scale=_resolve_attention_scale(node, query),
+                position_offset=_DYNAMIC_KV_QUERY_POSITION_OFFSET,
+                window_size=int(node.attrs.get("window_size", 0)),
+                v_head_dim=int(v_head_dim),
+            )
+            if output_layout == "bthd":
+                return [out]
+            return [g.permute(out, (0, 2, 1, 3))]
         if k_layout != "bthd":
             key = g.permute(key, (0, 2, 1, 3))
         if v_layout != "bthd":

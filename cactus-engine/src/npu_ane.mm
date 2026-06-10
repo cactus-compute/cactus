@@ -650,6 +650,59 @@ static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* ar
     }
 }
 
+static void copyInt32ToMLArray(const int32_t* data, size_t count, MLMultiArray* array) {
+    if (!array || !data || count == 0) return;
+
+    std::vector<size_t> dims;
+    std::vector<size_t> strides;
+    const size_t rank = array.shape.count;
+    bool have_layout = rank == array.strides.count && rank > 0;
+    if (have_layout) {
+        dims.resize(rank);
+        strides.resize(rank);
+        for (size_t i = 0; i < rank; ++i) {
+            NSInteger d = [array.shape[i] integerValue];
+            NSInteger s = [array.strides[i] integerValue];
+            if (d <= 0 || s < 0) {
+                have_layout = false;
+                break;
+            }
+            dims[i] = static_cast<size_t>(d);
+            strides[i] = static_cast<size_t>(s);
+        }
+    }
+
+    auto write_at = [&](size_t offset, size_t i) {
+        if (array.dataType == MLMultiArrayDataTypeInt32) {
+            ((int32_t*)array.dataPointer)[offset] = data[i];
+        } else if (array.dataType == MLMultiArrayDataTypeFloat16) {
+            ((__fp16*)array.dataPointer)[offset] = static_cast<__fp16>(data[i]);
+        } else {
+            ((float*)array.dataPointer)[offset] = static_cast<float>(data[i]);
+        }
+    };
+
+    if (!have_layout) {
+        for (size_t i = 0; i < count; ++i) write_at(i, i);
+        return;
+    }
+
+    std::vector<size_t> idx(rank, 0);
+    for (size_t i = 0; i < count; ++i) {
+        size_t offset = 0;
+        for (size_t d = 0; d < rank; ++d) {
+            offset += idx[d] * strides[d];
+        }
+        write_at(offset, i);
+
+        for (size_t d = rank; d-- > 0;) {
+            idx[d]++;
+            if (idx[d] < dims[d]) break;
+            idx[d] = 0;
+        }
+    }
+}
+
 - (BOOL)preallocateMultiInputBuffersWithOutputName:(NSString*)outputName {
     if (!_model || !_modelDescription) return NO;
 
@@ -917,7 +970,11 @@ size_t ANEEncoder::encode_multimodal_input(
                 if (!array || arrayError) return 0;
             }
 
-            copyFP16ToMLArray(input.data, total, array);
+            if (input.data_type == NPUNamedInput::DataType::INT32) {
+                copyInt32ToMLArray(static_cast<const int32_t*>(input.data), total, array);
+            } else {
+                copyFP16ToMLArray(static_cast<const __fp16*>(input.data), total, array);
+            }
             inputDict[nsName] = [MLFeatureValue featureValueWithMultiArray:array];
         }
 

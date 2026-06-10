@@ -494,6 +494,7 @@ ADAPTERS: dict[str, FamilyAdapter] = {
     "lfm2": Lfm2Adapter(),
     "moonshine": FamilyAdapter("moonshine"),
     "nomic": NomicAdapter(),
+    "needle": FamilyAdapter("needle"),
     "whisper": WhisperAdapter(),
     "parakeet": ParakeetAdapter(),
     "parakeet_tdt": ParakeetTDTAdapter(),

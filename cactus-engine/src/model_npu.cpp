@@ -30,6 +30,106 @@ bool Model::load_npu_vision_encoder(const std::string& model_path) {
     return true;
 }
 
+bool Model::load_npu_source_encoder(const std::string& model_path) {
+    auto encoder = npu::create_encoder();
+    if (!encoder) return false;
+    if (!encoder->load(model_path)) return false;
+    if (!encoder->is_available()) return false;
+    npu_source_encoder_ = std::move(encoder);
+    CACTUS_LOG_INFO("model", "NPU source encoder loaded from: " << model_path);
+    return true;
+}
+
+bool Model::source_encode_via_npu(const std::vector<uint32_t>& tokens) {
+    if (!npu_source_encoder_ || !npu_source_encoder_->is_available() ||
+        !source_encoder_ || !decoder_cross_kv_) {
+        return false;
+    }
+
+    int ids_idx = input_index(*source_encoder_, "input_ids");
+    if (ids_idx < 0) return false;
+    size_t ids_node = static_cast<size_t>(source_encoder_->runtime_input_node_ids[ids_idx]);
+    const auto& ids_desc = source_encoder_->graph->get_output_buffer(ids_node);
+    if (tokens.size() > ids_desc.total_size) return false;
+
+    std::vector<int> input_shape;
+    input_shape.reserve(ids_desc.shape.size());
+    for (size_t dim : ids_desc.shape) input_shape.push_back(static_cast<int>(dim));
+
+    std::vector<int32_t> input_ids(ids_desc.total_size, 0);
+    std::vector<int32_t> attention_mask(ids_desc.total_size, 0);
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        input_ids[i] = static_cast<int32_t>(tokens[i]);
+        attention_mask[i] = 1;
+    }
+
+    std::vector<npu::NPUNamedInput> npu_inputs;
+    npu_inputs.push_back({
+        "input_ids",
+        input_ids.data(),
+        npu::NPUNamedInput::DataType::INT32,
+        input_shape,
+    });
+    if (input_index(*source_encoder_, "attention_mask") >= 0) {
+        npu_inputs.push_back({
+            "attention_mask",
+            attention_mask.data(),
+            npu::NPUNamedInput::DataType::INT32,
+            input_shape,
+        });
+    }
+
+    int hidden_idx = input_index(*decoder_cross_kv_, "encoder_hidden_states");
+    if (hidden_idx < 0) return false;
+    size_t hidden_node = static_cast<size_t>(decoder_cross_kv_->runtime_input_node_ids[hidden_idx]);
+    const auto& hidden_desc = decoder_cross_kv_->graph->get_output_buffer(hidden_node);
+    std::vector<__fp16> hidden(hidden_desc.total_size, __fp16(0));
+    size_t written = npu_source_encoder_->encode_multimodal_input(
+        npu_inputs,
+        hidden.data(),
+        "encoder_hidden_states");
+    if (written == 0) return false;
+
+    auto copy_fp16_to_component_input = [&](Component& comp, int input_idx, const __fp16* src, size_t src_elems) {
+        if (input_idx < 0 || !src) return false;
+        size_t node = static_cast<size_t>(comp.runtime_input_node_ids[static_cast<size_t>(input_idx)]);
+        const auto& desc = comp.graph->get_output_buffer(node);
+        auto& dst = comp.input_buffers[static_cast<size_t>(input_idx)];
+        std::fill(dst.begin(), dst.end(), 0);
+        const size_t elems = std::min(src_elems, desc.total_size);
+        if (desc.precision == Precision::FP16) {
+            std::memcpy(dst.data(), src, elems * sizeof(__fp16));
+            return true;
+        }
+        if (desc.precision == Precision::FP32) {
+            float* out = reinterpret_cast<float*>(dst.data());
+            for (size_t i = 0; i < elems; ++i) out[i] = static_cast<float>(src[i]);
+            return true;
+        }
+        CACTUS_LOG_WARN("model", "NPU source encoder output precision mismatch for encoder_hidden_states");
+        return false;
+    };
+
+    if (!copy_fp16_to_component_input(*decoder_cross_kv_, hidden_idx, hidden.data(), written)) {
+        return false;
+    }
+
+    auto fill_mask = [&](Component& comp) {
+        int idx = input_index(comp, "encoder_attention_mask");
+        if (idx < 0) return;
+        std::fill(comp.input_buffers[static_cast<size_t>(idx)].begin(),
+                  comp.input_buffers[static_cast<size_t>(idx)].end(),
+                  0);
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            write_int_input_at(comp, "encoder_attention_mask", i, 1);
+        }
+    };
+    fill_mask(*decoder_cross_kv_);
+    if (decoder_) fill_mask(*decoder_);
+
+    return true;
+}
+
 bool Model::audio_encode_via_npu(const std::vector<float>& audio_features) {
     if (!npu_audio_encoder_ || !npu_audio_encoder_->is_available() || !audio_encoder_) {
         return false;
