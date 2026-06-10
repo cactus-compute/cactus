@@ -563,8 +563,8 @@ static bool test_orth_panel(int backend, double& mse_inc, double& mse_panel) {
 // legacy interleaved NEON kernel (old bundles); use_panels=true builds the panel layout from the
 // SAME interleaved fixture through the reference encoder and exercises the panel GEMV
 // (multi-super-block stealing included: N=192 = 3 super-blocks).
-static bool test_cq4_interleaved(bool use_panels, int backend, double& mse_out) {
-    const uint32_t K = 1024, N = 192, gs = 128;   // 192 = 3 super-blocks: exercises multi-SB stealing
+static bool test_cq4_interleaved(bool use_panels, int backend, double& mse_out,
+                                 uint32_t K = 1024, uint32_t N = 192, uint32_t gs = 128) {
     SyntheticCQ cq(4, K, N, gs, 777);
     if (use_panels) cq.preexpand_il();
     CactusQuantMatrix mat = cq.matrix_interleaved();
@@ -1049,6 +1049,10 @@ int main() {
     {
         double m1 = 0;
         runner.run_test("matmul_cq4_il[file]", test_cq4_interleaved(false, 1, m1));
+        // N=4164: 1041 IL blocks -> 66 chunks (16-block + 1-block tail) -> multi-thread fused
+        // driver (phase-A stealing, spin barrier, 4-chunk grabs); N=192 stays on the serial path.
+        double m_mt = 0;
+        runner.run_test("matmul_cq4_il_mt[file]", test_cq4_interleaved(false, 1, m_mt, 1024, 4164, 128));
         runner.run_test("panel_layout_invariance", test_panel_layout_invariance());
         runner.run_test("orth_embed_rows_batched", test_orth_embed_rows());
     }

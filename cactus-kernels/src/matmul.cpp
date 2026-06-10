@@ -1694,6 +1694,15 @@ static void cactus_quant_panel_rescale_sb(const int32_t* psb, size_t sb, const f
     for (uint32_t c = 0; c < valid; ++c) C[n_start + c] = static_cast<__fp16>(tmp[c]);
 }
 
+static size_t cactus_quant_gemv_sb_per_thread() {
+    static const size_t v = [] {
+        const char* e = getenv("CACTUS_GEMV_SB_PER_THREAD");
+        const int i = e ? atoi(e) : 8;
+        return static_cast<size_t>(i > 0 ? i : 8);
+    }();
+    return v;
+}
+
 // SME workers live INSIDE the thread budget, replacing NEON workers (measured frontier: flat k=2
 // dominates k=0 on speed AND power). Env/setter overrides; backend 2 clamps >= 1 for leaf coverage.
 static inline size_t cactus_quant_panel_k_sme(size_t nt, uint32_t gs) {
@@ -1712,11 +1721,7 @@ static void cactus_quant_panel_gemv(const CactusQuantMatrix* W, const __fp16* A,
     const uint32_t N = W->N;
     const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
     auto& pool = CactusThreading::get_thread_pool();
-    static const size_t sb_per_thread = [] {
-        const char* e = getenv("CACTUS_GEMV_SB_PER_THREAD");
-        const int v = e ? atoi(e) : 8;
-        return static_cast<size_t>(v > 0 ? v : 8);
-    }();
+    const size_t sb_per_thread = cactus_quant_gemv_sb_per_thread();
     const size_t nt_budget = std::max<size_t>(1, (SB64 + sb_per_thread - 1) / sb_per_thread);
     const size_t nt = std::min(pool.num_workers(), std::min(nt_budget, SB64));
 
@@ -1814,11 +1819,7 @@ void cactus_quant_orth_panel_gemv(const CactusQuantMatrix* W2, const __fp16* rot
     const uint32_t num_groups = W2->num_groups;
     const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
     auto& pool = CactusThreading::get_thread_pool();
-    static const size_t sb_per_thread = [] {
-        const char* e = getenv("CACTUS_GEMV_SB_PER_THREAD");
-        const int v = e ? atoi(e) : 8;
-        return static_cast<size_t>(v > 0 ? v : 8);
-    }();
+    const size_t sb_per_thread = cactus_quant_gemv_sb_per_thread();
     const size_t nt_budget = std::max<size_t>(1, (SB64 + sb_per_thread - 1) / sb_per_thread);
     const size_t nt = std::max<size_t>(1, std::min(pool.num_workers(), std::min(nt_budget, SB64)));
 
@@ -3051,6 +3052,8 @@ static void cactus_quant_interleaved4_gemv_blocks(
         }
 }
 
+// Fused IL GEMV: the panel driver's dispatch (group-stolen phase A, spin barrier, dynamic
+// 16-block-chunk stealing, main as worker 0, spin-join) over the unchanged IL micro-kernel.
 void cactus_quant_4bit_gemv_interleaved(
     const CactusQuantMatrix* W,
     const uint8_t* packed_interleaved,
@@ -3064,37 +3067,69 @@ void cactus_quant_4bit_gemv_interleaved(
     if (W->group_size > 256) return;
 
     const uint32_t gs = W->group_size;
-    const uint32_t pgb = cactus_quant_packed_group_bytes(4, gs);
     const uint32_t num_groups = W->num_groups;
+    const size_t N_blocks = W->N / 4;
+    const size_t n_chunks = (N_blocks + 15) / 16;
+    auto& pool = CactusThreading::get_thread_pool();
+    const size_t sb_per_thread = cactus_quant_gemv_sb_per_thread();
+    const size_t nt_budget = std::max<size_t>(1, (n_chunks + sb_per_thread - 1) / sb_per_thread);
+    const size_t nt = std::min(pool.num_workers(), std::min(nt_budget, n_chunks));
 
-    thread_local std::vector<__fp16> code_basis_buf;
-    if (code_basis_buf.size() < W->K) code_basis_buf.resize(W->K);
-    cactus_quant_transform_hadamard_activations(*W, x, 1, code_basis_buf.data());
-    const __fp16* code_basis = code_basis_buf.data();
-
-    thread_local std::vector<int8_t> act_i8_buf;
-    thread_local std::vector<float> act_scales_buf;
-    if (act_i8_buf.size() < W->K) act_i8_buf.resize(W->K);
-    if (act_scales_buf.size() < num_groups) act_scales_buf.resize(num_groups);
-    for (uint32_t g = 0; g < num_groups; ++g) {
-        act_scales_buf[g] = tq_quantize_group_i8(
-            code_basis + static_cast<size_t>(g) * gs,
-            act_i8_buf.data() + static_cast<size_t>(g) * gs, gs);
-    }
-    const int8_t* act_i8 = act_i8_buf.data();
-    const float* act_scales = act_scales_buf.data();
+    static thread_local std::vector<int8_t> tl_il_act_i8;
+    static thread_local std::vector<float> tl_il_act_scales;
+    if (tl_il_act_i8.size() < W->K) tl_il_act_i8.resize(W->K);
+    if (tl_il_act_scales.size() < num_groups) tl_il_act_scales.resize(num_groups);
+    int8_t* act_i8 = tl_il_act_i8.data();
+    float* act_scales = tl_il_act_scales.data();
 
     int8_t cb_i8[16] = {};
     const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 16);
     const int8x16_t cb_lut = vld1q_s8(cb_i8);
 
-    const size_t N_blocks = W->N / 4;
+    auto phase_a_group = [&](uint32_t g) {
+        __fp16 basis[256];
+        cactus_quant_transform_hadamard_group(*W, x + static_cast<size_t>(g) * gs, g, basis);
+        act_scales[g] = tq_quantize_group_i8(basis, act_i8 + static_cast<size_t>(g) * gs, gs);
+    };
 
-    cactus_quant_parallel_ranges(N_blocks, 64, [&](size_t block_start, size_t block_end) {
+    if (nt <= 1) {
+        for (uint32_t g = 0; g < num_groups; ++g) phase_a_group(g);
         cactus_quant_interleaved4_gemv_blocks(W, packed_interleaved, norms_interleaved,
                                               act_i8, act_scales, cb_lut, cb_scale,
-                                              block_start, block_end, y);
+                                              0, N_blocks, y);
+        return;
+    }
+
+    std::atomic<uint32_t> ga{0};
+    std::atomic<uint32_t> a_done{0};
+    std::atomic<uint32_t> next{0};
+    std::atomic<uint32_t> done{0};
+    auto worker = [&](size_t) {
+        for (uint32_t g; (g = ga.fetch_add(1, std::memory_order_relaxed)) < num_groups; ) {
+            phase_a_group(g);
+            a_done.fetch_add(1, std::memory_order_release);
+        }
+        while (a_done.load(std::memory_order_acquire) < num_groups) { /* spin */ }
+        for (;;) {
+            const uint32_t seen = next.load(std::memory_order_relaxed);
+            if (seen >= n_chunks) break;
+            const uint32_t want = (n_chunks - seen > 4u * nt) ? 4u : 1u;
+            const uint32_t ck = next.fetch_add(want, std::memory_order_relaxed);
+            if (ck >= n_chunks) break;
+            const uint32_t cnt = std::min<uint32_t>(want, static_cast<uint32_t>(n_chunks) - ck);
+            const size_t b0 = static_cast<size_t>(ck) * 16;
+            const size_t b1 = std::min(N_blocks, b0 + static_cast<size_t>(cnt) * 16);
+            cactus_quant_interleaved4_gemv_blocks(W, packed_interleaved, norms_interleaved,
+                                                  act_i8, act_scales, cb_lut, cb_scale,
+                                                  b0, b1, y);
+        }
+    };
+    pool.enqueue_n_threads(nt - 1, nt - 1, [&](size_t wid, size_t) {
+        worker(wid + 1);
+        done.fetch_add(1, std::memory_order_release);
     });
+    worker(0);
+    while (done.load(std::memory_order_acquire) < nt - 1) { /* spin */ }
 }
 
 void cactus_quant_3bit_gemv_interleaved(
