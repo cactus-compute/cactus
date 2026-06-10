@@ -447,3 +447,27 @@ Format per entry: `## YYYY-MM-DD [milestone] title` → Hypothesis / Experiment 
   tok/s (excl. one bimodal outlier), TTFT slightly better; 61/61 tests; temp-0 coherent.
 - CACTUS_RAM_DEBUG=1 logs each release. Build-transient peak remains (w_il int8 temp in the
   builder, lm_head ~400 MB) — streaming the cache build is the noted follow-up.
+
+## 2026-06-10 [SAME-FORMAT NEON BASELINE — SME GEMV retired from auto; best E2E of the campaign]
+- User asked for results vs NEON ON THE SAME FORMAT (esme-NEON had already beaten the file
+  kernels). Added cactus_quant_set_sme_gemv_workers(); three-way kernel bench (file-NEON vs
+  esme-NEON vs hybrid, alternating best-of) + three-way E2E.
+- **Kernel three-way (gemma shapes):** esme-NEON crushes file-NEON everywhere — o_proj 57-67 ->
+  ~200-235 GF (the "NEON collapses on K-heavy" gotcha was a FILE-LAYOUT artifact, NOT a NEON
+  limit); vs esme-NEON the hybrid keeps only down 1.1-1.3x, ffn/gate_up/q_proj ~1.0-1.2x, and
+  LOSES on o_proj (0.82-0.94x, 3 consistent runs) and lm_head (~0.97x).
+- **E2E three-way (c2-c4 means, 1068-tok prompt):** file-NEON 42.0 tok/s / TTFT 2902;
+  same-format NEON (k=0, attention NEON) 51.4 / 2192; full-SME-GEMV config 44.8 / 2342.
+  PURE NEON BEATS THE SME-GEMV HYBRID E2E BY ~13% DECODE despite bursty kernel wins — the
+  queue-limited GEMV leaf (~64-85 MACs/queue-op nibble streaming) nets negative under sustained
+  load once NEON runs on the good layout. SME's true wins all along: the LAYOUT, the fused M>1
+  GEMM (2.4-3.6x), and prefill attention.
+- **Config C (shipped default): NEON GEMVs over esme + SME fused GEMM + SME prefill attention:
+  decode ~50-52 tok/s, TTFT ~2010-2230 — vs legacy file-NEON: decode +19%, TTFT -27.5%** (hot
+  machine; every config measured in the same alternating windows). C beats every config measured
+  this campaign (prev best: 47.98 / 2172).
+- Shipped: CACTUS_SME_GEMV_WORKERS default 0 (auto = pure esme-NEON M=1, incl. the orth lm_head
+  driver); env/setter re-enables for experiments/other silicon; backend 2 forces >= 1 worker so
+  the [sme2] correctness tests keep covering the leaf (test_orth_sme pins 4 explicitly).
+- GOTCHA CORRECTED: "NEON-il collapses on K-heavy GEMV" -> file-layout artifact; superseded by
+  the esme-NEON numbers above.

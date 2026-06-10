@@ -501,7 +501,9 @@ static bool test_orth_sme(double& mse_inc, double& mse_sme) {
     cactus_quant_build_sme_cache(&W2, esme.data(), nsme.data());
     W2.expanded_sme = esme.data(); W2.norm_sme = nsme.data();
     std::vector<__fp16> y_sme(N);
+    cactus_quant_set_sme_gemv_workers(4);    // auto default is 0 — force the SME leaf for coverage
     cactus_quant_orth_sme_gemv(&W2, rot_t.data(), isr.data(), x.data(), y_sme.data());
+    cactus_quant_set_sme_gemv_workers(-1);
     mse_sme = compute_mse(ref.data(), y_sme.data(), N);
     return mse_inc <= 0.1 && mse_sme <= 0.1 && mse_sme <= mse_inc * 4 + 1e-4;
 }
@@ -605,27 +607,35 @@ static void print_il_comparison() {
         CactusQuantMatrix mat = cq.matrix_interleaved();
         std::vector<__fp16> x(sh.K), y(sh.N);
         fill_random_fp16(x, -1.f, 1.f);
-        auto run_ms = [&](int backend) {
+        auto run_ms = [&](int backend, int sme_workers) {
             cactus_quant_set_backend(backend);
+            cactus_quant_set_sme_gemv_workers(sme_workers);
             cactus_quant_matmul(&mat, x.data(), 1, y.data());
             Timer t;
             for (int i = 0; i < sh.iters; i++) cactus_quant_matmul(&mat, x.data(), 1, y.data());
             double ms = t.elapsed_ms() / sh.iters;
             cactus_quant_set_backend(0);
+            cactus_quant_set_sme_gemv_workers(-1);
             return ms;
         };
-        // backend 0 = production auto over the single cache format (hybrid >= 3M weight
-        // elements, pure esme-NEON co-workers below); backend 1 = legacy file-layout kernel.
-        double ms_n = 1e30, ms_s = 1e30;
+        // Three-way, thermally alternating: legacy file-layout NEON kernel (backend 1) vs
+        // pure NEON over the SAME cache format (backend 0, 0 SME workers) vs the production
+        // hybrid (backend 0, default workers). Hybrid speedup is reported against the
+        // same-format NEON baseline — the honest comparison now that NEON also runs on esme.
+        double ms_f = 1e30, ms_n = 1e30, ms_h = 1e30;
         for (int round = 0; round < 5; round++) {
-            ms_n = std::min(ms_n, run_ms(1));
-            ms_s = std::min(ms_s, run_ms(0));
+            ms_f = std::min(ms_f, run_ms(1, -1));
+            ms_n = std::min(ms_n, run_ms(0, 0));
+            ms_h = std::min(ms_h, run_ms(0, 4));   // hybrid: explicit 4 SME workers
         }
-        double gn = (2.0 * sh.K * sh.N) / (ms_n * 1e6), gs2 = (2.0 * sh.K * sh.N) / (ms_s * 1e6);
+        const double fl = 2.0 * sh.K * sh.N;
+        double gf = fl / (ms_f * 1e6), gn = fl / (ms_n * 1e6), gh = fl / (ms_h * 1e6);
         std::cout << "  " << std::left << std::setw(31) << sh.name
-                  << " NEON-il " << std::fixed << std::setprecision(1) << gn << " GF"
-                  << " | AUTO(esme) " << gs2 << " GF"
-                  << " | " << std::setprecision(2) << (gs2 / gn) << "x  (best of 5x" << sh.iters << ")\n";
+                  << " file-NEON " << std::fixed << std::setprecision(1) << gf << " GF"
+                  << " | esme-NEON " << gn << " GF"
+                  << " | HYBRID " << gh << " GF"
+                  << " | " << std::setprecision(2) << (gh / gn) << "x vs same-format NEON  (best of 5x"
+                  << sh.iters << ")\n";
     }
 }
 

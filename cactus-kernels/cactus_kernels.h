@@ -311,6 +311,9 @@ int cactus_quant_sme_attn_enabled(void);
 // 1 when SME runtime paths (and the SME weight cache build) should be used at all
 // (SME2 present, backend != force-NEON).
 int cactus_quant_sme_enabled(void);
+// Override the hybrid GEMV's SME worker count at runtime (-1 = env/default; 0 = pure NEON
+// co-workers over the cache — the same-format NEON baseline for benchmarks).
+int cactus_quant_set_sme_gemv_workers(int n);
 // Release the mmap'd packed-weight pages of W (madvise DONTNEED on the page-aligned interior
 // of the packed region only). Call ONLY for file-backed weights, after the SME cache is built —
 // the cache is then the single runtime weight format for both SME and NEON workers.

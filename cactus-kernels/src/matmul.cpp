@@ -1579,6 +1579,24 @@ int cactus_quant_sme_orth_enabled(void) {
     return (cpu_has_sme2() &&
             g_cactus_quant_backend.load(std::memory_order_relaxed) != 1) ? 1 : 0;
 }
+// SME GEMV worker-count override: -1 = use CACTUS_SME_GEMV_WORKERS env / default 4.
+// 0 = pure NEON co-workers over the cache (the "same-format NEON" baseline for A/Bs).
+static std::atomic<int> g_sme_gemv_workers{-1};
+int cactus_quant_set_sme_gemv_workers(int n) {
+    g_sme_gemv_workers.store(n, std::memory_order_relaxed);
+    return cpu_has_sme2() ? 1 : 0;
+}
+static inline size_t cactus_quant_sme_gemv_workers(void) {
+    const int o = g_sme_gemv_workers.load(std::memory_order_relaxed);
+    if (o >= 0) return static_cast<size_t>(o);
+    static const size_t env_default = [] {
+        const char* e = getenv("CACTUS_SME_GEMV_WORKERS");
+        // Default 0: with the single cache format, pure NEON wins every M=1 shape under
+        // sustained E2E load (see the dispatch comment in cactus_quant_sme_gemv_fused).
+        return e ? static_cast<size_t>(atoi(e)) : static_cast<size_t>(0);
+    }();
+    return env_default;
+}
 int cactus_quant_sme_enabled(void) {
     return (cpu_has_sme2() &&
             g_cactus_quant_backend.load(std::memory_order_relaxed) != 1) ? 1 : 0;
@@ -1908,19 +1926,20 @@ static void cactus_quant_sme_gemv_fused(const CactusQuantMatrix* W, const __fp16
             return;
         }
 
-        static const size_t k_sme_env = [] {
-            const char* e = getenv("CACTUS_SME_GEMV_WORKERS");
-            return e ? static_cast<size_t>(atoi(e)) : static_cast<size_t>(4);
-        }();
+        const size_t k_sme_env = cactus_quant_sme_gemv_workers();
         // NEON co-workers consume the SAME cache as the SME leaf (single runtime weight format —
-        // no second weight stream through the mmap'd file). SME workers only pay above ~3M weight
-        // elements (kernel A/Bs: below that the call is fixed-cost dominated and NEON wins), so
-        // smaller cached shapes run every worker as a NEON co-worker (k_sme = 0). backend 2
-        // bypasses the size policy so tests/benchmarks exercise the leaf on any shape.
-        const size_t kn = static_cast<size_t>(W->K) * W->N;
+        // no second weight stream through the mmap'd file). AUTO default is 0 SME workers:
+        // measured E2E against the same-format NEON baseline, the queue-limited SME GEMV leaf
+        // nets NEGATIVE under sustained decode (pure esme-NEON 51.4 tok/s vs hybrid 44.8 on
+        // Gemma 4 E2B) even though bursty kernel benches show per-shape wins (down 1.3x). The
+        // old "NEON collapses on K-heavy" rule was a FILE-layout artifact — esme-NEON has no
+        // such collapse (o_proj 57 -> 210 GF). SME stays where it wins: the fused M>1 GEMM and
+        // prefill attention. CACTUS_SME_GEMV_WORKERS / the setter re-enables SME GEMV workers
+        // for experiments and other silicon; backend 2 forces >= 1 so tests cover the leaf.
         const int backend_now = g_cactus_quant_backend.load(std::memory_order_relaxed);
-        const size_t k_sme = (backend_now == 2 || kn >= (3u << 20))
-            ? std::min(k_sme_env, nt - 1) : 0;
+        const size_t k_sme = (backend_now == 2)
+            ? std::max<size_t>(1, std::min(k_sme_env, nt - 1))
+            : std::min(k_sme_env, nt - 1);
 
         std::atomic<uint32_t> ga{0};            // phase A group grab
         std::atomic<uint32_t> a_done{0};        // phase A completion (release/acquire barrier)
@@ -2054,10 +2073,7 @@ void cactus_quant_orth_sme_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t
         return;
     }
 
-    static const size_t k_sme_env = [] {
-        const char* e = getenv("CACTUS_SME_GEMV_WORKERS");
-        return e ? static_cast<size_t>(atoi(e)) : static_cast<size_t>(4);
-    }();
+    const size_t k_sme_env = cactus_quant_sme_gemv_workers();
     const size_t k_sme = std::min(k_sme_env, nt - 1);
 
     std::atomic<uint32_t> ga{0};

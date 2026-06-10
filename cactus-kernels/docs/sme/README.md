@@ -51,6 +51,13 @@ re-derived.
 | M7/ATTN | SME prefill attention (cached-int8 segment: flat-scale QK seg + u8 USMOPA AV per-block) | **done ✅✅** | **4.6× global / 2.7× sliding** @ gemma shape (3.76→0.81ms / 2.23→0.83ms) | attention_hybrid.cpp `cactus_attention_sme_prefill`; gate hd%64==0, qg=32, pos≥cache; differential+oracle test in test_attention.cpp; see debug-log 2026-06-09 attn entries |
 | SVE2 | Android/Linux fallback (svmmla/svusmmla) | designed (research/sve2-android-fallback.md) | — | not built — needs Android/QEMU to validate; out of CQ4-on-M4 scope |
 
+**SAME-FORMAT BASELINE + DEFAULT RETUNE (2026-06-10): best E2E of the campaign.** esme-NEON
+beats the file kernels everywhere (K-heavy "collapse" was a file-layout artifact: o_proj 57→210
+GF), and beats the SME GEMV hybrid E2E under sustained decode — auto now runs 0 SME GEMV workers
+(knob: CACTUS_SME_GEMV_WORKERS). Shipped default = NEON GEMVs over the cache + SME fused GEMM +
+SME prefill attention: **decode ~50-52 tok/s, TTFT ~2.0-2.2s (vs legacy file-NEON 42.0 / 2.9s:
+decode +19%, TTFT −27.5%)**, physical footprint −1.2 GB. See debug-log 2026-06-10.
+
 **SINGLE RUNTIME WEIGHT FORMAT (2026-06-10): physical footprint 4.9 -> 3.7 GB (−1.2 GB).**
 NEON co-workers + small-shape GEMVs now consume the esme cache directly
 (cactus_quant_esme_gemv_blocks; parity-or-better vs the file kernels), the packed file pages are

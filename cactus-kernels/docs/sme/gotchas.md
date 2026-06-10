@@ -174,3 +174,14 @@ needs vzip1/vzip2 to restore byte order (9 ops/16 B vs 7 for the file layout). D
 esme-NEON at parity-or-better vs the file kernels (kv_proj 1.29x, hybrid ratios unchanged), so
 the packed file pages can be released after the cache build (-1.2 GB physical footprint on
 Gemma 4 E2B).
+
+## CORRECTION: "NEON collapses on K-heavy GEMV" was a file-layout artifact
+On the INTERLEAVED_4ROW file layout, K-heavy GEMVs (o_proj/down) measured 57-174 GF and the SME
+hybrid won 2-3x. On the esme cache layout the same NEON cores hit 200-400 GF on those shapes —
+the collapse was panel-walk behavior of the FILE layout, not a NEON limit. Against the
+same-format NEON baseline the SME GEMV leaf nets NEGATIVE E2E under sustained decode (51.4 vs
+44.8 tok/s on Gemma 4 E2B) even where bursty kernel benches show wins: ~64-85 MACs/queue-op
+nibble streaming cannot beat 10+ unobstructed NEON cores. Auto therefore runs 0 SME GEMV workers
+(CACTUS_SME_GEMV_WORKERS to override). SME earns its keep on: the single cache format itself,
+the fused M>1 GEMM (SMOPA, 2.4-3.6x), and prefill attention (4.6x/2.7x kernels, ~-100ms TTFT).
+Moral, twice over: gate every win on the BASELINE'S best format, not just yours.
