@@ -304,6 +304,19 @@ void cactus_quant_build_panels(const CactusQuantMatrix* W, uint8_t* panels_out, 
 void cactus_quant_orth_panel_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t,
                                   const __fp16* input_scale_recip, const __fp16* A, __fp16* C);
 
+// SME2 backend control (testing/benchmarking). backend: 0 = auto (production dispatch),
+// 1 = force NEON panel kernels, 2 = force the SME2 streaming leaves (k_sme >= 1).
+// Returns 1 if SME2 is available on this CPU, else 0.
+int cactus_quant_set_backend(int backend);
+int cactus_quant_sme_available(void);
+// 1 when SME runtime paths should be used (SME2 present + SVL == 64, backend != force-NEON).
+int cactus_quant_sme_enabled(void);
+// 1 when the SME prefill-attention path should be used (sme_enabled + CACTUS_SME_ATTENTION != 0).
+int cactus_quant_sme_attn_enabled(void);
+// Override the panel GEMV drivers' SME worker count (-1 = env CACTUS_SME_GEMV_WORKERS / auto
+// flat k = min(2, nt-1); 0 = pure NEON co-workers — the same-format NEON baseline for A/Bs).
+int cactus_quant_set_sme_gemv_workers(int n);
+
 void cactus_quant_4bit_gemv_interleaved(
     const CactusQuantMatrix* W,
     const uint8_t* packed_interleaved,

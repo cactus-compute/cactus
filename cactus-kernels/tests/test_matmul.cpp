@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <random>
+#include <utility>
 
 using namespace TestUtils;
 
@@ -367,9 +368,15 @@ bool test_cq_correctness(uint32_t bits) {
 
 // ── Panel-format GEMV validation ─────────────────────────────────────────────────────────────
 // With packed panels present (built here by the independent test packer), the real
-// cactus_quant_matmul dispatch takes the panel GEMV kernel; validate it against the SAME FP32
-// reference oracle the legacy kernels are gated on.
-static bool test_cq_panel(uint32_t bits, double& mse_out) {
+// cactus_quant_matmul dispatch takes the panel kernels; validate them against the SAME FP32
+// reference oracle the legacy kernels are gated on. backend pins the variant: 1 = NEON panel
+// kernels, 2 = forced SME2 leaves (k_sme >= 1 so the streaming path is test-covered).
+struct BackendGuard {
+    explicit BackendGuard(int b) { cactus_quant_set_backend(b); }
+    ~BackendGuard() { cactus_quant_set_backend(0); }
+};
+
+static bool test_cq_panel(uint32_t bits, int backend, double& mse_out) {
     const uint32_t K = 1024, N = 64, gs = 128;
     SyntheticCQ cq(bits, K, N, gs, 123);
     cq.preexpand();
@@ -385,15 +392,18 @@ static bool test_cq_panel(uint32_t bits, double& mse_out) {
     std::vector<__fp16> x_f16(K), y_f16(N, static_cast<__fp16>(0));
     for (size_t i = 0; i < K; i++) x_f16[i] = static_cast<__fp16>(x_f32[i]);
 
-    cactus_quant_matmul(&mat, x_f16.data(), 1, y_f16.data());
+    {
+        BackendGuard bg(backend);
+        cactus_quant_matmul(&mat, x_f16.data(), 1, y_f16.data());
+    }
 
     mse_out = compute_mse(ref.data(), y_f16.data(), N);
     return mse_out <= 0.1;
 }
 
-// GEMM (M>1) variant: validates the panel NEON GEMM (M and N tails included) vs a per-row FP32
+// GEMM (M>1) variant: validates the panel GEMM (M and N tails included) vs a per-row FP32
 // reference.
-static bool test_cq_panel_gemm(uint32_t bits, uint32_t M, uint32_t N, double& mse_out) {
+static bool test_cq_panel_gemm(uint32_t bits, uint32_t M, uint32_t N, int backend, double& mse_out) {
     const uint32_t K = 512, gs = 128;
     SyntheticCQ cq(bits, K, N, gs, 321);
     cq.preexpand();
@@ -411,16 +421,53 @@ static bool test_cq_panel_gemm(uint32_t bits, uint32_t M, uint32_t N, double& ms
     std::vector<__fp16> Xf(static_cast<size_t>(M) * K), Yf(static_cast<size_t>(M) * N, static_cast<__fp16>(0));
     for (size_t i = 0; i < static_cast<size_t>(M) * K; i++) Xf[i] = static_cast<__fp16>(X[i]);
 
-    cactus_quant_matmul(&mat, Xf.data(), M, Yf.data());
+    {
+        BackendGuard bg(backend);
+        cactus_quant_matmul(&mat, Xf.data(), M, Yf.data());
+    }
 
     mse_out = compute_mse(ref.data(), Yf.data(), static_cast<size_t>(M) * N);
     return mse_out <= 0.1;
 }
 
+// NEON and SME2 leaves must agree on the SAME panel fixture: both accumulate identical int32
+// partials before the fp32 rescale, so outputs differ only by fp16 store rounding.
+static bool test_panel_neon_sme_agreement() {
+    const uint32_t K = 1024, gs = 128;
+    for (uint32_t M : {1u, 20u}) {
+        const uint32_t N = (M == 1) ? 192 : 72;
+        SyntheticCQ cq(4, K, N, gs, 909);
+        cq.preexpand();
+        CactusQuantMatrix mat = cq.matrix();
+        std::vector<__fp16> X(static_cast<size_t>(M) * K);
+        fill_random_fp16(X, -1.f, 1.f);
+        std::vector<__fp16> y_neon(static_cast<size_t>(M) * N), y_sme(static_cast<size_t>(M) * N);
+        {
+            BackendGuard bg(1);
+            cactus_quant_matmul(&mat, X.data(), M, y_neon.data());
+        }
+        {
+            BackendGuard bg(2);
+            cactus_quant_matmul(&mat, X.data(), M, y_sme.data());
+        }
+        double mx = 0;
+        for (size_t i = 0; i < y_neon.size(); ++i) {
+            const double d = std::abs(static_cast<double>(y_neon[i]) - static_cast<double>(y_sme[i])) /
+                             std::max(1.0, std::abs(static_cast<double>(y_neon[i])));
+            mx = std::max(mx, d);
+        }
+        if (mx > 2e-3) {
+            std::cerr << "  neon/sme agreement M=" << M << " rel_err=" << mx << "\n";
+            return false;
+        }
+    }
+    return true;
+}
+
 // ── Orthogonal-rotation CQ4 (the Gemma lm_head format) ──────────────────────────────────────
 // Oracle: y[n] = norm[n] * sum_i cb[idx(n,i)] * (a_scaled @ R)[i], fp32. Gates the incumbent and
 // the panel virtual-group driver against the same reference, plus head-to-head agreement.
-static bool test_orth_panel(double& mse_inc, double& mse_panel) {
+static bool test_orth_panel(int backend, double& mse_inc, double& mse_panel) {
     // PRODUCTION lm_head format: orthogonal-rotation CQ4 in the INTERLEAVED_4ROW packed layout
     // (gs == K, ng == 1) for legacy bundles; panel files store it with virtual 128-wide groups.
     // Row-major orthogonal bundles were a transpiler bug and take the per-row fallback.
@@ -503,7 +550,10 @@ static bool test_orth_panel(double& mse_inc, double& mse_panel) {
     W2.packed_panels = panels.data(); W2.norm_panels = npanels.data();
     W2.rotation_t = rot_t.data();
     std::vector<__fp16> y_panel(N);
-    cactus_quant_orthogonal_matmul(&W2, x.data(), 1, y_panel.data());
+    {
+        BackendGuard bg(backend);
+        cactus_quant_orthogonal_matmul(&W2, x.data(), 1, y_panel.data());
+    }
     mse_panel = compute_mse(ref.data(), y_panel.data(), N);
     return mse_inc <= 0.1 && mse_panel <= 0.1 && mse_panel <= mse_inc * 4 + 1e-4;
 }
@@ -513,7 +563,7 @@ static bool test_orth_panel(double& mse_inc, double& mse_panel) {
 // legacy interleaved NEON kernel (old bundles); use_panels=true builds the panel layout from the
 // SAME interleaved fixture through the reference encoder and exercises the panel GEMV
 // (multi-super-block stealing included: N=192 = 3 super-blocks).
-static bool test_cq4_interleaved(bool use_panels, double& mse_out) {
+static bool test_cq4_interleaved(bool use_panels, int backend, double& mse_out) {
     const uint32_t K = 1024, N = 192, gs = 128;   // 192 = 3 super-blocks: exercises multi-SB stealing
     SyntheticCQ cq(4, K, N, gs, 777);
     if (use_panels) cq.preexpand_il();
@@ -528,7 +578,10 @@ static bool test_cq4_interleaved(bool use_panels, double& mse_out) {
 
     std::vector<__fp16> x_f16(K), y(N, (__fp16)0);
     for (size_t i = 0; i < K; i++) x_f16[i] = (__fp16)x_f32[i];
-    cactus_quant_matmul(&mat, x_f16.data(), 1, y.data());
+    {
+        BackendGuard bg(backend);
+        cactus_quant_matmul(&mat, x_f16.data(), 1, y.data());
+    }
     mse_out = compute_mse(ref.data(), y.data(), N);
     return mse_out <= 0.1;
 }
@@ -649,23 +702,27 @@ static void print_panel_comparison() {
         CactusQuantMatrix mat_panel = cq.matrix_interleaved();  // panels set: panel GEMV
         std::vector<__fp16> x(sh.K), y(sh.N);
         fill_random_fp16(x, -1.f, 1.f);
-        auto run_ms = [&](CactusQuantMatrix* m) {
+        auto run_ms = [&](CactusQuantMatrix* m, int backend) {
+            BackendGuard bg(backend);
             cactus_quant_matmul(m, x.data(), 1, y.data());      // warmup
             Timer t;
             for (int i = 0; i < sh.iters; i++) cactus_quant_matmul(m, x.data(), 1, y.data());
             return t.elapsed_ms() / sh.iters;
         };
-        double ms_f = 1e30, ms_p = 1e30;
+        const bool sme = cactus_quant_sme_available() != 0;
+        double ms_f = 1e30, ms_p = 1e30, ms_s = 1e30;
         for (int round = 0; round < 5; round++) {
-            ms_f = std::min(ms_f, run_ms(&mat_file));
-            ms_p = std::min(ms_p, run_ms(&mat_panel));
+            ms_f = std::min(ms_f, run_ms(&mat_file, 1));
+            ms_p = std::min(ms_p, run_ms(&mat_panel, 1));
+            if (sme) ms_s = std::min(ms_s, run_ms(&mat_panel, 0));
         }
         const double fl = 2.0 * sh.K * sh.N;
         double gf = fl / (ms_f * 1e6), gp = fl / (ms_p * 1e6);
         std::cout << "  " << std::left << std::setw(31) << sh.name
                   << " file-NEON " << std::fixed << std::setprecision(1) << gf
-                  << " | panel " << gp << " GF"
-                  << " | " << std::setprecision(2) << (gp / gf)
+                  << " | panel " << gp << " GF";
+        if (sme) std::cout << " | panel-auto(sme) " << fl / (ms_s * 1e6) << " GF";
+        std::cout << " | " << std::setprecision(2) << (gp / gf)
                   << "x  (best of 5x" << sh.iters << ")\n";
     }
     // GEMM (M>1): panel GEMM vs the legacy expand-from-packed NEON GEMM (the real-model M>1
@@ -678,24 +735,28 @@ static void print_panel_comparison() {
         CactusQuantMatrix mat_panel = cq.matrix();    // panels set: panel NEON GEMM
         std::vector<__fp16> A(static_cast<size_t>(M) * K), Cc(static_cast<size_t>(M) * N);
         fill_random_fp16(A, -1.f, 1.f);
-        auto bench = [&](CactusQuantMatrix* m) -> double {
+        auto bench = [&](CactusQuantMatrix* m, int backend) -> double {
+            BackendGuard bg(backend);
             cactus_quant_matmul(m, A.data(), M, Cc.data());     // warmup
             const int iters = 8;
             Timer t;
             for (int i = 0; i < iters; i++) cactus_quant_matmul(m, A.data(), M, Cc.data());
             return t.elapsed_ms() / iters;
         };
-        double ml = 1e30, mp = 1e30;
+        const bool sme = cactus_quant_sme_available() != 0;
+        double ml = 1e30, mp = 1e30, ms = 1e30;
         for (int round = 0; round < 3; round++) {
-            ml = std::min(ml, bench(&mat_legacy));
-            mp = std::min(mp, bench(&mat_panel));
+            ml = std::min(ml, bench(&mat_legacy, 1));
+            mp = std::min(mp, bench(&mat_panel, 1));
+            if (sme) ms = std::min(ms, bench(&mat_panel, 2));
         }
         double gl = (2.0 * M * K * N) / (ml * 1e6), gp = (2.0 * M * K * N) / (mp * 1e6);
         std::string label = "cq4 M" + std::to_string(M) + " 1024x1024";
         std::cout << "  " << std::left << std::setw(20) << label
                   << " legacy " << std::fixed << std::setprecision(1) << gl << " GFLOPS"
-                  << " | panel " << gp << " GFLOPS"
-                  << " | " << std::setprecision(2) << (gp / gl) << "x  (best of 3x8)\n";
+                  << " | panel " << gp << " GFLOPS";
+        if (sme) std::cout << " | panel-sme " << (2.0 * M * K * N) / (ms * 1e6) << " GFLOPS";
+        std::cout << " | " << std::setprecision(2) << (gp / gl) << "x  (best of 3x8)\n";
     }
 }
 
@@ -945,41 +1006,56 @@ int main() {
     runner.run_test("matmul_cq3", test_cq_correctness(3));
     runner.run_test("matmul_cq4", test_cq_correctness(4));
 
-    // ── Panel-format registry: validate the panel kernels through the real dispatch ──
-    for (uint32_t bits : {1u, 2u, 3u, 4u}) {
-        double mse_p = 0.0;
-        bool ok = test_cq_panel(bits, mse_p);
-        runner.run_test(std::string("matmul_cq") + std::to_string(bits) + "[panel]", ok);
-        if (!ok) std::cerr << "    cq" << bits << "[panel] MSE=" << mse_p << "\n";
-    }
-    // GEMM (M>1) variant: M tail (20 -> 16+4) and N tail (72 -> 4 super-blocks + 8 valid) for CQ4.
+    // ── Panel-format registry: validate the panel kernels through the real dispatch.
+    // backend 1 pins the NEON panel kernels; backend 2 (when SME2 silicon is present) forces the
+    // streaming LUTI4/SMOPA leaves so they stay test-covered.
     struct GemmCase { uint32_t M, N; };
-    for (GemmCase gc : {GemmCase{5, 64}, GemmCase{20, 64}, GemmCase{20, 72}, GemmCase{64, 256}}) {
-        double mse_g = 0.0;
-        bool ok = test_cq_panel_gemm(4, gc.M, gc.N, mse_g);
-        runner.run_test(std::string("matmul_cq4_M") + std::to_string(gc.M) +
-                        "_N" + std::to_string(gc.N) + "[panel]", ok);
-        if (!ok) std::cerr << "    cq4 M=" << gc.M << " N=" << gc.N << "[panel] MSE=" << mse_g << "\n";
+    const GemmCase gemm_cases[] = {GemmCase{5, 64}, GemmCase{20, 64}, GemmCase{20, 72}, GemmCase{64, 256}};
+    std::vector<std::pair<int, const char*>> backends{{1, "[panel]"}};
+    if (cactus_quant_sme_available()) backends.push_back({2, "[sme2]"});
+    for (auto [backend, tag] : backends) {
+        for (uint32_t bits : {1u, 2u, 3u, 4u}) {
+            double mse_p = 0.0;
+            bool ok = test_cq_panel(bits, backend, mse_p);
+            runner.run_test(std::string("matmul_cq") + std::to_string(bits) + tag, ok);
+            if (!ok) std::cerr << "    cq" << bits << tag << " MSE=" << mse_p << "\n";
+        }
+        // GEMM (M>1): M tail (20 -> 16+4) and N tail (72 -> 4 super-blocks + 8 valid) for CQ4.
+        for (GemmCase gc : gemm_cases) {
+            double mse_g = 0.0;
+            bool ok = test_cq_panel_gemm(4, gc.M, gc.N, backend, mse_g);
+            runner.run_test(std::string("matmul_cq4_M") + std::to_string(gc.M) +
+                            "_N" + std::to_string(gc.N) + tag, ok);
+            if (!ok) std::cerr << "    cq4 M=" << gc.M << " N=" << gc.N << tag << " MSE=" << mse_g << "\n";
+        }
+        {
+            double mi = 0, mp = 0;
+            bool orth_ok = test_orth_panel(backend, mi, mp);
+            runner.run_test(std::string("matmul_cq4_orth") + tag, orth_ok);
+            if (!orth_ok) std::cerr << "    orth" << tag << " mse_incumbent=" << mi << " mse_panel=" << mp << "\n";
+        }
+        {
+            double m2 = 0;
+            runner.run_test(std::string("matmul_cq4_il") + tag, test_cq4_interleaved(true, backend, m2));
+        }
+        // The panel GEMM is bits-agnostic (panel nibbles are codebook indices) — validate CQ1-3 too.
+        for (uint32_t b : {1u, 2u, 3u}) {
+            double mse_g = 0.0;
+            bool ok = test_cq_panel_gemm(b, 20, 64, backend, mse_g);
+            runner.run_test(std::string("matmul_cq") + std::to_string(b) + "_gemm" + tag, ok);
+            if (!ok) std::cerr << "    cq" << b << " gemm" << tag << " MSE=" << mse_g << "\n";
+        }
     }
     {
-        double mi = 0, mp = 0;
-        bool orth_ok = test_orth_panel(mi, mp);
-        runner.run_test("matmul_cq4_orth[panel]", orth_ok);
-        if (!orth_ok) std::cerr << "    orth mse_incumbent=" << mi << " mse_panel=" << mp << "\n";
-    }
-    {
-        double m1 = 0, m2 = 0;
-        runner.run_test("matmul_cq4_il[file]", test_cq4_interleaved(false, m1));
-        runner.run_test("matmul_cq4_il[panel]", test_cq4_interleaved(true, m2));
+        double m1 = 0;
+        runner.run_test("matmul_cq4_il[file]", test_cq4_interleaved(false, 1, m1));
         runner.run_test("panel_layout_invariance", test_panel_layout_invariance());
         runner.run_test("orth_embed_rows_batched", test_orth_embed_rows());
     }
-    // The panel GEMM is bits-agnostic (panel nibbles are codebook indices) — validate CQ1-3 too.
-    for (uint32_t b : {1u, 2u, 3u}) {
-        double mse_g = 0.0;
-        bool ok = test_cq_panel_gemm(b, 20, 64, mse_g);
-        runner.run_test(std::string("matmul_cq") + std::to_string(b) + "_gemm[panel]", ok);
-        if (!ok) std::cerr << "    cq" << b << " gemm[panel] MSE=" << mse_g << "\n";
+    if (cactus_quant_sme_available()) {
+        runner.run_test("panel_neon_sme_agreement", test_panel_neon_sme_agreement());
+    } else {
+        std::cout << "  (SME2 unavailable on this CPU — [sme2] variants skipped)\n";
     }
 
     runner.print_benchmarks_header();
