@@ -16,14 +16,21 @@ from cactus.transpile.runtime_compat import Graph
 from cactus.transpile.weight_binding import WeightBinding
 from cactus.convert.quantization.cq import FLAG_ORTHOGONAL_ROTATION
 from cactus.convert.quantization.cq import FLAG_INTERLEAVED_4ROW
+from cactus.convert.quantization.cq import FLAG_PACKED_PANELS
 from cactus.convert.quantization.cq import GROUP_SIZE as CQ_GROUP_SIZE
+from cactus.convert.quantization.cq import PANEL_WEIGHTS_SUFFIX
 from cactus.convert.quantization.cq import PRECISION_CQ
+from cactus.convert.quantization.cq import canonicalize_codebook_indices
+from cactus.convert.quantization.cq import fold_panel_norms
 from cactus.convert.quantization.cq import make_codebook
 from cactus.convert.quantization.cq import make_hadamard_components
 from cactus.convert.quantization.cq import make_hadamard_matrix
 from cactus.convert.quantization.cq import make_orthogonal_rotation
 from cactus.convert.quantization.cq import pack_indices_interleaved_4row
 from cactus.convert.quantization.cq import pack_indices_lsb
+from cactus.convert.quantization.cq import pack_indices_panels
+from cactus.convert.quantization.cq import panel_weights_path
+from cactus.convert.quantization.cq import quantize_codebook_i8
 from cactus.convert.quantization.cq import quantize_hadamard
 from cactus.convert.quantization.cq import quantize_orthogonal
 from cactus.convert.quantization.cq import write_cq_tensor
@@ -90,13 +97,23 @@ def ensure_embedding_binding_compatible(binding: WeightBinding) -> WeightBinding
     if config is None:
         return binding
 
-    compat_path = source_path.with_name(source_path.stem + f".cq{config['bits']}.weights")
+    bits = int(config["bits"])
+    rotation = str(config["rotation"])
+    # CQ4 orthogonal embeddings (token_embeddings == the tied lm_head) materialize in the
+    # packed-panel format under its own suffix; CQ2 per-layer hadamard embeddings keep the
+    # legacy row-major layout (the engine's hadamard row decoder reads it).
+    use_panels = bits == 4 and rotation == "orthogonal"
+    if use_panels:
+        compat_path = panel_weights_path(source_path)
+    else:
+        compat_path = source_path.with_name(source_path.stem + f".cq{bits}.weights")
     _materialize_cq_embedding_cache(
         opened,
         compat_path,
-        bits=int(config["bits"]),
-        rotation=str(config["rotation"]),
+        bits=bits,
+        rotation=rotation,
         layout=str(config.get("layout", "row_major")),
+        packed_panels=use_panels,
     )
     _cleanup_legacy_fp16_cache(source_path)
     return WeightBinding(path=str(compat_path), kind=binding.kind, source_name=binding.source_name)
@@ -121,12 +138,14 @@ def _ensure_legacy_int4_weight_binding_compatible(
     if not _is_legacy_packed_int4_tensor(opened):
         return binding
 
-    compat_path = source_path.with_name(source_path.stem + ".cq4.weights")
+    # CQ4 companions are written in the packed-panel format (its own suffix); the matmul kernels
+    # consume the mmap directly.
+    compat_path = panel_weights_path(source_path)
     if compat_path.exists():
         if _can_materialize_compat_weight(source_tensor):
             _materialize_source_cq_weight(
                 source_tensor,
-                compat_path,
+                source_path,
                 bits=4,
                 rotation="hadamard",
                 scale_factor=_compat_weight_scale_factor(source_path),
@@ -142,15 +161,15 @@ def _ensure_legacy_int4_weight_binding_compatible(
             "or generate them through `cq_convert` first."
         )
 
-    _materialize_source_cq_weight(
+    written = _materialize_source_cq_weight(
         source_tensor,
-        compat_path,
+        source_path,
         bits=4,
         rotation="hadamard",
         scale_factor=_compat_weight_scale_factor(source_path),
         source_mtime_ns=source_path.stat().st_mtime_ns,
     )
-    return WeightBinding(path=str(compat_path), kind=binding.kind, source_name=binding.source_name)
+    return WeightBinding(path=str(written), kind=binding.kind, source_name=binding.source_name)
 
 
 def _is_legacy_packed_int4_tensor(opened: _OpenedTensor) -> bool:
@@ -197,9 +216,12 @@ def _materialize_source_cq_weight(
     rotation: str,
     scale_factor: float = 1.0,
     source_mtime_ns: int | None = None,
-) -> None:
-    if source_mtime_ns is not None and out_path.exists() and out_path.stat().st_mtime_ns >= source_mtime_ns:
-        return
+) -> Path:
+    # write_cq_tensor picks the panel suffix for CQ4 weights; the freshness check targets that
+    # actual companion file.
+    target = panel_weights_path(out_path) if bits == 4 else out_path
+    if source_mtime_ns is not None and target.exists() and target.stat().st_mtime_ns >= source_mtime_ns:
+        return target
 
     if rotation == "orthogonal":
         cq = quantize_orthogonal(tensor, bits=bits)
@@ -207,7 +229,7 @@ def _materialize_source_cq_weight(
         cq = quantize_hadamard(tensor, bits=bits, use_gptq=False)
     if float(scale_factor) != 1.0:
         cq = replace(cq, norms=(cq.norms.astype(np.float32) * float(scale_factor)).astype(np.float16))
-    write_cq_tensor(out_path, cq)
+    return write_cq_tensor(out_path, cq)
 
 
 def _open_cactus_tensor_file(path: str | Path) -> _OpenedTensor:
@@ -290,6 +312,7 @@ def _materialize_cq_embedding_cache(
     bits: int,
     rotation: str,
     layout: str = "row_major",
+    packed_panels: bool = False,
 ) -> None:
     src_mtime_ns = opened.path.stat().st_mtime_ns
     if out_path.exists() and out_path.stat().st_mtime_ns >= src_mtime_ns:
@@ -297,6 +320,10 @@ def _materialize_cq_embedding_cache(
 
     if len(opened.shape) != 2:
         raise RuntimeError(f"expected rank-2 embedding tensor, got shape={opened.shape}")
+
+    if packed_panels:
+        _materialize_cq_embedding_cache_panels(opened, out_path, bits=bits, rotation=rotation)
+        return
 
     rows = int(opened.original_n or opened.shape[0])
     cols = int(opened.shape[1])
@@ -391,6 +418,107 @@ def _materialize_cq_embedding_cache(
                 pass
 
 
+def _materialize_cq_embedding_cache_panels(
+    opened: _OpenedTensor,
+    out_path: Path,
+    *,
+    bits: int,
+    rotation: str,
+) -> None:
+    """Materialize a tied orthogonal CQ4 embedding/lm_head as a packed-panel file.
+
+    The data region holds kernel-ready panels [SB64][ng][gs/4][128B] (ng = K/128 virtual
+    groups). The scales region carries the legacy fp16 norms (unfolded, replicated per virtual
+    group — the embedding row decoder uses them with the fp16 codebook) AND the fp32 folded
+    panel norms (the lm_head matmul rescale), then the rotation and its transpose. Rows stream
+    in 64-aligned chunks so the super-block panel order assembles by append.
+    """
+    if rotation != "orthogonal" or bits != 4:
+        raise RuntimeError(f"packed-panel embedding cache requires orthogonal CQ4, got rotation={rotation} bits={bits}")
+
+    rows = int(opened.original_n or opened.shape[0])
+    cols = int(opened.shape[1])
+    if cols % 128 != 0:
+        raise RuntimeError(f"packed-panel embedding cache requires cols % 128 == 0, got {cols}")
+
+    input_scale = _estimate_embedding_input_scale(opened, rows=rows, cols=cols)
+    input_scale = np.asarray(input_scale, dtype=np.float16).reshape(cols)
+    recip = np.minimum(1.0 / np.maximum(input_scale.astype(np.float32), 1e-8), 65504.0).astype(np.float16)
+
+    codebook = make_codebook(cols, bits).astype(np.float16)
+    cb_i8, cb_scale = quantize_codebook_i8(codebook)
+    rotation_mat = make_orthogonal_rotation(cols, seed=1234).astype(np.float16)
+
+    header_gs = 128
+    header_ng = cols // header_gs
+    nkg = header_gs // 4
+    sb64 = (rows + 63) // 64
+
+    base = _recommended_chunk_rows(cols=cols, rotation="orthogonal")
+    chunk_rows = max(64, ((base + 63) // 64) * 64)  # 64-aligned: only the last chunk is partial
+
+    norms_tmp = out_path.with_suffix(out_path.suffix + ".norms.tmp")
+    panel_norms_tmp = out_path.with_suffix(out_path.suffix + ".pn.tmp")
+    data_tmp = out_path.with_suffix(out_path.suffix + ".data.tmp")
+    final_tmp = out_path.with_suffix(out_path.suffix + ".tmp")
+
+    try:
+        with norms_tmp.open("wb") as norms_handle, \
+             panel_norms_tmp.open("wb") as pnorms_handle, \
+             data_tmp.open("wb") as data_handle:
+            for start in range(0, rows, chunk_rows):
+                stop = min(start + chunk_rows, rows)
+                chunk = _dequantize_int8_rows(opened, start, stop)
+                idx, norms = _quantize_orthogonal_chunk_indices(chunk, bits=bits, input_scale=input_scale)
+                canonical = canonicalize_codebook_indices(idx, cb_i8)
+                data_handle.write(np.ascontiguousarray(pack_indices_panels(canonical, header_gs)).tobytes())
+                norms_rep = np.repeat(norms.astype(np.float16).reshape(-1, 1), header_ng, axis=1)
+                norms_handle.write(np.ascontiguousarray(norms_rep, dtype=np.float16).tobytes())
+                pnorms_handle.write(np.ascontiguousarray(fold_panel_norms(norms_rep, cb_scale), dtype=np.float32).tobytes())
+
+        norms_bytes = norms_tmp.read_bytes()
+        panel_norms_bytes = panel_norms_tmp.read_bytes()
+        prefix = b"".join([codebook.tobytes(), input_scale.tobytes(), recip.tobytes(), norms_bytes])
+        pad = b"\x00" * (align_offset(len(prefix), 4) - len(prefix))
+        scales_blob = b"".join([
+            prefix,
+            pad,
+            panel_norms_bytes,
+            rotation_mat.tobytes(),
+            np.ascontiguousarray(rotation_mat.T).tobytes(),
+        ])
+        packed_bytes = sb64 * header_ng * nkg * 128
+        flags = FLAG_PACKED_PANELS | FLAG_ORTHOGONAL_ROTATION
+        with final_tmp.open("wb") as handle:
+            _write_cq_header(
+                handle,
+                rows=rows,
+                cols=cols,
+                precision=int(PRECISION_CQ[int(bits)]),
+                packed_bytes=packed_bytes,
+                scales_bytes=len(scales_blob),
+                group_size=header_gs,
+                num_groups=header_ng,
+                flags=flags,
+            )
+            scales_offset = align_offset(_HEADER_SIZE, CACTUS_ALIGNMENT)
+            handle.write(b"\x00" * (scales_offset - _HEADER_SIZE))
+            handle.write(scales_blob)
+            data_offset = align_offset(scales_offset + len(scales_blob), CACTUS_ALIGNMENT)
+            current = handle.tell()
+            if data_offset > current:
+                handle.write(b"\x00" * (data_offset - current))
+            with data_tmp.open("rb") as packed_handle:
+                shutil.copyfileobj(packed_handle, handle, length=8 * 1024 * 1024)
+        final_tmp.replace(out_path)
+    finally:
+        for temp_path in (norms_tmp, panel_norms_tmp, data_tmp):
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def _recommended_chunk_rows(*, cols: int, rotation: str) -> int:
     if rotation == "orthogonal":
         if cols >= 8192:
@@ -470,16 +598,29 @@ def _quantize_orthogonal_chunk(
     input_scale: np.ndarray,
     interleaved: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
+    indices, norms = _quantize_orthogonal_chunk_indices(chunk, bits=bits, input_scale=input_scale)
+    cols = chunk.shape[1]
+    norms_f16 = norms.astype(np.float16).reshape(-1, 1)
+    if interleaved:
+        return pack_indices_interleaved_4row(indices, cols, bits), norms_f16
+    return pack_indices_lsb(indices, cols, bits), norms_f16
+
+
+def _quantize_orthogonal_chunk_indices(
+    chunk: np.ndarray,
+    *,
+    bits: int,
+    input_scale: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Raw codebook indices [chunk, cols] (uint8) + per-row norms [chunk] (fp32)."""
     work = chunk.astype(np.float32, copy=False) * input_scale.astype(np.float32, copy=False)[None, :]
-    rows, cols = work.shape
+    cols = work.shape[1]
     rotation = make_orthogonal_rotation(cols, seed=1234).astype(np.float32)
     codebook = make_codebook(cols, bits).astype(np.float32)
     norms = np.linalg.norm(work, axis=1).clip(min=1e-8).astype(np.float32, copy=False)
     rotated = (work / norms[:, None]) @ rotation
     indices = np.abs(rotated[..., None] - codebook[None, None, :]).argmin(axis=-1).astype(np.uint8)
-    if interleaved:
-        return pack_indices_interleaved_4row(indices, cols, bits), norms.astype(np.float16).reshape(rows, 1)
-    return pack_indices_lsb(indices, cols, bits), norms.astype(np.float16).reshape(rows, 1)
+    return indices, norms
 
 
 def _write_cq_header(

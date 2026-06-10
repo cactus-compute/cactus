@@ -33,7 +33,8 @@ def test_token_embedding_binding_upgrades_to_cq4(tmp_path: Path) -> None:
     )
     compat = ensure_embedding_binding_compatible(binding)
 
-    assert compat.path.endswith(".cq4.weights")
+    # Orthogonal CQ4 token embeddings (the tied lm_head) materialize as packed panels.
+    assert compat.path.endswith(".cq4p.weights")
     assert compat.kind == "embedding"
     assert not legacy_fp16.exists()
 
@@ -75,7 +76,8 @@ def test_gemma4_per_layer_projection_binding_upgrades_legacy_int4(tmp_path: Path
     )
     compat = ensure_binding_compatible(binding, source_tensor=tensor)
 
-    assert compat.path.endswith(".cq4.weights")
+    # Legacy INT4 weights upgrade to packed-panel CQ4 companions.
+    assert compat.path.endswith(".cq4p.weights")
     opened = _open_cactus_tensor_file(compat.path)
     assert opened.precision == 6
     assert opened.shape == (8, 128)
@@ -88,7 +90,7 @@ def test_decoder_binding_prefers_existing_cq4_companion(tmp_path: Path) -> None:
     tensor = rng.standard_normal((8, 128), dtype=np.float32)
     save_tensor_with_header(tensor, source, precision="INT4", model_type="generic")
 
-    companion = tmp_path / "layer_0_attn_q.cq4.weights"
+    companion = tmp_path / "layer_0_attn_q.cq4p.weights"
     save_tensor_with_header(tensor, companion, precision="FP16", model_type="generic")
 
     binding = WeightBinding(

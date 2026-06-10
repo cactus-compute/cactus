@@ -219,8 +219,18 @@ struct CactusQuantMatrix {
     const int8_t* right_signs;
     const uint32_t* permutation;
     const __fp16* rotation;
+    // Transposed rotation (rot_t[i][k] = R[k][i], fp16 K x K), stored alongside `rotation` in
+    // panel-format files so the orthogonal GEMV phase-A needs no derived buffers.
+    const __fp16* rotation_t;
     const int8_t* expanded;
     const float* norm_f32;
+    // Packed-panel file format (mmap'd straight from the weights file): PACKED 4-bit codebook
+    // indices laid out in 64-channel super-block panels ([SB64][num_groups][gs/4][128B]; nibble j
+    // of a kg-block = byte j of the int8 panel [4 vectors][16 ch][4 K], vector v = channels
+    // 16v..16v+15, low nibble first) + matching norms ([SB64][num_groups][64] float, cb_scale
+    // folded; padded channels have norm 0). Null -> legacy-format kernels.
+    const uint8_t* packed_panels;
+    const float* norm_panels;
 };
 
 uint32_t cactus_quant_packed_group_bytes(uint32_t bits, uint32_t group_size);
@@ -281,6 +291,19 @@ void cactus_quant_orthogonal_matmul(
     uint32_t M,
     __fp16* C);
 
+// Reference encoder for the packed-panel format (row-major or INTERLEAVED_4ROW source layout).
+// panels_out: SB64*num_groups*(group_size/4)*128 bytes (SB64 = ceil(N/64)); norms_out:
+// SB64*num_groups*64 floats. See CactusQuantMatrix::packed_panels. Production panel files are
+// written by the transpiler; this is the byte-exact reference its output is tested against.
+void cactus_quant_build_panels(const CactusQuantMatrix* W, uint8_t* panels_out, float* norms_out);
+
+// Orthogonal-rotation CQ4 GEMV over packed panels (lm_head). W2 = virtual-group view of the
+// orthogonal matrix as stored in panel files (group_size=128, num_groups=K/128, norms replicated
+// per group, packed_panels/norm_panels set); rot_t = K x K fp16 rotation TRANSPOSED
+// (rot_t[i][k] = R[k][i]).
+void cactus_quant_orth_panel_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t,
+                                  const __fp16* input_scale_recip, const __fp16* A, __fp16* C);
+
 void cactus_quant_4bit_gemv_interleaved(
     const CactusQuantMatrix* W,
     const uint8_t* packed_interleaved,
@@ -335,6 +358,38 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
     const __fp16* rotation,
     uint32_t flags,
     __fp16* out_row);
+
+// Batched + parallelized version of the above for num_rows unique rows (same fp32-accumulate
+// math; the per-row variant is a serial scalar K^2 matvec). INTERLEAVED_4ROW only (the
+// production orthogonal-embedding format; no-op otherwise). out_rows: [num_rows][K].
+void cactus_quant_dequantize_orthogonal_embedding_rows(
+    uint32_t bits,
+    uint32_t K,
+    const uint32_t* rows,
+    uint32_t num_rows,
+    const uint8_t* packed_base,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const __fp16* rotation,
+    uint32_t flags,
+    __fp16* out_rows);
+
+// Panel-format variant of the batched embedding dequant: decodes rows straight from the
+// file-borne packed panels with the UNFOLDED fp16 norms (row-major [N][num_groups] in panel
+// files), then the same vectorized un-rotation. out_rows: [num_rows][K].
+void cactus_quant_dequantize_orthogonal_embedding_rows_panels(
+    uint32_t K,
+    uint32_t group_size,
+    uint32_t num_groups,
+    const uint32_t* rows,
+    uint32_t num_rows,
+    const uint8_t* packed_panels,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const __fp16* rotation,
+    __fp16* out_rows);
 
 void cactus_rms_norm_f16(
     const __fp16* input,

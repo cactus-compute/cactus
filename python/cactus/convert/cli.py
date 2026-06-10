@@ -493,6 +493,7 @@ def convert(args: argparse.Namespace) -> None:
             precision = emit_policy.precision
             gptq_used = False
             hessian_missing_reason = None
+            written_path = out_path
             module_name = adapter.module_target_name(name, model) or _module_name(name)
             try:
                 if not match.recognized and args.strict:
@@ -522,7 +523,9 @@ def convert(args: argparse.Namespace) -> None:
                     cq = _scale_cq_norms(cq, adapter.scale_factor(out_path.name))
                     if getattr(emit_policy, "layout", "row_major") == "interleaved_4row":
                         cq = replace(cq, interleaved_4row=True)
-                    write_cq_tensor(out_path, cq)
+                    # Panel-format CQ4 weights carry their own filename suffix; the manifest
+                    # records the actual written file so bindings resolve to it.
+                    written_path = write_cq_tensor(out_path, cq)
                     gptq_used = cq.gptq_used
                     status = "converted" if match.recognized else "unrecognized"
                 elif emit_policy.action == "fallback" and out_path is not None:
@@ -542,7 +545,7 @@ def convert(args: argparse.Namespace) -> None:
                 "source_name": name,
                 "hf_name": match.hf_name or name,
                 "adapter_name": match.adapter_name or name,
-                "output_file": str(out_path.name) if out_path else None,
+                "output_file": str(written_path.name) if written_path else None,
                 "shape": list(_tensor_shape(emit_tensor)),
                 "dtype": str(getattr(emit_tensor, "dtype", "")),
                 "component": emit_policy.component,

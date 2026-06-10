@@ -25,6 +25,7 @@ ALIGNMENT_DEFAULT = 32
 FLAG_ORTHOGONAL_ROTATION = 1 << 1
 FLAG_INTERLEAVED_4ROW = 1 << 2
 FLAG_INTERLEAVED = 1 << 3
+FLAG_PACKED_PANELS = 1 << 5
 
 PRECISION_INT8 = 0
 PRECISION_FP16 = 1
@@ -220,6 +221,82 @@ def unpack_interleaved_4row_4bit(packed: np.ndarray, rows: int, cols: int) -> np
     return out.reshape(rows, cols)
 
 
+def unpack_panels(packed: np.ndarray, n: int, group_size: int, num_groups: int) -> np.ndarray:
+    """Inverse of pack_indices_panels: panel bytes [SB64][ng][gs/4][128] -> indices [n][k]."""
+    nkg = group_size // 4
+    sb64 = (n + 63) // 64
+    p = packed.reshape(sb64, num_groups, nkg, 128)
+    nib = np.empty((sb64, num_groups, nkg, 256), dtype=np.uint8)
+    nib[..., 0::2] = p & 0x0F
+    nib[..., 1::2] = (p >> 4) & 0x0F
+    a = nib.reshape(sb64, num_groups, nkg, 64, 4).transpose(0, 3, 1, 2, 4)
+    return a.reshape(sb64 * 64, num_groups * group_size)[:n]
+
+
+def parse_panel_metadata(blob: bytes, header: CactusHeader):
+    """Returns (codebook, input_scale, norms[n][ng] fp16, rotation_or_hadamard) for a panel file.
+
+    The folded fp32 panel-norms region and the transposed rotation are skipped — QDQ reconstructs
+    from the unfolded fp16 norms + the forward rotation (orthogonal) or hadamard parts.
+    """
+    n, k = header.shape
+    ng = header.num_groups
+    gs = header.group_size
+    pos = 0
+    codebook = np.frombuffer(blob, dtype=np.float16, count=1 << header.bits, offset=pos).astype(np.float32)
+    pos += (1 << header.bits) * 2
+    input_scale = np.frombuffer(blob, dtype=np.float16, count=k, offset=pos).astype(np.float32)
+    pos += k * 2
+    pos += k * 2  # recip
+    norms = np.frombuffer(blob, dtype=np.float16, count=n * ng, offset=pos).astype(np.float32).reshape(n, ng)
+    pos += n * ng * 2
+    pos = align_offset(pos, 4)
+    sb64 = (n + 63) // 64
+    pos += sb64 * ng * 64 * 4  # folded fp32 panel norms
+    if header.flags & FLAG_ORTHOGONAL_ROTATION:
+        rotation = np.frombuffer(blob, dtype=np.float16, count=k * k, offset=pos).astype(np.float32).reshape(k, k)
+        return codebook, input_scale, norms, rotation
+    left = np.frombuffer(blob, dtype=np.int8, count=gs, offset=pos).astype(np.float32)
+    pos += gs
+    right = np.frombuffer(blob, dtype=np.int8, count=gs, offset=pos).astype(np.float32)
+    pos += gs
+    perm = np.frombuffer(blob, dtype="<u4", count=gs, offset=pos).astype(np.int64)
+    return codebook, input_scale, norms, (left, right, perm)
+
+
+def dequantize_cq_panels(path: Path, header: CactusHeader, out_dtype: torch.dtype, row_batch_size: int = 2048) -> torch.Tensor:
+    n, k = header.shape
+    ng = header.num_groups
+    gs = header.group_size
+    scales_blob, packed = read_cq_payload(path, header)
+    codebook, input_scale, norms, rot = parse_panel_metadata(scales_blob, header)
+    idx_all = unpack_panels(packed, n, gs, ng).astype(np.int64)
+    scale = input_scale[None, :]
+    is_orth = bool(header.flags & FLAG_ORTHOGONAL_ROTATION)
+    if is_orth:
+        rt = rot.T.copy()
+    else:
+        left, right, perm = rot
+        base_h = (hadamard(gs, dtype=float) / math.sqrt(gs)).astype(np.float32)
+        rotation = (left[:, None] * base_h * right[None, :])[:, perm]
+        rt = rotation.T.copy()
+    out = torch.empty(n, k, dtype=out_dtype)
+    batch = max(1, int(row_batch_size))
+    for start in range(0, n, batch):
+        stop = min(start + batch, n)
+        cb = codebook[idx_all[start:stop]]  # [b, k]
+        if is_orth:
+            recon = (cb @ rt) * norms[start:stop, :1]
+            arr = recon / scale
+        else:
+            arr = np.empty((stop - start, k), dtype=np.float32)
+            for g in range(ng):
+                lo, hi = g * gs, (g + 1) * gs
+                arr[:, lo:hi] = ((cb[:, lo:hi] @ rt) * norms[start:stop, g : g + 1]) / scale[:, lo:hi]
+        out[start:stop] = torch.from_numpy(arr.copy()).to(out_dtype)
+    return out
+
+
 def dequantize_fp_file(path: Path, header: CactusHeader, out_dtype: torch.dtype) -> torch.Tensor:
     offset = align_offset(HEADER_SIZE, header.alignment)
     dtype = np.float16 if header.precision == PRECISION_FP16 else np.float32
@@ -322,6 +399,8 @@ def parse_orthogonal_metadata(blob: bytes, header: CactusHeader):
 def dequantize_cq_file(path: Path, header: CactusHeader, out_dtype: torch.dtype, row_batch_size: int) -> torch.Tensor:
     if header.ndim != 2:
         raise ValueError(f"{path}: CQ tensors must be 2D, got shape={header.shape}")
+    if header.flags & FLAG_PACKED_PANELS:
+        return dequantize_cq_panels(path, header, out_dtype, row_batch_size)
     n, k = header.shape
     bits = header.bits
     scales_blob, packed = read_cq_payload(path, header)
