@@ -312,11 +312,19 @@ final class Cactus: RCTEventEmitter {
             return
         }
         var idValues = ids.map { Int32(truncating: $0) }
+        guard documents.count == idValues.count, embeddings.count == idValues.count, metadatas == nil || metadatas!.count == idValues.count else {
+            self.reject(reject, "ids, documents, embeddings and metadatas must have equal length")
+            return
+        }
+        let embeddingDim = embeddings.first?.count ?? 0
+        guard embeddings.allSatisfy({ $0.count == embeddingDim }) else {
+            self.reject(reject, "Embedding rows must all have the same length")
+            return
+        }
         var docStrings = documents.map { strdup($0) }
         var docPointers = docStrings.map { UnsafePointer<CChar>($0) }
         var metaStrings = metadatas?.map { strdup($0) }
         var metaPointers = metaStrings?.map { UnsafePointer<CChar>($0) }
-        let embeddingDim = embeddings.first?.count ?? 0
         var embeddingPointers = embeddings.map { row -> UnsafeMutablePointer<Float> in
             let ptr = UnsafeMutablePointer<Float>.allocate(capacity: row.count)
             for (index, value) in row.enumerated() {

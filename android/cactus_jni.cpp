@@ -29,6 +29,7 @@ static void token_callback_bridge(const char* token, uint32_t token_id, void* us
     if (!env) return;
     jstring jtoken = token ? env->NewStringUTF(token) : nullptr;
     env->CallVoidMethod(ctx->callback, ctx->method, jtoken, static_cast<jint>(token_id));
+    if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
     if (jtoken) env->DeleteLocalRef(jtoken);
     if (attached) ctx->jvm->DetachCurrentThread();
 }
@@ -46,6 +47,7 @@ static void log_callback_bridge(int level, const char* component, const char* me
     jstring jcomponent = component ? env->NewStringUTF(component) : nullptr;
     jstring jmessage = message ? env->NewStringUTF(message) : nullptr;
     env->CallVoidMethod(ctx->callback, ctx->method, static_cast<jint>(level), jcomponent, jmessage);
+    if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
     if (jcomponent) env->DeleteLocalRef(jcomponent);
     if (jmessage) env->DeleteLocalRef(jmessage);
     if (attached) ctx->jvm->DetachCurrentThread();
@@ -374,12 +376,15 @@ Java_com_cactus_CactusJNI_nativeIndexAdd(JNIEnv* env, jobject, jlong handle,
     jstring* metaStrings = new jstring[count];
     jfloatArray* embArrays = new jfloatArray[count];
 
+    jsize acquired = 0;
     for (jsize i = 0; i < count; i++) {
         docStrings[i] = static_cast<jstring>(env->GetObjectArrayElement(documents, i));
+        if (!docStrings[i]) break;
         docPtrs[i] = env->GetStringUTFChars(docStrings[i], nullptr);
 
         if (metadatas) {
             metaStrings[i] = static_cast<jstring>(env->GetObjectArrayElement(metadatas, i));
+            if (!metaStrings[i]) { env->ReleaseStringUTFChars(docStrings[i], docPtrs[i]); env->DeleteLocalRef(docStrings[i]); break; }
             metaPtrs[i] = env->GetStringUTFChars(metaStrings[i], nullptr);
         } else {
             metaStrings[i] = nullptr;
@@ -387,17 +392,29 @@ Java_com_cactus_CactusJNI_nativeIndexAdd(JNIEnv* env, jobject, jlong handle,
         }
 
         embArrays[i] = static_cast<jfloatArray>(env->GetObjectArrayElement(embeddings, i));
+        if (!embArrays[i]) {
+            env->ReleaseStringUTFChars(docStrings[i], docPtrs[i]); env->DeleteLocalRef(docStrings[i]);
+            if (metaStrings[i]) { env->ReleaseStringUTFChars(metaStrings[i], metaPtrs[i]); env->DeleteLocalRef(metaStrings[i]); }
+            break;
+        }
         embPtrs[i] = env->GetFloatArrayElements(embArrays[i], nullptr);
+        acquired = i + 1;
     }
 
-    int result = cactus_index_add(
-        reinterpret_cast<cactus_index_t>(handle),
-        reinterpret_cast<const int*>(idData),
-        docPtrs, metadatas ? metaPtrs : nullptr, embPtrs,
-        static_cast<size_t>(count), static_cast<size_t>(embeddingDim)
-    );
+    int result;
+    if (acquired < count) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        result = -1;
+    } else {
+        result = cactus_index_add(
+            reinterpret_cast<cactus_index_t>(handle),
+            reinterpret_cast<const int*>(idData),
+            docPtrs, metadatas ? metaPtrs : nullptr, embPtrs,
+            static_cast<size_t>(count), static_cast<size_t>(embeddingDim)
+        );
+    }
 
-    for (jsize i = 0; i < count; i++) {
+    for (jsize i = 0; i < acquired; i++) {
         env->ReleaseStringUTFChars(docStrings[i], docPtrs[i]);
         env->DeleteLocalRef(docStrings[i]);
         if (metaStrings[i]) { env->ReleaseStringUTFChars(metaStrings[i], metaPtrs[i]); env->DeleteLocalRef(metaStrings[i]); }
@@ -455,28 +472,46 @@ Java_com_cactus_CactusJNI_nativeIndexGet(JNIEnv* env, jobject, jlong handle,
     jlong* metaSizesIn = env->GetLongArrayElements(metadataBufferSizes, nullptr);
     jlong* embSizesIn = env->GetLongArrayElements(embeddingBufferSizes, nullptr);
 
+    jsize acquired = 0;
     for (jsize i = 0; i < count; i++) {
         docArrays[i] = static_cast<jbyteArray>(env->GetObjectArrayElement(documentBuffers, i));
+        if (!docArrays[i]) break;
         docBufs[i] = reinterpret_cast<char*>(env->GetByteArrayElements(docArrays[i], nullptr));
         docSizes[i] = static_cast<size_t>(docSizesIn[i]);
 
         metaArrays[i] = static_cast<jbyteArray>(env->GetObjectArrayElement(metadataBuffers, i));
+        if (!metaArrays[i]) {
+            env->ReleaseByteArrayElements(docArrays[i], reinterpret_cast<jbyte*>(docBufs[i]), JNI_ABORT); env->DeleteLocalRef(docArrays[i]);
+            break;
+        }
         metaBufs[i] = reinterpret_cast<char*>(env->GetByteArrayElements(metaArrays[i], nullptr));
         metaSizes[i] = static_cast<size_t>(metaSizesIn[i]);
 
         embArrays[i] = static_cast<jfloatArray>(env->GetObjectArrayElement(embeddingBuffers, i));
+        if (!embArrays[i]) {
+            env->ReleaseByteArrayElements(docArrays[i], reinterpret_cast<jbyte*>(docBufs[i]), JNI_ABORT); env->DeleteLocalRef(docArrays[i]);
+            env->ReleaseByteArrayElements(metaArrays[i], reinterpret_cast<jbyte*>(metaBufs[i]), JNI_ABORT); env->DeleteLocalRef(metaArrays[i]);
+            break;
+        }
         embBufs[i] = env->GetFloatArrayElements(embArrays[i], nullptr);
         embSizes[i] = static_cast<size_t>(embSizesIn[i]);
+        acquired = i + 1;
     }
 
-    int result = cactus_index_get(
-        reinterpret_cast<cactus_index_t>(handle),
-        reinterpret_cast<const int*>(idData),
-        static_cast<size_t>(count),
-        docBufs, docSizes, metaBufs, metaSizes, embBufs, embSizes
-    );
+    int result;
+    if (acquired < count) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        result = -1;
+    } else {
+        result = cactus_index_get(
+            reinterpret_cast<cactus_index_t>(handle),
+            reinterpret_cast<const int*>(idData),
+            static_cast<size_t>(count),
+            docBufs, docSizes, metaBufs, metaSizes, embBufs, embSizes
+        );
+    }
 
-    for (jsize i = 0; i < count; i++) {
+    for (jsize i = 0; i < acquired; i++) {
         env->ReleaseByteArrayElements(docArrays[i], reinterpret_cast<jbyte*>(docBufs[i]), 0);
         env->DeleteLocalRef(docArrays[i]);
         env->ReleaseByteArrayElements(metaArrays[i], reinterpret_cast<jbyte*>(metaBufs[i]), 0);
@@ -518,11 +553,6 @@ Java_com_cactus_CactusJNI_nativeIndexQuery(JNIEnv* env, jobject, jlong handle,
     const float** embPtrs = new const float*[embCount];
     jfloatArray* embArrays = new jfloatArray[embCount];
 
-    for (jsize i = 0; i < embCount; i++) {
-        embArrays[i] = static_cast<jfloatArray>(env->GetObjectArrayElement(embeddings, i));
-        embPtrs[i] = env->GetFloatArrayElements(embArrays[i], nullptr);
-    }
-
     int** idPtrs = new int*[embCount];
     size_t* idSizes = new size_t[embCount];
     float** scorePtrs = new float*[embCount];
@@ -534,23 +564,44 @@ Java_com_cactus_CactusJNI_nativeIndexQuery(JNIEnv* env, jobject, jlong handle,
     jlong* idSizesIn = env->GetLongArrayElements(idBufferSizes, nullptr);
     jlong* scoreSizesIn = env->GetLongArrayElements(scoreBufferSizes, nullptr);
 
+    jsize acquired = 0;
     for (jsize i = 0; i < embCount; i++) {
+        embArrays[i] = static_cast<jfloatArray>(env->GetObjectArrayElement(embeddings, i));
+        if (!embArrays[i]) break;
+        embPtrs[i] = env->GetFloatArrayElements(embArrays[i], nullptr);
+
         idJArrays[i] = static_cast<jintArray>(env->GetObjectArrayElement(idBuffers, i));
+        if (!idJArrays[i]) {
+            env->ReleaseFloatArrayElements(embArrays[i], const_cast<jfloat*>(embPtrs[i]), JNI_ABORT); env->DeleteLocalRef(embArrays[i]);
+            break;
+        }
         idPtrs[i] = env->GetIntArrayElements(idJArrays[i], nullptr);
         idSizes[i] = static_cast<size_t>(idSizesIn[i]);
 
         scoreJArrays[i] = static_cast<jfloatArray>(env->GetObjectArrayElement(scoreBuffers, i));
+        if (!scoreJArrays[i]) {
+            env->ReleaseFloatArrayElements(embArrays[i], const_cast<jfloat*>(embPtrs[i]), JNI_ABORT); env->DeleteLocalRef(embArrays[i]);
+            env->ReleaseIntArrayElements(idJArrays[i], idPtrs[i], JNI_ABORT); env->DeleteLocalRef(idJArrays[i]);
+            break;
+        }
         scorePtrs[i] = env->GetFloatArrayElements(scoreJArrays[i], nullptr);
         scoreSizes[i] = static_cast<size_t>(scoreSizesIn[i]);
+        acquired = i + 1;
     }
 
-    int result = cactus_index_query(
-        reinterpret_cast<cactus_index_t>(handle),
-        embPtrs, static_cast<size_t>(embCount), static_cast<size_t>(embeddingDim),
-        options, idPtrs, idSizes, scorePtrs, scoreSizes
-    );
+    int result;
+    if (acquired < embCount) {
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        result = -1;
+    } else {
+        result = cactus_index_query(
+            reinterpret_cast<cactus_index_t>(handle),
+            embPtrs, static_cast<size_t>(embCount), static_cast<size_t>(embeddingDim),
+            options, idPtrs, idSizes, scorePtrs, scoreSizes
+        );
+    }
 
-    for (jsize i = 0; i < embCount; i++) {
+    for (jsize i = 0; i < acquired; i++) {
         env->ReleaseFloatArrayElements(embArrays[i], const_cast<jfloat*>(embPtrs[i]), JNI_ABORT);
         env->DeleteLocalRef(embArrays[i]);
         env->ReleaseIntArrayElements(idJArrays[i], idPtrs[i], 0);
