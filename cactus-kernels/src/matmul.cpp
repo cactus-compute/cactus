@@ -1872,11 +1872,20 @@ static void cactus_quant_sme_gemv_fused(const CactusQuantMatrix* W, const __fp16
         const uint32_t N = W->N;
         const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
         auto& pool = CactusThreading::get_thread_pool();
-        // Thread BUDGET matches the original mobile-conscious policy (ceil(N/256) = one thread
-        // per 64 four-channel blocks): battery > saturation. SME workers live INSIDE this
-        // budget, replacing NEON workers — never adding threads. kv_proj: 2, o_proj/down: 6,
-        // gate_up/lm_head: pool-capped, exactly as the legacy kernels chose.
-        const size_t nt_budget = std::max<size_t>(1, (SB64 + 3) / 4);
+        // Thread BUDGET matches the original mobile-conscious policy (default: one thread per
+        // 4 super-blocks == ceil(N/256), the legacy formula): battery > saturation. SME workers
+        // live INSIDE this budget, replacing NEON workers — never adding threads. kv_proj: 2,
+        // o_proj/down: 6, gate_up/lm_head: pool-capped. CACTUS_GEMV_SB_PER_THREAD tunes the
+        // budget for power/speed frontier sweeps (8 = half the threads, 2 = double).
+        static const size_t sb_per_thread = [] {
+            const char* e = getenv("CACTUS_GEMV_SB_PER_THREAD");
+            // Default 8 (HALF the legacy ceil(N/256) budget): the measured power/speed frontier
+            // winner with 2 SME workers — beats the legacy budget without SME on BOTH axes
+            // (49.1 vs 48.7 tok/s at 16.1 vs 21.0 W, -24% energy/token on Gemma 4 E2B).
+            const int v = e ? atoi(e) : 8;
+            return static_cast<size_t>(v > 0 ? v : 8);
+        }();
+        const size_t nt_budget = std::max<size_t>(1, (SB64 + sb_per_thread - 1) / sb_per_thread);
         const size_t nt = std::min(pool.num_workers(), std::min(nt_budget, SB64));
 
         static thread_local std::vector<int8_t> tl_h_act_i8;
@@ -1933,12 +1942,13 @@ static void cactus_quant_sme_gemv_fused(const CactusQuantMatrix* W, const __fp16
 
         const int k_sme_ov = cactus_quant_sme_gemv_workers();
         // SME workers WITHIN the mobile thread budget (they replace NEON workers, never add
-        // threads — and one SME worker drives the shared matrix unit at ~9.6 NEON cores' GEMV
-        // throughput, the perf/watt case for SME on mobile). Measured at budgeted threads:
-        // k=2 wins K-heavy (o_proj +20%, down +23%) and gate_up (+11%), is par on ffn/q_proj,
-        // and LOSES on tiny shapes (kv_proj, nt=2: SME per-call overhead doesn't amortize) and
-        // the DRAM-bound lm_head — hence the nt/size gates. CACTUS_SME_GEMV_WORKERS or the
-        // setter overrides; backend 2 forces >= 1 so tests cover the streaming leaf.
+        // threads — one SME worker drives the shared matrix unit at multi-core GEMV throughput
+        // for a fraction of the power). Power/speed frontier sweep (powermetrics, decode-only
+        // window, 2-pass thermal pairing): a FLAT k=2 strictly dominates k=0 at every budget
+        // (faster AND lower power) and beats per-shape gating; with the halved thread budget it
+        // is the Pareto point (49.1 tok/s @ 16.1 W vs 48.7 @ 21.0 for the legacy budget without
+        // SME). CACTUS_SME_GEMV_WORKERS or the setter overrides; backend 2 forces >= 1 so tests
+        // cover the streaming leaf.
         const int backend_now = g_cactus_quant_backend.load(std::memory_order_relaxed);
         size_t k_sme;
         if (backend_now == 2)
@@ -1946,7 +1956,7 @@ static void cactus_quant_sme_gemv_fused(const CactusQuantMatrix* W, const __fp16
         else if (k_sme_ov >= 0)
             k_sme = std::min<size_t>(k_sme_ov, nt - 1);
         else
-            k_sme = (nt >= 4 && W->N < 65536) ? std::min<size_t>(2, nt - 1) : 0;
+            k_sme = std::min<size_t>(2, nt - 1);
 
         std::atomic<uint32_t> ga{0};            // phase A group grab
         std::atomic<uint32_t> a_done{0};        // phase A completion (release/acquire barrier)
@@ -2081,8 +2091,10 @@ void cactus_quant_orth_sme_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t
     }
 
     const int k_sme_ov = cactus_quant_sme_gemv_workers();
-    // lm_head auto policy: 0 SME workers (DRAM-bound; measured par-at-best for the SME leaf).
-    const size_t k_sme = (k_sme_ov >= 0) ? std::min<size_t>(k_sme_ov, nt - 1) : 0;
+    // lm_head auto policy: flat k=2 like the GEMV driver (the E2E power frontier favors flat
+    // SME workers everywhere; the env/setter overrides).
+    const size_t k_sme = (k_sme_ov >= 0) ? std::min<size_t>(k_sme_ov, nt - 1)
+                                         : std::min<size_t>(2, nt - 1);
 
     std::atomic<uint32_t> ga{0};
     std::atomic<uint32_t> a_done{0};

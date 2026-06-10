@@ -498,3 +498,23 @@ Format per entry: `## YYYY-MM-DD [milestone] title` → Hypothesis / Experiment 
 - **Final shipped numbers vs legacy production (same thread budget): decode 40.6 -> 52.7
   (+29.7%), TTFT 2875 -> 1993 (-30.7%), prefill 371 -> 536 (+44%), physical footprint -1.2 GB.**
   61/61 tests; temp-0 coherent.
+
+## 2026-06-10 [POWER/SPEED FRONTIER — flat k=2 SME at HALF the thread budget is Pareto-optimal]
+- Measured with powermetrics (sudo grant), decode-only 6s window, 420-token decodes, 2-pass
+  thermal pairing, grid = CACTUS_GEMV_SB_PER_THREAD {2,4,8} x CACTUS_SME_GEMV_WORKERS {0,1,2}:
+    spt4 k0 (legacy budget, no SME): 48.7 tok/s @ 21.0 W = 430 mJ/tok
+    spt4 k1:                         50.0 tok/s @ 18.3 W = 367 mJ/tok   (speed point)
+    spt8 k2 (half budget, 2 SME):    49.1 tok/s @ 16.1 W = 328 mJ/tok   (SHIPPED default)
+- **SME workers strictly dominate k=0 at every thread budget — faster AND lower power.** The
+  "E2E-neutral" verdict from tok/s-only measurement was incomplete: the SME GEMV leaf's value is
+  on the POWER axis (replacing NEON-saturated cores with one queue-feeding core + the matrix
+  block). Flat k=2 also beat the per-shape gating policy (removed).
+- Shipped defaults: sb_per_thread 8 (half the legacy ceil(N/256) budget), flat k=min(2,nt-1)
+  everywhere incl. the orth lm_head. vs the legacy budget WITHOUT SME: +0.8% speed, -23% power,
+  -24% energy/token. Verification runs at defaults: 49.0-50.6 tok/s, TTFT ~2000ms, 14.8-15.8 W;
+  61/61 tests; temp-0 coherent. Knobs stay for retuning (CACTUS_GEMV_SB_PER_THREAD,
+  CACTUS_SME_GEMV_WORKERS / setter).
+- Galaxy S26 (SM-S942U1, "canoe") recon via adb: CPU exposes sve/sve2/svei8mm + SME1
+  (smei8i32/smef16f32/...) but NO sme2 -> our gates correctly fall back to esme-NEON there; the
+  designed-but-unbuilt SVE2 path is the phone's SME-class lever. PR #698's tests/android-e2e
+  harness is the on-device runner for the thread-budget frontier validation (NEON-only).

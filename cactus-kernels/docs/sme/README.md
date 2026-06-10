@@ -51,6 +51,12 @@ re-derived.
 | M7/ATTN | SME prefill attention (cached-int8 segment: flat-scale QK seg + u8 USMOPA AV per-block) | **done ✅✅** | **4.6× global / 2.7× sliding** @ gemma shape (3.76→0.81ms / 2.23→0.83ms) | attention_hybrid.cpp `cactus_attention_sme_prefill`; gate hd%64==0, qg=32, pos≥cache; differential+oracle test in test_attention.cpp; see debug-log 2026-06-09 attn entries |
 | SVE2 | Android/Linux fallback (svmmla/svusmmla) | designed (research/sve2-android-fallback.md) | — | not built — needs Android/QEMU to validate; out of CQ4-on-M4 scope |
 
+**POWER FRONTIER (2026-06-10): flat k=2 SME at HALF the budget — Pareto winner.** powermetrics
+sweep (spt x k grid, decode-only windows): SME workers strictly dominate k=0 on BOTH axes at
+every budget. Shipped: sb_per_thread 8 + flat k=2 → 49.1 tok/s @ 16.1 W = 328 mJ/token, vs the
+legacy budget without SME at 48.7 @ 21.0 W (430 mJ/tok): **+0.8% speed, −24% energy/token.**
+This is SME's measured mobile value: same speed from half the threads at three-quarters the power.
+
 **MOBILE THREAD BUDGET (2026-06-10 final): budget beats saturation.** Original thread policy
 restored (GEMV ceil(N/256), GEMM M-tiles); SME workers live inside the budget (k=2 on nt≥4
 non-giant shapes — kernel-wins K-heavy +20-23%, E2E par on M4). **Shipped vs legacy production
