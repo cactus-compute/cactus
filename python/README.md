@@ -178,6 +178,32 @@ cactus benchmark \
   --markdown-report runs/regression_report.md
 ```
 
+Use a budget file when CI or device-lab runs need different tolerances per
+metric or profile. For example, a long-context sweep can use p95 decode
+throughput while RAM gets a tighter global budget:
+
+```json
+{
+  "threshold_pct": 5,
+  "metrics": {
+    "ram_usage_mb": {"threshold_pct": 2}
+  },
+  "profiles": {
+    "context_sweep_4096": {
+      "decode_tps": {"stat": "p95", "threshold_pct": 3},
+      "time_to_first_token_ms": {"threshold_pct": 8}
+    }
+  }
+}
+```
+
+```bash
+cactus benchmark \
+  --compare runs/main_summary.json runs/pr_summary.json \
+  --budget-json runs/mobile_budgets.json \
+  --fail-on-regression
+```
+
 ### Prefill
 
 Pre-processes input text and populates the KV cache without generating output tokens. This reduces latency for subsequent calls to `cactus_complete`.

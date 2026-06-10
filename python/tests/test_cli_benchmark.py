@@ -31,14 +31,25 @@ class FakeRuntime:
 
 def test_load_profiles_filters_and_applies_base_options(tmp_path):
     profiles = tmp_path / "profiles.json"
-    profiles.write_text(json.dumps({
-        "profiles": [
-            {"name": "short", "messages": [{"role": "user", "content": "hi"}]},
-            {"name": "long", "messages": [{"role": "user", "content": "hello"}], "options": {"temperature": 0.2}},
-        ]
-    }), encoding="utf-8")
+    profiles.write_text(
+        json.dumps(
+            {
+                "profiles": [
+                    {"name": "short", "messages": [{"role": "user", "content": "hi"}]},
+                    {
+                        "name": "long",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "options": {"temperature": 0.2},
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    selected = benchmark.load_profiles(str(profiles), {"long"}, {"max_tokens": 32, "temperature": 0.0})
+    selected = benchmark.load_profiles(
+        str(profiles), {"long"}, {"max_tokens": 32, "temperature": 0.0}
+    )
 
     assert [p.name for p in selected] == ["long"]
     assert selected[0].options == {"max_tokens": 32, "temperature": 0.2}
@@ -46,11 +57,13 @@ def test_load_profiles_filters_and_applies_base_options(tmp_path):
 
 def test_run_benchmark_records_json_ready_rows_and_summary():
     runtime = FakeRuntime()
-    profiles = [benchmark.BenchmarkProfile(
-        name="short",
-        messages=[{"role": "user", "content": "hi"}],
-        options={"max_tokens": 8},
-    )]
+    profiles = [
+        benchmark.BenchmarkProfile(
+            name="short",
+            messages=[{"role": "user", "content": "hi"}],
+            options={"max_tokens": 8},
+        )
+    ]
 
     rows, summary = benchmark.run_benchmark(
         runtime,
@@ -74,31 +87,38 @@ def test_run_benchmark_records_json_ready_rows_and_summary():
 def test_build_sweep_profiles_creates_named_context_profiles():
     profiles = benchmark.build_sweep_profiles([8, 16], {"max_tokens": 4})
 
-    assert [profile.name for profile in profiles] == ["context_sweep_8", "context_sweep_16"]
+    assert [profile.name for profile in profiles] == [
+        "context_sweep_8",
+        "context_sweep_16",
+    ]
     assert profiles[0].options == {"max_tokens": 4}
     assert "Return one short sentence" in profiles[0].messages[0]["content"]
 
 
 def test_compare_summaries_flags_latency_and_throughput_regressions():
     baseline = {
-        "profiles": [{
-            "profile": "short",
-            "runs": 2,
-            "metrics": {
-                "time_to_first_token_ms": {"p50": 100.0},
-                "decode_tps": {"p50": 50.0},
-            },
-        }]
+        "profiles": [
+            {
+                "profile": "short",
+                "runs": 2,
+                "metrics": {
+                    "time_to_first_token_ms": {"p50": 100.0},
+                    "decode_tps": {"p50": 50.0},
+                },
+            }
+        ]
     }
     candidate = {
-        "profiles": [{
-            "profile": "short",
-            "runs": 2,
-            "metrics": {
-                "time_to_first_token_ms": {"p50": 112.0},
-                "decode_tps": {"p50": 44.0},
-            },
-        }]
+        "profiles": [
+            {
+                "profile": "short",
+                "runs": 2,
+                "metrics": {
+                    "time_to_first_token_ms": {"p50": 112.0},
+                    "decode_tps": {"p50": 44.0},
+                },
+            }
+        ]
     }
 
     comparison = benchmark.compare_summaries(
@@ -110,40 +130,91 @@ def test_compare_summaries_flags_latency_and_throughput_regressions():
     )
 
     assert len(comparison["regressions"]) == 2
-    assert {row["metric"] for row in comparison["regressions"]} == {"time_to_first_token_ms", "decode_tps"}
+    assert {row["metric"] for row in comparison["regressions"]} == {
+        "time_to_first_token_ms",
+        "decode_tps",
+    }
+
+
+def test_compare_summaries_applies_profile_metric_budget():
+    baseline = {
+        "profiles": [
+            {
+                "profile": "long_prefill",
+                "runs": 2,
+                "metrics": {"decode_tps": {"p50": 50.0, "p95": 45.0}},
+            }
+        ]
+    }
+    candidate = {
+        "profiles": [
+            {
+                "profile": "long_prefill",
+                "runs": 2,
+                "metrics": {"decode_tps": {"p50": 48.0, "p95": 40.0}},
+            }
+        ]
+    }
+
+    comparison = benchmark.compare_summaries(
+        baseline,
+        candidate,
+        metrics=["decode_tps"],
+        stat="p50",
+        threshold_pct=10.0,
+        budget={
+            "profiles": {
+                "long_prefill": {
+                    "decode_tps": {"stat": "p95", "threshold_pct": 5.0},
+                }
+            }
+        },
+    )
+
+    row = comparison["comparisons"][0]
+    assert row["stat"] == "p95"
+    assert row["threshold_pct"] == 5.0
+    assert row["regression"] is True
+    assert row["severity"] == "major"
 
 
 def test_render_markdown_includes_environment_and_comparison():
     summary = {
         "environment": {"model_id": "m", "python": "3.11"},
-        "profiles": [{
-            "profile": "short",
-            "runs": 1,
-            "metrics": {
-                "time_to_first_token_ms": {"p50": 1.0},
-                "decode_tps": {"p50": 2.0},
-                "prefill_tps": {"p50": 3.0},
-                "ram_usage_mb": {"p50": 4.0},
-            },
-        }],
+        "profiles": [
+            {
+                "profile": "short",
+                "runs": 1,
+                "metrics": {
+                    "time_to_first_token_ms": {"p50": 1.0},
+                    "decode_tps": {"p50": 2.0},
+                    "prefill_tps": {"p50": 3.0},
+                    "ram_usage_mb": {"p50": 4.0},
+                },
+            }
+        ],
     }
     comparison = {
-        "comparisons": [{
-            "profile": "short",
-            "metric": "decode_tps",
-            "stat": "p50",
-            "baseline": 3.0,
-            "candidate": 2.0,
-            "change_pct": -33.3,
-            "regression": True,
-        }]
+        "comparisons": [
+            {
+                "profile": "short",
+                "metric": "decode_tps",
+                "stat": "p50",
+                "baseline": 3.0,
+                "candidate": 2.0,
+                "change_pct": -33.3,
+                "threshold_pct": 5.0,
+                "regression": True,
+                "severity": "critical",
+            }
+        ]
     }
 
     report = benchmark.render_markdown(summary, comparison)
 
     assert "# Cactus benchmark report" in report
     assert "| model_id | m |" in report
-    assert "regression" in report
+    assert "critical" in report
 
 
 def test_cmd_benchmark_uses_bundle_and_writes_outputs(monkeypatch, tmp_path):
@@ -157,7 +228,9 @@ def test_cmd_benchmark_uses_bundle_and_writes_outputs(monkeypatch, tmp_path):
 
     monkeypatch.setattr(benchmark, "print_color", lambda *args, **kwargs: None)
     monkeypatch.setattr("cactus.cli.model.resolve_bundle_dir", lambda model_id: bundle)
-    monkeypatch.setattr("cactus.cli.model.ensure_bundle", lambda *args, **kwargs: bundle)
+    monkeypatch.setattr(
+        "cactus.cli.model.ensure_bundle", lambda *args, **kwargs: bundle
+    )
     monkeypatch.setitem(sys.modules, "cactus.bindings.cactus", fake_runtime)
 
     args = Namespace(
@@ -179,6 +252,7 @@ def test_cmd_benchmark_uses_bundle_and_writes_outputs(monkeypatch, tmp_path):
         compare_metric=None,
         compare_stat="p50",
         regression_threshold=5.0,
+        budget_json=None,
         fail_on_regression=False,
     )
 
@@ -191,20 +265,22 @@ def test_cmd_benchmark_uses_bundle_and_writes_outputs(monkeypatch, tmp_path):
 def test_parser_accepts_benchmark_command():
     from cactus.cli import create_parser
 
-    args = create_parser().parse_args([
-        "benchmark",
-        "LiquidAI/LFM2-1.2B",
-        "--profile",
-        "short_chat",
-        "--iterations",
-        "5",
-        "--output",
-        "bench.jsonl",
-        "--sweep-token-counts",
-        "512,2048",
-        "--markdown-report",
-        "report.md",
-    ])
+    args = create_parser().parse_args(
+        [
+            "benchmark",
+            "LiquidAI/LFM2-1.2B",
+            "--profile",
+            "short_chat",
+            "--iterations",
+            "5",
+            "--output",
+            "bench.jsonl",
+            "--sweep-token-counts",
+            "512,2048",
+            "--markdown-report",
+            "report.md",
+        ]
+    )
 
     assert args.command == "benchmark"
     assert args.profile == ["short_chat"]
@@ -216,17 +292,22 @@ def test_parser_accepts_benchmark_command():
 def test_parser_accepts_benchmark_compare_mode():
     from cactus.cli import create_parser
 
-    args = create_parser().parse_args([
-        "benchmark",
-        "--compare",
-        "base.json",
-        "candidate.json",
-        "--compare-metric",
-        "decode_tps",
-        "--fail-on-regression",
-    ])
+    args = create_parser().parse_args(
+        [
+            "benchmark",
+            "--compare",
+            "base.json",
+            "candidate.json",
+            "--compare-metric",
+            "decode_tps",
+            "--budget-json",
+            "budgets.json",
+            "--fail-on-regression",
+        ]
+    )
 
     assert args.command == "benchmark"
     assert args.compare == ["base.json", "candidate.json"]
     assert args.compare_metric == ["decode_tps"]
+    assert args.budget_json == "budgets.json"
     assert args.fail_on_regression is True
