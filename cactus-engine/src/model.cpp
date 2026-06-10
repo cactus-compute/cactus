@@ -556,6 +556,8 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (components_.count("decoder_prefill_chunk") && components_.at("decoder_prefill_chunk").graph) {
         decoder_prefill_ = &components_.at("decoder_prefill_chunk");
         decoder_prefill_chunk_ = decoder_prefill_;
+    } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP && !components_.count("audio_encoder")) {
+        CACTUS_LOG_WARN("model", "Bundle has no decoder_prefill_chunk component; prompts will prefill token-by-token (prefill speed ~= decode speed). Re-transpile with the current converter for chunked prefill.");
     }
     if (components_.count("decoder_embed_chunk") && components_.at("decoder_embed_chunk").graph) {
         decoder_embed_ = &components_.at("decoder_embed_chunk");
