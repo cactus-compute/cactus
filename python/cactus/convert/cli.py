@@ -559,7 +559,7 @@ def convert(args: argparse.Namespace) -> None:
                 "fallback_reason": emit_policy.fallback_reason,
                 "hessian_samples": int(hessian_samples.get(module_name, 0)),
                 "gptq_used": bool(gptq_used),
-                "bytes": _tensor_bytes(out_path),
+                "bytes": _tensor_bytes(written_path),
                 "scale_factor": float(adapter.scale_factor(out_path.name)) if out_path else 1.0,
                 "recognized": bool(match.recognized),
                 "adapter_family": family,
