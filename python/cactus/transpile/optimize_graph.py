@@ -669,7 +669,7 @@ def normalize_attention_layouts(graph: IRGraph) -> bool:
         output_id = node.outputs[0]
         output_value = graph.values.get(output_id)
         output_users = list(output_value.users) if output_value is not None else []
-        if len(output_users) != 1:
+        if len(output_users) != 1 or output_id in graph.outputs:
             continue
         output_user = graph.nodes.get(output_users[0])
         if output_user is None or output_user.op != "permute" or len(output_user.inputs) != 1 or len(output_user.outputs) != 1:

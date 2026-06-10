@@ -1,6 +1,7 @@
 """Model resolution, weight management, and bundle preparation."""
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,7 +22,8 @@ def _convert_from_source(model_id, *, bits, token, weights_dir):
         "--bits", str(bits),
     ]
     if token:
-        cq_args.extend(["--token", token])
+        os.environ["HF_TOKEN"] = token
+        os.environ["HUGGING_FACE_HUB_TOKEN"] = token
     cq_main(cq_args)
 
     print_color(GREEN, f"Model converted and ready at {weights_dir}")

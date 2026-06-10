@@ -685,7 +685,9 @@ def _rewrite_jax_prefill_attentions(graph: IRGraph) -> None:
         node = graph.nodes[node_id]
         if node.op not in {"permute", "view", "reshape"}:
             continue
-        is_decoder_step = str(graph.meta.get("component", "") or "").lower() == "decoder_step"
+        component = str(graph.meta.get("component", "") or "").strip().lower()
+        is_decoder_step = component == "decoder_step"
+        is_causal_prefill = component in {"decoder_prefill_chunk", "decoder_media_step"}
         if node.op == "permute" and tuple(int(dim) for dim in node.attrs.get("permutation", ())) != (0, 2, 1, 3):
             continue
         if node.op in {"view", "reshape"} and not is_decoder_step:
@@ -733,7 +735,7 @@ def _rewrite_jax_prefill_attentions(graph: IRGraph) -> None:
             additive_mask=additive_mask,
             scale=scale,
             output_layout="bthd",
-            is_causal=mask_id is None and is_self_attention,
+            is_causal=is_causal_prefill and mask_id is None and is_self_attention,
             rewritten_from="jax_prefill_attention",
         )
 
@@ -787,7 +789,7 @@ def _legalize_remaining_jax_reductions(graph: IRGraph) -> None:
     new_order: list[str] = []
     for node_id in list(graph.order):
         node = graph.nodes[node_id]
-        if node.op not in {"sum", "mean", "min", "max"} or len(node.inputs) != 1 or len(node.outputs) != 1:
+        if node.op not in {"sum", "mean"} or len(node.inputs) != 1 or len(node.outputs) != 1:
             new_order.append(node_id)
             continue
         input_value = graph.values.get(node.inputs[0])

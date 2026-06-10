@@ -91,13 +91,14 @@ namespace {
 
     void ensure_moe_buffers(size_t max_tokens, size_t hidden_dim, size_t intermediate_dim,
                             size_t num_experts, size_t top_k) {
-        size_t hidden_size = max_tokens * hidden_dim;
-        size_t inter_size = max_tokens * intermediate_dim;
+        size_t max_rows = max_tokens * top_k;
+        size_t hidden_size = max_rows * hidden_dim;
+        size_t inter_size = max_rows * intermediate_dim;
         if (moe_compact_hidden_buf.size() < hidden_size) moe_compact_hidden_buf.resize(hidden_size);
         if (moe_gate_buf.size() < inter_size) moe_gate_buf.resize(inter_size);
         if (moe_up_buf.size() < inter_size) moe_up_buf.resize(inter_size);
         if (moe_expert_out_buf.size() < hidden_size) moe_expert_out_buf.resize(hidden_size);
-        size_t total_assignments = max_tokens * top_k;
+        size_t total_assignments = max_rows;
         if (moe_expert_offsets_buf.size() < num_experts + 1) moe_expert_offsets_buf.resize(num_experts + 1);
         if (moe_expert_tokens_buf.size() < total_assignments) moe_expert_tokens_buf.resize(total_assignments);
         if (moe_routing_denom_buf.size() < max_tokens) moe_routing_denom_buf.resize(max_tokens);
@@ -164,6 +165,13 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     const size_t token_count = hidden_buffer.shape[0];
     const size_t hidden_dim = hidden_buffer.shape[1];
     const size_t total_num_experts = routing_buffer.shape[1];
+
+    if (topk_idx_buffer.shape.size() != 2 || topk_idx_buffer.shape[0] != token_count || topk_idx_buffer.shape[1] != top_k) {
+        throw std::runtime_error("moe_layer topk indices must be [token_count, num_experts_per_tok]");
+    }
+    if (num_experts > total_num_experts) {
+        throw std::runtime_error("moe_layer routing width < num_experts");
+    }
 
     const auto& w1_0_buffer = get_input(node, 3, nodes, node_index_map);
     const size_t expert_intermediate_dim = w1_0_buffer.shape[0];

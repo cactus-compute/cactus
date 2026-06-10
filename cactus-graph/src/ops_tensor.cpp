@@ -70,10 +70,10 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
 
     const size_t axis_size = input_buffer.shape[axis_index];
     const size_t slice_start = node.params.slice_start;
-    size_t slice_length = node.params.slice_length;
+    const size_t slice_length = node.output_buffer.shape[axis_index];
 
     if (slice_length == 0) {
-        slice_length = axis_size - slice_start;
+        return;
     }
 
     if (axis_index == 0) {

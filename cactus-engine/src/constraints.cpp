@@ -182,14 +182,6 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                         }
                     }
                 }
-            } else if (decoded_text == "}") {
-                in_argument_string_ = false;
-                if (brace_depth_ > 0) {
-                    brace_depth_--;
-                    if (brace_depth_ == 0) {
-                        state_ = State::GEMMA_EXPECT_END;
-                    }
-                }
             }
             break;
 

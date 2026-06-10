@@ -986,6 +986,11 @@ def import_linear(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[in
 
 
 def import_addmm(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int, ...] | None, dtype: str | None, torch_op: str) -> None:
+    kwargs = getattr(node, "kwargs", {})
+    beta = _extract_numeric_literal(node.args[3]) if len(node.args) > 3 else _extract_numeric_literal(kwargs.get("beta"))
+    alpha = _extract_numeric_literal(node.args[4]) if len(node.args) > 4 else _extract_numeric_literal(kwargs.get("alpha"))
+    if (beta is not None and float(beta) != 1.0) or (alpha is not None and float(alpha) != 1.0):
+        ctx.fail(f"unsupported scaled addmm (beta/alpha != 1) for {torch_op}: {node.args!r} {kwargs!r}")
     ir_node = IRNode(
         id=node_id(node),
         op="addmm",

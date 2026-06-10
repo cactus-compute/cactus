@@ -630,6 +630,7 @@ public:
     size_t get_cache_size() const { return cache_total_seq_len_; }
 
     size_t get_prefill_chunk_size() const { return 128; }
+    bool can_generate() const { return decoder_ != nullptr; }  // false for embedding/encoder-only models
     double last_prefill_cache_copy_ms() const { return last_prefill_cache_copy_ms_; }
     size_t last_prefill_padding_tokens() const { return last_prefill_padding_tokens_; }
     size_t last_prefill_scalar_tail_tokens() const { return last_prefill_scalar_tail_tokens_; }

@@ -69,18 +69,18 @@ bool Model::audio_encode_via_npu(const std::vector<float>& audio_features) {
         const std::string& name = audio_encoder_->logical_outputs[i];
         size_t node_id = static_cast<size_t>(audio_encoder_->output_node_ids[i]);
         const auto& desc = audio_encoder_->graph->get_output_buffer(node_id);
-        const size_t copy_bytes = std::min(desc.byte_size, written * sizeof(__fp16));
+        const size_t elem_size = (desc.precision == Precision::FP32) ? sizeof(float) : sizeof(__fp16);
+        const size_t copy_elems = std::min(static_cast<size_t>(written), desc.byte_size / elem_size);
         auto& slot = media_features_[name];
-        const size_t prev = slot.size();
-        slot.resize(prev + copy_bytes);
-        if (desc.precision == Precision::FP16) {
-            std::memcpy(slot.data() + prev, output_fp16.data(), copy_bytes);
-        } else if (desc.precision == Precision::FP32) {
-            const size_t n = copy_bytes / sizeof(__fp16);
+        if (desc.precision == Precision::FP32) {
+            const size_t prev = slot.size();
+            slot.resize(prev + copy_elems * sizeof(float));
             float* dst = reinterpret_cast<float*>(slot.data() + prev);
-            for (size_t k = 0; k < n; ++k) dst[k] = static_cast<float>(output_fp16[k]);
+            for (size_t k = 0; k < copy_elems; ++k) dst[k] = static_cast<float>(output_fp16[k]);
         } else {
-            std::memcpy(slot.data() + prev, output_fp16.data(), copy_bytes);
+            const size_t prev = slot.size();
+            slot.resize(prev + copy_elems * sizeof(__fp16));
+            std::memcpy(slot.data() + prev, output_fp16.data(), copy_elems * sizeof(__fp16));
         }
         auto shape_it = media_feature_shapes_.find(name);
         if (shape_it == media_feature_shapes_.end() || shape_it->second.empty()) {

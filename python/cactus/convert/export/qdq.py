@@ -140,7 +140,16 @@ def safe_extract_tar(tar_path: Path, out_dir: Path) -> None:
             target = (out_dir / member.name).resolve()
             if os.path.commonpath([str(out_resolved), str(target)]) != str(out_resolved):
                 raise RuntimeError(f"refusing unsafe tar member path: {member.name}")
-        tf.extractall(out_dir)
+            if member.issym() or member.islnk():
+                base = target.parent if member.issym() else out_dir
+                link_target = (base / member.linkname).resolve()
+                if os.path.commonpath([str(out_resolved), str(link_target)]) != str(out_resolved):
+                    raise RuntimeError(f"refusing unsafe tar link target: {member.name} -> {member.linkname}")
+        # filter="data" only exists on Python >=3.10.12/3.11.4/3.12; link targets are validated above for older patches.
+        if hasattr(tarfile, "data_filter"):
+            tf.extractall(out_dir, filter="data")
+        else:
+            tf.extractall(out_dir)
 
 
 def materialize_input(input_path: Path, tmp_dir: Path | None) -> tuple[Path, tempfile.TemporaryDirectory[str] | None]:

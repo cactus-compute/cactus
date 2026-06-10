@@ -401,17 +401,26 @@ void CactusGraph::execute(const std::string& profile_file) {
         }
     }
 
+    auto resolve_alias_root = [&](size_t idx) -> size_t {
+        while (may_alias_input(*nodes_[idx]) && !nodes_[idx]->input_ids.empty()) {
+            auto it = node_index_map_.find(nodes_[idx]->input_ids[0]);
+            if (it == node_index_map_.end()) break;
+            idx = it->second;
+        }
+        return idx;
+    };
+
     std::vector<bool> keep_until_graph_cleanup(n, false);
     for (size_t i = 0; i < n; ++i) {
         const auto& node = *nodes_[i];
         if (!may_alias_input(node) || node.input_ids.empty()) continue;
         auto it = node_index_map_.find(node.input_ids[0]);
         if (it == node_index_map_.end()) continue;
-        size_t base_idx = it->second;
-        if (use_count[i] == 0) {
-            keep_until_graph_cleanup[base_idx] = true;
+        size_t root_idx = resolve_alias_root(it->second);
+        if (use_count[i] == 0 || retained_output_node_ids_.count(node.id)) {
+            keep_until_graph_cleanup[root_idx] = true;
         } else {
-            last_use[base_idx] = std::max(last_use[base_idx], last_use[i]);
+            last_use[root_idx] = std::max(last_use[root_idx], last_use[i]);
         }
     }
 

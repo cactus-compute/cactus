@@ -20,6 +20,10 @@ inline AudioFP32 load_wav_fp32(const std::string& path) {
     if (!file)
         throw std::runtime_error("Could not open WAV file: " + path);
 
+    file.seekg(0, std::ios::end);
+    const std::streamoff file_size = file.tellg();
+    file.seekg(0, std::ios::beg);
+
     char riff[4];
     file.read(riff, 4);
     if (std::string(riff, 4) != "RIFF") throw std::runtime_error("Not RIFF");
@@ -66,12 +70,25 @@ inline AudioFP32 load_wav_fp32(const std::string& path) {
         if (std::string(data_id, 4) == "data")
             break;
 
+        const std::streamoff after_header = file.tellg();
+        if (data_size > (uint64_t)(file_size - after_header))
+            throw std::runtime_error("Malformed WAV: chunk exceeds file");
         file.seekg(data_size, std::ios::cur);
     }
+
+    const std::streamoff data_offset = file.tellg();
+    if (data_size > (uint64_t)(file_size - data_offset))
+        throw std::runtime_error("Malformed WAV: data chunk exceeds file");
+
+    const size_t bytes_per_frame = (size_t)num_channels * 2;
+    if (num_channels == 0 || data_size % bytes_per_frame != 0)
+        throw std::runtime_error("Malformed WAV: data size not frame-aligned");
 
     size_t num_samples = data_size / 2;
     std::vector<int16_t> raw(num_samples);
     file.read(reinterpret_cast<char*>(raw.data()), data_size);
+    if ((uint64_t)file.gcount() != data_size)
+        throw std::runtime_error("Malformed WAV: truncated data chunk");
 
     std::vector<float> tmp(num_samples);
     constexpr float scale = 1.0f / 32768.0f;
@@ -85,7 +102,7 @@ inline AudioFP32 load_wav_fp32(const std::string& path) {
         mono = std::move(tmp);
     } else if (num_channels == 2) {
         mono.reserve(num_samples / 2);
-        for (size_t i = 0; i < num_samples; i += 2)
+        for (size_t i = 0; i + 1 < num_samples; i += 2)
             mono.push_back(0.5f * (tmp[i] + tmp[i + 1]));
     } else {
         throw std::runtime_error("Unsupported channel count");

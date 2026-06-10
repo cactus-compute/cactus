@@ -341,6 +341,9 @@ Siglip2Preprocessor::PreprocessedImage Siglip2Preprocessor::preprocess_from_memo
     if (!img_data) {
         throw std::runtime_error("Invalid image data pointer");
     }
+    if (width <= 0 || height <= 0) {
+        throw std::runtime_error("Image dimensions must be positive");
+    }
 
     const int expected_channels = 3;
     std::vector<unsigned char> rgb_data;

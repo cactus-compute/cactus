@@ -46,6 +46,8 @@ def _detect_sdl2() -> tuple[list[str], list[str]]:
     is_darwin = platform.system() == "Darwin"
 
     if is_darwin:
+        if not check_command("brew"):
+            return [], []
         sdl2_check = subprocess.run(["brew", "list", "sdl2"], capture_output=True)
         if sdl2_check.returncode == 0:
             sdl2_prefix_result = subprocess.run(
