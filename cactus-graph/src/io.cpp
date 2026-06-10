@@ -25,6 +25,7 @@ namespace {
     constexpr uint32_t FLAG_ORTHOGONAL_ROTATION = 1 << 1;
     constexpr uint32_t FLAG_INTERLEAVED_4ROW = 1 << 2;
     constexpr uint32_t FLAG_EXTENDED_SHAPE = 1 << 4;
+    constexpr uint32_t FLAG_PACKED_PANELS = 1 << 5;
     constexpr size_t HEADER_SIZE = 84;
 
     inline size_t align_offset(size_t offset, size_t alignment) {
@@ -41,6 +42,12 @@ namespace {
         }
 
         const std::string stem = filename.substr(0, filename.size() - std::strlen(suffix));
+        // Packed-panel CQ4 weights carry their own suffix (new bundles ship ONLY this file, so
+        // old engines fail loudly on new bundles instead of silently misreading the layout).
+        const std::string cq4p = stem + ".cq4p.weights";
+        if (std::filesystem::exists(cq4p)) {
+            return cq4p;
+        }
         const std::string cq4 = stem + ".cq4.weights";
         if (std::filesystem::exists(cq4)) {
             return cq4;
@@ -50,6 +57,67 @@ namespace {
             return cq2;
         }
         return filename;
+    }
+
+    // Derive the CQ scale/panel pointers of a mapped CQ weight buffer from the file's scales
+    // region. Panel-format files share the legacy prefix (codebook, input scales, fp16 norms)
+    // and then carry the folded fp32 panel norms (4-byte aligned) followed by the rotation +
+    // transposed rotation (orthogonal) or the Hadamard parts; their data region holds the
+    // packed panels themselves (see CactusQuantMatrix::packed_panels).
+    void set_cq_buffer_pointers(BufferDesc& buffer, const GraphFile::MappedFile& mf) {
+        const char* scales_base = static_cast<const char*>(mf.scales_data());
+        const uint32_t bits = PrecisionTraits::cq_bits(buffer.precision);
+        const uint32_t cb_size = 1u << bits;
+        const uint32_t gs = static_cast<uint32_t>(mf.group_size());
+        const uint32_t K = gs * static_cast<uint32_t>(mf.num_groups());
+        const uint32_t N = static_cast<uint32_t>(mf.shape().size() >= 2 ? mf.shape()[0] : 1);
+
+        size_t off = 0;
+        buffer.cq_codebook = reinterpret_cast<const __fp16*>(scales_base + off);
+        off += cb_size * sizeof(__fp16);
+        buffer.cq_input_scale = reinterpret_cast<const __fp16*>(scales_base + off);
+        off += K * sizeof(__fp16);
+        buffer.cq_input_scale_recip = reinterpret_cast<const __fp16*>(scales_base + off);
+        off += K * sizeof(__fp16);
+        buffer.cq_norms = reinterpret_cast<const __fp16*>(scales_base + off);
+        off += static_cast<size_t>(N) * mf.num_groups() * sizeof(__fp16);
+
+        if (mf.is_packed_panels()) {
+            const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
+            off = align_offset(off, sizeof(float));
+            buffer.cq_norm_panels = reinterpret_cast<const float*>(scales_base + off);
+            off += SB64 * mf.num_groups() * 64 * sizeof(float);
+            if (mf.is_orthogonal_rotation()) {
+                buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
+                off += static_cast<size_t>(K) * K * sizeof(__fp16);
+                buffer.cq_rotation_t = reinterpret_cast<const __fp16*>(scales_base + off);
+                buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
+            } else {
+                buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
+                off += gs;
+                buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
+                off += gs;
+                buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
+                buffer.cq_flags = 0;
+            }
+            buffer.cq_packed_panels = static_cast<const uint8_t*>(mf.data());
+            return;
+        }
+
+        if (mf.is_orthogonal_rotation()) {
+            buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
+            buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
+        } else {
+            buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
+            off += gs;
+            buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
+            off += gs;
+            buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
+            buffer.cq_flags = 0;
+        }
+        if (mf.is_interleaved_4row()) {
+            buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+        }
     }
 
     inline void write_u32(std::ostream& out, uint32_t v) {
@@ -388,38 +456,7 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
     if (PrecisionTraits::is_cq(precision) && mapped_file->group_size() > 0) {
         buffer.group_size = mapped_file->group_size();
         buffer.num_groups = mapped_file->num_groups();
-
-        const char* scales_base = static_cast<const char*>(mapped_file->scales_data());
-        uint32_t bits = PrecisionTraits::cq_bits(precision);
-        uint32_t cb_size = 1u << bits;
-        uint32_t gs = static_cast<uint32_t>(mapped_file->group_size());
-        uint32_t K = gs * static_cast<uint32_t>(mapped_file->num_groups());
-        uint32_t N = static_cast<uint32_t>(shape.size() >= 2 ? shape[0] : 1);
-
-        size_t off = 0;
-        buffer.cq_codebook = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += cb_size * sizeof(__fp16);
-        buffer.cq_input_scale = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_input_scale_recip = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_norms = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += static_cast<size_t>(N) * mapped_file->num_groups() * sizeof(__fp16);
-
-        if (mapped_file->is_orthogonal_rotation()) {
-            buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
-            buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
-        } else {
-            buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
-            buffer.cq_flags = 0;
-        }
-        if (mapped_file->is_interleaved_4row()) {
-            buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
-        }
+        set_cq_buffer_pointers(buffer, *mapped_file);
     } else if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
         buffer.group_size = mapped_file->group_size();
         buffer.num_groups = mapped_file->num_groups();
@@ -452,39 +489,7 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
         auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
         buffer.group_size = mapped_file->group_size();
         buffer.num_groups = mapped_file->num_groups();
-
-
-        const char* scales_base = static_cast<const char*>(mapped_file->scales_data());
-        uint32_t bits = PrecisionTraits::cq_bits(precision);
-        uint32_t cb_size = 1u << bits;
-        uint32_t gs = static_cast<uint32_t>(mapped_file->group_size());
-        uint32_t K = gs * static_cast<uint32_t>(mapped_file->num_groups());
-        uint32_t N = static_cast<uint32_t>(shape.size() >= 2 ? shape[0] : 1);
-
-        size_t off = 0;
-        buffer.cq_codebook = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += cb_size * sizeof(__fp16);
-        buffer.cq_input_scale = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_input_scale_recip = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_norms = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += static_cast<size_t>(N) * mapped_file->num_groups() * sizeof(__fp16);
-
-        if (mapped_file->is_orthogonal_rotation()) {
-            buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
-            buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
-        } else {
-            buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
-            buffer.cq_flags = 0;
-        }
-        if (mapped_file->is_interleaved_4row()) {
-            buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
-        }
+        set_cq_buffer_pointers(buffer, *mapped_file);
     }
 
     size_t file_idx = mapped_files_.size();
@@ -531,43 +536,15 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
     buffer.cq_right_signs = nullptr;
     buffer.cq_permutation = nullptr;
     buffer.cq_rotation = nullptr;
+    buffer.cq_packed_panels = nullptr;
+    buffer.cq_norm_panels = nullptr;
+    buffer.cq_rotation_t = nullptr;
     buffer.cq_flags = 0;
 
     if (PrecisionTraits::is_cq(precision) && mapped_file->group_size() > 0) {
         buffer.group_size = mapped_file->group_size();
         buffer.num_groups = mapped_file->num_groups();
-
-        const char* scales_base = static_cast<const char*>(mapped_file->scales_data());
-        uint32_t bits = PrecisionTraits::cq_bits(precision);
-        uint32_t cb_size = 1u << bits;
-        uint32_t gs = static_cast<uint32_t>(mapped_file->group_size());
-        uint32_t K = gs * static_cast<uint32_t>(mapped_file->num_groups());
-        uint32_t N = static_cast<uint32_t>(shape.size() >= 2 ? shape[0] : 1);
-
-        size_t off = 0;
-        buffer.cq_codebook = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += cb_size * sizeof(__fp16);
-        buffer.cq_input_scale = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_input_scale_recip = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_norms = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += static_cast<size_t>(N) * mapped_file->num_groups() * sizeof(__fp16);
-
-        if (mapped_file->is_orthogonal_rotation()) {
-            buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
-            buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
-        } else {
-            buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
-            buffer.cq_flags = 0;
-        }
-        if (mapped_file->is_interleaved_4row()) {
-            buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
-        }
+        set_cq_buffer_pointers(buffer, *mapped_file);
     } else if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
         buffer.group_size = mapped_file->group_size();
         buffer.num_groups = mapped_file->num_groups();
@@ -963,6 +940,7 @@ void MappedFile::parse_header() {
     offset += sizeof(uint32_t);
     is_orthogonal_rotation_ = (flags & FLAG_ORTHOGONAL_ROTATION) != 0;
     is_interleaved_4row_ = (flags & FLAG_INTERLEAVED_4ROW) != 0;
+    is_packed_panels_ = (flags & FLAG_PACKED_PANELS) != 0;
 
     alignment_ = *reinterpret_cast<const uint32_t*>(ptr + offset);
     offset += sizeof(uint32_t);

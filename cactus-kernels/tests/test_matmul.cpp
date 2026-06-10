@@ -54,6 +54,8 @@ struct SyntheticCQ {
 
     std::vector<int8_t> expanded_buf;
     std::vector<float> norm_f32_buf;
+    std::vector<uint8_t> packed_panels_buf;
+    std::vector<float> norm_panels_buf;
 
     void preexpand() {
         int8_t cb_i8[16] = {};
@@ -132,31 +134,41 @@ struct SyntheticCQ {
                     nd[ni] = (n_start+ni < N) ? static_cast<float>(norms[(n_start+ni)*num_groups+g]) * cb_sc : 0.f;
             }
         }
-    }
 
-    CactusQuantMatrix matrix() const {
-        return CactusQuantMatrix{
-            .bits = bits, .K = K, .N = N,
-            .group_size = group_size, .num_groups = num_groups,
-            .flags = 0,
-            .codebook = codebook.data(),
-            .input_scale = input_scale.data(),
-            .input_scale_recip = input_scale_recip.data(),
-            .norms = norms.data(),
-            .packed_indices = packed.data(),
-            .left_signs = left_signs.data(),
-            .right_signs = right_signs.data(),
-            .permutation = permutation.data(),
-            .rotation = nullptr,
-            .expanded = expanded_buf.empty() ? nullptr : expanded_buf.data(),
-            .norm_f32 = norm_f32_buf.empty() ? nullptr : norm_f32_buf.data(),
-        };
+        // Independent panel packer: nibble j of a kg-block = byte j of the int8 panel
+        // [4 vec][16 ch][4 K]; norms [SB64][num_groups][64] with cb_scale folded.
+        const uint32_t nkg = group_size / 4;
+        const size_t SB64 = (size_t(N) + 63) / 64;
+        packed_panels_buf.assign(SB64 * num_groups * nkg * 128, 0);
+        norm_panels_buf.assign(SB64 * num_groups * 64, 0.f);
+        for (size_t sb = 0; sb < SB64; ++sb)
+            for (uint32_t g = 0; g < num_groups; ++g) {
+                uint8_t* wbase = packed_panels_buf.data() + (sb * num_groups + g) * nkg * 128;
+                float* nbase = norm_panels_buf.data() + (sb * num_groups + g) * 64;
+                for (uint32_t kg = 0; kg < nkg; ++kg)
+                    for (uint32_t b = 0; b < 256; ++b) {        // expanded byte index in the kg-panel
+                        const uint32_t v = b / 64, ch = (b % 64) / 4, kc = b % 4;
+                        const size_t n = sb * 64 + v * 16 + ch;
+                        if (n >= N) continue;
+                        const uint8_t* row = packed.data() + (n * num_groups + g) * pgb;
+                        const uint8_t idx = unpack_index(row, bits, kg * 4 + kc);
+                        uint8_t& dst = wbase[kg * 128 + b / 2];
+                        dst = (b & 1u) ? static_cast<uint8_t>(dst | (idx << 4))
+                                       : static_cast<uint8_t>(dst | idx);
+                    }
+                for (uint32_t c = 0; c < 64; ++c) {
+                    const size_t n = sb * 64 + c;
+                    if (n < N) nbase[c] = static_cast<float>(norms[n * num_groups + g]) * cb_sc;
+                }
+            }
     }
 
     // INTERLEAVED_4ROW encoding: exact inverse of the shipped decoder. Per 8-byte half,
     // low nibbles = k 0-3 and high nibbles = k 4-7 of the half's K-range.
     std::vector<uint8_t> packed_il;
     std::vector<__fp16> norms_il;
+    std::vector<uint8_t> panels_il_buf;
+    std::vector<float> npanels_il_buf;
 
     void make_interleaved() {
         if (bits != 4 || (N % 4) != 0) return;
@@ -200,6 +212,37 @@ struct SyntheticCQ {
             .rotation = nullptr,
             .expanded = nullptr,
             .norm_f32 = nullptr,
+            .packed_panels = panels_il_buf.empty() ? nullptr : panels_il_buf.data(),
+            .norm_panels = npanels_il_buf.empty() ? nullptr : npanels_il_buf.data(),
+        };
+    }
+
+    void preexpand_il() {
+        CactusQuantMatrix W = matrix_interleaved();
+        const size_t SB64 = ((size_t)N + 63) / 64;
+        panels_il_buf.resize(SB64 * num_groups * (size_t)(group_size / 4) * 128);
+        npanels_il_buf.resize(SB64 * num_groups * 64);
+        cactus_quant_build_panels(&W, panels_il_buf.data(), npanels_il_buf.data());
+    }
+
+    CactusQuantMatrix matrix() const {
+        return CactusQuantMatrix{
+            .bits = bits, .K = K, .N = N,
+            .group_size = group_size, .num_groups = num_groups,
+            .flags = 0,
+            .codebook = codebook.data(),
+            .input_scale = input_scale.data(),
+            .input_scale_recip = input_scale_recip.data(),
+            .norms = norms.data(),
+            .packed_indices = packed.data(),
+            .left_signs = left_signs.data(),
+            .right_signs = right_signs.data(),
+            .permutation = permutation.data(),
+            .rotation = nullptr,
+            .expanded = expanded_buf.empty() ? nullptr : expanded_buf.data(),
+            .norm_f32 = norm_f32_buf.empty() ? nullptr : norm_f32_buf.data(),
+            .packed_panels = packed_panels_buf.empty() ? nullptr : packed_panels_buf.data(),
+            .norm_panels = norm_panels_buf.empty() ? nullptr : norm_panels_buf.data(),
         };
     }
 };
@@ -308,7 +351,7 @@ bool test_cq_correctness(uint32_t bits) {
 
     double mse = compute_mse(ref.data(), y_f16.data(), N);
     
-    double threshold = 0.1; 
+    double threshold = 0.1;
     if (mse > threshold) {
         std::cerr << "  cq" << bits << " MSE=" << mse << " > " << threshold << "\n";
         return false;
@@ -316,7 +359,325 @@ bool test_cq_correctness(uint32_t bits) {
     return true;
 }
 
+// ── Panel-format GEMV validation ─────────────────────────────────────────────────────────────
+// With packed panels present (built here by the independent test packer), the real
+// cactus_quant_matmul dispatch takes the panel GEMV kernel; validate it against the SAME FP32
+// reference oracle the legacy kernels are gated on.
+static bool test_cq_panel(uint32_t bits, double& mse_out) {
+    const uint32_t K = 1024, N = 64, gs = 128;
+    SyntheticCQ cq(bits, K, N, gs, 123);
+    cq.preexpand();
+    CactusQuantMatrix mat = cq.matrix();
+
+    std::mt19937 gen(77);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<float> x_f32(K);
+    for (auto& v : x_f32) v = dist(gen);
+    std::vector<float> ref(N, 0.f);
+    cq_reference_gemv_f32(cq, x_f32.data(), ref.data());
+
+    std::vector<__fp16> x_f16(K), y_f16(N, static_cast<__fp16>(0));
+    for (size_t i = 0; i < K; i++) x_f16[i] = static_cast<__fp16>(x_f32[i]);
+
+    cactus_quant_matmul(&mat, x_f16.data(), 1, y_f16.data());
+
+    mse_out = compute_mse(ref.data(), y_f16.data(), N);
+    return mse_out <= 0.1;
+}
+
+// GEMM (M>1) variant: validates the panel NEON GEMM (M and N tails included) vs a per-row FP32
+// reference.
+static bool test_cq_panel_gemm(uint32_t bits, uint32_t M, uint32_t N, double& mse_out) {
+    const uint32_t K = 512, gs = 128;
+    SyntheticCQ cq(bits, K, N, gs, 321);
+    cq.preexpand();
+    CactusQuantMatrix mat = cq.matrix();
+
+    std::mt19937 gen(91);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<float> X(static_cast<size_t>(M) * K);
+    for (auto& v : X) v = dist(gen);
+
+    std::vector<float> ref(static_cast<size_t>(M) * N, 0.f);
+    for (uint32_t m = 0; m < M; m++)
+        cq_reference_gemv_f32(cq, X.data() + static_cast<size_t>(m) * K, ref.data() + static_cast<size_t>(m) * N);
+
+    std::vector<__fp16> Xf(static_cast<size_t>(M) * K), Yf(static_cast<size_t>(M) * N, static_cast<__fp16>(0));
+    for (size_t i = 0; i < static_cast<size_t>(M) * K; i++) Xf[i] = static_cast<__fp16>(X[i]);
+
+    cactus_quant_matmul(&mat, Xf.data(), M, Yf.data());
+
+    mse_out = compute_mse(ref.data(), Yf.data(), static_cast<size_t>(M) * N);
+    return mse_out <= 0.1;
+}
+
+// ── Orthogonal-rotation CQ4 (the Gemma lm_head format) ──────────────────────────────────────
+// Oracle: y[n] = norm[n] * sum_i cb[idx(n,i)] * (a_scaled @ R)[i], fp32. Gates the incumbent and
+// the panel virtual-group driver against the same reference, plus head-to-head agreement.
+static bool test_orth_panel(double& mse_inc, double& mse_panel) {
+    // PRODUCTION lm_head format: orthogonal-rotation CQ4 in the INTERLEAVED_4ROW packed layout
+    // (gs == K, ng == 1) for legacy bundles; panel files store it with virtual 128-wide groups.
+    // Row-major orthogonal bundles were a transpiler bug and take the per-row fallback.
+    const uint32_t K = 1536, N = 1024, VGS = 128, VNG = K / VGS;
+    std::mt19937 gen(2024);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<__fp16> codebook(16), isr(K), norms(N), rot((size_t)K * K), rot_t((size_t)K * K);
+    for (auto& v : codebook) v = (__fp16)dist(gen);
+    for (auto& v : isr) v = (__fp16)(0.7f + 0.3f * dist(gen));
+    for (auto& v : norms) v = (__fp16)(dist(gen) * 0.05f);
+    for (size_t i = 0; i < rot.size(); i++) rot[i] = (__fp16)(dist(gen) * 0.04f);
+    for (uint32_t k = 0; k < K; k++)
+        for (uint32_t i = 0; i < K; i++) rot_t[(size_t)i * K + k] = rot[(size_t)k * K + i];
+    std::vector<uint8_t> packed((size_t)N * K / 2);
+    for (auto& v : packed) v = (uint8_t)(gen() & 0xFF);
+    std::vector<__fp16> x(K);
+    for (auto& v : x) v = (__fp16)dist(gen);
+
+    // IL panels from row-major nibbles: byte [c*16 + r4*4 + b] = idx(row, 8c+b) | idx(row, 8c+4+b) << 4.
+    std::vector<uint8_t> packed_il((size_t)N * K / 2);
+    for (uint32_t nb = 0; nb < N / 4; nb++) {
+        uint8_t* panel = packed_il.data() + (size_t)nb * 4 * (K / 2);
+        for (uint32_t c = 0; c < K / 8; c++)
+            for (uint32_t r4 = 0; r4 < 4; r4++) {
+                const uint8_t* row = packed.data() + (size_t)(nb * 4 + r4) * K / 2;
+                for (uint32_t b = 0; b < 4; b++) {
+                    uint8_t lo = unpack_index(row, 4, c * 8 + b);
+                    uint8_t hi = unpack_index(row, 4, c * 8 + 4 + b);
+                    panel[c * 16 + r4 * 4 + b] = (uint8_t)(lo | (hi << 4));
+                }
+            }
+    }
+
+    std::vector<float> ar(K, 0.f), ref(N);
+    for (uint32_t k = 0; k < K; k++) {
+        float a = (float)x[k] * (float)isr[k];
+        for (uint32_t i = 0; i < K; i++) ar[i] += a * (float)rot[(size_t)k * K + i];
+    }
+    for (uint32_t n = 0; n < N; n++) {
+        const uint8_t* row = packed.data() + (size_t)n * K / 2;
+        float acc = 0.f;
+        for (uint32_t i = 0; i < K; i++)
+            acc += (float)codebook[unpack_index(row, 4, i)] * ar[i];
+        ref[n] = acc * (float)norms[n];
+    }
+
+    CactusQuantMatrix Wo{ .bits = 4, .K = K, .N = N, .group_size = K, .num_groups = 1,
+        .flags = CACTUS_QUANT_FLAG_ORTHOGONAL | CACTUS_QUANT_FLAG_INTERLEAVED_4ROW,
+        .codebook = codebook.data(), .input_scale = nullptr,
+        .input_scale_recip = isr.data(), .norms = norms.data(), .packed_indices = packed_il.data(),
+        .left_signs = nullptr, .right_signs = nullptr, .permutation = nullptr,
+        .rotation = rot.data(), .rotation_t = nullptr, .expanded = nullptr, .norm_f32 = nullptr,
+        .packed_panels = nullptr, .norm_panels = nullptr };
+    std::vector<__fp16> y_inc(N);
+    cactus_quant_orthogonal_matmul(&Wo, x.data(), 1, y_inc.data());
+    mse_inc = compute_mse(ref.data(), y_inc.data(), N);
+
+    // Panel-file view: virtual 128-wide groups, replicated norms, rotation_t — what the
+    // loader hands the kernels; routed through the real dispatch.
+    std::vector<__fp16> norms_rep((size_t)N * VNG);
+    for (uint32_t nb = 0; nb < N / 4; nb++)
+        for (uint32_t g = 0; g < VNG; g++)
+            for (uint32_t ni = 0; ni < 4; ni++)
+                norms_rep[((size_t)nb * VNG + g) * 4 + ni] = norms[nb * 4 + ni];
+    CactusQuantMatrix W2 = Wo;
+    W2.flags = CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+    W2.group_size = VGS; W2.num_groups = VNG; W2.norms = norms_rep.data();
+    const size_t SB64 = (N + 63) / 64;
+    std::vector<uint8_t> panels(SB64 * VNG * (VGS / 4) * 128);
+    std::vector<float> npanels(SB64 * VNG * 64);
+    cactus_quant_build_panels(&W2, panels.data(), npanels.data());
+    W2.flags = CACTUS_QUANT_FLAG_ORTHOGONAL;       // loader view: panel files carry no IL flag
+    W2.packed_indices = nullptr;                   // panel files carry no legacy packed region
+    W2.packed_panels = panels.data(); W2.norm_panels = npanels.data();
+    W2.rotation_t = rot_t.data();
+    std::vector<__fp16> y_panel(N);
+    cactus_quant_orthogonal_matmul(&W2, x.data(), 1, y_panel.data());
+    mse_panel = compute_mse(ref.data(), y_panel.data(), N);
+    return mse_inc <= 0.1 && mse_panel <= 0.1 && mse_panel <= mse_inc * 4 + 1e-4;
+}
+
+// ── Interleaved-4row (legacy PRODUCTION format) tests ────────────────────────────────────────
+// CQ4 interleaved vs the FP32 oracle, through the real dispatch. use_panels=false exercises the
+// legacy interleaved NEON kernel (old bundles); use_panels=true builds the panel layout from the
+// SAME interleaved fixture through the reference encoder and exercises the panel GEMV
+// (multi-super-block stealing included: N=192 = 3 super-blocks).
+static bool test_cq4_interleaved(bool use_panels, double& mse_out,
+                                 uint32_t K = 1024, uint32_t N = 192, uint32_t gs = 128) {
+    SyntheticCQ cq(4, K, N, gs, 777);
+    if (use_panels) cq.preexpand_il();
+    CactusQuantMatrix mat = cq.matrix_interleaved();
+
+    std::mt19937 gen(31);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<float> x_f32(K);
+    for (auto& v : x_f32) v = dist(gen);
+    std::vector<float> ref(N, 0.f);
+    cq_reference_gemv_f32(cq, x_f32.data(), ref.data());
+
+    std::vector<__fp16> x_f16(K), y(N, (__fp16)0);
+    for (size_t i = 0; i < K; i++) x_f16[i] = (__fp16)x_f32[i];
+    cactus_quant_matmul(&mat, x_f16.data(), 1, y.data());
+    mse_out = compute_mse(ref.data(), y.data(), N);
+    return mse_out <= 0.1;
+}
+
+// Batched orthogonal embedding dequant vs the per-row reference, both packed layouts.
+static bool test_orth_embed_rows() {
+    const uint32_t K = 256, vocab = 64;
+    std::mt19937 gen(99);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<uint8_t> packed(static_cast<size_t>(vocab) * K / 2);
+    for (auto& b : packed) b = static_cast<uint8_t>(gen() & 0xFF);
+    std::vector<__fp16> codebook(16), rotation(static_cast<size_t>(K) * K), scale_recip(K);
+    std::vector<__fp16> norms(vocab);
+    for (auto& v : codebook) v = static_cast<__fp16>(dist(gen));
+    for (auto& v : rotation) v = static_cast<__fp16>(dist(gen) * 0.06f);
+    for (auto& v : scale_recip) v = static_cast<__fp16>(0.9f + 0.2f * std::fabs(dist(gen)));
+    for (auto& v : norms) v = static_cast<__fp16>(0.5f + std::fabs(dist(gen)));
+    const uint32_t rows[5] = {5, 9, 63, 0, 17};
+    for (uint32_t flags : {(uint32_t)CACTUS_QUANT_FLAG_INTERLEAVED_4ROW}) {
+        std::vector<__fp16> ref(5 * K), got(5 * K);
+        for (int u = 0; u < 5; ++u)
+            cactus_quant_dequantize_orthogonal_embedding_row(
+                4, K, rows[u], packed.data(), codebook.data(), norms.data(),
+                scale_recip.data(), rotation.data(), flags, ref.data() + (size_t)u * K);
+        cactus_quant_dequantize_orthogonal_embedding_rows(
+            4, K, rows, 5, packed.data(), codebook.data(), norms.data(),
+            scale_recip.data(), rotation.data(), flags, got.data());
+        double mx = 0;
+        for (size_t i = 0; i < ref.size(); ++i)
+            mx = std::max(mx, (double)std::fabs((float)ref[i] - (float)got[i]));
+        if (mx > 1e-2) {
+            std::cerr << "  orth_embed_rows flags=" << flags << " max_err=" << mx << "\n";
+            return false;
+        }
+    }
+    // Panel batched variant: same weights through the reference encoder, checked against
+    // the row-major per-row reference.
+    {
+        const uint32_t VGS = 128, VNG = K / VGS;
+        std::vector<__fp16> norms_rep((size_t)vocab * VNG);
+        for (uint32_t n = 0; n < vocab; ++n)
+            for (uint32_t g = 0; g < VNG; ++g) norms_rep[(size_t)n * VNG + g] = norms[n];
+        CactusQuantMatrix Wv{ .bits = 4, .K = K, .N = vocab, .group_size = VGS, .num_groups = VNG,
+            .flags = 0, .codebook = codebook.data(), .input_scale = nullptr,
+            .input_scale_recip = scale_recip.data(), .norms = norms_rep.data(),
+            .packed_indices = packed.data(), .left_signs = nullptr, .right_signs = nullptr,
+            .permutation = nullptr, .rotation = rotation.data(), .rotation_t = nullptr,
+            .expanded = nullptr, .norm_f32 = nullptr,
+            .packed_panels = nullptr, .norm_panels = nullptr };
+        const size_t SB64 = (vocab + 63) / 64;
+        std::vector<uint8_t> panels(SB64 * VNG * (VGS / 4) * 128);
+        std::vector<float> npanels(SB64 * VNG * 64);
+        cactus_quant_build_panels(&Wv, panels.data(), npanels.data());
+
+        std::vector<__fp16> ref(5 * K), got(5 * K);
+        for (int u = 0; u < 5; ++u)
+            cactus_quant_dequantize_orthogonal_embedding_row(
+                4, K, rows[u], packed.data(), codebook.data(), norms.data(),
+                scale_recip.data(), rotation.data(), 0, ref.data() + (size_t)u * K);
+        cactus_quant_dequantize_orthogonal_embedding_rows_panels(
+            K, VGS, VNG, rows, 5, panels.data(), codebook.data(), norms_rep.data(),
+            scale_recip.data(), rotation.data(), got.data());
+        double mx = 0;
+        for (size_t i = 0; i < ref.size(); ++i)
+            mx = std::max(mx, (double)std::fabs((float)ref[i] - (float)got[i]));
+        if (mx > 1e-2) {
+            std::cerr << "  orth_embed_rows[panel] max_err=" << mx << "\n";
+            return false;
+        }
+    }
+    return true;
+}
+
+// The reference encoder is layout-invariant: identical panels from row-major or interleaved
+// sources (the test packer keeps original indices, so it is not byte-compared).
+static bool test_panel_layout_invariance() {
+    const uint32_t K = 512, N = 128, gs = 128;
+    SyntheticCQ cq(4, K, N, gs, 555);
+    CactusQuantMatrix w_rm = cq.matrix();
+    cq.preexpand_il();     // reference encoder over the interleaved fixture
+    const size_t SB64 = (N + 63) / 64;
+    std::vector<uint8_t> panels_rm(SB64 * cq.num_groups * (gs / 4) * 128);
+    std::vector<float> npanels_rm(SB64 * cq.num_groups * 64);
+    cactus_quant_build_panels(&w_rm, panels_rm.data(), npanels_rm.data());
+    bool ok = panels_rm == cq.panels_il_buf && npanels_rm == cq.npanels_il_buf;
+    if (!ok) std::cerr << "  panel layout invariance FAILED\n";
+    return ok;
+}
+
+// Bench at Gemma shapes, alternating rounds + best-of: run-to-run noise exceeds the deltas.
+static void print_panel_comparison() {
+    std::cout << "── CQ4 GEMV: panel NEON vs legacy file-layout NEON (gemma shapes) ──────────────────\n";
+    struct Shape { const char* name; uint32_t K, N; int iters; };
+    Shape shapes[] = {
+        {"cq4 1x1536x6144 (ffn)", 1536, 6144, 30},
+        {"cq4 1x1536x12288 (gate_up)", 1536, 12288, 20},
+        {"cq4 1x2048x1536 (o_proj)", 2048, 1536, 30},
+        {"cq4 1x1536x2048 (q_proj)", 1536, 2048, 30},
+        {"cq4 1x6144x1536 (down)", 6144, 1536, 30},
+        {"cq4 1x1536x262144 (lm_head)", 1536, 262144, 6},
+        {"cq4 1x1536x512 (kv_proj)", 1536, 512, 60},
+    };
+    for (auto& sh : shapes) {
+        SyntheticCQ cq(4, sh.K, sh.N, 128);
+        CactusQuantMatrix mat_file = cq.matrix_interleaved();   // no panels: legacy IL kernel
+        cq.preexpand_il();
+        CactusQuantMatrix mat_panel = cq.matrix_interleaved();  // panels set: panel GEMV
+        std::vector<__fp16> x(sh.K), y(sh.N);
+        fill_random_fp16(x, -1.f, 1.f);
+        auto run_ms = [&](CactusQuantMatrix* m) {
+            cactus_quant_matmul(m, x.data(), 1, y.data());      // warmup
+            Timer t;
+            for (int i = 0; i < sh.iters; i++) cactus_quant_matmul(m, x.data(), 1, y.data());
+            return t.elapsed_ms() / sh.iters;
+        };
+        double ms_f = 1e30, ms_p = 1e30;
+        for (int round = 0; round < 5; round++) {
+            ms_f = std::min(ms_f, run_ms(&mat_file));
+            ms_p = std::min(ms_p, run_ms(&mat_panel));
+        }
+        const double fl = 2.0 * sh.K * sh.N;
+        double gf = fl / (ms_f * 1e6), gp = fl / (ms_p * 1e6);
+        std::cout << "  " << std::left << std::setw(31) << sh.name
+                  << " file-NEON " << std::fixed << std::setprecision(1) << gf
+                  << " | panel " << gp << " GF"
+                  << " | " << std::setprecision(2) << (gp / gf)
+                  << "x  (best of 5x" << sh.iters << ")\n";
+    }
+    // GEMM (M>1): panel GEMM vs the legacy expand-from-packed NEON GEMM (the real-model M>1
+    // path for old bundles).
+    for (uint32_t M : {4u, 16u, 32u, 64u, 128u, 256u}) {
+        const uint32_t K = 1024, N = 1024, gs = 128;
+        SyntheticCQ cq(4, K, N, gs);
+        CactusQuantMatrix mat_legacy = cq.matrix();   // no panels: per-call expand NEON GEMM
+        cq.preexpand();
+        CactusQuantMatrix mat_panel = cq.matrix();    // panels set: panel NEON GEMM
+        std::vector<__fp16> A(static_cast<size_t>(M) * K), Cc(static_cast<size_t>(M) * N);
+        fill_random_fp16(A, -1.f, 1.f);
+        auto bench = [&](CactusQuantMatrix* m) -> double {
+            cactus_quant_matmul(m, A.data(), M, Cc.data());     // warmup
+            const int iters = 8;
+            Timer t;
+            for (int i = 0; i < iters; i++) cactus_quant_matmul(m, A.data(), M, Cc.data());
+            return t.elapsed_ms() / iters;
+        };
+        double ml = 1e30, mp = 1e30;
+        for (int round = 0; round < 3; round++) {
+            ml = std::min(ml, bench(&mat_legacy));
+            mp = std::min(mp, bench(&mat_panel));
+        }
+        double gl = (2.0 * M * K * N) / (ml * 1e6), gp = (2.0 * M * K * N) / (mp * 1e6);
+        std::string label = "cq4 M" + std::to_string(M) + " 1024x1024";
+        std::cout << "  " << std::left << std::setw(20) << label
+                  << " legacy " << std::fixed << std::setprecision(1) << gl << " GFLOPS"
+                  << " | panel " << gp << " GFLOPS"
+                  << " | " << std::setprecision(2) << (gp / gl) << "x  (best of 3x8)\n";
+    }
+}
+
 bool run_benchmarks() {
+    print_panel_comparison();
     auto bench = [](const char* label, size_t M, size_t K, size_t N, auto fn) {
         fn();
         Timer t;
@@ -554,26 +915,6 @@ void print_mse_report() {
     }
 }
 
-// Legacy IL CQ4 vs the FP32 oracle through the real dispatch.
-static bool test_cq4_interleaved(double& mse_out,
-                                 uint32_t K = 1024, uint32_t N = 192, uint32_t gs = 128) {
-    SyntheticCQ cq(4, K, N, gs, 777);
-    CactusQuantMatrix mat = cq.matrix_interleaved();
-
-    std::mt19937 gen(31);
-    std::uniform_real_distribution<float> dist(-1.f, 1.f);
-    std::vector<float> x_f32(K);
-    for (auto& v : x_f32) v = dist(gen);
-    std::vector<float> ref(N, 0.f);
-    cq_reference_gemv_f32(cq, x_f32.data(), ref.data());
-
-    std::vector<__fp16> x_f16(K), y(N, (__fp16)0);
-    for (size_t i = 0; i < K; i++) x_f16[i] = (__fp16)x_f32[i];
-    cactus_quant_matmul(&mat, x_f16.data(), 1, y.data());
-    mse_out = compute_mse(ref.data(), y.data(), N);
-    return mse_out <= 0.1;
-}
-
 int main() {
     TestRunner runner("Matrix Multiplication");
     runner.run_test("matmul_f16", test_matmul_f16());
@@ -581,13 +922,48 @@ int main() {
     runner.run_test("matmul_cq2", test_cq_correctness(2));
     runner.run_test("matmul_cq3", test_cq_correctness(3));
     runner.run_test("matmul_cq4", test_cq_correctness(4));
-    {
-        double m1 = 0;
-        runner.run_test("matmul_cq4_il", test_cq4_interleaved(m1));
-        // N=4164 -> 66 chunks incl. a 1-block tail: exercises the multi-thread fused driver.
-        double m_mt = 0;
-        runner.run_test("matmul_cq4_il_mt", test_cq4_interleaved(m_mt, 1024, 4164, 128));
+
+    // ── Panel-format registry: validate the panel kernels through the real dispatch ──
+    for (uint32_t bits : {1u, 2u, 3u, 4u}) {
+        double mse_p = 0.0;
+        bool ok = test_cq_panel(bits, mse_p);
+        runner.run_test(std::string("matmul_cq") + std::to_string(bits) + "[panel]", ok);
+        if (!ok) std::cerr << "    cq" << bits << "[panel] MSE=" << mse_p << "\n";
     }
+    // GEMM (M>1) variant: M tail (20 -> 16+4) and N tail (72 -> 4 super-blocks + 8 valid) for CQ4.
+    struct GemmCase { uint32_t M, N; };
+    for (GemmCase gc : {GemmCase{5, 64}, GemmCase{20, 64}, GemmCase{20, 72}, GemmCase{64, 256}}) {
+        double mse_g = 0.0;
+        bool ok = test_cq_panel_gemm(4, gc.M, gc.N, mse_g);
+        runner.run_test(std::string("matmul_cq4_M") + std::to_string(gc.M) +
+                        "_N" + std::to_string(gc.N) + "[panel]", ok);
+        if (!ok) std::cerr << "    cq4 M=" << gc.M << " N=" << gc.N << "[panel] MSE=" << mse_g << "\n";
+    }
+    {
+        double mi = 0, mp = 0;
+        bool orth_ok = test_orth_panel(mi, mp);
+        runner.run_test("matmul_cq4_orth[panel]", orth_ok);
+        if (!orth_ok) std::cerr << "    orth mse_incumbent=" << mi << " mse_panel=" << mp << "\n";
+    }
+    {
+        double m1 = 0, m2 = 0;
+        runner.run_test("matmul_cq4_il[file]", test_cq4_interleaved(false, m1));
+        // N=4164: 1041 IL blocks -> 66 chunks (16-block + 1-block tail) -> multi-thread fused
+        // driver (phase-A stealing, spin barrier, 4-chunk grabs); N=192 stays on the serial path.
+        double m_mt = 0;
+        runner.run_test("matmul_cq4_il_mt[file]", test_cq4_interleaved(false, m_mt, 1024, 4164, 128));
+        runner.run_test("matmul_cq4_il[panel]", test_cq4_interleaved(true, m2));
+        runner.run_test("panel_layout_invariance", test_panel_layout_invariance());
+        runner.run_test("orth_embed_rows_batched", test_orth_embed_rows());
+    }
+    // The panel GEMM is bits-agnostic (panel nibbles are codebook indices) — validate CQ1-3 too.
+    for (uint32_t b : {1u, 2u, 3u}) {
+        double mse_g = 0.0;
+        bool ok = test_cq_panel_gemm(b, 20, 64, mse_g);
+        runner.run_test(std::string("matmul_cq") + std::to_string(b) + "_gemm[panel]", ok);
+        if (!ok) std::cerr << "    cq" << b << " gemm[panel] MSE=" << mse_g << "\n";
+    }
+
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     print_mse_report();

@@ -193,6 +193,141 @@ bool test_matmul_cq() {
     return true;
 }
 
+// Writes a packed-panel CQ4 weight file (FLAG_PACKED_PANELS) exactly as the transpiler does:
+// scales = codebook, input_scale, recip, fp16 norms, [4B pad], fp32 folded panel norms, then the
+// hadamard parts; data = panels from the reference encoder. Exercises the io.cpp panel loader
+// (set_cq_buffer_pointers offsets) + the panel GEMV/GEMM through the real graph.
+static void write_test_panel_weights(
+    const std::filesystem::path& path, size_t K, size_t N, size_t gs,
+    const std::vector<uint8_t>& panels, const std::vector<float>& panel_norms,
+    const std::vector<__fp16>& codebook, const std::vector<__fp16>& input_scale,
+    const std::vector<__fp16>& input_scale_recip, const std::vector<__fp16>& norms,
+    const std::vector<int8_t>& left_signs, const std::vector<int8_t>& right_signs,
+    const std::vector<uint32_t>& permutation) {
+    constexpr uint32_t CACTUS_MAGIC = 0x54434143;
+    constexpr uint32_t FLAG_PACKED_PANELS = 1u << 5;
+    constexpr size_t HEADER_SIZE = 84;
+    constexpr uint32_t alignment = 32;
+    const size_t ng = K / gs;
+
+    std::string prefix;  // codebook + input_scale + recip + fp16 norms
+    auto append = [&](const void* p, size_t bytes) {
+        prefix.append(reinterpret_cast<const char*>(p), bytes);
+    };
+    append(codebook.data(), codebook.size() * sizeof(__fp16));
+    append(input_scale.data(), input_scale.size() * sizeof(__fp16));
+    append(input_scale_recip.data(), input_scale_recip.size() * sizeof(__fp16));
+    append(norms.data(), norms.size() * sizeof(__fp16));
+    const size_t pad = align_offset_test(prefix.size(), 4) - prefix.size();
+
+    std::string scales = prefix;
+    scales.append(pad, '\0');
+    scales.append(reinterpret_cast<const char*>(panel_norms.data()), panel_norms.size() * sizeof(float));
+    scales.append(reinterpret_cast<const char*>(left_signs.data()), left_signs.size());
+    scales.append(reinterpret_cast<const char*>(right_signs.data()), right_signs.size());
+    scales.append(reinterpret_cast<const char*>(permutation.data()), permutation.size() * sizeof(uint32_t));
+
+    std::ofstream file(path, std::ios::binary);
+    if (!file) throw std::runtime_error("cannot open test panel weights");
+    auto write_u32 = [&](uint32_t v) { file.write(reinterpret_cast<const char*>(&v), sizeof(v)); };
+    auto write_u64 = [&](uint64_t v) { file.write(reinterpret_cast<const char*>(&v), sizeof(v)); };
+    auto write_padding = [&](size_t bytes) { for (size_t i = 0; i < bytes; ++i) file.put('\0'); };
+
+    write_u32(CACTUS_MAGIC);
+    write_u32(FLAG_PACKED_PANELS);
+    write_u32(alignment);
+    write_u32(2);
+    write_u64(N);
+    write_u64(K);
+    write_u64(0);
+    write_u64(0);
+    write_u32(static_cast<uint32_t>(cq_precision_for_bits(4)));
+    write_u64(panels.size());
+    write_u64(scales.size());
+    write_u32(static_cast<uint32_t>(gs));
+    write_u32(static_cast<uint32_t>(ng));
+    write_u64(N);
+    size_t aligned_header = align_offset_test(HEADER_SIZE, alignment);
+    write_padding(aligned_header - HEADER_SIZE);
+    file.write(scales.data(), scales.size());
+    size_t data_start = align_offset_test(aligned_header + scales.size(), alignment);
+    write_padding(data_start - (aligned_header + scales.size()));
+    file.write(reinterpret_cast<const char*>(panels.data()), panels.size());
+    if (!file) throw std::runtime_error("failed writing test panel weights");
+}
+
+bool test_matmul_cq_panels() {
+    // CQ4 panel file loaded through the graph must match the direct legacy-format kernel for
+    // GEMV (M=1) and GEMM (M>1). N=80 spans 2 padded super-blocks; K=256 spans 2 groups.
+    const size_t K = 256, N = 80, gs = 128, ng = K / gs;
+    const uint32_t bits = 4;
+    std::mt19937 gen(2024);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+
+    const uint32_t pgb = cactus_quant_packed_group_bytes(bits, gs);
+    std::vector<uint8_t> packed(N * ng * pgb);
+    for (auto& v : packed) v = static_cast<uint8_t>(gen() & 0xFF);
+    std::vector<__fp16> codebook(16), input_scale(K), input_scale_recip(K), norms(N * ng);
+    std::vector<int8_t> left_signs(gs), right_signs(gs);
+    std::vector<uint32_t> permutation(gs);
+    for (auto& v : codebook) v = static_cast<__fp16>(dist(gen));
+    for (size_t i = 0; i < K; i++) {
+        float s = 0.5f + std::abs(dist(gen));
+        input_scale[i] = static_cast<__fp16>(s);
+        input_scale_recip[i] = static_cast<__fp16>(1.f / s);
+    }
+    for (auto& v : norms) v = static_cast<__fp16>(dist(gen) * 0.1f);
+    for (auto& v : left_signs) v = (gen() & 1) ? 1 : -1;
+    for (auto& v : right_signs) v = (gen() & 1) ? 1 : -1;
+    for (uint32_t i = 0; i < gs; i++) permutation[i] = i;
+
+    CactusQuantMatrix mat{
+        .bits = bits, .K = static_cast<uint32_t>(K), .N = static_cast<uint32_t>(N),
+        .group_size = static_cast<uint32_t>(gs), .num_groups = static_cast<uint32_t>(ng),
+        .flags = 0,
+        .codebook = codebook.data(), .input_scale = input_scale.data(),
+        .input_scale_recip = input_scale_recip.data(), .norms = norms.data(),
+        .packed_indices = packed.data(), .left_signs = left_signs.data(),
+        .right_signs = right_signs.data(), .permutation = permutation.data(),
+        .rotation = nullptr, .rotation_t = nullptr, .expanded = nullptr, .norm_f32 = nullptr,
+        .packed_panels = nullptr, .norm_panels = nullptr,
+    };
+
+    const size_t SB64 = (N + 63) / 64;
+    std::vector<uint8_t> panels(SB64 * ng * (gs / 4) * 128);
+    std::vector<float> panel_norms(SB64 * ng * 64);
+    cactus_quant_build_panels(&mat, panels.data(), panel_norms.data());
+
+    auto path = std::filesystem::temp_directory_path() / "cactus_graph_cq4p_matmul.cq4p.weights";
+    write_test_panel_weights(path, K, N, gs, panels, panel_norms, codebook, input_scale,
+                             input_scale_recip, norms, left_signs, right_signs, permutation);
+
+    bool ok = true;
+    for (size_t M : {size_t(1), size_t(20)}) {
+        std::vector<__fp16> A(M * K);
+        for (auto& v : A) v = static_cast<__fp16>(dist(gen));
+        std::vector<__fp16> direct(M * N, static_cast<__fp16>(0));
+        cactus_quant_matmul(&mat, A.data(), static_cast<uint32_t>(M), direct.data());
+
+        CactusGraph g;
+        size_t ia = g.input({M, K}, Precision::FP16);
+        size_t iw = g.mmap_weights(path.string());
+        size_t out = g.matmul(ia, iw, true);
+        g.set_input(ia, A.data(), Precision::FP16);
+        g.execute();
+        __fp16* graph_out = static_cast<__fp16*>(g.get_output(out));
+        for (size_t i = 0; i < M * N; i++) {
+            float actual = static_cast<float>(graph_out[i]);
+            float expected = static_cast<float>(direct[i]);
+            if (!std::isfinite(actual) || std::abs(actual - expected) > 2e-3f) { ok = false; break; }
+        }
+        g.hard_reset();
+        if (!ok) break;
+    }
+    std::filesystem::remove(path);
+    return ok;
+}
+
 bool test_attention_int8_hybrid() {
     const size_t b = 1, s = 1, h = 2, kv = 2, d = 16;
     const size_t cache_len = 4;
@@ -683,6 +818,7 @@ int main() {
 
     runner.run_test("Matrix Multiplication", test_matrix_multiplication());
     runner.run_test("MatMul CQ", test_matmul_cq());
+    runner.run_test("MatMul CQ Panels", test_matmul_cq_panels());
     runner.run_test("Transpose", test_transpose());
     runner.run_test("Reshape", test_reshape());
     runner.run_test("RMS Norm", test_rms_norm());

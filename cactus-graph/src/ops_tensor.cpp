@@ -157,6 +157,63 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
     Precision emb_prec = embeddings_buffer.precision;
     if (PrecisionTraits::is_cq(emb_prec) && embeddings_buffer.group_size > 0) {
         bool orthogonal = (embeddings_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0;
+        bool interleaved = (embeddings_buffer.cq_flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0;
+        bool panels = embeddings_buffer.cq_packed_panels != nullptr;
+        if (orthogonal && (interleaved || panels) && (hidden_dim % 8) == 0) {
+            // Batched path (production orthogonal embeddings — packed-panel or
+            // INTERLEAVED_4ROW): dedup indices, then ONE parallel dequant+un-rotation pass over
+            // the unique rows (the per-row fallback below is a serial scalar K^2 matvec per row
+            // — it was a top prefill term for per-layer embeddings). Legacy row-major
+            // orthogonal bundles (a transpiler bug) take the per-row fallback.
+            std::unordered_map<size_t, uint32_t> slot;
+            slot.reserve(std::min<size_t>(num_indices, 256));
+            std::vector<uint32_t> uniq;
+            uniq.reserve(std::min<size_t>(num_indices, 256));
+            std::vector<uint32_t> idx_slot(num_indices);
+            for (size_t i = 0; i < num_indices; i++) {
+                size_t idx = static_cast<size_t>(indices_ptr[i]);
+                if (idx >= vocab_size) {
+                    throw std::runtime_error("Embedding index out of bounds: " + std::to_string(idx) + " >= " + std::to_string(vocab_size));
+                }
+                auto it = slot.emplace(idx, static_cast<uint32_t>(uniq.size()));
+                if (it.second) uniq.push_back(static_cast<uint32_t>(idx));
+                idx_slot[i] = it.first->second;
+            }
+            std::vector<__fp16> rows_out(uniq.size() * hidden_dim);
+            if (panels) {
+                cactus_quant_dequantize_orthogonal_embedding_rows_panels(
+                    static_cast<uint32_t>(hidden_dim),
+                    static_cast<uint32_t>(embeddings_buffer.group_size),
+                    static_cast<uint32_t>(embeddings_buffer.num_groups),
+                    uniq.data(),
+                    static_cast<uint32_t>(uniq.size()),
+                    embeddings_buffer.cq_packed_panels,
+                    embeddings_buffer.cq_codebook,
+                    embeddings_buffer.cq_norms,
+                    embeddings_buffer.cq_input_scale_recip,
+                    embeddings_buffer.cq_rotation,
+                    rows_out.data());
+            } else {
+                cactus_quant_dequantize_orthogonal_embedding_rows(
+                    PrecisionTraits::cq_bits(emb_prec),
+                    static_cast<uint32_t>(hidden_dim),
+                    uniq.data(),
+                    static_cast<uint32_t>(uniq.size()),
+                    embeddings_buffer.data_as<uint8_t>(),
+                    embeddings_buffer.cq_codebook,
+                    embeddings_buffer.cq_norms,
+                    embeddings_buffer.cq_input_scale_recip,
+                    embeddings_buffer.cq_rotation,
+                    embeddings_buffer.cq_flags,
+                    rows_out.data());
+            }
+            for (size_t i = 0; i < num_indices; i++) {
+                std::memcpy(output + i * hidden_dim,
+                            rows_out.data() + static_cast<size_t>(idx_slot[i]) * hidden_dim,
+                            hidden_dim * sizeof(__fp16));
+            }
+            return;
+        }
         std::unordered_map<size_t, size_t> row_cache;
         std::vector<__fp16> cached_rows;
         if (num_indices > 16) {

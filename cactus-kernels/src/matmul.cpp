@@ -459,7 +459,6 @@ static void cactus_quant_group_gemm(
     constexpr size_t TILE_N = 16;
     const size_t n_blocks = (W.N + TILE_N - 1) / TILE_N;
 
-
     CactusThreading::parallel_gemm_tiles(M, n_blocks,
         [&, decode_group](size_t block_start, size_t block_end) {
             thread_local std::vector<__fp16> b_tile;
@@ -497,13 +496,19 @@ static void cactus_quant_group_gemm(
         });
 }
 
+// Format-driven dispatch: the loader sets the panel pointers from panel files only.
+static inline bool cactus_quant_has_panels(const CactusQuantMatrix* W) {
+    return W->packed_panels != nullptr && W->norm_panels != nullptr;
+}
+
 static bool cactus_quant_valid_common(const CactusQuantMatrix* W, const void* A, void* C) {
     if (W == nullptr || A == nullptr || C == nullptr) return false;
     if (W->K == 0 || W->N == 0 || W->group_size == 0 || W->num_groups == 0) return false;
     if (W->group_size > 256) return false;
     if ((W->group_size & (W->group_size - 1)) != 0) return false;
     if (W->K != W->group_size * W->num_groups) return false;
-    if (W->codebook == nullptr || W->norms == nullptr || W->packed_indices == nullptr) return false;
+    if (W->codebook == nullptr || W->norms == nullptr) return false;
+    if (W->packed_indices == nullptr && !cactus_quant_has_panels(W)) return false;
     return true;
 }
 
@@ -691,34 +696,13 @@ __attribute__((always_inline)) static inline void tq_expand_i8_32(
 }
 
 template<uint32_t Bits>
-__attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
-    const CactusQuantMatrix* W,
-    const __fp16* code_basis,
-    __fp16* y) {
-    static_assert(Bits >= 1 && Bits <= 4);
+static void cactus_quant_sdot_packed_blocks(
+    const CactusQuantMatrix* W, const int8_t* act_i8, const float* act_scales,
+    const int8x16_t cb_lut, const float cb_scale,
+    size_t block_start, size_t block_end, __fp16* y) {
+    constexpr size_t INT8_TILE_N = 16;
     const uint32_t gs = W->group_size;
     const uint32_t pgb = cactus_quant_packed_group_bytes(Bits, gs);
-    constexpr uint32_t cb_size = 1u << Bits;
-
-    constexpr size_t INT8_TILE_N = 16;
-    const size_t int8_n_blocks = (W->N + INT8_TILE_N - 1) / INT8_TILE_N;
-
-    thread_local std::vector<int8_t> act_i8_buf;
-    thread_local std::vector<float> act_scales_buf;
-    if (act_i8_buf.size() < W->K) act_i8_buf.resize(W->K);
-    if (act_scales_buf.size() < W->num_groups) act_scales_buf.resize(W->num_groups);
-    for (uint32_t g = 0; g < W->num_groups; ++g) {
-        act_scales_buf[g] = tq_quantize_group_i8(
-            code_basis + static_cast<size_t>(g) * gs,
-            act_i8_buf.data() + static_cast<size_t>(g) * gs, gs);
-    }
-    const int8_t* act_i8 = act_i8_buf.data();
-    const float* act_scales = act_scales_buf.data();
-
-    int8_t cb_i8[16] = {};
-    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, cb_size);
-    const int8x16_t cb_lut = vld1q_s8(cb_i8);
-
     auto expand_group4 = [&](size_t cache_block, uint32_t g, int8_t* dst, float* norm_scale) {
         const uint32_t n_vecs = gs / 16;
         const size_t n_start4 = cache_block * 4;
@@ -763,7 +747,6 @@ __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
         }
     };
 
-    cactus_quant_parallel_ranges(int8_n_blocks, 16, [&](size_t block_start, size_t block_end) {
         for (size_t block = block_start; block < block_end; ++block) {
             const size_t n_start = block * INT8_TILE_N;
             const size_t actual_n = std::min(INT8_TILE_N, static_cast<size_t>(W->N) - n_start);
@@ -877,6 +860,38 @@ __attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
                 y[n_start + ni] = static_cast<__fp16>(acc[ni]);
             }
         }
+}
+
+template<uint32_t Bits>
+__attribute__((always_inline)) static inline void cactus_quant_sdot_gemv_int8(
+    const CactusQuantMatrix* W,
+    const __fp16* code_basis,
+    __fp16* y) {
+    static_assert(Bits >= 1 && Bits <= 4);
+    const uint32_t gs = W->group_size;
+    constexpr uint32_t cb_size = 1u << Bits;
+
+    constexpr size_t INT8_TILE_N = 16;
+    const size_t int8_n_blocks = (W->N + INT8_TILE_N - 1) / INT8_TILE_N;
+
+    thread_local std::vector<int8_t> act_i8_buf;
+    thread_local std::vector<float> act_scales_buf;
+    if (act_i8_buf.size() < W->K) act_i8_buf.resize(W->K);
+    if (act_scales_buf.size() < W->num_groups) act_scales_buf.resize(W->num_groups);
+    for (uint32_t g = 0; g < W->num_groups; ++g) {
+        act_scales_buf[g] = tq_quantize_group_i8(
+            code_basis + static_cast<size_t>(g) * gs,
+            act_i8_buf.data() + static_cast<size_t>(g) * gs, gs);
+    }
+    const int8_t* act_i8 = act_i8_buf.data();
+    const float* act_scales = act_scales_buf.data();
+
+    int8_t cb_i8[16] = {};
+    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, cb_size);
+    const int8x16_t cb_lut = vld1q_s8(cb_i8);
+
+    cactus_quant_parallel_ranges(int8_n_blocks, 16, [&](size_t b0, size_t b1) {
+        cactus_quant_sdot_packed_blocks<Bits>(W, act_i8, act_scales, cb_lut, cb_scale, b0, b1, y);
     });
 }
 
@@ -1043,8 +1058,6 @@ void cactus_quant_2bit_gemm(const CactusQuantMatrix* W, const __fp16* A, uint32_
     cactus_quant_Nbit_gemm_impl<2, CactusTQ2ScaledDecoder>(W, A, M, C, 8);
 }
 
-
-
 struct CactusTQ1ScaledDecoder {
     uint8x8_t cb_bytes;
 
@@ -1161,8 +1174,6 @@ void cactus_quant_1bit_gemv(
 void cactus_quant_1bit_gemm(const CactusQuantMatrix* W, const __fp16* A, uint32_t M, __fp16* C) {
     cactus_quant_Nbit_gemm_impl<1, CactusTQ1ScaledDecoder>(W, A, M, C, 8);
 }
-
-
 
 static inline uint8x8_t cactus_tq3_unpack_8x3bit(const uint8_t* packed) {
 
@@ -1314,7 +1325,6 @@ static inline float tq_quantize_group_i8(const __fp16* src, int8_t* dst, uint32_
         dst[k] = static_cast<int8_t>(std::round(static_cast<float>(src[k]) / scale));
     return scale;
 }
-
 
 static inline uint32_t tq_extract_idx(const uint8_t* packed, uint32_t k, uint32_t bits) {
     if (bits == 4) return (packed[k / 2] >> ((k & 1) * 4)) & 0xF;
@@ -1519,6 +1529,277 @@ static void tq_preexpand_weights(
     }
 }
 
+// Byte-exact reference encoder for the panel format (tests/fixtures; production panels come
+// from the transpiler).
+void cactus_quant_build_panels(const CactusQuantMatrix* W, uint8_t* panels_out, float* norms_out) {
+    const uint32_t bits = W->bits;
+    const uint32_t gs = W->group_size;
+    const uint32_t ng = W->num_groups;
+    const uint32_t N = W->N;
+    const uint32_t pgb = cactus_quant_packed_group_bytes(bits, gs);
+    const size_t N_blocks = (static_cast<size_t>(N) + 3) / 4;
+    const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
+    const uint32_t nkg = gs / 4;
+
+    int8_t cb_i8[16] = {};
+    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 1u << bits);
+    const int8x16_t cb_lut = vld1q_s8(cb_i8);
+
+    std::vector<int8_t> w_il(N_blocks * ng * static_cast<size_t>(gs) * 4);
+    std::vector<float> n_f32(N_blocks * ng * 4);
+    if (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW)
+        tq_preexpand_weights_interleaved(W, bits, ng, gs, pgb, cb_lut, cb_scale,
+                                         N_blocks, w_il.data(), n_f32.data());
+    else
+        tq_preexpand_weights(W, bits, ng, gs, pgb, cb_lut, cb_scale,
+                             N_blocks, w_il.data(), n_f32.data());
+
+    uint8_t inv[256];
+    bool seen[256] = {};
+    std::memset(inv, 0, sizeof inv);
+    for (uint32_t i = 0; i < (1u << bits); ++i) {
+        const uint8_t v = static_cast<uint8_t>(cb_i8[i]) ^ 0x80u;  // value+128
+        if (!seen[v]) { seen[v] = true; inv[v] = static_cast<uint8_t>(i); }
+    }
+
+    std::memset(panels_out, 0, SB64 * ng * static_cast<size_t>(nkg) * 128);
+    for (size_t sb = 0; sb < SB64; ++sb)
+        for (uint32_t g = 0; g < ng; ++g) {
+            uint8_t* dst = panels_out + (sb * ng + g) * static_cast<size_t>(nkg) * 128;
+            for (uint32_t kg = 0; kg < nkg; ++kg)
+                for (uint32_t b = 0; b < 256; ++b) {
+                    const uint32_t v = b / 64, ch = (b % 64) / 4, kc = b % 4;
+                    const size_t n = sb * 64 + v * 16 + ch;
+                    if (n >= N) continue;                  // padded channel: idx 0, norm 0
+                    const size_t nb = n / 4, ni = n % 4;
+                    const uint32_t k = kg * 4 + kc;
+                    const uint32_t v2 = k / 16, c = (k % 16) / 4, kc2 = k % 4;
+                    const int8_t val = w_il[((nb * ng + g) * static_cast<size_t>(gs)) * 4
+                                            + static_cast<size_t>(v2) * 64 + c * 16 + ni * 4 + kc2];
+                    const uint8_t idx = inv[static_cast<uint8_t>(val) ^ 0x80u];
+                    uint8_t& d = dst[kg * 128 + b / 2];
+                    d = (b & 1u) ? static_cast<uint8_t>(d | (idx << 4))
+                                 : static_cast<uint8_t>(d | idx);
+                }
+            float* nd = norms_out + (sb * ng + g) * 64;
+            for (uint32_t c = 0; c < 64; ++c) {
+                const size_t n = sb * 64 + c;
+                nd[c] = (n < N) ? n_f32[(n / 4 * ng + g) * 4 + (n % 4)] : 0.f;
+            }
+        }
+}
+
+static void cactus_quant_interleaved4_gemv_blocks(
+    const CactusQuantMatrix* W, const uint8_t* packed_interleaved,
+    const __fp16* norms_interleaved, const int8_t* act_i8, const float* act_scales,
+    const int8x16_t cb_lut, const float cb_scale,
+    size_t block_start, size_t block_end, __fp16* y);
+
+// NEON SDOT GEMV over the file-borne panels: per 16B, and/shr to nibbles, 2x vqtbl1q(codebook),
+// vzip(lo,hi), 2x vdotq_laneq; 16 independent accumulators. Panel order = [4 vec][16 ch][4 K].
+static void cactus_quant_panel_gemv_blocks(
+    const CactusQuantMatrix* W, const int8_t* act_i8, const float* act_scales,
+    const int8x16_t cb_lut, size_t sb_start, size_t sb_end, __fp16* C) {
+    const uint32_t gs = W->group_size;
+    const uint32_t ng = W->num_groups;
+    const uint32_t N = W->N;
+    const uint32_t nkg = gs / 4;
+    const size_t g_stride = static_cast<size_t>(nkg) * 128;
+    const size_t sb_stride = static_cast<size_t>(ng) * g_stride;
+    const uint8x16_t lo_mask = vdupq_n_u8(0x0F);
+
+    for (size_t sb = sb_start; sb < sb_end; ++sb) {
+        alignas(16) float facc[64] = {};
+        const uint8_t* sbp = W->packed_panels + sb * sb_stride;
+        const float* nsb = W->norm_panels + sb * static_cast<size_t>(ng) * 64;
+        for (uint32_t g = 0; g < ng; ++g) {
+            const uint8_t* gp = sbp + static_cast<size_t>(g) * g_stride;
+            const int8_t* ag = act_i8 + static_cast<size_t>(g) * gs;
+            int32x4_t acc[16];
+            for (int v = 0; v < 16; ++v) acc[v] = vdupq_n_s32(0);
+            for (uint32_t kq = 0; kq < nkg; kq += 4) {       // gs % 16 == 0 (cache gate: gs % 32 == 0)
+                const int8x16_t av = vld1q_s8(ag + static_cast<size_t>(kq) * 4);
+                #define CACTUS_PANEL_KG(J) do { \
+                    const uint8_t* p_ = gp + (static_cast<size_t>(kq) + (J)) * 128; \
+                    for (int c2 = 0; c2 < 8; ++c2) { \
+                        const uint8x16_t raw_ = vld1q_u8(p_ + c2 * 16); \
+                        const int8x16_t lov_ = vqtbl1q_s8(cb_lut, vandq_u8(raw_, lo_mask)); \
+                        const int8x16_t hiv_ = vqtbl1q_s8(cb_lut, vshrq_n_u8(raw_, 4)); \
+                        acc[c2 * 2 + 0] = vdotq_laneq_s32(acc[c2 * 2 + 0], \
+                            vzip1q_s8(lov_, hiv_), av, (J)); \
+                        acc[c2 * 2 + 1] = vdotq_laneq_s32(acc[c2 * 2 + 1], \
+                            vzip2q_s8(lov_, hiv_), av, (J)); \
+                    } } while (0)
+                CACTUS_PANEL_KG(0); CACTUS_PANEL_KG(1); CACTUS_PANEL_KG(2); CACTUS_PANEL_KG(3);
+                #undef CACTUS_PANEL_KG
+            }
+            const float32x4_t as = vdupq_n_f32(act_scales[g]);
+            const float* nf = nsb + static_cast<size_t>(g) * 64;
+            for (int v = 0; v < 16; ++v) {
+                float32x4_t f = vld1q_f32(facc + v * 4);
+                f = vfmaq_f32(f, vmulq_f32(vcvtq_f32_s32(acc[v]), as), vld1q_f32(nf + v * 4));
+                vst1q_f32(facc + v * 4, f);
+            }
+        }
+        const size_t n0 = sb * 64;
+        const uint32_t valid = static_cast<uint32_t>(std::min<size_t>(64, N - n0));
+        for (uint32_t c = 0; c < valid; ++c) C[n0 + c] = static_cast<__fp16>(facc[c]);
+    }
+}
+
+// Fused panel GEMV (M=1): one pool dispatch = phase A (group-parallel Hadamard + int8 quantize,
+// spin barrier) + phase B (dynamic super-block stealing). Main runs as worker 0 and spin-joins.
+// Thread budget = ceil(SB64 / CACTUS_GEMV_SB_PER_THREAD), default 8 (mobile: battery > saturation).
+static void cactus_quant_panel_gemv(const CactusQuantMatrix* W, const __fp16* A, __fp16* C) {
+    const uint32_t gs = W->group_size;
+    const uint32_t num_groups = W->num_groups;
+    const uint32_t N = W->N;
+    const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
+    auto& pool = CactusThreading::get_thread_pool();
+    const size_t sb_per_thread = cactus_quant_gemv_sb_per_thread();
+    const size_t nt_budget = std::max<size_t>(1, (SB64 + sb_per_thread - 1) / sb_per_thread);
+    const size_t nt = std::min(pool.num_workers(), std::min(nt_budget, SB64));
+
+    static thread_local std::vector<int8_t> tl_h_act_i8;
+    static thread_local std::vector<float> tl_h_act_scales;
+    if (tl_h_act_i8.size() < W->K) tl_h_act_i8.resize(W->K);
+    if (tl_h_act_scales.size() < num_groups) tl_h_act_scales.resize(num_groups);
+    int8_t* act_i8 = tl_h_act_i8.data();
+    float* act_scales = tl_h_act_scales.data();
+
+    int8_t cb_i8[16] = {};
+    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 1u << W->bits);
+    (void)cb_scale;                          // folded into norm_panels by the transpiler
+    const int8x16_t cb_lut = vld1q_s8(cb_i8);
+
+    auto phase_a_group = [&](uint32_t g) {
+        __fp16 basis[256];                   // gs <= 256 (same bound as the transform's tmp)
+        cactus_quant_transform_hadamard_group(*W, A + static_cast<size_t>(g) * gs, g, basis);
+        act_scales[g] = tq_quantize_group_i8(basis, act_i8 + static_cast<size_t>(g) * gs, gs);
+    };
+
+    if (nt <= 1) {
+        for (uint32_t g = 0; g < num_groups; ++g) phase_a_group(g);
+        cactus_quant_panel_gemv_blocks(W, act_i8, act_scales, cb_lut, 0, SB64, C);
+        return;
+    }
+
+    std::atomic<uint32_t> ga{0};             // phase A group grab
+    std::atomic<uint32_t> a_done{0};         // phase A completion (release/acquire barrier)
+    std::atomic<uint32_t> next{0};           // phase B super-block grab
+    std::atomic<uint32_t> done{0};           // worker completion (spin-join, no cv wake)
+    auto worker = [&](size_t) {
+        for (uint32_t g; (g = ga.fetch_add(1, std::memory_order_relaxed)) < num_groups; ) {
+            phase_a_group(g);
+            a_done.fetch_add(1, std::memory_order_release);
+        }
+        while (a_done.load(std::memory_order_acquire) < num_groups) { /* spin */ }
+        for (;;) {
+            const uint32_t seen = next.load(std::memory_order_relaxed);
+            if (seen >= SB64) break;
+            const uint32_t want = (SB64 - seen > 4u * nt) ? 4u : 1u;
+            const uint32_t sb = next.fetch_add(want, std::memory_order_relaxed);
+            if (sb >= SB64) break;
+            const uint32_t cnt = std::min<uint32_t>(want, static_cast<uint32_t>(SB64) - sb);
+            cactus_quant_panel_gemv_blocks(W, act_i8, act_scales, cb_lut,
+                                           sb, static_cast<size_t>(sb) + cnt, C);
+        }
+    };
+    pool.enqueue_n_threads(nt - 1, nt - 1, [&](size_t wid, size_t) {
+        worker(wid + 1);
+        done.fetch_add(1, std::memory_order_release);
+    });
+    worker(0);
+    while (done.load(std::memory_order_acquire) < nt - 1) { /* spin */ }
+}
+
+// Orthogonal-rotation CQ4 GEMV (the Gemma lm_head). Panel files store the lm_head with virtual
+// 128-wide groups already applied (exact regrouping: norms constant across subgroups, panel
+// kg-blocks K-chunk-ordered). Phase A rotates+quantizes each group via rot_t (fp32 accumulate);
+// phase B is the panel super-block stealing loop.
+void cactus_quant_orth_panel_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t,
+                                  const __fp16* input_scale_recip, const __fp16* A, __fp16* C) {
+    const uint32_t K = W2->K;
+    const uint32_t N = W2->N;
+    const uint32_t gs = W2->group_size;
+    const uint32_t num_groups = W2->num_groups;
+    const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
+    auto& pool = CactusThreading::get_thread_pool();
+    const size_t sb_per_thread = cactus_quant_gemv_sb_per_thread();
+    const size_t nt_budget = std::max<size_t>(1, (SB64 + sb_per_thread - 1) / sb_per_thread);
+    const size_t nt = std::max<size_t>(1, std::min(pool.num_workers(), std::min(nt_budget, SB64)));
+
+    static thread_local std::vector<__fp16> tl_a_scaled;
+    static thread_local std::vector<int8_t> tl_o_act_i8;
+    static thread_local std::vector<float> tl_o_act_scales;
+    if (tl_a_scaled.size() < K) tl_a_scaled.resize(K);
+    if (tl_o_act_i8.size() < K) tl_o_act_i8.resize(K);
+    if (tl_o_act_scales.size() < num_groups) tl_o_act_scales.resize(num_groups);
+    __fp16* a_scaled = tl_a_scaled.data();
+    int8_t* act_i8 = tl_o_act_i8.data();
+    float* act_scales = tl_o_act_scales.data();
+    for (uint32_t k = 0; k < K; ++k)
+        a_scaled[k] = static_cast<__fp16>(static_cast<float>(A[k]) *
+            (input_scale_recip ? static_cast<float>(input_scale_recip[k]) : 1.f));
+
+    int8_t cb_i8[16] = {};
+    const float cb_scale = tq_quantize_codebook_i8(W2->codebook, cb_i8, 1u << W2->bits);
+    (void)cb_scale;                          // folded into norm_panels by the transpiler
+    const int8x16_t cb_lut = vld1q_s8(cb_i8);
+    // rotate-and-quantize one virtual group: A_rot[i] = sum_k a_scaled[k]*R[k][i] = dot(a_scaled, rot_t[i])
+    auto phase_a_group = [&](uint32_t g) {
+        __fp16 basis[128];
+        for (uint32_t j = 0; j < gs; ++j) {
+            const __fp16* rt = rot_t + (static_cast<size_t>(g) * gs + j) * K;
+            float32x4_t s0 = vdupq_n_f32(0.f), s1 = vdupq_n_f32(0.f);
+            for (uint32_t k = 0; k < K; k += 8) {
+                float16x8_t av = vld1q_f16(a_scaled + k);
+                float16x8_t rv = vld1q_f16(rt + k);
+                s0 = vfmaq_f32(s0, vcvt_f32_f16(vget_low_f16(av)), vcvt_f32_f16(vget_low_f16(rv)));
+                s1 = vfmaq_f32(s1, vcvt_f32_f16(vget_high_f16(av)), vcvt_f32_f16(vget_high_f16(rv)));
+            }
+            basis[j] = static_cast<__fp16>(vaddvq_f32(vaddq_f32(s0, s1)));
+        }
+        act_scales[g] = tq_quantize_group_i8(basis, act_i8 + static_cast<size_t>(g) * gs, gs);
+    };
+
+    if (nt <= 1) {
+        for (uint32_t g = 0; g < num_groups; ++g) phase_a_group(g);
+        cactus_quant_panel_gemv_blocks(W2, act_i8, act_scales, cb_lut, 0, SB64, C);
+        return;
+    }
+
+    std::atomic<uint32_t> ga{0};
+    std::atomic<uint32_t> a_done{0};
+    std::atomic<uint32_t> next{0};
+    std::atomic<uint32_t> done{0};
+    auto worker = [&](size_t) {
+        for (uint32_t g; (g = ga.fetch_add(1, std::memory_order_relaxed)) < num_groups; ) {
+            phase_a_group(g);
+            a_done.fetch_add(1, std::memory_order_release);
+        }
+        while (a_done.load(std::memory_order_acquire) < num_groups) { /* spin */ }
+        for (;;) {
+            const uint32_t seen = next.load(std::memory_order_relaxed);
+            if (seen >= SB64) break;
+            const uint32_t want = (SB64 - seen > 4u * nt) ? 4u : 1u;
+            const uint32_t sb = next.fetch_add(want, std::memory_order_relaxed);
+            if (sb >= SB64) break;
+            const uint32_t cnt = std::min<uint32_t>(want, static_cast<uint32_t>(SB64) - sb);
+            cactus_quant_panel_gemv_blocks(W2, act_i8, act_scales, cb_lut,
+                                           sb, static_cast<size_t>(sb) + cnt, C);
+        }
+    };
+    // Main participates as worker 0 + spin-join (no wait_all cv sleep) — see the GEMV driver.
+    // (nt >= 2 here: the nt <= 1 case took the serial path above.)
+    pool.enqueue_n_threads(nt - 1, nt - 1, [&](size_t wid, size_t) {
+        worker(wid + 1);
+        done.fetch_add(1, std::memory_order_release);
+    });
+    worker(0);
+    while (done.load(std::memory_order_acquire) < nt - 1) { /* spin */ }
+}
+
 void cactus_quant_matmul(
     const CactusQuantMatrix* W,
     const __fp16* A,
@@ -1526,6 +1807,11 @@ void cactus_quant_matmul(
     __fp16* C) {
     if (W != nullptr && (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0) {
         cactus_quant_orthogonal_matmul(W, A, M, C);
+        return;
+    }
+    // Panels take precedence: panel files carry no legacy packed-indices region.
+    if (W != nullptr && M == 1 && cactus_quant_has_panels(W) && (W->group_size % 32) == 0) {
+        cactus_quant_panel_gemv(W, A, C);
         return;
     }
     if (W != nullptr && M == 1
@@ -1714,6 +2000,143 @@ void cactus_quant_matmul(
 
     if (!has_sdot_group_layout) {
         cactus_quant_dispatch_group_gemm(W, A, M, C);
+        return;
+    }
+
+    // Fused panel GEMM: phase A packs activations [kg][16 rows][4 K] per (M-tile, group);
+    // phase B work-steals (M-tile x super-block) pairs.
+    if (cactus_quant_has_panels(W)) {
+        const uint32_t N = W->N;
+        const uint32_t K = W->K;
+        const size_t SB64 = (static_cast<size_t>(N) + 63) / 64;
+        constexpr uint32_t TILE_M16 = 16;
+        const size_t M_tiles = (M + TILE_M16 - 1) / TILE_M16;
+        const size_t total_pairs = M_tiles * SB64;
+        const uint32_t nkg = gs / 4;
+        const size_t g_stride = static_cast<size_t>(nkg) * 128;
+
+        std::vector<int8_t> act_packed(M_tiles * num_groups * static_cast<size_t>(gs) * 16);
+        std::vector<float> act_scales(static_cast<size_t>(M) * num_groups);
+
+        int8_t cb_i8[16] = {};
+        const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, codebook_size);
+        (void)cb_scale;                          // folded into norm_panels by the transpiler
+        const int8x16_t cb_lut = vld1q_s8(cb_i8);
+        const uint8x16_t lo_mask = vdupq_n_u8(0x0F);
+
+        auto& pool = CactusThreading::get_thread_pool();
+        // Same thread budget as the original M>1 NEON GEMM (one thread per 16-row M-tile).
+        const size_t nt = std::max<size_t>(1,
+            std::min(pool.num_workers(), std::min(M_tiles, total_pairs)));
+        const uint32_t total_a = static_cast<uint32_t>(M_tiles * num_groups);
+
+        auto phase_a_item = [&](uint32_t item) {
+            const uint32_t mt = item / num_groups;
+            const uint32_t g = item % num_groups;
+            int8_t rowq[16][256];                       // gs <= 256
+            for (uint32_t r = 0; r < 16; ++r) {
+                const uint32_t m = mt * TILE_M16 + r;
+                if (m < M) {
+                    __fp16 basis[256];
+                    cactus_quant_transform_hadamard_group(
+                        *W, A + static_cast<size_t>(m) * K + static_cast<size_t>(g) * gs, g, basis);
+                    act_scales[static_cast<size_t>(m) * num_groups + g] =
+                        tq_quantize_group_i8(basis, rowq[r], gs);
+                } else {
+                    std::memset(rowq[r], 0, gs);
+                }
+            }
+            int8_t* dst = act_packed.data() + (static_cast<size_t>(mt) * num_groups + g) * gs * 16;
+            for (uint32_t kg = 0; kg < gs / 4; ++kg)
+                for (uint32_t r = 0; r < 16; ++r)
+                    std::memcpy(dst + static_cast<size_t>(kg) * 64 + r * 4, rowq[r] + kg * 4, 4);
+        };
+        auto run_pair = [&](size_t pair) {
+            const size_t mt = pair / SB64;
+            const size_t sb = pair % SB64;
+            const uint32_t m_rows = std::min<uint32_t>(TILE_M16, M - static_cast<uint32_t>(mt) * TILE_M16);
+            const uint32_t valid_n = std::min<uint32_t>(64, N - static_cast<uint32_t>(sb) * 64);
+            const int8_t* atile = act_packed.data() + (mt * num_groups) * static_cast<size_t>(gs) * 16;
+            const uint8_t* sbp = W->packed_panels + sb * static_cast<size_t>(num_groups) * g_stride;
+            const float* nsb = W->norm_panels + sb * static_cast<size_t>(num_groups) * 64;
+            const uint32_t vmax = (valid_n + 15) / 16;       // 16-channel quarters with output
+            const uint32_t strips = (m_rows + 3) / 4;        // 4-row strips with live rows
+            for (uint32_t v = 0; v < vmax; ++v) {
+                for (uint32_t t = 0; t < strips; ++t) {
+                    const uint32_t rmax = std::min<uint32_t>(4, m_rows - t * 4);
+                    alignas(16) float facc[64] = {};         // [4 rows][16 channels]
+                    for (uint32_t g = 0; g < num_groups; ++g) {
+                        const uint8_t* gp = sbp + static_cast<size_t>(g) * g_stride + v * 32;
+                        const int8_t* ag = atile + (static_cast<size_t>(g) * nkg) * 64 + t * 16;
+                        int32x4_t acc[16];                   // [4 rows][4 channel-quartets]
+                        for (int i2 = 0; i2 < 16; ++i2) acc[i2] = vdupq_n_s32(0);
+                        for (uint32_t kg = 0; kg < nkg; ++kg) {
+                            const int8x16_t act16 = vld1q_s8(ag + static_cast<size_t>(kg) * 64);
+                            const uint8_t* p = gp + static_cast<size_t>(kg) * 128;
+                            const uint8x16_t raw0 = vld1q_u8(p);
+                            const uint8x16_t raw1 = vld1q_u8(p + 16);
+                            const int8x16_t lo0 = vqtbl1q_s8(cb_lut, vandq_u8(raw0, lo_mask));
+                            const int8x16_t hi0 = vqtbl1q_s8(cb_lut, vshrq_n_u8(raw0, 4));
+                            const int8x16_t lo1 = vqtbl1q_s8(cb_lut, vandq_u8(raw1, lo_mask));
+                            const int8x16_t hi1 = vqtbl1q_s8(cb_lut, vshrq_n_u8(raw1, 4));
+                            const int8x16_t w0 = vzip1q_s8(lo0, hi0);   // ch 16v+0..3  x 4 K
+                            const int8x16_t w1 = vzip2q_s8(lo0, hi0);   // ch 16v+4..7
+                            const int8x16_t w2 = vzip1q_s8(lo1, hi1);   // ch 16v+8..11
+                            const int8x16_t w3 = vzip2q_s8(lo1, hi1);   // ch 16v+12..15
+                            acc[0]  = vdotq_laneq_s32(acc[0],  w0, act16, 0);
+                            acc[1]  = vdotq_laneq_s32(acc[1],  w1, act16, 0);
+                            acc[2]  = vdotq_laneq_s32(acc[2],  w2, act16, 0);
+                            acc[3]  = vdotq_laneq_s32(acc[3],  w3, act16, 0);
+                            acc[4]  = vdotq_laneq_s32(acc[4],  w0, act16, 1);
+                            acc[5]  = vdotq_laneq_s32(acc[5],  w1, act16, 1);
+                            acc[6]  = vdotq_laneq_s32(acc[6],  w2, act16, 1);
+                            acc[7]  = vdotq_laneq_s32(acc[7],  w3, act16, 1);
+                            acc[8]  = vdotq_laneq_s32(acc[8],  w0, act16, 2);
+                            acc[9]  = vdotq_laneq_s32(acc[9],  w1, act16, 2);
+                            acc[10] = vdotq_laneq_s32(acc[10], w2, act16, 2);
+                            acc[11] = vdotq_laneq_s32(acc[11], w3, act16, 2);
+                            acc[12] = vdotq_laneq_s32(acc[12], w0, act16, 3);
+                            acc[13] = vdotq_laneq_s32(acc[13], w1, act16, 3);
+                            acc[14] = vdotq_laneq_s32(acc[14], w2, act16, 3);
+                            acc[15] = vdotq_laneq_s32(acc[15], w3, act16, 3);
+                        }
+                        const float* nf = nsb + static_cast<size_t>(g) * 64 + v * 16;
+                        for (uint32_t r = 0; r < rmax; ++r) {
+                            const uint32_t m = static_cast<uint32_t>(mt) * TILE_M16 + t * 4 + r;
+                            const float32x4_t as =
+                                vdupq_n_f32(act_scales[static_cast<size_t>(m) * num_groups + g]);
+                            float* fr = facc + r * 16;
+                            for (int q = 0; q < 4; ++q) {
+                                float32x4_t f = vld1q_f32(fr + q * 4);
+                                f = vfmaq_f32(f,
+                                    vmulq_f32(vcvtq_f32_s32(acc[r * 4 + q]), as),
+                                    vld1q_f32(nf + q * 4));
+                                vst1q_f32(fr + q * 4, f);
+                            }
+                        }
+                    }
+                    const uint32_t n0 = static_cast<uint32_t>(sb) * 64 + v * 16;
+                    const uint32_t cmax = std::min<uint32_t>(16, valid_n - v * 16);
+                    for (uint32_t r = 0; r < rmax; ++r) {
+                        const uint32_t m = static_cast<uint32_t>(mt) * TILE_M16 + t * 4 + r;
+                        __fp16* crow = C + static_cast<size_t>(m) * N + n0;
+                        for (uint32_t c = 0; c < cmax; ++c)
+                            crow[c] = static_cast<__fp16>(facc[r * 16 + c]);
+                    }
+                }
+            }
+        };
+
+        if (nt <= 1) {
+            for (uint32_t i2 = 0; i2 < total_a; ++i2) phase_a_item(i2);
+            for (size_t p2 = 0; p2 < total_pairs; ++p2) run_pair(p2);
+            return;
+        }
+
+        cactus_quant_two_phase_run(nt, total_a, static_cast<uint32_t>(total_pairs), phase_a_item,
+            [&](size_t, uint32_t pair, uint32_t cnt) {
+                for (uint32_t i2 = 0; i2 < cnt; ++i2) run_pair(pair + i2);
+            });
         return;
     }
 
@@ -1956,6 +2379,124 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
     }
 }
 
+// Batched dequant + un-rotate in one pass (the per-row scalar K^2 matvec was a top Gemma
+// prefill term). INTERLEAVED_4ROW only; row-major orthogonal bundles use the per-row fallback.
+static void cactus_quant_unrotate_rows(const std::vector<float>& dq, uint32_t K, uint32_t num_rows,
+                                        const __fp16* rotation, const __fp16* input_scale_recip,
+                                        __fp16* out_rows) {
+    constexpr uint32_t JBLK = 64;
+    const uint32_t jblocks = (K + JBLK - 1) / JBLK;
+    // ~8 j-blocks per thread caps single-row decode lookups at ~3 threads; prefill batches spread.
+    CactusThreading::parallel_for(static_cast<size_t>(num_rows) * jblocks,
+        CactusThreading::ParallelConfig{16, 8},
+        [&](size_t start, size_t end) {
+            for (size_t item = start; item < end; ++item) {
+                const uint32_t u = static_cast<uint32_t>(item / jblocks);
+                const uint32_t j0 = static_cast<uint32_t>(item % jblocks) * JBLK;
+                const uint32_t j1 = std::min(j0 + JBLK, K);
+                const float* d = dq.data() + static_cast<size_t>(u) * K;
+                __fp16* out = out_rows + static_cast<size_t>(u) * K;
+                for (uint32_t j = j0; j < j1; ++j) {
+                    const __fp16* rrow = rotation + static_cast<size_t>(j) * K;
+                    float32x4_t acc0 = vdupq_n_f32(0.0f), acc1 = vdupq_n_f32(0.0f);
+                    for (uint32_t i = 0; i < K; i += 8) {
+                        float16x8_t r = vld1q_f16(rrow + i);
+                        acc0 = vfmaq_f32(acc0, vcvt_f32_f16(vget_low_f16(r)), vld1q_f32(d + i));
+                        acc1 = vfmaq_f32(acc1, vcvt_f32_f16(vget_high_f16(r)), vld1q_f32(d + i + 4));
+                    }
+                    const float scale = input_scale_recip ? static_cast<float>(input_scale_recip[j]) : 1.0f;
+                    out[j] = static_cast<__fp16>(vaddvq_f32(vaddq_f32(acc0, acc1)) * scale);
+                }
+            }
+        });
+}
+
+void cactus_quant_dequantize_orthogonal_embedding_rows(
+    uint32_t bits,
+    uint32_t K,
+    const uint32_t* rows,
+    uint32_t num_rows,
+    const uint8_t* packed_base,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const __fp16* rotation,
+    uint32_t flags,
+    __fp16* out_rows) {
+    if (!packed_base || !codebook || !norms || !rotation || !out_rows || !rows) return;
+    if (bits == 0 || bits > 4 || K == 0 || (K % 8) != 0 || num_rows == 0) return;
+
+    const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(bits, K);
+    if ((flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) == 0 || bits != 4) return;
+
+    std::vector<float> dq(static_cast<size_t>(num_rows) * K);
+    for (uint32_t u = 0; u < num_rows; ++u) {
+        const size_t row = rows[u];
+        const float norm = static_cast<float>(norms[(row / 4) * 4 + (row & 3u)]);
+        float* d = dq.data() + static_cast<size_t>(u) * K;
+        const size_t panel_bytes = static_cast<size_t>(4) * packed_group_bytes;
+        const uint8_t* panel = packed_base + (row / 4) * panel_bytes;
+        for (uint32_t i = 0; i < K; ++i) {
+            const uint32_t chunk = i / 8;
+            const uint32_t sub = i & 7u;
+            const uint8_t b = panel[chunk * 16 + (row & 3u) * 4 + (sub & 3u)];
+            const uint32_t idx = (sub & 4u) ? (b >> 4) : (b & 0x0F);
+            d[i] = static_cast<float>(codebook[idx]) * norm;
+        }
+    }
+
+    cactus_quant_unrotate_rows(dq, K, num_rows, rotation, input_scale_recip, out_rows);
+}
+
+// Batched embedding dequant straight from the panels (row n: super-block n/64, vector (n%64)/16,
+// channel n%16; nibble j = v*64+ch*4+kc) with unfolded fp16 norms, then the vectorized un-rotation.
+void cactus_quant_dequantize_orthogonal_embedding_rows_panels(
+    uint32_t K,
+    uint32_t group_size,
+    uint32_t num_groups,
+    const uint32_t* rows,
+    uint32_t num_rows,
+    const uint8_t* packed_panels,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const __fp16* rotation,
+    __fp16* out_rows) {
+    if (!packed_panels || !codebook || !norms || !rotation || !out_rows || !rows) return;
+    if (K == 0 || (K % 8) != 0 || num_rows == 0) return;
+    if (group_size == 0 || (group_size % 4) != 0 || group_size * num_groups != K) return;
+
+    const uint32_t nkg = group_size / 4;
+    const size_t g_stride = static_cast<size_t>(nkg) * 128;
+    const size_t sb_stride = static_cast<size_t>(num_groups) * g_stride;
+
+    std::vector<float> dq(static_cast<size_t>(num_rows) * K);
+    for (uint32_t u = 0; u < num_rows; ++u) {
+        const size_t row = rows[u];
+        const size_t sb = row / 64;
+        const uint32_t v = static_cast<uint32_t>((row % 64) / 16);
+        const uint32_t ch = static_cast<uint32_t>(row % 16);
+        const uint32_t jbase = v * 64 + ch * 4;
+        float* d = dq.data() + static_cast<size_t>(u) * K;
+        for (uint32_t g = 0; g < num_groups; ++g) {
+            const uint8_t* gp = packed_panels + sb * sb_stride + static_cast<size_t>(g) * g_stride;
+            const float norm = static_cast<float>(norms[row * num_groups + g]);
+            for (uint32_t kg = 0; kg < nkg; ++kg) {
+                const uint8_t* kgb = gp + static_cast<size_t>(kg) * 128;
+                float* dk = d + static_cast<size_t>(g) * group_size + kg * 4;
+                for (uint32_t kc = 0; kc < 4; ++kc) {
+                    const uint32_t j = jbase + kc;
+                    const uint8_t b = kgb[j >> 1];
+                    const uint32_t idx = (j & 1u) ? (b >> 4) : (b & 0x0F);
+                    dk[kc] = static_cast<float>(codebook[idx]) * norm;
+                }
+            }
+        }
+    }
+
+    cactus_quant_unrotate_rows(dq, K, num_rows, rotation, input_scale_recip, out_rows);
+}
+
 static inline uint32_t tq_extract_interleaved_4row_4bit(
     const uint8_t* packed_base,
     uint32_t K,
@@ -2059,6 +2600,14 @@ void cactus_quant_orthogonal_matmul(
     uint32_t M,
     __fp16* C) {
     if (!W || !A || !C || M == 0) return;
+    // Panel orthogonal lm_head: dispatch straight to the panel driver per row.
+    if (cactus_quant_has_panels(W) && W->rotation_t != nullptr) {
+        for (uint32_t m = 0; m < M; ++m)
+            cactus_quant_orth_panel_gemv(W, W->rotation_t, W->input_scale_recip,
+                                         A + static_cast<size_t>(m) * W->K,
+                                         C + static_cast<size_t>(m) * W->N);
+        return;
+    }
     if (!W->rotation || !W->packed_indices || !W->codebook || !W->norms) return;
 
     const uint32_t K    = W->K;
@@ -2203,6 +2752,7 @@ void cactus_quant_orthogonal_matmul(
         });
 }
 
+// Core of the IL CQ4 GEMV: pre-quantized activations against the interleaved packed panels.
 static void cactus_quant_interleaved4_gemv_blocks(
     const CactusQuantMatrix* W, const uint8_t* packed_interleaved,
     const __fp16* norms_interleaved, const int8_t* act_i8, const float* act_scales,

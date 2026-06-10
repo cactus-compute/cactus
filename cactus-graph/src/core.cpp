@@ -96,6 +96,9 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
       cq_right_signs(other.cq_right_signs),
       cq_permutation(other.cq_permutation),
       cq_rotation(other.cq_rotation),
+      cq_packed_panels(other.cq_packed_panels),
+      cq_norm_panels(other.cq_norm_panels),
+      cq_rotation_t(other.cq_rotation_t),
       cq_flags(other.cq_flags) {
     other.total_size = 0;
     other.byte_size = 0;
@@ -113,6 +116,9 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
     other.cq_right_signs = nullptr;
     other.cq_permutation = nullptr;
     other.cq_rotation = nullptr;
+    other.cq_packed_panels = nullptr;
+    other.cq_norm_panels = nullptr;
+    other.cq_rotation_t = nullptr;
     other.cq_flags = 0;
 }
 
@@ -142,6 +148,9 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
         cq_right_signs = other.cq_right_signs;
         cq_permutation = other.cq_permutation;
         cq_rotation = other.cq_rotation;
+        cq_packed_panels = other.cq_packed_panels;
+        cq_norm_panels = other.cq_norm_panels;
+        cq_rotation_t = other.cq_rotation_t;
         cq_flags = other.cq_flags;
 
         other.total_size = 0;
@@ -160,6 +169,9 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
         other.cq_right_signs = nullptr;
         other.cq_permutation = nullptr;
         other.cq_rotation = nullptr;
+        other.cq_packed_panels = nullptr;
+        other.cq_norm_panels = nullptr;
+        other.cq_rotation_t = nullptr;
         other.cq_flags = 0;
     }
     return *this;
