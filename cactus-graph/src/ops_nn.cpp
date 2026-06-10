@@ -60,7 +60,7 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             if (M == 1 && sc && sc->ready && sc->virt_ng > 0
                 && cactus_quant_sme_orth_enabled()) {
                 CactusQuantMatrix W2 = mat;
-                W2.flags = 0;
+                W2.flags = CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
                 W2.group_size = 128;
                 W2.num_groups = sc->virt_ng;
                 W2.norms = sc->norms_rep.data();
@@ -138,7 +138,7 @@ namespace {
                 if (M == 1 && sc && sc->ready && sc->virt_ng > 0
                     && cactus_quant_sme_orth_enabled()) {
                     CactusQuantMatrix W2 = mat;
-                    W2.flags = 0;
+                    W2.flags = CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
                     W2.group_size = 128;
                     W2.num_groups = sc->virt_ng;
                     W2.norms = sc->norms_rep.data();

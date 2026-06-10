@@ -366,7 +366,8 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
     __fp16* out_row);
 
 // Batched + parallelized version of the above for num_rows unique rows (same fp32-accumulate
-// math; the per-row variant is a serial scalar K^2 matvec). out_rows: [num_rows][K].
+// math; the per-row variant is a serial scalar K^2 matvec). INTERLEAVED_4ROW only (the
+// production orthogonal-embedding format; no-op otherwise). out_rows: [num_rows][K].
 void cactus_quant_dequantize_orthogonal_embedding_rows(
     uint32_t bits,
     uint32_t K,

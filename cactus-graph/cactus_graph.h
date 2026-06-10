@@ -292,10 +292,13 @@ struct BufferDesc {
         if (bits < 1 || bits > 4) return;
         const bool orth = (cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0;
         if (orth) {
-            // lm_head shape only: single group spanning K, fp16 rotation, row-major nibbles.
+            // lm_head shape only: single group spanning K, fp16 rotation, INTERLEAVED_4ROW
+            // nibbles (the production format — row-major orthogonal lm_heads came from a
+            // transpiler bug and are not SME-accelerated).
             CactusQuantMatrix W = to_cq_matrix();
             if (bits != 4 || !cq_rotation || W.num_groups != 1 || W.group_size != W.K ||
-                (W.K % 128) != 0 || (cq_flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW)) return;
+                (W.K % 128) != 0 || (W.N % 4) != 0 ||
+                (cq_flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) == 0) return;
         }
         {
             static std::mutex create_mu;
@@ -305,18 +308,24 @@ struct BufferDesc {
         std::call_once(sme_cache->once, [&] {
             CactusQuantMatrix W = to_cq_matrix();
             if (orth) {
-                // Virtual 128-wide regrouping (exact: norms constant across subgroups).
+                // Virtual 128-wide regrouping — exact for INTERLEAVED_4ROW: panel bytes are
+                // ordered by k-chunk, so the gs=128 re-view lands on contiguous 256-byte
+                // sub-panels at (nb*vng + g)*256 == the physical nb*2K + g*256. Norms are
+                // constant across subgroups; replicate them in the interleaved norms layout
+                // [(nb*ng + g)*4 + ni] that the IL preexpander and NEON co-worker read.
                 const uint32_t vng = W.K / 128;
                 sme_cache->virt_ng = vng;
                 sme_cache->norms_rep.resize(static_cast<size_t>(W.N) * vng);
-                for (size_t n = 0; n < W.N; ++n)
+                for (size_t nb = 0; nb < W.N / 4; ++nb)
                     for (uint32_t g = 0; g < vng; ++g)
-                        sme_cache->norms_rep[n * vng + g] = cq_norms[n];
+                        for (size_t ni = 0; ni < 4; ++ni)
+                            sme_cache->norms_rep[(nb * vng + g) * 4 + ni] = cq_norms[nb * 4 + ni];
                 sme_cache->rot_t.resize(static_cast<size_t>(W.K) * W.K);
                 for (size_t k = 0; k < W.K; ++k)
                     for (size_t i = 0; i < W.K; ++i)
                         sme_cache->rot_t[i * W.K + k] = cq_rotation[k * W.K + i];
-                W.flags = 0; W.group_size = 128; W.num_groups = vng;
+                W.flags = CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+                W.group_size = 128; W.num_groups = vng;
                 W.norms = sme_cache->norms_rep.data();
             }
             const size_t SB64 = (static_cast<size_t>(W.N) + 63) / 64;

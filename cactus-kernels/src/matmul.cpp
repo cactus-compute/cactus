@@ -1892,14 +1892,16 @@ static void cactus_quant_sme_gemv_fused(const CactusQuantMatrix* W, const __fp16
         while (done.load(std::memory_order_acquire) < nt - 1) { /* spin */ }
 }
 
-// SME2 orthogonal-rotation CQ4 GEMV (the Gemma lm_head: ONE weight matrix, gs == K, per-row
-// norms, fp16 K x K rotation). Mapped onto the standard hybrid via VIRTUAL 128-wide groups —
-// mathematically exact regrouping (norms constant across subgroups; row-major nibbles already
-// subgroup-contiguous). W2 is the virtual-group view (group_size=128, num_groups=K/128,
-// norms = per-row norms replicated across groups, expanded_sme/norm_sme from the cache).
+// SME2 orthogonal-rotation CQ4 GEMV (the Gemma lm_head: ONE weight matrix in the production
+// INTERLEAVED_4ROW layout, gs == K, per-row norms, fp16 K x K rotation). Mapped onto the standard
+// hybrid via VIRTUAL 128-wide groups — a mathematically exact regrouping: norms are constant
+// across subgroups, and the interleaved panel bytes are k-chunk-ordered, so the gs=128 re-view
+// lands on contiguous 256-byte sub-panels at (nb*vng+g)*256 == nb*2K + g*256 physically. W2 is
+// the virtual-group view (flags=INTERLEAVED_4ROW, group_size=128, num_groups=K/128, norms
+// replicated in the interleaved [(nb*ng+g)*4+ni] layout, expanded_sme/norm_sme from the cache).
 // Phase A: each work item g computes A_rot[g*128 .. g*128+127] = a_scaled . rot_t rows (fp32
 // accumulate, matching the incumbent) and int8-quantizes its own group. Phase B: identical hybrid
-// (SME LUTI4 partials leaf + row-major from-packed NEON co-workers).
+// (SME LUTI4 partials leaf + interleaved-panel NEON co-workers).
 void cactus_quant_orth_sme_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t,
                                 const __fp16* input_scale_recip, const __fp16* A, __fp16* C) {
     const uint32_t K = W2->K;
@@ -1982,7 +1984,7 @@ void cactus_quant_orth_sme_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t
         return e ? static_cast<size_t>(atoi(e)) : static_cast<size_t>(4);
     }();
     const size_t k_sme = std::min(k_sme_env, nt - 1);
-    const size_t n16_blocks = (static_cast<size_t>(N) + 15) / 16;
+    const size_t n4_blocks = static_cast<size_t>(N) / 4;
 
     std::atomic<uint32_t> ga{0};
     std::atomic<uint32_t> a_done{0};
@@ -2011,10 +2013,13 @@ void cactus_quant_orth_sme_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t
                     rescale_sb(tl_partials.data() + static_cast<size_t>(s2) * num_groups * 64,
                                static_cast<size_t>(sb) + s2);
             } else {
-                cactus_quant_sdot_packed_blocks_rt(
-                    W2, act_i8, act_scales, cb_lut, cb_scale,
-                    static_cast<size_t>(sb) * 4,
-                    std::min<size_t>(static_cast<size_t>(sb + cnt) * 4, n16_blocks), C);
+                // NEON co-worker on the native INTERLEAVED_4ROW panels — the virtual 128-wide
+                // group view is byte-exact on this layout (panels are k-chunk-ordered), so the
+                // production interleaved block processor consumes W2 directly.
+                cactus_quant_interleaved4_gemv_blocks(
+                    W2, W2->packed_indices, W2->norms, act_i8, act_scales, cb_lut, cb_scale,
+                    static_cast<size_t>(sb) * 16,
+                    std::min<size_t>(static_cast<size_t>(sb + cnt) * 16, n4_blocks), C);
             }
         }
     };
@@ -2631,7 +2636,8 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
 // version above is a serial scalar K^2 matvec (~2.4M scalar FMAs per row at K=1536) and was a
 // top prefill term for Gemma per-layer embeddings; this one keeps the same fp32-accumulate math
 // (norm folded into the fp32 dq operand) but vectorizes the dot 8-wide and parallelizes over
-// (row, 64-output-channel) blocks.
+// (row, 64-output-channel) blocks. INTERLEAVED_4ROW only — the production orthogonal-embedding
+// format; legacy row-major orthogonal bundles use the per-row fallback.
 void cactus_quant_dequantize_orthogonal_embedding_rows(
     uint32_t bits,
     uint32_t K,
@@ -2648,30 +2654,21 @@ void cactus_quant_dequantize_orthogonal_embedding_rows(
     if (bits == 0 || bits > 4 || K == 0 || (K % 8) != 0 || num_rows == 0) return;
 
     const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(bits, K);
-    const bool interleaved = (flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0;
-    if (interleaved && bits != 4) return;
+    if ((flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) == 0 || bits != 4) return;
 
     std::vector<float> dq(static_cast<size_t>(num_rows) * K);
     for (uint32_t u = 0; u < num_rows; ++u) {
         const size_t row = rows[u];
-        const float norm = interleaved
-            ? static_cast<float>(norms[(row / 4) * 4 + (row & 3u)])
-            : static_cast<float>(norms[row]);
+        const float norm = static_cast<float>(norms[(row / 4) * 4 + (row & 3u)]);
         float* d = dq.data() + static_cast<size_t>(u) * K;
-        if (interleaved) {
-            const size_t panel_bytes = static_cast<size_t>(4) * packed_group_bytes;
-            const uint8_t* panel = packed_base + (row / 4) * panel_bytes;
-            for (uint32_t i = 0; i < K; ++i) {
-                const uint32_t chunk = i / 8;
-                const uint32_t sub = i & 7u;
-                const uint8_t b = panel[chunk * 16 + (row & 3u) * 4 + (sub & 3u)];
-                const uint32_t idx = (sub & 4u) ? (b >> 4) : (b & 0x0F);
-                d[i] = static_cast<float>(codebook[idx]) * norm;
-            }
-        } else {
-            const uint8_t* packed = packed_base + row * packed_group_bytes;
-            for (uint32_t i = 0; i < K; ++i)
-                d[i] = static_cast<float>(codebook[tq_extract_idx(packed, i, bits)]) * norm;
+        const size_t panel_bytes = static_cast<size_t>(4) * packed_group_bytes;
+        const uint8_t* panel = packed_base + (row / 4) * panel_bytes;
+        for (uint32_t i = 0; i < K; ++i) {
+            const uint32_t chunk = i / 8;
+            const uint32_t sub = i & 7u;
+            const uint8_t b = panel[chunk * 16 + (row & 3u) * 4 + (sub & 3u)];
+            const uint32_t idx = (sub & 4u) ? (b >> 4) : (b & 0x0F);
+            d[i] = static_cast<float>(codebook[idx]) * norm;
         }
     }
 

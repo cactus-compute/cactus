@@ -424,6 +424,9 @@ static bool test_cq_gemm_backend(uint32_t bits, uint32_t M, uint32_t N, int back
 // Oracle: y[n] = norm[n] * sum_i cb[idx(n,i)] * (a_scaled @ R)[i], fp32. Gates the incumbent and
 // the new SME virtual-group kernel against the same reference, plus head-to-head agreement.
 static bool test_orth_sme(double& mse_inc, double& mse_sme) {
+    // PRODUCTION lm_head format: orthogonal-rotation CQ4 in the INTERLEAVED_4ROW packed layout
+    // (gs == K, ng == 1). Row-major orthogonal bundles were a transpiler bug and are no longer
+    // SME-accelerated.
     const uint32_t K = 1536, N = 1024, VGS = 128, VNG = K / VGS;
     std::mt19937 gen(2024);
     std::uniform_real_distribution<float> dist(-1.f, 1.f);
@@ -439,7 +442,24 @@ static bool test_orth_sme(double& mse_inc, double& mse_sme) {
     std::vector<__fp16> x(K);
     for (auto& v : x) v = (__fp16)dist(gen);
 
-    // fp32 oracle
+    // Encode INTERLEAVED_4ROW panels from the row-major nibbles (exact inverse of the shipped
+    // decoder): per 4-row block nb, chunk c covers k = 8c..8c+7; byte at [c*16 + r4*4 + b] holds
+    // low nibble = idx(row, 8c+b), high nibble = idx(row, 8c+4+b).
+    std::vector<uint8_t> packed_il((size_t)N * K / 2);
+    for (uint32_t nb = 0; nb < N / 4; nb++) {
+        uint8_t* panel = packed_il.data() + (size_t)nb * 4 * (K / 2);
+        for (uint32_t c = 0; c < K / 8; c++)
+            for (uint32_t r4 = 0; r4 < 4; r4++) {
+                const uint8_t* row = packed.data() + (size_t)(nb * 4 + r4) * K / 2;
+                for (uint32_t b = 0; b < 4; b++) {
+                    uint8_t lo = unpack_index(row, 4, c * 8 + b);
+                    uint8_t hi = unpack_index(row, 4, c * 8 + 4 + b);
+                    panel[c * 16 + r4 * 4 + b] = (uint8_t)(lo | (hi << 4));
+                }
+            }
+    }
+
+    // fp32 oracle (weights identical in both packings)
     std::vector<float> ar(K, 0.f), ref(N);
     for (uint32_t k = 0; k < K; k++) {
         float a = (float)x[k] * (float)isr[k];
@@ -453,10 +473,11 @@ static bool test_orth_sme(double& mse_inc, double& mse_sme) {
         ref[n] = acc * (float)norms[n];
     }
 
-    // incumbent
+    // incumbent (production NEON interleaved lm_head path)
     CactusQuantMatrix Wo{ .bits = 4, .K = K, .N = N, .group_size = K, .num_groups = 1,
-        .flags = CACTUS_QUANT_FLAG_ORTHOGONAL, .codebook = codebook.data(), .input_scale = nullptr,
-        .input_scale_recip = isr.data(), .norms = norms.data(), .packed_indices = packed.data(),
+        .flags = CACTUS_QUANT_FLAG_ORTHOGONAL | CACTUS_QUANT_FLAG_INTERLEAVED_4ROW,
+        .codebook = codebook.data(), .input_scale = nullptr,
+        .input_scale_recip = isr.data(), .norms = norms.data(), .packed_indices = packed_il.data(),
         .left_signs = nullptr, .right_signs = nullptr, .permutation = nullptr,
         .rotation = rot.data(), .expanded = nullptr, .norm_f32 = nullptr,
         .expanded_sme = nullptr, .norm_sme = nullptr };
@@ -464,12 +485,16 @@ static bool test_orth_sme(double& mse_inc, double& mse_sme) {
     cactus_quant_orthogonal_matmul(&Wo, x.data(), 1, y_inc.data());
     mse_inc = compute_mse(ref.data(), y_inc.data(), N);
 
-    // virtual-group view + production cache builder + new kernel
+    // virtual-group IL view (byte-exact regrouping) + production cache builder + SME kernel;
+    // norms replicated in the interleaved [(nb*ng + g)*4 + ni] layout (mirrors ensure_sme_cache)
     std::vector<__fp16> norms_rep((size_t)N * VNG);
-    for (uint32_t n = 0; n < N; n++)
-        for (uint32_t g = 0; g < VNG; g++) norms_rep[(size_t)n * VNG + g] = norms[n];
+    for (uint32_t nb = 0; nb < N / 4; nb++)
+        for (uint32_t g = 0; g < VNG; g++)
+            for (uint32_t ni = 0; ni < 4; ni++)
+                norms_rep[((size_t)nb * VNG + g) * 4 + ni] = norms[nb * 4 + ni];
     CactusQuantMatrix W2 = Wo;
-    W2.flags = 0; W2.group_size = VGS; W2.num_groups = VNG; W2.norms = norms_rep.data();
+    W2.flags = CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+    W2.group_size = VGS; W2.num_groups = VNG; W2.norms = norms_rep.data();
     const size_t SB64 = (N + 63) / 64;
     std::vector<uint8_t> esme(SB64 * VNG * (VGS / 4) * 128);
     std::vector<float> nsme(SB64 * VNG * 64);
@@ -522,7 +547,9 @@ static bool test_orth_embed_rows() {
     for (auto& v : scale_recip) v = static_cast<__fp16>(0.9f + 0.2f * std::fabs(dist(gen)));
     for (auto& v : norms) v = static_cast<__fp16>(0.5f + std::fabs(dist(gen)));
     const uint32_t rows[5] = {5, 9, 63, 0, 17};
-    for (uint32_t flags : {0u, (uint32_t)CACTUS_QUANT_FLAG_INTERLEAVED_4ROW}) {
+    // Batched fn is INTERLEAVED_4ROW-only (the production orthogonal-embedding format); the
+    // per-row reference covers both layouts and serves as the oracle here.
+    for (uint32_t flags : {(uint32_t)CACTUS_QUANT_FLAG_INTERLEAVED_4ROW}) {
         std::vector<__fp16> ref(5 * K), got(5 * K);
         for (int u = 0; u < 5; ++u)
             cactus_quant_dequantize_orthogonal_embedding_row(

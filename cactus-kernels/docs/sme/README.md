@@ -51,7 +51,17 @@ re-derived.
 | M7/ATTN | SME prefill attention (cached-int8 segment: flat-scale QK seg + u8 USMOPA AV per-block) | **done ✅✅** | **4.6× global / 2.7× sliding** @ gemma shape (3.76→0.81ms / 2.23→0.83ms) | attention_hybrid.cpp `cactus_attention_sme_prefill`; gate hd%64==0, qg=32, pos≥cache; differential+oracle test in test_attention.cpp; see debug-log 2026-06-09 attn entries |
 | SVE2 | Android/Linux fallback (svmmla/svusmmla) | designed (research/sve2-android-fallback.md) | — | not built — needs Android/QEMU to validate; out of CQ4-on-M4 scope |
 
-**GOAL 6 COMPLETE (2026-06-09): decode +34.0% / TTFT −34.1% — both targets MET** (6-cycle protocol
+**IL4ROW ORTH lm_head (2026-06-09 late):** the production lm_head format is ORTH+INTERLEAVED_4ROW
+(row-major orth was a transpiler bug, retired). The virtual 128-group regrouping is byte-exact on
+IL too (k-chunk-ordered panels) — ensure_sme_cache now requires IL, the orth driver uses
+interleaved NEON co-workers, and the batched embedding path is IL-only. On the corrected-format
+bundle the NEON baseline itself gains ~+14% decode (its old row-major orth lm_head cost ~4.8ms vs
+1.33ms interleaved), so SME-vs-NEON deltas there are decode ~+17%, TTFT ~−27% (clean cycles), with
+B absolute throughput unchanged (~47.6 tok/s). lm_head op: SME-IL min 0.98ms vs NEON-IL 1.20ms,
+DRAM floor ~0.77ms.
+
+**GOAL 6 COMPLETE (2026-06-09): decode +34.0% / TTFT −34.1% — both targets MET** (vs the
+row-major-orth-lm_head bundle vintage) (6-cycle protocol
 c2–c6; worst decode cycle +28.6%). Three levers: SME prefill attention; batched-parallel orthogonal
 embedding un-rotation (was serial scalar K² per token per layer — found by WALL profiling after
 busy-sample shares misled); wait_all→spin-join + main-as-worker-0 in hybrid GEMV (kernel: o_proj

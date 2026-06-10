@@ -390,3 +390,28 @@ Format per entry: `## YYYY-MM-DD [milestone] title` → Hypothesis / Experiment 
   (~8.5s of first-call lazy builds), GEMM-phase spin-join + NEON co-workers, transpiler tail-sized
   prefill components (44 x ~20ms scalar tail still present), SME decode attention (2.97ms/step,
   grows with ctx).
+
+## 2026-06-09 [IL4ROW orthogonal lm_head — SME path on the PRODUCTION format; row-major orth retired]
+- CONTEXT: token_embeddings bundles have three vintages (INT8/FP16 -> CQ4 ORTH row-major ->
+  CQ4 ORTH+IL4ROW). Row-major orth was a TRANSPILER BUG; IL4ROW orth is the intended production
+  format (all bundles from 2026-05-27 on). gemma-4-e2b-it was recompiled to IL4ROW at 16:29 on
+  2026-06-09 (after the day's A/Bs); ensure_sme_cache's old gate refused IL orth, silently
+  dropping the SME lm_head path on the new bundle.
+- **KEY EQUIVALENCE (proven by panel math + empirically by the oracle test):** the virtual
+  128-wide group regrouping is byte-exact on INTERLEAVED_4ROW too — IL panel bytes are
+  k-chunk-ordered, so the gs=128 re-view lands on contiguous 256-byte sub-panels at
+  (nb*vng+g)*256 == physical nb*2K + g*256. Same trick as row-major, zero repacking.
+- Changes: ensure_sme_cache now REQUIRES IL4ROW for orth (gate flipped), keeps the IL flag on the
+  virtual view, and replicates norms in the interleaved [(nb*ng+g)*4+ni] layout; ops_nn W2 keeps
+  flags=IL4ROW (both dispatch sites); orth driver NEON co-workers switched from the row-major
+  sdot reader to cactus_quant_interleaved4_gemv_blocks (consumes W2's virtual view natively).
+- Row-major orth support REMOVED per project decision: batched embedding rows fn is IL-only
+  (ops_tensor routes legacy row-major orth to the per-row fallback); test_orth_sme converted to
+  an IL fixture (encoder = exact inverse of the shipped panel decoder); orth_embed_rows test
+  IL-only. Legacy row-major bundles (gemma-4-e2b-16k, qwen3-vl-2b, lfm2.5-vl) still LOAD via
+  incumbent NEON paths but get no SME lm_head / batched embeddings — recompile them.
+- Validation: 61/61 tests; engagement on the recompiled bundle restored (orth_sme_gemv hot,
+  orthogonal_interleaved_lmhead 0 samples); temp-0 text IDENTICAL across backends; lm_head op
+  isolated via CACTUS_PROFILE_FILE: SME-IL min 0.98ms vs NEON-IL incumbent min 1.20ms (-19%),
+  means within thermal noise (machine saturated); DRAM floor ~0.77ms (192MB nibbles/call) — the
+  lm_head is bandwidth-capped, SME min sits ~25% above floor.
