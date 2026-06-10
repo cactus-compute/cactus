@@ -42,8 +42,7 @@ namespace {
         }
 
         const std::string stem = filename.substr(0, filename.size() - std::strlen(suffix));
-        // Packed-panel CQ4 weights carry their own suffix (new bundles ship ONLY this file, so
-        // old engines fail loudly on new bundles instead of silently misreading the layout).
+        // Panel bundles ship only the suffixed file, so old engines fail loudly.
         const std::string cq4p = stem + ".cq4p.weights";
         if (std::filesystem::exists(cq4p)) {
             return cq4p;
@@ -59,11 +58,8 @@ namespace {
         return filename;
     }
 
-    // Derive the CQ scale/panel pointers of a mapped CQ weight buffer from the file's scales
-    // region. Panel-format files share the legacy prefix (codebook, input scales, fp16 norms)
-    // and then carry the folded fp32 panel norms (4-byte aligned) followed by the rotation +
-    // transposed rotation (orthogonal) or the Hadamard parts; their data region holds the
-    // packed panels themselves (see CactusQuantMatrix::packed_panels).
+    // Panel files share the legacy scales prefix, then carry folded fp32 panel norms
+    // (4-byte aligned), then rotation + transposed rotation or the Hadamard parts.
     void set_cq_buffer_pointers(BufferDesc& buffer, const GraphFile::MappedFile& mf) {
         const char* scales_base = static_cast<const char*>(mf.scales_data());
         const uint32_t bits = PrecisionTraits::cq_bits(buffer.precision);

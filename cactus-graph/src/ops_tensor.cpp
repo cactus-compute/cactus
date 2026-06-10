@@ -160,11 +160,8 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
         bool interleaved = (embeddings_buffer.cq_flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0;
         bool panels = embeddings_buffer.cq_packed_panels != nullptr;
         if (orthogonal && (interleaved || panels) && (hidden_dim % 8) == 0) {
-            // Batched path (production orthogonal embeddings — packed-panel or
-            // INTERLEAVED_4ROW): dedup indices, then ONE parallel dequant+un-rotation pass over
-            // the unique rows (the per-row fallback below is a serial scalar K^2 matvec per row
-            // — it was a top prefill term for per-layer embeddings). Legacy row-major
-            // orthogonal bundles (a transpiler bug) take the per-row fallback.
+            // Dedup indices, then one parallel dequant+un-rotation pass over the unique rows;
+            // legacy row-major orthogonal bundles take the per-row fallback.
             std::unordered_map<size_t, uint32_t> slot;
             slot.reserve(std::min<size_t>(num_indices, 256));
             std::vector<uint32_t> uniq;

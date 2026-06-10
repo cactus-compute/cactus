@@ -1,5 +1,6 @@
 #include "../cactus_kernels.h"
 #include "threading.h"
+#include "matmul_simd.h"
 #include <arm_neon.h>
 #include <atomic>
 #include <cstdlib>
@@ -501,6 +502,27 @@ static inline bool cactus_quant_has_panels(const CactusQuantMatrix* W) {
     return W->packed_panels != nullptr && W->norm_panels != nullptr;
 }
 
+// SME2 backend override for tests/benchmarks: 0 = auto, 1 = force NEON, 2 = force SME2 leaves.
+static std::atomic<int> g_cactus_quant_backend{[] {
+    const char* e = getenv("CACTUS_QUANT_BACKEND");
+    return e ? atoi(e) : 0;
+}()};
+static std::atomic<int> g_sme_gemv_workers{-1};
+
+static inline int cactus_quant_backend_now() {
+    return g_cactus_quant_backend.load(std::memory_order_relaxed);
+}
+// Explicit SME GEMV worker override (setter wins over env), or -1 for the flat auto policy.
+static inline int cactus_quant_sme_gemv_workers() {
+    const int o = g_sme_gemv_workers.load(std::memory_order_relaxed);
+    if (o >= 0) return o;
+    static const int env_override = [] {
+        const char* e = getenv("CACTUS_SME_GEMV_WORKERS");
+        return e ? atoi(e) : -1;
+    }();
+    return env_override;
+}
+
 static bool cactus_quant_valid_common(const CactusQuantMatrix* W, const void* A, void* C) {
     if (W == nullptr || A == nullptr || C == nullptr) return false;
     if (W->K == 0 || W->N == 0 || W->group_size == 0 || W->num_groups == 0) return false;
@@ -513,6 +535,26 @@ static bool cactus_quant_valid_common(const CactusQuantMatrix* W, const void* A,
 }
 
 }  // namespace
+
+int cactus_quant_set_backend(int backend) {
+    g_cactus_quant_backend.store(backend, std::memory_order_relaxed);
+    return cpu_has_sme2() ? 1 : 0;
+}
+int cactus_quant_sme_available(void) { return cpu_has_sme2() ? 1 : 0; }
+int cactus_quant_sme_enabled(void) {
+    return (cpu_has_sme2() && cactus_quant_backend_now() != 1) ? 1 : 0;
+}
+int cactus_quant_sme_attn_enabled(void) {
+    static const int env_on = [] {
+        const char* e = getenv("CACTUS_SME_ATTENTION");
+        return e ? atoi(e) : 1;
+    }();
+    return (env_on && cactus_quant_sme_enabled()) ? 1 : 0;
+}
+int cactus_quant_set_sme_gemv_workers(int n) {
+    g_sme_gemv_workers.store(n, std::memory_order_relaxed);
+    return cpu_has_sme2() ? 1 : 0;
+}
 
 static void cactus_quant_dispatch_group_gemm(
     const CactusQuantMatrix* W,
@@ -1647,9 +1689,56 @@ static void cactus_quant_panel_gemv_blocks(
     }
 }
 
-// Fused panel GEMV (M=1): one pool dispatch = phase A (group-parallel Hadamard + int8 quantize,
-// spin barrier) + phase B (dynamic super-block stealing). Main runs as worker 0 and spin-joins.
-// Thread budget = ceil(SB64 / CACTUS_GEMV_SB_PER_THREAD), default 8 (mobile: battery > saturation).
+// Rescale one super-block of raw int32 partials in NEON:
+// C[sb*64+c] = sum_g partials[g][c] * act_scale[g] * norm_panels[sb][g][c].
+static void cactus_quant_panel_rescale_sb(const int32_t* psb, size_t sb, const float* norm_panels,
+                                          const float* act_scales, uint32_t num_groups,
+                                          uint32_t N, __fp16* C) {
+    float32x4_t acc[16];
+    for (int v = 0; v < 16; ++v) acc[v] = vdupq_n_f32(0.f);
+    const float* nsb = norm_panels + sb * num_groups * 64;
+    for (uint32_t g = 0; g < num_groups; ++g) {
+        const float32x4_t as = vdupq_n_f32(act_scales[g]);
+        const int32_t* pp = psb + static_cast<size_t>(g) * 64;
+        const float* nf = nsb + static_cast<size_t>(g) * 64;
+        for (int v = 0; v < 16; ++v)
+            acc[v] = vmlaq_f32(acc[v],
+                vmulq_f32(vcvtq_f32_s32(vld1q_s32(pp + v * 4)), as),
+                vld1q_f32(nf + v * 4));
+    }
+    const size_t n_start = sb * 64;
+    const uint32_t valid = std::min<uint32_t>(64, N - static_cast<uint32_t>(n_start));
+    float tmp[64];
+    for (int v = 0; v < 16; ++v) vst1q_f32(tmp + v * 4, acc[v]);
+    for (uint32_t c = 0; c < valid; ++c) C[n_start + c] = static_cast<__fp16>(tmp[c]);
+}
+
+// SME workers replace NEON workers inside the budget; flat k=2 is the measured speed/power frontier.
+static inline size_t cactus_quant_panel_k_sme(size_t nt, uint32_t gs) {
+    if (!cactus_quant_sme_enabled() || (gs % 32) != 0) return 0;
+    const size_t cap = nt > 1 ? nt - 1 : 1;
+    const int ov = cactus_quant_sme_gemv_workers();
+    if (cactus_quant_backend_now() == 2)
+        return std::max<size_t>(1, std::min<size_t>(ov > 0 ? static_cast<size_t>(ov) : 2, cap));
+    if (ov >= 0) return std::min<size_t>(static_cast<size_t>(ov), nt > 1 ? nt - 1 : 0);
+    return std::min<size_t>(2, nt > 1 ? nt - 1 : 0);
+}
+
+static void cactus_quant_panel_sme_range(const CactusQuantMatrix* W, const int8_t* act_i8,
+                                         const float* act_scales, const uint8_t* zt,
+                                         uint32_t sb, uint32_t cnt, __fp16* C) {
+    thread_local std::vector<int32_t> tl_partials;
+    const uint32_t ng = W->num_groups;
+    const size_t need = static_cast<size_t>(cnt) * ng * 64;
+    if (tl_partials.size() < need) tl_partials.resize(need);
+    cactus_sme_cq_gemv_luti4_s8(act_i8, W->packed_panels, zt, tl_partials.data(),
+                                ng, W->group_size, sb, cnt);
+    for (uint32_t s = 0; s < cnt; ++s)
+        cactus_quant_panel_rescale_sb(tl_partials.data() + static_cast<size_t>(s) * ng * 64,
+                                      static_cast<size_t>(sb) + s, W->norm_panels, act_scales,
+                                      ng, W->N, C);
+}
+
 static void cactus_quant_panel_gemv(const CactusQuantMatrix* W, const __fp16* A, __fp16* C) {
     const uint32_t gs = W->group_size;
     const uint32_t num_groups = W->num_groups;
@@ -1671,6 +1760,9 @@ static void cactus_quant_panel_gemv(const CactusQuantMatrix* W, const __fp16* A,
     const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, 1u << W->bits);
     (void)cb_scale;                          // folded into norm_panels by the transpiler
     const int8x16_t cb_lut = vld1q_s8(cb_i8);
+    alignas(16) uint8_t zt[64] = {};
+    for (int i = 0; i < 16; ++i) zt[4 * i] = static_cast<uint8_t>(cb_i8[i]);
+    const bool sme = cactus_quant_sme_enabled() && (gs % 32) == 0;
 
     auto phase_a_group = [&](uint32_t g) {
         __fp16 basis[256];                   // gs <= 256 (same bound as the transform's tmp)
@@ -1680,43 +1772,23 @@ static void cactus_quant_panel_gemv(const CactusQuantMatrix* W, const __fp16* A,
 
     if (nt <= 1) {
         for (uint32_t g = 0; g < num_groups; ++g) phase_a_group(g);
-        cactus_quant_panel_gemv_blocks(W, act_i8, act_scales, cb_lut, 0, SB64, C);
+        if (sme) cactus_quant_panel_sme_range(W, act_i8, act_scales, zt,
+                                              0, static_cast<uint32_t>(SB64), C);
+        else cactus_quant_panel_gemv_blocks(W, act_i8, act_scales, cb_lut, 0, SB64, C);
         return;
     }
 
-    std::atomic<uint32_t> ga{0};             // phase A group grab
-    std::atomic<uint32_t> a_done{0};         // phase A completion (release/acquire barrier)
-    std::atomic<uint32_t> next{0};           // phase B super-block grab
-    std::atomic<uint32_t> done{0};           // worker completion (spin-join, no cv wake)
-    auto worker = [&](size_t) {
-        for (uint32_t g; (g = ga.fetch_add(1, std::memory_order_relaxed)) < num_groups; ) {
-            phase_a_group(g);
-            a_done.fetch_add(1, std::memory_order_release);
-        }
-        while (a_done.load(std::memory_order_acquire) < num_groups) { /* spin */ }
-        for (;;) {
-            const uint32_t seen = next.load(std::memory_order_relaxed);
-            if (seen >= SB64) break;
-            const uint32_t want = (SB64 - seen > 4u * nt) ? 4u : 1u;
-            const uint32_t sb = next.fetch_add(want, std::memory_order_relaxed);
-            if (sb >= SB64) break;
-            const uint32_t cnt = std::min<uint32_t>(want, static_cast<uint32_t>(SB64) - sb);
-            cactus_quant_panel_gemv_blocks(W, act_i8, act_scales, cb_lut,
-                                           sb, static_cast<size_t>(sb) + cnt, C);
-        }
-    };
-    pool.enqueue_n_threads(nt - 1, nt - 1, [&](size_t wid, size_t) {
-        worker(wid + 1);
-        done.fetch_add(1, std::memory_order_release);
-    });
-    worker(0);
-    while (done.load(std::memory_order_acquire) < nt - 1) { /* spin */ }
+    const size_t k_sme = sme ? cactus_quant_panel_k_sme(nt, gs) : 0;
+    cactus_quant_two_phase_run(nt, num_groups, static_cast<uint32_t>(SB64), phase_a_group,
+        [&](size_t wid, uint32_t sb, uint32_t cnt) {
+            if (wid < k_sme) cactus_quant_panel_sme_range(W, act_i8, act_scales, zt, sb, cnt, C);
+            else cactus_quant_panel_gemv_blocks(W, act_i8, act_scales, cb_lut,
+                                                sb, static_cast<size_t>(sb) + cnt, C);
+        });
 }
 
-// Orthogonal-rotation CQ4 GEMV (the Gemma lm_head). Panel files store the lm_head with virtual
-// 128-wide groups already applied (exact regrouping: norms constant across subgroups, panel
-// kg-blocks K-chunk-ordered). Phase A rotates+quantizes each group via rot_t (fp32 accumulate);
-// phase B is the panel super-block stealing loop.
+// Orthogonal CQ4 GEMV (lm_head): panel files store virtual 128-wide groups, folded norms, and
+// the transposed rotation.
 void cactus_quant_orth_panel_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t,
                                   const __fp16* input_scale_recip, const __fp16* A, __fp16* C) {
     const uint32_t K = W2->K;
@@ -1746,6 +1818,9 @@ void cactus_quant_orth_panel_gemv(const CactusQuantMatrix* W2, const __fp16* rot
     const float cb_scale = tq_quantize_codebook_i8(W2->codebook, cb_i8, 1u << W2->bits);
     (void)cb_scale;                          // folded into norm_panels by the transpiler
     const int8x16_t cb_lut = vld1q_s8(cb_i8);
+    alignas(16) uint8_t zt[64] = {};
+    for (int i = 0; i < 16; ++i) zt[4 * i] = static_cast<uint8_t>(cb_i8[i]);
+    const bool sme = cactus_quant_sme_enabled() && (gs % 32) == 0;
     // rotate-and-quantize one virtual group: A_rot[i] = sum_k a_scaled[k]*R[k][i] = dot(a_scaled, rot_t[i])
     auto phase_a_group = [&](uint32_t g) {
         __fp16 basis[128];
@@ -1765,39 +1840,19 @@ void cactus_quant_orth_panel_gemv(const CactusQuantMatrix* W2, const __fp16* rot
 
     if (nt <= 1) {
         for (uint32_t g = 0; g < num_groups; ++g) phase_a_group(g);
-        cactus_quant_panel_gemv_blocks(W2, act_i8, act_scales, cb_lut, 0, SB64, C);
+        if (sme) cactus_quant_panel_sme_range(W2, act_i8, act_scales, zt,
+                                              0, static_cast<uint32_t>(SB64), C);
+        else cactus_quant_panel_gemv_blocks(W2, act_i8, act_scales, cb_lut, 0, SB64, C);
         return;
     }
 
-    std::atomic<uint32_t> ga{0};
-    std::atomic<uint32_t> a_done{0};
-    std::atomic<uint32_t> next{0};
-    std::atomic<uint32_t> done{0};
-    auto worker = [&](size_t) {
-        for (uint32_t g; (g = ga.fetch_add(1, std::memory_order_relaxed)) < num_groups; ) {
-            phase_a_group(g);
-            a_done.fetch_add(1, std::memory_order_release);
-        }
-        while (a_done.load(std::memory_order_acquire) < num_groups) { /* spin */ }
-        for (;;) {
-            const uint32_t seen = next.load(std::memory_order_relaxed);
-            if (seen >= SB64) break;
-            const uint32_t want = (SB64 - seen > 4u * nt) ? 4u : 1u;
-            const uint32_t sb = next.fetch_add(want, std::memory_order_relaxed);
-            if (sb >= SB64) break;
-            const uint32_t cnt = std::min<uint32_t>(want, static_cast<uint32_t>(SB64) - sb);
-            cactus_quant_panel_gemv_blocks(W2, act_i8, act_scales, cb_lut,
-                                           sb, static_cast<size_t>(sb) + cnt, C);
-        }
-    };
-    // Main participates as worker 0 + spin-join (no wait_all cv sleep) — see the GEMV driver.
-    // (nt >= 2 here: the nt <= 1 case took the serial path above.)
-    pool.enqueue_n_threads(nt - 1, nt - 1, [&](size_t wid, size_t) {
-        worker(wid + 1);
-        done.fetch_add(1, std::memory_order_release);
-    });
-    worker(0);
-    while (done.load(std::memory_order_acquire) < nt - 1) { /* spin */ }
+    const size_t k_sme = sme ? cactus_quant_panel_k_sme(nt, gs) : 0;
+    cactus_quant_two_phase_run(nt, num_groups, static_cast<uint32_t>(SB64), phase_a_group,
+        [&](size_t wid, uint32_t sb, uint32_t cnt) {
+            if (wid < k_sme) cactus_quant_panel_sme_range(W2, act_i8, act_scales, zt, sb, cnt, C);
+            else cactus_quant_panel_gemv_blocks(W2, act_i8, act_scales, cb_lut,
+                                                sb, static_cast<size_t>(sb) + cnt, C);
+        });
 }
 
 void cactus_quant_matmul(
@@ -2023,9 +2078,12 @@ void cactus_quant_matmul(
         (void)cb_scale;                          // folded into norm_panels by the transpiler
         const int8x16_t cb_lut = vld1q_s8(cb_i8);
         const uint8x16_t lo_mask = vdupq_n_u8(0x0F);
+        alignas(16) uint8_t zt[64] = {};
+        for (int i2 = 0; i2 < 16; ++i2) zt[4 * i2] = static_cast<uint8_t>(cb_i8[i2]);
+        // SMOPA beats the NEON panel GEMM at every measured M>1; backend 1 pins the NEON body.
+        const bool use_smopa = cactus_quant_sme_enabled() && (gs % 32) == 0;
 
         auto& pool = CactusThreading::get_thread_pool();
-        // Same thread budget as the original M>1 NEON GEMM (one thread per 16-row M-tile).
         const size_t nt = std::max<size_t>(1,
             std::min(pool.num_workers(), std::min(M_tiles, total_pairs)));
         const uint32_t total_a = static_cast<uint32_t>(M_tiles * num_groups);
@@ -2051,7 +2109,45 @@ void cactus_quant_matmul(
                 for (uint32_t r = 0; r < 16; ++r)
                     std::memcpy(dst + static_cast<size_t>(kg) * 64 + r * 4, rowq[r] + kg * 4, 4);
         };
+        // The leaf emits raw int32 partials [g][16 rows][64 ch]; the NEON rescale matches the
+        // fp32 body exactly.
+        auto run_pair_smopa = [&](size_t pair, int32_t* partials) {
+            const size_t mt = pair / SB64;
+            const size_t sb = pair % SB64;
+            cactus_sme_cq_gemm_luti4_s8(
+                act_packed.data() + (mt * num_groups) * static_cast<size_t>(gs) * 16,
+                W->packed_panels + sb * static_cast<size_t>(num_groups) * g_stride,
+                zt, partials, num_groups, gs);
+            const uint32_t m_rows = std::min<uint32_t>(TILE_M16, M - static_cast<uint32_t>(mt) * TILE_M16);
+            const uint32_t valid_n = std::min<uint32_t>(64, N - static_cast<uint32_t>(sb) * 64);
+            const float* nsb = W->norm_panels + sb * static_cast<size_t>(num_groups) * 64;
+            for (uint32_t r = 0; r < m_rows; ++r) {
+                const uint32_t m = static_cast<uint32_t>(mt) * TILE_M16 + r;
+                float32x4_t acc[16];
+                for (int v = 0; v < 16; ++v) acc[v] = vdupq_n_f32(0.f);
+                for (uint32_t g = 0; g < num_groups; ++g) {
+                    const float32x4_t as = vdupq_n_f32(act_scales[static_cast<size_t>(m) * num_groups + g]);
+                    const int32_t* pp = partials + (static_cast<size_t>(g) * 16 + r) * 64;
+                    const float* nf = nsb + static_cast<size_t>(g) * 64;
+                    for (int v = 0; v < 16; ++v)
+                        acc[v] = vmlaq_f32(acc[v],
+                            vmulq_f32(vcvtq_f32_s32(vld1q_s32(pp + v * 4)), as),
+                            vld1q_f32(nf + v * 4));
+                }
+                float tmp[64];
+                for (int v = 0; v < 16; ++v) vst1q_f32(tmp + v * 4, acc[v]);
+                __fp16* crow = C + static_cast<size_t>(m) * N + sb * 64;
+                for (uint32_t c = 0; c < valid_n; ++c) crow[c] = static_cast<__fp16>(tmp[c]);
+            }
+        };
         auto run_pair = [&](size_t pair) {
+            if (use_smopa) {
+                thread_local std::vector<int32_t> tl_partials;
+                const size_t need = static_cast<size_t>(num_groups) * 16 * 64;
+                if (tl_partials.size() < need) tl_partials.resize(need);
+                run_pair_smopa(pair, tl_partials.data());
+                return;
+            }
             const size_t mt = pair / SB64;
             const size_t sb = pair % SB64;
             const uint32_t m_rows = std::min<uint32_t>(TILE_M16, M - static_cast<uint32_t>(mt) * TILE_M16);

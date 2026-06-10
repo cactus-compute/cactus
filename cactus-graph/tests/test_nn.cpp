@@ -193,10 +193,8 @@ bool test_matmul_cq() {
     return true;
 }
 
-// Writes a packed-panel CQ4 weight file (FLAG_PACKED_PANELS) exactly as the transpiler does:
-// scales = codebook, input_scale, recip, fp16 norms, [4B pad], fp32 folded panel norms, then the
-// hadamard parts; data = panels from the reference encoder. Exercises the io.cpp panel loader
-// (set_cq_buffer_pointers offsets) + the panel GEMV/GEMM through the real graph.
+// Writes a panel CQ4 weight file exactly as the transpiler does; exercises the io.cpp panel
+// loader offsets and the panel GEMV/GEMM through the real graph.
 static void write_test_panel_weights(
     const std::filesystem::path& path, size_t K, size_t N, size_t gs,
     const std::vector<uint8_t>& panels, const std::vector<float>& panel_norms,

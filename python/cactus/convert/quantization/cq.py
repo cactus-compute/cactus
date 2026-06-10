@@ -26,9 +26,7 @@ FLAG_ORTHOGONAL_ROTATION = 1 << 1
 FLAG_INTERLEAVED_4ROW = 1 << 2
 FLAG_PACKED_PANELS = 1 << 5
 
-# Filename suffix for packed-panel CQ4 weight files. Panel bundles ship ONLY this file (no
-# legacy-layout twin), so pre-panel engines fail loudly on new bundles instead of silently
-# misreading the data region.
+# Panel bundles ship only this file, so pre-panel engines fail loudly on new bundles.
 PANEL_WEIGHTS_SUFFIX = ".cq4p.weights"
 
 
@@ -216,8 +214,7 @@ def quantize_codebook_i8(codebook_f16: np.ndarray) -> tuple[np.ndarray, np.float
     if scale < np.float32(1e-10):
         scale = np.float32(1e-10)
     inv = np.float32(1.0) / scale
-    # float64 holds every float32 exactly, so floor(|x| + 0.5) in float64 is exact
-    # round-half-away-from-zero of the float32 products (std::round semantics).
+    # float64 holds float32 exactly, so floor(|x| + 0.5) reproduces std::round half-away-from-zero.
     scaled = (cb * inv).astype(np.float64)
     cb_i8 = (np.sign(scaled) * np.floor(np.abs(scaled) + 0.5)).astype(np.int8)
     return cb_i8, scale
@@ -451,9 +448,8 @@ def write_cq_tensor(out_path: Path, cq: CQTensor, *, allow_panels: bool = True) 
     recip = np.minimum(1.0 / np.maximum(input_scale.astype(np.float32), 1e-8), 65504.0).astype(np.float16)
 
     if packed_panels:
-        # Header stores the kernel-facing group view: orthogonal tensors are written with
-        # virtual 128-wide groups already applied (an exact regrouping — norms are constant
-        # across subgroups and panel kg-blocks are K-chunk-ordered).
+        # Orthogonal tensors store virtual 128-wide groups already applied (exact regrouping:
+        # norms constant across subgroups, kg-blocks K-chunk-ordered).
         header_gs = 128 if is_orth else group_size
         header_ng = k // header_gs
         norms_f16 = norms_f32.astype(np.float16).reshape(n, groups)

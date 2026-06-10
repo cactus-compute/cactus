@@ -525,8 +525,7 @@ def convert(args: argparse.Namespace) -> None:
                     cq = _scale_cq_norms(cq, adapter.scale_factor(out_path.name))
                     if getattr(emit_policy, "layout", "row_major") == "interleaved_4row":
                         cq = replace(cq, interleaved_4row=True)
-                    # Panel-format CQ4 weights carry their own filename suffix; the manifest
-                    # records the actual written file so bindings resolve to it.
+                    # The manifest records the actual written file so bindings resolve to it.
                     written_path = write_cq_tensor(out_path, cq)
                     gptq_used = cq.gptq_used
                     status = "converted" if match.recognized else "unrecognized"

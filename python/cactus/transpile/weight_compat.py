@@ -99,9 +99,8 @@ def ensure_embedding_binding_compatible(binding: WeightBinding) -> WeightBinding
 
     bits = int(config["bits"])
     rotation = str(config["rotation"])
-    # CQ4 orthogonal embeddings (token_embeddings == the tied lm_head) materialize in the
-    # packed-panel format under its own suffix; CQ2 per-layer hadamard embeddings keep the
-    # legacy row-major layout (the engine's hadamard row decoder reads it).
+    # CQ4 orthogonal token embeddings (the tied lm_head) materialize as packed panels; CQ2
+    # hadamard embeddings keep the legacy row-major layout.
     use_panels = bits == 4 and rotation == "orthogonal"
     if use_panels:
         compat_path = panel_weights_path(source_path)
@@ -425,14 +424,8 @@ def _materialize_cq_embedding_cache_panels(
     bits: int,
     rotation: str,
 ) -> None:
-    """Materialize a tied orthogonal CQ4 embedding/lm_head as a packed-panel file.
-
-    The data region holds kernel-ready panels [SB64][ng][gs/4][128B] (ng = K/128 virtual
-    groups). The scales region carries the legacy fp16 norms (unfolded, replicated per virtual
-    group — the embedding row decoder uses them with the fp16 codebook) AND the fp32 folded
-    panel norms (the lm_head matmul rescale), then the rotation and its transpose. Rows stream
-    in 64-aligned chunks so the super-block panel order assembles by append.
-    """
+    """Materialize a tied orthogonal CQ4 embedding/lm_head as a packed-panel file; rows stream
+    in 64-aligned chunks so the super-block panel order assembles by append."""
     if rotation != "orthogonal" or bits != 4:
         raise RuntimeError(f"packed-panel embedding cache requires orthogonal CQ4, got rotation={rotation} bits={bits}")
 

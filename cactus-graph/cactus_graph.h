@@ -263,9 +263,8 @@ struct BufferDesc {
     const int8_t* cq_right_signs = nullptr;
     const uint32_t* cq_permutation = nullptr;
     const __fp16* cq_rotation = nullptr;
-    // Panel-format file extras (see CactusQuantMatrix::packed_panels): kernel-ready packed
-    // panels (the file's data region), folded fp32 panel norms, and the transposed rotation
-    // (orthogonal lm_head only) — all pointing straight into the weight-file mapping.
+    // Panel-format file extras: packed panels, folded fp32 norms, transposed rotation —
+    // all pointing straight into the weight-file mapping.
     const uint8_t* cq_packed_panels = nullptr;
     const float* cq_norm_panels = nullptr;
     const __fp16* cq_rotation_t = nullptr;
@@ -283,8 +282,7 @@ struct BufferDesc {
             .input_scale = cq_input_scale,
             .input_scale_recip = cq_input_scale_recip,
             .norms = cq_norms,
-            // Panel files store panels (not legacy packed indices) in the data region; keep
-            // packed_indices null there so legacy kernels can never misread panel bytes.
+            // Panel files keep packed_indices null so legacy kernels can never misread them.
             .packed_indices = cq_packed_panels ? nullptr : static_cast<const uint8_t*>(get_data()),
             .left_signs = cq_left_signs,
             .right_signs = cq_right_signs,
