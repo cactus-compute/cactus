@@ -107,8 +107,27 @@ def _extract_rsqrt_chain(graph: IRGraph, value_id: str) -> dict[str, object] | N
     pow2_node = producer(graph, mean_node.inputs[0])
     if pow2_node is None or pow2_node.op != "pow" or float(pow2_node.attrs.get("exponent", 0.0)) != 2.0:
         return None
+    if not _reduces_last_dim(graph, mean_node, pow2_node.inputs[0]):
+        return None
     return {
         "pow_input_value_id": pow2_node.inputs[0],
         "eps": float(add_node.attrs.get("value", 0.0)),
         "node_ids": (pow_node.id, add_node.id, mean_node.id, pow2_node.id),
     }
+
+
+def _reduces_last_dim(graph: IRGraph, mean_node: IRNode, input_value_id: str) -> bool:
+    value = graph.values.get(input_value_id)
+    if value is None or value.shape is None:
+        return False
+    rank = len(value.shape)
+    if rank == 0:
+        return False
+    axis = mean_node.attrs.get("axis")
+    if isinstance(axis, (list, tuple)):
+        if len(axis) != 1:
+            return False
+        axis = axis[0]
+    if not isinstance(axis, int):
+        return False
+    return axis % rank == rank - 1

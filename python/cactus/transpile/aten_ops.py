@@ -123,6 +123,8 @@ _PREFIX_RULES: tuple[AtenOpRule, ...] = (
     AtenOpRule("aten.mean", "mean"),
     AtenOpRule("aten.all", "min"),
     AtenOpRule("aten.var", "variance"),
+    AtenOpRule("aten.minimum", "minimum"),
+    AtenOpRule("aten.maximum", "maximum"),
     AtenOpRule("aten.min", "min"),
     AtenOpRule("aten.amin", "min"),
     AtenOpRule("aten.max", "max"),
@@ -131,6 +133,8 @@ _PREFIX_RULES: tuple[AtenOpRule, ...] = (
     AtenOpRule("aten.split_with_sizes", "split_with_sizes"),
     AtenOpRule("aten.chunk", "chunk"),
     AtenOpRule("aten.ones", "ones"),
+    AtenOpRule("aten.slice_scatter", "slice_scatter"),
+    AtenOpRule("aten.select_scatter", "select_scatter"),
     AtenOpRule("aten.slice", "slice"),
     AtenOpRule("aten.select", "index"),
     AtenOpRule("aten.gather", "gather"),
@@ -151,6 +155,11 @@ _PREFIX_RULES: tuple[AtenOpRule, ...] = (
 )
 
 
+_PREFIX_RULES_BY_LENGTH: tuple[AtenOpRule, ...] = tuple(
+    sorted(_PREFIX_RULES, key=lambda rule: len(rule.torch_prefix), reverse=True)
+)
+
+
 def canonical_ir_op(target: Any) -> str:
     torch_op = canonical_torch_op(target)
     exact = _EXACT_RULES.get(torch_op)
@@ -165,7 +174,7 @@ def canonical_ir_op(target: Any) -> str:
             "aten.lt": "less",
             "aten.le": "less_equal",
         }[torch_op]
-    for rule in _PREFIX_RULES:
+    for rule in _PREFIX_RULES_BY_LENGTH:
         if torch_op.startswith(rule.torch_prefix):
             return rule.ir_op
     return torch_op

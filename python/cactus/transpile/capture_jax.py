@@ -1358,7 +1358,8 @@ def _node_for_eqn(graph: IRGraph, ctx: _JaxImportContext, eqn: Any) -> IRNode | 
         limits = tuple(int(value) for value in params["limit_indices"])
         raw_strides = params.get("strides")
         strides = (1,) * len(starts) if raw_strides is None else tuple(int(value) for value in raw_strides)
-        changed_axes = [axis for axis, (start, limit) in enumerate(zip(starts, limits, strict=True)) if start != 0 or limit != getattr(eqn.invars[0].aval, "shape", ())[axis]]
+        input_shape = getattr(eqn.invars[0].aval, "shape", ())
+        changed_axes = [axis for axis, (start, limit, stride) in enumerate(zip(starts, limits, strides, strict=True)) if start != 0 or limit != input_shape[axis] or stride != 1]
         if not changed_axes:
             _alias_output(ctx, eqn.outvars[0], inputs[0])
             return None
@@ -1400,18 +1401,19 @@ def _node_for_eqn(graph: IRGraph, ctx: _JaxImportContext, eqn: Any) -> IRNode | 
         if index_shape and index_shape[-1] == 1:
             squeezed_id = f"{indices_id}__squeezed"
             squeeze_shape = tuple(int(dim) for dim in index_shape[:-1])
-            squeeze_node = IRNode(
-                node_id,
-                "reshape",
-                [indices_id],
-                [squeezed_id],
-                attrs={"shape": squeeze_shape},
-                meta=meta,
-            )
-            _register_node(graph, squeeze_node, out_avals=(eqn.invars[1].aval,))
-            graph.values[squeezed_id].shape = squeeze_shape
-            if indices_id in ctx.gather_index_aliases:
-                ctx.gather_index_aliases[squeezed_id] = ctx.gather_index_aliases[indices_id]
+            if squeezed_id not in graph.values:
+                squeeze_node = IRNode(
+                    node_id,
+                    "reshape",
+                    [indices_id],
+                    [squeezed_id],
+                    attrs={"shape": squeeze_shape},
+                    meta=meta,
+                )
+                _register_node(graph, squeeze_node, out_avals=(eqn.invars[1].aval,))
+                graph.values[squeezed_id].shape = squeeze_shape
+                if indices_id in ctx.gather_index_aliases:
+                    ctx.gather_index_aliases[squeezed_id] = ctx.gather_index_aliases[indices_id]
             indices_id = squeezed_id
             node_id = ctx.node_id("gather_embedding")
         indices_id = ctx.gather_index_aliases.get(indices_id, indices_id)
