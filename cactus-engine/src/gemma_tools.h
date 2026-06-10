@@ -118,6 +118,7 @@ inline std::string format_argument(const std::string& json, size_t& pos, bool es
                json[pos] == '-' || json[pos] == '+' || json[pos] == 'e' || json[pos] == 'E')) {
             pos++;
         }
+        if (pos == start && pos < json.length()) pos++;
         return json.substr(start, pos - start);
     }
 }

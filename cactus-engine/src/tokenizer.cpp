@@ -294,6 +294,7 @@ std::vector<std::string> split_with_special_tokens(const std::string& text,
         std::string best_special_token;
 
         for (const auto& [special_token, token_id] : special_tokens) {
+            if (special_token.empty()) continue;
             size_t pos = text.find(special_token, start);
             if (pos != std::string::npos &&
                 (pos < best_match_pos || (pos == best_match_pos && special_token.length() > best_match_len))) {
@@ -481,10 +482,11 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
         if (!data) return 0;
         cactus_image_free(data);
 
-        uint32_t p = vision_patch_size_;
-        uint32_t k = vision_pooling_kernel_size_;
+        uint32_t p = vision_patch_size_ ? vision_patch_size_ : 16;
+        uint32_t k = vision_pooling_kernel_size_ ? vision_pooling_kernel_size_ : 3;
+        uint32_t out_len = vision_default_output_length_ ? vision_default_output_length_ : 280;
         uint32_t side = k * p;
-        uint32_t max_patches = vision_default_output_length_ * k * k;
+        uint32_t max_patches = out_len * k * k;
         float factor = std::sqrt(static_cast<float>(max_patches) * p * p /
                                  (static_cast<float>(h) * w));
         int th = static_cast<int>(std::floor(factor * h / side)) * side;

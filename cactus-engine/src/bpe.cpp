@@ -148,7 +148,7 @@ bool BPETokenizer::load_vocabulary_mmap(const std::string& vocab_file, const std
             std::string merged = first + second;
             merge_rules_.emplace_back(first, second, merged, priority);
 
-            std::string key = first + "\x00" + second;
+            std::string key = first + '\0' + second;
             auto it = merge_map_.find(key);
             if (it == merge_map_.end() || priority < it->second) {
                 merge_map_[key] = priority;
@@ -175,7 +175,7 @@ bool BPETokenizer::load_vocabulary_mmap(const std::string& vocab_file, const std
             std::string first = tok.substr(0, i);
             std::string second = tok.substr(i);
             if (!token_to_id_.count(first) || !token_to_id_.count(second)) continue;
-            std::string key = first + "\x00" + second;
+            std::string key = first + '\0' + second;
             if (merge_map_.find(key) == merge_map_.end()) {
                 merge_rules_.emplace_back(first, second, tok, priority);
                 merge_map_[key] = priority;
@@ -413,7 +413,7 @@ std::pair<int, uint32_t> BPETokenizer::find_best_merge_fast(const std::vector<st
     uint32_t best_priority = UINT32_MAX;
 
     for (size_t i = 0; i < tokens.size() - 1; ++i) {
-        std::string key = tokens[i] + "\x00" + tokens[i + 1];
+        std::string key = tokens[i] + '\0' + tokens[i + 1];
         auto it = merge_map_.find(key);
         if (it != merge_map_.end()) {
             if (it->second < best_priority) {

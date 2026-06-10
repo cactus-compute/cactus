@@ -341,6 +341,9 @@ Siglip2Preprocessor::PreprocessedImage Siglip2Preprocessor::preprocess_from_memo
     if (!img_data) {
         throw std::runtime_error("Invalid image data pointer");
     }
+    if (width <= 0 || height <= 0) {
+        throw std::runtime_error("Image dimensions must be positive");
+    }
 
     const int expected_channels = 3;
     std::vector<unsigned char> rgb_data;
@@ -505,23 +508,24 @@ Siglip2Preprocessor::PreprocessedImage Siglip2Preprocessor::preprocess_from_memo
 
 std::vector<unsigned char> Siglip2Preprocessor::convert_to_rgb(
     const unsigned char* img_data, int width, int height, int channels) {
-    
-    std::vector<unsigned char> rgb_data(width * height * 3);
-    
+
+    const size_t px = static_cast<size_t>(width) * static_cast<size_t>(height);
+    std::vector<unsigned char> rgb_data(px * 3);
+
     if (channels == 1) {
-        for (int i = 0; i < width * height; ++i) {
+        for (size_t i = 0; i < px; ++i) {
             rgb_data[i * 3 + 0] = img_data[i];
             rgb_data[i * 3 + 1] = img_data[i];
             rgb_data[i * 3 + 2] = img_data[i];
         }
     } else if (channels == 4) {
-        for (int i = 0; i < width * height; ++i) {
+        for (size_t i = 0; i < px; ++i) {
             rgb_data[i * 3 + 0] = img_data[i * 4 + 0];
             rgb_data[i * 3 + 1] = img_data[i * 4 + 1];
             rgb_data[i * 3 + 2] = img_data[i * 4 + 2];
         }
     } else if (channels == 2) {
-        for (int i = 0; i < width * height; ++i) {
+        for (size_t i = 0; i < px; ++i) {
             rgb_data[i * 3 + 0] = img_data[i * 2 + 0];
             rgb_data[i * 3 + 1] = img_data[i * 2 + 0];
             rgb_data[i * 3 + 2] = img_data[i * 2 + 0];
@@ -529,7 +533,7 @@ std::vector<unsigned char> Siglip2Preprocessor::convert_to_rgb(
     } else {
         throw std::runtime_error("Unsupported number of channels: " + std::to_string(channels));
     }
-    
+
     return rgb_data;
 }
 

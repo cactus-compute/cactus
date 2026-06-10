@@ -676,6 +676,12 @@ int cactus_complete(
 
         auto* handle = static_cast<CactusModelHandle*>(model);
         handle->should_stop = false;
+        if (!handle->model->can_generate()) {
+            const std::string err = "Model has no language-model decoder; cannot generate (embedding/encoder-only model)";
+            CACTUS_LOG_ERROR("complete", err);
+            handle_error_response(err, response_buffer, buffer_size);
+            return -1;
+        }
         auto* tokenizer = handle->model->get_tokenizer();
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true, pcm_buffer, pcm_buffer_size);
 
@@ -1072,6 +1078,13 @@ int cactus_prefill(
         auto start_time = std::chrono::high_resolution_clock::now();
 
         auto* handle = static_cast<CactusModelHandle*>(model);
+        if (!handle->model->can_generate()) {
+            std::string err = "Model has no language-model decoder; cannot generate (embedding/encoder-only model)";
+            CACTUS_LOG_ERROR("prefill", err);
+            std::string result = construct_prefill_response_json(false, &err, 0, 0.0, 0.0);
+            if (result.size() < buffer_size) std::strcpy(response_buffer, result.c_str());
+            return -1;
+        }
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, false, false, pcm_buffer, pcm_buffer_size);
 
         std::vector<uint32_t> context_tokens(prompt.tokens.begin(), prompt.tokens.begin() + prompt.context_token_count);
