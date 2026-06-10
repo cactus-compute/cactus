@@ -86,7 +86,7 @@ struct CactusModelHandle {
     CactusModelHandle() : should_stop(false) {}
 };
 
-extern std::string last_error_message;
+extern thread_local std::string last_error_message;
 
 bool matches_stop_sequence(const std::vector<uint32_t>& generated_tokens,
                            const std::vector<std::vector<uint32_t>>& stop_sequences);
@@ -1056,6 +1056,27 @@ inline bool try_parse_json_float(const std::string& json, const std::string& key
     }
 }
 
+inline bool try_parse_json_uint(const std::string& json, const std::string& key, size_t& out_value) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return false;
+
+    size_t start = pos + pattern.size();
+    while (start < json.size() && std::isspace(static_cast<unsigned char>(json[start]))) ++start;
+
+    size_t end = start;
+    while (end < json.size() && std::string(",}] \t\n\r").find(json[end]) == std::string::npos) ++end;
+
+    try {
+        long long parsed = std::stoll(json.substr(start, end - start));
+        if (parsed < 0) return false;
+        out_value = static_cast<size_t>(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 inline std::vector<std::string> parse_json_string_array_field(const std::string& json, const std::string& key) {
     std::vector<std::string> out;
     std::string pattern = "\"" + key + "\":";
@@ -1395,16 +1416,14 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         }
     }
 
-    pos = json.find("\"top_k\"");
-    if (pos != std::string::npos) {
-        pos = json.find(':', pos) + 1;
-        options.top_k = std::stoul(json.substr(pos));
+    size_t parsed_top_k = options.top_k;
+    if (try_parse_json_uint(json, "top_k", parsed_top_k)) {
+        options.top_k = parsed_top_k;
     }
 
-    pos = json.find("\"max_tokens\"");
-    if (pos != std::string::npos) {
-        pos = json.find(':', pos) + 1;
-        options.max_tokens = std::stoul(json.substr(pos));
+    size_t parsed_max_tokens = options.max_tokens;
+    if (try_parse_json_uint(json, "max_tokens", parsed_max_tokens)) {
+        options.max_tokens = parsed_max_tokens;
     }
 
     pos = json.find("\"force_tools\"");
@@ -1414,10 +1433,9 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         options.force_tools = (json.substr(pos, 4) == "true");
     }
 
-    pos = json.find("\"tool_rag_top_k\"");
-    if (pos != std::string::npos) {
-        pos = json.find(':', pos) + 1;
-        options.tool_rag_top_k = std::stoul(json.substr(pos));
+    size_t parsed_tool_rag_top_k = options.tool_rag_top_k;
+    if (try_parse_json_uint(json, "tool_rag_top_k", parsed_tool_rag_top_k)) {
+        options.tool_rag_top_k = parsed_tool_rag_top_k;
     }
 
     pos = json.find("\"confidence_threshold\"");
@@ -1454,10 +1472,9 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         options.auto_handoff = (json.substr(pos, 4) == "true");
     }
 
-    pos = json.find("\"cloud_timeout_ms\"");
-    if (pos != std::string::npos) {
-        pos = json.find(':', pos) + 1;
-        options.cloud_timeout_ms = std::stoul(json.substr(pos));
+    size_t parsed_cloud_timeout_ms = options.cloud_timeout_ms;
+    if (try_parse_json_uint(json, "cloud_timeout_ms", parsed_cloud_timeout_ms)) {
+        options.cloud_timeout_ms = parsed_cloud_timeout_ms;
     }
 
     pos = json.find("\"handoff_with_images\"");

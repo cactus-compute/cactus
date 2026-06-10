@@ -815,7 +815,7 @@ namespace GraphFile {
     #define CACTUS_FFI_EXPORT
 #endif
 
-extern std::string last_error_message;
+extern thread_local std::string last_error_message;
 
 #ifdef __cplusplus
 extern "C" {
