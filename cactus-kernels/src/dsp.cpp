@@ -452,6 +452,9 @@ void cactus_compute_spectrogram_f32(
         padded_waveform.assign(padded_length, 0.0f);
 
         if (std::strcmp(pad_mode, "reflect") == 0) {
+            if (waveform_length <= pad_length) {
+                throw std::invalid_argument("reflect padding requires waveform_length > frame_length/2");
+            }
             for (size_t i = 0; i < pad_length; i++) padded_waveform[i] = waveform[pad_length - i];
             std::copy(waveform, waveform + waveform_length, padded_waveform.data() + pad_length);
             for (size_t i = 0; i < pad_length; i++) padded_waveform[pad_length + waveform_length + i] = waveform[waveform_length - 2 - i];
@@ -463,6 +466,10 @@ void cactus_compute_spectrogram_f32(
 
         input_waveform = padded_waveform.data();
         input_length = padded_length;
+    }
+
+    if (input_length < frame_length) {
+        throw std::invalid_argument("waveform shorter than frame_length");
     }
 
     const size_t num_frames = 1 + (input_length - frame_length) / hop_length;

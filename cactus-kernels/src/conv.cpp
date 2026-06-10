@@ -18,71 +18,12 @@ constexpr size_t T_TILE_F16 = 2;
 constexpr size_t ACCELERATE_K_THRESHOLD = 32;
 constexpr size_t ACCELERATE_L_THRESHOLD = 128;
 
-#ifdef __APPLE__
-static void conv1d_causal_depthwise_f16_accelerate(
-    const __fp16* input,
-    const __fp16* weight,
-    __fp16* output,
-    size_t N, size_t L, size_t C, size_t K, size_t dilation)
-{
-    const size_t in_bs  = L * C;
-    const size_t out_bs = L * C;
-    CactusThreading::parallel_for_2d(N, C, CactusThreading::Thresholds::ATTENTION, [&](size_t n, size_t c) {
-        const __fp16* Xb = input  + n * in_bs;
-        __fp16*       Yb = output + n * out_bs;
-        const __fp16* Wc = weight + c * K;
-
-        if (dilation == 1) {
-
-            size_t i = 0;
-            for(; i + 7 < L; i += 8){
-                float16x8_t acc = vdupq_n_f16(0.0f);
-
-                for (size_t k = 0; k < K; ++k) {
-                    float16x8_t input_vec = vld1q_f16(&Xb[(i + k) * C + c]);
-                    float16x8_t weight_vec = vdupq_n_f16(Wc[k]);
-                    acc = vfmaq_f16(acc, input_vec, weight_vec);
-                }
-                vst1q_f16(&Yb[i * C + c], acc);
-            }
-
-            for (; i < L; ++i) {
-                float acc = 0.0f;
-                for (size_t k = 0; k < K; ++k) {
-                    acc += float(Xb[(i + k) * C + c]) * float(Wc[k]);
-                }
-                Yb[i * C + c] = (__fp16)acc;
-            }
-        } else {
-
-            for (size_t i = 0; i < L; ++i) {
-                float acc = 0.0f;
-
-                for (size_t k = 0; k < K; ++k) {
-                    size_t idx = i + k * dilation;
-                    acc += float(Xb[idx * C + c]) * float(Wc[k]);
-                }
-
-                Yb[i * C + c] = (__fp16)acc;
-            }
-        }
-    });
-}
-#endif
-
 void cactus_conv1d_causal_depthwise_f16(
     const __fp16* input,
     const __fp16* weight,
     __fp16* output,
     size_t N, size_t L, size_t C, size_t K, size_t dilation)
 {
-#ifdef __APPLE__
-    if (K >= ACCELERATE_K_THRESHOLD && L >= ACCELERATE_L_THRESHOLD) {
-        conv1d_causal_depthwise_f16_accelerate(input, weight, output, N, L, C, K, dilation);
-        return;
-    }
-#endif
-
     const size_t in_bs  = L * C;
     const size_t out_bs = L * C;
 
@@ -316,7 +257,7 @@ static void conv1d_f16_accelerate(
     size_t K,
     size_t stride
 ){
-    const size_t out_len = ((L - K) / stride) + 1;
+    const size_t out_len = (L < K) ? 0 : ((L - K) / stride) + 1;
     const size_t in_bs   = C_in * L;
     const size_t out_bs  = C_out * out_len;
 
@@ -378,7 +319,7 @@ static void conv1d_f16_neon(
     size_t K,
     size_t stride
 ){
-    const size_t out_len = ((L - K) / stride) + 1;
+    const size_t out_len = (L < K) ? 0 : ((L - K) / stride) + 1;
     const size_t in_bs   = C_in  * L;
     const size_t out_bs  = C_out * out_len;
 
@@ -448,7 +389,7 @@ static void conv1d_f16_gemm(
     size_t K,
     size_t stride
 ) {
-    const size_t out_len = (L - K) / stride + 1;
+    const size_t out_len = (L < K) ? 0 : (L - K) / stride + 1;
     const size_t col_K = C_in * K;
 
     std::vector<float> W_f32(C_out * col_K);
@@ -791,7 +732,7 @@ void cactus_stft_f16(
     size_t K, size_t stride,
     size_t num_fft_bins
 ) {
-    const size_t out_len = ((L - K) / stride) + 1;
+    const size_t out_len = (L < K) ? 0 : ((L - K) / stride) + 1;
     const size_t in_bs  = C_in * L;
     const size_t out_bs = 2 * num_fft_bins * out_len;
 
