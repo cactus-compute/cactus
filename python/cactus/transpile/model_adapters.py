@@ -5783,6 +5783,15 @@ def _build_lfm2_causal_lm_component_specs(
 
     requested = tuple(components or ("decoder", "decoder_step"))
     requested_set = set(requested)
+    chunk_components = {"lm_encoder_step", "lm_encoder_text_chunk", "decoder_prefill_chunk"}
+    if chunk_components & requested_set:
+        return _build_lfm2_text_chunked_component_specs(
+            model,
+            input_ids=input_ids,
+            weights_dir=weights_dir,
+            requested_set=requested_set,
+            cache_context_length=cache_context_length,
+        )
     common_graph_meta = {
         "weights_dir": weights_dir,
         "task": "causal_lm_logits",
@@ -5819,6 +5828,90 @@ def _build_lfm2_causal_lm_component_specs(
                 "cache_sink_size": 4,
             },
             metadata={"family": "lfm2", "task": "causal_lm_logits"},
+        ))
+    return specs
+
+
+def _build_lfm2_text_chunked_component_specs(
+    model: torch.nn.Module,
+    *,
+    input_ids: torch.Tensor,
+    weights_dir: str | None,
+    requested_set: set[str],
+    cache_context_length: str | int | None,
+) -> list[ComponentModuleSpec]:
+    lm_encoder_step = Lfm2VlLMEncoderStepAdapter(model, weights_dir=weights_dir).eval()
+    lm_encoder_text_chunk = Lfm2VlLMEncoderTextChunkAdapter(model, weights_dir=weights_dir).eval()
+    decoder_last_token = Lfm2VlDecoderAdapter(model, weights_dir=weights_dir, last_token_only=True).eval()
+
+    prefill_chunk = max(2, int(os.environ.get("CACTUS_LFM2_PREFILL_CHUNK", "128") or "128"))
+    prefill_chunk = min(prefill_chunk, int(input_ids.shape[1]))
+    chunk_input_ids = input_ids[:, :prefill_chunk].contiguous()
+    chunk_position_ids = torch.arange(
+        prefill_chunk, dtype=torch.long, device=input_ids.device,
+    ).unsqueeze(0).expand(int(input_ids.shape[0]), -1).contiguous()
+    step_input_ids = input_ids[:, :1]
+    step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
+    with torch.no_grad():
+        chunk_decoder_inputs = lm_encoder_text_chunk(chunk_input_ids, chunk_position_ids)
+
+    common_graph_meta = {
+        "weights_dir": weights_dir,
+        "task": "causal_lm_logits",
+        "adapter_family": "lfm2",
+    }
+    cache_graph_meta = {
+        "use_internal_kv_cache": True,
+        "use_internal_conv_cache": True,
+        "max_cache_seq_len": _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512),
+        "cache_sink_size": 4,
+    }
+    metadata = {"family": "lfm2", "task": "causal_lm_logits"}
+
+    specs: list[ComponentModuleSpec] = []
+    if "lm_encoder_step" in requested_set:
+        specs.append(ComponentModuleSpec(
+            component="lm_encoder_step",
+            module=lm_encoder_step,
+            example_inputs=(step_input_ids, step_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=("inputs_embeds", "attention_mask", "position_ids"),
+            graph_meta={**common_graph_meta, "component": "lm_encoder_step"},
+            metadata=metadata,
+        ))
+    if "lm_encoder_text_chunk" in requested_set:
+        specs.append(ComponentModuleSpec(
+            component="lm_encoder_text_chunk",
+            module=lm_encoder_text_chunk,
+            example_inputs=(chunk_input_ids, chunk_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=("inputs_embeds", "attention_mask", "position_ids"),
+            graph_meta={
+                **common_graph_meta,
+                "component": "lm_encoder_text_chunk",
+                "encoder_chunk_size": prefill_chunk,
+            },
+            metadata=metadata,
+        ))
+    if "decoder_prefill_chunk" in requested_set:
+        specs.append(ComponentModuleSpec(
+            component="decoder_prefill_chunk",
+            module=decoder_last_token,
+            example_inputs=chunk_decoder_inputs,
+            input_keys=("inputs_embeds", "attention_mask", "position_ids"),
+            output_keys=("logits",),
+            graph_meta={**common_graph_meta, "component": "decoder_prefill_chunk", **cache_graph_meta},
+            metadata=metadata,
+        ))
+    if "decoder_step" in requested_set:
+        specs.append(ComponentModuleSpec(
+            component="decoder_step",
+            module=decoder_last_token,
+            example_inputs=tuple(tensor[:, :1, ...] for tensor in chunk_decoder_inputs),
+            input_keys=("inputs_embeds", "attention_mask", "position_ids"),
+            output_keys=("logits",),
+            graph_meta={**common_graph_meta, "component": "decoder_step", **cache_graph_meta},
+            metadata=metadata,
         ))
     return specs
 

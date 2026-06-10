@@ -37,6 +37,13 @@ def _plan_from_profile(
                                 "decoder_prefill_chunk", "decoder_embed_chunk", "decoder_media_step"),
                     force_component_pipeline=True,
                 )
+            if any("lfm2forcausallm" in a for a in architectures):
+                return ComponentPlan(
+                    task="causal_lm_logits",
+                    components=("decoder_step", "lm_encoder_step", "lm_encoder_text_chunk",
+                                "decoder_prefill_chunk"),
+                    force_component_pipeline=True,
+                )
             return ComponentPlan(
                 task="causal_lm_logits",
                 components=("decoder", "decoder_step"),
