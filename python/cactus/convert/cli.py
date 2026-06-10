@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -83,7 +84,7 @@ def _load_hf(model_id_or_path: str, device: str):
             low_cpu_mem_usage=True,
             local_files_only=Path(model_id_or_path).exists(),
         )
-    except Exception:
+    except Exception as primary_exc:
         try:
             model = AutoModel.from_pretrained(
                 model_id_or_path,
@@ -92,7 +93,8 @@ def _load_hf(model_id_or_path: str, device: str):
                 low_cpu_mem_usage=True,
                 local_files_only=Path(model_id_or_path).exists(),
             )
-        except Exception:
+        except Exception as auto_exc:
+            print(f"warning: could not load model object ({model_cls.__name__}: {primary_exc}; AutoModel: {auto_exc})")
             model = None
     if model is None:
         return cfg, processor, model
@@ -155,6 +157,8 @@ def _load_checkpoint_state_dict(model_id_or_path: str) -> dict[str, Any] | None:
                             raise RuntimeError(f"duplicate tensor key {key!r} across checkpoint shards")
                         state[key] = tensor
                 return state
+        except RuntimeError:
+            raise
         except Exception:
             return None
     safetensor_files = sorted(root.glob("*.safetensors"))
@@ -284,7 +288,7 @@ def _collect_manifest_token_ids(
             if text:
                 try:
                     encoded = processor(text, return_tensors=None)
-                    ids = encoded.get("input_ids", encoded) if isinstance(encoded, dict) else encoded
+                    ids = encoded.get("input_ids", encoded) if isinstance(encoded, Mapping) else encoded
                     if ids and isinstance(ids[0], list):
                         ids = ids[0]
                     out.extend(int(x) for x in ids)
@@ -440,6 +444,12 @@ def convert(args: argparse.Namespace) -> None:
                 target_modules.add(target)
         pending.append((name, tensor, match, policy))
 
+    if target_modules and model is None and not args.hessian_cache_in:
+        msg = "model object failed to load; GPTQ Hessian calibration is disabled and use_gptq tensors will fall back to RTN"
+        if args.strict:
+            raise RuntimeError(msg)
+        print(f"warning: {msg}")
+
     if args.hessian_cache_in:
         hessian_stats = _load_hessian_artifacts(Path(args.hessian_cache_in))
     else:
@@ -537,7 +547,7 @@ def convert(args: argparse.Namespace) -> None:
                     _save_fallback_tensor(emit_tensor, out_path, "FP16", family)
                     status = "fallback" if match.recognized else "unrecognized"
                     precision = "FP16"
-                    emit_policy = type(emit_policy)(emit_policy.action, precision, emit_policy.bits, emit_policy.component, emit_policy.use_gptq, emit_policy.rotation, str(exc))
+                    emit_policy = replace(emit_policy, action="fallback", precision="FP16", fallback_reason=str(exc))
             rows.append({
                 "source_name": name,
                 "hf_name": match.hf_name or name,
