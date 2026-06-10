@@ -200,7 +200,7 @@ static std::string call_cloud_endpoint(const std::string& url,
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, std::min<long>(timeout_ms, 2000L));
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
-    if (!env_flag_enabled("CACTUS_CLOUD_STRICT_SSL")) {
+    if (env_flag_enabled("CACTUS_CLOUD_INSECURE_SSL")) {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     } else {
