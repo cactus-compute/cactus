@@ -24,6 +24,10 @@ GROUP_SIZE = 128
 PRECISION_CQ = {1: 3, 2: 4, 3: 5, 4: 6}
 FLAG_ORTHOGONAL_ROTATION = 1 << 1
 FLAG_INTERLEAVED_4ROW = 1 << 2
+FLAG_PACKED_PANELS = 1 << 5
+
+# Panel bundles ship only this file, so pre-panel engines fail loudly on new bundles.
+PANEL_WEIGHTS_SUFFIX = ".cq4p.weights"
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,61 @@ def pack_indices_interleaved_4row_3bit(indices: np.ndarray, group_size: int) -> 
     return out.reshape(-1)
 
 
+def quantize_codebook_i8(codebook_f16: np.ndarray) -> tuple[np.ndarray, np.float32]:
+    # Bit-exact mirror of the engine's tq_quantize_codebook_i8 (float32 max-abs/127, 1e-10 clamp,
+    # round-half-away-from-zero) so folded panel norms match the reference encoder byte-for-byte.
+    cb = codebook_f16.astype(np.float16).astype(np.float32)
+    max_abs = np.float32(np.max(np.abs(cb))) if cb.size else np.float32(0.0)
+    scale = max_abs / np.float32(127.0)
+    if scale < np.float32(1e-10):
+        scale = np.float32(1e-10)
+    inv = np.float32(1.0) / scale
+    # float64 holds float32 exactly, so floor(|x| + 0.5) reproduces std::round half-away-from-zero.
+    scaled = (cb * inv).astype(np.float64)
+    cb_i8 = (np.sign(scaled) * np.floor(np.abs(scaled) + 0.5)).astype(np.int8)
+    return cb_i8, scale
+
+
+def canonicalize_codebook_indices(indices: np.ndarray, cb_i8: np.ndarray) -> np.ndarray:
+    # Map each index to the first index with an equal int8 value (both dequant identically) —
+    # mirrors the reference encoder's expand-then-reverse-map so panels are byte-identical.
+    lut = np.arange(cb_i8.size, dtype=np.uint8)
+    first: dict[int, int] = {}
+    for i, v in enumerate(cb_i8.tolist()):
+        if v in first:
+            lut[i] = first[v]
+        else:
+            first[v] = i
+    return lut[indices]
+
+
+def pack_indices_panels(indices: np.ndarray, group_size: int) -> np.ndarray:
+    # 4-bit indices -> [SB64][ng][gs/4][128B] panels; each 128B kg-block = 256 nibbles (low first)
+    # = int8 panel [4 vec][16 ch][4 K]. Channels past N zero-padded (index 0).
+    n, k = indices.shape
+    if group_size % 4 != 0 or k % group_size != 0:
+        raise ValueError(f"packed-panel constraints not met: gs={group_size}, k={k}")
+    ng = k // group_size
+    nkg = group_size // 4
+    sb64 = (n + 63) // 64
+    pad = sb64 * 64 - n
+    idx = indices if pad == 0 else np.vstack([indices, np.zeros((pad, k), dtype=indices.dtype)])
+    a = idx.reshape(sb64, 64, ng, nkg, 4).transpose(0, 2, 3, 1, 4).reshape(sb64, ng, nkg, 256)
+    a = a.astype(np.uint8)
+    lo = a[..., 0::2] & 0x0F
+    hi = a[..., 1::2] & 0x0F
+    return ((hi << 4) | lo).astype(np.uint8).reshape(-1)
+
+
+def fold_panel_norms(norms_f16: np.ndarray, cb_scale: np.float32) -> np.ndarray:
+    # fp32 panel norms [SB64][ng][64] = float(norms fp16) * cb_scale; channels past N -> 0.
+    n, ng = norms_f16.shape
+    sb64 = (n + 63) // 64
+    out = np.zeros((sb64 * 64, ng), dtype=np.float32)
+    out[:n] = norms_f16.astype(np.float16).astype(np.float32) * np.float32(cb_scale)
+    return np.ascontiguousarray(out.reshape(sb64, 64, ng).transpose(0, 2, 1))
+
+
 def pack_indices_interleaved_4row(indices: np.ndarray, group_size: int, bits: int) -> np.ndarray:
     if bits == 4:
         return pack_indices_interleaved_4row_4bit(indices, group_size)
@@ -318,15 +377,40 @@ _EMBEDDING_TENSOR_STEMS = frozenset({
 })
 
 
-def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
+def panel_weights_path(out_path: Path) -> Path:
+    """Panel files carry their own unique suffix (q_proj.weights -> q_proj.cq4p.weights)."""
+    name = out_path.name
+    if not name.endswith(".weights"):
+        return out_path
+    stem = name[: -len(".weights")]
+    if stem.endswith(".cq4"):
+        stem = stem[: -len(".cq4")]
+    return out_path.with_name(stem + PANEL_WEIGHTS_SUFFIX)
+
+
+def write_cq_tensor(out_path: Path, cq: CQTensor, *, allow_panels: bool = True) -> Path:
+    # Returns the path actually written. CQ4 matmul weights and orthogonal lm_heads/embeddings go
+    # to the packed-panel format (.cq4p.weights, kernel-ready mmap); other tensors keep legacy.
     out_path.parent.mkdir(parents=True, exist_ok=True)
     n, k = cq.indices.shape
     group_size = int(cq.group_size)
     groups = k // group_size
 
     is_embedding = out_path.stem in _EMBEDDING_TENSOR_STEMS
+    is_orth = cq.rotation_family == "orthogonal"
 
-    if cq.interleaved_4row:
+    # Hadamard embeddings keep the legacy row-major layout (the engine's per-row hadamard
+    # decoder reads it); everything else CQ4 with a panel-compatible group size goes panel.
+    packed_panels = (
+        allow_panels
+        and cq.bits == 4
+        and (
+            (is_orth and group_size == k and k % 128 == 0)
+            or (not is_orth and group_size % 32 == 0 and group_size <= 256 and not is_embedding)
+        )
+    )
+
+    if cq.interleaved_4row and not packed_panels:
         if cq.bits not in (1, 2, 3, 4):
             raise ValueError(f"INTERLEAVED_4ROW only supports CQ1..CQ4, got CQ{cq.bits}")
         if n % 4 != 0:
@@ -339,7 +423,7 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
         elif group_size % 32 != 0 or group_size > 256:
             raise ValueError(f"INTERLEAVED_4ROW requires group_size % 32 == 0 and group_size <= 256, got {group_size}")
 
-    interleaved = (
+    interleaved = not packed_panels and (
         cq.interleaved_4row
         or (
             cq.bits in (1, 2, 3, 4)
@@ -353,7 +437,7 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
 
     codebook_f32 = make_codebook(group_size, cq.bits).astype(np.float32)
     norms_f32 = cq.norms.astype(np.float32, copy=True)
-    if interleaved and cq.rotation_family != "orthogonal":
+    if (interleaved or packed_panels) and not is_orth:
         cb_max = float(np.max(np.abs(codebook_f32)))
         cb_factor = cb_max / 127.0 if cb_max > 1e-12 else 1.0 / 127.0
         codebook_f32 = codebook_f32 / cb_factor
@@ -362,6 +446,40 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
     codebook = codebook_f32.astype(np.float16)
     input_scale = cq.input_scale.astype(np.float16, copy=False).reshape(k)
     recip = np.minimum(1.0 / np.maximum(input_scale.astype(np.float32), 1e-8), 65504.0).astype(np.float16)
+
+    if packed_panels:
+        # Orthogonal tensors store virtual 128-wide groups already applied (exact regrouping:
+        # norms constant across subgroups, kg-blocks K-chunk-ordered).
+        header_gs = 128 if is_orth else group_size
+        header_ng = k // header_gs
+        norms_f16 = norms_f32.astype(np.float16).reshape(n, groups)
+        if is_orth:
+            norms_f16 = np.repeat(norms_f16.reshape(n, 1), header_ng, axis=1)
+        norms_f16 = np.ascontiguousarray(norms_f16)
+
+        cb_i8, cb_scale = quantize_codebook_i8(codebook)
+        canonical = canonicalize_codebook_indices(cq.indices, cb_i8)
+        packed = pack_indices_panels(canonical, header_gs)
+        panel_norms = fold_panel_norms(norms_f16, cb_scale)
+
+        parts = [codebook.tobytes(), input_scale.tobytes(), recip.tobytes(), norms_f16.tobytes()]
+        prefix_len = sum(len(p) for p in parts)
+        parts.append(b"\x00" * (align_offset(prefix_len, 4) - prefix_len))
+        parts.append(panel_norms.tobytes())
+        flags = FLAG_PACKED_PANELS
+        if is_orth:
+            flags |= FLAG_ORTHOGONAL_ROTATION
+            rotation = make_orthogonal_rotation(group_size, cq.seed).astype(np.float16)
+            parts.append(rotation.tobytes())
+            parts.append(np.ascontiguousarray(rotation.T).tobytes())
+        else:
+            left, right, perm = make_hadamard_components(group_size, cq.seed)
+            parts.extend([left.tobytes(), right.tobytes(), perm.astype("<u4", copy=False).tobytes()])
+        actual_path = panel_weights_path(out_path)
+        _write_cq_file(actual_path, flags=flags, n=n, k=k, bits=cq.bits,
+                       scales_blob=b"".join(parts), packed=packed,
+                       group_size=header_gs, groups=header_ng)
+        return actual_path
 
     if interleaved:
         norms_blob = norms_f32.reshape(n // 4, 4, groups).transpose(0, 2, 1).astype(np.float16).copy().tobytes()
@@ -380,7 +498,15 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
     else:
         left, right, perm = make_hadamard_components(group_size, cq.seed)
         parts.extend([left.tobytes(), right.tobytes(), perm.astype("<u4", copy=False).tobytes()])
-    scales_blob = b"".join(parts)
+    _write_cq_file(out_path, flags=flags, n=n, k=k, bits=cq.bits,
+                   scales_blob=b"".join(parts), packed=packed,
+                   group_size=group_size, groups=groups)
+    return out_path
+
+
+def _write_cq_file(out_path: Path, *, flags: int, n: int, k: int, bits: int,
+                   scales_blob: bytes, packed: np.ndarray,
+                   group_size: int, groups: int) -> None:
     scales_bytes = len(scales_blob)
     data_bytes = packed.size
     scales_end = align_offset(HEADER_SIZE, CACTUS_ALIGNMENT) + scales_bytes
@@ -394,7 +520,7 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
         f.write(struct.pack("<Q", k))
         f.write(struct.pack("<Q", 0))
         f.write(struct.pack("<Q", 0))
-        f.write(struct.pack("<I", PRECISION_CQ[cq.bits]))
+        f.write(struct.pack("<I", PRECISION_CQ[bits]))
         f.write(struct.pack("<Q", data_bytes))
         f.write(struct.pack("<Q", scales_bytes))
         f.write(struct.pack("<I", group_size))

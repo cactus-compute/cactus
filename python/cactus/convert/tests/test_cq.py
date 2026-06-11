@@ -13,9 +13,22 @@ from cactus.convert.cactus_adapters.tensor_io import (
     save_pointwise_conv1d_int8_with_header,
     save_tensor_with_header,
 )
-from cactus.convert.export.qdq import FLAG_INTERLEAVED_4ROW, FLAG_ORTHOGONAL_ROTATION, dequantize_cq_file, read_header
+from cactus.convert.export.qdq import (
+    FLAG_INTERLEAVED_4ROW,
+    FLAG_ORTHOGONAL_ROTATION,
+    FLAG_PACKED_PANELS,
+    dequantize_cq_file,
+    read_header,
+)
 from cactus.convert.interleave_orthogonal_cq4 import interleave_orthogonal_cq4_file
-from cactus.convert.quantization.cq import PRECISION_CQ, pack_indices_lsb, quantize_hadamard, quantize_orthogonal, write_cq_tensor
+from cactus.convert.quantization.cq import (
+    PANEL_WEIGHTS_SUFFIX,
+    PRECISION_CQ,
+    pack_indices_lsb,
+    quantize_hadamard,
+    quantize_orthogonal,
+    write_cq_tensor,
+)
 
 
 def test_pack_indices_lsb_bits():
@@ -83,6 +96,40 @@ def test_interleave_orthogonal_cq4_file_preserves_qdq(tmp_path):
     src_tensor = dequantize_cq_file(src, read_header(src), torch.float32, 4)
     dst_tensor = dequantize_cq_file(dst, read_header(dst), torch.float32, 4)
     assert torch.max(torch.abs(src_tensor - dst_tensor)).item() <= 1e-6
+
+
+def test_orthogonal_cq4_panels_written_under_suffix(tmp_path):
+    w = np.random.default_rng(10).standard_normal((256, 256), dtype=np.float32)
+    written = write_cq_tensor(tmp_path / "lm_head.weights", quantize_orthogonal(w, bits=4))
+    assert written.name.endswith(PANEL_WEIGHTS_SUFFIX)
+    assert not (tmp_path / "lm_head.weights").exists()
+    header = read_header(written)
+    assert header.flags & FLAG_PACKED_PANELS
+    assert header.flags & FLAG_ORTHOGONAL_ROTATION
+    assert header.group_size == 128
+    assert header.num_groups == 256 // 128
+
+
+def test_orthogonal_cq4_panels_qdq_matches_legacy(tmp_path):
+    w = np.random.default_rng(11).standard_normal((256, 384), dtype=np.float32)
+    cq = quantize_orthogonal(w, bits=4)
+    panel = write_cq_tensor(tmp_path / "p.weights", cq)
+    legacy = write_cq_tensor(tmp_path / "legacy.weights", cq, allow_panels=False)
+    t_panel = dequantize_cq_file(panel, read_header(panel), torch.float32, 256)
+    t_legacy = dequantize_cq_file(legacy, read_header(legacy), torch.float32, 256)
+    assert torch.max(torch.abs(t_panel - t_legacy)).item() == 0.0
+
+
+def test_hadamard_cq4_panels_qdq_matches_legacy(tmp_path):
+    w = np.random.default_rng(12).standard_normal((8, 256), dtype=np.float32)
+    cq = quantize_hadamard(w, bits=4)
+    panel = write_cq_tensor(tmp_path / "ffn.weights", cq)
+    legacy = write_cq_tensor(tmp_path / "ffn_legacy.weights", cq, allow_panels=False)
+    assert panel.name.endswith(PANEL_WEIGHTS_SUFFIX)
+    assert read_header(panel).flags & FLAG_PACKED_PANELS
+    t_panel = dequantize_cq_file(panel, read_header(panel), torch.float32, 256)
+    t_legacy = dequantize_cq_file(legacy, read_header(legacy), torch.float32, 256)
+    assert torch.max(torch.abs(t_panel - t_legacy)).item() == 0.0
 
 
 def test_int8_bias_uses_cactus_grouped_layout(tmp_path):

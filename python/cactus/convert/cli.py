@@ -43,7 +43,9 @@ def _hf_cache_dir() -> str | None:
     return os.environ.get("HF_HUB_CACHE") or os.environ.get("HF_HOME") or None
 
 
-def _load_hf(model_id_or_path: str, device: str):
+def _load_hf(model_id_or_path: str, device: str, torch_dtype: str = "float16"):
+    load_dtype = {"float16": torch.float16, "float32": torch.float32, "bfloat16": torch.bfloat16}.get(
+        torch_dtype, torch.float16) if torch is not None else None
     import logging, warnings
     logging.getLogger("transformers").setLevel(logging.ERROR)
     warnings.filterwarnings("ignore", message=".*You are using a model of type.*")
@@ -78,7 +80,7 @@ def _load_hf(model_id_or_path: str, device: str):
     try:
         model = model_cls.from_pretrained(
             model_id_or_path,
-            torch_dtype=torch.float16 if torch is not None else None,
+            torch_dtype=load_dtype,
             trust_remote_code=True,
             low_cpu_mem_usage=True,
             local_files_only=Path(model_id_or_path).exists(),
@@ -87,7 +89,7 @@ def _load_hf(model_id_or_path: str, device: str):
         try:
             model = AutoModel.from_pretrained(
                 model_id_or_path,
-                torch_dtype=torch.float16 if torch is not None else None,
+                torch_dtype=load_dtype,
                 trust_remote_code=True,
                 low_cpu_mem_usage=True,
                 local_files_only=Path(model_id_or_path).exists(),
@@ -393,7 +395,7 @@ def convert(args: argparse.Namespace) -> None:
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cfg, processor, model = _load_hf(args.model, args.device)
+    cfg, processor, model = _load_hf(args.model, args.device, getattr(args, 'torch_dtype', 'float16'))
     runtime_source = ensure_parakeet_tdt_nemo_source(args.model, cache_dir=_hf_cache_dir()) or args.model
     family = detect_family(cfg, args.model_family)
     adapter = adapter_for_family(family)
@@ -493,6 +495,7 @@ def convert(args: argparse.Namespace) -> None:
             precision = emit_policy.precision
             gptq_used = False
             hessian_missing_reason = None
+            written_path = out_path
             module_name = adapter.module_target_name(name, model) or _module_name(name)
             try:
                 if not match.recognized and args.strict:
@@ -522,7 +525,8 @@ def convert(args: argparse.Namespace) -> None:
                     cq = _scale_cq_norms(cq, adapter.scale_factor(out_path.name))
                     if getattr(emit_policy, "layout", "row_major") == "interleaved_4row":
                         cq = replace(cq, interleaved_4row=True)
-                    write_cq_tensor(out_path, cq)
+                    # The manifest records the actual written file so bindings resolve to it.
+                    written_path = write_cq_tensor(out_path, cq)
                     gptq_used = cq.gptq_used
                     status = "converted" if match.recognized else "unrecognized"
                 elif emit_policy.action == "fallback" and out_path is not None:
@@ -542,7 +546,7 @@ def convert(args: argparse.Namespace) -> None:
                 "source_name": name,
                 "hf_name": match.hf_name or name,
                 "adapter_name": match.adapter_name or name,
-                "output_file": str(out_path.name) if out_path else None,
+                "output_file": str(written_path.name) if written_path else None,
                 "shape": list(_tensor_shape(emit_tensor)),
                 "dtype": str(getattr(emit_tensor, "dtype", "")),
                 "component": emit_policy.component,
@@ -554,7 +558,7 @@ def convert(args: argparse.Namespace) -> None:
                 "fallback_reason": emit_policy.fallback_reason,
                 "hessian_samples": int(hessian_samples.get(module_name, 0)),
                 "gptq_used": bool(gptq_used),
-                "bytes": _tensor_bytes(out_path),
+                "bytes": _tensor_bytes(written_path),
                 "scale_factor": float(adapter.scale_factor(out_path.name)) if out_path else 1.0,
                 "recognized": bool(match.recognized),
                 "adapter_family": family,
@@ -584,6 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--embedding-bits", type=int, choices=[1, 2, 3, 4])
     p.add_argument("--calibration-manifest")
     p.add_argument("--device", default="auto")
+    p.add_argument("--torch-dtype", default="float16", choices=["float16", "float32", "bfloat16"])
     p.add_argument("--model-family", default="auto", choices=sorted(SUPPORTED_FAMILIES))
     p.add_argument("--strict", action="store_true")
     p.add_argument("--force", action="store_true")

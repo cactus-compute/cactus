@@ -74,6 +74,36 @@ inline bool cpu_has_i8mm() {
 #endif
 }
 
+// Streaming svcntb; stub returns 0 without SME2. Only call when the SME2 feature bit is set.
+extern "C" uint32_t cactus_sme2_svl_bytes(void);
+
+inline bool cpu_has_sme2() {
+#if defined(__aarch64__)
+    static std::once_flag once;
+    static bool has = false;
+    std::call_once(once, []() {
+#if defined(__APPLE__)
+    int ret = 0;
+    size_t size = sizeof(ret);
+    if (sysctlbyname("hw.optional.arm.FEAT_SME2", &ret, &size, nullptr, 0) == 0) {
+        has = (ret == 1);
+    }
+#elif defined(__ANDROID__)
+    unsigned long hwcap2 = getauxval(AT_HWCAP2);
+    #ifndef HWCAP2_SME2
+    #define HWCAP2_SME2 (1UL << 37)
+    #endif
+    has = (hwcap2 & HWCAP2_SME2) != 0;
+#endif
+    // Every shipped SME layout is pinned to SVL 64; other SVLs fall back to NEON for correctness.
+    if (has) has = (cactus_sme2_svl_bytes() == 64);
+    });
+    return has;
+#else
+    return false;
+#endif
+}
+
 inline float32x4_t fast_exp_f32x4(float32x4_t x) {
     const float32x4_t log2e = vdupq_n_f32(1.44269504088896341f);
     const float32x4_t ln2_hi = vdupq_n_f32(6.93145751953125e-1f);

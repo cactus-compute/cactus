@@ -219,8 +219,14 @@ struct CactusQuantMatrix {
     const int8_t* right_signs;
     const uint32_t* permutation;
     const __fp16* rotation;
+    // rot_t[i][k] = R[k][i] (fp16 K x K), stored in panel-format files.
+    const __fp16* rotation_t;
     const int8_t* expanded;
     const float* norm_f32;
+    // Panels mmap'd from the file: [SB64][ng][gs/4][128B], nibble j of a kg-block = byte j of
+    // the int8 panel [4 vec][16 ch][4 K]; norms [SB64][ng][64] f32 folded. Null -> legacy.
+    const uint8_t* packed_panels;
+    const float* norm_panels;
 };
 
 uint32_t cactus_quant_packed_group_bytes(uint32_t bits, uint32_t group_size);
@@ -281,6 +287,24 @@ void cactus_quant_orthogonal_matmul(
     uint32_t M,
     __fp16* C);
 
+// Byte-exact reference encoder for the panel format (production panels come from the transpiler).
+void cactus_quant_build_panels(const CactusQuantMatrix* W, uint8_t* panels_out, float* norms_out);
+
+// Orthogonal CQ4 GEMV over panels (lm_head): W2 is the virtual-128-group view stored in panel
+// files, rot_t the transposed rotation.
+void cactus_quant_orth_panel_gemv(const CactusQuantMatrix* W2, const __fp16* rot_t,
+                                  const __fp16* input_scale_recip, const __fp16* A, __fp16* C);
+
+// Backend override for tests/benches: 0 auto, 1 force NEON, 2 force SME2 leaves.
+int cactus_quant_set_backend(int backend);
+int cactus_quant_sme_available(void);
+// 1 when SME runtime paths should be used (SME2 present + SVL == 64, backend != force-NEON).
+int cactus_quant_sme_enabled(void);
+// 1 when the SME prefill-attention path should be used (sme_enabled + CACTUS_SME_ATTENTION != 0).
+int cactus_quant_sme_attn_enabled(void);
+// SME GEMV workers: -1 = env CACTUS_SME_GEMV_WORKERS / auto flat k = min(2, nt-1); 0 = NEON only.
+int cactus_quant_set_sme_gemv_workers(int n);
+
 void cactus_quant_4bit_gemv_interleaved(
     const CactusQuantMatrix* W,
     const uint8_t* packed_interleaved,
@@ -335,6 +359,34 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
     const __fp16* rotation,
     uint32_t flags,
     __fp16* out_row);
+
+// Batched variant; INTERLEAVED_4ROW only (no-op otherwise). out_rows: [num_rows][K].
+void cactus_quant_dequantize_orthogonal_embedding_rows(
+    uint32_t bits,
+    uint32_t K,
+    const uint32_t* rows,
+    uint32_t num_rows,
+    const uint8_t* packed_base,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const __fp16* rotation,
+    uint32_t flags,
+    __fp16* out_rows);
+
+// Panel-format variant: decodes rows from the packed panels with the unfolded fp16 norms.
+void cactus_quant_dequantize_orthogonal_embedding_rows_panels(
+    uint32_t K,
+    uint32_t group_size,
+    uint32_t num_groups,
+    const uint32_t* rows,
+    uint32_t num_rows,
+    const uint8_t* packed_panels,
+    const __fp16* codebook,
+    const __fp16* norms,
+    const __fp16* input_scale_recip,
+    const __fp16* rotation,
+    __fp16* out_rows);
 
 void cactus_rms_norm_f16(
     const __fp16* input,

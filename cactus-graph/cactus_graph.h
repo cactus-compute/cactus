@@ -263,6 +263,11 @@ struct BufferDesc {
     const int8_t* cq_right_signs = nullptr;
     const uint32_t* cq_permutation = nullptr;
     const __fp16* cq_rotation = nullptr;
+    // Panel-format file extras: packed panels, folded fp32 norms, transposed rotation —
+    // all pointing straight into the weight-file mapping.
+    const uint8_t* cq_packed_panels = nullptr;
+    const float* cq_norm_panels = nullptr;
+    const __fp16* cq_rotation_t = nullptr;
     uint32_t cq_flags = 0;
 
     CactusQuantMatrix to_cq_matrix() const {
@@ -277,13 +282,17 @@ struct BufferDesc {
             .input_scale = cq_input_scale,
             .input_scale_recip = cq_input_scale_recip,
             .norms = cq_norms,
-            .packed_indices = static_cast<const uint8_t*>(get_data()),
+            // Panel files keep packed_indices null so legacy kernels can never misread them.
+            .packed_indices = cq_packed_panels ? nullptr : static_cast<const uint8_t*>(get_data()),
             .left_signs = cq_left_signs,
             .right_signs = cq_right_signs,
             .permutation = cq_permutation,
             .rotation = cq_rotation,
+            .rotation_t = cq_rotation_t,
             .expanded = nullptr,
             .norm_f32 = nullptr,
+            .packed_panels = cq_packed_panels,
+            .norm_panels = cq_norm_panels,
         };
     }
 
@@ -781,6 +790,7 @@ namespace GraphFile {
         const void* scales_data() const;
         bool is_orthogonal_rotation() const { return is_orthogonal_rotation_; }
         bool is_interleaved_4row() const { return is_interleaved_4row_; }
+        bool is_packed_panels() const { return is_packed_panels_; }
         size_t original_N() const { return original_N_; }
         void* data();
         const void* data() const;
@@ -802,6 +812,7 @@ namespace GraphFile {
         uint32_t alignment_ = 32;
         bool is_orthogonal_rotation_ = false;
         bool is_interleaved_4row_ = false;
+        bool is_packed_panels_ = false;
         size_t original_N_ = 0;
 
         void parse_header();
