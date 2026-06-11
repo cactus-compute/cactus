@@ -237,6 +237,7 @@ namespace index {
     }
 
     void Index::delete_documents(const std::vector<int>& doc_ids) {
+        if (mapped_index_ == MAP_FAILED || mapped_data_ == MAP_FAILED) throw std::runtime_error("Index is in a failed memory-mapped state");
         validate_doc_ids(doc_ids);
 
         char* index_ptr = static_cast<char*>(mapped_index_);
@@ -394,6 +395,7 @@ namespace index {
     }
 
     void Index::compact() {
+        if (mapped_index_ == MAP_FAILED || mapped_data_ == MAP_FAILED) throw std::runtime_error("Index is in a failed memory-mapped state");
         std::string temp_index_path = index_path_ + ".tmp";
         std::string temp_data_path = data_path_ + ".tmp";
 
