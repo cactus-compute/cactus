@@ -5,6 +5,7 @@
 #include <limits>
 #include <cstdlib>
 #include <cassert>
+#include <stdexcept>
 
 namespace {
 
@@ -530,6 +531,98 @@ void CactusGraph::steal_cache_buffer(size_t dst_node, CactusGraph& src, size_t s
     // Buffer carries its own runtime precision (may be fp16); only op_type is invariant pre-move.
     assert(dst->op_type == s->op_type);
     dst->output_buffer = std::move(s->output_buffer);
+}
+
+namespace {
+
+struct PaddedAppendBackup {
+    uint64_t overshoot;
+    uint64_t keep_sink;
+    uint64_t kept_padded;
+};
+
+struct CacheRowRegion {
+    size_t offset;
+    size_t row_bytes;
+};
+
+std::vector<CacheRowRegion> cache_row_regions(const BufferDesc& buf, const CacheMetadata* meta) {
+    const auto* base = static_cast<const uint8_t*>(buf.get_data());
+    const size_t stride = meta->num_kv_heads * meta->head_dim;
+    if (buf.precision == Precision::FP16) {
+        return {{static_cast<size_t>(reinterpret_cast<const uint8_t*>(get_fp16_data(buf)) - base), stride * sizeof(__fp16)}};
+    }
+    const size_t num_groups = (meta->head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+    return {
+        {static_cast<size_t>(reinterpret_cast<const uint8_t*>(get_int8_data(buf)) - base), stride},
+        {static_cast<size_t>(reinterpret_cast<const uint8_t*>(get_scales(buf, meta->max_seq_len, meta->num_kv_heads, meta->head_dim)) - base),
+         meta->num_kv_heads * num_groups * sizeof(float)},
+    };
+}
+
+} // namespace
+
+std::vector<uint8_t> CactusGraph::snapshot_cache_padded_append(size_t node_id, size_t real_tokens, size_t pad_tokens) const {
+    const auto& node = *nodes_[node_index_map_.at(node_id)];
+    const auto& buf = node.output_buffer;
+    if (node.op_type != OpType::KV_CACHE_STATE || !buf.get_data() || pad_tokens == 0) return {};
+    const size_t window = node.params.window_size;
+    const size_t ceiling = node.params.max_cache_seq_len;
+    if (window == 0 || window >= ceiling) return {};
+    const auto* meta = get_meta(buf);
+    const size_t len0 = meta->current_seq_len;
+    const size_t appended = real_tokens + pad_tokens;
+    if (len0 == 0 || len0 + appended <= window) return {};
+    const size_t keep_sink = std::min({static_cast<size_t>(meta->sink_size), len0, window});
+    const size_t tail_capacity = window - keep_sink;
+    if (appended >= tail_capacity) {
+        throw std::runtime_error("padded cache append larger than the attention window is not supported");
+    }
+    auto kept_after = [&](size_t n) { return std::min(tail_capacity - n, len0 - keep_sink); };
+    const size_t kept_real = kept_after(real_tokens);
+    const size_t kept_padded = kept_after(appended);
+    const size_t overshoot = kept_real - kept_padded;
+    if (overshoot == 0) return {};
+
+    const size_t first_saved_row = len0 - kept_real;
+    std::vector<uint8_t> backup(sizeof(PaddedAppendBackup));
+    auto* header = reinterpret_cast<PaddedAppendBackup*>(backup.data());
+    header->overshoot = overshoot;
+    header->keep_sink = keep_sink;
+    header->kept_padded = kept_padded;
+    const auto* base = static_cast<const uint8_t*>(buf.get_data());
+    for (const auto& region : cache_row_regions(buf, meta)) {
+        const uint8_t* rows = base + region.offset + first_saved_row * region.row_bytes;
+        backup.insert(backup.end(), rows, rows + overshoot * region.row_bytes);
+    }
+    return backup;
+}
+
+void CactusGraph::rollback_cache_padded_append(size_t node_id, size_t real_tokens, size_t pad_tokens,
+                                               const std::vector<uint8_t>& backup) {
+    auto& node = *nodes_[node_index_map_.at(node_id)];
+    auto& buf = node.output_buffer;
+    if (node.op_type != OpType::KV_CACHE_STATE || !buf.get_data() || pad_tokens == 0) return;
+    auto* meta = get_meta(buf);
+    if (backup.empty()) {
+        meta->current_seq_len = meta->current_seq_len >= pad_tokens ? meta->current_seq_len - pad_tokens : 0;
+        return;
+    }
+    const auto* header = reinterpret_cast<const PaddedAppendBackup*>(backup.data());
+    const size_t overshoot = header->overshoot;
+    const size_t keep_sink = header->keep_sink;
+    const size_t kept_padded = header->kept_padded;
+    const size_t move_rows = kept_padded + real_tokens;
+    auto* base = static_cast<uint8_t*>(buf.get_data());
+    const uint8_t* saved = backup.data() + sizeof(PaddedAppendBackup);
+    for (const auto& region : cache_row_regions(buf, meta)) {
+        uint8_t* rows = base + region.offset;
+        std::memmove(rows + (keep_sink + overshoot) * region.row_bytes,
+                     rows + keep_sink * region.row_bytes, move_rows * region.row_bytes);
+        std::memcpy(rows + keep_sink * region.row_bytes, saved, overshoot * region.row_bytes);
+        saved += overshoot * region.row_bytes;
+    }
+    meta->current_seq_len = keep_sink + overshoot + kept_padded + real_tokens;
 }
 
 void CactusGraph::shrink_cache_buffer(size_t node_id, size_t new_capacity) {

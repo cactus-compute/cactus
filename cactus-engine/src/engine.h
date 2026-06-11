@@ -684,6 +684,8 @@ public:
     double last_prefill_cache_copy_ms() const { return last_prefill_cache_copy_ms_; }
     size_t last_prefill_padding_tokens() const { return last_prefill_padding_tokens_; }
     size_t last_prefill_scalar_tail_tokens() const { return last_prefill_scalar_tail_tokens_; }
+    size_t last_prefill_tail_chunk_tokens() const { return last_prefill_tail_chunk_tokens_; }
+    size_t last_prefill_tail_padding_tokens() const { return last_prefill_tail_padding_tokens_; }
 
     bool load_npu_audio_encoder(const std::string& model_path);
     bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
@@ -781,10 +783,15 @@ private:
     void move_cache_states(Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
     void set_cache_current_len(Component& comp, size_t len);
     void reset_component_cache_states(Component& comp);
+    void reset_prefill_stats();
     size_t component_chunk_tokens(const Component& comp, const std::string& input_name) const;
     size_t component_output_tokens(const Component& comp, const std::string& output_name) const;
     ChunkedPrefillResult run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position,
                                              size_t chunk_size, bool prepare_decode);
+    bool padded_tail_window_ok(const Component& comp, size_t chunk_tokens) const;
+    void execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, size_t encoder_chunk,
+                               size_t chunk_tokens, const std::vector<uint32_t>& tokens,
+                               size_t processed, size_t start_position);
     void run_full_context_text();
     uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max(),
                                      float* out_uncertainty = nullptr);
@@ -829,6 +836,7 @@ private:
     std::string encoder_cross_kv_source_kind_;
     bool encoder_cross_kv_ready_ = false;
     size_t encoder_cross_kv_source_len_ = 0;
+    bool prefill_tail_pad_disabled_ = false;
 
     std::string family_;
     std::string npu_audio_encoder_mlpackage_;
@@ -860,6 +868,8 @@ private:
     double last_prefill_cache_copy_ms_ = 0.0;
     size_t last_prefill_padding_tokens_ = 0;
     size_t last_prefill_scalar_tail_tokens_ = 0;
+    size_t last_prefill_tail_chunk_tokens_ = 0;
+    size_t last_prefill_tail_padding_tokens_ = 0;
     std::vector<uint32_t> context_tokens_;
 
     static constexpr size_t MAX_TOKEN_HISTORY = 128;

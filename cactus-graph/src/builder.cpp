@@ -1247,6 +1247,10 @@ size_t CactusGraph::get_node_window_size(size_t node_id) const {
     return nodes_[node_index_map_.at(node_id)]->params.window_size;
 }
 
+size_t CactusGraph::get_node_sink_size(size_t node_id) const {
+    return nodes_[node_index_map_.at(node_id)]->params.cache_sink_size;
+}
+
 size_t CactusGraph::persistent(size_t source_node) {
     const auto& source_buffer = get_output_buffer(source_node);
     OpParams params;

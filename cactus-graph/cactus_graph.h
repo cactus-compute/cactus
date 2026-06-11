@@ -708,8 +708,12 @@ public:
     const BufferDesc& get_output_buffer(size_t node_id) const;
     OpType get_node_op_type(size_t node_id) const;
     size_t get_node_window_size(size_t node_id) const;
+    size_t get_node_sink_size(size_t node_id) const;
     void steal_cache_buffer(size_t dst_node, CactusGraph& src, size_t src_node);
     void shrink_cache_buffer(size_t node_id, size_t new_capacity);
+    std::vector<uint8_t> snapshot_cache_padded_append(size_t node_id, size_t real_tokens, size_t pad_tokens) const;
+    void rollback_cache_padded_append(size_t node_id, size_t real_tokens, size_t pad_tokens,
+                                      const std::vector<uint8_t>& backup);
     void allocate_buffers();
     size_t get_node_count() const;
 

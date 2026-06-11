@@ -1400,6 +1400,8 @@ int cactus_benchmark_tokens(
             << "\"first_token_from_prefill\":" << (first_token_from_prefill ? "true" : "false") << ","
             << "\"prefill_padding_tokens\":" << handle->model->last_prefill_padding_tokens() << ","
             << "\"prefill_scalar_tail_tokens\":" << handle->model->last_prefill_scalar_tail_tokens() << ","
+            << "\"prefill_tail_chunk_tokens\":" << handle->model->last_prefill_tail_chunk_tokens() << ","
+            << "\"prefill_tail_padding_tokens\":" << handle->model->last_prefill_tail_padding_tokens() << ","
             << "\"decode_tps\":" << std::fixed << std::setprecision(2) << decode_tps << ","
             << "\"prompt_tokens\":" << prompt_token_len << ","
             << "\"completion_tokens\":" << generated << ","
