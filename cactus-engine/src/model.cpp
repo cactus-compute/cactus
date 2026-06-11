@@ -3230,11 +3230,6 @@ std::vector<float> Model::get_lm_embeddings(const std::vector<uint32_t>& tokens,
     }
     const size_t effective_chunk = component_tokens;
 
-    // Recurrent-state caches (gated-deltanet) don't chain correctly across
-    // chunked-prefill boundaries, so cap them to a single chunk -- matches
-    // run_chunked_prefill. Such models embed up to effective_chunk tokens; longer
-    // inputs are truncated. KV/conv/sliding-window caches (qwen/gemma/lfm2) chain
-    // across chunks and span the whole sequence here.
     bool recurrent_state = false;
     if (decoder_embed_->graph) {
         for (const auto& state : decoder_embed_->cache_states) {
@@ -3330,8 +3325,6 @@ std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bo
         throw std::runtime_error("get_embeddings: failed to load embedding component graph");
     }
 
-    // Embedding encoders (nomic / XLM-R) wrap the sequence with BOS/EOS, matching
-    // the reference tokenizer's add_special_tokens behavior.
     std::vector<uint32_t> wrapped;
     wrapped.reserve(tokens.size() + 2);
     if (tokenizer_) wrapped.push_back(tokenizer_->get_bos_token());
