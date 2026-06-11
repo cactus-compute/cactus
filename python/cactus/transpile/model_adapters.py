@@ -5310,6 +5310,7 @@ def _resolve_decoder_start_token_id(model: torch.nn.Module, *, fallback: int = 0
                 return int(value)
     return int(fallback)
 
+NEEDLE_CONTEXT_LENGTH = 1024
 
 def _build_needle_causal_lm_component_specs(
     model: torch.nn.Module,
@@ -5325,6 +5326,16 @@ def _build_needle_causal_lm_component_specs(
             raise RuntimeError(f"{type(model).__name__} does not expose {method_name}")
 
     pad_token_id = _resolve_model_pad_token_id(model)
+    current_len = int(input_ids.shape[1])
+    if current_len < NEEDLE_CONTEXT_LENGTH:
+        pad_value = int(pad_token_id) if pad_token_id is not None else 0
+        padding = torch.full(
+            (int(input_ids.shape[0]), NEEDLE_CONTEXT_LENGTH - current_len),
+            pad_value,
+            dtype=input_ids.dtype,
+            device=input_ids.device,
+        )
+        input_ids = torch.cat([input_ids, padding], dim=1)
     if pad_token_id is None:
         attention_mask = torch.ones_like(input_ids, dtype=torch.int64)
     else:

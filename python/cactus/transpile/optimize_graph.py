@@ -23,7 +23,7 @@ from cactus.transpile.fusion.common import producer
 from cactus.transpile.fusion.common import strip_layout_passthrough
 from cactus.transpile.fusion.common import strip_passthrough
 from cactus.transpile.fusion.linear import match_linear
-from cactus.transpile.fusion.rope import _extract_rope_angle_source, _find_constant_ancestor
+from cactus.transpile.fusion.rope import _extract_rope_angle_source
 from cactus.transpile.graph_ir import IRGraph
 from cactus.transpile.graph_ir import IRNode
 from cactus.transpile.graph_ir import IRValue
@@ -414,6 +414,14 @@ def precompute_rope_tables(graph: IRGraph) -> bool:
     return changed
 
 
+def _stored_inv_freq_constant(graph: IRGraph, value_id: str) -> str | None:
+    stripped = strip_layout_passthrough(graph, value_id)
+    constant = graph.constants.get(stripped)
+    if isinstance(constant, torch.Tensor):
+        return stripped
+    return None
+
+
 def _match_rope_angle_table_source(graph: IRGraph, value_id: str, index_shape: tuple[int, ...]) -> tuple[str, str] | None:
     cat_node = producer(graph, strip_passthrough(graph, value_id))
     if cat_node is None or cat_node.op != "cat" or len(cat_node.inputs) != 2:
@@ -430,7 +438,7 @@ def _match_rope_angle_table_source(graph: IRGraph, value_id: str, index_shape: t
     inv_freq_value_id: str | None = None
     position_value_id: str | None = None
     for input_id in angle_node.inputs:
-        const_id = _find_constant_ancestor(graph, input_id)
+        const_id = _stored_inv_freq_constant(graph, input_id)
         if const_id is not None:
             inv_freq_value_id = const_id
             continue
