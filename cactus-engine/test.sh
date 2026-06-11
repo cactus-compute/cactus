@@ -33,7 +33,7 @@ resolve_bundle_dir() {
         dir="$PROJECT_ROOT/weights/$(basename "$model" | tr '[:upper:]' '[:lower:]')"
     fi
     if [ ! -f "$dir/components/manifest.json" ]; then
-        echo "Bundle missing at $dir. Run: cactus transpile $model" >&2
+        echo "Bundle missing at $dir. Run: cactus download $model  (or: cactus convert $model && cactus transpile $model)" >&2
         exit 1
     fi
     echo "$dir"

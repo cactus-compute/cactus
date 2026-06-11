@@ -56,6 +56,7 @@ _DEFAULT_TEXT_PROMPT = "Hello"
 class _TranspileSpec:
     task: str
     components: tuple[str, ...] = ()
+    default_max_new_tokens: int | None = None
     needs_image: bool = False
     needs_audio: bool = False
     force_component_pipeline: bool = False
@@ -65,6 +66,7 @@ def _spec_from_plan(plan):
     return _TranspileSpec(
         task=plan.task,
         components=tuple(plan.components or ()),
+        default_max_new_tokens=plan.default_max_new_tokens,
         needs_image=bool(plan.needs_image),
         needs_audio=bool(plan.needs_audio),
         force_component_pipeline=bool(plan.force_component_pipeline),
@@ -95,12 +97,14 @@ def _infer_transpile_spec(*, task, plan):
     return _spec_from_plan(plan)
 
 
-def _default_max_new_tokens(task):
+def _default_max_new_tokens(spec):
+    if spec.default_max_new_tokens is not None:
+        return int(spec.default_max_new_tokens)
     return {
         "seq2seq_transcription": 128,
         "multimodal_causal_lm_logits": 512,
         "causal_lm_logits": 128,
-    }.get(task, 32)
+    }.get(spec.task, 32)
 
 
 def _default_multimodal_assets():
@@ -257,7 +261,7 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     elif spec.task in _AUDIO_TASKS and not spec_audio_file:
         raise RuntimeError(f"{spec.task} transpile requires --audio-file.")
 
-    effective_max_new_tokens = opts.max_new_tokens or _default_max_new_tokens(spec.task)
+    effective_max_new_tokens = opts.max_new_tokens or _default_max_new_tokens(spec)
 
     extra_args = [
         "--weights-dir", str(output_dir),

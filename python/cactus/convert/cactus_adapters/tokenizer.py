@@ -137,6 +137,21 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
     except Exception as e:
         print(f"  Warning: Could not save tokenizer JSON: {e}")
 
+    source_dir = Path(getattr(tokenizer, "name_or_path", "") or "")
+    source_tokenizer_model = source_dir / "tokenizer.model"
+    output_tokenizer_model = output_dir / "tokenizer.model"
+    if (model_type == "needle" or "needle" in model_name_l) and (
+        output_tokenizer_model.exists() or source_tokenizer_model.exists()
+    ):
+        tokenizer_model_path = output_tokenizer_model if output_tokenizer_model.exists() else source_tokenizer_model
+        convert_sentencepiece_tokenizer(
+            tokenizer_model_path,
+            output_dir,
+            getattr(tokenizer, "model_max_length", 1024),
+        )
+        print("  Saved Needle SentencePiece tokenizer")
+        return
+
     tokenizer_model = tokenizer_json_data.get("model", {}) if tokenizer_json_data else {}
     tokenizer_model_type = str(tokenizer_model.get("type", "")).upper()
     is_unigram = tokenizer_model_type == "UNIGRAM"
@@ -321,6 +336,24 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
     added_tokens_decoder = {}
     tool_tokens = {}
 
+    def add_additional_special_token(token_str):
+        if not isinstance(token_str, str) or not token_str:
+            return
+        token_id = None
+        try:
+            converted = tokenizer.convert_tokens_to_ids(token_str)
+            if converted is not None and converted != getattr(tokenizer, 'unk_token_id', None):
+                token_id = int(converted)
+        except Exception:
+            token_id = None
+        if token_id is None:
+            token_id = vocab_lookup.get(token_str)
+        if token_id is None:
+            return
+        special_tokens[token_id] = token_str
+        if not any(item["token"] == token_str and item["id"] == int(token_id) for item in additional_special_tokens):
+            additional_special_tokens.append({"token": token_str, "id": int(token_id)})
+
     try:
         config_path = None
         if hasattr(tokenizer, 'name_or_path') and hf_hub_download:
@@ -362,9 +395,22 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
                                 print(f"    Found tool token: {content} (ID: {token_id})")
                                 special_tokens[token_id] = content
 
+                    for token_str in tokenizer_full_config.get("additional_special_tokens", []) or []:
+                        add_additional_special_token(token_str)
+
             except Exception as e:
                 print(f"  Note: Could not load full tokenizer config: {e}")
                 pass
+    except Exception:
+        pass
+
+    try:
+        if hasattr(tokenizer, 'name_or_path') and Path(tokenizer.name_or_path).is_dir():
+            special_map_path = Path(tokenizer.name_or_path) / "special_tokens_map.json"
+            if special_map_path.exists():
+                special_map = json.loads(special_map_path.read_text(encoding="utf-8"))
+                for token_str in special_map.get("additional_special_tokens", []) or []:
+                    add_additional_special_token(token_str)
     except Exception:
         pass
 

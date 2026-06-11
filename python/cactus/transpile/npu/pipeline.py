@@ -3,11 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from .audio import emit_audio_encoder_mlpackage
+from .source import emit_source_encoder_mlpackage
 from .vision import emit_vision_encoder_mlpackage
 
 
 _ENCODER_COMPONENTS = {
     "audio_encoder": (emit_audio_encoder_mlpackage, "audio_encoder.mlpackage"),
+    "source_encoder": (emit_source_encoder_mlpackage, "source_encoder.mlpackage"),
     "vision_encoder": (emit_vision_encoder_mlpackage, "vision_encoder.mlpackage"),
 }
 
@@ -36,6 +38,7 @@ def run_encoder_pipeline(
 
     component_quants = {
         "audio_encoder":  _resolve(audio_quantize_bits,  default=8),
+        "source_encoder": _resolve(None, default=None),
         "vision_encoder": _resolve(vision_quantize_bits, default=None),
     }
 
@@ -52,8 +55,17 @@ def run_encoder_pipeline(
         n_runtime = min(max(1, spec.npu_runtime_input_count), len(example_inputs))
         qbits = component_quants[component]
         qdesc = f"int{qbits}" if qbits else "fp16"
-        print(f"npu.pipeline: emitting {component} quant={qdesc} runtime_inputs={n_runtime}")
-        if component == "vision_encoder":
+        print(f"npu.pipeline: emitting {component} quant={qdesc}")
+        if component == "source_encoder":
+            emitted = emit_fn(
+                module,
+                bundle_root,
+                example_inputs=example_inputs,
+                input_names=tuple(getattr(spec, "input_keys", ()) or ()),
+                filename=filename,
+                quantize_bits=qbits,
+            )
+        elif component == "vision_encoder":
             names = ("x",) + tuple(spec.input_keys[1:n_runtime])
             emitted = emit_fn(
                 module,

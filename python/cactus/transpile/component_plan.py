@@ -14,6 +14,7 @@ from cactus.transpile.model_profiles import profile_for_model_type
 class ComponentPlan:
     task: str
     components: tuple[str, ...] = ()
+    default_max_new_tokens: int | None = None
     needs_image: bool = False
     needs_audio: bool = False
     force_component_pipeline: bool = False
@@ -33,7 +34,7 @@ def _plan_from_profile(
                 return ComponentPlan(
                     task="causal_lm_logits",
                     components=("decoder_step", "lm_encoder_step", "lm_encoder_text_chunk",
-                                "decoder_prefill_chunk", "decoder_media_step"),
+                                "decoder_prefill_chunk", "decoder_embed_chunk", "decoder_media_step"),
                     force_component_pipeline=True,
                 )
             return ComponentPlan(
@@ -44,6 +45,7 @@ def _plan_from_profile(
     return ComponentPlan(
         task=profile.default_task,
         components=profile.default_components,
+        default_max_new_tokens=profile.default_max_new_tokens,
         needs_image=profile.needs_image,
         needs_audio=profile.needs_audio,
         force_component_pipeline=profile.force_component_pipeline,

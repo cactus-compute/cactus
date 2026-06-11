@@ -31,7 +31,6 @@ LOGGER = logging.getLogger(__name__)
 
 LLM_MODEL_TYPES = {"gemma", "gemma3n", "gemma4", "lfm2", "qwen", "qwen3p5", "needle", "youtu"}
 STT_MODEL_TYPES = {"whisper", "parakeet_tdt", "parakeet-tdt"}
-EMBED_MODEL_TYPES = {"bert", "nomic"}
 
 
 @dataclass(frozen=True)
@@ -41,6 +40,7 @@ class ModelInfo:
     model_type: str
     context_length: int
     created: int
+    supports_embedding: bool = False
 
 
 class ModelRegistry:
@@ -65,6 +65,19 @@ class ModelRegistry:
                 return line.split("=", 1)[1].strip()
         return ""
 
+    @staticmethod
+    def _supports_embedding(model_dir: Path) -> bool:
+        """A bundle can produce text embeddings if it carries a text_embedding
+        component (Nomic/BERT encoder) or a decoder_embed_chunk component
+        (causal-LM hidden-state embeddings)."""
+        manifest = model_dir / "components" / "manifest.json"
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        names = {str(c.get("component", "")) for c in data.get("components", []) if isinstance(c, dict)}
+        return "text_embedding" in names or "decoder_embed_chunk" in names
+
     @classmethod
     def _info_for_dir(cls, path: Path) -> ModelInfo | None:
         display_id = path.expanduser().name
@@ -85,6 +98,7 @@ class ModelRegistry:
             model_type=cls._read_config_field(resolved, "model_type"),
             context_length=context_length,
             created=int(stat.st_mtime),
+            supports_embedding=cls._supports_embedding(resolved),
         )
 
     def _discover(self, root: Path) -> None:
@@ -616,7 +630,7 @@ def create_app(
     async def create_embeddings(request: Request, req: EmbeddingRequest):
         reg: ModelRegistry = request.app.state.registry
         info = reg.require(req.model)
-        if info.model_type not in EMBED_MODEL_TYPES:
+        if not info.supports_embedding:
             raise HTTPException(status_code=400, detail=f"Model '{req.model}' is not an embedding model")
         inputs = [req.input] if isinstance(req.input, str) else list(req.input)
         if not inputs:

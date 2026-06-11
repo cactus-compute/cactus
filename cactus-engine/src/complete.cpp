@@ -1,6 +1,7 @@
 #include "../cactus_engine.h"
 #include "cloud.h"
 #include "utils.h"
+#include "chat_tools.h"
 #include "telemetry.h"
 #include "cactus_kernels.h"
 #include "wav.h"
@@ -13,6 +14,8 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <sstream>
+#include <unordered_set>
 #include <vector>
 
 using namespace cactus::engine;
@@ -214,6 +217,82 @@ std::vector<std::string> extract_schema_required(const std::string& schema) {
     return required;
 }
 
+std::string serialize_needle_tools(const std::vector<ToolFunction>& tools) {
+    if (tools.empty()) return "[]";
+
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < tools.size(); ++i) {
+        if (i > 0) oss << ",";
+
+        oss << "{\"name\":\"" << escape_json_string(tools[i].name) << "\"";
+        if (!tools[i].description.empty()) {
+            oss << ",\"description\":\"" << escape_json_string(tools[i].description) << "\"";
+        }
+
+        oss << ",\"parameters\":";
+        auto schema_it = tools[i].parameters.find("schema");
+        if (schema_it == tools[i].parameters.end()) {
+            oss << "{}";
+        } else {
+            auto properties = extract_schema_property_types(schema_it->second);
+            auto required = extract_schema_required(schema_it->second);
+            std::unordered_set<std::string> required_set(required.begin(), required.end());
+
+            if (properties.empty()) {
+                oss << "{}";
+            } else {
+                std::string properties_object = extract_json_object_field(schema_it->second, "properties");
+                oss << "{";
+                for (size_t p = 0; p < properties.size(); ++p) {
+                    if (p > 0) oss << ",";
+                    const std::string& param_name = properties[p].first;
+                    const std::string& param_type = properties[p].second;
+                    bool is_required = required_set.count(param_name) > 0;
+
+                    std::string description;
+                    std::string prop_obj = extract_json_object_field(properties_object, param_name);
+                    if (!prop_obj.empty()) {
+                        std::string desc_pattern = "\"description\":\"";
+                        size_t desc_pos = prop_obj.find(desc_pattern);
+                        if (desc_pos != std::string::npos) {
+                            size_t desc_start = desc_pos + desc_pattern.size();
+                            size_t desc_end = desc_start;
+                            bool escaped = false;
+                            while (desc_end < prop_obj.size()) {
+                                if (escaped) {
+                                    escaped = false;
+                                    desc_end++;
+                                    continue;
+                                }
+                                if (prop_obj[desc_end] == '\\') {
+                                    escaped = true;
+                                    desc_end++;
+                                    continue;
+                                }
+                                if (prop_obj[desc_end] == '"') break;
+                                desc_end++;
+                            }
+                            description = prop_obj.substr(desc_start, desc_end - desc_start);
+                        }
+                    }
+
+                    oss << "\"" << escape_json_string(param_name) << "\":{";
+                    oss << "\"type\":\"" << escape_json_string(param_type) << "\"";
+                    if (!description.empty()) {
+                        oss << ",\"description\":\"" << description << "\"";
+                    }
+                    oss << ",\"required\":" << (is_required ? "true" : "false") << "}";
+                }
+                oss << "}";
+            }
+        }
+        oss << "}";
+    }
+    oss << "]";
+    return oss.str();
+}
+
 std::vector<std::vector<uint32_t>> build_stop_sequences(
     Tokenizer* tokenizer,
     const std::vector<std::string>& stop_sequences,
@@ -382,6 +461,11 @@ bool prompt_context_matches(
     if (handle->processed_tokens.empty()) {
         return false;
     }
+    if (handle->model &&
+        handle->model->get_config().model_type == Config::ModelType::NEEDLE &&
+        prompt.tokens.size() != handle->processed_tokens.size() + 1) {
+        return false;
+    }
     if (prompt.context_token_count < handle->processed_tokens.size()) {
         return false;
     }
@@ -426,10 +510,6 @@ PreparedPrompt prepare_prompt(
         if (!query.empty()) {
             prompt.tools = select_relevant_tools(handle, query, prompt.tools, prompt.options.tool_rag_top_k);
         }
-    }
-
-    if (apply_tool_constraints) {
-        setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools, prompt.options.temperature);
     }
 
     auto* tokenizer = handle->model->get_tokenizer();
@@ -484,20 +564,36 @@ PreparedPrompt prepare_prompt(
         }
     }
 
-    std::string formatted_tools = gemma::format_tools(prompt.tools, true);
-
-    {
-        std::string full_prompt = tokenizer->format_chat_prompt(
-            prompt.messages,
-            add_generation_prompt,
-            formatted_tools,
-            prompt.options.enable_thinking_if_supported
-        );
-        if (full_prompt.find("ERROR:") == 0) {
-            throw std::runtime_error(full_prompt.substr(6));
-        }
-        prompt.tokens = tokenizer->encode(full_prompt);
+    if (prompt.model_type == Config::ModelType::NEEDLE && !prompt.tools.empty()) {
+        prompt.options.force_tools = true;
     }
+
+    // Build the tool-definition block in the format each model family was trained on.
+    std::string formatted_tools;
+    if (prompt.model_type == Config::ModelType::NEEDLE) {
+        formatted_tools = serialize_needle_tools(prompt.tools);
+    } else if (tokenizer->is_qwen_family()) {
+        formatted_tools = chat_tools::serialize_tools_qwen(prompt.tools);
+    } else if (tokenizer->is_lfm2_family()) {
+        formatted_tools = chat_tools::serialize_tools_lfm2(prompt.tools);
+    } else {
+        formatted_tools = gemma::format_tools(prompt.tools, true);
+    }
+
+    if (apply_tool_constraints) {
+        setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools, prompt.options.temperature);
+    }
+
+    std::string full_prompt = tokenizer->format_chat_prompt(
+        prompt.messages,
+        add_generation_prompt,
+        formatted_tools,
+        prompt.options.enable_thinking_if_supported
+    );
+    if (full_prompt.find("ERROR:") == 0) {
+        throw std::runtime_error(full_prompt.substr(6));
+    }
+    prompt.tokens = tokenizer->encode(full_prompt);
     prompt.context_token_count = prompt.tokens.size();
     prompt.images = images_from_message(prompt.messages);
     return prompt;
@@ -926,7 +1022,10 @@ int cactus_complete(
         }
 
         std::string local_completion = regular_response;
-        if (local_completion.empty() && function_calls.empty()) {
+        const bool parsed_empty_needle_tool_call =
+            prompt.model_type == Config::ModelType::NEEDLE &&
+            response_text.find("<tool_call>") != std::string::npos;
+        if (local_completion.empty() && function_calls.empty() && !parsed_empty_needle_tool_call) {
             local_completion = response_text;
         }
         std::string primary_response = local_completion;

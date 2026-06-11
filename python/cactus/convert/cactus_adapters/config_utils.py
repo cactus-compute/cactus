@@ -44,6 +44,8 @@ def detect_model_type(cfg, config, output_dir=None):
         return 'qwen'
     elif 'moonshine' in model_type_str:
         return 'moonshine'
+    elif 'needle' in model_type_str:
+        return 'needle'
     elif 'llama' in model_type_str:
         if output_dir and 'smol' in str(output_dir):
             return 'smol'
@@ -89,6 +91,15 @@ def extract_base_config(cfg, config):
         rope_theta = cfg_get(config, 'rope_theta', 10000.0)
 
     num_experts_per_tok = cfg_get(cfg, 'num_experts_per_tok', cfg_get(cfg, 'moe_top_k', cfg_get(cfg, 'num_top_experts', cfg_get(cfg, 'top_k_experts', 0)))) or 0
+    decoder_start_token_id = cfg_get(
+        cfg,
+        'decoder_start_token_id',
+        cfg_get(
+            config,
+            'decoder_start_token_id',
+            cfg_get(cfg, 'bos_token_id', cfg_get(config, 'bos_token_id', 0)),
+        ),
+    )
 
     base = {
         'vocab_size': cfg_get(cfg, 'vocab_size', cfg_get(config, 'vocab_size', 0)),
@@ -101,6 +112,7 @@ def extract_base_config(cfg, config):
         'rope_theta': rope_theta,
         'attention_head_dim': int(cfg_get(cfg, 'head_dim', int(cfg_get(cfg, 'hidden_size', cfg_get(cfg, 'hidden_dim', 0)) // max(1, cfg_get(cfg, 'num_attention_heads', 1))))),
         'layer_norm_eps': cfg_get(cfg, 'layer_norm_eps', cfg_get(cfg, 'layer_norm_epsilon', cfg_get(cfg, 'rms_norm_eps', cfg_get(cfg, 'norm_eps', 1e-6)))),
+        'decoder_start_token_id': int(decoder_start_token_id or 0),
         'num_experts': cfg_get(cfg, 'num_experts', 0) or 0,
         'num_shared_experts': cfg_get(cfg, 'num_shared_experts', 0),
         'num_top_experts': num_experts_per_tok,
@@ -253,6 +265,12 @@ def extract_whisper_config(config):
     attention_heads = int(cfg_get(config, 'decoder_attention_heads', cfg_get(config, 'encoder_attention_heads', 0)))
     encoder_layers = int(cfg_get(config, 'encoder_layers', cfg_get(config, 'num_encoder_layers', 0)))
     decoder_layers = int(cfg_get(config, 'decoder_layers', cfg_get(config, 'num_decoder_layers', 0)))
+    decoder_start_token_id = int(cfg_get(config, 'decoder_start_token_id', cfg_get(config, 'bos_token_id', 0)) or 0)
+    decoder_prompt_token_ids = [decoder_start_token_id]
+    forced_decoder_ids = cfg_get(config, 'forced_decoder_ids', None) or []
+    for item in sorted(forced_decoder_ids, key=lambda pair: int(pair[0]) if isinstance(pair, (list, tuple)) and pair else 0):
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            decoder_prompt_token_ids.append(int(item[1]))
     return {
         'vocab_size': int(cfg_get(config, 'vocab_size', 0)),
         'hidden_dim': hidden_dim,
@@ -270,6 +288,8 @@ def extract_whisper_config(config):
         'pad_token_id': int(cfg_get(config, 'pad_token_id', 0)),
         'bos_token_id': int(cfg_get(config, 'bos_token_id', 0)),
         'eos_token_id': int(cfg_get(config, 'eos_token_id', 0)),
+        'decoder_start_token_id': decoder_start_token_id,
+        'decoder_prompt_token_ids': decoder_prompt_token_ids,
         'tie_word_embeddings': bool(cfg_get(config, 'tie_word_embeddings', True)),
     }
 

@@ -532,6 +532,7 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
     size_t top_k);
 
 #include "gemma_tools.h"
+#include "chat_tools.h"
 
 namespace cactus {
 namespace ffi {
@@ -1501,7 +1502,37 @@ inline void parse_function_calls_from_response(const std::string& response_text,
     regular_response = response_text;
     function_calls.clear();
 
+    const std::string needle_marker = "<tool_call>";
+    size_t needle_pos = regular_response.find(needle_marker);
+    if (needle_pos != std::string::npos) {
+        size_t scan = needle_pos + needle_marker.size();
+        while (scan < regular_response.size() &&
+               std::isspace(static_cast<unsigned char>(regular_response[scan]))) {
+            ++scan;
+        }
+        if (scan < regular_response.size() && regular_response[scan] == '[') {
+            size_t array_start = scan;
+            size_t array_end = find_matching_delimiter(regular_response, array_start, '[', ']');
+            if (array_end <= regular_response.size()) {
+                size_t pos = array_start + 1;
+                while (pos < array_end) {
+                    size_t obj_start = regular_response.find('{', pos);
+                    if (obj_start == std::string::npos || obj_start >= array_end) break;
+                    size_t obj_end = find_matching_delimiter(regular_response, obj_start, '{', '}');
+                    if (obj_end > regular_response.size() || obj_end > array_end) break;
+                    function_calls.push_back(regular_response.substr(obj_start, obj_end - obj_start));
+                    pos = obj_end;
+                }
+                regular_response = trim_string(
+                    regular_response.substr(0, needle_pos) + regular_response.substr(array_end));
+                return;
+            }
+        }
+    }
+
     gemma::parse_function_calls(regular_response, function_calls);
+    chat_tools::extract_qwen_tool_calls(regular_response, function_calls);
+    chat_tools::extract_lfm2_tool_calls(regular_response, function_calls);
 
     const char* FUNCTION_CALL_MARKER = "\"function_call\"";
     size_t search_pos = 0;

@@ -1,5 +1,7 @@
 #include "engine.h"
 #include "cactus_kernels.h"
+#include "gemma_tools.h"
+#include "chat_tools.h"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -11,9 +13,32 @@ namespace engine {
 
 namespace {
 
+std::string format_needle_query_text(const std::vector<ChatMessage>& messages) {
+    std::string system_text;
+    std::string user_query;
+
+    for (const auto& msg : messages) {
+        if (msg.role == "system" || msg.role == "developer") {
+            if (!system_text.empty()) system_text += "\n";
+            system_text += msg.content;
+        } else if (msg.role == "user") {
+            user_query = msg.content;
+        }
+    }
+
+    if (user_query.empty() && !messages.empty()) user_query = messages.back().content;
+    if (system_text.empty()) return user_query;
+    if (user_query.empty()) return system_text;
+    return system_text + "\n\n" + user_query;
+}
+
 std::string format_tool_call_for_prompt(const std::string& name, const std::string& arguments, bool gemma4) {
     if (gemma4) {
-        return "\n<|tool_call>\ncall:" + name + "(" + arguments + ")\n<tool_call|>\n";
+        std::string args = arguments.empty() ? "{}" : arguments;
+        size_t pos = 0;
+        std::string dsl = gemma::format_argument(args, pos, /*escape_keys=*/false);
+        if (dsl.empty() || dsl.front() != '{') dsl = "{" + dsl + "}";
+        return "<|tool_call>call:" + name + dsl + "<tool_call|>";
     }
     return "\ncall:" + name + "(" + arguments + ")\n";
 }
@@ -339,7 +364,9 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
         std::transform(lower_line.begin(), lower_line.end(), lower_line.begin(), ::tolower);
 
         if (lower_line.find("model_type") != std::string::npos) {
-            if (lower_line.find("qwen") != std::string::npos) {
+            if (lower_line.find("needle") != std::string::npos) {
+                model_type_ = ModelType::NEEDLE;
+            } else if (lower_line.find("qwen") != std::string::npos) {
                 model_type_ = ModelType::QWEN;
             } else if (lower_line.find("lfm2") != std::string::npos) {
                 model_type_ = ModelType::LFM2;
@@ -370,6 +397,9 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
 }
 
 std::string Tokenizer::get_default_stop_sequence() const {
+    if (model_type_ == ModelType::NEEDLE) {
+        return "";
+    }
     if (model_type_ == ModelType::QWEN || model_type_ == ModelType::LFM2) {
         return "<|im_end|>";
     }
@@ -388,70 +418,159 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
     if (model_type_ == ModelType::LFM2) {
         return format_lfm2_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
     }
+    if (model_type_ == ModelType::NEEDLE) {
+        return format_needle_style(messages, add_generation_prompt, tools_json);
+    }
     return format_gemma4_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
 }
+
+namespace {
+std::string strip_newlines(const std::string& s) {
+    size_t a = s.find_first_not_of('\n');
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of('\n');
+    return s.substr(a, b - a + 1);
+}
+std::string lstrip_newlines(const std::string& s) {
+    size_t a = s.find_first_not_of('\n');
+    return a == std::string::npos ? "" : s.substr(a);
+}
+}  // namespace
 
 std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
                                          const std::string& tools_json, bool enable_thinking_if_supported) const {
     std::string result;
+    const size_t n = messages.size();
 
+    size_t first = 0;
+    std::string sys;
+    const bool has_sys = n > 0 && (messages[0].role == "system" || messages[0].role == "developer");
+    if (has_sys) { sys = messages[0].content; first = 1; }
     if (!tools_json.empty()) {
         result += "<|im_start|>system\n";
+        if (has_sys) result += sys + "\n\n";
         result += tools_json;
         result += "<|im_end|>\n";
+    } else if (has_sys) {
+        result += "<|im_start|>system\n" + sys + "<|im_end|>\n";
     }
 
-    for (const auto& msg : messages) {
-        std::string role = msg.role;
-        if (role == "developer") {
-            role = "system";
-        } else if (role != "system" && role != "assistant" && role != "tool") {
-            role = "user";
-        }
+    long last_query_index = static_cast<long>(n) - 1;
+    for (long i = static_cast<long>(n) - 1; i >= 0; --i) {
+        if (messages[i].role == "user") { last_query_index = i; break; }
+    }
 
-        result += "<|im_start|>" + role + "\n";
-        if (role == "user") {
-            const bool is_lfm2 = (model_type_ == ModelType::LFM2);
-            const std::string img_start = is_lfm2 ? "<|image_start|>" : "<|vision_start|>";
-            const std::string img_end = is_lfm2 ? "<|image_end|>" : "<|vision_end|>";
-            const std::string img_pad = is_lfm2 ? "<image>" : "<|image_pad|>";
-            const size_t soft_n = image_soft_token_count_ > 0 ? image_soft_token_count_ : 1;
-            for (const auto& image_path : msg.images) {
-                (void)image_path;
-                result += img_start;
-                for (size_t pad_i = 0; pad_i < soft_n; ++pad_i) {
-                    result += img_pad;
+    for (size_t i = first; i < n; i++) {
+        const auto& msg = messages[i];
+        std::string role = msg.role;
+        if (role == "developer") role = "system";
+        else if (role != "system" && role != "assistant" && role != "tool") role = "user";
+
+        if (role == "user" || role == "system") {
+            result += "<|im_start|>" + role + "\n";
+            if (role == "user") {
+                const size_t soft_n = image_soft_token_count_ > 0 ? image_soft_token_count_ : 1;
+                for (const auto& image_path : msg.images) {
+                    (void)image_path;
+                    result += "<|vision_start|>";
+                    for (size_t k = 0; k < soft_n; ++k) result += "<|image_pad|>";
+                    result += "<|vision_end|>";
                 }
-                result += img_end;
-                if (is_lfm2) result += "\n";
             }
-        }
-        // Replicating generation prompt so the kv cache can and is re-used across turns.
-        if (role == "assistant" && chat_template_.find("<think>") != std::string::npos) {
-            result += msg.content.find("</think>") != std::string::npos ? "<think>\n" : "<think>\n\n</think>\n\n";
-        }
-        result += msg.content;
-        if (role == "assistant" && !msg.tool_calls.empty()) {
-            for (const auto& tc : msg.tool_calls) {
-                result += format_tool_call_for_prompt(tc.name, tc.arguments, false);
+            result += msg.content + "<|im_end|>\n";
+        } else if (role == "assistant") {
+            std::string content = msg.content;
+            std::string reasoning;
+            size_t tpos = content.find("</think>");
+            if (tpos != std::string::npos) {
+                std::string head = content.substr(0, tpos);
+                size_t ts = head.rfind("<think>");
+                reasoning = strip_newlines(ts != std::string::npos ? head.substr(ts + 7) : head);
+                content = lstrip_newlines(content.substr(tpos + 8));
             }
+            result += "<|im_start|>assistant\n";
+            if (static_cast<long>(i) > last_query_index && (i == n - 1 || !reasoning.empty())) {
+                result += "<think>\n" + reasoning + "\n</think>\n\n" + lstrip_newlines(content);
+            } else {
+                result += content;
+            }
+            for (size_t k = 0; k < msg.tool_calls.size(); ++k) {
+                const auto& tc = msg.tool_calls[k];
+                if ((k == 0 && !content.empty()) || k > 0) result += "\n";
+                result += "<tool_call>\n{\"name\": \"" + tc.name + "\", \"arguments\": " +
+                          chat_tools::respace_json(tc.arguments.empty() ? "{}" : tc.arguments) + "}\n</tool_call>";
+            }
+            result += "<|im_end|>\n";
+        } else {  // tool
+            if (i == 0 || messages[i - 1].role != "tool") result += "<|im_start|>user";
+            result += "\n<tool_response>\n" + msg.content + "\n</tool_response>";
+            if (i + 1 >= n || messages[i + 1].role != "tool") result += "<|im_end|>\n";
         }
-        result += "<|im_end|>\n";
     }
 
     if (add_generation_prompt) {
         result += "<|im_start|>assistant\n";
-        if (chat_template_.find("<think>") != std::string::npos) {
-            result += enable_thinking_if_supported ? "<think>\n" : "<think>\n\n</think>\n\n";
-        }
+        if (!enable_thinking_if_supported) result += "<think>\n\n</think>\n\n";
     }
-
     return result;
 }
 
 std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
-                                         const std::string& tools_json, bool enable_thinking_if_supported) const {
-    return "<|startoftext|>" + format_qwen_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
+                                         const std::string& tools_json, bool /*enable_thinking_if_supported*/) const {
+    std::string result = "<|startoftext|>";
+    const size_t n = messages.size();
+
+    size_t first = 0;
+    std::string sys;
+    const bool has_sys = n > 0 && (messages[0].role == "system" || messages[0].role == "developer");
+    if (has_sys) { sys = messages[0].content; first = 1; }
+    if (!tools_json.empty() || has_sys) {
+        result += "<|im_start|>system\n";
+        if (has_sys) result += sys;
+        if (!tools_json.empty()) { if (has_sys) result += "\n"; result += tools_json; }
+        result += "<|im_end|>\n";
+    }
+
+    for (size_t i = first; i < n; i++) {
+        const auto& msg = messages[i];
+        std::string role = msg.role;
+        if (role == "developer") role = "system";
+        else if (role != "system" && role != "assistant" && role != "tool") role = "user";
+
+        result += "<|im_start|>" + role + "\n";
+        if (role == "user") {
+            const size_t soft_n = image_soft_token_count_ > 0 ? image_soft_token_count_ : 1;
+            for (const auto& image_path : msg.images) {
+                (void)image_path;
+                result += "<|image_start|>";
+                for (size_t k = 0; k < soft_n; ++k) result += "<image>";
+                result += "<|image_end|>\n";
+            }
+        }
+        if (role == "tool") {
+            result += "<|tool_response_start|>" + msg.content + "<|tool_response_end|>";
+        } else {
+            result += msg.content;
+        }
+        if (role == "assistant" && !msg.tool_calls.empty()) {
+            result += "<|tool_call_start|>[";
+            for (size_t k = 0; k < msg.tool_calls.size(); ++k) {
+                if (k) result += ", ";
+                result += chat_tools::pythonic_call(msg.tool_calls[k].name, msg.tool_calls[k].arguments);
+            }
+            result += "]<|tool_call_end|>";
+        }
+        result += "<|im_end|>\n";
+    }
+
+    if (add_generation_prompt) result += "<|im_start|>assistant\n";
+    return result;
+}
+
+std::string Tokenizer::format_needle_style(const std::vector<ChatMessage>& messages, bool /*add_generation_prompt*/,
+                                           const std::string& tools_json) const {
+    std::string serialized_tools = tools_json.empty() ? "[]" : tools_json;
+    return format_needle_query_text(messages) + "<tools>" + serialized_tools + "</s>";
 }
 
 std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
@@ -493,19 +612,36 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
         if (tw == 0) tw = side;
         return static_cast<size_t>((th / p / k) * (tw / p / k));
     };
+    bool in_model_turn = false;
+    std::vector<std::string> pending_call_names;
+    auto close_model_turn = [&]() {
+        if (in_model_turn) { result += "<turn|>\n"; in_model_turn = false; }
+    };
 
     for (size_t i = first_msg; i < messages.size(); i++) {
         const auto& msg = messages[i];
-        std::string role = (msg.role == "assistant") ? "model" : msg.role;
-        result += "<|turn>" + role + "\n";
+        const std::string role = (msg.role == "assistant") ? "model"
+                               : (msg.role == "developer") ? "system" : msg.role;
+
         if (role == "model") {
+            if (!in_model_turn) { result += "<|turn>model\n"; in_model_turn = true; }
             result += msg.content;
-            if (!msg.tool_calls.empty()) {
-                for (const auto& tc : msg.tool_calls) {
-                    result += format_tool_call_for_prompt(tc.name, tc.arguments, true);
-                }
+            for (const auto& tc : msg.tool_calls) {
+                result += format_tool_call_for_prompt(tc.name, tc.arguments, true);
+                pending_call_names.push_back(tc.name);
             }
+            if (msg.tool_calls.empty()) close_model_turn();
+        } else if (role == "tool") {
+            if (!in_model_turn) { result += "<|turn>model\n"; in_model_turn = true; }
+            std::string fn = !msg.name.empty() ? msg.name
+                           : (!pending_call_names.empty() ? pending_call_names.front()
+                                                          : std::string("unknown"));
+            if (!pending_call_names.empty()) pending_call_names.erase(pending_call_names.begin());
+            result += "<|tool_response>response:" + fn + "{value:<|\"|>" + msg.content
+                    + "<|\"|>}<tool_response|>";
         } else {
+            close_model_turn();
+            result += "<|turn>" + role + "\n";
             for (const auto& image_path : msg.images) {
                 size_t n = compute_soft_tokens(image_path);
                 if (n > 0) {
@@ -522,12 +658,14 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
                     result += "<|audio|>";
                 result += "<audio|>";
             }
+            result += "<turn|>\n";
         }
-        result += "<turn|>\n";
     }
 
     if (add_generation_prompt) {
-        result += "<|turn>model\n";
+        if (!in_model_turn) result += "<|turn>model\n";
+    } else {
+        close_model_turn();
     }
 
     return result;
