@@ -99,6 +99,8 @@ def optimize_graph(graph: IRGraph, *, max_passes: int = 8, config: FusionConfig 
             changed = True
         if normalize_gemma4_decoder_attention_semantics(graph):
             changed = True
+        if normalize_cached_decoder_attention_hints(graph):
+            changed = True
         if config.enable_dense_mlp_tq_fused and fuse_dense_mlp_tq(graph):
             changed = True
         if config.enable_conv_module and fuse_conv_modules(graph):
@@ -807,6 +809,30 @@ def normalize_gemma4_decoder_attention_semantics(graph: IRGraph) -> bool:
             node.attrs.pop("additive_mask", None)
             changed = True
 
+    if changed:
+        rebuild_graph(graph)
+    return changed
+
+
+def normalize_cached_decoder_attention_hints(graph: IRGraph) -> bool:
+    if _is_gemma4_graph(graph):
+        return False
+    if not bool(graph.meta.get("use_internal_kv_cache", False)):
+        return False
+    changed = _assign_gemma4_decoder_attention_hints_from_graph_meta(graph)
+    sliding_window = _graph_sliding_window(graph)
+    if sliding_window is not None and sliding_window > 0:
+        for node_id in graph.order:
+            node = graph.nodes.get(node_id)
+            if node is None or node.op not in {"attention", "scaled_dot_product_attention", "attention_block"}:
+                continue
+            layer_type = str(node.meta.get("attention_layer_type") or "").strip().lower()
+            if layer_type not in {"sliding", "sliding_attention"}:
+                continue
+            if int(node.attrs.get("window_size", 0) or 0) == 0:
+                node.attrs["window_size"] = int(sliding_window)
+                node.meta.setdefault("window_size_source", "layer_type_config")
+                changed = True
     if changed:
         rebuild_graph(graph)
     return changed
