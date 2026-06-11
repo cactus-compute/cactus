@@ -789,7 +789,6 @@ private:
     size_t component_output_tokens(const Component& comp, const std::string& output_name) const;
     ChunkedPrefillResult run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position,
                                              size_t chunk_size, bool prepare_decode);
-    bool padded_tail_window_ok(const Component& comp, size_t chunk_tokens) const;
     void execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, size_t encoder_chunk,
                                size_t chunk_tokens, const std::vector<uint32_t>& tokens,
                                size_t processed, size_t start_position);

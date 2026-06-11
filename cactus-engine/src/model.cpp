@@ -1064,19 +1064,6 @@ size_t Model::component_output_tokens(const Component& comp, const std::string& 
     return 0;
 }
 
-bool Model::padded_tail_window_ok(const Component& comp, size_t chunk_tokens) const {
-    for (const auto& state : comp.cache_states) {
-        for (int node_id : {state.key_node_id, state.value_node_id}) {
-            if (node_id < 0) continue;
-            if (comp.graph->get_node_op_type(static_cast<size_t>(node_id)) != OpType::KV_CACHE_STATE) continue;
-            size_t window = comp.graph->get_node_window_size(static_cast<size_t>(node_id));
-            size_t sink = comp.graph->get_node_sink_size(static_cast<size_t>(node_id));
-            if (window > 0 && (window < chunk_tokens * 4 || window <= chunk_tokens + sink)) return false;
-        }
-    }
-    return true;
-}
-
 void Model::execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, size_t encoder_chunk,
                                   size_t chunk_tokens, const std::vector<uint32_t>& tokens,
                                   size_t processed, size_t start_position) {
@@ -1151,16 +1138,22 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     });
     const size_t tail_tokens = tokens.size() - whole_chunks_end;
     const size_t padding_cutoff = std::max<size_t>(1, effective_chunk / 16);
-    const bool pad_tail = family_ != "lfm2_vl"
-        && !has_recurrent_state
-        && !has_sliding_window_cache
-        && tail_tokens >= padding_cutoff;
     const bool has_conv_state = any_cache_node([&](size_t id) {
         return decoder_prefill_->graph->get_node_op_type(id) == OpType::CONV_CACHE_STATE;
     });
+    const bool pad_tail = !has_conv_state
+        && !has_recurrent_state
+        && !has_sliding_window_cache
+        && tail_tokens >= padding_cutoff;
+    const bool padded_window_too_small = any_cache_node([&](size_t id) {
+        if (decoder_prefill_->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) return false;
+        size_t window = decoder_prefill_->graph->get_node_window_size(id);
+        size_t sink = decoder_prefill_->graph->get_node_sink_size(id);
+        return window > 0 && (window < effective_chunk * 4 || window <= effective_chunk + sink);
+    });
     const bool use_padded_tail = !pad_tail && !prefill_tail_pad_disabled_
         && has_sliding_window_cache && !has_recurrent_state && !has_conv_state
-        && tail_tokens >= 2 && padded_tail_window_ok(*decoder_prefill_, effective_chunk);
+        && tail_tokens > 8 && !padded_window_too_small;
     const size_t executable_tokens = whole_chunks_end + (pad_tail ? effective_chunk : 0);
     if (executable_tokens == 0 && !use_padded_tail) {
         result.scalar_tail_tokens = tail_tokens;
