@@ -189,6 +189,77 @@ bool test_kv_cache_append_full_window_eviction() {
     return true;
 }
 
+static bool padded_rollback_matches_exact_append(size_t prefix, size_t real, size_t pads) {
+    const size_t kv_heads = 1, head_dim = 16, max_seq = 64, window = 16, sink = 2;
+    const size_t stride = kv_heads * head_dim;
+
+    auto append = [&](CactusGraph& g, size_t cache_node, size_t real_tokens, size_t pad_tokens, float base) {
+        const size_t tokens = real_tokens + pad_tokens;
+        const size_t elements = tokens * stride;
+        size_t kv_input = g.input({elements}, Precision::FP16);
+        std::vector<__fp16> data(elements);
+        for (size_t t = 0; t < tokens; t++) {
+            float value = t < real_tokens ? base + static_cast<float>(t) : 9999.0f;
+            for (size_t j = 0; j < stride; j++) data[t * stride + j] = static_cast<__fp16>(value);
+        }
+        g.set_input(kv_input, data.data(), Precision::FP16);
+        g.kv_cache_append(kv_input, cache_node, window, sink);
+        g.execute();
+        g.soft_reset();
+    };
+
+    CactusGraph g_exact, g_padded;
+    size_t exact_node = g_exact.kv_cache_state(max_seq, kv_heads, head_dim, window, sink);
+    size_t padded_node = g_padded.kv_cache_state(max_seq, kv_heads, head_dim, window, sink);
+    if (prefix > 0) {
+        append(g_exact, exact_node, prefix, 0, 1.0f);
+        append(g_padded, padded_node, prefix, 0, 1.0f);
+    }
+    append(g_exact, exact_node, real, 0, 100.0f);
+    auto backup = g_padded.snapshot_cache_padded_append(padded_node, real, pads);
+    append(g_padded, padded_node, real, pads, 100.0f);
+    g_padded.rollback_cache_padded_append(padded_node, real, pads, backup);
+
+    auto* exact_raw = static_cast<uint8_t*>(g_exact.get_output(exact_node));
+    auto* padded_raw = static_cast<uint8_t*>(g_padded.get_output(padded_node));
+    uint64_t exact_len = *reinterpret_cast<uint64_t*>(exact_raw);
+    uint64_t padded_len = *reinterpret_cast<uint64_t*>(padded_raw);
+    if (exact_len != padded_len) {
+        std::cerr << "  current_seq_len mismatch: " << exact_len << " != " << padded_len << "\n";
+        return false;
+    }
+    uint64_t buffer_max_seq = *reinterpret_cast<uint64_t*>(exact_raw + 8);
+    const size_t meta_bytes = 64;
+    if (std::memcmp(exact_raw + meta_bytes, padded_raw + meta_bytes, exact_len * stride) != 0) {
+        std::cerr << "  cache data rows differ after rollback\n";
+        return false;
+    }
+    const size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+    const size_t scales_offset = meta_bytes + buffer_max_seq * stride;
+    if (std::memcmp(exact_raw + scales_offset, padded_raw + scales_offset,
+                    exact_len * kv_heads * num_groups * sizeof(float)) != 0) {
+        std::cerr << "  cache scale rows differ after rollback\n";
+        return false;
+    }
+    return true;
+}
+
+bool test_padded_rollback_no_eviction() {
+    return padded_rollback_matches_exact_append(4, 3, 5);
+}
+
+bool test_padded_rollback_eviction_overshoot() {
+    return padded_rollback_matches_exact_append(16, 3, 6);
+}
+
+bool test_padded_rollback_only_pads_evict() {
+    return padded_rollback_matches_exact_append(10, 2, 8);
+}
+
+bool test_padded_rollback_empty_cache() {
+    return padded_rollback_matches_exact_append(0, 5, 11);
+}
+
 bool test_attention_cached_basic() {
     const size_t b = 1, s = 1, h = 2, kv = 2, d = 16;
     const size_t max_seq = 64;
@@ -848,6 +919,10 @@ int main() {
     runner.run_test("KV Cache Append Multiple", test_kv_cache_append_multiple());
     runner.run_test("KV Cache Append Eviction", test_kv_cache_append_eviction());
     runner.run_test("KV Cache Append Full Window Eviction", test_kv_cache_append_full_window_eviction());
+    runner.run_test("Padded Rollback No Eviction", test_padded_rollback_no_eviction());
+    runner.run_test("Padded Rollback Eviction Overshoot", test_padded_rollback_eviction_overshoot());
+    runner.run_test("Padded Rollback Only Pads Evict", test_padded_rollback_only_pads_evict());
+    runner.run_test("Padded Rollback Empty Cache", test_padded_rollback_empty_cache());
     runner.run_test("Attention Cached Basic", test_attention_cached_basic());
     runner.run_test("Attention Cached Multistep", test_attention_cached_multistep());
     runner.run_test("KV Cache Invalidate", test_kv_cache_invalidate());

@@ -702,6 +702,93 @@ bool test_multiturn_thinking_persist() {
     return prefix_ok && mentions_alice;
 }
 
+static std::string benchmark_tokens_json(cactus_model_t model, const std::vector<uint32_t>& ids, size_t max_new) {
+    std::vector<char> response(1 << 16, 0);
+    int rc = cactus_benchmark_tokens(model, ids.data(), ids.size(), max_new, response.data(), response.size());
+    return rc < 0 ? std::string() : std::string(response.data());
+}
+
+static std::string completion_ids_field(const std::string& json) {
+    size_t start = json.find("\"completion_token_ids\":[");
+    if (start == std::string::npos) return std::string();
+    size_t end = json.find(']', start);
+    return end == std::string::npos ? std::string() : json.substr(start, end - start + 1);
+}
+
+static std::string first_completion_id(const std::string& json) {
+    std::string ids = completion_ids_field(json);
+    size_t open = ids.find('[');
+    if (open == std::string::npos) return std::string();
+    size_t end = ids.find_first_of(",]", open + 1);
+    return end == std::string::npos ? std::string() : ids.substr(open + 1, end - open - 1);
+}
+
+bool test_chunked_prefill_padding() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║" << std::setw(42) << std::left << "      CHUNKED PREFILL PADDING TEST" << "║\n"
+              << "╚══════════════════════════════════════════╝\n";
+    if (!g_model_path) { std::cout << "  [WARN] CACTUS_TEST_MODEL not set; skipping\n"; return true; }
+
+    for (size_t prompt_len : {size_t(95), size_t(600)}) {
+        std::vector<uint32_t> ids(prompt_len);
+        for (size_t i = 0; i < ids.size(); i++) ids[i] = static_cast<uint32_t>(100 + (i % 200));
+
+        cactus_model_t model = cactus_init(g_model_path, nullptr, false);
+        if (!model) { std::cerr << "  [✗] model init failed\n"; return false; }
+        std::string padded = benchmark_tokens_json(model, ids, 4);
+        std::string padded_again = benchmark_tokens_json(model, ids, 4);
+        cactus_destroy(model);
+        if (padded.empty() || padded.find("\"success\":true") == std::string::npos) {
+            std::cerr << "  [✗] padded benchmark failed at len " << prompt_len << "\n";
+            return false;
+        }
+        long tail_chunk = static_cast<long>(EngineTestUtils::json_number(padded, "prefill_tail_chunk_tokens", -1));
+        long tail_pads = static_cast<long>(EngineTestUtils::json_number(padded, "prefill_tail_padding_tokens", -1));
+        long scalar = static_cast<long>(EngineTestUtils::json_number(padded, "prefill_scalar_tail_tokens", -1));
+        std::cout << "  len " << prompt_len << ": tail_chunk=" << tail_chunk
+                  << " pads=" << tail_pads << " scalar=" << scalar << "\n";
+        if (tail_chunk <= 0) {
+            std::cout << "  [WARN] padded tail did not engage (no sliding caches?); skipping\n";
+            return true;
+        }
+        if (tail_pads <= 0 || scalar > 1) {
+            std::cerr << "  [✗] unexpected padding telemetry\n";
+            return false;
+        }
+        if (completion_ids_field(padded).empty()
+                || completion_ids_field(padded) != completion_ids_field(padded_again)) {
+            std::cerr << "  [✗] padded prefill is not deterministic\n";
+            return false;
+        }
+
+        setenv("CACTUS_DISABLE_PREFILL_TAIL_PAD", "1", 1);
+        model = cactus_init(g_model_path, nullptr, false);
+        std::string scalar_run = model ? benchmark_tokens_json(model, ids, 4) : std::string();
+        if (model) cactus_destroy(model);
+        unsetenv("CACTUS_DISABLE_PREFILL_TAIL_PAD");
+        if (scalar_run.empty() || scalar_run.find("\"success\":true") == std::string::npos) {
+            std::cerr << "  [✗] kill-switch benchmark failed\n";
+            return false;
+        }
+        long off_tail = static_cast<long>(EngineTestUtils::json_number(scalar_run, "prefill_tail_chunk_tokens", -1));
+        long off_scalar = static_cast<long>(EngineTestUtils::json_number(scalar_run, "prefill_scalar_tail_tokens", -1));
+        const size_t chunk_size = static_cast<size_t>(tail_chunk + tail_pads + 1);
+        if (off_tail != 0 || off_scalar != static_cast<long>(prompt_len % chunk_size)) {
+            std::cerr << "  [✗] kill switch did not restore the scalar tail (tail=" << off_tail
+                      << " scalar=" << off_scalar << ")\n";
+            return false;
+        }
+        if (first_completion_id(padded).empty()
+                || first_completion_id(padded) != first_completion_id(scalar_run)) {
+            std::cerr << "  [✗] padded prefill diverged from the scalar tail\n"
+                      << "    padded: " << completion_ids_field(padded) << "\n"
+                      << "    scalar: " << completion_ids_field(scalar_run) << "\n";
+            return false;
+        }
+    }
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("LLM Tests");
     runner.run_test("1k_context", test_1k_context());
@@ -710,6 +797,7 @@ int main() {
     runner.run_test("prefill_idempotent_reuse", test_prefill_idempotent_reuse());
     runner.run_test("prefill_prefix_extension_reuse", test_prefill_prefix_extension_reuse());
     runner.run_test("prefill_invalidated_on_message_change", test_prefill_invalidated_on_message_change());
+    runner.run_test("chunked_prefill_padding", test_chunked_prefill_padding());
     runner.run_test("tool_calls", test_tool_call());
     runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
     runner.run_test("tool_calls_with_three_tools", test_tool_call_with_three_tools());
