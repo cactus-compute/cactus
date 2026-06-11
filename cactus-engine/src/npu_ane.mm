@@ -650,6 +650,63 @@ static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* ar
     }
 }
 
+static void copyINT32ToMLArray(const int32_t* data, size_t count, MLMultiArray* array) {
+    if (!array || !data || count == 0) return;
+
+    std::vector<size_t> dims;
+    std::vector<size_t> strides;
+    const size_t rank = array.shape.count;
+    bool have_layout = rank == array.strides.count && rank > 0;
+    if (have_layout) {
+        dims.resize(rank);
+        strides.resize(rank);
+        for (size_t i = 0; i < rank; ++i) {
+            NSInteger d = [array.shape[i] integerValue];
+            NSInteger s = [array.strides[i] integerValue];
+            if (d <= 0 || s < 0) {
+                have_layout = false;
+                break;
+            }
+            dims[i] = static_cast<size_t>(d);
+            strides[i] = static_cast<size_t>(s);
+        }
+    }
+
+    auto write_at = [&](size_t offset, int32_t v) {
+        switch (array.dataType) {
+            case MLMultiArrayDataTypeInt32:
+                ((int32_t*)array.dataPointer)[offset] = v;
+                break;
+            case MLMultiArrayDataTypeFloat16:
+                ((__fp16*)array.dataPointer)[offset] = (__fp16)v;
+                break;
+            default:
+                ((float*)array.dataPointer)[offset] = (float)v;
+                break;
+        }
+    };
+
+    if (!have_layout) {
+        for (size_t i = 0; i < count; ++i) write_at(i, data[i]);
+        return;
+    }
+
+    std::vector<size_t> idx(rank, 0);
+    for (size_t i = 0; i < count; ++i) {
+        size_t offset = 0;
+        for (size_t d = 0; d < rank; ++d) {
+            offset += idx[d] * strides[d];
+        }
+        write_at(offset, data[i]);
+
+        for (size_t d = rank; d-- > 0;) {
+            idx[d]++;
+            if (idx[d] < dims[d]) break;
+            idx[d] = 0;
+        }
+    }
+}
+
 - (BOOL)preallocateMultiInputBuffersWithOutputName:(NSString*)outputName {
     if (!_model || !_modelDescription) return NO;
 
@@ -864,6 +921,29 @@ std::vector<int> ANEEncoder::get_output_shape() const {
     return result;
 }
 
+bool ANEEncoder::has_input(const std::string& name) const {
+    if (!impl_) return false;
+    CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
+    if (!impl.modelDescription) return false;
+    NSString* nsName = [NSString stringWithUTF8String:name.c_str()];
+    return impl.modelDescription.inputDescriptionsByName[nsName] != nil;
+}
+
+std::vector<int> ANEEncoder::get_input_shape_for(const std::string& name) const {
+    std::vector<int> result;
+    if (!impl_) return result;
+    CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
+    if (!impl.modelDescription) return result;
+    NSString* nsName = [NSString stringWithUTF8String:name.c_str()];
+    MLFeatureDescription* desc = impl.modelDescription.inputDescriptionsByName[nsName];
+    if (desc && desc.type == MLFeatureTypeMultiArray) {
+        for (NSNumber* dim in desc.multiArrayConstraint.shape) {
+            result.push_back([dim intValue]);
+        }
+    }
+    return result;
+}
+
 __fp16* ANEEncoder::get_output_buffer() {
     if (!impl_) return nullptr;
     CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
@@ -917,7 +997,14 @@ size_t ANEEncoder::encode_multimodal_input(
                 if (!array || arrayError) return 0;
             }
 
-            copyFP16ToMLArray(input.data, total, array);
+            switch (input.dtype) {
+                case NPUNamedInput::DType::INT32:
+                    copyINT32ToMLArray(static_cast<const int32_t*>(input.data), total, array);
+                    break;
+                case NPUNamedInput::DType::FP16:
+                    copyFP16ToMLArray(static_cast<const __fp16*>(input.data), total, array);
+                    break;
+            }
             inputDict[nsName] = [MLFeatureValue featureValueWithMultiArray:array];
         }
 

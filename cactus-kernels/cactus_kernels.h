@@ -795,6 +795,7 @@ void cactus_compute_spectrogram_f32(
     bool remove_dc_offset);
 
 unsigned char* cactus_image_load(const char* path, int* width, int* height, int* channels, int desired_channels);
+int cactus_image_info(const char* path, int* width, int* height, int* channels);
 void cactus_image_free(unsigned char* data);
 const char* cactus_image_failure_reason();
 

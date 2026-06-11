@@ -38,6 +38,10 @@ unsigned char* cactus_image_load(const char* path, int* width, int* height, int*
     return stbi_load(path, width, height, channels, desired_channels);
 }
 
+int cactus_image_info(const char* path, int* width, int* height, int* channels) {
+    return stbi_info(path, width, height, channels);
+}
+
 void cactus_image_free(unsigned char* data) {
     stbi_image_free(data);
 }

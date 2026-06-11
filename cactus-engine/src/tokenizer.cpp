@@ -479,9 +479,7 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
         if (image_soft_token_count_ > 0) return image_soft_token_count_;
 
         int w = 0, h = 0, c = 0;
-        unsigned char* data = cactus_image_load(image_path.c_str(), &w, &h, &c, 3);
-        if (!data) return 0;
-        cactus_image_free(data);
+        if (!cactus_image_info(image_path.c_str(), &w, &h, &c)) return 0;
 
         uint32_t p = vision_patch_size_;
         uint32_t k = vision_pooling_kernel_size_;

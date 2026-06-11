@@ -18,9 +18,13 @@ class VisionEncoderWrapper(torch.nn.Module):
         for idx, tensor in enumerate(baked_inputs):
             self.register_buffer(f"_baked_{idx}", tensor, persistent=False)
 
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+    def forward(self, *runtime_inputs: torch.Tensor) -> torch.Tensor:
+        coerced = tuple(
+            t if torch.is_floating_point(t) else t.to(torch.long)
+            for t in runtime_inputs
+        )
         extra = tuple(getattr(self, f"_baked_{i}") for i in range(self._n_baked))
-        return self.vision(pixel_values, *extra)
+        return self.vision(*coerced, *extra)
 
 
 def _import_coremltools() -> Any:
@@ -56,22 +60,22 @@ def emit_vision_encoder_mlpackage(
     vision_module: torch.nn.Module,
     bundle_dir: Path,
     *,
-    example_input: torch.Tensor,
+    runtime_inputs: tuple[tuple[str, torch.Tensor], ...],
     baked_inputs: tuple[torch.Tensor, ...] = (),
     filename: str = "vision_encoder.mlpackage",
-    input_name: str = "x",
     output_name: str = "encoded",
     minimum_deployment_target: str = "iOS18",
     quantize_bits: int | None = None,
 ) -> str | None:
     ct = _import_coremltools()
 
-    wrapper = VisionEncoderWrapper(vision_module, baked_inputs)
+    example_tensors = tuple(tensor for _, tensor in runtime_inputs)
+    wrapper = VisionEncoderWrapper(vision_module, baked_inputs=baked_inputs)
     wrapper.eval()
 
     try:
         with torch.no_grad():
-            exported = torch.export.export(wrapper, (example_input,))
+            exported = torch.export.export(wrapper, example_tensors)
             exported = exported.run_decompositions({})
     except Exception as exc:
         print(f"npu.vision: torch.export failed ({type(exc).__name__}: {exc}); skipping mlpackage emit")
@@ -83,11 +87,19 @@ def emit_vision_encoder_mlpackage(
 
     target_attr = getattr(ct.target, minimum_deployment_target, None) or ct.target.iOS17
 
+    import numpy as np
+    ct_inputs = [
+        ct.TensorType(name=name, shape=tuple(tensor.shape))
+        if torch.is_floating_point(tensor)
+        else ct.TensorType(name=name, shape=tuple(tensor.shape), dtype=np.int32)
+        for name, tensor in runtime_inputs
+    ]
+
     from .coremltools_patches import build_cactus_pass_pipeline
     try:
         mlmodel = ct.convert(
             exported,
-            inputs=[ct.TensorType(name=input_name, shape=tuple(example_input.shape))],
+            inputs=ct_inputs,
             outputs=[ct.TensorType(name=output_name)],
             compute_precision=ct.precision.FLOAT16,
             convert_to="mlprogram",
@@ -112,5 +124,6 @@ def emit_vision_encoder_mlpackage(
         print(f"npu.vision: mlpackage save failed ({type(exc).__name__}: {exc})")
         return None
 
-    print(f"npu.vision: wrote {out_path} (input_shape={tuple(example_input.shape)})")
+    shapes = ", ".join(f"{name}={tuple(t.shape)}" for name, t in runtime_inputs)
+    print(f"npu.vision: wrote {out_path} (inputs: {shapes})")
     return filename

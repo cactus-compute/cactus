@@ -798,9 +798,10 @@ def _gemma4_pool_vision_hidden_native_like(
     pooling_kernel_size = int(_module_or_config_attr(vision_tower, "pooling_kernel_size", 3) or 3)
     padding_positions = (pixel_position_ids == -1).all(dim=-1)
     pooled_batches: list[torch.Tensor] = []
-    for row_idx, (hidden_row, position_row, padding_row) in enumerate(
-        zip(hidden_states, pixel_position_ids, padding_positions, strict=True)
-    ):
+    for row_idx in range(int(hidden_states.shape[0])):
+        hidden_row = hidden_states[row_idx]
+        position_row = pixel_position_ids[row_idx]
+        padding_row = padding_positions[row_idx]
         if image_pool_shapes is not None and row_idx < len(image_pool_shapes):
             grid_h, grid_w, pooled_count = image_pool_shapes[row_idx]
             valid_patch_count = int(grid_h) * int(grid_w)
@@ -3417,6 +3418,12 @@ def _build_gemma4_multimodal_component_specs(
         native_image_soft_token_counts=native_image_soft_token_counts,
         native_image_pool_shapes=native_image_pool_shapes,
     ).eval()
+    vision_encoder_npu = Gemma4VisionEncoderAdapter(
+        model,
+        weights_dir=weights_dir,
+        native_image_soft_token_counts=native_image_soft_token_counts,
+        native_image_pool_shapes=None,
+    ).eval()
     audio_encoder = Gemma4AudioEncoderAdapter(model, weights_dir=weights_dir).eval()
 
     image_features: torch.Tensor | None = None
@@ -3543,6 +3550,8 @@ def _build_gemma4_multimodal_component_specs(
             output_keys=("image_features",),
             graph_meta={**common_graph_meta, "component": "vision_encoder"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
+            npu_module=vision_encoder_npu,
+            npu_runtime_input_count=2,
         ))
     if "audio_encoder" in expanded_components:
         specs.append(ComponentModuleSpec(
