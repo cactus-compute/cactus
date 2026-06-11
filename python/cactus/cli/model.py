@@ -184,6 +184,35 @@ class TranspileOptions:
     cache_context_length: str | int | None = None
 
 
+def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
+                           reconvert=False, transpile=None):
+    """Resolve a runnable bundle via the full fallback ladder, building if needed.
+
+    Rungs, in order: (1) a local bundle path, (2) a cached prior build,
+    (3) a prebuilt bundle on HuggingFace, (4) local convert + transpile.
+    Raises RuntimeError if every rung fails.
+    """
+    from .download import download_bundle, get_bundle_dir
+
+    local = resolve_bundle_dir(model_id)
+    if local is not None:
+        return local
+
+    cached = get_bundle_dir(model_id, bits=bits, platform=platform)
+    if _has_transpiled_bundle(cached) and not reconvert:
+        return cached
+
+    if not reconvert:
+        try:
+            return download_bundle(model_id, bits=bits, platform=platform,
+                                   token=token, reconvert=reconvert)
+        except (RuntimeError, OSError) as exc:
+            print_color(YELLOW, f"No prebuilt bundle ({exc}); building locally")
+
+    return ensure_bundle(model_id, bits=bits, token=token,
+                         reconvert=reconvert, transpile=transpile or TranspileOptions())
+
+
 def ensure_bundle(model_id, *, bits=4, token=None,
                   reconvert=False, output_dir=None, transpile=None):
     from .download import get_weights_dir

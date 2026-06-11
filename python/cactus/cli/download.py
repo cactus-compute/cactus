@@ -63,11 +63,12 @@ def download_bundle(model_id: str, *, bits: int = 4, platform: str | None = None
 
 
 def cmd_download(args) -> int:
+    from .model import ensure_runnable_bundle
+
     try:
         platform = resolve_platform(args.platform)
-        download_bundle(args.model_id, bits=args.bits, platform=platform, token=args.token)
+        ensure_runnable_bundle(args.model_id, bits=args.bits, platform=platform, token=args.token)
         return 0
     except (RuntimeError, OSError, ValueError) as e:
-        print_color(RED, f"Download failed: {e}")
-        print_color(YELLOW, f"Try: cactus convert {args.model_id} --bits {args.bits} && cactus transpile {args.model_id}")
+        print_color(RED, f"Failed to prepare {args.model_id}: {e}")
         return 1

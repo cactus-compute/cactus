@@ -108,10 +108,42 @@ def create_parser():
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force reconversion from source
 
-  cactus download [model]              download a pre-built bundle (default: {DEFAULT_MODEL_ID})
+  cactus download [model]              fetch a prebuilt bundle, else build locally (default: {DEFAULT_MODEL_ID})
     --bits 1|2|3|4                     CQ quantization (default: 4)
     --platform {_PLATFORM_PIPE:<22}  target accelerator (default: cpu)
     --token <token>                    HuggingFace token
+
+  cactus serve [model]                 OpenAI-compatible local HTTP server
+    --host <addr>                      bind address (default: 127.0.0.1)
+    --port <port>                      port (default: 8080)
+
+  cactus list                          list local converted weights and bundles
+
+  cactus build                         build cactus libraries
+    --apple                            Apple (iOS/macOS)
+    --android                          Android
+    --python                           shared lib for Python FFI
+
+  cactus test                          run the test suite
+    --component <name>                 kernels | graph | engine | all
+                                       (default: all)
+    --model <hf-id>                    default: {DEFAULT_MODEL_ID}
+    --transcription-model <hf-id>      default: {DEFAULT_TRANSCRIPTION_MODEL_ID}
+    --suite <name>                     run a single test suite from any
+                                       component (kernels, graph, or engine)
+    --list                             list components and suites
+    --ios                              run on connected iPhone
+    --android                          run on connected Android
+    --enable-telemetry                 send cloud telemetry (off by default)
+
+  cactus clean                         delete build artifacts
+  cactus --help                        show this help
+
+  -----------------------------------------------------------------
+
+  Advanced / build pipeline — the two manual steps below run
+  automatically inside run, serve, transcribe and download; reach for
+  them only to control the build (custom flags, LoRA, NPU, debugging):
 
   cactus convert <model> [dir]         convert HuggingFace weights to CQ
     --bits 1|2|3|4                     CQ quantization (default: 4)
@@ -150,32 +182,6 @@ def create_parser():
     --npu-quantize 0|4|8               force both NPU encoders to this quant
     --npu-audio-quantize 0|4|8         audio encoder quant (default int8)
     --npu-vision-quantize 0|4|8        vision encoder quant (default fp16)
-
-  cactus serve [model]                 OpenAI-compatible local HTTP server
-    --host <addr>                      bind address (default: 127.0.0.1)
-    --port <port>                      port (default: 8080)
-
-  cactus list                          list local converted weights and bundles
-
-  cactus build                         build cactus libraries
-    --apple                            Apple (iOS/macOS)
-    --android                          Android
-    --python                           shared lib for Python FFI
-
-  cactus test                          run the test suite
-    --component <name>                 kernels | graph | engine | all
-                                       (default: all)
-    --model <hf-id>                    default: {DEFAULT_MODEL_ID}
-    --transcription-model <hf-id>      default: {DEFAULT_TRANSCRIPTION_MODEL_ID}
-    --suite <name>                     run a single test suite from any
-                                       component (kernels, graph, or engine)
-    --list                             list components and suites
-    --ios                              run on connected iPhone
-    --android                          run on connected Android
-    --enable-telemetry                 send cloud telemetry (off by default)
-
-  cactus clean                         delete build artifacts
-  cactus --help                        show this help
 
   -----------------------------------------------------------------
 """

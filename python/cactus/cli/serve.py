@@ -27,9 +27,13 @@ def cmd_serve(args):
     """Start the OpenAI-compatible HTTP server."""
     model_path, model_name = _resolve_model_arg(args.model)
     if args.model and model_path is None:
-        print_color(RED, f"Error: model not found: {args.model}")
-        print("Prepare a v2 bundle first with `cactus run <model>` (or `cactus convert <model>` then `cactus transpile <model>`).")
-        return 1
+        from .model import ensure_runnable_bundle
+        try:
+            built = ensure_runnable_bundle(args.model)
+        except RuntimeError as exc:
+            print_color(RED, f"Error: could not prepare {args.model}: {exc}")
+            return 1
+        model_path, model_name = built, built.name
     if model_path is not None and not _is_valid_bundle(model_path):
         print_color(RED, f"Error: not a valid v2 Cactus bundle: {model_path}")
         print("Expected config.txt and components/manifest.json.")

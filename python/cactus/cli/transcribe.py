@@ -6,7 +6,7 @@ from .common import apply_cloud_api_key_env, print_color, resolve_binary, RED, G
 
 
 def cmd_transcribe(args):
-    from .model import ensure_bundle, resolve_bundle_dir, TranspileOptions
+    from .model import ensure_runnable_bundle, TranspileOptions
 
     audio_path = Path(args.audio_file).expanduser()
     if not audio_path.is_file():
@@ -24,18 +24,16 @@ def cmd_transcribe(args):
 
     apply_cloud_api_key_env()
 
-    bundle_dir = resolve_bundle_dir(args.model_id)
-    if bundle_dir is None:
-        try:
-            bundle_dir = ensure_bundle(
-                args.model_id,
-                token=args.token,
-                reconvert=args.reconvert,
-                transpile=TranspileOptions(audio_file=args.audio_file),
-            )
-        except RuntimeError as e:
-            print_color(RED, f"Model setup failed: {e}")
-            return 1
+    try:
+        bundle_dir = ensure_runnable_bundle(
+            args.model_id,
+            token=args.token,
+            reconvert=args.reconvert,
+            transpile=TranspileOptions(audio_file=args.audio_file),
+        )
+    except RuntimeError as e:
+        print_color(RED, f"Model setup failed: {e}")
+        return 1
 
     binary = resolve_binary("transcribe")
     if binary is None:
