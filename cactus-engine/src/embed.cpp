@@ -56,7 +56,7 @@ int cactus_embed(
             return -1;
         }
 
-        std::vector<float> embeddings = handle->model->get_embeddings(tokens, true, normalize);
+        std::vector<float> embeddings = handle->model->get_text_embeddings(tokens, normalize);
         if (embeddings.empty()) {
             CACTUS_LOG_ERROR("embed", "Embedding returned empty result");
             return -1;

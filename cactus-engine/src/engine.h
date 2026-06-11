@@ -652,6 +652,11 @@ public:
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
                                        bool normalize = false, const std::string& profile_file = "");
 
+    std::vector<float> get_text_embeddings(const std::vector<uint32_t>& tokens, bool normalize = false);
+    std::vector<float> get_lm_embeddings(const std::vector<uint32_t>& tokens, bool normalize = false);
+    bool has_lm_embedding() const { return decoder_embed_ != nullptr; }
+    bool has_text_embedding() const { return components_.count("text_embedding") > 0; }
+
     std::vector<float> get_image_embeddings(const std::string& image_path);
 
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features);
@@ -803,6 +808,7 @@ private:
     Component* encoder_ = nullptr;
     Component* decoder_ = nullptr;
     Component* decoder_prefill_ = nullptr;
+    Component* decoder_embed_ = nullptr;
     Component* prefill_encoder_ = nullptr;
     enum class DecodeRoute { CACHED_STEP, DIRECT_DECODER_STEP, FULL_CONTEXT_TEXT, ENCODER_CROSS_KV_STEP };
     DecodeRoute decode_route_ = DecodeRoute::CACHED_STEP;

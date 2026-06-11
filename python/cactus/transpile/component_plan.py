@@ -34,7 +34,7 @@ def _plan_from_profile(
                 return ComponentPlan(
                     task="causal_lm_logits",
                     components=("decoder_step", "lm_encoder_step", "lm_encoder_text_chunk",
-                                "decoder_prefill_chunk", "decoder_media_step"),
+                                "decoder_prefill_chunk", "decoder_embed_chunk", "decoder_media_step"),
                     force_component_pipeline=True,
                 )
             return ComponentPlan(

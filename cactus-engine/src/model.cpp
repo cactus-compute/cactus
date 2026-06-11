@@ -454,8 +454,6 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         && !components_.count("decoder_step")
         && !components_.count("lm_encoder_step");
     if (is_text_embedding) {
-        // Embedding-only bundle: no decode route; get_embeddings loads the
-        // text_embedding component on demand.
         cache_max_seq_len_ = context_size;
         initialized_ = true;
         return true;
@@ -543,6 +541,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
              "audio_encoder",
              "lm_encoder_media_step",
              "decoder_prefill_chunk",
+             "decoder_embed_chunk",
              "lm_encoder",
          }) {
         if (components_.count(optional)) {
@@ -557,6 +556,9 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (components_.count("decoder_prefill_chunk") && components_.at("decoder_prefill_chunk").graph) {
         decoder_prefill_ = &components_.at("decoder_prefill_chunk");
         decoder_prefill_chunk_ = decoder_prefill_;
+    }
+    if (components_.count("decoder_embed_chunk") && components_.at("decoder_embed_chunk").graph) {
+        decoder_embed_ = &components_.at("decoder_embed_chunk");
     }
     if (components_.count("lm_encoder_text_chunk") && components_.at("lm_encoder_text_chunk").graph) {
         prefill_encoder_ = &components_.at("lm_encoder_text_chunk");
@@ -3178,6 +3180,143 @@ void Model::maybe_roll_compact() {
     compress_kv_cache_keydiff(p);
 }
 
+static void l2_normalize_inplace(std::vector<float>& v) {
+    double norm = 0.0;
+    for (float x : v) norm += static_cast<double>(x) * x;
+    float inv = static_cast<float>(1.0 / std::max(std::sqrt(norm), 1e-12));
+    for (float& x : v) x *= inv;
+}
+
+static std::vector<float> finalize_pooled_embedding(const std::vector<double>& sum, size_t count, bool normalize) {
+    std::vector<float> out(sum.size(), 0.0f);
+    if (count > 0) {
+        for (size_t h = 0; h < sum.size(); ++h) out[h] = static_cast<float>(sum[h] / static_cast<double>(count));
+    }
+    if (normalize) l2_normalize_inplace(out);
+    return out;
+}
+
+std::vector<float> Model::get_text_embeddings(const std::vector<uint32_t>& tokens, bool normalize) {
+    if (has_text_embedding()) {
+        return get_embeddings(tokens, /*pooled=*/true, normalize);
+    }
+    if (has_lm_embedding()) {
+        return get_lm_embeddings(tokens, normalize);
+    }
+    throw std::runtime_error("get_text_embeddings: bundle has neither a text_embedding nor a decoder_embed_chunk component");
+}
+
+std::vector<float> Model::get_lm_embeddings(const std::vector<uint32_t>& tokens, bool normalize) {
+    if (!decoder_embed_) {
+        throw std::runtime_error("get_lm_embeddings: bundle has no decoder_embed_chunk component");
+    }
+    if (tokens.empty()) {
+        throw std::runtime_error("get_lm_embeddings: empty token sequence");
+    }
+    if (decode_route_ != DecodeRoute::CACHED_STEP || !encoder_) {
+        throw std::runtime_error("get_lm_embeddings: model does not support chunked LM embeddings");
+    }
+    if (!load_component_graph(*decoder_embed_)) {
+        throw std::runtime_error("get_lm_embeddings: failed to load decoder_embed_chunk graph");
+    }
+    if (prefill_encoder_ && !load_component_graph(*prefill_encoder_)) {
+        throw std::runtime_error("get_lm_embeddings: failed to load prefill encoder graph");
+    }
+    reset_component_cache_states(*decoder_embed_);
+
+    const size_t component_tokens = component_chunk_tokens(*decoder_embed_, "inputs_embeds");
+    if (component_tokens <= 1) {
+        throw std::runtime_error("get_lm_embeddings: decoder_embed_chunk is not chunk-shaped");
+    }
+    const size_t effective_chunk = component_tokens;
+
+    // Recurrent-state caches (gated-deltanet) don't chain correctly across
+    // chunked-prefill boundaries, so cap them to a single chunk -- matches
+    // run_chunked_prefill. Such models embed up to effective_chunk tokens; longer
+    // inputs are truncated. KV/conv/sliding-window caches (qwen/gemma/lfm2) chain
+    // across chunks and span the whole sequence here.
+    bool recurrent_state = false;
+    if (decoder_embed_->graph) {
+        for (const auto& state : decoder_embed_->cache_states) {
+            for (int node_id : {state.key_node_id, state.value_node_id}) {
+                if (node_id < 0) continue;
+                if (decoder_embed_->graph->get_node_op_type(static_cast<size_t>(node_id)) == OpType::RECURRENT_CACHE_STATE) {
+                    recurrent_state = true;
+                }
+            }
+        }
+    }
+    const size_t embed_limit = recurrent_state ? std::min(tokens.size(), effective_chunk) : tokens.size();
+
+    size_t encoder_chunk = 0;
+    if (prefill_encoder_ && input_index(*prefill_encoder_, "input_ids") >= 0 && input_index(*prefill_encoder_, "position_ids") >= 0) {
+        encoder_chunk = component_chunk_tokens(*prefill_encoder_, "input_ids");
+        if (encoder_chunk == 0 || effective_chunk % encoder_chunk != 0) encoder_chunk = 0;
+    }
+
+    const int out_idx = output_index(*decoder_embed_, "last_hidden_state");
+    if (out_idx < 0 || static_cast<size_t>(out_idx) >= decoder_embed_->output_node_ids.size()) {
+        throw std::runtime_error("get_lm_embeddings: decoder_embed_chunk missing last_hidden_state output");
+    }
+    const size_t out_node = static_cast<size_t>(decoder_embed_->output_node_ids[out_idx]);
+
+    std::vector<double> sum;
+    size_t count = 0;
+
+    size_t processed = 0;
+    while (processed < embed_limit) {
+        for (auto& buf : decoder_embed_->input_buffers) std::fill(buf.begin(), buf.end(), 0);
+        if (encoder_chunk > 0) {
+            for (size_t chunk_offset = 0; chunk_offset < effective_chunk; chunk_offset += encoder_chunk) {
+                for (auto& buf : prefill_encoder_->input_buffers) std::fill(buf.begin(), buf.end(), 0);
+                for (size_t i = 0; i < encoder_chunk; ++i) {
+                    const size_t index = processed + chunk_offset + i;
+                    const uint32_t token = index < tokens.size() ? tokens[index] : static_cast<uint32_t>(config_.pad_token_id);
+                    write_int_input_at(*prefill_encoder_, "input_ids", i, static_cast<int64_t>(token));
+                    write_int_input_at(*prefill_encoder_, "position_ids", i, static_cast<int64_t>(processed + chunk_offset + i));
+                }
+                prefill_encoder_->graph->execute();
+                copy_component_outputs_to_chunk_inputs_range(*prefill_encoder_, *decoder_embed_, chunk_offset);
+            }
+        } else {
+            for (size_t i = 0; i < effective_chunk; ++i) {
+                const size_t index = processed + i;
+                const uint32_t token = index < tokens.size() ? tokens[index] : static_cast<uint32_t>(config_.pad_token_id);
+                run_encoder_step(token, processed + i);
+                copy_component_outputs_to_chunk_inputs(*encoder_, *decoder_embed_, i);
+            }
+        }
+        decoder_embed_->graph->execute();
+
+        const auto& desc = decoder_embed_->graph->get_output_buffer(out_node);
+        void* ptr = decoder_embed_->graph->get_output(out_node);
+        const size_t hidden = desc.shape.empty() ? 0 : desc.shape.back();
+        const size_t seq = (desc.shape.size() >= 2) ? desc.shape[desc.shape.size() - 2] : 1;
+        if (hidden == 0 || !ptr) {
+            throw std::runtime_error("get_lm_embeddings: decoder_embed_chunk produced no last_hidden_state");
+        }
+        if (sum.empty()) sum.assign(hidden, 0.0);
+        const bool is_fp16 = desc.precision == Precision::FP16;
+        auto read_at = [&](size_t i) -> float {
+            return is_fp16 ? static_cast<float>(reinterpret_cast<const __fp16*>(ptr)[i])
+                           : reinterpret_cast<const float*>(ptr)[i];
+        };
+        size_t real_rows = std::min(effective_chunk, tokens.size() - processed);
+        real_rows = std::min(real_rows, seq);
+        for (size_t t = 0; t < real_rows; ++t) {
+            for (size_t h = 0; h < hidden; ++h) sum[h] += static_cast<double>(read_at(t * hidden + h));
+        }
+        count += real_rows;
+        processed += effective_chunk;
+    }
+
+    reset_component_cache_states(*decoder_embed_);
+    decoder_embed_->graph->release_runtime_buffers();
+    decoder_embed_->graph->release_all_weight_pages();
+    unload_component_graph(*decoder_embed_);
+    return finalize_pooled_embedding(sum, count, normalize);
+}
+
 std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bool pooled,
                                           bool normalize, const std::string& /*profile_file*/) {
     if (!components_.count("text_embedding")) {
@@ -3250,12 +3389,7 @@ std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bo
         for (size_t h = 0; h < hidden; ++h) result[h] = read_at(h);
     }
 
-    if (normalize) {
-        double norm = 0.0;
-        for (float v : result) norm += static_cast<double>(v) * v;
-        float inv = static_cast<float>(1.0 / std::max(std::sqrt(norm), 1e-12));
-        for (float& v : result) v *= inv;
-    }
+    if (normalize) l2_normalize_inplace(result);
 
     comp->graph->release_runtime_buffers();
     comp->graph->release_all_weight_pages();

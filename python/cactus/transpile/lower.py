@@ -219,7 +219,8 @@ def _should_lower_attention_with_internal_kv_cache(ir: IRGraph, node: IRNode) ->
     if node.op not in {"attention", "scaled_dot_product_attention"}:
         return False
     component = str(ir.meta.get("component", "") or "").strip().lower()
-    if component not in {"decoder_step", "decoder_prefill_chunk", "decoder_media_step"}:
+    if component not in {"decoder_step", "decoder_prefill_chunk", "decoder_media_step",
+                         "decoder_embed_chunk"}:
         return False
     if len(node.inputs) < 3:
         return False
@@ -390,7 +391,8 @@ def _should_lower_conv1d_with_internal_conv_cache(ir: IRGraph, node: IRNode, x: 
     if node.op != "conv1d":
         return False
     component = str(ir.meta.get("component", "") or "").strip().lower()
-    if component not in {"decoder_step", "decoder_prefill_chunk", "decoder_media_step"}:
+    if component not in {"decoder_step", "decoder_prefill_chunk", "decoder_media_step",
+                         "decoder_embed_chunk"}:
         return False
     stride = int(node.attrs.get("stride", 1))
     padding = int(node.attrs.get("padding", 0))

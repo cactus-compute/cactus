@@ -317,6 +317,7 @@ def _write_component_bundle(
             "lm_encoder",
             "lm_encoder_text_chunk",
             "decoder_prefill_chunk",
+            "decoder_embed_chunk",
             "decoder",
             "decoder_cross_kv",
             "lm_encoder_step",
