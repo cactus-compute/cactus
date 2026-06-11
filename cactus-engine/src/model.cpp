@@ -3524,7 +3524,7 @@ bool Config::from_json(const std::string& config_path) {
             std::transform(mt.begin(), mt.end(), mt.begin(), ::tolower);
             if (mt == "qwen") model_type = ModelType::QWEN;
             else if (mt == "qwen3p5" || mt == "qwen3_5") model_type = ModelType::QWEN3P5;
-            else if (mt == "gemma") model_type = ModelType::GEMMA;
+            else if (mt == "gemma" || mt == "gemma3") model_type = ModelType::GEMMA;
             else if (mt == "gemma3n") model_type = ModelType::GEMMA3N;
             else if (mt == "lfm2") model_type = ModelType::LFM2;
             else if (mt == "whisper") model_type = ModelType::WHISPER;

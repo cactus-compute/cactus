@@ -349,7 +349,7 @@ public:
     size_t get_image_soft_token_count() const { return image_soft_token_count_; }
 
 protected:
-    enum class ModelType { UNKNOWN, GEMMA4, QWEN, LFM2, NEEDLE };
+    enum class ModelType { UNKNOWN, GEMMA4, GEMMA, QWEN, LFM2, NEEDLE };
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -374,6 +374,7 @@ protected:
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_needle_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
 class BPETokenizer : public Tokenizer {

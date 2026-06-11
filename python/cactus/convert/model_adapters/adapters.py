@@ -21,7 +21,7 @@ from ..cactus_adapters.config_utils import (
     extract_vision_config,
     extract_whisper_config,
 )
-from .naming import NameMatch, cactus_name_for_tensor, gemma4_scale_factor, restore_hf_key_for_family
+from .naming import NameMatch, cactus_name_for_tensor, gemma3_scale_factor, gemma4_scale_factor, restore_hf_key_for_family
 from .policy import TensorPolicy, policy_for_tensor
 from ..compat import patch_transformers_import_compat
 
@@ -495,8 +495,16 @@ class Lfm2Adapter(FamilyAdapter):
         return super().module_target_name(source_name, _model)
 
 
+class Gemma3Adapter(FamilyAdapter):
+    family = "gemma3"
+
+    def scale_factor(self, output_name: str) -> float:
+        return gemma3_scale_factor(output_name)
+
+
 ADAPTERS: dict[str, FamilyAdapter] = {
     "generic": FamilyAdapter(),
+    "gemma3": Gemma3Adapter(),
     "gemma4": Gemma4Adapter(),
     "qwen": QwenAdapter(),
     "lfm2": Lfm2Adapter(),

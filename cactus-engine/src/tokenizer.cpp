@@ -371,8 +371,10 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
                 model_type_ = ModelType::QWEN;
             } else if (lower_line.find("lfm2") != std::string::npos) {
                 model_type_ = ModelType::LFM2;
-            } else if (lower_line.find("gemma") != std::string::npos) {
+            } else if (lower_line.find("gemma4") != std::string::npos) {
                 model_type_ = ModelType::GEMMA4;
+            } else if (lower_line.find("gemma") != std::string::npos) {
+                model_type_ = ModelType::GEMMA;
             }
         } else if (lower_line.find("model_variant") != std::string::npos) {
             if (lower_line.find("vlm") != std::string::npos) { model_variant_ = ModelVariant::VLM; }
@@ -404,6 +406,9 @@ std::string Tokenizer::get_default_stop_sequence() const {
     if (model_type_ == ModelType::QWEN || model_type_ == ModelType::LFM2) {
         return "<|im_end|>";
     }
+    if (model_type_ == ModelType::GEMMA) {
+        return "<end_of_turn>";
+    }
     return "<turn|>";
 }
 
@@ -422,7 +427,36 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
     if (model_type_ == ModelType::NEEDLE) {
         return format_needle_style(messages, add_generation_prompt, tools_json);
     }
+    if (model_type_ == ModelType::GEMMA) {
+        return format_gemma_style(messages, add_generation_prompt, tools_json);
+    }
     return format_gemma4_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
+}
+
+std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
+                                          const std::string& tools_json) const {
+    std::string result = "<bos>";
+    std::string pending_context = tools_json;
+    for (const auto& msg : messages) {
+        if (msg.role == "system" || msg.role == "developer") {
+            pending_context += msg.content + "\n\n";
+            continue;
+        }
+        std::string role = msg.role == "assistant" ? "model" : "user";
+        std::string content = msg.content;
+        for (const auto& tc : msg.tool_calls) {
+            content += "\ncall:" + tc.name + "(" + tc.arguments + ")";
+        }
+        if (role == "user" && !pending_context.empty()) {
+            content = pending_context + content;
+            pending_context.clear();
+        }
+        result += "<start_of_turn>" + role + "\n" + content + "<end_of_turn>\n";
+    }
+    if (add_generation_prompt) {
+        result += "<start_of_turn>model\n";
+    }
+    return result;
 }
 
 namespace {

@@ -3,6 +3,7 @@ import struct
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from .weight_patterns import EMBED_NAMES
+from ..model_adapters.naming import GEMMA4_WEIGHT_SCALE
 
 try:
     import torch
@@ -270,8 +271,18 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
     if model_type == 'gemma' and 'norm' in str(output_path):
         data = data + 1.0
 
+    if model_type == 'gemma3':
+        filename = output_path.name
+        if any(x in filename for x in ['input_norm', 'post_attn_norm', 'pre_ffn_norm', 'post_ffn_norm']):
+            data = (data + 1.0) / GEMMA4_WEIGHT_SCALE - 1.0
+        elif filename == 'output_norm.weights':
+            data = (data + 1.0) * GEMMA4_WEIGHT_SCALE - 1.0
+        elif any(x in filename for x in ['ffn_gate', 'ffn_up']):
+            data = data * GEMMA4_WEIGHT_SCALE
+        elif filename == 'token_embeddings.weights':
+            data = data / GEMMA4_WEIGHT_SCALE
+
     if model_type == 'gemma4':
-        GEMMA4_WEIGHT_SCALE = 16.0
         filename = output_path.name
         is_audio_weight = filename.startswith('audio_')
         if any(x in filename for x in ['input_norm', 'post_attn_norm', 'pre_ffn_norm', 'post_ffn_norm',

@@ -81,11 +81,25 @@ def restore_hf_key_for_family(key: str, family: str) -> str:
     return key
 
 
-def gemma4_scale_factor(out_name: str) -> float:
+def _scale_basename(out_name: str) -> str:
     base = out_name.removesuffix(".weights").removesuffix(".bias")
     parts = base.split("_", 2)
     if len(parts) == 3 and parts[0] == "layer" and parts[1].isdigit():
         base = parts[2]
+    return base
+
+
+def gemma3_scale_factor(out_name: str) -> float:
+    base = _scale_basename(out_name)
+    if base in {"ffn_gate", "ffn_up"}:
+        return GEMMA4_WEIGHT_SCALE
+    if base == "token_embeddings":
+        return 1.0 / GEMMA4_WEIGHT_SCALE
+    return 1.0
+
+
+def gemma4_scale_factor(out_name: str) -> float:
+    base = _scale_basename(out_name)
     if base in GEMMA4_MULT_BASENAMES:
         return GEMMA4_WEIGHT_SCALE
     if base in GEMMA4_DIV_BASENAMES:
