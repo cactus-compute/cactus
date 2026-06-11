@@ -237,7 +237,7 @@ static bool build_corpus_index(CactusModelHandle* handle, const std::string& cor
     CACTUS_LOG_INFO("init", "Generated " << chunks.size() << " chunks from corpus");
 
     std::vector<uint32_t> test_tokens = tokenizer->encode("test");
-    std::vector<float> test_embedding = handle->model->get_embeddings(test_tokens, true, true);
+    std::vector<float> test_embedding = handle->model->get_text_embeddings(test_tokens, true);
     if (test_embedding.empty()) {
         CACTUS_LOG_ERROR("init", "Failed to get embedding dimension");
         return false;
@@ -267,7 +267,7 @@ static bool build_corpus_index(CactusModelHandle* handle, const std::string& cor
         const auto& [chunk_text, source_file] = chunks[i];
 
         std::vector<uint32_t> tokens = tokenizer->encode(chunk_text);
-        std::vector<float> embedding = handle->model->get_embeddings(tokens, true, true);
+        std::vector<float> embedding = handle->model->get_text_embeddings(tokens, true);
 
         if (embedding.size() != embedding_dim) {
             CACTUS_LOG_WARN("init", "Skipping chunk " << i << " - embedding dimension mismatch");
@@ -317,7 +317,7 @@ static bool load_corpus_index(CactusModelHandle* handle, const std::string& corp
 
     auto* tokenizer = handle->model->get_tokenizer();
     std::vector<uint32_t> test_tokens = tokenizer->encode("test");
-    std::vector<float> test_embedding = handle->model->get_embeddings(test_tokens, true, true);
+    std::vector<float> test_embedding = handle->model->get_text_embeddings(test_tokens, true);
     if (test_embedding.empty()) {
         CACTUS_LOG_ERROR("init", "Failed to get embedding dimension for index loading");
         return false;

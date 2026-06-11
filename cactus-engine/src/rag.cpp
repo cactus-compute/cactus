@@ -126,7 +126,7 @@ std::string retrieve_rag_context(CactusModelHandle* handle, const std::string& q
 
     std::vector<float> query_embedding;
     try {
-        query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+        query_embedding = handle->model->get_text_embeddings(query_tokens, true);
     } catch (const std::exception& e) {
         CACTUS_LOG_WARN("rag", "get_embeddings unavailable, skipping RAG context: " << e.what());
         return "";
@@ -269,7 +269,7 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
             std::vector<uint32_t> tokens = tokenizer->encode(text);
             if (!tokens.empty()) {
                 try {
-                    std::vector<float> emb = handle->model->get_embeddings(tokens, true, true);
+                    std::vector<float> emb = handle->model->get_text_embeddings(tokens, true);
                     handle->tool_embeddings.push_back(std::move(emb));
                 } catch (const std::exception& e) {
                     CACTUS_LOG_WARN("tool_rag", "get_embeddings unavailable, returning all tools: " << e.what());
@@ -292,7 +292,7 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
 
     std::vector<float> query_embedding;
     try {
-        query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+        query_embedding = handle->model->get_text_embeddings(query_tokens, true);
     } catch (const std::exception& e) {
         CACTUS_LOG_WARN("tool_rag", "get_embeddings unavailable, returning all tools: " << e.what());
         return all_tools;
@@ -378,7 +378,7 @@ int cactus_rag_query(
             return 0;
         }
 
-        std::vector<float> query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+        std::vector<float> query_embedding = handle->model->get_text_embeddings(query_tokens, true);
         if (query_embedding.size() != handle->corpus_embedding_dim) {
             std::strcpy(response_buffer, "{\"chunks\":[],\"error\":\"Embedding dimension mismatch\"}");
             return 0;
