@@ -2,7 +2,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .common import GREEN, RED, YELLOW, apply_cloud_api_key_env, print_color, resolve_binary
+from .common import GREEN, RED, apply_cloud_api_key_env, print_color, resolve_binary
 
 
 def cmd_run(args) -> int:

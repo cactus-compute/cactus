@@ -2,7 +2,7 @@
 from pathlib import Path
 
 from .common import (
-    BLUE, GREEN, RED, YELLOW,
+    BLUE, GREEN, RED,
     SUPPORTED_PLATFORMS,
     print_color, transpiled_root, weights_root,
 )

@@ -29,8 +29,8 @@ def _component_args(component, args):
     if args.suite:
         cmd.extend(["--suite", args.suite])
     if component == "engine":
-        cmd.extend(["--model", args.model_id or DEFAULT_MODEL_ID])
-        cmd.extend(["--transcription-model", args.transcription_model_id or DEFAULT_TRANSCRIPTION_MODEL_ID])
+        cmd.extend(["--model", args.model_id])
+        cmd.extend(["--transcription-model", args.transcription_model_id])
         if args.android:
             cmd.append("--android")
         if args.ios:
@@ -64,6 +64,17 @@ def cmd_test(args):
         targets = matches if args.component == "all" else (args.component,)
     else:
         targets = ("kernels", "graph", "engine") if args.component == "all" else (args.component,)
+
+    if "engine" in targets:
+        from .model import ensure_runnable_bundle
+        try:
+            args.model_id = str(ensure_runnable_bundle(args.model_id or DEFAULT_MODEL_ID))
+            args.transcription_model_id = str(
+                ensure_runnable_bundle(args.transcription_model_id or DEFAULT_TRANSCRIPTION_MODEL_ID)
+            )
+        except RuntimeError as exc:
+            print_color(RED, f"Model setup failed: {exc}")
+            return 1
 
     apply_cloud_api_key_env()
     env = os.environ.copy()

@@ -1,7 +1,6 @@
 import itertools
 import stat as _stat
 import struct
-from pathlib import Path
 
 from .common import BLUE, CYAN, print_color, transpiled_root, weights_root
 
