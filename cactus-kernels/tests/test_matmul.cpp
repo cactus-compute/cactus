@@ -6,6 +6,8 @@
 
 using namespace TestUtils;
 
+static uint8_t unpack_index(const uint8_t* base, uint32_t bits, uint32_t k);
+
 struct SyntheticCQ {
     uint32_t bits, K, N, group_size, num_groups;
     std::vector<__fp16> codebook;
@@ -148,6 +150,56 @@ struct SyntheticCQ {
             .rotation = nullptr,
             .expanded = expanded_buf.empty() ? nullptr : expanded_buf.data(),
             .norm_f32 = norm_f32_buf.empty() ? nullptr : norm_f32_buf.data(),
+        };
+    }
+
+    // INTERLEAVED_4ROW encoding: exact inverse of the shipped decoder. Per 8-byte half,
+    // low nibbles = k 0-3 and high nibbles = k 4-7 of the half's K-range.
+    std::vector<uint8_t> packed_il;
+    std::vector<__fp16> norms_il;
+
+    void make_interleaved() {
+        if (bits != 4 || (N % 4) != 0) return;
+        const uint32_t pgb = cactus_quant_packed_group_bytes(4, group_size);
+        const size_t NB = N / 4;
+        packed_il.assign(NB * num_groups * 4 * (size_t)pgb, 0);
+        norms_il.resize(NB * num_groups * 4);
+        for (size_t nb = 0; nb < NB; ++nb)
+            for (uint32_t g = 0; g < num_groups; ++g) {
+                uint8_t* panel = packed_il.data() + (nb * num_groups + g) * 4 * (size_t)pgb;
+                for (uint32_t r = 0; r < 4; ++r) {
+                    const size_t n = nb * 4 + r;
+                    const uint8_t* row = packed.data() + (n * num_groups + g) * pgb;
+                    for (uint32_t v = 0; v < group_size / 16; ++v)
+                        for (uint32_t b = 0; b < 4; ++b) {
+                            auto idx = [&](uint32_t k) { return unpack_index(row, 4, k); };
+                            panel[(2 * v) * 16 + r * 4 + b] =
+                                (uint8_t)(idx(16 * v + b) | (idx(16 * v + 4 + b) << 4));
+                            panel[(2 * v + 1) * 16 + r * 4 + b] =
+                                (uint8_t)(idx(16 * v + 8 + b) | (idx(16 * v + 12 + b) << 4));
+                        }
+                    norms_il[(nb * num_groups + g) * 4 + r] = norms[n * num_groups + g];
+                }
+            }
+    }
+
+    CactusQuantMatrix matrix_interleaved() {
+        if (packed_il.empty()) make_interleaved();
+        return CactusQuantMatrix{
+            .bits = bits, .K = K, .N = N,
+            .group_size = group_size, .num_groups = num_groups,
+            .flags = CACTUS_QUANT_FLAG_INTERLEAVED_4ROW,
+            .codebook = codebook.data(),
+            .input_scale = input_scale.data(),
+            .input_scale_recip = input_scale_recip.data(),
+            .norms = norms_il.data(),
+            .packed_indices = packed_il.data(),
+            .left_signs = left_signs.data(),
+            .right_signs = right_signs.data(),
+            .permutation = permutation.data(),
+            .rotation = nullptr,
+            .expanded = nullptr,
+            .norm_f32 = nullptr,
         };
     }
 };
@@ -502,6 +554,26 @@ void print_mse_report() {
     }
 }
 
+// Legacy IL CQ4 vs the FP32 oracle through the real dispatch.
+static bool test_cq4_interleaved(double& mse_out,
+                                 uint32_t K = 1024, uint32_t N = 192, uint32_t gs = 128) {
+    SyntheticCQ cq(4, K, N, gs, 777);
+    CactusQuantMatrix mat = cq.matrix_interleaved();
+
+    std::mt19937 gen(31);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    std::vector<float> x_f32(K);
+    for (auto& v : x_f32) v = dist(gen);
+    std::vector<float> ref(N, 0.f);
+    cq_reference_gemv_f32(cq, x_f32.data(), ref.data());
+
+    std::vector<__fp16> x_f16(K), y(N, (__fp16)0);
+    for (size_t i = 0; i < K; i++) x_f16[i] = (__fp16)x_f32[i];
+    cactus_quant_matmul(&mat, x_f16.data(), 1, y.data());
+    mse_out = compute_mse(ref.data(), y.data(), N);
+    return mse_out <= 0.1;
+}
+
 int main() {
     TestRunner runner("Matrix Multiplication");
     runner.run_test("matmul_f16", test_matmul_f16());
@@ -509,6 +581,13 @@ int main() {
     runner.run_test("matmul_cq2", test_cq_correctness(2));
     runner.run_test("matmul_cq3", test_cq_correctness(3));
     runner.run_test("matmul_cq4", test_cq_correctness(4));
+    {
+        double m1 = 0;
+        runner.run_test("matmul_cq4_il", test_cq4_interleaved(m1));
+        // N=4164 -> 66 chunks incl. a 1-block tail: exercises the multi-thread fused driver.
+        double m_mt = 0;
+        runner.run_test("matmul_cq4_il_mt", test_cq4_interleaved(m_mt, 1024, 4164, 128));
+    }
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     print_mse_report();
