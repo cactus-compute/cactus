@@ -1101,19 +1101,25 @@ static CloudSendResult send_batch_to_cloud(const std::vector<Event>& local, cons
 static const size_t kMaxCachedEventsPerFile = 1000;
 
 static void trim_cache_file(const std::string& file, size_t max_lines) {
-    std::vector<std::string> lines;
+    // Stream the file keeping only the last max_lines, so a pre-existing oversized cache cannot blow up memory.
+    std::deque<std::string> lines;
+    bool trimmed = false;
     {
         std::ifstream in(file);
         if (!in.is_open()) return;
         std::string line;
-        while (std::getline(in, line)) lines.push_back(line);
+        while (std::getline(in, line)) {
+            lines.push_back(std::move(line));
+            if (lines.size() > max_lines) {
+                lines.pop_front();
+                trimmed = true;
+            }
+        }
     }
-    if (lines.size() <= max_lines) return;
+    if (!trimmed) return;
     std::ofstream out(file, std::ios::trunc);
     if (!out.is_open()) return;
-    for (size_t i = lines.size() - max_lines; i < lines.size(); ++i) {
-        out << lines[i] << "\n";
-    }
+    for (const auto& line : lines) out << line << "\n";
 }
 
 static void write_events_to_cache_in_dir(const std::vector<Event>& local, const std::string& dir) {
@@ -1207,9 +1213,15 @@ static std::vector<Event> load_cached_events_in_dir(const std::string& dir) {
         if (name.size() < 5 || name.substr(name.size() - 4) != ".log") continue;
         std::ifstream in(dir + "/" + name);
         std::string line;
+        // Load only the last kMaxCachedEventsPerFile lines, matching trim, so an oversized file is bounded here too.
+        std::deque<std::string> tail;
         while (std::getline(in, line)) {
+            tail.push_back(std::move(line));
+            if (tail.size() > kMaxCachedEventsPerFile) tail.pop_front();
+        }
+        for (const auto& cached : tail) {
             Event e;
-            if (parse_event_line(line, e)) {
+            if (parse_event_line(cached, e)) {
                 events.push_back(e);
             }
         }
