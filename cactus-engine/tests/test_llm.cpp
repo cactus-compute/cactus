@@ -731,6 +731,50 @@ bool test_multiturn_thinking_persist() {
     return prefix_ok && mentions_alice;
 }
 
+bool test_multiturn_turn2_distinct() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║" << std::setw(42) << std::left << "    MULTITURN TURN-2 DISTINCT TEST" << "║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    if (!g_model_path) { std::cout << "  [WARN] CACTUS_TEST_MODEL not set; skipping\n"; return true; }
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize model\n";
+        return false;
+    }
+
+    const char* options = R"({"max_tokens":150,"temperature":0,"telemetry_enabled":false,"auto_handoff":false})";
+    const char* turn1_msgs = R"([
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hi! My name is Ada and I live in Paris. Briefly say hello."}
+    ])";
+    char buf[16384];
+
+    int r1 = cactus_complete(model, turn1_msgs, buf, sizeof(buf), options, nullptr, nullptr, nullptr, nullptr, 0);
+    if (r1 <= 0) { std::cerr << "  Turn 1 failed\n"; cactus_destroy(model); return false; }
+    std::string response1 = EngineTestUtils::json_string(std::string(buf), "response");
+    std::cout << "  Turn 1: " << response1 << "\n";
+
+    std::string turn2_msgs = R"([
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hi! My name is Ada and I live in Paris. Briefly say hello."},
+        {"role": "assistant", "content": ")" + EngineTestUtils::escape_json(response1) + R"("},
+        {"role": "user", "content": "What is my name and what city do I live in? Answer in one short sentence."}
+    ])";
+
+    int r2 = cactus_complete(model, turn2_msgs.c_str(), buf, sizeof(buf), options, nullptr, nullptr, nullptr, nullptr, 0);
+    if (r2 <= 0) { std::cerr << "  Turn 2 failed\n"; cactus_destroy(model); return false; }
+    std::string response2 = EngineTestUtils::json_string(std::string(buf), "response");
+    std::cout << "  Turn 2: " << response2 << "\n";
+
+    cactus_destroy(model);
+
+    bool distinct = !response1.empty() && !response2.empty() && response2 != response1;
+    std::cout << "  Turn 2 distinct from turn 1: " << (distinct ? "YES" : "NO") << "\n";
+    if (!distinct) std::cerr << "  FAIL: turn 2 repeated turn 1 verbatim\n";
+    return distinct;
+}
+
 static std::string benchmark_tokens_json(cactus_model_t model, const std::vector<uint32_t>& ids, size_t max_new) {
     std::vector<char> response(1 << 16, 0);
     int rc = cactus_benchmark_tokens(model, ids.data(), ids.size(), max_new, response.data(), response.size());
@@ -835,6 +879,7 @@ int main() {
     runner.run_test("prompt_retains_thinking", test_prompt_gemma4_retains_thinking());
     runner.run_test("complete_thinking_api_clean", test_complete_gemma4_thinking_api_clean());
     runner.run_test("multiturn_thinking_persist", test_multiturn_thinking_persist());
+    runner.run_test("multiturn_turn2_distinct", test_multiturn_turn2_distinct());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

@@ -522,6 +522,7 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
                                          const std::string& tools_json, bool enable_thinking_if_supported) const {
     std::string result;
     const size_t n = messages.size();
+    const bool template_has_thinking = !has_chat_template_ || chat_template_.find("<think>") != std::string::npos;
 
     size_t first = 0;
     std::string sys;
@@ -570,7 +571,7 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
                 content = lstrip_newlines(content.substr(tpos + 8));
             }
             result += "<|im_start|>assistant\n";
-            if (static_cast<long>(i) > last_query_index && (i == n - 1 || !reasoning.empty())) {
+            if (template_has_thinking && static_cast<long>(i) > last_query_index && (i == n - 1 || !reasoning.empty())) {
                 result += "<think>\n" + reasoning + "\n</think>\n\n" + lstrip_newlines(content);
             } else {
                 result += content;
@@ -591,7 +592,7 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
 
     if (add_generation_prompt) {
         result += "<|im_start|>assistant\n";
-        if (!enable_thinking_if_supported) result += "<think>\n\n</think>\n\n";
+        if (!enable_thinking_if_supported && template_has_thinking) result += "<think>\n\n</think>\n\n";
     }
     return result;
 }
