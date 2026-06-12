@@ -65,6 +65,15 @@ CACTUS_FFI_EXPORT int cactus_tokenize(
     size_t* out_token_len
 );
 
+CACTUS_FFI_EXPORT int cactus_render_prompt(
+    cactus_model_t model,
+    const char* messages_json,
+    const char* options_json,
+    const char* tools_json,
+    char* prompt_buffer,
+    size_t buffer_size
+);
+
 CACTUS_FFI_EXPORT int cactus_score_window(
     cactus_model_t model,
     const uint32_t* tokens,

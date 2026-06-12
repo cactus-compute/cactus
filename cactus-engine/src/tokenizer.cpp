@@ -622,7 +622,7 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
     if (enable_thinking_if_supported || !sys_content.empty() || !tools_json.empty()) {
         result += "<|turn>system\n";
         if (enable_thinking_if_supported) {
-            result += "<|think|>";
+            result += "<|think|>\n";
         }
         result += sys_content;
         result += tools_json;
@@ -681,10 +681,10 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
             for (const auto& image_path : msg.images) {
                 size_t n = compute_soft_tokens(image_path);
                 if (n > 0) {
-                    result += "\n\n<|image>";
+                    result += "<|image>";
                     for (size_t j = 0; j < n; j++)
                         result += "<|image|>";
-                    result += "<image|>\n\n";
+                    result += "<image|>";
                 }
             }
             result += msg.content;

@@ -387,6 +387,7 @@ struct PreparedPrompt {
     std::vector<std::string> audio_paths;
     std::vector<ChatMessage> messages;
     std::vector<ToolFunction> tools;
+    std::string rendered;
     std::vector<uint32_t> tokens;
     size_t context_token_count = 0;
     std::vector<std::vector<CactusModelHandle::ProcessedImage>> images;
@@ -584,16 +585,16 @@ PreparedPrompt prepare_prompt(
         setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools, prompt.options.temperature);
     }
 
-    std::string full_prompt = tokenizer->format_chat_prompt(
+    prompt.rendered = tokenizer->format_chat_prompt(
         prompt.messages,
         add_generation_prompt,
         formatted_tools,
         prompt.options.enable_thinking_if_supported
     );
-    if (full_prompt.find("ERROR:") == 0) {
-        throw std::runtime_error(full_prompt.substr(6));
+    if (prompt.rendered.find("ERROR:") == 0) {
+        throw std::runtime_error(prompt.rendered.substr(6));
     }
-    prompt.tokens = tokenizer->encode(full_prompt);
+    prompt.tokens = tokenizer->encode(prompt.rendered);
     prompt.context_token_count = prompt.tokens.size();
     prompt.images = images_from_message(prompt.messages);
     return prompt;
@@ -1253,6 +1254,27 @@ int cactus_tokenize(
 
         std::memcpy(token_buffer, toks.data(), toks.size() * sizeof(uint32_t));
         return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+int cactus_render_prompt(
+    cactus_model_t model,
+    const char* messages_json,
+    const char* options_json,
+    const char* tools_json,
+    char* prompt_buffer,
+    size_t buffer_size
+) {
+    if (!model || !messages_json || !prompt_buffer || buffer_size == 0) return -1;
+
+    try {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, false, true);
+        if (prompt.rendered.size() >= buffer_size) return -2;
+        std::strcpy(prompt_buffer, prompt.rendered.c_str());
+        return static_cast<int>(prompt.rendered.size());
     } catch (...) {
         return -1;
     }

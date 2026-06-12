@@ -727,6 +727,19 @@ _lib.cactus_tokenize.argtypes = [
 _lib.cactus_tokenize.restype = ctypes.c_int
 
 _bind_optional(
+    "cactus_render_prompt",
+    [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+    ],
+    ctypes.c_int,
+)
+
+_bind_optional(
     "cactus_decode_tokens",
     [
         ctypes.c_void_p,
@@ -1127,6 +1140,19 @@ def cactus_tokenize(model, text):
     if rc < 0:
         raise RuntimeError(_err("Tokenization failed"))
     return list(arr[:n.value])
+
+
+def cactus_render_prompt(model, messages, options=None, tools=None):
+    """Render the chat-template prompt string for messages without generating."""
+    if not hasattr(_lib, "cactus_render_prompt"):
+        raise RuntimeError("cactus_render_prompt is unavailable; rebuild with cactus build --python")
+    buf = ctypes.create_string_buffer(1 << 20)
+    rc = _lib.cactus_render_prompt(
+        model, _to_json(messages), _to_json(options), _to_json(tools), buf, len(buf),
+    )
+    if rc < 0:
+        raise RuntimeError(_err("Prompt rendering failed"))
+    return buf.value.decode("utf-8", errors="ignore")
 
 
 def cactus_decode_tokens(model, tokens, temperature=0.0, top_p=1.0, top_k=1):

@@ -26,6 +26,7 @@ __all__ = [
     "cactus_transcribe",
     "cactus_detect_language",
     "cactus_tokenize",
+    "cactus_render_prompt",
     "cactus_decode_tokens",
     "cactus_score_window",
     "cactus_rag_query",
