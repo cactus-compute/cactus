@@ -530,7 +530,10 @@ void CactusGraph::steal_cache_buffer(size_t dst_node, CactusGraph& src, size_t s
     auto& s = src.nodes_[src.node_index_map_.at(src_node)];
     // Buffer carries its own runtime precision (may be fp16); only op_type is invariant pre-move.
     assert(dst->op_type == s->op_type);
+    auto shape = s->output_buffer.shape;
+    auto prec = s->output_buffer.precision;
     dst->output_buffer = std::move(s->output_buffer);
+    s->output_buffer = BufferDesc(shape, prec);
 }
 
 namespace {
