@@ -24,6 +24,7 @@ from .run import cmd_run
 from .list import cmd_list
 
 from .auth import cmd_auth
+from .bench import cmd_bench
 from .clean import cmd_clean
 
 
@@ -174,6 +175,15 @@ def create_parser():
     --android                          run on connected Android
     --enable-telemetry                 send cloud telemetry (off by default)
 
+  cactus bench [model]                 benchmark inference throughput
+    --android                          run on connected Android (default: local)
+    --prefill-tokens <n>               exact prefill length (default: 512)
+    --decode-tokens <n>                decode budget per round (default: 32)
+    --rounds <n>                       measured rounds (default: 3)
+    --prompt <text>                    benchmark the chat path instead
+    --cpu-mask <hex>                   taskset core mask (Android only)
+    --output <csv>                     write per-round results
+
   cactus clean                         delete build artifacts
   cactus --help                        show this help
 
@@ -291,6 +301,30 @@ def create_parser():
     test_parser.add_argument("--enable-telemetry", action="store_true",
                              help="Enable cloud telemetry (disabled by default in tests)")
 
+    bench_parser = subparsers.add_parser("bench",
+                                         help="Benchmark inference throughput (local by default, --android for a device)")
+    bench_parser.add_argument("model_id", nargs="?", default="google/gemma-4-E2B-it",
+                              type=_hf_id_or_path,
+                              help="HF model ID or bundle path (default: google/gemma-4-E2B-it)")
+    bench_parser.add_argument("--android", action="store_true",
+                              help="Build for arm64-v8a and run on a connected Android device")
+    bench_parser.add_argument("--serial", default=None,
+                              help="adb device serial (required with multiple devices)")
+    bench_parser.add_argument("--prefill-tokens", type=_positive_int, default=512,
+                              help="Exact prefill length in tokens (default: 512; use multiples of 128)")
+    bench_parser.add_argument("--decode-tokens", type=_positive_int, default=32,
+                              help="Decode budget per round (default: 32)")
+    bench_parser.add_argument("--rounds", type=_positive_int, default=3,
+                              help="Measured rounds after 1 warmup (default: 3)")
+    bench_parser.add_argument("--prompt", default=None,
+                              help="Benchmark the chat-template path with this prompt instead of raw token IDs")
+    bench_parser.add_argument("--max-tokens", type=_positive_int, default=32,
+                              help="Decode budget per round in prompt mode (default: 32)")
+    bench_parser.add_argument("--cpu-mask", default=None,
+                              help="taskset hex mask for core-restricted runs (Android only)")
+    bench_parser.add_argument("--output", default=None,
+                              help="Write per-round results to a CSV file")
+
     auth_parser = subparsers.add_parser("auth", help="Manage cloud API key")
     auth_parser.add_argument("--clear", action="store_true",
                              help="Remove the saved API key")
@@ -400,13 +434,14 @@ _COMMANDS = {
     "list":       cmd_list,
 
     "auth":           cmd_auth,
+    "bench":          cmd_bench,
     "clean":          cmd_clean,
     "convert":        cmd_convert,
     "transpile":      cmd_transpile,
 }
 
 
-_REPO_ONLY = {"build", "test", "clean"}
+_REPO_ONLY = {"bench", "build", "test", "clean"}
 
 
 def main():
