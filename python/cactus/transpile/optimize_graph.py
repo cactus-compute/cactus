@@ -840,7 +840,7 @@ def normalize_cached_decoder_attention_hints(graph: IRGraph) -> bool:
 
 def _assign_gemma4_decoder_attention_hints_from_graph_meta(graph: IRGraph) -> bool:
     component = str(graph.meta.get("component", "") or "").strip().lower()
-    if component not in {"decoder", "decoder_step", "decoder_prefill_chunk"}:
+    if component not in {"decoder", "decoder_step", "decoder_prefill_chunk", "decoder_media_step"}:
         return False
 
     layer_types = _graph_layer_types(graph)

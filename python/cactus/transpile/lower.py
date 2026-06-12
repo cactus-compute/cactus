@@ -247,6 +247,14 @@ def _should_lower_attention_with_internal_kv_cache(ir: IRGraph, node: IRNode) ->
     return True
 
 
+def _kv_cache_layer_key(node: IRNode) -> str:
+    for meta_key in ("attention_layer_index", "layer_index"):
+        value = node.meta.get(meta_key)
+        if value is not None:
+            return str(value)
+    return str(node.id)
+
+
 def _lower_attention_with_internal_kv_cache(
     g: Graph,
     ir: IRGraph,
@@ -268,11 +276,7 @@ def _lower_attention_with_internal_kv_cache(
         raise NotImplementedError("cached attention currently expects batch size 1")
 
     cache_states: dict[str, tuple[Tensor, Tensor]] = env.setdefault("__internal_kv_cache_states", {})  # type: ignore[assignment]
-    layer_key = str(
-        node.meta.get("attention_layer_index")
-        or node.meta.get("layer_index")
-        or node.id
-    )
+    layer_key = _kv_cache_layer_key(node)
     if layer_key not in cache_states:
         default_cache_len = max(512, int(key_shape[1]))
         requested_cache_len = node.meta.get("max_cache_seq_len", ir.meta.get("max_cache_seq_len", default_cache_len))
