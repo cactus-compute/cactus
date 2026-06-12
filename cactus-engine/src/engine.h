@@ -240,6 +240,10 @@ struct Config {
         return t == ModelType::GEMMA || t == ModelType::GEMMA3N || t == ModelType::GEMMA4;
     }
 
+    static bool is_gemma3_family(ModelType t) {
+        return t == ModelType::GEMMA || t == ModelType::GEMMA3N;
+    }
+
     bool from_json(const std::string& json_path);
     std::string to_json() const;
     // Disable rolling unless 0 < target < trigger (when trigger > 0).
@@ -337,6 +341,7 @@ public:
     virtual bool has_chat_template() const { return has_chat_template_; }
     bool is_qwen_family() const { return model_type_ == ModelType::QWEN; }
     bool is_lfm2_family() const { return model_type_ == ModelType::LFM2; }
+    bool has_function_call_tokens() const { return encode("<start_function_call>").size() == 1; }
     std::string get_default_stop_sequence() const;
 
     virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
@@ -535,6 +540,10 @@ private:
 
     std::string call_start_tag_;
     std::string call_end_tag_;
+    std::string response_start_tag_;
+    std::vector<uint32_t> call_start_sequence_;
+    std::vector<uint32_t> call_end_sequence_;
+    size_t forced_tag_progress_ = 0;
 
     std::unordered_set<uint32_t> all_func_name_tokens_;
     std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;
@@ -557,6 +566,7 @@ private:
     void tokenize_grammar_elements();
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
     void add_tokens_for_prefix_string(const std::string& prefix, std::unordered_set<uint32_t>& token_set);
+    void advance_forced_tag(const std::vector<uint32_t>& sequence, uint32_t token_id);
     void tokenize_function_names(bool quote_names);
     void init_common_tokens();
 

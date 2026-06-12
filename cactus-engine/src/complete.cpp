@@ -578,7 +578,7 @@ PreparedPrompt prepare_prompt(
     } else if (tokenizer->is_lfm2_family()) {
         formatted_tools = chat_tools::serialize_tools_lfm2(prompt.tools);
     } else {
-        formatted_tools = gemma::format_tools(prompt.tools, true);
+        formatted_tools = gemma::format_tools(prompt.tools, !Config::is_gemma3_family(prompt.model_type));
     }
 
     if (apply_tool_constraints) {

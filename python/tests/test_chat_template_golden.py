@@ -19,8 +19,9 @@ FAMILIES = [
     ("gemma-4-e2b-it", "google/gemma-4-E2B-it"),
     ("qwen3-0.6b", "Qwen/Qwen3-0.6B"),
     ("lfm2-350m", "LiquidAI/LFM2-350M"),
+    ("functiongemma-270m-it", "google/functiongemma-270m-it"),
 ]
-FAMILY_IDS = ["gemma4", "qwen3", "lfm2"]
+FAMILY_IDS = ["gemma4", "qwen3", "lfm2", "functiongemma"]
 THINKING_TYPES = {"gemma4", "qwen"}
 
 TOOLS = [
