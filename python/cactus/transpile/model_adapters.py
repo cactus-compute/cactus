@@ -216,6 +216,11 @@ def _select_last_non_pad_token(
     return _select_last_active_token(hidden_or_logits, attention_mask)
 
 
+def _tile_to_length(tensor: torch.Tensor, length: int) -> torch.Tensor:
+    reps = -(-length // int(tensor.shape[1]))
+    return torch.cat([tensor] * reps, dim=1)[:, :length].contiguous()
+
+
 def _resolve_model_pad_token_id(model: torch.nn.Module) -> int | None:
     config = getattr(model, "config", None)
     for attr_name in ("pad_token_id", "eos_token_id", "bos_token_id"):
@@ -3531,11 +3536,10 @@ def _build_gemma3_causal_lm_component_specs(
         "cache_sink_size": 4,
     }
     prefill_chunk_size = max(2, int(os.environ.get("CACTUS_GEMMA3_PREFILL_CHUNK", "128") or "128"))
-    prefill_chunk_size = min(prefill_chunk_size, int(input_ids.shape[1]))
 
     step_input_ids = input_ids[:, :1]
     step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
-    chunk_input_ids = input_ids[:, :prefill_chunk_size].contiguous()
+    chunk_input_ids = _tile_to_length(input_ids, prefill_chunk_size)
     chunk_position_ids = torch.arange(
         prefill_chunk_size, dtype=torch.int64, device=input_ids.device,
     ).unsqueeze(0)
@@ -4747,8 +4751,7 @@ def _build_qwen_causal_lm_component_specs(
         decoder_embed_chunk = Qwen3EmbedsCausalLMEmbedChunkAdapter(model).eval()
         max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
         prefill_chunk_size = max(1, int(os.environ.get("CACTUS_QWEN_PREFILL_CHUNK", "128") or "128"))
-        prefill_chunk_size = min(prefill_chunk_size, int(input_ids.shape[1]))
-        chunk_input_ids = input_ids[:, :prefill_chunk_size].contiguous()
+        chunk_input_ids = _tile_to_length(input_ids, prefill_chunk_size)
         chunk_position_ids = torch.arange(
             prefill_chunk_size,
             dtype=torch.long,
@@ -4916,8 +4919,7 @@ def _build_qwen3_5_multimodal_component_specs(
                 image_features = vision_encoder(pixel_values)
             decoder_inputs = lm_encoder(input_ids, attention_mask, position_ids, image_features)
         prefill_chunk_size = max(1, int(os.environ.get("CACTUS_QWEN_PREFILL_CHUNK", "128") or "128"))
-        prefill_chunk_size = min(prefill_chunk_size, int(input_ids.shape[1]))
-        chunk_input_ids = input_ids[:, :prefill_chunk_size].contiguous()
+        chunk_input_ids = _tile_to_length(input_ids, prefill_chunk_size)
         chunk_position_ids = torch.arange(
             prefill_chunk_size,
             dtype=torch.long,
@@ -5852,8 +5854,7 @@ def _lfm2_chunked_pipeline_specs(
     decoder_embed = Lfm2VlDecoderAdapter(model, weights_dir=weights_dir, last_token_only=False, return_hidden=True).eval()
 
     prefill_chunk = max(2, int(os.environ.get("CACTUS_LFM2_PREFILL_CHUNK", "128") or "128"))
-    prefill_chunk = min(prefill_chunk, int(input_ids.shape[1]))
-    chunk_input_ids = input_ids[:, :prefill_chunk].contiguous()
+    chunk_input_ids = _tile_to_length(input_ids, prefill_chunk)
     chunk_position_ids = torch.arange(
         prefill_chunk, dtype=torch.long, device=input_ids.device,
     ).unsqueeze(0).expand(int(input_ids.shape[0]), -1).contiguous()
