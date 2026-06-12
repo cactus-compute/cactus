@@ -411,6 +411,35 @@ bool test_prefill() {
     return all_success && warm_prefilled_less;
 }
 
+struct LengthTokenizer : public Tokenizer {
+    std::vector<uint32_t> encode(const std::string& text) const override {
+        return {static_cast<uint32_t>(text.size())};
+    }
+    std::string decode(const std::vector<uint32_t>&) const override { return std::string(); }
+    uint32_t get_vocab_size() const override { return 0; }
+    uint32_t get_unk_token() const override { return 0; }
+    uint32_t get_bos_token() const override { return 0; }
+    uint32_t get_eos_token() const override { return 0; }
+    bool load_vocabulary_with_config(const std::string&, const std::string&, const std::string&) override { return true; }
+};
+
+bool test_tool_constraint_clear_releases_bias() {
+    LengthTokenizer tok;
+    ToolCallConstrainer constrainer;
+    constrainer.init(Config::ModelType::GEMMA4, {{"get_weather", {"location"}, {"location"}}}, &tok);
+    if (constrainer.get_bias().empty()) {
+        std::cerr << "  expected bias after activating init\n";
+        return false;
+    }
+    constrainer.reset();
+    constrainer.init(Config::ModelType::GEMMA4, {}, &tok);
+    if (!constrainer.get_bias().empty()) {
+        std::cerr << "  stale bias survived deactivating init\n";
+        return false;
+    }
+    return true;
+}
+
 bool test_tool_call() {
     const char* messages = R"([
         {"role": "system", "content": "You are a helpful assistant that can use tools."},
@@ -801,6 +830,7 @@ int main() {
     runner.run_test("tool_calls", test_tool_call());
     runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
     runner.run_test("tool_calls_with_three_tools", test_tool_call_with_three_tools());
+    runner.run_test("tool_constraint_clear_releases_bias", test_tool_constraint_clear_releases_bias());
     runner.run_test("partition_thinking_response", test_partition_thinking_response());
     runner.run_test("prompt_retains_thinking", test_prompt_gemma4_retains_thinking());
     runner.run_test("complete_thinking_api_clean", test_complete_gemma4_thinking_api_clean());

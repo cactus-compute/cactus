@@ -289,6 +289,7 @@ void ToolCallConstrainer::init(Config::ModelType model_type,
     }
     tokenizer_ = tokenizer;
     generated_text_.clear();
+    current_bias_.clear();
     brace_depth_ = 0;
     in_argument_string_ = false;
     const bool model_supported = is_needle() || Config::is_gemma_family(model_type_);
@@ -558,7 +559,6 @@ void Model::set_tool_constraints(const std::vector<ToolConstraintSpec>& tools) {
 }
 
 void Model::clear_tool_constraints() {
-    tool_constrainer_.reset();
     tool_constrainer_.init(config_.model_type, {}, tokenizer_.get());
 }
 
