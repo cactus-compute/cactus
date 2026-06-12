@@ -82,6 +82,7 @@ struct CactusModelHandle {
     size_t corpus_embedding_dim = 0;
     std::vector<std::vector<float>> tool_embeddings;
     std::vector<std::string> tool_texts;
+    bool cloud_handoff_disabled = false;
 
     CactusModelHandle() : should_stop(false) {}
 };

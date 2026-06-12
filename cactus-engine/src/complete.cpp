@@ -788,7 +788,7 @@ int cactus_complete(
         bool has_images = prompt.has_images();
         bool has_audio = prompt.has_audio();
         const bool cloud_disabled = env_flag_enabled("CACTUS_DISABLE_CLOUD_HANDOFF");
-        const bool cloud_eligible = !cloud_disabled &&
+        const bool cloud_eligible = !cloud_disabled && !handle->cloud_handoff_disabled &&
             prompt.options.auto_handoff && (!has_images || prompt.options.handoff_with_images);
         handle->model->reset_handoff_probe_rollout();
         const bool defer_local_stream_until_probe = cloud_eligible && handle->model->has_handoff_probe();
@@ -808,6 +808,14 @@ int cactus_complete(
             }
             request.cloud_key = resolve_cloud_api_key(nullptr);
             return request;
+        };
+
+        auto disable_handoff_on_auth_failure = [&](const std::string& error) {
+            if (error.rfind("http_401", 0) == 0 || error.rfind("http_403", 0) == 0) {
+                handle->cloud_handoff_disabled = true;
+                CACTUS_LOG_WARN("cloud_handoff", "Cloud auth failed (" << error
+                    << "); disabling cloud handoff for this session");
+            }
         };
 
         auto return_cloud_completion = [&](const CloudCompletionResult& cloud_result,
@@ -860,6 +868,7 @@ int cactus_complete(
             }
             std::string cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
             CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed before local generation: " << cloud_error);
+            disable_handoff_on_auth_failure(cloud_error);
             handle_error_response(("cloud handoff failed before local generation: " + cloud_error).c_str(),
                                   response_buffer, buffer_size);
             return -1;
@@ -924,7 +933,8 @@ int cactus_complete(
         entropy.add(first_token_entropy);
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
-            if (!defer_local_stream_until_probe
+            if (cloud_eligible
+                && !defer_local_stream_until_probe
                 && !pre_generation_cloud_attempted
                 && confidence < prompt.options.confidence_threshold) {
                 CACTUS_LOG_WARN("cloud_handoff", "Cloud handoff triggered before local streaming; waiting up to "
@@ -942,6 +952,7 @@ int cactus_complete(
                 }
                 cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
                 CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed before local streaming, falling back to local output: " << cloud_error);
+                disable_handoff_on_auth_failure(cloud_error);
             }
 
             if (callback && !defer_local_stream_until_probe) {
@@ -1058,6 +1069,7 @@ int cactus_complete(
             cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
             CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed after probe handoff, falling back to local output: "
                 << cloud_error);
+            disable_handoff_on_auth_failure(cloud_error);
         }
 
         if (callback && defer_local_stream_until_probe && !primary_response.empty()) {
