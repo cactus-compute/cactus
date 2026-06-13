@@ -12,23 +12,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-WEIGHTS = PROJECT_ROOT / "weights"
+from .bundles import PROJECT_ROOT, WEIGHTS, _find_bundle, _read_model_type, _valid_bundle
+
 DEFAULT_LLM_BUNDLE = Path("weights/gemma-4-e2b-it")
 ASSETS = PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
 LLM_TYPES = {"gemma", "gemma3n", "gemma4", "lfm2", "qwen", "qwen3p5", "needle", "youtu"}
 STT_TYPES = {"whisper", "parakeet_tdt", "parakeet-tdt"}
-
-
-def _read_model_type(bundle: Path) -> str:
-    for line in (bundle / "config.txt").read_text(encoding="utf-8").splitlines():
-        if line.startswith("model_type="):
-            return line.split("=", 1)[1].strip()
-    return ""
-
-
-def _valid_bundle(path: Path) -> bool:
-    return (path / "config.txt").exists() and (path / "components" / "manifest.json").exists()
 
 
 def _require_bundle(relative: Path, types: set[str]) -> Path:
@@ -51,17 +40,6 @@ def _require_bundle(relative: Path, types: set[str]) -> Path:
             f"Expected one of: {sorted(types)}."
         )
     return candidate
-
-
-def _find_bundle(preferred: list[str], types: set[str]) -> Path:
-    for name in preferred:
-        candidate = WEIGHTS / name
-        if candidate.exists() and _valid_bundle(candidate) and _read_model_type(candidate) in types:
-            return candidate
-    for candidate in sorted(WEIGHTS.iterdir()):
-        if candidate.is_dir() and _valid_bundle(candidate) and _read_model_type(candidate) in types:
-            return candidate
-    pytest.fail(f"No valid live-test bundle found under {WEIGHTS} for model types: {sorted(types)}")
 
 
 def _free_port() -> int:

@@ -93,11 +93,16 @@ def _capturing_complete(captured: dict):
     return fake_complete
 
 
-def test_chat_tool_calls_are_translated(tmp_path: Path, monkeypatch) -> None:
+def _tool_capture_app(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
     monkeypatch.setattr(server, "cactus_reset", lambda handle: None)
     captured = {}
     monkeypatch.setattr(server, "cactus_complete", _capturing_complete(captured))
+    return app, captured
+
+
+def test_chat_tool_calls_are_translated(tmp_path: Path, monkeypatch) -> None:
+    app, captured = _tool_capture_app(tmp_path, monkeypatch)
 
     with TestClient(app) as client:
         res = client.post("/v1/chat/completions", json={
@@ -116,10 +121,7 @@ def test_chat_tool_calls_are_translated(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_streaming_chat_sends_wrapped_tools(tmp_path: Path, monkeypatch) -> None:
-    app = _app(tmp_path, monkeypatch)
-    monkeypatch.setattr(server, "cactus_reset", lambda handle: None)
-    captured = {}
-    monkeypatch.setattr(server, "cactus_complete", _capturing_complete(captured))
+    app, captured = _tool_capture_app(tmp_path, monkeypatch)
 
     with TestClient(app) as client:
         with client.stream("POST", "/v1/chat/completions", json={
@@ -136,10 +138,7 @@ def test_streaming_chat_sends_wrapped_tools(tmp_path: Path, monkeypatch) -> None
 
 
 def test_tool_choice_object_selects_wrapped_tool(tmp_path: Path, monkeypatch) -> None:
-    app = _app(tmp_path, monkeypatch)
-    monkeypatch.setattr(server, "cactus_reset", lambda handle: None)
-    captured = {}
-    monkeypatch.setattr(server, "cactus_complete", _capturing_complete(captured))
+    app, captured = _tool_capture_app(tmp_path, monkeypatch)
 
     with TestClient(app) as client:
         res = client.post("/v1/chat/completions", json={

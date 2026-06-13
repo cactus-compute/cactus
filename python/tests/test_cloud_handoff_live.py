@@ -4,23 +4,14 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-WEIGHTS = PROJECT_ROOT / "weights"
+from .bundles import _find_bundle
+
 PREFERRED_BUNDLES = ["qwen3-0.6b", "lfm2-350m"]
 OPTIONS = {"max_tokens": 8, "temperature": 0, "confidence_threshold": 1.0}
 MESSAGES = [{"role": "user", "content": "What is 2+2?"}]
-
-
-def _find_bundle() -> Path:
-    for name in PREFERRED_BUNDLES:
-        candidate = WEIGHTS / name
-        if (candidate / "config.txt").exists() and (candidate / "components" / "manifest.json").exists():
-            return candidate
-    pytest.skip(f"No live-test bundle found under {WEIGHTS}; expected one of: {PREFERRED_BUNDLES}")
 
 
 class _AuthFailHandler(BaseHTTPRequestHandler):
@@ -45,7 +36,7 @@ def _hits(server) -> int:
 
 
 def test_auth_failure_disables_cloud_handoff_for_session(monkeypatch, tmp_path):
-    bundle = _find_bundle()
+    bundle = _find_bundle(PREFERRED_BUNDLES, {"qwen", "lfm2"}, on_missing=pytest.skip)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _AuthFailHandler)
     server.hits = 0
     server.hits_lock = threading.Lock()

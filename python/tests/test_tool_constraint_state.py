@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from cactus import cactus_complete, cactus_destroy, cactus_init
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-BUNDLE = PROJECT_ROOT / "weights" / "gemma-4-e2b-it"
+from .bundles import WEIGHTS, _valid_bundle
+
+BUNDLE = WEIGHTS / "gemma-4-e2b-it"
 
 GET_WEATHER = {
     "type": "function",
@@ -24,10 +24,6 @@ GET_WEATHER = {
         },
     },
 }
-
-
-def _valid_bundle(path: Path) -> bool:
-    return (path / "config.txt").exists() and (path / "components" / "manifest.json").exists()
 
 
 @pytest.fixture(scope="module")

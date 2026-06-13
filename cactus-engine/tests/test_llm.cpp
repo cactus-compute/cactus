@@ -811,8 +811,9 @@ bool test_chunked_prefill_padding() {
         std::string padded = benchmark_tokens_json(model, ids, 4);
         std::string padded_again = benchmark_tokens_json(model, ids, 4);
         cactus_destroy(model);
-        if (padded.empty() || padded.find("\"success\":true") == std::string::npos) {
-            std::cerr << "  [✗] padded benchmark failed at len " << prompt_len << "\n";
+        if (padded.empty() || padded.find("\"success\":true") == std::string::npos
+                || padded_again.empty() || padded_again.find("\"success\":true") == std::string::npos) {
+            std::cerr << "  [✗] repeated chunked benchmark failed at len " << prompt_len << "\n";
             return false;
         }
         long tail_chunk = static_cast<long>(EngineTestUtils::json_number(padded, "prefill_tail_chunk_tokens", -1));
@@ -822,7 +823,7 @@ bool test_chunked_prefill_padding() {
                   << " pads=" << tail_pads << " scalar=" << scalar << "\n";
         if (tail_chunk <= 0) {
             std::cout << "  [WARN] padded tail did not engage (no sliding caches?); skipping\n";
-            return true;
+            continue;
         }
         if (tail_pads <= 0 || scalar > 1) {
             std::cerr << "  [✗] unexpected padding telemetry\n";

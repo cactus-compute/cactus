@@ -1,18 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-
 transformers = pytest.importorskip("transformers")
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-WEIGHTS = PROJECT_ROOT / "weights"
+from .bundles import PROJECT_ROOT, WEIGHTS, _read_model_type, _valid_bundle
+
 MONKEY_IMAGE = PROJECT_ROOT / "cactus-engine" / "tests" / "assets" / "test_monkey.png"
 
 FAMILIES = [
@@ -109,17 +105,6 @@ CASES = [
 ]
 
 
-def _read_model_type(bundle: Path) -> str:
-    for line in (bundle / "config.txt").read_text(encoding="utf-8").splitlines():
-        if line.startswith("model_type="):
-            return line.split("=", 1)[1].strip()
-    return ""
-
-
-def _valid_bundle(path: Path) -> bool:
-    return (path / "config.txt").exists() and (path / "components" / "manifest.json").exists()
-
-
 def _pythonic_call(call: dict) -> str:
     fn = call["function"]
     args = ", ".join(f"{key}={json.dumps(value)}" for key, value in fn["arguments"].items())
@@ -161,7 +146,7 @@ def load_family():
             if not _valid_bundle(bundle):
                 pytest.skip(f"bundle not prepared: {bundle}")
             try:
-                tokenizer = transformers.AutoTokenizer.from_pretrained(hf_id)
+                tokenizer = transformers.AutoTokenizer.from_pretrained(hf_id, local_files_only=True)
             except OSError as exc:
                 pytest.skip(f"HF tokenizer not cached for {hf_id}: {exc}")
             _LOADED[bundle_name] = (cactus_init(str(bundle)), tokenizer, _read_model_type(bundle))
@@ -194,7 +179,7 @@ def test_render_matches_hf_template(load_family, bundle_name, hf_id, case_name, 
     from cactus import cactus_render_prompt
 
     model, tokenizer, model_type = load_family(bundle_name, hf_id)
-    if case_name.startswith("thinking") and model_type not in THINKING_TYPES:
+    if case_name.startswith("thinking") and not any(t in model_type for t in THINKING_TYPES):
         pytest.skip(f"{model_type} has no thinking template support")
     engine_render = cactus_render_prompt(
         model, messages, options={"enable_thinking_if_supported": thinking}, tools=tools
