@@ -1094,10 +1094,6 @@ def _gemma4_compute_native_like_audio_features(
     if not callable(getattr(embed_audio, "forward", None)):
         raise TypeError("Gemma4 audio embedder is not callable")
     projected = embed_audio(inputs_embeds=audio_encodings)
-    # Native Cactus Gemma4 scales audio soft tokens before merging them into
-    # the language stream. HF leaves this implicit in its fp16 path, but the
-    # quantized Cactus decoder expects the native-scaled representation.
-    projected = projected * (1.0 / 16.0)
     # The transpiled bundle is shape-specialized from representative media.
     # Native Gemma4 audio preprocessing emits an unpadded feature tensor for
     # that media, so the post-subsampling sequence is already the real token
