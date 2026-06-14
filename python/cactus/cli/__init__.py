@@ -174,7 +174,7 @@ def create_parser():
     --android                          run on connected Android
     --enable-telemetry                 send cloud telemetry (off by default)
 
-  cactus clean                         delete build artifacts
+  cactus clean                         delete build artifacts, weights, venv
   cactus --help                        show this help
 
   -----------------------------------------------------------------
@@ -297,7 +297,8 @@ def create_parser():
     auth_parser.add_argument("--status", action="store_true",
                              help="Show current key status")
 
-    subparsers.add_parser("clean", help="Delete build artifacts")
+    clean_parser = subparsers.add_parser("clean", help="Delete build artifacts, downloaded weights, and venv")
+    clean_parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
 
     subparsers.add_parser("list", help="List local converted weights and bundles")
 
