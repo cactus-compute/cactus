@@ -23,6 +23,8 @@ GEMMA4_MULT_BASENAMES = {"ffn_gate", "ffn_up", "per_layer_gate", "moe_gate_proj"
 GEMMA4_DIV_BASENAMES = {
     "token_embeddings",
     "output_weight",
+    "embed_vision_proj",
+    "embed_audio_proj",
 }
 
 
