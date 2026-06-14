@@ -292,7 +292,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
             data = data * GEMMA4_WEIGHT_SCALE
         elif 'router_scale' in filename:
             data = data / GEMMA4_WEIGHT_SCALE
-        elif filename in ('token_embeddings.weights', 'output_weight.weights', 'embed_vision_embedding.weights'):
+        elif filename in ('token_embeddings.weights', 'output_weight.weights', 'embed_vision_embedding.weights', 'embed_vision_proj.weights'):
             data = data / GEMMA4_WEIGHT_SCALE
         elif filename == 'output_norm.weights':
             data = data * GEMMA4_WEIGHT_SCALE
