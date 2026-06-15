@@ -21,7 +21,7 @@ from ..cactus_adapters.config_utils import (
     extract_vision_config,
     extract_whisper_config,
 )
-from .naming import NameMatch, cactus_name_for_tensor, gemma4_scale_factor, restore_hf_key_for_family
+from .naming import NameMatch, cactus_name_for_tensor, gemma3_scale_factor, gemma4_scale_factor, restore_hf_key_for_family
 from .policy import TensorPolicy, policy_for_tensor
 from ..compat import patch_transformers_import_compat
 
@@ -132,11 +132,19 @@ class FamilyAdapter:
 class Gemma4Adapter(FamilyAdapter):
     family = "gemma4"
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.kv_shared_from_layer = 15
+
     def runtime_config(self, cfg: Any) -> dict[str, Any]:
         text_cfg = _cfg_get(cfg, "text_config", None)
         base_cfg = text_cfg if text_cfg is not None else cfg
         config = extract_base_config(base_cfg, cfg)
         config.update(extract_complex_gemma_config(base_cfg, cfg))
+        num_layers = int(config.get("num_layers", 0) or 0)
+        num_kv_shared_layers = int(config.get("num_kv_shared_layers", 0) or 0)
+        if num_layers > 0 and num_kv_shared_layers > 0:
+            self.kv_shared_from_layer = max(0, num_layers - num_kv_shared_layers)
         vision_cfg = _cfg_get(cfg, "vision_config", None)
         if vision_cfg:
             config.update(extract_vision_config(cfg, vision_cfg))
@@ -169,7 +177,7 @@ class Gemma4Adapter(FamilyAdapter):
                 layer = int(parts[3]) if parts[:3] == ["model", "language_model", "layers"] else None
             except Exception:
                 layer = None
-            if layer is not None and layer >= 15:
+            if layer is not None and layer >= self.kv_shared_from_layer:
                 return replace(policy, use_gptq=False, fallback_reason=policy.fallback_reason or "shared KV tensor has no per-layer hook module")
         return policy
 
@@ -266,7 +274,7 @@ class ParakeetAdapter(FamilyAdapter):
         if len(_tensor_shape(tensor)) != 4:
             return tensor, "none"
         shape = _tensor_shape(tensor)
-        is_hwio_k3 = shape[1] == 3 and shape[2] == 3 and shape[3] >= 1
+        is_hwio_k3 = shape[1] == 3 and shape[2] == 3 and shape[3] == 1
         is_hwio_pw = shape[1] == 1 and shape[2] == 1 and shape[3] > 1
         if not (is_hwio_k3 or is_hwio_pw):
             return tensor, "none"
@@ -487,8 +495,16 @@ class Lfm2Adapter(FamilyAdapter):
         return super().module_target_name(source_name, _model)
 
 
+class Gemma3Adapter(FamilyAdapter):
+    family = "gemma3"
+
+    def scale_factor(self, output_name: str) -> float:
+        return gemma3_scale_factor(output_name)
+
+
 ADAPTERS: dict[str, FamilyAdapter] = {
     "generic": FamilyAdapter(),
+    "gemma3": Gemma3Adapter(),
     "gemma4": Gemma4Adapter(),
     "qwen": QwenAdapter(),
     "lfm2": Lfm2Adapter(),

@@ -126,7 +126,7 @@ std::string retrieve_rag_context(CactusModelHandle* handle, const std::string& q
 
     std::vector<float> query_embedding;
     try {
-        query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+        query_embedding = handle->model->get_text_embeddings(query_tokens, true);
     } catch (const std::exception& e) {
         CACTUS_LOG_WARN("rag", "get_embeddings unavailable, skipping RAG context: " << e.what());
         return "";
@@ -269,7 +269,7 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
             std::vector<uint32_t> tokens = tokenizer->encode(text);
             if (!tokens.empty()) {
                 try {
-                    std::vector<float> emb = handle->model->get_embeddings(tokens, true, true);
+                    std::vector<float> emb = handle->model->get_text_embeddings(tokens, true);
                     handle->tool_embeddings.push_back(std::move(emb));
                 } catch (const std::exception& e) {
                     CACTUS_LOG_WARN("tool_rag", "get_embeddings unavailable, returning all tools: " << e.what());
@@ -292,7 +292,7 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
 
     std::vector<float> query_embedding;
     try {
-        query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+        query_embedding = handle->model->get_text_embeddings(query_tokens, true);
     } catch (const std::exception& e) {
         CACTUS_LOG_WARN("tool_rag", "get_embeddings unavailable, returning all tools: " << e.what());
         return all_tools;
@@ -345,6 +345,16 @@ std::vector<cactus::ffi::ToolFunction> select_relevant_tools(
     return selected;
 }
 
+static int rag_write_response(char* buffer, size_t buffer_size, const char* str, int success_code) {
+    size_t len = std::strlen(str);
+    if (len >= buffer_size) {
+        buffer[0] = '\0';
+        return -1;
+    }
+    std::memcpy(buffer, str, len + 1);
+    return success_code;
+}
+
 extern "C" {
 
 int cactus_rag_query(
@@ -361,27 +371,23 @@ int cactus_rag_query(
     auto* handle = static_cast<CactusModelHandle*>(model);
 
     if (!handle->corpus_index || handle->corpus_embedding_dim == 0) {
-        std::strcpy(response_buffer, "{\"chunks\":[],\"error\":\"No corpus index loaded\"}");
-        return 0;
+        return rag_write_response(response_buffer, buffer_size, "{\"chunks\":[],\"error\":\"No corpus index loaded\"}", 0);
     }
 
     try {
         auto* tokenizer = handle->model->get_tokenizer();
         if (!tokenizer) {
-            std::strcpy(response_buffer, "{\"chunks\":[],\"error\":\"No tokenizer\"}");
-            return 0;
+            return rag_write_response(response_buffer, buffer_size, "{\"chunks\":[],\"error\":\"No tokenizer\"}", 0);
         }
 
         std::vector<uint32_t> query_tokens = tokenizer->encode(query);
         if (query_tokens.empty()) {
-            std::strcpy(response_buffer, "{\"chunks\":[],\"error\":\"Empty query\"}");
-            return 0;
+            return rag_write_response(response_buffer, buffer_size, "{\"chunks\":[],\"error\":\"Empty query\"}", 0);
         }
 
-        std::vector<float> query_embedding = handle->model->get_embeddings(query_tokens, true, true);
+        std::vector<float> query_embedding = handle->model->get_text_embeddings(query_tokens, true);
         if (query_embedding.size() != handle->corpus_embedding_dim) {
-            std::strcpy(response_buffer, "{\"chunks\":[],\"error\":\"Embedding dimension mismatch\"}");
-            return 0;
+            return rag_write_response(response_buffer, buffer_size, "{\"chunks\":[],\"error\":\"Embedding dimension mismatch\"}", 0);
         }
 
         index::QueryOptions options;
@@ -392,8 +398,7 @@ int cactus_rag_query(
         auto results = handle->corpus_index->query(query_embeddings, options);
 
         if (results.empty() || results[0].empty()) {
-            std::strcpy(response_buffer, "{\"chunks\":[]}");
-            return 0;
+            return rag_write_response(response_buffer, buffer_size, "{\"chunks\":[]}", 0);
         }
 
         std::vector<int> doc_ids;
@@ -441,36 +446,21 @@ int cactus_rag_query(
 
             if (i > 0) oss << ",";
             oss << "{\"score\":" << std::setprecision(4) << final_score
-                << ",\"source\":\"" << docs[idx].metadata << "\""
-                << ",\"content\":\"";
-            for (char c : docs[idx].content) {
-                switch (c) {
-                    case '"': oss << "\\\""; break;
-                    case '\\': oss << "\\\\"; break;
-                    case '\n': oss << "\\n"; break;
-                    case '\r': oss << "\\r"; break;
-                    case '\t': oss << "\\t"; break;
-                    default: oss << c;
-                }
-            }
-            oss << "\"}";
+                << ",\"source\":\"" << escape_json_string(docs[idx].metadata) << "\""
+                << ",\"content\":\"" << escape_json_string(docs[idx].content) << "\"}";
         }
         oss << "]}";
 
         std::string result = oss.str();
         if (result.size() >= buffer_size) {
-            std::strcpy(response_buffer, "{\"chunks\":[],\"error\":\"Buffer too small\"}");
-            return -1;
+            return rag_write_response(response_buffer, buffer_size, "{\"chunks\":[],\"error\":\"Buffer too small\"}", -1);
         }
 
-        std::strcpy(response_buffer, result.c_str());
-        return static_cast<int>(result.size());
+        return rag_write_response(response_buffer, buffer_size, result.c_str(), static_cast<int>(result.size()));
 
     } catch (const std::exception& e) {
-        std::string error = "{\"chunks\":[],\"error\":\"" + std::string(e.what()) + "\"}";
-        if (error.size() < buffer_size) {
-            std::strcpy(response_buffer, error.c_str());
-        }
+        std::string error = "{\"chunks\":[],\"error\":\"" + escape_json_string(e.what()) + "\"}";
+        rag_write_response(response_buffer, buffer_size, error.c_str(), -1);
         return -1;
     }
 }

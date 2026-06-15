@@ -143,6 +143,7 @@ namespace index {
     }
 
     void Index::add_documents(const std::vector<Document>& documents) {
+        if (mapped_index_ == MAP_FAILED || mapped_data_ == MAP_FAILED) throw std::runtime_error("Index is in a failed memory-mapped state");
         validate_documents(documents);
 
         size_t added_data_size = 0;
@@ -164,20 +165,24 @@ namespace index {
         munmap(mapped_index_, index_file_size_);
         munmap(mapped_data_, data_file_size_);
 
-        mapped_index_ = mmap(nullptr, new_index_size, PROT_READ | PROT_WRITE, MAP_SHARED, index_fd_, 0);
-        if (mapped_index_ == MAP_FAILED) {
+        void* new_index_map = mmap(nullptr, new_index_size, PROT_READ | PROT_WRITE, MAP_SHARED, index_fd_, 0);
+        if (new_index_map == MAP_FAILED) {
+            mapped_index_ = mapped_data_ = MAP_FAILED;
             throw std::runtime_error("Failed to remap index file");
         }
 
-        mapped_data_ = mmap(nullptr, new_data_size, PROT_READ | PROT_WRITE, MAP_SHARED, data_fd_, 0);
-        if (mapped_data_ == MAP_FAILED) {
-            munmap(mapped_index_, new_index_size);
+        void* new_data_map = mmap(nullptr, new_data_size, PROT_READ | PROT_WRITE, MAP_SHARED, data_fd_, 0);
+        if (new_data_map == MAP_FAILED) {
+            munmap(new_index_map, new_index_size);
+            mapped_index_ = mapped_data_ = MAP_FAILED;
             throw std::runtime_error("Failed to remap data file");
         }
 
         size_t old_index_size = index_file_size_;
         size_t old_data_size = data_file_size_;
 
+        mapped_index_ = new_index_map;
+        mapped_data_ = new_data_map;
         index_file_size_ = new_index_size;
         data_file_size_ = new_data_size;
 
@@ -232,6 +237,7 @@ namespace index {
     }
 
     void Index::delete_documents(const std::vector<int>& doc_ids) {
+        if (mapped_index_ == MAP_FAILED || mapped_data_ == MAP_FAILED) throw std::runtime_error("Index is in a failed memory-mapped state");
         validate_doc_ids(doc_ids);
 
         char* index_ptr = static_cast<char*>(mapped_index_);
@@ -258,6 +264,7 @@ namespace index {
     }
 
     std::vector<Document> Index::get_documents(const std::vector<int>& doc_ids) {
+        if (mapped_index_ == MAP_FAILED || mapped_data_ == MAP_FAILED) throw std::runtime_error("Index is in a failed memory-mapped state");
         validate_doc_ids(doc_ids);
 
         const char* index_ptr = static_cast<const char*>(mapped_index_);
@@ -307,9 +314,16 @@ namespace index {
         if (embeddings.empty()) {
             return {};
         }
+        if (mapped_index_ == MAP_FAILED || mapped_data_ == MAP_FAILED) throw std::runtime_error("Index is in a failed memory-mapped state");
 
         if (options.top_k == 0) {
             return std::vector<std::vector<QueryResult>>(embeddings.size());
+        }
+
+        for (const auto& embedding : embeddings) {
+            if (embedding.size() != embedding_dim_) {
+                throw std::runtime_error("Query embedding dimension mismatch");
+            }
         }
 
         if (num_documents_ > 0) {
@@ -381,6 +395,7 @@ namespace index {
     }
 
     void Index::compact() {
+        if (mapped_index_ == MAP_FAILED || mapped_data_ == MAP_FAILED) throw std::runtime_error("Index is in a failed memory-mapped state");
         std::string temp_index_path = index_path_ + ".tmp";
         std::string temp_data_path = data_path_ + ".tmp";
 

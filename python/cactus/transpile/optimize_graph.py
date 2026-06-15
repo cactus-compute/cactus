@@ -23,7 +23,7 @@ from cactus.transpile.fusion.common import producer
 from cactus.transpile.fusion.common import strip_layout_passthrough
 from cactus.transpile.fusion.common import strip_passthrough
 from cactus.transpile.fusion.linear import match_linear
-from cactus.transpile.fusion.rope import _extract_rope_angle_source, _find_constant_ancestor
+from cactus.transpile.fusion.rope import _extract_rope_angle_source
 from cactus.transpile.graph_ir import IRGraph
 from cactus.transpile.graph_ir import IRNode
 from cactus.transpile.graph_ir import IRValue
@@ -98,6 +98,8 @@ def optimize_graph(graph: IRGraph, *, max_passes: int = 8, config: FusionConfig 
         ):
             changed = True
         if normalize_gemma4_decoder_attention_semantics(graph):
+            changed = True
+        if normalize_cached_decoder_attention_hints(graph):
             changed = True
         if config.enable_dense_mlp_tq_fused and fuse_dense_mlp_tq(graph):
             changed = True
@@ -414,6 +416,14 @@ def precompute_rope_tables(graph: IRGraph) -> bool:
     return changed
 
 
+def _stored_inv_freq_constant(graph: IRGraph, value_id: str) -> str | None:
+    stripped = strip_layout_passthrough(graph, value_id)
+    constant = graph.constants.get(stripped)
+    if isinstance(constant, torch.Tensor):
+        return stripped
+    return None
+
+
 def _match_rope_angle_table_source(graph: IRGraph, value_id: str, index_shape: tuple[int, ...]) -> tuple[str, str] | None:
     cat_node = producer(graph, strip_passthrough(graph, value_id))
     if cat_node is None or cat_node.op != "cat" or len(cat_node.inputs) != 2:
@@ -430,7 +440,7 @@ def _match_rope_angle_table_source(graph: IRGraph, value_id: str, index_shape: t
     inv_freq_value_id: str | None = None
     position_value_id: str | None = None
     for input_id in angle_node.inputs:
-        const_id = _find_constant_ancestor(graph, input_id)
+        const_id = _stored_inv_freq_constant(graph, input_id)
         if const_id is not None:
             inv_freq_value_id = const_id
             continue
@@ -669,7 +679,7 @@ def normalize_attention_layouts(graph: IRGraph) -> bool:
         output_id = node.outputs[0]
         output_value = graph.values.get(output_id)
         output_users = list(output_value.users) if output_value is not None else []
-        if len(output_users) != 1:
+        if len(output_users) != 1 or output_id in graph.outputs:
             continue
         output_user = graph.nodes.get(output_users[0])
         if output_user is None or output_user.op != "permute" or len(output_user.inputs) != 1 or len(output_user.outputs) != 1:
@@ -804,9 +814,33 @@ def normalize_gemma4_decoder_attention_semantics(graph: IRGraph) -> bool:
     return changed
 
 
+def normalize_cached_decoder_attention_hints(graph: IRGraph) -> bool:
+    if _is_gemma4_graph(graph):
+        return False
+    if not bool(graph.meta.get("use_internal_kv_cache", False)):
+        return False
+    changed = _assign_gemma4_decoder_attention_hints_from_graph_meta(graph)
+    sliding_window = _graph_sliding_window(graph)
+    if sliding_window is not None and sliding_window > 0:
+        for node_id in graph.order:
+            node = graph.nodes.get(node_id)
+            if node is None or node.op not in {"attention", "scaled_dot_product_attention", "attention_block"}:
+                continue
+            layer_type = str(node.meta.get("attention_layer_type") or "").strip().lower()
+            if layer_type not in {"sliding", "sliding_attention"}:
+                continue
+            if int(node.attrs.get("window_size", 0) or 0) == 0:
+                node.attrs["window_size"] = int(sliding_window)
+                node.meta.setdefault("window_size_source", "layer_type_config")
+                changed = True
+    if changed:
+        rebuild_graph(graph)
+    return changed
+
+
 def _assign_gemma4_decoder_attention_hints_from_graph_meta(graph: IRGraph) -> bool:
     component = str(graph.meta.get("component", "") or "").strip().lower()
-    if component not in {"decoder", "decoder_step", "decoder_prefill_chunk"}:
+    if component not in {"decoder", "decoder_step", "decoder_prefill_chunk", "decoder_media_step"}:
         return False
 
     layer_types = _graph_layer_types(graph)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import gc
+import hashlib
 import itertools
 import json
 import os
@@ -24,6 +25,7 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from cactus.transpile.runtime_compat import Graph
+from cactus.convert.cactus_adapters.tensor_io import save_tensor_with_header
 from cactus.convert.model_adapters.nemo import ensure_parakeet_tdt_nemo_source
 from cactus.transpile.audio_preprocess import generic_log_mel_features as _generic_log_mel_features
 from cactus.transpile.audio_preprocess import load_audio_waveform as _load_audio_waveform
@@ -45,6 +47,7 @@ from cactus.transpile.lower import _lower_input_value
 from cactus.transpile.lower import _lower_ir_node
 from cactus.transpile.lower import _lookup_weight_binding
 from cactus.transpile.media_limits import resize_static_image
+from cactus.transpile.model_adapters import UnsupportedComponentsError
 from cactus.transpile.model_adapters import build_component_module_specs
 from cactus.transpile.model_adapters import canonicalize_model_interface
 from cactus.transpile.model_profiles import multimodal_context_tokens_for_model_type
@@ -238,6 +241,46 @@ def _binding_entries_by_node_id(
     return result
 
 
+def _externalize_shared_rope_tables(
+    transpiled_graph: TranspiledGraph,
+    *,
+    weights_root: Path,
+    registry: dict[str, str],
+) -> int:
+    value_ids = getattr(transpiled_graph, "bound_constant_value_ids", {}) or {}
+    already_bound = {
+        int(binding["node_id"])
+        for binding in transpiled_graph.bound_constant_bindings
+        if isinstance(binding, dict) and "node_id" in binding
+    }
+    externalized = 0
+    for constant in transpiled_graph.bound_constants:
+        node_id = int(constant.id)
+        if node_id in already_bound:
+            continue
+        value_id = str(value_ids.get(node_id, ""))
+        if not value_id.startswith("c_rope_table_"):
+            continue
+        data = np.ascontiguousarray(constant.numpy())
+        digest = hashlib.sha1(data.tobytes()).hexdigest()[:16]
+        filename = registry.get(digest)
+        if filename is None:
+            filename = f"rope_table_{digest}.weights"
+            save_tensor_with_header(data, weights_root / filename, precision="FP16")
+            registry[digest] = filename
+        transpiled_graph.bound_constant_bindings.append(
+            {
+                "node_id": node_id,
+                "value_id": value_id,
+                "path": filename,
+                "kind": "weight",
+                "source_name": value_id,
+            }
+        )
+        externalized += 1
+    return externalized
+
+
 def _embed_materialized_bound_constants(transpiled_graph: TranspiledGraph) -> int:
     """Serialize small graph-local constants into the .cactus graph itself.
 
@@ -290,6 +333,36 @@ def _write_graph_binding_manifest(
     return manifest_path
 
 
+def _export_lfm2_vl_position_embedding_grid(
+    *,
+    model,
+    artifact_dir: Path,
+    component_metadata: dict[str, dict[str, object]],
+) -> None:
+    root = getattr(model, "model", None)
+    vision_tower = getattr(root, "vision_tower", None)
+    vision_model = getattr(vision_tower, "vision_model", None)
+    embeddings = getattr(vision_model, "embeddings", None)
+    if embeddings is None:
+        return
+    pos_size = int(embeddings.position_embedding_size)
+    embed_dim = int(embeddings.embed_dim)
+    grid = (
+        embeddings.position_embedding.weight.detach().cpu().to(torch.float32)
+        .reshape(pos_size, pos_size, embed_dim)
+        .contiguous()
+        .numpy()
+    )
+    rel_path = Path("components") / "vision_encoder" / "position_embedding_grid.f32"
+    out_path = artifact_dir / rel_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    grid.tofile(out_path)
+    meta = component_metadata.setdefault("vision_encoder", {})
+    meta["position_embedding_grid_path"] = str(rel_path)
+    meta["position_embedding_grid_shape"] = f"{pos_size},{pos_size},{embed_dim}"
+    print(f"saved_vision_position_embedding_grid={out_path}")
+
+
 def _write_component_bundle(
     *,
     artifact_dir: Path,
@@ -313,10 +386,12 @@ def _write_component_bundle(
             "source_encoder",
             "audio_encoder",
             "vision_encoder",
+            "vision_projector",
             "text_embedding",
             "lm_encoder",
             "lm_encoder_text_chunk",
             "decoder_prefill_chunk",
+            "decoder_embed_chunk",
             "decoder",
             "decoder_cross_kv",
             "lm_encoder_step",
@@ -335,6 +410,8 @@ def _write_component_bundle(
     component_order.extend(extra_components)
 
     manifest_components: list[dict[str, object]] = []
+    
+    rope_table_registry: dict[str, str] = {}
     for component in component_order:
         raw_graph = raw_component_graphs.get(component)
         optimized_graph = optimized_component_graphs.get(component)
@@ -375,6 +452,11 @@ def _write_component_bundle(
             graph_relpath = Path(component) / graph_filename
             component_dir.mkdir(parents=True, exist_ok=True)
             shutil.rmtree(component_dir / "bound_constants", ignore_errors=True)
+            _externalize_shared_rope_tables(
+                transpiled_graph,
+                weights_root=artifact_dir,
+                registry=rope_table_registry,
+            )
             _embed_materialized_bound_constants(transpiled_graph)
             transpiled_graph.graph.save(bundle_dir / graph_relpath)
 
@@ -702,6 +784,13 @@ def _run_component_pipeline_transpile(
             print(
                 f"saved_optimized_component_ir_{component}="
                 f"{artifact_dir / _component_artifact_name('optimized_ir', component)}"
+            )
+
+        if family == "lfm2_vl" and "vision_encoder" in component_metadata:
+            _export_lfm2_vl_position_embedding_grid(
+                model=model,
+                artifact_dir=artifact_dir,
+                component_metadata=component_metadata,
             )
 
         component_manifest_path = _write_component_bundle(
@@ -3274,15 +3363,35 @@ def main() -> int:
             for component in str(args.components).split(",")
             if component.strip()
         )
-    component_specs = build_component_module_specs(
-        model,
+    plan_derived_components = False
+    if requested_components is None and task == "causal_lm_logits":
+        inferred_plan = infer_component_plan_from_config(
+            _load_config_json(args.model_id), model_id=args.model_id
+        )
+        if (
+            inferred_plan is not None
+            and inferred_plan.task == task
+            and inferred_plan.force_component_pipeline
+            and inferred_plan.components
+        ):
+            requested_components = tuple(inferred_plan.components)
+            plan_derived_components = True
+    spec_kwargs = dict(
         task=task,
         named_tensors=_named_tensor_store(prepared),
         weights_dir=weights_dir,
         inputs_metadata=prepared.metadata,
-        components=requested_components,
         cache_context_length=args.cache_context_length,
     )
+    try:
+        component_specs = build_component_module_specs(
+            model, components=requested_components, **spec_kwargs
+        )
+    except UnsupportedComponentsError as exc:
+        if not plan_derived_components:
+            raise
+        print(f"warning: dropping inferred component plan ({exc}); using builder defaults", file=sys.stderr)
+        component_specs = build_component_module_specs(model, components=None, **spec_kwargs)
     use_component_pipeline = False
     if args.component_pipeline == "on":
         if component_specs is None:

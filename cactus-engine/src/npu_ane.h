@@ -44,6 +44,10 @@ public:
 
     std::vector<int> get_output_shape() const override;
 
+    bool has_input(const std::string& name) const override;
+
+    std::vector<int> get_input_shape_for(const std::string& name) const override;
+
     __fp16* get_output_buffer() override;
 
     size_t get_output_buffer_size() const override;
@@ -81,6 +85,10 @@ public:
     std::vector<int> get_input_shape() const override { return {}; }
 
     std::vector<int> get_output_shape() const override { return {}; }
+
+    bool has_input(const std::string&) const override { return false; }
+
+    std::vector<int> get_input_shape_for(const std::string&) const override { return {}; }
 
     __fp16* get_output_buffer() override { return nullptr; }
 

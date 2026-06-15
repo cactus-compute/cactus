@@ -917,6 +917,29 @@ std::vector<int> ANEEncoder::get_output_shape() const {
     return result;
 }
 
+bool ANEEncoder::has_input(const std::string& name) const {
+    if (!impl_) return false;
+    CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
+    if (!impl.modelDescription) return false;
+    NSString* nsName = [NSString stringWithUTF8String:name.c_str()];
+    return impl.modelDescription.inputDescriptionsByName[nsName] != nil;
+}
+
+std::vector<int> ANEEncoder::get_input_shape_for(const std::string& name) const {
+    std::vector<int> result;
+    if (!impl_) return result;
+    CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
+    if (!impl.modelDescription) return result;
+    NSString* nsName = [NSString stringWithUTF8String:name.c_str()];
+    MLFeatureDescription* desc = impl.modelDescription.inputDescriptionsByName[nsName];
+    if (desc && desc.type == MLFeatureTypeMultiArray) {
+        for (NSNumber* dim in desc.multiArrayConstraint.shape) {
+            result.push_back([dim intValue]);
+        }
+    }
+    return result;
+}
+
 __fp16* ANEEncoder::get_output_buffer() {
     if (!impl_) return nullptr;
     CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;

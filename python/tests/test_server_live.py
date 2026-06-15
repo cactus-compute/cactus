@@ -7,28 +7,18 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-WEIGHTS = PROJECT_ROOT / "weights"
+from .bundles import PROJECT_ROOT, WEIGHTS, _find_bundle, _read_model_type, _valid_bundle
+
 DEFAULT_LLM_BUNDLE = Path("weights/gemma-4-e2b-it")
 ASSETS = PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
 LLM_TYPES = {"gemma", "gemma3n", "gemma4", "lfm2", "qwen", "qwen3p5", "needle", "youtu"}
 STT_TYPES = {"whisper", "parakeet_tdt", "parakeet-tdt"}
-
-
-def _read_model_type(bundle: Path) -> str:
-    for line in (bundle / "config.txt").read_text(encoding="utf-8").splitlines():
-        if line.startswith("model_type="):
-            return line.split("=", 1)[1].strip()
-    return ""
-
-
-def _valid_bundle(path: Path) -> bool:
-    return (path / "config.txt").exists() and (path / "components" / "manifest.json").exists()
 
 
 def _require_bundle(relative: Path, types: set[str]) -> Path:
@@ -51,17 +41,6 @@ def _require_bundle(relative: Path, types: set[str]) -> Path:
             f"Expected one of: {sorted(types)}."
         )
     return candidate
-
-
-def _find_bundle(preferred: list[str], types: set[str]) -> Path:
-    for name in preferred:
-        candidate = WEIGHTS / name
-        if candidate.exists() and _valid_bundle(candidate) and _read_model_type(candidate) in types:
-            return candidate
-    for candidate in sorted(WEIGHTS.iterdir()):
-        if candidate.is_dir() and _valid_bundle(candidate) and _read_model_type(candidate) in types:
-            return candidate
-    pytest.fail(f"No valid live-test bundle found under {WEIGHTS} for model types: {sorted(types)}")
 
 
 def _free_port() -> int:
@@ -112,15 +91,14 @@ def _wait_ready(proc: subprocess.Popen, base_url: str) -> None:
     pytest.fail(f"server did not become ready: {last_error}")
 
 
-@pytest.fixture(scope="module")
-def live_server():
-    _require_bundle(DEFAULT_LLM_BUNDLE, LLM_TYPES)
+@contextmanager
+def _serve(bundle: Path):
     port = _free_port()
-    proc = _start_server(DEFAULT_LLM_BUNDLE, port)
+    proc = _start_server(bundle, port)
     base_url = f"http://127.0.0.1:{port}"
     try:
         _wait_ready(proc, base_url)
-        yield base_url, DEFAULT_LLM_BUNDLE.name
+        yield base_url, bundle.name
     finally:
         proc.terminate()
         try:
@@ -128,6 +106,13 @@ def live_server():
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
+
+
+@pytest.fixture(scope="module")
+def live_server():
+    _require_bundle(DEFAULT_LLM_BUNDLE, LLM_TYPES)
+    with _serve(DEFAULT_LLM_BUNDLE) as server:
+        yield server
 
 
 def test_live_models(live_server) -> None:
@@ -447,22 +432,37 @@ def _find_embed_bundle() -> Path:
     )
 
 
+def _supports_embedding(bundle: Path) -> bool:
+    try:
+        data = json.loads((bundle / "components" / "manifest.json").read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    names = {str(c.get("component", "")) for c in data.get("components", []) if isinstance(c, dict)}
+    return "text_embedding" in names or "decoder_embed_chunk" in names
+
+
+def _find_non_embed_llm_bundle() -> Path | None:
+    for candidate in sorted(WEIGHTS.iterdir()) if WEIGHTS.exists() else []:
+        if (candidate.is_dir() and _valid_bundle(candidate)
+                and _read_model_type(candidate) in LLM_TYPES
+                and not _supports_embedding(candidate)):
+            return candidate
+    return None
+
+
 @pytest.fixture(scope="module")
 def embed_server():
-    bundle = _find_embed_bundle()
-    port = _free_port()
-    proc = _start_server(bundle, port)
-    base_url = f"http://127.0.0.1:{port}"
-    try:
-        _wait_ready(proc, base_url)
-        yield base_url, bundle.name
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+    with _serve(_find_embed_bundle()) as server:
+        yield server
+
+
+@pytest.fixture(scope="module")
+def non_embed_server():
+    bundle = _find_non_embed_llm_bundle()
+    if bundle is None:
+        pytest.skip("No non-embedding LLM bundle under weights/")
+    with _serve(bundle) as server:
+        yield server
 
 
 def test_live_embeddings_string(embed_server) -> None:
@@ -495,8 +495,8 @@ def test_live_embeddings_list(embed_server) -> None:
     assert len(data[0]["embedding"]) == len(data[1]["embedding"]) > 0
 
 
-def test_live_embeddings_rejects_llm_model(live_server) -> None:
-    base_url, model = live_server
+def test_live_embeddings_rejects_llm_model(non_embed_server) -> None:
+    base_url, model = non_embed_server
     res = httpx.post(
         f"{base_url}/v1/embeddings",
         json={"model": model, "input": "hello"},

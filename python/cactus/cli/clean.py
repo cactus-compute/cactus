@@ -1,11 +1,12 @@
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from .common import (
     PROJECT_ROOT,
     print_color,
-    GREEN, YELLOW, BLUE,
+    RED, GREEN, YELLOW, BLUE,
 )
 
 
@@ -14,6 +15,24 @@ def cmd_clean(args):
     print_color(BLUE, "Cleaning all build artifacts from Cactus project...")
     print(f"Project root: {PROJECT_ROOT}")
     print()
+
+    destructive_targets = [
+        PROJECT_ROOT / "weights",
+        PROJECT_ROOT / "transpiled",
+        PROJECT_ROOT / "venv",
+    ]
+    present = [t for t in destructive_targets if t.exists()]
+    if present and not args.yes:
+        print_color(YELLOW, "This also deletes the following (not just build artifacts):")
+        for t in present:
+            print(f"  - {t}")
+        print_color(YELLOW, "Downloaded weights are NOT re-fetched by setup and will be lost.")
+        if not sys.stdin.isatty():
+            print_color(RED, "Refusing to proceed without confirmation. Re-run with --yes to skip this prompt.")
+            return 0
+        if input("Continue? [y/N]: ").strip().lower() not in ("y", "yes"):
+            print_color(YELLOW, "Aborted.")
+            return 0
 
     def remove_if_exists(path):
         if path.is_dir():
@@ -110,7 +129,7 @@ def cmd_clean(args):
 
     print()
     print_color(GREEN, "Clean complete!")
-    print("All build artifacts have been removed.")
+    print("All build artifacts, weights, and venv have been removed.")
     print()
 
     print_color(BLUE, "Re-running setup...")

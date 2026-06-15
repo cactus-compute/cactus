@@ -42,6 +42,8 @@ public:
     virtual bool is_available() const = 0;
     virtual std::vector<int> get_input_shape() const = 0;
     virtual std::vector<int> get_output_shape() const = 0;
+    virtual bool has_input(const std::string&) const { return false; }
+    virtual std::vector<int> get_input_shape_for(const std::string&) const { return {}; }
     virtual __fp16* get_output_buffer() = 0;
     virtual size_t get_output_buffer_size() const = 0;
     virtual size_t encode_multimodal_input(
@@ -238,6 +240,10 @@ struct Config {
         return t == ModelType::GEMMA || t == ModelType::GEMMA3N || t == ModelType::GEMMA4;
     }
 
+    static bool is_gemma3_family(ModelType t) {
+        return t == ModelType::GEMMA || t == ModelType::GEMMA3N;
+    }
+
     bool from_json(const std::string& json_path);
     std::string to_json() const;
     // Disable rolling unless 0 < target < trigger (when trigger > 0).
@@ -333,6 +339,9 @@ public:
     virtual uint32_t get_eos_token() const = 0;
     virtual std::unordered_set<uint32_t> special_token_ids() const { return {}; }
     virtual bool has_chat_template() const { return has_chat_template_; }
+    bool is_qwen_family() const { return model_type_ == ModelType::QWEN; }
+    bool is_lfm2_family() const { return model_type_ == ModelType::LFM2; }
+    bool has_function_call_tokens() const { return encode("<start_function_call>").size() == 1; }
     std::string get_default_stop_sequence() const;
 
     virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
@@ -344,8 +353,10 @@ public:
     void set_image_soft_token_count(size_t n) { image_soft_token_count_ = n; }
     size_t get_image_soft_token_count() const { return image_soft_token_count_; }
 
+    void set_lfm2_vision_config(const Config& cfg) { lfm2_vision_config_ = cfg; has_lfm2_vision_config_ = true; }
+
 protected:
-    enum class ModelType { UNKNOWN, GEMMA4, QWEN, LFM2, NEEDLE };
+    enum class ModelType { UNKNOWN, GEMMA4, GEMMA, QWEN, LFM2, NEEDLE };
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -362,6 +373,8 @@ protected:
     uint32_t vision_default_output_length_ = 280;
     uint32_t vision_image_size_ = 768;
     size_t image_soft_token_count_ = 0;
+    Config lfm2_vision_config_{};
+    bool has_lfm2_vision_config_ = false;
     TokenizerRuntimeConfig runtime_config_;
 
     void detect_model_type(const std::string& config_path);
@@ -370,6 +383,7 @@ protected:
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_needle_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
+    std::string format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json) const;
 };
 
 class BPETokenizer : public Tokenizer {
@@ -530,6 +544,10 @@ private:
 
     std::string call_start_tag_;
     std::string call_end_tag_;
+    std::string response_start_tag_;
+    std::vector<uint32_t> call_start_sequence_;
+    std::vector<uint32_t> call_end_sequence_;
+    size_t forced_tag_progress_ = 0;
 
     std::unordered_set<uint32_t> all_func_name_tokens_;
     std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;
@@ -552,6 +570,7 @@ private:
     void tokenize_grammar_elements();
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
     void add_tokens_for_prefix_string(const std::string& prefix, std::unordered_set<uint32_t>& token_set);
+    void advance_forced_tag(const std::vector<uint32_t>& sequence, uint32_t token_id);
     void tokenize_function_names(bool quote_names);
     void init_common_tokens();
 
@@ -652,6 +671,11 @@ public:
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
                                        bool normalize = false, const std::string& profile_file = "");
 
+    std::vector<float> get_text_embeddings(const std::vector<uint32_t>& tokens, bool normalize = false);
+    std::vector<float> get_lm_embeddings(const std::vector<uint32_t>& tokens, bool normalize = false);
+    bool has_lm_embedding() const { return decoder_embed_ != nullptr; }
+    bool has_text_embedding() const { return components_.count("text_embedding") > 0; }
+
     std::vector<float> get_image_embeddings(const std::string& image_path);
 
     std::vector<float> get_audio_embeddings(const std::vector<float>& audio_features);
@@ -671,9 +695,12 @@ public:
     size_t get_cache_size() const { return cache_total_seq_len_; }
 
     size_t get_prefill_chunk_size() const { return 128; }
+    bool can_generate() const { return decoder_ != nullptr; }  // false for embedding/encoder-only models
     double last_prefill_cache_copy_ms() const { return last_prefill_cache_copy_ms_; }
     size_t last_prefill_padding_tokens() const { return last_prefill_padding_tokens_; }
     size_t last_prefill_scalar_tail_tokens() const { return last_prefill_scalar_tail_tokens_; }
+    size_t last_prefill_tail_chunk_tokens() const { return last_prefill_tail_chunk_tokens_; }
+    size_t last_prefill_tail_padding_tokens() const { return last_prefill_tail_padding_tokens_; }
 
     bool load_npu_audio_encoder(const std::string& model_path);
     bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
@@ -771,10 +798,14 @@ private:
     void move_cache_states(Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
     void set_cache_current_len(Component& comp, size_t len);
     void reset_component_cache_states(Component& comp);
+    void reset_prefill_stats();
     size_t component_chunk_tokens(const Component& comp, const std::string& input_name) const;
     size_t component_output_tokens(const Component& comp, const std::string& output_name) const;
     ChunkedPrefillResult run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position,
                                              size_t chunk_size, bool prepare_decode);
+    void execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, size_t encoder_chunk,
+                               size_t chunk_tokens, const std::vector<uint32_t>& tokens,
+                               size_t processed, size_t start_position);
     void run_full_context_text();
     uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max(),
                                      float* out_uncertainty = nullptr);
@@ -787,6 +818,12 @@ private:
     bool load_handoff_probe();
     void maybe_capture_handoff_probe_hidden(const Component& comp);
     void run_vision_encoder(const std::string& image_path);
+    void run_vision_encoder_lfm2_vl(const std::string& image_path);
+    void encode_lfm2_vl_image_into_features(const std::string& image_path);
+    bool load_lfm2_vl_position_grid();
+    bool lfm2_vl_use_npu_vision() const;
+    bool lfm2_vl_encode_tile_npu(const float* pixel_values, const int64_t* mask, const float* pos_embeds,
+                                 size_t max_patches, int dim, size_t patch_dim, std::vector<float>& enc_out);
     void run_audio_encoder(const std::vector<float>& audio_features);
     void run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message);
     bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
@@ -803,12 +840,14 @@ private:
     Component* encoder_ = nullptr;
     Component* decoder_ = nullptr;
     Component* decoder_prefill_ = nullptr;
+    Component* decoder_embed_ = nullptr;
     Component* prefill_encoder_ = nullptr;
     enum class DecodeRoute { CACHED_STEP, DIRECT_DECODER_STEP, FULL_CONTEXT_TEXT, ENCODER_CROSS_KV_STEP };
     DecodeRoute decode_route_ = DecodeRoute::CACHED_STEP;
     Component* source_encoder_ = nullptr;
     Component* decoder_cross_kv_ = nullptr;
     Component* vision_encoder_ = nullptr;
+    Component* vision_projector_ = nullptr;
     Component* audio_encoder_ = nullptr;
     Component* lm_encoder_media_step_ = nullptr;
     Component* decoder_prefill_chunk_ = nullptr;
@@ -818,6 +857,7 @@ private:
     std::string encoder_cross_kv_source_kind_;
     bool encoder_cross_kv_ready_ = false;
     size_t encoder_cross_kv_source_len_ = 0;
+    bool prefill_tail_pad_disabled_ = false;
 
     std::string family_;
     std::string npu_audio_encoder_mlpackage_;
@@ -829,12 +869,19 @@ private:
     std::unique_ptr<npu::NPUEncoder> npu_source_encoder_;
 
     bool audio_encode_via_npu(const std::vector<float>& audio_features);
-    bool vision_encode_via_npu(const std::vector<float>& pixel_values);
+    bool vision_encode_via_npu(const std::vector<float>& pixel_values,
+                               const std::vector<int64_t>* pixel_position_ids = nullptr);
     bool source_encode_via_npu(const std::vector<uint32_t>& tokens);
 
     std::map<std::string, std::vector<uint8_t>> media_features_;
     std::map<std::string, std::vector<size_t>> media_feature_shapes_;
     std::map<std::string, Precision> media_feature_precisions_;
+
+    std::vector<float> lfm2_pos_grid_;
+    int lfm2_pos_grid_h_ = 0;
+    int lfm2_pos_grid_w_ = 0;
+    int lfm2_pos_grid_dim_ = 0;
+    bool lfm2_pos_grid_loaded_ = false;
 
     Config config_;
     std::unique_ptr<Tokenizer> tokenizer_;
@@ -848,6 +895,8 @@ private:
     double last_prefill_cache_copy_ms_ = 0.0;
     size_t last_prefill_padding_tokens_ = 0;
     size_t last_prefill_scalar_tail_tokens_ = 0;
+    size_t last_prefill_tail_chunk_tokens_ = 0;
+    size_t last_prefill_tail_padding_tokens_ = 0;
     std::vector<uint32_t> context_tokens_;
 
     static constexpr size_t MAX_TOKEN_HISTORY = 128;
@@ -1006,13 +1055,27 @@ Gemma4ImagePreprocessed preprocess_gemma4_image(const std::string& image_path, c
 struct Lfm2VlImagePreprocessed {
     std::vector<float> pixel_values;
     std::vector<int64_t> pixel_attention_mask;
-    std::pair<int, int> spatial_shape{0, 0};
-    size_t num_patches = 0;
-    size_t patch_dim = 0;
+    std::vector<std::pair<int, int>> spatial_shapes;
     size_t max_num_patches = 0;
+    size_t patch_dim = 0;
 };
 
 Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, const Config& config);
+
+void interpolate_position_embeddings(const float* grid, int grid_h, int grid_w, int dim,
+                                             int out_h, int out_w, float* out);
+
+void pixel_unshuffle(const float* feature, int h, int w, int dim, int factor, float* out);
+
+struct Lfm2VlTokenLayout {
+    int grid_rows = 1;
+    int grid_cols = 1;
+    int tokens_per_tile = 0;
+    int thumbnail_tokens = 0;
+    bool has_thumbnail = false;
+};
+
+Lfm2VlTokenLayout lfm2_vl_token_layout(int image_height, int image_width, const Config& config);
 
 struct Qwen3VlImagePreprocessed {
     std::vector<float> pixel_values;

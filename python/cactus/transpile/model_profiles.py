@@ -29,6 +29,7 @@ class ModelProfile:
     text_only_component: str | None = None
     default_task: str | None = None
     default_components: tuple[str, ...] = ()
+    text_component_plans: tuple[tuple[str, tuple[str, ...]], ...] = ()
     default_max_new_tokens: int | None = None
     needs_image: bool = False
     needs_audio: bool = False
@@ -90,6 +91,10 @@ LFM2_PROFILE = ModelProfile(
     text_only_component="text_lm_encoder",
     default_task="multimodal_causal_lm_logits",
     default_components=("vision_encoder", "lm_encoder", "decoder"),
+    text_component_plans=(
+        ("lfm2forcausallm", ("decoder_step", "lm_encoder_step", "lm_encoder_text_chunk",
+                             "decoder_prefill_chunk")),
+    ),
     needs_image=True,
     force_component_pipeline=True,
 )
@@ -196,6 +201,10 @@ QWEN_PROFILE = ModelProfile(
         "lm_encoder_step",
         "decoder_media_step",
         "decoder_step",
+    ),
+    text_component_plans=(
+        ("qwen3forcausallm", ("decoder_step", "lm_encoder_step", "lm_encoder_text_chunk",
+                              "decoder_prefill_chunk", "decoder_embed_chunk", "decoder_media_step")),
     ),
     needs_image=True,
     force_component_pipeline=True,

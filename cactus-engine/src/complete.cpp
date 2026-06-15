@@ -1,6 +1,7 @@
 #include "../cactus_engine.h"
 #include "cloud.h"
 #include "utils.h"
+#include "chat_tools.h"
 #include "telemetry.h"
 #include "cactus_kernels.h"
 #include "wav.h"
@@ -386,6 +387,7 @@ struct PreparedPrompt {
     std::vector<std::string> audio_paths;
     std::vector<ChatMessage> messages;
     std::vector<ToolFunction> tools;
+    std::string rendered;
     std::vector<uint32_t> tokens;
     size_t context_token_count = 0;
     std::vector<std::vector<CactusModelHandle::ProcessedImage>> images;
@@ -567,27 +569,32 @@ PreparedPrompt prepare_prompt(
         prompt.options.force_tools = true;
     }
 
+    // Build the tool-definition block in the format each model family was trained on.
     std::string formatted_tools;
     if (prompt.model_type == Config::ModelType::NEEDLE) {
         formatted_tools = serialize_needle_tools(prompt.tools);
+    } else if (tokenizer->is_qwen_family()) {
+        formatted_tools = chat_tools::serialize_tools_qwen(prompt.tools);
+    } else if (tokenizer->is_lfm2_family()) {
+        formatted_tools = chat_tools::serialize_tools_lfm2(prompt.tools);
     } else {
-        formatted_tools = gemma::format_tools(prompt.tools, true);
+        formatted_tools = gemma::format_tools(prompt.tools, !Config::is_gemma3_family(prompt.model_type));
     }
 
     if (apply_tool_constraints) {
         setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools, prompt.options.temperature);
     }
 
-    std::string full_prompt = tokenizer->format_chat_prompt(
+    prompt.rendered = tokenizer->format_chat_prompt(
         prompt.messages,
         add_generation_prompt,
         formatted_tools,
         prompt.options.enable_thinking_if_supported
     );
-    if (full_prompt.find("ERROR:") == 0) {
-        throw std::runtime_error(full_prompt.substr(6));
+    if (prompt.rendered.find("ERROR:") == 0) {
+        throw std::runtime_error(prompt.rendered.substr(6));
     }
-    prompt.tokens = tokenizer->encode(full_prompt);
+    prompt.tokens = tokenizer->encode(prompt.rendered);
     prompt.context_token_count = prompt.tokens.size();
     prompt.images = images_from_message(prompt.messages);
     return prompt;
@@ -766,6 +773,12 @@ int cactus_complete(
 
         auto* handle = static_cast<CactusModelHandle*>(model);
         handle->should_stop = false;
+        if (!handle->model->can_generate()) {
+            const std::string err = "Model has no language-model decoder; cannot generate (embedding/encoder-only model)";
+            CACTUS_LOG_ERROR("complete", err);
+            handle_error_response(err, response_buffer, buffer_size);
+            return -1;
+        }
         auto* tokenizer = handle->model->get_tokenizer();
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true, pcm_buffer, pcm_buffer_size);
 
@@ -775,7 +788,7 @@ int cactus_complete(
         bool has_images = prompt.has_images();
         bool has_audio = prompt.has_audio();
         const bool cloud_disabled = env_flag_enabled("CACTUS_DISABLE_CLOUD_HANDOFF");
-        const bool cloud_eligible = !cloud_disabled &&
+        const bool cloud_eligible = !cloud_disabled && !handle->cloud_handoff_disabled &&
             prompt.options.auto_handoff && (!has_images || prompt.options.handoff_with_images);
         handle->model->reset_handoff_probe_rollout();
         const bool defer_local_stream_until_probe = cloud_eligible && handle->model->has_handoff_probe();
@@ -795,6 +808,14 @@ int cactus_complete(
             }
             request.cloud_key = resolve_cloud_api_key(nullptr);
             return request;
+        };
+
+        auto disable_handoff_on_auth_failure = [&](const std::string& error) {
+            if (error.rfind("http_401", 0) == 0 || error.rfind("http_403", 0) == 0) {
+                handle->cloud_handoff_disabled = true;
+                CACTUS_LOG_WARN("cloud_handoff", "Cloud auth failed (" << error
+                    << "); disabling cloud handoff for this session");
+            }
         };
 
         auto return_cloud_completion = [&](const CloudCompletionResult& cloud_result,
@@ -847,6 +868,7 @@ int cactus_complete(
             }
             std::string cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
             CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed before local generation: " << cloud_error);
+            disable_handoff_on_auth_failure(cloud_error);
             handle_error_response(("cloud handoff failed before local generation: " + cloud_error).c_str(),
                                   response_buffer, buffer_size);
             return -1;
@@ -911,7 +933,8 @@ int cactus_complete(
         entropy.add(first_token_entropy);
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
-            if (!defer_local_stream_until_probe
+            if (cloud_eligible
+                && !defer_local_stream_until_probe
                 && !pre_generation_cloud_attempted
                 && confidence < prompt.options.confidence_threshold) {
                 CACTUS_LOG_WARN("cloud_handoff", "Cloud handoff triggered before local streaming; waiting up to "
@@ -929,6 +952,7 @@ int cactus_complete(
                 }
                 cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
                 CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed before local streaming, falling back to local output: " << cloud_error);
+                disable_handoff_on_auth_failure(cloud_error);
             }
 
             if (callback && !defer_local_stream_until_probe) {
@@ -1045,6 +1069,7 @@ int cactus_complete(
             cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
             CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed after probe handoff, falling back to local output: "
                 << cloud_error);
+            disable_handoff_on_auth_failure(cloud_error);
         }
 
         if (callback && defer_local_stream_until_probe && !primary_response.empty()) {
@@ -1165,6 +1190,13 @@ int cactus_prefill(
         auto start_time = std::chrono::high_resolution_clock::now();
 
         auto* handle = static_cast<CactusModelHandle*>(model);
+        if (!handle->model->can_generate()) {
+            std::string err = "Model has no language-model decoder; cannot generate (embedding/encoder-only model)";
+            CACTUS_LOG_ERROR("prefill", err);
+            std::string result = construct_prefill_response_json(false, &err, 0, 0.0, 0.0);
+            if (result.size() < buffer_size) std::strcpy(response_buffer, result.c_str());
+            return -1;
+        }
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, false, false, pcm_buffer, pcm_buffer_size);
 
         std::vector<uint32_t> context_tokens(prompt.tokens.begin(), prompt.tokens.begin() + prompt.context_token_count);
@@ -1234,6 +1266,27 @@ int cactus_tokenize(
 
         std::memcpy(token_buffer, toks.data(), toks.size() * sizeof(uint32_t));
         return 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+int cactus_render_prompt(
+    cactus_model_t model,
+    const char* messages_json,
+    const char* options_json,
+    const char* tools_json,
+    char* prompt_buffer,
+    size_t buffer_size
+) {
+    if (!model || !messages_json || !prompt_buffer || buffer_size == 0) return -1;
+
+    try {
+        auto* handle = static_cast<CactusModelHandle*>(model);
+        auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, false, true);
+        if (prompt.rendered.size() >= buffer_size) return -2;
+        std::strcpy(prompt_buffer, prompt.rendered.c_str());
+        return static_cast<int>(prompt.rendered.size());
     } catch (...) {
         return -1;
     }
@@ -1337,9 +1390,12 @@ int cactus_benchmark_tokens(
         sample_peak_ram();
         auto first_token_time = std::chrono::high_resolution_clock::now();
 
+        std::vector<uint32_t> completion_tokens;
+        if (decode_token_len > 0) completion_tokens.push_back(next_token);
         size_t generated = decode_token_len > 0 ? 1 : 0;
         while (generated < decode_token_len) {
             next_token = handle->model->decode({next_token}, 0.0f, 1.0f, 1);
+            completion_tokens.push_back(next_token);
             sample_peak_ram();
             ++generated;
         }
@@ -1378,9 +1434,17 @@ int cactus_benchmark_tokens(
             << "\"first_token_from_prefill\":" << (first_token_from_prefill ? "true" : "false") << ","
             << "\"prefill_padding_tokens\":" << handle->model->last_prefill_padding_tokens() << ","
             << "\"prefill_scalar_tail_tokens\":" << handle->model->last_prefill_scalar_tail_tokens() << ","
+            << "\"prefill_tail_chunk_tokens\":" << handle->model->last_prefill_tail_chunk_tokens() << ","
+            << "\"prefill_tail_padding_tokens\":" << handle->model->last_prefill_tail_padding_tokens() << ","
             << "\"decode_tps\":" << std::fixed << std::setprecision(2) << decode_tps << ","
             << "\"prompt_tokens\":" << prompt_token_len << ","
             << "\"completion_tokens\":" << generated << ","
+            << "\"completion_token_ids\":[";
+        for (size_t i = 0; i < completion_tokens.size(); ++i) {
+            if (i) oss << ",";
+            oss << completion_tokens[i];
+        }
+        oss << "],"
             << "\"peak_ram_usage_mb\":" << std::fixed << std::setprecision(2) << peak_ram_usage_mb << ","
             << "\"ram_usage_mb\":" << std::fixed << std::setprecision(2) << get_ram_usage_mb()
             << "}";

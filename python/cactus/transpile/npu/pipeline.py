@@ -51,26 +51,36 @@ def run_encoder_pipeline(
         if not example_inputs:
             print(f"npu.pipeline: {component} spec has no example inputs; skipping")
             continue
-        primary = example_inputs[0]
-        baked = example_inputs[1:]
+        module = spec.npu_module or spec.module
+        n_runtime = min(max(1, spec.npu_runtime_input_count), len(example_inputs))
         qbits = component_quants[component]
         qdesc = f"int{qbits}" if qbits else "fp16"
         print(f"npu.pipeline: emitting {component} quant={qdesc}")
         if component == "source_encoder":
             emitted = emit_fn(
-                spec.module,
+                module,
                 bundle_root,
                 example_inputs=example_inputs,
                 input_names=tuple(getattr(spec, "input_keys", ()) or ()),
                 filename=filename,
                 quantize_bits=qbits,
             )
+        elif component == "vision_encoder":
+            names = ("x",) + tuple(spec.input_keys[1:n_runtime])
+            emitted = emit_fn(
+                module,
+                bundle_root,
+                runtime_inputs=tuple(zip(names, example_inputs[:n_runtime])),
+                baked_inputs=example_inputs[n_runtime:],
+                filename=filename,
+                quantize_bits=qbits,
+            )
         else:
             emitted = emit_fn(
-                spec.module,
+                module,
                 bundle_root,
-                example_input=primary,
-                baked_inputs=baked,
+                example_input=example_inputs[0],
+                baked_inputs=example_inputs[1:],
                 filename=filename,
                 quantize_bits=qbits,
             )

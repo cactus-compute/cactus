@@ -42,7 +42,7 @@ A low-latency AI engine for mobile devices & wearables.
 ## Quick Demo (Mac)
 
 - Step 1: `brew install cactus-compute/cactus/cactus`
-- Step 2: `cactus transcribe` or `cactus run` 
+- Step 2: `cactus run`
 
 ## Cactus Engine
 
@@ -230,7 +230,7 @@ cactus build               # default static lib
 ┌────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                │
 │ Step 0: if on Linux (Ubuntu/Debian)                                            │
-│ sudo apt-get install python3 python3-venv python3-pip cmake                    │
+│ sudo apt-get install python3.12 python3.12-venv python3-pip cmake              │
 │   build-essential libcurl4-openssl-dev                                         │
 │                                                                                │
 │ Step 1: clone and setup                                                        │

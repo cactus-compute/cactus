@@ -896,9 +896,9 @@ static bool ensure_project_row_remote(CURL* curl, const CloudConfigurationStateS
     std::string url = snapshot.supabase_url + "/rest/v1/projects";
     std::ostringstream payload;
     payload << "[{";
-    payload << "\"project_key\":\"" << snapshot.project_id << "\"";
+    payload << "\"project_key\":\"" << escape_json_string(snapshot.project_id) << "\"";
     if (!snapshot.project_scope.empty()) {
-        payload << ",\"name\":\"" << snapshot.project_scope << "\"";
+        payload << ",\"name\":\"" << escape_json_string(snapshot.project_scope) << "\"";
     }
     payload << "}]";
     struct curl_slist* headers = nullptr;
@@ -934,12 +934,12 @@ static bool ensure_device_row_remote(CURL* curl, const CloudConfigurationStateSn
     std::string url = snapshot.supabase_url + "/rest/v1/devices";
     std::ostringstream payload;
     payload << "[{";
-    payload << "\"id\":\"" << snapshot.device_id << "\"";
-    payload << ",\"device_id\":\"" << snapshot.device_id << "\"";
-    if (!snapshot.device_model.empty()) payload << ",\"model\":\"" << snapshot.device_model << "\"";
-    if (!snapshot.device_os.empty()) payload << ",\"os\":\"" << snapshot.device_os << "\"";
-    if (!snapshot.device_os_version.empty()) payload << ",\"os_version\":\"" << snapshot.device_os_version << "\"";
-    if (!snapshot.device_brand.empty()) payload << ",\"brand\":\"" << snapshot.device_brand << "\"";
+    payload << "\"id\":\"" << escape_json_string(snapshot.device_id) << "\"";
+    payload << ",\"device_id\":\"" << escape_json_string(snapshot.device_id) << "\"";
+    if (!snapshot.device_model.empty()) payload << ",\"model\":\"" << escape_json_string(snapshot.device_model) << "\"";
+    if (!snapshot.device_os.empty()) payload << ",\"os\":\"" << escape_json_string(snapshot.device_os) << "\"";
+    if (!snapshot.device_os_version.empty()) payload << ",\"os_version\":\"" << escape_json_string(snapshot.device_os_version) << "\"";
+    if (!snapshot.device_brand.empty()) payload << ",\"brand\":\"" << escape_json_string(snapshot.device_brand) << "\"";
     payload << "}]";
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -1063,16 +1063,16 @@ static CloudSendResult send_batch_to_cloud(const std::vector<Event>& local, cons
         }
         payload << "\"created_at\":\"" << format_timestamp(e.timestamp) << "\",";
         if (!snapshot.project_id.empty()) {
-            payload << "\"project_id\":\"" << snapshot.project_id << "\",";
+            payload << "\"project_id\":\"" << escape_json_string(snapshot.project_id) << "\",";
         }
         if (!snapshot.cloud_key.empty()) {
-            payload << "\"key_hash\":\"" << snapshot.cloud_key << "\",";
+            payload << "\"key_hash\":\"" << escape_json_string(snapshot.cloud_key) << "\",";
         }
-        payload << "\"framework\":\"" << snapshot.framework << "\",";
+        payload << "\"framework\":\"" << escape_json_string(snapshot.framework) << "\",";
         if (!snapshot.cactus_version.empty()) {
-            payload << "\"framework_version\":\"" << snapshot.cactus_version << "\",";
+            payload << "\"framework_version\":\"" << escape_json_string(snapshot.cactus_version) << "\",";
         }
-        payload << "\"device_id\":\"" << snapshot.device_id << "\"";
+        payload << "\"device_id\":\"" << escape_json_string(snapshot.device_id) << "\"";
         if (!snapshot.app_id.empty()) {
             payload << ",\"app_id\":\"" << escape_json_string(snapshot.app_id.c_str()) << "\"";
         } else {
@@ -1098,7 +1098,32 @@ static CloudSendResult send_batch_to_cloud(const std::vector<Event>& local, cons
     return result;
 }
 
+static const size_t kMaxCachedEventsPerFile = 1000;
+
+static void trim_cache_file(const std::string& file, size_t max_lines) {
+    // Stream the file keeping only the last max_lines, so a pre-existing oversized cache cannot blow up memory.
+    std::deque<std::string> lines;
+    bool trimmed = false;
+    {
+        std::ifstream in(file);
+        if (!in.is_open()) return;
+        std::string line;
+        while (std::getline(in, line)) {
+            lines.push_back(std::move(line));
+            if (lines.size() > max_lines) {
+                lines.pop_front();
+                trimmed = true;
+            }
+        }
+    }
+    if (!trimmed) return;
+    std::ofstream out(file, std::ios::trunc);
+    if (!out.is_open()) return;
+    for (const auto& line : lines) out << line << "\n";
+}
+
 static void write_events_to_cache_in_dir(const std::vector<Event>& local, const std::string& dir) {
+    std::vector<std::string> touched_files;
     for (const auto &e : local) {
         std::ostringstream oss;
         oss << "{\"event_type\":\"" << event_type_to_string(e.type) << "\",";
@@ -1169,6 +1194,12 @@ static void write_events_to_cache_in_dir(const std::vector<Event>& local, const 
             out << oss.str() << "\n";
             out.close();
         }
+        bool seen = false;
+        for (const auto& f : touched_files) { if (f == file) { seen = true; break; } }
+        if (!seen) touched_files.push_back(file);
+    }
+    for (const auto& file : touched_files) {
+        trim_cache_file(file, kMaxCachedEventsPerFile);
     }
 }
 
@@ -1182,9 +1213,15 @@ static std::vector<Event> load_cached_events_in_dir(const std::string& dir) {
         if (name.size() < 5 || name.substr(name.size() - 4) != ".log") continue;
         std::ifstream in(dir + "/" + name);
         std::string line;
+        // Load only the last kMaxCachedEventsPerFile lines, matching trim, so an oversized file is bounded here too.
+        std::deque<std::string> tail;
         while (std::getline(in, line)) {
+            tail.push_back(std::move(line));
+            if (tail.size() > kMaxCachedEventsPerFile) tail.pop_front();
+        }
+        for (const auto& cached : tail) {
             Event e;
-            if (parse_event_line(line, e)) {
+            if (parse_event_line(cached, e)) {
                 events.push_back(e);
             }
         }

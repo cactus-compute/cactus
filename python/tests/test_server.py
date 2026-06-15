@@ -77,16 +77,32 @@ def test_chat_completion_shapes_openai_response(tmp_path: Path, monkeypatch) -> 
     assert body["usage"] == {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3}
 
 
-def test_chat_tool_calls_are_translated(tmp_path: Path, monkeypatch) -> None:
+_WRAPPED_LOOKUP = [{"type": "function", "function": {"name": "lookup", "description": "", "parameters": {}}}]
+
+
+def _capturing_complete(captured: dict):
+    def fake_complete(handle, messages, options, tools, callback):
+        captured["tools"] = tools
+        return {
+            "success": True,
+            "response": "",
+            "function_calls": [{"name": "lookup", "arguments": {"q": "x"}}],
+            "prefill_tokens": 1,
+            "decode_tokens": 1,
+        }
+    return fake_complete
+
+
+def _tool_capture_app(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
     monkeypatch.setattr(server, "cactus_reset", lambda handle: None)
-    monkeypatch.setattr(server, "cactus_complete", lambda *args, **kwargs: {
-        "success": True,
-        "response": "",
-        "function_calls": [{"name": "lookup", "arguments": {"q": "x"}}],
-        "prefill_tokens": 1,
-        "decode_tokens": 1,
-    })
+    captured = {}
+    monkeypatch.setattr(server, "cactus_complete", _capturing_complete(captured))
+    return app, captured
+
+
+def test_chat_tool_calls_are_translated(tmp_path: Path, monkeypatch) -> None:
+    app, captured = _tool_capture_app(tmp_path, monkeypatch)
 
     with TestClient(app) as client:
         res = client.post("/v1/chat/completions", json={
@@ -101,6 +117,42 @@ def test_chat_tool_calls_are_translated(tmp_path: Path, monkeypatch) -> None:
     assert choice["message"]["content"] is None
     assert choice["message"]["tool_calls"][0]["function"]["name"] == "lookup"
     assert choice["message"]["tool_calls"][0]["function"]["arguments"] == '{"q": "x"}'
+    assert captured["tools"] == _WRAPPED_LOOKUP
+
+
+def test_streaming_chat_sends_wrapped_tools(tmp_path: Path, monkeypatch) -> None:
+    app, captured = _tool_capture_app(tmp_path, monkeypatch)
+
+    with TestClient(app) as client:
+        with client.stream("POST", "/v1/chat/completions", json={
+            "model": "llm",
+            "messages": [{"role": "user", "content": "call tool"}],
+            "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {}}}],
+            "stream": True,
+        }) as res:
+            body = "".join(res.iter_text())
+
+    assert '"finish_reason": "tool_calls"' in body
+    assert "data: [DONE]" in body
+    assert captured["tools"] == _WRAPPED_LOOKUP
+
+
+def test_tool_choice_object_selects_wrapped_tool(tmp_path: Path, monkeypatch) -> None:
+    app, captured = _tool_capture_app(tmp_path, monkeypatch)
+
+    with TestClient(app) as client:
+        res = client.post("/v1/chat/completions", json={
+            "model": "llm",
+            "messages": [{"role": "user", "content": "call tool"}],
+            "tools": [
+                {"type": "function", "function": {"name": "lookup", "parameters": {}}},
+                {"type": "function", "function": {"name": "other", "parameters": {}}},
+            ],
+            "tool_choice": {"type": "function", "function": {"name": "lookup"}},
+        })
+
+    assert res.status_code == 200
+    assert captured["tools"] == _WRAPPED_LOOKUP
 
 
 def test_streaming_completion_error_terminates(tmp_path: Path, monkeypatch) -> None:

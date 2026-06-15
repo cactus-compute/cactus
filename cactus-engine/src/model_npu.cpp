@@ -169,18 +169,18 @@ bool Model::audio_encode_via_npu(const std::vector<float>& audio_features) {
         const std::string& name = audio_encoder_->logical_outputs[i];
         size_t node_id = static_cast<size_t>(audio_encoder_->output_node_ids[i]);
         const auto& desc = audio_encoder_->graph->get_output_buffer(node_id);
-        const size_t copy_bytes = std::min(desc.byte_size, written * sizeof(__fp16));
+        const size_t elem_size = (desc.precision == Precision::FP32) ? sizeof(float) : sizeof(__fp16);
+        const size_t copy_elems = std::min(static_cast<size_t>(written), desc.byte_size / elem_size);
         auto& slot = media_features_[name];
-        const size_t prev = slot.size();
-        slot.resize(prev + copy_bytes);
-        if (desc.precision == Precision::FP16) {
-            std::memcpy(slot.data() + prev, output_fp16.data(), copy_bytes);
-        } else if (desc.precision == Precision::FP32) {
-            const size_t n = copy_bytes / sizeof(__fp16);
+        if (desc.precision == Precision::FP32) {
+            const size_t prev = slot.size();
+            slot.resize(prev + copy_elems * sizeof(float));
             float* dst = reinterpret_cast<float*>(slot.data() + prev);
-            for (size_t k = 0; k < n; ++k) dst[k] = static_cast<float>(output_fp16[k]);
+            for (size_t k = 0; k < copy_elems; ++k) dst[k] = static_cast<float>(output_fp16[k]);
         } else {
-            std::memcpy(slot.data() + prev, output_fp16.data(), copy_bytes);
+            const size_t prev = slot.size();
+            slot.resize(prev + copy_elems * sizeof(__fp16));
+            std::memcpy(slot.data() + prev, output_fp16.data(), copy_elems * sizeof(__fp16));
         }
         auto shape_it = media_feature_shapes_.find(name);
         if (shape_it == media_feature_shapes_.end() || shape_it->second.empty()) {
@@ -194,11 +194,12 @@ bool Model::audio_encode_via_npu(const std::vector<float>& audio_features) {
     return true;
 }
 
-bool Model::vision_encode_via_npu(const std::vector<float>& pixel_values) {
+bool Model::vision_encode_via_npu(const std::vector<float>& pixel_values,
+                                  const std::vector<int64_t>* pixel_position_ids) {
     if (!npu_vision_encoder_ || !npu_vision_encoder_->is_available() || !vision_encoder_) {
         return false;
     }
-    const std::vector<int> input_shape = npu_vision_encoder_->get_input_shape();
+    const std::vector<int> input_shape = npu_vision_encoder_->get_input_shape_for("x");
     if (input_shape.empty()) return false;
 
     size_t expected_elems = 1;
@@ -207,6 +208,13 @@ bool Model::vision_encode_via_npu(const std::vector<float>& pixel_values) {
         expected_elems *= static_cast<size_t>(d);
     }
     if (pixel_values.size() > expected_elems) return false;
+
+    const bool package_takes_positions = npu_vision_encoder_->has_input("pixel_position_ids");
+    if (package_takes_positions != (pixel_position_ids != nullptr)) {
+        CACTUS_LOG_WARN("model", "NPU vision encoder and pixel_position_ids mismatch; "
+            "falling back to CPU vision encoder (re-transpile with --npu to fix)");
+        return false;
+    }
 
     std::vector<__fp16> input_fp16(expected_elems, __fp16(0));
     for (size_t i = 0; i < pixel_values.size(); ++i) {
@@ -224,8 +232,33 @@ bool Model::vision_encode_via_npu(const std::vector<float>& pixel_values) {
     }
     std::vector<__fp16> output_fp16(output_elems, __fp16(0));
 
-    size_t written = npu_vision_encoder_->encode(
-        input_fp16.data(), output_fp16.data(), input_shape, "x", "encoded");
+    size_t written = 0;
+    if (package_takes_positions) {
+        const std::vector<int> pos_shape =
+            npu_vision_encoder_->get_input_shape_for("pixel_position_ids");
+        if (pos_shape.empty()) return false;
+        size_t pos_elems = 1;
+        for (int d : pos_shape) {
+            if (d <= 0) return false;
+            pos_elems *= static_cast<size_t>(d);
+        }
+        if (pixel_position_ids->size() > pos_elems) return false;
+
+        std::vector<int32_t> positions_i32(pos_elems, -1);
+        for (size_t i = 0; i < pixel_position_ids->size(); ++i) {
+            positions_i32[i] = static_cast<int32_t>((*pixel_position_ids)[i]);
+        }
+
+        const std::vector<npu::NPUNamedInput> inputs = {
+            {"x", input_fp16.data(), npu::NPUNamedInput::DataType::FP16, input_shape},
+            {"pixel_position_ids", positions_i32.data(), npu::NPUNamedInput::DataType::INT32, pos_shape},
+        };
+        written = npu_vision_encoder_->encode_multimodal_input(
+            inputs, output_fp16.data(), "encoded");
+    } else {
+        written = npu_vision_encoder_->encode(
+            input_fp16.data(), output_fp16.data(), input_shape, "x", "encoded");
+    }
     if (written == 0) return false;
 
     for (size_t i = 0; i < vision_encoder_->output_node_ids.size()
@@ -266,6 +299,61 @@ bool Model::vision_encode_via_npu(const std::vector<float>& pixel_values) {
     return true;
 }
 
+bool Model::lfm2_vl_use_npu_vision() const {
+    return npu_vision_encoder_ != nullptr
+        && npu_vision_encoder_->is_available()
+        && npu_vision_encoder_->has_input("positional_embeddings");
+}
+
+bool Model::lfm2_vl_encode_tile_npu(const float* pixel_values, const int64_t* mask,
+                                    const float* pos_embeds, size_t max_patches,
+                                    int dim, size_t patch_dim, std::vector<float>& enc_out) {
+    if (!npu_vision_encoder_ || !npu_vision_encoder_->is_available()) return false;
+
+    const std::vector<int> x_shape = npu_vision_encoder_->get_input_shape_for("x");
+    const std::vector<int> m_shape = npu_vision_encoder_->get_input_shape_for("pixel_attention_mask");
+    const std::vector<int> p_shape = npu_vision_encoder_->get_input_shape_for("positional_embeddings");
+    if (x_shape.empty() || p_shape.empty()) return false;
+
+    auto elem_count = [](const std::vector<int>& s) -> size_t {
+        size_t e = 1;
+        for (int d : s) { if (d <= 0) return 0; e *= static_cast<size_t>(d); }
+        return e;
+    };
+    const size_t x_elems = elem_count(x_shape);
+    const size_t p_elems = elem_count(p_shape);
+    const size_t m_elems = m_shape.empty() ? 0 : elem_count(m_shape);
+    const size_t pv_count = max_patches * patch_dim;
+    const size_t pe_count = max_patches * static_cast<size_t>(dim);
+    if (x_elems < pv_count || p_elems < pe_count) return false;
+
+    std::vector<__fp16> x_fp16(x_elems, __fp16(0));
+    for (size_t i = 0; i < pv_count; ++i) x_fp16[i] = static_cast<__fp16>(pixel_values[i]);
+    std::vector<__fp16> p_fp16(p_elems, __fp16(0));
+    for (size_t i = 0; i < pe_count; ++i) p_fp16[i] = static_cast<__fp16>(pos_embeds[i]);
+    std::vector<int32_t> m_i32(m_elems ? m_elems : max_patches, 0);
+    for (size_t i = 0; i < max_patches && i < m_i32.size(); ++i) m_i32[i] = static_cast<int32_t>(mask[i]);
+
+    const std::vector<int> out_shape = npu_vision_encoder_->get_output_shape();
+    size_t out_elems = elem_count(out_shape);
+    if (out_elems == 0) out_elems = npu_vision_encoder_->get_output_buffer_size();
+    std::vector<__fp16> out_fp16(out_elems, __fp16(0));
+
+    std::vector<npu::NPUNamedInput> inputs = {
+        {"x", x_fp16.data(), npu::NPUNamedInput::DataType::FP16, x_shape},
+        {"positional_embeddings", p_fp16.data(), npu::NPUNamedInput::DataType::FP16, p_shape},
+    };
+    if (!m_shape.empty()) {
+        inputs.push_back({"pixel_attention_mask", m_i32.data(), npu::NPUNamedInput::DataType::INT32, m_shape});
+    }
+
+    size_t written = npu_vision_encoder_->encode_multimodal_input(inputs, out_fp16.data(), "encoded");
+    if (written == 0) return false;
+
+    const size_t copy = std::min(enc_out.size(), static_cast<size_t>(written));
+    for (size_t i = 0; i < copy; ++i) enc_out[i] = static_cast<float>(out_fp16[i]);
+    return true;
+}
 
 }
 }

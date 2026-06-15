@@ -174,9 +174,10 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
                 id_to_token[token_id] = token_str
     else:
         vocab = tokenizer.get_vocab()
-        id_to_token = [""] * len(vocab)
+        vocab_size = (max(vocab.values()) + 1) if vocab else 0
+        id_to_token = [""] * vocab_size
         for token_str, token_id in vocab.items():
-            if token_id < len(id_to_token):
+            if token_id < vocab_size:
                 id_to_token[token_id] = token_str
 
     # vocab.txt is written later, after special tokens are collected
@@ -276,8 +277,8 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         if not any(item["token"] == token_str and item["id"] == int(token_id) for item in additional_special_tokens):
             additional_special_tokens.append({"token": token_str, "id": int(token_id)})
 
-    model_type = model_name_l or getattr(tokenizer, 'name_or_path', '').lower()
-    if 'gemma' in model_type:
+    name_or_path_l = model_name_l or getattr(tokenizer, 'name_or_path', '').lower()
+    if 'gemma' in (model_type or '') or 'gemma' in name_or_path_l:
         gemma_special_tokens = {
             '<start_of_turn>': None,
             '<end_of_turn>': None,

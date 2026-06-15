@@ -62,7 +62,7 @@ Install Cactus and run your first on-device AI completion.
     **From Source (Linux):**
 
     ```bash
-    sudo apt-get install python3 python3-venv python3-pip cmake build-essential libcurl4-openssl-dev
+    sudo apt-get install python3.12 python3.12-venv python3-pip cmake build-essential libcurl4-openssl-dev
     git clone https://github.com/cactus-compute/cactus && cd cactus && source ./setup && cactus build --python
     ```
 
