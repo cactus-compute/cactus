@@ -411,6 +411,35 @@ bool test_prefill() {
     return all_success && warm_prefilled_less;
 }
 
+struct LengthTokenizer : public Tokenizer {
+    std::vector<uint32_t> encode(const std::string& text) const override {
+        return {static_cast<uint32_t>(text.size())};
+    }
+    std::string decode(const std::vector<uint32_t>&) const override { return std::string(); }
+    uint32_t get_vocab_size() const override { return 0; }
+    uint32_t get_unk_token() const override { return 0; }
+    uint32_t get_bos_token() const override { return 0; }
+    uint32_t get_eos_token() const override { return 0; }
+    bool load_vocabulary_with_config(const std::string&, const std::string&, const std::string&) override { return true; }
+};
+
+bool test_tool_constraint_clear_releases_bias() {
+    LengthTokenizer tok;
+    ToolCallConstrainer constrainer;
+    constrainer.init(Config::ModelType::GEMMA4, {{"get_weather", {"location"}, {"location"}}}, &tok);
+    if (constrainer.get_bias().empty()) {
+        std::cerr << "  expected bias after activating init\n";
+        return false;
+    }
+    constrainer.reset();
+    constrainer.init(Config::ModelType::GEMMA4, {}, &tok);
+    if (!constrainer.get_bias().empty()) {
+        std::cerr << "  stale bias survived deactivating init\n";
+        return false;
+    }
+    return true;
+}
+
 bool test_tool_call() {
     const char* messages = R"([
         {"role": "system", "content": "You are a helpful assistant that can use tools."},
@@ -702,6 +731,50 @@ bool test_multiturn_thinking_persist() {
     return prefix_ok && mentions_alice;
 }
 
+bool test_multiturn_turn2_distinct() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║" << std::setw(42) << std::left << "    MULTITURN TURN-2 DISTINCT TEST" << "║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    if (!g_model_path) { std::cout << "  [WARN] CACTUS_TEST_MODEL not set; skipping\n"; return true; }
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize model\n";
+        return false;
+    }
+
+    const char* options = R"({"max_tokens":150,"temperature":0,"telemetry_enabled":false,"auto_handoff":false})";
+    const char* turn1_msgs = R"([
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hi! My name is Ada and I live in Paris. Briefly say hello."}
+    ])";
+    char buf[16384];
+
+    int r1 = cactus_complete(model, turn1_msgs, buf, sizeof(buf), options, nullptr, nullptr, nullptr, nullptr, 0);
+    if (r1 <= 0) { std::cerr << "  Turn 1 failed\n"; cactus_destroy(model); return false; }
+    std::string response1 = EngineTestUtils::json_string(std::string(buf), "response");
+    std::cout << "  Turn 1: " << response1 << "\n";
+
+    std::string turn2_msgs = R"([
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Hi! My name is Ada and I live in Paris. Briefly say hello."},
+        {"role": "assistant", "content": ")" + EngineTestUtils::escape_json(response1) + R"("},
+        {"role": "user", "content": "What is my name and what city do I live in? Answer in one short sentence."}
+    ])";
+
+    int r2 = cactus_complete(model, turn2_msgs.c_str(), buf, sizeof(buf), options, nullptr, nullptr, nullptr, nullptr, 0);
+    if (r2 <= 0) { std::cerr << "  Turn 2 failed\n"; cactus_destroy(model); return false; }
+    std::string response2 = EngineTestUtils::json_string(std::string(buf), "response");
+    std::cout << "  Turn 2: " << response2 << "\n";
+
+    cactus_destroy(model);
+
+    bool distinct = !response1.empty() && !response2.empty() && response2 != response1;
+    std::cout << "  Turn 2 distinct from turn 1: " << (distinct ? "YES" : "NO") << "\n";
+    if (!distinct) std::cerr << "  FAIL: turn 2 repeated turn 1 verbatim\n";
+    return distinct;
+}
+
 static std::string benchmark_tokens_json(cactus_model_t model, const std::vector<uint32_t>& ids, size_t max_new) {
     std::vector<char> response(1 << 16, 0);
     int rc = cactus_benchmark_tokens(model, ids.data(), ids.size(), max_new, response.data(), response.size());
@@ -738,8 +811,9 @@ bool test_chunked_prefill_padding() {
         std::string padded = benchmark_tokens_json(model, ids, 4);
         std::string padded_again = benchmark_tokens_json(model, ids, 4);
         cactus_destroy(model);
-        if (padded.empty() || padded.find("\"success\":true") == std::string::npos) {
-            std::cerr << "  [✗] padded benchmark failed at len " << prompt_len << "\n";
+        if (padded.empty() || padded.find("\"success\":true") == std::string::npos
+                || padded_again.empty() || padded_again.find("\"success\":true") == std::string::npos) {
+            std::cerr << "  [✗] repeated chunked benchmark failed at len " << prompt_len << "\n";
             return false;
         }
         long tail_chunk = static_cast<long>(EngineTestUtils::json_number(padded, "prefill_tail_chunk_tokens", -1));
@@ -749,7 +823,7 @@ bool test_chunked_prefill_padding() {
                   << " pads=" << tail_pads << " scalar=" << scalar << "\n";
         if (tail_chunk <= 0) {
             std::cout << "  [WARN] padded tail did not engage (no sliding caches?); skipping\n";
-            return true;
+            continue;
         }
         if (tail_pads <= 0 || scalar > 1) {
             std::cerr << "  [✗] unexpected padding telemetry\n";
@@ -801,10 +875,12 @@ int main() {
     runner.run_test("tool_calls", test_tool_call());
     runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
     runner.run_test("tool_calls_with_three_tools", test_tool_call_with_three_tools());
+    runner.run_test("tool_constraint_clear_releases_bias", test_tool_constraint_clear_releases_bias());
     runner.run_test("partition_thinking_response", test_partition_thinking_response());
     runner.run_test("prompt_retains_thinking", test_prompt_gemma4_retains_thinking());
     runner.run_test("complete_thinking_api_clean", test_complete_gemma4_thinking_api_clean());
     runner.run_test("multiturn_thinking_persist", test_multiturn_thinking_persist());
+    runner.run_test("multiturn_turn2_distinct", test_multiturn_turn2_distinct());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

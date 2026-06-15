@@ -82,6 +82,7 @@ struct CactusModelHandle {
     size_t corpus_embedding_dim = 0;
     std::vector<std::vector<float>> tool_embeddings;
     std::vector<std::string> tool_texts;
+    bool cloud_handoff_disabled = false;
 
     CactusModelHandle() : should_stop(false) {}
 };
@@ -1659,7 +1660,8 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            bool cloud_handoff = false,
                                            const std::string& thinking = "",
                                            const std::vector<TranscriptSegment>& segments = {},
-                                           const std::string& context_response = "") {
+                                           const std::string& context_response = "",
+                                           float confidence_threshold = -1.0f) {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
@@ -1687,6 +1689,7 @@ inline std::string construct_response_json(const std::string& regular_response,
     }
     json << "],";
     json << "\"confidence\":" << std::fixed << std::setprecision(4) << confidence << ",";
+    json << "\"confidence_threshold\":" << std::fixed << std::setprecision(4) << confidence_threshold << ",";
     json << "\"time_to_first_token_ms\":" << std::fixed << std::setprecision(2) << time_to_first_token << ",";
     json << "\"total_time_ms\":" << std::fixed << std::setprecision(2) << total_time_ms << ",";
     json << "\"prefill_tps\":" << std::fixed << std::setprecision(2) << prefill_tps << ",";

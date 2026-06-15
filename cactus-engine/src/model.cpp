@@ -569,6 +569,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         prefill_tail_pad_disabled_ = std::atoi(env) != 0;
     }
     vision_encoder_ = components_.count("vision_encoder") ? &components_.at("vision_encoder") : nullptr;
+    vision_projector_ = components_.count("vision_projector") ? &components_.at("vision_projector") : nullptr;
     audio_encoder_ = components_.count("audio_encoder") ? &components_.at("audio_encoder") : nullptr;
     lm_encoder_media_step_ = components_.count("lm_encoder_media_step") ? &components_.at("lm_encoder_media_step") : nullptr;
     lm_encoder_ = components_.count("lm_encoder") ? &components_.at("lm_encoder") : nullptr;
@@ -582,6 +583,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         decoder_cross_kv_,
         decoder_prefill_,
         vision_encoder_,
+        vision_projector_,
         audio_encoder_,
         lm_encoder_media_step_,
         lm_encoder_,
@@ -602,6 +604,10 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         if (desc.shape.size() >= 3) n = desc.shape[desc.shape.size() - 2];
         else if (desc.shape.size() >= 2) n = desc.shape[0];
         if (n > 0) tokenizer_->set_image_soft_token_count(n);
+    }
+
+    if (family_ == "lfm2_vl" && tokenizer_) {
+        tokenizer_->set_lfm2_vision_config(config_);
     }
 
     cache_max_seq_len_ = context_size;
@@ -1311,6 +1317,10 @@ void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
 
 void Model::run_vision_encoder(const std::string& image_path) {
     if (!vision_encoder_) return;
+    if (family_ == "lfm2_vl") {
+        run_vision_encoder_lfm2_vl(image_path);
+        return;
+    }
     if (!load_component_graph(*vision_encoder_)) {
         throw std::runtime_error("failed to load vision_encoder");
     }
@@ -1337,27 +1347,7 @@ void Model::run_vision_encoder(const std::string& image_path) {
         if (n < cap) std::memset(buf.data() + n * elem, 0, (cap - n) * elem);
     };
 
-    if (family_ == "lfm2_vl") {
-        Lfm2VlImagePreprocessed prep = preprocess_lfm2_vl_image(image_path, config_);
-        if (has_npu_vision_encoder() && vision_encode_via_npu(prep.pixel_values)) {
-            return;
-        }
-        int pv_idx = input_index(*vision_encoder_, "pixel_values");
-        if (pv_idx >= 0) {
-            auto& pv_buf = vision_encoder_->input_buffers[pv_idx];
-            size_t pv_node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[pv_idx]);
-            const auto& pv_desc = vision_encoder_->graph->get_output_buffer(pv_node);
-            write_typed_buffer(pv_buf, pv_desc.precision,
-                               prep.pixel_values.data(),
-                               prep.pixel_values.size() * sizeof(float),
-                               Precision::FP32);
-        }
-        int pm_idx = input_index(*vision_encoder_, "pixel_attention_mask");
-        if (pm_idx >= 0) {
-            write_int_buffer_typed(pm_idx, prep.pixel_attention_mask.data(),
-                                   prep.pixel_attention_mask.size());
-        }
-    } else if (family_ == "qwen3_5" || family_ == "qwen3_vl" || config_.model_type == Config::ModelType::QWEN) {
+    if (family_ == "qwen3_5" || family_ == "qwen3_vl" || config_.model_type == Config::ModelType::QWEN) {
         Qwen3VlImagePreprocessed prep = preprocess_qwen3_vl_image(image_path, config_);
         int pv_idx = input_index(*vision_encoder_, "pixel_values");
         if (pv_idx < 0) {
@@ -1407,6 +1397,201 @@ void Model::run_vision_encoder(const std::string& image_path) {
     vision_encoder_->graph->release_runtime_buffers();
     vision_encoder_->graph->release_all_weight_pages();
     unload_component_graph(*vision_encoder_);
+}
+
+namespace {
+void typed_buffer_to_float(const void* src, Precision prec, float* dst, size_t n) {
+    switch (prec) {
+        case Precision::FP32: std::memcpy(dst, src, n * sizeof(float)); break;
+        case Precision::FP16: {
+            const __fp16* s = reinterpret_cast<const __fp16*>(src);
+            for (size_t i = 0; i < n; ++i) dst[i] = static_cast<float>(s[i]);
+            break;
+        }
+        case Precision::INT8: {
+            const int8_t* s = reinterpret_cast<const int8_t*>(src);
+            for (size_t i = 0; i < n; ++i) dst[i] = static_cast<float>(s[i]);
+            break;
+        }
+        default: std::memset(dst, 0, n * sizeof(float)); break;
+    }
+}
+}  // namespace
+
+bool Model::load_lfm2_vl_position_grid() {
+    if (lfm2_pos_grid_loaded_) return !lfm2_pos_grid_.empty();
+    lfm2_pos_grid_loaded_ = true;
+    if (!vision_encoder_) return false;
+    auto path_it = vision_encoder_->metadata.find("position_embedding_grid_path");
+    auto shape_it = vision_encoder_->metadata.find("position_embedding_grid_shape");
+    if (path_it == vision_encoder_->metadata.end() || shape_it == vision_encoder_->metadata.end()) return false;
+    int gh = 0, gw = 0, gd = 0;
+    if (std::sscanf(shape_it->second.c_str(), "%d,%d,%d", &gh, &gw, &gd) != 3) return false;
+    if (gh <= 0 || gw <= 0 || gd <= 0) return false;
+    fs::path full = fs::path(bundle_dir_) / path_it->second;
+    std::ifstream f(full, std::ios::binary);
+    if (!f.is_open()) return false;
+    const size_t count = static_cast<size_t>(gh) * gw * gd;
+    lfm2_pos_grid_.resize(count);
+    f.read(reinterpret_cast<char*>(lfm2_pos_grid_.data()), static_cast<std::streamsize>(count * sizeof(float)));
+    if (!f) { lfm2_pos_grid_.clear(); return false; }
+    lfm2_pos_grid_h_ = gh;
+    lfm2_pos_grid_w_ = gw;
+    lfm2_pos_grid_dim_ = gd;
+    return true;
+}
+
+void Model::run_vision_encoder_lfm2_vl(const std::string& image_path) {
+    if (!vision_encoder_ || !vision_projector_) {
+        throw std::runtime_error("lfm2_vl requires vision_encoder and vision_projector components");
+    }
+    if (!load_lfm2_vl_position_grid()) {
+        throw std::runtime_error("lfm2_vl vision position-embedding grid is missing from the bundle");
+    }
+    if (!load_component_graph(*vision_encoder_)) throw std::runtime_error("failed to load vision_encoder");
+    if (!load_component_graph(*vision_projector_)) throw std::runtime_error("failed to load vision_projector");
+
+    media_features_.erase("image_features");
+    media_feature_shapes_.erase("image_features");
+    media_feature_precisions_.erase("image_features");
+
+    encode_lfm2_vl_image_into_features(image_path);
+
+    unload_component_graph(*vision_encoder_);
+    unload_component_graph(*vision_projector_);
+}
+
+void Model::encode_lfm2_vl_image_into_features(const std::string& image_path) {
+    Lfm2VlImagePreprocessed prep = preprocess_lfm2_vl_image(image_path, config_);
+    const bool use_npu = lfm2_vl_use_npu_vision();
+    const int dim = lfm2_pos_grid_dim_;
+    const int factor = config_.downsample_factor ? static_cast<int>(config_.downsample_factor) : 2;
+    const size_t max_patches = prep.max_num_patches;
+    const size_t patch_dim = prep.patch_dim;
+    const int cff = dim * factor * factor;
+
+    const int pv_idx = input_index(*vision_encoder_, "pixel_values");
+    const int pm_idx = input_index(*vision_encoder_, "pixel_attention_mask");
+    const int pe_idx = input_index(*vision_encoder_, "positional_embeddings");
+    const int vf_idx = input_index(*vision_projector_, "vision_features");
+    if (pv_idx < 0 || pe_idx < 0 || vf_idx < 0) {
+        throw std::runtime_error("lfm2_vl vision components are missing expected inputs");
+    }
+
+    const size_t enc_out_node = static_cast<size_t>(vision_encoder_->output_node_ids[0]);
+    const size_t proj_out_node = static_cast<size_t>(vision_projector_->output_node_ids[0]);
+    const auto& proj_out_desc = vision_projector_->graph->get_output_buffer(proj_out_node);
+    const size_t proj_rows = proj_out_desc.shape.size() >= 2
+        ? proj_out_desc.shape[proj_out_desc.shape.size() - 2] : 0;
+    const size_t text_hidden = proj_out_desc.shape.empty() ? 0 : proj_out_desc.shape.back();
+    const Precision proj_prec = proj_out_desc.precision;
+    const size_t proj_elem = PrecisionTraits::size_of(proj_prec);
+    if (proj_rows == 0 || text_hidden == 0) {
+        throw std::runtime_error("lfm2_vl vision_projector has an invalid output shape");
+    }
+    if (!use_npu) {
+        const auto& enc_out_desc0 = vision_encoder_->graph->get_output_buffer(enc_out_node);
+        const size_t enc_elem = PrecisionTraits::size_of(enc_out_desc0.precision);
+        const size_t enc_out_elems = enc_elem ? enc_out_desc0.byte_size / enc_elem : 0;
+        if (enc_out_elems < max_patches * static_cast<size_t>(dim)) {
+            throw std::runtime_error("lfm2_vl vision_encoder output is smaller than the preprocessed patch grid");
+        }
+    }
+
+    auto write_mask = [&](int comp_idx, const int64_t* src, size_t count) {
+        auto& buf = vision_encoder_->input_buffers[comp_idx];
+        size_t node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[comp_idx]);
+        const auto& d = vision_encoder_->graph->get_output_buffer(node);
+        const size_t elem = PrecisionTraits::size_of(d.precision);
+        const size_t cap = elem ? buf.size() / elem : 0;
+        const size_t n = std::min(cap, count);
+        for (size_t i = 0; i < n; ++i) {
+            int64_t v = src[i];
+            switch (d.precision) {
+                case Precision::FP32: reinterpret_cast<float*>(buf.data())[i] = static_cast<float>(v); break;
+                case Precision::FP16: reinterpret_cast<__fp16*>(buf.data())[i] = static_cast<__fp16>(v); break;
+                case Precision::INT8: reinterpret_cast<int8_t*>(buf.data())[i] = static_cast<int8_t>(v); break;
+                default:
+                    if (elem == 8) reinterpret_cast<int64_t*>(buf.data())[i] = v;
+                    else if (elem == 4) reinterpret_cast<int32_t*>(buf.data())[i] = static_cast<int32_t>(v);
+                    break;
+            }
+        }
+        if (n < cap) std::memset(buf.data() + n * elem, 0, (cap - n) * elem);
+    };
+
+    auto write_float_input = [](Component& comp, int idx, const float* src, size_t count) {
+        auto& buf = comp.input_buffers[idx];
+        size_t node = static_cast<size_t>(comp.runtime_input_node_ids[idx]);
+        const auto& d = comp.graph->get_output_buffer(node);
+        write_typed_buffer(buf, d.precision, src, count * sizeof(float), Precision::FP32);
+    };
+
+    std::vector<uint8_t> image_features;
+    size_t total_tokens = 0;
+
+    std::vector<float> pos_buf(max_patches * static_cast<size_t>(dim));
+    std::vector<float> enc_out_f(max_patches * static_cast<size_t>(dim));
+    std::vector<float> unshuf;
+    std::vector<float> proj_in;
+
+    for (size_t t = 0; t < prep.spatial_shapes.size(); ++t) {
+        const int h = prep.spatial_shapes[t].first;
+        const int w = prep.spatial_shapes[t].second;
+        const int num_tokens = (h / factor) * (w / factor);
+        if (static_cast<size_t>(num_tokens) > proj_rows) {
+            throw std::runtime_error("lfm2_vl sub-image exceeds the traced projector capacity");
+        }
+
+        std::fill(pos_buf.begin(), pos_buf.end(), 0.0f);
+        interpolate_position_embeddings(
+            lfm2_pos_grid_.data(), lfm2_pos_grid_h_, lfm2_pos_grid_w_, dim, h, w, pos_buf.data());
+
+        if (use_npu) {
+            const float* pv_src = prep.pixel_values.data() + t * max_patches * patch_dim;
+            const int64_t* m_src = prep.pixel_attention_mask.data() + t * max_patches;
+            if (!lfm2_vl_encode_tile_npu(pv_src, m_src, pos_buf.data(), max_patches, dim, patch_dim, enc_out_f)) {
+                throw std::runtime_error("lfm2_vl NPU vision encode failed");
+            }
+        } else {
+            write_float_input(*vision_encoder_, pv_idx,
+                              prep.pixel_values.data() + t * max_patches * patch_dim, max_patches * patch_dim);
+            if (pm_idx >= 0) {
+                write_mask(pm_idx, prep.pixel_attention_mask.data() + t * max_patches, max_patches);
+            }
+            write_float_input(*vision_encoder_, pe_idx, pos_buf.data(), max_patches * static_cast<size_t>(dim));
+            vision_encoder_->graph->execute();
+            const auto& enc_desc = vision_encoder_->graph->get_output_buffer(enc_out_node);
+            const void* enc_ptr = vision_encoder_->graph->get_output(enc_out_node);
+            typed_buffer_to_float(enc_ptr, enc_desc.precision, enc_out_f.data(),
+                                  max_patches * static_cast<size_t>(dim));
+        }
+
+        unshuf.assign(static_cast<size_t>(num_tokens) * cff, 0.0f);
+        pixel_unshuffle(enc_out_f.data(), h, w, dim, factor, unshuf.data());
+
+        proj_in.assign(proj_rows * static_cast<size_t>(cff), 0.0f);
+        std::copy(unshuf.begin(), unshuf.end(), proj_in.begin());
+        write_float_input(*vision_projector_, vf_idx, proj_in.data(), proj_in.size());
+
+        vision_projector_->graph->execute();
+        const void* proj_ptr = vision_projector_->graph->get_output(proj_out_node);
+        const size_t row_bytes = text_hidden * proj_elem;
+        const size_t append_bytes = static_cast<size_t>(num_tokens) * row_bytes;
+        const size_t base = image_features.size();
+        image_features.resize(base + append_bytes);
+        std::memcpy(image_features.data() + base, proj_ptr, append_bytes);
+        total_tokens += static_cast<size_t>(num_tokens);
+    }
+
+    auto& slot = media_features_["image_features"];
+    const size_t prev_bytes = slot.size();
+    slot.resize(prev_bytes + image_features.size());
+    std::memcpy(slot.data() + prev_bytes, image_features.data(), image_features.size());
+    auto& shape = media_feature_shapes_["image_features"];
+    if (shape.size() != 2) shape = { total_tokens, text_hidden };
+    else shape[0] += total_tokens;
+    media_feature_precisions_["image_features"] = proj_prec;
 }
 
 void Model::run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message) {
@@ -2158,41 +2343,21 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             media_feature_shapes_.erase(logical);
             media_feature_precisions_.erase(logical);
         }
+        const bool lfm2_vision = family_ == "lfm2_vl";
+        if (lfm2_vision) {
+            if (!vision_projector_) throw std::runtime_error("lfm2_vl requires a vision_projector component");
+            if (!load_lfm2_vl_position_grid()) {
+                throw std::runtime_error("lfm2_vl vision position-embedding grid is missing from the bundle");
+            }
+            if (!load_component_graph(*vision_projector_)) throw std::runtime_error("failed to load vision_projector");
+            media_features_.erase("image_features");
+            media_feature_shapes_.erase("image_features");
+            media_feature_precisions_.erase("image_features");
+        }
         for (const auto& path : image_paths) {
             if (family_ == "lfm2_vl") {
-                Lfm2VlImagePreprocessed prep = preprocess_lfm2_vl_image(path, config_);
-                if (has_npu_vision_encoder() && vision_encode_via_npu(prep.pixel_values)) {
-                    continue;
-                }
-                int pv_idx = input_index(*vision_encoder_, "pixel_values");
-                if (pv_idx >= 0) {
-                    auto& pv_buf = vision_encoder_->input_buffers[pv_idx];
-                    size_t pv_node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[pv_idx]);
-                    const auto& pv_desc = vision_encoder_->graph->get_output_buffer(pv_node);
-                    write_typed_buffer(pv_buf, pv_desc.precision,
-                                       prep.pixel_values.data(),
-                                       prep.pixel_values.size() * sizeof(float),
-                                       Precision::FP32);
-                }
-                int pm_idx = input_index(*vision_encoder_, "pixel_attention_mask");
-                if (pm_idx >= 0) {
-                    auto& pm_buf = vision_encoder_->input_buffers[pm_idx];
-                    size_t pm_node = static_cast<size_t>(vision_encoder_->runtime_input_node_ids[pm_idx]);
-                    const auto& pm_desc = vision_encoder_->graph->get_output_buffer(pm_node);
-                    const size_t elem = PrecisionTraits::size_of(pm_desc.precision);
-                    const size_t cap = elem ? pm_buf.size() / elem : 0;
-                    const size_t n = std::min(cap, prep.pixel_attention_mask.size());
-                    for (size_t i = 0; i < n; ++i) {
-                        int64_t v = prep.pixel_attention_mask[i];
-                        switch (pm_desc.precision) {
-                            case Precision::FP32: reinterpret_cast<float*>(pm_buf.data())[i] = static_cast<float>(v); break;
-                            case Precision::FP16: reinterpret_cast<__fp16*>(pm_buf.data())[i] = static_cast<__fp16>(v); break;
-                            case Precision::INT8: reinterpret_cast<int8_t*>(pm_buf.data())[i] = static_cast<int8_t>(v); break;
-                            default: reinterpret_cast<int64_t*>(pm_buf.data())[i] = v; break;
-                        }
-                    }
-                    if (n < cap) std::memset(pm_buf.data() + n * elem, 0, (cap - n) * elem);
-                }
+                encode_lfm2_vl_image_into_features(path);
+                continue;
             } else if (family_ == "qwen3_5" || family_ == "qwen3_vl" || config_.model_type == Config::ModelType::QWEN) {
                 Qwen3VlImagePreprocessed prep = preprocess_qwen3_vl_image(path, config_);
                 int pv_idx = input_index(*vision_encoder_, "pixel_values");
@@ -2267,6 +2432,9 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             vision_encoder_->graph->release_runtime_buffers();
             vision_encoder_->graph->release_all_weight_pages();
         }
+        if (lfm2_vision) {
+            unload_component_graph(*vision_projector_);
+        }
         unload_component_graph(*vision_encoder_);
     }
 
@@ -2340,6 +2508,42 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             store_prec[name] = desc.precision;
             store_shape[name] = desc.shape;
         }
+
+        if (have_images && family_ == "lfm2_vl") {
+            auto feat_it = media_features_.find("image_features");
+            auto emb_it = store_bytes.find("inputs_embeds");
+            if (feat_it != media_features_.end() && emb_it != store_bytes.end() && tokenizer_) {
+                const auto& emb_shape = store_shape["inputs_embeds"];
+                const auto& feat_shape = media_feature_shapes_["image_features"];
+                const size_t hidden = emb_shape.empty() ? 0 : emb_shape.back();
+                const size_t emb_seq = emb_shape.size() >= 2 ? emb_shape[emb_shape.size() - 2] : 0;
+                const size_t feat_rows = feat_shape.empty() ? 0 : feat_shape[0];
+                const Precision emb_prec = store_prec["inputs_embeds"];
+                const Precision feat_prec = media_feature_precisions_["image_features"];
+                const size_t emb_elem = PrecisionTraits::size_of(emb_prec);
+                const size_t feat_elem = PrecisionTraits::size_of(feat_prec);
+                const uint32_t image_tok = tokenizer_->get_image_token_id();
+                uint8_t* emb_data = emb_it->second.data();
+                const uint8_t* feat_data = feat_it->second.data();
+                std::vector<float> frow(hidden);
+                size_t fcur = 0;
+                const size_t limit = std::min(emb_seq, tokens.size());
+                for (size_t p = 0; p < limit && fcur < feat_rows; ++p) {
+                    if (tokens[p] != image_tok) continue;
+                    typed_buffer_to_float(feat_data + fcur * hidden * feat_elem, feat_prec, frow.data(), hidden);
+                    uint8_t* dst = emb_data + p * hidden * emb_elem;
+                    for (size_t d = 0; d < hidden; ++d) {
+                        switch (emb_prec) {
+                            case Precision::FP32: reinterpret_cast<float*>(dst)[d] = frow[d]; break;
+                            case Precision::FP16: reinterpret_cast<__fp16*>(dst)[d] = static_cast<__fp16>(frow[d]); break;
+                            default: reinterpret_cast<float*>(dst)[d] = frow[d]; break;
+                        }
+                    }
+                    ++fcur;
+                }
+            }
+        }
+
         lm_encoder_->graph->release_runtime_buffers();
         lm_encoder_->graph->release_all_weight_pages();
         unload_component_graph(*lm_encoder_);
@@ -3676,7 +3880,6 @@ bool Config::from_json(const std::string& config_path) {
         default_top_k = 64;
         if (model_type == ModelType::GEMMA4) {
             default_cloud_handoff_threshold = 0.92f;
-            default_rolling_entropy_window = 16;
         }
     } else if (model_type == ModelType::LFM2) {
         default_temperature = 0.3f;

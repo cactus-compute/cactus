@@ -4,7 +4,7 @@ from pathlib import Path
 from .common import (
     BLUE, GREEN, RED, YELLOW,
     SUPPORTED_PLATFORMS,
-    print_color, transpiled_root, weights_root,
+    print_color, weights_root,
 )
 
 
@@ -18,15 +18,26 @@ def get_weights_dir(model_id: str) -> Path:
 
 def get_bundle_dir(model_id: str, *, bits: int = 4, platform: str | None = None) -> Path:
     from .utils import variant_suffix
-    return transpiled_root() / f"{get_model_dir_name(model_id)}-{variant_suffix(bits, platform)}"
+    return weights_root() / f"{get_model_dir_name(model_id)}-{variant_suffix(bits, platform)}"
+
+
+def _host_platform() -> str | None:
+    """Best-fit accelerator for the current host: apple on macOS, else generic CPU."""
+    import platform as _platform
+
+    if _platform.system() == "Darwin" and "apple" in SUPPORTED_PLATFORMS:
+        return "apple"
+    return None
 
 
 def resolve_platform(choice: str) -> str | None:
+    if choice == "auto":
+        return _host_platform()
     if choice == "cpu":
         return None
     if choice in SUPPORTED_PLATFORMS:
         return choice
-    raise ValueError(f"unknown platform {choice!r}; supported: cpu, {', '.join(SUPPORTED_PLATFORMS)}")
+    raise ValueError(f"unknown platform {choice!r}; supported: auto, cpu, {', '.join(SUPPORTED_PLATFORMS)}")
 
 
 def ensure_model(model_id: str) -> Path:

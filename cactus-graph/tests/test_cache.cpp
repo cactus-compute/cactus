@@ -663,6 +663,28 @@ bool test_recurrent_cache_state_initializes_to_zero() {
     return true;
 }
 
+bool test_steal_cache_buffer_preserves_source_descriptor() {
+    CactusGraph src;
+    CactusGraph dst;
+    const std::vector<size_t> shape{1, 16, 4, 32};
+    const size_t elements = 1 * 16 * 4 * 32;
+    size_t src_state = src.recurrent_cache_state(shape, Precision::FP16);
+    size_t dst_state = dst.recurrent_cache_state(shape, Precision::FP16);
+    src.execute();
+    dst.steal_cache_buffer(dst_state, src, src_state);
+    if (!dst.get_output(dst_state)) return false;
+    if (src.get_output_buffer(src_state).shape != shape) return false;
+    src.execute();
+    const BufferDesc& buf = src.get_output_buffer(src_state);
+    const __fp16* data = static_cast<const __fp16*>(buf.get_data());
+    if (!data) return false;
+    if (buf.byte_size != elements * sizeof(__fp16)) return false;
+    for (size_t i = 0; i < elements; ++i) {
+        if (static_cast<float>(data[i]) != 0.0f) return false;
+    }
+    return true;
+}
+
 bool test_recurrent_cache_write_rejects_non_state_input() {
     CactusGraph g;
     size_t plain_input = g.input({2, 4}, Precision::FP16);
@@ -935,6 +957,7 @@ int main() {
     runner.run_test("Conv Cache Initialize Resets Dirty Cache", test_conv_cache_initialize_resets_dirty_cache());
     runner.run_test("Conv Cache Initialize Output Zero Byte", test_conv_cache_initialize_output_is_zero_byte());
     runner.run_test("Recurrent Cache State Initializes to Zero", test_recurrent_cache_state_initializes_to_zero());
+    runner.run_test("Steal Cache Buffer Preserves Source Descriptor", test_steal_cache_buffer_preserves_source_descriptor());
     runner.run_test("Recurrent Cache Write Carries State", test_recurrent_cache_write_carries_state_across_executions());
     runner.run_test("Recurrent Cache Write Rejects Non-State Input", test_recurrent_cache_write_rejects_non_state_input());
     runner.run_test("Recurrent Cache Write Rejects Mismatch", test_recurrent_cache_write_rejects_shape_mismatch());

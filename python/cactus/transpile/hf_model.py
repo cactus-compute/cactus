@@ -333,6 +333,36 @@ def _write_graph_binding_manifest(
     return manifest_path
 
 
+def _export_lfm2_vl_position_embedding_grid(
+    *,
+    model,
+    artifact_dir: Path,
+    component_metadata: dict[str, dict[str, object]],
+) -> None:
+    root = getattr(model, "model", None)
+    vision_tower = getattr(root, "vision_tower", None)
+    vision_model = getattr(vision_tower, "vision_model", None)
+    embeddings = getattr(vision_model, "embeddings", None)
+    if embeddings is None:
+        return
+    pos_size = int(embeddings.position_embedding_size)
+    embed_dim = int(embeddings.embed_dim)
+    grid = (
+        embeddings.position_embedding.weight.detach().cpu().to(torch.float32)
+        .reshape(pos_size, pos_size, embed_dim)
+        .contiguous()
+        .numpy()
+    )
+    rel_path = Path("components") / "vision_encoder" / "position_embedding_grid.f32"
+    out_path = artifact_dir / rel_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    grid.tofile(out_path)
+    meta = component_metadata.setdefault("vision_encoder", {})
+    meta["position_embedding_grid_path"] = str(rel_path)
+    meta["position_embedding_grid_shape"] = f"{pos_size},{pos_size},{embed_dim}"
+    print(f"saved_vision_position_embedding_grid={out_path}")
+
+
 def _write_component_bundle(
     *,
     artifact_dir: Path,
@@ -356,6 +386,7 @@ def _write_component_bundle(
             "source_encoder",
             "audio_encoder",
             "vision_encoder",
+            "vision_projector",
             "text_embedding",
             "lm_encoder",
             "lm_encoder_text_chunk",
@@ -753,6 +784,13 @@ def _run_component_pipeline_transpile(
             print(
                 f"saved_optimized_component_ir_{component}="
                 f"{artifact_dir / _component_artifact_name('optimized_ir', component)}"
+            )
+
+        if family == "lfm2_vl" and "vision_encoder" in component_metadata:
+            _export_lfm2_vl_position_embedding_grid(
+                model=model,
+                artifact_dir=artifact_dir,
+                component_metadata=component_metadata,
             )
 
         component_manifest_path = _write_component_bundle(

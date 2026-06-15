@@ -32,8 +32,10 @@ def transpiled_root() -> Path:
     return Path.home() / ".cache" / "cactus" / "transpiled"
 
 
-DEFAULT_MODEL_ID = "LiquidAI/LFM2-VL-450M"
-DEFAULT_TRANSCRIPTION_MODEL_ID = "openai/whisper-base"
+DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
+DEFAULT_TRANSCRIPTION_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
+DEFAULT_TEST_MODEL_ID = "LiquidAI/LFM2-VL-450M"
+DEFAULT_TEST_TRANSCRIPTION_MODEL_ID = "openai/whisper-base"
 
 
 # Add a new vendor accelerator by appending its name here.
@@ -75,10 +77,25 @@ def apply_cloud_api_key_env() -> None:
         os.environ["CACTUS_CLOUD_KEY"] = api_key
 
 
+def _auto_build_binaries() -> bool:
+    """Build the native runtime and CLI binaries, equivalent to `cactus build`."""
+    from argparse import Namespace
+    from .compile import cmd_build
+
+    return cmd_build(Namespace(apple=False, android=False, python=False)) == 0
+
+
 def resolve_binary(name):
     path = BIN_DIR / name
     if path.exists():
         return path
+
+    # First run in a source checkout: build automatically instead of erroring out.
+    if is_repo_checkout():
+        print_color(YELLOW, f"{name} binary not found; building Cactus (first run, this may take a minute)...")
+        if _auto_build_binaries() and path.exists():
+            return path
+
     print_color(RED, f"{name} binary not found at {path}.")
     if is_repo_checkout():
         print_color(RED, "Run `cactus build` first.")

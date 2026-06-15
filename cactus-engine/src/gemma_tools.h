@@ -4,8 +4,11 @@
 #include <vector>
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <map>
 #include <set>
+
+#include "json_escape.h"
 
 namespace gemma {
 
@@ -17,6 +20,15 @@ inline std::string to_upper(const std::string& s) {
 
 inline std::string escape(const std::string& s) {
     return "<|\"|>" + s + "<|\"|>";
+}
+
+inline std::string use_escape_tags(std::string s) {
+    size_t pos = 0;
+    while ((pos = s.find("<|\"|>", pos)) != std::string::npos) {
+        s.replace(pos, 5, "<escape>");
+        pos += 8;
+    }
+    return s;
 }
 
 inline void skip_whitespace(const std::string& json, size_t& pos) {
@@ -398,7 +410,8 @@ inline std::string format_tools(const std::vector<ToolFunction>& tools, bool use
             params_json = it->second;
         }
 
-        result += format_function_declaration(tool.name, tool.description, params_json);
+        std::string declaration = format_function_declaration(tool.name, tool.description, params_json);
+        result += use_pipe_tags ? declaration : use_escape_tags(declaration);
         result += decl_end;
     }
     return result;
@@ -429,6 +442,16 @@ inline std::string unescape(const std::string& s) {
     return result;
 }
 
+inline std::string to_json_value(const std::string& v) {
+    if (v == "true" || v == "false" || v == "null") return v;
+    if (!v.empty()) {
+        char* end = nullptr;
+        std::strtod(v.c_str(), &end);
+        if (end == v.c_str() + v.size()) return v;
+    }
+    return "\"" + escape_json_string(v) + "\"";
+}
+
 inline std::string args_to_json(const std::string& args_content) {
     std::string result = "{";
     size_t pos = 0;
@@ -455,7 +478,7 @@ inline std::string args_to_json(const std::string& args_content) {
                 pos += qtag_len;
                 size_t val_end = find_quote_tag(args_content, pos);
                 if (val_end != std::string::npos) {
-                    value = "\"" + args_content.substr(pos, val_end - pos) + "\"";
+                    value = "\"" + escape_json_string(args_content.substr(pos, val_end - pos)) + "\"";
                     pos = val_end + match_quote_tag(args_content, val_end);
                 }
             } else if (args_content[pos] == '{') {
@@ -493,13 +516,13 @@ inline std::string args_to_json(const std::string& args_content) {
                         arr_pos += aq_len;
                         size_t end = find_quote_tag(arr_content, arr_pos);
                         if (end != std::string::npos) {
-                            value += "\"" + arr_content.substr(arr_pos, end - arr_pos) + "\"";
+                            value += "\"" + escape_json_string(arr_content.substr(arr_pos, end - arr_pos)) + "\"";
                             arr_pos = end + match_quote_tag(arr_content, end);
                         }
                     } else {
                         size_t end = arr_content.find_first_of(",]", arr_pos);
                         if (end == std::string::npos) end = arr_content.length();
-                        value += arr_content.substr(arr_pos, end - arr_pos);
+                        value += to_json_value(arr_content.substr(arr_pos, end - arr_pos));
                         arr_pos = end;
                     }
                 }
@@ -511,12 +534,13 @@ inline std::string args_to_json(const std::string& args_content) {
                 }
                 value = args_content.substr(val_start, pos - val_start);
                 while (!value.empty() && std::isspace(value.back())) value.pop_back();
+                value = to_json_value(value);
             }
         }
 
         if (!first) result += ",";
         first = false;
-        result += "\"" + key + "\":" + value;
+        result += "\"" + escape_json_string(key) + "\":" + (value.empty() ? "\"\"" : value);
     }
 
     result += "}";
@@ -554,7 +578,7 @@ inline void parse_function_calls(std::string& response, std::vector<std::string>
                     if (args_content.back() != '}') args_content += "}";
 
                     std::string args_json = args_to_json(args_content);
-                    std::string json_call = "{\"name\":\"" + func_name + "\",\"arguments\":" + args_json + "}";
+                    std::string json_call = "{\"name\":\"" + escape_json_string(func_name) + "\",\"arguments\":" + args_json + "}";
                     function_calls.push_back(json_call);
                 }
             } else {

@@ -155,8 +155,7 @@ int Siglip2Preprocessor::round_by_factor(int number, int factor) {
         return number;
     }
     double scaled = static_cast<double>(number) / static_cast<double>(factor);
-    long long rounded = std::llround(scaled);
-    
+    long long rounded = static_cast<long long>(std::nearbyint(scaled));
     return static_cast<int>(rounded * factor);
 }
 
@@ -898,7 +897,7 @@ Qwen3VlImagePreprocessed preprocess_qwen3_vl_image(const std::string& image_path
     return result;
 }
 
-Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, const Config& config) {
+static Siglip2Preprocessor::Config make_lfm2_vl_siglip_config(const Config& config) {
     Siglip2Preprocessor::Config sp_cfg;
     sp_cfg.patch_size = config.vision_patch_size ? static_cast<int>(config.vision_patch_size) : 16;
     sp_cfg.downsample_factor = config.downsample_factor ? static_cast<int>(config.downsample_factor) : 2;
@@ -913,12 +912,16 @@ Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, 
     sp_cfg.rescale_factor = config.rescale_factor > 0.0f ? config.rescale_factor : (1.0f / 255.0f);
     sp_cfg.image_mean[0] = sp_cfg.image_mean[1] = sp_cfg.image_mean[2] = config.image_mean;
     sp_cfg.image_std[0]  = sp_cfg.image_std[1]  = sp_cfg.image_std[2]  = config.image_std;
-    sp_cfg.do_image_splitting = false;
+    sp_cfg.do_image_splitting = true;
     sp_cfg.do_resize = true;
     sp_cfg.do_rescale = true;
     sp_cfg.do_normalize = true;
     sp_cfg.do_convert_rgb = true;
+    return sp_cfg;
+}
 
+Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, const Config& config) {
+    Siglip2Preprocessor::Config sp_cfg = make_lfm2_vl_siglip_config(config);
     Siglip2Preprocessor pre(sp_cfg);
     auto sp_out = pre.preprocess_from_file(image_path);
 
@@ -926,13 +929,126 @@ Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, 
     result.pixel_values = std::move(sp_out.pixel_values);
     result.pixel_attention_mask.assign(sp_out.pixel_attention_mask.begin(),
                                        sp_out.pixel_attention_mask.end());
-    if (!sp_out.spatial_shapes.empty()) {
-        result.spatial_shape = sp_out.spatial_shapes.front();
-    }
-    result.num_patches = static_cast<size_t>(sp_out.actual_num_patches);
+    result.spatial_shapes = sp_out.spatial_shapes;
     result.patch_dim = static_cast<size_t>(sp_out.patch_dim);
-    result.max_num_patches = static_cast<size_t>(sp_cfg.max_num_patches);
+    result.max_num_patches = static_cast<size_t>(sp_out.max_patches_per_tile);
     return result;
+}
+
+Lfm2VlTokenLayout lfm2_vl_token_layout(int image_height, int image_width, const Config& config) {
+    Siglip2Preprocessor::Config sp_cfg = make_lfm2_vl_siglip_config(config);
+    Siglip2Preprocessor pre(sp_cfg);
+    auto shapes = pre.compute_spatial_shapes(image_height, image_width);
+    const int df = sp_cfg.downsample_factor > 0 ? sp_cfg.downsample_factor : 1;
+    auto tokens_for = [df](const std::pair<int, int>& s) {
+        return ((s.first + df - 1) / df) * ((s.second + df - 1) / df);
+    };
+
+    Lfm2VlTokenLayout layout;
+    layout.grid_rows = shapes.grid_rows;
+    layout.grid_cols = shapes.grid_cols;
+    const int tile_count = shapes.grid_rows * shapes.grid_cols;
+    const bool split = tile_count > 1;
+    if (!split || shapes.shapes.empty()) {
+        layout.tokens_per_tile = shapes.shapes.empty() ? 0 : tokens_for(shapes.shapes.front());
+        return layout;
+    }
+
+    layout.tokens_per_tile = tokens_for(shapes.shapes.front());
+    if (sp_cfg.use_thumbnail && static_cast<int>(shapes.shapes.size()) == tile_count + 1) {
+        layout.has_thumbnail = true;
+        layout.thumbnail_tokens = tokens_for(shapes.shapes.back());
+    }
+    return layout;
+}
+
+namespace {
+void compute_bilinear_antialias_coeffs(int in_size, int out_size,
+                                       std::vector<int>& starts,
+                                       std::vector<std::vector<float>>& weights) {
+    const double scale = static_cast<double>(in_size) / static_cast<double>(out_size);
+    const double filterscale = std::max(scale, 1.0);
+    const double support = filterscale;
+    const double inv_filterscale = 1.0 / filterscale;
+    starts.assign(out_size, 0);
+    weights.assign(out_size, {});
+    for (int o = 0; o < out_size; ++o) {
+        const double center = (static_cast<double>(o) + 0.5) * scale;
+        int xmin = static_cast<int>(center - support + 0.5);
+        if (xmin < 0) xmin = 0;
+        int xmax = static_cast<int>(center + support + 0.5);
+        if (xmax > in_size) xmax = in_size;
+        std::vector<float> w;
+        w.reserve(static_cast<size_t>(xmax - xmin));
+        double total = 0.0;
+        for (int x = xmin; x < xmax; ++x) {
+            double t = (static_cast<double>(x) - center + 0.5) * inv_filterscale;
+            if (t < 0.0) t = -t;
+            const double weight = t < 1.0 ? 1.0 - t : 0.0;
+            w.push_back(static_cast<float>(weight));
+            total += weight;
+        }
+        if (total > 0.0) for (float& v : w) v = static_cast<float>(v / total);
+        starts[o] = xmin;
+        weights[o] = std::move(w);
+    }
+}
+}  // namespace
+
+void interpolate_position_embeddings(const float* grid, int grid_h, int grid_w, int dim,
+                                     int out_h, int out_w, float* out) {
+    std::vector<int> x_start, y_start;
+    std::vector<std::vector<float>> x_w, y_w;
+    compute_bilinear_antialias_coeffs(grid_w, out_w, x_start, x_w);
+    compute_bilinear_antialias_coeffs(grid_h, out_h, y_start, y_w);
+
+    std::vector<float> tmp(static_cast<size_t>(grid_h) * out_w * dim, 0.0f);
+    for (int gy = 0; gy < grid_h; ++gy) {
+        for (int ox = 0; ox < out_w; ++ox) {
+            float* dst = tmp.data() + (static_cast<size_t>(gy) * out_w + ox) * dim;
+            const auto& w = x_w[ox];
+            const int xs = x_start[ox];
+            for (size_t k = 0; k < w.size(); ++k) {
+                const float wk = w[k];
+                const float* src = grid + (static_cast<size_t>(gy) * grid_w + (xs + static_cast<int>(k))) * dim;
+                for (int d = 0; d < dim; ++d) dst[d] += wk * src[d];
+            }
+        }
+    }
+    for (int oy = 0; oy < out_h; ++oy) {
+        const auto& w = y_w[oy];
+        const int ys = y_start[oy];
+        for (int ox = 0; ox < out_w; ++ox) {
+            float* dst = out + (static_cast<size_t>(oy) * out_w + ox) * dim;
+            for (int d = 0; d < dim; ++d) dst[d] = 0.0f;
+            for (size_t k = 0; k < w.size(); ++k) {
+                const float wk = w[k];
+                const float* src = tmp.data() + (static_cast<size_t>(ys + static_cast<int>(k)) * out_w + ox) * dim;
+                for (int d = 0; d < dim; ++d) dst[d] += wk * src[d];
+            }
+        }
+    }
+}
+
+void pixel_unshuffle(const float* feature, int h, int w, int dim, int factor, float* out) {
+    const int hf = h / factor;
+    const int wf = w / factor;
+    const int cf = dim * factor;
+    const int cff = dim * factor * factor;
+    for (int yq = 0; yq < hf; ++yq) {
+        for (int xq = 0; xq < wf; ++xq) {
+            float* token = out + (static_cast<size_t>(yq) * wf + xq) * cff;
+            for (int a = 0; a < factor; ++a) {
+                const int y = yq * factor + a;
+                for (int xr = 0; xr < factor; ++xr) {
+                    const int x = xq * factor + xr;
+                    const float* src = feature + (static_cast<size_t>(y) * w + x) * dim;
+                    float* dst = token + a * cf + xr * dim;
+                    for (int c = 0; c < dim; ++c) dst[c] = src[c];
+                }
+            }
+        }
+    }
 }
 
 } // namespace engine

@@ -296,17 +296,13 @@ def _flatten_message(msg: ChatMessage) -> dict[str, Any]:
 def _translate_tools(tools: list[Tool] | None, tool_choice) -> tuple[list[dict[str, Any]] | None, bool]:
     if not tools or tool_choice == "none":
         return None, False
-    if isinstance(tool_choice, ToolChoiceObject):
-        selected = [
-            {"name": t.function.name, "description": t.function.description or "", "parameters": t.function.parameters or {}}
-            for t in tools
-            if t.function.name == tool_choice.function.name
-        ]
-        return selected or None, True
     translated = [
-        {"name": t.function.name, "description": t.function.description or "", "parameters": t.function.parameters or {}}
+        {"type": "function", "function": {"name": t.function.name, "description": t.function.description or "", "parameters": t.function.parameters or {}}}
         for t in tools
     ]
+    if isinstance(tool_choice, ToolChoiceObject):
+        selected = [t for t in translated if t["function"]["name"] == tool_choice.function.name]
+        return selected or None, True
     return translated, tool_choice == "required"
 
 

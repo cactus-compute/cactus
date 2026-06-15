@@ -2,8 +2,8 @@ import os
 import subprocess
 
 from .common import (
-    BLUE, DEFAULT_MODEL_ID, DEFAULT_TRANSCRIPTION_MODEL_ID, PROJECT_ROOT, RED,
-    YELLOW, apply_cloud_api_key_env, print_color, weights_root,
+    BLUE, DEFAULT_TEST_MODEL_ID, DEFAULT_TEST_TRANSCRIPTION_MODEL_ID,
+    PROJECT_ROOT, RED, YELLOW, apply_cloud_api_key_env, print_color, weights_root,
 )
 
 COMPONENTS = ("kernels", "graph", "engine", "all")
@@ -29,8 +29,8 @@ def _component_args(component, args):
     if args.suite:
         cmd.extend(["--suite", args.suite])
     if component == "engine":
-        cmd.extend(["--model", args.model_id or DEFAULT_MODEL_ID])
-        cmd.extend(["--transcription-model", args.transcription_model_id or DEFAULT_TRANSCRIPTION_MODEL_ID])
+        cmd.extend(["--model", args.model_id or DEFAULT_TEST_MODEL_ID])
+        cmd.extend(["--transcription-model", args.transcription_model_id or DEFAULT_TEST_TRANSCRIPTION_MODEL_ID])
         if args.android:
             cmd.append("--android")
         if args.ios:
@@ -120,8 +120,8 @@ def _ensure_bundle(model_id):
 
 
 def _ensure_engine_bundles(args):
-    model_id = args.model_id or DEFAULT_MODEL_ID
-    transcription_id = args.transcription_model_id or DEFAULT_TRANSCRIPTION_MODEL_ID
+    model_id = args.model_id or DEFAULT_TEST_MODEL_ID
+    transcription_id = args.transcription_model_id or DEFAULT_TEST_TRANSCRIPTION_MODEL_ID
     for mid in (model_id, transcription_id):
         if not _ensure_bundle(mid):
             raise SystemExit(1)

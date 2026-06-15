@@ -174,7 +174,6 @@ struct Config {
     size_t default_top_k = 20;
     float default_max_tps = -1.0f;
     float default_cloud_handoff_threshold = 0.0f;
-    size_t default_rolling_entropy_window = 10;
 
     std::vector<std::string> layer_types;
     size_t conv_L_cache = 0;
@@ -238,6 +237,10 @@ struct Config {
 
     static bool is_gemma_family(ModelType t) {
         return t == ModelType::GEMMA || t == ModelType::GEMMA3N || t == ModelType::GEMMA4;
+    }
+
+    static bool is_gemma3_family(ModelType t) {
+        return t == ModelType::GEMMA || t == ModelType::GEMMA3N;
     }
 
     bool from_json(const std::string& json_path);
@@ -337,6 +340,7 @@ public:
     virtual bool has_chat_template() const { return has_chat_template_; }
     bool is_qwen_family() const { return model_type_ == ModelType::QWEN; }
     bool is_lfm2_family() const { return model_type_ == ModelType::LFM2; }
+    bool has_function_call_tokens() const { return encode("<start_function_call>").size() == 1; }
     std::string get_default_stop_sequence() const;
 
     virtual bool load_vocabulary_with_config(const std::string& vocab_file, const std::string& merges_file, const std::string& config_file) = 0;
@@ -347,6 +351,8 @@ public:
 
     void set_image_soft_token_count(size_t n) { image_soft_token_count_ = n; }
     size_t get_image_soft_token_count() const { return image_soft_token_count_; }
+
+    void set_lfm2_vision_config(const Config& cfg) { lfm2_vision_config_ = cfg; has_lfm2_vision_config_ = true; }
 
 protected:
     enum class ModelType { UNKNOWN, GEMMA4, GEMMA, QWEN, LFM2, NEEDLE };
@@ -366,6 +372,8 @@ protected:
     uint32_t vision_default_output_length_ = 280;
     uint32_t vision_image_size_ = 768;
     size_t image_soft_token_count_ = 0;
+    Config lfm2_vision_config_{};
+    bool has_lfm2_vision_config_ = false;
     TokenizerRuntimeConfig runtime_config_;
 
     void detect_model_type(const std::string& config_path);
@@ -535,6 +543,10 @@ private:
 
     std::string call_start_tag_;
     std::string call_end_tag_;
+    std::string response_start_tag_;
+    std::vector<uint32_t> call_start_sequence_;
+    std::vector<uint32_t> call_end_sequence_;
+    size_t forced_tag_progress_ = 0;
 
     std::unordered_set<uint32_t> all_func_name_tokens_;
     std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;
@@ -557,6 +569,7 @@ private:
     void tokenize_grammar_elements();
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
     void add_tokens_for_prefix_string(const std::string& prefix, std::unordered_set<uint32_t>& token_set);
+    void advance_forced_tag(const std::vector<uint32_t>& sequence, uint32_t token_id);
     void tokenize_function_names(bool quote_names);
     void init_common_tokens();
 
@@ -804,6 +817,12 @@ private:
     bool load_handoff_probe();
     void maybe_capture_handoff_probe_hidden(const Component& comp);
     void run_vision_encoder(const std::string& image_path);
+    void run_vision_encoder_lfm2_vl(const std::string& image_path);
+    void encode_lfm2_vl_image_into_features(const std::string& image_path);
+    bool load_lfm2_vl_position_grid();
+    bool lfm2_vl_use_npu_vision() const;
+    bool lfm2_vl_encode_tile_npu(const float* pixel_values, const int64_t* mask, const float* pos_embeds,
+                                 size_t max_patches, int dim, size_t patch_dim, std::vector<float>& enc_out);
     void run_audio_encoder(const std::vector<float>& audio_features);
     void run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message);
     bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
@@ -827,6 +846,7 @@ private:
     Component* source_encoder_ = nullptr;
     Component* decoder_cross_kv_ = nullptr;
     Component* vision_encoder_ = nullptr;
+    Component* vision_projector_ = nullptr;
     Component* audio_encoder_ = nullptr;
     Component* lm_encoder_media_step_ = nullptr;
     Component* decoder_prefill_chunk_ = nullptr;
@@ -855,6 +875,12 @@ private:
     std::map<std::string, std::vector<uint8_t>> media_features_;
     std::map<std::string, std::vector<size_t>> media_feature_shapes_;
     std::map<std::string, Precision> media_feature_precisions_;
+
+    std::vector<float> lfm2_pos_grid_;
+    int lfm2_pos_grid_h_ = 0;
+    int lfm2_pos_grid_w_ = 0;
+    int lfm2_pos_grid_dim_ = 0;
+    bool lfm2_pos_grid_loaded_ = false;
 
     Config config_;
     std::unique_ptr<Tokenizer> tokenizer_;
@@ -1028,13 +1054,27 @@ Gemma4ImagePreprocessed preprocess_gemma4_image(const std::string& image_path, c
 struct Lfm2VlImagePreprocessed {
     std::vector<float> pixel_values;
     std::vector<int64_t> pixel_attention_mask;
-    std::pair<int, int> spatial_shape{0, 0};
-    size_t num_patches = 0;
-    size_t patch_dim = 0;
+    std::vector<std::pair<int, int>> spatial_shapes;
     size_t max_num_patches = 0;
+    size_t patch_dim = 0;
 };
 
 Lfm2VlImagePreprocessed preprocess_lfm2_vl_image(const std::string& image_path, const Config& config);
+
+void interpolate_position_embeddings(const float* grid, int grid_h, int grid_w, int dim,
+                                             int out_h, int out_w, float* out);
+
+void pixel_unshuffle(const float* feature, int h, int w, int dim, int factor, float* out);
+
+struct Lfm2VlTokenLayout {
+    int grid_rows = 1;
+    int grid_cols = 1;
+    int tokens_per_tile = 0;
+    int thumbnail_tokens = 0;
+    bool has_thumbnail = false;
+};
+
+Lfm2VlTokenLayout lfm2_vl_token_layout(int image_height, int image_width, const Config& config);
 
 struct Qwen3VlImagePreprocessed {
     std::vector<float> pixel_values;

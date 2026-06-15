@@ -1094,10 +1094,6 @@ def _gemma4_compute_native_like_audio_features(
     if not callable(getattr(embed_audio, "forward", None)):
         raise TypeError("Gemma4 audio embedder is not callable")
     projected = embed_audio(inputs_embeds=audio_encodings)
-    # Native Cactus Gemma4 scales audio soft tokens before merging them into
-    # the language stream. HF leaves this implicit in its fp16 path, but the
-    # quantized Cactus decoder expects the native-scaled representation.
-    projected = projected * (1.0 / 16.0)
     # The transpiled bundle is shape-specialized from representative media.
     # Native Gemma4 audio preprocessing emits an unpadded feature tensor for
     # that media, so the post-subsampling sequence is already the real token
@@ -1670,8 +1666,6 @@ class Lfm2VlVisionEncoderAdapter(torch.nn.Module):
         self,
         model: torch.nn.Module,
         *,
-        pixel_attention_mask: torch.Tensor,
-        spatial_shapes: torch.Tensor,
         weights_dir: str | None = None,
     ):
         super().__init__()
@@ -1684,75 +1678,33 @@ class Lfm2VlVisionEncoderAdapter(torch.nn.Module):
         vision_model = getattr(vision_tower, "vision_model", None)
         if not isinstance(vision_model, torch.nn.Module):
             raise TypeError("LFM2-VL vision_tower is missing vision_model")
-        projector = getattr(root, "multi_modal_projector", None)
-        if not isinstance(projector, torch.nn.Module):
-            raise TypeError("LFM2-VL model is missing multi_modal_projector")
 
-        self.vision_tower = vision_tower
-        self.vision_model = vision_model
         self.embeddings = vision_model.embeddings
         self.encoder = vision_model.encoder
         self.post_layernorm = vision_model.post_layernorm
-        self.projector = projector
-        from transformers.models.siglip2.modeling_siglip2 import create_bidirectional_mask  # type: ignore
-
-        self._create_bidirectional_mask = create_bidirectional_mask
-
-        static_spatial_shapes = [
-            (int(shape[0]), int(shape[1]))
-            for shape in spatial_shapes.detach().cpu().tolist()
-        ]
-        self._static_spatial_shapes = tuple(static_spatial_shapes)
-        self._static_feature_lengths = tuple(
-            int(value)
-            for value in pixel_attention_mask.detach().cpu().to(dtype=torch.int64).sum(dim=1).tolist()
-        )
-        with torch.no_grad():
-            positional_embeddings = self.embeddings.position_embedding.weight.reshape(
-                self.embeddings.position_embedding_size,
-                self.embeddings.position_embedding_size,
-                -1,
-            )
-            static_positional_embeddings = self.embeddings.resize_positional_embeddings(
-                positional_embeddings,
-                spatial_shapes.detach().cpu(),
-                max_length=int(pixel_attention_mask.shape[1]),
-            ).detach()
-        self.register_buffer("_static_positional_embeddings", static_positional_embeddings, persistent=False)
 
     def forward(
         self,
         pixel_values: torch.Tensor,
-        spatial_shapes: torch.Tensor,
         pixel_attention_mask: torch.Tensor,
+        positional_embeddings: torch.Tensor,
     ) -> torch.Tensor:
         target_dtype = self.embeddings.patch_embedding.weight.dtype
         hidden_states = self.embeddings.patch_embedding(pixel_values.to(dtype=target_dtype))
-        hidden_states = hidden_states + self._static_positional_embeddings.to(
+        hidden_states = hidden_states + positional_embeddings.to(
             device=hidden_states.device,
             dtype=hidden_states.dtype,
         )
-        encoder_attention_mask = self._create_bidirectional_mask(
-            config=self.vision_model.config,
-            inputs_embeds=hidden_states,
-            attention_mask=pixel_attention_mask,
+        masked_bias = -30000.0
+        seq_len = hidden_states.shape[1]
+        key_valid = pixel_attention_mask[:, None, None, :].to(dtype=hidden_states.dtype)
+        encoder_attention_mask = (key_valid * (-masked_bias) + masked_bias).expand(
+            hidden_states.shape[0], 1, seq_len, seq_len
         )
         for encoder_layer in self.encoder.layers:
             hidden_states = encoder_layer(hidden_states, encoder_attention_mask)
         hidden_states = self.post_layernorm(hidden_states)
-
-        image_features: list[torch.Tensor] = []
-        for image_index, (feature_length, spatial_shape) in enumerate(
-            zip(self._static_feature_lengths, self._static_spatial_shapes, strict=True)
-        ):
-            feature_h, feature_w = spatial_shape
-            feature = hidden_states[image_index : image_index + 1, :feature_length, :]
-            feature = feature.reshape(1, feature_h, feature_w, -1)
-            image_embedding = self.projector(feature)
-            image_features.append(image_embedding.reshape(-1, image_embedding.shape[-1]))
-        if len(image_features) == 1:
-            return image_features[0]
-        return torch.cat(image_features, dim=0)
+        return hidden_states
 
     def get_transpile_metadata(self):
         return {
@@ -1761,7 +1713,46 @@ class Lfm2VlVisionEncoderAdapter(torch.nn.Module):
                     self.model,
                     adapter_family="lfm2_vl",
                     adapter_type=type(self).__name__,
-                    input_names=("pixel_values", "spatial_shapes", "pixel_attention_mask"),
+                    input_names=("pixel_values", "pixel_attention_mask", "positional_embeddings"),
+                ),
+                "weights_dir": self.weights_dir,
+            }
+        }
+
+
+class Lfm2VlVisionProjectorAdapter(torch.nn.Module):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        *,
+        weights_dir: str | None = None,
+    ):
+        super().__init__()
+        self.model = model
+        self.weights_dir = weights_dir
+        root = _lfm2_vl_model_root(model)
+        projector = getattr(root, "multi_modal_projector", None)
+        if not isinstance(projector, torch.nn.Module):
+            raise TypeError("LFM2-VL model is missing multi_modal_projector")
+        self.projector = projector
+
+    def forward(self, vision_features: torch.Tensor) -> torch.Tensor:
+        hidden_states = vision_features
+        if self.projector.use_layer_norm:
+            hidden_states = self.projector.layer_norm(hidden_states)
+        hidden_states = self.projector.linear_1(hidden_states)
+        hidden_states = self.projector.act(hidden_states)
+        hidden_states = self.projector.linear_2(hidden_states)
+        return hidden_states
+
+    def get_transpile_metadata(self):
+        return {
+            "graph": {
+                **_transpile_graph_meta(
+                    self.model,
+                    adapter_family="lfm2_vl",
+                    adapter_type=type(self).__name__,
+                    input_names=("vision_features",),
                 ),
                 "weights_dir": self.weights_dir,
             }
@@ -1773,69 +1764,8 @@ class Lfm2VlLMEncoderAdapter(torch.nn.Module):
         self,
         model: torch.nn.Module,
         *,
-        input_ids: torch.Tensor,
         weights_dir: str | None = None,
     ):
-        super().__init__()
-        self.model = model
-        self.weights_dir = weights_dir
-        self.root = _lfm2_vl_model_root(model)
-        self.backbone = _lfm2_language_backbone(model)
-        image_token_id = int(getattr(self.root.config, "image_token_id"))
-        token_ids = [int(value) for value in input_ids.detach().cpu().reshape(-1).tolist()]
-        segments: list[tuple[int, int]] = []
-        index = 0
-        while index < len(token_ids):
-            if token_ids[index] != image_token_id:
-                index += 1
-                continue
-            start = index
-            while index < len(token_ids) and token_ids[index] == image_token_id:
-                index += 1
-            segments.append((start, index - start))
-        self._static_image_segments = tuple(segments)
-
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-        image_features: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        inputs_embeds = self.backbone.embed_tokens(input_ids)
-        image_features = image_features.to(device=inputs_embeds.device, dtype=inputs_embeds.dtype)
-        if self._static_image_segments:
-            pieces: list[torch.Tensor] = []
-            token_cursor = 0
-            feature_cursor = 0
-            for token_start, token_length in self._static_image_segments:
-                if token_start > token_cursor:
-                    pieces.append(inputs_embeds[:, token_cursor:token_start, :])
-                feature_end = feature_cursor + token_length
-                pieces.append(image_features[feature_cursor:feature_end, :].unsqueeze(0))
-                feature_cursor = feature_end
-                token_cursor = token_start + token_length
-            if token_cursor < inputs_embeds.shape[1]:
-                pieces.append(inputs_embeds[:, token_cursor:, :])
-            inputs_embeds = torch.cat(pieces, dim=1) if len(pieces) > 1 else pieces[0]
-        position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
-        return inputs_embeds, attention_mask.to(dtype=torch.int64), position_ids
-
-    def get_transpile_metadata(self):
-        return {
-            "graph": {
-                **_transpile_graph_meta(
-                    self.model,
-                    adapter_family="lfm2_vl",
-                    adapter_type=type(self).__name__,
-                    input_names=("input_ids", "attention_mask", "image_features"),
-                ),
-                "weights_dir": self.weights_dir,
-            }
-        }
-
-
-class Lfm2VlTextLMEncoderAdapter(torch.nn.Module):
-    def __init__(self, model: torch.nn.Module, *, weights_dir: str | None = None):
         super().__init__()
         self.model = model
         self.weights_dir = weights_dir
@@ -5973,6 +5903,7 @@ def _build_lfm2_vl_multimodal_component_specs(
 
     if "decoder" in requested_set:
         _require("vision_encoder")
+        _require("vision_projector")
         _require("lm_encoder")
         _require("text_lm_encoder")
         _require("decoder")
@@ -5984,6 +5915,7 @@ def _build_lfm2_vl_multimodal_component_specs(
         _require("decoder_step")
     if "lm_encoder" in requested_set:
         _require("vision_encoder")
+        _require("vision_projector")
         _require("lm_encoder")
     if "lm_encoder_step" in requested_set:
         _require("lm_encoder_step")
@@ -6002,36 +5934,41 @@ def _build_lfm2_vl_multimodal_component_specs(
         _require("text_decoder")
     if "vision_encoder" in requested_set:
         _require("vision_encoder")
+        _require("vision_projector")
 
-    vision_encoder = Lfm2VlVisionEncoderAdapter(
-        model,
-        pixel_attention_mask=pixel_attention_mask,
-        spatial_shapes=spatial_shapes,
-        weights_dir=weights_dir,
-    ).eval()
-    lm_encoder = Lfm2VlLMEncoderAdapter(model, input_ids=input_ids, weights_dir=weights_dir).eval()
-    text_lm_encoder = Lfm2VlTextLMEncoderAdapter(model, weights_dir=weights_dir).eval()
+    vision_encoder = Lfm2VlVisionEncoderAdapter(model, weights_dir=weights_dir).eval()
+    vision_projector = Lfm2VlVisionProjectorAdapter(model, weights_dir=weights_dir).eval()
+
+    _vemb = vision_encoder.embeddings
+    with torch.no_grad():
+        _pos_grid = _vemb.position_embedding.weight.reshape(
+            _vemb.position_embedding_size, _vemb.position_embedding_size, -1
+        )
+        example_positional_embeddings = _vemb.resize_positional_embeddings(
+            _pos_grid, spatial_shapes.detach().cpu(), max_length=int(pixel_attention_mask.shape[1])
+        ).to(pixel_values.dtype)
+    _root = _lfm2_vl_model_root(model)
+    _factor = int(_root.multi_modal_projector.factor)
+    _proj_in = int(_vemb.embed_dim) * _factor * _factor
+    _max_subimage_tokens = int(getattr(_root.config, "max_image_tokens", 256) or 256)
+    example_vision_features = torch.zeros((_max_subimage_tokens, _proj_in), dtype=pixel_values.dtype)
+
+    lm_encoder = Lfm2VlLMEncoderAdapter(model, weights_dir=weights_dir).eval()
+    text_lm_encoder = Lfm2VlLMEncoderAdapter(model, weights_dir=weights_dir).eval()
     decoder = Lfm2VlDecoderAdapter(model, weights_dir=weights_dir, last_token_only=False).eval()
 
-    image_features: torch.Tensor | None = None
     decoder_inputs: tuple[torch.Tensor, ...] | None = None
     text_decoder_inputs: tuple[torch.Tensor, ...] | None = None
     with torch.no_grad():
-        if "vision_encoder" in expanded_components and ("lm_encoder" in expanded_components or "decoder" in expanded_components):
-            image_features = vision_encoder(pixel_values, spatial_shapes, pixel_attention_mask)
         if "lm_encoder" in expanded_components or "decoder" in expanded_components:
-            if image_features is None:
-                image_features = vision_encoder(pixel_values, spatial_shapes, pixel_attention_mask)
-            decoder_inputs = lm_encoder(input_ids, attention_mask, image_features)
+            decoder_inputs = lm_encoder(input_ids, attention_mask)
         if "text_lm_encoder" in expanded_components:
             text_decoder_inputs = text_lm_encoder(text_input_ids, text_attention_mask)
 
     def _ensure_decoder_inputs() -> tuple[torch.Tensor, ...]:
-        nonlocal decoder_inputs, image_features
+        nonlocal decoder_inputs
         if decoder_inputs is None:
-            if image_features is None:
-                image_features = vision_encoder(pixel_values, spatial_shapes, pixel_attention_mask)
-            decoder_inputs = lm_encoder(input_ids, attention_mask, image_features)
+            decoder_inputs = lm_encoder(input_ids, attention_mask)
         return decoder_inputs
 
     common_graph_meta = {
@@ -6040,25 +5977,38 @@ def _build_lfm2_vl_multimodal_component_specs(
         "adapter_family": "lfm2_vl",
     }
     metadata = {"family": "lfm2_vl", "task": "multimodal_causal_lm_logits"}
+    max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
+    lm_seq = max(int(input_ids.shape[1]), int(max_cache_seq_len))
+    lm_example_input_ids = torch.zeros((int(input_ids.shape[0]), lm_seq), dtype=input_ids.dtype, device=input_ids.device)
+    lm_example_attention_mask = torch.ones((int(attention_mask.shape[0]), lm_seq), dtype=attention_mask.dtype, device=attention_mask.device)
     specs: list[ComponentModuleSpec] = []
     if "vision_encoder" in expanded_components:
         specs.append(ComponentModuleSpec(
             component="vision_encoder",
             module=vision_encoder,
-            example_inputs=(pixel_values, spatial_shapes, pixel_attention_mask),
-            input_keys=("pixel_values", "spatial_shapes", "pixel_attention_mask"),
-            output_keys=("image_features",),
+            example_inputs=(pixel_values, pixel_attention_mask, example_positional_embeddings),
+            input_keys=("pixel_values", "pixel_attention_mask", "positional_embeddings"),
+            output_keys=("last_hidden_state",),
             graph_meta={**common_graph_meta, "component": "vision_encoder"},
+            metadata=metadata,
+            npu_runtime_input_count=3,
+        ))
+    if "vision_projector" in expanded_components:
+        specs.append(ComponentModuleSpec(
+            component="vision_projector",
+            module=vision_projector,
+            example_inputs=(example_vision_features,),
+            input_keys=("vision_features",),
+            output_keys=("image_features",),
+            graph_meta={**common_graph_meta, "component": "vision_projector"},
             metadata=metadata,
         ))
     if "lm_encoder" in expanded_components:
-        if image_features is None:
-            raise RuntimeError("LFM2-VL lm_encoder spec requires precomputed image features")
         specs.append(ComponentModuleSpec(
             component="lm_encoder",
             module=lm_encoder,
-            example_inputs=(input_ids, attention_mask, image_features),
-            input_keys=("input_ids", "attention_mask", "image_features"),
+            example_inputs=(lm_example_input_ids, lm_example_attention_mask),
+            input_keys=("input_ids", "attention_mask"),
             output_keys=("inputs_embeds", "attention_mask", "position_ids"),
             graph_meta={**common_graph_meta, "component": "lm_encoder"},
             metadata=metadata,

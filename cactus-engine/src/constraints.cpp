@@ -264,9 +264,12 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
     escape_tokens_.clear();
     gemma_response_start_tokens_.clear();
 
-    add_tokens_for_string(call_start_tag_, gemma_call_start_tokens_);
-    add_tokens_for_string(call_end_tag_, gemma_call_end_tokens_);
-    add_tokens_for_string("<|tool_response>", gemma_response_start_tokens_);
+    call_start_sequence_ = tokenizer_->encode(call_start_tag_);
+    call_end_sequence_ = tokenizer_->encode(call_end_tag_);
+    std::vector<uint32_t> response_sequence = tokenizer_->encode(response_start_tag_);
+    if (call_start_sequence_.size() == 1) gemma_call_start_tokens_.insert(call_start_sequence_[0]);
+    if (call_end_sequence_.size() == 1) gemma_call_end_tokens_.insert(call_end_sequence_[0]);
+    if (response_sequence.size() == 1) gemma_response_start_tokens_.insert(response_sequence[0]);
     add_tokens_for_string("call:", gemma_call_prefix_tokens_);
 
     add_tokens_for_string("{", open_brace_tokens_);
@@ -289,15 +292,24 @@ void ToolCallConstrainer::init(Config::ModelType model_type,
     }
     tokenizer_ = tokenizer;
     generated_text_.clear();
+    current_bias_.clear();
     brace_depth_ = 0;
     in_argument_string_ = false;
+    forced_tag_progress_ = 0;
     const bool model_supported = is_needle() || Config::is_gemma_family(model_type_);
     active_ = model_supported && !function_names_.empty() && tokenizer != nullptr;
 
     reset_needle_constraints();
     state_ = is_needle() ? State::NEEDLE_START : State::GEMMA_START;
-    call_start_tag_ = "<|tool_call>";
-    call_end_tag_ = "<tool_call|>";
+    if (Config::is_gemma3_family(model_type_)) {
+        call_start_tag_ = "<start_function_call>";
+        call_end_tag_ = "<end_function_call>";
+        response_start_tag_ = "<start_function_response>";
+    } else {
+        call_start_tag_ = "<|tool_call>";
+        call_end_tag_ = "<tool_call|>";
+        response_start_tag_ = "<|tool_response>";
+    }
 
     if (!active_) {
         return;
@@ -310,7 +322,15 @@ void ToolCallConstrainer::init(Config::ModelType model_type,
     compute_bias();
 }
 
-void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decoded_text) {
+void ToolCallConstrainer::advance_forced_tag(const std::vector<uint32_t>& sequence, uint32_t token_id) {
+    if (forced_tag_progress_ < sequence.size() && token_id == sequence[forced_tag_progress_]) {
+        forced_tag_progress_++;
+    } else {
+        forced_tag_progress_ = (!sequence.empty() && token_id == sequence[0]) ? 1 : 0;
+    }
+}
+
+void ToolCallConstrainer::update(uint32_t token_id, const std::string& decoded_text) {
     if (!active_) return;
 
     generated_text_ += decoded_text;
@@ -324,9 +344,11 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
 
     switch (state_) {
         case State::GEMMA_START:
+            advance_forced_tag(call_start_sequence_, token_id);
             if (generated_text_.find(call_start_tag_) != std::string::npos) {
                 state_ = State::GEMMA_EXPECT_CALL;
                 generated_text_.clear();
+                forced_tag_progress_ = 0;
             }
             break;
 
@@ -369,6 +391,7 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
                         if (brace_depth_ == 0) {
                             state_ = State::GEMMA_EXPECT_END;
                             in_argument_string_ = false;
+                            forced_tag_progress_ = 0;
                             break;
                         }
                     }
@@ -377,6 +400,7 @@ void ToolCallConstrainer::update(uint32_t /*token_id*/, const std::string& decod
             break;
 
         case State::GEMMA_EXPECT_END:
+            advance_forced_tag(call_end_sequence_, token_id);
             if (generated_text_.find(call_end_tag_) != std::string::npos) {
                 state_ = State::DONE;
                 generated_text_.clear();
@@ -451,8 +475,8 @@ void ToolCallConstrainer::compute_bias() {
 
     switch (state_) {
         case State::GEMMA_START:
-            for (uint32_t t : gemma_call_start_tokens_) {
-                current_bias_[t] = FORCE_BIAS;
+            if (forced_tag_progress_ < call_start_sequence_.size()) {
+                current_bias_[call_start_sequence_[forced_tag_progress_]] = FORCE_BIAS;
             }
             for (uint32_t t : open_brace_tokens_) {
                 current_bias_[t] = BLOCK_BIAS;
@@ -522,8 +546,8 @@ void ToolCallConstrainer::compute_bias() {
             break;
 
         case State::GEMMA_EXPECT_END:
-            for (uint32_t t : gemma_call_end_tokens_) {
-                current_bias_[t] = FORCE_BIAS;
+            if (forced_tag_progress_ < call_end_sequence_.size()) {
+                current_bias_[call_end_sequence_[forced_tag_progress_]] = FORCE_BIAS;
             }
             for (uint32_t t : open_brace_tokens_) {
                 current_bias_[t] = BLOCK_BIAS;
@@ -543,6 +567,7 @@ void ToolCallConstrainer::reset() {
     current_bias_.clear();
     brace_depth_ = 0;
     in_argument_string_ = false;
+    forced_tag_progress_ = 0;
     reset_needle_constraints();
 
     state_ = is_needle() ? State::NEEDLE_START : State::GEMMA_START;
@@ -558,7 +583,6 @@ void Model::set_tool_constraints(const std::vector<ToolConstraintSpec>& tools) {
 }
 
 void Model::clear_tool_constraints() {
-    tool_constrainer_.reset();
     tool_constrainer_.init(config_.model_type, {}, tokenizer_.get());
 }
 

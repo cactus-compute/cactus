@@ -299,6 +299,61 @@ bool Model::vision_encode_via_npu(const std::vector<float>& pixel_values,
     return true;
 }
 
+bool Model::lfm2_vl_use_npu_vision() const {
+    return npu_vision_encoder_ != nullptr
+        && npu_vision_encoder_->is_available()
+        && npu_vision_encoder_->has_input("positional_embeddings");
+}
+
+bool Model::lfm2_vl_encode_tile_npu(const float* pixel_values, const int64_t* mask,
+                                    const float* pos_embeds, size_t max_patches,
+                                    int dim, size_t patch_dim, std::vector<float>& enc_out) {
+    if (!npu_vision_encoder_ || !npu_vision_encoder_->is_available()) return false;
+
+    const std::vector<int> x_shape = npu_vision_encoder_->get_input_shape_for("x");
+    const std::vector<int> m_shape = npu_vision_encoder_->get_input_shape_for("pixel_attention_mask");
+    const std::vector<int> p_shape = npu_vision_encoder_->get_input_shape_for("positional_embeddings");
+    if (x_shape.empty() || p_shape.empty()) return false;
+
+    auto elem_count = [](const std::vector<int>& s) -> size_t {
+        size_t e = 1;
+        for (int d : s) { if (d <= 0) return 0; e *= static_cast<size_t>(d); }
+        return e;
+    };
+    const size_t x_elems = elem_count(x_shape);
+    const size_t p_elems = elem_count(p_shape);
+    const size_t m_elems = m_shape.empty() ? 0 : elem_count(m_shape);
+    const size_t pv_count = max_patches * patch_dim;
+    const size_t pe_count = max_patches * static_cast<size_t>(dim);
+    if (x_elems < pv_count || p_elems < pe_count) return false;
+
+    std::vector<__fp16> x_fp16(x_elems, __fp16(0));
+    for (size_t i = 0; i < pv_count; ++i) x_fp16[i] = static_cast<__fp16>(pixel_values[i]);
+    std::vector<__fp16> p_fp16(p_elems, __fp16(0));
+    for (size_t i = 0; i < pe_count; ++i) p_fp16[i] = static_cast<__fp16>(pos_embeds[i]);
+    std::vector<int32_t> m_i32(m_elems ? m_elems : max_patches, 0);
+    for (size_t i = 0; i < max_patches && i < m_i32.size(); ++i) m_i32[i] = static_cast<int32_t>(mask[i]);
+
+    const std::vector<int> out_shape = npu_vision_encoder_->get_output_shape();
+    size_t out_elems = elem_count(out_shape);
+    if (out_elems == 0) out_elems = npu_vision_encoder_->get_output_buffer_size();
+    std::vector<__fp16> out_fp16(out_elems, __fp16(0));
+
+    std::vector<npu::NPUNamedInput> inputs = {
+        {"x", x_fp16.data(), npu::NPUNamedInput::DataType::FP16, x_shape},
+        {"positional_embeddings", p_fp16.data(), npu::NPUNamedInput::DataType::FP16, p_shape},
+    };
+    if (!m_shape.empty()) {
+        inputs.push_back({"pixel_attention_mask", m_i32.data(), npu::NPUNamedInput::DataType::INT32, m_shape});
+    }
+
+    size_t written = npu_vision_encoder_->encode_multimodal_input(inputs, out_fp16.data(), "encoded");
+    if (written == 0) return false;
+
+    const size_t copy = std::min(enc_out.size(), static_cast<size_t>(written));
+    for (size_t i = 0; i < copy; ++i) enc_out[i] = static_cast<float>(out_fp16[i]);
+    return true;
+}
 
 }
 }
