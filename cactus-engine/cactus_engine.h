@@ -21,6 +21,7 @@ extern "C" {
 
 typedef void* cactus_model_t;
 typedef void* cactus_index_t;
+typedef void* cactus_stream_transcribe_t;
 typedef void (*cactus_token_callback)(const char* token, uint32_t token_id, void* user_data);
 
 CACTUS_FFI_EXPORT cactus_model_t cactus_init(
@@ -105,6 +106,25 @@ CACTUS_FFI_EXPORT int cactus_transcribe(
     void* user_data,                        // optional
     const uint8_t* pcm_buffer,              // NULL if using audio_file_path
     size_t pcm_buffer_size
+);
+
+CACTUS_FFI_EXPORT cactus_stream_transcribe_t cactus_stream_transcribe_start(
+    cactus_model_t model,
+    const char* options_json
+);
+
+CACTUS_FFI_EXPORT int cactus_stream_transcribe_process(
+    cactus_stream_transcribe_t stream,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size,
+    char* response_buffer,
+    size_t buffer_size
+);
+
+CACTUS_FFI_EXPORT int cactus_stream_transcribe_stop(
+    cactus_stream_transcribe_t stream,
+    char* response_buffer,
+    size_t buffer_size
 );
 
 CACTUS_FFI_EXPORT int cactus_embed(

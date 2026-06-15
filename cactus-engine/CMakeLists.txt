@@ -29,6 +29,7 @@ set(ENGINE_SOURCES
     src/embed.cpp
     src/complete.cpp
     src/transcribe.cpp
+    src/stream.cpp
     src/tokenizer.cpp
 )
 if(APPLE)

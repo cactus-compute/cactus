@@ -426,6 +426,34 @@ if (result == 0) {
 }
 ```
 
+### `cactus_render_prompt`
+Renders the chat-templated prompt string for the given messages without running inference. Useful for debugging prompt formatting, estimating token budgets, or feeding the rendered text to another tool.
+
+```c
+int cactus_render_prompt(
+    cactus_model_t model,        // Model handle
+    const char* messages_json,   // JSON array of messages (same format as cactus_complete)
+    const char* options_json,    // Optional generation options (can be NULL)
+    const char* tools_json,      // Optional tools definition (can be NULL)
+    char* prompt_buffer,         // Buffer for the rendered prompt text
+    size_t buffer_size           // Size of prompt_buffer
+);
+```
+
+**Returns:** The rendered prompt length in bytes (excluding the null terminator) on success; -1 on invalid parameters or rendering error; -2 if the buffer is too small to hold the rendered prompt and its null terminator.
+
+**Note:** The output is plain prompt text, not JSON.
+
+**Example:**
+```c
+const char* messages = "[{\"role\": \"user\", \"content\": \"Hello!\"}]";
+char prompt[4096];
+int len = cactus_render_prompt(model, messages, NULL, NULL, prompt, sizeof(prompt));
+if (len >= 0) {
+    printf("Rendered prompt:\n%s\n", prompt);
+}
+```
+
 ### `cactus_score_window`
 Scores a window of tokens for perplexity calculation or token probability analysis.
 
@@ -513,13 +541,15 @@ int cactus_transcribe(
 **Options Format:**
 ```json
 {
-    "max_tokens": 448
+    "max_tokens": 448,
+    "language": "en"
 }
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `max_tokens` | int | auto | Maximum tokens to generate. When unset, it defaults to the larger of 100 and an audio-length estimate (`audio_sec × 20` for Whisper, `audio_sec × 30` for Parakeet). For Whisper the result is then capped so the prompt tokens plus generated tokens fit the decoder's 448-position limit. |
+| `language` | string | model default | Whisper only. Two-letter language code (e.g. `en`, `es`, `de`) substituted into the decoder prompt's language token. Ignored by Parakeet and when an explicit `prompt` is supplied. |
 
 **Response Format:**
 ```json
@@ -567,6 +597,93 @@ char response[16384];
 int result = cactus_transcribe(whisper, NULL, NULL,
                                 response, sizeof(response), NULL, NULL, NULL,
                                 pcm_data, pcm_size);
+```
+
+### Streaming transcription
+Transcribe continuously while audio is still being captured, instead of waiting for a complete recording. You push PCM as it arrives and read back text as soon as it stabilizes. Supported for the dedicated speech models (Whisper and Parakeet TDT).
+
+The session emits text in two parts on every call:
+
+- **`confirmed`** — newly finalized words. Append them to your running transcript; they never change.
+- **`pending`** — the current best guess for the still-changing tail. Replace it on every call (do not append it); it is for live display only.
+
+A word is confirmed once two successive re-transcriptions of the audio agree on it (LocalAgreement-2). A run of trailing silence — or a hard size cap — closes the current segment, flushing its tail as `confirmed` and freeing the buffer, so pauses are handled naturally and memory stays bounded.
+
+#### `cactus_stream_transcribe_start`
+Opens a streaming session bound to an already-initialized speech model.
+```c
+cactus_stream_transcribe_t cactus_stream_transcribe_start(
+    cactus_model_t model,       // Whisper or Parakeet TDT model handle
+    const char* options_json    // Optional (can be NULL); forwarded to cactus_transcribe
+);
+```
+**Returns:** an opaque session handle, or `NULL` on error (see `cactus_get_last_error`). Free it with `cactus_stream_transcribe_stop`.
+
+Segmentation is automatic with sensible defaults; `options_json` (optional) overrides them and is forwarded to the underlying `cactus_transcribe` call (e.g. `language`, `max_tokens`):
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `min_chunk_sec` | float | 1.0 | Minimum new audio accumulated before a growing segment is re-transcribed. |
+| `silence_sec` | float | 0.7 | Trailing silence that finalizes a segment. |
+| `max_segment_sec` | float | 24.0 | Hard cap on segment length, keeping each segment under Whisper's 30s window. |
+| `vad_threshold` | float | 0.0025 | Normalized RMS below which audio counts as silence (lower for quiet mics). |
+| `commit_holdback` | int | 4 | Words held back from commit until later audio confirms them. |
+
+#### `cactus_stream_transcribe_process`
+Feeds the next slice of audio. Input is 16-bit signed PCM, **16 kHz, mono** — the same format as `cactus_transcribe`'s `pcm_buffer`. Feed reasonably small chunks (≈ 0.1–2 s) for low latency.
+```c
+int cactus_stream_transcribe_process(
+    cactus_stream_transcribe_t stream,
+    const uint8_t* pcm_buffer,  // 16-bit PCM, 16 kHz, mono
+    size_t pcm_buffer_size,     // size in bytes
+    char* response_buffer,
+    size_t buffer_size
+);
+```
+**Returns:** bytes written to `response_buffer`, or -1 on error.
+
+**Response Format:**
+```json
+{ "success": true, "confirmed": "the quick brown", "pending": "fox jumps" }
+```
+
+#### `cactus_stream_transcribe_stop`
+Flushes any buffered audio, returns the final `confirmed` text, and destroys the session.
+```c
+int cactus_stream_transcribe_stop(
+    cactus_stream_transcribe_t stream,
+    char* response_buffer,      // may be NULL to discard the final text
+    size_t buffer_size
+);
+```
+**Returns:** bytes written (0 when discarded), or -1 on error.
+
+**Example:**
+```c
+cactus_model_t whisper = cactus_init("../../weights/whisper-base", NULL, false);
+cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(whisper, NULL);
+
+char response[16384];
+std::string transcript;
+
+// Push audio as it is captured (here, 0.5s chunks of 16kHz mono PCM16).
+for (each chunk) {
+    int rc = cactus_stream_transcribe_process(
+        stream, chunk_pcm, chunk_bytes, response, sizeof(response));
+    if (rc < 0) break;
+    // Parse "confirmed" and append it; show "confirmed-so-far + pending" live.
+    transcript += parse_confirmed(response);
+}
+
+// Flush the tail.
+cactus_stream_transcribe_stop(stream, response, sizeof(response));
+transcript += parse_confirmed(response);
+```
+
+The `transcribe` CLI uses this streaming path for **live microphone** transcription (no file; a colored UI with running captions, press Enter to stop). With a **file** it does a one-shot transcription (long files are windowed internally, so there is no 30s limit):
+```bash
+cactus transcribe openai/whisper-base                  # live microphone (press Enter to stop)
+cactus transcribe openai/whisper-base --file audio.wav # one-shot file transcription (any length)
 ```
 
 ### `cactus_embed`

@@ -236,6 +236,21 @@ int cactus_transcribe(
             tokens = tokenizer->encode(prompt);
         } else if (is_whisper) {
             tokens = handle->model->get_config().decoder_prompt_token_ids;
+            std::string language = json_string_field(options_json ? options_json : "", "language");
+            if (!language.empty()) {
+                std::vector<uint32_t> language_token = tokenizer->encode("<|" + language + "|>");
+                if (language_token.size() == 1) {
+                    for (uint32_t& token : tokens) {
+                        std::string piece = tokenizer->decode({token});
+                        if (piece.size() == 6 && piece[0] == '<' && piece[1] == '|' &&
+                            piece[4] == '|' && piece[5] == '>' &&
+                            std::islower((unsigned char)piece[2]) && std::islower((unsigned char)piece[3])) {
+                            token = language_token[0];
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         if (tokens.empty() && is_whisper) {
