@@ -21,8 +21,6 @@
 using namespace cactus::engine;
 using namespace cactus::ffi;
 
-static constexpr size_t DEFAULT_ROLLING_ENTROPY_WINDOW = 10;
-
 namespace {
 
 std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema);
@@ -352,27 +350,12 @@ struct PrefillResult {
 };
 
 struct EntropyState {
-    std::vector<float> window;
-    float window_sum = 0.0f;
     float total_sum = 0.0f;
     size_t total_count = 0;
-    bool spike_handoff = false;
-    size_t window_size = DEFAULT_ROLLING_ENTROPY_WINDOW;
 
     void add(float entropy) {
-        window.push_back(entropy);
-        window_sum += entropy;
         total_sum += entropy;
         total_count++;
-
-        if (window.size() > window_size) {
-            window_sum -= window.front();
-            window.erase(window.begin());
-        }
-    }
-
-    float rolling_confidence() const {
-        return 1.0f - (window_sum / window.size());
     }
 
     float mean_confidence() const {
@@ -830,7 +813,8 @@ int cactus_complete(
             }
             std::string result = construct_response_json(cloud_response, cloud_calls, ttft_ms,
                                                          total_ms, 0.0, 0.0, prompt_token_count,
-                                                         0, confidence, true, "");
+                                                         0, confidence, true, "", {}, "",
+                                                         prompt.options.confidence_threshold);
             if (result.length() >= buffer_size) {
                 handle_error_response("Response buffer too small", response_buffer, buffer_size);
                 return -1;
@@ -926,10 +910,6 @@ int cactus_complete(
         }
 
         EntropyState entropy;
-        {
-            size_t cfg_window = handle->model->get_config().default_rolling_entropy_window;
-            if (cfg_window > 0) entropy.window_size = cfg_window;
-        }
         entropy.add(first_token_entropy);
 
         if (!matches_stop_sequence(generated_tokens, stop_token_sequences)) {
@@ -978,10 +958,6 @@ int cactus_complete(
                 generated_tokens.push_back(next_token);
 
                 entropy.add(token_entropy);
-
-                if (entropy.rolling_confidence() < prompt.options.confidence_threshold) {
-                    entropy.spike_handoff = true;
-                }
 
                 if (prompt.options.force_tools && !prompt.tools.empty()) {
                     handle->model->update_tool_constraints(next_token);
@@ -1079,7 +1055,8 @@ int cactus_complete(
         std::string result = construct_response_json(primary_response, primary_function_calls, time_to_first_token,
                                                      total_time_ms, prefill_tps, decode_tps, prompt_tokens,
                                                      completion_tokens, confidence, handoff_succeeded,
-                                                     thinking_text, {}, response_text);
+                                                     thinking_text, {}, response_text,
+                                                     prompt.options.confidence_threshold);
 
         if (result.length() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);

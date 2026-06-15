@@ -16,6 +16,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <unistd.h>
+#include <sys/ioctl.h>
 
 #ifdef HAVE_SDL2
 #include <SDL.h>
@@ -26,9 +28,10 @@ namespace {
 
 constexpr int kMaxTokens = 1024;
 constexpr size_t kResponseBufferSize = kMaxTokens * 128;
+constexpr int kAudioSampleRate = 16000;
 
 #ifdef HAVE_SDL2
-constexpr int kRecordSampleRate = 16000;
+constexpr int kRecordSampleRate = kAudioSampleRate;
 
 struct RecordState {
     std::mutex mutex;
@@ -183,28 +186,284 @@ bool record_audio(std::vector<uint8_t>& pcm_out) {
 }
 #endif
 
+namespace ansi {
+constexpr const char* reset     = "\033[0m";
+constexpr const char* bold      = "\033[1m";
+constexpr const char* dim       = "\033[2m";
+constexpr const char* italic    = "\033[3m";
+constexpr const char* underline = "\033[4m";
+constexpr const char* cyan      = "\033[36m";
+constexpr const char* green     = "\033[32m";
+constexpr const char* yellow    = "\033[33m";
+constexpr const char* blue      = "\033[34m";
+}  // namespace ansi
+
+bool stdout_is_terminal() {
+    return isatty(STDOUT_FILENO) != 0 && std::getenv("NO_COLOR") == nullptr;
+}
+
+int terminal_width() {
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) return ws.ws_col;
+    if (const char* cols = std::getenv("COLUMNS")) {
+        int c = std::atoi(cols);
+        if (c > 0) return c;
+    }
+    return 80;
+}
+
+void print_turn_separator() {
+    std::cout << "\n";
+    if (stdout_is_terminal()) {
+        std::string rule;
+        for (int i = 0, w = terminal_width(); i < w; ++i) rule += "─";
+        std::cout << ansi::dim << rule << ansi::reset << "\n";
+    }
+}
+
+std::atomic<bool> g_cloud_active{false};
+
+void print_banner() {
+    if (!stdout_is_terminal()) {
+        std::cout << "Cactus Hybrid Chat\n\n";
+        return;
+    }
+    std::cout << ansi::bold << ansi::green
+              << " ██████╗ █████╗  ██████╗████████╗██╗   ██╗███████╗\n"
+              << "██╔════╝██╔══██╗██╔════╝╚══██╔══╝██║   ██║██╔════╝\n"
+              << "██║     ███████║██║        ██║   ██║   ██║███████╗\n"
+              << "██║     ██╔══██║██║        ██║   ██║   ██║╚════██║\n"
+              << "╚██████╗██║  ██║╚██████╗   ██║   ╚██████╔╝███████║\n"
+              << " ╚═════╝╚═╝  ╚═╝ ╚═════╝   ╚═╝    ╚═════╝ ╚══════╝\n"
+              << ansi::reset
+              << ansi::dim << "              Hybrid Chat" << ansi::reset << "\n\n";
+}
+
 struct TokenPrinter {
     std::chrono::steady_clock::time_point start;
     std::chrono::steady_clock::time_point first;
     bool saw_first = false;
     int count = 0;
+    std::string pending;
+    bool in_code_fence = false;
+    bool color = false;
+    bool label_printed = false;
+    std::thread spinner_thread;
+    std::atomic<bool> spinner_running{false};
+
+    ~TokenPrinter() { stop_thinking(); }
 
     void reset() {
         start = std::chrono::steady_clock::now();
         saw_first = false;
         count = 0;
+        pending.clear();
+        in_code_fence = false;
+        label_printed = false;
+        color = stdout_is_terminal();
+    }
+
+    void start_thinking() {
+        if (!color) return;
+        spinner_running = true;
+        spinner_thread = std::thread([this]() {
+            const char* frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+            for (int idx = 0; spinner_running.load(); ++idx) {
+                std::cout << "\r" << ansi::dim << frames[idx % 10] << " thinking…" << ansi::reset << std::flush;
+                for (int k = 0; k < 5 && spinner_running.load(); ++k) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                }
+            }
+        });
+    }
+
+    void stop_thinking() {
+        if (spinner_running.exchange(false)) {
+            if (spinner_thread.joinable()) spinner_thread.join();
+            std::cout << "\r\033[K" << std::flush;  
+        }
+    }
+
+    void print_label() {
+        if (label_printed) return;
+        label_printed = true;
+        stop_thinking();
+        const char* origin = g_cloud_active.load() ? "cloud" : "local";
+        if (color) {
+            const char* origin_color = g_cloud_active.load() ? ansi::yellow : ansi::cyan;
+            std::cout << ansi::bold << ansi::green << "Assistant" << ansi::reset
+                      << " " << origin_color << "(" << origin << ")" << ansi::reset
+                      << ansi::bold << ansi::green << ":" << ansi::reset << " ";
+        } else {
+            std::cout << "Assistant (" << origin << "): ";
+        }
+        std::cout << std::flush;
+    }
+
+    // Render the markdown inline spans (**bold**, *italic*, `code`) within one line.
+    void render_inline(const std::string& s) const {
+        if (!color) { std::cout << s; return; }
+        size_t i = 0, n = s.size();
+        while (i < n) {
+            char c = s[i];
+            if (c == '*' && i + 1 < n && s[i + 1] == '*') {
+                size_t end = s.find("**", i + 2);
+                if (end != std::string::npos && end > i + 2) {
+                    std::cout << ansi::bold << s.substr(i + 2, end - (i + 2)) << ansi::reset;
+                    i = end + 2;
+                    continue;
+                }
+            }
+            if (c == '`') {
+                size_t end = s.find('`', i + 1);
+                if (end != std::string::npos) {
+                    std::cout << ansi::cyan << s.substr(i + 1, end - (i + 1)) << ansi::reset;
+                    i = end + 1;
+                    continue;
+                }
+            }
+            
+            if (c == '[') {
+                size_t rb = s.find(']', i + 1);
+                if (rb != std::string::npos && rb + 1 < n && s[rb + 1] == '(') {
+                    size_t rp = s.find(')', rb + 2);
+                    if (rp != std::string::npos) {
+                        std::cout << ansi::underline << ansi::cyan
+                                  << s.substr(i + 1, rb - (i + 1)) << ansi::reset;
+                        i = rp + 1;
+                        continue;
+                    }
+                }
+            }
+            if (c == '*' && i + 1 < n && s[i + 1] != '*' && s[i + 1] != ' ') {
+                size_t end = s.find('*', i + 1);
+                if (end != std::string::npos && s[end - 1] != ' ') {
+                    std::cout << ansi::italic << s.substr(i + 1, end - (i + 1)) << ansi::reset;
+                    i = end + 1;
+                    continue;
+                }
+            }
+            std::cout << c;
+            ++i;
+        }
+    }
+
+    // Render a single complete line, handling block-level markdown (headings, lists, code fences).
+    void render_line(const std::string& raw) {
+        if (!color) { std::cout << raw; return; }
+
+        size_t s0 = raw.find_first_not_of(" \t");
+        std::string lead = (s0 == std::string::npos) ? raw : raw.substr(0, s0);
+        std::string body = (s0 == std::string::npos) ? "" : raw.substr(s0);
+
+        if (body.rfind("```", 0) == 0) {
+            if (!in_code_fence) {
+                in_code_fence = true;
+                std::string lang = body.substr(3);
+                size_t a = lang.find_first_not_of(" \t");
+                size_t b = lang.find_last_not_of(" \t");
+                lang = (a == std::string::npos) ? "" : lang.substr(a, b - a + 1);
+                std::cout << ansi::dim << "  ┌── " << (lang.empty() ? "code" : lang) << ansi::reset;
+            } else {
+                in_code_fence = false;
+                std::cout << ansi::dim << "  └──" << ansi::reset;
+            }
+            return;
+        }
+        if (in_code_fence) {
+            std::cout << ansi::dim << "  │ " << ansi::reset << ansi::green << raw << ansi::reset;
+            return;
+        }
+
+        if (!body.empty() && body[0] == '#') {
+            size_t h = 0;
+            while (h < body.size() && body[h] == '#') ++h;
+            if (h >= 1 && h <= 6 && h < body.size() && body[h] == ' ') {
+                std::cout << lead << ansi::bold << ansi::cyan << body.substr(h + 1) << ansi::reset;
+                return;
+            }
+        }
+
+        if (body[0] == '-' || body[0] == '*' || body[0] == '_') {
+            char hc = body[0];
+            size_t marks = 0;
+            bool only = true;
+            for (char ch : body) {
+                if (ch == hc) ++marks;
+                else if (ch != ' ') { only = false; break; }
+            }
+            if (only && marks >= 3) {
+                std::cout << lead << ansi::dim
+                          << "────────────────────────────"
+                          << ansi::reset;
+                return;
+            }
+        }
+
+        if (body[0] == '>') {
+            std::string rest = body.substr(1);
+            if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1);
+            std::cout << lead << ansi::dim << "▏ " << ansi::reset;
+            render_inline(rest);
+            return;
+        }
+
+        // Bullet list: -, *, + then space(s)
+        if (body.size() >= 2 && (body[0] == '-' || body[0] == '*' || body[0] == '+') && body[1] == ' ') {
+            std::string rest = body.substr(2);
+            size_t r0 = rest.find_first_not_of(" \t");
+            rest = (r0 == std::string::npos) ? "" : rest.substr(r0);
+            std::cout << lead << ansi::yellow << "• " << ansi::reset;
+            render_inline(rest);
+            return;
+        }
+
+        size_t d = 0;
+        while (d < body.size() && std::isdigit(static_cast<unsigned char>(body[d]))) ++d;
+        if (d > 0 && d + 1 < body.size() && body[d] == '.' && body[d + 1] == ' ') {
+            std::string rest = body.substr(d + 1);
+            size_t r0 = rest.find_first_not_of(" \t");
+            rest = (r0 == std::string::npos) ? "" : rest.substr(r0);
+            std::cout << lead << ansi::yellow << body.substr(0, d + 1) << ansi::reset << " ";
+            render_inline(rest);
+            return;
+        }
+
+        std::cout << lead;
+        render_inline(body);
     }
 
     void on_token(const char* text) {
+        print_label();
         if (!saw_first) {
             first = std::chrono::steady_clock::now();
             saw_first = true;
         }
-        std::cout << (text ? text : "") << std::flush;
         ++count;
+        if (!text) return;
+        pending += text;
+        size_t nl;
+        while ((nl = pending.find('\n')) != std::string::npos) {
+            render_line(pending.substr(0, nl));
+            std::cout << "\n";
+            pending.erase(0, nl + 1);
+        }
+        std::cout << std::flush;
     }
 
-    void print_stats(double ram_mb, double confidence, bool cloud_handoff,
+    // Flush the trailing partial line once generation completes (no trailing newline).
+    void finish() {
+        print_label();
+        if (!pending.empty()) {
+            render_line(pending);
+            pending.clear();
+        }
+        if (color && in_code_fence) std::cout << ansi::reset;
+        in_code_fence = false;
+        std::cout << std::flush;
+    }
+
+    void print_stats(double ram_mb, double confidence, bool cloud_handoff, double threshold,
                      int reported_tokens = -1, double reported_decode_tps = -1.0,
                      double reported_ttft_ms = -1.0, double reported_total_ms = -1.0) const {
         auto end = std::chrono::steady_clock::now();
@@ -216,23 +475,27 @@ struct TokenPrinter {
         if (reported_decode_tps >= 0.0) tps = reported_decode_tps;
         if (reported_ttft_ms >= 0.0) ttft_s = reported_ttft_ms / 1000.0;
         if (reported_total_ms >= 0.0) total_s = reported_total_ms / 1000.0;
-        std::cout << "\n[" << display_tokens << " tokens | latency: "
+        std::cout << "\n";
+        if (color) std::cout << ansi::dim;
+        std::cout << "[" << display_tokens << " tokens | latency: "
                   << std::fixed << std::setprecision(3) << ttft_s
                   << "s | total: " << total_s
                   << "s | " << std::setprecision(1) << tps << " tok/s";
         if (confidence >= 0.0) {
-            double handoff_pct = std::max(0.0, std::min(100.0, (1.0 - confidence) * 100.0));
-            std::cout << " | handoff: " << handoff_pct << "%"
-                      << " | confidence: " << std::max(0.0, std::min(100.0, confidence * 100.0)) << "%";
+            std::cout << " | confidence: " << std::max(0.0, std::min(100.0, confidence * 100.0)) << "%";
         } else {
-            std::cout << " | handoff: forced"
-                      << " | confidence: n/a";
+            std::cout << " | confidence: n/a";
+        }
+        if (threshold >= 0.0) {
+            std::cout << " | threshold: " << std::max(0.0, std::min(100.0, threshold * 100.0)) << "%";
         }
         std::cout << " | cloud: " << (cloud_handoff ? "yes" : "no");
         if (ram_mb > 0.0) {
             std::cout << " | RAM: " << ram_mb << " MB";
         }
-        std::cout << "]\n";
+        std::cout << "]";
+        if (color) std::cout << ansi::reset;
+        std::cout << "\n";
     }
 };
 
@@ -242,6 +505,29 @@ void token_callback(const char* text, uint32_t, void*) {
     if (g_printer) {
         g_printer->on_token(text);
     }
+}
+
+void log_callback(int level, const char* component, const char* message, void*) {
+    const std::string comp = component ? component : "";
+    const std::string msg = message ? message : "";
+    if (comp == "cloud_handoff") {
+        if (msg.find("triggered") != std::string::npos) {
+            g_cloud_active = true;
+        } else if (msg.find("falling back") != std::string::npos ||
+                   msg.find("failed") != std::string::npos ||
+                   msg.find("disabling") != std::string::npos) {
+            g_cloud_active = false;
+        }
+        return;
+    }
+    const bool color = isatty(STDERR_FILENO) != 0 && std::getenv("NO_COLOR") == nullptr;
+    const char* names[] = {"DEBUG", "INFO", "WARN", "ERROR"};
+    const char* name = (level >= 0 && level <= 3) ? names[level] : "LOG";
+    std::cerr << "\n";
+    if (color) std::cerr << ansi::dim;
+    std::cerr << "[" << name << "] " << comp << ": " << msg;
+    if (color) std::cerr << ansi::reset;
+    std::cerr << "\n";
 }
 
 std::string escape_json(const std::string& s) {
@@ -412,7 +698,7 @@ void print_usage(const char* argv0) {
               << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>]"
               << " [--prompt <text>] [--input-ids <ids>] [--input-ids-file <path>] [--max-new-tokens <n>]"
               << " [--result-json <path>] [--thinking] [--no-cloud-handoff]"
-              << " [--confidence-threshold <value>] [--cloud-timeout-ms <ms>]\n";
+              << " [--confidence-threshold <value>] [--cloud-timeout-ms <ms>] [-h|--help]\n";
 }
 
 } // namespace
@@ -440,32 +726,58 @@ int main(int argc, char** argv) {
     double confidence_threshold = -1.0;
     int cloud_timeout_ms = 15000;
 
-    for (int i = 2; i < argc; ++i) {
+    int i = 2;
+    auto need_value = [&](const char* flag) -> bool {
+        if (i + 1 >= argc) {
+            std::cerr << "Error: " << flag << " requires a value\n";
+            print_usage(argv[0]);
+            return false;
+        }
+        return true;
+    };
+    for (; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--system" && i + 1 < argc) {
+        if (arg == "-h" || arg == "--help") {
+            print_usage(argv[0]);
+            return 0;
+        } else if (arg == "--system") {
+            if (!need_value("--system")) return 1;
             system_prompt = argv[++i];
-        } else if (arg == "--image" && i + 1 < argc) {
+        } else if (arg == "--image") {
+            if (!need_value("--image")) return 1;
             current_image = expand_tilde(argv[++i]);
-        } else if (arg == "--audio" && i + 1 < argc) {
+        } else if (arg == "--audio") {
+            if (!need_value("--audio")) return 1;
             current_audio = expand_tilde(argv[++i]);
-        } else if (arg == "--prompt" && i + 1 < argc) {
+        } else if (arg == "--prompt") {
+            if (!need_value("--prompt")) return 1;
             initial_prompt = argv[++i];
-        } else if (arg == "--input-ids" && i + 1 < argc) {
+        } else if (arg == "--input-ids") {
+            if (!need_value("--input-ids")) return 1;
             input_ids = argv[++i];
-        } else if (arg == "--input-ids-file" && i + 1 < argc) {
+        } else if (arg == "--input-ids-file") {
+            if (!need_value("--input-ids-file")) return 1;
             input_ids_file = expand_tilde(argv[++i]);
-        } else if (arg == "--max-new-tokens" && i + 1 < argc) {
-            max_new_tokens = std::max(0, std::atoi(argv[++i]));
-        } else if (arg == "--result-json" && i + 1 < argc) {
+        } else if (arg == "--max-new-tokens") {
+            if (!need_value("--max-new-tokens")) return 1;
+            max_new_tokens = std::max(1, std::atoi(argv[++i]));
+        } else if (arg == "--result-json") {
+            if (!need_value("--result-json")) return 1;
             result_json = argv[++i];
         } else if (arg == "--thinking") {
             thinking = true;
         } else if (arg == "--no-cloud-handoff") {
             auto_handoff = false;
-        } else if (arg == "--confidence-threshold" && i + 1 < argc) {
+        } else if (arg == "--confidence-threshold") {
+            if (!need_value("--confidence-threshold")) return 1;
             confidence_threshold = std::atof(argv[++i]);
-        } else if (arg == "--cloud-timeout-ms" && i + 1 < argc) {
+        } else if (arg == "--cloud-timeout-ms") {
+            if (!need_value("--cloud-timeout-ms")) return 1;
             cloud_timeout_ms = std::max(0, std::atoi(argv[++i]));
+        } else {
+            std::cerr << "Error: unknown option '" << arg << "'\n";
+            print_usage(argv[0]);
+            return 1;
         }
     }
 
@@ -491,6 +803,8 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
+
+    cactus_log_set_callback(log_callback, nullptr);
 
     std::cout << "Loading model from " << model_path << "...\n";
     cactus_model_t model = cactus_init(model_path.c_str(), nullptr, false);
@@ -532,12 +846,46 @@ int main(int argc, char** argv) {
         return rc < 0 ? 1 : 0;
     }
 
-    std::cout << "Model loaded.\n";
-    std::cout << "Commands: /image <path> [prompt], /audio <path> [prompt], ";
+    if (stdout_is_terminal()) std::cout << "\033[2J\033[3J\033[H";
+    print_banner();
+
+    {
+        const bool tty = stdout_is_terminal();
+        const char* d = tty ? ansi::dim : "";
+        const char* r = tty ? ansi::reset : "";
+        if (!auto_handoff) {
+            std::cout << d << "Hybrid handoff off (--no-cloud-handoff): answering fully on-device." << r << "\n\n";
+        } else {
+            std::string ratio = (confidence_threshold >= 0.0)
+                ? std::to_string(static_cast<int>(confidence_threshold * 100.0 + 0.5)) + "%"
+                : "50% (model default)";
+            std::cout << d
+                      << "Hybrid mode: answers on-device and hands off to the cloud when the local\n"
+                      << "model's confidence drops below " << ratio << ". "
+                      << "Tune with --confidence-threshold <0-1>;\n"
+                      << "pass --no-cloud-handoff to stay fully local. "
+                      << "Each reply's confidence is shown in its stats line." << r << "\n\n";
+        }
+    }
+
+    std::cout << (stdout_is_terminal() ? "\033[1mCommands:\033[0m\n" : "Commands:\n");
+    auto print_command = [](const char* command, const char* description) {
+        if (stdout_is_terminal()) {
+            std::cout << "  " << ansi::cyan << std::left << std::setw(24) << command << ansi::reset
+                      << ansi::dim << description << ansi::reset << "\n";
+        } else {
+            std::cout << "  " << std::left << std::setw(24) << command << description << "\n";
+        }
+    };
+    print_command("/image <path> [prompt]", "attach an image and chat about it");
+    print_command("/audio <path> [prompt]", "attach an audio file as a spoken prompt");
 #ifdef HAVE_SDL2
-    std::cout << "/record [prompt], ";
+    print_command("/record [prompt]", "record from the mic as a spoken prompt");
 #endif
-    std::cout << "/clear, reset, exit\n\n";
+    print_command("/clear", "drop the attached image/audio");
+    print_command("reset", "start a new conversation");
+    print_command("exit", "quit");
+    std::cout << std::right << "\n";
 
     std::vector<std::pair<std::string, std::string>> history;
     std::vector<uint8_t> current_pcm;
@@ -551,10 +899,12 @@ int main(int argc, char** argv) {
             auto_send = false;
             if (!initial_prompt.empty()) input = initial_prompt;
             else if (!current_image.empty()) input = "Describe this image.";
-            else input = "Transcribe or respond to this audio.";
-            std::cout << "You: " << input << "\n";
+            else input = "Respond to the spoken request in this audio.";
+            const char* you = stdout_is_terminal() ? "\033[1;34mYou:\033[0m " : "You: ";
+            std::cout << you << input << "\n";
         } else {
-            std::cout << "You: " << std::flush;
+            const char* you = stdout_is_terminal() ? "\033[1;34mYou:\033[0m " : "You: ";
+            std::cout << you << std::flush;
             if (!std::getline(std::cin, input)) break;
         }
 
@@ -602,11 +952,12 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        if (input == "/record" || input.rfind("/record ", 0) == 0) {
+        static const std::string kRecordCmd = "/record";
+        if (input == kRecordCmd || input.rfind(kRecordCmd + " ", 0) == 0) {
 #ifdef HAVE_SDL2
             std::string record_prompt;
-            if (input.size() > 8) {
-                record_prompt = input.substr(8);
+            if (input.size() > kRecordCmd.size() + 1) {
+                record_prompt = input.substr(kRecordCmd.size() + 1);
                 while (!record_prompt.empty() && (record_prompt.front() == ' ' || record_prompt.front() == '\t')) {
                     record_prompt.erase(record_prompt.begin());
                 }
@@ -617,7 +968,7 @@ int main(int argc, char** argv) {
                 std::cerr << "Recording failed.\n";
                 continue;
             }
-            input = record_prompt.empty() ? "Transcribe or respond to this audio." : record_prompt;
+            input = record_prompt.empty() ? "Respond to the spoken request in this audio." : record_prompt;
 #else
             std::cerr << "Recording requires SDL2, but this binary was built without SDL2.\n";
             continue;
@@ -642,13 +993,13 @@ int main(int argc, char** argv) {
         if (!current_image.empty()) std::cout << "[image: " << current_image << "]\n";
         if (!current_audio.empty()) std::cout << "[audio: " << current_audio << "]\n";
         if (!current_pcm.empty()) {
-            double seconds = static_cast<double>(current_pcm.size() / sizeof(int16_t)) / 16000.0;
+            double seconds = static_cast<double>(current_pcm.size() / sizeof(int16_t)) / static_cast<double>(kAudioSampleRate);
             std::cout << "[recorded audio: " << std::fixed << std::setprecision(1) << seconds << "s]\n";
         }
-        std::cout << "Assistant: " << std::flush;
-
         std::vector<char> response(kResponseBufferSize, 0);
+        g_cloud_active = false;
         printer.reset();
+        printer.start_thinking();
         int rc = cactus_complete(model,
                                  messages.c_str(),
                                  response.data(),
@@ -659,6 +1010,7 @@ int main(int argc, char** argv) {
                                  nullptr,
                                  current_pcm.empty() ? nullptr : current_pcm.data(),
                                  current_pcm.size());
+        printer.finish();
 
         std::string response_json(response.data());
         if (!result_json.empty() && !write_text_file(result_json, response_json)) {
@@ -666,13 +1018,13 @@ int main(int argc, char** argv) {
         }
         bool cloud_handoff = json_bool_value(response_json, "cloud_handoff");
         double confidence = json_number_value(response_json, "confidence", -1.0);
+        double threshold = json_number_value(response_json, "confidence_threshold", -1.0);
         double ram_mb = json_number_value(response_json, "ram_usage_mb");
         int decode_tokens = static_cast<int>(json_number_value(response_json, "decode_tokens", -1.0));
         double decode_tps = json_number_value(response_json, "decode_tps", -1.0);
         double ttft_ms = json_number_value(response_json, "time_to_first_token_ms", -1.0);
         double total_ms = json_number_value(response_json, "total_time_ms", -1.0);
-        printer.print_stats(ram_mb, confidence, cloud_handoff, decode_tokens, decode_tps, ttft_ms, total_ms);
-        std::cout << "\n";
+        printer.print_stats(ram_mb, confidence, cloud_handoff, threshold, decode_tokens, decode_tps, ttft_ms, total_ms);
 
         if (rc < 0) {
             std::cout << "Error: " << response.data() << "\n";
@@ -686,6 +1038,7 @@ int main(int argc, char** argv) {
         current_image.clear();
         current_audio.clear();
         current_pcm.clear();
+        print_turn_separator();
     }
 
     cactus_destroy(model);
