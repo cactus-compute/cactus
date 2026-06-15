@@ -18,6 +18,9 @@ foreach(TEST_FILE ${TEST_SOURCES})
     target_link_libraries(${TEST_NAME} PRIVATE cactus_engine)
 endforeach()
 
+add_executable(llm_bench ${TESTS_DIR}/llm_bench.cpp)
+target_link_libraries(llm_bench PRIVATE cactus_engine)
+
 if(TARGET test_curl AND EXISTS "${CACTUS_CURL_ROOT}/include/curl/curl.h")
     target_include_directories(test_curl PRIVATE "${CACTUS_CURL_ROOT}/include")
 endif()

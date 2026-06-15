@@ -46,3 +46,6 @@ endif()
 
 add_executable(transcribe transcribe.cpp)
 target_link_libraries(transcribe PRIVATE cactus_engine)
+
+add_executable(llm_bench llm_bench.cpp)
+target_link_libraries(llm_bench PRIVATE cactus_engine)
