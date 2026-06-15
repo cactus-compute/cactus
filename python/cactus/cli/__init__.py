@@ -5,13 +5,16 @@ from .. import __version__
 from .common import (
     DEFAULT_MODEL_ID,
     DEFAULT_TRANSCRIPTION_MODEL_ID,
+    DEFAULT_TEST_MODEL_ID,
+    DEFAULT_TEST_TRANSCRIPTION_MODEL_ID,
     SUPPORTED_PLATFORMS,
 )
 from .download import cmd_download
 
-_PLATFORM_CHOICES = ("cpu", *SUPPORTED_PLATFORMS)
+_PLATFORM_CHOICES = ("auto", "cpu", *SUPPORTED_PLATFORMS)
 _PLATFORM_HELP = (
-    f"target accelerator: cpu = generic ARM (default); "
+    f"target accelerator: auto = best for this host, e.g. apple on macOS (default); "
+    f"cpu = generic ARM; "
     f"or one of: {', '.join(SUPPORTED_PLATFORMS) if SUPPORTED_PLATFORMS else '(none yet)'}"
 )
 _PLATFORM_PIPE = "|".join(_PLATFORM_CHOICES)
@@ -93,7 +96,7 @@ def create_parser():
 
   cactus run [model|path]              run a model (default: {DEFAULT_MODEL_ID})
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target accelerator (default: cpu)
+    --platform {_PLATFORM_PIPE:<22}  target accelerator (default: auto)
     --image <path>                     image file for VLM inference
     --audio <path>                     audio file for audio chat
     --system <prompt>                  system prompt
@@ -110,7 +113,7 @@ def create_parser():
 
   cactus download [model]              fetch a prebuilt bundle, else build locally (default: {DEFAULT_MODEL_ID})
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target accelerator (default: cpu)
+    --platform {_PLATFORM_PIPE:<22}  target accelerator (default: auto)
     --token <token>                    HuggingFace token
 
   cactus serve [model]                 OpenAI-compatible local HTTP server
@@ -127,8 +130,8 @@ def create_parser():
   cactus test                          run the test suite
     --component <name>                 kernels | graph | engine | all
                                        (default: all)
-    --model <hf-id>                    default: {DEFAULT_MODEL_ID}
-    --transcription-model <hf-id>      default: {DEFAULT_TRANSCRIPTION_MODEL_ID}
+    --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
+    --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
     --suite <name>                     run a single test suite from any
                                        component (kernels, graph, or engine)
     --list                             list components and suites
@@ -205,7 +208,7 @@ def create_parser():
                                  help=f"HuggingFace model id (default: {DEFAULT_MODEL_ID})")
     download_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
                                  help="CQ quantization bits (default: 4)")
-    download_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="cpu",
+    download_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
                                  help=_PLATFORM_HELP)
     download_parser.add_argument("--token", help="HuggingFace token")
 
@@ -225,7 +228,7 @@ def create_parser():
                             help=f"HuggingFace model id or local bundle path (default: {DEFAULT_MODEL_ID})")
     run_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
                             help="CQ quantization bits (default: 4)")
-    run_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="cpu",
+    run_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
                             help=_PLATFORM_HELP)
     run_parser.add_argument("--token", help="HuggingFace token")
     run_parser.add_argument("--reconvert", action="store_true",
@@ -284,10 +287,10 @@ def create_parser():
                              help="Component to test (default: all)")
     test_parser.add_argument("--model", dest="model_id", default=None,
                              type=_hf_id_or_path,
-                             help=f"HF model ID under test (default: {DEFAULT_MODEL_ID})")
+                             help=f"HF model ID under test (default: {DEFAULT_TEST_MODEL_ID})")
     test_parser.add_argument("--transcription-model", dest="transcription_model_id", default=None,
                              type=_hf_id_or_path,
-                             help=f"HF transcription model ID under test (default: {DEFAULT_TRANSCRIPTION_MODEL_ID})")
+                             help=f"HF transcription model ID under test (default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID})")
     test_parser.add_argument("--suite", default=None,
                              help="Run a single test suite by name; resolved across all components (e.g. llm → engine, performance → kernels + graph)")
     test_parser.add_argument("--list", action="store_true",

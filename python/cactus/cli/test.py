@@ -2,8 +2,8 @@ import os
 import subprocess
 
 from .common import (
-    BLUE, DEFAULT_MODEL_ID, DEFAULT_TRANSCRIPTION_MODEL_ID, PROJECT_ROOT, RED,
-    apply_cloud_api_key_env, print_color,
+    BLUE, DEFAULT_TEST_MODEL_ID, DEFAULT_TEST_TRANSCRIPTION_MODEL_ID,
+    PROJECT_ROOT, RED, apply_cloud_api_key_env, print_color,
 )
 
 COMPONENTS = ("kernels", "graph", "engine", "all")
@@ -68,9 +68,9 @@ def cmd_test(args):
     if "engine" in targets:
         from .model import ensure_runnable_bundle
         try:
-            args.model_id = str(ensure_runnable_bundle(args.model_id or DEFAULT_MODEL_ID))
+            args.model_id = str(ensure_runnable_bundle(args.model_id or DEFAULT_TEST_MODEL_ID))
             args.transcription_model_id = str(
-                ensure_runnable_bundle(args.transcription_model_id or DEFAULT_TRANSCRIPTION_MODEL_ID)
+                ensure_runnable_bundle(args.transcription_model_id or DEFAULT_TEST_TRANSCRIPTION_MODEL_ID)
             )
         except RuntimeError as exc:
             print_color(RED, f"Model setup failed: {exc}")
