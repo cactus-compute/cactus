@@ -130,8 +130,8 @@ graph.hard_reset();
 - VLM: Gemma-4-E2B-CQ4 (NPU prefill, CPU decode), 256px input, latency / decode tps
 - Transcribe: Parakeet-TDT-0.6B-CQ4 (NPU prefill, CPU decode), 20s audio, latency / decode tps
 
-| Device | LLM | VLM | Transcribe | RAM |
-|--------|-----|-----|------------|-----|
+| Device | Gemma4 Text | Gemma4 Vision | Parakeet 1.1B | RAM |
+|--------|----------|------------|---------------|-----|
 | Mac M4 Pro | - | - | - | - |
 | iPad/Mac M3 | - | - | - | - |
 | iPhone 17 Pro | - | - | - | - |
