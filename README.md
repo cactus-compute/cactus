@@ -130,8 +130,8 @@ graph.hard_reset();
 - VLM: Gemma-4-E2B-CQ4 (NPU prefill, CPU decode), 256px input, latency / decode tps
 - Transcribe: Parakeet-TDT-0.6B-CQ4 (NPU prefill, CPU decode), 20s audio, latency / decode tps
 
-| Device | Gemma4 Text | Gemma4 Vision | Parakeet 1.1B | RAM |
-|--------|----------|------------|---------------|-----|
+| Device | LLM | VLM | Transcribe | RAM |
+|--------|-----|-----|------------|-----|
 | Mac M4 Pro | - | - | - | - |
 | iPad/Mac M3 | - | - | - | - |
 | iPhone 17 Pro | - | - | - | - |
@@ -140,7 +140,7 @@ graph.hard_reset();
 | Pixel 10 Pro | - | - | - | - |
 | Pixel 6a | - | - | - | - |
 | Galaxy A17 5G | - | - | - | - |
-| Raspberry Pi 5 | 64.24 tok/s prefill, 15.94s TTFT / 5.70 tok/s decode | 104.90s / 5.75 tok/s | 4.64s / 5.81M tok/s | 2.92 GB |
+| Raspberry Pi 5 | 64 / 5.7 | 105s / 5.8 | 4.6s | 2990 MB |
 
 
 ## Supported Models
