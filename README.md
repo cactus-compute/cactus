@@ -132,7 +132,7 @@ graph.hard_reset();
 - VLM: Gemma-4-E2B-CQ4 (NPU prefill, CPU decode), 256px input, latency / decode tps
 - Transcribe: Parakeet-TDT-0.6B-CQ4 (NPU prefill, CPU decode), 20s audio, latency / decode tps
 
-| Device | Gemma4 Text | Gemma4 Vision | Parakeet 1.1B | RAM |
+| Device | Gemma4 Text | Gemma4 Vision | Parakeet 0.6B | RAM |
 |--------|----------|------------|---------------|-----|
 | Mac M4 Pro | - | - | - | - |
 | iPad/Mac M3 | - | - | - | - |
@@ -242,9 +242,9 @@ graph.hard_reset();
 │                                      (default: all)                            │
 │    --model <hf-id>                   default: LiquidAI/LFM2-VL-450M            │
 │    --transcription-model <hf-id>     default: openai/whisper-base              │
-│    --suite <name>                    run a single test suite (resolved         │
-│                                      across components; e.g. performance       │
-│                                      → kernels + graph, llm → engine)          │
+│    --suite <name>                    run a single test suite by name           │
+│                                      (resolved across components,              │
+│                                      e.g. llm → engine)                        │
 │    --list                            list components and suites                │
 │    --ios                             run on connected iPhone                   │
 │    --android                         run on connected Android                  │

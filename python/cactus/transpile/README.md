@@ -63,7 +63,7 @@ Two important details:
 order (`python/cactus/cli/run.py:_resolve_or_fetch_bundle`):
 
 1. `<arg>` is an existing path with `components/manifest.json` → run as-is.
-2. Cached download at `transpiled/<model>-cq<bits>[-<platform>]/` → run.
+2. Cached download at `weights/<model>-cq<bits>[-<platform>]/` → run.
 3. Fresh download from `huggingface.co/Cactus-Compute` via `download_bundle`.
 4. Fallback: local `ensure_bundle` (convert + transpile for custom models not on HF).
 
@@ -856,7 +856,7 @@ By default this:
   `--weights-dir` or found in the default `weights/<model>` location
 - resolves the runtime library
 - launches `python/cactus/transpile/hf_model.py`
-- saves artifacts under `./transpiled/<model-id>/`
+- saves artifacts under `weights/<model>/` (alongside the converted CQ weights; override with `--artifact-dir`)
 - adds `--skip-execute`, so it does not run the graph unless you ask
 
 To also execute right after transpiling:

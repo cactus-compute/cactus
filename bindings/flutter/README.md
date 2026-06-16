@@ -23,6 +23,7 @@ cactus build --android
 
 <!-- --8<-- [start:example] -->
 ```dart
+import 'dart:ffi';
 import 'cactus.dart';
 import 'package:ffi/ffi.dart';
 

@@ -105,6 +105,7 @@ Ready to run LFM2-24B locally on your Mac? Here's how to get up and running.
 ```bash
 git clone https://github.com/cactus-compute/cactus.git
 cd cactus
+source ./setup
 
 # Build the Cactus engine (shared library for Python FFI)
 cactus build --python

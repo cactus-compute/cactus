@@ -426,7 +426,7 @@ cactus transpile <model-id-or-path> [options]
 | Option | Description |
 |--------|-------------|
 | `--weights-dir <path>` | Path to converted CQ weights (default: `weights/<model_name>`) |
-| `--task <name>` | Force task type (default: `auto` — inferred from weights). Choices: `causal_lm_logits`, `multimodal_causal_lm_logits`, `ctc_logits`, `encoder_hidden_states`, `seq2seq_transcription`, `tdt_transcription` |
+| `--task <name>` | Force task type (default: `auto` — inferred from model config). Choices: `causal_lm_logits`, `multimodal_causal_lm_logits`, `ctc_logits`, `encoder_hidden_states`, `seq2seq_transcription`, `tdt_transcription` |
 | `--prompt <text>` | Representative prompt for shape capture |
 | `--image-file <path>` | Representative image (repeatable) |
 | `--audio-file <path>` | Representative audio file |

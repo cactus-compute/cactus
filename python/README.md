@@ -20,7 +20,7 @@ cactus build --python
 <!-- --8<-- [end:install] -->
 
 ```bash
-# Download pre-built bundles (defaults to the generic CPU variant)
+# Download pre-built bundles (defaults to --platform auto; use --platform cpu for the generic build)
 cactus download LiquidAI/LFM2-VL-450M
 cactus download openai/whisper-small --platform apple   # CoreML/NPU variant
 
@@ -187,7 +187,7 @@ result = cactus_complete(model, completion_messages, None, tools, None)
 
 ### Transcription
 
-Returns a `dict` with the `response` field (transcribed text), the `segments` array (timestamped segments as `{"start": <sec>, "end": <sec>, "text": "<str>"}` — Whisper: phrase-level from timestamp tokens; Parakeet TDT: word-level from frame timing; Parakeet CTC and Moonshine: one segment per transcription window (consecutive VAD speech regions up to 30s)), and other metadata.
+Returns a `dict` with the `response` field (transcribed text), the `segments` array (always empty for the current native transcription paths), and other metadata.
 
 ```python
 result = cactus_transcribe(

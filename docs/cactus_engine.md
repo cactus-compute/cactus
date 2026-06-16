@@ -567,7 +567,7 @@ int cactus_transcribe(
     "function_calls": [],
     "segments": [],
     "confidence": 1.0,
-    "confidence_threshold": 0.7,
+    "confidence_threshold": -1.0,
     "time_to_first_token_ms": 120.0,
     "total_time_ms": 450.0,
     "prefill_tps": 50.0,
@@ -582,6 +582,7 @@ int cactus_transcribe(
 - `response`: Full transcription text
 - `segments`: Always empty for the current native transcription paths
 - `cloud_handoff`: Always false for transcription
+- `confidence_threshold`: `-1.0` (unset) — transcription does not resolve a cloud-handoff threshold
 
 **Example (file-based):**
 ```c
