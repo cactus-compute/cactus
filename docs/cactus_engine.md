@@ -25,9 +25,9 @@ cactus auth
 `cactus download` fetches a **pre-built runtime bundle** (CQ weights + serialized
 graph + manifest) from
 [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute) into
-`transpiled/<model>-cq<bits>[-<platform>]/`. Defaults to the generic CPU
-bundle; pass `--platform apple` for the Apple Silicon variant. The result
-can be loaded directly via `cactus_init()`.
+`weights/<model>-cq<bits>[-<platform>]/`. Defaults to `--platform auto` (the
+best build for your host, e.g. Apple Silicon on macOS); pass `--platform cpu`
+for the generic build. The result can be loaded directly via `cactus_init()`.
 
 For models not on Cactus-Compute, build a bundle from source with
 `cactus convert <model>` followed by `cactus transpile <model>`.
@@ -191,6 +191,7 @@ int cactus_complete(
     "function_calls": [],
     "segments": [],
     "confidence": 0.85,
+    "confidence_threshold": 0.7,
     "time_to_first_token_ms": 150.5,
     "total_time_ms": 1250.3,
     "prefill_tps": 166.1,
@@ -201,6 +202,8 @@ int cactus_complete(
     "total_tokens": 33
 }
 ```
+
+`confidence_threshold` is the resolved value `confidence` is compared against — model-dependent (see the options table above), or whatever you pass; the `0.7` here is just the fallback default. `cloud_handoff` becomes `true` when `confidence` drops below it.
 
 The `thinking` field is only present in the JSON when the model produced a chain-of-thought block:
 ```json
@@ -213,6 +216,7 @@ The `thinking` field is only present in the JSON when the model produced a chain
     "function_calls": [],
     "segments": [],
     "confidence": 0.91,
+    "confidence_threshold": 0.7,
     "time_to_first_token_ms": 150.5,
     "total_time_ms": 1250.3,
     "prefill_tps": 166.1,
@@ -234,6 +238,7 @@ The `thinking` field is only present in the JSON when the model produced a chain
     "function_calls": [],
     "segments": [],
     "confidence": 0.18,
+    "confidence_threshold": 0.7,
     "time_to_first_token_ms": 45.2,
     "total_time_ms": 45.2,
     "prefill_tps": 619.5,
@@ -284,6 +289,7 @@ Note: `ram_usage_mb` reflects actual current RAM usage even in error responses.
     ],
     "segments": [],
     "confidence": 0.92,
+    "confidence_threshold": 0.7,
     "time_to_first_token_ms": 120.0,
     "total_time_ms": 450.5,
     "prefill_tps": 375.0,
@@ -561,6 +567,7 @@ int cactus_transcribe(
     "function_calls": [],
     "segments": [],
     "confidence": 1.0,
+    "confidence_threshold": 0.7,
     "time_to_first_token_ms": 120.0,
     "total_time_ms": 450.0,
     "prefill_tps": 50.0,

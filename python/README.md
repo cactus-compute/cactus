@@ -62,7 +62,7 @@ bundle = ensure_model("openai/whisper-tiny")
 
 # Or resolve the expected on-disk location explicitly
 bundle_dir = get_bundle_dir("openai/whisper-tiny", bits=4, platform=None)
-# -> Path("transpiled/whisper-tiny-cq4")  (or `-cq4-apple` with platform="apple")
+# -> Path("weights/whisper-tiny-cq4")  (or `-cq4-apple` with platform="apple")
 ```
 
 ### Init / Lifecycle
@@ -111,6 +111,7 @@ if result["cloud_handoff"]:
     "function_calls": [],
     "segments": [],
     "confidence": 0.92,
+    "confidence_threshold": 0.7,
     "time_to_first_token_ms": 45.2,
     "total_time_ms": 163.7,
     "prefill_tps": 619.5,

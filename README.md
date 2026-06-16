@@ -87,7 +87,9 @@ Example response from Gemma3-270m
     "cloud_handoff": false, // true if cloud model used
     "response": "Hi there!",
     "function_calls": [],   // parsed tool calls
+    "segments": [],         // transcription segments (empty for chat)
     "confidence": 0.8193,   // model confidence
+    "confidence_threshold": 0.7, // resolved handoff threshold (model-dependent)
     "time_to_first_token_ms": 45.23,
     "total_time_ms": 163.67,
     "prefill_tps": 1621.89,
@@ -193,7 +195,7 @@ graph.hard_reset();
 │                                                                                │
 │  cactus run [model|path]             run a model (downloads if needed)         │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform cpu|apple              target accelerator (default: cpu)         │
+│    --platform auto|cpu|apple         target accelerator (default: auto)        │
 │    --image <path>                    image file for VLM inference              │
 │    --audio <path>                    audio file for audio chat                 │
 │    --system <prompt>                 system prompt                             │
@@ -210,7 +212,7 @@ graph.hard_reset();
 │                                                                                │
 │  cactus download [model]             download a pre-built bundle               │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform cpu|apple              target accelerator (default: cpu)         │
+│    --platform auto|cpu|apple         target accelerator (default: auto)        │
 │    --token <token>                   HuggingFace token                         │
 │                                                                                │
 │  cactus convert <model> [dir]        convert HuggingFace weights to CQ         │

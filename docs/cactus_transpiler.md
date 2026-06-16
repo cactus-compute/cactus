@@ -459,7 +459,7 @@ huggingface.co/Cactus-Compute) or a local path to a bundle directory.
 | Option | Description |
 |--------|-------------|
 | `--bits 1\|2\|3\|4` | CQ quantization bits when downloading (default: 4) |
-| `--platform cpu\|apple` | Target accelerator (default: cpu — generic ARM) |
+| `--platform auto\|cpu\|apple` | Target accelerator (default: auto — best for the host) |
 | `--token <token>` | HuggingFace token (gated models) |
 | `--prompt <text>` | Input prompt |
 | `--input-ids <ids>` | Comma-separated token IDs |

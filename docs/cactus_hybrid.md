@@ -163,7 +163,8 @@ routed to the cloud. The response JSON indicates whether handoff occurred:
     "success": true,
     "cloud_handoff": true,
     "response": "Cloud-provided answer.",
-    "confidence": 0.18
+    "confidence": 0.18,
+    "confidence_threshold": 0.7
 }
 ```
 
