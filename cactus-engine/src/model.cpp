@@ -1262,52 +1262,64 @@ void Model::run_full_context_text() {
     decoder_->graph->execute();
 }
 
-void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
-                           Precision feature_precision) {
-    if (!lm_encoder_media_step_) {
-        run_step(static_cast<uint32_t>(config_.pad_token_id), position, false);
-        return;
-    }
-    int embeds_idx = input_index(*lm_encoder_media_step_, "inputs_embeds");
-    if (embeds_idx < 0) {
-        run_step(static_cast<uint32_t>(config_.pad_token_id), position, false);
-        return;
-    }
-    auto& embeds_buf = lm_encoder_media_step_->input_buffers[embeds_idx];
-    size_t node_id = static_cast<size_t>(lm_encoder_media_step_->runtime_input_node_ids[embeds_idx]);
-    const auto& desc = lm_encoder_media_step_->graph->get_output_buffer(node_id);
+void Model::write_media_embeds_row(Component& comp, int embeds_idx, const uint8_t* feature_row,
+                                   size_t feature_row_bytes, Precision feature_precision) {
+    auto& embeds_buf = comp.input_buffers[embeds_idx];
+    size_t node_id = static_cast<size_t>(comp.runtime_input_node_ids[embeds_idx]);
+    const auto& desc = comp.graph->get_output_buffer(node_id);
     if (desc.precision == feature_precision) {
         size_t to_copy = std::min(feature_row_bytes, embeds_buf.size());
         std::memcpy(embeds_buf.data(), feature_row, to_copy);
         if (to_copy < embeds_buf.size()) {
             std::memset(embeds_buf.data() + to_copy, 0, embeds_buf.size() - to_copy);
         }
-    } else {
-        size_t src_elem = PrecisionTraits::size_of(feature_precision);
-        size_t dst_elem = PrecisionTraits::size_of(desc.precision);
-        size_t src_count = src_elem ? feature_row_bytes / src_elem : 0;
-        size_t dst_count = dst_elem ? embeds_buf.size() / dst_elem : 0;
-        size_t n = std::min(src_count, dst_count);
-        auto load_float = [&](size_t i) -> float {
-            if (feature_precision == Precision::FP16) return static_cast<float>(reinterpret_cast<const __fp16*>(feature_row)[i]);
-            if (feature_precision == Precision::FP32) return reinterpret_cast<const float*>(feature_row)[i];
-            return static_cast<float>(reinterpret_cast<const int8_t*>(feature_row)[i]);
-        };
-        for (size_t i = 0; i < n; ++i) {
-            float v = load_float(i);
-            if (desc.precision == Precision::FP16) reinterpret_cast<__fp16*>(embeds_buf.data())[i] = static_cast<__fp16>(v);
-            else if (desc.precision == Precision::FP32) reinterpret_cast<float*>(embeds_buf.data())[i] = v;
-            else reinterpret_cast<int8_t*>(embeds_buf.data())[i] = static_cast<int8_t>(v);
+        return;
+    }
+    size_t src_elem = PrecisionTraits::size_of(feature_precision);
+    size_t dst_elem = PrecisionTraits::size_of(desc.precision);
+    size_t src_count = src_elem ? feature_row_bytes / src_elem : 0;
+    size_t dst_count = dst_elem ? embeds_buf.size() / dst_elem : 0;
+    size_t n = std::min(src_count, dst_count);
+    auto load_float = [&](size_t i) -> float {
+        if (feature_precision == Precision::FP16) return static_cast<float>(reinterpret_cast<const __fp16*>(feature_row)[i]);
+        if (feature_precision == Precision::FP32) return reinterpret_cast<const float*>(feature_row)[i];
+        return static_cast<float>(reinterpret_cast<const int8_t*>(feature_row)[i]);
+    };
+    for (size_t i = 0; i < n; ++i) {
+        float v = load_float(i);
+        if (desc.precision == Precision::FP16) reinterpret_cast<__fp16*>(embeds_buf.data())[i] = static_cast<__fp16>(v);
+        else if (desc.precision == Precision::FP32) reinterpret_cast<float*>(embeds_buf.data())[i] = v;
+        else reinterpret_cast<int8_t*>(embeds_buf.data())[i] = static_cast<int8_t>(v);
+    }
+    if (n < dst_count) {
+        std::memset(embeds_buf.data() + n * dst_elem, 0, (dst_count - n) * dst_elem);
+    }
+}
+
+void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
+                           Precision feature_precision) {
+    if (lm_encoder_media_step_) {
+        int embeds_idx = input_index(*lm_encoder_media_step_, "inputs_embeds");
+        if (embeds_idx >= 0) {
+            write_media_embeds_row(*lm_encoder_media_step_, embeds_idx, feature_row, feature_row_bytes, feature_precision);
+            write_int_input(*lm_encoder_media_step_, "input_ids", 0);
+            write_int_input(*lm_encoder_media_step_, "position_ids", static_cast<int64_t>(position));
+            lm_encoder_media_step_->graph->execute();
+            copy_encoder_outputs_to_decoder(*lm_encoder_media_step_);
+            decoder_->graph->execute();
+            return;
         }
-        if (n < dst_count) {
-            std::memset(embeds_buf.data() + n * dst_elem, 0, (dst_count - n) * dst_elem);
+    } else if (encoder_ != nullptr && decoder_ != nullptr) {
+        int dec_embeds_idx = input_index(*decoder_, "inputs_embeds");
+        if (dec_embeds_idx >= 0) {
+            run_encoder_step(static_cast<uint32_t>(config_.pad_token_id), position);
+            copy_component_outputs_to_inputs(*encoder_, *decoder_);
+            write_media_embeds_row(*decoder_, dec_embeds_idx, feature_row, feature_row_bytes, feature_precision);
+            decoder_->graph->execute();
+            return;
         }
     }
-    write_int_input(*lm_encoder_media_step_, "input_ids", 0);
-    write_int_input(*lm_encoder_media_step_, "position_ids", static_cast<int64_t>(position));
-    lm_encoder_media_step_->graph->execute();
-    copy_encoder_outputs_to_decoder(*lm_encoder_media_step_);
-    decoder_->graph->execute();
+    run_step(static_cast<uint32_t>(config_.pad_token_id), position, false);
 }
 
 namespace {
@@ -2679,8 +2691,8 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
             return;
         }
     }
-    if (!lm_encoder_media_step_) {
-        CACTUS_LOG_WARN("model", "Bundle has neither chunk-prefill nor lm_encoder_media_step; falling back to text-only prefill");
+    if (!supports_warm_media_injection()) {
+        CACTUS_LOG_WARN("model", "Bundle supports neither chunk-prefill nor warm media injection; falling back to text-only prefill");
         prefill(tokens, get_prefill_chunk_size(), profile_file);
         return;
     }
@@ -2748,11 +2760,12 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
     size_t audio_consumed = 0;
     const uint32_t image_tok = config_.image_token_id;
     const uint32_t audio_tok = config_.audio_token_id;
+    const bool warm_media = supports_warm_media_injection();
 
     for (size_t i = 0; i < tokens.size(); ++i) {
         uint32_t t = tokens[i];
         size_t pos = cache_total_seq_len_ + i;
-        if (image_tok != 0 && t == image_tok && !image_feature_name.empty() && lm_encoder_media_step_) {
+        if (image_tok != 0 && t == image_tok && !image_feature_name.empty() && warm_media) {
             const auto& feat = media_features_[image_feature_name];
             const uint8_t* row = feat.data() + image_consumed * image_row_bytes;
             if (image_consumed * image_row_bytes + image_row_bytes <= feat.size()) {
@@ -2761,7 +2774,7 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
                 continue;
             }
         }
-        if (audio_tok != 0 && t == audio_tok && !audio_feature_name.empty() && lm_encoder_media_step_) {
+        if (audio_tok != 0 && t == audio_tok && !audio_feature_name.empty() && warm_media) {
             const auto& feat = media_features_[audio_feature_name];
             const uint8_t* row = feat.data() + audio_consumed * audio_row_bytes;
             if (audio_consumed * audio_row_bytes + audio_row_bytes <= feat.size()) {

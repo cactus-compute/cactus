@@ -666,11 +666,15 @@ bool json_bool_value(const std::string& json, const std::string& key) {
     return json.compare(start, 4, "true") == 0;
 }
 
+struct ChatTurn {
+    std::string role;
+    std::string content;
+    std::string image;
+    std::string audio;
+};
+
 std::string build_messages(const std::string& system_prompt,
-                           const std::vector<std::pair<std::string, std::string>>& history,
-                           const std::string& image,
-                           const std::string& audio,
-                           bool attach_media) {
+                           const std::vector<ChatTurn>& history) {
     std::ostringstream msg;
     msg << "[";
     bool need_comma = false;
@@ -678,15 +682,13 @@ std::string build_messages(const std::string& system_prompt,
         msg << "{\"role\":\"system\",\"content\":\"" << escape_json(system_prompt) << "\"}";
         need_comma = true;
     }
-    for (size_t i = 0; i < history.size(); ++i) {
+    for (const auto& turn : history) {
         if (need_comma) msg << ",";
         need_comma = true;
-        msg << "{\"role\":\"" << history[i].first << "\",\"content\":\""
-            << escape_json(history[i].second) << "\"";
-        if (attach_media && i + 1 == history.size() && history[i].first == "user") {
-            if (!image.empty()) msg << ",\"images\":[\"" << escape_json(image) << "\"]";
-            if (!audio.empty()) msg << ",\"audio\":[\"" << escape_json(audio) << "\"]";
-        }
+        msg << "{\"role\":\"" << turn.role << "\",\"content\":\""
+            << escape_json(turn.content) << "\"";
+        if (!turn.image.empty()) msg << ",\"images\":[\"" << escape_json(turn.image) << "\"]";
+        if (!turn.audio.empty()) msg << ",\"audio\":[\"" << escape_json(turn.audio) << "\"]";
         msg << "}";
     }
     msg << "]";
@@ -887,7 +889,7 @@ int main(int argc, char** argv) {
     print_command("exit", "quit");
     std::cout << std::right << "\n";
 
-    std::vector<std::pair<std::string, std::string>> history;
+    std::vector<ChatTurn> history;
     std::vector<uint8_t> current_pcm;
     TokenPrinter printer;
     g_printer = &printer;
@@ -980,8 +982,8 @@ int main(int argc, char** argv) {
         if (attach_media) {
             cactus_reset(model);
         }
-        history.push_back({"user", input});
-        std::string messages = build_messages(system_prompt, history, current_image, current_audio, attach_media);
+        history.push_back({"user", input, current_image, current_audio});
+        std::string messages = build_messages(system_prompt, history);
         std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
             + std::to_string(max_new_tokens)
             + ",\"enable_thinking_if_supported\":" + (thinking ? "true" : "false")
@@ -1034,7 +1036,7 @@ int main(int argc, char** argv) {
 
         std::string assistant = json_string_value(response_json, "context_response");
         if (assistant.empty()) assistant = json_string_value(response_json, "response");
-        history.push_back({"assistant", assistant});
+        history.push_back({"assistant", assistant, "", ""});
         current_image.clear();
         current_audio.clear();
         current_pcm.clear();

@@ -674,6 +674,11 @@ public:
     std::vector<float> get_lm_embeddings(const std::vector<uint32_t>& tokens, bool normalize = false);
     bool has_lm_embedding() const { return decoder_embed_ != nullptr; }
     bool has_text_embedding() const { return components_.count("text_embedding") > 0; }
+    bool supports_warm_media_injection() const {
+        if (lm_encoder_media_step_ != nullptr) return true;
+        return encoder_ != nullptr && decoder_ != nullptr
+            && input_index(*decoder_, "inputs_embeds") >= 0;
+    }
 
     std::vector<float> get_image_embeddings(const std::string& image_path);
 
@@ -777,6 +782,8 @@ private:
     void run_encoder_step(uint32_t token_id, size_t position);
     void run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
                         Precision feature_precision);
+    void write_media_embeds_row(Component& comp, int embeds_idx, const uint8_t* feature_row,
+                                size_t feature_row_bytes, Precision feature_precision);
     void reset_encoder_cross_kv_route_state();
     bool finish_encoder_cross_kv_prepare();
     bool finish_encoder_cross_kv_prepare_after_source();
