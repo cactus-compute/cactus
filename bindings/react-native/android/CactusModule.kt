@@ -227,6 +227,41 @@ class CactusModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
     }
 
     @ReactMethod
+    fun streamTranscribeStart(handle: String, optionsJson: String?, promise: Promise) {
+        val nativeHandle = parseHandle(handle, promise) ?: return
+        val stream = CactusJNI.nativeStreamTranscribeStart(nativeHandle, optionsJson)
+        if (stream == 0L) {
+            fail(promise, "Failed to start streaming transcription")
+            return
+        }
+        promise.resolve(stream.toString())
+    }
+
+    @ReactMethod
+    fun streamTranscribeProcess(streamHandle: String, pcmDataBase64: String?, promise: Promise) {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        val stream = parseHandle(streamHandle, promise) ?: return
+        val rc = CactusJNI.nativeStreamTranscribeProcess(stream, decodeBase64OrNull(pcmDataBase64), buffer)
+        if (rc < 0) {
+            fail(promise, "Stream transcription failed")
+            return
+        }
+        promise.resolve(decodeNullTerminatedUtf8(buffer))
+    }
+
+    @ReactMethod
+    fun streamTranscribeStop(streamHandle: String, promise: Promise) {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        val stream = parseHandle(streamHandle, promise) ?: return
+        val rc = CactusJNI.nativeStreamTranscribeStop(stream, buffer)
+        if (rc < 0) {
+            fail(promise, "Stream transcription stop failed")
+            return
+        }
+        promise.resolve(decodeNullTerminatedUtf8(buffer))
+    }
+
+    @ReactMethod
     fun embed(handle: String, text: String, normalize: Boolean, promise: Promise) {
         val nativeHandle = parseHandle(handle, promise) ?: return
         val buffer = FloatArray(DEFAULT_EMBEDDING_BUFFER_SIZE)

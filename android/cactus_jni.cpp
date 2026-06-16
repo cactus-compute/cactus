@@ -264,6 +264,54 @@ Java_com_cactus_CactusJNI_nativeTranscribe(JNIEnv* env, jobject, jlong handle,
     return result;
 }
 
+JNIEXPORT jlong JNICALL
+Java_com_cactus_CactusJNI_nativeStreamTranscribeStart(JNIEnv* env, jobject, jlong handle,
+                                                      jstring optionsJson) {
+    const char* options = optionsJson ? env->GetStringUTFChars(optionsJson, nullptr) : nullptr;
+    cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(
+        reinterpret_cast<cactus_model_t>(handle), options);
+    if (options) env->ReleaseStringUTFChars(optionsJson, options);
+    return reinterpret_cast<jlong>(stream);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_cactus_CactusJNI_nativeStreamTranscribeProcess(JNIEnv* env, jobject, jlong stream,
+                                                        jbyteArray pcmData,
+                                                        jbyteArray responseBuffer) {
+    jbyte* pcmBytes = pcmData ? env->GetByteArrayElements(pcmData, nullptr) : nullptr;
+    size_t pcmSize = pcmData ? static_cast<size_t>(env->GetArrayLength(pcmData)) : 0;
+
+    jsize bufSize = env->GetArrayLength(responseBuffer);
+    jbyte* buf = env->GetByteArrayElements(responseBuffer, nullptr);
+
+    int result = cactus_stream_transcribe_process(
+        reinterpret_cast<cactus_stream_transcribe_t>(stream),
+        reinterpret_cast<const uint8_t*>(pcmBytes), pcmSize,
+        reinterpret_cast<char*>(buf), static_cast<size_t>(bufSize)
+    );
+
+    env->ReleaseByteArrayElements(responseBuffer, buf, 0);
+    if (pcmBytes) env->ReleaseByteArrayElements(pcmData, pcmBytes, JNI_ABORT);
+
+    return result;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_cactus_CactusJNI_nativeStreamTranscribeStop(JNIEnv* env, jobject, jlong stream,
+                                                     jbyteArray responseBuffer) {
+    jsize bufSize = env->GetArrayLength(responseBuffer);
+    jbyte* buf = env->GetByteArrayElements(responseBuffer, nullptr);
+
+    int result = cactus_stream_transcribe_stop(
+        reinterpret_cast<cactus_stream_transcribe_t>(stream),
+        reinterpret_cast<char*>(buf), static_cast<size_t>(bufSize)
+    );
+
+    env->ReleaseByteArrayElements(responseBuffer, buf, 0);
+
+    return result;
+}
+
 JNIEXPORT jint JNICALL
 Java_com_cactus_CactusJNI_nativeEmbed(JNIEnv* env, jobject, jlong handle,
                                        jstring text, jfloatArray embeddingsBuffer,

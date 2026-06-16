@@ -73,7 +73,7 @@ Check out the open-source engine and documentation on GitHub.
 
 ## See Also
 
-- [Cactus Engine API Reference](/docs/cactus_engine.md) — Full transcription API docs (`cactus_transcribe`)
+- [Cactus Engine API Reference](/docs/cactus_engine.md) — Transcription API: one-shot `cactus_transcribe` and streaming `cactus_stream_transcribe_*`
 - [Python Binding](/python/) — Python bindings
 - [Swift Binding](/bindings/swift/) — Swift API
 - [Kotlin Binding](/bindings/kotlin/) — Kotlin API

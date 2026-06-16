@@ -221,12 +221,15 @@ int cactus_stream_transcribe_process(cactus_stream_transcribe_t stream,
             return write_result(response_buffer, buffer_size, confirmed, "");
         }
 
+        if (hyp.size() < s->committed.size()) {
+            return write_result(response_buffer, buffer_size, "", "");
+        }
+
         const size_t hold = static_cast<size_t>(s->cfg.commit_holdback);
         const size_t commit_cap = hyp.size() > hold ? hyp.size() - hold : 0;
         size_t agreed = s->committed.size();
         const size_t limit = std::min({s->previous.size(), hyp.size(), commit_cap});
         while (agreed < limit && s->previous[agreed] == hyp[agreed]) ++agreed;
-        if (agreed > hyp.size()) agreed = hyp.size();
         const std::string confirmed = agreed > s->committed.size()
             ? join_words(hyp, s->committed.size(), agreed) : std::string();
         s->committed.assign(hyp.begin(), hyp.begin() + agreed);

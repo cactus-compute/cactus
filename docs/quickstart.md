@@ -167,6 +167,7 @@ Install Cactus and run your first on-device AI completion.
 ## Next Steps
 
 - **[Engine API](cactus_engine.md)** -- Full inference API reference
+- **[Speech Transcription](cactus_engine.md#cactus_transcribe)** -- Live & file transcription (`cactus transcribe`; one-shot + streaming)
 - **[Graph API](cactus_graph.md)** -- Zero-copy computation graph for custom models
 - **[Fine-tuning & Deployment](finetuning.md)** -- Convert and deploy custom fine-tunes
 - **[Choose Your Binding](choose-bindings.md)** -- Help picking the right binding for your project

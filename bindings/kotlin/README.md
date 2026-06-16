@@ -27,6 +27,18 @@ CactusJNI.nativeDestroy(handle)
 ```
 <!-- --8<-- [end:example] -->
 
+Streaming transcription — push 16 kHz mono PCM16, read `{"success":true,"confirmed":...,"pending":...}` back each call:
+
+```kotlin
+val stream = CactusJNI.nativeStreamTranscribeStart(handle, "{\"language\":\"en\"}")
+val out = ByteArray(65536)
+for (chunk in pcmChunks) { // each: 16 kHz mono PCM16 bytes
+    CactusJNI.nativeStreamTranscribeProcess(stream, chunk, out)
+    // parse confirmed/pending from String(out, 0, out.indexOf(0))
+}
+CactusJNI.nativeStreamTranscribeStop(stream, out)
+```
+
 ## Kotlin Multiplatform
 
 ```
@@ -64,5 +76,11 @@ kotlin {
 ```kotlin
 val model = cactusInit("/path/to/model", null, false)
 val result = cactusComplete(model, messagesJson, null, null, null, null)
+
+// streaming transcription: start, feed PCM16 chunks, stop
+val stream = cactusStreamTranscribeStart(model, "{\"language\":\"en\"}")
+val out = cactusStreamTranscribeProcess(stream, pcmChunk)   // {"success":true,"confirmed":...,"pending":...}
+val tail = cactusStreamTranscribeStop(stream)
+
 cactusDestroy(model)
 ```

@@ -32,8 +32,7 @@ cactus auth
 
 <!-- --8<-- [start:example] -->
 ```python
-from cactus import ensure_model
-from cactus import cactus_init, cactus_complete, cactus_destroy
+from cactus import ensure_model, cactus_init, cactus_complete, cactus_destroy
 import json
 
 # Downloads the pre-built bundle from HuggingFace if not already present
@@ -83,9 +82,9 @@ Returns a `dict` with `success`, `error`, `cloud_handoff`, `response`, optional 
 ```python
 result = cactus_complete(
     model: int,
-    messages_json: str,              # JSON array of {role, content}
-    options_json: str | None,        # optional inference options
-    tools_json: str | None,          # optional tool definitions
+    messages: list | str,            # list of {role, content} dicts or JSON string
+    options: dict | str | None,        # optional inference options
+    tools: list | str | None,        # optional tool definitions
     callback: Callable[[str, int], None] | None,  # streaming token callback
     pcm_data: list[int] | None = None              # optional raw audio bytes
 ) -> dict
@@ -96,7 +95,7 @@ result = cactus_complete(
 options = json.dumps({"max_tokens": 256, "temperature": 0.7})
 def on_token(token, token_id): print(token, end="", flush=True)
 
-result = cactus_complete(model, messages_json, options, None, on_token)
+result = cactus_complete(model, messages, options, None, on_token)
 if result["cloud_handoff"]:
     # response already contains cloud result
     pass
@@ -130,11 +129,11 @@ Pre-processes input text and populates the KV cache without generating output to
 ```python
 cactus_prefill(
     model: int,
-    messages_json: str,              # JSON array of {role, content}
-    options_json: str | None,        # optional inference options
-    tools_json: str | None,          # optional tool definitions
+    messages: list | str,            # list of {role, content} dicts or JSON string
+    options: dict | str | None,        # optional inference options
+    tools: list | str | None,        # optional tool definitions
     pcm_data: list[int] | None = None              # optional raw audio bytes
-) -> None
+) -> dict
 ```
 
 ```python
@@ -194,13 +193,13 @@ result = cactus_transcribe(
     model: int,
     audio_path: str | None,
     prompt: str | None,
-    options_json: str | None,
+    options: dict | str | None,
     callback: Callable[[str, int], None] | None,
     pcm_data: list[int] | bytes | None
 ) -> dict
 ```
 
-**Custom vocabulary** biases the decoder toward domain-specific words (supported for Whisper and Moonshine models). Pass `custom_vocabulary` and `vocabulary_boost` in `options_json`:
+**Custom vocabulary** biases the decoder toward domain-specific words (supported for Whisper and Moonshine models). Pass `custom_vocabulary` and `vocabulary_boost` in `options`:
 
 ```python
 options = json.dumps({
@@ -215,6 +214,27 @@ result = cactus_transcribe(model, "/path/to/audio.wav", None, None, None, None)
 print(result["response"])
 for seg in result["segments"]:
     print(f"[{seg['start']:.3f}s - {seg['end']:.3f}s] {seg['text']}")
+```
+
+### Streaming transcription
+
+Transcribe continuously while audio is still being captured (Whisper and Parakeet TDT). Open a session, push 16 kHz mono 16-bit PCM chunks, and read text back as it stabilizes: `confirmed` words are final (append them to your transcript), `pending` is the volatile tail (replace it each call, for live display only).
+
+```python
+stream = cactus_stream_transcribe_start(model: int, options: dict | str | None) -> int
+result = cactus_stream_transcribe_process(stream: int, pcm_data: bytes) -> dict  # {"success": True, "confirmed": str, "pending": str}
+result = cactus_stream_transcribe_stop(stream: int) -> dict                      # {"success": True, "confirmed": str}; destroys the session
+```
+
+`options` accepts the same keys as `cactus_transcribe` (e.g. `language`) plus segmentation tunables (`min_chunk_sec`, `silence_sec`, `max_segment_sec`, `vad_threshold`, `commit_holdback`).
+
+```python
+stream = cactus_stream_transcribe_start(model, {"language": "en"})
+transcript = ""
+for chunk in pcm_chunks:                       # each chunk: 16 kHz mono 16-bit PCM bytes
+    out = cactus_stream_transcribe_process(stream, chunk)
+    transcript += out["confirmed"]             # show out["pending"] separately as a live preview
+transcript += cactus_stream_transcribe_stop(stream)["confirmed"]
 ```
 
 ### Embeddings
@@ -256,7 +276,7 @@ cactus_index_add(index: int, ids: list[int], documents: list[str],
                  metadatas: list[str] | None, embeddings: list[list[float]])
 cactus_index_delete(index: int, ids: list[int])
 result = cactus_index_get(index: int, ids: list[int]) -> dict
-result = cactus_index_query(index: int, embedding: list[float], options_json: str | None) -> dict
+result = cactus_index_query(index: int, embedding: list[float], options: dict | str | None) -> dict
 cactus_index_compact(index: int)
 cactus_index_destroy(index: int)
 ```
@@ -279,7 +299,7 @@ cactus_telemetry_flush()
 cactus_telemetry_shutdown()
 ```
 
-Functions that return a value raise `RuntimeError` on failure. `cactus_prefill`, `cactus_index_add`, `cactus_index_delete`, and `cactus_index_compact` also raise `RuntimeError` on failure despite not returning a value. Truly void functions that never raise: `cactus_destroy`, `cactus_reset`, `cactus_stop`, `cactus_index_destroy`, logging and telemetry functions.
+Functions that return a value raise `RuntimeError` on failure. `cactus_index_add`, `cactus_index_delete`, and `cactus_index_compact` also raise `RuntimeError` on failure despite not returning a value. Truly void functions that never raise: `cactus_destroy`, `cactus_reset`, `cactus_stop`, `cactus_index_destroy`, logging and telemetry functions.
 
 ## Vision (VLM)
 
@@ -335,7 +355,7 @@ g.set_input(a, np.array([[2, 4], [6, 8]], dtype=np.float16))
 g.set_input(b, np.array([[1, 2], [3, 4]], dtype=np.float16))
 g.execute()
 
-print(y.numpy())  # [9. 36. 81. 144.]
+print(y.numpy())  # [9. 144. 729. 2304.]
 ```
 
 Supported ops: `+`, `-`, `*`, `/`, `abs`, `pow`, `view`, `flatten`, `concat`, `cat`, `relu`, `sigmoid`, `tanh`, `gelu`, `softmax`.

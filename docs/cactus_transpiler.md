@@ -52,7 +52,8 @@ cactus convert ./classifier.pt ./classifier-cactus --bits 4
 
 ```bash
 # Transpile: captures the graph, optimizes, and saves a bundle
-cactus transpile ./classifier.pt --weights-dir ./classifier-cactus
+cactus transpile ./classifier.pt \
+    --weights-dir ./classifier-cactus --artifact-dir ./classifier-cactus
 
 # Run the transpiled bundle
 cactus run ./classifier-cactus
@@ -121,6 +122,7 @@ the model in a thin adapter that exposes a stable, task-specific interface:
 | `multimodal_causal_lm_logits` | `input_ids`, image/audio features | next-token logits |
 | `encoder_hidden_states` | `input_features` | hidden states |
 | `ctc_logits` | `input_features` | CTC logits |
+| `seq2seq_transcription` | `input_features` | transcription token IDs |
 | `tdt_transcription` | `input_features` | TDT token IDs |
 
 This is where model-family-specific knowledge lives (Gemma4, Qwen, LFM2, Parakeet, etc.).
@@ -195,7 +197,8 @@ The most common use case is transpiling a model from HuggingFace:
 cactus convert google/gemma-4-E2B-it ./gemma4-weights --bits 4
 
 # 2. Transpile
-cactus transpile google/gemma-4-E2B-it --weights-dir ./gemma4-weights
+cactus transpile google/gemma-4-E2B-it \
+    --weights-dir ./gemma4-weights --artifact-dir ./gemma4-weights
 
 # 3. Run
 cactus run ./gemma4-weights --prompt "Hello!"

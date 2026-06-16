@@ -6,7 +6,7 @@ keywords: ["fine-tuning", "LoRA", "Unsloth", "mobile deployment", "on-device AI"
 
 # Deploying Unsloth Fine-Tunes to Cactus for Phones
 
-- Cactus is an inference engine for mobile devices, macs and ARM chips like Raspberry Pi.
+- Cactus is an inference engine for mobile devices, Macs, and ARM chips like Raspberry Pi.
 - At INT8, Cactus runs `Qwen3-0.6B` and `LFM2-1.2B` at `60-70 toks/sec` on iPhone 17 Pro, `13-18 toks/sec` on budget Pixel 6a.
 - INT4 quantization provides ~50% memory reduction with minimal quality loss.
 - Task-Specific INT8 tunes of `Gemma3-270m` hit `150 toks/sec` on iPhone 17 Pro and `23 toks/sec` on Raspberry Pi 5. 
@@ -87,7 +87,7 @@ Build the native library:
 ```bash
 cactus build --apple
 ```
-```bash
+```
 Build complete!
 Total time: 58 seconds
 Static libraries:
@@ -127,7 +127,7 @@ cactus_destroy(model)
 
 You can now build iOS apps using the following code, 
 but to see performance on any device while testing,
-run cactus tests by plugging any iphone to your Mac then running:
+run cactus tests by plugging any iPhone to your Mac then running:
 
 ```bash
 cactus test --model <model-path-or-name> --transcription-model <model-path-or-name> --ios
@@ -135,7 +135,7 @@ cactus test --model <model-path-or-name> --transcription-model <model-path-or-na
 
 Cactus demo apps will eventually expand to using your custom fine-tunes.
 Also, `cactus run` will allow plugging in a phone,
-such that the interactive session use the phone chips,
+such that the interactive session uses the phone chips,
 this way you can test before fully building out your apps.
 
 ### 6. Use in Android App
@@ -145,7 +145,7 @@ Build the native library:
 ```bash
 cactus build --android
 ```
-```bash
+```
 Build complete!
 Shared library location: <repo>/android/libcactus_engine.so
 Static library location: <repo>/android/libcactus_engine.a
@@ -175,7 +175,7 @@ cactusDestroy(model)
 
 You can now build Android apps using the following code, 
 but to see performance on any device while testing,
-run cactus tests by plugging any android phone to your Mac then running:
+run cactus tests by plugging any Android phone to your Mac then running:
 
 ```bash
 cactus test --model <model-path-or-name> --transcription-model <model-path-or-name> --android
@@ -183,7 +183,7 @@ cactus test --model <model-path-or-name> --transcription-model <model-path-or-na
 
 Cactus demo apps will eventually expand to using your custom fine-tunes.
 Also, `cactus run` will allow plugging in a phone,
-such that the interactive session use the phone chips,
+such that the interactive session uses the phone chips,
 this way you can test before fully building out your apps.
 
 ## Resources

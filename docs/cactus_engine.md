@@ -245,7 +245,7 @@ The `thinking` field is only present in the JSON when the model produced a chain
 }
 ```
 
-When `cloud_handoff` is true, the model's confidence dropped below `confidence_threshold` (default: 0.7) and the response was fulfilled by a cloud-based model. The `response` field contains the cloud-provided answer.
+When `cloud_handoff` is true, the model's confidence dropped below the resolved `confidence_threshold` (see the request options above) and the response was fulfilled by a cloud-based model. The `response` field contains the cloud-provided answer.
 
 **Error Response:**
 ```json
@@ -255,7 +255,7 @@ When `cloud_handoff` is true, the model's confidence dropped below `confidence_t
     "cloud_handoff": false,
     "response": null,
     "function_calls": [],
-    "confidence": 0.0,
+    "confidence": null,
     "time_to_first_token_ms": 0.0,
     "total_time_ms": 0.0,
     "prefill_tps": 0.0,
@@ -627,7 +627,7 @@ Segmentation is automatic with sensible defaults; `options_json` (optional) over
 | `silence_sec` | float | 0.7 | Trailing silence that finalizes a segment. |
 | `max_segment_sec` | float | 24.0 | Hard cap on segment length, keeping each segment under Whisper's 30s window. |
 | `vad_threshold` | float | 0.0025 | Normalized RMS below which audio counts as silence (lower for quiet mics). |
-| `commit_holdback` | int | 4 | Words held back from commit until later audio confirms them. |
+| `commit_holdback` | float | 4 | Words held back from commit until later audio confirms them. |
 
 #### `cactus_stream_transcribe_process`
 Feeds the next slice of audio. Input is 16-bit signed PCM, **16 kHz, mono** — the same format as `cactus_transcribe`'s `pcm_buffer`. Feed reasonably small chunks (≈ 0.1–2 s) for low latency.
@@ -664,20 +664,18 @@ cactus_model_t whisper = cactus_init("../../weights/whisper-base", NULL, false);
 cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(whisper, NULL);
 
 char response[16384];
-std::string transcript;
 
 // Push audio as it is captured (here, 0.5s chunks of 16kHz mono PCM16).
 for (each chunk) {
     int rc = cactus_stream_transcribe_process(
         stream, chunk_pcm, chunk_bytes, response, sizeof(response));
     if (rc < 0) break;
-    // Parse "confirmed" and append it; show "confirmed-so-far + pending" live.
-    transcript += parse_confirmed(response);
+    // Parse "confirmed" from response and append it to your transcript;
+    // show "confirmed-so-far + pending" live.
 }
 
-// Flush the tail.
+// Flush the tail; its "confirmed" holds the final words.
 cactus_stream_transcribe_stop(stream, response, sizeof(response));
-transcript += parse_confirmed(response);
 ```
 
 The `transcribe` CLI uses this streaming path for **live microphone** transcription (no file; a colored UI with running captions, press Enter to stop). With a **file** it does a one-shot transcription (long files are windowed internally, so there is no 30s limit):
@@ -1153,7 +1151,7 @@ int main() {
 ### Tool Calling
 ```c
 const char* tools =
-    "[{\"function\": {"
+    "[{\"type\": \"function\", \"function\": {"
     "    \"name\": \"get_weather\","
     "    \"description\": \"Get weather for a location\","
     "    \"parameters\": {"

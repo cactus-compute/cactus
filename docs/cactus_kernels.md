@@ -27,12 +27,12 @@ enum class Precision {
 ## Element-wise Arithmetic
 
 ```cpp
-void cactus_add_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t n);
-void cactus_subtract_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t n);
-void cactus_multiply_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t n);
-void cactus_divide_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t n);
-void cactus_add_f16_clipped(const __fp16* a, const __fp16* b, __fp16* output, size_t n);
-void cactus_add_scaled_f16(const __fp16* base, const __fp16* src, __fp16* output, size_t n, float scale);
+void cactus_add_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements);
+void cactus_subtract_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements);
+void cactus_multiply_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements);
+void cactus_divide_f16(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements);
+void cactus_add_f16_clipped(const __fp16* a, const __fp16* b, __fp16* output, size_t num_elements);
+void cactus_add_scaled_f16(const __fp16* base, const __fp16* src, __fp16* output, size_t num_elements, float scale);
 ```
 
 ### Broadcast Variants
@@ -53,7 +53,7 @@ void cactus_add_broadcast_f16(
 enum class ScalarOpType { ADD, SUBTRACT, MULTIPLY, DIVIDE, ABS, EXP, POW, SQRT, COS, SIN, LOG };
 
 void cactus_scalar_op_f16(
-    const __fp16* input, __fp16* output, size_t n,
+    const __fp16* input, __fp16* output, size_t num_elements,
     float scalar_value, ScalarOpType op_type);
 ```
 
@@ -61,11 +61,11 @@ void cactus_scalar_op_f16(
 
 ```cpp
 // Full reductions (all elements)
-double cactus_sum_all_f16(const __fp16* data, size_t n);
-double cactus_mean_all_f16(const __fp16* data, size_t n);
-double cactus_variance_all_f16(const __fp16* data, size_t n);
-__fp16 cactus_min_all_f16(const __fp16* data, size_t n);
-__fp16 cactus_max_all_f16(const __fp16* data, size_t n);
+double cactus_sum_all_f16(const __fp16* data, size_t num_elements);
+double cactus_mean_all_f16(const __fp16* data, size_t num_elements);
+double cactus_variance_all_f16(const __fp16* data, size_t num_elements);
+__fp16 cactus_min_all_f16(const __fp16* data, size_t num_elements);
+__fp16 cactus_max_all_f16(const __fp16* data, size_t num_elements);
 
 // Axis reductions
 void cactus_sum_axis_f16(const __fp16* input, __fp16* output,
@@ -91,20 +91,22 @@ CQ quantization uses Hadamard rotation + per-group codebooks for 1-4 bit weight 
 
 ```cpp
 struct CactusQuantMatrix {
-    uint32_t bits;           // 1, 2, 3, or 4
-    uint32_t K, N;           // matrix dimensions
-    uint32_t group_size;     // elements per codebook group
+    uint32_t bits;                  // 1, 2, 3, or 4
+    uint32_t K, N;                  // matrix dimensions
+    uint32_t group_size;            // elements per codebook group
     uint32_t num_groups;
-    uint32_t flags;          // ORTHOGONAL, INTERLEAVED_4ROW
+    uint32_t flags;                 // ORTHOGONAL, INTERLEAVED_4ROW
     const __fp16* codebook;
     const __fp16* input_scale;
+    const __fp16* input_scale_recip;
     const __fp16* norms;
     const uint8_t* packed_indices;
     const int8_t* left_signs;
     const int8_t* right_signs;
     const uint32_t* permutation;
     const __fp16* rotation;
-    // ...
+    const int8_t* expanded;
+    const float* norm_f32;
 };
 
 // Unified dispatch (picks gemv or gemm based on M)
@@ -231,14 +233,14 @@ void cactus_gpt_j_rope_f16(
 ## Activation Functions
 
 ```cpp
-void cactus_relu_f16(const __fp16* input, __fp16* output, size_t n);
-void cactus_leaky_relu_f16(const __fp16* input, __fp16* output, size_t n, float negative_slope);
-void cactus_clamp_f16(const __fp16* input, __fp16* output, size_t n, float lo, float hi);
-void cactus_silu_f16(const __fp16* input, __fp16* output, size_t n);
-void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t n);
-void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t n);
-void cactus_sigmoid_f16(const __fp16* input, __fp16* output, size_t n);
-void cactus_tanh_f16(const __fp16* input, __fp16* output, size_t n);
+void cactus_relu_f16(const __fp16* input, __fp16* output, size_t num_elements);
+void cactus_leaky_relu_f16(const __fp16* input, __fp16* output, size_t num_elements, float negative_slope);
+void cactus_clamp_f16(const __fp16* input, __fp16* output, size_t num_elements, float lo, float hi);
+void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements);
+void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t num_elements);
+void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t num_elements);
+void cactus_sigmoid_f16(const __fp16* input, __fp16* output, size_t num_elements);
+void cactus_tanh_f16(const __fp16* input, __fp16* output, size_t num_elements);
 
 void cactus_glu_f16(const __fp16* input, __fp16* output,
     size_t outer_size, size_t split_size, size_t inner_size);
@@ -278,7 +280,7 @@ void cactus_conv2d_f16_k3s1p1_nchw(...);             // 3x3 stride-1 pad-1
 
 ```cpp
 void cactus_lstm_cell_f16(
-    const __fp16* x, const __fp16* h_prev, const __fp16* c_prev,
+    const __fp16* x_input, const __fp16* h_prev, const __fp16* c_prev,
     const __fp16* weight_ih, const __fp16* weight_hh,
     const __fp16* bias_ih, const __fp16* bias_hh,
     __fp16* h_new, __fp16* c_new,
@@ -286,20 +288,20 @@ void cactus_lstm_cell_f16(
 
 void cactus_bilstm_sequence_f16(
     const __fp16* input,
-    const __fp16* w_ih_fwd, const __fp16* w_hh_fwd, const __fp16* b_ih_fwd, const __fp16* b_hh_fwd,
-    const __fp16* w_ih_bwd, const __fp16* w_hh_bwd, const __fp16* b_ih_bwd, const __fp16* b_hh_bwd,
+    const __fp16* weight_ih_fwd, const __fp16* weight_hh_fwd, const __fp16* bias_ih_fwd, const __fp16* bias_hh_fwd,
+    const __fp16* weight_ih_bwd, const __fp16* weight_hh_bwd, const __fp16* bias_ih_bwd, const __fp16* bias_hh_bwd,
     __fp16* output, size_t batch_size, size_t seq_len, size_t input_size, size_t hidden_size);
 
 void cactus_gated_deltanet_decode_f16(
-    const __fp16* q, const __fp16* k, const __fp16* v,
-    const __fp16* gate, const __fp16* beta, const __fp16* state,
+    const __fp16* q_data, const __fp16* k_data, const __fp16* v_data,
+    const __fp16* g_data, const __fp16* b_data, const __fp16* s_data,
     __fp16* out, size_t B, size_t Hq, size_t Hv, size_t K, size_t V, float scale);
 
 void cactus_gated_deltanet_prefill_f16(
-    const __fp16* q, const __fp16* k, const __fp16* v,
-    const __fp16* gate, const __fp16* beta, const __fp16* state,
+    const __fp16* q_data, const __fp16* k_data, const __fp16* v_data,
+    const __fp16* g_data, const __fp16* b_data, const __fp16* s_data,
     __fp16* out, size_t B, size_t T, size_t Hq, size_t Hv,
-    size_t K, size_t V, size_t chunk_size, float scale);
+    size_t K, size_t V, size_t requested_chunk_size, float scale);
 ```
 
 ## Sampling

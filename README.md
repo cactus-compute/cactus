@@ -191,7 +191,7 @@ graph.hard_reset();
 │    --status                          show key status                           │
 │    --clear                           remove saved key                          │
 │                                                                                │
-│  cactus run <model|path>             run a model (downloads if needed)         │
+│  cactus run [model|path]             run a model (downloads if needed)         │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --platform cpu|apple              target accelerator (default: cpu)         │
 │    --image <path>                    image file for VLM inference              │
@@ -208,7 +208,7 @@ graph.hard_reset();
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force reconversion from source            │
 │                                                                                │
-│  cactus download <model>             download a pre-built bundle               │
+│  cactus download [model]             download a pre-built bundle               │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --platform cpu|apple              target accelerator (default: cpu)         │
 │    --token <token>                   HuggingFace token                         │
@@ -248,7 +248,7 @@ graph.hard_reset();
 │    --android                         run on connected Android                  │
 │    --enable-telemetry                send cloud telemetry (off by default)     │
 │                                                                                │
-│  cactus clean                        delete build artifacts                    │
+│  cactus clean                        delete build artifacts, weights, venv     │
 │  cactus --help                       show this help                            │
 │                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘

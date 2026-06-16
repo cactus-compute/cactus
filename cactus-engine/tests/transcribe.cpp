@@ -85,7 +85,7 @@ static std::string build_options(const std::string& language) {
 }
 
 static std::vector<float> resample_to_16k(const std::vector<float>& in, int sr_in) {
-    if (sr_in == kSampleRate || in.empty()) return in;
+    if (sr_in <= 0 || sr_in == kSampleRate || in.empty()) return in;
     const double ratio = (double)kSampleRate / sr_in;
     const size_t in_len = in.size();
     const size_t out_len = (size_t)(in_len * ratio);
@@ -152,8 +152,8 @@ static bool read_wav_16k_mono(const std::string& path, std::vector<int16_t>& out
         uint32_t size;
         if (!rd_u32(size)) break;
         if (std::strncmp(tag, "fmt ", 4) == 0) {
-            uint16_t align, bps, ch;
-            uint32_t sr, br;
+            uint16_t align = 0, bps = 16, ch = 1;
+            uint32_t sr = kSampleRate, br = 0;
             rd_u16(format); rd_u16(ch); rd_u32(sr); rd_u32(br); rd_u16(align); rd_u16(bps);
             channels = ch ? ch : 1;
             rate = sr;
@@ -161,7 +161,7 @@ static bool read_wav_16k_mono(const std::string& path, std::vector<int16_t>& out
             have_fmt = true;
             if (size > 16) fseek(f, (long)size - 16, SEEK_CUR);
         } else if (std::strncmp(tag, "data", 4) == 0) {
-            if (!have_fmt || format != 1 || bits != 16) { fclose(f); return false; }
+            if (!have_fmt || format != 1 || bits != 16 || channels > 8) { fclose(f); return false; }
             size_t frames = size / (2u * channels);
             std::vector<int16_t> raw(size / 2);
             if (fread(raw.data(), 2, raw.size(), f) != raw.size()) { fclose(f); return false; }
@@ -203,8 +203,8 @@ struct AudioState {
 AudioState g_audio;
 
 void audio_callback(void*, Uint8* stream, int len) {
-    if (!g_audio.recording) return;
     std::lock_guard<std::mutex> lock(g_audio.mutex);
+    if (!g_audio.recording) return;
     g_audio.buffer.insert(g_audio.buffer.end(), stream, stream + len);
 }
 
@@ -224,6 +224,12 @@ size_t terminal_width() {
     struct winsize w;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1 || w.ws_col < 20) return 80;
     return w.ws_col;
+}
+
+size_t utf8_safe_len(const std::string& s, size_t n) {
+    if (n >= s.size()) return s.size();
+    while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
+    return n;
 }
 
 void print_header() {
@@ -307,13 +313,14 @@ static int run_live(cactus_model_t model, const std::string& language) {
         std::cout << "\r\033[2K";
         while (display_line.size() >= width) {
             size_t cut = display_line.rfind(' ', width);
-            if (cut == std::string::npos || cut == 0) cut = width;
+            if (cut == std::string::npos || cut == 0) cut = utf8_safe_len(display_line, width);
+            if (cut == 0) cut = width;
             std::cout << colored(display_line.substr(0, cut), Color::GREEN) << "\n";
             display_line.erase(0, (cut < display_line.size() && display_line[cut] == ' ') ? cut + 1 : cut);
         }
         std::cout << colored(display_line, Color::GREEN);
         if (!pending.empty() && display_line.size() + 1 < width)
-            std::cout << colored(pending.substr(0, width - display_line.size() - 1), Color::DIM);
+            std::cout << colored(pending.substr(0, utf8_safe_len(pending, width - display_line.size() - 1)), Color::DIM);
         std::cout << std::flush;
     };
 
