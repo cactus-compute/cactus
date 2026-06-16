@@ -1881,14 +1881,15 @@ Example response from Gemma3-270m
 <li>LLM: Gemma-4-E2B-CQ4 (CPU, no speculative decode), 1k-prefill tps / 100-decode tps</li>
 <li>VLM: Gemma-4-E2B-CQ4 (NPU prefill, CPU decode), 256px input, latency / decode tps</li>
 <li>Transcribe: Parakeet-TDT-0.6B-CQ4 (NPU prefill, CPU decode), 20s audio, latency / decode tps</li>
+<li>Missing latency == no NPU support for device</li>
 </ul>
 <table>
 <thead>
 <tr>
 <th>Device</th>
-<th>Gemma4 Text</th>
-<th>Gemma4 Vision</th>
-<th>Parakeet 1.1B</th>
+<th>LLM</th>
+<th>VLM</th>
+<th>Transcribe</th>
 <th>RAM</th>
 </tr>
 </thead>
@@ -1897,7 +1898,7 @@ Example response from Gemma3-270m
 <td>Mac M4 Pro</td>
 <td>324 / 39</td>
 <td>1.2s / 48</td>
-<td>0.2s (NPU)</td>
+<td>0.2s / 10.6M</td>
 <td>1385 MB</td>
 </tr>
 <tr>
@@ -1924,9 +1925,16 @@ Example response from Gemma3-270m
 <tr>
 <td>Galaxy S26</td>
 <td>248 / 21</td>
-<td>17s / 16</td>
-<td>4.2s</td>
-<td>4024 MB</td>
+<td>- / 16</td>
+<td>- / 5.7M</td>
+<td>-</td>
+</tr>
+<tr>
+<td>Galaxy A17 5G</td>
+<td>-</td>
+<td>-</td>
+<td>-</td>
+<td>-</td>
 </tr>
 <tr>
 <td>Pixel 10 Pro</td>
@@ -1937,13 +1945,6 @@ Example response from Gemma3-270m
 </tr>
 <tr>
 <td>Pixel 6a</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>Galaxy A17 5G</td>
 <td>-</td>
 <td>-</td>
 <td>-</td>
