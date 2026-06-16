@@ -26,6 +26,8 @@ def _plan_from_profile(
 ) -> ComponentPlan | None:
     if profile.default_task is None or not profile.default_components:
         return None
+    has_vision: bool | None = None
+    has_audio: bool | None = None
     if config is not None and profile.needs_image:
         has_vision = _has_dict_config(config, "vision_config", "visual_config", "image_config")
         if not has_vision:
@@ -42,12 +44,19 @@ def _plan_from_profile(
                 components=("decoder", "decoder_step"),
                 force_component_pipeline=True,
             )
+    if config is not None and profile.needs_audio:
+        has_audio = _has_dict_config(config, "audio_config", "speech_config", "acoustic_config")
+    components = profile.default_components
+    needs_audio = profile.needs_audio
+    if profile.needs_image and profile.needs_audio and has_vision and has_audio is False:
+        components = tuple(component for component in components if component != "audio_encoder")
+        needs_audio = False
     return ComponentPlan(
         task=profile.default_task,
-        components=profile.default_components,
+        components=components,
         default_max_new_tokens=profile.default_max_new_tokens,
         needs_image=profile.needs_image,
-        needs_audio=profile.needs_audio,
+        needs_audio=needs_audio,
         force_component_pipeline=profile.force_component_pipeline,
     )
 

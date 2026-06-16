@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 import numpy as np
@@ -16,6 +17,7 @@ from ..cactus_adapters.config_utils import (
     extract_audio_config,
     extract_base_config,
     extract_complex_gemma_config,
+    extract_lfm2_config,
     extract_parakeet_config,
     extract_parakeet_tdt_config,
     extract_vision_config,
@@ -136,6 +138,36 @@ class Gemma4Adapter(FamilyAdapter):
         super().__init__()
         self.kv_shared_from_layer = 15
 
+    def normalize_state_dict(self, state_dict: dict[str, Any]) -> NormalizedState:
+        out = dict(state_dict)
+        provenance: dict[str, TensorProvenance] = {}
+        down_pattern = re.compile(
+            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.moe\.down_proj"
+        )
+        for source_name, tensor in list(state_dict.items()):
+            if down_pattern.fullmatch(source_name) is None:
+                continue
+            scale_name = source_name[: -len(".down_proj")] + ".per_expert_scale"
+            scale = state_dict.get(scale_name)
+            if scale is None:
+                continue
+            shape = _tensor_shape(tensor)
+            scale_shape = _tensor_shape(scale)
+            if len(shape) != 3 or len(scale_shape) != 1 or int(shape[0]) != int(scale_shape[0]):
+                continue
+            if torch is not None and isinstance(tensor, torch.Tensor):
+                scale_tensor = scale if isinstance(scale, torch.Tensor) else torch.as_tensor(scale)
+                scale_value = scale_tensor.to(device=tensor.device, dtype=tensor.dtype).reshape(-1, 1, 1)
+                out[source_name] = (tensor * scale_value).contiguous()
+            else:
+                out[source_name] = (np.asarray(tensor) * np.asarray(scale).reshape(-1, 1, 1)).copy()
+            provenance[source_name] = TensorProvenance(
+                [source_name, scale_name],
+                "gemma4_moe_down_proj_per_expert_scale",
+                "hf_key",
+            )
+        return NormalizedState(out, provenance)
+
     def runtime_config(self, cfg: Any) -> dict[str, Any]:
         text_cfg = _cfg_get(cfg, "text_config", None)
         base_cfg = text_cfg if text_cfg is not None else cfg
@@ -167,10 +199,20 @@ class Gemma4Adapter(FamilyAdapter):
         return gemma4_scale_factor(output_name)
 
     def policy(self, match: NameMatch, shape: tuple[int, ...], requested_bits: int) -> TensorPolicy:
+        if match.output_name and (
+            "moe_router" in match.output_name
+            or "moe_expert_bias" in match.output_name
+            or "moe_per_expert_scale" in match.output_name
+            or match.source_name.endswith(".router.proj.weight")
+            or match.source_name.endswith(".router.scale")
+        ):
+            return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "moe routing tensor")
         policy = super().policy(match, shape, requested_bits)
         name = match.source_name
         if name == "model.embed_vision.embedding_projection.weight":
             return policy
+        if match.output_name and "moe_expert_" in match.output_name:
+            return replace(policy, use_gptq=False)
         if ".self_attn." in name and (name.endswith(".k_proj.weight") or name.endswith(".v_proj.weight")):
             parts = name.split(".")
             try:
@@ -180,6 +222,91 @@ class Gemma4Adapter(FamilyAdapter):
             if layer is not None and layer >= self.kv_shared_from_layer:
                 return replace(policy, use_gptq=False, fallback_reason=policy.fallback_reason or "shared KV tensor has no per-layer hook module")
         return policy
+
+    def module_target_name(self, source_name: str, _model: Any) -> str | None:
+        if ".moe.gate_up_proj" in source_name or ".moe.down_proj" in source_name:
+            return None
+        return super().module_target_name(source_name, _model)
+
+    def name_tensor(self, source_name: str, tensor: Any, num_layers: int | None) -> NameMatch:
+        match = re.fullmatch(
+            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.moe\.(gate_up_proj|down_proj)",
+            source_name,
+        )
+        if match is not None:
+            layer_index = int(match.group(1))
+            kind = match.group(2)
+            if kind == "gate_up_proj":
+                output_name = f"layer_{layer_index}_moe_expert_{{channel}}_gate_up.weights"
+            else:
+                output_name = f"layer_{layer_index}_moe_expert_{{channel}}_w2.weights"
+            return NameMatch(source_name, output_name, "language", True, hf_name=source_name, adapter_name=source_name)
+        return super().name_tensor(source_name, tensor, num_layers)
+
+    def expand_tensor(self, match: NameMatch, tensor: Any) -> list[TensorEmission]:
+        if match.output_name is None:
+            return []
+        source_match = re.fullmatch(
+            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.moe\.(gate_up_proj|down_proj)",
+            match.source_name,
+        )
+        if source_match is None:
+            return super().expand_tensor(match, tensor)
+
+        layer_index = int(source_match.group(1))
+        kind = source_match.group(2)
+        shape = _tensor_shape(tensor)
+        if len(shape) != 3:
+            raise ValueError(f"Gemma4-MoE expert tensor expects rank 3, got {shape}")
+        num_experts = int(shape[0])
+        emissions: list[TensorEmission] = []
+
+        def _piece(value, expert_idx: int, start: int | None = None, end: int | None = None):
+            if torch is not None and isinstance(value, torch.Tensor):
+                selected = value[expert_idx] if start is None else value[expert_idx, start:end, :]
+                return selected.contiguous()
+            array = np.asarray(value)
+            selected = array[expert_idx] if start is None else array[expert_idx, start:end, :]
+            return selected.copy()
+
+        def _source_names(weight_name: str, expert_idx: int) -> list[str]:
+            return [
+                f"model.language_model.layers.{layer_index}.moe.{weight_name}.{expert_idx}",
+                f"model.layers.{layer_index}.moe.{weight_name}.{expert_idx}",
+                f"layers.{layer_index}.moe.{weight_name}.{expert_idx}",
+                f"backbone.layers.{layer_index}.moe.{weight_name}.{expert_idx}",
+            ]
+
+        if kind == "gate_up_proj":
+            if int(shape[1]) % 2 != 0:
+                raise ValueError(f"Gemma4-MoE gate_up_proj second dim must be even, got {shape}")
+            intermediate = int(shape[1]) // 2
+            for expert_idx in range(num_experts):
+                emissions.append(TensorEmission(
+                    f"layer_{layer_index}_moe_expert_{expert_idx}_w1.weights",
+                    _piece(tensor, expert_idx, 0, intermediate),
+                    "gemma4_moe_gate_up_split_gate",
+                    source_names=_source_names("w1_weights", expert_idx),
+                    qdq_restore="runtime_key",
+                ))
+                emissions.append(TensorEmission(
+                    f"layer_{layer_index}_moe_expert_{expert_idx}_w3.weights",
+                    _piece(tensor, expert_idx, intermediate, int(shape[1])),
+                    "gemma4_moe_gate_up_split_up",
+                    source_names=_source_names("w3_weights", expert_idx),
+                    qdq_restore="runtime_key",
+                ))
+            return emissions
+
+        for expert_idx in range(num_experts):
+            emissions.append(TensorEmission(
+                f"layer_{layer_index}_moe_expert_{expert_idx}_w2.weights",
+                _piece(tensor, expert_idx),
+                "gemma4_moe_down_proj_split_scaled",
+                source_names=_source_names("w2_weights", expert_idx),
+                qdq_restore="runtime_key",
+            ))
+        return emissions
 
     def module_target_name(self, source_name: str, _model: Any) -> str | None:
         target = super().module_target_name(source_name, _model)
@@ -196,6 +323,20 @@ class Gemma4Adapter(FamilyAdapter):
 class QwenAdapter(FamilyAdapter):
     family = "qwen"
 
+    def runtime_config(self, cfg: Any) -> dict[str, Any]:
+        config = super().runtime_config(cfg)
+        model_type = str(_cfg_get(cfg, "model_type", "") or "").lower()
+        if model_type == "qwen2_moe" or _cfg_get(cfg, "moe_intermediate_size", None) is not None:
+            config.update({
+                "moe_intermediate_size": int(_cfg_get(cfg, "moe_intermediate_size", 0) or 0),
+                "shared_expert_intermediate_size": int(_cfg_get(cfg, "shared_expert_intermediate_size", 0) or 0),
+                "decoder_sparse_step": int(_cfg_get(cfg, "decoder_sparse_step", 0) or 0),
+                "num_experts": int(_cfg_get(cfg, "num_experts", config.get("num_experts", 0)) or 0),
+                "num_experts_per_tok": int(_cfg_get(cfg, "num_experts_per_tok", config.get("num_experts_per_tok", 0)) or 0),
+                "norm_topk_prob": bool(_cfg_get(cfg, "norm_topk_prob", False)),
+            })
+        return config
+
     def model_class(self, cfg: Any):
         from transformers import AutoModel, AutoModelForCausalLM
 
@@ -209,6 +350,115 @@ class QwenAdapter(FamilyAdapter):
             except Exception:
                 return AutoModel
         return AutoModelForCausalLM
+
+    def policy(self, match: NameMatch, shape: tuple[int, ...], requested_bits: int) -> TensorPolicy:
+        if match.output_name and (
+            "moe_router" in match.output_name
+            or "moe_expert_" in match.output_name
+            or "shared_expert_gate" in match.output_name
+        ):
+            return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "moe routing/expert tensor")
+        return super().policy(match, shape, requested_bits)
+
+    def module_target_name(self, source_name: str, _model: Any) -> str | None:
+        if ".mlp.experts.gate_up_proj" in source_name or ".mlp.experts.down_proj" in source_name:
+            return None
+        return super().module_target_name(source_name, _model)
+
+    def name_tensor(self, source_name: str, tensor: Any, num_layers: int | None) -> NameMatch:
+        match = re.fullmatch(
+            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.mlp\.experts\.(gate_up_proj|down_proj)",
+            source_name,
+        )
+        if match is not None:
+            layer_index = int(match.group(1))
+            kind = match.group(2)
+            if kind == "gate_up_proj":
+                output_name = f"layer_{layer_index}_moe_expert_{{channel}}_gate_up.weights"
+            else:
+                output_name = f"layer_{layer_index}_moe_expert_{{channel}}_w2.weights"
+            return NameMatch(source_name, output_name, "language", True, hf_name=source_name, adapter_name=source_name)
+
+        router_match = re.fullmatch(
+            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.mlp\.gate\.weight",
+            source_name,
+        )
+        if router_match is not None:
+            layer_index = int(router_match.group(1))
+            return NameMatch(
+                source_name,
+                f"layer_{layer_index}_moe_router.weights",
+                "language",
+                True,
+                hf_name=source_name,
+                adapter_name=source_name,
+            )
+
+        return super().name_tensor(source_name, tensor, num_layers)
+
+    def expand_tensor(self, match: NameMatch, tensor: Any) -> list[TensorEmission]:
+        if match.output_name is None:
+            return []
+        source_match = re.fullmatch(
+            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.mlp\.experts\.(gate_up_proj|down_proj)",
+            match.source_name,
+        )
+        if source_match is None:
+            return super().expand_tensor(match, tensor)
+
+        layer_index = int(source_match.group(1))
+        kind = source_match.group(2)
+        shape = _tensor_shape(tensor)
+        if len(shape) != 3:
+            raise ValueError(f"Qwen2-MoE expert tensor expects rank 3, got {shape}")
+        num_experts = int(shape[0])
+        emissions: list[TensorEmission] = []
+
+        def _piece(value, expert_idx: int, start: int | None = None, end: int | None = None):
+            if torch is not None and isinstance(value, torch.Tensor):
+                selected = value[expert_idx] if start is None else value[expert_idx, start:end, :]
+                return selected.contiguous()
+            array = np.asarray(value)
+            selected = array[expert_idx] if start is None else array[expert_idx, start:end, :]
+            return selected.copy()
+
+        def _source_names(weight_name: str, expert_idx: int) -> list[str]:
+            return [
+                f"model.layers.{layer_index}.mlp.{weight_name}.{expert_idx}",
+                f"layers.{layer_index}.mlp.{weight_name}.{expert_idx}",
+                f"backbone.layers.{layer_index}.mlp.{weight_name}.{expert_idx}",
+            ]
+
+        if kind == "gate_up_proj":
+            if int(shape[1]) % 2 != 0:
+                raise ValueError(f"Qwen2-MoE gate_up_proj second dim must be even, got {shape}")
+            intermediate = int(shape[1]) // 2
+            for expert_idx in range(num_experts):
+                emissions.append(TensorEmission(
+                    f"layer_{layer_index}_moe_expert_{expert_idx}_w1.weights",
+                    _piece(tensor, expert_idx, 0, intermediate),
+                    "qwen2_moe_gate_up_split_gate",
+                    source_names=_source_names("w1_weights", expert_idx),
+                    qdq_restore="runtime_key",
+                ))
+                emissions.append(TensorEmission(
+                    f"layer_{layer_index}_moe_expert_{expert_idx}_w3.weights",
+                    _piece(tensor, expert_idx, intermediate, int(shape[1])),
+                    "qwen2_moe_gate_up_split_up",
+                    source_names=_source_names("w3_weights", expert_idx),
+                    qdq_restore="runtime_key",
+                ))
+            return emissions
+
+        for expert_idx in range(num_experts):
+            emissions.append(TensorEmission(
+                f"layer_{layer_index}_moe_expert_{expert_idx}_w2.weights",
+                _piece(tensor, expert_idx),
+                "qwen2_moe_down_proj_split",
+                source_names=_source_names("w2_weights", expert_idx),
+                qdq_restore="runtime_key",
+            ))
+        return emissions
 
 
 class WhisperAdapter(FamilyAdapter):
@@ -435,6 +685,10 @@ class ParakeetTDTAdapter(ParakeetAdapter):
 class Lfm2Adapter(FamilyAdapter):
     family = "lfm2"
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.num_experts = 0
+
     def model_class(self, cfg: Any):
         from transformers import AutoModelForCausalLM
 
@@ -448,6 +702,12 @@ class Lfm2Adapter(FamilyAdapter):
             except Exception:
                 pass
         return AutoModelForCausalLM
+
+    def runtime_config(self, cfg: Any) -> dict[str, Any]:
+        config = super().runtime_config(cfg)
+        config.update(extract_lfm2_config(cfg))
+        self.num_experts = int(_cfg_get(cfg, "num_experts", config.get("num_experts", 0)) or 0)
+        return config
 
     def load_processor(self, model_id_or_path: str):
         processor = super().load_processor(model_id_or_path)
@@ -484,15 +744,104 @@ class Lfm2Adapter(FamilyAdapter):
         return Lfm2VlProcessor(image_processor=image_processor, tokenizer=tokenizer)
 
     def policy(self, match: NameMatch, shape: tuple[int, ...], requested_bits: int) -> TensorPolicy:
+        if match.output_name and (
+            "moe_router" in match.output_name
+            or "moe_expert_bias" in match.output_name
+        ):
+            return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "moe routing tensor")
         policy = super().policy(match, shape, requested_bits)
         if match.source_name.endswith("vision_model.embeddings.patch_embedding.weight"):
             return replace(policy, use_gptq=False, fallback_reason=policy.fallback_reason or "vision patch embedding has no linear Hessian target")
+        if match.output_name and "moe_expert_" in match.output_name:
+            return replace(policy, use_gptq=False)
         return policy
 
     def module_target_name(self, source_name: str, _model: Any) -> str | None:
+        if ".feed_forward.experts.gate_up_proj" in source_name or ".feed_forward.experts.down_proj" in source_name:
+            return None
         if source_name.startswith("model.vision_tower.vision_model."):
             source_name = source_name.replace("model.vision_tower.vision_model.", "model.vision_tower.", 1)
         return super().module_target_name(source_name, _model)
+
+    def name_tensor(self, source_name: str, tensor: Any, num_layers: int | None) -> NameMatch:
+        match = re.fullmatch(
+            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.feed_forward\.experts\.(gate_up_proj|down_proj)",
+            source_name,
+        )
+        if match is not None:
+            layer_index = int(match.group(1))
+            kind = match.group(2)
+            if kind == "gate_up_proj":
+                output_name = f"layer_{layer_index}_moe_expert_{{channel}}_gate_up.weights"
+            else:
+                output_name = f"layer_{layer_index}_moe_expert_{{channel}}_w2.weights"
+            return NameMatch(source_name, output_name, "language", True, hf_name=source_name, adapter_name=source_name)
+        return super().name_tensor(source_name, tensor, num_layers)
+
+    def expand_tensor(self, match: NameMatch, tensor: Any) -> list[TensorEmission]:
+        if match.output_name is None:
+            return []
+        source_match = re.fullmatch(
+            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.feed_forward\.experts\.(gate_up_proj|down_proj)",
+            match.source_name,
+        )
+        if source_match is None:
+            return super().expand_tensor(match, tensor)
+
+        layer_index = int(source_match.group(1))
+        kind = source_match.group(2)
+        shape = _tensor_shape(tensor)
+        if len(shape) != 3:
+            raise ValueError(f"LFM2-MoE expert tensor expects rank 3, got {shape}")
+        num_experts = int(shape[0])
+        self.num_experts = self.num_experts or num_experts
+        emissions: list[TensorEmission] = []
+
+        def _piece(value, expert_idx: int, start: int | None = None, end: int | None = None):
+            if torch is not None and isinstance(value, torch.Tensor):
+                selected = value[expert_idx] if start is None else value[expert_idx, start:end, :]
+                return selected.contiguous()
+            array = np.asarray(value)
+            selected = array[expert_idx] if start is None else array[expert_idx, start:end, :]
+            return selected.copy()
+
+        def _source_names(weight_name: str, expert_idx: int) -> list[str]:
+            return [
+                f"model.layers.{layer_index}.feed_forward.{weight_name}.{expert_idx}",
+                f"layers.{layer_index}.feed_forward.{weight_name}.{expert_idx}",
+                f"backbone.layers.{layer_index}.feed_forward.{weight_name}.{expert_idx}",
+            ]
+
+        if kind == "gate_up_proj":
+            if int(shape[1]) % 2 != 0:
+                raise ValueError(f"LFM2-MoE gate_up_proj second dim must be even, got {shape}")
+            intermediate = int(shape[1]) // 2
+            for expert_idx in range(num_experts):
+                emissions.append(TensorEmission(
+                    f"layer_{layer_index}_moe_expert_{expert_idx}_w1.weights",
+                    _piece(tensor, expert_idx, 0, intermediate),
+                    "lfm2_moe_gate_up_split_gate",
+                    source_names=_source_names("w1_weights", expert_idx),
+                    qdq_restore="runtime_key",
+                ))
+                emissions.append(TensorEmission(
+                    f"layer_{layer_index}_moe_expert_{expert_idx}_w3.weights",
+                    _piece(tensor, expert_idx, intermediate, int(shape[1])),
+                    "lfm2_moe_gate_up_split_up",
+                    source_names=_source_names("w3_weights", expert_idx),
+                    qdq_restore="runtime_key",
+                ))
+            return emissions
+
+        for expert_idx in range(num_experts):
+            emissions.append(TensorEmission(
+                f"layer_{layer_index}_moe_expert_{expert_idx}_w2.weights",
+                _piece(tensor, expert_idx),
+                "lfm2_moe_down_proj_split",
+                source_names=_source_names("w2_weights", expert_idx),
+                qdq_restore="runtime_key",
+            ))
+        return emissions
 
 
 class Gemma3Adapter(FamilyAdapter):

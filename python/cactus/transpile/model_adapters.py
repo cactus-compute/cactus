@@ -437,6 +437,700 @@ def _torch_is_compiling() -> bool:
     return False
 
 
+_CACTUS_TORCH_LIBRARIES: list[object] = []
+_LFM2_MOE_CUSTOM_OP_REGISTERED = False
+_LFM2_MOE_CUSTOM_OP = "cactus_transpile::lfm2_moe_layer_gated"
+_QWEN2_MOE_CUSTOM_OP_REGISTERED = False
+_QWEN2_MOE_CUSTOM_OP = "cactus_transpile::qwen2_moe_layer_gated"
+_GEMMA4_MOE_CUSTOM_OP_REGISTERED = False
+_GEMMA4_MOE_CUSTOM_OP = "cactus_transpile::gemma4_moe_layer_gated"
+
+
+def _ignore_duplicate_torch_registration(exc: RuntimeError) -> bool:
+    text = str(exc).lower()
+    return "already" in text or "duplicate" in text or "previously" in text
+
+
+def _ensure_lfm2_moe_custom_op_registered() -> None:
+    global _LFM2_MOE_CUSTOM_OP_REGISTERED
+    if _LFM2_MOE_CUSTOM_OP_REGISTERED:
+        return
+
+    schema = (
+        "lfm2_moe_layer_gated("
+        "Tensor hidden, Tensor router_logits, Tensor expert_bias, "
+        "Tensor[] w1_weights, Tensor[] w3_weights, Tensor[] w2_weights, "
+        "int num_experts, int num_experts_per_tok, bool use_expert_bias, "
+        "bool normalize_routing, float epsilon, float routed_scaling_factor"
+        ") -> Tensor"
+    )
+    try:
+        library = torch.library.Library("cactus_transpile", "FRAGMENT")
+        library.define(schema)
+        _CACTUS_TORCH_LIBRARIES.append(library)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+
+    def _impl(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        expert_bias: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        use_expert_bias: bool,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        routing_probs = router_logits.sigmoid()
+        if use_expert_bias:
+            scores_for_routing = routing_probs + expert_bias.to(device=routing_probs.device, dtype=routing_probs.dtype)
+            _, selected_experts = torch.topk(scores_for_routing, k=int(num_experts_per_tok), dim=-1)
+            routing_weights = torch.gather(routing_probs, dim=1, index=selected_experts).type_as(router_logits)
+        else:
+            routing_weights, selected_experts = torch.topk(routing_probs, k=int(num_experts_per_tok), dim=-1)
+
+        if normalize_routing:
+            routing_weights = routing_weights / (routing_weights.sum(dim=-1, keepdim=True) + float(epsilon))
+        routing_weights = routing_weights * float(routed_scaling_factor)
+
+        output = torch.zeros_like(hidden)
+        for expert_idx in range(int(num_experts)):
+            selected = selected_experts == expert_idx
+            if not bool(selected.any()):
+                continue
+            token_idx, topk_pos = torch.where(selected)
+            current = hidden[token_idx]
+            gate = F.linear(current, w1_weights[expert_idx])
+            up = F.linear(current, w3_weights[expert_idx])
+            expert_out = F.linear(F.silu(gate) * up, w2_weights[expert_idx])
+            expert_out = expert_out * routing_weights[token_idx, topk_pos, None]
+            output.index_add_(0, token_idx, expert_out.to(dtype=output.dtype))
+        return output
+
+    def _fake(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        expert_bias: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        use_expert_bias: bool,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        return hidden.new_empty(hidden.shape)
+
+    try:
+        torch.library.impl(_LFM2_MOE_CUSTOM_OP, "CompositeExplicitAutograd")(_impl)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+    try:
+        torch.library.register_fake(_LFM2_MOE_CUSTOM_OP)(_fake)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+    _LFM2_MOE_CUSTOM_OP_REGISTERED = True
+
+
+def _ensure_qwen2_moe_custom_op_registered() -> None:
+    global _QWEN2_MOE_CUSTOM_OP_REGISTERED
+    if _QWEN2_MOE_CUSTOM_OP_REGISTERED:
+        return
+
+    schema = (
+        "qwen2_moe_layer_gated("
+        "Tensor hidden, Tensor router_logits, "
+        "Tensor[] w1_weights, Tensor[] w3_weights, Tensor[] w2_weights, "
+        "int num_experts, int num_experts_per_tok, bool normalize_routing, "
+        "float epsilon, float routed_scaling_factor"
+        ") -> Tensor"
+    )
+    try:
+        library = torch.library.Library("cactus_transpile", "FRAGMENT")
+        library.define(schema)
+        _CACTUS_TORCH_LIBRARIES.append(library)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+
+    def _impl(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        routing_probs = F.softmax(router_logits, dim=-1, dtype=torch.float32).to(dtype=router_logits.dtype)
+        routing_weights, selected_experts = torch.topk(routing_probs, k=int(num_experts_per_tok), dim=-1)
+        if normalize_routing:
+            routing_weights = routing_weights / (routing_weights.sum(dim=-1, keepdim=True) + float(epsilon))
+        routing_weights = routing_weights * float(routed_scaling_factor)
+
+        output = torch.zeros_like(hidden)
+        for expert_idx in range(int(num_experts)):
+            selected = selected_experts == expert_idx
+            if not bool(selected.any()):
+                continue
+            token_idx, topk_pos = torch.where(selected)
+            current = hidden[token_idx]
+            gate = F.linear(current, w1_weights[expert_idx])
+            up = F.linear(current, w3_weights[expert_idx])
+            expert_out = F.linear(F.silu(gate) * up, w2_weights[expert_idx])
+            expert_out = expert_out * routing_weights[token_idx, topk_pos, None]
+            output.index_add_(0, token_idx, expert_out.to(dtype=output.dtype))
+        return output
+
+    def _fake(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        return hidden.new_empty(hidden.shape)
+
+    try:
+        torch.library.impl(_QWEN2_MOE_CUSTOM_OP, "CompositeExplicitAutograd")(_impl)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+    try:
+        torch.library.register_fake(_QWEN2_MOE_CUSTOM_OP)(_fake)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+    _QWEN2_MOE_CUSTOM_OP_REGISTERED = True
+
+
+def _ensure_gemma4_moe_custom_op_registered() -> None:
+    global _GEMMA4_MOE_CUSTOM_OP_REGISTERED
+    if _GEMMA4_MOE_CUSTOM_OP_REGISTERED:
+        return
+
+    schema = (
+        "gemma4_moe_layer_gated("
+        "Tensor hidden, Tensor router_logits, "
+        "Tensor[] w1_weights, Tensor[] w3_weights, Tensor[] w2_weights, "
+        "int num_experts, int num_experts_per_tok, bool normalize_routing, "
+        "float epsilon, float routed_scaling_factor"
+        ") -> Tensor"
+    )
+    try:
+        library = torch.library.Library("cactus_transpile", "FRAGMENT")
+        library.define(schema)
+        _CACTUS_TORCH_LIBRARIES.append(library)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+
+    def _impl(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        routing_probs = F.softmax(router_logits, dim=-1, dtype=torch.float32).to(dtype=router_logits.dtype)
+        routing_weights, selected_experts = torch.topk(routing_probs, k=int(num_experts_per_tok), dim=-1)
+        if normalize_routing:
+            routing_weights = routing_weights / (routing_weights.sum(dim=-1, keepdim=True) + float(epsilon))
+        routing_weights = routing_weights * float(routed_scaling_factor)
+
+        output = torch.zeros_like(hidden)
+        for expert_idx in range(int(num_experts)):
+            selected = selected_experts == expert_idx
+            if not bool(selected.any()):
+                continue
+            token_idx, topk_pos = torch.where(selected)
+            current = hidden[token_idx]
+            gate = F.linear(current, w1_weights[expert_idx])
+            up = F.linear(current, w3_weights[expert_idx])
+            expert_out = F.linear(F.silu(gate) * up, w2_weights[expert_idx])
+            expert_out = expert_out * routing_weights[token_idx, topk_pos, None]
+            output.index_add_(0, token_idx, expert_out.to(dtype=output.dtype))
+        return output
+
+    def _fake(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        return hidden.new_empty(hidden.shape)
+
+    try:
+        torch.library.impl(_GEMMA4_MOE_CUSTOM_OP, "CompositeExplicitAutograd")(_impl)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+    try:
+        torch.library.register_fake(_GEMMA4_MOE_CUSTOM_OP)(_fake)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+    _GEMMA4_MOE_CUSTOM_OP_REGISTERED = True
+
+
+class _Lfm2MoeRuntimeMoeBlock(torch.nn.Module):
+    """Export-friendly LFM2-MoE block backed by the Cactus sparse MoE runtime op."""
+
+    def __init__(self, block: torch.nn.Module, *, layer_index: int):
+        super().__init__()
+        _ensure_lfm2_moe_custom_op_registered()
+        experts = getattr(block, "experts", None)
+        gate_up = getattr(experts, "gate_up_proj", None)
+        down = getattr(experts, "down_proj", None)
+        gate = getattr(block, "gate", None)
+        if not isinstance(gate, torch.nn.Module) or not isinstance(gate_up, torch.Tensor) or not isinstance(down, torch.Tensor):
+            raise TypeError("LFM2-MoE runtime block requires gate, gate_up_proj, and down_proj")
+
+        self.layer_index = int(layer_index)
+        self.gate = gate
+        self.num_experts = int(getattr(block, "num_experts", int(gate_up.shape[0])) or int(gate_up.shape[0]))
+        self.top_k = int(getattr(block, "top_k", 0) or 0)
+        self.use_expert_bias = bool(getattr(block, "use_expert_bias", False))
+        self.normalize_routing = bool(getattr(block, "norm_topk_prob", False))
+        self.routed_scaling_factor = float(getattr(block, "routed_scaling_factor", 1.0) or 1.0)
+        self.epsilon = 1.0e-6
+        self.hidden_dim = int(gate_up.shape[2])
+        self.intermediate_dim = int(gate_up.shape[1]) // 2
+
+        if self.num_experts <= 0 or self.top_k <= 0:
+            raise ValueError("LFM2-MoE runtime block requires positive num_experts and top_k")
+        if int(gate_up.shape[0]) != self.num_experts or int(down.shape[0]) != self.num_experts:
+            raise ValueError("LFM2-MoE expert tensor count mismatch")
+        if int(gate_up.shape[1]) != 2 * self.intermediate_dim:
+            raise ValueError("LFM2-MoE gate_up_proj must have an even expert dimension")
+
+        self.w1_weights = torch.nn.ParameterList()
+        self.w3_weights = torch.nn.ParameterList()
+        self.w2_weights = torch.nn.ParameterList()
+        for expert_idx in range(self.num_experts):
+            self.w1_weights.append(torch.nn.Parameter(
+                gate_up[expert_idx, : self.intermediate_dim, :].detach().contiguous(),
+                requires_grad=False,
+            ))
+            self.w3_weights.append(torch.nn.Parameter(
+                gate_up[expert_idx, self.intermediate_dim :, :].detach().contiguous(),
+                requires_grad=False,
+            ))
+            self.w2_weights.append(torch.nn.Parameter(down[expert_idx].detach().contiguous(), requires_grad=False))
+
+        expert_bias = getattr(block, "expert_bias", None)
+        if self.use_expert_bias and isinstance(expert_bias, torch.Tensor):
+            bias_value = expert_bias.detach().to(dtype=torch.float32)
+        else:
+            bias_value = torch.zeros(self.num_experts, dtype=torch.float32, device=gate_up.device)
+        self.register_buffer("expert_bias", bias_value, persistent=True)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_flat = hidden_states.reshape(-1, hidden_dim)
+        router_logits = self.gate(hidden_flat)
+        output = torch.ops.cactus_transpile.lfm2_moe_layer_gated(
+            hidden_flat,
+            router_logits,
+            self.expert_bias,
+            list(self.w1_weights),
+            list(self.w3_weights),
+            list(self.w2_weights),
+            self.num_experts,
+            self.top_k,
+            self.use_expert_bias,
+            self.normalize_routing,
+            self.epsilon,
+            self.routed_scaling_factor,
+        )
+        return output.reshape(batch_size, sequence_length, hidden_dim)
+
+
+def _is_lfm2_moe_sparse_block(block: object) -> bool:
+    experts = getattr(block, "experts", None)
+    return (
+        isinstance(block, torch.nn.Module)
+        and isinstance(getattr(block, "gate", None), torch.nn.Module)
+        and isinstance(getattr(experts, "gate_up_proj", None), torch.Tensor)
+        and isinstance(getattr(experts, "down_proj", None), torch.Tensor)
+    )
+
+
+def _is_lfm2_moe_model(model: torch.nn.Module) -> bool:
+    config = getattr(model, "config", None)
+    model_type = str(getattr(config, "model_type", "") or "").lower()
+    if model_type == "lfm2_moe":
+        return True
+    return type(model).__module__.startswith("transformers.models.lfm2_moe.")
+
+
+def _lfm2_backbone_from_model(model: torch.nn.Module) -> torch.nn.Module | None:
+    model_root = getattr(model, "model", None)
+    language_model = getattr(model_root, "language_model", None)
+    backbone = language_model if isinstance(language_model, torch.nn.Module) else model_root
+    return backbone if isinstance(backbone, torch.nn.Module) else None
+
+
+def _patch_lfm2_moe_feed_forwards(model: torch.nn.Module) -> None:
+    if not _is_lfm2_moe_model(model):
+        return
+    backbone = _lfm2_backbone_from_model(model)
+    layers = getattr(backbone, "layers", None)
+    if not isinstance(layers, torch.nn.ModuleList):
+        return
+    for layer_index, layer in enumerate(layers):
+        feed_forward = getattr(layer, "feed_forward", None)
+        if isinstance(feed_forward, _Lfm2MoeRuntimeMoeBlock):
+            continue
+        if _is_lfm2_moe_sparse_block(feed_forward):
+            setattr(layer, "feed_forward", _Lfm2MoeRuntimeMoeBlock(feed_forward, layer_index=layer_index))
+
+
+class _Qwen2MoeRuntimeMoeBlock(torch.nn.Module):
+    """Export-friendly Qwen2-MoE block backed by the Cactus sparse MoE runtime op."""
+
+    def __init__(self, block: torch.nn.Module, *, layer_index: int):
+        super().__init__()
+        _ensure_qwen2_moe_custom_op_registered()
+        experts = getattr(block, "experts", None)
+        gate_up = getattr(experts, "gate_up_proj", None)
+        down = getattr(experts, "down_proj", None)
+        gate = getattr(block, "gate", None)
+        gate_weight = getattr(gate, "weight", None)
+        shared_expert = getattr(block, "shared_expert", None)
+        shared_expert_gate = getattr(block, "shared_expert_gate", None)
+        if (
+            not isinstance(gate, torch.nn.Module)
+            or not isinstance(gate_weight, torch.Tensor)
+            or not isinstance(gate_up, torch.Tensor)
+            or not isinstance(down, torch.Tensor)
+            or not isinstance(shared_expert, torch.nn.Module)
+            or not isinstance(shared_expert_gate, torch.nn.Module)
+        ):
+            raise TypeError(
+                "Qwen2-MoE runtime block requires gate, packed experts, shared_expert, and shared_expert_gate"
+            )
+
+        self.layer_index = int(layer_index)
+        self.gate = gate
+        self.shared_expert = shared_expert
+        self.shared_expert_gate = shared_expert_gate
+        self.num_experts = int(getattr(gate, "num_experts", int(gate_up.shape[0])) or int(gate_up.shape[0]))
+        self.top_k = int(getattr(gate, "top_k", 0) or 0)
+        self.normalize_routing = bool(getattr(gate, "norm_topk_prob", False))
+        self.routed_scaling_factor = float(getattr(block, "routed_scaling_factor", 1.0) or 1.0)
+        self.epsilon = 1.0e-6
+        self.hidden_dim = int(gate_up.shape[2])
+        self.intermediate_dim = int(gate_up.shape[1]) // 2
+
+        if self.num_experts <= 0 or self.top_k <= 0:
+            raise ValueError("Qwen2-MoE runtime block requires positive num_experts and top_k")
+        if int(gate_up.shape[0]) != self.num_experts or int(down.shape[0]) != self.num_experts:
+            raise ValueError("Qwen2-MoE expert tensor count mismatch")
+        if int(gate_up.shape[1]) != 2 * self.intermediate_dim:
+            raise ValueError("Qwen2-MoE gate_up_proj must have an even expert dimension")
+
+        self.w1_weights = torch.nn.ParameterList()
+        self.w3_weights = torch.nn.ParameterList()
+        self.w2_weights = torch.nn.ParameterList()
+        for expert_idx in range(self.num_experts):
+            self.w1_weights.append(torch.nn.Parameter(
+                gate_up[expert_idx, : self.intermediate_dim, :].detach().contiguous(),
+                requires_grad=False,
+            ))
+            self.w3_weights.append(torch.nn.Parameter(
+                gate_up[expert_idx, self.intermediate_dim :, :].detach().contiguous(),
+                requires_grad=False,
+            ))
+            self.w2_weights.append(torch.nn.Parameter(down[expert_idx].detach().contiguous(), requires_grad=False))
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_flat = hidden_states.reshape(-1, hidden_dim)
+        router_logits = F.linear(hidden_flat, self.gate.weight)
+        routed_output = torch.ops.cactus_transpile.qwen2_moe_layer_gated(
+            hidden_flat,
+            router_logits,
+            list(self.w1_weights),
+            list(self.w3_weights),
+            list(self.w2_weights),
+            self.num_experts,
+            self.top_k,
+            self.normalize_routing,
+            self.epsilon,
+            self.routed_scaling_factor,
+        )
+        shared_output = self.shared_expert(hidden_flat)
+        shared_output = torch.sigmoid(self.shared_expert_gate(hidden_flat)) * shared_output
+        output = routed_output + shared_output
+        return output.reshape(batch_size, sequence_length, hidden_dim)
+
+
+def _is_qwen2_moe_sparse_block(block: object) -> bool:
+    experts = getattr(block, "experts", None)
+    gate = getattr(block, "gate", None)
+    return (
+        isinstance(block, torch.nn.Module)
+        and isinstance(gate, torch.nn.Module)
+        and isinstance(getattr(gate, "weight", None), torch.Tensor)
+        and isinstance(getattr(experts, "gate_up_proj", None), torch.Tensor)
+        and isinstance(getattr(experts, "down_proj", None), torch.Tensor)
+        and isinstance(getattr(block, "shared_expert", None), torch.nn.Module)
+        and isinstance(getattr(block, "shared_expert_gate", None), torch.nn.Module)
+    )
+
+
+def _is_qwen2_moe_model(model: torch.nn.Module) -> bool:
+    config = getattr(model, "config", None)
+    model_type = str(getattr(config, "model_type", "") or "").lower()
+    if model_type == "qwen2_moe":
+        return True
+    return type(model).__module__.startswith("transformers.models.qwen2_moe.")
+
+
+def _qwen2_moe_backbone_from_model(model: torch.nn.Module) -> torch.nn.Module | None:
+    backbone = getattr(model, "model", None)
+    return backbone if isinstance(backbone, torch.nn.Module) else None
+
+
+def _patch_qwen2_moe_mlps(model: torch.nn.Module) -> None:
+    if not _is_qwen2_moe_model(model):
+        return
+    backbone = _qwen2_moe_backbone_from_model(model)
+    layers = getattr(backbone, "layers", None)
+    if not isinstance(layers, torch.nn.ModuleList):
+        return
+    for layer_index, layer in enumerate(layers):
+        mlp = getattr(layer, "mlp", None)
+        if isinstance(mlp, _Qwen2MoeRuntimeMoeBlock):
+            continue
+        if _is_qwen2_moe_sparse_block(mlp):
+            setattr(layer, "mlp", _Qwen2MoeRuntimeMoeBlock(mlp, layer_index=layer_index))
+
+
+class _Gemma4RuntimeMoeBlock(torch.nn.Module):
+    """Export-friendly Gemma4 MoE block with per-expert scale folded into w2."""
+
+    def __init__(self, block: torch.nn.Module, *, layer_index: int):
+        super().__init__()
+        _ensure_gemma4_moe_custom_op_registered()
+        gate_up = getattr(block, "gate_up_proj", None)
+        down = getattr(block, "down_proj", None)
+        per_expert_scale = getattr(block, "per_expert_scale", None)
+        if (
+            not isinstance(gate_up, torch.Tensor)
+            or not isinstance(down, torch.Tensor)
+            or not isinstance(per_expert_scale, torch.Tensor)
+        ):
+            raise TypeError("Gemma4 MoE runtime block requires gate_up_proj, down_proj, and per_expert_scale")
+
+        self.layer_index = int(layer_index)
+        self.num_experts = int(getattr(block, "num_experts", int(gate_up.shape[0])) or int(gate_up.shape[0]))
+        self.hidden_dim = int(gate_up.shape[2])
+        self.intermediate_dim = int(gate_up.shape[1]) // 2
+        if self.num_experts <= 0:
+            raise ValueError("Gemma4 MoE runtime block requires positive num_experts")
+        if int(gate_up.shape[0]) != self.num_experts or int(down.shape[0]) != self.num_experts:
+            raise ValueError("Gemma4 MoE expert tensor count mismatch")
+        if int(gate_up.shape[1]) != 2 * self.intermediate_dim:
+            raise ValueError("Gemma4 MoE gate_up_proj must have an even expert dimension")
+
+        self.w1_weights = torch.nn.ParameterList()
+        self.w3_weights = torch.nn.ParameterList()
+        self.w2_weights = torch.nn.ParameterList()
+        for expert_idx in range(self.num_experts):
+            self.w1_weights.append(torch.nn.Parameter(
+                gate_up[expert_idx, : self.intermediate_dim, :].detach().contiguous(),
+                requires_grad=False,
+            ))
+            self.w3_weights.append(torch.nn.Parameter(
+                gate_up[expert_idx, self.intermediate_dim :, :].detach().contiguous(),
+                requires_grad=False,
+            ))
+            scale = per_expert_scale[expert_idx].detach().to(device=down.device, dtype=down.dtype)
+            self.w2_weights.append(torch.nn.Parameter(
+                (down[expert_idx].detach() * scale).contiguous(),
+                requires_grad=False,
+            ))
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        router_logits: torch.Tensor,
+        *,
+        top_k: int,
+        normalize_routing: bool = True,
+        epsilon: float = 1.0e-6,
+    ) -> torch.Tensor:
+        return torch.ops.cactus_transpile.gemma4_moe_layer_gated(
+            hidden_states,
+            router_logits,
+            list(self.w1_weights),
+            list(self.w3_weights),
+            list(self.w2_weights),
+            self.num_experts,
+            int(top_k),
+            bool(normalize_routing),
+            float(epsilon),
+            1.0,
+        )
+
+
+class _Gemma4MoeRuntimeDecoderLayer(torch.nn.Module):
+    """Gemma4 decoder layer that preserves HF math while exporting MoE as one semantic op."""
+
+    def __init__(self, layer: torch.nn.Module, *, layer_index: int):
+        super().__init__()
+        self.config = layer.config
+        self.hidden_size = layer.hidden_size
+        self.layer_idx = layer.layer_idx
+        self.attention_type = layer.attention_type
+        self.self_attn = layer.self_attn
+        self.mlp = layer.mlp
+        self.input_layernorm = layer.input_layernorm
+        self.post_attention_layernorm = layer.post_attention_layernorm
+        self.pre_feedforward_layernorm = layer.pre_feedforward_layernorm
+        self.post_feedforward_layernorm = layer.post_feedforward_layernorm
+        self.register_buffer("layer_scalar", layer.layer_scalar.detach().clone(), persistent=True)
+        self.hidden_size_per_layer_input = getattr(layer, "hidden_size_per_layer_input", 0)
+        if self.hidden_size_per_layer_input:
+            self.act_fn = layer.act_fn
+            self.per_layer_input_gate = layer.per_layer_input_gate
+            self.per_layer_projection = layer.per_layer_projection
+            self.post_per_layer_input_norm = layer.post_per_layer_input_norm
+        self.enable_moe_block = True
+        self.router = layer.router
+        self.moe = _Gemma4RuntimeMoeBlock(layer.moe, layer_index=layer_index)
+        self.post_feedforward_layernorm_1 = layer.post_feedforward_layernorm_1
+        self.post_feedforward_layernorm_2 = layer.post_feedforward_layernorm_2
+        self.pre_feedforward_layernorm_2 = layer.pre_feedforward_layernorm_2
+        self.top_k_experts = int(getattr(self.config, "top_k_experts", 0) or 0)
+        self.router_epsilon = float(getattr(self.config, "rms_norm_eps", 1.0e-6) or 1.0e-6)
+
+    def _router_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        router_states = self.router.norm(hidden_states)
+        router_states = router_states * self.router.root_size.to(router_states.dtype)
+        router_states = router_states * self.router.scale.to(router_states.dtype)
+        return self.router.proj(router_states)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: torch.Tensor = None,
+        per_layer_input: torch.Tensor = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: object | None = None,
+        use_cache: bool | None = False,
+        **kwargs,
+    ) -> torch.Tensor:
+        residual = hidden_states
+        hidden_states = self.input_layernorm(hidden_states)
+        hidden_states, _ = self.self_attn(
+            hidden_states=hidden_states,
+            position_embeddings=position_embeddings,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            **kwargs,
+        )
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        hidden_states = residual + hidden_states
+
+        residual = hidden_states
+        hidden_states_1 = self.pre_feedforward_layernorm(hidden_states)
+        hidden_states_1 = self.mlp(hidden_states_1)
+        hidden_states_1 = self.post_feedforward_layernorm_1(hidden_states_1)
+
+        hidden_states_flat = hidden_states.reshape(-1, hidden_states.shape[-1])
+        router_logits = self._router_logits(hidden_states_flat)
+        hidden_states_2 = self.pre_feedforward_layernorm_2(hidden_states_flat)
+        hidden_states_2 = self.moe(
+            hidden_states_2,
+            router_logits,
+            top_k=self.top_k_experts,
+            normalize_routing=True,
+            epsilon=self.router_epsilon,
+        )
+        hidden_states_2 = hidden_states_2.reshape(hidden_states.shape)
+        hidden_states_2 = self.post_feedforward_layernorm_2(hidden_states_2)
+
+        hidden_states = hidden_states_1 + hidden_states_2
+        hidden_states = self.post_feedforward_layernorm(hidden_states)
+        hidden_states = residual + hidden_states
+
+        if self.hidden_size_per_layer_input:
+            residual = hidden_states
+            hidden_states = self.per_layer_input_gate(hidden_states)
+            hidden_states = self.act_fn(hidden_states)
+            hidden_states = torch.multiply(hidden_states, per_layer_input)
+            hidden_states = self.per_layer_projection(hidden_states)
+            hidden_states = self.post_per_layer_input_norm(hidden_states)
+            hidden_states = residual + hidden_states
+
+        hidden_states = hidden_states * self.layer_scalar
+        return hidden_states
+
+
+def _is_gemma4_moe_decoder_layer(layer: object) -> bool:
+    return (
+        isinstance(layer, torch.nn.Module)
+        and bool(getattr(layer, "enable_moe_block", False))
+        and hasattr(layer, "router")
+        and hasattr(layer, "moe")
+        and not isinstance(layer, _Gemma4MoeRuntimeDecoderLayer)
+    )
+
+
+def _gemma4_backbone_from_model(model: torch.nn.Module) -> torch.nn.Module | None:
+    model_root = getattr(model, "model", None)
+    backbone = getattr(model_root, "language_model", model_root)
+    return backbone if isinstance(backbone, torch.nn.Module) else None
+
+
+def _patch_gemma4_moe_layers(model: torch.nn.Module) -> None:
+    if _family_key(model) != "gemma4":
+        return
+    backbone = _gemma4_backbone_from_model(model)
+    layers = getattr(backbone, "layers", None)
+    if not isinstance(layers, torch.nn.ModuleList):
+        return
+    for layer_index, layer in enumerate(layers):
+        if isinstance(layer, _Gemma4MoeRuntimeDecoderLayer):
+            continue
+        if _is_gemma4_moe_decoder_layer(layer):
+            layers[layer_index] = _Gemma4MoeRuntimeDecoderLayer(layer, layer_index=layer_index)
+
+
 def _gemma4_cpu_safe_text_mlp_enabled(layer: torch.nn.Module, hidden_states: torch.Tensor) -> bool:
     if hidden_states.device.type != "cpu" or hidden_states.dtype != torch.float16:
         return False
@@ -1519,12 +2213,14 @@ class CausalLMLogitsAdapter(torch.nn.Module):
 class Lfm2CausalLMLogitsAdapter(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
         super().__init__()
+        _patch_lfm2_moe_feed_forwards(model)
         self.model = model
         model_root = getattr(model, "model", None)
         language_model = getattr(model_root, "language_model", None)
         self.backbone = language_model if isinstance(language_model, torch.nn.Module) else model_root
         self.lm_head = getattr(model, "lm_head", None)
         self.pad_token_id = pad_token_id if pad_token_id is not None else _resolve_model_pad_token_id(model)
+        self.adapter_family = _family_key(model)
         from transformers.models.lfm2.modeling_lfm2 import create_causal_mask  # type: ignore
 
         self._create_causal_mask = create_causal_mask
@@ -1580,7 +2276,7 @@ class Lfm2CausalLMLogitsAdapter(torch.nn.Module):
             "graph": {
                 **_transpile_graph_meta(
                     self.model,
-                    adapter_family="lfm2",
+                    adapter_family=self.adapter_family,
                     adapter_type=type(self).__name__,
                     input_names=("input_ids",),
                 ),
@@ -1592,12 +2288,14 @@ class Lfm2CausalLMLogitsAdapter(torch.nn.Module):
 class Lfm2CausalLMStepAdapter(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
         super().__init__()
+        _patch_lfm2_moe_feed_forwards(model)
         self.model = model
         model_root = getattr(model, "model", None)
         language_model = getattr(model_root, "language_model", None)
         self.backbone = language_model if isinstance(language_model, torch.nn.Module) else model_root
         self.lm_head = getattr(model, "lm_head", None)
         self.pad_token_id = pad_token_id if pad_token_id is not None else _resolve_model_pad_token_id(model)
+        self.adapter_family = _family_key(model)
 
     def forward(self, input_ids: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         backbone = self.backbone
@@ -1635,7 +2333,7 @@ class Lfm2CausalLMStepAdapter(torch.nn.Module):
             "graph": {
                 **_transpile_graph_meta(
                     self.model,
-                    adapter_family="lfm2",
+                    adapter_family=self.adapter_family,
                     adapter_type=type(self).__name__,
                     input_names=("input_ids", "position_ids"),
                 ),
@@ -1653,6 +2351,7 @@ def _lfm2_vl_model_root(model: torch.nn.Module) -> torch.nn.Module:
 
 
 def _lfm2_language_backbone(model: torch.nn.Module) -> torch.nn.Module:
+    _patch_lfm2_moe_feed_forwards(model)
     root = getattr(model, "model", None)
     language_model = getattr(root, "language_model", None)
     backbone = language_model if isinstance(language_model, torch.nn.Module) else root
@@ -2162,6 +2861,7 @@ class Gemma3EmbedsCausalLMPrefillChunkAdapter(Gemma3EmbedsCausalLMStepAdapter):
 class Gemma4CausalLMLogitsAdapter(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
         super().__init__()
+        _patch_gemma4_moe_layers(model)
         self.model = model
         model_backbone = model.model
         self.backbone = getattr(model_backbone, "language_model", model_backbone)
@@ -2342,6 +3042,7 @@ def _gemma4_apply_final_logit_softcapping(model: torch.nn.Module, logits: torch.
 
 class Gemma4MultimodalCausalLMLogitsAdapter(BoundInputAdapter):
     def __init__(self, model: torch.nn.Module, *, input_names: tuple[str, ...], weights_dir: str | None = None):
+        _patch_gemma4_moe_layers(model)
         super().__init__(
             model,
             input_names=input_names,
@@ -2820,6 +3521,7 @@ class _Gemma4MultimodalComponentBase(torch.nn.Module):
         native_image_pool_shapes: tuple[tuple[int, int, int], ...] | None = None,
     ):
         super().__init__()
+        _patch_gemma4_moe_layers(model)
         self.model = model
         self.input_names = input_names
         self.multimodal_backbone = model.model
@@ -2983,14 +3685,19 @@ class _Gemma4MultimodalComponentBase(torch.nn.Module):
         attention_mask: torch.Tensor | None,
         token_type_ids: torch.Tensor,
         image_features: torch.Tensor,
-        audio_features: torch.Tensor,
+        audio_features: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.LongTensor]:
         if self._native_merge_plan is not None:
+            audio_features_for_merge = audio_features
+            if audio_features_for_merge is None:
+                audio_features_for_merge = image_features.new_empty(
+                    (int(input_ids.shape[0]), 0, int(image_features.shape[-1]))
+                )
             inputs_embeds, per_layer_inputs_tokens = _gemma4_apply_native_merge_plan(
                 self.model,
                 input_ids=input_ids,
                 image_features=image_features,
-                audio_features=audio_features,
+                audio_features=audio_features_for_merge,
                 merge_plan=self._native_merge_plan,
                 pli_token_ids=self._native_merge_pli_token_ids,
             )
@@ -3020,10 +3727,11 @@ class _Gemma4MultimodalComponentBase(torch.nn.Module):
                 image_mask.unsqueeze(-1).expand_as(inputs_embeds),
                 image_features.to(inputs_embeds.device, inputs_embeds.dtype),
             )
-            inputs_embeds = inputs_embeds.masked_scatter(
-                audio_mask.unsqueeze(-1).expand_as(inputs_embeds),
-                audio_features.to(inputs_embeds.device, inputs_embeds.dtype),
-            )
+            if audio_features is not None:
+                inputs_embeds = inputs_embeds.masked_scatter(
+                    audio_mask.unsqueeze(-1).expand_as(inputs_embeds),
+                    audio_features.to(inputs_embeds.device, inputs_embeds.dtype),
+                )
             per_layer_inputs_tokens = input_ids * text_mask.to(dtype=input_ids.dtype)
 
         per_layer_inputs: torch.Tensor
@@ -3130,10 +3838,15 @@ class Gemma4LMEncoderAdapter(_Gemma4MultimodalComponentBase):
         *,
         weights_dir: str | None = None,
         native_merge_plan: _Gemma4NativeMergePlan | None = None,
+        include_audio: bool = True,
     ):
+        self.include_audio = bool(include_audio)
+        input_names = ("input_ids", "attention_mask", "token_type_ids", "image_features")
+        if self.include_audio:
+            input_names = (*input_names, "audio_features")
         super().__init__(
             model,
-            input_names=("input_ids", "attention_mask", "token_type_ids", "image_features", "audio_features"),
+            input_names=input_names,
             weights_dir=weights_dir,
             native_merge_plan=native_merge_plan,
         )
@@ -3144,7 +3857,7 @@ class Gemma4LMEncoderAdapter(_Gemma4MultimodalComponentBase):
         attention_mask: torch.Tensor | None,
         token_type_ids: torch.Tensor,
         image_features: torch.Tensor,
-        audio_features: torch.Tensor,
+        audio_features: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.LongTensor]:
         return self._prepare_decoder_inputs(
             input_ids=input_ids,
@@ -3158,7 +3871,7 @@ class Gemma4LMEncoderAdapter(_Gemma4MultimodalComponentBase):
         return {
             "graph": self._base_graph_meta(
                 adapter_type=type(self).__name__,
-                input_names=("input_ids", "attention_mask", "token_type_ids", "image_features", "audio_features"),
+                input_names=self.input_names,
             ),
         }
 
@@ -3541,18 +4254,27 @@ def _build_gemma4_multimodal_component_specs(
     components: tuple[str, ...] | None = None,
     cache_context_length: str | int | None = None,
 ) -> list[ComponentModuleSpec]:
-    pixel_values = named_tensors["pixel_values"]
+    pixel_values = named_tensors.get("pixel_values")
     pixel_position_ids = named_tensors.get("pixel_position_ids")
-    input_features = named_tensors["input_features"]
-    input_features_mask = named_tensors["input_features_mask"]
+    input_features = named_tensors.get("input_features")
+    input_features_mask = named_tensors.get("input_features_mask")
     input_ids = named_tensors["input_ids"]
     attention_mask = named_tensors.get("attention_mask")
     token_type_ids = named_tensors["token_type_ids"]
 
-    requested_components = tuple(components or ("vision_encoder", "audio_encoder", "lm_encoder", "decoder"))
+    has_vision_inputs = pixel_values is not None
+    has_audio_inputs = input_features is not None and input_features_mask is not None
+    default_components = ["lm_encoder", "decoder"]
+    if has_vision_inputs:
+        default_components.insert(0, "vision_encoder")
+    if has_audio_inputs:
+        insert_at = 1 if has_vision_inputs else 0
+        default_components.insert(insert_at, "audio_encoder")
+    requested_components = tuple(components or tuple(default_components))
     requested_set = set(requested_components)
     if not requested_set:
         return []
+    include_audio = "audio_encoder" in requested_set or (components is None and has_audio_inputs)
 
     expanded_components: list[str] = []
 
@@ -3561,8 +4283,10 @@ def _build_gemma4_multimodal_component_specs(
             expanded_components.append(component)
 
     if "decoder" in requested_set:
-        _require("vision_encoder")
-        _require("audio_encoder")
+        if has_vision_inputs or "vision_encoder" in requested_set:
+            _require("vision_encoder")
+        if include_audio:
+            _require("audio_encoder")
         _require("lm_encoder")
         _require("decoder_prefill_chunk")
         _require("decoder_embed_chunk")
@@ -3572,8 +4296,10 @@ def _build_gemma4_multimodal_component_specs(
         _require("lm_encoder_media_step")
         _require("decoder_step")
     if "lm_encoder" in requested_set:
-        _require("vision_encoder")
-        _require("audio_encoder")
+        if has_vision_inputs or "vision_encoder" in requested_set:
+            _require("vision_encoder")
+        if include_audio:
+            _require("audio_encoder")
         _require("lm_encoder")
     if "decoder_prefill_chunk" in requested_set:
         _require("decoder_prefill_chunk")
@@ -3593,30 +4319,39 @@ def _build_gemma4_multimodal_component_specs(
         _require("lm_encoder_step")
         _require("decoder_step")
 
-    vision_tower = getattr(getattr(model, "model", model), "vision_tower", None)
-    pooling_kernel_size = int(_module_or_config_attr(vision_tower, "pooling_kernel_size", 3) or 3)
-    native_image_soft_token_counts = _gemma4_static_image_soft_token_counts(
-        pixel_position_ids,
-        pooling_kernel_size=pooling_kernel_size,
-    )
-    native_image_pool_shapes = _gemma4_static_image_pool_shapes(
-        pixel_position_ids,
-        pooling_kernel_size=pooling_kernel_size,
-    )
+    if "vision_encoder" in expanded_components and pixel_values is None:
+        raise RuntimeError("Gemma4 vision component requested but pixel_values were not prepared")
+    if "audio_encoder" in expanded_components and (input_features is None or input_features_mask is None):
+        raise RuntimeError("Gemma4 audio component requested but input_features/input_features_mask were not prepared")
 
-    vision_encoder = Gemma4VisionEncoderAdapter(
-        model,
-        weights_dir=weights_dir,
-        native_image_soft_token_counts=native_image_soft_token_counts,
-        native_image_pool_shapes=native_image_pool_shapes,
-    ).eval()
-    vision_encoder_npu = Gemma4VisionEncoderAdapter(
-        model,
-        weights_dir=weights_dir,
-        native_image_soft_token_counts=native_image_soft_token_counts,
-        native_image_pool_shapes=None,
-    ).eval()
-    audio_encoder = Gemma4AudioEncoderAdapter(model, weights_dir=weights_dir).eval()
+    vision_encoder: Gemma4VisionEncoderAdapter | None = None
+    vision_encoder_npu: Gemma4VisionEncoderAdapter | None = None
+    audio_encoder: Gemma4AudioEncoderAdapter | None = None
+    if "vision_encoder" in expanded_components:
+        vision_tower = getattr(getattr(model, "model", model), "vision_tower", None)
+        pooling_kernel_size = int(_module_or_config_attr(vision_tower, "pooling_kernel_size", 3) or 3)
+        native_image_soft_token_counts = _gemma4_static_image_soft_token_counts(
+            pixel_position_ids,
+            pooling_kernel_size=pooling_kernel_size,
+        )
+        native_image_pool_shapes = _gemma4_static_image_pool_shapes(
+            pixel_position_ids,
+            pooling_kernel_size=pooling_kernel_size,
+        )
+        vision_encoder = Gemma4VisionEncoderAdapter(
+            model,
+            weights_dir=weights_dir,
+            native_image_soft_token_counts=native_image_soft_token_counts,
+            native_image_pool_shapes=native_image_pool_shapes,
+        ).eval()
+        vision_encoder_npu = Gemma4VisionEncoderAdapter(
+            model,
+            weights_dir=weights_dir,
+            native_image_soft_token_counts=native_image_soft_token_counts,
+            native_image_pool_shapes=None,
+        ).eval()
+    if "audio_encoder" in expanded_components:
+        audio_encoder = Gemma4AudioEncoderAdapter(model, weights_dir=weights_dir).eval()
 
     image_features: torch.Tensor | None = None
     audio_features: torch.Tensor | None = None
@@ -3633,27 +4368,33 @@ def _build_gemma4_multimodal_component_specs(
             "lm_encoder" in expanded_components
             or "decoder" in expanded_components
         ):
+            if vision_encoder is None or pixel_values is None:
+                raise RuntimeError("Gemma4 vision features requested but vision encoder inputs are unavailable")
             image_features = vision_encoder(pixel_values, pixel_position_ids)
         if "audio_encoder" in expanded_components and (
             "lm_encoder" in expanded_components
             or "decoder" in expanded_components
         ):
+            if audio_encoder is None or input_features is None or input_features_mask is None:
+                raise RuntimeError("Gemma4 audio features requested but audio encoder inputs are unavailable")
             audio_features = audio_encoder(input_features, input_features_mask)
         if "lm_encoder" in expanded_components or "decoder" in expanded_components:
-            if image_features is None:
+            if image_features is None and vision_encoder is not None and pixel_values is not None:
                 image_features = vision_encoder(pixel_values, pixel_position_ids)
-            if audio_features is None:
+            if include_audio and audio_features is None and audio_encoder is not None and input_features is not None and input_features_mask is not None:
                 audio_features = audio_encoder(input_features, input_features_mask)
-            native_merge_plan = _gemma4_build_native_merge_plan(
-                getattr(model, "model", model),
-                input_ids,
-                image_feature_count=_gemma4_feature_token_count(image_features),
-                audio_feature_count=_gemma4_feature_token_count(audio_features),
-            )
+            if image_features is not None:
+                native_merge_plan = _gemma4_build_native_merge_plan(
+                    getattr(model, "model", model),
+                    input_ids,
+                    image_feature_count=_gemma4_feature_token_count(image_features),
+                    audio_feature_count=_gemma4_feature_token_count(audio_features),
+                )
     lm_encoder = Gemma4LMEncoderAdapter(
         model,
         weights_dir=weights_dir,
         native_merge_plan=native_merge_plan,
+        include_audio=include_audio,
     ).eval()
     encoder_chunk_size = max(1, int(os.environ.get("CACTUS_GEMMA4_ENCODER_CHUNK", "128") or "128"))
     encoder_chunk_size = min(encoder_chunk_size, int(input_ids.shape[1]))
@@ -3668,13 +4409,27 @@ def _build_gemma4_multimodal_component_specs(
 
     with torch.no_grad():
         if "decoder" in expanded_components:
-            decoder_inputs = lm_encoder(
-                input_ids,
-                attention_mask,
-                token_type_ids,
-                image_features,
-                audio_features,
-            )
+            if image_features is None:
+                raise RuntimeError("Gemma4 decoder spec requires precomputed image features")
+            if include_audio and audio_features is None:
+                raise RuntimeError("Gemma4 decoder spec requires precomputed audio features")
+            lm_encoder_inputs: tuple[torch.Tensor | None, ...]
+            if include_audio:
+                lm_encoder_inputs = (
+                    input_ids,
+                    attention_mask,
+                    token_type_ids,
+                    image_features,
+                    audio_features,
+                )
+            else:
+                lm_encoder_inputs = (
+                    input_ids,
+                    attention_mask,
+                    token_type_ids,
+                    image_features,
+                )
+            decoder_inputs = lm_encoder(*lm_encoder_inputs)
         if "lm_encoder_step" in expanded_components or "decoder_step" in expanded_components:
             step_input_ids = input_ids[:, -1:].contiguous()
             step_position_ids = torch.full(
@@ -3735,6 +4490,8 @@ def _build_gemma4_multimodal_component_specs(
     }
     specs: list[ComponentModuleSpec] = []
     if "vision_encoder" in expanded_components:
+        if vision_encoder is None or vision_encoder_npu is None or pixel_values is None:
+            raise RuntimeError("Gemma4 vision_encoder spec requires prepared pixel_values")
         specs.append(ComponentModuleSpec(
             component="vision_encoder",
             module=vision_encoder,
@@ -3747,6 +4504,8 @@ def _build_gemma4_multimodal_component_specs(
             npu_runtime_input_count=2,
         ))
     if "audio_encoder" in expanded_components:
+        if audio_encoder is None or input_features is None or input_features_mask is None:
+            raise RuntimeError("Gemma4 audio_encoder spec requires prepared audio features")
         specs.append(ComponentModuleSpec(
             component="audio_encoder",
             module=audio_encoder,
@@ -3757,13 +4516,22 @@ def _build_gemma4_multimodal_component_specs(
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
         ))
     if "lm_encoder" in expanded_components:
-        if image_features is None or audio_features is None:
-            raise RuntimeError("Gemma4 lm_encoder spec requires precomputed image/audio features")
+        if image_features is None:
+            raise RuntimeError("Gemma4 lm_encoder spec requires precomputed image features")
+        if include_audio and audio_features is None:
+            raise RuntimeError("Gemma4 lm_encoder spec requires precomputed audio features")
+        lm_encoder_example_inputs: tuple[torch.Tensor | None, ...]
+        lm_encoder_input_keys = ("input_ids", "attention_mask", "token_type_ids", "image_features")
+        if include_audio:
+            lm_encoder_example_inputs = (input_ids, attention_mask, token_type_ids, image_features, audio_features)
+            lm_encoder_input_keys = (*lm_encoder_input_keys, "audio_features")
+        else:
+            lm_encoder_example_inputs = (input_ids, attention_mask, token_type_ids, image_features)
         specs.append(ComponentModuleSpec(
             component="lm_encoder",
             module=lm_encoder,
-            example_inputs=(input_ids, attention_mask, token_type_ids, image_features, audio_features),
-            input_keys=("input_ids", "attention_mask", "token_type_ids", "image_features", "audio_features"),
+            example_inputs=lm_encoder_example_inputs,
+            input_keys=lm_encoder_input_keys,
             output_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
             graph_meta={**common_graph_meta, "component": "lm_encoder"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
@@ -4373,6 +5141,7 @@ class Qwen3CausalLMLogitsAdapter(torch.nn.Module):
         self.model = model
         self.backbone = model.model
         self.pad_token_id = pad_token_id if pad_token_id is not None else _resolve_model_pad_token_id(model)
+        self.adapter_family = _family_key(model)
 
     def forward(self, input_ids: torch.Tensor):
         return self.debug_forward(input_ids)[0]
@@ -4434,7 +5203,7 @@ class Qwen3CausalLMLogitsAdapter(torch.nn.Module):
             "graph": {
                 **_transpile_graph_meta(
                     self.model,
-                    adapter_family="qwen3",
+                    adapter_family=self.adapter_family,
                     adapter_type=type(self).__name__,
                     input_names=("input_ids",),
                 ),
@@ -4451,6 +5220,7 @@ class Qwen3CausalLMStepAdapter(torch.nn.Module):
         self.model = model
         self.backbone = model.model
         self.pad_token_id = pad_token_id if pad_token_id is not None else _resolve_model_pad_token_id(model)
+        self.adapter_family = _family_key(model)
 
     def forward(self, input_ids: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         inputs_embeds = self.backbone.embed_tokens(input_ids)
@@ -4495,7 +5265,7 @@ class Qwen3CausalLMStepAdapter(torch.nn.Module):
             "graph": {
                 **_transpile_graph_meta(
                     self.model,
-                    adapter_family="qwen3",
+                    adapter_family=self.adapter_family,
                     adapter_type=type(self).__name__,
                     input_names=("input_ids", "position_ids"),
                 ),
@@ -4504,6 +5274,18 @@ class Qwen3CausalLMStepAdapter(torch.nn.Module):
                 "sliding_window": None if sliding_window is None else int(sliding_window),
             }
         }
+
+
+class Qwen2MoeCausalLMLogitsAdapter(Qwen3CausalLMLogitsAdapter):
+    def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
+        _patch_qwen2_moe_mlps(model)
+        super().__init__(model, pad_token_id=pad_token_id)
+
+
+class Qwen2MoeCausalLMStepAdapter(Qwen3CausalLMStepAdapter):
+    def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
+        _patch_qwen2_moe_mlps(model)
+        super().__init__(model, pad_token_id=pad_token_id)
 
 
 class Qwen3LMEncoderStepAdapter(torch.nn.Module):
@@ -4619,6 +5401,9 @@ def _build_qwen_causal_lm_component_specs(
     if family == "qwen3_5":
         decoder = Qwen35CausalLMLogitsAdapter(model, pad_token_id=pad_token_id).eval()
         decoder_step = Qwen35CausalLMStepAdapter(model, pad_token_id=pad_token_id).eval()
+    elif family == "qwen2_moe":
+        decoder = Qwen2MoeCausalLMLogitsAdapter(model, pad_token_id=pad_token_id).eval()
+        decoder_step = Qwen2MoeCausalLMStepAdapter(model, pad_token_id=pad_token_id).eval()
     elif family == "qwen3":
         decoder = Qwen3CausalLMLogitsAdapter(model, pad_token_id=pad_token_id).eval()
         decoder_step = Qwen3CausalLMStepAdapter(model, pad_token_id=pad_token_id).eval()
@@ -5352,6 +6137,8 @@ def _family_key(model: torch.nn.Module) -> str:
         return "qwen3_5"
     if module_name.startswith("transformers.models.qwen3_vl."):
         return "qwen3_5"
+    if module_name.startswith("transformers.models.qwen2_moe."):
+        return "qwen2_moe"
     if module_name.startswith("transformers.models.qwen3."):
         return "qwen3"
     if module_name.startswith("transformers.models.lfm2_vl."):
@@ -5363,6 +6150,8 @@ def _family_key(model: torch.nn.Module) -> str:
     model_type = str(getattr(getattr(model, "config", None), "model_type", "") or "").lower()
     if model_type == "needle":
         return "needle"
+    if model_type == "qwen2_moe":
+        return "qwen2_moe"
     if "nomic" in module_name.lower() or "nomic" in model_type:
         return "nomic"
     return "generic"
@@ -5711,12 +6500,13 @@ def _build_lfm2_causal_lm_component_specs(
         return None
     requested = tuple(components or ("decoder", "decoder_step"))
     requested_set = set(requested)
+    family = _family_key(model)
     common_graph_meta = {
         "weights_dir": weights_dir,
         "task": "causal_lm_logits",
-        "adapter_family": "lfm2",
+        "adapter_family": family,
     }
-    metadata = {"family": "lfm2", "task": "causal_lm_logits"}
+    metadata = {"family": family, "task": "causal_lm_logits"}
     chunk_components = {"lm_encoder_step", "lm_encoder_text_chunk", "decoder_prefill_chunk"}
     if chunk_components & requested_set:
         return _lfm2_chunked_pipeline_specs(
@@ -6083,7 +6873,7 @@ def build_component_module_specs(
             components=components,
             cache_context_length=cache_context_length,
         )
-    if family in {"qwen3", "qwen3_5"} and task == "causal_lm_logits":
+    if family in {"qwen2_moe", "qwen3", "qwen3_5"} and task == "causal_lm_logits":
         return _build_qwen_causal_lm_component_specs(
             model,
             named_tensors=named_tensors,
@@ -6115,7 +6905,7 @@ def build_component_module_specs(
             components=components,
             cache_context_length=cache_context_length,
         )
-    if family == "lfm2" and task == "causal_lm_logits":
+    if family in {"lfm2", "lfm2_moe"} and task == "causal_lm_logits":
         return _build_lfm2_causal_lm_component_specs(
             model,
             named_tensors=named_tensors,
@@ -6188,6 +6978,11 @@ def canonicalize_model_interface(
             )
         elif family == "qwen3_5":
             adapter_factory = lambda inner_model: Qwen35CausalLMLogitsAdapter(  # type: ignore[assignment]
+                inner_model,
+                pad_token_id=padding_token_id_value,
+            )
+        elif family == "qwen2_moe":
+            adapter_factory = lambda inner_model: Qwen2MoeCausalLMLogitsAdapter(  # type: ignore[assignment]
                 inner_model,
                 pad_token_id=padding_token_id_value,
             )

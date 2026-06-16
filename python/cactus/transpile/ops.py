@@ -107,6 +107,43 @@ OPS: tuple[OpSchema, ...] = (
 
     # CUSTOM / FUSED OPS
     OpSchema("dense_mlp_tq_fused", num_inputs=4, attrs=("product_scale",), backend_op="dense_mlp_tq_fused"),
+    OpSchema(
+        "lfm2_moe_layer_gated",
+        num_inputs=None,
+        attrs=(
+            "num_experts",
+            "num_experts_per_tok",
+            "use_expert_bias",
+            "normalize_routing",
+            "epsilon",
+            "routed_scaling_factor",
+            "activation",
+        ),
+    ),
+    OpSchema(
+        "qwen2_moe_layer_gated",
+        num_inputs=None,
+        attrs=(
+            "num_experts",
+            "num_experts_per_tok",
+            "normalize_routing",
+            "epsilon",
+            "routed_scaling_factor",
+            "activation",
+        ),
+    ),
+    OpSchema(
+        "gemma4_moe_layer_gated",
+        num_inputs=None,
+        attrs=(
+            "num_experts",
+            "num_experts_per_tok",
+            "normalize_routing",
+            "epsilon",
+            "routed_scaling_factor",
+            "activation",
+        ),
+    ),
     OpSchema("rms_norm", num_inputs=2, attrs=("eps",), backend_op="rms_norm"),
     OpSchema("rope", num_inputs=1, attrs=("theta", "position_offset"), backend_op="rope"),
     OpSchema("rel_pos_bias", num_inputs=2, attrs=("scale",), backend_op="rel_pos_bias"),

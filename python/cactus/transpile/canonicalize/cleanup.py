@@ -129,6 +129,9 @@ FP16_ONLY_OUTPUT_OPS = {
     "attention_block",
     "conv_module",
     "dense_mlp_tq_fused",
+    "lfm2_moe_layer_gated",
+    "qwen2_moe_layer_gated",
+    "gemma4_moe_layer_gated",
     "rope",
 }
 

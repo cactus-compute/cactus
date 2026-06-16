@@ -1774,6 +1774,146 @@ def import_getitem(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[i
     register_node(ir, ir_node, shape=shape, dtype=dtype)
 
 
+def import_lfm2_moe_layer_gated(
+    ir: IRGraph,
+    node: Any,
+    ctx: ImportContext,
+    *,
+    shape: tuple[int, ...] | None,
+    dtype: str | None,
+    torch_op: str,
+) -> None:
+    if len(node.args) != 12:
+        ctx.fail(f"lfm2_moe_layer_gated expected 12 args, got {len(node.args)}")
+    w1_inputs = extract_input_ids(node.args[3], ctx)
+    w3_inputs = extract_input_ids(node.args[4], ctx)
+    w2_inputs = extract_input_ids(node.args[5], ctx)
+    num_experts = int(extract_literals(node.args[6]))
+    num_experts_per_tok = int(extract_literals(node.args[7]))
+    if len(w1_inputs) != num_experts or len(w3_inputs) != num_experts or len(w2_inputs) != num_experts:
+        ctx.fail(
+            "lfm2_moe_layer_gated expert input count mismatch: "
+            f"num_experts={num_experts} w1={len(w1_inputs)} w3={len(w3_inputs)} w2={len(w2_inputs)}"
+        )
+    attrs = {
+        "num_experts": num_experts,
+        "num_experts_per_tok": num_experts_per_tok,
+        "use_expert_bias": bool(extract_literals(node.args[8])),
+        "normalize_routing": bool(extract_literals(node.args[9])),
+        "epsilon": float(extract_literals(node.args[10])),
+        "routed_scaling_factor": float(extract_literals(node.args[11])),
+        "activation": "silu",
+    }
+    ir_node = IRNode(
+        id=node_id(node),
+        op="lfm2_moe_layer_gated",
+        inputs=[
+            value_id(node.args[0], ctx),
+            value_id(node.args[1], ctx),
+            value_id(node.args[2], ctx),
+            *w1_inputs,
+            *w3_inputs,
+            *w2_inputs,
+        ],
+        outputs=[value_id(node, ctx)],
+        attrs=attrs,
+        meta=_base_meta(shape, dtype, torch_op, node),
+    )
+    register_node(ir, ir_node, shape=shape, dtype=dtype)
+
+
+def import_qwen2_moe_layer_gated(
+    ir: IRGraph,
+    node: Any,
+    ctx: ImportContext,
+    *,
+    shape: tuple[int, ...] | None,
+    dtype: str | None,
+    torch_op: str,
+) -> None:
+    if len(node.args) != 10:
+        ctx.fail(f"qwen2_moe_layer_gated expected 10 args, got {len(node.args)}")
+    w1_inputs = extract_input_ids(node.args[2], ctx)
+    w3_inputs = extract_input_ids(node.args[3], ctx)
+    w2_inputs = extract_input_ids(node.args[4], ctx)
+    num_experts = int(extract_literals(node.args[5]))
+    num_experts_per_tok = int(extract_literals(node.args[6]))
+    if len(w1_inputs) != num_experts or len(w3_inputs) != num_experts or len(w2_inputs) != num_experts:
+        ctx.fail(
+            "qwen2_moe_layer_gated expert input count mismatch: "
+            f"num_experts={num_experts} w1={len(w1_inputs)} w3={len(w3_inputs)} w2={len(w2_inputs)}"
+        )
+    attrs = {
+        "num_experts": num_experts,
+        "num_experts_per_tok": num_experts_per_tok,
+        "normalize_routing": bool(extract_literals(node.args[7])),
+        "epsilon": float(extract_literals(node.args[8])),
+        "routed_scaling_factor": float(extract_literals(node.args[9])),
+        "activation": "silu",
+    }
+    ir_node = IRNode(
+        id=node_id(node),
+        op="qwen2_moe_layer_gated",
+        inputs=[
+            value_id(node.args[0], ctx),
+            value_id(node.args[1], ctx),
+            *w1_inputs,
+            *w3_inputs,
+            *w2_inputs,
+        ],
+        outputs=[value_id(node, ctx)],
+        attrs=attrs,
+        meta=_base_meta(shape, dtype, torch_op, node),
+    )
+    register_node(ir, ir_node, shape=shape, dtype=dtype)
+
+
+def import_gemma4_moe_layer_gated(
+    ir: IRGraph,
+    node: Any,
+    ctx: ImportContext,
+    *,
+    shape: tuple[int, ...] | None,
+    dtype: str | None,
+    torch_op: str,
+) -> None:
+    if len(node.args) != 10:
+        ctx.fail(f"gemma4_moe_layer_gated expected 10 args, got {len(node.args)}")
+    w1_inputs = extract_input_ids(node.args[2], ctx)
+    w3_inputs = extract_input_ids(node.args[3], ctx)
+    w2_inputs = extract_input_ids(node.args[4], ctx)
+    num_experts = int(extract_literals(node.args[5]))
+    num_experts_per_tok = int(extract_literals(node.args[6]))
+    if len(w1_inputs) != num_experts or len(w3_inputs) != num_experts or len(w2_inputs) != num_experts:
+        ctx.fail(
+            "gemma4_moe_layer_gated expert input count mismatch: "
+            f"num_experts={num_experts} w1={len(w1_inputs)} w3={len(w3_inputs)} w2={len(w2_inputs)}"
+        )
+    attrs = {
+        "num_experts": num_experts,
+        "num_experts_per_tok": num_experts_per_tok,
+        "normalize_routing": bool(extract_literals(node.args[7])),
+        "epsilon": float(extract_literals(node.args[8])),
+        "routed_scaling_factor": float(extract_literals(node.args[9])),
+        "activation": "silu",
+    }
+    ir_node = IRNode(
+        id=node_id(node),
+        op="gemma4_moe_layer_gated",
+        inputs=[
+            value_id(node.args[0], ctx),
+            value_id(node.args[1], ctx),
+            *w1_inputs,
+            *w3_inputs,
+            *w2_inputs,
+        ],
+        outputs=[value_id(node, ctx)],
+        attrs=attrs,
+        meta=_base_meta(shape, dtype, torch_op, node),
+    )
+    register_node(ir, ir_node, shape=shape, dtype=dtype)
+
+
 OP_IMPORTERS = {
     "arange": import_arange,
     "identity": import_identity,
@@ -1867,4 +2007,7 @@ OP_IMPORTERS = {
     "batch_norm": import_batch_norm,
     "contiguous": import_contiguous,
     "getitem": import_getitem,
+    "lfm2_moe_layer_gated": import_lfm2_moe_layer_gated,
+    "qwen2_moe_layer_gated": import_qwen2_moe_layer_gated,
+    "gemma4_moe_layer_gated": import_gemma4_moe_layer_gated,
 }

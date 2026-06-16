@@ -74,7 +74,7 @@ GEMMA4_PROFILE = ModelProfile(
 
 LFM2_PROFILE = ModelProfile(
     family="lfm2",
-    model_types=("lfm2_vl", "lfm2"),
+    model_types=("lfm2_vl", "lfm2", "lfm2_moe"),
     multimodal_context_tokens=256,
     input_combinations=((), ("image",)),
     model_id_aliases=(("lfm", "LiquidAI/LFM2-VL-450M"),),
@@ -94,6 +94,8 @@ LFM2_PROFILE = ModelProfile(
     text_component_plans=(
         ("lfm2forcausallm", ("decoder_step", "lm_encoder_step", "lm_encoder_text_chunk",
                              "decoder_prefill_chunk")),
+        ("lfm2moeforcausallm", ("decoder_step", "lm_encoder_step", "lm_encoder_text_chunk",
+                                "decoder_prefill_chunk")),
     ),
     needs_image=True,
     force_component_pipeline=True,
@@ -172,7 +174,7 @@ WHISPER_PROFILE = ModelProfile(
 
 QWEN_PROFILE = ModelProfile(
     family="qwen",
-    model_types=("qwen", "qwen2", "qwen3", "qwen3_5", "qwen3.5", "qwen3_vl"),
+    model_types=("qwen", "qwen2", "qwen2_moe", "qwen3", "qwen3_5", "qwen3.5", "qwen3_vl"),
     multimodal_context_tokens=512,
     input_combinations=((), ("image",)),
     model_id_aliases=(
@@ -183,7 +185,7 @@ QWEN_PROFILE = ModelProfile(
         ("qwen3", "Qwen/Qwen3-1.7B"),
     ),
     model_id_markers=("qwen",),
-    family_aliases=("qwen2", "qwen3", "qwen3_5", "qwen3.5", "qwen3_vl"),
+    family_aliases=("qwen2", "qwen2_moe", "qwen3", "qwen3_5", "qwen3.5", "qwen3_vl"),
     stop_tokens=("<|im_end|>",),
     avoid_native_loader=True,
     cached_step_components=("decoder_media_step",),

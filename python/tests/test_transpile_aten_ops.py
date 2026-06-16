@@ -122,3 +122,327 @@ def test_dense_mlp_fusion_uses_topology_not_layer_names() -> None:
     assert fuse_dense_mlp_tq(graph) is True
     assert graph.nodes["down_linear"].op == "dense_mlp_tq_fused"
     assert graph.nodes["down_linear"].inputs == ["x", "pear_weight", "banana_weight", "plum_weight"]
+
+
+_TEST_LFM2_MOE_OP_REGISTERED = False
+_TEST_QWEN2_MOE_OP_REGISTERED = False
+_TEST_GEMMA4_MOE_OP_REGISTERED = False
+_TEST_TORCH_LIBRARIES: list[object] = []
+
+
+def _ignore_duplicate_registration(exc: RuntimeError) -> bool:
+    text = str(exc).lower()
+    return "already" in text or "duplicate" in text or "previously" in text
+
+
+def _ensure_test_lfm2_moe_op_registered() -> None:
+    global _TEST_LFM2_MOE_OP_REGISTERED
+    if _TEST_LFM2_MOE_OP_REGISTERED:
+        return
+    try:
+        library = torch.library.Library("cactus_transpile", "FRAGMENT")
+        library.define(
+            "lfm2_moe_layer_gated("
+            "Tensor hidden, Tensor router_logits, Tensor expert_bias, "
+            "Tensor[] w1_weights, Tensor[] w3_weights, Tensor[] w2_weights, "
+            "int num_experts, int num_experts_per_tok, bool use_expert_bias, "
+            "bool normalize_routing, float epsilon, float routed_scaling_factor"
+            ") -> Tensor"
+        )
+        _TEST_TORCH_LIBRARIES.append(library)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_registration(exc):
+            raise
+
+    def impl(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        expert_bias: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        use_expert_bias: bool,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        return hidden + router_logits.sum() * 0.0
+
+    def fake(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        expert_bias: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        use_expert_bias: bool,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        return hidden.new_empty(hidden.shape)
+
+    try:
+        torch.library.impl("cactus_transpile::lfm2_moe_layer_gated", "CompositeExplicitAutograd")(impl)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_registration(exc):
+            raise
+    try:
+        torch.library.register_fake("cactus_transpile::lfm2_moe_layer_gated")(fake)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_registration(exc):
+            raise
+    _TEST_LFM2_MOE_OP_REGISTERED = True
+
+
+def _ensure_test_qwen2_moe_op_registered() -> None:
+    global _TEST_QWEN2_MOE_OP_REGISTERED
+    if _TEST_QWEN2_MOE_OP_REGISTERED:
+        return
+    try:
+        library = torch.library.Library("cactus_transpile", "FRAGMENT")
+        library.define(
+            "qwen2_moe_layer_gated("
+            "Tensor hidden, Tensor router_logits, "
+            "Tensor[] w1_weights, Tensor[] w3_weights, Tensor[] w2_weights, "
+            "int num_experts, int num_experts_per_tok, bool normalize_routing, "
+            "float epsilon, float routed_scaling_factor"
+            ") -> Tensor"
+        )
+        _TEST_TORCH_LIBRARIES.append(library)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_registration(exc):
+            raise
+
+    def impl(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        return hidden + router_logits.sum() * 0.0
+
+    def fake(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        return hidden.new_empty(hidden.shape)
+
+    try:
+        torch.library.impl("cactus_transpile::qwen2_moe_layer_gated", "CompositeExplicitAutograd")(impl)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_registration(exc):
+            raise
+    try:
+        torch.library.register_fake("cactus_transpile::qwen2_moe_layer_gated")(fake)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_registration(exc):
+            raise
+    _TEST_QWEN2_MOE_OP_REGISTERED = True
+
+
+def _ensure_test_gemma4_moe_op_registered() -> None:
+    global _TEST_GEMMA4_MOE_OP_REGISTERED
+    if _TEST_GEMMA4_MOE_OP_REGISTERED:
+        return
+    try:
+        library = torch.library.Library("cactus_transpile", "FRAGMENT")
+        library.define(
+            "gemma4_moe_layer_gated("
+            "Tensor hidden, Tensor router_logits, "
+            "Tensor[] w1_weights, Tensor[] w3_weights, Tensor[] w2_weights, "
+            "int num_experts, int num_experts_per_tok, bool normalize_routing, "
+            "float epsilon, float routed_scaling_factor"
+            ") -> Tensor"
+        )
+        _TEST_TORCH_LIBRARIES.append(library)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_registration(exc):
+            raise
+
+    def impl(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        return hidden + router_logits.sum() * 0.0
+
+    def fake(
+        hidden: torch.Tensor,
+        router_logits: torch.Tensor,
+        w1_weights: list[torch.Tensor],
+        w3_weights: list[torch.Tensor],
+        w2_weights: list[torch.Tensor],
+        num_experts: int,
+        num_experts_per_tok: int,
+        normalize_routing: bool,
+        epsilon: float,
+        routed_scaling_factor: float,
+    ) -> torch.Tensor:
+        return hidden.new_empty(hidden.shape)
+
+    try:
+        torch.library.impl("cactus_transpile::gemma4_moe_layer_gated", "CompositeExplicitAutograd")(impl)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_registration(exc):
+            raise
+    try:
+        torch.library.register_fake("cactus_transpile::gemma4_moe_layer_gated")(fake)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_registration(exc):
+            raise
+    _TEST_GEMMA4_MOE_OP_REGISTERED = True
+
+
+class _FakeLfm2MoeBlock(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = torch.nn.Linear(4, 2, bias=False)
+        self.w1 = torch.nn.ParameterList([torch.nn.Parameter(torch.randn(3, 4)) for _ in range(2)])
+        self.w3 = torch.nn.ParameterList([torch.nn.Parameter(torch.randn(3, 4)) for _ in range(2)])
+        self.w2 = torch.nn.ParameterList([torch.nn.Parameter(torch.randn(4, 3)) for _ in range(2)])
+        self.register_buffer("expert_bias", torch.zeros(2, dtype=torch.float32))
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        hidden_flat = hidden_states.reshape(-1, hidden_states.shape[-1])
+        return torch.ops.cactus_transpile.lfm2_moe_layer_gated(
+            hidden_flat,
+            self.gate(hidden_flat),
+            self.expert_bias,
+            list(self.w1),
+            list(self.w3),
+            list(self.w2),
+            2,
+            1,
+            True,
+            True,
+            1.0e-6,
+            1.0,
+        ).reshape(hidden_states.shape)
+
+
+class _FakeQwen2MoeBlock(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = torch.nn.Linear(4, 2, bias=False)
+        self.w1 = torch.nn.ParameterList([torch.nn.Parameter(torch.randn(3, 4)) for _ in range(2)])
+        self.w3 = torch.nn.ParameterList([torch.nn.Parameter(torch.randn(3, 4)) for _ in range(2)])
+        self.w2 = torch.nn.ParameterList([torch.nn.Parameter(torch.randn(4, 3)) for _ in range(2)])
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        hidden_flat = hidden_states.reshape(-1, hidden_states.shape[-1])
+        return torch.ops.cactus_transpile.qwen2_moe_layer_gated(
+            hidden_flat,
+            self.gate(hidden_flat),
+            list(self.w1),
+            list(self.w3),
+            list(self.w2),
+            2,
+            1,
+            False,
+            1.0e-6,
+            1.0,
+        ).reshape(hidden_states.shape)
+
+
+class _FakeGemma4MoeBlock(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.router = torch.nn.Linear(4, 2, bias=False)
+        self.w1 = torch.nn.ParameterList([torch.nn.Parameter(torch.randn(3, 4)) for _ in range(2)])
+        self.w3 = torch.nn.ParameterList([torch.nn.Parameter(torch.randn(3, 4)) for _ in range(2)])
+        self.w2 = torch.nn.ParameterList([torch.nn.Parameter(torch.randn(4, 3)) for _ in range(2)])
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        hidden_flat = hidden_states.reshape(-1, hidden_states.shape[-1])
+        return torch.ops.cactus_transpile.gemma4_moe_layer_gated(
+            hidden_flat,
+            self.router(hidden_flat),
+            list(self.w1),
+            list(self.w3),
+            list(self.w2),
+            2,
+            1,
+            True,
+            1.0e-6,
+            1.0,
+        ).reshape(hidden_states.shape)
+
+
+def test_lfm2_moe_runtime_block_exports_single_semantic_op() -> None:
+    _ensure_test_lfm2_moe_op_registered()
+    block = _FakeLfm2MoeBlock().eval()
+    captured = capture_model(block, (torch.randn(1, 2, 4),), strict=False)
+
+    moe_nodes = [
+        captured.ir_graph.nodes[node_id]
+        for node_id in captured.ir_graph.order
+        if captured.ir_graph.nodes[node_id].op == "lfm2_moe_layer_gated"
+    ]
+
+    assert len(moe_nodes) == 1
+    assert moe_nodes[0].attrs["num_experts"] == 2
+    assert moe_nodes[0].attrs["num_experts_per_tok"] == 1
+    assert moe_nodes[0].attrs["use_expert_bias"] is True
+    assert len(moe_nodes[0].inputs) == 3 + 3 * 2
+
+
+def test_qwen2_moe_runtime_block_exports_single_semantic_op() -> None:
+    _ensure_test_qwen2_moe_op_registered()
+    block = _FakeQwen2MoeBlock().eval()
+    captured = capture_model(block, (torch.randn(1, 2, 4),), strict=False)
+
+    moe_nodes = [
+        captured.ir_graph.nodes[node_id]
+        for node_id in captured.ir_graph.order
+        if captured.ir_graph.nodes[node_id].op == "qwen2_moe_layer_gated"
+    ]
+
+    assert len(moe_nodes) == 1
+    assert moe_nodes[0].attrs["num_experts"] == 2
+    assert moe_nodes[0].attrs["num_experts_per_tok"] == 1
+    assert moe_nodes[0].attrs["normalize_routing"] is False
+    assert len(moe_nodes[0].inputs) == 2 + 3 * 2
+
+
+def test_gemma4_moe_runtime_block_exports_single_semantic_op() -> None:
+    _ensure_test_gemma4_moe_op_registered()
+    block = _FakeGemma4MoeBlock().eval()
+    captured = capture_model(block, (torch.randn(1, 2, 4),), strict=False)
+
+    moe_nodes = [
+        captured.ir_graph.nodes[node_id]
+        for node_id in captured.ir_graph.order
+        if captured.ir_graph.nodes[node_id].op == "gemma4_moe_layer_gated"
+    ]
+
+    assert len(moe_nodes) == 1
+    assert moe_nodes[0].attrs["num_experts"] == 2
+    assert moe_nodes[0].attrs["num_experts_per_tok"] == 1
+    assert moe_nodes[0].attrs["normalize_routing"] is True
+    assert len(moe_nodes[0].inputs) == 2 + 3 * 2
