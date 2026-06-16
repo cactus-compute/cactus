@@ -3533,6 +3533,22 @@ def _build_gemma3_causal_lm_component_specs(
     return specs
 
 
+def _gemma4_make_audio_mask_fp16_safe(model: torch.nn.Module) -> None:
+    backbone = getattr(model, "model", model)
+    audio_tower = getattr(backbone, "audio_tower", None)
+    if audio_tower is None:
+        return
+    seen: set[int] = set()
+    for mod in audio_tower.modules():
+        cfg = getattr(mod, "config", None)
+        if cfg is None or id(cfg) in seen:
+            continue
+        seen.add(id(cfg))
+        value = getattr(cfg, "attention_invalid_logits_value", None)
+        if isinstance(value, (int, float)) and value < -1e4:
+            cfg.attention_invalid_logits_value = -1e4
+
+
 def _build_gemma4_multimodal_component_specs(
     model: torch.nn.Module,
     *,
@@ -3616,6 +3632,7 @@ def _build_gemma4_multimodal_component_specs(
         native_image_soft_token_counts=native_image_soft_token_counts,
         native_image_pool_shapes=None,
     ).eval()
+    _gemma4_make_audio_mask_fp16_safe(model)
     audio_encoder = Gemma4AudioEncoderAdapter(model, weights_dir=weights_dir).eval()
 
     image_features: torch.Tensor | None = None
