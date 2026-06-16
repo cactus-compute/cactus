@@ -60,7 +60,7 @@ Two important details:
 ### `cactus run`
 
 `cactus run <model-id-or-bundle-path>` is the single user-facing entry. Resolution
-order (`python/cactus/cli/run.py:_resolve_or_fetch_bundle`):
+order (`python/cactus/cli/model.py:ensure_runnable_bundle`):
 
 1. `<arg>` is an existing path with `components/manifest.json` → run as-is.
 2. Cached download at `transpiled/<model>-cq<bits>[-<platform>]/` → run.
@@ -990,7 +990,7 @@ cactus run /path/to/transpiled/model \
   --result-json ./result.json
 ```
 
-Internally, `cli/run.py:_resolve_or_fetch_bundle` checks whether the positional
+Internally, `cli/model.py:ensure_runnable_bundle` checks whether the positional
 argument is a local path with `components/manifest.json` and dispatches the
 native `run` binary against it.
 

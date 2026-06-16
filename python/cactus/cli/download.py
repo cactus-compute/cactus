@@ -2,7 +2,7 @@
 from pathlib import Path
 
 from .common import (
-    BLUE, GREEN, RED, YELLOW,
+    BLUE, GREEN, RED,
     SUPPORTED_PLATFORMS,
     print_color, weights_root,
 )
@@ -51,6 +51,7 @@ def download_bundle(model_id: str, *, bits: int = 4, platform: str | None = None
         download_cq_archive,
         list_hf_cq_archives,
         resolve_archive,
+        resolve_weight_revision,
         suggested_cq_repo,
         variant_suffix,
     )
@@ -59,26 +60,28 @@ def download_bundle(model_id: str, *, bits: int = 4, platform: str | None = None
     local_name = get_model_dir_name(model_id)
     bundle_dir = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits, platform=platform)
 
+    revision = resolve_weight_revision(repo_id, token=token)
     label = variant_suffix(bits, platform)
     print()
-    print_color(BLUE, f"Fetching {repo_id} [{label}]")
+    print_color(BLUE, f"Fetching {repo_id} [{label}] @ {revision or 'main'}")
 
-    archives = list_hf_cq_archives(repo_id, token=token)
+    archives = list_hf_cq_archives(repo_id, token=token, revision=revision)
     if not archives:
         raise RuntimeError(f"no bundles published at {repo_id}")
 
     resolution = resolve_archive(repo_id, local_name, archives, bits, platform=platform)
-    download_cq_archive(resolution, bundle_dir, token=token, reconvert=reconvert)
+    download_cq_archive(resolution, bundle_dir, token=token, revision=revision, reconvert=reconvert)
     print_color(GREEN, f"Ready at {bundle_dir}")
     return bundle_dir
 
 
 def cmd_download(args) -> int:
+    from .model import ensure_runnable_bundle
+
     try:
         platform = resolve_platform(args.platform)
-        download_bundle(args.model_id, bits=args.bits, platform=platform, token=args.token)
+        ensure_runnable_bundle(args.model_id, bits=args.bits, platform=platform, token=args.token)
         return 0
     except (RuntimeError, OSError, ValueError) as e:
-        print_color(RED, f"Download failed: {e}")
-        print_color(YELLOW, f"Try: cactus convert {args.model_id} --bits {args.bits} && cactus transpile {args.model_id}")
+        print_color(RED, f"Failed to prepare {args.model_id}: {e}")
         return 1

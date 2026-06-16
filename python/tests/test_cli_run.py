@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import cactus.cli.common as common_mod
+import cactus.cli.model as model_mod
 import cactus.cli.run as run_mod
 
 
@@ -32,7 +33,7 @@ def test_cmd_run_forwards_chunked_bundle_flags(monkeypatch, tmp_path: Path) -> N
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(run_mod.subprocess, "run", fake_subprocess_run)
-    monkeypatch.setattr(run_mod, "_resolve_or_fetch_bundle", lambda *a, **k: bundle_dir)
+    monkeypatch.setattr(model_mod, "ensure_runnable_bundle", lambda *a, **k: bundle_dir)
 
     args = Namespace(
         no_cloud_tele=False,

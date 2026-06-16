@@ -92,6 +92,60 @@ def archives_from_repo_files(repo_files: Iterable[str], sizes: dict[str, int] | 
     return tuple(sorted(archives, key=lambda a: (a.bits, _platform_sort_key(a.platform))))
 
 
+VERSION_TAG_RE = re.compile(r"^v?(\d+(?:\.\d+){0,2})$", re.IGNORECASE)
+
+
+def parse_version(text: str | None) -> tuple[int, int, int] | None:
+    if not text:
+        return None
+    m = VERSION_TAG_RE.match(str(text).strip())
+    if not m:
+        return None
+    parts = [int(p) for p in m.group(1).split(".")]
+    parts += [0] * (3 - len(parts))
+    return tuple(parts[:3])
+
+
+def list_version_tags(repo_id: str, *, token=None) -> tuple[tuple[str, tuple[int, int, int]], ...]:
+    try:
+        from huggingface_hub import HfApi
+        refs = HfApi().list_repo_refs(repo_id, token=token)
+        names = [t.name for t in refs.tags]
+    except ImportError:
+        quoted = urllib.parse.quote(repo_id, safe="/")
+        url = f"https://huggingface.co/api/models/{quoted}/refs"
+        headers = {"User-Agent": "cactus-cq-downloader"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as response:
+            data = json.load(response)
+        names = [t.get("name", "") for t in data.get("tags", [])]
+    out = []
+    for name in names:
+        version = parse_version(name)
+        if version is not None:
+            out.append((name, version))
+    return tuple(out)
+
+
+def resolve_weight_revision(repo_id: str, runtime_version: str | None = None,
+                            *, token=None) -> str | None:
+    if runtime_version is None:
+        from .. import __version__ as runtime_version
+    runtime = parse_version(runtime_version)
+    if runtime is None:
+        return None
+    try:
+        tags = list_version_tags(repo_id, token=token)
+    except Exception:
+        return None
+    eligible = [(name, version) for name, version in tags if version <= runtime]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda item: item[1])[0]
+
+
 def resolve_archive(repo_id: str, local_name: str, archives: Iterable[CqArchive],
                     bits: int, platform: str | None = None) -> CqResolution:
     available = tuple(archives)
@@ -170,17 +224,22 @@ def promote_single_root(output_dir: Path) -> None:
 def validate_extracted_bundle(output_dir: Path) -> None:
     required = (
         "config.txt",
-        "token_embeddings.weights",
         "vocab.txt",
-        "tokenizer_config.txt",
         "components/manifest.json",
     )
     missing = [name for name in required if not (output_dir / name).exists()]
     if missing:
         raise RuntimeError(f"Downloaded bundle is missing required file(s): {', '.join(missing)}")
 
+    if not any(output_dir.rglob("*.weights")):
+        raise RuntimeError("Downloaded bundle contains no weight files")
+
+    tokenizer_config_txt = output_dir / "tokenizer_config.txt"
+    if not tokenizer_config_txt.exists():
+        return
+
     tokenizer_config = {}
-    for line in (output_dir / "tokenizer_config.txt").read_text(encoding="utf-8").splitlines():
+    for line in tokenizer_config_txt.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

@@ -20,27 +20,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-resolve_bundle_dir() {
-    local model="$1" label="$2"
-    if [ -z "$model" ]; then
-        echo "Error: --$label is required. Run engine tests via the CLI (cactus test ...) which sets it." >&2
+require_bundle() {
+    local dir="$1" label="$2"
+    if [ -z "$dir" ] || [ ! -f "$dir/components/manifest.json" ]; then
+        echo "Error: --$label must point to a prepared bundle. Run engine tests via 'cactus test', which prepares them." >&2
         exit 2
-    fi
-    local dir
-    if [[ "$model" == /* || "$model" == ./* ]]; then
-        dir="$model"
-    else
-        dir="$PROJECT_ROOT/weights/$(basename "$model" | tr '[:upper:]' '[:lower:]')"
-    fi
-    if [ ! -f "$dir/components/manifest.json" ]; then
-        echo "Bundle missing at $dir. Run: cactus download $model  (or: cactus convert $model && cactus transpile $model)" >&2
-        exit 1
     fi
     echo "$dir"
 }
 
-BUNDLE_DIR="$(resolve_bundle_dir "$CACTUS_TEST_MODEL" "model")"
-TRANSCRIPTION_BUNDLE_DIR="$(resolve_bundle_dir "$CACTUS_TEST_TRANSCRIPTION_MODEL" "transcription-model")"
+BUNDLE_DIR="$(require_bundle "$CACTUS_TEST_MODEL" "model")"
+TRANSCRIPTION_BUNDLE_DIR="$(require_bundle "$CACTUS_TEST_TRANSCRIPTION_MODEL" "transcription-model")"
 
 if [ "$IOS_MODE" = true ]; then
     export CACTUS_TEST_MODEL="$BUNDLE_DIR" CACTUS_TEST_TRANSCRIPTION_MODEL="$TRANSCRIPTION_BUNDLE_DIR" CACTUS_TEST_SUITE="$SUITE"

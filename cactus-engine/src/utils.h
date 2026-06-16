@@ -1661,12 +1661,14 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            const std::string& thinking = "",
                                            const std::vector<TranscriptSegment>& segments = {},
                                            const std::string& context_response = "",
-                                           float confidence_threshold = -1.0f) {
+                                           float confidence_threshold = -1.0f,
+                                           const std::string& cloud_handoff_reason = "") {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
     json << "\"error\":null,";
     json << "\"cloud_handoff\":" << (cloud_handoff ? "true" : "false") << ",";
+    json << "\"cloud_handoff_reason\":\"" << escape_json_string(cloud_handoff_reason) << "\",";
     json << "\"response\":\"" << escape_json_string(regular_response) << "\",";
     if (!context_response.empty()) {
         json << "\"context_response\":\"" << escape_json_string(context_response) << "\",";

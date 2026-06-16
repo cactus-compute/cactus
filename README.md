@@ -132,11 +132,11 @@ graph.hard_reset();
 
 | Device | Gemma4 Text | Gemma4 Vision | Parakeet 1.1B | RAM |
 |--------|----------|------------|---------------|-----|
-| Mac M4 Pro | - | - | - | - |
+| Mac M4 Pro | 324 / 39 | 1.2s / 48 | 0.2s (NPU) | 1385 MB |
 | iPad/Mac M3 | - | - | - | - |
 | iPhone 17 Pro | - | - | - | - |
 | iPhone 13 Mini | - | - | - | - |
-| Galaxy S26 | - | - | - | - |
+| Galaxy S26 | 248 / 21 | 17s / 16 | 4.2s | 4024 MB |
 | Pixel 10 Pro | - | - | - | - |
 | Pixel 6a | - | - | - | - |
 | Galaxy A17 5G | - | - | - | - |

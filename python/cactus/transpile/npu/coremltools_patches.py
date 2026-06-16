@@ -14,6 +14,7 @@ def apply_all_coremltools_patches() -> None:
         _override_layer_norm_translator()
         _override_one_hot_translator()
         _register_unfold_op()
+        _register_noop_assert_ops()
         _patch_pipeline_remove_fuse_prelu()
         _patch_mb_binops_scalar_cast()
         _patch_fp16_cast_skip_layer_norm()
@@ -382,6 +383,17 @@ def _override_one_hot_translator() -> None:
         context.add(res)
 
     _TORCH_OPS_REGISTRY.set_func_by_name(one_hot, "one_hot")
+
+
+def _register_noop_assert_ops() -> None:
+    from coremltools.converters.mil.frontend.torch.torch_op_registry import (
+        _TORCH_OPS_REGISTRY,
+    )
+
+    def _noop(context, node):
+        return
+
+    _TORCH_OPS_REGISTRY.set_func_by_name(_noop, "_assert_tensor_metadata")
 
 
 def _register_unfold_op() -> None:

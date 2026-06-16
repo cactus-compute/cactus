@@ -108,13 +108,49 @@ def create_parser():
   cactus transcribe [model]            transcribe audio with a model
     --file <audio.wav>                 audio file to transcribe (required)
     --language <code>                  language code (default: en)
+    --bits 1|2|3|4                     CQ quantization (default: 4)
+    --platform {_PLATFORM_PIPE:<22}  target accelerator (default: auto)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force reconversion from source
 
-  cactus download [model]              download a pre-built bundle (default: {DEFAULT_MODEL_ID})
+  cactus download [model]              fetch a prebuilt bundle, else build locally (default: {DEFAULT_MODEL_ID})
     --bits 1|2|3|4                     CQ quantization (default: 4)
     --platform {_PLATFORM_PIPE:<22}  target accelerator (default: auto)
     --token <token>                    HuggingFace token
+
+  cactus serve [model]                 OpenAI-compatible local HTTP server
+    --host <addr>                      bind address (default: 127.0.0.1)
+    --port <port>                      port (default: 8080)
+    --bits 1|2|3|4                     CQ quantization (default: 4)
+    --platform {_PLATFORM_PIPE:<22}  target accelerator (default: auto)
+
+  cactus list                          list local converted weights and bundles
+
+  cactus build                         build cactus libraries
+    --apple                            Apple (iOS/macOS)
+    --android                          Android
+    --python                           shared lib for Python FFI
+
+  cactus test                          run the test suite
+    --component <name>                 kernels | graph | engine | all
+                                       (default: all)
+    --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
+    --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
+    --suite <name>                     run a single test suite from any
+                                       component (kernels, graph, or engine)
+    --list                             list components and suites
+    --ios                              run on connected iPhone
+    --android                          run on connected Android
+    --enable-telemetry                 send cloud telemetry (off by default)
+
+  cactus clean                         delete build artifacts, weights, venv
+  cactus --help                        show this help
+
+  -----------------------------------------------------------------
+
+  Advanced / build pipeline — the two manual steps below run
+  automatically inside run, serve, transcribe and download; reach for
+  them only to control the build (custom flags, LoRA, NPU, debugging):
 
   cactus convert <model> [dir]         convert HuggingFace weights to CQ
     --bits 1|2|3|4                     CQ quantization (default: 4)
@@ -153,32 +189,6 @@ def create_parser():
     --npu-quantize 0|4|8               force both NPU encoders to this quant
     --npu-audio-quantize 0|4|8         audio encoder quant (default int8)
     --npu-vision-quantize 0|4|8        vision encoder quant (default fp16)
-
-  cactus serve [model]                 OpenAI-compatible local HTTP server
-    --host <addr>                      bind address (default: 127.0.0.1)
-    --port <port>                      port (default: 8080)
-
-  cactus list                          list local converted weights and bundles
-
-  cactus build                         build cactus libraries
-    --apple                            Apple (iOS/macOS)
-    --android                          Android
-    --python                           shared lib for Python FFI
-
-  cactus test                          run the test suite
-    --component <name>                 kernels | graph | engine | all
-                                       (default: all)
-    --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
-    --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
-    --suite <name>                     run a single test suite from any
-                                       component (kernels, graph, or engine)
-    --list                             list components and suites
-    --ios                              run on connected iPhone
-    --android                          run on connected Android
-    --enable-telemetry                 send cloud telemetry (off by default)
-
-  cactus clean                         delete build artifacts, weights, venv
-  cactus --help                        show this help
 
   -----------------------------------------------------------------
 """
@@ -261,6 +271,10 @@ def create_parser():
                                    help="Audio file to transcribe (WAV)")
     transcribe_parser.add_argument("--language", default="en",
                                    help="Language code (default: en)")
+    transcribe_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
+                                   help="CQ quantization (default: 4)")
+    transcribe_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
+                                   help="Target accelerator (default: auto)")
     transcribe_parser.add_argument("--token", help="HuggingFace token")
     transcribe_parser.add_argument("--force-handoff", action="store_true",
                                    help=argparse.SUPPRESS)
@@ -275,6 +289,10 @@ def create_parser():
                               help="Bind address (default: 127.0.0.1)")
     serve_parser.add_argument("--port", type=_port_int, default=8080,
                               help="Port (default: 8080)")
+    serve_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
+                              help="CQ quantization (default: 4)")
+    serve_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
+                              help="Target accelerator (default: auto)")
 
     test_parser = subparsers.add_parser("test", help="Run the test suite")
     test_parser.add_argument("--component", choices=COMPONENTS, default="all",
