@@ -47,7 +47,9 @@ def run_encoder_pipeline(
         if component not in _ENCODER_COMPONENTS:
             continue
         emit_fn, filename = _ENCODER_COMPONENTS[component]
-        example_inputs = tuple(getattr(spec, "example_inputs", ()) or ())
+        example_inputs = tuple(
+            getattr(spec, "npu_example_inputs", None) or getattr(spec, "example_inputs", ()) or ()
+        )
         if not example_inputs:
             print(f"npu.pipeline: {component} spec has no example inputs; skipping")
             continue

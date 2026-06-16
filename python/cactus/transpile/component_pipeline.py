@@ -30,6 +30,7 @@ class ComponentModuleSpec:
     metadata: dict[str, object] = field(default_factory=dict)
     npu_module: torch.nn.Module | None = None
     npu_runtime_input_count: int = 1
+    npu_example_inputs: tuple[torch.Tensor, ...] | None = None
 
 
 @dataclass
