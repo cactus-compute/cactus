@@ -140,7 +140,7 @@ graph.hard_reset();
 | Pixel 10 Pro | - | - | - | - |
 | Pixel 6a | - | - | - | - |
 | Galaxy A17 5G | - | - | - | - |
-| Raspberry Pi 5 | - | - | - | - |
+| Raspberry Pi 5 | 64.24 tok/s prefill, 15.94s TTFT / 5.70 tok/s decode | 104.90s / 5.75 tok/s | 4.64s / 5.81M tok/s | 2.92 GB |
 
 
 ## Supported Models
