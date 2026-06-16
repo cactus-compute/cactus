@@ -140,7 +140,7 @@ graph.hard_reset();
 | Pixel 10 Pro | - | - | - | - |
 | Pixel 6a | - | - | - | - |
 | Galaxy A17 5G | - | - | - | - |
-| Raspberry Pi 5 | - | - | - | - |
+| Raspberry Pi 5 | 64 / 5.7 | 105s / 5.8 | 4.6s | 2990 MB |
 
 
 ## Supported Models
