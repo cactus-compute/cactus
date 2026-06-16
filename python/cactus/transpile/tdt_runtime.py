@@ -562,10 +562,12 @@ class ParakeetTDTConformerConv(nn.Module):
         )
         self.config = config
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, pad_mask: torch.Tensor | None = None) -> torch.Tensor:
         x = x.transpose(1, 2)
         x = self.pointwise_conv1(x)
         x = F.glu(x, dim=1)
+        if pad_mask is not None:
+            x = x * pad_mask
         x = self.depthwise_conv(x)
         x = self.batch_norm(x)
         x = _apply_activation(x, self.config.encoder_hidden_act)
@@ -680,7 +682,7 @@ class ParakeetTDTANESelfAttention(nn.Module):
             ).flip(1)
         self.register_buffer("_rel_k", rel_k.detach(), persistent=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, key_bias: torch.Tensor | None = None) -> torch.Tensor:
         batch, seq_len, _ = x.shape
         num_heads = self.config.attention_heads
         head_dim = self.config.attention_head_dim
@@ -698,6 +700,8 @@ class ParakeetTDTANESelfAttention(nn.Module):
             rel_k_heads,
             scale=self.config.attention_scale,
         )
+        if key_bias is not None:
+            rel_bias = rel_bias + key_bias
         attn = F.scaled_dot_product_attention(
             q_u.permute(0, 2, 1, 3),
             k.permute(0, 2, 1, 3),
@@ -724,10 +728,10 @@ class ParakeetTDTANEEncoderLayer(nn.Module):
         self.norm_out = layer.norm_out
         self.config = layer.config
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, conv_mask: torch.Tensor, key_bias: torch.Tensor) -> torch.Tensor:
         x = x + 0.5 * self.feed_forward1(self.norm_feed_forward1(x), activation=self.config.encoder_hidden_act)
-        x = x + self.self_attn(self.norm_self_att(x))
-        x = x + self.conv(self.norm_conv(x))
+        x = x + self.self_attn(self.norm_self_att(x), key_bias)
+        x = x + self.conv(self.norm_conv(x), conv_mask)
         x = x + 0.5 * self.feed_forward2(self.norm_feed_forward2(x), activation=self.config.encoder_hidden_act)
         return self.norm_out(x)
 
@@ -739,11 +743,23 @@ class ParakeetTDTANEEncoder(nn.Module):
         self.layers = nn.ModuleList(
             [ParakeetTDTANEEncoderLayer(layer, seq_len) for layer in encoder.layers]
         )
+        factor = max(1, int(encoder.layers[0].config.subsampling_factor))
+        self._subsample_stages = max(0, factor.bit_length() - 1)
+
+    def _frame_masks(self, input_features: torch.Tensor, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
+        valid = (input_features.abs().sum(-1) > 0).to(input_features.dtype).sum(-1, keepdim=True)
+        for _ in range(self._subsample_stages):
+            valid = torch.floor((valid - 1.0) / 2.0) + 1.0
+        positions = torch.arange(seq_len, device=input_features.device, dtype=input_features.dtype)
+        enc_valid = (positions.view(1, 1, seq_len) < valid.view(-1, 1, 1)).to(input_features.dtype)
+        key_bias = (1.0 - enc_valid).unsqueeze(1) * -1e4
+        return enc_valid, key_bias
 
     def forward(self, input_features: torch.Tensor) -> torch.Tensor:
         x = self.pre_encode(input_features)
+        conv_mask, key_bias = self._frame_masks(input_features, x.shape[1])
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, conv_mask, key_bias)
         return x
 
 
@@ -981,6 +997,8 @@ def build_parakeet_tdt_component_specs(
         device=input_features.device,
         dtype=input_features.dtype,
     )
+    valid_frames = min(int(input_features.shape[1]), npu_frames)
+    npu_input_features[:, :valid_frames, :] = input_features[:, :valid_frames, :]
     with torch.no_grad():
         ane_seq_len = int(model.encoder.pre_encode(npu_input_features).shape[1])
     ane_encoder = ParakeetTDTANEEncoder(model.encoder, ane_seq_len)
