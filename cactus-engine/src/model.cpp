@@ -614,7 +614,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
 
     if (!npu_audio_encoder_mlpackage_.empty()) {
         std::string full_path = bundle_dir + "/" + npu_audio_encoder_mlpackage_;
-        if (!load_npu_audio_encoder(full_path)) {
+        if (!load_npu_audio_encoder(full_path, npu_audio_compute_units_)) {
             CACTUS_LOG_WARN("model", "NPU audio encoder load failed for " << full_path << "; falling back to CPU");
         }
     }
@@ -661,6 +661,9 @@ bool Model::load_manifest() {
     }
     if (obj.count("npu_audio_encoder") && obj.at("npu_audio_encoder").is<std::string>()) {
         npu_audio_encoder_mlpackage_ = obj.at("npu_audio_encoder").get<std::string>();
+    }
+    if (obj.count("npu_audio_compute_units") && obj.at("npu_audio_compute_units").is<std::string>()) {
+        npu_audio_compute_units_ = obj.at("npu_audio_compute_units").get<std::string>();
     }
     if (obj.count("npu_vision_encoder") && obj.at("npu_vision_encoder").is<std::string>()) {
         npu_vision_encoder_mlpackage_ = obj.at("npu_vision_encoder").get<std::string>();
@@ -2900,7 +2903,8 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         const std::vector<int> out_shape = npu_audio_encoder_->get_output_shape();
         if (in_shape.size() >= 3 && out_shape.size() >= 3 &&
             in_shape[1] > 0 && in_shape[2] > 0 && out_shape[1] > 0 && out_shape[2] > 0 &&
-            static_cast<size_t>(in_shape[2]) == expected_mels) {
+            static_cast<size_t>(in_shape[2]) == expected_mels &&
+            copy_frames <= static_cast<size_t>(in_shape[1])) {
             const size_t window_frames = static_cast<size_t>(in_shape[1]);
             const size_t window_hidden = static_cast<size_t>(out_shape[1]);
             const size_t hidden_dim_npu = static_cast<size_t>(out_shape[2]);

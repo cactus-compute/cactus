@@ -29,7 +29,7 @@ struct NPUNamedInput {
 class NPUEncoder {
 public:
     virtual ~NPUEncoder() = default;
-    virtual bool load(const std::string& model_path) = 0;
+    virtual bool load(const std::string& model_path, const std::string& compute_units = "") = 0;
     virtual bool preallocate(
         const std::vector<int>& input_shape,
         const std::string& input_name = "x",
@@ -701,7 +701,7 @@ public:
     size_t last_prefill_tail_chunk_tokens() const { return last_prefill_tail_chunk_tokens_; }
     size_t last_prefill_tail_padding_tokens() const { return last_prefill_tail_padding_tokens_; }
 
-    bool load_npu_audio_encoder(const std::string& model_path);
+    bool load_npu_audio_encoder(const std::string& model_path, const std::string& compute_units = "");
     bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
 
     bool load_npu_vision_encoder(const std::string& model_path);
@@ -860,6 +860,7 @@ private:
 
     std::string family_;
     std::string npu_audio_encoder_mlpackage_;
+    std::string npu_audio_compute_units_;
     std::string npu_vision_encoder_mlpackage_;
     std::string npu_source_encoder_mlpackage_;
 
