@@ -665,10 +665,10 @@ public:
         uint32_t last_token = 0;
         size_t time_index = 0;
         std::vector<std::vector<uint8_t>> dec_state;
-        std::vector<uint32_t> pending;    // volatile tail tokens from the last call (not committed)
-        float confirmed_sec = 0.0f;       // end time of the confirmed region from the last call
-        size_t decoded_tokens = 0;        // tokens decoded on the last call
-        double raw_decode_ms = 0.0;       // decoder execute time on the last call
+        std::vector<uint32_t> pending;
+        float confirmed_sec = 0.0f;
+        size_t decoded_tokens = 0;
+        double raw_decode_ms = 0.0;
     };
 
     std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features,
@@ -679,7 +679,8 @@ public:
                                                      const std::vector<uint32_t>& decoder_prompt_tokens,
                                                      size_t max_tokens,
                                                      const std::vector<std::vector<uint32_t>>& stop_token_sequences,
-                                                     const std::atomic<bool>* should_stop = nullptr);
+                                                     const std::atomic<bool>* should_stop = nullptr,
+                                                     int64_t suppress_token_id = -1);
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
                                        bool normalize = false, const std::string& profile_file = "");
@@ -917,6 +918,7 @@ private:
 
     ToolCallConstrainer tool_constrainer_;
     std::unordered_map<uint32_t, float> vocab_bias_;
+    int64_t suppressed_token_id_ = -1;
 
     bool handoff_probe_loaded_ = false;
     uint32_t handoff_probe_feat_dim_ = 0;

@@ -1040,12 +1040,15 @@ def cactus_transcribe(model, audio_path, prompt=None, options=None, callback=Non
         model:      Model handle.
         audio_path: Path to a WAV audio file.
         prompt:     Optional prompt to guide transcription.
-        options:    Optional dict of transcription options.
+        options:    Optional dict of transcription options. Set ``timestamps: True`` (Whisper
+                    only) to populate the ``segments`` array.
         callback:   Optional function(text, token_id) for streaming tokens.
         pcm_data:   Optional raw PCM audio bytes (alternative to audio_path).
 
     Returns:
-        A dict with transcription text and segments.
+        A dict with the transcribed text under ``response`` and a ``segments`` array of
+        ``{start, end, text}`` objects, populated only for Whisper when ``timestamps`` is set
+        (empty otherwise, including all Parakeet transcription).
     """
     buf = ctypes.create_string_buffer(1 << 20)
     cb = _make_token_callback(callback)
@@ -1065,9 +1068,8 @@ def cactus_stream_transcribe_start(model, options=None):
     Args:
         model:   Model handle.
         options: Optional dict forwarded to the underlying transcribe call
-                 (e.g. {"language": "en"}) plus segmentation tunables
-                 (min_chunk_sec, silence_sec, max_segment_sec, vad_threshold,
-                 commit_holdback).
+                 (e.g. {"language": "en", "max_tokens": 256}); chunking is
+                 handled internally.
 
     Returns:
         An opaque stream handle. Feed audio with cactus_stream_transcribe_process
@@ -1087,8 +1089,9 @@ def cactus_stream_transcribe_process(stream, pcm_data):
         pcm_data: 16 kHz mono 16-bit PCM audio bytes for this chunk.
 
     Returns:
-        A dict {"success": True, "confirmed": <newly finalized text>, "pending": <volatile tail>}.
-        Append "confirmed" to your transcript; replace "pending" each call.
+        A dict with "confirmed" (newly finalized text, append it), "pending" (volatile tail,
+        replace it each call), and per-call stats ("decode_tps", "raw_decoder_tps",
+        "total_time_ms", "time_to_first_token_ms", "decode_tokens").
     """
     buf = ctypes.create_string_buffer(1 << 16)
     pcm_ptr, pcm_size = _prepare_pcm(pcm_data)

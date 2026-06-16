@@ -77,7 +77,7 @@ cactus_get_last_error() -> str | None
 
 ### Completion
 
-Returns a `dict` with `success`, `error`, `cloud_handoff`, `response`, optional `thinking` (only present when the model emits chain-of-thought content, placed before `function_calls`), `function_calls`, `segments` (always `[]` for completion — populated only in transcription responses), `confidence`, timing stats (`time_to_first_token_ms`, `total_time_ms`, `prefill_tps`, `decode_tps`, `ram_usage_mb`), and token counts (`prefill_tokens`, `decode_tokens`, `total_tokens`).
+Returns a `dict` with `success`, `error`, `cloud_handoff`, `response`, optional `thinking` (only present when the model emits chain-of-thought content, placed before `function_calls`), `function_calls`, `segments` (always `[]` for completion — populated only for Whisper transcription with the `timestamps` option), `confidence`, timing stats (`time_to_first_token_ms`, `total_time_ms`, `prefill_tps`, `decode_tps`, `ram_usage_mb`), and token counts (`prefill_tokens`, `decode_tokens`, `total_tokens`).
 
 ```python
 result = cactus_complete(
@@ -187,7 +187,7 @@ result = cactus_complete(model, completion_messages, None, tools, None)
 
 ### Transcription
 
-Returns a `dict` with the `response` field (transcribed text), the `segments` array (always empty for the current native transcription paths), and other metadata.
+Returns a `dict` with the `response` field (transcribed text) and a `segments` array of `{start, end, text}` objects. `segments` is populated only for Whisper models when the `timestamps` option is set (`{"timestamps": True}`); it is empty otherwise, including for all Parakeet transcription.
 
 ```python
 result = cactus_transcribe(
@@ -211,7 +211,7 @@ result = cactus_transcribe(model, "medical_notes.wav", None, options, None, None
 ```
 
 ```python
-result = cactus_transcribe(model, "/path/to/audio.wav", None, None, None, None)
+result = cactus_transcribe(model, "/path/to/audio.wav", None, {"timestamps": True}, None, None)
 print(result["response"])
 for seg in result["segments"]:
     print(f"[{seg['start']:.3f}s - {seg['end']:.3f}s] {seg['text']}")
@@ -223,11 +223,11 @@ Transcribe continuously while audio is still being captured (Whisper and Parakee
 
 ```python
 stream = cactus_stream_transcribe_start(model: int, options: dict | str | None) -> int
-result = cactus_stream_transcribe_process(stream: int, pcm_data: bytes) -> dict  # {"success": True, "confirmed": str, "pending": str}
-result = cactus_stream_transcribe_stop(stream: int) -> dict                      # {"success": True, "confirmed": str}; destroys the session
+result = cactus_stream_transcribe_process(stream: int, pcm_data: bytes) -> dict  # {"confirmed": str, "pending": str, plus per-call timing stats}
+result = cactus_stream_transcribe_stop(stream: int) -> dict                      # {"confirmed": str, "pending": ""}; destroys the session
 ```
 
-`options` accepts the same keys as `cactus_transcribe` (e.g. `language`) plus segmentation tunables (`min_chunk_sec`, `silence_sec`, `max_segment_sec`, `vad_threshold`, `commit_holdback`).
+`options` accepts the same keys as `cactus_transcribe` (e.g. `language`, `max_tokens`); chunking is handled internally.
 
 ```python
 stream = cactus_stream_transcribe_start(model, {"language": "en"})

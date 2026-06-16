@@ -10,6 +10,46 @@
 
 using namespace cactus::ffi;
 
+namespace {
+
+constexpr float kWhisperTimestampStepSec = 0.02f;
+
+uint32_t whisper_timestamp_begin(cactus::engine::Tokenizer* tokenizer) {
+    return tokenizer->encode("<|notimestamps|>")[0] + 1;
+}
+
+std::vector<TranscriptSegment> parse_whisper_timestamp_segments(
+    cactus::engine::Tokenizer* tokenizer, const std::vector<uint32_t>& tokens,
+    uint32_t timestamp_begin, std::string& clean_text) {
+    std::vector<TranscriptSegment> segments;
+    std::vector<uint32_t> text_tokens;
+    std::vector<uint32_t> flat;
+    float seg_start = -1.0f;
+    auto flush = [&](float end_sec) {
+        if (!text_tokens.empty()) {
+            std::string text = tokenizer->decode(text_tokens);
+            if (!text.empty() && text[0] == ' ') text.erase(0, 1);
+            segments.push_back({seg_start, end_sec, text});
+        }
+        text_tokens.clear();
+    };
+    for (uint32_t tok : tokens) {
+        if (tok >= timestamp_begin) {
+            const float t = static_cast<float>(tok - timestamp_begin) * kWhisperTimestampStepSec;
+            if (seg_start < 0.0f) seg_start = t;
+            else { flush(t); seg_start = t; }
+        } else {
+            text_tokens.push_back(tok);
+            flat.push_back(tok);
+        }
+    }
+    flush(seg_start);
+    clean_text = tokenizer->decode(flat);
+    return segments;
+}
+
+} // namespace
+
 extern "C" {
 
 int cactus_preprocess_audio_features(
@@ -231,6 +271,9 @@ int cactus_transcribe(
             return -1;
         }
 
+        const bool want_timestamps = is_whisper && options.timestamps;
+        const uint32_t ts_begin = want_timestamps ? whisper_timestamp_begin(tokenizer) : 0;
+
         std::vector<uint32_t> tokens;
         if (prompt && prompt[0] != '\0') {
             tokens = tokenizer->encode(prompt);
@@ -251,6 +294,8 @@ int cactus_transcribe(
                     }
                 }
             }
+            if (want_timestamps)
+                tokens.erase(std::remove(tokens.begin(), tokens.end(), ts_begin - 1), tokens.end());
         }
 
         if (tokens.empty() && is_whisper) {
@@ -282,6 +327,7 @@ int cactus_transcribe(
         }
 
         std::string final_text;
+        std::vector<TranscriptSegment> segments;
         std::vector<uint32_t> generated_tokens;
         generated_tokens.reserve(options.max_tokens);
         const size_t prompt_tokens = tokens.size();
@@ -306,7 +352,8 @@ int cactus_transcribe(
                 tokens,
                 options.max_tokens,
                 stop_token_sequences,
-                &handle->should_stop);
+                &handle->should_stop,
+                want_timestamps ? static_cast<int64_t>(ts_begin) - 1 : -1);
             auto t_first = std::chrono::high_resolution_clock::now();
             time_to_first_token =
                 std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
@@ -317,9 +364,14 @@ int cactus_transcribe(
                     break;
                 }
             }
-            final_text = tokenizer->decode(generated_tokens);
+            if (want_timestamps) {
+                segments = parse_whisper_timestamp_segments(tokenizer, generated_tokens, ts_begin, final_text);
+            } else {
+                final_text = tokenizer->decode(generated_tokens);
+            }
             if (callback) {
                 for (uint32_t tok : generated_tokens) {
+                    if (want_timestamps && tok >= ts_begin) continue;
                     std::string piece = tokenizer->decode({tok});
                     callback(piece.c_str(), tok, user_data);
                 }
@@ -384,7 +436,7 @@ int cactus_transcribe(
         std::string json = construct_response_json(
             final_text, {}, time_to_first_token, total_time_ms,
             prefill_tps, decode_tps, prompt_tokens, completion_tokens,
-            confidence);
+            confidence, false, "", segments);
         if (json.size() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);
             return -1;

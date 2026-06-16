@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstring>
 #include <mutex>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -18,9 +19,7 @@ constexpr size_t kRightContextSamples = 16000;
 constexpr size_t kChunkSamples = 16000;
 constexpr size_t kColdStartSamples = 6 * 16000;
 constexpr size_t kSilenceResetSamples = 3 * 16000;
-constexpr size_t kWhisperResetWindow = 8 * 16000;
-constexpr size_t kWhisperMaxWindow = 28 * 16000;
-constexpr size_t kWhisperStablePolls = 4;
+constexpr size_t kMaxDecodeSamples = 10 * 16000;
 
 struct StreamStats {
     size_t decode_tokens = 0;
@@ -51,33 +50,13 @@ struct StreamTranscribe {
     std::string emitted_text;
     std::string previous_pending;
 
-    std::vector<std::string> whisper_prev_words;
-    size_t whisper_committed = 0;
+    std::vector<TranscriptSegment> whisper_prev_segments;
     size_t whisper_last_len = 0;
-    size_t whisper_window_start = 0;
-    size_t whisper_stable = 0;
 };
 
 double json_num(const std::string& json, const std::string& key) {
     float v = 0.0f;
     return try_parse_json_float(json, key, v) ? static_cast<double>(v) : 0.0;
-}
-
-std::vector<std::string> split_ws(const std::string& text) {
-    std::vector<std::string> words;
-    std::istringstream iss(text);
-    std::string w;
-    while (iss >> w) words.push_back(w);
-    return words;
-}
-
-std::string join_ws(const std::vector<std::string>& words, size_t from, size_t to) {
-    std::string out;
-    for (size_t i = from; i < to && i < words.size(); ++i) {
-        if (!out.empty()) out += ' ';
-        out += words[i];
-    }
-    return out;
 }
 
 std::vector<int16_t> to_pcm16(const std::vector<float>& samples) {
@@ -89,23 +68,53 @@ std::vector<int16_t> to_pcm16(const std::vector<float>& samples) {
     return pcm;
 }
 
-std::string transcribe_samples(StreamTranscribe* s, const std::vector<float>& samples, StreamStats& stats) {
+std::string with_timestamps_option(std::string opts) {
+    if (opts.find("\"timestamps\"") != std::string::npos) return opts;
+    if (opts.empty() || opts == "{}") return "{\"timestamps\":true}";
+    return opts.substr(0, opts.find_last_of('}')) + ",\"timestamps\":true}";
+}
+
+std::string trim(const std::string& s) {
+    size_t b = s.find_first_not_of(' '), e = s.find_last_not_of(' ');
+    return b == std::string::npos ? std::string() : s.substr(b, e - b + 1);
+}
+
+std::string strip_annotations(const std::string& text) {
+    static const std::regex pattern(R"(\([^)]*\)|\[[^\]]*\]|\.\.\.)");
+    std::string out = std::regex_replace(text, pattern, "");
+    out = std::regex_replace(out, std::regex(R"(\s+)"), " ");
+    return trim(out);
+}
+
+std::vector<TranscriptSegment> parse_segments(const std::string& json) {
+    std::vector<TranscriptSegment> segs;
+    for (const std::string& obj : split_json_array(json_array_field(json, "segments"))) {
+        float start = 0.0f, end = 0.0f;
+        try_parse_json_float(obj, "start", start);
+        try_parse_json_float(obj, "end", end);
+        segs.push_back({start, end, strip_annotations(json_string_field(obj, "text"))});
+    }
+    return segs;
+}
+
+std::vector<TranscriptSegment> whisper_transcribe(StreamTranscribe* s, const std::vector<float>& samples,
+                                                  StreamStats& stats) {
     std::vector<int16_t> pcm = to_pcm16(samples);
     std::string scratch(kScratchSize, '\0');
+    const std::string opts = with_timestamps_option(s->options_json);
     const int rc = cactus_transcribe(
         static_cast<cactus_model_t>(s->model), nullptr, nullptr,
-        scratch.data(), scratch.size(),
-        s->options_json.empty() ? nullptr : s->options_json.c_str(),
+        scratch.data(), scratch.size(), opts.c_str(),
         nullptr, nullptr,
         reinterpret_cast<const uint8_t*>(pcm.data()), pcm.size() * sizeof(int16_t));
-    if (rc <= 0) return "";
+    if (rc <= 0) return {};
     const std::string json(scratch.c_str());
     stats.decode_tps = json_num(json, "decode_tps");
     stats.raw_decoder_tps = json_num(json, "raw_decoder_tps");
     stats.total_time_ms = json_num(json, "total_time_ms");
     stats.time_to_first_token_ms = json_num(json, "time_to_first_token_ms");
     stats.decode_tokens = static_cast<size_t>(json_num(json, "decode_tokens"));
-    return json_string_field(json, "response");
+    return parse_segments(json);
 }
 
 std::vector<float> window_features(std::vector<float> window, size_t mel_bins) {
@@ -166,7 +175,7 @@ size_t parakeet_spf(StreamTranscribe* s) {
     return cactus::audio::get_parakeet_spectrogram_config().hop_length * subsampling;
 }
 
-std::string parakeet_process(StreamTranscribe* s, std::string* pending_text, StreamStats& stats) {
+std::string parakeet_process(StreamTranscribe* s, std::string& pending, StreamStats& stats) {
     std::lock_guard<std::mutex> lock(s->model->model_mutex);
     const size_t spf = parakeet_spf(s);
 
@@ -180,36 +189,44 @@ std::string parakeet_process(StreamTranscribe* s, std::string* pending_text, Str
             decodable - s->samples_decoded_up_to < min_chunk) {
             break;
         }
+        const size_t decode_to = std::min(decodable, s->samples_decoded_up_to + kMaxDecodeSamples);
         const size_t window_start = cold ? s->samples_decoded_up_to
             : (s->samples_decoded_up_to > kLeftContextSamples ? s->samples_decoded_up_to - kLeftContextSamples : 0);
-        const size_t window_end = std::min(total, decodable + kRightContextSamples);
+        const size_t window_end = decode_to + kRightContextSamples;
         const size_t decode_start_frame = (s->samples_decoded_up_to - window_start) / spf;
-        const size_t decode_end_frame = decode_start_frame + (decodable - s->samples_decoded_up_to) / spf;
-        if (decode_end_frame <= decode_start_frame) break;
+        const size_t decode_end_frame = decode_start_frame + (decode_to - s->samples_decoded_up_to) / spf;
         if (cold) s->pstate = {};
 
         std::string pend;
         const size_t prev_cursor = s->samples_decoded_up_to;
         confirmed += parakeet_decode_window(s, window_start, window_end,
                                             decode_start_frame, decode_end_frame, false, &pend, stats);
-        if (pending_text) *pending_text = pend;
+        pending = pend;
         if (s->pstate.decoded_tokens > 0) { s->cold_restart = false; s->silence_run = 0; }
         if (s->samples_decoded_up_to > prev_cursor) continue;
         if (s->pstate.decoded_tokens == 0) {
-            s->silence_run += decodable - s->samples_decoded_up_to;
-            s->samples_decoded_up_to = decodable;
+            s->silence_run += decode_to - s->samples_decoded_up_to;
+            s->samples_decoded_up_to = decode_to;
             if (s->silence_run >= kSilenceResetSamples) s->cold_restart = true;
             continue;
         }
-        if (decodable - s->samples_decoded_up_to < kColdStartSamples) break;
+        if (decode_to - s->samples_decoded_up_to < kColdStartSamples) break;
         confirmed += parakeet_decode_window(s, window_start, window_end,
                                             decode_start_frame, decode_end_frame, true, &pend, stats);
-        if (pending_text) *pending_text = pend;
-        s->samples_decoded_up_to = decodable;
+        pending = pend;
+        s->samples_decoded_up_to = decode_to;
     }
+
+    const size_t keep_from = s->samples_decoded_up_to > kLeftContextSamples
+        ? s->samples_decoded_up_to - kLeftContextSamples : 0;
+    if (keep_from > kLeftContextSamples) {
+        s->samples.erase(s->samples.begin(), s->samples.begin() + keep_from);
+        s->samples_decoded_up_to -= keep_from;
+    }
+
     stats.finalize();
-    if (confirmed.empty() && pending_text && pending_text->empty()) *pending_text = s->previous_pending;
-    else if (pending_text) s->previous_pending = *pending_text;
+    if (confirmed.empty() && pending.empty()) pending = s->previous_pending;
+    else s->previous_pending = pending;
     return confirmed;
 }
 
@@ -226,57 +243,54 @@ std::string parakeet_flush(StreamTranscribe* s, StreamStats& stats) {
     return confirmed;
 }
 
-std::string whisper_commit(StreamTranscribe* s, const std::vector<std::string>& words, size_t up_to) {
-    std::string confirmed = join_ws(words, s->whisper_committed, up_to);
-    if (!confirmed.empty()) {
-        if (!s->emitted_text.empty()) { s->emitted_text += ' '; confirmed = " " + confirmed; }
-        s->emitted_text += join_ws(words, s->whisper_committed, up_to);
-        s->whisper_committed = up_to;
+std::string segments_text(const std::vector<TranscriptSegment>& segs, size_t from, size_t to) {
+    std::string out;
+    for (size_t i = from; i < to && i < segs.size(); ++i) {
+        if (segs[i].text.empty()) continue;
+        if (!out.empty()) out += ' ';
+        out += segs[i].text;
     }
-    return confirmed;
+    return out;
 }
 
-std::vector<float> whisper_window(StreamTranscribe* s) {
-    return std::vector<float>(s->samples.begin() + s->whisper_window_start, s->samples.end());
-}
-
-std::string whisper_process(StreamTranscribe* s, std::string* pending_text, StreamStats& stats) {
+std::string whisper_process(StreamTranscribe* s, std::string& pending, StreamStats& stats) {
     if (s->samples.size() < s->whisper_last_len + kChunkSamples) {
-        if (pending_text) *pending_text = s->previous_pending;
+        pending = s->previous_pending;
         return "";
     }
     s->whisper_last_len = s->samples.size();
-    std::vector<std::string> words = split_ws(transcribe_samples(s, whisper_window(s), stats));
+    std::vector<TranscriptSegment> segs = whisper_transcribe(s, s->samples, stats);
 
     size_t agree = 0;
-    while (agree < words.size() && agree < s->whisper_prev_words.size() &&
-           words[agree] == s->whisper_prev_words[agree]) ++agree;
-    s->whisper_prev_words = words;
-    if (agree < s->whisper_committed) agree = s->whisper_committed;
-
-    std::string confirmed = whisper_commit(s, words, agree);
-    std::string pending = join_ws(words, agree, words.size());
-
-    const size_t window_len = s->samples.size() - s->whisper_window_start;
-    s->whisper_stable = s->whisper_committed >= words.size() ? s->whisper_stable + 1 : 0;
-    if ((window_len >= kWhisperResetWindow && s->whisper_stable >= kWhisperStablePolls) ||
-        window_len >= kWhisperMaxWindow) {
-        if (window_len >= kWhisperMaxWindow) confirmed += whisper_commit(s, words, words.size());
-        s->whisper_window_start = s->samples.size();
-        s->whisper_committed = 0;
-        s->whisper_stable = 0;
-        s->whisper_prev_words.clear();
-        pending.clear();
+    float confirmed_end_sec = 0.0f;
+    while (agree < segs.size() && agree < s->whisper_prev_segments.size() &&
+           segs[agree].text == s->whisper_prev_segments[agree].text) {
+        confirmed_end_sec = std::min(segs[agree].end, s->whisper_prev_segments[agree].end);
+        ++agree;
     }
 
-    if (pending_text) { *pending_text = pending; s->previous_pending = pending; }
+    std::string confirmed;
+    pending = segments_text(segs, agree, segs.size());
+    if (agree > 0 && confirmed_end_sec > 0.0f) {
+        confirmed = segments_text(segs, 0, agree);
+        const size_t cut = std::min(static_cast<size_t>(confirmed_end_sec * 16000.0f), s->samples.size());
+        s->samples.erase(s->samples.begin(), s->samples.begin() + cut);
+        s->whisper_last_len -= cut;
+        std::vector<TranscriptSegment> tail;
+        for (size_t i = agree; i < segs.size(); ++i)
+            tail.push_back({segs[i].start - confirmed_end_sec, segs[i].end - confirmed_end_sec, segs[i].text});
+        s->whisper_prev_segments = std::move(tail);
+    } else {
+        s->whisper_prev_segments = segs;
+    }
+
+    s->previous_pending = pending;
     return confirmed;
 }
 
 std::string whisper_flush(StreamTranscribe* s, StreamStats& stats) {
-    std::vector<std::string> words = split_ws(transcribe_samples(s, whisper_window(s), stats));
-    if (words.size() < s->whisper_committed) return "";
-    return whisper_commit(s, words, words.size());
+    std::vector<TranscriptSegment> segs = whisper_transcribe(s, s->samples, stats);
+    return segments_text(segs, 0, segs.size());
 }
 
 int write_result(char* buffer, size_t size, const std::string& confirmed,
@@ -349,8 +363,8 @@ int cactus_stream_transcribe_process(cactus_stream_transcribe_t stream,
         }
         StreamStats stats;
         std::string pending;
-        std::string confirmed = s->is_parakeet ? parakeet_process(s, &pending, stats)
-                                                : whisper_process(s, &pending, stats);
+        std::string confirmed = s->is_parakeet ? parakeet_process(s, pending, stats)
+                                                : whisper_process(s, pending, stats);
         return write_result(response_buffer, buffer_size, confirmed, pending, stats);
     } catch (const std::exception& e) {
         last_error_message = std::string("stream_transcribe_process: ") + e.what();

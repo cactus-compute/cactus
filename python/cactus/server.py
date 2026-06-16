@@ -590,6 +590,8 @@ def create_app(
                 options["temperature"] = temperature
             if language:
                 options["language"] = language
+            if response_format == "verbose_json":
+                options["timestamps"] = True
             mgr: ModelManager = request.app.state.manager
             async with mgr.acquire(model_id) as slot:
                 async with slot.lock:

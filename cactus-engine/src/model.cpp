@@ -1739,6 +1739,7 @@ uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float
     };
     float second_v = -std::numeric_limits<float>::infinity();
     auto observe_logit = [&](size_t i, float v) {
+        if (static_cast<int64_t>(i) == suppressed_token_id_) return;
         v = score_with_bias(i, v);
         if (v > best_v) {
             second_v = best_v;
@@ -2841,13 +2842,16 @@ std::vector<uint32_t> Model::transcribe_whisper_seq2seq(
     const std::vector<uint32_t>& decoder_prompt_tokens,
     size_t max_tokens,
     const std::vector<std::vector<uint32_t>>& stop_token_sequences,
-    const std::atomic<bool>* should_stop) {
+    const std::atomic<bool>* should_stop,
+    int64_t suppress_token_id) {
     if (decoder_prompt_tokens.empty() || max_tokens == 0) return {};
     if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP || encoder_cross_kv_source_kind_ != "audio_features") {
         CACTUS_LOG_ERROR("model", "Whisper bundle missing encoder_cross_kv_decoder_step route metadata");
         return {};
     }
     if (!prepare_encoder_cross_kv_from_audio(audio_features)) return {};
+    struct SuppressGuard { int64_t& id; ~SuppressGuard() { id = -1; } } guard{suppressed_token_id_};
+    suppressed_token_id_ = suppress_token_id;
     return run_encoder_cross_kv_decode_loop(
         decoder_prompt_tokens,
         max_tokens,

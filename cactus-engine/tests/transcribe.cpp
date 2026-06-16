@@ -9,58 +9,64 @@
 #include <chrono>
 #include <thread>
 #include <vector>
-#include <deque>
 #include <cctype>
 #include <algorithm>
+#include <unistd.h>
+#include <sys/ioctl.h>
 
 #ifdef HAVE_SDL2
 #include <SDL.h>
 #include <atomic>
 #include <mutex>
-#include <sys/ioctl.h>
-#include <unistd.h>
 #endif
 
 constexpr size_t RESPONSE_BUFFER_SIZE = 65536;
 
-namespace Color {
-    const std::string RESET   = "\033[0m";
-    const std::string BOLD    = "\033[1m";
-    const std::string DIM     = "\033[2m";
-    const std::string CYAN    = "\033[36m";
-    const std::string GREEN   = "\033[32m";
-    const std::string YELLOW  = "\033[33m";
-    const std::string BLUE    = "\033[34m";
-    const std::string MAGENTA = "\033[35m";
-    const std::string RED     = "\033[31m";
-    const std::string GRAY    = "\033[90m";
+namespace ansi {
+constexpr const char* reset  = "\033[0m";
+constexpr const char* bold   = "\033[1m";
+constexpr const char* dim    = "\033[2m";
+constexpr const char* green  = "\033[32m";
+constexpr const char* yellow = "\033[33m";
+constexpr const char* cyan   = "\033[36m";
 }
 
-static bool supports_color() {
-    const char* term = std::getenv("TERM");
-    return term && std::string(term) != "dumb";
+static bool stdout_is_terminal() {
+    return isatty(STDOUT_FILENO) != 0 && std::getenv("NO_COLOR") == nullptr;
 }
-static bool use_colors = supports_color();
+static const bool g_color = stdout_is_terminal();
 
-static std::string colored(const std::string& text, const std::string& color) {
-    return use_colors ? color + text + Color::RESET : text;
-}
-
-static void print_separator(char ch = '-', int width = 60) {
-    std::cout << colored(std::string(width, ch), Color::DIM) << "\n";
+static std::string colored(const std::string& text, const char* color) {
+    return g_color ? color + text + ansi::reset : text;
 }
 
-static void print_header_live_mode() {
-    std::cout << "\n";
-    print_separator('=');
-    std::cout << colored("     🌵 CACTUS LIVE TRANSCRIPTION 🌵", Color::GREEN + Color::BOLD) << "\n";
-    print_separator('=');
-    std::cout << colored("Listening...", Color::YELLOW) << " Press " << colored("Enter", Color::CYAN) << " to stop\n";
-    print_separator();
-    std::cout << "\n";
+static int terminal_width() {
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1 || w.ws_col == 0) return 80;
+    return w.ws_col;
 }
 
-static std::string extract_json_value(const std::string& json, const std::string& key) {
+static void print_rule() {
+    std::string rule(terminal_width(), '-');
+    std::cout << colored(rule, ansi::dim) << "\n";
+}
+
+static void print_banner() {
+    if (!g_color) {
+        std::cout << "Cactus Transcription\n\n";
+        return;
+    }
+    std::cout << ansi::bold << ansi::green
+              << " ██████╗ █████╗  ██████╗████████╗██╗   ██╗███████╗\n"
+              << "██╔════╝██╔══██╗██╔════╝╚══██╔══╝██║   ██║██╔════╝\n"
+              << "██║     ███████║██║        ██║   ██║   ██║███████╗\n"
+              << "██║     ██╔══██║██║        ██║   ██║   ██║╚════██║\n"
+              << "╚██████╗██║  ██║╚██████╗   ██║   ╚██████╔╝███████║\n"
+              << " ╚═════╝╚═╝  ╚═╝ ╚═════╝   ╚═╝    ╚═════╝ ╚══════╝\n"
+              << ansi::reset << ansi::dim << "              Transcription" << ansi::reset << "\n\n";
+}
+
+static std::string json_string_value(const std::string& json, const std::string& key) {
     std::string pattern = "\"" + key + "\":\"";
     size_t start = json.find(pattern);
     if (start == std::string::npos) return "";
@@ -73,20 +79,16 @@ static std::string extract_json_value(const std::string& json, const std::string
     return json.substr(start, end - start);
 }
 
-static std::string extract_json_number(const std::string& json, const std::string& key) {
+static double json_number_value(const std::string& json, const std::string& key) {
     std::string pattern = "\"" + key + "\":";
     size_t start = json.find(pattern);
-    if (start == std::string::npos) return "";
+    if (start == std::string::npos) return 0.0;
     start += pattern.length();
     while (start < json.length() && std::isspace((unsigned char)json[start])) start++;
-    const char* begin = json.c_str() + start;
-    char* end_ptr = nullptr;
-    std::strtod(begin, &end_ptr);
-    if (end_ptr == begin) return "";
-    return std::string(begin, static_cast<size_t>(end_ptr - begin));
+    return std::strtod(json.c_str() + start, nullptr);
 }
 
-static std::string get_transcribe_prompt(const std::string& model_path, const std::string& language) {
+static std::string whisper_prompt(const std::string& model_path, const std::string& language) {
     std::string p = model_path;
     std::transform(p.begin(), p.end(), p.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     if (p.find("whisper") != std::string::npos)
@@ -94,46 +96,36 @@ static std::string get_transcribe_prompt(const std::string& model_path, const st
     return "";
 }
 
-static void print_token(const char* token, uint32_t /*token_id*/, void* /*user_data*/) {
+static void print_token(const char* token, uint32_t, void*) {
     std::cout << token << std::flush;
-}
-
-static std::string transcribe_options_json(const std::string& language) {
-    std::ostringstream os;
-    os << "{\"max_tokens\":500,\"language\":\"" << language << "\"}";
-    return os.str();
 }
 
 static int transcribe_file(cactus_model_t model, const std::string& audio_path,
                            const std::string& model_path, const std::string& language) {
-    std::string prompt = get_transcribe_prompt(model_path, language);
+    std::string prompt = whisper_prompt(model_path, language);
     std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
-    const std::string options_json = transcribe_options_json(language);
+    std::string options = "{\"max_tokens\":500,\"language\":\"" + language + "\"}";
 
-    auto start_time = std::chrono::steady_clock::now();
-    int result = cactus_transcribe(
+    auto start = std::chrono::steady_clock::now();
+    int rc = cactus_transcribe(
         model, audio_path.c_str(), prompt.empty() ? nullptr : prompt.c_str(),
         response_buffer.data(), response_buffer.size(),
-        options_json.c_str(), print_token, nullptr, nullptr, 0);
-    auto end_time = std::chrono::steady_clock::now();
-    double total_seconds = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count() / 1000.0;
-
-    if (result < 0) {
-        std::cerr << "\n" << colored("Error: ", Color::RED + Color::BOLD) << "Transcription failed\n";
-        const char* err = cactus_get_last_error();
-        if (err && *err) std::cerr << colored("Details: ", Color::RED) << err << "\n";
+        options.c_str(), print_token, nullptr, nullptr, 0);
+    double total_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (rc < 0) {
+        std::cerr << "\nTranscription failed: " << cactus_get_last_error() << "\n";
         return -1;
     }
 
-    std::string json_str(response_buffer.data());
-    std::string time_str = extract_json_number(json_str, "total_time_ms");
+    std::string json(response_buffer.data());
+    double model_ms = json_number_value(json, "total_time_ms");
+    double tps = json_number_value(json, "decode_tps");
     std::ostringstream stats;
-    stats << std::fixed << std::setprecision(2) << "\n\n" << colored("[", Color::GRAY)
-          << colored("processed in: ", Color::GRAY) << total_seconds << "s";
-    if (!time_str.empty())
-        stats << colored(" | model time: ", Color::GRAY) << std::stod(time_str) / 1000.0 << "s";
-    stats << colored("]", Color::GRAY);
-    std::cout << stats.str() << "\n";
+    stats << std::fixed << std::setprecision(2) << "[processed: " << total_s << "s";
+    if (model_ms > 0.0) stats << " | model: " << model_ms / 1000.0 << "s";
+    if (tps > 0.0) stats << " | " << std::setprecision(1) << tps << " tok/s";
+    stats << "]";
+    std::cout << "\n\n" << colored(stats.str(), ansi::dim) << "\n";
     return 0;
 }
 
@@ -141,6 +133,7 @@ static int transcribe_file(cactus_model_t model, const std::string& audio_path,
 
 constexpr int TARGET_SAMPLE_RATE = 16000;
 constexpr int AUDIO_BUFFER_MS = 100;
+constexpr int PROCESS_INTERVAL_MS = 250;
 
 struct AudioState {
     std::mutex mutex;
@@ -148,42 +141,34 @@ struct AudioState {
     std::atomic<bool> recording{false};
     int actual_sample_rate{TARGET_SAMPLE_RATE};
 };
-static AudioState g_audio_state;
+static AudioState g_audio;
 
-static std::vector<uint8_t> resample_audio(const std::vector<uint8_t>& input, int source_rate, int target_rate) {
-    if (source_rate == target_rate || input.empty()) return input;
+static std::vector<uint8_t> resample_to_16k(const std::vector<uint8_t>& input, int source_rate) {
+    if (source_rate == TARGET_SAMPLE_RATE) return input;
     size_t num_input = input.size() / 2;
-    if (num_input == 0) return input;
     const int16_t* in = reinterpret_cast<const int16_t*>(input.data());
-    double ratio = static_cast<double>(target_rate) / source_rate;
+    double ratio = static_cast<double>(TARGET_SAMPLE_RATE) / source_rate;
     size_t num_output = static_cast<size_t>(num_input * ratio);
-    if (num_output == 0) return {};
     std::vector<int16_t> out(num_output);
     for (size_t i = 0; i < num_output; i++) {
         double src = i / ratio;
         size_t i0 = static_cast<size_t>(src);
         size_t i1 = std::min(i0 + 1, num_input - 1);
         double frac = src - i0;
-        double s = in[i0] * (1.0 - frac) + in[i1] * frac;
-        out[i] = static_cast<int16_t>(std::clamp(s, -32768.0, 32767.0));
+        out[i] = static_cast<int16_t>(in[i0] * (1.0 - frac) + in[i1] * frac);
     }
     std::vector<uint8_t> result(num_output * 2);
     std::memcpy(result.data(), out.data(), result.size());
     return result;
 }
 
-static void audio_callback(void* /*userdata*/, Uint8* stream, int len) {
-    if (!g_audio_state.recording) return;
-    std::lock_guard<std::mutex> lock(g_audio_state.mutex);
-    g_audio_state.buffer.insert(g_audio_state.buffer.end(), stream, stream + len);
+static void audio_callback(void*, Uint8* stream, int len) {
+    if (!g_audio.recording) return;
+    std::lock_guard<std::mutex> lock(g_audio.mutex);
+    g_audio.buffer.insert(g_audio.buffer.end(), stream, stream + len);
 }
 
-static int get_terminal_width() {
-    struct winsize w;
-    return (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1) ? 80 : w.ws_col;
-}
-
-static size_t find_safe_split_index(const std::string& s, size_t limit) {
+static size_t wrap_index(const std::string& s, size_t limit) {
     size_t len = 0;
     bool in_esc = false;
     for (size_t i = 0; i < s.length(); ++i) {
@@ -196,20 +181,11 @@ static size_t find_safe_split_index(const std::string& s, size_t limit) {
     return std::string::npos;
 }
 
-static int run_live_transcription(cactus_model_t model, const std::string& model_path, const std::string& language) {
+static int run_live_transcription(cactus_model_t model, const std::string& language) {
     if (SDL_Init(SDL_INIT_AUDIO) < 0) {
-        std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Failed to init SDL: " << SDL_GetError() << "\n";
+        std::cerr << "Failed to init SDL audio: " << SDL_GetError() << "\n";
         return 1;
     }
-    if (SDL_GetNumAudioDevices(1) == 0) {
-        std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "No audio capture devices found\n";
-        SDL_Quit();
-        return 1;
-    }
-    std::cout << colored("Available microphones:", Color::YELLOW) << "\n";
-    for (int i = 0; i < SDL_GetNumAudioDevices(1); i++)
-        std::cout << "  [" << i << "] " << SDL_GetAudioDeviceName(i, 1) << "\n";
-    std::cout << "\n";
 
     SDL_AudioSpec want, have;
     SDL_zero(want);
@@ -220,30 +196,28 @@ static int run_live_transcription(cactus_model_t model, const std::string& model
     want.callback = audio_callback;
     SDL_AudioDeviceID device = SDL_OpenAudioDevice(nullptr, 1, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (device == 0) {
-        std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Failed to open microphone: " << SDL_GetError() << "\n";
+        std::cerr << "Failed to open microphone: " << SDL_GetError() << "\n";
         SDL_Quit();
         return 1;
     }
-    g_audio_state.actual_sample_rate = have.freq;
-    if (have.freq != TARGET_SAMPLE_RATE)
-        std::cout << colored("Note: ", Color::YELLOW) << "device runs at " << have.freq
-                  << "Hz, resampling to " << TARGET_SAMPLE_RATE << "Hz\n";
+    g_audio.actual_sample_rate = have.freq;
 
-    const std::string options = "{\"language\":\"" + language + "\"}";
+    std::string options = "{\"language\":\"" + language + "\"}";
     cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(model, options.c_str());
     if (!stream) {
-        std::cerr << colored("Error: ", Color::RED + Color::BOLD)
-                  << "Failed to start streaming transcription (live mode needs a Whisper or Parakeet TDT model).\n";
-        const char* err = cactus_get_last_error();
-        if (err && *err) std::cerr << "  " << err << "\n";
+        std::cerr << "Failed to start streaming (live mode needs a Whisper or Parakeet TDT model): "
+                  << cactus_get_last_error() << "\n";
         SDL_CloseAudioDevice(device);
         SDL_Quit();
         return 1;
     }
 
-    print_header_live_mode();
-    g_audio_state.buffer.clear();
-    g_audio_state.recording = true;
+    std::cout << colored("Listening…", ansi::yellow) << " press " << colored("Enter", ansi::cyan) << " to stop\n";
+    print_rule();
+    std::cout << "\n";
+
+    g_audio.buffer.clear();
+    g_audio.recording = true;
     SDL_PauseAudioDevice(device, 0);
 
     std::atomic<bool> should_stop{false};
@@ -253,71 +227,64 @@ static int run_live_transcription(cactus_model_t model, const std::string& model
         should_stop = true;
     });
 
-    std::string confirmed_text;          // plain final transcript
-    std::string current_line_confirmed;  // colored, current wrapped line
-    int last_pending_line_count = 0;
-    std::string last_stats;
+    std::string confirmed_text;
+    std::string current_line;
+    int pending_lines = 0;
+    std::string stats;
     std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
-
     auto last_process = std::chrono::steady_clock::now();
-    const auto interval = std::chrono::milliseconds(250);
 
     auto step = [&](std::vector<uint8_t> chunk) {
         if (chunk.empty()) return;
-        std::vector<uint8_t> pcm = resample_audio(chunk, g_audio_state.actual_sample_rate, TARGET_SAMPLE_RATE);
+        std::vector<uint8_t> pcm = resample_to_16k(chunk, g_audio.actual_sample_rate);
         response_buffer[0] = '\0';
-        auto t0 = std::chrono::high_resolution_clock::now();
-        int rc = cactus_stream_transcribe_process(stream, pcm.data(), pcm.size(),
-                                                  response_buffer.data(), response_buffer.size());
-        auto t1 = std::chrono::high_resolution_clock::now();
-        if (rc < 0) return;
-        double latency_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
+        auto t0 = std::chrono::steady_clock::now();
+        if (cactus_stream_transcribe_process(stream, pcm.data(), pcm.size(),
+                                             response_buffer.data(), response_buffer.size()) < 0) return;
+        double latency_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 
-        std::string json_str(response_buffer.data());
-        std::string confirmed = extract_json_value(json_str, "confirmed");
-        std::string pending = extract_json_value(json_str, "pending");
-        std::string decode_tps = extract_json_number(json_str, "decode_tps");
-        std::string raw_decoder_tps = extract_json_number(json_str, "raw_decoder_tps");
+        std::string json(response_buffer.data());
+        std::string confirmed = json_string_value(json, "confirmed");
+        std::string pending = json_string_value(json, "pending");
+        double decode_tps = json_number_value(json, "decode_tps");
+        double raw_tps = json_number_value(json, "raw_decoder_tps");
         if (!confirmed.empty() || !pending.empty()) {
-            last_stats = colored("[Latency:" + std::to_string((int)latency_ms) + "ms", Color::GRAY);
-            if (!decode_tps.empty())
-                last_stats += colored(" Decode speed:" + decode_tps + " tokens/sec", Color::GRAY);
-            try {
-                if (!raw_decoder_tps.empty() && std::stod(raw_decoder_tps) > 0.0)
-                    last_stats += colored(" Raw decoder:" + raw_decoder_tps + " tokens/sec", Color::GRAY);
-            } catch (...) {}
-            last_stats += colored("]", Color::GRAY);
+            std::ostringstream st;
+            st << "[latency: " << (int)latency_ms << "ms";
+            if (decode_tps > 0.0) st << " | decode: " << std::fixed << std::setprecision(1) << decode_tps << " tok/s";
+            if (raw_tps > 0.0) st << " | raw decoder: " << std::fixed << std::setprecision(1) << raw_tps << " tok/s";
+            st << "]";
+            stats = colored(st.str(), ansi::dim);
         }
 
-        int width = get_terminal_width();
-        int limit = (int)((width < 20 ? 80 : width) * 0.7);
+        int limit = (int)(terminal_width() * 0.7);
 
-        if (last_pending_line_count > 0) {
+        if (pending_lines > 0) {
             std::cout << "\r\033[2K";
-            for (int i = 0; i < last_pending_line_count; ++i) std::cout << "\033[1A\033[2K";
+            for (int i = 0; i < pending_lines; ++i) std::cout << "\033[1A\033[2K";
         } else {
             std::cout << "\r";
         }
 
         if (!confirmed.empty()) {
-            current_line_confirmed += colored(confirmed, Color::GREEN);
+            current_line += colored(confirmed, ansi::green);
             confirmed_text += confirmed;
         }
 
         while (true) {
-            size_t idx = find_safe_split_index(current_line_confirmed, (size_t)limit);
+            size_t idx = wrap_index(current_line, (size_t)limit);
             if (idx == std::string::npos) break;
-            std::cout << "\r\033[K" << current_line_confirmed.substr(0, idx) << Color::RESET << "\n";
-            current_line_confirmed = Color::GREEN + current_line_confirmed.substr(idx + 1);
+            std::cout << "\r\033[K" << current_line.substr(0, idx) << ansi::reset << "\n";
+            current_line = std::string(ansi::green) + current_line.substr(idx + 1);
         }
-        std::cout << "\r\033[K" << current_line_confirmed;
+        std::cout << "\r\033[K" << current_line;
 
-        std::string ghost = last_stats;
+        std::string ghost = stats;
         if (!pending.empty()) {
             if (!ghost.empty()) ghost += "\n";
-            ghost += colored("[pending] ", Color::YELLOW) + colored(pending, Color::YELLOW);
+            ghost += colored("[pending] " + pending, ansi::yellow);
         }
-        last_pending_line_count = 0;
+        pending_lines = 0;
         if (!ghost.empty()) {
             std::cout << "\n";
             std::stringstream ss(ghost);
@@ -325,17 +292,17 @@ static int run_live_transcription(cactus_model_t model, const std::string& model
             bool first = true;
             while (std::getline(ss, line)) {
                 while (true) {
-                    size_t idx = find_safe_split_index(line, (size_t)limit);
+                    size_t idx = wrap_index(line, (size_t)limit);
                     if (idx == std::string::npos) break;
                     if (!first) std::cout << "\n";
                     std::cout << line.substr(0, idx);
                     line = line.substr(idx + 1);
-                    last_pending_line_count++;
+                    pending_lines++;
                     first = false;
                 }
                 if (!first) std::cout << "\n";
                 std::cout << line;
-                last_pending_line_count++;
+                pending_lines++;
                 first = false;
             }
         }
@@ -344,30 +311,29 @@ static int run_live_transcription(cactus_model_t model, const std::string& model
 
     while (!should_stop) {
         auto now = std::chrono::steady_clock::now();
-        if (now - last_process >= interval) {
+        if (now - last_process >= std::chrono::milliseconds(PROCESS_INTERVAL_MS)) {
             last_process = now;
             std::vector<uint8_t> chunk;
-            { std::lock_guard<std::mutex> lock(g_audio_state.mutex); chunk.swap(g_audio_state.buffer); }
+            { std::lock_guard<std::mutex> lock(g_audio.mutex); chunk.swap(g_audio.buffer); }
             step(std::move(chunk));
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    g_audio_state.recording = false;
+    g_audio.recording = false;
     SDL_PauseAudioDevice(device, 1);
     std::vector<uint8_t> tail;
-    { std::lock_guard<std::mutex> lock(g_audio_state.mutex); tail.swap(g_audio_state.buffer); }
+    { std::lock_guard<std::mutex> lock(g_audio.mutex); tail.swap(g_audio.buffer); }
     step(std::move(tail));
 
     response_buffer[0] = '\0';
     cactus_stream_transcribe_stop(stream, response_buffer.data(), response_buffer.size());
-    confirmed_text += extract_json_value(std::string(response_buffer.data()), "confirmed");
+    confirmed_text += json_string_value(std::string(response_buffer.data()), "confirmed");
 
     std::cout << "\n\n";
-    print_separator();
-    std::cout << colored("Final transcript:", Color::GREEN + Color::BOLD) << "\n";
-    std::cout << confirmed_text << "\n";
-    print_separator();
+    print_rule();
+    std::cout << colored("Final transcript:", ansi::bold) << "\n" << confirmed_text << "\n";
+    print_rule();
 
     if (input_thread.joinable()) input_thread.detach();
     SDL_CloseAudioDevice(device);
@@ -375,55 +341,73 @@ static int run_live_transcription(cactus_model_t model, const std::string& model
     return 0;
 }
 
-#else  // HAVE_SDL2
+#else
 
-static int run_live_transcription(cactus_model_t, const std::string&, const std::string&) {
-    std::cerr << colored("Error: ", Color::RED + Color::BOLD)
-              << "Live microphone transcription requires SDL2.\n"
-              << "Install SDL2 and rebuild, or pass an audio file:\n"
-              << "  macOS:  brew install sdl2\n"
-              << "  Linux:  sudo apt-get install libsdl2-dev\n";
+static int run_live_transcription(cactus_model_t, const std::string&) {
+    std::cerr << "Live microphone transcription requires SDL2. Install SDL2 and rebuild, "
+                 "or pass an audio file (brew install sdl2 / apt-get install libsdl2-dev).\n";
     return 1;
 }
 
-#endif  // HAVE_SDL2
+#endif
 
-int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << colored("Error: ", Color::RED + Color::BOLD) << "Missing model path\n";
-        std::cerr << "Usage: " << argv[0] << " <model_path> [audio_file] [--language <code>]\n"
-                  << "  With an audio file: one-shot transcription. Without: live from the microphone.\n";
-        return 1;
+static void print_usage(const char* argv0) {
+    std::cerr << "Usage: " << argv0 << " <model_path> [audio_file] [--language <code>]\n"
+              << "  With an audio file: one-shot transcription. Without: live from the microphone.\n";
+}
+
+int main(int argc, char** argv) {
+    std::cout << std::unitbuf;
+
+    if (argc < 2 || std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help") {
+        print_usage(argv[0]);
+        return argc < 2 ? 1 : 0;
     }
 
-    const char* model_path = argv[1];
-    const char* audio_file = nullptr;
+    std::string model_path = argv[1];
+    std::string audio_file;
     std::string language = "en";
     for (int i = 2; i < argc; ++i) {
-        if (std::string(argv[i]) == "--language" && i + 1 < argc) language = argv[++i];
-        else if (argv[i][0] != '-') audio_file = argv[i];
+        std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            print_usage(argv[0]);
+            return 0;
+        } else if (arg == "--language") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --language requires a value\n";
+                return 1;
+            }
+            language = argv[++i];
+        } else if (!arg.empty() && arg[0] == '-') {
+            std::cerr << "Error: unknown option '" << arg << "'\n";
+            print_usage(argv[0]);
+            return 1;
+        } else {
+            audio_file = arg;
+        }
     }
 
-    std::cout << "\n" << colored("Loading model from ", Color::YELLOW)
-              << colored(model_path, Color::CYAN) << colored("...", Color::YELLOW) << "\n";
-    cactus_model_t model = cactus_init(model_path, nullptr, false);
+    std::cout << "Loading model from " << model_path << "...\n";
+    cactus_model_t model = cactus_init(model_path.c_str(), nullptr, false);
     if (!model) {
-        std::cerr << colored("Failed to initialize model\n", Color::RED + Color::BOLD);
-        const char* err = cactus_get_last_error();
-        if (err && *err) std::cerr << colored("Error: ", Color::RED) << err << "\n";
+        std::cerr << "Failed to initialize model: " << cactus_get_last_error() << "\n";
         return 1;
     }
-    std::cout << colored("Model loaded successfully!\n", Color::GREEN + Color::BOLD);
+
+    if (g_color) std::cout << "\033[2J\033[3J\033[H";
+    print_banner();
 
     int result;
-    if (audio_file) {
-        std::cout << "\n" << colored("Transcribing: ", Color::BLUE + Color::BOLD) << audio_file << "\n\n";
+    if (!audio_file.empty()) {
+        std::cout << colored("Transcribing ", ansi::bold) << audio_file << "\n";
+        print_rule();
+        std::cout << "\n";
         result = transcribe_file(model, audio_file, model_path, language);
     } else {
-        result = run_live_transcription(model, model_path, language);
+        result = run_live_transcription(model, language);
     }
 
-    std::cout << colored("\n👋 Goodbye!\n", Color::MAGENTA + Color::BOLD);
     cactus_destroy(model);
+    std::cout << "\nGoodbye.\n";
     return result >= 0 ? 0 : 1;
 }

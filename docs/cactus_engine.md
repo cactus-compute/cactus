@@ -548,7 +548,8 @@ int cactus_transcribe(
 ```json
 {
     "max_tokens": 448,
-    "language": "en"
+    "language": "en",
+    "timestamps": true
 }
 ```
 
@@ -556,6 +557,7 @@ int cactus_transcribe(
 |--------|------|---------|-------------|
 | `max_tokens` | int | auto | Maximum tokens to generate. When unset, it defaults to the larger of 100 and an audio-length estimate (`audio_sec × 20` for Whisper, `audio_sec × 30` for Parakeet). For Whisper the result is then capped so the prompt tokens plus generated tokens fit the decoder's 448-position limit. |
 | `language` | string | model default | Whisper only. Two-letter language code (e.g. `en`, `es`, `de`) substituted into the decoder prompt's language token. Ignored by Parakeet and when an explicit `prompt` is supplied. |
+| `timestamps` | bool | false | Whisper only. Decodes timestamp tokens and populates `segments` with `{start, end, text}` entries (seconds). Empty otherwise, including all Parakeet transcription. |
 
 **Response Format:**
 ```json
@@ -580,7 +582,7 @@ int cactus_transcribe(
 ```
 
 - `response`: Full transcription text
-- `segments`: Always empty for the current native transcription paths
+- `segments`: `{start, end, text}` entries (seconds), populated only for Whisper when the `timestamps` option is set; empty otherwise, including all Parakeet transcription
 - `cloud_handoff`: Always false for transcription
 - `confidence_threshold`: `-1.0` (unset) — transcription does not resolve a cloud-handoff threshold
 
@@ -615,7 +617,7 @@ The session emits text in two parts on every call:
 - **`confirmed`** — newly finalized words. Append them to your running transcript; they never change.
 - **`pending`** — the current best guess for the still-changing tail. Replace it on every call (do not append it); it is for live display only.
 
-A word is confirmed once two successive re-transcriptions of the audio agree on it (LocalAgreement-2). A run of trailing silence — or a hard size cap — closes the current segment, flushing its tail as `confirmed` and freeing the buffer, so pauses are handled naturally and memory stays bounded.
+A word is confirmed once two successive re-transcriptions of the audio agree on it (LocalAgreement-2, Whisper) or once a following token starts a new word (Parakeet TDT). Confirmed audio is dropped from the front of the buffer as the window advances, so memory stays bounded and the active window never approaches the model's fixed input length.
 
 #### `cactus_stream_transcribe_start`
 Opens a streaming session bound to an already-initialized speech model.
@@ -627,15 +629,7 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(
 ```
 **Returns:** an opaque session handle, or `NULL` on error (see `cactus_get_last_error`). Free it with `cactus_stream_transcribe_stop`.
 
-Segmentation is automatic with sensible defaults; `options_json` (optional) overrides them and is forwarded to the underlying `cactus_transcribe` call (e.g. `language`, `max_tokens`):
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `min_chunk_sec` | float | 1.0 | Minimum new audio accumulated before a growing segment is re-transcribed. |
-| `silence_sec` | float | 0.7 | Trailing silence that finalizes a segment. |
-| `max_segment_sec` | float | 24.0 | Hard cap on segment length, keeping each segment under Whisper's 30s window. |
-| `vad_threshold` | float | 0.0025 | Normalized RMS below which audio counts as silence (lower for quiet mics). |
-| `commit_holdback` | float | 4 | Words held back from commit until later audio confirms them. |
+`options_json` (optional) is forwarded to the underlying `cactus_transcribe` call (e.g. `language`); chunking and segmentation are handled internally with no user-facing tunables.
 
 #### `cactus_stream_transcribe_process`
 Feeds the next slice of audio. Input is 16-bit signed PCM, **16 kHz, mono** — the same format as `cactus_transcribe`'s `pcm_buffer`. Feed reasonably small chunks (≈ 0.1–2 s) for low latency.
