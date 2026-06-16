@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from cactus.transpile.component_pipeline import ComponentModuleSpec
 from cactus.convert.cactus_adapters.tensor_io import CACTUS_MAGIC
 from cactus.convert.cactus_adapters.tensor_io import align_offset
+from cactus.convert.model_adapters.naming import gemma4_scale_factor
 
 
 _GEMMA4_SAFE_TEXT_MLP_PRODUCT_SCALE = 1.0 / 64.0
@@ -999,6 +1000,30 @@ def _gemma4_compute_native_like_image_features(
             eps=_gemma4_layer_norm_eps(multimodal_backbone),
         )
     return projected
+
+
+_GEMMA4_NPU_PROJ_WEIGHTS = (
+    ("embed_audio", "embed_audio_proj.weights"),
+    ("embed_vision", "embed_vision_proj.weights"),
+)
+
+
+@contextmanager
+def _gemma4_npu_projection_reparam(module: torch.nn.Module):
+    backbone = getattr(module, "multimodal_backbone", None)
+    scaled: list[tuple[torch.nn.Linear, float]] = []
+    for attr, cactus_name in _GEMMA4_NPU_PROJ_WEIGHTS:
+        projection = getattr(getattr(backbone, attr, None), "embedding_projection", None)
+        factor = gemma4_scale_factor(cactus_name)
+        if isinstance(projection, torch.nn.Linear) and factor != 1.0:
+            scaled.append((projection, factor))
+    for projection, factor in scaled:
+        projection.weight.data.mul_(factor)
+    try:
+        yield
+    finally:
+        for projection, factor in scaled:
+            projection.weight.data.div_(factor)
 
 
 def _gemma4_compute_native_like_audio_features(
@@ -3745,6 +3770,7 @@ def _build_gemma4_multimodal_component_specs(
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
             npu_module=vision_encoder_npu,
             npu_runtime_input_count=2,
+            npu_reparam=_gemma4_npu_projection_reparam,
         ))
     if "audio_encoder" in expanded_components:
         specs.append(ComponentModuleSpec(
@@ -3755,6 +3781,7 @@ def _build_gemma4_multimodal_component_specs(
             output_keys=("audio_features",),
             graph_meta={**common_graph_meta, "component": "audio_encoder"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
+            npu_reparam=_gemma4_npu_projection_reparam,
         ))
     if "lm_encoder" in expanded_components:
         if image_features is None or audio_features is None:

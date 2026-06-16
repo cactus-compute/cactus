@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 
 from .audio import emit_audio_encoder_mlpackage
@@ -56,34 +57,36 @@ def run_encoder_pipeline(
         qbits = component_quants[component]
         qdesc = f"int{qbits}" if qbits else "fp16"
         print(f"npu.pipeline: emitting {component} quant={qdesc}")
-        if component == "source_encoder":
-            emitted = emit_fn(
-                module,
-                bundle_root,
-                example_inputs=example_inputs,
-                input_names=tuple(getattr(spec, "input_keys", ()) or ()),
-                filename=filename,
-                quantize_bits=qbits,
-            )
-        elif component == "vision_encoder":
-            names = ("x",) + tuple(spec.input_keys[1:n_runtime])
-            emitted = emit_fn(
-                module,
-                bundle_root,
-                runtime_inputs=tuple(zip(names, example_inputs[:n_runtime])),
-                baked_inputs=example_inputs[n_runtime:],
-                filename=filename,
-                quantize_bits=qbits,
-            )
-        else:
-            emitted = emit_fn(
-                module,
-                bundle_root,
-                example_input=example_inputs[0],
-                baked_inputs=example_inputs[1:],
-                filename=filename,
-                quantize_bits=qbits,
-            )
+        reparam = getattr(spec, "npu_reparam", None)
+        with (reparam(module) if reparam else nullcontext()):
+            if component == "source_encoder":
+                emitted = emit_fn(
+                    module,
+                    bundle_root,
+                    example_inputs=example_inputs,
+                    input_names=tuple(getattr(spec, "input_keys", ()) or ()),
+                    filename=filename,
+                    quantize_bits=qbits,
+                )
+            elif component == "vision_encoder":
+                names = ("x",) + tuple(spec.input_keys[1:n_runtime])
+                emitted = emit_fn(
+                    module,
+                    bundle_root,
+                    runtime_inputs=tuple(zip(names, example_inputs[:n_runtime])),
+                    baked_inputs=example_inputs[n_runtime:],
+                    filename=filename,
+                    quantize_bits=qbits,
+                )
+            else:
+                emitted = emit_fn(
+                    module,
+                    bundle_root,
+                    example_input=example_inputs[0],
+                    baked_inputs=example_inputs[1:],
+                    filename=filename,
+                    quantize_bits=qbits,
+                )
         if emitted:
             results[f"npu_{component}"] = f"components/{emitted}"
     return results
