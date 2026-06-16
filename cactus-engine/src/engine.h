@@ -660,7 +660,21 @@ public:
                                float min_p = 0.15f, float repetition_penalty = 1.1f,
                                float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
 
-    std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features);
+    struct ParakeetTdtStreamState {
+        bool initialized = false;
+        uint32_t last_token = 0;
+        size_t time_index = 0;
+        std::vector<std::vector<uint8_t>> dec_state;
+        std::vector<uint32_t> pending;    // volatile tail tokens from the last call (not committed)
+        float confirmed_sec = 0.0f;       // end time of the confirmed region from the last call
+        size_t decoded_tokens = 0;        // tokens decoded on the last call
+        double raw_decode_ms = 0.0;       // decoder execute time on the last call
+    };
+
+    std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features,
+                                                  ParakeetTdtStreamState* stream = nullptr,
+                                                  bool is_final = true,
+                                                  size_t end_frame = 0);
     std::vector<uint32_t> transcribe_whisper_seq2seq(const std::vector<float>& audio_features,
                                                      const std::vector<uint32_t>& decoder_prompt_tokens,
                                                      size_t max_tokens,

@@ -2855,8 +2855,11 @@ std::vector<uint32_t> Model::transcribe_whisper_seq2seq(
         should_stop);
 }
 
-std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& audio_features) {
+std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& audio_features,
+                                                     ParakeetTdtStreamState* stream, bool is_final,
+                                                     size_t end_frame) {
     std::vector<uint32_t> emitted;
+    double raw_decode_ms = 0.0;
 
     Component* audio_enc = components_.count("audio_encoder") ? &components_.at("audio_encoder") : nullptr;
     Component* dec = components_.count("decoder") ? &components_.at("decoder") : nullptr;
@@ -2972,10 +2975,21 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         auto& buf = dec->input_buffers[idx];
         std::memset(buf.data(), 0, buf.size());
     };
-    zero_state("state_h_0");
-    zero_state("state_c_0");
-    zero_state("state_h_1");
-    zero_state("state_c_1");
+    if (stream && stream->initialized && stream->dec_state.size() == 4) {
+        const char* sn[4] = {"state_h_0", "state_c_0", "state_h_1", "state_c_1"};
+        for (size_t i = 0; i < 4; ++i) {
+            int idx = input_index(*dec, sn[i]);
+            if (idx < 0) continue;
+            auto& buf = dec->input_buffers[idx];
+            std::memcpy(buf.data(), stream->dec_state[i].data(),
+                        std::min(buf.size(), stream->dec_state[i].size()));
+        }
+    } else {
+        zero_state("state_h_0");
+        zero_state("state_c_0");
+        zero_state("state_h_1");
+        zero_state("state_c_1");
+    }
 
     std::vector<uint32_t> durations = config_.tdt_durations;
     if (durations.empty()) {
@@ -2984,8 +2998,8 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     if (durations.empty()) durations.push_back(1);
 
     const uint32_t configured_blank = config_.tdt_blank_id;
-    uint32_t last_token = configured_blank;
-    size_t time_index = 0;
+    uint32_t last_token = (stream && stream->initialized) ? stream->last_token : configured_blank;
+    size_t time_index = (stream && stream->initialized) ? stream->time_index : 0;
 
     const int ef_idx = input_index(*dec, "encoder_frame");
     const int tok_in_idx = input_index(*dec, "token_ids");
@@ -3027,7 +3041,35 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         };
     }
 
-    while (time_index < T) {
+    size_t commit_to = T;
+    if (stream) {
+        size_t valid_hidden = T;
+        if (!used_npu && expected_frames > 0)
+            valid_hidden = std::min<size_t>(T, (copy_frames * T) / expected_frames);
+        commit_to = (end_frame > 0) ? std::min(end_frame, valid_hidden) : valid_hidden;
+    }
+    Tokenizer* stream_tok = stream ? get_tokenizer() : nullptr;
+    const auto& tdt_vocab_bias = get_vocab_bias();
+    const float frame_sec = (160.0f / 16000.0f) *
+        static_cast<float>(std::max<uint32_t>(1, config_.subsampling_factor));
+    constexpr uint32_t kMaxStreamDurationSkipFrames = 2;
+
+    auto snapshot_state = [&]() {
+        std::vector<std::vector<uint8_t>> snap(state_copy_count);
+        for (size_t s = 0; s < state_copy_count; ++s) {
+            const uint8_t* p = static_cast<const uint8_t*>(state_copies[s].in_data);
+            snap[s].assign(p, p + state_copies[s].bytes);
+        }
+        return snap;
+    };
+
+    std::vector<std::vector<uint8_t>> snap_state;
+    uint32_t snap_last_token = last_token;
+    size_t snap_time = time_index;
+    size_t confirmed_count = 0;
+    if (stream) snap_state = snapshot_state();
+
+    while (time_index < commit_to) {
         const uint8_t* frame_ptr = hidden_ptr + time_index * frame_bytes;
         write_typed_buffer(ef_buf, ef_desc.precision, frame_ptr, frame_bytes, hidden_precision);
 
@@ -3040,7 +3082,10 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
                 case Precision::INT8: *reinterpret_cast<int8_t*>(tok_data) = static_cast<int8_t>(last_token); break;
                 default: *reinterpret_cast<int32_t*>(tok_data) = static_cast<int32_t>(last_token); break;
             }
+            const auto exec_t0 = std::chrono::steady_clock::now();
             dec->graph->execute();
+            raw_decode_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - exec_t0).count();
 
             const void* logits_ptr = dec->graph->get_output(logits_node);
             auto get_logit = [&](size_t i) -> float {
@@ -3053,6 +3098,10 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
             float best_token_score = -std::numeric_limits<float>::infinity();
             for (size_t i = 0; i < token_class_count; ++i) {
                 float v = get_logit(i);
+                if (stream && !tdt_vocab_bias.empty()) {
+                    auto it = tdt_vocab_bias.find(static_cast<uint32_t>(i));
+                    if (it != tdt_vocab_bias.end()) v += it->second;
+                }
                 if (v > best_token_score) { best_token_score = v; next_token = static_cast<uint32_t>(i); }
             }
             uint32_t best_duration_idx = 0;
@@ -3062,9 +3111,19 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
                 if (v > best_duration_score) { best_duration_score = v; best_duration_idx = static_cast<uint32_t>(i); }
             }
 
-            const uint32_t skip = durations[std::min<uint32_t>(best_duration_idx, static_cast<uint32_t>(durations.size() - 1))];
+            uint32_t skip = durations[std::min<uint32_t>(best_duration_idx, static_cast<uint32_t>(durations.size() - 1))];
+            if (stream && skip > kMaxStreamDurationSkipFrames) skip = kMaxStreamDurationSkipFrames;
 
             if (next_token != effective_blank) {
+                if (stream && !is_final && stream_tok && !emitted.empty()) {
+                    std::string piece = stream_tok->decode({next_token});
+                    if (!piece.empty() && piece[0] == ' ') {
+                        snap_state = snapshot_state();
+                        snap_last_token = last_token;
+                        snap_time = time_index;
+                        confirmed_count = emitted.size();
+                    }
+                }
                 emitted.push_back(next_token);
                 last_token = next_token;
                 for (size_t s = 0; s < state_copy_count; ++s) {
@@ -3087,6 +3146,26 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         }
 
         if (!advanced) time_index += 1;
+    }
+
+    if (stream) {
+        stream->initialized = true;
+        stream->decoded_tokens = emitted.size();
+        stream->raw_decode_ms = raw_decode_ms;
+        stream->pending.clear();
+        if (is_final) {
+            stream->dec_state = snapshot_state();
+            stream->last_token = last_token;
+            stream->time_index = time_index;
+            stream->confirmed_sec = static_cast<float>(time_index) * frame_sec;
+        } else {
+            stream->dec_state = std::move(snap_state);
+            stream->last_token = snap_last_token;
+            stream->time_index = snap_time;
+            stream->confirmed_sec = static_cast<float>(snap_time) * frame_sec;
+            stream->pending.assign(emitted.begin() + confirmed_count, emitted.end());
+            emitted.resize(confirmed_count);
+        }
     }
 
     return emitted;
