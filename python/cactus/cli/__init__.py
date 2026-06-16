@@ -286,7 +286,7 @@ def create_parser():
                              type=_hf_id_or_path,
                              help=f"HF transcription model ID under test (default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID})")
     test_parser.add_argument("--suite", default=None,
-                             help="Run a single test suite by name; resolved across all components (e.g. llm → engine, performance → kernels + graph)")
+                             help="Run a single test suite by name; resolved across all components (e.g. llm → engine)")
     test_parser.add_argument("--list", action="store_true",
                              help="List available components and engine tests, then exit")
     test_parser.add_argument("--android", action="store_true", help="Run tests on Android")

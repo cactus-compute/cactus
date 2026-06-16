@@ -23,14 +23,14 @@ Thank you for your interest in contributing to Cactus! This document covers the 
 
 1. Fork the repository and create a branch from `main`.
 2. Make your changes, keeping the scope focused on the relevant GitHub issue.
-3. Run `cactus test` to verify your changes build and pass all tests and test the performance for regressions on performance-critical paths.
+3. Run `cactus test` to verify your changes build and pass all tests.
 4. Update documentation if your changes affect the public API or user-facing behavior.
 5. Submit a pull request with a clear description of what you changed and why.
 
 ## Testing
 
 ```bash
-# Run all tests and test the performance
+# Run all tests
 cactus test
 
 # Run tests on a connected iOS device
