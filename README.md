@@ -129,17 +129,18 @@ graph.hard_reset();
 - LLM: Gemma-4-E2B-CQ4 (CPU, no speculative decode), 1k-prefill tps / 100-decode tps
 - VLM: Gemma-4-E2B-CQ4 (NPU prefill, CPU decode), 256px input, latency / decode tps
 - Transcribe: Parakeet-TDT-0.6B-CQ4 (NPU prefill, CPU decode), 20s audio, latency / decode tps
+- Missing latency == no NPU support for device
 
-| Device | Gemma4 Text | Gemma4 Vision | Parakeet 1.1B | RAM |
+| Device | LLM | VLM | Transcribe | RAM |
 |--------|----------|------------|---------------|-----|
 | Mac M4 Pro | 324 / 39 | 1.2s / 48 | 0.2s / 10.6M | 1385 MB |
 | iPad/Mac M3 | - | - | - | - |
 | iPhone 17 Pro | - | - | - | - |
 | iPhone 13 Mini | - | - | - | - |
-| Galaxy S26 | 248 / 21 | 17s / 16 | 4.2s / 5.7M | 4024 MB |
+| Galaxy S26 | 248 / 21 | - / 16 | - / 5.7M | - |
+| Galaxy A17 5G | - | - | - | - |
 | Pixel 10 Pro | - | - | - | - |
 | Pixel 6a | - | - | - | - |
-| Galaxy A17 5G | - | - | - | - |
 | Raspberry Pi 5 | - | - | - | - |
 
 
