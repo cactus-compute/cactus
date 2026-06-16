@@ -32,18 +32,13 @@ jobs:
   build:
     needs: gate
     if: needs.gate.outputs.approved == 'true'
-    runs-on: [self-hosted, linux, arm64]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        with:
-          clean: false
 
-      - name: Setup Python environment
-        run: |
-          if [ ! -f venv/bin/activate ]; then
-            source ./setup
-          fi
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libcurl4-openssl-dev
 
       - name: Build libcactus + engine tests
         run: |
@@ -55,7 +50,7 @@ jobs:
 
   model-tests:
     needs: build
-    runs-on: [self-hosted, linux, arm64]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     env:
       CACTUS_NO_CLOUD_TELE: "1"
@@ -67,8 +62,19 @@ jobs:
           - openai/whisper-small
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libcurl4-openssl-dev
+
+      - name: Build libcactus
+        run: bash cactus-engine/build.sh
+
+      - uses: actions/setup-python@v5
         with:
-          clean: false
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e "python/[dev,serve]"
 
       - name: Run tests for ${{ matrix.model }}
         env:
