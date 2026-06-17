@@ -104,18 +104,7 @@ static int transcribe_file(cactus_model_t model, const std::string& audio_path,
                            const std::string& model_path, const std::string& language) {
     std::string prompt = whisper_prompt(model_path, language);
     std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
-    // Cloud-handoff knobs are env-overridable so this binary can exercise the
-    // Parakeet handoff-probe path (CACTUS_TEST_AUTO_HANDOFF=1, optional
-    // CACTUS_TEST_CONFIDENCE_THRESHOLD / CACTUS_TEST_CLOUD_TIMEOUT_MS).
-    const bool auto_handoff = std::getenv("CACTUS_TEST_AUTO_HANDOFF") != nullptr;
-    const char* thr = std::getenv("CACTUS_TEST_CONFIDENCE_THRESHOLD");
-    const char* cto = std::getenv("CACTUS_TEST_CLOUD_TIMEOUT_MS");
-    std::ostringstream opts;
-    opts << "{\"max_tokens\":500,\"language\":\"" << language << "\""
-         << ",\"auto_handoff\":" << (auto_handoff ? "true" : "false")
-         << ",\"confidence_threshold\":" << (thr ? thr : "-1")
-         << ",\"cloud_timeout_ms\":" << (cto ? cto : "15000") << "}";
-    std::string options = opts.str();
+    std::string options = "{\"max_tokens\":500,\"auto_handoff\":false,\"language\":\"" + language + "\"}";
 
     auto start = std::chrono::steady_clock::now();
     int rc = cactus_transcribe(

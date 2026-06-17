@@ -69,15 +69,11 @@ def emit_audio_encoder_mlpackage(
     wrapper = AudioEncoderWrapper(audio_module, baked_inputs)
     wrapper.eval()
 
-    # Encoders that expose a cloud-handoff probe return (encoded, probe_hidden);
-    # name the extra output so the engine can read it from the same prediction.
     with torch.no_grad():
         sample_out = wrapper(example_input)
-    n_outputs = len(sample_out) if isinstance(sample_out, (tuple, list)) else 1
-    output_names = [output_name] + (["probe_hidden"] if n_outputs == 2 else [])
-    if n_outputs > 2:
-        print(f"npu.audio: unexpected {n_outputs} encoder outputs; emitting only {output_name}")
-        output_names = [output_name]
+    output_names = [output_name]
+    if isinstance(sample_out, (tuple, list)) and len(sample_out) == 2:
+        output_names.append("probe_hidden")
 
     try:
         with torch.no_grad():

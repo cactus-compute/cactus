@@ -485,9 +485,6 @@ static NSURL* resolve_or_compile_model_url(NSString* path, NSError** error) {
     return outputFeature.multiArrayValue;
 }
 
-// Like predictWithInput, but returns the whole prediction so callers can read
-// more than one named output (e.g. "encoded" + the handoff probe "probe_hidden")
-// from a single ANE run. Uses a fresh prediction (no cached output backings).
 - (id<MLFeatureProvider>)predictProviderWithInput:(NSString*)inputName
                                              data:(const __fp16*)data
                                             shape:(NSArray<NSNumber*>*)shape {
@@ -504,7 +501,7 @@ static NSURL* resolve_or_compile_model_url(NSString* path, NSError** error) {
                                                           dataType:expectedDataType
                                                              error:&error];
     if (error || !inputArray) {
-        CACTUS_LOG_ERROR("npu", "ANE create input array failed (probe path)");
+        CACTUS_LOG_ERROR("npu", "ANE create input array failed: " << (error ? [[error localizedDescription] UTF8String] : ""));
         return nil;
     }
 
@@ -521,13 +518,13 @@ static NSURL* resolve_or_compile_model_url(NSString* path, NSError** error) {
     id<MLFeatureProvider> inputProvider =
         [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{inputName: inputFeature} error:&error];
     if (error || !inputProvider) {
-        CACTUS_LOG_ERROR("npu", "ANE create feature provider failed (probe path)");
+        CACTUS_LOG_ERROR("npu", "ANE create feature provider failed: " << (error ? [[error localizedDescription] UTF8String] : ""));
         return nil;
     }
 
     id<MLFeatureProvider> outputProvider = [_model predictionFromFeatures:inputProvider error:&error];
     if (error) {
-        CACTUS_LOG_ERROR("npu", "ANE prediction failed (probe path): " << [[error localizedDescription] UTF8String]);
+        CACTUS_LOG_ERROR("npu", "ANE prediction failed: " << [[error localizedDescription] UTF8String]);
         return nil;
     }
     return outputProvider;
@@ -976,7 +973,6 @@ size_t ANEEncoder::encode_with_secondary(const __fp16* input,
         NSString* secName = [NSString stringWithUTF8String:secondary_name.c_str()];
         MLFeatureValue* secFeat = [provider featureValueForName:secName];
         if (!secFeat || !secFeat.multiArrayValue) {
-            // Model does not expose the probe output; caller falls back to encode().
             return 0;
         }
         NSString* priName = [NSString stringWithUTF8String:primary_name.c_str()];

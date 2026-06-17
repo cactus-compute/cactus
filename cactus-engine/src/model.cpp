@@ -354,9 +354,6 @@ void Model::maybe_capture_handoff_probe_hidden(const Component& comp) {
     if (rows == 0) return;
     const auto* data = static_cast<const uint8_t*>(comp.graph->get_output(node));
     if (!data) return;
-    // Append every row of probe_hidden. Text decode steps emit a single row
-    // (one token), so this preserves prior behaviour; the Parakeet audio encoder
-    // emits all T time frames in one pass, which the probe then pools over.
     for (size_t row = 0; row < rows; ++row) {
         size_t base = row * static_cast<size_t>(handoff_probe_feat_dim_);
         for (size_t i = 0; i < handoff_probe_feat_dim_; ++i) {
@@ -641,21 +638,11 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         }
     }
     if (load_handoff_probe()) {
-        // The probe reads a "probe_hidden" graph output. For Parakeet ASR it is
-        // exposed by the audio_encoder (layer-17 activations); for text models
-        // by the decoder_step. Disable the probe if the bundle predates it.
-        bool exposes_probe_hidden = false;
-        const char* reconvert_hint =
-            "decoder_step does not expose probe_hidden; reconvert Gemma4 to enable probe-based handoff";
-        if (config_.model_type == Config::ModelType::PARAKEET_TDT) {
-            exposes_probe_hidden = audio_encoder_ && output_index(*audio_encoder_, "probe_hidden") >= 0;
-            reconvert_hint =
-                "audio_encoder does not expose probe_hidden; reconvert Parakeet to enable probe-based handoff";
-        } else {
-            exposes_probe_hidden = decoder_ && output_index(*decoder_, "probe_hidden") >= 0;
-        }
-        if (!exposes_probe_hidden) {
-            CACTUS_LOG_WARN("cloud_handoff", "Handoff probe is packaged, but " << reconvert_hint);
+        const Component* probe_comp = (config_.model_type == Config::ModelType::PARAKEET_TDT)
+            ? audio_encoder_ : decoder_;
+        if (!probe_comp || output_index(*probe_comp, "probe_hidden") < 0) {
+            CACTUS_LOG_WARN("cloud_handoff", "Handoff probe is packaged, but probe_hidden is not exposed; "
+                "reconvert to enable probe-based handoff");
             handoff_probe_loaded_ = false;
         }
     }
@@ -2955,9 +2942,6 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
             const size_t num_chunks = (copy_frames + window_frames - 1) / window_frames;
             const size_t total_hidden_T = num_chunks * window_hidden;
             npu_hidden_storage.assign(total_hidden_T * hidden_dim_npu, __fp16(0));
-            // If a handoff probe is packaged and the ANE encoder exposes a
-            // probe_hidden output, capture layer-17 activations alongside the
-            // encoded output (one ANE run produces both).
             const bool want_probe = handoff_probe_loaded_ &&
                 static_cast<size_t>(handoff_probe_feat_dim_) == hidden_dim_npu;
             std::vector<__fp16> npu_probe_storage;
@@ -2983,8 +2967,6 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
                     written = npu_audio_encoder_->encode_with_secondary(
                         input_fp16.data(), out_ptr, probe_ptr, in_shape, "x", "encoded", "probe_hidden");
                     if (written == 0) {
-                        // ANE model has no probe_hidden output (older bundle); fall
-                        // back to plain encode and skip probe-based handoff.
                         probe_complete = false;
                         written = npu_audio_encoder_->encode(
                             input_fp16.data(), out_ptr, in_shape, "x", "encoded");
@@ -3012,9 +2994,8 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
                     CACTUS_LOG_INFO("cloud_handoff", "Captured " << npu_hidden_T
                                     << " NPU probe frames for the handoff probe");
                 } else if (want_probe) {
-                    CACTUS_LOG_WARN("cloud_handoff", "NPU audio encoder has no probe_hidden output; "
-                        "probe-based handoff disabled for this transcription (reconvert with --npu on the "
-                        "probe-enabled branch)");
+                    CACTUS_LOG_WARN("cloud_handoff", "NPU audio encoder lacks probe_hidden; "
+                        "skipping probe-based handoff for this transcription");
                 }
             } else {
                 CACTUS_LOG_WARN("model", "NPU audio encoder chunk failed; falling back to CPU graph");
@@ -3023,9 +3004,6 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     }
     if (!used_npu) {
         audio_enc->graph->execute();
-        // Capture layer-17 activations for the cloud-handoff probe. Only the CPU
-        // graph exposes probe_hidden; the NPU encoder emits only "encoded", so
-        // probe-based handoff is unavailable on the NPU path.
         maybe_capture_handoff_probe_hidden(*audio_enc);
     }
 

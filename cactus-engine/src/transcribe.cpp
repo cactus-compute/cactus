@@ -239,7 +239,7 @@ int cactus_transcribe(
 
         const size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
         std::vector<float> audio_features;
-        std::vector<float> handoff_audio_samples;  // 16k mono, pre-emphasis-free, for cloud handoff
+        std::vector<float> handoff_audio_samples;
         if (is_parakeet) {
             auto cfg = cactus::audio::get_parakeet_spectrogram_config();
             const size_t waveform_samples = audio_samples.size();
@@ -427,10 +427,6 @@ int cactus_transcribe(
             : 0.0f;
         float confidence = 1.0f - mean_entropy;
 
-        // Cloud-handoff decision for Parakeet, driven by the handoff probe's
-        // p_wrong (confidence = 1 - p_wrong). Mirrors the Gemma4 path in
-        // complete.cpp. TDT decoding produces no token entropy, so without the
-        // probe confidence stays 1.0 and no handoff occurs.
         bool cloud_handoff_used = false;
         std::string handoff_reason;
         float reported_threshold = -1.0f;
@@ -461,7 +457,7 @@ int cactus_transcribe(
                     confidence = std::max(0.0f, std::min(1.0f, 1.0f - p_wrong));
                     CACTUS_LOG_DEBUG("cloud_handoff", "Parakeet handoff probe p_wrong="
                         << p_wrong << " confidence=" << confidence);
-                    if (confidence < threshold && !handoff_audio_samples.empty()) {
+                    if (confidence < threshold) {
                         CACTUS_LOG_WARN("cloud_handoff", "Cloud transcription handoff triggered: p_wrong="
                             << p_wrong << " confidence=" << confidence << " threshold=" << threshold);
                         std::vector<int16_t> pcm16(handoff_audio_samples.size());
