@@ -777,7 +777,8 @@ class ParakeetTDTANEEncoderLayer(nn.Module):
 
 
 class ParakeetTDTANEEncoder(nn.Module):
-    def __init__(self, encoder: "ParakeetTDTEncoder", seq_len: int):
+    def __init__(self, encoder: "ParakeetTDTEncoder", seq_len: int,
+                 capture_index: int = PARAKEET_PROBE_CAPTURE_LAYER):
         super().__init__()
         self.pre_encode = encoder.pre_encode
         self.layers = nn.ModuleList(
@@ -785,6 +786,10 @@ class ParakeetTDTANEEncoder(nn.Module):
         )
         factor = max(1, int(encoder.layers[0].config.subsampling_factor))
         self._subsample_stages = max(0, factor.bit_length() - 1)
+        num_layers = len(self.layers)
+        if not (0 <= capture_index < num_layers):
+            capture_index = max(0, num_layers - 1)
+        self.capture_index = capture_index
 
     def _frame_masks(self, input_features: torch.Tensor, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         valid = (input_features.abs().sum(-1) > 0).to(input_features.dtype).sum(-1, keepdim=True)
@@ -795,12 +800,17 @@ class ParakeetTDTANEEncoder(nn.Module):
         key_bias = (1.0 - enc_valid).unsqueeze(1) * -1e4
         return enc_valid, key_bias
 
-    def forward(self, input_features: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x = self.pre_encode(input_features)
         conv_mask, key_bias = self._frame_masks(input_features, x.shape[1])
-        for layer in self.layers:
+        probe_hidden = x
+        for index, layer in enumerate(self.layers):
             x = layer(x, conv_mask, key_bias)
-        return x
+            if index == self.capture_index:
+                probe_hidden = x
+        # Emit encoded + probe_hidden so the ANE/NPU bundle can run the
+        # cloud-handoff probe (layer-17 activations), matching the CPU graph.
+        return x, probe_hidden
 
 
 class ParakeetTDTDecoderCell(nn.Module):

@@ -27,17 +27,11 @@ _ORDERED_KEYS = (
 
 
 def _candidate_probe_files(output_dir: Path, names: tuple[str, ...]) -> list[Path]:
-    cwd = Path.cwd()
-    roots = [output_dir, cwd, Path.home() / "Downloads"]
-    out: list[Path] = []
-    for root in roots:
-        for name in names:
-            out.append(root / name)
-        # also look one release-dir deep (e.g. v10p6_probe_release/, the kit dir)
-        out.append(root / "v10p6_probe_release" / "global_attn_probe_v10p6.pt")
-        out.append(root / "parakeet_handoff_kit" / "parakeet_handoff_probe.pt")
-        out.append(root / "parakeet_handoff_kit" / "parakeet_handoff_kit" / "parakeet_handoff_probe.pt")
-    return out
+    # Same convention as the Gemma4 probe: look for the checkpoint by plain
+    # filename in the bundle output dir and the dir the convert command runs in
+    # (cwd), plus ~/Downloads as a convenience. Names may be relative paths.
+    roots = [output_dir, Path.cwd(), Path.home() / "Downloads"]
+    return [root / name for root in roots for name in names]
 
 
 def _candidate_probe_zips(output_dir: Path, zip_names: tuple[str, ...]) -> list[Path]:
@@ -149,7 +143,8 @@ def export_gemma4_handoff_probe(output_dir: str | Path, *, model_id: str | None 
     out_dir = Path(output_dir)
     checkpoint, source = _load_checkpoint(
         out_dir,
-        file_names=("probe.pt", "global_attn_probe_v10p6.pt"),
+        file_names=("probe.pt", "global_attn_probe_v10p6.pt",
+                    "v10p6_probe_release/global_attn_probe_v10p6.pt"),
         zip_names=("v10p6_probe_release.zip",),
         inner_names=(
             "v10p6_probe_release/global_attn_probe_v10p6.pt",
@@ -170,7 +165,11 @@ def export_parakeet_handoff_probe(output_dir: str | Path, *, model_id: str | Non
     Reads the probe dims from the checkpoint tensors (feat_dim=1024, t_h=32,
     h1=128, h2=64 for parakeet-tdt-0.6b-v2), so it is not tied to the Gemma4
     1536-d shape. The capture layer is informational metadata; the engine taps
-    whatever layer the transpiler exposes as probe_hidden."""
+    whatever layer the transpiler exposes as probe_hidden.
+
+    Detected like the Gemma4 probe: a plain ``parakeet_handoff_probe.pt`` in the
+    bundle output dir or the convert working directory (drop the file next to
+    where you run ``cactus convert``)."""
     model_key = (model_id or "").lower()
     if model_key and "parakeet" not in model_key:
         return False
@@ -178,13 +177,9 @@ def export_parakeet_handoff_probe(output_dir: str | Path, *, model_id: str | Non
     out_dir = Path(output_dir)
     checkpoint, source = _load_checkpoint(
         out_dir,
-        file_names=("parakeet_handoff_probe.pt", "probe.pt"),
-        zip_names=("parakeet_handoff_kit.zip",),
-        inner_names=(
-            "parakeet_handoff_kit/parakeet_handoff_probe.pt",
-            "parakeet_handoff_kit/parakeet_handoff_kit/parakeet_handoff_probe.pt",
-            "parakeet_handoff_probe.pt",
-        ),
+        file_names=("parakeet_handoff_probe.pt",),
+        zip_names=(),
+        inner_names=(),
     )
     if checkpoint is None:
         return False

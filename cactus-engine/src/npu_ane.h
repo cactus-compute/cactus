@@ -38,6 +38,14 @@ public:
                   const std::string& input_name = "x",
                   const std::string& output_name = "") override;
 
+    size_t encode_with_secondary(const __fp16* input,
+                                 __fp16* primary_output,
+                                 __fp16* secondary_output,
+                                 const std::vector<int>& shape,
+                                 const std::string& input_name = "x",
+                                 const std::string& primary_name = "encoded",
+                                 const std::string& secondary_name = "probe_hidden") override;
+
     bool is_available() const override;
 
     std::vector<int> get_input_shape() const override;

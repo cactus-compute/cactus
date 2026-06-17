@@ -69,6 +69,16 @@ def emit_audio_encoder_mlpackage(
     wrapper = AudioEncoderWrapper(audio_module, baked_inputs)
     wrapper.eval()
 
+    # Encoders that expose a cloud-handoff probe return (encoded, probe_hidden);
+    # name the extra output so the engine can read it from the same prediction.
+    with torch.no_grad():
+        sample_out = wrapper(example_input)
+    n_outputs = len(sample_out) if isinstance(sample_out, (tuple, list)) else 1
+    output_names = [output_name] + (["probe_hidden"] if n_outputs == 2 else [])
+    if n_outputs > 2:
+        print(f"npu.audio: unexpected {n_outputs} encoder outputs; emitting only {output_name}")
+        output_names = [output_name]
+
     try:
         with torch.no_grad():
             exported = torch.export.export(wrapper, (example_input,))
@@ -88,7 +98,7 @@ def emit_audio_encoder_mlpackage(
         mlmodel = ct.convert(
             exported,
             inputs=[ct.TensorType(name=input_name, shape=tuple(example_input.shape))],
-            outputs=[ct.TensorType(name=output_name)],
+            outputs=[ct.TensorType(name=name) for name in output_names],
             compute_precision=ct.precision.FLOAT16,
             convert_to="mlprogram",
             minimum_deployment_target=target_attr,
@@ -112,5 +122,6 @@ def emit_audio_encoder_mlpackage(
         print(f"npu.audio: mlpackage save failed ({type(exc).__name__}: {exc})")
         return None
 
-    print(f"npu.audio: wrote {out_path} (input_shape={tuple(example_input.shape)})")
+    print(f"npu.audio: wrote {out_path} (input_shape={tuple(example_input.shape)}, "
+          f"outputs={output_names})")
     return filename

@@ -2955,6 +2955,14 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
             const size_t num_chunks = (copy_frames + window_frames - 1) / window_frames;
             const size_t total_hidden_T = num_chunks * window_hidden;
             npu_hidden_storage.assign(total_hidden_T * hidden_dim_npu, __fp16(0));
+            // If a handoff probe is packaged and the ANE encoder exposes a
+            // probe_hidden output, capture layer-17 activations alongside the
+            // encoded output (one ANE run produces both).
+            const bool want_probe = handoff_probe_loaded_ &&
+                static_cast<size_t>(handoff_probe_feat_dim_) == hidden_dim_npu;
+            std::vector<__fp16> npu_probe_storage;
+            if (want_probe) npu_probe_storage.assign(total_hidden_T * hidden_dim_npu, __fp16(0));
+            bool probe_complete = want_probe;
             std::vector<__fp16> input_fp16(chunk_input_elems);
             bool all_ok = num_chunks > 0;
             for (size_t c = 0; c < num_chunks && all_ok; ++c) {
@@ -2969,8 +2977,22 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
                     }
                 }
                 __fp16* out_ptr = npu_hidden_storage.data() + c * chunk_output_elems;
-                size_t written = npu_audio_encoder_->encode(
-                    input_fp16.data(), out_ptr, in_shape, "x", "encoded");
+                size_t written = 0;
+                if (probe_complete) {
+                    __fp16* probe_ptr = npu_probe_storage.data() + c * chunk_output_elems;
+                    written = npu_audio_encoder_->encode_with_secondary(
+                        input_fp16.data(), out_ptr, probe_ptr, in_shape, "x", "encoded", "probe_hidden");
+                    if (written == 0) {
+                        // ANE model has no probe_hidden output (older bundle); fall
+                        // back to plain encode and skip probe-based handoff.
+                        probe_complete = false;
+                        written = npu_audio_encoder_->encode(
+                            input_fp16.data(), out_ptr, in_shape, "x", "encoded");
+                    }
+                } else {
+                    written = npu_audio_encoder_->encode(
+                        input_fp16.data(), out_ptr, in_shape, "x", "encoded");
+                }
                 if (written == 0) { all_ok = false; break; }
             }
             if (all_ok) {
@@ -2980,6 +3002,20 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
                 if (npu_hidden_T > total_hidden_T) npu_hidden_T = total_hidden_T;
                 CACTUS_LOG_INFO("model", "Parakeet audio encoder ran on NPU ("
                                 << num_chunks << " chunks, " << npu_hidden_T << " valid hidden frames)");
+                if (want_probe && probe_complete) {
+                    const size_t probe_elems = npu_hidden_T * hidden_dim_npu;
+                    handoff_probe_hidden_.reserve(handoff_probe_hidden_.size() + probe_elems);
+                    const __fp16* pp = npu_probe_storage.data();
+                    for (size_t i = 0; i < probe_elems; ++i) {
+                        handoff_probe_hidden_.push_back(static_cast<float>(pp[i]));
+                    }
+                    CACTUS_LOG_INFO("cloud_handoff", "Captured " << npu_hidden_T
+                                    << " NPU probe frames for the handoff probe");
+                } else if (want_probe) {
+                    CACTUS_LOG_WARN("cloud_handoff", "NPU audio encoder has no probe_hidden output; "
+                        "probe-based handoff disabled for this transcription (reconvert with --npu on the "
+                        "probe-enabled branch)");
+                }
             } else {
                 CACTUS_LOG_WARN("model", "NPU audio encoder chunk failed; falling back to CPU graph");
             }
