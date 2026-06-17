@@ -2194,10 +2194,11 @@ that loads with zero-copy memory mapping.</p>
 </code></pre></div>
 <h3 id="step-3-transpile-and-run">Step 3: Transpile and Run<a class="headerlink" href="#step-3-transpile-and-run" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Transpile: captures the graph, optimizes, and saves a bundle</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>./classifier.pt<span class="w"> </span>--weights-dir<span class="w"> </span>./classifier-cactus
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Run the transpiled bundle</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>cactus<span class="w"> </span>run<span class="w"> </span>./classifier-cactus
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>./classifier.pt<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span>--weights-dir<span class="w"> </span>./classifier-cactus<span class="w"> </span>--artifact-dir<span class="w"> </span>./classifier-cactus
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="c1"># Run the transpiled bundle</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>cactus<span class="w"> </span>run<span class="w"> </span>./classifier-cactus
 </code></pre></div>
 <p>That's it. The output is a self-contained bundle with memory-mapped weights that
 loads in milliseconds on any ARM device.</p>
@@ -2276,6 +2277,11 @@ the model in a thin adapter that exposes a stable, task-specific interface:</p>
 <td><code>ctc_logits</code></td>
 <td><code>input_features</code></td>
 <td>CTC logits</td>
+</tr>
+<tr>
+<td><code>seq2seq_transcription</code></td>
+<td><code>input_features</code></td>
+<td>transcription token IDs</td>
 </tr>
 <tr>
 <td><code>tdt_transcription</code></td>
@@ -2364,10 +2370,11 @@ and weight binding metadata.</p>
 <a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>cactus<span class="w"> </span>convert<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>./gemma4-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span>
 <a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
 <a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># 2. Transpile</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>--weights-dir<span class="w"> </span>./gemma4-weights
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="c1"># 3. Run</span>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>cactus<span class="w"> </span>run<span class="w"> </span>./gemma4-weights<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">&quot;Hello!&quot;</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span>--weights-dir<span class="w"> </span>./gemma4-weights<span class="w"> </span>--artifact-dir<span class="w"> </span>./gemma4-weights
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="c1"># 3. Run</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>cactus<span class="w"> </span>run<span class="w"> </span>./gemma4-weights<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">&quot;Hello!&quot;</span>
 </code></pre></div>
 <h3 id="text-models">Text Models<a class="headerlink" href="#text-models" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>Qwen/Qwen3-0.6B<span class="w"> </span>./qwen3-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span>
@@ -2562,7 +2569,7 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 </tr>
 <tr>
 <td><code>--task &lt;name&gt;</code></td>
-<td>Force task type (default: <code>auto</code> — inferred from weights). Choices: <code>causal_lm_logits</code>, <code>multimodal_causal_lm_logits</code>, <code>ctc_logits</code>, <code>encoder_hidden_states</code>, <code>seq2seq_transcription</code>, <code>tdt_transcription</code></td>
+<td>Force task type (default: <code>auto</code> — inferred from model config). Choices: <code>causal_lm_logits</code>, <code>multimodal_causal_lm_logits</code>, <code>ctc_logits</code>, <code>encoder_hidden_states</code>, <code>seq2seq_transcription</code>, <code>tdt_transcription</code></td>
 </tr>
 <tr>
 <td><code>--prompt &lt;text&gt;</code></td>
@@ -2647,8 +2654,8 @@ huggingface.co/Cactus-Compute) or a local path to a bundle directory.</p>
 <td>CQ quantization bits when downloading (default: 4)</td>
 </tr>
 <tr>
-<td><code>--platform cpu\|apple</code></td>
-<td>Target accelerator (default: cpu — generic ARM)</td>
+<td><code>--platform auto\|cpu\|apple</code></td>
+<td>Target accelerator (default: auto — best for the host)</td>
 </tr>
 <tr>
 <td><code>--token &lt;token&gt;</code></td>

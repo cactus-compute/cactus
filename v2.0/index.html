@@ -1843,16 +1843,18 @@ Example response from Gemma3-270m
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">&quot;cloud_handoff&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"> </span><span class="c1">// true if cloud model used</span>
 <a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">&quot;response&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Hi there!&quot;</span><span class="p">,</span>
 <a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">    </span><span class="nt">&quot;function_calls&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span><span class="w">   </span><span class="c1">// parsed tool calls</span>
-<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">&quot;confidence&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.8193</span><span class="p">,</span><span class="w">   </span><span class="c1">// model confidence</span>
-<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">&quot;time_to_first_token_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">45.23</span><span class="p">,</span>
-<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">&quot;total_time_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">163.67</span><span class="p">,</span>
-<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">&quot;prefill_tps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1621.89</span><span class="p">,</span>
-<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">&quot;decode_tps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">168.42</span><span class="p">,</span>
-<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="nt">&quot;ram_usage_mb&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">245.67</span><span class="p">,</span>
-<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">&quot;prefill_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">28</span><span class="p">,</span>
-<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">&quot;decode_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span>
-<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span><span class="nt">&quot;total_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">78</span>
-<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="p">}</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">    </span><span class="nt">&quot;segments&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span><span class="w">         </span><span class="c1">// transcription segments (empty for chat)</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span><span class="nt">&quot;confidence&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.8193</span><span class="p">,</span><span class="w">   </span><span class="c1">// model confidence</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span><span class="nt">&quot;confidence_threshold&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.7</span><span class="p">,</span><span class="w"> </span><span class="c1">// resolved handoff threshold (model-dependent)</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span><span class="nt">&quot;time_to_first_token_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">45.23</span><span class="p">,</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">&quot;total_time_ms&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">163.67</span><span class="p">,</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span><span class="nt">&quot;prefill_tps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1621.89</span><span class="p">,</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span><span class="nt">&quot;decode_tps&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">168.42</span><span class="p">,</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span><span class="nt">&quot;ram_usage_mb&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">245.67</span><span class="p">,</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span><span class="nt">&quot;prefill_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">28</span><span class="p">,</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">    </span><span class="nt">&quot;decode_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">    </span><span class="nt">&quot;total_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">78</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="p">}</span>
 </code></pre></div></p>
 <h2 id="cactus-graph">Cactus Graph<a class="headerlink" href="#cactus-graph" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;cactus_graph.h&quot;</span>
@@ -2040,9 +2042,9 @@ Example response from Gemma3-270m
 <a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>│    --status                          show key status                           │
 <a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>│    --clear                           remove saved key                          │
 <a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>│                                                                                │
-<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>│  cactus run &lt;model|path&gt;             run a model (downloads if needed)         │
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>│  cactus run [model|path]             run a model (downloads if needed)         │
 <a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>│    --platform cpu|apple              target accelerator (default: cpu)         │
+<a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>│    --platform auto|cpu|apple         target accelerator (default: auto)        │
 <a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>│    --image &lt;path&gt;                    image file for VLM inference              │
 <a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a>│    --audio &lt;path&gt;                    audio file for audio chat                 │
 <a id="__codelineno-4-23" name="__codelineno-4-23" href="#__codelineno-4-23"></a>│    --system &lt;prompt&gt;                 system prompt                             │
@@ -2051,15 +2053,15 @@ Example response from Gemma3-270m
 <a id="__codelineno-4-26" name="__codelineno-4-26" href="#__codelineno-4-26"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
 <a id="__codelineno-4-27" name="__codelineno-4-27" href="#__codelineno-4-27"></a>│    --reconvert                       force local convert+transpile fallback    │
 <a id="__codelineno-4-28" name="__codelineno-4-28" href="#__codelineno-4-28"></a>│                                                                                │
-<a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>│  cactus transcribe [model]           transcribe audio with a model             │
-<a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a>│    --file &lt;audio.wav&gt;                audio file to transcribe (required)       │
+<a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>│  cactus transcribe [model]           live microphone transcription with a model│
+<a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a>│    --file &lt;audio.wav&gt;                audio file to transcribe (WAV)            │
 <a id="__codelineno-4-31" name="__codelineno-4-31" href="#__codelineno-4-31"></a>│    --language &lt;code&gt;                 language code (default: en)               │
 <a id="__codelineno-4-32" name="__codelineno-4-32" href="#__codelineno-4-32"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
 <a id="__codelineno-4-33" name="__codelineno-4-33" href="#__codelineno-4-33"></a>│    --reconvert                       force reconversion from source            │
 <a id="__codelineno-4-34" name="__codelineno-4-34" href="#__codelineno-4-34"></a>│                                                                                │
-<a id="__codelineno-4-35" name="__codelineno-4-35" href="#__codelineno-4-35"></a>│  cactus download &lt;model&gt;             download a pre-built bundle               │
+<a id="__codelineno-4-35" name="__codelineno-4-35" href="#__codelineno-4-35"></a>│  cactus download [model]             download a pre-built bundle               │
 <a id="__codelineno-4-36" name="__codelineno-4-36" href="#__codelineno-4-36"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-<a id="__codelineno-4-37" name="__codelineno-4-37" href="#__codelineno-4-37"></a>│    --platform cpu|apple              target accelerator (default: cpu)         │
+<a id="__codelineno-4-37" name="__codelineno-4-37" href="#__codelineno-4-37"></a>│    --platform auto|cpu|apple         target accelerator (default: auto)        │
 <a id="__codelineno-4-38" name="__codelineno-4-38" href="#__codelineno-4-38"></a>│    --token &lt;token&gt;                   HuggingFace token                         │
 <a id="__codelineno-4-39" name="__codelineno-4-39" href="#__codelineno-4-39"></a>│                                                                                │
 <a id="__codelineno-4-40" name="__codelineno-4-40" href="#__codelineno-4-40"></a>│  cactus convert &lt;model&gt; [dir]        convert HuggingFace weights to CQ         │
@@ -2089,15 +2091,15 @@ Example response from Gemma3-270m
 <a id="__codelineno-4-64" name="__codelineno-4-64" href="#__codelineno-4-64"></a>│                                      (default: all)                            │
 <a id="__codelineno-4-65" name="__codelineno-4-65" href="#__codelineno-4-65"></a>│    --model &lt;hf-id&gt;                   default: LiquidAI/LFM2-VL-450M            │
 <a id="__codelineno-4-66" name="__codelineno-4-66" href="#__codelineno-4-66"></a>│    --transcription-model &lt;hf-id&gt;     default: openai/whisper-base              │
-<a id="__codelineno-4-67" name="__codelineno-4-67" href="#__codelineno-4-67"></a>│    --suite &lt;name&gt;                    run a single test suite (resolved         │
-<a id="__codelineno-4-68" name="__codelineno-4-68" href="#__codelineno-4-68"></a>│                                      across components; e.g. performance       │
-<a id="__codelineno-4-69" name="__codelineno-4-69" href="#__codelineno-4-69"></a>│                                      → kernels + graph, llm → engine)          │
+<a id="__codelineno-4-67" name="__codelineno-4-67" href="#__codelineno-4-67"></a>│    --suite &lt;name&gt;                    run a single test suite by name           │
+<a id="__codelineno-4-68" name="__codelineno-4-68" href="#__codelineno-4-68"></a>│                                      (resolved across components,              │
+<a id="__codelineno-4-69" name="__codelineno-4-69" href="#__codelineno-4-69"></a>│                                      e.g. llm → engine)                        │
 <a id="__codelineno-4-70" name="__codelineno-4-70" href="#__codelineno-4-70"></a>│    --list                            list components and suites                │
 <a id="__codelineno-4-71" name="__codelineno-4-71" href="#__codelineno-4-71"></a>│    --ios                             run on connected iPhone                   │
 <a id="__codelineno-4-72" name="__codelineno-4-72" href="#__codelineno-4-72"></a>│    --android                         run on connected Android                  │
 <a id="__codelineno-4-73" name="__codelineno-4-73" href="#__codelineno-4-73"></a>│    --enable-telemetry                send cloud telemetry (off by default)     │
 <a id="__codelineno-4-74" name="__codelineno-4-74" href="#__codelineno-4-74"></a>│                                                                                │
-<a id="__codelineno-4-75" name="__codelineno-4-75" href="#__codelineno-4-75"></a>│  cactus clean                        delete build artifacts                    │
+<a id="__codelineno-4-75" name="__codelineno-4-75" href="#__codelineno-4-75"></a>│  cactus clean                        delete build artifacts, weights, venv     │
 <a id="__codelineno-4-76" name="__codelineno-4-76" href="#__codelineno-4-76"></a>│  cactus --help                       show this help                            │
 <a id="__codelineno-4-77" name="__codelineno-4-77" href="#__codelineno-4-77"></a>│                                                                                │
 <a id="__codelineno-4-78" name="__codelineno-4-78" href="#__codelineno-4-78"></a>└────────────────────────────────────────────────────────────────────────────────┘

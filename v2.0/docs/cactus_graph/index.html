@@ -3549,8 +3549,9 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-38-1" name="__codelineno-38-1" href="#__codelineno-38-1"></a><span class="n">GraphFile</span><span class="o">::</span><span class="n">save_node</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span><span class="w"> </span><span class="n">node_id</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;output.bin&quot;</span><span class="p">);</span>
 </code></pre></div>
 <h4 id="graphfile-namespace">GraphFile Namespace<a class="headerlink" href="#graphfile-namespace" title="Permanent link">&para;</a></h4>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a><span class="n">GraphFile</span><span class="o">::</span><span class="n">SerializedGraph</span><span class="w"> </span><span class="n">serialized</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">GraphFile</span><span class="o">::</span><span class="n">load_graph</span><span class="p">(</span><span class="s">&quot;graph.cactus&quot;</span><span class="p">);</span>
-<a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a><span class="n">CactusGraph</span><span class="w"> </span><span class="n">loaded</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">CactusGraph</span><span class="o">::</span><span class="n">from_serialized</span><span class="p">(</span><span class="n">serialized</span><span class="p">);</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-39-1" name="__codelineno-39-1" href="#__codelineno-39-1"></a><span class="n">GraphFile</span><span class="o">::</span><span class="n">save_graph</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;graph.cactus&quot;</span><span class="p">);</span>
+<a id="__codelineno-39-2" name="__codelineno-39-2" href="#__codelineno-39-2"></a><span class="n">GraphFile</span><span class="o">::</span><span class="n">SerializedGraph</span><span class="w"> </span><span class="n">serialized</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">GraphFile</span><span class="o">::</span><span class="n">load_graph</span><span class="p">(</span><span class="s">&quot;graph.cactus&quot;</span><span class="p">);</span>
+<a id="__codelineno-39-3" name="__codelineno-39-3" href="#__codelineno-39-3"></a><span class="n">CactusGraph</span><span class="w"> </span><span class="n">loaded</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">CactusGraph</span><span class="o">::</span><span class="n">from_serialized</span><span class="p">(</span><span class="n">serialized</span><span class="p">);</span>
 </code></pre></div>
 <p>The <code>GraphFile</code> namespace currently exposes <code>save_graph</code>, <code>load_graph</code>, and
 <code>save_node</code>. There is no per-node loader; reload a saved subgraph by
@@ -3672,12 +3673,12 @@ serializing the parent graph with <code>save_graph</code> and reading it back wi
 <h3 id="contributing-graph-operations">Contributing Graph Operations<a class="headerlink" href="#contributing-graph-operations" title="Permanent link">&para;</a></h3>
 <ol>
 <li>
-<p>** Define the op in core graph types ** 
+<p><strong>Define the op in core graph types</strong> 
 Add the new OpType in <code>cactus-graph/cactus_graph.h</code>
 If the op needs additional parameters, add the fields to OpParams in the same file </p>
 </li>
 <li>
-<p>** Add a graph builder API **<br />
+<p><strong>Add a graph builder API</strong><br />
 Add a builder method in <code>cactus-graph/src/builder.cpp</code> and its declaration in 
 <code>cactus-graph/cactus_graph.h</code>
 Follow the pattern of existing builder methods, e.g. for a new "relu" op:
@@ -3687,28 +3688,28 @@ Follow the pattern of existing builder methods, e.g. for a new "relu" op:
 </code></pre></div></p>
 </li>
 <li>
-<p>** Implement the op in the execution engine **
+<p><strong>Implement the op in the execution engine</strong>
 Implement the kernel or graph op code in the relevant file, usually in <code>cactus-kernels/src/</code>
 Register the new op in the dispatch table in <code>cactus-graph/src/execute.cpp</code> for the supported backends (CPU, NPU)</p>
 </li>
 <li>
-<p>** Export op in FFI bindings **</p>
+<p><strong>Export op in FFI bindings</strong></p>
 </li>
 <li>header: <code>cactus-graph/cactus_graph.h</code> (in the <code>extern "C"</code> block)</li>
 <li>
 <p>implementation: <code>cactus-graph/src/graph_ffi.cpp</code></p>
 </li>
 <li>
-<p>** Add python ctypes declaration ** 
+<p><strong>Add python ctypes declaration</strong> 
 Add <code>_lib.cactus_graph_my_new_op.argtypes/restype</code> in <code>python/cactus/bindings/cactus.py</code></p>
 </li>
 <li>
-<p>** Add python graph wrapper ** 
+<p><strong>Add python graph wrapper</strong> 
 Add <code>Graph.my_new_op(...)</code> in <code>python/cactus/bindings/cactus.py</code>, and optionally a Tensor
   convenience method.</p>
 </li>
 <li>
-<p>** Add serialization schema entry if needed **
+<p><strong>Add serialization schema entry if needed</strong>
 If your op has extra parameters that need to be saved/loaded that are not in the 
 default node, add new ParamField enum values. </p>
 </li>
@@ -3727,7 +3728,7 @@ empty schema entry.</p>
 <a id="__codelineno-48-3" name="__codelineno-48-3" href="#__codelineno-48-3"></a>    {ParamField::Mode, FieldPersistence::Persistent},
 <a id="__codelineno-48-4" name="__codelineno-48-4" href="#__codelineno-48-4"></a>}},
 </code></pre></div>
-8. ** Add test coverage **
+8. <strong>Add test coverage</strong>
 Add unit tests to <code>cactus-graph/tests/test_graph.cpp</code> covering the native graph function, and
 add python tests in <code>python/tests/test_graph.py</code> covering the Python API and end-to-end execution.</p>
 <p>and then support those fields in <code>write_field(...)</code> / <code>read_field(...)</code>.</p>

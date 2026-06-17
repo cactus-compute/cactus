@@ -1677,7 +1677,6 @@
 <li>Fork the repository and create a branch from <code>main</code>.</li>
 <li>Make your changes, keeping the scope focused on the relevant GitHub issue.</li>
 <li>Run <code>cactus test</code> to verify your changes build and pass all tests.</li>
-<li>Run <code>cactus test --suite performance</code> if your changes affect performance-critical paths.</li>
 <li>Update documentation if your changes affect the public API or user-facing behavior.</li>
 <li>Submit a pull request with a clear description of what you changed and why.</li>
 </ol>
@@ -1691,11 +1690,8 @@
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1"># Run tests on a connected Android device</span>
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>cactus<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--android
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="c1"># Run performance tests</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>cactus<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--suite<span class="w"> </span>performance
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="c1"># Test a specific model</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>cactus<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--model<span class="w"> </span>LiquidAI/LFM2-VL-450M
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="c1"># Test a specific model</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>cactus<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--model<span class="w"> </span>LiquidAI/LFM2-VL-450M
 </code></pre></div>
 <h2 id="developer-certificate-of-origin">Developer Certificate of Origin<a class="headerlink" href="#developer-certificate-of-origin" title="Permanent link">&para;</a></h2>
 <p>All contributions must comply with the <a href="../DCO/">Developer Certificate of Origin (DCO)</a>. By submitting a contribution, you certify that you have the right to do so under the project's open source license.</p>

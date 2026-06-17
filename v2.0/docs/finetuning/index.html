@@ -1764,7 +1764,7 @@
 
 <h1 id="deploying-unsloth-fine-tunes-to-cactus-for-phones">Deploying Unsloth Fine-Tunes to Cactus for Phones<a class="headerlink" href="#deploying-unsloth-fine-tunes-to-cactus-for-phones" title="Permanent link">&para;</a></h1>
 <ul>
-<li>Cactus is an inference engine for mobile devices, macs and ARM chips like Raspberry Pi.</li>
+<li>Cactus is an inference engine for mobile devices, Macs, and ARM chips like Raspberry Pi.</li>
 <li>At INT8, Cactus runs <code>Qwen3-0.6B</code> and <code>LFM2-1.2B</code> at <code>60-70 toks/sec</code> on iPhone 17 Pro, <code>13-18 toks/sec</code> on budget Pixel 6a.</li>
 <li>INT4 quantization provides ~50% memory reduction with minimal quality loss.</li>
 <li>Task-Specific INT8 tunes of <code>Gemma3-270m</code> hit <code>150 toks/sec</code> on iPhone 17 Pro and <code>23 toks/sec</code> on Raspberry Pi 5. </li>
@@ -1825,15 +1825,15 @@ when no bundle exists locally.
 <p>Build the native library:</p>
 <p><div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>cactus<span class="w"> </span>build<span class="w"> </span>--apple
 </code></pre></div>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Build<span class="w"> </span>complete!
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>Total<span class="w"> </span>time:<span class="w"> </span><span class="m">58</span><span class="w"> </span>seconds
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>Static<span class="w"> </span>libraries:
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>Device:<span class="w"> </span>&lt;repo&gt;/apple/libcactus_engine-device.a
-<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span>Simulator:<span class="w"> </span>&lt;repo&gt;/apple/libcactus_engine-simulator.a
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Build complete!
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>Total time: 58 seconds
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>Static libraries:
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>  Device: &lt;repo&gt;/apple/libcactus_engine-device.a
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>  Simulator: &lt;repo&gt;/apple/libcactus_engine-simulator.a
 <a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>XCFrameworks:
-<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">  </span>iOS:<span class="w"> </span>&lt;repo&gt;/apple/cactus-ios.xcframework
-<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">  </span>macOS:<span class="w"> </span>&lt;repo&gt;/apple/cactus-macos.xcframework
-<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>Building<span class="w"> </span>Cactus<span class="w"> </span><span class="k">for</span><span class="w"> </span>Apple<span class="w"> </span>platforms<span class="w"> </span>complete!
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>  iOS: &lt;repo&gt;/apple/cactus-ios.xcframework
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>  macOS: &lt;repo&gt;/apple/cactus-macos.xcframework
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>Building Cactus for Apple platforms complete!
 </code></pre></div></p>
 <p>Link <code>cactus-ios.xcframework</code> to your Xcode project, then:</p>
 <p><div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kd">import</span><span class="w"> </span><span class="nc">Foundation</span>
@@ -1860,21 +1860,21 @@ when no bundle exists locally.
 <img src="../assets/app.png" alt="Logo" style="border-radius: 30px; width: 20%;"></p>
 <p>You can now build iOS apps using the following code, 
 but to see performance on any device while testing,
-run cactus tests by plugging any iphone to your Mac then running:</p>
+run cactus tests by plugging any iPhone to your Mac then running:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>cactus<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--model<span class="w"> </span>&lt;model-path-or-name&gt;<span class="w"> </span>--transcription-model<span class="w"> </span>&lt;model-path-or-name&gt;<span class="w"> </span>--ios
 </code></pre></div>
 <p>Cactus demo apps will eventually expand to using your custom fine-tunes.
 Also, <code>cactus run</code> will allow plugging in a phone,
-such that the interactive session use the phone chips,
+such that the interactive session uses the phone chips,
 this way you can test before fully building out your apps.</p>
 <h3 id="6-use-in-android-app">6. Use in Android App<a class="headerlink" href="#6-use-in-android-app" title="Permanent link">&para;</a></h3>
 <p>Build the native library:</p>
 <p><div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>cactus<span class="w"> </span>build<span class="w"> </span>--android
 </code></pre></div>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>Build<span class="w"> </span>complete!
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>Shared<span class="w"> </span>library<span class="w"> </span>location:<span class="w"> </span>&lt;repo&gt;/android/libcactus_engine.so
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>Static<span class="w"> </span>library<span class="w"> </span>location:<span class="w"> </span>&lt;repo&gt;/android/libcactus_engine.a
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>Building<span class="w"> </span>Cactus<span class="w"> </span><span class="k">for</span><span class="w"> </span>Android<span class="w"> </span>complete!
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>Build complete!
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>Shared library location: &lt;repo&gt;/android/libcactus_engine.so
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>Static library location: &lt;repo&gt;/android/libcactus_engine.a
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>Building Cactus for Android complete!
 </code></pre></div></p>
 <p>Copy <code>libcactus_engine.so</code> to <code>app/src/main/jniLibs/arm64-v8a/</code>, then:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">import</span><span class="w"> </span><span class="nn">com.cactus.*</span>
@@ -1896,12 +1896,12 @@ this way you can test before fully building out your apps.</p>
 </code></pre></div>
 <p>You can now build Android apps using the following code, 
 but to see performance on any device while testing,
-run cactus tests by plugging any android phone to your Mac then running:</p>
+run cactus tests by plugging any Android phone to your Mac then running:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>cactus<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--model<span class="w"> </span>&lt;model-path-or-name&gt;<span class="w"> </span>--transcription-model<span class="w"> </span>&lt;model-path-or-name&gt;<span class="w"> </span>--android
 </code></pre></div>
 <p>Cactus demo apps will eventually expand to using your custom fine-tunes.
 Also, <code>cactus run</code> will allow plugging in a phone,
-such that the interactive session use the phone chips,
+such that the interactive session uses the phone chips,
 this way you can test before fully building out your apps.</p>
 <h2 id="resources">Resources<a class="headerlink" href="#resources" title="Permanent link">&para;</a></h2>
 <ul>

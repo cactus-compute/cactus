@@ -717,6 +717,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#streaming-transcription" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming transcription
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1576,6 +1587,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#streaming-transcription" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming transcription
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1617,6 +1639,15 @@
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="kd">const</span><span class="w"> </span><span class="nx">handle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">Cactus</span><span class="p">.</span><span class="nx">init</span><span class="p">(</span><span class="s1">&#39;/path/to/model&#39;</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">false</span><span class="p">);</span>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="kd">const</span><span class="w"> </span><span class="nx">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">Cactus</span><span class="p">.</span><span class="nx">complete</span><span class="p">(</span><span class="nx">handle</span><span class="p">,</span><span class="w"> </span><span class="nx">messagesJson</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="kc">false</span><span class="p">);</span>
 <a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="k">await</span><span class="w"> </span><span class="nx">Cactus</span><span class="p">.</span><span class="nx">destroy</span><span class="p">(</span><span class="nx">handle</span><span class="p">);</span>
+</code></pre></div>
+<h2 id="streaming-transcription">Streaming transcription<a class="headerlink" href="#streaming-transcription" title="Permanent link">&para;</a></h2>
+<p>Push 16 kHz mono PCM16 (base64) as it arrives; each call returns <code>{"success":true,"confirmed":...,"pending":...}</code> (<code>confirmed</code> is final, <code>pending</code> is the volatile tail).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kd">const</span><span class="w"> </span><span class="nx">stream</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">Cactus</span><span class="p">.</span><span class="nx">streamTranscribeStart</span><span class="p">(</span><span class="nx">handle</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;{&quot;language&quot;:&quot;en&quot;}&#39;</span><span class="p">);</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">const</span><span class="w"> </span><span class="nx">chunkBase64</span><span class="w"> </span><span class="k">of</span><span class="w"> </span><span class="nx">pcmChunks</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">json</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">Cactus</span><span class="p">.</span><span class="nx">streamTranscribeProcess</span><span class="p">(</span><span class="nx">stream</span><span class="p">,</span><span class="w"> </span><span class="nx">chunkBase64</span><span class="p">);</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="c1">// parse json -&gt; append &quot;confirmed&quot;, show &quot;pending&quot; as a live preview</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="p">}</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="kd">const</span><span class="w"> </span><span class="nx">tail</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">Cactus</span><span class="p">.</span><span class="nx">streamTranscribeStop</span><span class="p">(</span><span class="nx">stream</span><span class="p">);</span>
 </code></pre></div>
 
 

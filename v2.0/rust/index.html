@@ -857,6 +857,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#streaming-transcription" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming transcription
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1576,6 +1587,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#streaming-transcription" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Streaming transcription
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1632,6 +1654,20 @@ attributes) and point Cargo at the build directory:</p>
 <a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="w">        </span><span class="n">cactus</span><span class="p">::</span><span class="n">cactus_destroy</span><span class="p">(</span><span class="n">model</span><span class="p">);</span>
 <a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="w">    </span><span class="p">}</span>
 <a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="p">}</span>
+</code></pre></div>
+<h2 id="streaming-transcription">Streaming transcription<a class="headerlink" href="#streaming-transcription" title="Permanent link">&para;</a></h2>
+<p>Push 16 kHz mono PCM16 as it arrives; each call returns <code>{"success":true,"confirmed":...,"pending":...}</code> (<code>confirmed</code> is final, <code>pending</code> is the volatile tail). All <code>unsafe</code>, like the rest:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">opts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">CString</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="s">r#&quot;{&quot;language&quot;:&quot;en&quot;}&quot;#</span><span class="p">).</span><span class="n">unwrap</span><span class="p">();</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kd">let</span><span class="w"> </span><span class="n">stream</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">cactus</span><span class="p">::</span><span class="n">cactus_stream_transcribe_start</span><span class="p">(</span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="n">opts</span><span class="p">.</span><span class="n">as_ptr</span><span class="p">());</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="kd">let</span><span class="w"> </span><span class="k">mut</span><span class="w"> </span><span class="n">buf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="fm">vec!</span><span class="p">[</span><span class="mi">0</span><span class="k">u8</span><span class="p">;</span><span class="w"> </span><span class="mi">65536</span><span class="p">];</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">for</span><span class="w"> </span><span class="n">chunk</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">pcm_chunks</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="c1">// each: 16 kHz mono i16 bytes</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span><span class="n">cactus</span><span class="p">::</span><span class="n">cactus_stream_transcribe_process</span><span class="p">(</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">        </span><span class="n">stream</span><span class="p">,</span><span class="w"> </span><span class="n">chunk</span><span class="p">.</span><span class="n">as_ptr</span><span class="p">(),</span><span class="w"> </span><span class="n">chunk</span><span class="p">.</span><span class="n">len</span><span class="p">(),</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">        </span><span class="n">buf</span><span class="p">.</span><span class="n">as_mut_ptr</span><span class="p">()</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="o">*</span><span class="k">mut</span><span class="w"> </span><span class="n">c_char</span><span class="p">,</span><span class="w"> </span><span class="n">buf</span><span class="p">.</span><span class="n">len</span><span class="p">(),</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="p">);</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">    </span><span class="c1">// append &quot;confirmed&quot;; show &quot;pending&quot; as a live preview</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="p">}</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="n">cactus</span><span class="p">::</span><span class="n">cactus_stream_transcribe_stop</span><span class="p">(</span><span class="n">stream</span><span class="p">,</span><span class="w"> </span><span class="n">buf</span><span class="p">.</span><span class="n">as_mut_ptr</span><span class="p">()</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="o">*</span><span class="k">mut</span><span class="w"> </span><span class="n">c_char</span><span class="p">,</span><span class="w"> </span><span class="n">buf</span><span class="p">.</span><span class="n">len</span><span class="p">());</span>
 </code></pre></div>
 
 
