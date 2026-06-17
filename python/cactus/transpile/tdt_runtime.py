@@ -658,6 +658,46 @@ class ParakeetTDTEncoder(nn.Module):
         return x
 
 
+# Encoder layer (0-indexed) whose output the cloud-handoff probe was trained on.
+# parakeet-tdt-0.6b-v2 has 24 conformer layers; the probe taps layer 17 (NOT the
+# final layer). Override with CACTUS_PARAKEET_PROBE_LAYER if a probe is retrained.
+PARAKEET_PROBE_CAPTURE_LAYER = int(os.environ.get("CACTUS_PARAKEET_PROBE_LAYER", "17"))
+
+
+class ParakeetTDTEncoderProbe(nn.Module):
+    """Wraps the Parakeet encoder so it returns (encoder_hidden_states,
+    probe_hidden), where probe_hidden is the raw output of conformer layer
+    ``capture_index``. Mirrors the Gemma4 ``capture_layer_index`` mechanism so
+    the C++ engine can run the cloud-handoff probe on ASR activations.
+
+    Reuses the encoder's own ``pre_encode`` and ``layers`` submodules, so traced
+    parameter names match ``model.encoder`` exactly and weight mapping is
+    unchanged."""
+
+    def __init__(self, encoder: "ParakeetTDTEncoder", capture_index: int):
+        super().__init__()
+        self.pre_encode = encoder.pre_encode
+        self.layers = encoder.layers
+        num_layers = len(self.layers)
+        if not (0 <= capture_index < num_layers):
+            clamped = max(0, num_layers - 1)
+            print(
+                f"tdt_runtime: probe capture layer {capture_index} out of range for "
+                f"{num_layers}-layer encoder; clamping to {clamped}"
+            )
+            capture_index = clamped
+        self.capture_index = capture_index
+
+    def forward(self, input_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        x = self.pre_encode(input_features)
+        probe_hidden = x
+        for index, layer in enumerate(self.layers):
+            x = layer(x)
+            if index == self.capture_index:
+                probe_hidden = x
+        return x, probe_hidden
+
+
 class ParakeetTDTANESelfAttention(nn.Module):
     def __init__(self, attn: "ParakeetTDTSelfAttention", seq_len: int):
         super().__init__()
@@ -1003,13 +1043,19 @@ def build_parakeet_tdt_component_specs(
         ane_seq_len = int(model.encoder.pre_encode(npu_input_features).shape[1])
     ane_encoder = ParakeetTDTANEEncoder(model.encoder, ane_seq_len)
 
+    # CPU encoder additionally emits probe_hidden (layer-17 activations) for the
+    # cloud-handoff probe. The NPU/ANE encoder keeps its single "encoded" output
+    # (the offline NPU emit traces npu_module directly and ignores output_keys),
+    # so probe-based handoff is only available on the CPU graph path.
+    probe_encoder = ParakeetTDTEncoderProbe(model.encoder, PARAKEET_PROBE_CAPTURE_LAYER)
+
     return [
         ComponentModuleSpec(
             component="audio_encoder",
-            module=model.encoder,
+            module=probe_encoder,
             example_inputs=(input_features,),
             input_keys=("input_features",),
-            output_keys=("encoder_hidden_states",),
+            output_keys=("encoder_hidden_states", "probe_hidden"),
             graph_meta={**common_graph_meta, "component": "audio_encoder"},
             metadata={"family": "parakeet_tdt", "task": "tdt_transcription"},
             npu_module=ane_encoder,

@@ -1,10 +1,12 @@
 #include "../cactus_engine.h"
 #include "utils.h"
+#include "cloud.h"
 #include "cactus_kernels.h"
 #include "wav.h"
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 
@@ -237,9 +239,11 @@ int cactus_transcribe(
 
         const size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
         std::vector<float> audio_features;
+        std::vector<float> handoff_audio_samples;  // 16k mono, pre-emphasis-free, for cloud handoff
         if (is_parakeet) {
             auto cfg = cactus::audio::get_parakeet_spectrogram_config();
             const size_t waveform_samples = audio_samples.size();
+            handoff_audio_samples = audio_samples;
             cactus::audio::apply_preemphasis(audio_samples, 0.97f);
             audio_features = cactus::audio::compute_spectrogram_graph(
                 audio_samples, cfg, mel_bins, 0.0f, 8000.0f,
@@ -423,6 +427,76 @@ int cactus_transcribe(
             : 0.0f;
         float confidence = 1.0f - mean_entropy;
 
+        // Cloud-handoff decision for Parakeet, driven by the handoff probe's
+        // p_wrong (confidence = 1 - p_wrong). Mirrors the Gemma4 path in
+        // complete.cpp. TDT decoding produces no token entropy, so without the
+        // probe confidence stays 1.0 and no handoff occurs.
+        bool cloud_handoff_used = false;
+        std::string handoff_reason;
+        float reported_threshold = -1.0f;
+        if (is_parakeet) {
+            const bool cloud_disabled = env_flag_enabled("CACTUS_DISABLE_CLOUD_HANDOFF");
+            const bool cloud_eligible =
+                !cloud_disabled && !handle->cloud_handoff_disabled && options.auto_handoff;
+            float threshold = options.confidence_threshold;
+            if (threshold < 0.0f) {
+                const float model_default = handle->model->get_config().default_cloud_handoff_threshold;
+                threshold = handle->model->has_handoff_probe()
+                    ? 0.50f
+                    : (model_default > 0.0f ? model_default : 0.7f);
+            }
+            reported_threshold = threshold;
+
+            if (!options.auto_handoff) {
+                handoff_reason = "handoff off";
+            } else if (cloud_disabled) {
+                handoff_reason = "disabled (env)";
+            } else if (handle->cloud_handoff_disabled) {
+                handoff_reason = "disabled (auth failed earlier)";
+            }
+
+            if (cloud_eligible && handle->model->has_handoff_probe_rollout()) {
+                float p_wrong = handle->model->handoff_probe_wrong_probability();
+                if (std::isfinite(p_wrong)) {
+                    confidence = std::max(0.0f, std::min(1.0f, 1.0f - p_wrong));
+                    CACTUS_LOG_DEBUG("cloud_handoff", "Parakeet handoff probe p_wrong="
+                        << p_wrong << " confidence=" << confidence);
+                    if (confidence < threshold && !handoff_audio_samples.empty()) {
+                        CACTUS_LOG_WARN("cloud_handoff", "Cloud transcription handoff triggered: p_wrong="
+                            << p_wrong << " confidence=" << confidence << " threshold=" << threshold);
+                        std::vector<int16_t> pcm16(handoff_audio_samples.size());
+                        for (size_t i = 0; i < handoff_audio_samples.size(); ++i) {
+                            float clamped = std::max(-1.0f, std::min(1.0f, handoff_audio_samples[i]));
+                            pcm16[i] = static_cast<int16_t>(std::lround(clamped * 32767.0f));
+                        }
+                        std::vector<uint8_t> wav = cactus::ffi::cloud_build_wav(
+                            reinterpret_cast<const uint8_t*>(pcm16.data()), pcm16.size() * sizeof(int16_t));
+                        std::string audio_b64 = cactus::ffi::cloud_base64_encode(wav.data(), wav.size());
+                        std::string cloud_key = cactus::ffi::resolve_cloud_api_key(nullptr);
+                        CloudResponse cloud = cactus::ffi::cloud_transcribe_request(
+                            audio_b64, final_text,
+                            static_cast<long>(options.cloud_timeout_ms / 1000),
+                            cloud_key.empty() ? nullptr : cloud_key.c_str());
+                        if (cloud.used_cloud && !cloud.transcript.empty()) {
+                            final_text = cloud.transcript;
+                            cloud_handoff_used = true;
+                            handoff_reason = "low confidence (probe)";
+                        } else {
+                            if (cloud.error.rfind("http_401", 0) == 0 || cloud.error.rfind("http_403", 0) == 0) {
+                                handle->cloud_handoff_disabled = true;
+                            }
+                            handoff_reason = "handoff failed: " + cloud.error;
+                            CACTUS_LOG_WARN("cloud_handoff", "Cloud transcription failed, keeping local output: "
+                                << cloud.error);
+                        }
+                    }
+                }
+            }
+            if (handoff_reason.empty()) {
+                handoff_reason = (confidence >= threshold) ? "above threshold" : "kept local";
+            }
+        }
+
         auto end_time = std::chrono::high_resolution_clock::now();
         double total_time_ms =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
@@ -436,7 +510,8 @@ int cactus_transcribe(
         std::string json = construct_response_json(
             final_text, {}, time_to_first_token, total_time_ms,
             prefill_tps, decode_tps, prompt_tokens, completion_tokens,
-            confidence, false, "", segments);
+            confidence, cloud_handoff_used, "", segments, "",
+            reported_threshold, handoff_reason);
         if (json.size() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);
             return -1;
