@@ -17,11 +17,12 @@ namespace {
 constexpr size_t kScratchSize = 1u << 16;
 constexpr size_t kSampleRate = 16000;
 constexpr float kSampleRateF = 16000.0f;
-constexpr size_t kLeftContextSamples = 8 * kSampleRate;
-constexpr size_t kRightContextSamples = 1 * kSampleRate;
-constexpr size_t kChunkSamples = 1 * kSampleRate;
-constexpr size_t kColdStartSamples = 6 * kSampleRate;
-constexpr size_t kSilenceResetSamples = 3 * kSampleRate;
+constexpr size_t kLeftContextSamples = 8 * kSampleRate;   // left context re-fed each window
+constexpr size_t kRightContextSamples = 1 * kSampleRate;  // look-ahead before confirming
+constexpr size_t kChunkSamples = 1 * kSampleRate;         // warm decode step
+constexpr size_t kColdStartSamples = 6 * kSampleRate;     // first decode from empty state
+constexpr size_t kResumeColdSamples = 2 * kSampleRate;    // first decode after silence
+constexpr size_t kSilenceResetSamples = 3 * kSampleRate;  // silence run that triggers a cold restart
 constexpr size_t kMaxDecodeSamples = 10 * kSampleRate;
 
 struct StreamStats {
@@ -184,7 +185,8 @@ std::string parakeet_process(StreamTranscribe* s, std::string& pending, StreamSt
         const size_t total = s->samples.size();
         const size_t decodable = total > kRightContextSamples ? total - kRightContextSamples : 0;
         const bool cold = s->samples_decoded_up_to == 0 || s->cold_restart;
-        const size_t min_chunk = cold ? kColdStartSamples : kChunkSamples;
+        const size_t cold_min = s->cold_restart ? kResumeColdSamples : kColdStartSamples;
+        const size_t min_chunk = cold ? cold_min : kChunkSamples;
         if (decodable <= s->samples_decoded_up_to ||
             decodable - s->samples_decoded_up_to < min_chunk) {
             break;
@@ -211,7 +213,7 @@ std::string parakeet_process(StreamTranscribe* s, std::string& pending, StreamSt
             if (s->silence_run >= kSilenceResetSamples) s->cold_restart = true;
             continue;
         }
-        if (decode_to - s->samples_decoded_up_to < kColdStartSamples) break;
+        if (decode_to - s->samples_decoded_up_to < cold_min) break;
         stats.decode_tokens = tokens_before;
         confirmed += parakeet_decode_window(s, window_start, window_end,
                                             decode_start_frame, decode_end_frame, true, &pend, stats);
