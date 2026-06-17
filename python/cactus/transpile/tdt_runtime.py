@@ -664,6 +664,28 @@ class ParakeetTDTEncoder(nn.Module):
 PARAKEET_PROBE_CAPTURE_LAYER = int(os.environ.get("CACTUS_PARAKEET_PROBE_LAYER", "17"))
 
 
+def parakeet_checkpoint_version(model_source: str | None) -> int:
+    """Best-effort Parakeet-TDT version from the model id/source path.
+    Defaults to 3 (the published/supported model) when unidentifiable."""
+    source = (model_source or "").lower()
+    match = re.search(r"[-_]v(\d+)(?:[-_/.]|$)", source)
+    return int(match.group(1)) if match else 3
+
+
+def parakeet_ane_flip_relpos(model_source: str | None) -> bool:
+    """Whether the ANE conformer attention flips its relative-position key table.
+
+    parakeet-tdt-0.6b-v2 and v3 use OPPOSITE relative-position sign conventions:
+    the `.flip(1)` is correct for v3 (the published/supported model) but wrong
+    for v2 (yields blank NPU transcriptions). Default to v3 behaviour (flip) for
+    anything not clearly identified as v2. Override with CACTUS_PARAKEET_ANE_FLIP=0/1.
+    """
+    env = os.environ.get("CACTUS_PARAKEET_ANE_FLIP")
+    if env is not None:
+        return env.strip().lower() not in ("0", "false", "no", "off", "")
+    return parakeet_checkpoint_version(model_source) != 2  # v2 -> no flip; v3+ -> flip
+
+
 class ParakeetTDTEncoderProbe(nn.Module):
     """Wraps the Parakeet encoder so it returns (encoder_hidden_states,
     probe_hidden), where probe_hidden is the raw output of conformer layer
@@ -699,7 +721,7 @@ class ParakeetTDTEncoderProbe(nn.Module):
 
 
 class ParakeetTDTANESelfAttention(nn.Module):
-    def __init__(self, attn: "ParakeetTDTSelfAttention", seq_len: int):
+    def __init__(self, attn: "ParakeetTDTSelfAttention", seq_len: int, flip_relpos: bool = True):
         super().__init__()
         self.linear_q = attn.linear_q
         self.linear_k = attn.linear_k
@@ -719,7 +741,11 @@ class ParakeetTDTANESelfAttention(nn.Module):
         with torch.no_grad():
             rel_k = attn.linear_pos(rel_pos).view(
                 1, 2 * int(seq_len) - 1, self.config.attention_heads, self.config.attention_head_dim
-            ).flip(1)
+            )
+            # The relative-position sign convention differs by checkpoint: v3
+            # needs the flip, v2 does not (see parakeet_ane_flip_relpos).
+            if flip_relpos:
+                rel_k = rel_k.flip(1)
         self.register_buffer("_rel_k", rel_k.detach(), persistent=False)
 
     def forward(self, x: torch.Tensor, key_bias: torch.Tensor | None = None) -> torch.Tensor:
@@ -755,11 +781,11 @@ class ParakeetTDTANESelfAttention(nn.Module):
 
 
 class ParakeetTDTANEEncoderLayer(nn.Module):
-    def __init__(self, layer: "ParakeetTDTEncoderLayer", seq_len: int):
+    def __init__(self, layer: "ParakeetTDTEncoderLayer", seq_len: int, flip_relpos: bool = True):
         super().__init__()
         self.feed_forward1 = layer.feed_forward1
         self.feed_forward2 = layer.feed_forward2
-        self.self_attn = ParakeetTDTANESelfAttention(layer.self_attn, seq_len)
+        self.self_attn = ParakeetTDTANESelfAttention(layer.self_attn, seq_len, flip_relpos=flip_relpos)
         self.conv = layer.conv
         self.norm_feed_forward1 = layer.norm_feed_forward1
         self.norm_self_att = layer.norm_self_att
@@ -778,11 +804,13 @@ class ParakeetTDTANEEncoderLayer(nn.Module):
 
 class ParakeetTDTANEEncoder(nn.Module):
     def __init__(self, encoder: "ParakeetTDTEncoder", seq_len: int,
-                 capture_index: int = PARAKEET_PROBE_CAPTURE_LAYER):
+                 capture_index: int = PARAKEET_PROBE_CAPTURE_LAYER,
+                 flip_relpos: bool = True,
+                 emit_probe_hidden: bool = True):
         super().__init__()
         self.pre_encode = encoder.pre_encode
         self.layers = nn.ModuleList(
-            [ParakeetTDTANEEncoderLayer(layer, seq_len) for layer in encoder.layers]
+            [ParakeetTDTANEEncoderLayer(layer, seq_len, flip_relpos=flip_relpos) for layer in encoder.layers]
         )
         factor = max(1, int(encoder.layers[0].config.subsampling_factor))
         self._subsample_stages = max(0, factor.bit_length() - 1)
@@ -790,6 +818,7 @@ class ParakeetTDTANEEncoder(nn.Module):
         if not (0 <= capture_index < num_layers):
             capture_index = max(0, num_layers - 1)
         self.capture_index = capture_index
+        self.emit_probe_hidden = emit_probe_hidden
 
     def _frame_masks(self, input_features: torch.Tensor, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         valid = (input_features.abs().sum(-1) > 0).to(input_features.dtype).sum(-1, keepdim=True)
@@ -800,7 +829,7 @@ class ParakeetTDTANEEncoder(nn.Module):
         key_bias = (1.0 - enc_valid).unsqueeze(1) * -1e4
         return enc_valid, key_bias
 
-    def forward(self, input_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, input_features: torch.Tensor):
         x = self.pre_encode(input_features)
         conv_mask, key_bias = self._frame_masks(input_features, x.shape[1])
         probe_hidden = x
@@ -808,9 +837,12 @@ class ParakeetTDTANEEncoder(nn.Module):
             x = layer(x, conv_mask, key_bias)
             if index == self.capture_index:
                 probe_hidden = x
-        # Emit encoded + probe_hidden so the ANE/NPU bundle can run the
-        # cloud-handoff probe (layer-17 activations), matching the CPU graph.
-        return x, probe_hidden
+        # When the cloud-handoff probe ships (v2 only), emit encoder +
+        # probe_hidden so the ANE/NPU bundle can run the probe (layer-17
+        # activations). Otherwise emit only the encoded output (v3/standard).
+        if self.emit_probe_hidden:
+            return x, probe_hidden
+        return x
 
 
 class ParakeetTDTDecoderCell(nn.Module):
@@ -1051,21 +1083,33 @@ def build_parakeet_tdt_component_specs(
     npu_input_features[:, :valid_frames, :] = input_features[:, :valid_frames, :]
     with torch.no_grad():
         ane_seq_len = int(model.encoder.pre_encode(npu_input_features).shape[1])
-    ane_encoder = ParakeetTDTANEEncoder(model.encoder, ane_seq_len)
+    model_source = getattr(model.config, "model_source", None)
+    version = parakeet_checkpoint_version(model_source)
+    # v2 and v3 use opposite relative-position sign conventions; the ANE
+    # encoder flips its rel-pos table only for v3+ (correct), not v2.
+    ane_flip = parakeet_ane_flip_relpos(model_source)
+    # The cloud-handoff probe was trained on v2 layer-17 activations only, so
+    # expose probe_hidden (CPU graph + ANE) for v2 and ship the standard
+    # single-output encoder for v3/other versions.
+    include_probe = (version == 2)
 
-    # CPU encoder additionally emits probe_hidden (layer-17 activations) for the
-    # cloud-handoff probe. The NPU/ANE encoder keeps its single "encoded" output
-    # (the offline NPU emit traces npu_module directly and ignores output_keys),
-    # so probe-based handoff is only available on the CPU graph path.
-    probe_encoder = ParakeetTDTEncoderProbe(model.encoder, PARAKEET_PROBE_CAPTURE_LAYER)
+    if include_probe:
+        encoder_module = ParakeetTDTEncoderProbe(model.encoder, PARAKEET_PROBE_CAPTURE_LAYER)
+        encoder_output_keys = ("encoder_hidden_states", "probe_hidden")
+    else:
+        encoder_module = model.encoder
+        encoder_output_keys = ("encoder_hidden_states",)
+    ane_encoder = ParakeetTDTANEEncoder(
+        model.encoder, ane_seq_len, flip_relpos=ane_flip, emit_probe_hidden=include_probe
+    )
 
     return [
         ComponentModuleSpec(
             component="audio_encoder",
-            module=probe_encoder,
+            module=encoder_module,
             example_inputs=(input_features,),
             input_keys=("input_features",),
-            output_keys=("encoder_hidden_states", "probe_hidden"),
+            output_keys=encoder_output_keys,
             graph_meta={**common_graph_meta, "component": "audio_encoder"},
             metadata={"family": "parakeet_tdt", "task": "tdt_transcription"},
             npu_module=ane_encoder,

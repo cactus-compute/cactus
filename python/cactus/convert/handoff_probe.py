@@ -169,9 +169,16 @@ def export_parakeet_handoff_probe(output_dir: str | Path, *, model_id: str | Non
 
     Detected like the Gemma4 probe: a plain ``parakeet_handoff_probe.pt`` in the
     bundle output dir or the convert working directory (drop the file next to
-    where you run ``cactus convert``)."""
+    where you run ``cactus convert``).
+
+    The probe was trained on parakeet-tdt-0.6b-v2 layer-17 activations only, so
+    it is packaged for v2 and NOT for v3 (or other versions), whose encoder
+    activations differ and would give uncalibrated p_wrong."""
     model_key = (model_id or "").lower()
     if model_key and "parakeet" not in model_key:
+        return False
+    if model_key and "v2" not in model_key:
+        # Probe only ships with the v2 checkpoint it was trained on.
         return False
 
     out_dir = Path(output_dir)
