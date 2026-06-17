@@ -234,18 +234,21 @@ static int run_live_transcription(cactus_model_t model, const std::string& langu
     std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
     auto last_process = std::chrono::steady_clock::now();
 
-    auto step = [&](std::vector<uint8_t> chunk) {
+    auto step = [&](std::vector<uint8_t> chunk, bool render) {
         if (chunk.empty()) return;
         std::vector<uint8_t> pcm = resample_to_16k(chunk, g_audio.actual_sample_rate);
         response_buffer[0] = '\0';
         auto t0 = std::chrono::steady_clock::now();
         if (cactus_stream_transcribe_process(stream, pcm.data(), pcm.size(),
                                              response_buffer.data(), response_buffer.size()) < 0) return;
-        double latency_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 
         std::string json(response_buffer.data());
         std::string confirmed = json_string_value(json, "confirmed");
         std::string pending = json_string_value(json, "pending");
+        confirmed_text += confirmed;
+        if (!render) return;
+
+        double latency_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         double decode_tps = json_number_value(json, "decode_tps");
         double raw_tps = json_number_value(json, "raw_decoder_tps");
         if (!confirmed.empty() || !pending.empty()) {
@@ -266,10 +269,7 @@ static int run_live_transcription(cactus_model_t model, const std::string& langu
             std::cout << "\r";
         }
 
-        if (!confirmed.empty()) {
-            current_line += colored(confirmed, ansi::green);
-            confirmed_text += confirmed;
-        }
+        if (!confirmed.empty()) current_line += colored(confirmed, ansi::green);
 
         while (true) {
             size_t idx = wrap_index(current_line, (size_t)limit);
@@ -315,7 +315,7 @@ static int run_live_transcription(cactus_model_t model, const std::string& langu
             last_process = now;
             std::vector<uint8_t> chunk;
             { std::lock_guard<std::mutex> lock(g_audio.mutex); chunk.swap(g_audio.buffer); }
-            step(std::move(chunk));
+            step(std::move(chunk), true);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -324,7 +324,7 @@ static int run_live_transcription(cactus_model_t model, const std::string& langu
     SDL_PauseAudioDevice(device, 1);
     std::vector<uint8_t> tail;
     { std::lock_guard<std::mutex> lock(g_audio.mutex); tail.swap(g_audio.buffer); }
-    step(std::move(tail));
+    step(std::move(tail), false);
 
     response_buffer[0] = '\0';
     cactus_stream_transcribe_stop(stream, response_buffer.data(), response_buffer.size());
