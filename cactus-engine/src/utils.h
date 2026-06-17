@@ -620,9 +620,20 @@ inline std::string json_array_field(const std::string& json, const std::string& 
 
     int depth = 1;
     size_t end = start + 1;
+    bool in_string = false, escape = false;
     while (end < json.size() && depth > 0) {
-        if (json[end] == '[') depth++;
-        else if (json[end] == ']') depth--;
+        const char c = json[end];
+        if (in_string) {
+            if (escape) escape = false;
+            else if (c == '\\') escape = true;
+            else if (c == '"') in_string = false;
+        } else if (c == '"') {
+            in_string = true;
+        } else if (c == '[') {
+            depth++;
+        } else if (c == ']') {
+            depth--;
+        }
         end++;
     }
     return json.substr(start, end - start);
@@ -1651,8 +1662,8 @@ inline void partition_thinking_response(const std::string& input, std::string& t
 }
 
 struct TranscriptSegment {
-    float start;
-    float end;
+    float start = 0.0f;
+    float end = 0.0f;
     std::string text;
 };
 

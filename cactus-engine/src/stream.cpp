@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <regex>
 #include <sstream>
@@ -14,24 +15,23 @@ using namespace cactus::ffi;
 namespace {
 
 constexpr size_t kScratchSize = 1u << 16;
-constexpr size_t kLeftContextSamples = 8 * 16000;
-constexpr size_t kRightContextSamples = 16000;
-constexpr size_t kChunkSamples = 16000;
-constexpr size_t kColdStartSamples = 6 * 16000;
-constexpr size_t kSilenceResetSamples = 3 * 16000;
-constexpr size_t kMaxDecodeSamples = 10 * 16000;
+constexpr size_t kSampleRate = 16000;
+constexpr float kSampleRateF = 16000.0f;
+constexpr size_t kLeftContextSamples = 8 * kSampleRate;
+constexpr size_t kRightContextSamples = 1 * kSampleRate;
+constexpr size_t kChunkSamples = 1 * kSampleRate;
+constexpr size_t kColdStartSamples = 6 * kSampleRate;
+constexpr size_t kSilenceResetSamples = 3 * kSampleRate;
+constexpr size_t kMaxDecodeSamples = 10 * kSampleRate;
 
 struct StreamStats {
     size_t decode_tokens = 0;
     double total_time_ms = 0.0;
-    double raw_decode_ms = 0.0;
     double decode_tps = 0.0;
-    double raw_decoder_tps = 0.0;
     double time_to_first_token_ms = 0.0;
 
     void finalize() {
         if (total_time_ms > 0.0) decode_tps = decode_tokens * 1000.0 / total_time_ms;
-        if (raw_decode_ms > 0.0) raw_decoder_tps = decode_tokens * 1000.0 / raw_decode_ms;
     }
 };
 
@@ -102,15 +102,16 @@ std::vector<TranscriptSegment> whisper_transcribe(StreamTranscribe* s, const std
     std::vector<int16_t> pcm = to_pcm16(samples);
     std::string scratch(kScratchSize, '\0');
     const std::string opts = with_timestamps_option(s->options_json);
+    const bool prev_should_stop = s->model->should_stop.load();
     const int rc = cactus_transcribe(
         static_cast<cactus_model_t>(s->model), nullptr, nullptr,
         scratch.data(), scratch.size(), opts.c_str(),
         nullptr, nullptr,
         reinterpret_cast<const uint8_t*>(pcm.data()), pcm.size() * sizeof(int16_t));
+    if (prev_should_stop) s->model->should_stop.store(true);
     if (rc <= 0) return {};
     const std::string json(scratch.c_str());
     stats.decode_tps = json_num(json, "decode_tps");
-    stats.raw_decoder_tps = json_num(json, "raw_decoder_tps");
     stats.total_time_ms = json_num(json, "total_time_ms");
     stats.time_to_first_token_ms = json_num(json, "time_to_first_token_ms");
     stats.decode_tokens = static_cast<size_t>(json_num(json, "decode_tokens"));
@@ -146,7 +147,6 @@ std::string parakeet_decode_window(StreamTranscribe* s, size_t window_start, siz
     std::vector<uint32_t> tokens = model->transcribe_parakeet_tdt(
         features, &s->pstate, is_final, is_final ? 0 : decode_end_frame);
     stats.total_time_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    stats.raw_decode_ms += s->pstate.raw_decode_ms;
     stats.decode_tokens += s->pstate.decoded_tokens;
 
     auto* tokenizer = model->get_tokenizer();
@@ -165,7 +165,7 @@ std::string parakeet_decode_window(StreamTranscribe* s, size_t window_start, siz
     }
 
     if (!is_final && !tokens.empty() && s->pstate.confirmed_sec > 0.0f) {
-        s->samples_decoded_up_to = window_start + static_cast<size_t>(s->pstate.confirmed_sec * 16000.0f);
+        s->samples_decoded_up_to = window_start + static_cast<size_t>(s->pstate.confirmed_sec * kSampleRateF);
     }
     return delta;
 }
@@ -199,6 +199,7 @@ std::string parakeet_process(StreamTranscribe* s, std::string& pending, StreamSt
 
         std::string pend;
         const size_t prev_cursor = s->samples_decoded_up_to;
+        const size_t tokens_before = stats.decode_tokens;
         confirmed += parakeet_decode_window(s, window_start, window_end,
                                             decode_start_frame, decode_end_frame, false, &pend, stats);
         pending = pend;
@@ -211,6 +212,7 @@ std::string parakeet_process(StreamTranscribe* s, std::string& pending, StreamSt
             continue;
         }
         if (decode_to - s->samples_decoded_up_to < kColdStartSamples) break;
+        stats.decode_tokens = tokens_before;
         confirmed += parakeet_decode_window(s, window_start, window_end,
                                             decode_start_frame, decode_end_frame, true, &pend, stats);
         pending = pend;
@@ -235,8 +237,11 @@ std::string parakeet_flush(StreamTranscribe* s, StreamStats& stats) {
     const size_t total = s->samples.size();
     if (total <= s->samples_decoded_up_to) return "";
     const size_t spf = parakeet_spf(s);
-    const size_t window_start = s->samples_decoded_up_to > kLeftContextSamples
-        ? s->samples_decoded_up_to - kLeftContextSamples : 0;
+    const bool cold = s->samples_decoded_up_to == 0 || s->cold_restart;
+    if (cold) s->pstate = {};
+    const size_t window_start = cold
+        ? s->samples_decoded_up_to
+        : (s->samples_decoded_up_to > kLeftContextSamples ? s->samples_decoded_up_to - kLeftContextSamples : 0);
     const size_t decode_start_frame = (s->samples_decoded_up_to - window_start) / spf;
     std::string confirmed = parakeet_decode_window(s, window_start, total, decode_start_frame, 0, true, nullptr, stats);
     stats.finalize();
@@ -273,7 +278,7 @@ std::string whisper_process(StreamTranscribe* s, std::string& pending, StreamSta
     pending = segments_text(segs, agree, segs.size());
     if (agree > 0 && confirmed_end_sec > 0.0f) {
         confirmed = segments_text(segs, 0, agree);
-        const size_t cut = std::min(static_cast<size_t>(confirmed_end_sec * 16000.0f), s->samples.size());
+        const size_t cut = std::min(static_cast<size_t>(confirmed_end_sec * kSampleRateF), s->samples.size());
         s->samples.erase(s->samples.begin(), s->samples.begin() + cut);
         s->whisper_last_len -= cut;
         std::vector<TranscriptSegment> tail;
@@ -299,7 +304,6 @@ int write_result(char* buffer, size_t size, const std::string& confirmed,
     os << "{\"success\":true,\"confirmed\":\"" << escape_json_string(confirmed)
        << "\",\"pending\":\"" << escape_json_string(pending)
        << "\",\"decode_tps\":" << stats.decode_tps
-       << ",\"raw_decoder_tps\":" << stats.raw_decoder_tps
        << ",\"total_time_ms\":" << stats.total_time_ms
        << ",\"time_to_first_token_ms\":" << stats.time_to_first_token_ms
        << ",\"decode_tokens\":" << stats.decode_tokens << "}";
@@ -333,12 +337,12 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
             CACTUS_LOG_ERROR("stream_transcribe_start", last_error_message);
             return nullptr;
         }
-        auto* s = new StreamTranscribe();
+        auto s = std::make_unique<StreamTranscribe>();
         s->model = handle;
         s->is_parakeet = is_parakeet;
         if (options_json && options_json[0] != '\0') s->options_json = options_json;
         CACTUS_LOG_INFO("stream_transcribe_start", "streaming session opened");
-        return static_cast<cactus_stream_transcribe_t>(s);
+        return static_cast<cactus_stream_transcribe_t>(s.release());
     } catch (const std::exception& e) {
         last_error_message = std::string("stream_transcribe_start: ") + e.what();
         CACTUS_LOG_ERROR("stream_transcribe_start", last_error_message);

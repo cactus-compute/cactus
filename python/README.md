@@ -227,7 +227,7 @@ result = cactus_stream_transcribe_process(stream: int, pcm_data: bytes) -> dict 
 result = cactus_stream_transcribe_stop(stream: int) -> dict                      # {"confirmed": str, "pending": ""}; destroys the session
 ```
 
-`options` accepts the same keys as `cactus_transcribe` (e.g. `language`, `max_tokens`); chunking is handled internally.
+`options` is forwarded to `cactus_transcribe` for **Whisper only** (e.g. `language`, `max_tokens`); the Parakeet TDT path ignores it. Chunking is handled internally.
 
 ```python
 stream = cactus_stream_transcribe_start(model, {"language": "en"})

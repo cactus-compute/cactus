@@ -1090,7 +1090,7 @@ def cactus_stream_transcribe_process(stream, pcm_data):
 
     Returns:
         A dict with "confirmed" (newly finalized text, append it), "pending" (volatile tail,
-        replace it each call), and per-call stats ("decode_tps", "raw_decoder_tps",
+        replace it each call), and per-call stats ("decode_tps",
         "total_time_ms", "time_to_first_token_ms", "decode_tokens").
     """
     buf = ctypes.create_string_buffer(1 << 16)

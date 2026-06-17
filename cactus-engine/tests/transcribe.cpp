@@ -104,7 +104,7 @@ static int transcribe_file(cactus_model_t model, const std::string& audio_path,
                            const std::string& model_path, const std::string& language) {
     std::string prompt = whisper_prompt(model_path, language);
     std::vector<char> response_buffer(RESPONSE_BUFFER_SIZE, 0);
-    std::string options = "{\"max_tokens\":500,\"language\":\"" + language + "\"}";
+    std::string options = "{\"max_tokens\":500,\"auto_handoff\":false,\"language\":\"" + language + "\"}";
 
     auto start = std::chrono::steady_clock::now();
     int rc = cactus_transcribe(
@@ -250,12 +250,10 @@ static int run_live_transcription(cactus_model_t model, const std::string& langu
 
         double latency_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         double decode_tps = json_number_value(json, "decode_tps");
-        double raw_tps = json_number_value(json, "raw_decoder_tps");
         if (!confirmed.empty() || !pending.empty()) {
             std::ostringstream st;
             st << "[latency: " << (int)latency_ms << "ms";
             if (decode_tps > 0.0) st << " | decode: " << std::fixed << std::setprecision(1) << decode_tps << " tok/s";
-            if (raw_tps > 0.0) st << " | raw decoder: " << std::fixed << std::setprecision(1) << raw_tps << " tok/s";
             st << "]";
             stats = colored(st.str(), ansi::dim);
         }

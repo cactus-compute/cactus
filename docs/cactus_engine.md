@@ -617,7 +617,7 @@ The session emits text in two parts on every call:
 - **`confirmed`** — newly finalized words. Append them to your running transcript; they never change.
 - **`pending`** — the current best guess for the still-changing tail. Replace it on every call (do not append it); it is for live display only.
 
-A word is confirmed once two successive re-transcriptions of the audio agree on it (LocalAgreement-2, Whisper) or once a following token starts a new word (Parakeet TDT). Confirmed audio is dropped from the front of the buffer as the window advances, so memory stays bounded and the active window never approaches the model's fixed input length.
+Text is confirmed once two successive re-transcriptions of the audio agree (LocalAgreement, compared per **segment** for Whisper) or once a following token starts a new word (Parakeet TDT). Confirmed audio is dropped from the front of the buffer as the window advances, so memory stays bounded and the active window never approaches the model's fixed input length.
 
 #### `cactus_stream_transcribe_start`
 Opens a streaming session bound to an already-initialized speech model.
@@ -629,7 +629,7 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(
 ```
 **Returns:** an opaque session handle, or `NULL` on error (see `cactus_get_last_error`). Free it with `cactus_stream_transcribe_stop`.
 
-`options_json` (optional) is forwarded to the underlying `cactus_transcribe` call (e.g. `language`); chunking and segmentation are handled internally with no user-facing tunables.
+`options_json` (optional) is forwarded to the underlying `cactus_transcribe` call **for Whisper only** (e.g. `language`); the Parakeet TDT path ignores it. Chunking and segmentation are handled internally with no user-facing tunables.
 
 #### `cactus_stream_transcribe_process`
 Feeds the next slice of audio. Input is 16-bit signed PCM, **16 kHz, mono** — the same format as `cactus_transcribe`'s `pcm_buffer`. Feed reasonably small chunks (≈ 0.1–2 s) for low latency.
@@ -644,9 +644,9 @@ int cactus_stream_transcribe_process(
 ```
 **Returns:** bytes written to `response_buffer`, or -1 on error.
 
-**Response Format:**
+**Response Format:** (also includes timing stats: `decode_tps`, `total_time_ms`, `time_to_first_token_ms`, `decode_tokens`)
 ```json
-{ "success": true, "confirmed": "the quick brown", "pending": "fox jumps" }
+{ "success": true, "confirmed": "the quick brown", "pending": "fox jumps", "decode_tps": 0, "total_time_ms": 0, "time_to_first_token_ms": 0, "decode_tokens": 0 }
 ```
 
 #### `cactus_stream_transcribe_stop`
