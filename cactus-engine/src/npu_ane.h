@@ -26,7 +26,7 @@ public:
     ANEEncoder(ANEEncoder&& other) noexcept;
     ANEEncoder& operator=(ANEEncoder&& other) noexcept;
 
-    bool load(const std::string& model_path) override;
+    bool load(const std::string& model_path, const std::string& compute_units = "") override;
 
     bool preallocate(const std::vector<int>& input_shape,
                      const std::string& input_name = "x",
@@ -68,7 +68,7 @@ public:
     ANEEncoder() = default;
     ~ANEEncoder() override = default;
 
-    bool load(const std::string&) override { return false; }
+    bool load(const std::string&, const std::string& = "") override { return false; }
 
     bool preallocate(const std::vector<int>&,
                      const std::string& = "x",

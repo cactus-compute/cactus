@@ -3,7 +3,7 @@ import struct
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from .weight_patterns import EMBED_NAMES
-from ..model_adapters.naming import GEMMA4_WEIGHT_SCALE
+from ..model_adapters.naming import GEMMA4_WEIGHT_SCALE, gemma4_scale_factor
 
 try:
     import torch
@@ -283,19 +283,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
             data = data / GEMMA4_WEIGHT_SCALE
 
     if model_type == 'gemma4':
-        filename = output_path.name
-        is_audio_weight = filename.startswith('audio_')
-        if any(x in filename for x in ['input_norm', 'post_attn_norm', 'pre_ffn_norm', 'post_ffn_norm',
-                                       'post_per_layer_norm', 'post_proj_norm']):
-            data = data / GEMMA4_WEIGHT_SCALE
-        elif any(x in filename for x in ['ffn_gate', 'ffn_up', 'per_layer_gate', 'moe_gate_proj', 'moe_up_proj']):
-            data = data * GEMMA4_WEIGHT_SCALE
-        elif 'router_scale' in filename:
-            data = data / GEMMA4_WEIGHT_SCALE
-        elif filename in ('token_embeddings.weights', 'output_weight.weights', 'embed_vision_proj.weights', 'embed_audio_proj.weights'):
-            data = data / GEMMA4_WEIGHT_SCALE
-        elif filename == 'output_norm.weights':
-            data = data * GEMMA4_WEIGHT_SCALE
+        data = data * gemma4_scale_factor(output_path.name)
 
     if precision in ('INT8', 'INT4'):
         filename = output_path.name

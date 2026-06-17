@@ -777,6 +777,26 @@ int cactus_complete(
         const bool defer_local_stream_until_probe = cloud_eligible && handle->model->has_handoff_probe();
         bool pre_generation_cloud_attempted = false;
 
+        std::string handoff_reason;
+        if (!prompt.options.auto_handoff) {
+            handoff_reason = "handoff off";
+        } else if (cloud_disabled) {
+            handoff_reason = "disabled (env)";
+        } else if (handle->cloud_handoff_disabled) {
+            handoff_reason = "disabled (auth failed earlier)";
+        } else if (has_images && !prompt.options.handoff_with_images) {
+            handoff_reason = "images kept local";
+        }
+        auto friendly_cloud_error = [](const std::string& e) -> std::string {
+            if (e == "missing_api_key") return "no API key";
+            if (e.rfind("http_401", 0) == 0) return "auth failed (401)";
+            if (e.rfind("http_403", 0) == 0) return "auth failed (403)";
+            if (e == "cloud_handoff_disabled") return "disabled";
+            if (e == "curl_init_failed") return "curl init failed";
+            if (e.empty()) return "cloud error";
+            return e;
+        };
+
         auto make_cloud_request = [&](const std::string& local_output_hint,
                                       const std::vector<std::string>& local_calls_hint) {
             CloudCompletionRequest request;
@@ -805,7 +825,8 @@ int cactus_complete(
                                            double ttft_ms,
                                            double total_ms,
                                            float confidence,
-                                           size_t prompt_token_count) {
+                                           size_t prompt_token_count,
+                                           const std::string& reason) {
             std::string cloud_response = cloud_result.response;
             std::vector<std::string> cloud_calls = cloud_result.function_calls;
             if (callback && !cloud_response.empty()) {
@@ -814,7 +835,7 @@ int cactus_complete(
             std::string result = construct_response_json(cloud_response, cloud_calls, ttft_ms,
                                                          total_ms, 0.0, 0.0, prompt_token_count,
                                                          0, confidence, true, "", {}, "",
-                                                         prompt.options.confidence_threshold);
+                                                         prompt.options.confidence_threshold, reason);
             if (result.length() >= buffer_size) {
                 handle_error_response("Response buffer too small", response_buffer, buffer_size);
                 return -1;
@@ -848,7 +869,8 @@ int cactus_complete(
             auto now = std::chrono::high_resolution_clock::now();
             double elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count() / 1000.0;
             if (cloud_result.ok && (!cloud_result.response.empty() || !cloud_result.function_calls.empty())) {
-                return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, 0.0f, prompt.tokens.size());
+                return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, 0.0f, prompt.tokens.size(),
+                                               "forced (threshold 100%)");
             }
             std::string cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
             CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed before local generation: " << cloud_error);
@@ -881,10 +903,9 @@ int cactus_complete(
         bool first_token_from_prefill = false;
         if (!has_images && !has_audio && handle->processed_tokens.empty()) {
             reset_cache(handle);
-            first_token_from_prefill = handle->model->prefill_and_sample_first_token(prompt.tokens, next_token);
+            first_token_from_prefill = handle->model->prefill_and_sample_first_token(prompt.tokens, next_token, &first_token_entropy);
             if (first_token_from_prefill) {
                 prompt_tokens = prompt.tokens.size();
-                first_token_entropy = 0.0f;
             }
         }
         if (!first_token_from_prefill) {
@@ -928,11 +949,13 @@ int cactus_complete(
                     if (prompt.options.force_tools && !prompt.tools.empty()) {
                         handle->model->clear_tool_constraints();
                     }
-                    return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, confidence, prompt_tokens);
+                    return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, confidence, prompt_tokens,
+                                                   "low confidence");
                 }
                 cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
                 CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed before local streaming, falling back to local output: " << cloud_error);
                 disable_handoff_on_auth_failure(cloud_error);
+                handoff_reason = "handoff failed: " + friendly_cloud_error(cloud_error);
             }
 
             if (callback && !defer_local_stream_until_probe) {
@@ -977,13 +1000,15 @@ int cactus_complete(
             trim_stop_suffix(generated_tokens, stop_token_sequences, prompt.options.include_stop_sequences);
         }
 
-        confidence = entropy.mean_confidence();
-        if (defer_local_stream_until_probe && handle->model->has_handoff_probe_rollout()) {
-            float wrong_probability = handle->model->handoff_probe_wrong_probability();
-            if (std::isfinite(wrong_probability)) {
-                confidence = std::max(0.0f, std::min(1.0f, 1.0f - wrong_probability));
-                CACTUS_LOG_DEBUG("cloud_handoff", "Gemma4 handoff probe p_wrong="
-                    << wrong_probability << " confidence=" << confidence);
+        if (defer_local_stream_until_probe) {
+            confidence = entropy.mean_confidence();
+            if (handle->model->has_handoff_probe_rollout()) {
+                float wrong_probability = handle->model->handoff_probe_wrong_probability();
+                if (std::isfinite(wrong_probability)) {
+                    confidence = std::max(0.0f, std::min(1.0f, 1.0f - wrong_probability));
+                    CACTUS_LOG_DEBUG("cloud_handoff", "Gemma4 handoff probe p_wrong="
+                        << wrong_probability << " confidence=" << confidence);
+                }
             }
         }
 
@@ -1040,23 +1065,33 @@ int cactus_complete(
                 if (prompt.options.force_tools && !prompt.tools.empty()) {
                     handle->model->clear_tool_constraints();
                 }
-                return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, confidence, prompt_tokens);
+                return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, confidence, prompt_tokens,
+                                               "low confidence (probe)");
             }
             cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
             CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed after probe handoff, falling back to local output: "
                 << cloud_error);
             disable_handoff_on_auth_failure(cloud_error);
+            handoff_reason = "handoff failed: " + friendly_cloud_error(cloud_error);
         }
 
         if (callback && defer_local_stream_until_probe && !primary_response.empty()) {
             callback(primary_response.c_str(), 0, user_data);
         }
 
+        // No cloud handoff happened (success paths returned early above). If we never recorded a
+        // reason, the request was eligible and the local model cleared the threshold.
+        if (handoff_reason.empty()) {
+            handoff_reason = (confidence >= prompt.options.confidence_threshold)
+                ? "above threshold"
+                : "kept local";
+        }
+
         std::string result = construct_response_json(primary_response, primary_function_calls, time_to_first_token,
                                                      total_time_ms, prefill_tps, decode_tps, prompt_tokens,
                                                      completion_tokens, confidence, handoff_succeeded,
                                                      thinking_text, {}, response_text,
-                                                     prompt.options.confidence_threshold);
+                                                     prompt.options.confidence_threshold, handoff_reason);
 
         if (result.length() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);

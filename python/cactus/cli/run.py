@@ -2,7 +2,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .common import GREEN, RED, YELLOW, apply_cloud_api_key_env, print_color, resolve_binary
+from .common import GREEN, RED, apply_cloud_api_key_env, print_color, resolve_binary
 
 
 def cmd_run(args) -> int:
@@ -19,13 +19,20 @@ def cmd_run(args) -> int:
     if args.result_json:
         args.result_json = str(Path(args.result_json).expanduser())
 
+    from .model import TranspileOptions, ensure_runnable_bundle
+
     platform = resolve_platform(args.platform)
-    bundle_dir = _resolve_or_fetch_bundle(
-        args.model_id, bits=args.bits, platform=platform,
-        token=args.token, reconvert=args.reconvert,
-        image=args.image, audio=args.audio,
-    )
-    if bundle_dir is None:
+    try:
+        bundle_dir = ensure_runnable_bundle(
+            args.model_id, bits=args.bits, platform=platform,
+            token=args.token, reconvert=args.reconvert,
+            transpile=TranspileOptions(
+                image_files=[args.image] if args.image else None,
+                audio_file=args.audio,
+            ),
+        )
+    except RuntimeError as exc:
+        print_color(RED, f"Model setup failed: {exc}")
         return 1
 
     binary = resolve_binary("run")
@@ -55,34 +62,3 @@ def cmd_run(args) -> int:
     print_color(GREEN, f"Running: {bundle_dir}")
     print()
     return subprocess.run(cmd).returncode
-
-
-def _resolve_or_fetch_bundle(model_id, *, bits, platform, token, reconvert, image, audio):
-    from .download import download_bundle, get_bundle_dir
-    from .model import TranspileOptions, ensure_bundle, resolve_bundle_dir
-
-    local = resolve_bundle_dir(model_id)
-    if local is not None:
-        return local
-
-    cached = get_bundle_dir(model_id, bits=bits, platform=platform)
-    if (cached / "components" / "manifest.json").exists() and not reconvert:
-        return cached
-
-    if not reconvert:
-        try:
-            return download_bundle(model_id, bits=bits, platform=platform, token=token, reconvert=reconvert)
-        except (RuntimeError, OSError) as exc:
-            print_color(YELLOW, f"HF download unavailable ({exc}); building locally")
-
-    try:
-        return ensure_bundle(
-            model_id, bits=bits, token=token, reconvert=reconvert,
-            transpile=TranspileOptions(
-                image_files=[image] if image else None,
-                audio_file=audio,
-            ),
-        )
-    except RuntimeError as exc:
-        print_color(RED, f"Model setup failed: {exc}")
-        return None

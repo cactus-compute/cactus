@@ -8,11 +8,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from cactus.cli import utils as cq_utils
 from cactus.cli.utils import (
     archives_from_repo_files,
     parse_cq_variant,
+    parse_version,
     promote_single_root,
     resolve_archive,
+    resolve_weight_revision,
     safe_extract_archive,
     suggested_cq_repo,
     validate_extracted_bundle,
@@ -97,6 +100,48 @@ class TestCqDownloadResolver(unittest.TestCase):
             resolve_archive("Cactus-Compute/model", "model", [], 4)
 
 
+class TestWeightRevisionResolver(unittest.TestCase):
+    def test_parse_version(self):
+        self.assertEqual(parse_version("v2.0"), (2, 0, 0))
+        self.assertEqual(parse_version("2.0.0"), (2, 0, 0))
+        self.assertEqual(parse_version("v1.14"), (1, 14, 0))
+        self.assertEqual(parse_version("V1.2.3"), (1, 2, 3))
+        self.assertIsNone(parse_version("main"))
+        self.assertIsNone(parse_version("v2.0-rc1"))
+        self.assertIsNone(parse_version(None))
+        self.assertIsNone(parse_version(""))
+
+    def _patch_tags(self, tags):
+        names = [(t, parse_version(t)) for t in tags if parse_version(t) is not None]
+        original = cq_utils.list_version_tags
+        cq_utils.list_version_tags = lambda repo_id, token=None: tuple(names)
+        self.addCleanup(setattr, cq_utils, "list_version_tags", original)
+
+    def test_picks_latest_tag_at_or_below_runtime(self):
+        self._patch_tags(["v1.12", "v1.13", "v1.14", "v2.0"])
+        self.assertEqual(resolve_weight_revision("Cactus-Compute/m", "2.0.0"), "v2.0")
+
+    def test_skips_tags_above_runtime(self):
+        self._patch_tags(["v1.12", "v2.0", "v3.0"])
+        self.assertEqual(resolve_weight_revision("Cactus-Compute/m", "2.0.0"), "v2.0")
+
+    def test_minor_version_ordering(self):
+        self._patch_tags(["v1.8", "v1.9", "v1.10", "v1.14"])
+        self.assertEqual(resolve_weight_revision("Cactus-Compute/m", "2.0.0"), "v1.14")
+
+    def test_no_eligible_tag_falls_back_to_main(self):
+        self._patch_tags(["v3.0", "v4.1"])
+        self.assertIsNone(resolve_weight_revision("Cactus-Compute/m", "2.0.0"))
+
+    def test_no_version_tags_falls_back_to_main(self):
+        self._patch_tags(["main", "experimental"])
+        self.assertIsNone(resolve_weight_revision("Cactus-Compute/m", "2.0.0"))
+
+    def test_unparseable_runtime_falls_back_to_main(self):
+        self._patch_tags(["v1.0", "v2.0"])
+        self.assertIsNone(resolve_weight_revision("Cactus-Compute/m", "garbage"))
+
+
 class TestCqSafeExtraction(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="cactus_cq_test_"))
@@ -146,6 +191,26 @@ class TestCqSafeExtraction(unittest.TestCase):
         self._write_minimal_package(package)
         (package / "tokenizer.json").unlink()
         with self.assertRaisesRegex(RuntimeError, "missing tokenizer sidecar"):
+            validate_extracted_bundle(package)
+
+    def test_validate_extracted_bundle_accepts_seq2seq_embeddings(self):
+        package = self.root / "pkg"
+        self._write_minimal_package(package)
+        (package / "token_embeddings.weights").rename(package / "decoder_token_embeddings.weights")
+        validate_extracted_bundle(package)
+
+    def test_validate_extracted_bundle_accepts_audio_bundle_without_tokenizer_config(self):
+        package = self.root / "pkg"
+        self._write_minimal_package(package)
+        for sidecar in ("tokenizer_config.txt", "special_tokens.json", "tokenizer.json", "merges.txt"):
+            (package / sidecar).unlink()
+        validate_extracted_bundle(package)
+
+    def test_validate_extracted_bundle_requires_weights(self):
+        package = self.root / "pkg"
+        self._write_minimal_package(package)
+        (package / "token_embeddings.weights").unlink()
+        with self.assertRaisesRegex(RuntimeError, "no weight files"):
             validate_extracted_bundle(package)
 
     def test_verify_archive_sha256_rejects_mismatch(self):

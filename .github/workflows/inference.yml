@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: inference-${{ github.event.pull_request.number || github.ref }}
@@ -29,9 +30,41 @@ jobs:
             echo "approved=false" >> $GITHUB_OUTPUT
           fi
 
-  build:
+  runner-check:
     needs: gate
     if: needs.gate.outputs.approved == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          status=$(curl -sS -L -w "%{http_code}" -o runners.json \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/actions/runners?per_page=100" || true)
+          if [ "$status" != "200" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Could not inspect self-hosted runners (HTTP $status); skipping inference tests instead of queueing."
+            exit 0
+          fi
+          count=$(jq '[.runners[] | select(.status == "online" and .busy == false) | select(([.labels[].name] | contains(["self-hosted", "linux", "arm64"])))] | length' runners.json)
+          if [ "$count" -gt 0 ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No idle self-hosted linux arm64 runner is available; skipping inference tests."
+          fi
+
+  build:
+    needs: [gate, runner-check]
+    if: needs.gate.outputs.approved == 'true' && needs.runner-check.outputs.available == 'true'
     runs-on: [self-hosted, linux, arm64]
     timeout-minutes: 60
     steps:

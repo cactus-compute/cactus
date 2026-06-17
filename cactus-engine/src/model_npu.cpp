@@ -10,10 +10,10 @@
 namespace cactus {
 namespace engine {
 
-bool Model::load_npu_audio_encoder(const std::string& model_path) {
+bool Model::load_npu_audio_encoder(const std::string& model_path, const std::string& compute_units) {
     auto encoder = npu::create_encoder();
     if (!encoder) return false;
-    if (!encoder->load(model_path)) return false;
+    if (!encoder->load(model_path, compute_units)) return false;
     if (!encoder->is_available()) return false;
     npu_audio_encoder_ = std::move(encoder);
     CACTUS_LOG_INFO("model", "NPU audio encoder loaded from: " << model_path);

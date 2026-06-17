@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import copy
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from dataclasses import field
 import re
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -30,6 +31,8 @@ class ComponentModuleSpec:
     metadata: dict[str, object] = field(default_factory=dict)
     npu_module: torch.nn.Module | None = None
     npu_runtime_input_count: int = 1
+    npu_reparam: Callable[[torch.nn.Module], AbstractContextManager] | None = None
+    npu_example_inputs: tuple[torch.Tensor, ...] | None = None
 
 
 @dataclass

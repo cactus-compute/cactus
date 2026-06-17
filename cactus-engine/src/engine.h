@@ -29,7 +29,7 @@ struct NPUNamedInput {
 class NPUEncoder {
 public:
     virtual ~NPUEncoder() = default;
-    virtual bool load(const std::string& model_path) = 0;
+    virtual bool load(const std::string& model_path, const std::string& compute_units = "") = 0;
     virtual bool preallocate(
         const std::vector<int>& input_shape,
         const std::string& input_name = "x",
@@ -631,7 +631,8 @@ public:
     uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
                     size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                     float min_p = 0.15f, float repetition_penalty = 1.1f);
-    bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token);
+    bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token,
+                                        float* out_uncertainty = nullptr);
 
     void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 128, const std::string& profile_file = "",
                  bool prepare_decode = true);
@@ -689,6 +690,11 @@ public:
     std::vector<float> get_lm_embeddings(const std::vector<uint32_t>& tokens, bool normalize = false);
     bool has_lm_embedding() const { return decoder_embed_ != nullptr; }
     bool has_text_embedding() const { return components_.count("text_embedding") > 0; }
+    bool supports_warm_media_injection() const {
+        if (lm_encoder_media_step_ != nullptr) return true;
+        return encoder_ != nullptr && decoder_ != nullptr
+            && input_index(*decoder_, "inputs_embeds") >= 0;
+    }
 
     std::vector<float> get_image_embeddings(const std::string& image_path);
 
@@ -716,7 +722,7 @@ public:
     size_t last_prefill_tail_chunk_tokens() const { return last_prefill_tail_chunk_tokens_; }
     size_t last_prefill_tail_padding_tokens() const { return last_prefill_tail_padding_tokens_; }
 
-    bool load_npu_audio_encoder(const std::string& model_path);
+    bool load_npu_audio_encoder(const std::string& model_path, const std::string& compute_units = "");
     bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
 
     bool load_npu_vision_encoder(const std::string& model_path);
@@ -792,6 +798,8 @@ private:
     void run_encoder_step(uint32_t token_id, size_t position);
     void run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
                         Precision feature_precision);
+    void write_media_embeds_row(Component& comp, int embeds_idx, const uint8_t* feature_row,
+                                size_t feature_row_bytes, Precision feature_precision);
     void reset_encoder_cross_kv_route_state();
     bool finish_encoder_cross_kv_prepare();
     bool finish_encoder_cross_kv_prepare_after_source();
@@ -875,6 +883,7 @@ private:
 
     std::string family_;
     std::string npu_audio_encoder_mlpackage_;
+    std::string npu_audio_compute_units_;
     std::string npu_vision_encoder_mlpackage_;
     std::string npu_source_encoder_mlpackage_;
 
