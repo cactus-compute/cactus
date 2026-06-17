@@ -119,11 +119,9 @@ static int transcribe_file(cactus_model_t model, const std::string& audio_path,
 
     std::string json(response_buffer.data());
     double model_ms = json_number_value(json, "total_time_ms");
-    double tps = json_number_value(json, "decode_tps");
     std::ostringstream stats;
     stats << std::fixed << std::setprecision(2) << "[processed: " << total_s << "s";
     if (model_ms > 0.0) stats << " | model: " << model_ms / 1000.0 << "s";
-    if (tps > 0.0) stats << " | " << std::setprecision(1) << tps << " tok/s";
     stats << "]";
     std::cout << "\n\n" << colored(stats.str(), ansi::dim) << "\n";
     return 0;
@@ -249,12 +247,9 @@ static int run_live_transcription(cactus_model_t model, const std::string& langu
         if (!render) return;
 
         double latency_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        double decode_tps = json_number_value(json, "decode_tps");
         if (!confirmed.empty() || !pending.empty()) {
             std::ostringstream st;
-            st << "[latency: " << (int)latency_ms << "ms";
-            if (decode_tps > 0.0) st << " | decode: " << std::fixed << std::setprecision(1) << decode_tps << " tok/s";
-            st << "]";
+            st << "[latency: " << (int)latency_ms << "ms]";
             stats = colored(st.str(), ansi::dim);
         }
 
