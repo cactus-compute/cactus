@@ -30,9 +30,30 @@ target_include_directories(cactus_kernels
            ${CMAKE_CURRENT_SOURCE_DIR}/libs
 )
 
-target_compile_options(cactus_kernels PUBLIC
+add_library(cactus_flags INTERFACE)
+
+target_compile_options(cactus_flags INTERFACE
     -march=armv8.2-a+fp16+simd+dotprod+i8mm -pthread -O3
+    -fvisibility=hidden -fvisibility-inlines-hidden
+    -ffunction-sections -fdata-sections -fno-rtti
+    $<$<CXX_COMPILER_ID:Clang,AppleClang>:-flto=thin>
 )
+
+target_link_options(cactus_flags INTERFACE
+    $<$<CXX_COMPILER_ID:Clang,AppleClang>:-flto=thin>
+)
+
+if(APPLE)
+    target_link_options(cactus_flags INTERFACE -Wl,-dead_strip)
+else()
+    target_link_options(cactus_flags INTERFACE -Wl,--gc-sections)
+endif()
+
+if(ANDROID)
+    target_link_options(cactus_flags INTERFACE -Wl,--exclude-libs,ALL)
+endif()
+
+target_link_libraries(cactus_kernels PUBLIC cactus_flags)
 
 target_compile_options(cactus_kernels PRIVATE
     -Wall -Wextra -pedantic -Wno-missing-field-initializers

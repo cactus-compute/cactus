@@ -1176,7 +1176,7 @@ int cactus_graph_conv1d_pointwise(cactus_graph_t graph, cactus_node_t input, cac
     }
 }
 
-int cactus_graph_clamp(cactus_graph_t graph, cactus_node_t input, float lo, float hi, cactus_node_t* out) {
+CACTUS_FFI_EXPORT int cactus_graph_clamp(cactus_graph_t graph, cactus_node_t input, float lo, float hi, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_clamp");
     try {
         *out = static_cast<cactus_node_t>(as_graph(graph)->graph.clamp(static_cast<size_t>(input), lo, hi));
@@ -1332,7 +1332,7 @@ int cactus_graph_moe_layer_gated(cactus_graph_t graph, cactus_node_t hidden, cac
     }
 }
 
-int cactus_graph_dense_mlp_tq_fused(cactus_graph_t graph, cactus_node_t hidden, cactus_node_t gate_weight, cactus_node_t up_weight, cactus_node_t down_weight, float product_scale, cactus_node_t* out) {
+CACTUS_FFI_EXPORT int cactus_graph_dense_mlp_tq_fused(cactus_graph_t graph, cactus_node_t hidden, cactus_node_t gate_weight, cactus_node_t up_weight, cactus_node_t down_weight, float product_scale, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_dense_mlp_tq_fused");
     try {
         *out = static_cast<cactus_node_t>(

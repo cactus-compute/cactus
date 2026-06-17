@@ -18,11 +18,12 @@ if(BUILD_SHARED_LIBS)
     set_target_properties(cactus_framework PROPERTIES OUTPUT_NAME cactus)
     add_dependencies(cactus_framework ${_DEPS})
 
+    target_link_libraries(cactus_framework PRIVATE cactus_flags)
+
     target_link_options(cactus_framework PRIVATE
         -force_load $<TARGET_FILE:cactus_engine>
         -force_load $<TARGET_FILE:cactus_graph>
         -force_load $<TARGET_FILE:cactus_kernels>
-        -Wl,-dead_strip -flto
     )
 
     target_link_libraries(cactus_framework PUBLIC

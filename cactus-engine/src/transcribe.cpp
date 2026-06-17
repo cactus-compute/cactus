@@ -12,7 +12,7 @@ using namespace cactus::ffi;
 
 extern "C" {
 
-int cactus_preprocess_audio_features(
+CACTUS_FFI_EXPORT int cactus_preprocess_audio_features(
     const char* audio_file_path,
     const char* model_type,
     size_t mel_bins,

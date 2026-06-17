@@ -255,14 +255,6 @@ static void lstm_gemv_f16_neon(
 }
 #endif
 
-static inline void fp16_to_fp32_neon(const __fp16* src, float* dst, size_t n) {
-    cactus_fp16_to_fp32(src, dst, n);
-}
-
-static inline void fp32_to_fp16_neon(const float* src, __fp16* dst, size_t n) {
-    cactus_fp32_to_fp16(src, dst, n);
-}
-
 void cactus_bilstm_sequence_f16(
     const __fp16* input,
     const __fp16* weight_ih_fwd,
@@ -294,13 +286,13 @@ void cactus_bilstm_sequence_f16(
     std::vector<float> W_fwd_f32(gate_size * combined_K);
     std::vector<float> W_bwd_f32(gate_size * combined_K);
     for (size_t g = 0; g < gate_size; ++g) {
-        fp16_to_fp32_neon(weight_ih_fwd + g * input_size,
+        cactus_fp16_to_fp32(weight_ih_fwd + g * input_size,
                           W_fwd_f32.data() + g * combined_K, input_size);
-        fp16_to_fp32_neon(weight_hh_fwd + g * hidden_size,
+        cactus_fp16_to_fp32(weight_hh_fwd + g * hidden_size,
                           W_fwd_f32.data() + g * combined_K + input_size, hidden_size);
-        fp16_to_fp32_neon(weight_ih_bwd + g * input_size,
+        cactus_fp16_to_fp32(weight_ih_bwd + g * input_size,
                           W_bwd_f32.data() + g * combined_K, input_size);
-        fp16_to_fp32_neon(weight_hh_bwd + g * hidden_size,
+        cactus_fp16_to_fp32(weight_hh_bwd + g * hidden_size,
                           W_bwd_f32.data() + g * combined_K + input_size, hidden_size);
     }
 
@@ -317,7 +309,7 @@ void cactus_bilstm_sequence_f16(
 
             for (size_t idx = 0; idx < seq_len; ++idx) {
                 const size_t t = seq_len - 1 - idx;
-                fp16_to_fp32_neon(batch_in + t * input_size, xh.data(), input_size);
+                cactus_fp16_to_fp32(batch_in + t * input_size, xh.data(), input_size);
                 memcpy(xh.data() + input_size, h.data(), hidden_size * sizeof(float));
 
                 memcpy(gates.data(), bias_bwd_f32.data(), gate_size * sizeof(float));
@@ -328,7 +320,7 @@ void cactus_bilstm_sequence_f16(
 
                 apply_lstm_gates_f32(gates.data(), c.data(), h.data(), hidden_size);
 
-                fp32_to_fp16_neon(h.data(), batch_out + t * output_size + hidden_size, hidden_size);
+                cactus_fp32_to_fp16(h.data(), batch_out + t * output_size + hidden_size, hidden_size);
             }
         });
 
@@ -339,7 +331,7 @@ void cactus_bilstm_sequence_f16(
             std::vector<float> c(hidden_size, 0.0f);
 
             for (size_t t = 0; t < seq_len; ++t) {
-                fp16_to_fp32_neon(batch_in + t * input_size, xh.data(), input_size);
+                cactus_fp16_to_fp32(batch_in + t * input_size, xh.data(), input_size);
                 memcpy(xh.data() + input_size, h.data(), hidden_size * sizeof(float));
 
                 memcpy(gates.data(), bias_fwd_f32.data(), gate_size * sizeof(float));
@@ -350,7 +342,7 @@ void cactus_bilstm_sequence_f16(
 
                 apply_lstm_gates_f32(gates.data(), c.data(), h.data(), hidden_size);
 
-                fp32_to_fp16_neon(h.data(), batch_out + t * output_size, hidden_size);
+                cactus_fp32_to_fp16(h.data(), batch_out + t * output_size, hidden_size);
             }
         }
 
