@@ -265,6 +265,12 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
             case Activation::RELU:
                 cactus_relu_f16(gate, gate, selected_count * expert_intermediate_dim);
                 break;
+            case Activation::SIGMOID:
+                cactus_sigmoid_f16(gate, gate, selected_count * expert_intermediate_dim);
+                break;
+            case Activation::TANH:
+                cactus_tanh_f16(gate, gate, selected_count * expert_intermediate_dim);
+                break;
             case Activation::SILU:
             default:
                 cactus_silu_f16(gate, gate, selected_count * expert_intermediate_dim);
