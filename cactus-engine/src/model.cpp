@@ -2879,7 +2879,8 @@ std::vector<uint32_t> Model::transcribe_whisper_seq2seq(
 
 std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& audio_features,
                                                      ParakeetTdtStreamState* stream, bool is_final,
-                                                     size_t end_frame) {
+                                                     size_t end_frame,
+                                                     const std::atomic<bool>* should_stop) {
     std::vector<uint32_t> emitted;
     double raw_decode_ms = 0.0;
 
@@ -2938,6 +2939,7 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
             std::vector<__fp16> input_fp16(chunk_input_elems);
             bool all_ok = num_chunks > 0;
             for (size_t c = 0; c < num_chunks && all_ok; ++c) {
+                if (should_stop && should_stop->load()) return emitted;
                 const size_t frame_start = c * window_frames;
                 const size_t frame_end = std::min(frame_start + window_frames, copy_frames);
                 std::fill(input_fp16.begin(), input_fp16.end(), __fp16(0));
@@ -2966,6 +2968,7 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         }
     }
     if (!used_npu) {
+        if (should_stop && should_stop->load()) return emitted;
         audio_enc->graph->execute();
     }
 
@@ -3093,6 +3096,7 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     if (stream) snap_state = snapshot_state();
 
     while (time_index < commit_to) {
+        if (should_stop && should_stop->load()) break;
         const uint8_t* frame_ptr = hidden_ptr + time_index * frame_bytes;
         write_typed_buffer(ef_buf, ef_desc.precision, frame_ptr, frame_bytes, hidden_precision);
 

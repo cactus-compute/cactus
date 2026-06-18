@@ -675,7 +675,8 @@ public:
     std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features,
                                                   ParakeetTdtStreamState* stream = nullptr,
                                                   bool is_final = true,
-                                                  size_t end_frame = 0);
+                                                  size_t end_frame = 0,
+                                                  const std::atomic<bool>* should_stop = nullptr);
     std::vector<uint32_t> transcribe_whisper_seq2seq(const std::vector<float>& audio_features,
                                                      const std::vector<uint32_t>& decoder_prompt_tokens,
                                                      size_t max_tokens,

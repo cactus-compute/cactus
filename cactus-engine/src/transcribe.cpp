@@ -335,7 +335,8 @@ int cactus_transcribe(
         float total_entropy_sum = 0.0f;
 
         if (is_parakeet) {
-            generated_tokens = handle->model->transcribe_parakeet_tdt(audio_features);
+            generated_tokens = handle->model->transcribe_parakeet_tdt(
+                audio_features, nullptr, true, 0, &handle->should_stop);
             auto t_first = std::chrono::high_resolution_clock::now();
             time_to_first_token =
                 std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
