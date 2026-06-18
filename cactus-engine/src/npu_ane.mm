@@ -229,9 +229,6 @@ static NSURL* resolve_or_compile_model_url(NSString* path, NSError** error) {
                              data:(const __fp16*)data
                             shape:(NSArray<NSNumber*>*)shape
                        outputName:(NSString*)outputName;
-- (id<MLFeatureProvider>)predictProviderWithInput:(NSString*)inputName
-                                             data:(const __fp16*)data
-                                            shape:(NSArray<NSNumber*>*)shape;
 - (BOOL)preallocateMultiInputBuffersWithOutputName:(NSString*)outputName;
 - (size_t)predictMultiInputWithDict:(NSMutableDictionary<NSString*, MLFeatureValue*>*)inputDict
                          outputData:(__fp16*)output
@@ -483,51 +480,6 @@ static NSURL* resolve_or_compile_model_url(NSString* path, NSError** error) {
         logged_output_feature_layout = true;
     }
     return outputFeature.multiArrayValue;
-}
-
-- (id<MLFeatureProvider>)predictProviderWithInput:(NSString*)inputName
-                                             data:(const __fp16*)data
-                                            shape:(NSArray<NSNumber*>*)shape {
-    if (!_model) return nil;
-
-    NSError* error = nil;
-    MLMultiArrayDataType expectedDataType = MLMultiArrayDataTypeFloat16;
-    MLFeatureDescription* inputDesc = _modelDescription.inputDescriptionsByName[inputName];
-    if (inputDesc && inputDesc.multiArrayConstraint) {
-        expectedDataType = inputDesc.multiArrayConstraint.dataType;
-    }
-
-    MLMultiArray* inputArray = [[MLMultiArray alloc] initWithShape:shape
-                                                          dataType:expectedDataType
-                                                             error:&error];
-    if (error || !inputArray) {
-        CACTUS_LOG_ERROR("npu", "ANE create input array failed: " << (error ? [[error localizedDescription] UTF8String] : ""));
-        return nil;
-    }
-
-    NSUInteger totalElements = 1;
-    for (NSNumber* dim in shape) totalElements *= [dim unsignedIntegerValue];
-    if (expectedDataType == MLMultiArrayDataTypeFloat16) {
-        memcpy(inputArray.dataPointer, data, totalElements * sizeof(__fp16));
-    } else {
-        float* inputPtr = (float*)inputArray.dataPointer;
-        for (NSUInteger i = 0; i < totalElements; i++) inputPtr[i] = (float)data[i];
-    }
-
-    MLFeatureValue* inputFeature = [MLFeatureValue featureValueWithMultiArray:inputArray];
-    id<MLFeatureProvider> inputProvider =
-        [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{inputName: inputFeature} error:&error];
-    if (error || !inputProvider) {
-        CACTUS_LOG_ERROR("npu", "ANE create feature provider failed: " << (error ? [[error localizedDescription] UTF8String] : ""));
-        return nil;
-    }
-
-    id<MLFeatureProvider> outputProvider = [_model predictionFromFeatures:inputProvider error:&error];
-    if (error) {
-        CACTUS_LOG_ERROR("npu", "ANE prediction failed: " << [[error localizedDescription] UTF8String]);
-        return nil;
-    }
-    return outputProvider;
 }
 
 static size_t copyMLArrayToFP16(MLMultiArray* array, __fp16* output) {
@@ -942,45 +894,6 @@ size_t ANEEncoder::encode(const __fp16* input,
         if (mlOutput) {
             return copyMLArrayToFP16(mlOutput, output);
         }
-    }
-
-    return 0;
-}
-
-size_t ANEEncoder::encode_with_secondary(const __fp16* input,
-                                         __fp16* primary_output,
-                                         __fp16* secondary_output,
-                                         const std::vector<int>& shape,
-                                         const std::string& input_name,
-                                         const std::string& primary_name,
-                                         const std::string& secondary_name) {
-    if (!impl_ || !input || !primary_output || !secondary_output) return 0;
-
-    @autoreleasepool {
-        CactusANEImpl* impl = (__bridge CactusANEImpl*)impl_;
-
-        NSMutableArray<NSNumber*>* shapeArray = [NSMutableArray arrayWithCapacity:shape.size()];
-        for (int dim : shape) [shapeArray addObject:@(dim)];
-
-        NSString* inName = impl.cachedInputName;
-        if (!inName) inName = [NSString stringWithUTF8String:input_name.c_str()];
-
-        id<MLFeatureProvider> provider = [impl predictProviderWithInput:inName
-                                                                   data:input
-                                                                  shape:shapeArray];
-        if (!provider) return 0;
-
-        NSString* secName = [NSString stringWithUTF8String:secondary_name.c_str()];
-        MLFeatureValue* secFeat = [provider featureValueForName:secName];
-        if (!secFeat || !secFeat.multiArrayValue) {
-            return 0;
-        }
-        NSString* priName = [NSString stringWithUTF8String:primary_name.c_str()];
-        MLFeatureValue* priFeat = [provider featureValueForName:priName];
-        if (!priFeat || !priFeat.multiArrayValue) return 0;
-
-        copyMLArrayToFP16(secFeat.multiArrayValue, secondary_output);
-        return copyMLArrayToFP16(priFeat.multiArrayValue, primary_output);
     }
 
     return 0;

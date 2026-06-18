@@ -69,12 +69,6 @@ def emit_audio_encoder_mlpackage(
     wrapper = AudioEncoderWrapper(audio_module, baked_inputs)
     wrapper.eval()
 
-    with torch.no_grad():
-        sample_out = wrapper(example_input)
-    output_names = [output_name]
-    if isinstance(sample_out, (tuple, list)) and len(sample_out) == 2:
-        output_names.append("probe_hidden")
-
     try:
         with torch.no_grad():
             exported = torch.export.export(wrapper, (example_input,))
@@ -94,7 +88,7 @@ def emit_audio_encoder_mlpackage(
         mlmodel = ct.convert(
             exported,
             inputs=[ct.TensorType(name=input_name, shape=tuple(example_input.shape))],
-            outputs=[ct.TensorType(name=name) for name in output_names],
+            outputs=[ct.TensorType(name=output_name)],
             compute_precision=ct.precision.FLOAT16,
             convert_to="mlprogram",
             minimum_deployment_target=target_attr,
@@ -118,6 +112,5 @@ def emit_audio_encoder_mlpackage(
         print(f"npu.audio: mlpackage save failed ({type(exc).__name__}: {exc})")
         return None
 
-    print(f"npu.audio: wrote {out_path} (input_shape={tuple(example_input.shape)}, "
-          f"outputs={output_names})")
+    print(f"npu.audio: wrote {out_path} (input_shape={tuple(example_input.shape)})")
     return filename

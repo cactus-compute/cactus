@@ -131,19 +131,21 @@ def export_gemma4_handoff_probe(output_dir: str | Path, *, model_id: str | None 
     return True
 
 
+_PARAKEET_PROBE_FILE = "parakeet_v3_probe.pt"
+_PARAKEET_PROBE_LAYER = 23
+
+
 def export_parakeet_handoff_probe(output_dir: str | Path, *, model_id: str | None = None) -> bool:
-    """Package the Parakeet-TDT v2 cloud-handoff probe into a C++-readable bundle file."""
+    """Package the Parakeet-TDT-v3 cloud-handoff probe into a C++-readable bundle file."""
     model_key = (model_id or "").lower()
-    if model_key and ("parakeet" not in model_key or "v2" not in model_key):
+    if model_key and "parakeet" not in model_key:
         return False
+    layer = _PARAKEET_PROBE_LAYER
 
     out_dir = Path(output_dir)
     checkpoint = source = None
-    for path in (
-        out_dir / "parakeet_handoff_probe.pt",
-        Path.cwd() / "parakeet_handoff_probe.pt",
-        Path.home() / "Downloads" / "parakeet_handoff_probe.pt",
-    ):
+    for path in (out_dir / _PARAKEET_PROBE_FILE, Path.cwd() / _PARAKEET_PROBE_FILE,
+                 Path.home() / "Downloads" / _PARAKEET_PROBE_FILE):
         if path.exists():
             import torch
 
@@ -174,7 +176,7 @@ def export_parakeet_handoff_probe(output_dir: str | Path, *, model_id: str | Non
     metadata = {
         "format": "cactus_handoff_probe_parakeet",
         "source": source,
-        "layer": 17,
+        "layer": layer,
         "feat_dim": feat_dim,
         "t_h": t_h,
         "output": str(probe_path.name),

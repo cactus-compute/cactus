@@ -658,33 +658,8 @@ class ParakeetTDTEncoder(nn.Module):
         return x
 
 
-PARAKEET_PROBE_CAPTURE_LAYER = 17
-
-
-def parakeet_checkpoint_version(model_source: str | None) -> int:
-    match = re.search(r"[-_]v(\d+)(?:[-_/.]|$)", (model_source or "").lower())
-    return int(match.group(1)) if match else 3
-
-
-class ParakeetTDTEncoderProbe(nn.Module):
-    def __init__(self, encoder: "ParakeetTDTEncoder", capture_index: int):
-        super().__init__()
-        self.pre_encode = encoder.pre_encode
-        self.layers = encoder.layers
-        self.capture_index = capture_index
-
-    def forward(self, input_features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        x = self.pre_encode(input_features)
-        probe_hidden = x
-        for index, layer in enumerate(self.layers):
-            x = layer(x)
-            if index == self.capture_index:
-                probe_hidden = x
-        return x, probe_hidden
-
-
 class ParakeetTDTANESelfAttention(nn.Module):
-    def __init__(self, attn: "ParakeetTDTSelfAttention", seq_len: int, flip_relpos: bool = True):
+    def __init__(self, attn: "ParakeetTDTSelfAttention", seq_len: int):
         super().__init__()
         self.linear_q = attn.linear_q
         self.linear_k = attn.linear_k
@@ -704,9 +679,7 @@ class ParakeetTDTANESelfAttention(nn.Module):
         with torch.no_grad():
             rel_k = attn.linear_pos(rel_pos).view(
                 1, 2 * int(seq_len) - 1, self.config.attention_heads, self.config.attention_head_dim
-            )
-            if flip_relpos:
-                rel_k = rel_k.flip(1)
+            ).flip(1)
         self.register_buffer("_rel_k", rel_k.detach(), persistent=False)
 
     def forward(self, x: torch.Tensor, key_bias: torch.Tensor | None = None) -> torch.Tensor:
@@ -742,11 +715,11 @@ class ParakeetTDTANESelfAttention(nn.Module):
 
 
 class ParakeetTDTANEEncoderLayer(nn.Module):
-    def __init__(self, layer: "ParakeetTDTEncoderLayer", seq_len: int, flip_relpos: bool = True):
+    def __init__(self, layer: "ParakeetTDTEncoderLayer", seq_len: int):
         super().__init__()
         self.feed_forward1 = layer.feed_forward1
         self.feed_forward2 = layer.feed_forward2
-        self.self_attn = ParakeetTDTANESelfAttention(layer.self_attn, seq_len, flip_relpos=flip_relpos)
+        self.self_attn = ParakeetTDTANESelfAttention(layer.self_attn, seq_len)
         self.conv = layer.conv
         self.norm_feed_forward1 = layer.norm_feed_forward1
         self.norm_self_att = layer.norm_self_att
@@ -764,19 +737,14 @@ class ParakeetTDTANEEncoderLayer(nn.Module):
 
 
 class ParakeetTDTANEEncoder(nn.Module):
-    def __init__(self, encoder: "ParakeetTDTEncoder", seq_len: int,
-                 capture_index: int = PARAKEET_PROBE_CAPTURE_LAYER,
-                 flip_relpos: bool = True,
-                 emit_probe_hidden: bool = True):
+    def __init__(self, encoder: "ParakeetTDTEncoder", seq_len: int):
         super().__init__()
         self.pre_encode = encoder.pre_encode
         self.layers = nn.ModuleList(
-            [ParakeetTDTANEEncoderLayer(layer, seq_len, flip_relpos=flip_relpos) for layer in encoder.layers]
+            [ParakeetTDTANEEncoderLayer(layer, seq_len) for layer in encoder.layers]
         )
         factor = max(1, int(encoder.layers[0].config.subsampling_factor))
         self._subsample_stages = max(0, factor.bit_length() - 1)
-        self.capture_index = capture_index
-        self.emit_probe_hidden = emit_probe_hidden
 
     def _frame_masks(self, input_features: torch.Tensor, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
         valid = (input_features.abs().sum(-1) > 0).to(input_features.dtype).sum(-1, keepdim=True)
@@ -790,13 +758,8 @@ class ParakeetTDTANEEncoder(nn.Module):
     def forward(self, input_features: torch.Tensor):
         x = self.pre_encode(input_features)
         conv_mask, key_bias = self._frame_masks(input_features, x.shape[1])
-        probe_hidden = x
-        for index, layer in enumerate(self.layers):
+        for layer in self.layers:
             x = layer(x, conv_mask, key_bias)
-            if index == self.capture_index:
-                probe_hidden = x
-        if self.emit_probe_hidden:
-            return x, probe_hidden
         return x
 
 
@@ -1038,18 +1001,9 @@ def build_parakeet_tdt_component_specs(
     npu_input_features[:, :valid_frames, :] = input_features[:, :valid_frames, :]
     with torch.no_grad():
         ane_seq_len = int(model.encoder.pre_encode(npu_input_features).shape[1])
-    version = parakeet_checkpoint_version(getattr(model.config, "model_source", None))
-    include_probe = version == 2
-
-    if include_probe:
-        encoder_module = ParakeetTDTEncoderProbe(model.encoder, PARAKEET_PROBE_CAPTURE_LAYER)
-        encoder_output_keys = ("encoder_hidden_states", "probe_hidden")
-    else:
-        encoder_module = model.encoder
-        encoder_output_keys = ("encoder_hidden_states",)
-    ane_encoder = ParakeetTDTANEEncoder(
-        model.encoder, ane_seq_len, flip_relpos=version != 2, emit_probe_hidden=include_probe
-    )
+    encoder_module = model.encoder
+    encoder_output_keys = ("encoder_hidden_states",)
+    ane_encoder = ParakeetTDTANEEncoder(model.encoder, ane_seq_len)
 
     return [
         ComponentModuleSpec(

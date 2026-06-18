@@ -39,16 +39,6 @@ public:
         const std::vector<int>& shape,
         const std::string& input_name = "x",
         const std::string& output_name = "") = 0;
-    virtual size_t encode_with_secondary(
-        const __fp16* input, __fp16* primary_output, __fp16* secondary_output,
-        const std::vector<int>& shape,
-        const std::string& input_name = "x",
-        const std::string& primary_name = "encoded",
-        const std::string& secondary_name = "probe_hidden") {
-        (void)input; (void)primary_output; (void)secondary_output; (void)shape;
-        (void)input_name; (void)primary_name; (void)secondary_name;
-        return 0;
-    }
     virtual bool is_available() const = 0;
     virtual std::vector<int> get_input_shape() const = 0;
     virtual std::vector<int> get_output_shape() const = 0;
@@ -848,7 +838,7 @@ private:
     int output_index(const Component& comp, const std::string& name) const;
     uint32_t argmax_last_logits(float* out_uncertainty = nullptr);
     bool load_handoff_probe();
-    void maybe_capture_handoff_probe_hidden(const Component& comp);
+    void maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name = "probe_hidden");
     void run_vision_encoder(const std::string& image_path);
     void run_vision_encoder_lfm2_vl(const std::string& image_path);
     void encode_lfm2_vl_image_into_features(const std::string& image_path);

@@ -343,9 +343,9 @@ bool Model::has_handoff_probe_rollout() const {
         && handoff_probe_hidden_.size() >= static_cast<size_t>(handoff_probe_feat_dim_);
 }
 
-void Model::maybe_capture_handoff_probe_hidden(const Component& comp) {
+void Model::maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name) {
     if (!handoff_probe_loaded_ || handoff_probe_feat_dim_ == 0) return;
-    int idx = output_index(comp, "probe_hidden");
+    int idx = output_index(comp, output_name);
     if (idx < 0 || static_cast<size_t>(idx) >= comp.output_node_ids.size()) return;
     size_t node = static_cast<size_t>(comp.output_node_ids[idx]);
     const auto& desc = comp.graph->get_output_buffer(node);
@@ -638,10 +638,11 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         }
     }
     if (load_handoff_probe()) {
-        const Component* probe_comp = (config_.model_type == Config::ModelType::PARAKEET_TDT)
-            ? audio_encoder_ : decoder_;
-        if (!probe_comp || output_index(*probe_comp, "probe_hidden") < 0) {
-            CACTUS_LOG_WARN("cloud_handoff", "Handoff probe is packaged, but probe_hidden is not exposed; "
+        const bool is_parakeet = config_.model_type == Config::ModelType::PARAKEET_TDT;
+        const Component* probe_comp = is_parakeet ? audio_encoder_ : decoder_;
+        const char* probe_output = is_parakeet ? "encoder_hidden_states" : "probe_hidden";
+        if (!probe_comp || output_index(*probe_comp, probe_output) < 0) {
+            CACTUS_LOG_WARN("cloud_handoff", "Handoff probe is packaged, but its probe input is not exposed; "
                 "reconvert to enable probe-based handoff");
             handoff_probe_loaded_ = false;
         }
@@ -2944,9 +2945,6 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
             npu_hidden_storage.assign(total_hidden_T * hidden_dim_npu, __fp16(0));
             const bool want_probe = handoff_probe_loaded_ &&
                 static_cast<size_t>(handoff_probe_feat_dim_) == hidden_dim_npu;
-            std::vector<__fp16> npu_probe_storage;
-            if (want_probe) npu_probe_storage.assign(total_hidden_T * hidden_dim_npu, __fp16(0));
-            bool probe_complete = want_probe;
             std::vector<__fp16> input_fp16(chunk_input_elems);
             bool all_ok = num_chunks > 0;
             for (size_t c = 0; c < num_chunks && all_ok; ++c) {
@@ -2961,20 +2959,8 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
                     }
                 }
                 __fp16* out_ptr = npu_hidden_storage.data() + c * chunk_output_elems;
-                size_t written = 0;
-                if (probe_complete) {
-                    __fp16* probe_ptr = npu_probe_storage.data() + c * chunk_output_elems;
-                    written = npu_audio_encoder_->encode_with_secondary(
-                        input_fp16.data(), out_ptr, probe_ptr, in_shape, "x", "encoded", "probe_hidden");
-                    if (written == 0) {
-                        probe_complete = false;
-                        written = npu_audio_encoder_->encode(
-                            input_fp16.data(), out_ptr, in_shape, "x", "encoded");
-                    }
-                } else {
-                    written = npu_audio_encoder_->encode(
-                        input_fp16.data(), out_ptr, in_shape, "x", "encoded");
-                }
+                size_t written = npu_audio_encoder_->encode(
+                    input_fp16.data(), out_ptr, in_shape, "x", "encoded");
                 if (written == 0) { all_ok = false; break; }
             }
             if (all_ok) {
@@ -2984,18 +2970,15 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
                 if (npu_hidden_T > total_hidden_T) npu_hidden_T = total_hidden_T;
                 CACTUS_LOG_INFO("model", "Parakeet audio encoder ran on NPU ("
                                 << num_chunks << " chunks, " << npu_hidden_T << " valid hidden frames)");
-                if (want_probe && probe_complete) {
+                if (want_probe) {
                     const size_t probe_elems = npu_hidden_T * hidden_dim_npu;
                     handoff_probe_hidden_.reserve(handoff_probe_hidden_.size() + probe_elems);
-                    const __fp16* pp = npu_probe_storage.data();
+                    const __fp16* pp = npu_hidden_storage.data();
                     for (size_t i = 0; i < probe_elems; ++i) {
                         handoff_probe_hidden_.push_back(static_cast<float>(pp[i]));
                     }
                     CACTUS_LOG_INFO("cloud_handoff", "Captured " << npu_hidden_T
                                     << " NPU probe frames for the handoff probe");
-                } else if (want_probe) {
-                    CACTUS_LOG_WARN("cloud_handoff", "NPU audio encoder lacks probe_hidden; "
-                        "skipping probe-based handoff for this transcription");
                 }
             } else {
                 CACTUS_LOG_WARN("model", "NPU audio encoder chunk failed; falling back to CPU graph");
@@ -3004,7 +2987,7 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     }
     if (!used_npu) {
         audio_enc->graph->execute();
-        maybe_capture_handoff_probe_hidden(*audio_enc);
+        maybe_capture_handoff_probe_hidden(*audio_enc, "encoder_hidden_states");
     }
 
     int hidden_idx = output_index(*audio_enc, "encoder_hidden_states");
