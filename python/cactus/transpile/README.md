@@ -16,8 +16,9 @@ This README is a code-first walkthrough of the actual flow in the repo today.
 
 ## Related Entry Points
 
-These files are outside `python/cactus/transpile`, but they are the public top-level
-entry points for the transpiler:
+These files are outside `python/cactus/transpile`, but they are the top-level
+entry points for the transpiler (driven by `cactus convert` for end users; the
+`cactus transpile` command is hidden from the CLI menu and used internally):
 
 - `python/cactus/cli/transpile.py`
 - `python/cactus/transpile/hf_model.py`
@@ -52,8 +53,9 @@ def cmd_transpile(args):
 Two important details:
 
 - `cactus transpile` saves artifacts and skips execution by default.
-- Normal transpilation requires converted Cactus CQ weights. Run `cactus convert`
-  first, or pass `--weights-dir` to an existing converted folder.
+- Transpilation reads converted Cactus CQ weights from the default weights dir
+  or `--weights-dir`. (`cactus convert` runs convert + transpile together; this
+  internal command is the transpile-only step.)
 - The CLI only has an explicit `--execute-after-transpile` flag; most other
   transpile options are forwarded as unknown args to `hf_model.py`.
 
@@ -665,7 +667,7 @@ cactus run <bundle-path>
 
 The runtime reads `components/manifest.json` from the bundle directory, mmaps
 the `.weights` files, and loads the serialized `.cactus` graphs. Per-platform
-`.mlpackage` files (Apple CoreML / future vendor accelerators) are dispatched
+`.mlpackage` files (Apple CoreML / future vendor platforms) are dispatched
 to the matching hardware when present.
 
 ## Major Situations And How They Are Handled
@@ -844,7 +846,7 @@ Notes:
 
 ## 1. Basic Transpile
 
-The simplest public command is:
+The simplest invocation (internal command, not in the CLI menu) is:
 
 ```bash
 cactus transpile <hf-model-id>

@@ -1,7 +1,5 @@
 import numpy as np
 import struct
-from pathlib import Path
-from typing import Optional, Dict, Any, List
 from .weight_patterns import EMBED_NAMES
 from ..model_adapters.naming import GEMMA4_WEIGHT_SCALE, gemma4_scale_factor
 

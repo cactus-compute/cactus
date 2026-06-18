@@ -31,7 +31,6 @@ def _patch_register_func_allow_dunder() -> None:
     if getattr(cls.register_func, "_cactus_dunder_patched", False):
         return
 
-    original = cls.register_func
 
     def register_func(self, func=None, torch_alias=None, override=False):
         f_name = func.__name__
@@ -84,7 +83,6 @@ def _register_new_ones_op() -> None:
 def _register_logical_and_op() -> None:
     from coremltools.converters.mil.frontend.torch.torch_op_registry import (
         _TORCH_OPS_REGISTRY,
-        register_torch_op,
     )
     from coremltools.converters.mil import Builder as mb
 

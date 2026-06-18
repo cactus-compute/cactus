@@ -266,7 +266,6 @@ def collect_manifest_hessians(
         add_time("preprocess_cache_write_seconds", time.perf_counter() - t0)
 
     def run_inputs(inputs, context: str):
-        nonlocal forwards
         try:
             model_dtype = next(model.parameters()).dtype
         except Exception:

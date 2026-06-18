@@ -24,7 +24,7 @@ from .bindings.cactus import (
     cactus_reset,
     cactus_transcribe,
 )
-from .cli.download import get_weights_dir
+from .cli.download import get_model_dir_name, get_weights_dir
 from .cli.common import DEFAULT_MODEL_ID, PROJECT_ROOT, is_repo_checkout
 
 LOGGER = logging.getLogger(__name__)
@@ -111,15 +111,32 @@ class ModelRegistry:
             if info is not None:
                 self.models[info.id] = info
 
-    def require(self, model_id: str) -> ModelInfo:
+    def _resolve(self, model_id: str) -> ModelInfo | None:
+        """Match an exact bundle id, or fall back to the HuggingFace id / bare
+        stem (e.g. 'google/gemma-4-E2B-it' -> 'gemma-4-e2b-it-cq4-apple') when it
+        is unambiguous."""
         info = self.models.get(model_id)
+        if info is not None:
+            return info
+        stem = get_model_dir_name(model_id)
+        if stem in self.models:
+            return self.models[stem]
+        variants = [m for m in self.models.values() if m.id.startswith(f"{stem}-")]
+        return variants[0] if len(variants) == 1 else None
+
+    def require(self, model_id: str) -> ModelInfo:
+        info = self._resolve(model_id)
         if info is None:
-            raise HTTPException(status_code=404, detail=f"Model '{model_id}' is not available")
+            available = ", ".join(sorted(self.models)) or "none"
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model '{model_id}' is not available (available: {available})",
+            )
         return info
 
     def default_llm(self, preferred: str | None = None) -> ModelInfo:
         if preferred:
-            info = self.models.get(preferred)
+            info = self._resolve(preferred)
             if info is None:
                 raise RuntimeError(f"Requested model '{preferred}' is not a valid v2 Cactus bundle")
             if info.model_type not in LLM_MODEL_TYPES:
@@ -481,6 +498,9 @@ def create_app(
     default_model: str | None = None,
     max_warm: int = 2,
     preload: bool = True,
+    auto_handoff: bool = True,
+    confidence_threshold: float | None = None,
+    cloud_timeout_ms: int | None = None,
 ) -> FastAPI:
     root = Path(weights_root) if weights_root is not None else (
         PROJECT_ROOT / "weights" if is_repo_checkout() else Path.home() / ".cache" / "cactus" / "weights"
@@ -515,6 +535,9 @@ def create_app(
     app.state.manager = manager
     app.state.default_model = selected.id
     app.state.default_stt_model = registry.default_stt().id if registry.default_stt() else None
+    app.state.auto_handoff = auto_handoff
+    app.state.confidence_threshold = confidence_threshold
+    app.state.cloud_timeout_ms = cloud_timeout_ms
 
     @app.get("/v1/models")
     async def list_models(request: Request):
@@ -530,6 +553,13 @@ def create_app(
         messages = [_flatten_message(m) for m in req.messages]
         tools, force_tools = _translate_tools(req.tools, req.tool_choice)
         options = _chat_options(req)
+        state = request.app.state
+        if not state.auto_handoff:
+            options["auto_handoff"] = False
+        if state.confidence_threshold is not None:
+            options["confidence_threshold"] = state.confidence_threshold
+        if state.cloud_timeout_ms is not None:
+            options["cloud_timeout_ms"] = state.cloud_timeout_ms
         if force_tools:
             options["force_tools"] = True
         request_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"

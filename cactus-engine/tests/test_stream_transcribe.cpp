@@ -104,7 +104,8 @@ static bool test_stream_matches_oneshot() {
 
     std::vector<int16_t> pcm = load_wav(std::string(g_assets) + "/test.wav");
     if (pcm.size() > 20 * 16000) pcm.resize(20 * 16000);
-    auto golden = words_of(transcribe_oneshot(model, pcm));
+    std::string oneshot_text = transcribe_oneshot(model, pcm);
+    auto golden = words_of(oneshot_text);
     if (golden.size() < 4) { cactus_destroy(model); std::cout << "  SKIP (test.wav has no usable speech)\n"; return true; }
 
     cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(model, nullptr);
@@ -135,6 +136,8 @@ static bool test_stream_matches_oneshot() {
     cactus_destroy(model);
 
     auto sw = words_of(streamed);
+    std::cout << "  ONE-SHOT: " << oneshot_text << "\n";
+    std::cout << "  STREAM:   " << streamed << "\n";
     double rc = recall(golden, sw), pr = recall(sw, golden);
     bool ok = rc >= 0.85 && pr >= 0.85;
     std::cout << "  recall=" << std::fixed << std::setprecision(3) << rc << " precision=" << pr
@@ -143,8 +146,8 @@ static bool test_stream_matches_oneshot() {
 }
 
 int main() {
-    TestUtils::TestRunner runner("Stream Tests");
-    runner.run_test("stream_matches_oneshot", test_stream_matches_oneshot());
+    TestUtils::TestRunner runner("Stream Transcribe Tests");
+    runner.run_test("stream_transcribe_matches_oneshot", test_stream_matches_oneshot());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

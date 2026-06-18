@@ -68,11 +68,11 @@ def cmd_test(args):
     if "engine" in targets:
         from .model import ensure_runnable_bundle
         try:
-            args.model_id = str(ensure_runnable_bundle(args.model_id or DEFAULT_TEST_MODEL_ID))
-            args.transcription_model_id = str(
-                ensure_runnable_bundle(args.transcription_model_id or DEFAULT_TEST_TRANSCRIPTION_MODEL_ID)
-            )
-        except RuntimeError as exc:
+            args.model_id = str(ensure_runnable_bundle(
+                args.model_id or DEFAULT_TEST_MODEL_ID, reconvert=args.reconvert))
+            args.transcription_model_id = str(ensure_runnable_bundle(
+                args.transcription_model_id or DEFAULT_TEST_TRANSCRIPTION_MODEL_ID, reconvert=args.reconvert))
+        except (RuntimeError, OSError, ValueError) as exc:
             print_color(RED, f"Model setup failed: {exc}")
             return 1
 

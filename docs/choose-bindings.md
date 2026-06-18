@@ -23,7 +23,7 @@ Pick the right one for your platform and use case:
     - **React Native** -- already have a React Native project? Just `npm install` and go
     - **Flutter** -- cross-platform mobile + Mac with full native bindings
     - **Kotlin** -- native Android apps or Kotlin Multiplatform
-    - **Swift** -- native iOS/macOS apps with Apple NPU acceleration
+    - **Swift** -- native iOS/macOS apps with the Apple Neural Engine
 
 !!! tip "Server-side or scripting?"
     - **Python** -- server-side inference, batch processing, or rapid prototyping

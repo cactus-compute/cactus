@@ -38,7 +38,7 @@ DEFAULT_TEST_MODEL_ID = "LiquidAI/LFM2-VL-450M"
 DEFAULT_TEST_TRANSCRIPTION_MODEL_ID = "openai/whisper-base"
 
 
-# Add a new vendor accelerator by appending its name here.
+# Add a new vendor platform by appending its name here.
 SUPPORTED_PLATFORMS: tuple[str, ...] = ("apple",)
 
 
@@ -97,6 +97,4 @@ def resolve_binary(name):
             return path
 
     print_color(RED, f"{name} binary not found at {path}.")
-    if is_repo_checkout():
-        print_color(RED, "Run `cactus build` first.")
     return None

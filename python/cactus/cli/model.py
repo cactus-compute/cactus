@@ -6,7 +6,7 @@ import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .common import GREEN, PROJECT_ROOT, YELLOW, print_color
+from .common import GREEN, PROJECT_ROOT, RED, YELLOW, print_color
 
 
 
@@ -42,6 +42,10 @@ def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=
     if weights_dir.exists() and (weights_dir / "config.txt").exists():
         print_color(GREEN, f"Model weights found at {weights_dir}")
         return weights_dir
+
+    if weights_dir.exists():
+        print_color(YELLOW, "Removing incomplete weights from a previous run...")
+        shutil.rmtree(weights_dir)
 
     return _convert_from_source(model_id, bits=bits, token=token, weights_dir=weights_dir)
 
@@ -162,7 +166,7 @@ _AUDIO_TASKS = frozenset({
 
 def resolve_bundle_dir(model_id):
     path = Path(model_id).expanduser()
-    if path.is_dir() and (path / "components" / "manifest.json").exists():
+    if path.is_dir() and _has_transpiled_bundle(path):
         return path
     return None
 
@@ -187,11 +191,14 @@ class TranspileOptions:
 
 
 def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
-                           reconvert=False, transpile=None):
+                           reconvert=False, prebuilt=True, output_dir=None,
+                           transpile=None):
     """Resolve a runnable bundle via the full fallback ladder, building if needed.
 
     Rungs, in order: (1) a local bundle path, (2) a cached prior build,
     (3) a prebuilt bundle on HuggingFace, (4) local convert + transpile.
+    With prebuilt=False, rung (3) is skipped and the bundle is always built
+    locally when not already present.
     Raises RuntimeError if every rung fails.
     """
     from .download import download_bundle, get_bundle_dir
@@ -200,14 +207,14 @@ def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
     if local is not None:
         return local
 
-    cached = get_bundle_dir(model_id, bits=bits, platform=platform)
+    cached = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits, platform=platform)
     if _has_transpiled_bundle(cached) and not reconvert:
         return cached
 
-    if not reconvert:
+    if prebuilt and not reconvert:
         try:
             return download_bundle(model_id, bits=bits, platform=platform,
-                                   token=token, reconvert=reconvert)
+                                   token=token, output_dir=cached)
         except (RuntimeError, OSError) as exc:
             print_color(YELLOW, f"No prebuilt bundle ({exc}); building locally")
 
@@ -216,6 +223,28 @@ def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
         opts = replace(opts, npu=True)
     return ensure_bundle(model_id, bits=bits, token=token, reconvert=reconvert,
                          output_dir=cached, transpile=opts)
+
+
+def prepare_bundle(args, *, model_id=None, transpile=None, prebuilt=True,
+                   output_dir=None, fail_prefix="Model setup failed"):
+    """Resolve the platform from args and return a runnable bundle, with uniform
+    error handling shared by every model command. Returns the bundle Path, or
+    None (after printing the error) on failure."""
+    from .download import resolve_platform
+    try:
+        return ensure_runnable_bundle(
+            args.model_id if model_id is None else model_id,
+            bits=getattr(args, "bits", 4),
+            platform=resolve_platform(getattr(args, "platform", "auto")),
+            token=getattr(args, "token", None),
+            reconvert=getattr(args, "reconvert", False),
+            prebuilt=prebuilt,
+            output_dir=output_dir,
+            transpile=transpile,
+        )
+    except (RuntimeError, OSError, ValueError) as exc:
+        print_color(RED, f"{fail_prefix}: {exc}")
+        return None
 
 
 def ensure_bundle(model_id, *, bits=4, token=None,
@@ -273,9 +302,9 @@ def ensure_bundle(model_id, *, bits=4, token=None,
                 "using bundled tiny test assets.",
             )
         if needs_image and not spec_image_files:
-            raise RuntimeError("Multimodal transpile requires --image-file for this model.")
+            raise RuntimeError("Building this multimodal model requires --image-file.")
         if needs_audio and not spec_audio_file:
-            raise RuntimeError("Multimodal transpile requires --audio-file for this model.")
+            raise RuntimeError("Building this multimodal model requires --audio-file.")
 
     if effective_component_pipeline == "auto" and spec.force_component_pipeline:
         effective_component_pipeline = "on"
@@ -293,7 +322,7 @@ def ensure_bundle(model_id, *, bits=4, token=None,
             "using bundled tiny test audio asset.",
         )
     elif spec.task in _AUDIO_TASKS and not spec_audio_file:
-        raise RuntimeError(f"{spec.task} transpile requires --audio-file.")
+        raise RuntimeError(f"Building a {spec.task} model requires --audio-file.")
 
     effective_max_new_tokens = opts.max_new_tokens or _default_max_new_tokens(spec)
 
@@ -333,7 +362,7 @@ def ensure_bundle(model_id, *, bits=4, token=None,
 
     rc = run_transpile(model_id, extra_args=extra_args)
     if rc != 0:
-        raise RuntimeError(f"Transpilation failed for {model_id}")
+        raise RuntimeError(f"Build failed for {model_id}")
 
     try:
         from cactus.convert.handoff_probe import (
@@ -348,5 +377,5 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     except Exception as e:
         print_color(YELLOW, f"Warning: failed to package cloud handoff probe: {e}")
 
-    print_color(GREEN, f"Model converted and transpiled to {output_dir}")
+    print_color(GREEN, f"Model built at {output_dir}")
     return output_dir

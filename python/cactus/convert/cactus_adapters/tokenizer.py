@@ -491,7 +491,7 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         else:
             f.write("has_chat_template=false\n")
         if len(tool_tokens) > 0:
-            f.write(f"has_tool_support=true\n")
+            f.write("has_tool_support=true\n")
             f.write(f"tool_token_count={len(tool_tokens)}\n")
 
 

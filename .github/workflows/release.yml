@@ -69,7 +69,7 @@ jobs:
             license "Cactus Compute License"
             include Language::Python::Virtualenv
             depends_on "python@3.12"
-            depends_on macos: :ventura
+            depends_on macos: :sonoma
             depends_on arch: :arm64
 
             livecheck do

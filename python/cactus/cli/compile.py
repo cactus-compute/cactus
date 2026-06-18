@@ -171,7 +171,6 @@ def cmd_build(args):
     cactus_dir = PROJECT_ROOT / "cactus-engine"
     lib_path = cactus_dir / "build" / "libcactus_engine.a"
 
-    print_color(YELLOW, "Building Cactus library...")
     if run_command(str(cactus_dir / "build.sh"), cwd=cactus_dir).returncode != 0:
         print_color(RED, "Failed to build cactus library")
         return 1

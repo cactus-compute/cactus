@@ -30,7 +30,7 @@ best build for your host, e.g. Apple Silicon on macOS); pass `--platform cpu`
 for the generic build. The result can be loaded directly via `cactus_init()`.
 
 For models not on Cactus-Compute, build a bundle from source with
-`cactus convert <model>` followed by `cactus transpile <model>`.
+`cactus convert <model>`.
 
 ## Types
 

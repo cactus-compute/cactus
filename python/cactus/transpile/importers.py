@@ -1397,7 +1397,6 @@ def import_diff(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int,
     concat_shapes = [tuple(int(v) for v in source_shape)]
 
     def _append_concat_input(arg: Any, label: str) -> None:
-        nonlocal concat_inputs, concat_shapes
         if arg is None:
             return
         arg_value_id = value_id(arg, ctx)

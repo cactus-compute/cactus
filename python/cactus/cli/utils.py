@@ -316,12 +316,8 @@ def write_download_metadata(output_dir: Path, resolution: CqResolution, archive_
 
 
 def download_cq_archive(resolution: CqResolution, output_dir: Path, *, token=None,
-                        revision=None, reconvert=False, dry_run=False) -> Path:
-    if dry_run:
-        return output_dir
+                        revision=None) -> Path:
 
-    if output_dir.exists() and reconvert:
-        shutil.rmtree(output_dir)
     if output_dir.exists() and (output_dir / "components" / "manifest.json").exists():
         return output_dir
     if output_dir.exists() and any(output_dir.iterdir()):

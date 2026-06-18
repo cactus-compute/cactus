@@ -1,8 +1,8 @@
-"""Download pre-transpiled bundles from huggingface.co/Cactus-Compute."""
+"""Download prebuilt bundles from huggingface.co/Cactus-Compute."""
 from pathlib import Path
 
 from .common import (
-    BLUE, GREEN, RED,
+    BLUE, GREEN,
     SUPPORTED_PLATFORMS,
     print_color, weights_root,
 )
@@ -22,7 +22,7 @@ def get_bundle_dir(model_id: str, *, bits: int = 4, platform: str | None = None)
 
 
 def _host_platform() -> str | None:
-    """Best-fit accelerator for the current host: apple on macOS, else generic CPU."""
+    """Best-fit platform for the current host: apple on macOS, else generic CPU."""
     import platform as _platform
 
     if _platform.system() == "Darwin" and "apple" in SUPPORTED_PLATFORMS:
@@ -45,8 +45,7 @@ def ensure_model(model_id: str) -> Path:
 
 
 def download_bundle(model_id: str, *, bits: int = 4, platform: str | None = None,
-                    token: str | None = None, output_dir: Path | None = None,
-                    reconvert: bool = False) -> Path:
+                    token: str | None = None, output_dir: Path | None = None) -> Path:
     from .utils import (
         download_cq_archive,
         list_hf_cq_archives,
@@ -70,18 +69,13 @@ def download_bundle(model_id: str, *, bits: int = 4, platform: str | None = None
         raise RuntimeError(f"no bundles published at {repo_id}")
 
     resolution = resolve_archive(repo_id, local_name, archives, bits, platform=platform)
-    download_cq_archive(resolution, bundle_dir, token=token, revision=revision, reconvert=reconvert)
+    download_cq_archive(resolution, bundle_dir, token=token, revision=revision)
     print_color(GREEN, f"Ready at {bundle_dir}")
     return bundle_dir
 
 
 def cmd_download(args) -> int:
-    from .model import ensure_runnable_bundle
+    from .model import prepare_bundle
 
-    try:
-        platform = resolve_platform(args.platform)
-        ensure_runnable_bundle(args.model_id, bits=args.bits, platform=platform, token=args.token)
-        return 0
-    except (RuntimeError, OSError, ValueError) as e:
-        print_color(RED, f"Failed to prepare {args.model_id}: {e}")
-        return 1
+    bundle = prepare_bundle(args, fail_prefix=f"Failed to prepare {args.model_id}")
+    return 1 if bundle is None else 0

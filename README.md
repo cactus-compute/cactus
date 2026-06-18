@@ -196,36 +196,34 @@ graph.hard_reset();
 │                                                                                │
 │  cactus run [model|path]             run a model (downloads if needed)         │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform auto|cpu|apple         target accelerator (default: auto)        │
+│    --platform auto|cpu|apple         target platform (default: auto)           │
 │    --image <path>                    image file for VLM inference              │
 │    --audio <path>                    audio file for audio chat                 │
 │    --system <prompt>                 system prompt                             │
 │    --prompt <text>                   send prompt immediately                   │
 │    --thinking                        enable thinking/reasoning mode            │
 │    --token <token>                   HuggingFace token (gated models)          │
-│    --reconvert                       force local convert+transpile fallback    │
+│    --reconvert                       force local rebuild from source           │
 │                                                                                │
 │  cactus transcribe [model]           live microphone transcription with a model│
 │    --file <audio.wav>                audio file to transcribe (WAV)            │
 │    --language <code>                 language code (default: en)               │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --platform auto|cpu|apple         target platform (default: auto)           │
 │    --token <token>                   HuggingFace token (gated models)          │
-│    --reconvert                       force reconversion from source            │
+│    --reconvert                       force local rebuild from source           │
 │                                                                                │
-│  cactus download [model]             download a pre-built bundle               │
+│  cactus download [model]             get a bundle (prebuilt, else build)       │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform auto|cpu|apple         target accelerator (default: auto)        │
+│    --platform auto|cpu|apple         target platform (default: auto)           │
 │    --token <token>                   HuggingFace token                         │
 │                                                                                │
-│  cactus convert <model> [dir]        convert HuggingFace weights to CQ         │
+│  cactus convert <model> [dir]        build a runnable bundle locally           │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --platform auto|cpu|apple         target platform (default: auto)           │
 │    --token <token>                   HuggingFace token                         │
-│    --reconvert                       force build from source                   │
+│    --reconvert                       force rebuild from source                 │
 │    --lora <path>                     merge a LoRA adapter before converting    │
-│                                                                                │
-│  cactus transpile <model>            build a runnable bundle from CQ weights   │
-│    --weights-dir <path>              path to CQ weights (default: lookup)      │
-│    --task <auto|...>                 force task type (default: auto)           │
-│    --artifact-dir <path>             bundle output (default: weights/<model>)  │
 │                                                                                │
 │  cactus serve [model]                OpenAI-compatible local HTTP server       │
 │    --host <addr>                     bind address (default: 127.0.0.1)         │

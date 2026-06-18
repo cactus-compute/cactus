@@ -25,15 +25,11 @@ def _is_valid_bundle(path: Path) -> bool:
 
 def cmd_serve(args):
     """Start the OpenAI-compatible HTTP server."""
-    model_path, model_name = _resolve_model_arg(args.model)
-    if args.model and model_path is None:
-        from .model import ensure_runnable_bundle
-        from .download import resolve_platform
-        try:
-            built = ensure_runnable_bundle(
-                args.model, bits=args.bits, platform=resolve_platform(args.platform))
-        except RuntimeError as exc:
-            print_color(RED, f"Error: could not prepare {args.model}: {exc}")
+    model_path, model_name = _resolve_model_arg(args.model_id)
+    if args.model_id and model_path is None:
+        from .model import prepare_bundle
+        built = prepare_bundle(args, fail_prefix=f"Error: could not prepare {args.model_id}")
+        if built is None:
             return 1
         model_path, model_name = built, built.name
     if model_path is not None and not _is_valid_bundle(model_path):
@@ -58,10 +54,12 @@ def cmd_serve(args):
             weights_root=weights_root(),
             model_path=model_path,
             default_model=model_name,
+            auto_handoff=not args.no_cloud_handoff,
+            confidence_threshold=args.confidence_threshold,
+            cloud_timeout_ms=args.cloud_timeout_ms,
         )
     except RuntimeError as exc:
         print_color(RED, f"Error: {exc}")
-        print("Prepare a v2 bundle first with `cactus run <model>` (or `cactus convert <model>` then `cactus transpile <model>`).")
         return 1
 
     models = sorted(application.state.registry.models)

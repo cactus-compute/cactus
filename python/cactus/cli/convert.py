@@ -3,7 +3,6 @@ import tempfile
 from pathlib import Path
 
 from .common import GREEN, RED, YELLOW, print_color
-from .download import get_weights_dir
 
 
 def _merge_lora_adapter(base_model_id, lora_path, token=None):
@@ -42,10 +41,11 @@ def _merge_lora_adapter(base_model_id, lora_path, token=None):
 
 
 def cmd_convert(args):
-    """Convert a HuggingFace model to CQ format. Does not transpile —
-    use `cactus transpile` afterwards to build the runtime graph bundle.
+    """Build a runnable bundle locally: convert HuggingFace weights to CQ and
+    transpile. Skips the prebuilt-bundle search — checks the local copy first
+    and builds from source if it is not present.
     """
-    from .model import ensure_weights
+    from .model import prepare_bundle
 
     source_model_id = args.model_id
     merged_dir = None
@@ -56,20 +56,16 @@ def cmd_convert(args):
             return 1
         source_model_id = merged_dir
 
-    output_dir = args.output_dir or str(get_weights_dir(args.model_id))
+    output_dir = args.output_dir
+    if merged_dir and not output_dir:
+        from .download import get_bundle_dir, resolve_platform
+        output_dir = str(get_bundle_dir(args.model_id, bits=args.bits,
+                                        platform=resolve_platform(args.platform)))
 
     try:
-        ensure_weights(
-            source_model_id,
-            bits=args.bits,
-            token=args.token,
-            reconvert=args.reconvert,
-            output_dir=output_dir,
-        )
-        return 0
-    except RuntimeError as e:
-        print_color(RED, f"Conversion error: {e}")
-        return 1
+        bundle = prepare_bundle(args, model_id=source_model_id, prebuilt=False,
+                                output_dir=output_dir, fail_prefix="Conversion error")
+        return 1 if bundle is None else 0
     finally:
         if merged_dir:
             shutil.rmtree(merged_dir, ignore_errors=True)

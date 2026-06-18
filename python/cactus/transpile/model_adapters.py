@@ -1632,7 +1632,6 @@ class Lfm2CausalLMStepAdapter(torch.nn.Module):
 
         inputs_embeds = backbone.embed_tokens(input_ids)
         text_position_ids = position_ids.to(dtype=torch.int64)
-        seq_len = int(inputs_embeds.shape[1])
         causal_mask = None
 
         hidden_states = inputs_embeds
@@ -4760,7 +4759,7 @@ def _build_qwen_causal_lm_component_specs(
                 },
                 metadata={"family": family, "task": "causal_lm_logits"},
             ))
-        if "decoder_prefill_chunk" in requested_set:
+        if "decoder_embed_chunk" in requested_set:
             specs.append(ComponentModuleSpec(
                 component="decoder_embed_chunk",
                 module=decoder_embed_chunk,
@@ -6307,17 +6306,6 @@ def canonicalize_model_interface(
         if not resolved_input_names:
             resolved_input_names = ("input_ids", "attention_mask")
         adapter_factory = NomicTextEmbeddingAdapter
-    elif task == "audio_classification_logits":
-        if not resolved_input_names:
-            resolved_input_names = _infer_input_names(
-                model,
-                preferred=("input_values", "input_features", "attention_mask"),
-            )
-        adapter_factory = lambda inner_model: AudioClassificationLogitsAdapter(  # type: ignore[assignment]
-            inner_model,
-            input_names=resolved_input_names,
-            family=family,
-        )
     else:
         raise NotImplementedError(f"unsupported task={task}")
 

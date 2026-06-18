@@ -103,7 +103,7 @@ def _print_section(title: str, color: str, entries):
 def cmd_list(_args):
     roots = (weights_root(), transpiled_root())
     converted, transpiled = _categorize(roots)
-    _print_section("Converted weights (cactus convert)", BLUE, converted)
+    _print_section("Converted weights", BLUE, converted)
     print()
-    _print_section("Transpiled bundles (cactus transpile / download)", CYAN, transpiled)
+    _print_section("Runnable bundles (cactus convert / download)", CYAN, transpiled)
     return 0
