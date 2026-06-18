@@ -8,6 +8,7 @@
 #include <memory>
 #include <cstdint>
 #include <atomic>
+#include <future>
 #include <limits>
 
 #include "cactus_graph.h"
@@ -723,12 +724,14 @@ public:
     size_t last_prefill_tail_padding_tokens() const { return last_prefill_tail_padding_tokens_; }
 
     bool load_npu_audio_encoder(const std::string& model_path, const std::string& compute_units = "");
-    bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
+    bool has_npu_audio_encoder() const { return npu_ready_.load(std::memory_order_acquire) && npu_audio_encoder_ != nullptr; }
 
     bool load_npu_vision_encoder(const std::string& model_path);
-    bool has_npu_vision_encoder() const { return npu_vision_encoder_ != nullptr; }
+    bool has_npu_vision_encoder() const { return npu_ready_.load(std::memory_order_acquire) && npu_vision_encoder_ != nullptr; }
 
     bool load_npu_source_encoder(const std::string& model_path);
+    bool npu_ready() const { return npu_ready_.load(std::memory_order_acquire); }
+    void start_npu_encoder_loads();
 
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
@@ -890,6 +893,8 @@ private:
     std::unique_ptr<npu::NPUEncoder> npu_audio_encoder_;
     std::unique_ptr<npu::NPUEncoder> npu_vision_encoder_;
     std::unique_ptr<npu::NPUEncoder> npu_source_encoder_;
+    std::atomic<bool> npu_ready_{false};
+    std::future<void> npu_load_future_;
 
     bool audio_encode_via_npu(const std::vector<float>& audio_features);
     bool vision_encode_via_npu(const std::vector<float>& pixel_values,

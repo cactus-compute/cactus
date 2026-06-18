@@ -263,7 +263,9 @@ Model::Model() : config_() {}
 
 Model::Model(const Config& config) : config_(config) {}
 
-Model::~Model() = default;
+Model::~Model() {
+    if (npu_load_future_.valid()) npu_load_future_.wait();
+}
 
 namespace {
 
@@ -458,6 +460,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         initialized_ = true;
         return true;
     }
+    start_npu_encoder_loads();
     std::string encoder_name;
     std::string decoder_name;
     std::string source_encoder_name;
@@ -612,30 +615,6 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
 
     cache_max_seq_len_ = context_size;
 
-    if (!npu_audio_encoder_mlpackage_.empty()) {
-        std::string full_path = bundle_dir + "/" + npu_audio_encoder_mlpackage_;
-        if (!load_npu_audio_encoder(full_path, npu_audio_compute_units_)) {
-            CACTUS_LOG_WARN("model", "NPU audio encoder load failed for " << full_path << "; falling back to CPU");
-        }
-    }
-    if (!npu_vision_encoder_mlpackage_.empty()) {
-        std::string full_path = bundle_dir + "/" + npu_vision_encoder_mlpackage_;
-        if (!load_npu_vision_encoder(full_path)) {
-            CACTUS_LOG_WARN("model", "NPU vision encoder load failed for " << full_path << "; falling back to CPU");
-        } else if (tokenizer_) {
-            const auto& npu_out = npu_vision_encoder_->get_output_shape();
-            size_t npu_rows = 0;
-            if (npu_out.size() >= 3) npu_rows = static_cast<size_t>(npu_out[npu_out.size() - 2]);
-            else if (npu_out.size() >= 2) npu_rows = static_cast<size_t>(npu_out[0]);
-            if (npu_rows > 0) tokenizer_->set_image_soft_token_count(npu_rows);
-        }
-    }
-    if (!npu_source_encoder_mlpackage_.empty()) {
-        std::string full_path = bundle_dir + "/" + npu_source_encoder_mlpackage_;
-        if (!load_npu_source_encoder(full_path)) {
-            CACTUS_LOG_WARN("model", "NPU source encoder load failed for " << full_path << "; falling back to CPU");
-        }
-    }
     if (load_handoff_probe() && decoder_ && output_index(*decoder_, "probe_hidden") < 0) {
         CACTUS_LOG_WARN("cloud_handoff", "Handoff probe is packaged, but decoder_step does not expose probe_hidden; "
             "reconvert Gemma4 to enable probe-based handoff");

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <future>
 #include <vector>
 
 namespace cactus {
@@ -40,8 +41,39 @@ bool Model::load_npu_source_encoder(const std::string& model_path) {
     return true;
 }
 
+void Model::start_npu_encoder_loads() {
+    if (npu_audio_encoder_mlpackage_.empty() &&
+        npu_vision_encoder_mlpackage_.empty() &&
+        npu_source_encoder_mlpackage_.empty()) {
+        npu_ready_.store(true, std::memory_order_release);
+        return;
+    }
+    npu_load_future_ = std::async(std::launch::async, [this]() {
+        if (!npu_audio_encoder_mlpackage_.empty()) {
+            std::string full_path = bundle_dir_ + "/" + npu_audio_encoder_mlpackage_;
+            if (!load_npu_audio_encoder(full_path, npu_audio_compute_units_)) {
+                CACTUS_LOG_WARN("model", "NPU audio encoder load failed for " << full_path << "; falling back to CPU");
+            }
+        }
+        if (!npu_vision_encoder_mlpackage_.empty()) {
+            std::string full_path = bundle_dir_ + "/" + npu_vision_encoder_mlpackage_;
+            if (!load_npu_vision_encoder(full_path)) {
+                CACTUS_LOG_WARN("model", "NPU vision encoder load failed for " << full_path << "; falling back to CPU");
+            }
+        }
+        if (!npu_source_encoder_mlpackage_.empty()) {
+            std::string full_path = bundle_dir_ + "/" + npu_source_encoder_mlpackage_;
+            if (!load_npu_source_encoder(full_path)) {
+                CACTUS_LOG_WARN("model", "NPU source encoder load failed for " << full_path << "; falling back to CPU");
+            }
+        }
+        npu_ready_.store(true, std::memory_order_release);
+    });
+}
+
 bool Model::source_encode_via_npu(const std::vector<uint32_t>& tokens) {
-    if (!npu_source_encoder_ || !npu_source_encoder_->is_available() ||
+    if (!npu_ready_.load(std::memory_order_acquire) ||
+        !npu_source_encoder_ || !npu_source_encoder_->is_available() ||
         !source_encoder_ || !decoder_cross_kv_) {
         return false;
     }
