@@ -333,7 +333,7 @@ bool Model::load_handoff_probe() {
 
     handoff_probe_hidden_.clear();
     handoff_probe_loaded_ = true;
-    CACTUS_LOG_INFO("cloud_handoff", "Loaded Gemma4 v10p6 handoff probe from " << path);
+    CACTUS_LOG_INFO("cloud_handoff", "Loaded handoff probe from " << path);
     return true;
 }
 
@@ -350,6 +350,8 @@ void Model::maybe_capture_handoff_probe_hidden(const Component& comp, const std:
     size_t node = static_cast<size_t>(comp.output_node_ids[idx]);
     const auto& desc = comp.graph->get_output_buffer(node);
     if (desc.total_size < handoff_probe_feat_dim_) return;
+    if (!desc.shape.empty() &&
+        static_cast<size_t>(desc.shape.back()) != static_cast<size_t>(handoff_probe_feat_dim_)) return;
     size_t rows = desc.total_size / handoff_probe_feat_dim_;
     if (rows == 0) return;
     const auto* data = static_cast<const uint8_t*>(comp.graph->get_output(node));

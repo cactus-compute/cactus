@@ -755,7 +755,7 @@ class ParakeetTDTANEEncoder(nn.Module):
         key_bias = (1.0 - enc_valid).unsqueeze(1) * -1e4
         return enc_valid, key_bias
 
-    def forward(self, input_features: torch.Tensor):
+    def forward(self, input_features: torch.Tensor) -> torch.Tensor:
         x = self.pre_encode(input_features)
         conv_mask, key_bias = self._frame_masks(input_features, x.shape[1])
         for layer in self.layers:
@@ -1001,17 +1001,15 @@ def build_parakeet_tdt_component_specs(
     npu_input_features[:, :valid_frames, :] = input_features[:, :valid_frames, :]
     with torch.no_grad():
         ane_seq_len = int(model.encoder.pre_encode(npu_input_features).shape[1])
-    encoder_module = model.encoder
-    encoder_output_keys = ("encoder_hidden_states",)
     ane_encoder = ParakeetTDTANEEncoder(model.encoder, ane_seq_len)
 
     return [
         ComponentModuleSpec(
             component="audio_encoder",
-            module=encoder_module,
+            module=model.encoder,
             example_inputs=(input_features,),
             input_keys=("input_features",),
-            output_keys=encoder_output_keys,
+            output_keys=("encoder_hidden_states",),
             graph_meta={**common_graph_meta, "component": "audio_encoder"},
             metadata={"family": "parakeet_tdt", "task": "tdt_transcription"},
             npu_module=ane_encoder,
