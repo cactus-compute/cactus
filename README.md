@@ -136,7 +136,7 @@ graph.hard_reset();
 | Device | LLM | VLM | Transcribe | RAM |
 |--------|----------|------------|---------------|-----|
 | Mac M4 Pro | 324 / 39 | 1.2s / 48 | 0.2s / 10.6M | 1385 MB |
-| iPad/Mac M3 | - | - | - | - |
+| Mac M3 Pro | 390 / 26 | 2.76s / 28.06 | 0.32s / 2.29M | 1376 MB |
 | iPhone 17 Pro | - | - | - | - |
 | iPhone 13 Mini | - | - | - | - |
 | Galaxy S26 | 248 / 21 | - / 16 | - / 5.7M | - |
