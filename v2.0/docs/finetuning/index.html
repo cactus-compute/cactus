@@ -1812,11 +1812,7 @@
 </code></pre></div>
 <img src="../assets/lora.png" alt="Logo" style="border-radius: 30px; width: 70%;"></p>
 <h3 id="4-run">4. Run<a class="headerlink" href="#4-run" title="Permanent link">&para;</a></h3>
-<p>Build the native library, transpile the weights into a runtime bundle, then run:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cactus<span class="w"> </span>build
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>Qwen/Qwen3-0.6B<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span>--weights-dir<span class="w"> </span>./my-qwen3-0.6b<span class="w"> </span>--artifact-dir<span class="w"> </span>./my-qwen3-0.6b
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>cactus<span class="w"> </span>run<span class="w"> </span>./my-qwen3-0.6b
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cactus<span class="w"> </span>run<span class="w"> </span>./my-qwen3-0.6b
 </code></pre></div>
 <p><code>cactus run</code> accepts the bundle path directly, or auto-builds from a HF model id
 when no bundle exists locally.
