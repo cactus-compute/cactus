@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import replace
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,7 @@ import torch.nn.functional as F
 
 from cactus.transpile.component_pipeline import ComponentModuleSpec
 from cactus.transpile.tdt_runtime import ParakeetTDTConfig
+from cactus.transpile.tdt_runtime import ParakeetTDTANEEncoder
 from cactus.transpile.tdt_runtime import ParakeetTDTDecoderPrediction
 from cactus.transpile.tdt_runtime import ParakeetTDTEncoder
 from cactus.transpile.tdt_runtime import ParakeetTDTJoint
@@ -31,6 +34,24 @@ from cactus.transpile.audio_preprocess import generic_log_mel_features
 from cactus.transpile.audio_preprocess import load_audio_waveform
 from cactus.transpile.model_profiles import NEMOTRON_ASR_PROFILE
 from cactus.transpile.model_profiles import add_tensor_aliases
+
+
+@contextmanager
+def _temporary_float32(module: torch.nn.Module):
+    dtypes = {
+        param.dtype
+        for param in module.parameters()
+        if param.is_floating_point()
+    }
+    dtype = next(iter(dtypes)) if len(dtypes) == 1 else None
+    if dtype is None or dtype == torch.float32:
+        yield
+        return
+    module.to(dtype=torch.float32)
+    try:
+        yield
+    finally:
+        module.to(dtype=dtype)
 
 
 @dataclass
@@ -417,6 +438,22 @@ def build_nemotron_asr_component_specs(
         "adapter_family": "nemotron_asr",
     }
 
+    factor = max(1, int(model.config.subsampling_factor))
+    npu_frames = int(os.environ.get("CACTUS_NPU_NEMOTRON_FRAMES", "256"))
+    if npu_frames <= 0 or npu_frames % factor != 0:
+        raise ValueError(f"CACTUS_NPU_NEMOTRON_FRAMES must be a positive multiple of {factor}, got {npu_frames}")
+    npu_input_features = torch.zeros(
+        (int(input_features.shape[0]), npu_frames, int(input_features.shape[-1])),
+        device=input_features.device,
+        dtype=input_features.dtype,
+    )
+    valid_frames = min(int(input_features.shape[1]), npu_frames)
+    npu_input_features[:, :valid_frames, :] = input_features[:, :valid_frames, :]
+    with torch.no_grad():
+        ane_seq_len = int(model.encoder.pre_encode(npu_input_features).shape[1])
+    ane_encoder = ParakeetTDTANEEncoder(model.encoder, ane_seq_len)
+    npu_example_features = npu_input_features.to(dtype=torch.float32)
+
     return [
         ComponentModuleSpec(
             component="audio_encoder",
@@ -426,6 +463,10 @@ def build_nemotron_asr_component_specs(
             output_keys=("encoder_hidden_states",),
             graph_meta={**common_graph_meta, "component": "audio_encoder"},
             metadata={"family": "nemotron_asr", "task": "rnnt_transcription"},
+            npu_module=ane_encoder,
+            npu_example_inputs=(npu_example_features,),
+            npu_runtime_input_count=1,
+            npu_reparam=_temporary_float32,
         ),
         ComponentModuleSpec(
             component="decoder",

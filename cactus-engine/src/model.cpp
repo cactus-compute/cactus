@@ -3293,9 +3293,72 @@ std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& a
     write_typed_buffer(feat_buf, feat_desc.precision, transposed.data(),
                        transposed.size() * sizeof(float), Precision::FP32);
 
-    if (should_stop && should_stop->load()) return emitted;
-    audio_enc->graph->execute();
-    maybe_capture_handoff_probe_hidden(*audio_enc, "encoder_hidden_states");
+    std::vector<__fp16> npu_hidden_storage;
+    bool used_npu = false;
+    size_t npu_hidden_T = 0;
+    if (has_npu_audio_encoder()) {
+        const std::vector<int> in_shape = npu_audio_encoder_->get_input_shape();
+        const std::vector<int> out_shape = npu_audio_encoder_->get_output_shape();
+        if (in_shape.size() >= 3 && out_shape.size() >= 3 &&
+            in_shape[1] > 0 && in_shape[2] > 0 && out_shape[1] > 0 && out_shape[2] > 0 &&
+            static_cast<size_t>(in_shape[2]) == expected_mels &&
+            copy_frames <= static_cast<size_t>(in_shape[1])) {
+            const size_t window_frames = static_cast<size_t>(in_shape[1]);
+            const size_t window_hidden = static_cast<size_t>(out_shape[1]);
+            const size_t hidden_dim_npu = static_cast<size_t>(out_shape[2]);
+            const size_t chunk_input_elems = window_frames * expected_mels;
+            const size_t chunk_output_elems = window_hidden * hidden_dim_npu;
+            const size_t num_chunks = (copy_frames + window_frames - 1) / window_frames;
+            const size_t total_hidden_T = num_chunks * window_hidden;
+            npu_hidden_storage.assign(total_hidden_T * hidden_dim_npu, __fp16(0));
+            const bool want_probe = handoff_probe_loaded_ &&
+                static_cast<size_t>(handoff_probe_feat_dim_) == hidden_dim_npu;
+            std::vector<__fp16> input_fp16(chunk_input_elems);
+            bool all_ok = num_chunks > 0;
+            for (size_t c = 0; c < num_chunks && all_ok; ++c) {
+                if (should_stop && should_stop->load()) return emitted;
+                const size_t frame_start = c * window_frames;
+                const size_t frame_end = std::min(frame_start + window_frames, copy_frames);
+                std::fill(input_fp16.begin(), input_fp16.end(), __fp16(0));
+                for (size_t t = frame_start; t < frame_end; ++t) {
+                    const size_t local = (t - frame_start) * expected_mels;
+                    const size_t src = t * expected_mels;
+                    for (size_t m = 0; m < expected_mels; ++m) {
+                        input_fp16[local + m] = static_cast<__fp16>(transposed[src + m]);
+                    }
+                }
+                __fp16* out_ptr = npu_hidden_storage.data() + c * chunk_output_elems;
+                size_t written = npu_audio_encoder_->encode(
+                    input_fp16.data(), out_ptr, in_shape, "x", "encoded");
+                if (written == 0) { all_ok = false; break; }
+            }
+            if (all_ok) {
+                used_npu = true;
+                const size_t valid_input = copy_frames;
+                npu_hidden_T = (valid_input * window_hidden + window_frames - 1) / window_frames;
+                if (npu_hidden_T > total_hidden_T) npu_hidden_T = total_hidden_T;
+                CACTUS_LOG_INFO("model", "Nemotron audio encoder ran on NPU ("
+                                << num_chunks << " chunks, " << npu_hidden_T << " valid hidden frames)");
+                if (want_probe) {
+                    const size_t probe_elems = npu_hidden_T * hidden_dim_npu;
+                    handoff_probe_hidden_.reserve(handoff_probe_hidden_.size() + probe_elems);
+                    const __fp16* pp = npu_hidden_storage.data();
+                    for (size_t i = 0; i < probe_elems; ++i) {
+                        handoff_probe_hidden_.push_back(static_cast<float>(pp[i]));
+                    }
+                    CACTUS_LOG_INFO("cloud_handoff", "Captured " << npu_hidden_T
+                                    << " NPU probe frames for the handoff probe");
+                }
+            } else {
+                CACTUS_LOG_WARN("model", "NPU audio encoder chunk failed; falling back to CPU graph");
+            }
+        }
+    }
+    if (!used_npu) {
+        if (should_stop && should_stop->load()) return emitted;
+        audio_enc->graph->execute();
+        maybe_capture_handoff_probe_hidden(*audio_enc, "encoder_hidden_states");
+    }
 
     int hidden_idx = output_index(*audio_enc, "encoder_hidden_states");
     if (hidden_idx < 0) {
@@ -3304,14 +3367,19 @@ std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& a
     }
     size_t hidden_node = static_cast<size_t>(audio_enc->output_node_ids[hidden_idx]);
     const auto& hidden_desc = audio_enc->graph->get_output_buffer(hidden_node);
-    const uint8_t* hidden_ptr = static_cast<const uint8_t*>(audio_enc->graph->get_output(hidden_node));
+    const uint8_t* hidden_ptr;
+    if (used_npu) {
+        hidden_ptr = reinterpret_cast<const uint8_t*>(npu_hidden_storage.data());
+    } else {
+        hidden_ptr = static_cast<const uint8_t*>(audio_enc->graph->get_output(hidden_node));
+    }
     if (hidden_desc.shape.size() < 3 || hidden_ptr == nullptr) {
         CACTUS_LOG_ERROR("model", "encoder_hidden_states must be 3D [B, T, D]");
         return emitted;
     }
-    const size_t T = hidden_desc.shape[1];
+    const size_t T = used_npu ? npu_hidden_T : hidden_desc.shape[1];
     const size_t D = hidden_desc.shape[2];
-    const Precision hidden_precision = hidden_desc.precision;
+    const Precision hidden_precision = used_npu ? Precision::FP16 : hidden_desc.precision;
     const size_t hidden_elem = PrecisionTraits::size_of(hidden_precision);
     const size_t frame_bytes = D * hidden_elem;
 
@@ -3424,7 +3492,7 @@ std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& a
     size_t commit_to = T;
     if (stream) {
         size_t valid_hidden = T;
-        if (expected_frames > 0)
+        if (!used_npu && expected_frames > 0)
             valid_hidden = std::min<size_t>(T, (copy_frames * T) / expected_frames);
         commit_to = (end_frame > 0) ? std::min(end_frame, valid_hidden) : valid_hidden;
     }
