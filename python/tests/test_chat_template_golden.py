@@ -7,7 +7,7 @@ import pytest
 
 transformers = pytest.importorskip("transformers")
 
-from .bundles import PROJECT_ROOT, WEIGHTS, _read_model_type, _valid_bundle
+from .bundles import PROJECT_ROOT, WEIGHTS, _iter_bundle_candidates, _read_model_type, _valid_bundle
 
 MONKEY_IMAGE = PROJECT_ROOT / "cactus-engine" / "tests" / "assets" / "test_monkey.png"
 
@@ -142,7 +142,10 @@ def load_family():
 
     def _load(bundle_name: str, hf_id: str):
         if bundle_name not in _LOADED:
-            bundle = WEIGHTS / bundle_name
+            bundle = next(
+                (c for c in _iter_bundle_candidates(bundle_name) if _valid_bundle(c)),
+                WEIGHTS / bundle_name,
+            )
             if not _valid_bundle(bundle):
                 pytest.skip(f"bundle not prepared: {bundle}")
             try:

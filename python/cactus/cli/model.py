@@ -30,10 +30,10 @@ def _convert_from_source(model_id, *, bits, token, weights_dir):
     return weights_dir
 
 
-def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=None):
-    from .download import get_weights_dir
+def ensure_weights(model_id, *, bits=4, platform=None, token=None, reconvert=False, output_dir=None):
+    from .download import get_bundle_dir
 
-    weights_dir = Path(output_dir) if output_dir else get_weights_dir(model_id)
+    weights_dir = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits, platform=platform)
 
     if reconvert and weights_dir.exists():
         print_color(YELLOW, "Removing cached weights for reconversion...")
@@ -207,6 +207,9 @@ def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
     if local is not None:
         return local
 
+    if str(model_id).startswith(("/", "./", "../", "~")) and not Path(model_id).expanduser().exists():
+        raise RuntimeError(f"path not found: {model_id}")
+
     cached = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits, platform=platform)
     if _has_transpiled_bundle(cached) and not reconvert:
         return cached
@@ -221,8 +224,8 @@ def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
     opts = transpile or TranspileOptions()
     if platform == "apple" and not opts.npu:
         opts = replace(opts, npu=True)
-    return ensure_bundle(model_id, bits=bits, token=token, reconvert=reconvert,
-                         output_dir=cached, transpile=opts)
+    return ensure_bundle(model_id, bits=bits, platform=platform, token=token,
+                         reconvert=reconvert, output_dir=cached, transpile=opts)
 
 
 def prepare_bundle(args, *, model_id=None, transpile=None, prebuilt=True,
@@ -247,21 +250,21 @@ def prepare_bundle(args, *, model_id=None, transpile=None, prebuilt=True,
         return None
 
 
-def ensure_bundle(model_id, *, bits=4, token=None,
+def ensure_bundle(model_id, *, bits=4, platform=None, token=None,
                   reconvert=False, output_dir=None, transpile=None):
-    from .download import get_weights_dir
+    from .download import get_bundle_dir
     from .transpile import run_transpile
     from cactus.transpile.component_plan import infer_component_plan_from_output
 
     opts = transpile or TranspileOptions()
 
     if output_dir is not None:
-        output_dir = Path(output_dir)
+        output_dir = Path(output_dir).expanduser().resolve()
     else:
-        output_dir = get_weights_dir(model_id)
+        output_dir = get_bundle_dir(model_id, bits=bits, platform=platform)
 
     ensure_weights(
-        model_id, bits=bits, token=token,
+        model_id, bits=bits, platform=platform, token=token,
         reconvert=reconvert, output_dir=output_dir,
     )
 

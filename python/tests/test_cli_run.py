@@ -32,7 +32,7 @@ def test_cmd_run_forwards_chunked_bundle_flags(monkeypatch, tmp_path: Path) -> N
         calls.append(cmd)
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(run_mod.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(common_mod.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(model_mod, "ensure_runnable_bundle", lambda *a, **k: bundle_dir)
 
     args = Namespace(

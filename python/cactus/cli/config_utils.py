@@ -34,6 +34,12 @@ class CactusConfig:
                 pass
             raise
 
+    def _load_or_empty(self):
+        try:
+            return self.load_config()
+        except (OSError, ValueError):
+            return {}
+
     def get_api_key(self):
         env_key = os.getenv("CACTUS_CLOUD_KEY") or os.getenv("CACTUS_CLOUD_API_KEY")
         if env_key:
@@ -41,11 +47,11 @@ class CactusConfig:
         return self.load_config().get("api_key") or None
 
     def set_api_key(self, key):
-        config = self.load_config()
+        config = self._load_or_empty()
         config["api_key"] = key
         self.save_config(config)
 
     def clear_api_key(self):
-        config = self.load_config()
+        config = self._load_or_empty()
         config.pop("api_key", None)
         self.save_config(config)

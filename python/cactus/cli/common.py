@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -72,9 +73,35 @@ BIN_DIR = SCRIPT_DIR.parent / "bin"
 
 def apply_cloud_api_key_env() -> None:
     from .config_utils import CactusConfig
-    api_key = CactusConfig().get_api_key()
+    try:
+        api_key = CactusConfig().get_api_key()
+    except (OSError, ValueError):
+        return
     if api_key:
         os.environ["CACTUS_CLOUD_KEY"] = api_key
+
+
+def apply_runtime_env(args) -> None:
+    """Prepare the process env for an inference command: honour --no-cloud-tele
+    and load the stored cloud API key."""
+    if getattr(args, "no_cloud_tele", False):
+        os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
+    apply_cloud_api_key_env()
+
+
+def is_valid_bundle(path) -> bool:
+    """A runnable v2 bundle has both config.txt and the components manifest."""
+    path = Path(path)
+    return (path / "config.txt").exists() and (path / "components" / "manifest.json").exists()
+
+
+def launch_binary(name, *args) -> int:
+    """Resolve a bundled binary and exec it with str-coerced args. Returns its
+    exit code, or 1 if the binary is unavailable."""
+    binary = resolve_binary(name)
+    if binary is None:
+        return 1
+    return subprocess.run([str(binary), *(str(a) for a in args)]).returncode
 
 
 def _auto_build_binaries() -> bool:

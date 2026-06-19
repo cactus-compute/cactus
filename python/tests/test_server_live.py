@@ -13,12 +13,23 @@ from pathlib import Path
 import httpx
 import pytest
 
-from .bundles import PROJECT_ROOT, WEIGHTS, _find_bundle, _read_model_type, _valid_bundle
+from .bundles import (
+    PROJECT_ROOT, WEIGHTS, _find_bundle, _iter_bundle_candidates,
+    _read_model_type, _valid_bundle,
+)
 
-DEFAULT_LLM_BUNDLE = Path("weights/gemma-4-e2b-it")
 ASSETS = PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
 LLM_TYPES = {"gemma", "gemma3n", "gemma4", "lfm2", "qwen", "qwen3p5", "needle", "youtu"}
 STT_TYPES = {"whisper", "parakeet_tdt", "parakeet-tdt"}
+
+
+def _default_llm_bundle() -> Path:
+    """Locate the canonical gemma-4-e2b-it LLM bundle under whichever convention
+    it was built with (bare `gemma-4-e2b-it` or suffixed `...-cq4[-apple]`)."""
+    for candidate in _iter_bundle_candidates("gemma-4-e2b-it"):
+        if _valid_bundle(candidate) and _read_model_type(candidate) in LLM_TYPES:
+            return candidate
+    return WEIGHTS / "gemma-4-e2b-it"  # fall through so _require_bundle reports it
 
 
 def _require_bundle(relative: Path, types: set[str]) -> Path:
@@ -110,8 +121,9 @@ def _serve(bundle: Path):
 
 @pytest.fixture(scope="module")
 def live_server():
-    _require_bundle(DEFAULT_LLM_BUNDLE, LLM_TYPES)
-    with _serve(DEFAULT_LLM_BUNDLE) as server:
+    bundle = _default_llm_bundle()
+    _require_bundle(bundle, LLM_TYPES)
+    with _serve(bundle) as server:
         yield server
 
 

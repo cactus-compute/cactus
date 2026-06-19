@@ -66,15 +66,17 @@ def cmd_test(args):
         targets = ("kernels", "graph", "engine") if args.component == "all" else (args.component,)
 
     if "engine" in targets:
-        from .model import ensure_runnable_bundle
-        try:
-            args.model_id = str(ensure_runnable_bundle(
-                args.model_id or DEFAULT_TEST_MODEL_ID, reconvert=args.reconvert))
-            args.transcription_model_id = str(ensure_runnable_bundle(
-                args.transcription_model_id or DEFAULT_TEST_TRANSCRIPTION_MODEL_ID, reconvert=args.reconvert))
-        except (RuntimeError, OSError, ValueError) as exc:
-            print_color(RED, f"Model setup failed: {exc}")
+        from .model import prepare_bundle
+        model_dir = prepare_bundle(args, model_id=args.model_id or DEFAULT_TEST_MODEL_ID,
+                                   fail_prefix="Model setup failed")
+        if model_dir is None:
             return 1
+        args.model_id = str(model_dir)
+        stt_dir = prepare_bundle(args, model_id=args.transcription_model_id or DEFAULT_TEST_TRANSCRIPTION_MODEL_ID,
+                                 fail_prefix="Model setup failed")
+        if stt_dir is None:
+            return 1
+        args.transcription_model_id = str(stt_dir)
 
     apply_cloud_api_key_env()
     env = os.environ.copy()

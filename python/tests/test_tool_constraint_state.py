@@ -6,9 +6,12 @@ import pytest
 
 from cactus import cactus_complete, cactus_destroy, cactus_init
 
-from .bundles import WEIGHTS, _valid_bundle
+from .bundles import WEIGHTS, _iter_bundle_candidates, _valid_bundle
 
-BUNDLE = WEIGHTS / "gemma-4-e2b-it"
+BUNDLE = next(
+    (c for c in _iter_bundle_candidates("gemma-4-e2b-it") if _valid_bundle(c)),
+    WEIGHTS / "gemma-4-e2b-it",
+)
 
 GET_WEATHER = {
     "type": "function",

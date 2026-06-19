@@ -39,6 +39,19 @@ def _telemetry_parent():
     return p
 
 
+def _build_parent():
+    """Bundle-build flags shared by every command that prepares a model."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
+                   help="CQ quantization (default: 4)")
+    p.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
+                   help=_PLATFORM_HELP)
+    p.add_argument("--token", help="HuggingFace token")
+    p.add_argument("--reconvert", action="store_true",
+                   help="Force local rebuild from source")
+    return p
+
+
 def _positive_int(value):
     n = int(value)
     if n <= 0:
@@ -112,7 +125,7 @@ def create_parser():
     --bits 1|2|3|4                     CQ quantization (default: 4)
     --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
     --token <token>                    HuggingFace token (gated models)
-    --reconvert                        force reconversion from source
+    --reconvert                        force local rebuild from source
 
   cactus download [model]              fetch a prebuilt bundle, else build locally (default: {DEFAULT_MODEL_ID})
     --bits 1|2|3|4                     CQ quantization (default: 4)
@@ -134,6 +147,9 @@ def create_parser():
     --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
+    --no-cloud-handoff                 disable automatic cloud handoff
+    --confidence-threshold <0..1>      handoff to cloud below this confidence
+    --cloud-timeout-ms <n>             max wait for cloud handoff before local fallback
 
   cactus list                          list local converted weights and bundles
 
@@ -147,6 +163,9 @@ def create_parser():
                                        (default: all)
     --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
     --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
+    --bits 1|2|3|4                     CQ quantization (default: 4)
+    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild of test models
     --suite <name>                     run a single test suite from any
                                        component (kernels, graph, or engine)
@@ -175,17 +194,11 @@ def create_parser():
     parser._action_groups = []
 
     download_parser = subparsers.add_parser("download",
-                                            help="Download a pre-built bundle from huggingface.co/Cactus-Compute")
+                                            help="Download a pre-built bundle from huggingface.co/Cactus-Compute",
+                                            parents=[_build_parent()])
     download_parser.add_argument("model_id", nargs="?", default=DEFAULT_MODEL_ID,
                                  type=_hf_id_or_path,
                                  help=f"HuggingFace model id (default: {DEFAULT_MODEL_ID})")
-    download_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
-                                 help="CQ quantization bits (default: 4)")
-    download_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
-                                 help=_PLATFORM_HELP)
-    download_parser.add_argument("--token", help="HuggingFace token")
-    download_parser.add_argument("--reconvert", action="store_true",
-                                 help="Force local rebuild from source instead of fetching the prebuilt bundle")
 
     build_parser = subparsers.add_parser("build", help="Build cactus libraries")
     build_group = build_parser.add_mutually_exclusive_group()
@@ -197,17 +210,10 @@ def create_parser():
                              help="Build shared library for Python FFI")
 
     run_parser = subparsers.add_parser("run", help="Run a model (downloads bundle if needed)",
-                                       parents=[_telemetry_parent()])
+                                       parents=[_telemetry_parent(), _build_parent()])
     run_parser.add_argument("model_id", nargs="?", default=DEFAULT_MODEL_ID,
                             type=_hf_id_or_path,
                             help=f"HuggingFace model id or local bundle path (default: {DEFAULT_MODEL_ID})")
-    run_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
-                            help="CQ quantization bits (default: 4)")
-    run_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
-                            help=_PLATFORM_HELP)
-    run_parser.add_argument("--token", help="HuggingFace token")
-    run_parser.add_argument("--reconvert", action="store_true",
-                            help="Force local rebuild from source")
     run_parser.add_argument("--image",
                             help="Path to image file for VLM inference (attached to first message)")
     run_parser.add_argument("--audio",
@@ -234,7 +240,7 @@ def create_parser():
                             help="Maximum time to wait for cloud handoff before falling back locally")
 
     transcribe_parser = subparsers.add_parser("transcribe", help="Transcribe audio with a model",
-                                              parents=[_telemetry_parent()])
+                                              parents=[_telemetry_parent(), _build_parent()])
     transcribe_parser.add_argument("model_id", nargs="?", default=DEFAULT_TRANSCRIPTION_MODEL_ID,
                                    type=_hf_id_or_path,
                                    help=f"HuggingFace model id (default: {DEFAULT_TRANSCRIPTION_MODEL_ID})")
@@ -242,15 +248,9 @@ def create_parser():
                                    help="Audio file to transcribe (WAV)")
     transcribe_parser.add_argument("--language", default="en",
                                    help="Language code (default: en)")
-    transcribe_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
-                                   help="CQ quantization (default: 4)")
-    transcribe_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
-                                   help=_PLATFORM_HELP)
-    transcribe_parser.add_argument("--token", help="HuggingFace token")
-    transcribe_parser.add_argument("--reconvert", action="store_true",
-                                   help="Force local rebuild from source")
 
-    serve_parser = subparsers.add_parser("serve", help="OpenAI-compatible local HTTP server")
+    serve_parser = subparsers.add_parser("serve", help="OpenAI-compatible local HTTP server",
+                                         parents=[_telemetry_parent(), _build_parent()])
     serve_parser.add_argument("model_id", nargs="?", default=None,
                               type=_hf_id_or_path,
                               help="HuggingFace model id (e.g. openai/whisper-base) or bundle path")
@@ -258,13 +258,6 @@ def create_parser():
                               help="Bind address (default: 127.0.0.1)")
     serve_parser.add_argument("--port", type=_port_int, default=8080,
                               help="Port (default: 8080)")
-    serve_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
-                              help="CQ quantization (default: 4)")
-    serve_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
-                              help=_PLATFORM_HELP)
-    serve_parser.add_argument("--token", help="HuggingFace token")
-    serve_parser.add_argument("--reconvert", action="store_true",
-                              help="Force local rebuild from source")
     serve_parser.add_argument("--no-cloud-handoff", action="store_true",
                               help="Disable automatic cloud handoff for all requests")
     serve_parser.add_argument("--confidence-threshold", type=_unit_float, default=None,
@@ -272,7 +265,8 @@ def create_parser():
     serve_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                               help="Maximum time to wait for cloud handoff before falling back locally")
 
-    test_parser = subparsers.add_parser("test", help="Run the test suite")
+    test_parser = subparsers.add_parser("test", help="Run the test suite",
+                                        parents=[_build_parent()])
     test_parser.add_argument("--component", choices=COMPONENTS, default="all",
                              help="Component to test (default: all)")
     test_parser.add_argument("--model", dest="model_id", default=None,
@@ -281,8 +275,6 @@ def create_parser():
     test_parser.add_argument("--transcription-model", dest="transcription_model_id", default=None,
                              type=_hf_id_or_path,
                              help=f"HF transcription model ID under test (default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID})")
-    test_parser.add_argument("--reconvert", action="store_true",
-                             help="Force local rebuild of the test models from source")
     test_parser.add_argument("--suite", default=None,
                              help="Run a single test suite by name; resolved across all components (e.g. llm → engine)")
     test_parser.add_argument("--list", action="store_true",
@@ -304,27 +296,17 @@ def create_parser():
     subparsers.add_parser("list", help="List local converted weights and bundles")
 
     convert_parser = subparsers.add_parser("convert",
-                                           help="Build a runnable bundle locally from source (no prebuilt fetch)")
+                                           help="Build a runnable bundle locally from source (no prebuilt fetch)",
+                                           parents=[_build_parent()])
     convert_parser.add_argument("model_id", type=_hf_id_or_path,
                                 help="HuggingFace model id (e.g. openai/whisper-base)")
     convert_parser.add_argument("output_dir", nargs="?", default=None,
                                 help="Output directory (default: weights/<model>)")
-    convert_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
-                                help="CQ quantization bits (default: 4)")
-    convert_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
-                                help=_PLATFORM_HELP)
-    convert_parser.add_argument("--token", help="HuggingFace token")
     convert_parser.add_argument("--lora",
                                 help="Path or HF id of a LoRA adapter to merge before converting (requires `peft`)")
-    convert_parser.add_argument("--reconvert", action="store_true",
-                                help="Force rebuild from source")
 
-    upload_parser = subparsers.add_parser("upload")
+    upload_parser = subparsers.add_parser("upload", parents=[_build_parent()])
     upload_parser.add_argument("model_id", type=_hf_id_or_path)
-    upload_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4)
-    upload_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto")
-    upload_parser.add_argument("--token", default=None)
-    upload_parser.add_argument("--reconvert", action="store_true")
 
     transpile_parser = subparsers.add_parser("transpile",
                                              help="Build a runnable bundle from CQ weights")

@@ -14,7 +14,11 @@ def cmd_auth(args):
         print_color(GREEN, "API key cleared.")
         return 0
 
-    api_key = config.get_api_key()
+    try:
+        api_key = config.get_api_key()
+    except (OSError, ValueError):
+        print_color(YELLOW, "Existing config is unreadable; set or clear a key to reset it.")
+        api_key = None
 
     if api_key:
         print(f"Current API key: {mask_key(api_key)}")
