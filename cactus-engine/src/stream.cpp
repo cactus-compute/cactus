@@ -175,13 +175,26 @@ std::string parakeet_decode_window(StreamTranscribe* s, size_t window_start, siz
     auto* tokenizer = model->get_tokenizer();
     if (!tokenizer) return "";
 
+    const std::vector<uint32_t>& pending_tokens = s->is_nemotron ? s->rstate.pending : s->pstate.pending;
+    if (s->is_nemotron && !is_final) {
+        if (pending_text) {
+            std::vector<uint32_t> preview = tokens;
+            preview.insert(preview.end(), pending_tokens.begin(), pending_tokens.end());
+            *pending_text = strip_trailing_language_tag(tokenizer->decode(preview));
+        }
+        const float confirmed_sec = s->rstate.confirmed_sec;
+        if (!tokens.empty() && confirmed_sec > 0.0f) {
+            s->samples_decoded_up_to = window_start + static_cast<size_t>(confirmed_sec * kSampleRateF);
+        }
+        return "";
+    }
+
     s->committed_tokens.insert(s->committed_tokens.end(), tokens.begin(), tokens.end());
     std::string full = tokenizer->decode(s->committed_tokens);
     std::string delta = full.size() > s->emitted_text.size() ? full.substr(s->emitted_text.size()) : std::string();
     if (s->is_nemotron) delta = strip_trailing_language_tag(delta);
     s->emitted_text = full;
 
-    const std::vector<uint32_t>& pending_tokens = s->is_nemotron ? s->rstate.pending : s->pstate.pending;
     if (pending_text && !pending_tokens.empty()) {
         std::vector<uint32_t> combined = s->committed_tokens;
         combined.insert(combined.end(), pending_tokens.begin(), pending_tokens.end());

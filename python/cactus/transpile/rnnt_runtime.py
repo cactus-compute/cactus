@@ -439,7 +439,7 @@ def build_nemotron_asr_component_specs(
     }
 
     factor = max(1, int(model.config.subsampling_factor))
-    npu_frames = int(os.environ.get("CACTUS_NPU_NEMOTRON_FRAMES", "256"))
+    npu_frames = int(os.environ.get("CACTUS_NPU_NEMOTRON_FRAMES", "2048"))
     if npu_frames <= 0 or npu_frames % factor != 0:
         raise ValueError(f"CACTUS_NPU_NEMOTRON_FRAMES must be a positive multiple of {factor}, got {npu_frames}")
     npu_input_features = torch.zeros(

@@ -509,8 +509,10 @@ def _write_component_bundle(
     for manifest_key, mlpackage_path in (npu_encoder_mlpackages or {}).items():
         if mlpackage_path:
             manifest_payload[manifest_key] = mlpackage_path
-    if family in {"parakeet_tdt", "nemotron_asr"} and "npu_audio_encoder" in manifest_payload:
+    if family == "parakeet_tdt" and "npu_audio_encoder" in manifest_payload:
         manifest_payload["npu_audio_compute_units"] = "CPU_AND_NE"
+    elif family == "nemotron_asr" and "npu_audio_encoder" in manifest_payload:
+        manifest_payload["npu_audio_compute_units"] = "CPU_AND_GPU"
     _write_json(manifest_path, manifest_payload)
     return manifest_path
 
