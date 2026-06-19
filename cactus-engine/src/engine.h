@@ -147,13 +147,19 @@ struct Config {
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, NEEDLE = 18};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, NEEDLE = 18, NEMOTRON_ASR = 19};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
     uint32_t tdt_num_durations = 0;
     uint32_t tdt_blank_id = 0;
     std::vector<uint32_t> tdt_durations;
+    uint32_t rnnt_joint_dim = 0;
+    uint32_t rnnt_blank_id = 0;
+    uint32_t prompt_dim = 0;
+    uint32_t default_prompt_id = 0;
+    uint32_t max_symbols_per_step = 10;
+    std::unordered_map<std::string, uint32_t> prompt_dictionary;
 
     ModelType model_type = ModelType::GEMMA4;
 
@@ -672,8 +678,25 @@ public:
         double raw_decode_ms = 0.0;
     };
 
+    struct RnntStreamState {
+        bool initialized = false;
+        uint32_t last_token = 0;
+        size_t time_index = 0;
+        std::vector<std::vector<uint8_t>> dec_state;
+        std::vector<uint32_t> pending;
+        float confirmed_sec = 0.0f;
+        size_t decoded_tokens = 0;
+        double raw_decode_ms = 0.0;
+    };
+
     std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features,
                                                   ParakeetTdtStreamState* stream = nullptr,
+                                                  bool is_final = true,
+                                                  size_t end_frame = 0,
+                                                  const std::atomic<bool>* should_stop = nullptr);
+    std::vector<uint32_t> transcribe_nemotron_asr(const std::vector<float>& audio_features,
+                                                  const std::string& target_lang = "auto",
+                                                  RnntStreamState* stream = nullptr,
                                                   bool is_final = true,
                                                   size_t end_frame = 0,
                                                   const std::atomic<bool>* should_stop = nullptr);

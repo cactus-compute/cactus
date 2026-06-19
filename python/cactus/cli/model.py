@@ -83,12 +83,12 @@ def _infer_transpile_spec(*, task, plan):
             task=task,
             needs_image=task == "multimodal_causal_lm_logits",
             needs_audio=task in {
-                "tdt_transcription", "seq2seq_transcription",
+                "tdt_transcription", "rnnt_transcription", "seq2seq_transcription",
                 "ctc_logits", "encoder_hidden_states",
                 "multimodal_causal_lm_logits",
             },
             force_component_pipeline=task in {
-                "tdt_transcription", "seq2seq_transcription",
+                "tdt_transcription", "rnnt_transcription", "seq2seq_transcription",
                 "multimodal_causal_lm_logits",
             },
         )
@@ -153,7 +153,7 @@ def _has_transpiled_bundle(path):
 
 
 _AUDIO_TASKS = frozenset({
-    "tdt_transcription", "seq2seq_transcription",
+    "tdt_transcription", "rnnt_transcription", "seq2seq_transcription",
     "ctc_logits", "encoder_hidden_states",
 })
 

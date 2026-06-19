@@ -110,7 +110,7 @@ M is the modality-tower bit width and L is the LLM bit width:
 At 2-bit modality tower with 4-bit LLM, AWQ and HQQ collapse on ChartQA from ~49 to
 ~14 while CQ retains 48.44.
 
-### Transcription (Whisper and Parakeet)
+### Transcription (Whisper, Parakeet, and Nemotron)
 
 On speech models, CQ is the best method on Parakeet at every bit width. The standout:
 2-bit Parakeet-1.1B where CQ holds 0.147 WER while every baseline collapses to ≥ 1.0.
@@ -122,7 +122,8 @@ On speech models, CQ is the best method on Parakeet at every bit width. The stan
 | Parakeet-1.1B 2-bit WER | **0.147** | 1.043 | 1.084 | 1.043 |
 
 On Whisper, CQ is competitive but doesn't consistently lead — it's within 1% of the
-best method at most settings.
+best method at most settings. Nemotron ASR uses the same speech conversion/runtime
+surface as Parakeet, with RNNT decoding and Cactus streaming API parity in v1.
 
 ### Mixed-Precision Allocation
 

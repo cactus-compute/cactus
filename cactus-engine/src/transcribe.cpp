@@ -50,6 +50,39 @@ std::vector<TranscriptSegment> parse_whisper_timestamp_segments(
     return segments;
 }
 
+void strip_trailing_language_tag(std::string& text) {
+    size_t end = text.find_last_not_of(" \t\r\n");
+    if (end == std::string::npos) {
+        text.clear();
+        return;
+    }
+    if (text[end] != '>') {
+        text.resize(end + 1);
+        return;
+    }
+    size_t start = text.rfind('<', end);
+    if (start == std::string::npos) {
+        text.resize(end + 1);
+        return;
+    }
+    std::string tag = text.substr(start + 1, end - start - 1);
+    bool valid = tag.size() == 2 || tag.size() == 5;
+    valid = valid && std::islower(static_cast<unsigned char>(tag[0])) && std::islower(static_cast<unsigned char>(tag[1]));
+    if (tag.size() == 5) {
+        valid = valid && tag[2] == '-' &&
+            std::isupper(static_cast<unsigned char>(tag[3])) &&
+            std::isupper(static_cast<unsigned char>(tag[4]));
+    }
+    if (valid) {
+        text.resize(start);
+        end = text.find_last_not_of(" \t\r\n");
+        if (end == std::string::npos) text.clear();
+        else text.resize(end + 1);
+    } else {
+        text.resize(end + 1);
+    }
+}
+
 } // namespace
 
 extern "C" {
@@ -102,14 +135,17 @@ CACTUS_FFI_EXPORT int cactus_preprocess_audio_features(
             auto prepared = cactus::audio::preprocess_audio_for_gemma4(std::move(audio_samples), cfg);
             features = std::move(prepared.features);
             frames = prepared.num_frames;
-        } else if (lowered.find("parakeet") != std::string::npos) {
+        } else if (lowered.find("parakeet") != std::string::npos || lowered.find("nemotron") != std::string::npos) {
+            const bool is_nemotron_frontend = lowered.find("nemotron") != std::string::npos;
             auto cfg = cactus::audio::get_parakeet_spectrogram_config();
             const size_t waveform_samples = audio_samples.size();
             cactus::audio::apply_preemphasis(audio_samples, 0.97f);
+            const int mel_norm_type = is_nemotron_frontend ? 1 : 0;
+            const int mel_scale_type = is_nemotron_frontend ? 2 : 0;
             features = cactus::audio::compute_spectrogram_graph(
                 audio_samples, cfg, bins, 0.0f, 8000.0f,
-                cactus::audio::WHISPER_SAMPLE_RATE, 0, 0);
-            cactus::audio::normalize_parakeet_log_mel(features, bins);
+                cactus::audio::WHISPER_SAMPLE_RATE, mel_norm_type, mel_scale_type);
+            if (!is_nemotron_frontend) cactus::audio::normalize_parakeet_log_mel(features, bins);
             size_t valid_frames = waveform_samples / cfg.hop_length;
             if (valid_frames == 0) valid_frames = 1;
             cactus::audio::trim_mel_frames(features, bins, valid_frames);
@@ -173,8 +209,9 @@ int cactus_transcribe(
         const auto model_type = handle->model->get_config().model_type;
         const bool is_whisper = model_type == cactus::engine::Config::ModelType::WHISPER;
         const bool is_parakeet = model_type == cactus::engine::Config::ModelType::PARAKEET_TDT;
+        const bool is_nemotron = model_type == cactus::engine::Config::ModelType::NEMOTRON_ASR;
 
-        if (!is_whisper && !is_parakeet) {
+        if (!is_whisper && !is_parakeet && !is_nemotron) {
             const uint8_t* pcm_data = pcm_buffer;
             size_t pcm_size = pcm_buffer_size;
             std::vector<uint8_t> file_pcm;
@@ -240,15 +277,17 @@ int cactus_transcribe(
         const size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
         std::vector<float> audio_features;
         std::vector<float> handoff_audio_samples;
-        if (is_parakeet) {
+        if (is_parakeet || is_nemotron) {
             auto cfg = cactus::audio::get_parakeet_spectrogram_config();
             const size_t waveform_samples = audio_samples.size();
             handoff_audio_samples = audio_samples;
             cactus::audio::apply_preemphasis(audio_samples, 0.97f);
+            const int mel_norm_type = is_nemotron ? 1 : 0;
+            const int mel_scale_type = is_nemotron ? 2 : 0;
             audio_features = cactus::audio::compute_spectrogram_graph(
                 audio_samples, cfg, mel_bins, 0.0f, 8000.0f,
-                cactus::audio::WHISPER_SAMPLE_RATE, 0, 0);
-            cactus::audio::normalize_parakeet_log_mel(audio_features, mel_bins);
+                cactus::audio::WHISPER_SAMPLE_RATE, mel_norm_type, mel_scale_type);
+            if (is_parakeet) cactus::audio::normalize_parakeet_log_mel(audio_features, mel_bins);
             size_t valid_frames = waveform_samples / cfg.hop_length;
             if (valid_frames == 0) valid_frames = 1;
             cactus::audio::trim_mel_frames(audio_features, mel_bins, valid_frames);
@@ -345,6 +384,23 @@ int cactus_transcribe(
             time_to_first_token =
                 std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
             final_text = tokenizer->decode(generated_tokens);
+            if (callback) {
+                for (uint32_t tok : generated_tokens) {
+                    std::string piece = tokenizer->decode({tok});
+                    callback(piece.c_str(), tok, user_data);
+                }
+            }
+        } else if (is_nemotron) {
+            std::string target_lang = json_string_field(options_json ? options_json : "", "target_lang");
+            if (target_lang.empty()) target_lang = json_string_field(options_json ? options_json : "", "language");
+            if (target_lang.empty()) target_lang = "auto";
+            generated_tokens = handle->model->transcribe_nemotron_asr(
+                audio_features, target_lang, nullptr, true, 0, &handle->should_stop);
+            auto t_first = std::chrono::high_resolution_clock::now();
+            time_to_first_token =
+                std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
+            final_text = tokenizer->decode(generated_tokens);
+            strip_trailing_language_tag(final_text);
             if (callback) {
                 for (uint32_t tok : generated_tokens) {
                     std::string piece = tokenizer->decode({tok});

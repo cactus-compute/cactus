@@ -141,7 +141,7 @@ def _task_default_component(*, family: str, task: str) -> str:
     if task in {"ctc_logits", "encoder_hidden_states"}:
         return COMPONENT_AUDIO_ENCODER
     profile = profile_for_family(family)
-    if profile is not None and profile.default_task == "tdt_transcription":
+    if profile is not None and profile.default_task in {"tdt_transcription", "rnnt_transcription"}:
         return COMPONENT_AUDIO_ENCODER
     return COMPONENT_UNSPECIFIED
 

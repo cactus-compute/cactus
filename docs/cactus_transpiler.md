@@ -124,6 +124,7 @@ the model in a thin adapter that exposes a stable, task-specific interface:
 | `ctc_logits` | `input_features` | CTC logits |
 | `seq2seq_transcription` | `input_features` | transcription token IDs |
 | `tdt_transcription` | `input_features` | TDT token IDs |
+| `rnnt_transcription` | `input_features` | RNNT token IDs |
 
 This is where model-family-specific knowledge lives (Gemma4, Qwen, LFM2, Parakeet, etc.).
 The adapter also injects `use_cache=False` and `return_dict=False` so the export
@@ -229,7 +230,7 @@ cactus transpile google/gemma-4-E2B-it \
   --weights-dir ./gemma4-weights
 ```
 
-### Speech Models (Parakeet TDT)
+### Speech Models (Parakeet TDT and Nemotron ASR)
 
 ```bash
 cactus convert nvidia/parakeet-tdt-0.6b-v3 ./parakeet-weights --bits 4
@@ -238,6 +239,16 @@ cactus transpile nvidia/parakeet-tdt-0.6b-v3 \
   --task tdt_transcription \
   --weights-dir ./parakeet-weights
 ```
+
+```bash
+cactus convert nvidia/nemotron-3.5-asr-streaming-0.6b ./nemotron-weights --bits 4
+cactus transpile nvidia/nemotron-3.5-asr-streaming-0.6b \
+  --audio-file recording.wav \
+  --task rnnt_transcription \
+  --weights-dir ./nemotron-weights
+```
+
+Nemotron ASR bundles provide the same Cactus one-shot and streaming APIs as Parakeet. The v1 stream path does not yet use NVIDIA-style cache-aware encoder-cache tensors.
 
 ---
 
@@ -426,7 +437,7 @@ cactus transpile <model-id-or-path> [options]
 | Option | Description |
 |--------|-------------|
 | `--weights-dir <path>` | Path to converted CQ weights (default: `weights/<model_name>`) |
-| `--task <name>` | Force task type (default: `auto` — inferred from model config). Choices: `causal_lm_logits`, `multimodal_causal_lm_logits`, `ctc_logits`, `encoder_hidden_states`, `seq2seq_transcription`, `tdt_transcription` |
+| `--task <name>` | Force task type (default: `auto` — inferred from model config). Choices: `causal_lm_logits`, `multimodal_causal_lm_logits`, `ctc_logits`, `encoder_hidden_states`, `seq2seq_transcription`, `tdt_transcription`, `rnnt_transcription` |
 | `--prompt <text>` | Representative prompt for shape capture |
 | `--image-file <path>` | Representative image (repeatable) |
 | `--audio-file <path>` | Representative audio file |

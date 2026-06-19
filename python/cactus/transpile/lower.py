@@ -151,7 +151,13 @@ def transpile_preoptimized_ir(ir: IRGraph) -> TranspiledGraph:
                     flush=True,
                 )
 
-    outputs = [env[value_id] for value_id in ir.outputs]
+    outputs = []
+    for value_id in ir.outputs:
+        output = env[value_id]
+        value = ir.values.get(value_id)
+        if isinstance(output, Tensor) and value is not None and value.users:
+            output = g.reshape(output, tuple(int(dim) for dim in output.shape))
+        outputs.append(output)
     seen_bound_constant_ids = {int(tensor.id) for tensor in bound_constants}
     for tensor in getattr(g, "_transpile_materialized_constants", []):
         tensor_id = int(tensor.id)

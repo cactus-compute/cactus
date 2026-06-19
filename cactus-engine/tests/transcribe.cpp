@@ -96,10 +96,6 @@ static std::string whisper_prompt(const std::string& model_path, const std::stri
     return "";
 }
 
-static void print_token(const char* token, uint32_t, void*) {
-    std::cout << token << std::flush;
-}
-
 static int transcribe_file(cactus_model_t model, const std::string& audio_path,
                            const std::string& model_path, const std::string& language) {
     std::string prompt = whisper_prompt(model_path, language);
@@ -110,7 +106,7 @@ static int transcribe_file(cactus_model_t model, const std::string& audio_path,
     int rc = cactus_transcribe(
         model, audio_path.c_str(), prompt.empty() ? nullptr : prompt.c_str(),
         response_buffer.data(), response_buffer.size(),
-        options.c_str(), print_token, nullptr, nullptr, 0);
+        options.c_str(), nullptr, nullptr, nullptr, 0);
     double total_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     if (rc < 0) {
         std::cerr << "\nTranscription failed: " << cactus_get_last_error() << "\n";
@@ -118,6 +114,7 @@ static int transcribe_file(cactus_model_t model, const std::string& audio_path,
     }
 
     std::string json(response_buffer.data());
+    std::cout << json_string_value(json, "response");
     double model_ms = json_number_value(json, "total_time_ms");
     std::ostringstream stats;
     stats << std::fixed << std::setprecision(2) << "[processed: " << total_s << "s";
@@ -203,7 +200,7 @@ static int run_live_transcription(cactus_model_t model, const std::string& langu
     std::string options = "{\"language\":\"" + language + "\"}";
     cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(model, options.c_str());
     if (!stream) {
-        std::cerr << "Failed to start streaming (live mode needs a Whisper or Parakeet TDT model): "
+        std::cerr << "Failed to start streaming (live mode needs a Whisper, Parakeet TDT, or Nemotron ASR model): "
                   << cactus_get_last_error() << "\n";
         SDL_CloseAudioDevice(device);
         SDL_Quit();
@@ -359,7 +356,8 @@ int main(int argc, char** argv) {
 
     std::string model_path = argv[1];
     std::string audio_file;
-    std::string language = "en";
+    std::string language;
+    bool language_explicit = false;
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "-h" || arg == "--help") {
@@ -371,6 +369,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             language = argv[++i];
+            language_explicit = true;
         } else if (!arg.empty() && arg[0] == '-') {
             std::cerr << "Error: unknown option '" << arg << "'\n";
             print_usage(argv[0]);
@@ -378,6 +377,11 @@ int main(int argc, char** argv) {
         } else {
             audio_file = arg;
         }
+    }
+    if (!language_explicit) {
+        std::string lowered = model_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        language = lowered.find("nemotron") != std::string::npos ? "auto" : "en";
     }
 
     std::cout << "Loading model from " << model_path << "...\n";

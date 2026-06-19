@@ -44,6 +44,32 @@ std::vector<uint32_t> parse_config_uint_list(const std::string& value) {
     return numbers;
 }
 
+std::unordered_map<std::string, uint32_t> parse_config_string_uint_map(const std::string& value) {
+    std::unordered_map<std::string, uint32_t> result;
+    std::stringstream ss(value);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        size_t sep = item.find(':');
+        if (sep == std::string::npos) continue;
+        std::string key = item.substr(0, sep);
+        std::string number = item.substr(sep + 1);
+        auto trim = [](std::string& s) {
+            size_t first = s.find_first_not_of(" \t");
+            if (first == std::string::npos) {
+                s.clear();
+                return;
+            }
+            size_t last = s.find_last_not_of(" \t");
+            s = s.substr(first, last - first + 1);
+        };
+        trim(key);
+        trim(number);
+        if (key.empty() || number.empty()) continue;
+        result[key] = static_cast<uint32_t>(std::stoul(number));
+    }
+    return result;
+}
+
 float read_scalar_value(Precision precision, const uint8_t* data, size_t index) {
     const uint8_t* ptr = data + PrecisionTraits::byte_offset_of(precision, index);
     switch (precision) {
@@ -742,6 +768,7 @@ bool Model::setup_tokenizer() {
     std::string merges = bundle_dir_ + "/merges.txt";
     std::string cfg = bundle_dir_ + "/tokenizer_config.txt";
     if (!fs::exists(vocab)) return false;
+    if (!fs::exists(cfg)) cfg = bundle_dir_ + "/config.txt";
     auto rt = load_tokenizer_runtime_config(cfg);
     bool use_bpe = rt.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::BPE
                    || (rt.tokenizer_type == TokenizerRuntimeConfig::TokenizerType::UNKNOWN
@@ -3221,6 +3248,292 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     return emitted;
 }
 
+std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& audio_features,
+                                                     const std::string& target_lang,
+                                                     RnntStreamState* stream,
+                                                     bool is_final,
+                                                     size_t end_frame,
+                                                     const std::atomic<bool>* should_stop) {
+    std::vector<uint32_t> emitted;
+    double raw_decode_ms = 0.0;
+
+    reset_handoff_probe_rollout();
+
+    Component* audio_enc = components_.count("audio_encoder") ? &components_.at("audio_encoder") : nullptr;
+    Component* dec = components_.count("decoder") ? &components_.at("decoder") : nullptr;
+    if (!audio_enc || !dec) {
+        CACTUS_LOG_ERROR("model", "Nemotron ASR bundle missing audio_encoder or decoder component");
+        return emitted;
+    }
+    if (!bind_runtime_buffers(*audio_enc)) return emitted;
+    if (!bind_runtime_buffers(*dec)) return emitted;
+
+    int feat_idx = input_index(*audio_enc, "input_features");
+    if (feat_idx < 0) {
+        CACTUS_LOG_ERROR("model", "audio_encoder has no input_features input");
+        return emitted;
+    }
+    auto& feat_buf = audio_enc->input_buffers[feat_idx];
+    size_t feat_node = static_cast<size_t>(audio_enc->runtime_input_node_ids[feat_idx]);
+    const auto& feat_desc = audio_enc->graph->get_output_buffer(feat_node);
+    if (feat_desc.shape.size() != 3) {
+        CACTUS_LOG_ERROR("model", "audio_encoder expects [1, frames, mels] input shape");
+        return emitted;
+    }
+    const size_t expected_frames = feat_desc.shape[1];
+    const size_t expected_mels = feat_desc.shape[2];
+    const size_t source_frames = expected_mels > 0 ? audio_features.size() / expected_mels : 0;
+    const size_t copy_frames = std::min(source_frames, expected_frames);
+    std::vector<float> transposed(expected_frames * expected_mels, 0.0f);
+    for (size_t t = 0; t < copy_frames; ++t) {
+        for (size_t m = 0; m < expected_mels; ++m) {
+            transposed[t * expected_mels + m] = audio_features[m * source_frames + t];
+        }
+    }
+    write_typed_buffer(feat_buf, feat_desc.precision, transposed.data(),
+                       transposed.size() * sizeof(float), Precision::FP32);
+
+    if (should_stop && should_stop->load()) return emitted;
+    audio_enc->graph->execute();
+    maybe_capture_handoff_probe_hidden(*audio_enc, "encoder_hidden_states");
+
+    int hidden_idx = output_index(*audio_enc, "encoder_hidden_states");
+    if (hidden_idx < 0) {
+        CACTUS_LOG_ERROR("model", "audio_encoder has no encoder_hidden_states output");
+        return emitted;
+    }
+    size_t hidden_node = static_cast<size_t>(audio_enc->output_node_ids[hidden_idx]);
+    const auto& hidden_desc = audio_enc->graph->get_output_buffer(hidden_node);
+    const uint8_t* hidden_ptr = static_cast<const uint8_t*>(audio_enc->graph->get_output(hidden_node));
+    if (hidden_desc.shape.size() < 3 || hidden_ptr == nullptr) {
+        CACTUS_LOG_ERROR("model", "encoder_hidden_states must be 3D [B, T, D]");
+        return emitted;
+    }
+    const size_t T = hidden_desc.shape[1];
+    const size_t D = hidden_desc.shape[2];
+    const Precision hidden_precision = hidden_desc.precision;
+    const size_t hidden_elem = PrecisionTraits::size_of(hidden_precision);
+    const size_t frame_bytes = D * hidden_elem;
+
+    const int ef_idx = input_index(*dec, "encoder_frame");
+    const int prompt_idx = input_index(*dec, "language_prompt");
+    const int tok_in_idx = input_index(*dec, "token_ids");
+    const int logits_idx = output_index(*dec, "step_logits");
+    if (ef_idx < 0 || prompt_idx < 0 || tok_in_idx < 0 || logits_idx < 0) {
+        CACTUS_LOG_ERROR("model", "decoder missing encoder_frame / language_prompt / token_ids / step_logits ports");
+        return emitted;
+    }
+
+    auto& ef_buf = dec->input_buffers[ef_idx];
+    const auto& ef_desc = dec->graph->get_output_buffer(static_cast<size_t>(dec->runtime_input_node_ids[ef_idx]));
+    auto& prompt_buf = dec->input_buffers[prompt_idx];
+    const auto& prompt_desc = dec->graph->get_output_buffer(static_cast<size_t>(dec->runtime_input_node_ids[prompt_idx]));
+    auto& tok_buf = dec->input_buffers[tok_in_idx];
+    const Precision tok_prec = dec->graph->get_output_buffer(static_cast<size_t>(dec->runtime_input_node_ids[tok_in_idx])).precision;
+    void* tok_data = tok_buf.data();
+    const size_t logits_node = static_cast<size_t>(dec->output_node_ids[logits_idx]);
+    const auto& logits_desc = dec->graph->get_output_buffer(logits_node);
+    const Precision logits_prec = logits_desc.precision;
+    const size_t token_class_count = logits_desc.shape.empty() ? 0 : logits_desc.shape.back();
+    if (token_class_count == 0) return emitted;
+    uint32_t effective_blank = config_.rnnt_blank_id;
+    if (effective_blank >= token_class_count) effective_blank = static_cast<uint32_t>(token_class_count - 1);
+
+    size_t prompt_elems = prompt_desc.byte_size / std::max<size_t>(1, PrecisionTraits::size_of(prompt_desc.precision));
+    if (prompt_elems == 0 && !prompt_desc.shape.empty()) prompt_elems = prompt_desc.shape.back();
+    std::vector<float> prompt(prompt_elems, 0.0f);
+    std::string lang = target_lang.empty() ? "auto" : target_lang;
+    uint32_t prompt_id = config_.default_prompt_id;
+    auto prompt_it = config_.prompt_dictionary.find(lang);
+    if (prompt_it != config_.prompt_dictionary.end()) prompt_id = prompt_it->second;
+    if (prompt_id >= prompt_elems) prompt_id = std::min<uint32_t>(config_.default_prompt_id, prompt_elems ? static_cast<uint32_t>(prompt_elems - 1) : 0);
+    if (!prompt.empty()) prompt[prompt_id] = 1.0f;
+    write_typed_buffer(prompt_buf, prompt_desc.precision, prompt.data(), prompt.size() * sizeof(float), Precision::FP32);
+
+    std::vector<std::string> state_names;
+    for (uint32_t i = 0; i < config_.predictor_num_layers; ++i) {
+        state_names.push_back("state_h_" + std::to_string(i));
+        state_names.push_back("state_c_" + std::to_string(i));
+    }
+    auto zero_state = [&](const std::string& name) -> bool {
+        int idx = input_index(*dec, name);
+        if (idx < 0) {
+            CACTUS_LOG_ERROR("model", "decoder missing recurrent state input " << name);
+            return false;
+        }
+        auto& buf = dec->input_buffers[idx];
+        std::memset(buf.data(), 0, buf.size());
+        return true;
+    };
+    if (stream && stream->initialized) {
+        if (stream->dec_state.size() != state_names.size()) {
+            CACTUS_LOG_ERROR("model", "decoder recurrent stream state count mismatch");
+            return emitted;
+        }
+        for (size_t i = 0; i < state_names.size(); ++i) {
+            int idx = input_index(*dec, state_names[i]);
+            if (idx < 0) {
+                CACTUS_LOG_ERROR("model", "decoder missing recurrent state input " << state_names[i]);
+                return emitted;
+            }
+            auto& buf = dec->input_buffers[idx];
+            if (buf.size() != stream->dec_state[i].size()) {
+                CACTUS_LOG_ERROR("model", "decoder recurrent stream state size mismatch for " << state_names[i]);
+                return emitted;
+            }
+            std::memcpy(buf.data(), stream->dec_state[i].data(),
+                        buf.size());
+        }
+    } else {
+        for (const auto& state_name : state_names) {
+            if (!zero_state(state_name)) return emitted;
+        }
+    }
+
+    struct StateCopy { void* in_data; const void* out_ptr; size_t bytes; };
+    std::vector<StateCopy> state_copies;
+    state_copies.reserve(state_names.size());
+    for (const auto& state_name : state_names) {
+        int out_idx = output_index(*dec, state_name);
+        int in_idx = input_index(*dec, state_name);
+        if (out_idx < 0 || in_idx < 0) {
+            CACTUS_LOG_ERROR("model", "decoder missing recurrent state port " << state_name);
+            return emitted;
+        }
+        size_t out_node = static_cast<size_t>(dec->output_node_ids[out_idx]);
+        const auto& out_desc = dec->graph->get_output_buffer(out_node);
+        auto& in_buf = dec->input_buffers[in_idx];
+        const void* out_ptr = dec->graph->get_output(out_node);
+        if (!out_ptr || out_desc.byte_size != in_buf.size()) {
+            CACTUS_LOG_ERROR("model", "decoder recurrent state buffer mismatch for " << state_name);
+            return emitted;
+        }
+        state_copies.push_back({
+            in_buf.data(),
+            out_ptr,
+            in_buf.size()
+        });
+    }
+    if (state_copies.size() != state_names.size()) {
+        CACTUS_LOG_ERROR("model", "decoder recurrent state port count mismatch");
+        return emitted;
+    }
+
+    uint32_t last_token = (stream && stream->initialized) ? stream->last_token : effective_blank;
+    size_t time_index = (stream && stream->initialized) ? stream->time_index : 0;
+    size_t commit_to = T;
+    if (stream) {
+        size_t valid_hidden = T;
+        if (expected_frames > 0)
+            valid_hidden = std::min<size_t>(T, (copy_frames * T) / expected_frames);
+        commit_to = (end_frame > 0) ? std::min(end_frame, valid_hidden) : valid_hidden;
+    }
+    Tokenizer* stream_tok = stream ? get_tokenizer() : nullptr;
+    const auto& vocab_bias = get_vocab_bias();
+    const float frame_sec = (160.0f / 16000.0f) *
+        static_cast<float>(std::max<uint32_t>(1, config_.subsampling_factor));
+    const uint32_t max_symbols = std::max<uint32_t>(1, config_.max_symbols_per_step);
+
+    auto snapshot_state = [&]() {
+        std::vector<std::vector<uint8_t>> snap(state_copies.size());
+        for (size_t s = 0; s < state_copies.size(); ++s) {
+            const uint8_t* p = static_cast<const uint8_t*>(state_copies[s].in_data);
+            snap[s].assign(p, p + state_copies[s].bytes);
+        }
+        return snap;
+    };
+
+    std::vector<std::vector<uint8_t>> snap_state;
+    uint32_t snap_last_token = last_token;
+    size_t snap_time = time_index;
+    size_t confirmed_count = 0;
+    if (stream) snap_state = snapshot_state();
+
+    while (time_index < commit_to) {
+        if (should_stop && should_stop->load()) break;
+        const uint8_t* frame_ptr = hidden_ptr + time_index * frame_bytes;
+        write_typed_buffer(ef_buf, ef_desc.precision, frame_ptr, frame_bytes, hidden_precision);
+
+        uint32_t symbols_added = 0;
+        bool advanced = false;
+        while (symbols_added < max_symbols) {
+            write_int_element(static_cast<uint8_t*>(tok_data), tok_prec, 0, static_cast<int64_t>(last_token));
+
+            const auto exec_t0 = std::chrono::steady_clock::now();
+            dec->graph->execute();
+            raw_decode_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - exec_t0).count();
+
+            const void* logits_ptr = dec->graph->get_output(logits_node);
+            auto get_logit = [&](size_t i) -> float {
+                if (logits_prec == Precision::FP32) return reinterpret_cast<const float*>(logits_ptr)[i];
+                if (logits_prec == Precision::FP16) return static_cast<float>(reinterpret_cast<const __fp16*>(logits_ptr)[i]);
+                return static_cast<float>(reinterpret_cast<const int8_t*>(logits_ptr)[i]);
+            };
+
+            uint32_t next_token = 0;
+            float best_score = -std::numeric_limits<float>::infinity();
+            for (size_t i = 0; i < token_class_count; ++i) {
+                float v = get_logit(i);
+                if (stream && !vocab_bias.empty()) {
+                    auto it = vocab_bias.find(static_cast<uint32_t>(i));
+                    if (it != vocab_bias.end()) v += it->second;
+                }
+                if (v > best_score) {
+                    best_score = v;
+                    next_token = static_cast<uint32_t>(i);
+                }
+            }
+
+            ++symbols_added;
+            if (next_token == effective_blank) {
+                ++time_index;
+                advanced = true;
+                break;
+            }
+
+            if (stream && !is_final && stream_tok && !emitted.empty()) {
+                std::string piece = stream_tok->decode({next_token});
+                if (!piece.empty() && piece[0] == ' ') {
+                    snap_state = snapshot_state();
+                    snap_last_token = last_token;
+                    snap_time = time_index;
+                    confirmed_count = emitted.size();
+                }
+            }
+            emitted.push_back(next_token);
+            last_token = next_token;
+            for (const auto& copy : state_copies) {
+                std::memcpy(copy.in_data, copy.out_ptr, copy.bytes);
+            }
+        }
+
+        if (!advanced) ++time_index;
+    }
+
+    if (stream) {
+        stream->initialized = true;
+        stream->decoded_tokens = emitted.size();
+        stream->raw_decode_ms = raw_decode_ms;
+        stream->pending.clear();
+        if (is_final) {
+            stream->dec_state = snapshot_state();
+            stream->last_token = last_token;
+            stream->time_index = time_index;
+            stream->confirmed_sec = static_cast<float>(time_index) * frame_sec;
+        } else {
+            stream->dec_state = std::move(snap_state);
+            stream->last_token = snap_last_token;
+            stream->time_index = snap_time;
+            stream->confirmed_sec = static_cast<float>(snap_time) * frame_sec;
+            stream->pending.assign(emitted.begin() + confirmed_count, emitted.end());
+            emitted.resize(confirmed_count);
+        }
+    }
+
+    return emitted;
+}
+
 uint32_t Model::decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& /*image_paths*/,
                                      float temperature, float top_p, size_t top_k, const std::string& profile_file,
                                      float* out_entropy, float min_p, float repetition_penalty) {
@@ -3857,6 +4170,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (mt == "lfm2") model_type = ModelType::LFM2;
             else if (mt == "whisper") model_type = ModelType::WHISPER;
             else if (mt == "parakeet_tdt" || mt == "parakeet-tdt") model_type = ModelType::PARAKEET_TDT;
+            else if (mt == "nemotron_asr" || mt == "nemotron-asr") model_type = ModelType::NEMOTRON_ASR;
             else if (mt == "youtu") model_type = ModelType::YOUTU;
             else if (mt == "needle") model_type = ModelType::NEEDLE;
             else if (mt == "bert" || mt == "nomic") model_type = ModelType::NOMIC;
@@ -3932,6 +4246,12 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "tdt_joint_dim") tdt_joint_dim = static_cast<uint32_t>(std::stoul(value));
         else if (key == "tdt_num_durations") tdt_num_durations = static_cast<uint32_t>(std::stoul(value));
         else if (key == "tdt_blank_id") tdt_blank_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "rnnt_joint_dim") rnnt_joint_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "rnnt_blank_id") rnnt_blank_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "prompt_dim") prompt_dim = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "default_prompt_id") default_prompt_id = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "max_symbols_per_step") max_symbols_per_step = static_cast<uint32_t>(std::stoul(value));
+        else if (key == "prompt_dictionary") prompt_dictionary = parse_config_string_uint_map(value);
         else if (key == "tdt_durations") {
             tdt_durations.clear();
             std::stringstream ss(value);

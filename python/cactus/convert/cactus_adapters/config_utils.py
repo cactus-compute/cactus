@@ -18,6 +18,17 @@ def cfg_get(c, key, default=None):
         return default
 
 
+def prompt_dim_from_dictionary(prompt_dictionary, *candidates):
+    values = []
+    if isinstance(prompt_dictionary, dict):
+        for value in prompt_dictionary.values():
+            values.append(int(value))
+    dim = max((int(value or 0) for value in candidates), default=0)
+    if values:
+        dim = max(dim, max(values) + 1)
+    return max(1, dim)
+
+
 def detect_model_type(cfg, config, output_dir=None):
     """Detect the model architecture type from config."""
     model_type_str = str(cfg_get(cfg, 'model_type', cfg_get(config, 'model_type', '')) or '').lower().strip()
@@ -26,9 +37,20 @@ def detect_model_type(cfg, config, output_dir=None):
     loss_cfg = cfg_get(cfg, 'loss', cfg_get(config, 'loss', None))
     loss_name = str(cfg_get(loss_cfg, 'loss_name', '')).lower()
 
-    # NeMo Parakeet-TDT configs often do not expose HF-style model_type names.
     if decoding_model_type == 'tdt' or loss_name == 'tdt':
         return 'parakeet_tdt'
+
+    target = str(cfg_get(cfg, 'target', cfg_get(config, 'target', '')) or '').lower()
+    model_defaults = cfg_get(cfg, 'model_defaults', cfg_get(config, 'model_defaults', {}))
+    has_prompt = (
+        'withprompt' in target
+        or 'prompt' in target
+        or cfg_get(model_defaults, 'prompt_dictionary', None) is not None
+        or int(cfg_get(cfg, 'num_prompts', cfg_get(config, 'num_prompts', 0)) or 0) > 0
+    )
+
+    if has_prompt and ('rnnt' in target or cfg_get(cfg_get(cfg, 'joint', cfg_get(config, 'joint', {})), 'num_classes', None) is not None):
+        return 'nemotron_asr'
 
     if model_type_str in {'nomic_bert', 'nomic-bert'} or 'nomic' in model_type_str:
         return 'nomic'
@@ -57,6 +79,8 @@ def detect_model_type(cfg, config, output_dir=None):
         return 'bert'
     elif 'whisper' in model_type_str:
         return 'whisper'
+    elif 'nemotron_asr' in model_type_str or 'nemotron-asr' in model_type_str:
+        return 'nemotron_asr'
     elif 'parakeet_tdt' in model_type_str or 'parakeet-tdt' in model_type_str:
         return 'parakeet_tdt'
     elif 'parakeet' in model_type_str:
@@ -394,6 +418,82 @@ def extract_parakeet_tdt_config(config):
         'tdt_num_durations': len(tdt_durations),
         'tdt_durations': [int(v) for v in tdt_durations],
         'tdt_blank_id': tdt_blank_id,
+    }
+
+
+def extract_nemotron_asr_config(config):
+    """Extract Cactus runtime config for prompt-conditioned Nemotron RNNT ASR checkpoints."""
+    encoder_cfg = cfg_get(config, 'encoder', cfg_get(config, 'encoder_config', None))
+    if encoder_cfg is None:
+        raise ValueError("Nemotron ASR conversion requires encoder config")
+
+    preprocessor_cfg = cfg_get(config, 'preprocessor', {})
+    decoder_cfg = cfg_get(config, 'decoder', {})
+    prediction_cfg = cfg_get(decoder_cfg, 'prediction', cfg_get(decoder_cfg, 'prednet', {}))
+    joint_cfg = cfg_get(config, 'joint', {})
+    jointnet_cfg = cfg_get(joint_cfg, 'jointnet', {})
+    model_defaults_cfg = cfg_get(config, 'model_defaults', {})
+
+    hidden_dim = int(cfg_get(encoder_cfg, 'd_model', cfg_get(encoder_cfg, 'hidden_size', 0)))
+    attention_heads = int(cfg_get(encoder_cfg, 'n_heads', cfg_get(encoder_cfg, 'num_attention_heads', 0)))
+    ff_intermediate = int(cfg_get(encoder_cfg, 'ffn_hidden_size', cfg_get(encoder_cfg, 'intermediate_size', 0)))
+    if ff_intermediate == 0:
+        ff_intermediate = int(round(hidden_dim * float(cfg_get(encoder_cfg, 'ff_expansion_factor', 4.0))))
+
+    labels = cfg_get(config, 'labels', cfg_get(joint_cfg, 'vocabulary', []))
+    if not isinstance(labels, (list, tuple)):
+        labels = []
+    vocab_size = int(cfg_get(decoder_cfg, 'vocab_size', cfg_get(config, 'vocab_size', len(labels))))
+    blank_id = int(cfg_get(config, 'rnnt_blank_id', vocab_size))
+    prompt_dictionary = cfg_get(config, 'prompt_dictionary', cfg_get(model_defaults_cfg, 'prompt_dictionary', {}))
+    if not isinstance(prompt_dictionary, dict):
+        prompt_dictionary = {}
+    prompt_dim = prompt_dim_from_dictionary(
+        prompt_dictionary,
+        cfg_get(config, 'prompt_dim', 0),
+        cfg_get(config, 'num_prompts', 0),
+        cfg_get(model_defaults_cfg, 'num_prompts', 0),
+    )
+    default_prompt_id = int(cfg_get(config, 'default_prompt_id', prompt_dictionary.get('auto', 0)))
+    prompt_dictionary_text = ",".join(
+        f"{str(key)}:{int(value)}"
+        for key, value in sorted(prompt_dictionary.items(), key=lambda item: str(item[0]))
+    )
+    greedy_cfg = cfg_get(cfg_get(config, 'decoding', {}), 'greedy', {})
+    max_symbols = cfg_get(greedy_cfg, 'max_symbols', 10) if isinstance(greedy_cfg, dict) else 10
+
+    return {
+        'vocab_size': vocab_size + 1,
+        'hidden_dim': hidden_dim,
+        'num_layers': int(cfg_get(encoder_cfg, 'n_layers', cfg_get(encoder_cfg, 'num_hidden_layers', 0))),
+        'attention_heads': attention_heads,
+        'attention_kv_heads': int(cfg_get(encoder_cfg, 'n_kv_heads', attention_heads)),
+        'attention_head_dim': int(hidden_dim // max(1, attention_heads)),
+        'ffn_intermediate_dim': ff_intermediate,
+        'context_length': int(cfg_get(encoder_cfg, 'pos_emb_max_len', cfg_get(encoder_cfg, 'max_position_embeddings', 0))),
+        'layer_norm_eps': float(cfg_get(encoder_cfg, 'layer_norm_eps', cfg_get(encoder_cfg, 'norm_eps', 1e-5)) or 1e-5),
+        'rope_theta': float(cfg_get(encoder_cfg, 'rope_theta', 0.0) or 0.0),
+        'conv_kernel_size': int(cfg_get(encoder_cfg, 'conv_kernel_size', 9)),
+        'subsampling_conv_kernel_size': int(cfg_get(encoder_cfg, 'subsampling_conv_kernel_size', 3)),
+        'subsampling_conv_stride': int(cfg_get(encoder_cfg, 'subsampling_conv_stride', 2)),
+        'subsampling_conv_channels': int(cfg_get(encoder_cfg, 'subsampling_conv_channels', 256)),
+        'subsampling_factor': int(cfg_get(encoder_cfg, 'subsampling_factor', 8)),
+        'num_mel_bins': int(cfg_get(preprocessor_cfg, 'features', cfg_get(encoder_cfg, 'feat_in', cfg_get(encoder_cfg, 'num_mel_bins', 128)))),
+        'pad_token_id': int(cfg_get(config, 'pad_token_id', 0)),
+        'encoder_hidden_act': cfg_get(encoder_cfg, 'activation', cfg_get(encoder_cfg, 'hidden_act', 'silu')),
+        'predictor_hidden_dim': int(cfg_get(prediction_cfg, 'pred_hidden', cfg_get(config, 'decoder_hidden_size', 0))),
+        'predictor_num_layers': int(cfg_get(prediction_cfg, 'pred_rnn_layers', cfg_get(config, 'num_decoder_layers', 0))),
+        'rnnt_joint_dim': int(cfg_get(jointnet_cfg, 'joint_hidden', cfg_get(config, 'decoder_hidden_size', 0))),
+        'rnnt_blank_id': blank_id,
+        'prompt_dim': prompt_dim,
+        'default_prompt_id': default_prompt_id,
+        'prompt_dictionary': prompt_dictionary_text,
+        'max_symbols_per_step': int(max_symbols),
+        'sample_rate': int(cfg_get(preprocessor_cfg, 'sample_rate', cfg_get(config, 'sample_rate', 16000))),
+        'tokenizer_type': 'bpe',
+        'vocab_format': 'id_tab_token',
+        'normalizer': 'metaspace',
+        'decoder': 'replace_metaspace',
     }
 
 

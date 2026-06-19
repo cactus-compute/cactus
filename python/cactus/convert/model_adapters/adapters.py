@@ -18,6 +18,7 @@ from ..cactus_adapters.config_utils import (
     extract_complex_gemma_config,
     extract_parakeet_config,
     extract_parakeet_tdt_config,
+    extract_nemotron_asr_config,
     extract_vision_config,
     extract_whisper_config,
 )
@@ -432,6 +433,16 @@ class ParakeetTDTAdapter(ParakeetAdapter):
         return NormalizedState(augmented, provenance)
 
 
+class NemotronASRAdapter(ParakeetTDTAdapter):
+    family = "nemotron_asr"
+
+    def runtime_config(self, cfg: Any) -> dict[str, Any]:
+        return extract_nemotron_asr_config(cfg)
+
+    def runtime_model_type(self) -> str:
+        return "nemotron_asr"
+
+
 class Lfm2Adapter(FamilyAdapter):
     family = "lfm2"
 
@@ -514,6 +525,7 @@ ADAPTERS: dict[str, FamilyAdapter] = {
     "whisper": WhisperAdapter(),
     "parakeet": ParakeetAdapter(),
     "parakeet_tdt": ParakeetTDTAdapter(),
+    "nemotron_asr": NemotronASRAdapter(),
 }
 
 

@@ -118,6 +118,7 @@ Today the main task shapes are:
 - `ctc_logits`
 - `encoder_hidden_states`
 - `tdt_transcription`
+- `rnnt_transcription`
 
 ## 2. Prepare Example Inputs
 
@@ -137,7 +138,7 @@ if task == "causal_lm_logits":
     prepared = _prepare_text_inputs(...)
 elif task == "multimodal_causal_lm_logits":
     prepared = _prepare_gemma4_multimodal_inputs(...)
-elif task == "tdt_transcription":
+elif task in {"tdt_transcription", "rnnt_transcription"}:
     prepared = _prepare_audio_inputs(...)
 else:
     prepared = _prepare_audio_inputs(...)
@@ -928,12 +929,19 @@ cactus transpile <whisper-model-id> \
   --weights-dir /path/to/converted_weights
 ```
 
-### Parakeet TDT
+### Parakeet TDT and Nemotron ASR
 
 ```bash
 cactus transpile <parakeet-tdt-model-id> \
   --audio-file /path/to/sample.wav \
   --task tdt_transcription \
+  --weights-dir /path/to/converted_weights
+```
+
+```bash
+cactus transpile <nemotron-asr-model-id> \
+  --audio-file /path/to/sample.wav \
+  --task rnnt_transcription \
   --weights-dir /path/to/converted_weights
 ```
 
@@ -1000,7 +1008,7 @@ As of the current code:
 
 - Saved bundle execution is implemented for `causal_lm_logits`,
   `multimodal_causal_lm_logits`, `encoder_hidden_states`, and
-  `tdt_transcription`.
+  `tdt_transcription` / `rnnt_transcription`.
 - `ctc_logits` can be transpiled, but the runtime does not currently implement
   a saved-bundle executor for that task.
 - The component pipeline is model-family-specific; it is not a universal split-IR

@@ -31,7 +31,7 @@ from .export.reports import print_summary, write_reports
 from .export.validate import validate_qdq
 from .model_adapters.detection import SUPPORTED_FAMILIES, detect_family
 from .model_adapters.adapters import adapter_for_family
-from .model_adapters.nemo import ensure_parakeet_tdt_nemo_source
+from .model_adapters.nemo import ensure_nemo_asr_source
 from .quantization.cq import quantize_hadamard, quantize_orthogonal, write_cq_tensor
 from .compat import patch_transformers_import_compat
 
@@ -50,7 +50,7 @@ def _load_hf(model_id_or_path: str, device: str):
     warnings.filterwarnings("ignore", message=".*You are using a model of type.*")
     for note in patch_transformers_import_compat():
         print(f"note={note}")
-    nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path, cache_dir=_hf_cache_dir())
+    nemo_export = ensure_nemo_asr_source(model_id_or_path, cache_dir=_hf_cache_dir())
     if nemo_export is not None:
         model_id_or_path = nemo_export
     try:
@@ -74,7 +74,7 @@ def _load_hf(model_id_or_path: str, device: str):
     processor = adapter.load_processor(model_id_or_path)
     model_cls = adapter.model_class(cfg)
     model_type = str(cfg_get(cfg, "model_type", "") or "").lower()
-    if isinstance(cfg, dict) and model_type == "parakeet_tdt":
+    if isinstance(cfg, dict) and model_type in {"parakeet_tdt", "nemotron_asr"}:
         return cfg, processor, None
     try:
         model = model_cls.from_pretrained(
@@ -132,7 +132,7 @@ def _bits_for_component(component: str, args: argparse.Namespace) -> int:
 
 
 def _load_checkpoint_state_dict(model_id_or_path: str) -> dict[str, Any] | None:
-    nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path, cache_dir=_hf_cache_dir())
+    nemo_export = ensure_nemo_asr_source(model_id_or_path, cache_dir=_hf_cache_dir())
     if nemo_export is not None:
         model_id_or_path = nemo_export
     root = Path(model_id_or_path)
@@ -398,7 +398,7 @@ def convert(args: argparse.Namespace) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cfg, processor, model = _load_hf(args.model, args.device)
-    runtime_source = ensure_parakeet_tdt_nemo_source(args.model, cache_dir=_hf_cache_dir()) or args.model
+    runtime_source = ensure_nemo_asr_source(args.model, cache_dir=_hf_cache_dir()) or args.model
     family = detect_family(cfg, args.model_family)
     adapter = adapter_for_family(family)
     checkpoint_state = _load_checkpoint_state_dict(args.model)

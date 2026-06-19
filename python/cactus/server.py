@@ -30,7 +30,7 @@ from .cli.common import DEFAULT_MODEL_ID, PROJECT_ROOT, is_repo_checkout
 LOGGER = logging.getLogger(__name__)
 
 LLM_MODEL_TYPES = {"gemma", "gemma3n", "gemma4", "lfm2", "qwen", "qwen3p5", "needle", "youtu"}
-STT_MODEL_TYPES = {"whisper", "parakeet_tdt", "parakeet-tdt"}
+STT_MODEL_TYPES = {"whisper", "parakeet_tdt", "parakeet-tdt", "nemotron_asr", "nemotron-asr"}
 
 
 @dataclass(frozen=True)

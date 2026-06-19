@@ -6164,6 +6164,14 @@ def build_component_module_specs(
             named_tensors=named_tensors,
             weights_dir=weights_dir,
         )
+    if family == "nemotron_asr" and task == "rnnt_transcription":
+        from cactus.transpile.rnnt_runtime import build_nemotron_asr_component_specs
+
+        return build_nemotron_asr_component_specs(
+            model,
+            named_tensors=named_tensors,
+            weights_dir=weights_dir,
+        )
     if family == "whisper" and task == "seq2seq_transcription":
         return _build_whisper_seq2seq_component_specs(
             model,

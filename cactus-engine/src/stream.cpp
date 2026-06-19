@@ -40,13 +40,16 @@ struct StreamTranscribe {
     CactusModelHandle* model = nullptr;
     std::string options_json;
     bool is_parakeet = false;
+    bool is_nemotron = false;
 
     std::vector<float> samples;
+    std::vector<float> full_samples;
     size_t samples_decoded_up_to = 0;
     size_t silence_run = 0;
     bool cold_restart = false;
 
     cactus::engine::Model::ParakeetTdtStreamState pstate;
+    cactus::engine::Model::RnntStreamState rstate;
     std::vector<uint32_t> committed_tokens;
     std::string emitted_text;
     std::string previous_pending;
@@ -87,6 +90,16 @@ std::string strip_annotations(const std::string& text) {
     return trim(out);
 }
 
+std::string strip_trailing_language_tag(const std::string& text) {
+    return trim(std::regex_replace(text, std::regex(R"(\s*<[a-z]{2}(?:-[A-Z]{2})?>\s*$)"), ""));
+}
+
+std::string target_lang_option(const std::string& json) {
+    std::string target = json_string_field(json, "target_lang");
+    if (target.empty()) target = json_string_field(json, "language");
+    return target.empty() ? "auto" : target;
+}
+
 std::vector<TranscriptSegment> parse_segments(const std::string& json) {
     std::vector<TranscriptSegment> segs;
     for (const std::string& obj : split_json_array(json_array_field(json, "segments"))) {
@@ -119,14 +132,16 @@ std::vector<TranscriptSegment> whisper_transcribe(StreamTranscribe* s, const std
     return parse_segments(json);
 }
 
-std::vector<float> window_features(std::vector<float> window, size_t mel_bins) {
+std::vector<float> window_features(std::vector<float> window, size_t mel_bins, bool is_nemotron) {
     if (window.empty()) return {};
     auto cfg = cactus::audio::get_parakeet_spectrogram_config();
     const size_t waveform_samples = window.size();
     cactus::audio::apply_preemphasis(window, 0.97f);
+    const int mel_norm_type = is_nemotron ? 1 : 0;
+    const int mel_scale_type = is_nemotron ? 2 : 0;
     std::vector<float> features = cactus::audio::compute_spectrogram_graph(
-        window, cfg, mel_bins, 0.0f, 8000.0f, cactus::audio::WHISPER_SAMPLE_RATE, 0, 0);
-    cactus::audio::normalize_parakeet_log_mel(features, mel_bins);
+        window, cfg, mel_bins, 0.0f, 8000.0f, cactus::audio::WHISPER_SAMPLE_RATE, mel_norm_type, mel_scale_type);
+    if (!is_nemotron) cactus::audio::normalize_parakeet_log_mel(features, mel_bins);
     size_t valid_frames = waveform_samples / cfg.hop_length;
     if (valid_frames == 0) valid_frames = 1;
     cactus::audio::trim_mel_frames(features, mel_bins, valid_frames);
@@ -140,15 +155,22 @@ std::string parakeet_decode_window(StreamTranscribe* s, size_t window_start, siz
     auto* model = s->model->model.get();
     const size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(model->get_config().num_mel_bins));
     std::vector<float> features = window_features(
-        std::vector<float>(s->samples.begin() + window_start, s->samples.begin() + window_end), mel_bins);
+        std::vector<float>(s->samples.begin() + window_start, s->samples.begin() + window_end),
+        mel_bins,
+        s->is_nemotron);
     if (features.empty()) return "";
 
-    s->pstate.time_index = decode_start_frame;
+    if (s->is_nemotron) s->rstate.time_index = decode_start_frame;
+    else s->pstate.time_index = decode_start_frame;
     const auto t0 = std::chrono::steady_clock::now();
-    std::vector<uint32_t> tokens = model->transcribe_parakeet_tdt(
-        features, &s->pstate, is_final, is_final ? 0 : decode_end_frame);
+    std::vector<uint32_t> tokens = s->is_nemotron
+        ? model->transcribe_nemotron_asr(
+            features, target_lang_option(s->options_json), &s->rstate, is_final,
+            is_final ? 0 : decode_end_frame)
+        : model->transcribe_parakeet_tdt(
+            features, &s->pstate, is_final, is_final ? 0 : decode_end_frame);
     stats.total_time_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    stats.decode_tokens += s->pstate.decoded_tokens;
+    stats.decode_tokens += s->is_nemotron ? s->rstate.decoded_tokens : s->pstate.decoded_tokens;
 
     auto* tokenizer = model->get_tokenizer();
     if (!tokenizer) return "";
@@ -156,17 +178,23 @@ std::string parakeet_decode_window(StreamTranscribe* s, size_t window_start, siz
     s->committed_tokens.insert(s->committed_tokens.end(), tokens.begin(), tokens.end());
     std::string full = tokenizer->decode(s->committed_tokens);
     std::string delta = full.size() > s->emitted_text.size() ? full.substr(s->emitted_text.size()) : std::string();
+    if (s->is_nemotron) delta = strip_trailing_language_tag(delta);
     s->emitted_text = full;
 
-    if (pending_text && !s->pstate.pending.empty()) {
+    const std::vector<uint32_t>& pending_tokens = s->is_nemotron ? s->rstate.pending : s->pstate.pending;
+    if (pending_text && !pending_tokens.empty()) {
         std::vector<uint32_t> combined = s->committed_tokens;
-        combined.insert(combined.end(), s->pstate.pending.begin(), s->pstate.pending.end());
+        combined.insert(combined.end(), pending_tokens.begin(), pending_tokens.end());
         std::string with_pending = tokenizer->decode(combined);
-        if (with_pending.size() > full.size()) *pending_text = with_pending.substr(full.size());
+        if (with_pending.size() > full.size()) {
+            *pending_text = with_pending.substr(full.size());
+            if (s->is_nemotron) *pending_text = strip_trailing_language_tag(*pending_text);
+        }
     }
 
-    if (!is_final && !tokens.empty() && s->pstate.confirmed_sec > 0.0f) {
-        s->samples_decoded_up_to = window_start + static_cast<size_t>(s->pstate.confirmed_sec * kSampleRateF);
+    const float confirmed_sec = s->is_nemotron ? s->rstate.confirmed_sec : s->pstate.confirmed_sec;
+    if (!is_final && !tokens.empty() && confirmed_sec > 0.0f) {
+        s->samples_decoded_up_to = window_start + static_cast<size_t>(confirmed_sec * kSampleRateF);
     }
     return delta;
 }
@@ -197,7 +225,10 @@ std::string parakeet_process(StreamTranscribe* s, std::string& pending, StreamSt
         const size_t window_end = decode_to + kRightContextSamples;
         const size_t decode_start_frame = (s->samples_decoded_up_to - window_start) / spf;
         const size_t decode_end_frame = decode_start_frame + (decode_to - s->samples_decoded_up_to) / spf;
-        if (cold) s->pstate = {};
+        if (cold) {
+            if (s->is_nemotron) s->rstate = {};
+            else s->pstate = {};
+        }
 
         std::string pend;
         const size_t prev_cursor = s->samples_decoded_up_to;
@@ -205,9 +236,10 @@ std::string parakeet_process(StreamTranscribe* s, std::string& pending, StreamSt
         confirmed += parakeet_decode_window(s, window_start, window_end,
                                             decode_start_frame, decode_end_frame, false, &pend, stats);
         pending = pend;
-        if (s->pstate.decoded_tokens > 0) { s->cold_restart = false; s->silence_run = 0; }
+        const size_t decoded_tokens = s->is_nemotron ? s->rstate.decoded_tokens : s->pstate.decoded_tokens;
+        if (decoded_tokens > 0) { s->cold_restart = false; s->silence_run = 0; }
         if (s->samples_decoded_up_to > prev_cursor) continue;
-        if (s->pstate.decoded_tokens == 0) {
+        if (decoded_tokens == 0) {
             s->silence_run += decode_to - s->samples_decoded_up_to;
             s->samples_decoded_up_to = decode_to;
             if (s->silence_run >= kSilenceResetSamples) s->cold_restart = true;
@@ -236,16 +268,31 @@ std::string parakeet_process(StreamTranscribe* s, std::string& pending, StreamSt
 
 std::string parakeet_flush(StreamTranscribe* s, StreamStats& stats) {
     std::lock_guard<std::mutex> lock(s->model->model_mutex);
+    std::string previous_emitted;
+    if (s->is_nemotron) {
+        previous_emitted = s->emitted_text;
+        if (!s->full_samples.empty()) s->samples = s->full_samples;
+        s->samples_decoded_up_to = 0;
+        s->rstate = {};
+        s->committed_tokens.clear();
+        s->emitted_text.clear();
+    }
     const size_t total = s->samples.size();
     if (total <= s->samples_decoded_up_to) return "";
     const size_t spf = parakeet_spf(s);
     const bool cold = s->samples_decoded_up_to == 0 || s->cold_restart;
-    if (cold) s->pstate = {};
+    if (cold) {
+        if (s->is_nemotron) s->rstate = {};
+        else s->pstate = {};
+    }
     const size_t window_start = cold
         ? s->samples_decoded_up_to
         : (s->samples_decoded_up_to > kLeftContextSamples ? s->samples_decoded_up_to - kLeftContextSamples : 0);
     const size_t decode_start_frame = (s->samples_decoded_up_to - window_start) / spf;
     std::string confirmed = parakeet_decode_window(s, window_start, total, decode_start_frame, 0, true, nullptr, stats);
+    if (s->is_nemotron && !previous_emitted.empty() && confirmed.rfind(previous_emitted, 0) == 0) {
+        confirmed = trim(confirmed.substr(previous_emitted.size()));
+    }
     stats.finalize();
     return confirmed;
 }
@@ -334,14 +381,16 @@ cactus_stream_transcribe_t cactus_stream_transcribe_start(cactus_model_t model, 
         const auto type = handle->model->get_config().model_type;
         const bool is_whisper = type == cactus::engine::Config::ModelType::WHISPER;
         const bool is_parakeet = type == cactus::engine::Config::ModelType::PARAKEET_TDT;
-        if (!is_whisper && !is_parakeet) {
-            last_error_message = "stream_transcribe_start: only Whisper and Parakeet models support streaming";
+        const bool is_nemotron = type == cactus::engine::Config::ModelType::NEMOTRON_ASR;
+        if (!is_whisper && !is_parakeet && !is_nemotron) {
+            last_error_message = "stream_transcribe_start: only Whisper, Parakeet, and Nemotron ASR models support streaming";
             CACTUS_LOG_ERROR("stream_transcribe_start", last_error_message);
             return nullptr;
         }
         auto s = std::make_unique<StreamTranscribe>();
         s->model = handle;
         s->is_parakeet = is_parakeet;
+        s->is_nemotron = is_nemotron;
         if (options_json && options_json[0] != '\0') s->options_json = options_json;
         CACTUS_LOG_INFO("stream_transcribe_start", "streaming session opened");
         return static_cast<cactus_stream_transcribe_t>(s.release());
@@ -366,11 +415,13 @@ int cactus_stream_transcribe_process(cactus_stream_transcribe_t stream,
         if (pcm_buffer && pcm_buffer_size >= sizeof(int16_t)) {
             std::vector<float> news = cactus::audio::pcm_buffer_to_float_samples(pcm_buffer, pcm_buffer_size);
             s->samples.insert(s->samples.end(), news.begin(), news.end());
+            if (s->is_nemotron) s->full_samples.insert(s->full_samples.end(), news.begin(), news.end());
         }
         StreamStats stats;
         std::string pending;
-        std::string confirmed = s->is_parakeet ? parakeet_process(s, pending, stats)
-                                                : whisper_process(s, pending, stats);
+        std::string confirmed = (s->is_parakeet || s->is_nemotron)
+            ? parakeet_process(s, pending, stats)
+            : whisper_process(s, pending, stats);
         return write_result(response_buffer, buffer_size, confirmed, pending, stats);
     } catch (const std::exception& e) {
         last_error_message = std::string("stream_transcribe_process: ") + e.what();
@@ -392,7 +443,10 @@ int cactus_stream_transcribe_stop(cactus_stream_transcribe_t stream,
     int result = 0;
     try {
         StreamStats stats;
-        std::string confirmed = s->is_parakeet ? parakeet_flush(s, stats) : whisper_flush(s, stats);
+        std::string confirmed = (s->is_parakeet || s->is_nemotron)
+            ? parakeet_flush(s, stats)
+            : whisper_flush(s, stats);
+        if (s->is_nemotron) confirmed = strip_trailing_language_tag(confirmed);
         result = write_result(response_buffer, buffer_size, confirmed, "", stats);
     } catch (const std::exception& e) {
         last_error_message = std::string("stream_transcribe_stop: ") + e.what();
