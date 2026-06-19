@@ -88,7 +88,7 @@ def _collect(roots):
 
 def cmd_list(_args):
     models = _collect((weights_root(), transpiled_root()))
-    print_color(CYAN, "Local models (cactus convert / download)")
+    print_color(CYAN, "Available models")
     if not models:
         print("  (none)")
         return 0
