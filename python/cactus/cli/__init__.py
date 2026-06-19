@@ -151,7 +151,7 @@ def create_parser():
     --confidence-threshold <0..1>      handoff to cloud below this confidence
     --cloud-timeout-ms <n>             max wait for cloud handoff before local fallback
 
-  cactus list                          list local converted weights and bundles
+  cactus list                          list downloaded models
 
   cactus build                         build cactus libraries
     --apple                            Apple (iOS/macOS)
@@ -293,7 +293,7 @@ def create_parser():
     clean_parser = subparsers.add_parser("clean", help="Delete build artifacts, downloaded weights, and venv")
     clean_parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
 
-    subparsers.add_parser("list", help="List local converted weights and bundles")
+    subparsers.add_parser("list", help="List downloaded models")
 
     convert_parser = subparsers.add_parser("convert",
                                            help="Build a runnable bundle locally from source (no prebuilt fetch)",
