@@ -178,7 +178,7 @@ def generic_log_mel_features(
     frame_length: int,
     preemphasis: float | None = None,
     mel_floor: np.float32 = _PARAKEET_LOG_FLOOR,
-    normalize_active_frames_only: bool = True,
+    normalize_active_frames_only: bool | None = True,
 ) -> tuple[np.ndarray, int]:
     waveform_tensor = torch.from_numpy(waveform).to(torch.float32).unsqueeze(0)
     if preemphasis is not None and abs(preemphasis) > 0.0:
@@ -210,7 +210,9 @@ def generic_log_mel_features(
     mel_spec = power.transpose(1, 2) @ mel_filters
     mel_spec = torch.log(torch.clamp(mel_spec, min=float(mel_floor)))
 
-    if normalize_active_frames_only:
+    if normalize_active_frames_only is None:
+        pass
+    elif normalize_active_frames_only:
         attention_mask = (
             torch.arange(mel_spec.shape[1], dtype=torch.long, device=mel_spec.device).unsqueeze(0)
             < feature_length

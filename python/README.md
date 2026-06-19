@@ -219,7 +219,7 @@ for seg in result["segments"]:
 
 ### Streaming transcription
 
-Transcribe continuously while audio is still being captured (Whisper and Parakeet TDT). Open a session, push 16 kHz mono 16-bit PCM chunks, and read text back as it stabilizes: `confirmed` words are final (append them to your transcript), `pending` is the volatile tail (replace it each call, for live display only).
+Transcribe continuously while audio is still being captured (Whisper, Parakeet TDT, and Nemotron ASR). Open a session, push 16 kHz mono 16-bit PCM chunks, and read text back as it stabilizes: `confirmed` words are final (append them to your transcript), `pending` is the volatile tail (replace it each call, for live display only).
 
 ```python
 stream = cactus_stream_transcribe_start(model: int, options: dict | str | None) -> int
@@ -227,7 +227,7 @@ result = cactus_stream_transcribe_process(stream: int, pcm_data: bytes) -> dict 
 result = cactus_stream_transcribe_stop(stream: int) -> dict                      # {"confirmed": str, "pending": ""}; destroys the session
 ```
 
-`options` is forwarded to `cactus_transcribe` for **Whisper only** (e.g. `language`, `max_tokens`); the Parakeet TDT path ignores it. Chunking is handled internally.
+`options` is forwarded to `cactus_transcribe` for Whisper and Nemotron (e.g. `language`, `target_lang`, `max_tokens`); the Parakeet TDT path ignores it. Chunking is handled internally.
 
 ```python
 stream = cactus_stream_transcribe_start(model, {"language": "en"})

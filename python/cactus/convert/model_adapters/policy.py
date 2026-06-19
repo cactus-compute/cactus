@@ -27,21 +27,25 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "norm tensor")
     if family == "gemma4" and name == "model.embed_vision.embedding_projection.weight":
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "vision embedding projection scale-sensitive")
-    if family in {"parakeet", "parakeet_tdt"} and out.endswith(".bias") and (
+    if family in {"parakeet", "parakeet_tdt", "nemotron_asr"} and out.endswith(".bias") and (
         "conv_" in out or out.startswith("subsampling_") or out.startswith("ctc_head_")
     ):
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "conv bias tensor")
-    if family in {"parakeet", "parakeet_tdt"} and "lstm" in out.lower():
+    if family in {"parakeet", "parakeet_tdt", "nemotron_asr"} and "lstm" in out.lower():
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "lstm recurrent tensor")
     if family == "parakeet_tdt" and out.startswith("tdt_"):
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "tdt decoder tensor")
-    if family in {"parakeet", "parakeet_tdt"} and "self_attn_bias_" in out:
+    if family == "nemotron_asr" and out.startswith("rnnt_"):
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "rnnt decoder tensor")
+    if family == "nemotron_asr" and component == "transcription":
+        return TensorPolicy("fallback", "FP16", None, component, False, "none", "nemotron asr parity")
+    if family in {"parakeet", "parakeet_tdt", "nemotron_asr"} and "self_attn_bias_" in out:
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "relative attention bias tensor")
-    if family in {"parakeet", "parakeet_tdt"} and "conv_pointwise" in out and len(shape) == 3 and shape[2] == 1:
+    if family in {"parakeet", "parakeet_tdt", "nemotron_asr"} and "conv_pointwise" in out and len(shape) == 3 and shape[2] == 1:
         return TensorPolicy("fallback", "INT8", 8, component, False, "none", "pointwise conv tensor")
     if "conv_depthwise.weights" in out and len(shape) == 3 and shape[1] == 1:
         return TensorPolicy("fallback", "INT8", 8, component, False, "none", "depthwise conv tensor")
-    if family in {"parakeet", "parakeet_tdt"} and out.startswith("layer_") and (
+    if family in {"parakeet", "parakeet_tdt", "nemotron_asr"} and out.startswith("layer_") and (
         "conv_pointwise" in out or "conv_depthwise" in out
     ):
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "conformer conv tensor")

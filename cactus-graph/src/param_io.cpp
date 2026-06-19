@@ -142,6 +142,28 @@ enum class ParamField : uint32_t {
     CachedVScalesPtr,
     MaxCacheSeqLen,
     CacheSinkSize,
+    HopLength,
+    Power,
+    Center,
+    MelFloor,
+    Dither,
+    PreemphasisCoef,
+    RemoveDcOffset,
+    LogMelMode,
+    PadModeType,
+    NumMelFilters,
+    SamplingRate,
+    MinFrequency,
+    MaxFrequency,
+    MelNormType,
+    MelScaleType,
+    PatchSize,
+    RescaleFactor,
+    ImageMean,
+    ImageStd,
+    TargetWidth,
+    TargetHeight,
+    ImageChannels,
 };
 
 enum class FieldPersistence {
@@ -167,6 +189,7 @@ const Schema& op_schema(OpType op_type) {
         {OpType::SCALAR_DIVIDE, {{ParamField::Scalar, FieldPersistence::Persistent}}},
         {OpType::SCALAR_NOT_EQUAL, {{ParamField::Scalar, FieldPersistence::Persistent}}},
         {OpType::CLAMP, {{ParamField::Scalar, FieldPersistence::Persistent}, {ParamField::Scale, FieldPersistence::Persistent}}},
+        {OpType::LEAKY_RELU, {{ParamField::Scalar, FieldPersistence::Persistent}}},
         {OpType::SOFTMAX, {{ParamField::Axis, FieldPersistence::Persistent}}},
         {OpType::SUM, {{ParamField::Axis, FieldPersistence::Persistent}}},
         {OpType::MEAN, {{ParamField::Axis, FieldPersistence::Persistent}}},
@@ -177,6 +200,7 @@ const Schema& op_schema(OpType op_type) {
         {OpType::INDEX, {{ParamField::Axis, FieldPersistence::Persistent}, {ParamField::IndexValue, FieldPersistence::Persistent}}},
         {OpType::CONCAT, {{ParamField::Axis, FieldPersistence::Persistent}}},
         {OpType::CAT, {{ParamField::Axis, FieldPersistence::Persistent}}},
+        {OpType::GLU, {{ParamField::Axis, FieldPersistence::Persistent}}},
         {OpType::VIEW, {{ParamField::NewShape, FieldPersistence::Persistent}}},
         {OpType::RESHAPE, {{ParamField::NewShape, FieldPersistence::Persistent}}},
         {OpType::FLATTEN, {{ParamField::NewShape, FieldPersistence::Persistent}}},
@@ -230,15 +254,49 @@ const Schema& op_schema(OpType op_type) {
         {OpType::GATED_DELTANET_DECODE, {{ParamField::Scale, FieldPersistence::Persistent}, {ParamField::NumKvHeads, FieldPersistence::Persistent}}},
         {OpType::GATED_DELTANET_PREFILL, {{ParamField::Scale, FieldPersistence::Persistent}, {ParamField::NumKvHeads, FieldPersistence::Persistent}, {ParamField::ChunkSize, FieldPersistence::Persistent}}},
         {OpType::STFT, {{ParamField::Stride, FieldPersistence::Persistent}, {ParamField::NumFftBins, FieldPersistence::Persistent}}},
+        {OpType::MEL_FILTER_BANK, {
+            {ParamField::NumMelFilters, FieldPersistence::Persistent},
+            {ParamField::MinFrequency, FieldPersistence::Persistent},
+            {ParamField::MaxFrequency, FieldPersistence::Persistent},
+            {ParamField::SamplingRate, FieldPersistence::Persistent},
+            {ParamField::MelNormType, FieldPersistence::Persistent},
+            {ParamField::MelScaleType, FieldPersistence::Persistent},
+        }},
+        {OpType::SPECTROGRAM, {
+            {ParamField::NumFftBins, FieldPersistence::Persistent},
+            {ParamField::HopLength, FieldPersistence::Persistent},
+            {ParamField::Stride, FieldPersistence::Persistent},
+            {ParamField::Power, FieldPersistence::Persistent},
+            {ParamField::Center, FieldPersistence::Persistent},
+            {ParamField::PadModeType, FieldPersistence::Persistent},
+            {ParamField::MelFloor, FieldPersistence::Persistent},
+            {ParamField::LogMelMode, FieldPersistence::Persistent},
+            {ParamField::Dither, FieldPersistence::Persistent},
+            {ParamField::PreemphasisCoef, FieldPersistence::Persistent},
+            {ParamField::RemoveDcOffset, FieldPersistence::Persistent},
+        }},
+        {OpType::IMAGE_PREPROCESS, {
+            {ParamField::DstWidth, FieldPersistence::Persistent},
+            {ParamField::DstHeight, FieldPersistence::Persistent},
+            {ParamField::TargetWidth, FieldPersistence::Persistent},
+            {ParamField::TargetHeight, FieldPersistence::Persistent},
+            {ParamField::PatchSize, FieldPersistence::Persistent},
+            {ParamField::ImageChannels, FieldPersistence::Persistent},
+            {ParamField::RescaleFactor, FieldPersistence::Persistent},
+            {ParamField::ImageMean, FieldPersistence::Persistent},
+            {ParamField::ImageStd, FieldPersistence::Persistent},
+        }},
         {OpType::BILINEAR_INTERPOLATION, {{ParamField::DstHeight, FieldPersistence::Persistent}, {ParamField::DstWidth, FieldPersistence::Persistent}, {ParamField::AlignCorners, FieldPersistence::Persistent}}},
         {OpType::SCATTER_TOPK, {{ParamField::NumClasses, FieldPersistence::Persistent}}},
         {OpType::ALTUP_PREDICT, {{ParamField::NumAltupInputs, FieldPersistence::Persistent}}},
         {OpType::ALTUP_CORRECT, {{ParamField::NumAltupInputs, FieldPersistence::Persistent}}},
+        {OpType::GAUSSIAN_TOPK, {{ParamField::Scalar, FieldPersistence::Persistent}}},
         {OpType::MAXPOOL1D, {{ParamField::KernelSize, FieldPersistence::Persistent}, {ParamField::Stride, FieldPersistence::Persistent}}},
         {OpType::CONV1D_CAUSAL, {{ParamField::Dilation, FieldPersistence::Persistent}}},
         {OpType::CONV1D_K3, {{ParamField::Stride, FieldPersistence::Persistent}}},
         {OpType::CONV1D_K7S3, {{ParamField::Stride, FieldPersistence::Persistent}}},
         {OpType::CONV1D, {{ParamField::Stride, FieldPersistence::Persistent}}},
+        {OpType::DENSE_MLP_TQ_FUSED, {{ParamField::Scalar, FieldPersistence::Persistent}}},
         {OpType::SAMPLE, {{ParamField::Temperature, FieldPersistence::Persistent}, {ParamField::TopP, FieldPersistence::Persistent}, {ParamField::MinP, FieldPersistence::Persistent}, {ParamField::RepetitionPenalty, FieldPersistence::Persistent}, {ParamField::TopK, FieldPersistence::Persistent}, {ParamField::RandomSeed, FieldPersistence::Persistent}, {ParamField::BiasIndices, FieldPersistence::Persistent}, {ParamField::BiasValues, FieldPersistence::Persistent}}},
     };
 
@@ -300,6 +358,32 @@ void write_field(std::ostream& out, ParamField field, const OpParams& params) {
             throw std::runtime_error("Attempted to serialize runtime-only pointer field");
         case ParamField::MaxCacheSeqLen: write_u64(out, static_cast<uint64_t>(params.max_cache_seq_len)); break;
         case ParamField::CacheSinkSize: write_u64(out, static_cast<uint64_t>(params.cache_sink_size)); break;
+        case ParamField::HopLength: write_u64(out, static_cast<uint64_t>(params.hop_length)); break;
+        case ParamField::Power: write_f32(out, params.power); break;
+        case ParamField::Center: write_u32(out, params.center ? 1u : 0u); break;
+        case ParamField::MelFloor: write_f32(out, params.mel_floor); break;
+        case ParamField::Dither: write_f32(out, params.dither); break;
+        case ParamField::PreemphasisCoef: write_f32(out, params.preemphasis_coef); break;
+        case ParamField::RemoveDcOffset: write_u32(out, params.remove_dc_offset ? 1u : 0u); break;
+        case ParamField::LogMelMode: write_i32(out, static_cast<int32_t>(params.log_mel_mode)); break;
+        case ParamField::PadModeType: write_i32(out, static_cast<int32_t>(params.pad_mode_type)); break;
+        case ParamField::NumMelFilters: write_u64(out, static_cast<uint64_t>(params.num_mel_filters)); break;
+        case ParamField::SamplingRate: write_u64(out, static_cast<uint64_t>(params.sampling_rate)); break;
+        case ParamField::MinFrequency: write_f32(out, params.min_frequency); break;
+        case ParamField::MaxFrequency: write_f32(out, params.max_frequency); break;
+        case ParamField::MelNormType: write_i32(out, static_cast<int32_t>(params.mel_norm_type)); break;
+        case ParamField::MelScaleType: write_i32(out, static_cast<int32_t>(params.mel_scale_type)); break;
+        case ParamField::PatchSize: write_i32(out, static_cast<int32_t>(params.patch_size)); break;
+        case ParamField::RescaleFactor: write_f32(out, params.rescale_factor); break;
+        case ParamField::ImageMean:
+            for (float value : params.image_mean) write_f32(out, value);
+            break;
+        case ParamField::ImageStd:
+            for (float value : params.image_std) write_f32(out, value);
+            break;
+        case ParamField::TargetWidth: write_i32(out, static_cast<int32_t>(params.target_width)); break;
+        case ParamField::TargetHeight: write_i32(out, static_cast<int32_t>(params.target_height)); break;
+        case ParamField::ImageChannels: write_i32(out, static_cast<int32_t>(params.image_channels)); break;
     }
 }
 
@@ -364,6 +448,32 @@ void read_field(std::istream& in, ParamField field, OpParams& params) {
             throw std::runtime_error("Graph file corrupted: runtime-only field serialized");
         case ParamField::MaxCacheSeqLen: params.max_cache_seq_len = static_cast<size_t>(read_u64(in)); break;
         case ParamField::CacheSinkSize: params.cache_sink_size = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::HopLength: params.hop_length = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::Power: params.power = read_f32(in); break;
+        case ParamField::Center: params.center = (read_u32(in) != 0); break;
+        case ParamField::MelFloor: params.mel_floor = read_f32(in); break;
+        case ParamField::Dither: params.dither = read_f32(in); break;
+        case ParamField::PreemphasisCoef: params.preemphasis_coef = read_f32(in); break;
+        case ParamField::RemoveDcOffset: params.remove_dc_offset = (read_u32(in) != 0); break;
+        case ParamField::LogMelMode: params.log_mel_mode = static_cast<int>(read_i32(in)); break;
+        case ParamField::PadModeType: params.pad_mode_type = static_cast<int>(read_i32(in)); break;
+        case ParamField::NumMelFilters: params.num_mel_filters = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::SamplingRate: params.sampling_rate = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::MinFrequency: params.min_frequency = read_f32(in); break;
+        case ParamField::MaxFrequency: params.max_frequency = read_f32(in); break;
+        case ParamField::MelNormType: params.mel_norm_type = static_cast<int>(read_i32(in)); break;
+        case ParamField::MelScaleType: params.mel_scale_type = static_cast<int>(read_i32(in)); break;
+        case ParamField::PatchSize: params.patch_size = static_cast<int>(read_i32(in)); break;
+        case ParamField::RescaleFactor: params.rescale_factor = read_f32(in); break;
+        case ParamField::ImageMean:
+            for (float& value : params.image_mean) value = read_f32(in);
+            break;
+        case ParamField::ImageStd:
+            for (float& value : params.image_std) value = read_f32(in);
+            break;
+        case ParamField::TargetWidth: params.target_width = static_cast<int>(read_i32(in)); break;
+        case ParamField::TargetHeight: params.target_height = static_cast<int>(read_i32(in)); break;
+        case ParamField::ImageChannels: params.image_channels = static_cast<int>(read_i32(in)); break;
     }
 }
 

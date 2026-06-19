@@ -153,6 +153,27 @@ PARAKEET_TDT_PROFILE = ModelProfile(
 )
 
 
+NEMOTRON_ASR_PROFILE = ModelProfile(
+    family="nemotron_asr",
+    model_types=("nemotron_asr",),
+    model_id_aliases=(
+        ("nemotron-asr", "nvidia/nemotron-3.5-asr-streaming-0.6b"),
+        ("nemotron-3.5-asr", "nvidia/nemotron-3.5-asr-streaming-0.6b"),
+    ),
+    model_id_markers=("nemotron-3.5-asr", "nemotron-asr"),
+    avoid_native_loader=True,
+    default_task="rnnt_transcription",
+    default_components=("audio_encoder", "decoder"),
+    needs_audio=True,
+    force_component_pipeline=True,
+    aliases=PARAKEET_TDT_PROFILE.aliases + (
+        ("joint.joint_net.2.weight", "joint.joint_net.0.weight"),
+        ("joint.joint_net.2.bias", "joint.joint_net.0.bias"),
+    ),
+    regex_aliases=PARAKEET_TDT_PROFILE.regex_aliases,
+)
+
+
 WHISPER_PROFILE = ModelProfile(
     family="whisper",
     model_types=("whisper",),
@@ -227,6 +248,7 @@ PROFILES: tuple[ModelProfile, ...] = (
     GEMMA4_PROFILE,
     LFM2_PROFILE,
     PARAKEET_TDT_PROFILE,
+    NEMOTRON_ASR_PROFILE,
     WHISPER_PROFILE,
     QWEN_PROFILE,
     NEEDLE_PROFILE,

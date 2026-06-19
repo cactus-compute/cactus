@@ -122,6 +122,16 @@ def _is_tdt_config(config: Mapping[str, object], model_type: str, lowered_id: st
     return model_type == "parakeet_tdt" or "parakeet-tdt" in lowered_id
 
 
+def _is_rnnt_asr_config(config: Mapping[str, object], model_type: str, lowered_id: str) -> bool:
+    if model_type == "nemotron_asr" or "nemotron-3.5-asr" in lowered_id or "nemotron-asr" in lowered_id:
+        return True
+    target = str(config.get("target", "") or "").lower()
+    model_defaults = config.get("model_defaults")
+    if isinstance(model_defaults, Mapping) and model_defaults.get("prompt_dictionary"):
+        return True
+    return "rnnt" in target and "prompt" in target
+
+
 def _looks_like_vision_language_model(
     *,
     model_type: str,
@@ -166,6 +176,14 @@ def infer_component_plan_from_config(
     if _is_tdt_config(config, model_type, lowered_id):
         return ComponentPlan(
             task="tdt_transcription",
+            components=("audio_encoder", "decoder"),
+            needs_audio=True,
+            force_component_pipeline=True,
+        )
+
+    if _is_rnnt_asr_config(config, model_type, lowered_id):
+        return ComponentPlan(
+            task="rnnt_transcription",
             components=("audio_encoder", "decoder"),
             needs_audio=True,
             force_component_pipeline=True,

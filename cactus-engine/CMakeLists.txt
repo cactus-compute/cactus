@@ -122,8 +122,14 @@ set(_CACTUS_ENGINE_ARCHIVES
 set(_CACTUS_ENGINE_DEPS cactus_engine cactus_graph cactus_kernels)
 
 if(APPLE)
+    find_program(CACTUS_APPLE_LIBTOOL
+        NAMES libtool
+        PATHS /usr/bin
+        NO_DEFAULT_PATH
+        REQUIRED
+    )
     add_custom_target(cactus_engine_bundle ALL
-        COMMAND libtool -static -o ${_CACTUS_ENGINE_BUNDLE} ${_CACTUS_ENGINE_ARCHIVES}
+        COMMAND ${CACTUS_APPLE_LIBTOOL} -static -o ${_CACTUS_ENGINE_BUNDLE} ${_CACTUS_ENGINE_ARCHIVES}
         DEPENDS ${_CACTUS_ENGINE_DEPS}
         BYPRODUCTS ${_CACTUS_ENGINE_BUNDLE}
     )

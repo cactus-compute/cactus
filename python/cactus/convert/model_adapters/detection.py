@@ -3,7 +3,7 @@ from __future__ import annotations
 from ..cactus_adapters.config_utils import cfg_get, detect_model_type
 
 
-SUPPORTED_FAMILIES = {"auto", "gemma3", "gemma4", "qwen", "lfm2", "whisper", "parakeet", "parakeet_tdt", "moonshine", "nomic", "needle", "generic"}
+SUPPORTED_FAMILIES = {"auto", "gemma3", "gemma4", "qwen", "lfm2", "whisper", "parakeet", "parakeet_tdt", "nemotron_asr", "moonshine", "nomic", "needle", "generic"}
 
 
 def detect_family(config, requested: str = "auto") -> str:
@@ -17,6 +17,6 @@ def detect_family(config, requested: str = "auto") -> str:
         if "gemma3" in raw:
             return "gemma3"
         return "generic"
-    if detected in {"gemma4", "qwen", "lfm2", "whisper", "moonshine", "parakeet", "parakeet_tdt", "nomic", "needle"}:
+    if detected in {"gemma4", "qwen", "lfm2", "whisper", "moonshine", "parakeet", "parakeet_tdt", "nemotron_asr", "nomic", "needle"}:
         return detected
     return "generic"

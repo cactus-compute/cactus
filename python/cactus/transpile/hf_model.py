@@ -26,7 +26,7 @@ if str(PYTHON_ROOT) not in sys.path:
 
 from cactus.transpile.runtime_compat import Graph
 from cactus.convert.cactus_adapters.tensor_io import save_tensor_with_header
-from cactus.convert.model_adapters.nemo import ensure_parakeet_tdt_nemo_source
+from cactus.convert.model_adapters.nemo import ensure_nemo_asr_source
 from cactus.transpile.audio_preprocess import generic_log_mel_features as _generic_log_mel_features
 from cactus.transpile.audio_preprocess import load_audio_waveform as _load_audio_waveform
 from cactus.transpile.audio_preprocess import prepare_cactus_audio_features
@@ -59,6 +59,9 @@ from cactus.transpile.runtime_support import patch_transformers_torchvision_prob
 from cactus.transpile.tdt_runtime import greedy_decode_parakeet_tdt_token_ids
 from cactus.transpile.tdt_runtime import load_tdt_local_model
 from cactus.transpile.tdt_runtime import prepare_parakeet_tdt_audio_features
+from cactus.transpile.rnnt_runtime import greedy_decode_nemotron_asr_token_ids
+from cactus.transpile.rnnt_runtime import load_nemotron_asr_local_model
+from cactus.transpile.rnnt_runtime import prepare_nemotron_asr_audio_features
 from cactus.transpile.weight_compat import ensure_binding_compatible
 
 _DEFAULT_CAUSAL_PROMPT = "The capital of France is"
@@ -79,7 +82,7 @@ def _ensure_transformers_supports_model_type(model_type: str) -> str | None:
 def _resolve_local_snapshot(model_id_or_path: str) -> str | None:
     explicit = Path(model_id_or_path)
     if explicit.exists():
-        nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path)
+        nemo_export = ensure_nemo_asr_source(model_id_or_path)
         if nemo_export is not None:
             return nemo_export
         return str(explicit)
@@ -98,7 +101,7 @@ def _resolve_local_snapshot(model_id_or_path: str) -> str | None:
     if not snapshots:
         return None
     snapshot = str(snapshots[-1])
-    nemo_export = ensure_parakeet_tdt_nemo_source(snapshot)
+    nemo_export = ensure_nemo_asr_source(snapshot)
     if nemo_export is not None:
         return nemo_export
     return snapshot
@@ -508,6 +511,8 @@ def _write_component_bundle(
             manifest_payload[manifest_key] = mlpackage_path
     if family == "parakeet_tdt" and "npu_audio_encoder" in manifest_payload:
         manifest_payload["npu_audio_compute_units"] = "CPU_AND_NE"
+    elif family == "nemotron_asr" and "npu_audio_encoder" in manifest_payload:
+        manifest_payload["npu_audio_compute_units"] = "CPU_AND_GPU"
     _write_json(manifest_path, manifest_payload)
     return manifest_path
 
@@ -595,6 +600,71 @@ def _run_parakeet_tdt_component_decode(
         return logits, next_states
 
     emitted = greedy_decode_parakeet_tdt_token_ids(
+        config=model.config,
+        encoder_hidden_states=encoder_hidden_states,
+        initial_states=initial_state_arrays,
+        step=_step,
+    )
+
+    return {
+        "token_ids": emitted,
+        "transcript": model.decode_token_ids(emitted),
+        "encoder_hidden_shape": list(encoder_hidden_states.shape),
+    }
+
+
+def _run_nemotron_asr_component_decode(
+    *,
+    component_graphs,
+    model,
+    prepared: PreparedInputs,
+) -> dict[str, object]:
+    store, _ = execute_component_pipeline(
+        [component_graphs["audio_encoder"]],
+        initial_store=_named_tensor_store(prepared),
+    )
+    encoder_hidden_states = np.asarray(store["encoder_hidden_states"])
+    batch_size = int(encoder_hidden_states.shape[0])
+    if batch_size != 1:
+        raise ValueError("Nemotron ASR component decode currently expects batch size 1")
+
+    hidden_dtype = prepared.tensors[0].dtype
+    initial_states = model.initial_decoder_state(
+        batch_size=batch_size,
+        device=torch.device("cpu"),
+        dtype=hidden_dtype,
+    )
+    initial_state_arrays = tuple(state.detach().cpu().numpy() for state in initial_states)
+    language_prompt = model.language_prompt(
+        "auto",
+        batch_size=batch_size,
+        device=torch.device("cpu"),
+        dtype=hidden_dtype,
+    ).detach().cpu().numpy()
+    decoder_component = component_graphs["decoder"]
+
+    def _step(
+        frame: np.ndarray,
+        token_id: int,
+        state_values: tuple[np.ndarray, ...],
+    ) -> tuple[np.ndarray, tuple[np.ndarray, ...]]:
+        input_store: dict[str, object] = {
+            "encoder_frame": np.ascontiguousarray(frame),
+            "language_prompt": np.ascontiguousarray(language_prompt),
+            "token_ids": np.full((batch_size,), token_id, dtype=np.int64),
+        }
+        for index in range(model.config.predictor_num_layers):
+            input_store[f"state_h_{index}"] = np.ascontiguousarray(state_values[index * 2])
+            input_store[f"state_c_{index}"] = np.ascontiguousarray(state_values[index * 2 + 1])
+
+        runtime_inputs = [input_store[key] for key in decoder_component.input_keys]
+        decoder_component.transpiled_graph.set_inputs(runtime_inputs)
+        outputs = decoder_component.transpiled_graph.execute()
+        logits = outputs[0].numpy().astype(np.float32, copy=False)
+        next_states = tuple(output.numpy() for output in outputs[1:])
+        return logits, next_states
+
+    emitted = greedy_decode_nemotron_asr_token_ids(
         config=model.config,
         encoder_hidden_states=encoder_hidden_states,
         initial_states=initial_state_arrays,
@@ -994,6 +1064,50 @@ def _run_component_pipeline_transpile(
             print(f"saved_result={artifact_dir / 'result.json'}")
         return 0
 
+    if task == "rnnt_transcription":
+        print("execute_begin=true")
+        transpiled_decode = _run_nemotron_asr_component_decode(
+            component_graphs=captured_components,
+            model=model,
+            prepared=prepared,
+        )
+        print("execute_done=true")
+        print(f"transpiled_transcript={transpiled_decode['transcript']!r}")
+        result_payload = {
+            "model_id": args.model_id,
+            "model_source": model_source,
+            "task": task,
+            "family": family,
+            "inputs": _serialize_json_compatible(prepared.metadata),
+            "raw_ir_nodes": raw_ir_nodes,
+            "optimized_ir_nodes": optimized_ir_nodes,
+            "weight_bindings": binding_count,
+            "transpiled_token_ids": transpiled_decode["token_ids"],
+            "transpiled_transcript": transpiled_decode["transcript"],
+            "encoder_hidden_shape": transpiled_decode["encoder_hidden_shape"],
+        }
+        if args.skip_reference_compare:
+            result_payload["reference_compare_skipped"] = True
+            if artifact_dir is not None:
+                _write_json(artifact_dir / "result.json", result_payload)
+                print(f"saved_result={artifact_dir / 'result.json'}")
+            return 0
+
+        print("reference_begin=true")
+        reference_token_ids = model.greedy_decode_token_ids(prepared.tensors[0], language="auto")
+        reference_transcript = model.decode_token_ids(reference_token_ids)
+        print("reference_done=true")
+        print(f"reference_transcript={reference_transcript!r}")
+        print(f"transcript_match={reference_transcript == transpiled_decode['transcript']}")
+        result_payload["reference_token_ids"] = reference_token_ids
+        result_payload["reference_transcript"] = reference_transcript
+        result_payload["transcript_match"] = bool(reference_transcript == transpiled_decode["transcript"])
+        result_payload["token_id_match"] = bool(reference_token_ids == transpiled_decode["token_ids"])
+        if artifact_dir is not None:
+            _write_json(artifact_dir / "result.json", result_payload)
+            print(f"saved_result={artifact_dir / 'result.json'}")
+        return 0
+
     raise NotImplementedError(f"component pipeline execution is not implemented for task={task}")
 
 
@@ -1270,6 +1384,8 @@ def _infer_task_from_config(model_id_or_path: str) -> str:
     loss_cfg = config.get("loss")
     if isinstance(loss_cfg, dict) and str(loss_cfg.get("loss_name", "") or "").lower() == "tdt":
         return "tdt_transcription"
+    if model_type in {"nemotron_asr", "nemotron-asr"}:
+        return "rnnt_transcription"
 
     if "nomic" in model_type or any("NomicBert" in value for value in architectures):
         return "text_embedding"
@@ -1287,6 +1403,8 @@ def _infer_task_from_config(model_id_or_path: str) -> str:
         return "text_embedding"
     if "parakeet-tdt" in lowered_id:
         return "tdt_transcription"
+    if "nemotron-3.5-asr" in lowered_id or "nemotron-asr" in lowered_id:
+        return "rnnt_transcription"
     if "whisper" in lowered_id:
         return "seq2seq_transcription"
     if "ctc" in lowered_id:
@@ -1300,6 +1418,7 @@ def _infer_task_from_config(model_id_or_path: str) -> str:
         "Pass one explicitly with --task, for example:\n"
         "  --task causal_lm_logits\n"
         "  --task tdt_transcription\n"
+        "  --task rnnt_transcription\n"
         "  --task ctc_logits\n"
         "  --task encoder_hidden_states\n"
         "  --task seq2seq_transcription\n"
@@ -1327,6 +1446,8 @@ def _infer_fallback_audio_input_names(config: dict[str, object], task: str) -> t
     if task == "encoder_hidden_states":
         return ("input_features",)
     if task == "tdt_transcription":
+        return ("input_features",)
+    if task == "rnnt_transcription":
         return ("input_features",)
     audio_cfg = config.get("audio_config")
     if isinstance(audio_cfg, dict) and any(key in audio_cfg for key in ("features", "input_feat_size", "num_mel_bins")):
@@ -1449,12 +1570,20 @@ def _prepare_fallback_audio_inputs(
         model_type = str(config.get("model_type", "") or "").lower()
         is_parakeet_like = (
             task == "tdt_transcription"
+            or task == "rnnt_transcription"
             or "parakeet" in model_type
+            or "nemotron" in model_type
             or "parakeet" in type(model).__module__.lower()
+            or "nemotron" in type(model).__module__.lower()
         )
         if is_parakeet_like:
             expected_frames = _infer_expected_input_feature_frames(model)
-            parakeet_features, _ = prepare_parakeet_tdt_audio_features(
+            prepare_native_features = (
+                prepare_nemotron_asr_audio_features
+                if task == "rnnt_transcription" or "nemotron" in model_type
+                else prepare_parakeet_tdt_audio_features
+            )
+            parakeet_features, _ = prepare_native_features(
                 audio_file,
                 expected_frames=expected_frames,
                 expected_mels=num_mels,
@@ -2691,6 +2820,10 @@ def _load_transformers_bundle(
         model = load_tdt_local_model(model_source, torch_dtype=torch_dtype).eval()
         return model_source, None, model, config
 
+    if task == "rnnt_transcription":
+        model = load_nemotron_asr_local_model(model_source, torch_dtype=torch_dtype).eval()
+        return model_source, None, model, config
+
     if task == "text_embedding":
         # nomic-bert weights are produced from the model's remote modeling code
         # (fused Wqkv / experts.mlp.w1,w2); the transformers-native nomic_bert has a
@@ -3029,6 +3162,7 @@ def main() -> int:
             "encoder_hidden_states",
             "seq2seq_transcription",
             "tdt_transcription",
+            "rnnt_transcription",
             "text_embedding",
         ),
         help="Transpile task. Use auto to infer from config/model id.",
@@ -3305,7 +3439,7 @@ def main() -> int:
         prime_static_features = getattr(canonical.module, "prime_static_multimodal_features", None)
         if callable(prime_static_features):
             prime_static_features(*prepared.tensors)
-    elif task == "tdt_transcription":
+    elif task in {"tdt_transcription", "rnnt_transcription"}:
         if not args.audio_file:
             raise RuntimeError(f"--audio-file is required for task={task}")
         prepared = _prepare_audio_inputs(

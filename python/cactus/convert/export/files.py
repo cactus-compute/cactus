@@ -12,6 +12,7 @@ TOKENIZER_FILES = [
     "tokenizer.json",
     "tokenizer.model",
     "vocab.txt",
+    "tokenizer_config.txt",
     "tokenizer_config.json",
     "special_tokens_map.json",
     "added_tokens.json",

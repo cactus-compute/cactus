@@ -569,7 +569,7 @@ void compute_rel_pos_bias_node(GraphNode& node, const std::vector<std::unique_pt
                 __fp16* y_row = y + b * y_batch_stride + h * (T * T) + t * T;
 
                 for (size_t j = 0; j < T; ++j) {
-                    const size_t rel_idx = (T - 1) - t + j;
+                    const size_t rel_idx = t + (T - 1) - j;
                     const __fp16* r_vec = r_base + rel_idx * r_time_stride;
 
                     float acc = 0.0f;
@@ -928,6 +928,5 @@ void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
         }
     }
 }
-
 
 

@@ -523,11 +523,11 @@ int cactus_benchmark_tokens(
 Returns the number of bytes written to `response_buffer` on success, `-1` on error.
 
 ### `cactus_transcribe`
-Transcribes audio to text using Whisper or Parakeet TDT models. Supports both file-based and buffer-based audio input.
+Transcribes audio to text using Whisper, Parakeet TDT, or Nemotron ASR models. Supports both file-based and buffer-based audio input.
 
 ```c
 int cactus_transcribe(
-    cactus_model_t model,           // Model handle (Whisper or Parakeet TDT model)
+    cactus_model_t model,           // Model handle (Whisper, Parakeet TDT, or Nemotron ASR model)
     const char* audio_file_path,    // Path to WAV file (16-bit PCM) - can be NULL if using pcm_buffer
     const char* prompt,             // Optional prompt to guide transcription (can be NULL)
     char* response_buffer,          // Buffer for response JSON
@@ -556,8 +556,8 @@ int cactus_transcribe(
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `max_tokens` | int | auto | Maximum tokens to generate. When unset, it defaults to the larger of 100 and an audio-length estimate (`audio_sec × 20` for Whisper, `audio_sec × 30` for Parakeet). For Whisper the result is then capped so the prompt tokens plus generated tokens fit the decoder's 448-position limit. |
-| `language` | string | model default | Whisper only. Two-letter language code (e.g. `en`, `es`, `de`) substituted into the decoder prompt's language token. Ignored by Parakeet and when an explicit `prompt` is supplied. |
-| `timestamps` | bool | false | Whisper only. Decodes timestamp tokens and populates `segments` with `{start, end, text}` entries (seconds). Empty otherwise, including all Parakeet transcription. |
+| `language` / `target_lang` | string | model default | Whisper: two-letter language code substituted into the decoder prompt's language token. Nemotron: prompt language (`auto` by default). Ignored by Parakeet and by Whisper when an explicit `prompt` is supplied. |
+| `timestamps` | bool | false | Whisper only. Decodes timestamp tokens and populates `segments` with `{start, end, text}` entries (seconds). Empty otherwise, including Parakeet and Nemotron transcription. |
 
 **Response Format:**
 ```json
@@ -582,7 +582,7 @@ int cactus_transcribe(
 ```
 
 - `response`: Full transcription text
-- `segments`: `{start, end, text}` entries (seconds), populated only for Whisper when the `timestamps` option is set; empty otherwise, including all Parakeet transcription
+- `segments`: `{start, end, text}` entries (seconds), populated only for Whisper when the `timestamps` option is set; empty otherwise, including Parakeet and Nemotron transcription
 - `cloud_handoff`: Always false for transcription
 - `confidence_threshold`: `-1.0` (unset) — transcription does not resolve a cloud-handoff threshold
 
@@ -610,26 +610,26 @@ int result = cactus_transcribe(whisper, NULL, NULL,
 ```
 
 ### Streaming transcription
-Transcribe continuously while audio is still being captured, instead of waiting for a complete recording. You push PCM as it arrives and read back text as soon as it stabilizes. Supported for the dedicated speech models (Whisper and Parakeet TDT).
+Transcribe continuously while audio is still being captured, instead of waiting for a complete recording. You push PCM as it arrives and read back text as soon as it stabilizes. Supported for the dedicated speech models (Whisper, Parakeet TDT, and Nemotron ASR).
 
 The session emits text in two parts on every call:
 
 - **`confirmed`** — newly finalized words. Append them to your running transcript; they never change.
 - **`pending`** — the current best guess for the still-changing tail. Replace it on every call (do not append it); it is for live display only.
 
-Text is confirmed once two successive re-transcriptions of the audio agree (LocalAgreement, compared per **segment** for Whisper) or once a following token starts a new word (Parakeet TDT). Confirmed audio is dropped from the front of the buffer as the window advances, so memory stays bounded and the active window never approaches the model's fixed input length.
+Text is confirmed once two successive re-transcriptions of the audio agree (LocalAgreement, compared per **segment** for Whisper) or once a following token starts a new word (Parakeet TDT and Nemotron ASR). Confirmed audio is dropped from the front of the buffer as the window advances, so memory stays bounded and the active window never approaches the model's fixed input length. Nemotron v1 uses this Cactus streaming contract; NVIDIA-style cache-aware encoder-cache tensors are future work.
 
 #### `cactus_stream_transcribe_start`
 Opens a streaming session bound to an already-initialized speech model.
 ```c
 cactus_stream_transcribe_t cactus_stream_transcribe_start(
-    cactus_model_t model,       // Whisper or Parakeet TDT model handle
+    cactus_model_t model,       // Whisper, Parakeet TDT, or Nemotron ASR model handle
     const char* options_json    // Optional (can be NULL); forwarded to cactus_transcribe
 );
 ```
 **Returns:** an opaque session handle, or `NULL` on error (see `cactus_get_last_error`). Free it with `cactus_stream_transcribe_stop`.
 
-`options_json` (optional) is forwarded to the underlying `cactus_transcribe` call **for Whisper only** (e.g. `language`); the Parakeet TDT path ignores it. Chunking and segmentation are handled internally with no user-facing tunables.
+`options_json` (optional) is forwarded to the underlying `cactus_transcribe` call for Whisper and Nemotron (e.g. `language` / `target_lang`); the Parakeet TDT path ignores it. Chunking and segmentation are handled internally with no user-facing tunables.
 
 #### `cactus_stream_transcribe_process`
 Feeds the next slice of audio. Input is 16-bit signed PCM, **16 kHz, mono** — the same format as `cactus_transcribe`'s `pcm_buffer`. Feed reasonably small chunks (≈ 0.1–2 s) for low latency.

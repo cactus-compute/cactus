@@ -101,8 +101,11 @@ class ParakeetTDTConfig:
     attention_scale: float
     ff_intermediate_dim: int
     conv_kernel_size: int
+    conv_norm_type: str
+    conv_is_causal: bool
     subsampling_factor: int
     subsampling_conv_channels: int
+    causal_downsampling: bool
     predictor_hidden_dim: int
     predictor_num_layers: int
     joint_dim: int
@@ -290,10 +293,13 @@ def load_parakeet_tdt_config(model_source: str) -> ParakeetTDTConfig:
             )
         ),
         conv_kernel_size=int(_cfg_get(root, "conv_kernel_size", _cfg_get(encoder, "conv_kernel_size", 9))),
+        conv_norm_type=str(_cfg_get(root, "conv_norm_type", _cfg_get(encoder, "conv_norm_type", "batch_norm"))).lower(),
+        conv_is_causal=str(_cfg_get(root, "conv_context_size", _cfg_get(encoder, "conv_context_size", ""))).lower() == "causal",
         subsampling_factor=int(_cfg_get(root, "subsampling_factor", _cfg_get(encoder, "subsampling_factor", 8))),
         subsampling_conv_channels=int(
             _cfg_get(root, "subsampling_conv_channels", _cfg_get(encoder, "subsampling_conv_channels", 256))
         ),
+        causal_downsampling=bool(_cfg_get(root, "causal_downsampling", _cfg_get(encoder, "causal_downsampling", False))),
         predictor_hidden_dim=int(
             _cfg_get(root, "predictor_hidden_dim", _cfg_get(root, "decoder_hidden_size", _cfg_get(prediction, "pred_hidden", _cfg_get(model_defaults, "pred_hidden", 640))))
         ),
@@ -526,11 +532,15 @@ class ParakeetTDTConformerConv(nn.Module):
             hidden_dim,
             hidden_dim,
             kernel_size=kernel,
-            padding=kernel // 2,
+            padding=0 if config.conv_is_causal else kernel // 2,
             groups=hidden_dim,
             bias=f"{prefix}.depthwise_conv.bias" in state_dict,
         )
-        self.batch_norm = nn.BatchNorm1d(hidden_dim, eps=1e-5, affine=True, track_running_stats=True)
+        self.norm_type = config.conv_norm_type
+        if self.norm_type == "layer_norm":
+            self.batch_norm = nn.LayerNorm(hidden_dim)
+        else:
+            self.batch_norm = nn.BatchNorm1d(hidden_dim, eps=1e-5, affine=True, track_running_stats=True)
         self.pointwise_conv2 = nn.Conv1d(
             hidden_dim,
             hidden_dim,
@@ -554,12 +564,13 @@ class ParakeetTDTConformerConv(nn.Module):
         )
         self.batch_norm.weight.data.copy_(state_dict[f"{prefix}.batch_norm.weight"].to(dtype=self.batch_norm.weight.dtype))
         self.batch_norm.bias.data.copy_(state_dict[f"{prefix}.batch_norm.bias"].to(dtype=self.batch_norm.bias.dtype))
-        self.batch_norm.running_mean.data.copy_(
-            state_dict[f"{prefix}.batch_norm.running_mean"].to(dtype=self.batch_norm.running_mean.dtype)
-        )
-        self.batch_norm.running_var.data.copy_(
-            state_dict[f"{prefix}.batch_norm.running_var"].to(dtype=self.batch_norm.running_var.dtype)
-        )
+        if self.norm_type != "layer_norm":
+            self.batch_norm.running_mean.data.copy_(
+                state_dict[f"{prefix}.batch_norm.running_mean"].to(dtype=self.batch_norm.running_mean.dtype)
+            )
+            self.batch_norm.running_var.data.copy_(
+                state_dict[f"{prefix}.batch_norm.running_var"].to(dtype=self.batch_norm.running_var.dtype)
+            )
         self.config = config
 
     def forward(self, x: torch.Tensor, pad_mask: torch.Tensor | None = None) -> torch.Tensor:
@@ -568,8 +579,13 @@ class ParakeetTDTConformerConv(nn.Module):
         x = F.glu(x, dim=1)
         if pad_mask is not None:
             x = x * pad_mask
+        if self.config.conv_is_causal:
+            x = F.pad(x, (self.config.conv_kernel_size - 1, 0))
         x = self.depthwise_conv(x)
-        x = self.batch_norm(x)
+        if self.norm_type == "layer_norm":
+            x = self.batch_norm(x.transpose(1, 2)).transpose(1, 2)
+        else:
+            x = self.batch_norm(x)
         x = _apply_activation(x, self.config.encoder_hidden_act)
         x = self.pointwise_conv2(x)
         return x.transpose(1, 2)
@@ -606,6 +622,7 @@ class ParakeetTDTPreEncode(nn.Module):
     def __init__(self, config: ParakeetTDTConfig, state_dict: dict[str, torch.Tensor]):
         super().__init__()
         channels = config.subsampling_conv_channels
+        self.causal_downsampling = config.causal_downsampling
         self.conv = nn.ModuleList(
             [
                 nn.Conv2d(1, channels, kernel_size=3, stride=2, padding=1),
@@ -624,7 +641,8 @@ class ParakeetTDTPreEncode(nn.Module):
         _copy_conv2d_weight(self.conv[6], state_dict["encoder.pre_encode.conv.6.weight"], bias=state_dict["encoder.pre_encode.conv.6.bias"])
         projected_width = config.num_mel_bins
         for _ in range(3):
-            projected_width = (projected_width + 2 - 3) // 2 + 1
+            all_padding = 3 if config.causal_downsampling else 2
+            projected_width = (projected_width + all_padding - 3) // 2 + 1
         self.out = nn.Linear(channels * projected_width, config.hidden_dim)
         _copy_linear_weight(
             self.out,
@@ -636,8 +654,14 @@ class ParakeetTDTPreEncode(nn.Module):
         if input_features.ndim != 3:
             raise ValueError(f"expected input_features [batch, frames, mels], got {tuple(input_features.shape)}")
         x = input_features.unsqueeze(1)
+        if self.causal_downsampling:
+            x = F.pad(x, (1, 0, 1, 0))
         x = F.relu(self.conv[0](x))
+        if self.causal_downsampling:
+            x = F.pad(x, (1, 0, 1, 0))
         x = F.relu(self.conv[3](self.conv[2](x)))
+        if self.causal_downsampling:
+            x = F.pad(x, (1, 0, 1, 0))
         x = F.relu(self.conv[6](self.conv[5](x)))
         x = x.permute(0, 2, 1, 3).reshape(x.shape[0], x.shape[2], -1)
         return self.out(x)

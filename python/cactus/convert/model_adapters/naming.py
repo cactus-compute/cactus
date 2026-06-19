@@ -328,6 +328,11 @@ def _global_match(name: str, family: str) -> str | None:
             found = _candidate_table_match(name, table)
             if found:
                 return found
+    elif family == "nemotron_asr":
+        for table in (wp.PARAKEET_GLOBAL_WEIGHTS, wp.NEMOTRON_ASR_GLOBAL_WEIGHTS):
+            found = _candidate_table_match(name, table)
+            if found:
+                return found
     if name in {"wte.weight", "word_embeddings.weight"}:
         return "token_embeddings.weights"
     if name in {"wpe.weight", "position_embeddings.weight"}:
@@ -357,12 +362,16 @@ def _global_match(name: str, family: str) -> str | None:
         predictor_name = _parakeet_tdt_predictor_match(name)
         if predictor_name:
             return predictor_name
+    if family == "nemotron_asr":
+        predictor_name = _parakeet_tdt_predictor_match(name)
+        if predictor_name:
+            return predictor_name.replace("tdt_", "rnnt_", 1)
     return None
 
 
 def component_for_name(name: str, output_name: str | None = None) -> str:
     joined = f"{name} {output_name or ''}".lower()
-    if "parakeet" in joined or "tdt_" in joined or "ctc_" in joined:
+    if "parakeet" in joined or "nemotron" in joined or "tdt_" in joined or "rnnt_" in joined or "ctc_" in joined:
         return "transcription"
     if "audio" in joined or "encoder.conv" in joined or "subsample" in joined:
         return "audio"
@@ -376,7 +385,7 @@ def component_for_name(name: str, output_name: str | None = None) -> str:
 
 
 def _component_for_family(name: str, output_name: str | None, family: str) -> str:
-    if family in {"parakeet", "parakeet_tdt"}:
+    if family in {"parakeet", "parakeet_tdt", "nemotron_asr"}:
         return "transcription"
     if family == "whisper":
         out = output_name or ""

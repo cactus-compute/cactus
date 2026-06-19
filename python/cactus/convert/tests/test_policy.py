@@ -2,7 +2,8 @@ from cactus.convert.model_adapters.naming import cactus_name_for_tensor
 from cactus.convert.model_adapters.policy import policy_for_tensor
 from cactus.convert.cli import _bits_for_component, _validate_cq_layout
 from cactus.convert.model_adapters.detection import detect_family
-from cactus.convert.cactus_adapters.config_utils import extract_parakeet_tdt_config, extract_whisper_config
+from cactus.convert.cactus_adapters.config_utils import extract_nemotron_asr_config, extract_parakeet_tdt_config, extract_whisper_config
+from cactus.transpile.component_plan import infer_component_plan_from_config
 from cactus.convert.cli import _augment_state_dict_for_family
 from cactus.convert.model_adapters.adapters import adapter_for_family
 import torch
@@ -141,6 +142,15 @@ def test_policy_parakeet_transcription_no_gptq():
     assert not p.use_gptq
 
 
+def test_policy_nemotron_asr_encoder_fp16_transcription():
+    match = cactus_name_for_tensor("encoder.layers.0.self_attn.q_proj.weight", "nemotron_asr", 24)
+    p = policy_for_tensor(match, (1024, 1024), 4, "nemotron_asr")
+    assert match.component == "transcription"
+    assert p.precision == "FP16"
+    assert p.fallback_reason == "nemotron asr parity"
+    assert not p.use_gptq
+
+
 def test_parakeet_tdt_hf_config_detection_and_extraction():
     cfg = {
         "model_type": "parakeet_tdt",
@@ -174,6 +184,82 @@ def test_parakeet_tdt_hf_config_detection_and_extraction():
     assert extracted["predictor_num_layers"] == 2
     assert extracted["tdt_durations"] == [0, 1, 2, 3, 4]
     assert extracted["tdt_blank_id"] == 8192
+
+
+def test_nemotron_asr_config_detection_extraction_and_plan():
+    cfg = {
+        "target": "nemo.collections.asr.models.rnnt_bpe_models_prompt.EncDecRNNTBPEModelWithPrompt",
+        "model_type": "nemotron_asr",
+        "labels": ["a", "b", "<en-US>"],
+        "model_defaults": {
+            "num_prompts": 128,
+            "prompt_dictionary": {"auto": 101, "en-US": 0},
+            "pred_hidden": 640,
+            "joint_hidden": 640,
+        },
+        "preprocessor": {"sample_rate": 16000, "features": 128},
+        "encoder": {
+            "d_model": 1024,
+            "n_layers": 24,
+            "n_heads": 8,
+            "ff_expansion_factor": 4.0,
+            "conv_kernel_size": 9,
+            "subsampling_conv_channels": 256,
+            "subsampling_factor": 8,
+            "activation": "silu",
+        },
+        "decoder": {
+            "vocab_size": 3,
+            "prediction": {"pred_hidden": 640, "pred_rnn_layers": 2},
+        },
+        "joint": {
+            "num_classes": 3,
+            "jointnet": {"joint_hidden": 640},
+            "vocabulary": ["a", "b", "<en-US>"],
+        },
+        "decoding": {"greedy": {"max_symbols": 10}},
+    }
+    assert detect_family(cfg) == "nemotron_asr"
+    extracted = extract_nemotron_asr_config(cfg)
+    assert extracted["vocab_size"] == 4
+    assert extracted["num_mel_bins"] == 128
+    assert extracted["predictor_hidden_dim"] == 640
+    assert extracted["predictor_num_layers"] == 2
+    assert extracted["rnnt_blank_id"] == 3
+    assert extracted["prompt_dim"] == 128
+    assert extracted["default_prompt_id"] == 101
+    assert "auto:101" in extracted["prompt_dictionary"]
+    assert "en-US:0" in extracted["prompt_dictionary"]
+    plan = infer_component_plan_from_config(cfg, model_id="nvidia/nemotron-3.5-asr-streaming-0.6b")
+    assert plan is not None
+    assert plan.task == "rnnt_transcription"
+    assert plan.components == ("audio_encoder", "decoder")
+
+
+def test_prompt_tdt_config_detection_stays_parakeet_tdt():
+    cfg = {
+        "target": "nemo.collections.asr.models.rnnt_bpe_models_prompt.EncDecRNNTBPEModelWithPrompt",
+        "model_defaults": {"prompt_dictionary": {"auto": 101}, "tdt_durations": [0, 1, 2]},
+        "loss": {"loss_name": "tdt"},
+        "decoder": {"vocab_size": 3},
+        "joint": {"num_classes": 3, "vocabulary": ["a", "b", "<en-US>"]},
+    }
+    assert detect_family(cfg) == "parakeet_tdt"
+
+
+def test_nemotron_prompt_dim_preserves_sparse_prompt_ids():
+    cfg = {
+        "model_type": "nemotron_asr",
+        "labels": ["a", "b"],
+        "model_defaults": {"prompt_dictionary": {"auto": 101, "en-US": 0}},
+        "preprocessor": {"sample_rate": 16000, "features": 128},
+        "encoder": {"d_model": 1024, "n_layers": 1, "n_heads": 8},
+        "decoder": {"vocab_size": 2, "prediction": {"pred_hidden": 640, "pred_rnn_layers": 2}},
+        "joint": {"num_classes": 2, "jointnet": {"joint_hidden": 640}, "vocabulary": ["a", "b"]},
+    }
+    extracted = extract_nemotron_asr_config(cfg)
+    assert extracted["prompt_dim"] == 102
+    assert extracted["default_prompt_id"] == 101
 
 
 def test_whisper_hf_config_extraction():

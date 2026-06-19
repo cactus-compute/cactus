@@ -110,6 +110,30 @@ class TestGraphComposed(unittest.TestCase):
         np.testing.assert_allclose(out, expected, atol=1e-2)
 
 
+class TestGraphAttentionOps(unittest.TestCase):
+
+    def test_rel_pos_bias_matches_pytorch_indexing(self):
+        g = Graph()
+        q = g.input((1, 3, 2, 4))
+        r = g.input((1, 5, 2, 4))
+        y = g.rel_pos_bias(q, r, 0.25)
+
+        q_data = (np.arange(24, dtype=np.float32).reshape(1, 3, 2, 4) / 10).astype(np.float16)
+        r_data = (np.arange(40, dtype=np.float32).reshape(1, 5, 2, 4) / 20).astype(np.float16)
+        g.set_input(q, q_data)
+        g.set_input(r, r_data)
+        g.execute()
+
+        scores = np.einsum("bthd,brhd->bhtr", q_data.astype(np.float32), r_data.astype(np.float32))
+        rel_index = (
+            np.arange(3, dtype=np.int64).reshape(3, 1)
+            - np.arange(3, dtype=np.int64).reshape(1, 3)
+            + 2
+        )
+        expected = np.take_along_axis(scores, rel_index.reshape(1, 1, 3, 3), axis=-1) * 0.25
+        np.testing.assert_allclose(y.numpy(), expected.astype(np.float16), atol=1e-2)
+
+
 class TestGraphTensorOps(unittest.TestCase):
 
     def test_view(self):
@@ -570,6 +594,176 @@ class TestGraphSaveLoad(unittest.TestCase):
             self.assertEqual(info["shape"], expected_info["shape"])
             self.assertEqual(info["precision"], expected_info["precision"])
             np.testing.assert_allclose(out, expected, atol=5e-2)
+
+    def test_save_load_roundtrip_glu_axis(self):
+        g = Graph()
+
+        x = g.input((1, 4, 2))
+        out_node = g.glu(x, axis=1)
+
+        x_data = np.array(
+            [[[1.0, 2.0], [3.0, 4.0], [-2.0, 1.0], [0.5, -1.0]]],
+            dtype=np.float16,
+        )
+
+        g.set_input(x, x_data)
+        g.execute()
+        expected = out_node.numpy()
+        expected_info = g.output_info(out_node)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "glu_axis_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_x = self._rebind_tensor(loaded, x)
+            loaded_out = self._rebind_tensor(loaded, out_node)
+
+            loaded.set_input(loaded_x, x_data)
+            loaded.execute()
+
+            out = loaded_out.numpy()
+            info = loaded.output_info(loaded_out)
+
+            self.assertEqual(info["shape"], expected_info["shape"])
+            self.assertEqual(info["precision"], expected_info["precision"])
+            np.testing.assert_allclose(out, expected, atol=1e-2)
+
+    def test_save_load_roundtrip_audio_preprocess_params(self):
+        g = Graph()
+
+        waveform = g.input((160,), dtype=Graph.FP32)
+        mel_filters = g.mel_filter_bank(
+            num_frequency_bins=33,
+            num_mel_filters=8,
+            min_frequency=20.0,
+            max_frequency=7600.0,
+            sampling_rate=16000,
+            norm_type=1,
+            scale_type=1,
+        )
+        out_node = g.spectrogram(
+            waveform,
+            mel_filters,
+            frame_length=64,
+            hop_length=16,
+            fft_length=64,
+            power=1.0,
+            center=False,
+            pad_mode=1,
+            mel_floor=1e-5,
+            log_mel_mode=1,
+            dither=0.0,
+            preemphasis=0.97,
+            remove_dc_offset=True,
+        )
+
+        waveform_data = np.linspace(-0.4, 0.6, 160, dtype=np.float32)
+
+        g.set_input(waveform, waveform_data)
+        g.execute()
+        expected = out_node.numpy()
+        expected_info = g.output_info(out_node)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "audio_preprocess_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_waveform = self._rebind_tensor(loaded, waveform)
+            loaded_out = self._rebind_tensor(loaded, out_node)
+
+            loaded.set_input(loaded_waveform, waveform_data)
+            loaded.execute()
+
+            out = loaded_out.numpy()
+            info = loaded.output_info(loaded_out)
+
+            self.assertEqual(info["shape"], expected_info["shape"])
+            self.assertEqual(info["precision"], expected_info["precision"])
+            np.testing.assert_allclose(out, expected, atol=1e-5)
+
+    def test_save_load_roundtrip_image_preprocess_params(self):
+        g = Graph()
+
+        pixels = g.input((2, 2, 3), dtype=Graph.FP32)
+        out_node = g.image_preprocess(
+            pixels,
+            src_width=2,
+            src_height=2,
+            target_width=2,
+            target_height=2,
+            patch_size=1,
+            channels=3,
+            rescale_factor=0.25,
+            mean=[0.1, 0.2, 0.3],
+            std_dev=[1.0, 2.0, 4.0],
+        )
+
+        pixel_data = np.array(
+            [
+                [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                [[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]],
+            ],
+            dtype=np.float32,
+        )
+
+        g.set_input(pixels, pixel_data)
+        g.execute()
+        expected = out_node.numpy()
+        expected_info = g.output_info(out_node)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "image_preprocess_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_pixels = self._rebind_tensor(loaded, pixels)
+            loaded_out = self._rebind_tensor(loaded, out_node)
+
+            loaded.set_input(loaded_pixels, pixel_data)
+            loaded.execute()
+
+            out = loaded_out.numpy()
+            info = loaded.output_info(loaded_out)
+
+            self.assertEqual(info["shape"], expected_info["shape"])
+            self.assertEqual(info["precision"], expected_info["precision"])
+            np.testing.assert_allclose(out, expected, atol=1e-6)
+
+    def test_save_load_roundtrip_gaussian_topk_scalar(self):
+        g = Graph()
+
+        x = g.input((2, 4))
+        out_node = g.gaussian_topk(x, ppf=0.8)
+
+        x_data = np.array(
+            [[0.0, 1.0, 2.0, 3.0], [3.0, 2.0, 1.0, 0.0]],
+            dtype=np.float16,
+        )
+
+        g.set_input(x, x_data)
+        g.execute()
+        expected = out_node.numpy()
+        expected_info = g.output_info(out_node)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "gaussian_topk_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_x = self._rebind_tensor(loaded, x)
+            loaded_out = self._rebind_tensor(loaded, out_node)
+
+            loaded.set_input(loaded_x, x_data)
+            loaded.execute()
+
+            out = loaded_out.numpy()
+            info = loaded.output_info(loaded_out)
+
+            self.assertEqual(info["shape"], expected_info["shape"])
+            self.assertEqual(info["precision"], expected_info["precision"])
+            np.testing.assert_allclose(out, expected, atol=1e-2)
 
     def test_save_load_roundtrip_matmul(self):
         g = Graph()

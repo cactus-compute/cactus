@@ -179,6 +179,32 @@ PARAKEET_TDT_GLOBAL_WEIGHTS = [
     (('joint.joint_net.2.bias', 'joint.joint_net.0.bias', 'joint.head.bias'), 'tdt_joint_out.bias'),
 ]
 
+NEMOTRON_ASR_GLOBAL_WEIGHTS = [
+    (('encoder.pre_encode.conv.0.weight', 'encoder.subsampling.layers.0.weight'), 'subsampling_conv0_weight.weights'),
+    (('encoder.pre_encode.conv.0.bias', 'encoder.subsampling.layers.0.bias'), 'subsampling_conv0_bias.bias'),
+    (('encoder.pre_encode.conv.2.weight', 'encoder.subsampling.layers.2.weight'), 'subsampling_depthwise1_weight.weights'),
+    (('encoder.pre_encode.conv.2.bias', 'encoder.subsampling.layers.2.bias'), 'subsampling_depthwise1_bias.bias'),
+    (('encoder.pre_encode.conv.3.weight', 'encoder.subsampling.layers.3.weight'), 'subsampling_pointwise1_weight.weights'),
+    (('encoder.pre_encode.conv.3.bias', 'encoder.subsampling.layers.3.bias'), 'subsampling_pointwise1_bias.bias'),
+    (('encoder.pre_encode.conv.5.weight', 'encoder.subsampling.layers.5.weight'), 'subsampling_depthwise2_weight.weights'),
+    (('encoder.pre_encode.conv.5.bias', 'encoder.subsampling.layers.5.bias'), 'subsampling_depthwise2_bias.bias'),
+    (('encoder.pre_encode.conv.6.weight', 'encoder.subsampling.layers.6.weight'), 'subsampling_pointwise2_weight.weights'),
+    (('encoder.pre_encode.conv.6.bias', 'encoder.subsampling.layers.6.bias'), 'subsampling_pointwise2_bias.bias'),
+    (('encoder.pre_encode.out.weight', 'encoder.subsampling.linear.weight'), 'subsampling_linear_weight.weights'),
+    (('encoder.pre_encode.out.bias', 'encoder.subsampling.linear.bias'), 'subsampling_linear_bias.bias'),
+    (('decoder.prediction.embed.weight', 'decoder.embedding.weight'), 'rnnt_predictor_embed.weights'),
+    (('joint.enc.weight', 'encoder_projector.weight'), 'rnnt_joint_enc.weights'),
+    (('joint.enc.bias', 'encoder_projector.bias'), 'rnnt_joint_enc.bias'),
+    (('joint.pred.weight', 'decoder.decoder_projector.weight'), 'rnnt_joint_pred.weights'),
+    (('joint.pred.bias', 'decoder.decoder_projector.bias'), 'rnnt_joint_pred.bias'),
+    (('joint.joint_net.2.weight', 'joint.joint_net.0.weight', 'joint.head.weight'), 'rnnt_joint_out.weights'),
+    (('joint.joint_net.2.bias', 'joint.joint_net.0.bias', 'joint.head.bias'), 'rnnt_joint_out.bias'),
+    (('prompt_kernel.0.weight',), 'rnnt_prompt_linear1.weights'),
+    (('prompt_kernel.0.bias',), 'rnnt_prompt_linear1.bias'),
+    (('prompt_kernel.2.weight',), 'rnnt_prompt_linear2.weights'),
+    (('prompt_kernel.2.bias',), 'rnnt_prompt_linear2.bias'),
+]
+
 PARAKEET_LAYER_WEIGHTS = [
     (('feed_forward1.linear1.weight',), 'ff1_linear1.weights'),
     (('feed_forward1.linear1.bias',), 'ff1_linear1.bias'),

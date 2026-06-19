@@ -107,7 +107,7 @@ def create_parser():
 
   cactus transcribe [model]            live microphone transcription with a model
     --file <audio.wav>                 audio file to transcribe (WAV)
-    --language <code>                  language code (default: en)
+    --language <code>                  language code (default: model-specific)
     --bits 1|2|3|4                     CQ quantization (default: 4)
     --platform {_PLATFORM_PIPE:<22}  target accelerator (default: auto)
     --token <token>                    HuggingFace token (gated models)
@@ -269,8 +269,8 @@ def create_parser():
                                    help=f"HuggingFace model id (default: {DEFAULT_TRANSCRIPTION_MODEL_ID})")
     transcribe_parser.add_argument("--file", dest="audio_file", default=None,
                                    help="Audio file to transcribe (WAV)")
-    transcribe_parser.add_argument("--language", default="en",
-                                   help="Language code (default: en)")
+    transcribe_parser.add_argument("--language", default=None,
+                                   help="Language code (default: model-specific)")
     transcribe_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
                                    help="CQ quantization (default: 4)")
     transcribe_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
@@ -346,7 +346,8 @@ def create_parser():
     transpile_parser.add_argument("--task", default="auto",
                                   choices=["auto", "causal_lm_logits", "multimodal_causal_lm_logits",
                                            "ctc_logits", "encoder_hidden_states",
-                                           "seq2seq_transcription", "tdt_transcription"],
+                                           "seq2seq_transcription", "tdt_transcription",
+                                           "rnnt_transcription"],
                                   help="Transpile task (default: auto, from model config)")
     transpile_parser.add_argument("--prompt",
                                   help="Prompt for causal/multimodal shape capture")

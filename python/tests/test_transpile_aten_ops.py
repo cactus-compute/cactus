@@ -9,8 +9,10 @@ from cactus.transpile.capture_pytorch import capture_model
 from cactus.transpile.graph_ir import IRGraph
 from cactus.transpile.graph_ir import IRNode
 from cactus.transpile.graph_ir import IRValue
+from cactus.transpile.lower import transpile_preoptimized_ir
 from cactus.transpile.normalize import normalize_target
 from cactus.transpile.optimize_graph import fuse_dense_mlp_tq
+from cactus.transpile.optimize_graph import optimize_graph
 
 
 class OddlyNamedLinearBlock(torch.nn.Module):
@@ -31,6 +33,45 @@ class SameOpsDifferentNames(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.nn.functional.silu(self.not_a_transformer_layer["banana"](x))
+
+
+class ManualLSTMCell(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight_ih = torch.nn.Parameter(torch.randn(16, 4) * 0.2)
+        self.weight_hh = torch.nn.Parameter(torch.randn(16, 4) * 0.2)
+        self.bias = torch.nn.Parameter(torch.randn(16) * 0.1)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        h: torch.Tensor,
+        c: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        gates = torch.nn.functional.linear(x, self.weight_ih) + torch.nn.functional.linear(h, self.weight_hh) + self.bias
+        i, f, g, o = torch.chunk(gates, 4, dim=-1)
+        c_next = torch.sigmoid(f) * c + torch.sigmoid(i) * torch.tanh(g)
+        h_next = torch.sigmoid(o) * torch.tanh(c_next)
+        return h_next, c_next
+
+
+class ReusedLSTMStateOutput(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cell0 = ManualLSTMCell()
+        self.cell1 = ManualLSTMCell()
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        h0: torch.Tensor,
+        c0: torch.Tensor,
+        h1: torch.Tensor,
+        c1: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        h0_next, c0_next = self.cell0(x, h0, c0)
+        h1_next, _ = self.cell1(h0_next, h1, c1)
+        return h1_next, h0_next, c0_next
 
 
 def _op_counts(module: torch.nn.Module) -> Counter[str]:
@@ -62,6 +103,28 @@ def test_import_records_canonical_aten_op_metadata() -> None:
     assert {meta["aten_op"] for meta in node_meta} >= {"aten.linear.default", "aten.silu.default"}
     assert all("torch_name" in meta for meta in node_meta)
     assert all("module_paths" not in meta for meta in node_meta)
+
+
+def test_reused_lstm_state_output_is_materialized() -> None:
+    torch.manual_seed(3)
+    module = ReusedLSTMStateOutput().eval().to(dtype=torch.float16)
+    inputs = tuple(torch.randn(1, 4, dtype=torch.float16) for _ in range(5))
+    with torch.no_grad():
+        expected = module(*inputs)
+
+    captured = capture_model(module, inputs)
+    optimized = optimize_graph(captured.ir_graph)
+    lowered = transpile_preoptimized_ir(optimized)
+    lowered.set_inputs([value.numpy() for value in inputs])
+    actual = [value.numpy() for value in lowered.execute()]
+
+    for got, want in zip(actual, expected, strict=True):
+        torch.testing.assert_close(
+            torch.from_numpy(got),
+            want.detach().cpu(),
+            atol=2e-3,
+            rtol=2e-3,
+        )
 
 
 def test_dense_mlp_fusion_uses_topology_not_layer_names() -> None:
