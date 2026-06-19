@@ -2,7 +2,7 @@ import itertools
 import stat as _stat
 import struct
 
-from .common import BLUE, CYAN, print_color, transpiled_root, weights_root
+from .common import CYAN, print_color, transpiled_root, weights_root
 
 _PREC_TO_BITS = {3: 1, 4: 2, 5: 3, 6: 4}
 
@@ -73,8 +73,8 @@ def _dir_size(path):
     return total
 
 
-def _categorize(roots):
-    converted, transpiled = [], []
+def _collect(roots):
+    models = []
     for root in roots:
         if not root.is_dir():
             continue
@@ -82,28 +82,19 @@ def _categorize(roots):
             if not p.is_dir() or not (p / "config.txt").is_file():
                 continue
             cfg = _read_config(p / "config.txt")
-            entry = (p, cfg.get("model_type", "?"), _quant_label(p), _dir_size(p))
-            if (p / "components" / "manifest.json").is_file():
-                transpiled.append(entry)
-            else:
-                converted.append(entry)
-    return converted, transpiled
-
-
-def _print_section(title: str, color: str, entries):
-    print_color(color, title)
-    if not entries:
-        print("  (none)")
-        return
-    width = max(len(p.name) for p, _, _, _ in entries)
-    for p, model_type, quant, size in entries:
-        print(f"  {p.name:<{width}}  {model_type:<12}  {quant:<5}  {_human_size(size):>10}  {p.parent}")
+            models.append((p, cfg.get("model_type", "?"), _quant_label(p), _dir_size(p)))
+    return models
 
 
 def cmd_list(_args):
-    roots = (weights_root(), transpiled_root())
-    converted, transpiled = _categorize(roots)
-    _print_section("Converted weights", BLUE, converted)
-    print()
-    _print_section("Runnable bundles (cactus convert / download)", CYAN, transpiled)
+    models = _collect((weights_root(), transpiled_root()))
+    print_color(CYAN, "Local models (cactus convert / download)")
+    if not models:
+        print("  (none)")
+        return 0
+    name_w = max(len(p.name) for p, _, _, _ in models)
+    type_w = max(len("type"), max(len(t) for _, t, _, _ in models))
+    print(f"  {'name':<{name_w}}  {'type':<{type_w}}  {'quant':<5}  {'size':>10}  location")
+    for p, model_type, quant, size in models:
+        print(f"  {p.name:<{name_w}}  {model_type:<{type_w}}  {quant:<5}  {_human_size(size):>10}  {p.parent}")
     return 0
