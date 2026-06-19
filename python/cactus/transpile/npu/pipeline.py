@@ -60,6 +60,30 @@ def run_encoder_pipeline(
         qdesc = f"int{qbits}" if qbits else "fp16"
         print(f"npu.pipeline: emitting {component} quant={qdesc}")
         reparam = getattr(spec, "npu_reparam", None)
+        variants = tuple(getattr(spec, "npu_variants", ()) or ())
+        if component == "audio_encoder" and variants:
+            emitted_paths: list[str] = []
+            for variant in variants:
+                variant_inputs = tuple(variant.get("example_inputs") or example_inputs)
+                if not variant_inputs:
+                    continue
+                variant_module = variant.get("module") or module
+                variant_filename = str(variant.get("filename") or filename)
+                with (reparam(variant_module) if reparam else nullcontext()):
+                    emitted = emit_fn(
+                        variant_module,
+                        bundle_root,
+                        example_input=variant_inputs[0],
+                        baked_inputs=variant_inputs[1:],
+                        filename=variant_filename,
+                        quantize_bits=qbits,
+                    )
+                if emitted:
+                    emitted_paths.append(f"components/{emitted}")
+            if emitted_paths:
+                results["npu_audio_encoders"] = emitted_paths
+                results["npu_audio_encoder"] = emitted_paths[-1]
+            continue
         with (reparam(module) if reparam else nullcontext()):
             if component == "source_encoder":
                 emitted = emit_fn(

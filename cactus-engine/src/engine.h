@@ -747,7 +747,9 @@ public:
     size_t last_prefill_tail_padding_tokens() const { return last_prefill_tail_padding_tokens_; }
 
     bool load_npu_audio_encoder(const std::string& model_path, const std::string& compute_units = "");
+    bool load_npu_audio_encoders(const std::vector<std::string>& model_paths, const std::string& compute_units = "");
     bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
+    npu::NPUEncoder* select_npu_audio_encoder(size_t feature_dim, size_t frame_count) const;
 
     bool load_npu_vision_encoder(const std::string& model_path);
     bool has_npu_vision_encoder() const { return npu_vision_encoder_ != nullptr; }
@@ -907,11 +909,13 @@ private:
 
     std::string family_;
     std::string npu_audio_encoder_mlpackage_;
+    std::vector<std::string> npu_audio_encoder_mlpackages_;
     std::string npu_audio_compute_units_;
     std::string npu_vision_encoder_mlpackage_;
     std::string npu_source_encoder_mlpackage_;
 
     std::unique_ptr<npu::NPUEncoder> npu_audio_encoder_;
+    std::vector<std::unique_ptr<npu::NPUEncoder>> npu_audio_encoders_;
     std::unique_ptr<npu::NPUEncoder> npu_vision_encoder_;
     std::unique_ptr<npu::NPUEncoder> npu_source_encoder_;
 

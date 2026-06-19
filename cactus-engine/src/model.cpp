@@ -641,7 +641,16 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
 
     cache_max_seq_len_ = context_size;
 
-    if (!npu_audio_encoder_mlpackage_.empty()) {
+    if (!npu_audio_encoder_mlpackages_.empty()) {
+        std::vector<std::string> full_paths;
+        full_paths.reserve(npu_audio_encoder_mlpackages_.size());
+        for (const std::string& rel_path : npu_audio_encoder_mlpackages_) {
+            full_paths.push_back(bundle_dir + "/" + rel_path);
+        }
+        if (!load_npu_audio_encoders(full_paths, npu_audio_compute_units_)) {
+            CACTUS_LOG_WARN("model", "NPU audio encoder variants failed to load; falling back to CPU");
+        }
+    } else if (!npu_audio_encoder_mlpackage_.empty()) {
         std::string full_path = bundle_dir + "/" + npu_audio_encoder_mlpackage_;
         if (!load_npu_audio_encoder(full_path, npu_audio_compute_units_)) {
             CACTUS_LOG_WARN("model", "NPU audio encoder load failed for " << full_path << "; falling back to CPU");
@@ -695,6 +704,11 @@ bool Model::load_manifest() {
     }
     if (obj.count("npu_audio_encoder") && obj.at("npu_audio_encoder").is<std::string>()) {
         npu_audio_encoder_mlpackage_ = obj.at("npu_audio_encoder").get<std::string>();
+    }
+    if (obj.count("npu_audio_encoders") && obj.at("npu_audio_encoders").is<picojson::array>()) {
+        for (const auto& v : obj.at("npu_audio_encoders").get<picojson::array>()) {
+            if (v.is<std::string>()) npu_audio_encoder_mlpackages_.push_back(v.get<std::string>());
+        }
     }
     if (obj.count("npu_audio_compute_units") && obj.at("npu_audio_compute_units").is<std::string>()) {
         npu_audio_compute_units_ = obj.at("npu_audio_compute_units").get<std::string>();
@@ -3296,19 +3310,20 @@ std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& a
     std::vector<__fp16> npu_hidden_storage;
     bool used_npu = false;
     size_t npu_hidden_T = 0;
-    if (has_npu_audio_encoder()) {
-        const std::vector<int> in_shape = npu_audio_encoder_->get_input_shape();
-        const std::vector<int> out_shape = npu_audio_encoder_->get_output_shape();
+    npu::NPUEncoder* npu_audio_encoder = select_npu_audio_encoder(expected_mels, source_frames);
+    if (npu_audio_encoder) {
+        const std::vector<int> in_shape = npu_audio_encoder->get_input_shape();
+        const std::vector<int> out_shape = npu_audio_encoder->get_output_shape();
         if (in_shape.size() >= 3 && out_shape.size() >= 3 &&
             in_shape[1] > 0 && in_shape[2] > 0 && out_shape[1] > 0 && out_shape[2] > 0 &&
             static_cast<size_t>(in_shape[2]) == expected_mels &&
-            copy_frames <= static_cast<size_t>(in_shape[1])) {
+            source_frames <= static_cast<size_t>(in_shape[1])) {
             const size_t window_frames = static_cast<size_t>(in_shape[1]);
             const size_t window_hidden = static_cast<size_t>(out_shape[1]);
             const size_t hidden_dim_npu = static_cast<size_t>(out_shape[2]);
             const size_t chunk_input_elems = window_frames * expected_mels;
             const size_t chunk_output_elems = window_hidden * hidden_dim_npu;
-            const size_t num_chunks = (copy_frames + window_frames - 1) / window_frames;
+            const size_t num_chunks = (source_frames + window_frames - 1) / window_frames;
             const size_t total_hidden_T = num_chunks * window_hidden;
             npu_hidden_storage.assign(total_hidden_T * hidden_dim_npu, __fp16(0));
             const bool want_probe = handoff_probe_loaded_ &&
@@ -3318,23 +3333,22 @@ std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& a
             for (size_t c = 0; c < num_chunks && all_ok; ++c) {
                 if (should_stop && should_stop->load()) return emitted;
                 const size_t frame_start = c * window_frames;
-                const size_t frame_end = std::min(frame_start + window_frames, copy_frames);
+                const size_t frame_end = std::min(frame_start + window_frames, source_frames);
                 std::fill(input_fp16.begin(), input_fp16.end(), __fp16(0));
                 for (size_t t = frame_start; t < frame_end; ++t) {
                     const size_t local = (t - frame_start) * expected_mels;
-                    const size_t src = t * expected_mels;
                     for (size_t m = 0; m < expected_mels; ++m) {
-                        input_fp16[local + m] = static_cast<__fp16>(transposed[src + m]);
+                        input_fp16[local + m] = static_cast<__fp16>(audio_features[m * source_frames + t]);
                     }
                 }
                 __fp16* out_ptr = npu_hidden_storage.data() + c * chunk_output_elems;
-                size_t written = npu_audio_encoder_->encode(
+                size_t written = npu_audio_encoder->encode(
                     input_fp16.data(), out_ptr, in_shape, "x", "encoded");
                 if (written == 0) { all_ok = false; break; }
             }
             if (all_ok) {
                 used_npu = true;
-                const size_t valid_input = copy_frames;
+                const size_t valid_input = source_frames;
                 npu_hidden_T = (valid_input * window_hidden + window_frames - 1) / window_frames;
                 if (npu_hidden_T > total_hidden_T) npu_hidden_T = total_hidden_T;
                 CACTUS_LOG_INFO("model", "Nemotron audio encoder ran on NPU ("

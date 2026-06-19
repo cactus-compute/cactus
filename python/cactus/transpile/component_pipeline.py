@@ -33,6 +33,7 @@ class ComponentModuleSpec:
     npu_runtime_input_count: int = 1
     npu_reparam: Callable[[torch.nn.Module], AbstractContextManager] | None = None
     npu_example_inputs: tuple[torch.Tensor, ...] | None = None
+    npu_variants: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
 
 @dataclass

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 namespace cactus {
@@ -18,6 +19,48 @@ bool Model::load_npu_audio_encoder(const std::string& model_path, const std::str
     npu_audio_encoder_ = std::move(encoder);
     CACTUS_LOG_INFO("model", "NPU audio encoder loaded from: " << model_path);
     return true;
+}
+
+bool Model::load_npu_audio_encoders(const std::vector<std::string>& model_paths, const std::string& compute_units) {
+    bool loaded = false;
+    for (const std::string& model_path : model_paths) {
+        auto encoder = npu::create_encoder();
+        if (!encoder) continue;
+        if (!encoder->load(model_path, compute_units) || !encoder->is_available()) {
+            CACTUS_LOG_WARN("model", "NPU audio encoder load failed for " << model_path << "; skipping");
+            continue;
+        }
+        npu_audio_encoders_.push_back(std::move(encoder));
+        CACTUS_LOG_INFO("model", "NPU audio encoder loaded from: " << model_path);
+        loaded = true;
+    }
+    std::sort(npu_audio_encoders_.begin(), npu_audio_encoders_.end(),
+              [](const std::unique_ptr<npu::NPUEncoder>& a, const std::unique_ptr<npu::NPUEncoder>& b) {
+                  const auto as = a ? a->get_input_shape() : std::vector<int>{};
+                  const auto bs = b ? b->get_input_shape() : std::vector<int>{};
+                  const int af = as.size() >= 2 ? as[1] : 0;
+                  const int bf = bs.size() >= 2 ? bs[1] : 0;
+                  return af < bf;
+              });
+    return loaded;
+}
+
+npu::NPUEncoder* Model::select_npu_audio_encoder(size_t feature_dim, size_t frame_count) const {
+    npu::NPUEncoder* best = nullptr;
+    size_t best_frames = std::numeric_limits<size_t>::max();
+    auto consider = [&](npu::NPUEncoder* encoder) {
+        if (!encoder || !encoder->is_available()) return;
+        const std::vector<int> shape = encoder->get_input_shape();
+        if (shape.size() < 3 || shape[1] <= 0 || shape[2] <= 0) return;
+        const size_t frames = static_cast<size_t>(shape[1]);
+        const size_t mels = static_cast<size_t>(shape[2]);
+        if (mels != feature_dim || frame_count > frames || frames >= best_frames) return;
+        best = encoder;
+        best_frames = frames;
+    };
+    for (const auto& encoder : npu_audio_encoders_) consider(encoder.get());
+    consider(npu_audio_encoder_.get());
+    return best;
 }
 
 bool Model::load_npu_vision_encoder(const std::string& model_path) {
