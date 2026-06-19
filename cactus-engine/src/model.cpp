@@ -705,6 +705,7 @@ bool Model::load_manifest() {
     if (obj.count("npu_audio_encoder") && obj.at("npu_audio_encoder").is<std::string>()) {
         npu_audio_encoder_mlpackage_ = obj.at("npu_audio_encoder").get<std::string>();
     }
+    npu_audio_encoder_mlpackages_.clear();
     if (obj.count("npu_audio_encoders") && obj.at("npu_audio_encoders").is<picojson::array>()) {
         for (const auto& v : obj.at("npu_audio_encoders").get<picojson::array>()) {
             if (v.is<std::string>()) npu_audio_encoder_mlpackages_.push_back(v.get<std::string>());
@@ -3369,6 +3370,11 @@ std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& a
         }
     }
     if (!used_npu) {
+        if (source_frames > expected_frames) {
+            CACTUS_LOG_WARN("model", "Nemotron audio has " << source_frames
+                            << " frames but CPU graph capacity is " << expected_frames
+                            << " and NPU audio encoding is unavailable; falling back with truncation");
+        }
         if (should_stop && should_stop->load()) return emitted;
         audio_enc->graph->execute();
         maybe_capture_handoff_probe_hidden(*audio_enc, "encoder_hidden_states");

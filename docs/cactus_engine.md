@@ -555,7 +555,7 @@ int cactus_transcribe(
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `max_tokens` | int | auto | Maximum tokens to generate. When unset, it defaults to the larger of 100 and an audio-length estimate (`audio_sec × 20` for Whisper, `audio_sec × 30` for Parakeet). For Whisper the result is then capped so the prompt tokens plus generated tokens fit the decoder's 448-position limit. |
+| `max_tokens` | int | auto | Whisper maximum tokens to generate. When unset, it defaults to the larger of 100 and an audio-length estimate (`audio_sec × 20`) and is capped so the prompt tokens plus generated tokens fit the decoder's 448-position limit. |
 | `language` / `target_lang` | string | model default | Whisper: two-letter language code substituted into the decoder prompt's language token. Nemotron: prompt language (`auto` by default). Ignored by Parakeet and by Whisper when an explicit `prompt` is supplied. |
 | `timestamps` | bool | false | Whisper only. Decodes timestamp tokens and populates `segments` with `{start, end, text}` entries (seconds). Empty otherwise, including Parakeet and Nemotron transcription. |
 
@@ -617,7 +617,7 @@ The session emits text in two parts on every call:
 - **`confirmed`** — newly finalized words. Append them to your running transcript; they never change.
 - **`pending`** — the current best guess for the still-changing tail. Replace it on every call (do not append it); it is for live display only.
 
-Text is confirmed once two successive re-transcriptions of the audio agree (LocalAgreement, compared per **segment** for Whisper) or once a following token starts a new word (Parakeet TDT and Nemotron ASR). Confirmed audio is dropped from the front of the buffer as the window advances, so memory stays bounded and the active window never approaches the model's fixed input length. Nemotron v1 uses this Cactus streaming contract; NVIDIA-style cache-aware encoder-cache tensors are future work.
+Text is confirmed once two successive re-transcriptions of the audio agree (LocalAgreement, compared per **segment** for Whisper) or once a following token starts a new word (Parakeet TDT and Nemotron ASR). Confirmed audio is dropped from the active decode window as it advances. Nemotron v1 keeps the full session audio for final flush, supports the Cactus streaming contract up to the emitted encoder window set, and does not yet use NVIDIA-style cache-aware encoder-cache tensors.
 
 #### `cactus_stream_transcribe_start`
 Opens a streaming session bound to an already-initialized speech model.

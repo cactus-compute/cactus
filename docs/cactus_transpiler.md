@@ -457,6 +457,8 @@ cactus transpile <model-id-or-path> [options]
 NPU emission (CoreML `.mlpackage`s for Apple Silicon audio and vision encoders)
 is available through the `--npu`, `--npu-quantize`, `--npu-audio-quantize`, and
 `--npu-vision-quantize` flags on `cactus transpile`.
+Nemotron ASR emits CPU/GPU audio encoder variants for 1024, 2048, 4096, and 6144
+input frames by default; override the set with `CACTUS_NPU_NEMOTRON_FRAMES`.
 
 ### `cactus run`
 
@@ -501,6 +503,7 @@ tested adapters for:
 | Whisper | encoder | no |
 | Parakeet CTC | encoder | no |
 | Parakeet TDT | transcription | yes (encoder + decoder) |
+| Nemotron ASR | transcription | yes (encoder + decoder) |
 
 Adding a new model family means writing a small adapter in `model_adapters.py` that
 wraps the HF forward into the canonical task interface. The rest of the pipeline

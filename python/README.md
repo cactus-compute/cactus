@@ -187,7 +187,7 @@ result = cactus_complete(model, completion_messages, None, tools, None)
 
 ### Transcription
 
-Returns a `dict` with the `response` field (transcribed text) and a `segments` array of `{start, end, text}` objects. `segments` is populated only for Whisper models when the `timestamps` option is set (`{"timestamps": True}`); it is empty otherwise, including for all Parakeet transcription.
+Returns a `dict` with the `response` field (transcribed text) and a `segments` array of `{start, end, text}` objects. `segments` is populated only for Whisper models when the `timestamps` option is set (`{"timestamps": True}`); it is empty otherwise, including for Parakeet and Nemotron transcription.
 
 ```python
 result = cactus_transcribe(

@@ -380,7 +380,7 @@ def _write_component_bundle(
     component_io_signatures: dict[str, dict[str, tuple[str, ...]]] | None = None,
     component_metadata: dict[str, dict[str, object]] | None = None,
     graph_filename: str = "graph.cactus",
-    npu_encoder_mlpackages: dict[str, str] | None = None,
+    npu_encoder_mlpackages: dict[str, object] | None = None,
 ) -> Path:
     bundle_dir = artifact_dir / "components"
     component_order = [
@@ -709,7 +709,7 @@ def _run_component_pipeline_transpile(
     npu_quantize = getattr(args, "npu_quantize", None)
     npu_audio_quantize  = getattr(args, "npu_audio_quantize",  None)
     npu_vision_quantize = getattr(args, "npu_vision_quantize", None)
-    npu_encoder_mlpackages: dict[str, str] = {}
+    npu_encoder_mlpackages: dict[str, object] = {}
     if npu_enabled and artifact_dir is not None:
         from .npu import run_encoder_pipeline
         npu_encoder_mlpackages = run_encoder_pipeline(

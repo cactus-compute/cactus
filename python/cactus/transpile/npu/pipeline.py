@@ -23,8 +23,8 @@ def run_encoder_pipeline(
     quantize_bits: int | None = None,
     audio_quantize_bits: int | None = None,
     vision_quantize_bits: int | None = None,
-) -> dict[str, str]:
-    results: dict[str, str] = {}
+) -> dict[str, object]:
+    results: dict[str, object] = {}
     if not enabled or not component_specs:
         return results
 

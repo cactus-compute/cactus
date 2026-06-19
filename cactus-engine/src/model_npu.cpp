@@ -22,6 +22,7 @@ bool Model::load_npu_audio_encoder(const std::string& model_path, const std::str
 }
 
 bool Model::load_npu_audio_encoders(const std::vector<std::string>& model_paths, const std::string& compute_units) {
+    npu_audio_encoders_.clear();
     bool loaded = false;
     for (const std::string& model_path : model_paths) {
         auto encoder = npu::create_encoder();
@@ -46,6 +47,7 @@ bool Model::load_npu_audio_encoders(const std::vector<std::string>& model_paths,
 }
 
 npu::NPUEncoder* Model::select_npu_audio_encoder(size_t feature_dim, size_t frame_count) const {
+    if (frame_count == 0) return nullptr;
     npu::NPUEncoder* best = nullptr;
     size_t best_frames = std::numeric_limits<size_t>::max();
     auto consider = [&](npu::NPUEncoder* encoder) {
