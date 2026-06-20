@@ -111,6 +111,52 @@ static void write_test_cq_weights(
     if (!file) throw std::runtime_error("failed writing test CQ weights");
 }
 
+static void write_test_int8_grouped_weights(
+    const std::filesystem::path& path,
+    const std::vector<size_t>& shape,
+    size_t group_size,
+    const std::vector<int8_t>& data,
+    const std::vector<__fp16>& scales) {
+    constexpr uint32_t CACTUS_MAGIC = 0x54434143;
+    constexpr uint32_t FLAG_HAS_SCALES = 1 << 0;
+    constexpr size_t HEADER_SIZE = 84;
+    constexpr uint32_t alignment = 32;
+
+    size_t rows = shape.empty() ? 1 : shape[0];
+    size_t cols = data.size() / rows;
+    size_t num_groups = cols / group_size;
+
+    std::ofstream file(path, std::ios::binary);
+    if (!file) throw std::runtime_error("cannot open test INT8 weights");
+
+    auto write_u32 = [&](uint32_t v) { file.write(reinterpret_cast<const char*>(&v), sizeof(v)); };
+    auto write_u64 = [&](uint64_t v) { file.write(reinterpret_cast<const char*>(&v), sizeof(v)); };
+    auto write_padding = [&](size_t bytes) {
+        char zero = 0;
+        for (size_t i = 0; i < bytes; ++i) file.write(&zero, 1);
+    };
+
+    write_u32(CACTUS_MAGIC);
+    write_u32(FLAG_HAS_SCALES);
+    write_u32(alignment);
+    write_u32(static_cast<uint32_t>(shape.size()));
+    for (size_t i = 0; i < 4; ++i) write_u64(i < shape.size() ? shape[i] : 0);
+    write_u32(static_cast<uint32_t>(Precision::INT8));
+    write_u64(data.size());
+    write_u64(scales.size() * sizeof(__fp16));
+    write_u32(static_cast<uint32_t>(group_size));
+    write_u32(static_cast<uint32_t>(num_groups));
+    write_u64(rows);
+
+    size_t aligned_header = align_offset_test(HEADER_SIZE, alignment);
+    write_padding(aligned_header - HEADER_SIZE);
+    file.write(reinterpret_cast<const char*>(scales.data()), scales.size() * sizeof(__fp16));
+    size_t data_start = align_offset_test(aligned_header + scales.size() * sizeof(__fp16), alignment);
+    write_padding(data_start - (aligned_header + scales.size() * sizeof(__fp16)));
+    file.write(reinterpret_cast<const char*>(data.data()), data.size());
+    if (!file) throw std::runtime_error("failed writing test INT8 weights");
+}
+
 bool test_matmul_cq() {
     // Test graph-level CQ matmul dispatch for every supported bit width.
     const size_t M = 2, K = 128, N = 8;
@@ -191,6 +237,42 @@ bool test_matmul_cq() {
         if (!ok) return false;
     }
     return true;
+}
+
+bool test_mmap_int8_conv1d_pointwise_scales() {
+    const size_t C_in = 32;
+    const size_t C_out = 2;
+    std::filesystem::path path = std::filesystem::temp_directory_path() / "cactus_test_int8_conv1d_pointwise.weights";
+
+    std::vector<int8_t> q(C_out * C_in);
+    for (size_t c = 0; c < C_in; ++c) {
+        q[c] = 2;
+        q[C_in + c] = -3;
+    }
+    std::vector<__fp16> scales = {static_cast<__fp16>(0.25f), static_cast<__fp16>(0.5f)};
+    write_test_int8_grouped_weights(path, {C_out, C_in, 1}, C_in, q, scales);
+
+    CactusGraph g;
+    size_t input = g.input({1, 1, C_in}, Precision::FP16);
+    size_t weight = g.mmap_weights(path.string());
+    size_t output = g.conv1d_pointwise(input, weight);
+
+    std::vector<__fp16> x(C_in);
+    float sum = 0.0f;
+    for (size_t c = 0; c < C_in; ++c) {
+        float v = static_cast<float>(static_cast<int>(c % 5) - 2);
+        x[c] = static_cast<__fp16>(v);
+        sum += v;
+    }
+
+    g.set_input(input, x.data(), Precision::FP16);
+    g.execute();
+    auto* y = static_cast<__fp16*>(g.get_output(output));
+    std::filesystem::remove(path);
+
+    float y0 = static_cast<float>(y[0]);
+    float y1 = static_cast<float>(y[1]);
+    return std::abs(y0 - sum * 0.5f) < 1e-2f && std::abs(y1 - sum * -1.5f) < 1e-2f;
 }
 
 bool test_attention_int8_hybrid() {
@@ -683,6 +765,7 @@ int main() {
 
     runner.run_test("Matrix Multiplication", test_matrix_multiplication());
     runner.run_test("MatMul CQ", test_matmul_cq());
+    runner.run_test("MMap INT8 Conv1D Pointwise", test_mmap_int8_conv1d_pointwise_scales());
     runner.run_test("Transpose", test_transpose());
     runner.run_test("Reshape", test_reshape());
     runner.run_test("RMS Norm", test_rms_norm());

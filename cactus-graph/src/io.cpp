@@ -52,6 +52,51 @@ namespace {
         return filename;
     }
 
+    void attach_mapped_weight_metadata(BufferDesc& buffer, const GraphFile::MappedFile& mapped_file) {
+        Precision precision = mapped_file.precision();
+        const auto& shape = mapped_file.shape();
+        if (PrecisionTraits::is_cq(precision) && mapped_file.group_size() > 0) {
+            buffer.group_size = mapped_file.group_size();
+            buffer.num_groups = mapped_file.num_groups();
+
+            const char* scales_base = static_cast<const char*>(mapped_file.scales_data());
+            uint32_t bits = PrecisionTraits::cq_bits(precision);
+            uint32_t cb_size = 1u << bits;
+            uint32_t gs = static_cast<uint32_t>(mapped_file.group_size());
+            uint32_t K = gs * static_cast<uint32_t>(mapped_file.num_groups());
+            uint32_t N = static_cast<uint32_t>(shape.size() >= 2 ? shape[0] : 1);
+
+            size_t off = 0;
+            buffer.cq_codebook = reinterpret_cast<const __fp16*>(scales_base + off);
+            off += cb_size * sizeof(__fp16);
+            buffer.cq_input_scale = reinterpret_cast<const __fp16*>(scales_base + off);
+            off += K * sizeof(__fp16);
+            buffer.cq_input_scale_recip = reinterpret_cast<const __fp16*>(scales_base + off);
+            off += K * sizeof(__fp16);
+            buffer.cq_norms = reinterpret_cast<const __fp16*>(scales_base + off);
+            off += static_cast<size_t>(N) * mapped_file.num_groups() * sizeof(__fp16);
+
+            if (mapped_file.is_orthogonal_rotation()) {
+                buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
+                buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
+            } else {
+                buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
+                off += gs;
+                buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
+                off += gs;
+                buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
+                buffer.cq_flags = 0;
+            }
+            if (mapped_file.is_interleaved_4row()) {
+                buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+            }
+        } else if (precision == Precision::INT8 && mapped_file.group_size() > 0) {
+            buffer.group_size = mapped_file.group_size();
+            buffer.num_groups = mapped_file.num_groups();
+            buffer.set_activation_scales(const_cast<void*>(mapped_file.scales_data()), shape.empty() ? 0 : shape[0]);
+        }
+    }
+
     inline void write_u32(std::ostream& out, uint32_t v) {
       out.write(reinterpret_cast<const char*>(&v), sizeof(v));
     }
@@ -385,46 +430,7 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
 
     auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
-    if (PrecisionTraits::is_cq(precision) && mapped_file->group_size() > 0) {
-        buffer.group_size = mapped_file->group_size();
-        buffer.num_groups = mapped_file->num_groups();
-
-        const char* scales_base = static_cast<const char*>(mapped_file->scales_data());
-        uint32_t bits = PrecisionTraits::cq_bits(precision);
-        uint32_t cb_size = 1u << bits;
-        uint32_t gs = static_cast<uint32_t>(mapped_file->group_size());
-        uint32_t K = gs * static_cast<uint32_t>(mapped_file->num_groups());
-        uint32_t N = static_cast<uint32_t>(shape.size() >= 2 ? shape[0] : 1);
-
-        size_t off = 0;
-        buffer.cq_codebook = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += cb_size * sizeof(__fp16);
-        buffer.cq_input_scale = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_input_scale_recip = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_norms = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += static_cast<size_t>(N) * mapped_file->num_groups() * sizeof(__fp16);
-
-        if (mapped_file->is_orthogonal_rotation()) {
-            buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
-            buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
-        } else {
-            buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
-            buffer.cq_flags = 0;
-        }
-        if (mapped_file->is_interleaved_4row()) {
-            buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
-        }
-    } else if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
-        buffer.group_size = mapped_file->group_size();
-        buffer.num_groups = mapped_file->num_groups();
-        buffer.set_activation_scales(const_cast<void*>(mapped_file->scales_data()), shape.empty() ? 0 : shape[0]);
-    }
+    attach_mapped_weight_metadata(buffer, *mapped_file);
 
     size_t file_idx = mapped_files_.size();
     mapped_files_.push_back(std::move(mapped_file));
@@ -448,44 +454,8 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
     size_t node_id = input(shape, precision);
     set_external_input(node_id, const_cast<void*>(mapped_file->data()), precision);
 
-    if (PrecisionTraits::is_cq(precision) && mapped_file->group_size() > 0) {
-        auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
-        buffer.group_size = mapped_file->group_size();
-        buffer.num_groups = mapped_file->num_groups();
-
-
-        const char* scales_base = static_cast<const char*>(mapped_file->scales_data());
-        uint32_t bits = PrecisionTraits::cq_bits(precision);
-        uint32_t cb_size = 1u << bits;
-        uint32_t gs = static_cast<uint32_t>(mapped_file->group_size());
-        uint32_t K = gs * static_cast<uint32_t>(mapped_file->num_groups());
-        uint32_t N = static_cast<uint32_t>(shape.size() >= 2 ? shape[0] : 1);
-
-        size_t off = 0;
-        buffer.cq_codebook = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += cb_size * sizeof(__fp16);
-        buffer.cq_input_scale = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_input_scale_recip = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_norms = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += static_cast<size_t>(N) * mapped_file->num_groups() * sizeof(__fp16);
-
-        if (mapped_file->is_orthogonal_rotation()) {
-            buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
-            buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
-        } else {
-            buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
-            buffer.cq_flags = 0;
-        }
-        if (mapped_file->is_interleaved_4row()) {
-            buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
-        }
-    }
+    auto& buffer = nodes_[node_index_map_.at(node_id)]->output_buffer;
+    attach_mapped_weight_metadata(buffer, *mapped_file);
 
     size_t file_idx = mapped_files_.size();
     mapped_files_.push_back(std::move(mapped_file));
@@ -533,46 +503,7 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
     buffer.cq_rotation = nullptr;
     buffer.cq_flags = 0;
 
-    if (PrecisionTraits::is_cq(precision) && mapped_file->group_size() > 0) {
-        buffer.group_size = mapped_file->group_size();
-        buffer.num_groups = mapped_file->num_groups();
-
-        const char* scales_base = static_cast<const char*>(mapped_file->scales_data());
-        uint32_t bits = PrecisionTraits::cq_bits(precision);
-        uint32_t cb_size = 1u << bits;
-        uint32_t gs = static_cast<uint32_t>(mapped_file->group_size());
-        uint32_t K = gs * static_cast<uint32_t>(mapped_file->num_groups());
-        uint32_t N = static_cast<uint32_t>(shape.size() >= 2 ? shape[0] : 1);
-
-        size_t off = 0;
-        buffer.cq_codebook = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += cb_size * sizeof(__fp16);
-        buffer.cq_input_scale = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_input_scale_recip = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += K * sizeof(__fp16);
-        buffer.cq_norms = reinterpret_cast<const __fp16*>(scales_base + off);
-        off += static_cast<size_t>(N) * mapped_file->num_groups() * sizeof(__fp16);
-
-        if (mapped_file->is_orthogonal_rotation()) {
-            buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
-            buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
-        } else {
-            buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_right_signs = reinterpret_cast<const int8_t*>(scales_base + off);
-            off += gs;
-            buffer.cq_permutation = reinterpret_cast<const uint32_t*>(scales_base + off);
-            buffer.cq_flags = 0;
-        }
-        if (mapped_file->is_interleaved_4row()) {
-            buffer.cq_flags |= CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
-        }
-    } else if (precision == Precision::INT8 && mapped_file->group_size() > 0) {
-        buffer.group_size = mapped_file->group_size();
-        buffer.num_groups = mapped_file->num_groups();
-        buffer.set_activation_scales(const_cast<void*>(mapped_file->scales_data()), shape.empty() ? 0 : shape[0]);
-    }
+    attach_mapped_weight_metadata(buffer, *mapped_file);
 
     size_t file_idx = mapped_files_.size();
     mapped_files_.push_back(std::move(mapped_file));

@@ -41,10 +41,6 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "nemotron asr parity")
     if family in {"parakeet", "parakeet_tdt", "nemotron_asr"} and "self_attn_bias_" in out:
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "relative attention bias tensor")
-    if family in {"parakeet", "parakeet_tdt", "nemotron_asr"} and out.startswith("layer_") and (
-        "conv_pointwise" in out or "conv_depthwise" in out
-    ):
-        return TensorPolicy("fallback", "FP16", None, component, False, "none", "conformer conv tensor")
     if family in {"parakeet", "parakeet_tdt", "nemotron_asr"} and "conv_pointwise" in out and len(shape) == 3 and shape[2] == 1:
         return TensorPolicy("fallback", "INT8", 8, component, False, "none", "pointwise conv tensor")
     if "conv_depthwise.weights" in out and len(shape) == 3 and shape[1] == 1:

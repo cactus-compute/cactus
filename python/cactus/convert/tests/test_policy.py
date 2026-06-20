@@ -312,16 +312,16 @@ def test_parakeet_tdt_lstm_bias_normalization_records_provenance():
     assert provenance.transform == "parakeet_tdt_lstm_bias_sum"
 
 
-def test_policy_parakeet_conformer_conv_and_conv_bias_fp16():
+def test_policy_parakeet_conformer_conv_int8_and_conv_bias_fp16():
     weight = cactus_name_for_tensor("encoder.layers.0.conv.pointwise_conv1.weight", "parakeet_tdt", 24)
     weight_policy = policy_for_tensor(weight, (2048, 1024, 1), 4, "parakeet_tdt")
-    assert weight_policy.precision == "FP16"
-    assert weight_policy.fallback_reason == "conformer conv tensor"
+    assert weight_policy.precision == "INT8"
+    assert weight_policy.fallback_reason == "pointwise conv tensor"
 
     depthwise = cactus_name_for_tensor("encoder.layers.0.conv.depthwise_conv.weight", "parakeet_tdt", 24)
     depthwise_policy = policy_for_tensor(depthwise, (1024, 1, 9), 4, "parakeet_tdt")
-    assert depthwise_policy.precision == "FP16"
-    assert depthwise_policy.fallback_reason == "conformer conv tensor"
+    assert depthwise_policy.precision == "INT8"
+    assert depthwise_policy.fallback_reason == "depthwise conv tensor"
 
     bias = cactus_name_for_tensor("encoder.layers.0.conv.pointwise_conv1.bias", "parakeet_tdt", 24)
     bias_policy = policy_for_tensor(bias, (2048,), 4, "parakeet_tdt")
