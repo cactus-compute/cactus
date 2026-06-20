@@ -34,17 +34,84 @@ void cactus_conv1d_causal_depthwise_f16(
         __fp16*       Yb = output + n * out_bs;
 
         const __fp16* Wc = weight + c * K;
-        const ptrdiff_t causal_offset = static_cast<ptrdiff_t>((K - 1) * dilation);
+        std::vector<float> wrev(K);
+        for (size_t k = 0; k < K; ++k) wrev[k] = static_cast<float>(Wc[K - 1 - k]);
 
-        for (size_t t = 0; t < L; ++t) {
-            float acc = 0.0f;
-            for (size_t k = 0; k < K; ++k) {
-                ptrdiff_t src = static_cast<ptrdiff_t>(t) + static_cast<ptrdiff_t>(k * dilation) - causal_offset;
-                if (src >= 0) {
-                    acc += static_cast<float>(Wc[k]) * static_cast<float>(Xb[static_cast<size_t>(src) * C + c]);
+        for (size_t t0 = 0; t0 < L; t0 += T_TILE_F16) {
+            const size_t t1 = std::min(t0 + 1, L - 1);
+
+            float32x4_t vacc0 = vdupq_n_f32(0.f);
+            float32x4_t vacc1 = vdupq_n_f32(0.f);
+
+            size_t k = 0;
+            for (; k + 8 <= K; k += 8) {
+                float x0_0 = 0, x1_0 = 0, x2_0 = 0, x3_0 = 0;
+                float x0_1 = 0, x1_1 = 0, x2_1 = 0, x3_1 = 0;
+                {
+                    ptrdiff_t a0 = static_cast<ptrdiff_t>(t0) - static_cast<ptrdiff_t>((k + 0) * dilation);
+                    ptrdiff_t a1 = static_cast<ptrdiff_t>(t0) - static_cast<ptrdiff_t>((k + 1) * dilation);
+                    ptrdiff_t a2 = static_cast<ptrdiff_t>(t0) - static_cast<ptrdiff_t>((k + 2) * dilation);
+                    ptrdiff_t a3 = static_cast<ptrdiff_t>(t0) - static_cast<ptrdiff_t>((k + 3) * dilation);
+                    if (a0 >= 0) x0_0 = static_cast<float>(Xb[static_cast<size_t>(a0) * C + c]);
+                    if (a1 >= 0) x1_0 = static_cast<float>(Xb[static_cast<size_t>(a1) * C + c]);
+                    if (a2 >= 0) x2_0 = static_cast<float>(Xb[static_cast<size_t>(a2) * C + c]);
+                    if (a3 >= 0) x3_0 = static_cast<float>(Xb[static_cast<size_t>(a3) * C + c]);
+
+                    ptrdiff_t b0 = static_cast<ptrdiff_t>(t1) - static_cast<ptrdiff_t>((k + 0) * dilation);
+                    ptrdiff_t b1 = static_cast<ptrdiff_t>(t1) - static_cast<ptrdiff_t>((k + 1) * dilation);
+                    ptrdiff_t b2 = static_cast<ptrdiff_t>(t1) - static_cast<ptrdiff_t>((k + 2) * dilation);
+                    ptrdiff_t b3 = static_cast<ptrdiff_t>(t1) - static_cast<ptrdiff_t>((k + 3) * dilation);
+                    if (b0 >= 0) x0_1 = static_cast<float>(Xb[static_cast<size_t>(b0) * C + c]);
+                    if (b1 >= 0) x1_1 = static_cast<float>(Xb[static_cast<size_t>(b1) * C + c]);
+                    if (b2 >= 0) x2_1 = static_cast<float>(Xb[static_cast<size_t>(b2) * C + c]);
+                    if (b3 >= 0) x3_1 = static_cast<float>(Xb[static_cast<size_t>(b3) * C + c]);
                 }
+                float32x4_t xv0 = {x0_0, x1_0, x2_0, x3_0};
+                float32x4_t yv0 = {x0_1, x1_1, x2_1, x3_1};
+                float32x4_t wv0 = {wrev[k + 0], wrev[k + 1], wrev[k + 2], wrev[k + 3]};
+                vacc0 = vfmaq_f32(vacc0, xv0, wv0);
+                vacc1 = vfmaq_f32(vacc1, yv0, wv0);
+
+                float a0_0 = 0, a1_0 = 0, a2_0 = 0, a3_0 = 0;
+                float a0_1 = 0, a1_1 = 0, a2_1 = 0, a3_1 = 0;
+                {
+                    ptrdiff_t a0i = static_cast<ptrdiff_t>(t0) - static_cast<ptrdiff_t>((k + 4) * dilation);
+                    ptrdiff_t a1i = static_cast<ptrdiff_t>(t0) - static_cast<ptrdiff_t>((k + 5) * dilation);
+                    ptrdiff_t a2i = static_cast<ptrdiff_t>(t0) - static_cast<ptrdiff_t>((k + 6) * dilation);
+                    ptrdiff_t a3i = static_cast<ptrdiff_t>(t0) - static_cast<ptrdiff_t>((k + 7) * dilation);
+                    if (a0i >= 0) a0_0 = static_cast<float>(Xb[static_cast<size_t>(a0i) * C + c]);
+                    if (a1i >= 0) a1_0 = static_cast<float>(Xb[static_cast<size_t>(a1i) * C + c]);
+                    if (a2i >= 0) a2_0 = static_cast<float>(Xb[static_cast<size_t>(a2i) * C + c]);
+                    if (a3i >= 0) a3_0 = static_cast<float>(Xb[static_cast<size_t>(a3i) * C + c]);
+
+                    ptrdiff_t b0i = static_cast<ptrdiff_t>(t1) - static_cast<ptrdiff_t>((k + 4) * dilation);
+                    ptrdiff_t b1i = static_cast<ptrdiff_t>(t1) - static_cast<ptrdiff_t>((k + 5) * dilation);
+                    ptrdiff_t b2i = static_cast<ptrdiff_t>(t1) - static_cast<ptrdiff_t>((k + 6) * dilation);
+                    ptrdiff_t b3i = static_cast<ptrdiff_t>(t1) - static_cast<ptrdiff_t>((k + 7) * dilation);
+                    if (b0i >= 0) a0_1 = static_cast<float>(Xb[static_cast<size_t>(b0i) * C + c]);
+                    if (b1i >= 0) a1_1 = static_cast<float>(Xb[static_cast<size_t>(b1i) * C + c]);
+                    if (b2i >= 0) a2_1 = static_cast<float>(Xb[static_cast<size_t>(b2i) * C + c]);
+                    if (b3i >= 0) a3_1 = static_cast<float>(Xb[static_cast<size_t>(b3i) * C + c]);
+                }
+                float32x4_t xv1 = {a0_0, a1_0, a2_0, a3_0};
+                float32x4_t yv1 = {a0_1, a1_1, a2_1, a3_1};
+                float32x4_t wv1 = {wrev[k + 4], wrev[k + 5], wrev[k + 6], wrev[k + 7]};
+                vacc0 = vfmaq_f32(vacc0, xv1, wv1);
+                vacc1 = vfmaq_f32(vacc1, yv1, wv1);
             }
-            Yb[t * C + c] = static_cast<__fp16>(acc);
+
+            float acc0 = vaddvq_f32(vacc0);
+            float acc1 = vaddvq_f32(vacc1);
+
+            for (; k < K; ++k) {
+                ptrdiff_t a = static_cast<ptrdiff_t>(t0) - static_cast<ptrdiff_t>(k * dilation);
+                if (a >= 0) acc0 += wrev[k] * static_cast<float>(Xb[static_cast<size_t>(a) * C + c]);
+                ptrdiff_t b = static_cast<ptrdiff_t>(t1) - static_cast<ptrdiff_t>(k * dilation);
+                if (b >= 0) acc1 += wrev[k] * static_cast<float>(Xb[static_cast<size_t>(b) * C + c]);
+            }
+
+            Yb[t0 * C + c] = static_cast<__fp16>(acc0);
+            if (t0 + 1 < L) Yb[t1 * C + c] = static_cast<__fp16>(acc1);
         }
     });
 }
