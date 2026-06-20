@@ -527,7 +527,7 @@ static size_t copyMLArrayToFP16(MLMultiArray* array, __fp16* output) {
         return true;
     };
 
-    if (false && is_contiguous()) {
+    if (is_contiguous()) {
         if (array.dataType == MLMultiArrayDataTypeFloat16) {
             if (output != (__fp16*)array.dataPointer) {
                 memcpy(output, array.dataPointer, count * sizeof(__fp16));
@@ -616,7 +616,7 @@ static void copyFP16ToMLArray(const __fp16* data, size_t count, MLMultiArray* ar
         return true;
     };
 
-    if (false && is_contiguous()) {
+    if (is_contiguous()) {
         if (array.dataType == MLMultiArrayDataTypeFloat16) {
             memcpy(array.dataPointer, data, count * sizeof(__fp16));
         } else {

@@ -11,11 +11,34 @@
 namespace cactus {
 namespace engine {
 
+static void prewarm_npu_audio_encoder(npu::NPUEncoder& encoder) {
+    const std::vector<int> input_shape = encoder.get_input_shape();
+    const std::vector<int> output_shape = encoder.get_output_shape();
+    if (input_shape.empty() || output_shape.empty()) return;
+    size_t input_elems = 1;
+    for (int dim : input_shape) {
+        if (dim <= 0) return;
+        input_elems *= static_cast<size_t>(dim);
+    }
+    size_t output_elems = 1;
+    for (int dim : output_shape) {
+        if (dim <= 0) return;
+        output_elems *= static_cast<size_t>(dim);
+    }
+    std::vector<__fp16> input(input_elems, __fp16(0));
+    std::vector<__fp16> output(output_elems, __fp16(0));
+    if (!encoder.preallocate(input_shape, "x", "encoded")) return;
+    if (encoder.encode(input.data(), output.data(), input_shape, "x", "encoded") == 0) {
+        CACTUS_LOG_WARN("model", "NPU audio encoder warmup failed");
+    }
+}
+
 bool Model::load_npu_audio_encoder(const std::string& model_path, const std::string& compute_units) {
     auto encoder = npu::create_encoder();
     if (!encoder) return false;
     if (!encoder->load(model_path, compute_units)) return false;
     if (!encoder->is_available()) return false;
+    prewarm_npu_audio_encoder(*encoder);
     npu_audio_encoder_ = std::move(encoder);
     CACTUS_LOG_INFO("model", "NPU audio encoder loaded from: " << model_path);
     return true;
@@ -43,6 +66,30 @@ bool Model::load_npu_audio_encoders(const std::vector<std::string>& model_paths,
                   const int bf = bs.size() >= 2 ? bs[1] : 0;
                   return af < bf;
               });
+    if (npu_audio_prewarm_frames_ > 0) {
+        size_t feature_dim = 0;
+        for (const auto& encoder : npu_audio_encoders_) {
+            const auto shape = encoder ? encoder->get_input_shape() : std::vector<int>{};
+            if (shape.size() >= 3 && shape[2] > 0) {
+                feature_dim = static_cast<size_t>(shape[2]);
+                break;
+            }
+        }
+        if (feature_dim > 0) {
+            npu::NPUEncoder* encoder = select_npu_audio_encoder(feature_dim, npu_audio_prewarm_frames_);
+            const auto selected_shape = encoder ? encoder->get_input_shape() : std::vector<int>{};
+            const size_t selected_frames = selected_shape.size() >= 2 && selected_shape[1] > 0
+                ? static_cast<size_t>(selected_shape[1]) : 0;
+            for (const auto& candidate : npu_audio_encoders_) {
+                if (!candidate) continue;
+                const auto shape = candidate->get_input_shape();
+                if (shape.size() < 2 || shape[1] <= 0) continue;
+                if (selected_frames > 0 && static_cast<size_t>(shape[1]) <= selected_frames) {
+                    prewarm_npu_audio_encoder(*candidate);
+                }
+            }
+        }
+    }
     return loaded;
 }
 

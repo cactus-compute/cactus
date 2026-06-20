@@ -714,6 +714,14 @@ bool Model::load_manifest() {
     if (obj.count("npu_audio_compute_units") && obj.at("npu_audio_compute_units").is<std::string>()) {
         npu_audio_compute_units_ = obj.at("npu_audio_compute_units").get<std::string>();
     }
+    npu_audio_prewarm_frames_ = 0;
+    if (obj.count("inputs") && obj.at("inputs").is<picojson::object>()) {
+        const auto& inputs = obj.at("inputs").get<picojson::object>();
+        auto it = inputs.find("active_feature_frames");
+        if (it != inputs.end() && it->second.is<double>() && it->second.get<double>() > 0.0) {
+            npu_audio_prewarm_frames_ = static_cast<size_t>(it->second.get<double>());
+        }
+    }
     if (obj.count("npu_vision_encoder") && obj.at("npu_vision_encoder").is<std::string>()) {
         npu_vision_encoder_mlpackage_ = obj.at("npu_vision_encoder").get<std::string>();
     }

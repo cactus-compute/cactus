@@ -911,6 +911,7 @@ private:
     std::string npu_audio_encoder_mlpackage_;
     std::vector<std::string> npu_audio_encoder_mlpackages_;
     std::string npu_audio_compute_units_;
+    size_t npu_audio_prewarm_frames_ = 0;
     std::string npu_vision_encoder_mlpackage_;
     std::string npu_source_encoder_mlpackage_;
 
