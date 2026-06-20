@@ -128,6 +128,7 @@ FP16_ONLY_OUTPUT_OPS = {
     "attention",
     "attention_block",
     "conv_module",
+    "causal_layer_norm_conv_module",
     "dense_mlp_tq_fused",
     "rope",
 }

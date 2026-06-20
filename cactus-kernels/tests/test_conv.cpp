@@ -39,6 +39,54 @@ bool test_conv1d_causal_depthwise() {
     return true;
 }
 
+bool test_conv1d_causal_depthwise_matches_reference() {
+    const size_t N = 1, L = 16, C = 8, K = 9;
+    std::vector<__fp16> input(N * L * C), weight(C * K), causal(N * L * C);
+    std::vector<__fp16> padded_channel(N * (L + K - 1)), generic_channel(N * L);
+    fill_random_fp16(input, -0.5f, 0.5f);
+    fill_random_fp16(weight, -0.5f, 0.5f);
+
+    cactus_conv1d_causal_depthwise_f16(input.data(), weight.data(), causal.data(), N, L, C, K, 1);
+
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t t = 0; t < L; ++t) {
+            for (size_t c = 0; c < C; ++c) {
+                const size_t causal_idx = (n * L + t) * C + c;
+                float expected = 0.0f;
+                for (size_t k = 0; k < K; ++k) {
+                    ptrdiff_t src = static_cast<ptrdiff_t>(t) + static_cast<ptrdiff_t>(k) - static_cast<ptrdiff_t>(K - 1);
+                    if (src >= 0) {
+                        expected += static_cast<float>(input[(n * L + static_cast<size_t>(src)) * C + c]) * static_cast<float>(weight[c * K + k]);
+                    }
+                }
+                const __fp16 expected_h = static_cast<__fp16>(expected);
+                if (static_cast<float>(causal[causal_idx]) != static_cast<float>(expected_h)) {
+                    std::cerr << "  causal depthwise mismatch [t=" << t << ",c=" << c << "]: "
+                              << static_cast<float>(causal[causal_idx]) << " vs " << static_cast<float>(expected_h) << "\n";
+                    return false;
+                }
+            }
+        }
+    }
+    for (size_t c = 0; c < C; ++c) {
+        std::fill(padded_channel.begin(), padded_channel.end(), static_cast<__fp16>(0));
+        for (size_t t = 0; t < L; ++t) {
+            padded_channel[t + K - 1] = input[t * C + c];
+        }
+        cactus_conv1d_f16(padded_channel.data(), weight.data() + c * K, nullptr, generic_channel.data(), N, L + K - 1, 1, 1, K, 1);
+        for (size_t t = 0; t < L; ++t) {
+            const size_t causal_idx = t * C + c;
+            if (std::abs(static_cast<float>(causal[causal_idx]) - static_cast<float>(generic_channel[t])) > 1e-5f) {
+                std::cerr << "  causal depthwise generic mismatch [t=" << t << ",c=" << c << "]: "
+                          << static_cast<float>(causal[causal_idx]) << " vs "
+                          << static_cast<float>(generic_channel[t]) << "\n";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool test_stft_complex() {
     const size_t N = 1, L = 128, C_in = 1, K = 64, stride = 32;
     const size_t num_fft_bins = K / 2;
@@ -143,6 +191,7 @@ int main() {
     TestRunner runner("Convolution & Pooling");
     runner.run_test("conv1d_k3", test_conv1d_k3());
     runner.run_test("conv1d_causal_depthwise", test_conv1d_causal_depthwise());
+    runner.run_test("conv1d_causal_depthwise_ref", test_conv1d_causal_depthwise_matches_reference());
     runner.run_test("stft_complex", test_stft_complex());
     runner.run_test("maxpool1d", test_maxpool1d());
     runner.print_benchmarks_header();

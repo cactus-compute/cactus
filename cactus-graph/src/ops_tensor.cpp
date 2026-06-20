@@ -93,6 +93,12 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
             node.output_buffer.group_size = input_buffer.group_size;
             node.output_buffer.num_groups = input_buffer.num_groups;
         }
+        if (input_buffer.precision == Precision::INT8 && input_buffer.activation_scales_data != nullptr && input_buffer.group_size > 0) {
+            node.output_buffer.group_size = input_buffer.group_size;
+            node.output_buffer.num_groups = input_buffer.num_groups;
+            auto* scales = static_cast<char*>(input_buffer.activation_scales_data);
+            node.output_buffer.set_activation_scales(scales + slice_start * input_buffer.num_groups * sizeof(__fp16), slice_length);
+        }
         return;
     }
 

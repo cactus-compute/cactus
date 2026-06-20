@@ -142,13 +142,59 @@ def test_policy_parakeet_transcription_no_gptq():
     assert not p.use_gptq
 
 
-def test_policy_nemotron_asr_encoder_fp16_transcription():
+def test_policy_nemotron_asr_encoder_cq4_transcription():
     match = cactus_name_for_tensor("encoder.layers.0.self_attn.q_proj.weight", "nemotron_asr", 24)
     p = policy_for_tensor(match, (1024, 1024), 4, "nemotron_asr")
     assert match.component == "transcription"
-    assert p.precision == "FP16"
-    assert p.fallback_reason == "nemotron asr parity"
+    assert p.precision == "CQ4"
     assert not p.use_gptq
+
+
+def test_policy_nemotron_asr_conformer_conv_int8_and_rnnt_mixed_precision():
+    weight = cactus_name_for_tensor("encoder.layers.0.conv.pointwise_conv1.weight", "nemotron_asr", 24)
+    weight_policy = policy_for_tensor(weight, (2048, 1024, 1), 4, "nemotron_asr")
+    assert weight_policy.precision == "INT8"
+    assert weight_policy.fallback_reason == "pointwise conv tensor"
+
+    depthwise = cactus_name_for_tensor("encoder.layers.0.conv.depthwise_conv.weight", "nemotron_asr", 24)
+    depthwise_policy = policy_for_tensor(depthwise, (1024, 1, 9), 4, "nemotron_asr")
+    assert depthwise_policy.precision == "INT8"
+    assert depthwise_policy.fallback_reason == "depthwise conv tensor"
+
+    joint = cactus_name_for_tensor("joint.enc.weight", "nemotron_asr", 24)
+    joint_policy = policy_for_tensor(joint, (640, 1024), 4, "nemotron_asr")
+    assert joint_policy.precision == "CQ4"
+    assert joint_policy.component == "transcription"
+
+    prompt = cactus_name_for_tensor("prompt_kernel.0.weight", "nemotron_asr", 24)
+    prompt_policy = policy_for_tensor(prompt, (2048, 1152), 4, "nemotron_asr")
+    assert prompt_policy.precision == "CQ4"
+    assert prompt_policy.component == "transcription"
+
+    out = cactus_name_for_tensor("joint.joint_net.2.weight", "nemotron_asr", 24)
+    out_policy = policy_for_tensor(out, (13088, 640), 4, "nemotron_asr")
+    assert out_policy.precision == "CQ4"
+    assert out_policy.component == "transcription"
+
+    embed = cactus_name_for_tensor("decoder.prediction.embed.weight", "nemotron_asr", 24)
+    embed_policy = policy_for_tensor(embed, (13088, 640), 4, "nemotron_asr")
+    assert embed_policy.precision == "FP16"
+    assert embed_policy.fallback_reason == "rnnt predictor embedding tensor"
+
+    lstm = cactus_name_for_tensor("decoder.prediction.dec_rnn.lstm.weight_ih_l0", "nemotron_asr", 24)
+    lstm_policy = policy_for_tensor(lstm, (2560, 640), 4, "nemotron_asr")
+    assert lstm_policy.precision == "FP16"
+    assert lstm_policy.fallback_reason == "lstm recurrent tensor"
+
+    bias = cactus_name_for_tensor("joint.enc.bias", "nemotron_asr", 24)
+    bias_policy = policy_for_tensor(bias, (640,), 4, "nemotron_asr")
+    assert bias_policy.precision == "FP16"
+    assert bias_policy.fallback_reason == "bias tensor"
+
+    tdt = cactus_name_for_tensor("joint.enc.weight", "parakeet_tdt", 24)
+    tdt_policy = policy_for_tensor(tdt, (640, 1024), 4, "parakeet_tdt")
+    assert tdt_policy.precision == "FP16"
+    assert tdt_policy.fallback_reason == "tdt decoder tensor"
 
 
 def test_parakeet_tdt_hf_config_detection_and_extraction():

@@ -184,6 +184,18 @@ OPS: tuple[OpSchema, ...] = (
         is_fusible=True,
     ),
     OpSchema(
+        "causal_layer_norm_conv_module",
+        num_inputs=None,
+        attrs=(
+            "eps",
+            "has_pointwise1_bias",
+            "has_depthwise_bias",
+            "has_pointwise2_bias",
+            "depthwise_kernel_size",
+        ),
+        is_fusible=True,
+    ),
+    OpSchema(
         "gated_deltanet_prefill",
         num_inputs=None,
         attrs=(

@@ -11,6 +11,7 @@ from cactus.transpile.canonicalize.utils import remove_node
 from cactus.transpile.canonicalize.utils import rebuild_graph
 from cactus.transpile.fusion import match_attention
 from cactus.transpile.fusion import match_attention_block
+from cactus.transpile.fusion import match_causal_layer_norm_conv_module
 from cactus.transpile.fusion import match_conv_module
 from cactus.transpile.fusion import match_gated_deltanet
 from cactus.transpile.fusion import match_gated_mlp
@@ -103,8 +104,11 @@ def optimize_graph(graph: IRGraph, *, max_passes: int = 8, config: FusionConfig 
             changed = True
         if config.enable_dense_mlp_tq_fused and fuse_dense_mlp_tq(graph):
             changed = True
-        if config.enable_conv_module and fuse_conv_modules(graph):
-            changed = True
+        if config.enable_conv_module:
+            if fuse_conv_modules(graph):
+                changed = True
+            if fuse_causal_layer_norm_conv_modules(graph):
+                changed = True
         if config.enable_add_clipped and fuse_add_clipped(graph):
             changed = True
         if not changed:
@@ -1213,6 +1217,54 @@ def fuse_conv_modules(graph: IRGraph) -> bool:
             "has_pointwise2_bias": bool(match.pointwise2_bias_value_id is not None),
             "depthwise_kernel_size": int(match.depthwise_kernel_size),
             "depthwise_padding": int(match.depthwise_padding),
+        }
+        node.kind = "semantic"
+        node.meta["conv_module_nodes"] = match.node_ids
+        changed = True
+
+    if changed:
+        rebuild_graph(graph)
+    return changed
+
+
+def fuse_causal_layer_norm_conv_modules(graph: IRGraph) -> bool:
+    changed = False
+    for node_id in list(graph.order):
+        node = graph.nodes.get(node_id)
+        if node is None:
+            continue
+
+        match = match_causal_layer_norm_conv_module(graph, node)
+        if match is None:
+            continue
+
+        inputs = [
+            match.input_value_id,
+            match.pointwise1_weight_value_id,
+        ]
+        if match.pointwise1_bias_value_id is not None:
+            inputs.append(match.pointwise1_bias_value_id)
+        inputs.append(match.depthwise_weight_value_id)
+        if match.depthwise_bias_value_id is not None:
+            inputs.append(match.depthwise_bias_value_id)
+        inputs.extend(
+            [
+                match.layer_norm_weight_value_id,
+                match.layer_norm_bias_value_id,
+                match.pointwise2_weight_value_id,
+            ]
+        )
+        if match.pointwise2_bias_value_id is not None:
+            inputs.append(match.pointwise2_bias_value_id)
+
+        node.op = "causal_layer_norm_conv_module"
+        node.inputs = inputs
+        node.attrs = {
+            "eps": float(match.eps),
+            "has_pointwise1_bias": bool(match.pointwise1_bias_value_id is not None),
+            "has_depthwise_bias": bool(match.depthwise_bias_value_id is not None),
+            "has_pointwise2_bias": bool(match.pointwise2_bias_value_id is not None),
+            "depthwise_kernel_size": int(match.depthwise_kernel_size),
         }
         node.kind = "semantic"
         node.meta["conv_module_nodes"] = match.node_ids

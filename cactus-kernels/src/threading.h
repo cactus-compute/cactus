@@ -167,6 +167,10 @@ inline float32x4_t fast_sigmoid_f32x4(float32x4_t x) {
     return vdivq_f32(one, vaddq_f32(one, fast_exp_f32x4(vnegq_f32(x))));
 }
 
+inline float fast_sigmoid_f32(float x) {
+    return vgetq_lane_f32(fast_sigmoid_f32x4(vdupq_n_f32(x)), 0);
+}
+
 template<typename F32x4Op>
 inline float16x8_t apply_f32_op_on_f16x8(float16x8_t v, F32x4Op op) {
     float32x4_t lo, hi;

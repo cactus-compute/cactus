@@ -275,6 +275,119 @@ bool test_mmap_int8_conv1d_pointwise_scales() {
     return std::abs(y0 - sum * 0.5f) < 1e-2f && std::abs(y1 - sum * -1.5f) < 1e-2f;
 }
 
+bool test_axis0_slice_preserves_int8_scales() {
+    const size_t C = 2;
+    const size_t K = 9;
+    std::filesystem::path path = std::filesystem::temp_directory_path() / "cactus_test_int8_depthwise_slice.weights";
+
+    std::vector<int8_t> q(C * K);
+    for (size_t k = 0; k < K; ++k) {
+        q[k] = 2;
+        q[K + k] = -3;
+    }
+    std::vector<__fp16> scales = {static_cast<__fp16>(0.25f), static_cast<__fp16>(0.5f)};
+    write_test_int8_grouped_weights(path, {C, 1, K}, K, q, scales);
+
+    CactusGraph g;
+    size_t input = g.input({1, 1, K}, Precision::FP16);
+    size_t weight = g.mmap_weights(path.string());
+    size_t sliced = g.slice(weight, 0, 1, 1);
+    size_t output = g.conv1d(input, sliced, 1);
+
+    std::vector<__fp16> x(K, static_cast<__fp16>(1.0f));
+    g.set_input(input, x.data(), Precision::FP16);
+    g.execute();
+    auto* y = static_cast<__fp16*>(g.get_output(output));
+    std::filesystem::remove(path);
+
+    return std::abs(static_cast<float>(y[0]) - (-13.5f)) < 1e-2f;
+}
+
+bool test_glu_layout_invariant() {
+    const size_t L = 16;
+    const size_t C2 = 18;
+
+    CactusGraph g;
+    size_t input = g.input({1, L, C2}, Precision::FP16);
+    size_t direct = g.glu(input, -1);
+    size_t transposed = g.transposeN(input, {0, 2, 1});
+    size_t via_ncl = g.transposeN(g.glu(transposed, 1), {0, 2, 1});
+
+    std::vector<__fp16> x(L * C2);
+    for (size_t i = 0; i < x.size(); ++i) {
+        x[i] = static_cast<__fp16>((static_cast<int>(i % 23) - 11) / 5.0f);
+    }
+    g.set_input(input, x.data(), Precision::FP16);
+    g.execute();
+
+    auto* a = static_cast<__fp16*>(g.get_output(direct));
+    auto* b = static_cast<__fp16*>(g.get_output(via_ncl));
+    for (size_t i = 0; i < L * (C2 / 2); ++i) {
+        if (std::abs(static_cast<float>(a[i]) - static_cast<float>(b[i])) > 1e-5f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool test_int8_causal_depthwise_matches_sliced_generic_conv1d() {
+    const size_t L = 16;
+    const size_t C = 2;
+    const size_t K = 9;
+    std::filesystem::path path = std::filesystem::temp_directory_path() / "cactus_test_int8_depthwise_causal.weights";
+
+    std::vector<int8_t> q(C * K);
+    for (size_t k = 0; k < K; ++k) {
+        q[k] = static_cast<int8_t>(k - 4);
+        q[K + k] = static_cast<int8_t>(4 - static_cast<int>(k));
+    }
+    std::vector<__fp16> scales = {static_cast<__fp16>(0.25f), static_cast<__fp16>(0.5f)};
+    write_test_int8_grouped_weights(path, {C, 1, K}, K, q, scales);
+
+    std::vector<__fp16> input_nlc(L * C);
+    for (size_t t = 0; t < L; ++t) {
+        for (size_t c = 0; c < C; ++c) {
+            input_nlc[t * C + c] = static_cast<__fp16>(static_cast<float>((t + 1) * (c + 1)) / 16.0f);
+        }
+    }
+
+    CactusGraph causal_graph;
+    size_t causal_input = causal_graph.input({1, L, C}, Precision::FP16);
+    size_t causal_weight = causal_graph.mmap_weights(path.string());
+    size_t causal_output = causal_graph.conv1d_causal(causal_input, causal_weight, K, 1);
+    causal_graph.set_input(causal_input, input_nlc.data(), Precision::FP16);
+    causal_graph.execute();
+    auto* causal = static_cast<__fp16*>(causal_graph.get_output(causal_output));
+
+    bool ok = true;
+    for (size_t c = 0; c < C; ++c) {
+        CactusGraph generic_graph;
+        size_t generic_input = generic_graph.input({1, 1, L + K - 1}, Precision::FP16);
+        size_t generic_weight = generic_graph.mmap_weights(path.string());
+        size_t sliced_weight = generic_graph.slice(generic_weight, 0, c, 1);
+        size_t generic_output = generic_graph.conv1d(generic_input, sliced_weight, 1);
+
+        std::vector<__fp16> padded(L + K - 1, static_cast<__fp16>(0));
+        for (size_t t = 0; t < L; ++t) {
+            padded[t + K - 1] = input_nlc[t * C + c];
+        }
+        generic_graph.set_input(generic_input, padded.data(), Precision::FP16);
+        generic_graph.execute();
+        auto* generic = static_cast<__fp16*>(generic_graph.get_output(generic_output));
+
+        for (size_t t = 0; t < L; ++t) {
+            float a = static_cast<float>(causal[t * C + c]);
+            float b = static_cast<float>(generic[t]);
+            if (std::abs(a - b) > 1e-5f) {
+                ok = false;
+                break;
+            }
+        }
+    }
+    std::filesystem::remove(path);
+    return ok;
+}
+
 bool test_attention_int8_hybrid() {
     const size_t b = 1, s = 1, h = 2, kv = 2, d = 16;
     const size_t cache_len = 4;
@@ -766,6 +879,9 @@ int main() {
     runner.run_test("Matrix Multiplication", test_matrix_multiplication());
     runner.run_test("MatMul CQ", test_matmul_cq());
     runner.run_test("MMap INT8 Conv1D Pointwise", test_mmap_int8_conv1d_pointwise_scales());
+    runner.run_test("Axis0 Slice INT8 Scales", test_axis0_slice_preserves_int8_scales());
+    runner.run_test("GLU Layout Invariant", test_glu_layout_invariant());
+    runner.run_test("INT8 Causal Depthwise", test_int8_causal_depthwise_matches_sliced_generic_conv1d());
     runner.run_test("Transpose", test_transpose());
     runner.run_test("Reshape", test_reshape());
     runner.run_test("RMS Norm", test_rms_norm());

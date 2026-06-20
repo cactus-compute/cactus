@@ -207,7 +207,7 @@ def _save_fallback_tensor(tensor, out_path: Path, precision: str, family: str) -
         if "conv_pointwise" in out_path.name and len(shape) == 3 and shape[2] == 1:
             save_pointwise_conv1d_int8_with_header(tensor, out_path)
             return
-        if "conv_depthwise.weights" in out_path.name and len(shape) == 3 and shape[1] == 1:
+        if "conv_depthwise" in out_path.name and len(shape) == 3 and shape[1] == 1:
             save_depthwise_conv_int8_with_header(tensor, out_path)
             return
         save_tensor_with_header(tensor, out_path, precision="INT8", model_type=family, allow_int8_bias=True)

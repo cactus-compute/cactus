@@ -6,6 +6,7 @@ import struct
 import numpy as np
 import torch
 
+from cactus.convert.cli import _save_fallback_tensor
 from cactus.convert.cactus_adapters.tensor_io import (
     FLAG_HAS_SCALES,
     GROUP_SIZE,
@@ -130,6 +131,26 @@ def test_depthwise_conv_int8_preserves_kernel_shape(tmp_path):
     assert data_bytes == 6
     assert scales_bytes == 4
     assert group_size == 3
+    assert num_groups == 1
+
+
+def test_fallback_tensor_routes_nemotron_depthwise_conv_name(tmp_path):
+    weight = torch.randn(4, 1, 9)
+    out = tmp_path / "layer_0_conv_depthwise_conv.weights"
+    _save_fallback_tensor(weight, out, "INT8", "nemotron_asr")
+    raw = out.read_bytes()
+    magic, flags, alignment, ndim = struct.unpack_from("<4sIII", raw, 0)
+    dims = struct.unpack_from("<QQQQ", raw, 16)
+    precision = struct.unpack_from("<I", raw, 48)[0]
+    group_size = struct.unpack_from("<I", raw, 68)[0]
+    num_groups = struct.unpack_from("<I", raw, 72)[0]
+    assert magic == b"CACT"
+    assert flags & FLAG_HAS_SCALES
+    assert alignment == 32
+    assert ndim == 3
+    assert dims[:3] == (4, 1, 9)
+    assert precision == 0
+    assert group_size == 9
     assert num_groups == 1
 
 

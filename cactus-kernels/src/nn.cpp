@@ -61,7 +61,7 @@ void cactus_silu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
 
             for (size_t i = vectorized_end; i < end_idx; ++i) {
                 float x_f32 = static_cast<float>(input[i]);
-                output[i] = static_cast<__fp16>(x_f32 / (1.0f + expf(-x_f32)));
+                output[i] = static_cast<__fp16>(x_f32 * fast_sigmoid_f32(x_f32));
             }
         });
 }
@@ -187,7 +187,7 @@ void cactus_sigmoid_f16(const __fp16* input, __fp16* output, size_t num_elements
 
             for (size_t i = vectorized_end; i < end_idx; ++i) {
                 float x_f32 = static_cast<float>(input[i]);
-                output[i] = static_cast<__fp16>(1.0f / (1.0f + expf(-x_f32)));
+                output[i] = static_cast<__fp16>(fast_sigmoid_f32(x_f32));
             }
         });
 }
@@ -256,7 +256,7 @@ void cactus_glu_f16(
                 }
 
                 for (; i < inner_size; ++i) {
-                    const float gate = 1.0f / (1.0f + expf(-static_cast<float>(b[i])));
+                    const float gate = fast_sigmoid_f32(static_cast<float>(b[i]));
                     y[i] = static_cast<__fp16>(static_cast<float>(a[i]) * gate);
                 }
             }
@@ -294,7 +294,7 @@ void cactus_glu_f32(
                 }
 
                 for (; i < inner_size; ++i) {
-                    const float gate = 1.0f / (1.0f + expf(-b[i]));
+                    const float gate = fast_sigmoid_f32(b[i]);
                     y[i] = a[i] * gate;
                 }
             }

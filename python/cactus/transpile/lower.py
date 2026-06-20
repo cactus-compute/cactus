@@ -1841,6 +1841,60 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         current = g.conv1d_pointwise(current, pointwise2_weight, bias=pointwise2_bias)
         return [current]
 
+    if op == "causal_layer_norm_conv_module":
+        input_index = 0
+        x_nlc = _tensor(env, node.inputs[input_index])
+        input_index += 1
+
+        pointwise1_weight = _tensor(env, node.inputs[input_index])
+        input_index += 1
+        pointwise1_bias = None
+        if bool(node.attrs.get("has_pointwise1_bias", False)):
+            pointwise1_bias = _tensor(env, node.inputs[input_index])
+            input_index += 1
+
+        depthwise_weight = _tensor(env, node.inputs[input_index])
+        input_index += 1
+        depthwise_bias = None
+        if bool(node.attrs.get("has_depthwise_bias", False)):
+            depthwise_bias = _tensor(env, node.inputs[input_index])
+            input_index += 1
+
+        layer_norm_weight = _tensor(env, node.inputs[input_index])
+        layer_norm_bias = _tensor(env, node.inputs[input_index + 1])
+        input_index += 2
+
+        pointwise2_weight = _tensor(env, node.inputs[input_index])
+        input_index += 1
+        pointwise2_bias = None
+        if bool(node.attrs.get("has_pointwise2_bias", False)):
+            pointwise2_bias = _tensor(env, node.inputs[input_index])
+
+        if len(x_nlc.shape) != 3:
+            raise NotImplementedError(f"causal_layer_norm_conv_module expects rank-3 NLC input, got {x_nlc.shape}")
+        kernel_size = int(node.attrs.get("depthwise_kernel_size", 0))
+        if len(depthwise_weight.shape) != 3 or kernel_size != int(depthwise_weight.shape[2]):
+            raise NotImplementedError(
+                f"causal_layer_norm_conv_module got kernel_size={kernel_size} weight_shape={depthwise_weight.shape}"
+            )
+
+        current = g.conv1d_pointwise(x_nlc, pointwise1_weight, bias=pointwise1_bias)
+        current = g.glu(current, axis=-1)
+        current = g.conv1d_causal(current, depthwise_weight, kernel_size=kernel_size, dilation=1)
+        if depthwise_bias is not None:
+            bias_reshaped = g.reshape(depthwise_bias, (1, 1, int(depthwise_weight.shape[0])))
+            current, bias_reshaped = _legalize_elementwise_binary_inputs(g, current, bias_reshaped)
+            current = g.add(current, bias_reshaped)
+        current = g.layer_norm(
+            current,
+            layer_norm_weight,
+            bias=layer_norm_bias,
+            eps=float(node.attrs.get("eps", 1e-5)),
+        )
+        current = g.silu(current)
+        current = g.conv1d_pointwise(current, pointwise2_weight, bias=pointwise2_bias)
+        return [current]
+
     if op == "conv1d":
         x = _tensor(env, node.inputs[0])
         weight = _tensor(env, node.inputs[1])

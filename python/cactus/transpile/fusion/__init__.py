@@ -1,4 +1,6 @@
 from cactus.transpile.fusion.conv import ConvModuleMatch
+from cactus.transpile.fusion.conv import CausalLayerNormConvModuleMatch
+from cactus.transpile.fusion.conv import match_causal_layer_norm_conv_module
 from cactus.transpile.fusion.conv import match_conv_module
 from cactus.transpile.fusion.attention import AttentionBlockMatch
 from cactus.transpile.fusion.attention import AttentionMatch
@@ -23,6 +25,7 @@ from cactus.transpile.fusion.rope import match_rope
 
 __all__ = [
     "ConvModuleMatch",
+    "CausalLayerNormConvModuleMatch",
     "AttentionBlockMatch",
     "AttentionMatch",
     "SelfAttentionBlockMatch",
@@ -37,6 +40,7 @@ __all__ = [
     "match_attention_block",
     "match_self_attention_block",
     "match_conv_module",
+    "match_causal_layer_norm_conv_module",
     "match_gated_deltanet",
     "match_gated_mlp",
     "match_linear",
