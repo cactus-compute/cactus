@@ -2006,7 +2006,12 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         if dilation != 1:
             raise NotImplementedError(f"conv2d with dilation != 1 is unsupported: {dilation}")
 
-        if stride == 2 and padding == 0 and groups == 1 and weight.shape[2:] == (3, 3):
+        is_depthwise_k3 = (
+            groups == x.shape[1] == weight.shape[0]
+            and weight.shape[1] == 1
+            and weight.shape[2:] == (3, 3)
+        )
+        if stride == 2 and padding == 0 and weight.shape[2:] == (3, 3) and (groups == 1 or is_depthwise_k3):
             batch_size, channels, height, width = (int(dim) for dim in x.shape)
             pad_dtype = _torch_dtype_for_graph_dtype(x.dtype)
             top = _materialize_constant_tensor(
@@ -2027,7 +2032,10 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
                 torch.zeros((batch_size, channels, height + 2, 1), dtype=pad_dtype),
             )
             x = g.cat([left, x, right], axis=3)
-            y = g.conv2d_k3s2p1(x, weight, bias=bias)
+            if is_depthwise_k3:
+                y = g.conv2d_depthwise_k3s2p1(x, weight, bias=bias)
+            else:
+                y = g.conv2d_k3s2p1(x, weight, bias=bias)
             output_height = ((height - 3) // 2) + 1
             output_width = ((width - 3) // 2) + 1
             y = g.slice(y, axis=2, start=1, length=output_height)

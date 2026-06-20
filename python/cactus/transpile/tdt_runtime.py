@@ -114,6 +114,18 @@ class ParakeetTDTConfig:
     blank_id: int
     vocabulary: tuple[str, ...]
     encoder_hidden_act: str
+    attention_context_style: str = "regular"
+    attention_context_size: tuple[int, int] = (-1, -1)
+
+
+def _parse_attention_context_size(raw: Any) -> tuple[int, int]:
+    if isinstance(raw, (list, tuple)) and raw:
+        first = raw[0]
+        if isinstance(first, (list, tuple)) and len(first) >= 2:
+            return (int(first[0]), int(first[1]))
+        if len(raw) >= 2:
+            return (int(raw[0]), int(raw[1]))
+    return (-1, -1)
 
 
 def prepare_parakeet_tdt_audio_features(
@@ -312,6 +324,8 @@ def load_parakeet_tdt_config(model_source: str) -> ParakeetTDTConfig:
         blank_id=blank_id,
         vocabulary=vocabulary,
         encoder_hidden_act=str(_cfg_get(root, "encoder_hidden_act", _cfg_get(encoder, "activation", _cfg_get(encoder, "hidden_act", "silu")))).lower(),
+        attention_context_style=str(_cfg_get(encoder, "att_context_style", "regular")),
+        attention_context_size=_parse_attention_context_size(_cfg_get(encoder, "att_context_size", None)),
     )
 
 
@@ -412,14 +426,12 @@ def _relative_position_embeddings(*, seq_len: int, hidden_dim: int, device: torc
 def _relative_position_bias(query: torch.Tensor, relative_key: torch.Tensor, *, scale: float) -> torch.Tensor:
     batch, heads, seq_len, _ = query.shape
     scores = torch.matmul(query, relative_key.transpose(-1, -2))
-    rel_index = (
-        torch.arange(seq_len, device=query.device).view(seq_len, 1)
-        - torch.arange(seq_len, device=query.device).view(1, seq_len)
-        + (seq_len - 1)
-    )
-    rel_index = rel_index.view(1, 1, seq_len, seq_len).expand(batch, heads, seq_len, seq_len)
-    gathered = scores.gather(-1, rel_index)
-    return gathered * float(scale)
+    pos_len = 2 * seq_len - 1
+    shifted = F.pad(scores, (1, 0))
+    shifted = shifted.reshape(batch, heads, pos_len + 1, seq_len)
+    shifted = shifted[:, :, 1:, :]
+    shifted = shifted.reshape(batch, heads, seq_len, pos_len)
+    return shifted[:, :, :, :seq_len] * float(scale)
 
 
 def _relative_position_bias_static(query: torch.Tensor, relative_key: torch.Tensor, *, scale: float) -> torch.Tensor:
@@ -431,6 +443,30 @@ def _relative_position_bias_static(query: torch.Tensor, relative_key: torch.Tens
     x = x[:, :, 1:, :]
     x = x.reshape(batch, heads, seq_len, pos_len)
     return x[:, :, :, :seq_len] * float(scale)
+
+
+def _attention_context_bias(config: ParakeetTDTConfig, seq_len: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor | None:
+    left, right = config.attention_context_size
+    if left < 0 and right < 0:
+        return None
+    style = config.attention_context_style
+    positions = torch.arange(seq_len, device=device)
+    if style == "chunked_limited" and right >= 0:
+        chunk_size = int(right) + 1
+        query_chunks = torch.div(positions, chunk_size, rounding_mode="trunc").view(seq_len, 1)
+        key_chunks = torch.div(positions, chunk_size, rounding_mode="trunc").view(1, seq_len)
+        diff_chunks = query_chunks - key_chunks
+        left_chunks = (int(left) // chunk_size) if left >= 0 else 10000
+        allowed = (diff_chunks <= left_chunks) & (diff_chunks >= 0)
+    else:
+        query_positions = positions.view(seq_len, 1)
+        key_positions = positions.view(1, seq_len)
+        allowed = torch.ones((seq_len, seq_len), dtype=torch.bool, device=device)
+        if left >= 0:
+            allowed &= key_positions >= query_positions - int(left)
+        if right >= 0:
+            allowed &= key_positions <= query_positions + int(right)
+    return (~allowed).to(dtype=dtype).view(1, 1, seq_len, seq_len) * -1e4
 
 
 class ParakeetTDTFeedForward(nn.Module):
@@ -505,6 +541,9 @@ class ParakeetTDTSelfAttention(nn.Module):
             rel_k_heads,
             scale=self.config.attention_scale,
         )
+        context_bias = _attention_context_bias(self.config, seq_len, device=x.device, dtype=rel_bias.dtype)
+        if context_bias is not None:
+            rel_bias = rel_bias + context_bias
         attn = F.scaled_dot_product_attention(
             q_u_heads,
             k_heads,
@@ -623,14 +662,15 @@ class ParakeetTDTPreEncode(nn.Module):
         super().__init__()
         channels = config.subsampling_conv_channels
         self.causal_downsampling = config.causal_downsampling
+        conv_padding = 0 if config.causal_downsampling else 1
         self.conv = nn.ModuleList(
             [
-                nn.Conv2d(1, channels, kernel_size=3, stride=2, padding=1),
+                nn.Conv2d(1, channels, kernel_size=3, stride=2, padding=conv_padding),
                 nn.Identity(),
-                nn.Conv2d(channels, channels, kernel_size=3, stride=2, padding=1, groups=channels),
+                nn.Conv2d(channels, channels, kernel_size=3, stride=2, padding=conv_padding, groups=channels),
                 nn.Conv2d(channels, channels, kernel_size=1, stride=1, padding=0),
                 nn.Identity(),
-                nn.Conv2d(channels, channels, kernel_size=3, stride=2, padding=1, groups=channels),
+                nn.Conv2d(channels, channels, kernel_size=3, stride=2, padding=conv_padding, groups=channels),
                 nn.Conv2d(channels, channels, kernel_size=1, stride=1, padding=0),
             ]
         )
@@ -655,13 +695,13 @@ class ParakeetTDTPreEncode(nn.Module):
             raise ValueError(f"expected input_features [batch, frames, mels], got {tuple(input_features.shape)}")
         x = input_features.unsqueeze(1)
         if self.causal_downsampling:
-            x = F.pad(x, (1, 0, 1, 0))
+            x = F.pad(x, (2, 1, 2, 1))
         x = F.relu(self.conv[0](x))
         if self.causal_downsampling:
-            x = F.pad(x, (1, 0, 1, 0))
+            x = F.pad(x, (2, 1, 2, 1))
         x = F.relu(self.conv[3](self.conv[2](x)))
         if self.causal_downsampling:
-            x = F.pad(x, (1, 0, 1, 0))
+            x = F.pad(x, (2, 1, 2, 1))
         x = F.relu(self.conv[6](self.conv[5](x)))
         x = x.permute(0, 2, 1, 3).reshape(x.shape[0], x.shape[2], -1)
         return self.out(x)
@@ -703,7 +743,7 @@ class ParakeetTDTANESelfAttention(nn.Module):
         with torch.no_grad():
             rel_k = attn.linear_pos(rel_pos).view(
                 1, 2 * int(seq_len) - 1, self.config.attention_heads, self.config.attention_head_dim
-            ).flip(1)
+            )
         self.register_buffer("_rel_k", rel_k.detach(), persistent=False)
 
     def forward(self, x: torch.Tensor, key_bias: torch.Tensor | None = None) -> torch.Tensor:
@@ -724,6 +764,9 @@ class ParakeetTDTANESelfAttention(nn.Module):
             rel_k_heads,
             scale=self.config.attention_scale,
         )
+        context_bias = _attention_context_bias(self.config, seq_len, device=x.device, dtype=rel_bias.dtype)
+        if context_bias is not None:
+            rel_bias = rel_bias + context_bias
         if key_bias is not None:
             rel_bias = rel_bias + key_bias
         attn = F.scaled_dot_product_attention(

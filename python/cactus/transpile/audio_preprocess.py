@@ -178,6 +178,7 @@ def generic_log_mel_features(
     frame_length: int,
     preemphasis: float | None = None,
     mel_floor: np.float32 = _PARAKEET_LOG_FLOOR,
+    mel_floor_additive: bool = False,
     normalize_active_frames_only: bool | None = True,
 ) -> tuple[np.ndarray, int]:
     waveform_tensor = torch.from_numpy(waveform).to(torch.float32).unsqueeze(0)
@@ -208,7 +209,10 @@ def generic_log_mel_features(
     feature_length = max(1, int(waveform.shape[0] // hop_length))
     mel_filters = torch.from_numpy(_mel_filter_bank(num_mels, sample_rate, n_fft)).to(torch.float32)
     mel_spec = power.transpose(1, 2) @ mel_filters
-    mel_spec = torch.log(torch.clamp(mel_spec, min=float(mel_floor)))
+    if mel_floor_additive:
+        mel_spec = torch.log(mel_spec + float(mel_floor))
+    else:
+        mel_spec = torch.log(torch.clamp(mel_spec, min=float(mel_floor)))
 
     if normalize_active_frames_only is None:
         pass

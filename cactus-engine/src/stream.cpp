@@ -90,8 +90,10 @@ std::string strip_annotations(const std::string& text) {
     return trim(out);
 }
 
-std::string strip_trailing_language_tag(const std::string& text) {
-    return trim(std::regex_replace(text, std::regex(R"(\s*<[a-z]{2}(?:-[A-Z]{2})?>\s*$)"), ""));
+std::string strip_language_tags(const std::string& text) {
+    std::string out = std::regex_replace(text, std::regex(R"(\s*<[a-z]{2}(?:-[A-Z]{2})?>\s*)"), " ");
+    out = std::regex_replace(out, std::regex(R"(\s+)"), " ");
+    return trim(out);
 }
 
 std::string target_lang_option(const std::string& json) {
@@ -135,6 +137,7 @@ std::vector<TranscriptSegment> whisper_transcribe(StreamTranscribe* s, const std
 std::vector<float> window_features(std::vector<float> window, size_t mel_bins, bool is_nemotron) {
     if (window.empty()) return {};
     auto cfg = cactus::audio::get_parakeet_spectrogram_config();
+    if (is_nemotron) cfg.mel_floor_additive = true;
     const size_t waveform_samples = window.size();
     cactus::audio::apply_preemphasis(window, 0.97f);
     const int mel_norm_type = is_nemotron ? 1 : 0;
@@ -174,34 +177,22 @@ std::string parakeet_decode_window(StreamTranscribe* s, size_t window_start, siz
 
     auto* tokenizer = model->get_tokenizer();
     if (!tokenizer) return "";
-
-    const std::vector<uint32_t>& pending_tokens = s->is_nemotron ? s->rstate.pending : s->pstate.pending;
-    if (s->is_nemotron && !is_final) {
-        if (pending_text) {
-            std::vector<uint32_t> preview = tokens;
-            preview.insert(preview.end(), pending_tokens.begin(), pending_tokens.end());
-            *pending_text = strip_trailing_language_tag(tokenizer->decode(preview));
-        }
-        const float confirmed_sec = s->rstate.confirmed_sec;
-        if (!tokens.empty() && confirmed_sec > 0.0f) {
-            s->samples_decoded_up_to = window_start + static_cast<size_t>(confirmed_sec * kSampleRateF);
-        }
-        return "";
-    }
+    const bool strip_lang_tags = s->is_nemotron && json_bool_field_or(s->options_json, "strip_lang_tags", true);
 
     s->committed_tokens.insert(s->committed_tokens.end(), tokens.begin(), tokens.end());
     std::string full = tokenizer->decode(s->committed_tokens);
+    if (strip_lang_tags) full = strip_language_tags(full);
     std::string delta = full.size() > s->emitted_text.size() ? full.substr(s->emitted_text.size()) : std::string();
-    if (s->is_nemotron) delta = strip_trailing_language_tag(delta);
     s->emitted_text = full;
 
+    const std::vector<uint32_t>& pending_tokens = s->is_nemotron ? s->rstate.pending : s->pstate.pending;
     if (pending_text && !pending_tokens.empty()) {
         std::vector<uint32_t> combined = s->committed_tokens;
         combined.insert(combined.end(), pending_tokens.begin(), pending_tokens.end());
         std::string with_pending = tokenizer->decode(combined);
+        if (strip_lang_tags) with_pending = strip_language_tags(with_pending);
         if (with_pending.size() > full.size()) {
             *pending_text = with_pending.substr(full.size());
-            if (s->is_nemotron) *pending_text = strip_trailing_language_tag(*pending_text);
         }
     }
 
@@ -459,7 +450,9 @@ int cactus_stream_transcribe_stop(cactus_stream_transcribe_t stream,
         std::string confirmed = (s->is_parakeet || s->is_nemotron)
             ? parakeet_flush(s, stats)
             : whisper_flush(s, stats);
-        if (s->is_nemotron) confirmed = strip_trailing_language_tag(confirmed);
+        if (s->is_nemotron && json_bool_field_or(s->options_json, "strip_lang_tags", true)) {
+            confirmed = strip_language_tags(confirmed);
+        }
         result = write_result(response_buffer, buffer_size, confirmed, "", stats);
     } catch (const std::exception& e) {
         last_error_message = std::string("stream_transcribe_stop: ") + e.what();

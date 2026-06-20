@@ -74,6 +74,16 @@ class ReusedLSTMStateOutput(torch.nn.Module):
         return h1_next, h0_next, c0_next
 
 
+class DepthwiseConv2dStride2Padding0(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.randn(4, 1, 3, 3) * 0.1)
+        self.bias = torch.nn.Parameter(torch.randn(4) * 0.1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.conv2d(x, self.weight, self.bias, stride=2, padding=0, groups=4)
+
+
 def _op_counts(module: torch.nn.Module) -> Counter[str]:
     example = torch.randn(2, 4)
     captured = capture_model(module, (example,))
@@ -125,6 +135,22 @@ def test_reused_lstm_state_output_is_materialized() -> None:
             atol=2e-3,
             rtol=2e-3,
         )
+
+
+def test_depthwise_conv2d_stride2_padding0_lowers() -> None:
+    torch.manual_seed(11)
+    module = DepthwiseConv2dStride2Padding0().eval()
+    x = torch.randn(1, 4, 9, 11)
+    with torch.no_grad():
+        expected = module(x)
+
+    captured = capture_model(module, (x,))
+    optimized = optimize_graph(captured.ir_graph)
+    lowered = transpile_preoptimized_ir(optimized)
+    lowered.set_inputs([x.numpy()])
+    actual = torch.from_numpy(lowered.execute()[0].numpy())
+
+    torch.testing.assert_close(actual.float(), expected.float(), atol=2e-3, rtol=2e-3)
 
 
 def test_dense_mlp_fusion_uses_topology_not_layer_names() -> None:

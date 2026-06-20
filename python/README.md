@@ -227,7 +227,7 @@ result = cactus_stream_transcribe_process(stream: int, pcm_data: bytes) -> dict 
 result = cactus_stream_transcribe_stop(stream: int) -> dict                      # {"confirmed": str, "pending": ""}; destroys the session
 ```
 
-`options` is forwarded to `cactus_transcribe` for Whisper and Nemotron (e.g. `language`, `target_lang`, `max_tokens`); the Parakeet TDT path ignores it. Chunking is handled internally.
+`options` is forwarded to `cactus_transcribe` for Whisper and Nemotron. Whisper accepts options such as `language` and `max_tokens`; Nemotron accepts `language` / `target_lang`. The Parakeet TDT path ignores it. Chunking is handled internally.
 
 ```python
 stream = cactus_stream_transcribe_start(model, {"language": "en"})

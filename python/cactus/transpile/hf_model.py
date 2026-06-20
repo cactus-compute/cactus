@@ -61,6 +61,7 @@ from cactus.transpile.tdt_runtime import load_tdt_local_model
 from cactus.transpile.tdt_runtime import prepare_parakeet_tdt_audio_features
 from cactus.transpile.rnnt_runtime import greedy_decode_nemotron_asr_token_ids
 from cactus.transpile.rnnt_runtime import load_nemotron_asr_local_model
+from cactus.transpile.rnnt_runtime import _valid_hidden_frame_count
 from cactus.transpile.rnnt_runtime import prepare_nemotron_asr_audio_features
 from cactus.transpile.weight_compat import ensure_binding_compatible
 
@@ -567,6 +568,11 @@ def _run_parakeet_tdt_component_decode(
         initial_store=_named_tensor_store(prepared),
     )
     encoder_hidden_states = np.asarray(store["encoder_hidden_states"])
+    active_frames = prepared.metadata.get("active_feature_frames")
+    if isinstance(active_frames, int):
+        total_frames = int(prepared.tensors[0].shape[1])
+        valid_hidden = _valid_hidden_frame_count(active_frames, total_frames, int(encoder_hidden_states.shape[1]))
+        encoder_hidden_states = encoder_hidden_states[:, :valid_hidden, :]
     batch_size = int(encoder_hidden_states.shape[0])
     if batch_size != 1:
         raise ValueError("Parakeet TDT component decode currently expects batch size 1")
@@ -1095,7 +1101,12 @@ def _run_component_pipeline_transpile(
             return 0
 
         print("reference_begin=true")
-        reference_token_ids = model.greedy_decode_token_ids(prepared.tensors[0], language="auto")
+        active_frames = prepared.metadata.get("active_feature_frames")
+        reference_token_ids = model.greedy_decode_token_ids(
+            prepared.tensors[0],
+            language="auto",
+            active_frames=active_frames if isinstance(active_frames, int) else None,
+        )
         reference_transcript = model.decode_token_ids(reference_token_ids)
         print("reference_done=true")
         print(f"reference_transcript={reference_transcript!r}")
@@ -1584,7 +1595,7 @@ def _prepare_fallback_audio_inputs(
                 if task == "rnnt_transcription" or "nemotron" in model_type
                 else prepare_parakeet_tdt_audio_features
             )
-            parakeet_features, _ = prepare_native_features(
+            parakeet_features, active_frames = prepare_native_features(
                 audio_file,
                 expected_frames=expected_frames,
                 expected_mels=num_mels,
@@ -1599,6 +1610,7 @@ def _prepare_fallback_audio_inputs(
                     "sample_rate": sample_rate,
                     "fallback_audio_preprocessor": True,
                     "native_parakeet_audio_preprocessor": True,
+                    "active_feature_frames": int(active_frames),
                     "input_shapes": {
                         name: list(tensor.shape)
                         for name, tensor in zip(input_names, tensors)

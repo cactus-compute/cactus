@@ -2973,6 +2973,7 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     std::vector<__fp16> npu_hidden_storage;
     bool used_npu = false;
     size_t npu_hidden_T = 0;
+    size_t npu_hidden_D = 0;
     if (has_npu_audio_encoder()) {
         const std::vector<int> in_shape = npu_audio_encoder_->get_input_shape();
         const std::vector<int> out_shape = npu_audio_encoder_->get_output_shape();
@@ -2983,6 +2984,7 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
             const size_t window_frames = static_cast<size_t>(in_shape[1]);
             const size_t window_hidden = static_cast<size_t>(out_shape[1]);
             const size_t hidden_dim_npu = static_cast<size_t>(out_shape[2]);
+            npu_hidden_D = hidden_dim_npu;
             const size_t chunk_input_elems = window_frames * expected_mels;
             const size_t chunk_output_elems = window_hidden * hidden_dim_npu;
             const size_t num_chunks = (copy_frames + window_frames - 1) / window_frames;
@@ -3044,13 +3046,22 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     }
     size_t hidden_node = static_cast<size_t>(audio_enc->output_node_ids[hidden_idx]);
     const auto& hidden_desc = audio_enc->graph->get_output_buffer(hidden_node);
+    if (hidden_desc.shape.size() < 3) {
+        CACTUS_LOG_ERROR("model", "encoder_hidden_states must be 3D [B, T, D]");
+        return emitted;
+    }
+    if (used_npu && npu_hidden_D != hidden_desc.shape[2]) {
+        throw std::runtime_error(
+            "NPU audio encoder hidden dimension " + std::to_string(npu_hidden_D) +
+            " does not match decoder graph hidden dimension " + std::to_string(hidden_desc.shape[2]));
+    }
     const uint8_t* hidden_ptr;
     if (used_npu) {
         hidden_ptr = reinterpret_cast<const uint8_t*>(npu_hidden_storage.data());
     } else {
         hidden_ptr = static_cast<const uint8_t*>(audio_enc->graph->get_output(hidden_node));
     }
-    if (hidden_desc.shape.size() < 3 || hidden_ptr == nullptr) {
+    if (hidden_ptr == nullptr) {
         CACTUS_LOG_ERROR("model", "encoder_hidden_states must be 3D [B, T, D]");
         return emitted;
     }
@@ -3132,13 +3143,10 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         };
     }
 
-    size_t commit_to = T;
-    if (stream) {
-        size_t valid_hidden = T;
-        if (!used_npu && expected_frames > 0)
-            valid_hidden = std::min<size_t>(T, (copy_frames * T) / expected_frames);
-        commit_to = (end_frame > 0) ? std::min(end_frame, valid_hidden) : valid_hidden;
-    }
+    size_t valid_hidden = T;
+    if (!used_npu && expected_frames > 0 && copy_frames > 0)
+        valid_hidden = std::min<size_t>(T, (copy_frames * T + expected_frames - 1) / expected_frames);
+    size_t commit_to = (stream && end_frame > 0) ? std::min(end_frame, valid_hidden) : valid_hidden;
     Tokenizer* stream_tok = stream ? get_tokenizer() : nullptr;
     const auto& tdt_vocab_bias = get_vocab_bias();
     const float frame_sec = (160.0f / 16000.0f) *
@@ -3311,6 +3319,7 @@ std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& a
     std::vector<__fp16> npu_hidden_storage;
     bool used_npu = false;
     size_t npu_hidden_T = 0;
+    size_t npu_hidden_D = 0;
     npu::NPUEncoder* npu_audio_encoder = select_npu_audio_encoder(expected_mels, source_frames);
     if (npu_audio_encoder) {
         const std::vector<int> in_shape = npu_audio_encoder->get_input_shape();
@@ -3322,38 +3331,26 @@ std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& a
             const size_t window_frames = static_cast<size_t>(in_shape[1]);
             const size_t window_hidden = static_cast<size_t>(out_shape[1]);
             const size_t hidden_dim_npu = static_cast<size_t>(out_shape[2]);
-            const size_t chunk_input_elems = window_frames * expected_mels;
-            const size_t chunk_output_elems = window_hidden * hidden_dim_npu;
-            const size_t num_chunks = (source_frames + window_frames - 1) / window_frames;
-            const size_t total_hidden_T = num_chunks * window_hidden;
-            npu_hidden_storage.assign(total_hidden_T * hidden_dim_npu, __fp16(0));
+            npu_hidden_D = hidden_dim_npu;
+            npu_hidden_storage.assign(window_hidden * hidden_dim_npu, __fp16(0));
             const bool want_probe = handoff_probe_loaded_ &&
                 static_cast<size_t>(handoff_probe_feat_dim_) == hidden_dim_npu;
-            std::vector<__fp16> input_fp16(chunk_input_elems);
-            bool all_ok = num_chunks > 0;
-            for (size_t c = 0; c < num_chunks && all_ok; ++c) {
-                if (should_stop && should_stop->load()) return emitted;
-                const size_t frame_start = c * window_frames;
-                const size_t frame_end = std::min(frame_start + window_frames, source_frames);
-                std::fill(input_fp16.begin(), input_fp16.end(), __fp16(0));
-                for (size_t t = frame_start; t < frame_end; ++t) {
-                    const size_t local = (t - frame_start) * expected_mels;
-                    for (size_t m = 0; m < expected_mels; ++m) {
-                        input_fp16[local + m] = static_cast<__fp16>(audio_features[m * source_frames + t]);
-                    }
+            std::vector<__fp16> input_fp16(window_frames * expected_mels, __fp16(0));
+            if (should_stop && should_stop->load()) return emitted;
+            for (size_t t = 0; t < source_frames; ++t) {
+                const size_t local = t * expected_mels;
+                for (size_t m = 0; m < expected_mels; ++m) {
+                    input_fp16[local + m] = static_cast<__fp16>(audio_features[m * source_frames + t]);
                 }
-                __fp16* out_ptr = npu_hidden_storage.data() + c * chunk_output_elems;
-                size_t written = npu_audio_encoder->encode(
-                    input_fp16.data(), out_ptr, in_shape, "x", "encoded");
-                if (written == 0) { all_ok = false; break; }
             }
-            if (all_ok) {
+            size_t written = npu_audio_encoder->encode(
+                input_fp16.data(), npu_hidden_storage.data(), in_shape, "x", "encoded");
+            if (written > 0) {
                 used_npu = true;
-                const size_t valid_input = source_frames;
-                npu_hidden_T = (valid_input * window_hidden + window_frames - 1) / window_frames;
-                if (npu_hidden_T > total_hidden_T) npu_hidden_T = total_hidden_T;
+                npu_hidden_T = (source_frames * window_hidden + window_frames - 1) / window_frames;
+                if (npu_hidden_T > window_hidden) npu_hidden_T = window_hidden;
                 CACTUS_LOG_INFO("model", "Nemotron audio encoder ran on NPU ("
-                                << num_chunks << " chunks, " << npu_hidden_T << " valid hidden frames)");
+                                << window_frames << " frame capacity, " << npu_hidden_T << " valid hidden frames)");
                 if (want_probe) {
                     const size_t probe_elems = npu_hidden_T * hidden_dim_npu;
                     handoff_probe_hidden_.reserve(handoff_probe_hidden_.size() + probe_elems);
@@ -3365,7 +3362,7 @@ std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& a
                                     << " NPU probe frames for the handoff probe");
                 }
             } else {
-                CACTUS_LOG_WARN("model", "NPU audio encoder chunk failed; falling back to CPU graph");
+                CACTUS_LOG_WARN("model", "NPU audio encoder failed; falling back to CPU graph");
             }
         }
     }
@@ -3387,13 +3384,22 @@ std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& a
     }
     size_t hidden_node = static_cast<size_t>(audio_enc->output_node_ids[hidden_idx]);
     const auto& hidden_desc = audio_enc->graph->get_output_buffer(hidden_node);
+    if (hidden_desc.shape.size() < 3) {
+        CACTUS_LOG_ERROR("model", "encoder_hidden_states must be 3D [B, T, D]");
+        return emitted;
+    }
+    if (used_npu && npu_hidden_D != hidden_desc.shape[2]) {
+        throw std::runtime_error(
+            "NPU audio encoder hidden dimension " + std::to_string(npu_hidden_D) +
+            " does not match decoder graph hidden dimension " + std::to_string(hidden_desc.shape[2]));
+    }
     const uint8_t* hidden_ptr;
     if (used_npu) {
         hidden_ptr = reinterpret_cast<const uint8_t*>(npu_hidden_storage.data());
     } else {
         hidden_ptr = static_cast<const uint8_t*>(audio_enc->graph->get_output(hidden_node));
     }
-    if (hidden_desc.shape.size() < 3 || hidden_ptr == nullptr) {
+    if (hidden_ptr == nullptr) {
         CACTUS_LOG_ERROR("model", "encoder_hidden_states must be 3D [B, T, D]");
         return emitted;
     }
@@ -3509,13 +3515,10 @@ std::vector<uint32_t> Model::transcribe_nemotron_asr(const std::vector<float>& a
 
     uint32_t last_token = (stream && stream->initialized) ? stream->last_token : effective_blank;
     size_t time_index = (stream && stream->initialized) ? stream->time_index : 0;
-    size_t commit_to = T;
-    if (stream) {
-        size_t valid_hidden = T;
-        if (!used_npu && expected_frames > 0)
-            valid_hidden = std::min<size_t>(T, (copy_frames * T) / expected_frames);
-        commit_to = (end_frame > 0) ? std::min(end_frame, valid_hidden) : valid_hidden;
-    }
+    size_t valid_hidden = T;
+    if (!used_npu && expected_frames > 0 && copy_frames > 0)
+        valid_hidden = std::min<size_t>(T, (copy_frames * T + expected_frames - 1) / expected_frames);
+    size_t commit_to = (stream && end_frame > 0) ? std::min(end_frame, valid_hidden) : valid_hidden;
     Tokenizer* stream_tok = stream ? get_tokenizer() : nullptr;
     const auto& vocab_bias = get_vocab_bias();
     const float frame_sec = (160.0f / 16000.0f) *

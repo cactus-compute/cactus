@@ -610,6 +610,17 @@ inline std::string json_string_field(const std::string& json, const std::string&
     return {};
 }
 
+inline bool json_bool_field_or(const std::string& json, const std::string& key, bool fallback) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return fallback;
+    size_t i = pos + pattern.size();
+    while (i < json.size() && std::isspace(static_cast<unsigned char>(json[i]))) i++;
+    if (json.compare(i, 4, "true") == 0) return true;
+    if (json.compare(i, 5, "false") == 0) return false;
+    return fallback;
+}
+
 inline std::string json_array_field(const std::string& json, const std::string& key) {
     std::string pattern = "\"" + key + "\":";
     size_t pos = json.find(pattern);

@@ -24,6 +24,7 @@ from cactus.transpile.tdt_runtime import _add_tdt_derived_aliases
 from cactus.transpile.tdt_runtime import _cfg_get
 from cactus.transpile.tdt_runtime import _copy_linear_weight
 from cactus.transpile.tdt_runtime import _load_parakeet_vocabulary
+from cactus.transpile.tdt_runtime import _parse_attention_context_size
 from cactus.transpile.audio_preprocess import _PARAKEET_FRAME_LENGTH
 from cactus.transpile.audio_preprocess import _PARAKEET_HOP_LENGTH
 from cactus.transpile.audio_preprocess import _PARAKEET_LOG_FLOOR
@@ -34,6 +35,22 @@ from cactus.transpile.audio_preprocess import generic_log_mel_features
 from cactus.transpile.audio_preprocess import load_audio_waveform
 from cactus.transpile.model_profiles import NEMOTRON_ASR_PROFILE
 from cactus.transpile.model_profiles import add_tensor_aliases
+
+
+def nemotron_asr_frame_values() -> tuple[int, ...]:
+    raw = os.environ.get("CACTUS_NEMOTRON_ASR_FRAMES")
+    if raw is None:
+        raw = os.environ.get("CACTUS_NPU_NEMOTRON_FRAMES", "1024,2048,4096,6144")
+    values = tuple(sorted({int(value.strip()) for value in raw.split(",") if value.strip()}))
+    if not values or any(value <= 0 for value in values):
+        raise ValueError("CACTUS_NEMOTRON_ASR_FRAMES values must be positive frame counts")
+    return values
+
+
+def _valid_hidden_frame_count(active_frames: int | None, total_frames: int, hidden_frames: int) -> int:
+    if active_frames is None or active_frames <= 0 or total_frames <= 0:
+        return hidden_frames
+    return min(hidden_frames, (int(active_frames) * hidden_frames + total_frames - 1) // total_frames)
 
 
 @contextmanager
@@ -81,6 +98,8 @@ class NemotronASRConfig:
     prompt_dictionary: dict[str, int]
     default_prompt_id: int
     max_symbols_per_step: int
+    attention_context_style: str
+    attention_context_size: tuple[int, int]
 
     def as_parakeet_config(self) -> ParakeetTDTConfig:
         return ParakeetTDTConfig(
@@ -107,6 +126,8 @@ class NemotronASRConfig:
             blank_id=self.blank_id,
             vocabulary=self.vocabulary,
             encoder_hidden_act=self.encoder_hidden_act,
+            attention_context_style=self.attention_context_style,
+            attention_context_size=self.attention_context_size,
         )
 
 
@@ -155,6 +176,8 @@ def prepare_nemotron_asr_audio_features(
     expected_mels: int,
     torch_dtype: torch.dtype,
 ) -> tuple[torch.Tensor, int]:
+    if expected_frames is None or expected_frames <= 0:
+        expected_frames = max(nemotron_asr_frame_values())
     waveform = load_audio_waveform(audio_file, target_sample_rate=_PARAKEET_SAMPLE_RATE)
     features, feature_length = generic_log_mel_features(
         waveform,
@@ -165,6 +188,7 @@ def prepare_nemotron_asr_audio_features(
         frame_length=_PARAKEET_FRAME_LENGTH,
         preemphasis=_PARAKEET_PREEMPHASIS,
         mel_floor=_PARAKEET_LOG_FLOOR,
+        mel_floor_additive=True,
         normalize_active_frames_only=None,
     )
     active_frames = feature_length
@@ -251,6 +275,8 @@ def load_nemotron_asr_config(model_source: str) -> NemotronASRConfig:
         prompt_dictionary=prompt_dictionary,
         default_prompt_id=int(_cfg_get(root, "default_prompt_id", prompt_dictionary.get("auto", 0))),
         max_symbols_per_step=int(_cfg_get(root, "max_symbols_per_step", _cfg_get(greedy, "max_symbols", 10))),
+        attention_context_style=str(_cfg_get(encoder, "att_context_style", "regular")),
+        attention_context_size=_parse_attention_context_size(_cfg_get(encoder, "att_context_size", None)),
     )
 
 
@@ -323,9 +349,11 @@ class NemotronASRLocalModel(nn.Module):
         prompt[:, prompt_id] = 1.0
         return prompt
 
-    def greedy_decode_token_ids(self, input_features: torch.Tensor, *, language: str = "auto") -> list[int]:
+    def greedy_decode_token_ids(self, input_features: torch.Tensor, *, language: str = "auto", active_frames: int | None = None) -> list[int]:
         with torch.no_grad():
             encoder_hidden = self.encoder(input_features)
+            valid_hidden = _valid_hidden_frame_count(active_frames, int(input_features.shape[1]), int(encoder_hidden.shape[1]))
+            encoder_hidden = encoder_hidden[:, :valid_hidden, :]
             batch = int(encoder_hidden.shape[0])
             if batch != 1:
                 raise ValueError("Nemotron ASR local greedy decode currently expects batch size 1")
@@ -364,7 +392,8 @@ class NemotronASRLocalModel(nn.Module):
         text = "".join(pieces).replace("▁", " ")
         text = re.sub(r"\s+", " ", text).strip()
         if strip_lang_tags:
-            text = re.sub(r"\s*<[a-z]{2}(?:-[A-Z]{2})?>\s*$", "", text).strip()
+            text = re.sub(r"\s*<[a-z]{2}(?:-[A-Z]{2})?>\s*", " ", text)
+            text = re.sub(r"\s+", " ", text).strip()
         return text
 
 
@@ -439,14 +468,11 @@ def build_nemotron_asr_component_specs(
     }
 
     factor = max(1, int(model.config.subsampling_factor))
-    raw_npu_frames = os.environ.get("CACTUS_NPU_NEMOTRON_FRAMES", "1024,2048,4096,6144")
-    npu_frame_values = tuple(sorted({int(value.strip()) for value in raw_npu_frames.split(",") if value.strip()}))
-    if not npu_frame_values:
-        raise ValueError("CACTUS_NPU_NEMOTRON_FRAMES must include at least one positive frame count")
+    npu_frame_values = nemotron_asr_frame_values()
     npu_variants: list[dict[str, object]] = []
     for npu_frames in npu_frame_values:
         if npu_frames <= 0 or npu_frames % factor != 0:
-            raise ValueError(f"CACTUS_NPU_NEMOTRON_FRAMES values must be positive multiples of {factor}, got {npu_frames}")
+            raise ValueError(f"CACTUS_NEMOTRON_ASR_FRAMES values must be positive multiples of {factor}, got {npu_frames}")
         npu_input_features = torch.zeros(
             (int(input_features.shape[0]), npu_frames, int(input_features.shape[-1])),
             device=input_features.device,

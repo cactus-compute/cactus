@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <regex>
 
 using namespace cactus::ffi;
 
@@ -50,37 +51,16 @@ std::vector<TranscriptSegment> parse_whisper_timestamp_segments(
     return segments;
 }
 
-void strip_trailing_language_tag(std::string& text) {
-    size_t end = text.find_last_not_of(" \t\r\n");
-    if (end == std::string::npos) {
+void strip_language_tags(std::string& text) {
+    text = std::regex_replace(text, std::regex(R"(\s*<[a-z]{2}(?:-[A-Z]{2})?>\s*)"), " ");
+    text = std::regex_replace(text, std::regex(R"(\s+)"), " ");
+    size_t start = text.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
         text.clear();
         return;
     }
-    if (text[end] != '>') {
-        text.resize(end + 1);
-        return;
-    }
-    size_t start = text.rfind('<', end);
-    if (start == std::string::npos) {
-        text.resize(end + 1);
-        return;
-    }
-    std::string tag = text.substr(start + 1, end - start - 1);
-    bool valid = tag.size() == 2 || tag.size() == 5;
-    valid = valid && std::islower(static_cast<unsigned char>(tag[0])) && std::islower(static_cast<unsigned char>(tag[1]));
-    if (tag.size() == 5) {
-        valid = valid && tag[2] == '-' &&
-            std::isupper(static_cast<unsigned char>(tag[3])) &&
-            std::isupper(static_cast<unsigned char>(tag[4]));
-    }
-    if (valid) {
-        text.resize(start);
-        end = text.find_last_not_of(" \t\r\n");
-        if (end == std::string::npos) text.clear();
-        else text.resize(end + 1);
-    } else {
-        text.resize(end + 1);
-    }
+    size_t end = text.find_last_not_of(" \t\r\n");
+    text = text.substr(start, end - start + 1);
 }
 
 } // namespace
@@ -138,6 +118,7 @@ CACTUS_FFI_EXPORT int cactus_preprocess_audio_features(
         } else if (lowered.find("parakeet") != std::string::npos || lowered.find("nemotron") != std::string::npos) {
             const bool is_nemotron_frontend = lowered.find("nemotron") != std::string::npos;
             auto cfg = cactus::audio::get_parakeet_spectrogram_config();
+            if (is_nemotron_frontend) cfg.mel_floor_additive = true;
             const size_t waveform_samples = audio_samples.size();
             cactus::audio::apply_preemphasis(audio_samples, 0.97f);
             const int mel_norm_type = is_nemotron_frontend ? 1 : 0;
@@ -279,6 +260,7 @@ int cactus_transcribe(
         std::vector<float> handoff_audio_samples;
         if (is_parakeet || is_nemotron) {
             auto cfg = cactus::audio::get_parakeet_spectrogram_config();
+            if (is_nemotron) cfg.mel_floor_additive = true;
             const size_t waveform_samples = audio_samples.size();
             handoff_audio_samples = audio_samples;
             cactus::audio::apply_preemphasis(audio_samples, 0.97f);
@@ -400,7 +382,9 @@ int cactus_transcribe(
             time_to_first_token =
                 std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
             final_text = tokenizer->decode(generated_tokens);
-            strip_trailing_language_tag(final_text);
+            if (json_bool_field_or(options_json ? options_json : "", "strip_lang_tags", true)) {
+                strip_language_tags(final_text);
+            }
             if (callback) {
                 for (uint32_t tok : generated_tokens) {
                     std::string piece = tokenizer->decode({tok});

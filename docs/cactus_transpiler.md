@@ -457,8 +457,8 @@ cactus transpile <model-id-or-path> [options]
 NPU emission (CoreML `.mlpackage`s for Apple Silicon audio and vision encoders)
 is available through the `--npu`, `--npu-quantize`, `--npu-audio-quantize`, and
 `--npu-vision-quantize` flags on `cactus transpile`.
-Nemotron ASR emits CPU/GPU audio encoder variants for 1024, 2048, 4096, and 6144
-input frames by default; override the set with `CACTUS_NPU_NEMOTRON_FRAMES`.
+Nemotron ASR captures 1024, 2048, 4096, and 6144 input-frame variants by default;
+override the set with `CACTUS_NEMOTRON_ASR_FRAMES`.
 
 ### `cactus run`
 
