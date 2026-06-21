@@ -2067,52 +2067,57 @@ Example response from Gemma3-270m
 <a id="__codelineno-4-40" name="__codelineno-4-40" href="#__codelineno-4-40"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
 <a id="__codelineno-4-41" name="__codelineno-4-41" href="#__codelineno-4-41"></a>│    --reconvert                       force local rebuild from source           │
 <a id="__codelineno-4-42" name="__codelineno-4-42" href="#__codelineno-4-42"></a>│                                                                                │
-<a id="__codelineno-4-43" name="__codelineno-4-43" href="#__codelineno-4-43"></a>│  cactus convert &lt;model&gt; [dir]        build a runnable bundle locally           │
-<a id="__codelineno-4-44" name="__codelineno-4-44" href="#__codelineno-4-44"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-<a id="__codelineno-4-45" name="__codelineno-4-45" href="#__codelineno-4-45"></a>│    --platform auto|cpu|apple         target platform (default: auto)           │
-<a id="__codelineno-4-46" name="__codelineno-4-46" href="#__codelineno-4-46"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
-<a id="__codelineno-4-47" name="__codelineno-4-47" href="#__codelineno-4-47"></a>│    --reconvert                       force local rebuild from source           │
-<a id="__codelineno-4-48" name="__codelineno-4-48" href="#__codelineno-4-48"></a>│    --lora &lt;path&gt;                     merge a LoRA adapter before converting    │
-<a id="__codelineno-4-49" name="__codelineno-4-49" href="#__codelineno-4-49"></a>│                                                                                │
-<a id="__codelineno-4-50" name="__codelineno-4-50" href="#__codelineno-4-50"></a>│  cactus serve [model]                OpenAI-compatible local HTTP server       │
-<a id="__codelineno-4-51" name="__codelineno-4-51" href="#__codelineno-4-51"></a>│    --host &lt;addr&gt;                     bind address (default: 127.0.0.1)         │
-<a id="__codelineno-4-52" name="__codelineno-4-52" href="#__codelineno-4-52"></a>│    --port &lt;port&gt;                     port (default: 8080)                      │
-<a id="__codelineno-4-53" name="__codelineno-4-53" href="#__codelineno-4-53"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-<a id="__codelineno-4-54" name="__codelineno-4-54" href="#__codelineno-4-54"></a>│    --platform auto|cpu|apple         target platform (default: auto)           │
-<a id="__codelineno-4-55" name="__codelineno-4-55" href="#__codelineno-4-55"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
-<a id="__codelineno-4-56" name="__codelineno-4-56" href="#__codelineno-4-56"></a>│    --reconvert                       force local rebuild from source           │
-<a id="__codelineno-4-57" name="__codelineno-4-57" href="#__codelineno-4-57"></a>│    --no-cloud-handoff                disable automatic cloud handoff           │
-<a id="__codelineno-4-58" name="__codelineno-4-58" href="#__codelineno-4-58"></a>│    --confidence-threshold &lt;0..1&gt;     handoff to cloud below this confidence    │
-<a id="__codelineno-4-59" name="__codelineno-4-59" href="#__codelineno-4-59"></a>│    --cloud-timeout-ms &lt;n&gt;            max wait for cloud handoff                │
-<a id="__codelineno-4-60" name="__codelineno-4-60" href="#__codelineno-4-60"></a>│                                                                                │
-<a id="__codelineno-4-61" name="__codelineno-4-61" href="#__codelineno-4-61"></a>│  cactus list                         list downloaded models                    │
-<a id="__codelineno-4-62" name="__codelineno-4-62" href="#__codelineno-4-62"></a>│                                                                                │
-<a id="__codelineno-4-63" name="__codelineno-4-63" href="#__codelineno-4-63"></a>│  cactus build                        build cactus libraries                    │
-<a id="__codelineno-4-64" name="__codelineno-4-64" href="#__codelineno-4-64"></a>│    --apple                           Apple (iOS/macOS)                         │
-<a id="__codelineno-4-65" name="__codelineno-4-65" href="#__codelineno-4-65"></a>│    --android                         Android                                   │
-<a id="__codelineno-4-66" name="__codelineno-4-66" href="#__codelineno-4-66"></a>│    --python                          shared lib for Python FFI                 │
+<a id="__codelineno-4-43" name="__codelineno-4-43" href="#__codelineno-4-43"></a>│  cactus convert &lt;model&gt; [dir]        HuggingFace -&gt; runnable cactus bundle     │
+<a id="__codelineno-4-44" name="__codelineno-4-44" href="#__codelineno-4-44"></a>│                                      (CQ weights + runtime graph)              │
+<a id="__codelineno-4-45" name="__codelineno-4-45" href="#__codelineno-4-45"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+<a id="__codelineno-4-46" name="__codelineno-4-46" href="#__codelineno-4-46"></a>│    --platform auto|cpu|apple         target platform (default: auto)           │
+<a id="__codelineno-4-47" name="__codelineno-4-47" href="#__codelineno-4-47"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
+<a id="__codelineno-4-48" name="__codelineno-4-48" href="#__codelineno-4-48"></a>│    --reconvert                       force local rebuild from source           │
+<a id="__codelineno-4-49" name="__codelineno-4-49" href="#__codelineno-4-49"></a>│    --lora &lt;path&gt;                     merge a LoRA adapter before converting    │
+<a id="__codelineno-4-50" name="__codelineno-4-50" href="#__codelineno-4-50"></a>│    --weights-only                    stop after CQ weights (skip the graph)    │
+<a id="__codelineno-4-51" name="__codelineno-4-51" href="#__codelineno-4-51"></a>│    --dynamic-batch                   dynamic-batch decoder graph (Gemma4)      │
+<a id="__codelineno-4-52" name="__codelineno-4-52" href="#__codelineno-4-52"></a>│    --max-slots &lt;n&gt;                   KV-cache slots for batched decode         │
+<a id="__codelineno-4-53" name="__codelineno-4-53" href="#__codelineno-4-53"></a>│    --artifact-dir &lt;path&gt;             bundle output (default: weights/&lt;model&gt;)  │
+<a id="__codelineno-4-54" name="__codelineno-4-54" href="#__codelineno-4-54"></a>│                                                                                │
+<a id="__codelineno-4-55" name="__codelineno-4-55" href="#__codelineno-4-55"></a>│  cactus serve [model]                OpenAI-compatible local HTTP server       │
+<a id="__codelineno-4-56" name="__codelineno-4-56" href="#__codelineno-4-56"></a>│    --host &lt;addr&gt;                     bind address (default: 127.0.0.1)         │
+<a id="__codelineno-4-57" name="__codelineno-4-57" href="#__codelineno-4-57"></a>│    --port &lt;port&gt;                     port (default: 8080)                      │
+<a id="__codelineno-4-58" name="__codelineno-4-58" href="#__codelineno-4-58"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+<a id="__codelineno-4-59" name="__codelineno-4-59" href="#__codelineno-4-59"></a>│    --platform auto|cpu|apple         target platform (default: auto)           │
+<a id="__codelineno-4-60" name="__codelineno-4-60" href="#__codelineno-4-60"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
+<a id="__codelineno-4-61" name="__codelineno-4-61" href="#__codelineno-4-61"></a>│    --reconvert                       force local rebuild from source           │
+<a id="__codelineno-4-62" name="__codelineno-4-62" href="#__codelineno-4-62"></a>│    --no-cloud-handoff                disable automatic cloud handoff           │
+<a id="__codelineno-4-63" name="__codelineno-4-63" href="#__codelineno-4-63"></a>│    --confidence-threshold &lt;0..1&gt;     handoff to cloud below this confidence    │
+<a id="__codelineno-4-64" name="__codelineno-4-64" href="#__codelineno-4-64"></a>│    --cloud-timeout-ms &lt;n&gt;            max wait for cloud handoff                │
+<a id="__codelineno-4-65" name="__codelineno-4-65" href="#__codelineno-4-65"></a>│                                                                                │
+<a id="__codelineno-4-66" name="__codelineno-4-66" href="#__codelineno-4-66"></a>│  cactus list                         list downloaded models                    │
 <a id="__codelineno-4-67" name="__codelineno-4-67" href="#__codelineno-4-67"></a>│                                                                                │
-<a id="__codelineno-4-68" name="__codelineno-4-68" href="#__codelineno-4-68"></a>│  cactus test                         run the test suite                        │
-<a id="__codelineno-4-69" name="__codelineno-4-69" href="#__codelineno-4-69"></a>│    --component &lt;name&gt;                kernels | graph | engine | all            │
-<a id="__codelineno-4-70" name="__codelineno-4-70" href="#__codelineno-4-70"></a>│                                      (default: all)                            │
-<a id="__codelineno-4-71" name="__codelineno-4-71" href="#__codelineno-4-71"></a>│    --model &lt;hf-id&gt;                   default: LiquidAI/LFM2-VL-450M            │
-<a id="__codelineno-4-72" name="__codelineno-4-72" href="#__codelineno-4-72"></a>│    --transcription-model &lt;hf-id&gt;     default: openai/whisper-base              │
-<a id="__codelineno-4-73" name="__codelineno-4-73" href="#__codelineno-4-73"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-<a id="__codelineno-4-74" name="__codelineno-4-74" href="#__codelineno-4-74"></a>│    --platform auto|cpu|apple         target platform (default: auto)           │
-<a id="__codelineno-4-75" name="__codelineno-4-75" href="#__codelineno-4-75"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
-<a id="__codelineno-4-76" name="__codelineno-4-76" href="#__codelineno-4-76"></a>│    --reconvert                       force local rebuild of test models        │
-<a id="__codelineno-4-77" name="__codelineno-4-77" href="#__codelineno-4-77"></a>│    --suite &lt;name&gt;                    run a single test suite by name           │
-<a id="__codelineno-4-78" name="__codelineno-4-78" href="#__codelineno-4-78"></a>│                                      (resolved across components,              │
-<a id="__codelineno-4-79" name="__codelineno-4-79" href="#__codelineno-4-79"></a>│                                      e.g. llm → engine)                        │
-<a id="__codelineno-4-80" name="__codelineno-4-80" href="#__codelineno-4-80"></a>│    --list                            list components and suites                │
-<a id="__codelineno-4-81" name="__codelineno-4-81" href="#__codelineno-4-81"></a>│    --ios                             run on connected iPhone                   │
-<a id="__codelineno-4-82" name="__codelineno-4-82" href="#__codelineno-4-82"></a>│    --android                         run on connected Android                  │
-<a id="__codelineno-4-83" name="__codelineno-4-83" href="#__codelineno-4-83"></a>│    --enable-telemetry                send cloud telemetry (off by default)     │
-<a id="__codelineno-4-84" name="__codelineno-4-84" href="#__codelineno-4-84"></a>│                                                                                │
-<a id="__codelineno-4-85" name="__codelineno-4-85" href="#__codelineno-4-85"></a>│  cactus clean                        delete build artifacts, weights, venv     │
-<a id="__codelineno-4-86" name="__codelineno-4-86" href="#__codelineno-4-86"></a>│  cactus --help                       show this help                            │
-<a id="__codelineno-4-87" name="__codelineno-4-87" href="#__codelineno-4-87"></a>│                                                                                │
-<a id="__codelineno-4-88" name="__codelineno-4-88" href="#__codelineno-4-88"></a>└────────────────────────────────────────────────────────────────────────────────┘
+<a id="__codelineno-4-68" name="__codelineno-4-68" href="#__codelineno-4-68"></a>│  cactus build                        build cactus libraries                    │
+<a id="__codelineno-4-69" name="__codelineno-4-69" href="#__codelineno-4-69"></a>│    --apple                           Apple (iOS/macOS)                         │
+<a id="__codelineno-4-70" name="__codelineno-4-70" href="#__codelineno-4-70"></a>│    --android                         Android                                   │
+<a id="__codelineno-4-71" name="__codelineno-4-71" href="#__codelineno-4-71"></a>│    --python                          shared lib for Python FFI                 │
+<a id="__codelineno-4-72" name="__codelineno-4-72" href="#__codelineno-4-72"></a>│                                                                                │
+<a id="__codelineno-4-73" name="__codelineno-4-73" href="#__codelineno-4-73"></a>│  cactus test                         run the test suite                        │
+<a id="__codelineno-4-74" name="__codelineno-4-74" href="#__codelineno-4-74"></a>│    --component &lt;name&gt;                kernels | graph | engine | all            │
+<a id="__codelineno-4-75" name="__codelineno-4-75" href="#__codelineno-4-75"></a>│                                      (default: all)                            │
+<a id="__codelineno-4-76" name="__codelineno-4-76" href="#__codelineno-4-76"></a>│    --model &lt;hf-id&gt;                   default: LiquidAI/LFM2-VL-450M            │
+<a id="__codelineno-4-77" name="__codelineno-4-77" href="#__codelineno-4-77"></a>│    --transcription-model &lt;hf-id&gt;     default: openai/whisper-base              │
+<a id="__codelineno-4-78" name="__codelineno-4-78" href="#__codelineno-4-78"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+<a id="__codelineno-4-79" name="__codelineno-4-79" href="#__codelineno-4-79"></a>│    --platform auto|cpu|apple         target platform (default: auto)           │
+<a id="__codelineno-4-80" name="__codelineno-4-80" href="#__codelineno-4-80"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
+<a id="__codelineno-4-81" name="__codelineno-4-81" href="#__codelineno-4-81"></a>│    --reconvert                       force local rebuild of test models        │
+<a id="__codelineno-4-82" name="__codelineno-4-82" href="#__codelineno-4-82"></a>│    --suite &lt;name&gt;                    run a single test suite by name           │
+<a id="__codelineno-4-83" name="__codelineno-4-83" href="#__codelineno-4-83"></a>│                                      (resolved across components,              │
+<a id="__codelineno-4-84" name="__codelineno-4-84" href="#__codelineno-4-84"></a>│                                      e.g. llm → engine)                        │
+<a id="__codelineno-4-85" name="__codelineno-4-85" href="#__codelineno-4-85"></a>│    --list                            list components and suites                │
+<a id="__codelineno-4-86" name="__codelineno-4-86" href="#__codelineno-4-86"></a>│    --ios                             run on connected iPhone                   │
+<a id="__codelineno-4-87" name="__codelineno-4-87" href="#__codelineno-4-87"></a>│    --android                         run on connected Android                  │
+<a id="__codelineno-4-88" name="__codelineno-4-88" href="#__codelineno-4-88"></a>│    --enable-telemetry                send cloud telemetry (off by default)     │
+<a id="__codelineno-4-89" name="__codelineno-4-89" href="#__codelineno-4-89"></a>│                                                                                │
+<a id="__codelineno-4-90" name="__codelineno-4-90" href="#__codelineno-4-90"></a>│  cactus clean                        delete build artifacts, weights, venv     │
+<a id="__codelineno-4-91" name="__codelineno-4-91" href="#__codelineno-4-91"></a>│  cactus --help                       show this help                            │
+<a id="__codelineno-4-92" name="__codelineno-4-92" href="#__codelineno-4-92"></a>│                                                                                │
+<a id="__codelineno-4-93" name="__codelineno-4-93" href="#__codelineno-4-93"></a>└────────────────────────────────────────────────────────────────────────────────┘
 </code></pre></div>
 <h2 id="maintaining-organisations">Maintaining Organisations<a class="headerlink" href="#maintaining-organisations" title="Permanent link">&para;</a></h2>
 <ol>

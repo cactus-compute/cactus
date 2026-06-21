@@ -1095,15 +1095,15 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#from-pytorch-to-on-device-in-3-steps" class="md-nav__link">
+  <a href="#from-pytorch-to-on-device-in-2-steps" class="md-nav__link">
     <span class="md-ellipsis">
       
-        From PyTorch to On-Device in 3 Steps
+        From PyTorch to On-Device in 2 Steps
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="From PyTorch to On-Device in 3 Steps">
+    <nav class="md-nav" aria-label="From PyTorch to On-Device in 2 Steps">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -1118,21 +1118,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#step-2-convert-weights" class="md-nav__link">
+  <a href="#step-2-convert-and-run" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Step 2: Convert Weights
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-3-transpile-and-run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Step 3: Transpile and Run
+        Step 2: Convert and Run
       
     </span>
   </a>
@@ -1228,15 +1217,15 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#transpiling-huggingface-models" class="md-nav__link">
+  <a href="#converting-huggingface-models" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Transpiling HuggingFace Models
+        Converting HuggingFace Models
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Transpiling HuggingFace Models">
+    <nav class="md-nav" aria-label="Converting HuggingFace Models">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -1340,10 +1329,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#cactus-transpile" class="md-nav__link">
+  <a href="#cactus-convert" class="md-nav__link">
     <span class="md-ellipsis">
       
-        cactus transpile
+        cactus convert
       
     </span>
   </a>
@@ -1835,15 +1824,15 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#from-pytorch-to-on-device-in-3-steps" class="md-nav__link">
+  <a href="#from-pytorch-to-on-device-in-2-steps" class="md-nav__link">
     <span class="md-ellipsis">
       
-        From PyTorch to On-Device in 3 Steps
+        From PyTorch to On-Device in 2 Steps
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="From PyTorch to On-Device in 3 Steps">
+    <nav class="md-nav" aria-label="From PyTorch to On-Device in 2 Steps">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -1858,21 +1847,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#step-2-convert-weights" class="md-nav__link">
+  <a href="#step-2-convert-and-run" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Step 2: Convert Weights
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-3-transpile-and-run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Step 3: Transpile and Run
+        Step 2: Convert and Run
       
     </span>
   </a>
@@ -1968,15 +1946,15 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#transpiling-huggingface-models" class="md-nav__link">
+  <a href="#converting-huggingface-models" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Transpiling HuggingFace Models
+        Converting HuggingFace Models
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Transpiling HuggingFace Models">
+    <nav class="md-nav" aria-label="Converting HuggingFace Models">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -2080,10 +2058,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#cactus-transpile" class="md-nav__link">
+  <a href="#cactus-convert" class="md-nav__link">
     <span class="md-ellipsis">
       
-        cactus transpile
+        cactus convert
       
     </span>
   </a>
@@ -2164,7 +2142,7 @@
 that runs on ARM devices. You write normal PyTorch, and the transpiler handles the rest:
 capturing the computation graph, fusing ops, quantizing weights, and producing a bundle
 that loads with zero-copy memory mapping.</p>
-<h2 id="from-pytorch-to-on-device-in-3-steps">From PyTorch to On-Device in 3 Steps<a class="headerlink" href="#from-pytorch-to-on-device-in-3-steps" title="Permanent link">&para;</a></h2>
+<h2 id="from-pytorch-to-on-device-in-2-steps">From PyTorch to On-Device in 2 Steps<a class="headerlink" href="#from-pytorch-to-on-device-in-2-steps" title="Permanent link">&para;</a></h2>
 <h3 id="step-1-write-a-pytorch-model">Step 1: Write a PyTorch Model<a class="headerlink" href="#step-1-write-a-pytorch-model" title="Permanent link">&para;</a></h3>
 <p>Any <code>torch.nn.Module</code> works. Here's a small feedforward classifier:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
@@ -2187,64 +2165,60 @@ that loads with zero-copy memory mapping.</p>
 <a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="n">model</span> <span class="o">=</span> <span class="n">TextClassifier</span><span class="p">()</span>
 <a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="n">torch</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">state_dict</span><span class="p">(),</span> <span class="s2">&quot;classifier.pt&quot;</span><span class="p">)</span>
 </code></pre></div>
-<h3 id="step-2-convert-weights">Step 2: Convert Weights<a class="headerlink" href="#step-2-convert-weights" title="Permanent link">&para;</a></h3>
-<p>Convert the model weights to Cactus format. This quantizes them and writes a
-<code>weights_manifest.json</code> that the transpiler uses to bind weights at load time:</p>
+<h3 id="step-2-convert-and-run">Step 2: Convert and Run<a class="headerlink" href="#step-2-convert-and-run" title="Permanent link">&para;</a></h3>
+<p><code>cactus convert</code> quantizes the weights to Cactus format (writing a
+<code>weights_manifest.json</code>) and then captures the graph, optimizes it, and saves a
+self-contained bundle — all in one step:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>./classifier.pt<span class="w"> </span>./classifier-cactus<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span>
-</code></pre></div>
-<h3 id="step-3-transpile-and-run">Step 3: Transpile and Run<a class="headerlink" href="#step-3-transpile-and-run" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Transpile: captures the graph, optimizes, and saves a bundle</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>./classifier.pt<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span>--weights-dir<span class="w"> </span>./classifier-cactus<span class="w"> </span>--artifact-dir<span class="w"> </span>./classifier-cactus
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="c1"># Run the transpiled bundle</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>cactus<span class="w"> </span>run<span class="w"> </span>./classifier-cactus
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1"># Run the converted bundle</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>cactus<span class="w"> </span>run<span class="w"> </span>./classifier-cactus
 </code></pre></div>
 <p>That's it. The output is a self-contained bundle with memory-mapped weights that
 loads in milliseconds on any ARM device.</p>
 <hr />
 <h2 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
 <p>The transpiler is a six-stage compiler pipeline:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>PyTorch nn.Module
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>      |
-<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>      v
-<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>+------------------+
-<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>| 1. Canonicalize  |  Wrap the model in a task-specific adapter
-<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>|    model         |  (causal LM, encoder, multimodal, etc.)
-<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>+--------+---------+
-<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>         |
-<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>         v
-<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>+------------------+
-<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>| 2. torch.export  |  Capture the forward pass as an FX graph
-<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>|                  |  (no Python control flow, tensor-only)
-<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>+--------+---------+
-<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>         |
-<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>         v
-<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>+------------------+
-<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>| 3. Import to IR  |  FX nodes -&gt; canonical IRGraph
-<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>|                  |  Bind converted weight files from manifest
-<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>+--------+---------+
-<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>         |
-<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>         v
-<a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a>+------------------+
-<a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a>| 4. Canonicalize  |  Normalize ops, constant-fold, remove no-ops,
-<a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a>|    IR            |  insert precision casts, dead code elimination
-<a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a>+--------+---------+
-<a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a>         |
-<a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a>         v
-<a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a>+------------------+
-<a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a>| 5. Fuse patterns |  Collapse subgraphs into single ops:
-<a id="__codelineno-3-30" name="__codelineno-3-30" href="#__codelineno-3-30"></a>|                  |  RMSNorm, RoPE, attention, MLP, LSTM, etc.
-<a id="__codelineno-3-31" name="__codelineno-3-31" href="#__codelineno-3-31"></a>+--------+---------+
-<a id="__codelineno-3-32" name="__codelineno-3-32" href="#__codelineno-3-32"></a>         |
-<a id="__codelineno-3-33" name="__codelineno-3-33" href="#__codelineno-3-33"></a>         v
-<a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a>+------------------+
-<a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a>| 6. Lower to      |  IRNodes -&gt; CactusGraph ops
-<a id="__codelineno-3-36" name="__codelineno-3-36" href="#__codelineno-3-36"></a>|    CactusGraph   |  Constants -&gt; mmap_weights() or inline tensors
-<a id="__codelineno-3-37" name="__codelineno-3-37" href="#__codelineno-3-37"></a>+------------------+
-<a id="__codelineno-3-38" name="__codelineno-3-38" href="#__codelineno-3-38"></a>         |
-<a id="__codelineno-3-39" name="__codelineno-3-39" href="#__codelineno-3-39"></a>         v
-<a id="__codelineno-3-40" name="__codelineno-3-40" href="#__codelineno-3-40"></a>   Saved bundle: graph.cactus + manifest.json + weights
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>PyTorch nn.Module
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>      |
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>      v
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>+------------------+
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>| 1. Canonicalize  |  Wrap the model in a task-specific adapter
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>|    model         |  (causal LM, encoder, multimodal, etc.)
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>+--------+---------+
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>         |
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>         v
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>+------------------+
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>| 2. torch.export  |  Capture the forward pass as an FX graph
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>|                  |  (no Python control flow, tensor-only)
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>+--------+---------+
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>         |
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>         v
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>+------------------+
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>| 3. Import to IR  |  FX nodes -&gt; canonical IRGraph
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>|                  |  Bind converted weight files from manifest
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>+--------+---------+
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>         |
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>         v
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>+------------------+
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>| 4. Canonicalize  |  Normalize ops, constant-fold, remove no-ops,
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>|    IR            |  insert precision casts, dead code elimination
+<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a>+--------+---------+
+<a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>         |
+<a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a>         v
+<a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a>+------------------+
+<a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a>| 5. Fuse patterns |  Collapse subgraphs into single ops:
+<a id="__codelineno-2-30" name="__codelineno-2-30" href="#__codelineno-2-30"></a>|                  |  RMSNorm, RoPE, attention, MLP, LSTM, etc.
+<a id="__codelineno-2-31" name="__codelineno-2-31" href="#__codelineno-2-31"></a>+--------+---------+
+<a id="__codelineno-2-32" name="__codelineno-2-32" href="#__codelineno-2-32"></a>         |
+<a id="__codelineno-2-33" name="__codelineno-2-33" href="#__codelineno-2-33"></a>         v
+<a id="__codelineno-2-34" name="__codelineno-2-34" href="#__codelineno-2-34"></a>+------------------+
+<a id="__codelineno-2-35" name="__codelineno-2-35" href="#__codelineno-2-35"></a>| 6. Lower to      |  IRNodes -&gt; CactusGraph ops
+<a id="__codelineno-2-36" name="__codelineno-2-36" href="#__codelineno-2-36"></a>|    CactusGraph   |  Constants -&gt; mmap_weights() or inline tensors
+<a id="__codelineno-2-37" name="__codelineno-2-37" href="#__codelineno-2-37"></a>+------------------+
+<a id="__codelineno-2-38" name="__codelineno-2-38" href="#__codelineno-2-38"></a>         |
+<a id="__codelineno-2-39" name="__codelineno-2-39" href="#__codelineno-2-39"></a>         v
+<a id="__codelineno-2-40" name="__codelineno-2-40" href="#__codelineno-2-40"></a>   Saved bundle: graph.cactus + manifest.json + weights
 </code></pre></div>
 <h3 id="stage-1-canonicalize-the-model">Stage 1: Canonicalize the Model<a class="headerlink" href="#stage-1-canonicalize-the-model" title="Permanent link">&para;</a></h3>
 <p>The transpiler doesn't try to handle every model's forward signature as-is. It wraps
@@ -2364,59 +2338,50 @@ high-level ops:</p>
 <p>The output is a <code>TranspiledGraph</code> containing the runtime graph, input/output handles,
 and weight binding metadata.</p>
 <hr />
-<h2 id="transpiling-huggingface-models">Transpiling HuggingFace Models<a class="headerlink" href="#transpiling-huggingface-models" title="Permanent link">&para;</a></h2>
-<p>The most common use case is transpiling a model from HuggingFace:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># 1. Convert weights</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>cactus<span class="w"> </span>convert<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>./gemma4-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span>
-<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
-<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># 2. Transpile</span>
-<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span>--weights-dir<span class="w"> </span>./gemma4-weights<span class="w"> </span>--artifact-dir<span class="w"> </span>./gemma4-weights
-<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
-<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="c1"># 3. Run</span>
-<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>cactus<span class="w"> </span>run<span class="w"> </span>./gemma4-weights<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">&quot;Hello!&quot;</span>
+<h2 id="converting-huggingface-models">Converting HuggingFace Models<a class="headerlink" href="#converting-huggingface-models" title="Permanent link">&para;</a></h2>
+<p>The most common use case is converting a model from HuggingFace. <code>cactus convert</code>
+quantizes the weights and builds the runtime graph in one step:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># 1. Convert (CQ weights + runtime bundle)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>cactus<span class="w"> </span>convert<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>./gemma4-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># 2. Run</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>cactus<span class="w"> </span>run<span class="w"> </span>./gemma4-weights<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">&quot;Hello!&quot;</span>
 </code></pre></div>
 <h3 id="text-models">Text Models<a class="headerlink" href="#text-models" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>Qwen/Qwen3-0.6B<span class="w"> </span>./qwen3-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span>
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>Qwen/Qwen3-0.6B<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--weights-dir<span class="w"> </span>./qwen3-weights<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--prompt<span class="w"> </span><span class="s2">&quot;The capital of France is&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>Qwen/Qwen3-0.6B<span class="w"> </span>./qwen3-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--prompt<span class="w"> </span><span class="s2">&quot;The capital of France is&quot;</span>
 </code></pre></div>
 <h3 id="multimodal-models-gemma4">Multimodal Models (Gemma4)<a class="headerlink" href="#multimodal-models-gemma4" title="Permanent link">&para;</a></h3>
 <p>Multimodal models are automatically split into components (<code>vision_encoder</code>,
 <code>audio_encoder</code>, <code>lm_encoder</code>, <code>decoder</code>) that are each independently captured
 and optimized:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>./gemma4-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span>
-<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--task<span class="w"> </span>multimodal_causal_lm_logits<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>--image-file<span class="w"> </span>photo.jpg<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span>--audio-file<span class="w"> </span>speech.wav<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span>--prompt<span class="w"> </span><span class="s2">&quot;Describe what you see and hear.&quot;</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span>--weights-dir<span class="w"> </span>./gemma4-weights
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>./gemma4-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>--task<span class="w"> </span>multimodal_causal_lm_logits<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>--image-file<span class="w"> </span>photo.jpg<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--audio-file<span class="w"> </span>speech.wav<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span>--prompt<span class="w"> </span><span class="s2">&quot;Describe what you see and hear.&quot;</span>
 </code></pre></div>
 <h3 id="speech-models-parakeet-tdt">Speech Models (Parakeet TDT)<a class="headerlink" href="#speech-models-parakeet-tdt" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>nvidia/parakeet-tdt-0.6b-v3<span class="w"> </span>./parakeet-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>nvidia/parakeet-tdt-0.6b-v3<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>--audio-file<span class="w"> </span>recording.wav<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>--task<span class="w"> </span>tdt_transcription<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span>--weights-dir<span class="w"> </span>./parakeet-weights
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>nvidia/parakeet-tdt-0.6b-v3<span class="w"> </span>./parakeet-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--audio-file<span class="w"> </span>recording.wav<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--task<span class="w"> </span>tdt_transcription
 </code></pre></div>
 <hr />
 <h2 id="running-saved-bundles">Running Saved Bundles<a class="headerlink" href="#running-saved-bundles" title="Permanent link">&para;</a></h2>
 <p>Transpiled bundles are saved to <code>./weights/&lt;model&gt;/</code> by default (alongside their CQ
 weights). Run them later without re-transpiling:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Text</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>cactus<span class="w"> </span>run<span class="w"> </span>./weights/qwen3-0.6b<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">&quot;Write a haiku&quot;</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># Multimodal</span>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>cactus<span class="w"> </span>run<span class="w"> </span>./weights/gemma-4-e2b-it<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span>--image<span class="w"> </span>photo.jpg<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span>--audio<span class="w"> </span>speech.wav<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">  </span>--prompt<span class="w"> </span><span class="s2">&quot;What do you see?&quot;</span>
-<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>
-<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="c1"># Audio</span>
-<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>cactus<span class="w"> </span>run<span class="w"> </span>./weights/parakeet-tdt-0.6b-v3<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="w">  </span>--audio<span class="w"> </span>meeting.wav
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Text</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>cactus<span class="w"> </span>run<span class="w"> </span>./weights/qwen3-0.6b<span class="w"> </span>--prompt<span class="w"> </span><span class="s2">&quot;Write a haiku&quot;</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Multimodal</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>cactus<span class="w"> </span>run<span class="w"> </span>./weights/gemma-4-e2b-it<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span>--image<span class="w"> </span>photo.jpg<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">  </span>--audio<span class="w"> </span>speech.wav<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">  </span>--prompt<span class="w"> </span><span class="s2">&quot;What do you see?&quot;</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="c1"># Audio</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>cactus<span class="w"> </span>run<span class="w"> </span>./weights/parakeet-tdt-0.6b-v3<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">  </span>--audio<span class="w"> </span>meeting.wav
 </code></pre></div>
 <p><code>cactus run</code> accepts either a HuggingFace model id (downloads the bundle) or a
 local bundle directory path (detected by the presence of
@@ -2425,101 +2390,101 @@ removed — <code>cactus run</code> handles both cases.</p>
 <hr />
 <h2 id="using-the-python-api-directly">Using the Python API Directly<a class="headerlink" href="#using-the-python-api-directly" title="Permanent link">&para;</a></h2>
 <p>You can also drive the transpiler from Python:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.capture_pytorch</span><span class="w"> </span><span class="kn">import</span> <span class="n">capture_model</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.lower</span><span class="w"> </span><span class="kn">import</span> <span class="n">transpile_ir</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.bindings.cactus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Graph</span>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
-<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
-<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
-<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="c1"># Define your model</span>
-<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="k">class</span><span class="w"> </span><span class="nc">MyModel</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
-<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
-<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">linear</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">64</span><span class="p">,</span> <span class="mi">32</span><span class="p">)</span>
-<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>
-<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
-<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">relu</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">linear</span><span class="p">(</span><span class="n">x</span><span class="p">))</span>
-<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>
-<a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="n">model</span> <span class="o">=</span> <span class="n">MyModel</span><span class="p">()</span><span class="o">.</span><span class="n">eval</span><span class="p">()</span>
-<a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a><span class="n">example_input</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">64</span><span class="p">)</span>
-<a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a>
-<a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a><span class="c1"># Capture and transpile</span>
-<a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a><span class="n">captured</span> <span class="o">=</span> <span class="n">capture_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="p">(</span><span class="n">example_input</span><span class="p">,))</span>
-<a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a><span class="n">transpiled</span> <span class="o">=</span> <span class="n">transpile_ir</span><span class="p">(</span><span class="n">captured</span><span class="o">.</span><span class="n">ir_graph</span><span class="p">)</span>
-<a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a>
-<a id="__codelineno-9-23" name="__codelineno-9-23" href="#__codelineno-9-23"></a><span class="c1"># Run</span>
-<a id="__codelineno-9-24" name="__codelineno-9-24" href="#__codelineno-9-24"></a><span class="n">transpiled</span><span class="o">.</span><span class="n">set_input</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">64</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float16</span><span class="p">))</span>
-<a id="__codelineno-9-25" name="__codelineno-9-25" href="#__codelineno-9-25"></a><span class="n">outputs</span> <span class="o">=</span> <span class="n">transpiled</span><span class="o">.</span><span class="n">execute</span><span class="p">()</span>
-<a id="__codelineno-9-26" name="__codelineno-9-26" href="#__codelineno-9-26"></a><span class="n">result</span> <span class="o">=</span> <span class="n">outputs</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
-<a id="__codelineno-9-27" name="__codelineno-9-27" href="#__codelineno-9-27"></a><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Output shape:&quot;</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># (1, 32)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.capture_pytorch</span><span class="w"> </span><span class="kn">import</span> <span class="n">capture_model</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.lower</span><span class="w"> </span><span class="kn">import</span> <span class="n">transpile_ir</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.bindings.cactus</span><span class="w"> </span><span class="kn">import</span> <span class="n">Graph</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="c1"># Define your model</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="k">class</span><span class="w"> </span><span class="nc">MyModel</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">):</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">linear</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Linear</span><span class="p">(</span><span class="mi">64</span><span class="p">,</span> <span class="mi">32</span><span class="p">)</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">relu</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">linear</span><span class="p">(</span><span class="n">x</span><span class="p">))</span>
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>
+<a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a><span class="n">model</span> <span class="o">=</span> <span class="n">MyModel</span><span class="p">()</span><span class="o">.</span><span class="n">eval</span><span class="p">()</span>
+<a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a><span class="n">example_input</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">64</span><span class="p">)</span>
+<a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a>
+<a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a><span class="c1"># Capture and transpile</span>
+<a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a><span class="n">captured</span> <span class="o">=</span> <span class="n">capture_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="p">(</span><span class="n">example_input</span><span class="p">,))</span>
+<a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a><span class="n">transpiled</span> <span class="o">=</span> <span class="n">transpile_ir</span><span class="p">(</span><span class="n">captured</span><span class="o">.</span><span class="n">ir_graph</span><span class="p">)</span>
+<a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a>
+<a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a><span class="c1"># Run</span>
+<a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a><span class="n">transpiled</span><span class="o">.</span><span class="n">set_input</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">randn</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">64</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float16</span><span class="p">))</span>
+<a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a><span class="n">outputs</span> <span class="o">=</span> <span class="n">transpiled</span><span class="o">.</span><span class="n">execute</span><span class="p">()</span>
+<a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a><span class="n">result</span> <span class="o">=</span> <span class="n">outputs</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<a id="__codelineno-8-27" name="__codelineno-8-27" href="#__codelineno-8-27"></a><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Output shape:&quot;</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># (1, 32)</span>
 </code></pre></div>
 <h3 id="generic-jax-user-graphs">Generic JAX User Graphs<a class="headerlink" href="#generic-jax-user-graphs" title="Permanent link">&para;</a></h3>
 <p>JAX and Flax models can be bundled by providing params and one or more graph
 entrypoints. The caller owns tokenization, masks, sampling, and any prefill/decode
 loop; Cactus captures the supplied functions, writes FP16 mmap weights, and saves
 component graphs.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">jax.numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">jnp</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.capture_jax</span><span class="w"> </span><span class="kn">import</span> <span class="n">JaxGraphSpec</span>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.jax_user_graph_bundle</span><span class="w"> </span><span class="kn">import</span> <span class="n">build_jax_user_graph_bundle</span>
-<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.jax_user_graph_bundle</span><span class="w"> </span><span class="kn">import</span> <span class="n">load_jax_user_graph_bundle</span>
-<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>
-<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>
-<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="k">def</span><span class="w"> </span><span class="nf">model</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
-<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>    <span class="k">return</span> <span class="n">jnp</span><span class="o">.</span><span class="n">maximum</span><span class="p">(</span><span class="n">x</span> <span class="o">@</span> <span class="n">params</span><span class="p">[</span><span class="s2">&quot;w&quot;</span><span class="p">]</span> <span class="o">+</span> <span class="n">params</span><span class="p">[</span><span class="s2">&quot;b&quot;</span><span class="p">],</span> <span class="mi">0</span><span class="p">)</span>
-<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>
-<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>
-<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="n">params</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;w&quot;</span><span class="p">:</span> <span class="n">jnp</span><span class="o">.</span><span class="n">ones</span><span class="p">((</span><span class="mi">4</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">jnp</span><span class="o">.</span><span class="n">float16</span><span class="p">),</span> <span class="s2">&quot;b&quot;</span><span class="p">:</span> <span class="n">jnp</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="mi">3</span><span class="p">,),</span> <span class="n">jnp</span><span class="o">.</span><span class="n">float16</span><span class="p">)}</span>
-<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a><span class="n">example_x</span> <span class="o">=</span> <span class="n">jnp</span><span class="o">.</span><span class="n">ones</span><span class="p">((</span><span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">),</span> <span class="n">jnp</span><span class="o">.</span><span class="n">float16</span><span class="p">)</span>
-<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>
-<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a><span class="n">result</span> <span class="o">=</span> <span class="n">build_jax_user_graph_bundle</span><span class="p">(</span>
-<a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a>    <span class="n">params</span><span class="o">=</span><span class="n">params</span><span class="p">,</span>
-<a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a>    <span class="n">output_dir</span><span class="o">=</span><span class="s2">&quot;/tmp/my-jax-bundle&quot;</span><span class="p">,</span>
-<a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a>    <span class="n">model_id</span><span class="o">=</span><span class="s2">&quot;my-jax-model&quot;</span><span class="p">,</span>
-<a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a>    <span class="n">specs</span><span class="o">=</span><span class="p">(</span><span class="n">JaxGraphSpec</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;forward&quot;</span><span class="p">,</span> <span class="n">fn</span><span class="o">=</span><span class="n">model</span><span class="p">,</span> <span class="n">example_args</span><span class="o">=</span><span class="p">(</span><span class="n">example_x</span><span class="p">,)),),</span>
-<a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a><span class="p">)</span>
-<a id="__codelineno-10-22" name="__codelineno-10-22" href="#__codelineno-10-22"></a>
-<a id="__codelineno-10-23" name="__codelineno-10-23" href="#__codelineno-10-23"></a><span class="n">loaded</span> <span class="o">=</span> <span class="n">load_jax_user_graph_bundle</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">output_dir</span><span class="p">)</span>
-<a id="__codelineno-10-24" name="__codelineno-10-24" href="#__codelineno-10-24"></a><span class="n">y</span> <span class="o">=</span> <span class="n">loaded</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;forward&quot;</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">((</span><span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">float16</span><span class="p">))[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">jax.numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">jnp</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.capture_jax</span><span class="w"> </span><span class="kn">import</span> <span class="n">JaxGraphSpec</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.jax_user_graph_bundle</span><span class="w"> </span><span class="kn">import</span> <span class="n">build_jax_user_graph_bundle</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="kn">from</span><span class="w"> </span><span class="nn">cactus.transpile.jax_user_graph_bundle</span><span class="w"> </span><span class="kn">import</span> <span class="n">load_jax_user_graph_bundle</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="k">def</span><span class="w"> </span><span class="nf">model</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">x</span><span class="p">):</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>    <span class="k">return</span> <span class="n">jnp</span><span class="o">.</span><span class="n">maximum</span><span class="p">(</span><span class="n">x</span> <span class="o">@</span> <span class="n">params</span><span class="p">[</span><span class="s2">&quot;w&quot;</span><span class="p">]</span> <span class="o">+</span> <span class="n">params</span><span class="p">[</span><span class="s2">&quot;b&quot;</span><span class="p">],</span> <span class="mi">0</span><span class="p">)</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="n">params</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;w&quot;</span><span class="p">:</span> <span class="n">jnp</span><span class="o">.</span><span class="n">ones</span><span class="p">((</span><span class="mi">4</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">jnp</span><span class="o">.</span><span class="n">float16</span><span class="p">),</span> <span class="s2">&quot;b&quot;</span><span class="p">:</span> <span class="n">jnp</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="mi">3</span><span class="p">,),</span> <span class="n">jnp</span><span class="o">.</span><span class="n">float16</span><span class="p">)}</span>
+<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="n">example_x</span> <span class="o">=</span> <span class="n">jnp</span><span class="o">.</span><span class="n">ones</span><span class="p">((</span><span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">),</span> <span class="n">jnp</span><span class="o">.</span><span class="n">float16</span><span class="p">)</span>
+<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>
+<a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="n">result</span> <span class="o">=</span> <span class="n">build_jax_user_graph_bundle</span><span class="p">(</span>
+<a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a>    <span class="n">params</span><span class="o">=</span><span class="n">params</span><span class="p">,</span>
+<a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a>    <span class="n">output_dir</span><span class="o">=</span><span class="s2">&quot;/tmp/my-jax-bundle&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a>    <span class="n">model_id</span><span class="o">=</span><span class="s2">&quot;my-jax-model&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a>    <span class="n">specs</span><span class="o">=</span><span class="p">(</span><span class="n">JaxGraphSpec</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;forward&quot;</span><span class="p">,</span> <span class="n">fn</span><span class="o">=</span><span class="n">model</span><span class="p">,</span> <span class="n">example_args</span><span class="o">=</span><span class="p">(</span><span class="n">example_x</span><span class="p">,)),),</span>
+<a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a><span class="p">)</span>
+<a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a>
+<a id="__codelineno-9-23" name="__codelineno-9-23" href="#__codelineno-9-23"></a><span class="n">loaded</span> <span class="o">=</span> <span class="n">load_jax_user_graph_bundle</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">output_dir</span><span class="p">)</span>
+<a id="__codelineno-9-24" name="__codelineno-9-24" href="#__codelineno-9-24"></a><span class="n">y</span> <span class="o">=</span> <span class="n">loaded</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;forward&quot;</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">((</span><span class="mi">2</span><span class="p">,</span> <span class="mi">4</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">float16</span><span class="p">))[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
 </code></pre></div>
 <p>For encoder-decoder models, provide each graph boundary explicitly:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">params</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">tokenizer</span><span class="p">,</span> <span class="n">config</span> <span class="o">=</span> <span class="n">load_needle_model</span><span class="p">()</span>
-<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="n">src</span> <span class="o">=</span> <span class="n">tokenizer</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;What time is it in Tokyo?&quot;</span><span class="p">)</span>
-<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">tgt</span> <span class="o">=</span> <span class="n">tokenizer</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;&lt;bos&gt;&quot;</span><span class="p">)</span>
-<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="n">src_mask</span> <span class="o">=</span> <span class="n">make_padding_mask</span><span class="p">(</span><span class="n">src</span><span class="p">,</span> <span class="n">config</span><span class="o">.</span><span class="n">pad_token_id</span><span class="p">)</span>
-<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="n">tgt_mask</span> <span class="o">=</span> <span class="n">make_causal_mask</span><span class="p">(</span><span class="n">tgt</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
-<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="n">encoder_out</span><span class="p">,</span> <span class="n">enc_mask</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">apply</span><span class="p">({</span><span class="s2">&quot;params&quot;</span><span class="p">:</span> <span class="n">params</span><span class="p">},</span> <span class="n">src</span><span class="p">,</span> <span class="n">src_mask</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">encode_text</span><span class="p">)</span>
-<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>
-<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="n">result</span> <span class="o">=</span> <span class="n">build_jax_user_graph_bundle</span><span class="p">(</span>
-<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>    <span class="n">params</span><span class="o">=</span><span class="n">params</span><span class="p">,</span>
-<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>    <span class="n">output_dir</span><span class="o">=</span><span class="s2">&quot;weights/needle&quot;</span><span class="p">,</span>
-<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>    <span class="n">model_id</span><span class="o">=</span><span class="s2">&quot;needle&quot;</span><span class="p">,</span>
-<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>    <span class="n">task</span><span class="o">=</span><span class="s2">&quot;encoder-decoder&quot;</span><span class="p">,</span>
-<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>    <span class="n">specs</span><span class="o">=</span><span class="p">(</span>
-<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a>        <span class="n">JaxGraphSpec</span><span class="p">(</span>
-<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>            <span class="n">name</span><span class="o">=</span><span class="s2">&quot;encoder&quot;</span><span class="p">,</span>
-<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a>            <span class="n">fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">params</span><span class="p">,</span> <span class="n">src</span><span class="p">,</span> <span class="n">src_mask</span><span class="p">:</span> <span class="n">model</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span>
-<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a>                <span class="p">{</span><span class="s2">&quot;params&quot;</span><span class="p">:</span> <span class="n">params</span><span class="p">},</span> <span class="n">src</span><span class="p">,</span> <span class="n">src_mask</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">encode_text</span>
-<a id="__codelineno-11-18" name="__codelineno-11-18" href="#__codelineno-11-18"></a>            <span class="p">),</span>
-<a id="__codelineno-11-19" name="__codelineno-11-19" href="#__codelineno-11-19"></a>            <span class="n">example_args</span><span class="o">=</span><span class="p">(</span><span class="n">src</span><span class="p">,</span> <span class="n">src_mask</span><span class="p">),</span>
-<a id="__codelineno-11-20" name="__codelineno-11-20" href="#__codelineno-11-20"></a>            <span class="n">output_names</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;encoder_out&quot;</span><span class="p">,</span> <span class="s2">&quot;encoder_mask&quot;</span><span class="p">),</span>
-<a id="__codelineno-11-21" name="__codelineno-11-21" href="#__codelineno-11-21"></a>        <span class="p">),</span>
-<a id="__codelineno-11-22" name="__codelineno-11-22" href="#__codelineno-11-22"></a>        <span class="n">JaxGraphSpec</span><span class="p">(</span>
-<a id="__codelineno-11-23" name="__codelineno-11-23" href="#__codelineno-11-23"></a>            <span class="n">name</span><span class="o">=</span><span class="s2">&quot;decoder_prefill&quot;</span><span class="p">,</span>
-<a id="__codelineno-11-24" name="__codelineno-11-24" href="#__codelineno-11-24"></a>            <span class="n">fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">params</span><span class="p">,</span> <span class="n">tgt</span><span class="p">,</span> <span class="n">encoder_out</span><span class="p">,</span> <span class="n">tgt_mask</span><span class="p">,</span> <span class="n">cross_mask</span><span class="p">:</span> <span class="n">model</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span>
-<a id="__codelineno-11-25" name="__codelineno-11-25" href="#__codelineno-11-25"></a>                <span class="p">{</span><span class="s2">&quot;params&quot;</span><span class="p">:</span> <span class="n">params</span><span class="p">},</span> <span class="n">tgt</span><span class="p">,</span> <span class="n">encoder_out</span><span class="p">,</span> <span class="n">tgt_mask</span><span class="p">,</span> <span class="n">cross_mask</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">decode</span>
-<a id="__codelineno-11-26" name="__codelineno-11-26" href="#__codelineno-11-26"></a>            <span class="p">),</span>
-<a id="__codelineno-11-27" name="__codelineno-11-27" href="#__codelineno-11-27"></a>            <span class="n">example_args</span><span class="o">=</span><span class="p">(</span><span class="n">tgt</span><span class="p">,</span> <span class="n">encoder_out</span><span class="p">,</span> <span class="n">tgt_mask</span><span class="p">,</span> <span class="n">enc_mask</span><span class="p">),</span>
-<a id="__codelineno-11-28" name="__codelineno-11-28" href="#__codelineno-11-28"></a>            <span class="n">output_names</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;logits&quot;</span><span class="p">,),</span>
-<a id="__codelineno-11-29" name="__codelineno-11-29" href="#__codelineno-11-29"></a>        <span class="p">),</span>
-<a id="__codelineno-11-30" name="__codelineno-11-30" href="#__codelineno-11-30"></a>    <span class="p">),</span>
-<a id="__codelineno-11-31" name="__codelineno-11-31" href="#__codelineno-11-31"></a><span class="p">)</span>
-<a id="__codelineno-11-32" name="__codelineno-11-32" href="#__codelineno-11-32"></a>
-<a id="__codelineno-11-33" name="__codelineno-11-33" href="#__codelineno-11-33"></a><span class="n">loaded</span> <span class="o">=</span> <span class="n">load_jax_user_graph_bundle</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">output_dir</span><span class="p">)</span>
-<a id="__codelineno-11-34" name="__codelineno-11-34" href="#__codelineno-11-34"></a><span class="n">encoder_out</span><span class="p">,</span> <span class="n">enc_mask</span> <span class="o">=</span> <span class="n">loaded</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;encoder&quot;</span><span class="p">,</span> <span class="n">src</span><span class="p">,</span> <span class="n">src_mask</span><span class="p">)</span>
-<a id="__codelineno-11-35" name="__codelineno-11-35" href="#__codelineno-11-35"></a><span class="n">logits</span> <span class="o">=</span> <span class="n">loaded</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;decoder_prefill&quot;</span><span class="p">,</span> <span class="n">tgt</span><span class="p">,</span> <span class="n">encoder_out</span><span class="p">,</span> <span class="n">tgt_mask</span><span class="p">,</span> <span class="n">enc_mask</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
-<a id="__codelineno-11-36" name="__codelineno-11-36" href="#__codelineno-11-36"></a><span class="n">next_token</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">argmax</span><span class="p">(</span><span class="n">logits</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">]))</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">params</span><span class="p">,</span> <span class="n">model</span><span class="p">,</span> <span class="n">tokenizer</span><span class="p">,</span> <span class="n">config</span> <span class="o">=</span> <span class="n">load_needle_model</span><span class="p">()</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">src</span> <span class="o">=</span> <span class="n">tokenizer</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;What time is it in Tokyo?&quot;</span><span class="p">)</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">tgt</span> <span class="o">=</span> <span class="n">tokenizer</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s2">&quot;&lt;bos&gt;&quot;</span><span class="p">)</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="n">src_mask</span> <span class="o">=</span> <span class="n">make_padding_mask</span><span class="p">(</span><span class="n">src</span><span class="p">,</span> <span class="n">config</span><span class="o">.</span><span class="n">pad_token_id</span><span class="p">)</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="n">tgt_mask</span> <span class="o">=</span> <span class="n">make_causal_mask</span><span class="p">(</span><span class="n">tgt</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="n">encoder_out</span><span class="p">,</span> <span class="n">enc_mask</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">apply</span><span class="p">({</span><span class="s2">&quot;params&quot;</span><span class="p">:</span> <span class="n">params</span><span class="p">},</span> <span class="n">src</span><span class="p">,</span> <span class="n">src_mask</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">encode_text</span><span class="p">)</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="n">result</span> <span class="o">=</span> <span class="n">build_jax_user_graph_bundle</span><span class="p">(</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>    <span class="n">params</span><span class="o">=</span><span class="n">params</span><span class="p">,</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>    <span class="n">output_dir</span><span class="o">=</span><span class="s2">&quot;weights/needle&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>    <span class="n">model_id</span><span class="o">=</span><span class="s2">&quot;needle&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>    <span class="n">task</span><span class="o">=</span><span class="s2">&quot;encoder-decoder&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>    <span class="n">specs</span><span class="o">=</span><span class="p">(</span>
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>        <span class="n">JaxGraphSpec</span><span class="p">(</span>
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>            <span class="n">name</span><span class="o">=</span><span class="s2">&quot;encoder&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>            <span class="n">fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">params</span><span class="p">,</span> <span class="n">src</span><span class="p">,</span> <span class="n">src_mask</span><span class="p">:</span> <span class="n">model</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span>
+<a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a>                <span class="p">{</span><span class="s2">&quot;params&quot;</span><span class="p">:</span> <span class="n">params</span><span class="p">},</span> <span class="n">src</span><span class="p">,</span> <span class="n">src_mask</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">encode_text</span>
+<a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a>            <span class="p">),</span>
+<a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a>            <span class="n">example_args</span><span class="o">=</span><span class="p">(</span><span class="n">src</span><span class="p">,</span> <span class="n">src_mask</span><span class="p">),</span>
+<a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a>            <span class="n">output_names</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;encoder_out&quot;</span><span class="p">,</span> <span class="s2">&quot;encoder_mask&quot;</span><span class="p">),</span>
+<a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a>        <span class="p">),</span>
+<a id="__codelineno-10-22" name="__codelineno-10-22" href="#__codelineno-10-22"></a>        <span class="n">JaxGraphSpec</span><span class="p">(</span>
+<a id="__codelineno-10-23" name="__codelineno-10-23" href="#__codelineno-10-23"></a>            <span class="n">name</span><span class="o">=</span><span class="s2">&quot;decoder_prefill&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-24" name="__codelineno-10-24" href="#__codelineno-10-24"></a>            <span class="n">fn</span><span class="o">=</span><span class="k">lambda</span> <span class="n">params</span><span class="p">,</span> <span class="n">tgt</span><span class="p">,</span> <span class="n">encoder_out</span><span class="p">,</span> <span class="n">tgt_mask</span><span class="p">,</span> <span class="n">cross_mask</span><span class="p">:</span> <span class="n">model</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span>
+<a id="__codelineno-10-25" name="__codelineno-10-25" href="#__codelineno-10-25"></a>                <span class="p">{</span><span class="s2">&quot;params&quot;</span><span class="p">:</span> <span class="n">params</span><span class="p">},</span> <span class="n">tgt</span><span class="p">,</span> <span class="n">encoder_out</span><span class="p">,</span> <span class="n">tgt_mask</span><span class="p">,</span> <span class="n">cross_mask</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">decode</span>
+<a id="__codelineno-10-26" name="__codelineno-10-26" href="#__codelineno-10-26"></a>            <span class="p">),</span>
+<a id="__codelineno-10-27" name="__codelineno-10-27" href="#__codelineno-10-27"></a>            <span class="n">example_args</span><span class="o">=</span><span class="p">(</span><span class="n">tgt</span><span class="p">,</span> <span class="n">encoder_out</span><span class="p">,</span> <span class="n">tgt_mask</span><span class="p">,</span> <span class="n">enc_mask</span><span class="p">),</span>
+<a id="__codelineno-10-28" name="__codelineno-10-28" href="#__codelineno-10-28"></a>            <span class="n">output_names</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;logits&quot;</span><span class="p">,),</span>
+<a id="__codelineno-10-29" name="__codelineno-10-29" href="#__codelineno-10-29"></a>        <span class="p">),</span>
+<a id="__codelineno-10-30" name="__codelineno-10-30" href="#__codelineno-10-30"></a>    <span class="p">),</span>
+<a id="__codelineno-10-31" name="__codelineno-10-31" href="#__codelineno-10-31"></a><span class="p">)</span>
+<a id="__codelineno-10-32" name="__codelineno-10-32" href="#__codelineno-10-32"></a>
+<a id="__codelineno-10-33" name="__codelineno-10-33" href="#__codelineno-10-33"></a><span class="n">loaded</span> <span class="o">=</span> <span class="n">load_jax_user_graph_bundle</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">output_dir</span><span class="p">)</span>
+<a id="__codelineno-10-34" name="__codelineno-10-34" href="#__codelineno-10-34"></a><span class="n">encoder_out</span><span class="p">,</span> <span class="n">enc_mask</span> <span class="o">=</span> <span class="n">loaded</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;encoder&quot;</span><span class="p">,</span> <span class="n">src</span><span class="p">,</span> <span class="n">src_mask</span><span class="p">)</span>
+<a id="__codelineno-10-35" name="__codelineno-10-35" href="#__codelineno-10-35"></a><span class="n">logits</span> <span class="o">=</span> <span class="n">loaded</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;decoder_prefill&quot;</span><span class="p">,</span> <span class="n">tgt</span><span class="p">,</span> <span class="n">encoder_out</span><span class="p">,</span> <span class="n">tgt_mask</span><span class="p">,</span> <span class="n">enc_mask</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<a id="__codelineno-10-36" name="__codelineno-10-36" href="#__codelineno-10-36"></a><span class="n">next_token</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">argmax</span><span class="p">(</span><span class="n">logits</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">]))</span>
 </code></pre></div>
 <p>Each component is saved under <code>components/&lt;name&gt;/</code> with <code>graph.cactus</code>,
 <code>raw_ir.json</code>, and <code>optimized_ir.json</code>. For decode, expose a separate
@@ -2529,32 +2494,35 @@ component. Use <code>loaded.reset()</code> between independent generations.</p>
 <hr />
 <h2 id="artifact-layout">Artifact Layout<a class="headerlink" href="#artifact-layout" title="Permanent link">&para;</a></h2>
 <p>A transpiled bundle looks like this:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>weights/&lt;model&gt;/
-<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>  raw_ir.json              # IR before optimization (debugging)
-<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>  optimized_ir.json        # IR after fusion passes (debugging)
-<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>  graph.cactus             # serialized runtime graph
-<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>  graph_bindings.json      # weight binding metadata
-<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>  result.json              # execution results (if --execute-after-transpile)
-<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>  components/              # for multimodal models
-<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>    manifest.json          # component order, input/output names
-<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>    vision_encoder/
-<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>      graph.cactus
-<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>      bound_constants/
-<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>    audio_encoder/
-<a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a>      graph.cactus
-<a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a>    lm_encoder/
-<a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a>      graph.cactus
-<a id="__codelineno-12-16" name="__codelineno-12-16" href="#__codelineno-12-16"></a>    decoder/
-<a id="__codelineno-12-17" name="__codelineno-12-17" href="#__codelineno-12-17"></a>      graph.cactus
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>weights/&lt;model&gt;/
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>  raw_ir.json              # IR before optimization (debugging)
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>  optimized_ir.json        # IR after fusion passes (debugging)
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>  graph.cactus             # serialized runtime graph
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>  graph_bindings.json      # weight binding metadata
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>  result.json              # execution results (if --execute-after-transpile)
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>  components/              # for multimodal models
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>    manifest.json          # component order, input/output names
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>    vision_encoder/
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>      graph.cactus
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>      bound_constants/
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>    audio_encoder/
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a>      graph.cactus
+<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a>    lm_encoder/
+<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>      graph.cactus
+<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a>    decoder/
+<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a>      graph.cactus
 </code></pre></div>
 <p>The <code>manifest.json</code> tells the runtime loader how to chain the components and where
 to find the memory-mapped weight files. The raw/optimized IR JSONs are also valid
 reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 <hr />
 <h2 id="cli-reference">CLI Reference<a class="headerlink" href="#cli-reference" title="Permanent link">&para;</a></h2>
-<h3 id="cactus-transpile"><code>cactus transpile</code><a class="headerlink" href="#cactus-transpile" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>cactus<span class="w"> </span>transpile<span class="w"> </span>&lt;model-id-or-path&gt;<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
+<h3 id="cactus-convert"><code>cactus convert</code><a class="headerlink" href="#cactus-convert" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>&lt;model-id-or-path&gt;<span class="w"> </span><span class="o">[</span>output-dir<span class="o">]</span><span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
 </code></pre></div>
+<p>Quantizes the weights to CQ and builds the runtime graph. Pass <code>--weights-only</code> to
+stop after the CQ weights. The graph-build options below are the same ones the
+transpiler accepts:</p>
 <table>
 <thead>
 <tr>
@@ -2563,6 +2531,22 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><code>--bits 1\|2\|3\|4</code></td>
+<td>CQ quantization bits (default: 4)</td>
+</tr>
+<tr>
+<td><code>--weights-only</code></td>
+<td>Stop after CQ quantization; skip the runtime graph</td>
+</tr>
+<tr>
+<td><code>--dynamic-batch</code></td>
+<td>Emit a dynamic-batch decoder graph for batched/continuous decode (Gemma4)</td>
+</tr>
+<tr>
+<td><code>--max-slots &lt;N&gt;</code></td>
+<td>KV-cache slot-pool capacity for batched decode (with <code>--dynamic-batch</code>)</td>
+</tr>
 <tr>
 <td><code>--weights-dir &lt;path&gt;</code></td>
 <td>Path to converted CQ weights (default: <code>weights/&lt;model_name&gt;</code>)</td>
@@ -2609,7 +2593,7 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 </tr>
 <tr>
 <td><code>--trust-remote-code</code></td>
-<td>Allow HF remote code during the transpile phase</td>
+<td>Allow HF remote code during the build</td>
 </tr>
 <tr>
 <td><code>--local-files-only</code></td>
@@ -2617,7 +2601,7 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 </tr>
 <tr>
 <td><code>--allow-unconverted-weights</code></td>
-<td>Transpile against an unconverted source checkpoint</td>
+<td>Build against an unconverted source checkpoint</td>
 </tr>
 <tr>
 <td><code>--no-fuse-rms-norm</code></td>
@@ -2635,9 +2619,9 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 </table>
 <p>NPU emission (CoreML <code>.mlpackage</code>s for Apple Silicon audio and vision encoders)
 is available through the <code>--npu</code>, <code>--npu-quantize</code>, <code>--npu-audio-quantize</code>, and
-<code>--npu-vision-quantize</code> flags on <code>cactus transpile</code>.</p>
+<code>--npu-vision-quantize</code> flags on <code>cactus convert</code>.</p>
 <h3 id="cactus-run"><code>cactus run</code><a class="headerlink" href="#cactus-run" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>cactus<span class="w"> </span>run<span class="w"> </span>&lt;model-id-or-bundle-path&gt;<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>cactus<span class="w"> </span>run<span class="w"> </span>&lt;model-id-or-bundle-path&gt;<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
 </code></pre></div>
 <p><code>model_id</code> may be a HuggingFace model id (downloads the matching bundle from
 huggingface.co/Cactus-Compute) or a local path to a bundle directory.</p>

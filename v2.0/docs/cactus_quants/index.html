@@ -2209,7 +2209,9 @@ of Unsloth UD-Q4_K_XL while matching it on most metrics.</p>
 </li>
 </ol>
 <h2 id="using-cq-weights">Using CQ Weights<a class="headerlink" href="#using-cq-weights" title="Permanent link">&para;</a></h2>
-<p><code>cactus convert &lt;model&gt;</code> builds a runnable bundle locally; <code>cactus run</code> runs a
+<p><code>cactus convert</code> quantizes the weights to CQ and builds the runtime bundle
+(graph + manifest) in one step. Run via <code>cactus run</code>:
+<code>cactus convert &lt;model&gt;</code> builds a runnable bundle locally; <code>cactus run</code> runs a
 bundle path or a model id.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>./gemma4-bundle
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>cactus<span class="w"> </span>convert<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>./gemma4-bundle<span class="w"> </span>--bits<span class="w"> </span><span class="m">2</span>

@@ -1812,7 +1812,10 @@
 </code></pre></div>
 <img src="../assets/lora.png" alt="Logo" style="border-radius: 30px; width: 70%;"></p>
 <h3 id="4-run">4. Run<a class="headerlink" href="#4-run" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cactus<span class="w"> </span>run<span class="w"> </span>./my-qwen3-0.6b
+<p>Build the native library, then run (the convert above already produced the runtime
+bundle alongside the CQ weights):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>cactus<span class="w"> </span>build
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>cactus<span class="w"> </span>run<span class="w"> </span>./my-qwen3-0.6b
 </code></pre></div>
 <p><code>cactus run</code> accepts the bundle path directly, or auto-builds from a HF model id
 when no bundle exists locally.
