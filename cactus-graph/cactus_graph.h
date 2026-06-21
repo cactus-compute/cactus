@@ -232,6 +232,9 @@ struct BufferDesc {
     char* pooled_data;
     Precision precision;
 
+    std::vector<uint8_t> dynamic_dims;
+    size_t pooled_byte_size = 0;
+
     size_t group_size = 0;
     size_t num_groups = 0;
 
@@ -304,6 +307,10 @@ struct BufferDesc {
     void release_to_pool(BufferPool& pool);
     void release_memory(BufferPool& pool);
     void set_external(void* ptr);
+
+    bool has_dynamic_dims() const { return !dynamic_dims.empty(); }
+    void set_shape(const std::vector<size_t>& new_shape);
+    void resize_from_pool(BufferPool& pool);
 };
 
 struct OpParams {
@@ -364,6 +371,8 @@ struct OpParams {
     size_t kernel_size = 0;
     size_t max_cache_seq_len = 0;
     size_t cache_sink_size = 0;
+    size_t cache_slot = 0;
+    size_t cache_num_slots = 1;
 
     size_t hop_length = 0;
     float power = 2.0f;
@@ -560,13 +569,15 @@ public:
         size_t num_kv_heads,
         size_t head_dim,
         size_t window_size = 0,
-        size_t sink_size = 4);
+        size_t sink_size = 4,
+        size_t num_slots = 1);
 
     size_t kv_cache_append(
         size_t new_kv,
         size_t cache_state_node,
         size_t window_size = 0,
-        size_t sink_size = 4);
+        size_t sink_size = 4,
+        size_t cache_slot = 0);
 
     size_t attention_cached(
         size_t query,
@@ -577,7 +588,8 @@ public:
         float scale,
         size_t position_offset = 0,
         size_t window_size = 0,
-        size_t v_head_dim = 0);
+        size_t v_head_dim = 0,
+        size_t cache_slot = 0);
 
     size_t conv_cache_state(size_t window_size, size_t hidden_dim);
     size_t conv_cache_append(size_t new_data, size_t cache_state_node);
@@ -709,6 +721,7 @@ public:
     OpType get_node_op_type(size_t node_id) const;
     size_t get_node_window_size(size_t node_id) const;
     size_t get_node_sink_size(size_t node_id) const;
+    size_t get_node_cache_num_slots(size_t node_id) const;
     void steal_cache_buffer(size_t dst_node, CactusGraph& src, size_t src_node);
     void shrink_cache_buffer(size_t node_id, size_t new_capacity);
     std::vector<uint8_t> snapshot_cache_padded_append(size_t node_id, size_t real_tokens, size_t pad_tokens) const;
@@ -716,12 +729,15 @@ public:
                                       const std::vector<uint8_t>& backup);
     void allocate_buffers();
     size_t get_node_count() const;
+    void set_runtime_input_shape(size_t node_id, const std::vector<size_t>& shape);
+    void set_input_dynamic_dims(size_t node_id, const std::vector<uint8_t>& dynamic_dims);
 
     std::vector<std::unique_ptr<GraphNode>> nodes_;
     std::unordered_map<size_t, size_t> node_index_map_;
 
 private:
     size_t binary_broadcast_op(OpType op, size_t input1, size_t input2);
+    void infer_shapes();
     size_t reduction_op(OpType op, size_t input, int axis);
     size_t attach_conv_bias(size_t node, size_t bias, size_t expected_size, const char* op_name);
     static CactusGraph from_serialized(const GraphFile::SerializedGraph& serialized);
@@ -732,6 +748,8 @@ private:
     std::vector<DebugNodeEntry> debug_nodes_;
     BufferPool buffer_pool_;
     bool prefill_mode_ = false;
+    bool has_dynamic_shapes_ = false;
+    bool runtime_shapes_dirty_ = false;
     std::unordered_set<size_t> persistent_node_ids_;
     std::unordered_set<size_t> populated_node_ids_;
     std::unordered_set<size_t> embedded_input_node_ids_;
@@ -755,6 +773,7 @@ namespace GraphFile {
         OpParams params;
         bool has_embedded_data = false;
         std::vector<uint8_t> embedded_data;
+        std::vector<uint8_t> dynamic_mask;
     };
 
     struct SerializedGraph {
@@ -856,6 +875,10 @@ CACTUS_FFI_EXPORT int cactus_graph_set_external_input(
     cactus_graph_t graph, cactus_node_t node, void* data, int32_t precision);
 CACTUS_FFI_EXPORT int cactus_graph_mark_embedded_input(
     cactus_graph_t graph, cactus_node_t node);
+CACTUS_FFI_EXPORT int cactus_graph_set_runtime_input_shape(
+    cactus_graph_t graph, cactus_node_t node, const size_t* shape, size_t rank);
+CACTUS_FFI_EXPORT int cactus_graph_set_input_dynamic_dims(
+    cactus_graph_t graph, cactus_node_t node, const uint8_t* mask, size_t rank);
 
 CACTUS_FFI_EXPORT int cactus_graph_precision_cast(
     cactus_graph_t graph, cactus_node_t input, int32_t target_precision, cactus_node_t* out);
@@ -971,7 +994,7 @@ CACTUS_FFI_EXPORT int cactus_graph_attention_int8_hybrid(
     size_t cache_len, size_t num_kv_heads, size_t head_dim, size_t window_size, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_kv_cache_state(
-    cactus_graph_t graph, size_t max_seq_len, size_t num_kv_heads, size_t head_dim, size_t window_size, size_t sink_size, cactus_node_t* out);
+    cactus_graph_t graph, size_t max_seq_len, size_t num_kv_heads, size_t head_dim, size_t window_size, size_t sink_size, size_t num_slots, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_kv_cache_append(
     cactus_graph_t graph, cactus_node_t new_kv, cactus_node_t cache_state, size_t window_size, size_t sink_size, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_attention_cached(

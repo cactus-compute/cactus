@@ -203,7 +203,7 @@ graph.hard_reset();
 │    --prompt <text>                   send prompt immediately                   │
 │    --thinking                        enable thinking/reasoning mode            │
 │    --token <token>                   HuggingFace token (gated models)          │
-│    --reconvert                       force local convert+transpile fallback    │
+│    --reconvert                       force local convert fallback              │
 │                                                                                │
 │  cactus transcribe [model]           live microphone transcription with a model│
 │    --file <audio.wav>                audio file to transcribe (WAV)            │
@@ -216,15 +216,15 @@ graph.hard_reset();
 │    --platform auto|cpu|apple         target accelerator (default: auto)        │
 │    --token <token>                   HuggingFace token                         │
 │                                                                                │
-│  cactus convert <model> [dir]        convert HuggingFace weights to CQ         │
+│  cactus convert <model> [dir]        HuggingFace -> runnable cactus bundle     │
+│                                      (CQ weights + runtime graph)              │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --token <token>                   HuggingFace token                         │
 │    --reconvert                       force build from source                   │
 │    --lora <path>                     merge a LoRA adapter before converting    │
-│                                                                                │
-│  cactus transpile <model>            build a runnable bundle from CQ weights   │
-│    --weights-dir <path>              path to CQ weights (default: lookup)      │
-│    --task <auto|...>                 force task type (default: auto)           │
+│    --weights-only                    stop after CQ weights (skip the graph)    │
+│    --dynamic-batch                   dynamic-batch decoder graph (Gemma4)      │
+│    --max-slots <n>                   KV-cache slots for batched decode         │
 │    --artifact-dir <path>             bundle output (default: weights/<model>)  │
 │                                                                                │
 │  cactus serve [model]                OpenAI-compatible local HTTP server       │

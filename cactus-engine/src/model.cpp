@@ -889,6 +889,70 @@ void Model::run_encoder_step(uint32_t token_id, size_t position) {
     encoder_->graph->execute();
 }
 
+void Model::set_component_batch(Component& comp, size_t batch) {
+    for (size_t i = 0; i < comp.runtime_input_node_ids.size(); ++i) {
+        size_t node_id = static_cast<size_t>(comp.runtime_input_node_ids[i]);
+        const auto& desc = comp.graph->get_output_buffer(node_id);
+        if (!desc.has_dynamic_dims() || desc.shape.empty() || desc.shape[0] == batch) continue;
+        std::vector<size_t> shape = desc.shape;
+        shape[0] = batch;
+        comp.graph->set_runtime_input_shape(node_id, shape);
+        const auto& resized = comp.graph->get_output_buffer(node_id);
+        comp.input_buffers[i].assign(resized.byte_size, 0);
+        comp.graph->set_external_input(node_id, comp.input_buffers[i].data(), resized.precision);
+    }
+}
+
+size_t Model::decoder_cache_num_slots() {
+    if (!decoder_ || !decoder_->graph) return 1;
+    for (const auto& state : decoder_->cache_states) {
+        int node_id = state.key_node_id;
+        if (node_id < 0) continue;
+        if (decoder_->graph->get_node_op_type(static_cast<size_t>(node_id)) != OpType::KV_CACHE_STATE) continue;
+        size_t num_slots = decoder_->graph->get_node_cache_num_slots(static_cast<size_t>(node_id));
+        return num_slots ? num_slots : 1;
+    }
+    return 1;
+}
+
+void Model::run_step_batch(const std::vector<uint32_t>& token_ids, size_t position) {
+    for (size_t b = 0; b < token_ids.size(); ++b) {
+        write_int_input_at(*encoder_, "input_ids", b, static_cast<int64_t>(token_ids[b]));
+        write_int_input_at(*encoder_, "position_ids", b, static_cast<int64_t>(position));
+    }
+    encoder_->graph->execute();
+    copy_component_outputs_to_inputs(*encoder_, *decoder_);
+    decoder_->graph->execute();
+    maybe_capture_handoff_probe_hidden(*decoder_);
+}
+
+std::vector<std::vector<uint32_t>> Model::decode_batch(const std::vector<uint32_t>& seed_tokens,
+                                                       size_t max_new_tokens) {
+    size_t batch = seed_tokens.size();
+    if (batch == 0 || !encoder_ || !decoder_ || decode_route_ != DecodeRoute::CACHED_STEP) return {};
+    if (!load_component_graph(*encoder_) || !load_component_graph(*decoder_)) return {};
+    if (batch > decoder_cache_num_slots()) return {};
+    auto has_dynamic_input = [](Component& c) {
+        for (int node_id : c.runtime_input_node_ids) {
+            if (node_id < 0) continue;
+            if (c.graph->get_output_buffer(static_cast<size_t>(node_id)).has_dynamic_dims()) return true;
+        }
+        return false;
+    };
+    if (batch > 1 && (!has_dynamic_input(*encoder_) || !has_dynamic_input(*decoder_))) return {};
+    reset_component_cache_states(*decoder_);
+    set_component_batch(*encoder_, batch);
+    set_component_batch(*decoder_, batch);
+    std::vector<std::vector<uint32_t>> streams(batch);
+    std::vector<uint32_t> current = seed_tokens;
+    for (size_t step = 0; step < max_new_tokens; ++step) {
+        run_step_batch(current, step);
+        current = argmax_component_logits_batch(*decoder_, batch);
+        for (size_t b = 0; b < batch; ++b) streams[b].push_back(current[b]);
+    }
+    return streams;
+}
+
 #define FOR_EACH_MATCHED_OUTPUT(source, target, body) \
     for (size_t _i = 0; _i < (source).output_node_ids.size() && _i < (source).logical_outputs.size(); ++_i) { \
         const std::string& out_name = (source).logical_outputs[_i]; \
@@ -1035,7 +1099,12 @@ void Model::reset_component_cache_states(Component& comp) {
             switch (op_type) {
                 case OpType::KV_CACHE_STATE:
                     if (desc.byte_size >= sizeof(uint64_t)) {
-                        static_cast<uint64_t*>(ptr)[0] = 0;
+                        auto* meta = static_cast<uint64_t*>(ptr);
+                        uint64_t num_slots = (desc.byte_size >= 6 * sizeof(uint64_t) && meta[5] > 0) ? meta[5] : 1;
+                        size_t slot_stride = num_slots ? desc.byte_size / num_slots : desc.byte_size;
+                        for (uint64_t s = 0; s < num_slots; ++s) {
+                            *reinterpret_cast<uint64_t*>(static_cast<char*>(ptr) + s * slot_stride) = 0;
+                        }
                     }
                     break;
                 case OpType::CONV_CACHE_STATE:
@@ -1729,21 +1798,11 @@ void Model::run_audio_encoder(const std::vector<float>& audio_features) {
     }
 }
 
-uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float* out_uncertainty) {
-    size_t out_node = static_cast<size_t>(comp.output_node_ids.empty() ? 0 : comp.output_node_ids[0]);
-    const auto& desc = comp.graph->get_output_buffer(out_node);
-    void* ptr = comp.graph->get_output(out_node);
+uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty) {
     size_t vocab = desc.shape.empty() ? 0 : desc.shape.back();
-    size_t seq = desc.shape.size() >= 2 ? desc.shape[desc.shape.size() - 2] : 1;
-    size_t row = seq > 0 ? seq - 1 : 0;
-    if (logit_row != std::numeric_limits<size_t>::max()) {
-        row = std::min(logit_row, seq > 0 ? seq - 1 : 0);
-    } else if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
-        row = std::min(last_logit_position_, seq > 0 ? seq - 1 : 0);
-    }
-    size_t row_off = row * vocab;
     uint32_t best = 0;
     float best_v = -std::numeric_limits<float>::infinity();
+    float second_v = -std::numeric_limits<float>::infinity();
     const auto& tool_bias = tool_constrainer_.get_bias();
     auto score_with_bias = [&](size_t token_id, float value) {
         auto tool_it = tool_bias.find(static_cast<uint32_t>(token_id));
@@ -1752,7 +1811,6 @@ uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float
         if (vocab_it != vocab_bias_.end()) value += vocab_it->second;
         return value;
     };
-    float second_v = -std::numeric_limits<float>::infinity();
     auto observe_logit = [&](size_t i, float v) {
         if (static_cast<int64_t>(i) == suppressed_token_id_) return;
         v = score_with_bias(i, v);
@@ -1783,6 +1841,38 @@ uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float
         *out_uncertainty = std::max(0.0f, std::min(1.0f, 1.0f - confidence));
     }
     return best;
+}
+
+uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float* out_uncertainty) {
+    size_t out_node = static_cast<size_t>(comp.output_node_ids.empty() ? 0 : comp.output_node_ids[0]);
+    const auto& desc = comp.graph->get_output_buffer(out_node);
+    void* ptr = comp.graph->get_output(out_node);
+    size_t vocab = desc.shape.empty() ? 0 : desc.shape.back();
+    size_t seq = desc.shape.size() >= 2 ? desc.shape[desc.shape.size() - 2] : 1;
+    size_t row = seq > 0 ? seq - 1 : 0;
+    if (logit_row != std::numeric_limits<size_t>::max()) {
+        row = std::min(logit_row, seq > 0 ? seq - 1 : 0);
+    } else if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
+        row = std::min(last_logit_position_, seq > 0 ? seq - 1 : 0);
+    }
+    return argmax_logits_at(desc, ptr, row * vocab, out_uncertainty);
+}
+
+std::vector<uint32_t> Model::argmax_component_logits_batch(Component& comp, size_t batch) {
+    std::vector<uint32_t> out(batch, 0);
+    if (batch == 0) return out;
+    size_t out_node = static_cast<size_t>(comp.output_node_ids.empty() ? 0 : comp.output_node_ids[0]);
+    const auto& desc = comp.graph->get_output_buffer(out_node);
+    void* ptr = comp.graph->get_output(out_node);
+    size_t vocab = desc.shape.empty() ? 0 : desc.shape.back();
+    if (vocab == 0) return out;
+    size_t total_rows = desc.total_size / vocab;
+    size_t seq = total_rows / batch;
+    for (size_t b = 0; b < batch; ++b) {
+        size_t row = b * seq + (seq > 0 ? seq - 1 : 0);
+        out[b] = argmax_logits_at(desc, ptr, row * vocab, nullptr);
+    }
+    return out;
 }
 
 uint32_t Model::argmax_last_logits(float* out_uncertainty) {
@@ -3981,7 +4071,7 @@ bool Config::from_json(const std::string& config_path) {
         default_top_p = 0.95f;
         default_top_k = 64;
         if (model_type == ModelType::GEMMA4) {
-            default_cloud_handoff_threshold = 0.92f;
+            default_cloud_handoff_threshold = 0.81f;
         }
     } else if (model_type == ModelType::LFM2) {
         default_temperature = 0.3f;

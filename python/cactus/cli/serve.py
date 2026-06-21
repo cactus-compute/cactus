@@ -61,7 +61,7 @@ def cmd_serve(args):
         )
     except RuntimeError as exc:
         print_color(RED, f"Error: {exc}")
-        print("Prepare a v2 bundle first with `cactus run <model>` (or `cactus convert <model>` then `cactus transpile <model>`).")
+        print("Prepare a bundle first with `cactus run <model>` (or `cactus convert <model>`).")
         return 1
 
     models = sorted(application.state.registry.models)

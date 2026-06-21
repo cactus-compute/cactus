@@ -19,24 +19,27 @@ This README is a code-first walkthrough of the actual flow in the repo today.
 These files are outside `python/cactus/transpile`, but they are the public top-level
 entry points for the transpiler:
 
-- `python/cactus/cli/transpile.py`
+- `python/cactus/cli/convert.py` (`cmd_convert` → `cmd_transpile`)
+- `python/cactus/cli/transpile.py` (`run_transpile`)
 - `python/cactus/transpile/hf_model.py`
 
-`cactus transpile` is a thin CLI wrapper around `python/cactus/transpile/hf_model.py`.
+There is no separate `cactus transpile` subcommand. `cactus convert <model>`
+quantizes the weights to CQ and then builds the runtime graph in one step; the graph
+build is `run_transpile`, a thin wrapper around `python/cactus/transpile/hf_model.py`.
 The packaged module is the real top-level transpile program.
 
 ## CLI Entry Flow
 
-### `cactus transpile`
+### `cactus convert`
 
-`python/cactus/cli/transpile.py` resolves the transpiler module, ensures the Python runtime
-library is available, and forwards most arguments to the transpiler:
+`cmd_convert` (`python/cactus/cli/convert.py`) quantizes the weights via `ensure_weights`,
+then (unless `--weights-only`) calls `cmd_transpile`, which forwards options to
+`run_transpile`:
 
 ```python
-def cmd_transpile(args):
+def run_transpile(model_id, *, extra_args, execute_after_transpile=False, ...):
     transpile_lib = _ensure_python_runtime_library()
-    model_id = resolve_model_id_alias(args.model_id)
-    extra_args = list(getattr(args, "extra_args", []) or [])
+    model_id = resolve_model_id_alias(model_id)
     command = [sys.executable, "-m", "cactus.transpile.hf_model", "--model-id", model_id]
     if "--weights-dir" not in extra_args:
         default_weights_dir = get_weights_dir(model_id)
@@ -44,18 +47,17 @@ def cmd_transpile(args):
             command.extend(["--weights-dir", str(default_weights_dir)])
         else:
             return 1
-    if not getattr(args, "execute_after_transpile", False) and "--skip-execute" not in extra_args:
+    if not execute_after_transpile and "--skip-execute" not in extra_args:
         command.append("--skip-execute")
     command.extend(extra_args)
 ```
 
 Two important details:
 
-- `cactus transpile` saves artifacts and skips execution by default.
-- Normal transpilation requires converted Cactus CQ weights. Run `cactus convert`
-  first, or pass `--weights-dir` to an existing converted folder.
-- The CLI only has an explicit `--execute-after-transpile` flag; most other
-  transpile options are forwarded as unknown args to `hf_model.py`.
+- The graph build saves artifacts and skips execution by default
+  (pass `--execute-after-transpile` to run a reference execution).
+- Building the runtime graph requires converted Cactus CQ weights. `cactus convert`
+  produces them before this stage; or pass `--weights-dir` to an existing converted folder.
 
 ### `cactus run`
 
@@ -842,33 +844,30 @@ Notes:
 
 ## CLI Usage
 
-## 1. Basic Transpile
+## 1. Basic Convert
 
 The simplest public command is:
 
 ```bash
-cactus transpile <hf-model-id>
+cactus convert <hf-model-id>
 ```
 
-By default this:
+This quantizes the weights to CQ and then builds the runtime graph. The graph stage:
 
-- requires a converted Cactus CQ weights directory, either passed with
-  `--weights-dir` or found in the default `weights/<model>` location
+- requires the converted Cactus CQ weights (produced by the same command, or passed
+  with `--weights-dir`; default lookup is `weights/<model>`)
 - resolves the runtime library
 - launches `python/cactus/transpile/hf_model.py`
 - saves artifacts under `weights/<model>/` (alongside the converted CQ weights; override with `--artifact-dir`)
 - adds `--skip-execute`, so it does not run the graph unless you ask
 
-To also execute right after transpiling:
+To stop after the CQ weights (skip the graph), pass `--weights-only`. To also execute
+a reference run right after building the graph, pass `--execute-after-transpile`.
 
-```bash
-cactus transpile <hf-model-id> --execute-after-transpile
-```
+## 2. Graph Options
 
-## 2. Forwarded Transpile Options
-
-Most useful transpile options are parsed by `python/cactus/transpile/hf_model.py`
-and simply forwarded through `cactus transpile`.
+The graph-build options are parsed by `python/cactus/transpile/hf_model.py` and exposed
+on `cactus convert`.
 
 Common ones:
 
@@ -892,49 +891,35 @@ Examples:
 ### Text causal LM
 
 ```bash
-cactus convert <text-model-id> /path/to/converted_weights --bits 4
-cactus transpile <text-model-id> \
-  --weights-dir /path/to/converted_weights \
+cactus convert <text-model-id> /path/to/converted_weights --bits 4 \
   --prompt "The capital of France is" \
   --artifact-dir ./transpiled/text_demo
-```
-
-### Text causal LM with explicit converted weights
-
-```bash
-cactus transpile <text-model-id> \
-  --weights-dir /path/to/converted_weights \
-  --prompt "Write a haiku about compilers"
 ```
 
 ### Gemma4 multimodal
 
 ```bash
-cactus transpile <gemma4-model-id> \
+cactus convert <gemma4-model-id> \
   --task multimodal_causal_lm_logits \
   --image-file /path/to/image.jpg \
   --audio-file /path/to/audio.wav \
-  --prompt "Describe what is happening in the image and audio." \
-  --weights-dir /path/to/converted_weights
+  --prompt "Describe what is happening in the image and audio."
 ```
 
 ### Whisper-style encoder capture
 
 ```bash
-cactus convert <whisper-model-id> /path/to/converted_weights --bits 4
-cactus transpile <whisper-model-id> \
+cactus convert <whisper-model-id> /path/to/converted_weights --bits 4 \
   --audio-file /path/to/sample.wav \
-  --task encoder_hidden_states \
-  --weights-dir /path/to/converted_weights
+  --task encoder_hidden_states
 ```
 
 ### Parakeet TDT
 
 ```bash
-cactus transpile <parakeet-tdt-model-id> \
+cactus convert <parakeet-tdt-model-id> \
   --audio-file /path/to/sample.wav \
-  --task tdt_transcription \
-  --weights-dir /path/to/converted_weights
+  --task tdt_transcription
 ```
 
 If you want the full direct script help:
@@ -1021,7 +1006,7 @@ As of the current code:
 
 If you only want the high-level lifecycle, it is:
 
-1. `cactus transpile` launches `python/cactus/transpile/hf_model.py`.
+1. `cactus convert` quantizes the weights, then launches `python/cactus/transpile/hf_model.py`.
 2. The script infers a task, loads the HF model, and creates one example input batch.
 3. `model_adapters.py` wraps the model into a smaller canonical task interface.
 4. `capture_pytorch.py` runs `torch.export`.

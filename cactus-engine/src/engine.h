@@ -634,6 +634,9 @@ public:
     bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token,
                                         float* out_uncertainty = nullptr);
 
+    std::vector<std::vector<uint32_t>> decode_batch(const std::vector<uint32_t>& seed_tokens,
+                                                    size_t max_new_tokens);
+
     void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 128, const std::string& profile_file = "",
                  bool prepare_decode = true);
 
@@ -795,6 +798,9 @@ private:
     void unload_component_graph(Component& comp);
     bool bind_runtime_buffers(Component& comp);
     void run_step(uint32_t token_id, size_t position, bool read_logits);
+    void run_step_batch(const std::vector<uint32_t>& token_ids, size_t position);
+    void set_component_batch(Component& comp, size_t batch);
+    size_t decoder_cache_num_slots();
     void run_encoder_step(uint32_t token_id, size_t position);
     void run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
                         Precision feature_precision);
@@ -831,6 +837,8 @@ private:
     void run_full_context_text();
     uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max(),
                                      float* out_uncertainty = nullptr);
+    uint32_t argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty);
+    std::vector<uint32_t> argmax_component_logits_batch(Component& comp, size_t batch);
     void write_int_input(Component& comp, const std::string& name, int64_t value);
     void write_int_input_at(Component& comp, const std::string& name, size_t index, int64_t value);
     void write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size);

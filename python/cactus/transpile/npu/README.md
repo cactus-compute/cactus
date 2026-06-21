@@ -1,10 +1,9 @@
 # NPU Transpiler Pipeline
 
 Emits CoreML `.mlpackage`s so the runtime engine can dispatch through the
-Apple Neural Engine. Triggered by `--npu` on the underlying transpile script
-(`python -m cactus.transpile.hf_model --npu …`), or programmatically via
-`TranspileOptions(npu=True)` in `cli/model.py`. The flag is not yet
-surfaced on the user-facing `cactus transpile` CLI. Runtime side:
+Apple Neural Engine. Triggered by `--npu` on `cactus convert` (forwarded to
+`python -m cactus.transpile.hf_model --npu …`), or programmatically via
+`TranspileOptions(npu=True)` in `cli/model.py`. Runtime side:
 `cactus-engine/src/model_npu.cpp`.
 
 **Scope: audio + vision encoders only.** Text-decoder prefill is

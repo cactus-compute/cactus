@@ -30,7 +30,7 @@ best build for your host, e.g. Apple Silicon on macOS); pass `--platform cpu`
 for the generic build. The result can be loaded directly via `cactus_init()`.
 
 For models not on Cactus-Compute, build a bundle from source with
-`cactus convert <model>` followed by `cactus transpile <model>`.
+`cactus convert <model>` (quantizes the weights and builds the runtime graph).
 
 ## Types
 
@@ -175,7 +175,7 @@ int cactus_complete(
 | `include_stop_sequences` | bool | false | Include stop sequence tokens in the response |
 | `force_tools` | bool | false | Constrain output to tool call format |
 | `tool_rag_top_k` | int | 2 | Select top-k relevant tools via Tool RAG (0 = disabled, use all tools) |
-| `confidence_threshold` | float | model-dependent | Minimum confidence for local generation; triggers cloud_handoff when below. Resolved in this order: `0.5` if the bundle ships a `handoff_probe.bin`; else the model's `default_cloud_handoff_threshold` (Gemma 4 = `0.92`); else `0.7`. |
+| `confidence_threshold` | float | model-dependent | Minimum confidence for local generation; triggers cloud_handoff when below. Resolved in this order: `0.5` if the bundle ships a `handoff_probe.bin`; else the model's `default_cloud_handoff_threshold` (Gemma 4 = `0.81`); else `0.7`. |
 | `auto_handoff` | bool | true | Automatically attempt cloud handoff when confidence is low |
 | `cloud_timeout_ms` | int | 15000 | Timeout in milliseconds for cloud handoff requests |
 | `handoff_with_images` | bool | true | Allow cloud handoff for requests that include images |

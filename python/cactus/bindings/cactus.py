@@ -100,6 +100,16 @@ _bind_optional(
     [cactus_graph_t, cactus_node_t],
     ctypes.c_int,
 )
+_bind_optional(
+    "cactus_graph_set_runtime_input_shape",
+    [cactus_graph_t, cactus_node_t, ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t],
+    ctypes.c_int,
+)
+_bind_optional(
+    "cactus_graph_set_input_dynamic_dims",
+    [cactus_graph_t, cactus_node_t, ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t],
+    ctypes.c_int,
+)
 
 _lib.cactus_graph_add.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
@@ -396,6 +406,7 @@ _lib.cactus_graph_attention.argtypes = [
 _lib.cactus_graph_attention.restype = ctypes.c_int
 _lib.cactus_graph_kv_cache_state.argtypes = [
     cactus_graph_t,
+    ctypes.c_size_t,
     ctypes.c_size_t,
     ctypes.c_size_t,
     ctypes.c_size_t,
@@ -1502,14 +1513,20 @@ class Graph:
             _lib.cactus_graph_destroy(h)
             self.h = None
 
-    def input(self, shape, dtype=FP16):
+    def input(self, shape, dtype=FP16, dynamic_dims=None):
         shape = tuple(int(x) for x in shape)
         arr = (ctypes.c_size_t * len(shape))(*shape)
         out = cactus_node_t()
         rc = _lib.cactus_graph_input(self.h, arr, len(shape), int(dtype), ctypes.byref(out))
         if rc != 0:
             raise RuntimeError(_err("graph_input failed"))
-        return self._tensor_from_node(out.value)
+        tensor = self._tensor_from_node(out.value)
+        if dynamic_dims is not None:
+            mask = (ctypes.c_uint8 * len(dynamic_dims))(*[1 if int(d) else 0 for d in dynamic_dims])
+            rc = _lib.cactus_graph_set_input_dynamic_dims(self.h, cactus_node_t(tensor.id), mask, len(dynamic_dims))
+            if rc != 0:
+                raise RuntimeError(_err("graph_set_input_dynamic_dims failed"))
+        return tensor
 
     def set_input(self, tensor, data, dtype=None):
         if not isinstance(tensor, Tensor):
@@ -1561,6 +1578,17 @@ class Graph:
         )
         if rc != 0:
             raise RuntimeError(_err("graph_set_external_input failed"))
+
+    def set_runtime_input_shape(self, tensor, shape):
+        if not isinstance(tensor, Tensor):
+            raise TypeError("tensor must be a Tensor")
+        if tensor.g is not self:
+            raise ValueError("tensor belongs to a different graph")
+        shape = tuple(int(x) for x in shape)
+        arr = (ctypes.c_size_t * len(shape))(*shape)
+        rc = _lib.cactus_graph_set_runtime_input_shape(self.h, cactus_node_t(tensor.id), arr, len(shape))
+        if rc != 0:
+            raise RuntimeError(_err("graph_set_runtime_input_shape failed"))
 
     def mark_embedded_input(self, tensor):
         if not isinstance(tensor, Tensor):
@@ -2144,7 +2172,7 @@ class Graph:
             raise RuntimeError(_err("graph_attention failed"))
         return self._tensor_from_node(out.value)
 
-    def kv_cache_state(self, max_seq_len, num_kv_heads, head_dim, window_size=0, sink_size=0):
+    def kv_cache_state(self, max_seq_len, num_kv_heads, head_dim, window_size=0, sink_size=0, num_slots=1):
         out = cactus_node_t()
         rc = _lib.cactus_graph_kv_cache_state(
             self.h,
@@ -2153,6 +2181,7 @@ class Graph:
             ctypes.c_size_t(int(head_dim)),
             ctypes.c_size_t(int(window_size)),
             ctypes.c_size_t(int(sink_size)),
+            ctypes.c_size_t(int(num_slots)),
             ctypes.byref(out),
         )
         if rc != 0:

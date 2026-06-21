@@ -147,6 +147,32 @@ int cactus_graph_set_external_input(cactus_graph_t graph, cactus_node_t node, vo
     }
 }
 
+int cactus_graph_set_runtime_input_shape(cactus_graph_t graph, cactus_node_t node, const size_t* shape, size_t rank) {
+    if (!graph || !shape) {
+        return fail_invalid("Invalid args to cactus_graph_set_runtime_input_shape");
+    }
+    try {
+        as_graph(graph)->graph.set_runtime_input_shape(static_cast<size_t>(node), std::vector<size_t>(shape, shape + rank));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+int cactus_graph_set_input_dynamic_dims(cactus_graph_t graph, cactus_node_t node, const uint8_t* mask, size_t rank) {
+    if (!graph || !mask) {
+        return fail_invalid("Invalid args to cactus_graph_set_input_dynamic_dims");
+    }
+    try {
+        as_graph(graph)->graph.set_input_dynamic_dims(static_cast<size_t>(node), std::vector<uint8_t>(mask, mask + rank));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_mark_embedded_input(cactus_graph_t graph, cactus_node_t node) {
     if (!graph) {
         return fail_invalid("Invalid args to cactus_graph_mark_embedded_input");
@@ -929,10 +955,10 @@ int cactus_graph_attention_int8_hybrid(cactus_graph_t graph, cactus_node_t query
     }
 }
 
-int cactus_graph_kv_cache_state(cactus_graph_t graph, size_t max_seq_len, size_t num_kv_heads, size_t head_dim, size_t window_size, size_t sink_size, cactus_node_t* out) {
+int cactus_graph_kv_cache_state(cactus_graph_t graph, size_t max_seq_len, size_t num_kv_heads, size_t head_dim, size_t window_size, size_t sink_size, size_t num_slots, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_kv_cache_state");
     try {
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.kv_cache_state(max_seq_len, num_kv_heads, head_dim, window_size, sink_size));
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.kv_cache_state(max_seq_len, num_kv_heads, head_dim, window_size, sink_size, num_slots));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();

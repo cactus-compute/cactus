@@ -22,7 +22,7 @@ from .compile import cmd_build
 from .serve import cmd_serve
 from .transcribe import cmd_transcribe
 from .test import cmd_test, COMPONENTS
-from .convert import cmd_convert, cmd_transpile
+from .convert import cmd_convert
 from .run import cmd_run
 from .list import cmd_list
 
@@ -103,7 +103,7 @@ def create_parser():
     --prompt <text>                    send prompt immediately
     --thinking                         enable thinking/reasoning mode
     --token <token>                    HuggingFace token (gated models)
-    --reconvert                        force local convert+transpile fallback
+    --reconvert                        force local convert fallback
 
   cactus transcribe [model]            live microphone transcription with a model
     --file <audio.wav>                 audio file to transcribe (WAV)
@@ -148,19 +148,22 @@ def create_parser():
 
   -----------------------------------------------------------------
 
-  Advanced / build pipeline — the two manual steps below run
-  automatically inside run, serve, transcribe and download; reach for
-  them only to control the build (custom flags, LoRA, NPU, debugging):
+  Advanced / build pipeline — convert runs automatically inside run,
+  serve, transcribe and download; reach for it only to control the
+  build (custom flags, LoRA, NPU, debugging):
 
-  cactus convert <model> [dir]         convert HuggingFace weights to CQ
+  cactus convert <model> [dir]         HuggingFace -> runnable cactus bundle
+                                       (quantizes weights to CQ, then builds
+                                       the runtime graph)
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --token <token>                    HuggingFace token
-    --reconvert                        force build from source
+    --token <token>                    HuggingFace token (defaults to $HF_TOKEN)
+    --reconvert                        force weight conversion from source
     --lora <path>                      merge a LoRA adapter before converting
-
-  cactus transpile <model>             build a runnable bundle from CQ weights
-    --weights-dir <path>               path to CQ weights (default: weights/<model>)
-    --task <auto|...>                  task (default: auto, inferred from model config)
+    --weights-only                     stop after CQ weights (skip the graph)
+    --dynamic-batch                    emit a dynamic-batch decoder graph (Gemma4)
+    --max-slots <n>                    KV-cache slot capacity for batched decode
+    --weights-dir <path>              path to CQ weights (default: weights/<model>)
+    --task <auto|...>                  task (default: auto, inferred from config)
     --artifact-dir <path>              write bundle here (default: weights/<model>)
     --prompt <text>                    representative prompt for shape capture
     --system-prompt <text>             system prompt for multimodal chat
@@ -169,14 +172,13 @@ def create_parser():
     --image-file <path>                representative image (repeatable)
     --audio-file <path>                representative audio file (WAV)
     --max-new-tokens <n>               preallocate decode context for causal LM
-    --component-pipeline auto|on|off   force component-pipeline transpilation
-    --components <a,b,...>             subset of components to transpile
+    --component-pipeline auto|on|off   force component-pipeline graph build
+    --components <a,b,...>             subset of components to build
     --torch-dtype <dtype>              float16 | float32 | bfloat16
-    --token <token>                    HuggingFace token (defaults to $HF_TOKEN)
-    --trust-remote-code                allow HF remote code at transpile time
+    --trust-remote-code                allow HF remote code during the build
     --local-files-only                 require model/processor to be local
     --allow-unconverted-weights        debug-only: skip the CQ-weights check
-    --execute-after-transpile          run a reference execution after lowering
+    --execute-after-transpile          run a reference execution after building
     --graph-filename <name>            override saved graph filename
     --skip-reference-compare           skip PyTorch comparison (with --execute-…)
     --no-fuse-rms-norm                 disable RMSNorm fusion
@@ -236,7 +238,7 @@ def create_parser():
                             help=_PLATFORM_HELP)
     run_parser.add_argument("--token", help="HuggingFace token")
     run_parser.add_argument("--reconvert", action="store_true",
-                            help="Force local convert+transpile fallback")
+                            help="Force local convert fallback")
     run_parser.add_argument("--image",
                             help="Path to image file for VLM inference (attached to first message)")
     run_parser.add_argument("--audio",
@@ -324,7 +326,7 @@ def create_parser():
     subparsers.add_parser("list", help="List local converted weights and bundles")
 
     convert_parser = subparsers.add_parser("convert",
-                                           help="Convert HuggingFace weights to CQ format")
+                                           help="Convert a HuggingFace model into a runnable cactus bundle")
     convert_parser.add_argument("model_id", type=_hf_id_or_path,
                                 help="HuggingFace model id (e.g. openai/whisper-base)")
     convert_parser.add_argument("output_dir", nargs="?", default=None,
@@ -336,77 +338,77 @@ def create_parser():
                                 help="Path or HF id of a LoRA adapter to merge before converting (requires `peft`)")
     convert_parser.add_argument("--reconvert", action="store_true",
                                 help="Force conversion from source")
+    convert_parser.add_argument("--weights-only", action="store_true",
+                                help="Only quantize weights; skip building the runtime graph bundle")
+    convert_parser.add_argument("--dynamic-batch", action="store_true",
+                                help="Emit a dynamic-batch decoder graph for batched/continuous decode (Gemma4)")
+    convert_parser.add_argument("--max-slots", type=int, default=1,
+                                help="KV-cache slot-pool capacity for batched decode; used with --dynamic-batch")
 
-    transpile_parser = subparsers.add_parser("transpile",
-                                             help="Build a runnable bundle from CQ weights")
-    transpile_parser.add_argument("model_id", type=_hf_id_or_path,
-                                  help="HuggingFace model id or local checkpoint path")
-    transpile_parser.add_argument("--weights-dir",
-                                  help="CQ weights directory (default: weights/<model>)")
-    transpile_parser.add_argument("--task", default="auto",
-                                  choices=["auto", "causal_lm_logits", "multimodal_causal_lm_logits",
-                                           "ctc_logits", "encoder_hidden_states",
-                                           "seq2seq_transcription", "tdt_transcription"],
-                                  help="Transpile task (default: auto, from model config)")
-    transpile_parser.add_argument("--prompt",
-                                  help="Prompt for causal/multimodal shape capture")
-    transpile_parser.add_argument("--system-prompt", default=None,
-                                  help="System prompt for multimodal chat formats")
-    transpile_parser.add_argument("--enable-thinking", action="store_true",
-                                  help="Enable thinking markers when the prompt supports them")
-    transpile_parser.add_argument("--input-ids", default=None,
-                                  help="Comma-separated token ids for causal-LM shape capture")
-    transpile_parser.add_argument("--image-file", action="append", default=[],
-                                  help="Image for multimodal shape capture (repeatable)")
-    transpile_parser.add_argument("--audio-file",
-                                  help="Audio file (WAV) for audio/multimodal shape capture")
-    transpile_parser.add_argument("--max-new-tokens", type=_positive_int, default=None,
-                                  help="Decode context to preallocate for causal LM (default: 32)")
-    transpile_parser.add_argument("--component-pipeline", default="auto", choices=["auto", "on", "off"],
-                                  help="Split-component transpilation when supported (default: auto)")
-    transpile_parser.add_argument("--components",
-                                  help="Comma-separated component subset (e.g. vision_encoder,decoder)")
-    transpile_parser.add_argument("--torch-dtype", default=None,
-                                  choices=["float16", "float32", "bfloat16"],
-                                  help="Torch dtype for HF loading (default: float16)")
-    transpile_parser.add_argument("--token", default=None,
-                                  help="HuggingFace token for gated models (default: $HF_TOKEN)")
-    transpile_parser.add_argument("--trust-remote-code", action="store_true",
-                                  help="Pass trust_remote_code=True to HF loaders")
-    transpile_parser.add_argument("--local-files-only", action="store_true",
-                                  help="Require model/processor to already be local")
-    transpile_parser.add_argument("--allow-unconverted-weights", action="store_true",
-                                  help="Debug: transpile without CQ weights")
-    transpile_parser.add_argument("--execute-after-transpile", action="store_true",
-                                  help="Run a reference execution after lowering")
-    transpile_parser.add_argument("--artifact-dir",
-                                  help="Output directory (default: weights/<model>)")
-    transpile_parser.add_argument("--graph-filename", default=None,
-                                  help="Saved graph filename (default: graph.cactus)")
-    transpile_parser.add_argument("--skip-reference-compare", action="store_true",
-                                  help="Skip PyTorch comparison (requires --execute-after-transpile)")
-    transpile_parser.add_argument("--no-fuse-rms-norm", action="store_true",
-                                  help="Disable RMSNorm fusion")
-    transpile_parser.add_argument("--no-fuse-rope", action="store_true",
-                                  help="Disable RoPE fusion")
-    transpile_parser.add_argument("--no-fuse-attention", action="store_true",
-                                  help="Disable attention fusion")
-    transpile_parser.add_argument("--no-fuse-attention-block", action="store_true",
-                                  help="Disable attention-block fusion")
-    transpile_parser.add_argument("--no-fuse-add-clipped", action="store_true",
-                                  help="Disable add-clipped fusion")
-    transpile_parser.add_argument("--no-fuse-gated-deltanet", action="store_true",
-                                  help="Disable gated DeltaNet fusion")
-    transpile_parser.add_argument("--npu", action="store_true",
-                                  help="Also emit CoreML .mlpackage(s) for Apple NPU encoders")
-    transpile_parser.add_argument("--npu-quantize", type=int, choices=[0, 4, 8], default=None,
-                                  help="Legacy: force both NPU encoders to same quant (0=fp16, 4=int4, 8=int8)")
-    transpile_parser.add_argument("--npu-audio-quantize", type=int, choices=[0, 4, 8], default=None,
-                                  help="NPU audio encoder quant: 0=fp16, 4=int4, 8=int8 (default: 8)")
-    transpile_parser.add_argument("--npu-vision-quantize", type=int, choices=[0, 4, 8], default=None,
-                                  help="NPU vision encoder quant: 0=fp16, 4=int4, 8=int8 (default: 0; int4 degrades Gemma4 vision)")
-    transpile_parser.add_argument("--cache-context-length", default=None,
-                                  help="KV cache context length for cached decode graphs (default: model config)")
+    convert_parser.add_argument("--weights-dir",
+                                help="CQ weights directory (default: weights/<model>)")
+    convert_parser.add_argument("--task", default="auto",
+                                choices=["auto", "causal_lm_logits", "multimodal_causal_lm_logits",
+                                         "ctc_logits", "encoder_hidden_states",
+                                         "seq2seq_transcription", "tdt_transcription"],
+                                help="Graph task (default: auto, from model config)")
+    convert_parser.add_argument("--prompt",
+                                help="Prompt for causal/multimodal shape capture")
+    convert_parser.add_argument("--system-prompt", default=None,
+                                help="System prompt for multimodal chat formats")
+    convert_parser.add_argument("--enable-thinking", action="store_true",
+                                help="Enable thinking markers when the prompt supports them")
+    convert_parser.add_argument("--input-ids", default=None,
+                                help="Comma-separated token ids for causal-LM shape capture")
+    convert_parser.add_argument("--image-file", action="append", default=[],
+                                help="Image for multimodal shape capture (repeatable)")
+    convert_parser.add_argument("--audio-file",
+                                help="Audio file (WAV) for audio/multimodal shape capture")
+    convert_parser.add_argument("--max-new-tokens", type=_positive_int, default=None,
+                                help="Decode context to preallocate for causal LM (default: 32)")
+    convert_parser.add_argument("--component-pipeline", default="auto", choices=["auto", "on", "off"],
+                                help="Split-component graph when supported (default: auto)")
+    convert_parser.add_argument("--components",
+                                help="Comma-separated component subset (e.g. vision_encoder,decoder)")
+    convert_parser.add_argument("--torch-dtype", default=None,
+                                choices=["float16", "float32", "bfloat16"],
+                                help="Torch dtype for HF loading (default: float16)")
+    convert_parser.add_argument("--trust-remote-code", action="store_true",
+                                help="Pass trust_remote_code=True to HF loaders")
+    convert_parser.add_argument("--local-files-only", action="store_true",
+                                help="Require model/processor to already be local")
+    convert_parser.add_argument("--allow-unconverted-weights", action="store_true",
+                                help="Debug: build the graph without CQ weights")
+    convert_parser.add_argument("--execute-after-transpile", action="store_true",
+                                help="Run a reference execution after building the graph")
+    convert_parser.add_argument("--artifact-dir",
+                                help="Graph bundle output directory (default: weights/<model>)")
+    convert_parser.add_argument("--graph-filename", default=None,
+                                help="Saved graph filename (default: graph.cactus)")
+    convert_parser.add_argument("--skip-reference-compare", action="store_true",
+                                help="Skip PyTorch comparison (requires --execute-after-transpile)")
+    convert_parser.add_argument("--no-fuse-rms-norm", action="store_true",
+                                help="Disable RMSNorm fusion")
+    convert_parser.add_argument("--no-fuse-rope", action="store_true",
+                                help="Disable RoPE fusion")
+    convert_parser.add_argument("--no-fuse-attention", action="store_true",
+                                help="Disable attention fusion")
+    convert_parser.add_argument("--no-fuse-attention-block", action="store_true",
+                                help="Disable attention-block fusion")
+    convert_parser.add_argument("--no-fuse-add-clipped", action="store_true",
+                                help="Disable add-clipped fusion")
+    convert_parser.add_argument("--no-fuse-gated-deltanet", action="store_true",
+                                help="Disable gated DeltaNet fusion")
+    convert_parser.add_argument("--npu", action="store_true",
+                                help="Also emit CoreML .mlpackage(s) for Apple NPU encoders")
+    convert_parser.add_argument("--npu-quantize", type=int, choices=[0, 4, 8], default=None,
+                                help="Legacy: force both NPU encoders to same quant (0=fp16, 4=int4, 8=int8)")
+    convert_parser.add_argument("--npu-audio-quantize", type=int, choices=[0, 4, 8], default=None,
+                                help="NPU audio encoder quant: 0=fp16, 4=int4, 8=int8 (default: 8)")
+    convert_parser.add_argument("--npu-vision-quantize", type=int, choices=[0, 4, 8], default=None,
+                                help="NPU vision encoder quant: 0=fp16, 4=int4, 8=int8 (default: 0; int4 degrades Gemma4 vision)")
+    convert_parser.add_argument("--cache-context-length", default=None,
+                                help="KV cache context length for cached decode graphs (default: model config)")
 
     return parser
 
@@ -424,7 +426,6 @@ _COMMANDS = {
     "auth":           cmd_auth,
     "clean":          cmd_clean,
     "convert":        cmd_convert,
-    "transpile":      cmd_transpile,
 }
 
 

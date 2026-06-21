@@ -210,7 +210,8 @@ def _lower_input_value(g: Graph, value: IRValue, *, ir: IRGraph | None = None, i
             max_seq_len, num_kv_heads, head_dim = shape[1], shape[2], shape[3]
         cache_elements = _cross_kv_cache_buffer_elements(max_seq_len, num_kv_heads, head_dim)
         return g.input(shape=(cache_elements,), dtype=Graph.INT8)
-    return g.input(shape=value.shape, dtype=_map_ir_dtype(value.dtype))
+    dynamic_dims = value.meta.get("dynamic_dims") if value.meta else None
+    return g.input(shape=value.shape, dtype=_map_ir_dtype(value.dtype), dynamic_dims=dynamic_dims)
 
 
 def _should_lower_attention_with_internal_kv_cache(ir: IRGraph, node: IRNode) -> bool:
@@ -283,12 +284,14 @@ def _lower_attention_with_internal_kv_cache(
         max_cache_seq_len = max(default_cache_len, int(requested_cache_len or default_cache_len))
         sink_size = int(ir.meta.get("cache_sink_size", 4) or 4)
         window_size = int(node.attrs.get("window_size", 0) or 0)
+        cache_num_slots = int(ir.meta.get("cache_num_slots", 1) or 1)
         k_cache = g.kv_cache_state(
             max_cache_seq_len,
             int(key_shape[2]),
             int(key_shape[3]),
             window_size=window_size,
             sink_size=sink_size,
+            num_slots=cache_num_slots,
         )
         v_cache = g.kv_cache_state(
             max_cache_seq_len,
@@ -296,6 +299,7 @@ def _lower_attention_with_internal_kv_cache(
             int(value_shape[3]),
             window_size=window_size,
             sink_size=sink_size,
+            num_slots=cache_num_slots,
         )
         cache_states[layer_key] = (k_cache, v_cache)
         cache_entries: list[tuple[str, Tensor, Tensor]] = env.setdefault("__internal_kv_cache_state_entries", [])  # type: ignore[assignment]

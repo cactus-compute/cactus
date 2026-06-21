@@ -3565,6 +3565,8 @@ def _build_gemma4_multimodal_component_specs(
     weights_dir: str | None,
     components: tuple[str, ...] | None = None,
     cache_context_length: str | int | None = None,
+    dynamic_batch: bool = False,
+    max_slots: int = 1,
 ) -> list[ComponentModuleSpec]:
     pixel_values = named_tensors["pixel_values"]
     pixel_position_ids = named_tensors.get("pixel_position_ids")
@@ -3878,6 +3880,7 @@ def _build_gemma4_multimodal_component_specs(
             output_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
             graph_meta={**common_graph_meta, "component": "lm_encoder_step"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
+            dynamic_batch_axis=0 if dynamic_batch else None,
         ))
     if "lm_encoder_text_chunk" in expanded_components:
         specs.append(ComponentModuleSpec(
@@ -3934,8 +3937,10 @@ def _build_gemma4_multimodal_component_specs(
                 "use_internal_kv_cache": True,
                 "max_cache_seq_len": cache_seq_len,
                 "cache_sink_size": 4,
+                "cache_num_slots": (max_slots if dynamic_batch else 1),
             },
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
+            dynamic_batch_axis=0 if dynamic_batch else None,
         ))
     return specs
 
@@ -6100,6 +6105,8 @@ def build_component_module_specs(
     inputs_metadata: dict[str, object] | None = None,
     components: tuple[str, ...] | None = None,
     cache_context_length: str | int | None = None,
+    dynamic_batch: bool = False,
+    max_slots: int = 1,
 ) -> list[ComponentModuleSpec] | None:
     family = _family_key(model)
     if family == "qwen3_5" and task == "multimodal_causal_lm_logits":
@@ -6133,6 +6140,8 @@ def build_component_module_specs(
             weights_dir=weights_dir,
             components=components,
             cache_context_length=cache_context_length,
+            dynamic_batch=dynamic_batch,
+            max_slots=max_slots,
         )
     if family == "lfm2_vl" and task == "multimodal_causal_lm_logits":
         return _build_lfm2_vl_multimodal_component_specs(

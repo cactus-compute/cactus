@@ -3133,6 +3133,23 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--dynamic-batch",
+        action="store_true",
+        help=(
+            "Mark the Gemma4 decoder_step batch axis dynamic so the emitted graph runs any "
+            "batch at runtime (for batched/continuous decode). Default off."
+        ),
+    )
+    parser.add_argument(
+        "--max-slots",
+        type=int,
+        default=1,
+        help=(
+            "KV-cache slot-pool capacity (max concurrent sequences) for batched decode. "
+            "Only used with --dynamic-batch; the decoder_step caches are sized for this many slots."
+        ),
+    )
+    parser.add_argument(
         "--npu",
         action="store_true",
         help="Also emit CoreML .mlpackage(s) for Apple Neural Engine audio + vision encoders.",
@@ -3179,13 +3196,10 @@ def main() -> int:
     validated_weights_dir = _validate_weights_dir(args.weights_dir.strip() or None, model_id=args.model_id)
     if validated_weights_dir is None and not args.allow_unconverted_weights:
         raise RuntimeError(
-            "Transpilation requires converted Cactus CQ weights.\n"
+            "Building the runtime graph requires converted Cactus CQ weights.\n"
             "\n"
-            "Create them first with:\n"
-            f"  cactus convert {args.model_id} <weights-dir> --bits 4\n"
-            "\n"
-            "Then retry with:\n"
-            f"  cactus transpile {args.model_id} --weights-dir <weights-dir>\n"
+            "Run:\n"
+            f"  cactus convert {args.model_id} --bits 4\n"
             "\n"
             "For compiler-only debugging, pass --allow-unconverted-weights."
         )
@@ -3384,6 +3398,8 @@ def main() -> int:
         weights_dir=weights_dir,
         inputs_metadata=prepared.metadata,
         cache_context_length=args.cache_context_length,
+        dynamic_batch=getattr(args, "dynamic_batch", False),
+        max_slots=getattr(args, "max_slots", 1),
     )
     try:
         component_specs = build_component_module_specs(

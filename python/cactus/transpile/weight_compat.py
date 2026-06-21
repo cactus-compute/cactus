@@ -138,7 +138,7 @@ def _ensure_legacy_int4_weight_binding_compatible(
         raise RuntimeError(
             "legacy packed INT4 weight is not directly executable in the v2 runtime and is "
             f"missing a CQ companion file: {source_path.name}. "
-            "Rerun `cactus transpile ...` so the transpiler can materialize the CQ weights, "
+            "Rerun `cactus convert ...` so the CQ weights can be materialized, "
             "or generate them through `cq_convert` first."
         )
 

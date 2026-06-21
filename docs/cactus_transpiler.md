@@ -11,7 +11,7 @@ that runs on ARM devices. You write normal PyTorch, and the transpiler handles t
 capturing the computation graph, fusing ops, quantizing weights, and producing a bundle
 that loads with zero-copy memory mapping.
 
-## From PyTorch to On-Device in 3 Steps
+## From PyTorch to On-Device in 2 Steps
 
 ### Step 1: Write a PyTorch Model
 
@@ -39,23 +39,16 @@ model = TextClassifier()
 torch.save(model.state_dict(), "classifier.pt")
 ```
 
-### Step 2: Convert Weights
+### Step 2: Convert and Run
 
-Convert the model weights to Cactus format. This quantizes them and writes a
-`weights_manifest.json` that the transpiler uses to bind weights at load time:
+`cactus convert` quantizes the weights to Cactus format (writing a
+`weights_manifest.json`) and then captures the graph, optimizes it, and saves a
+self-contained bundle — all in one step:
 
 ```bash
 cactus convert ./classifier.pt ./classifier-cactus --bits 4
-```
 
-### Step 3: Transpile and Run
-
-```bash
-# Transpile: captures the graph, optimizes, and saves a bundle
-cactus transpile ./classifier.pt \
-    --weights-dir ./classifier-cactus --artifact-dir ./classifier-cactus
-
-# Run the transpiled bundle
+# Run the converted bundle
 cactus run ./classifier-cactus
 ```
 
@@ -188,28 +181,23 @@ and weight binding metadata.
 
 ---
 
-## Transpiling HuggingFace Models
+## Converting HuggingFace Models
 
-The most common use case is transpiling a model from HuggingFace:
+The most common use case is converting a model from HuggingFace. `cactus convert`
+quantizes the weights and builds the runtime graph in one step:
 
 ```bash
-# 1. Convert weights
+# 1. Convert (CQ weights + runtime bundle)
 cactus convert google/gemma-4-E2B-it ./gemma4-weights --bits 4
 
-# 2. Transpile
-cactus transpile google/gemma-4-E2B-it \
-    --weights-dir ./gemma4-weights --artifact-dir ./gemma4-weights
-
-# 3. Run
+# 2. Run
 cactus run ./gemma4-weights --prompt "Hello!"
 ```
 
 ### Text Models
 
 ```bash
-cactus convert Qwen/Qwen3-0.6B ./qwen3-weights --bits 4
-cactus transpile Qwen/Qwen3-0.6B \
-  --weights-dir ./qwen3-weights \
+cactus convert Qwen/Qwen3-0.6B ./qwen3-weights --bits 4 \
   --prompt "The capital of France is"
 ```
 
@@ -220,23 +208,19 @@ Multimodal models are automatically split into components (`vision_encoder`,
 and optimized:
 
 ```bash
-cactus convert google/gemma-4-E2B-it ./gemma4-weights --bits 4
-cactus transpile google/gemma-4-E2B-it \
+cactus convert google/gemma-4-E2B-it ./gemma4-weights --bits 4 \
   --task multimodal_causal_lm_logits \
   --image-file photo.jpg \
   --audio-file speech.wav \
-  --prompt "Describe what you see and hear." \
-  --weights-dir ./gemma4-weights
+  --prompt "Describe what you see and hear."
 ```
 
 ### Speech Models (Parakeet TDT)
 
 ```bash
-cactus convert nvidia/parakeet-tdt-0.6b-v3 ./parakeet-weights --bits 4
-cactus transpile nvidia/parakeet-tdt-0.6b-v3 \
+cactus convert nvidia/parakeet-tdt-0.6b-v3 ./parakeet-weights --bits 4 \
   --audio-file recording.wav \
-  --task tdt_transcription \
-  --weights-dir ./parakeet-weights
+  --task tdt_transcription
 ```
 
 ---
@@ -417,14 +401,22 @@ reload targets — the runtime can re-lower from saved IR as a fallback.
 
 ## CLI Reference
 
-### `cactus transpile`
+### `cactus convert`
 
 ```bash
-cactus transpile <model-id-or-path> [options]
+cactus convert <model-id-or-path> [output-dir] [options]
 ```
+
+Quantizes the weights to CQ and builds the runtime graph. Pass `--weights-only` to
+stop after the CQ weights. The graph-build options below are the same ones the
+transpiler accepts:
 
 | Option | Description |
 |--------|-------------|
+| `--bits 1\|2\|3\|4` | CQ quantization bits (default: 4) |
+| `--weights-only` | Stop after CQ quantization; skip the runtime graph |
+| `--dynamic-batch` | Emit a dynamic-batch decoder graph for batched/continuous decode (Gemma4) |
+| `--max-slots <N>` | KV-cache slot-pool capacity for batched decode (with `--dynamic-batch`) |
 | `--weights-dir <path>` | Path to converted CQ weights (default: `weights/<model_name>`) |
 | `--task <name>` | Force task type (default: `auto` — inferred from model config). Choices: `causal_lm_logits`, `multimodal_causal_lm_logits`, `ctc_logits`, `encoder_hidden_states`, `seq2seq_transcription`, `tdt_transcription` |
 | `--prompt <text>` | Representative prompt for shape capture |
@@ -436,16 +428,16 @@ cactus transpile <model-id-or-path> [options]
 | `--skip-reference-compare` | Skip PyTorch vs transpiled comparison |
 | `--component-pipeline auto\|on\|off` | Use split component graph transpilation when supported |
 | `--components <list>` | Comma-separated component subset for component-pipeline models |
-| `--trust-remote-code` | Allow HF remote code during the transpile phase |
+| `--trust-remote-code` | Allow HF remote code during the build |
 | `--local-files-only` | Require HF files to already be local |
-| `--allow-unconverted-weights` | Transpile against an unconverted source checkpoint |
+| `--allow-unconverted-weights` | Build against an unconverted source checkpoint |
 | `--no-fuse-rms-norm` | Disable RMSNorm fusion |
 | `--no-fuse-rope` | Disable RoPE fusion |
 | `--no-fuse-attention` | Disable attention fusion |
 
 NPU emission (CoreML `.mlpackage`s for Apple Silicon audio and vision encoders)
 is available through the `--npu`, `--npu-quantize`, `--npu-audio-quantize`, and
-`--npu-vision-quantize` flags on `cactus transpile`.
+`--npu-vision-quantize` flags on `cactus convert`.
 
 ### `cactus run`
 

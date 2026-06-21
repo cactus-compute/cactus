@@ -863,6 +863,49 @@ bool test_chunked_prefill_padding() {
     return true;
 }
 
+bool test_decode_batch() {
+    cactus_model_t model = load_gemma4_or_skip();
+    if (!model) return true;
+
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    auto* tok = handle->model->get_tokenizer();
+    std::vector<uint32_t> ids = tok->encode("The");
+    if (ids.empty()) { std::cerr << "  empty seed encode\n"; cactus_destroy(model); return false; }
+    uint32_t seed = ids.back();
+    const size_t M = 12;
+
+    auto two = handle->model->decode_batch(std::vector<uint32_t>(2, seed), M);
+    if (two.empty()) {
+        std::cout << "  [WARN] bundle not dynamic-batch capable (need `cactus convert --dynamic-batch`); skipping\n";
+        cactus_destroy(model);
+        return true;
+    }
+
+    auto ref = handle->model->decode_batch(std::vector<uint32_t>{seed}, M);
+    if (ref.empty() || ref[0].size() != M) { std::cerr << "  single-stream reference failed\n"; cactus_destroy(model); return false; }
+    const std::vector<uint32_t>& ref_stream = ref[0];
+
+    bool ok = true;
+    if (two[0] != ref_stream || two[1] != ref_stream) {
+        std::cerr << "  N=2 batched rows diverged from single-stream reference\n";
+        ok = false;
+    }
+    auto four = handle->model->decode_batch(std::vector<uint32_t>(4, seed), M);
+    if (four.size() != 4) {
+        std::cerr << "  N=4 returned " << four.size() << " streams\n";
+        ok = false;
+    } else {
+        for (size_t b = 0; b < 4; ++b) {
+            if (four[b] != ref_stream) {
+                std::cerr << "  N=4 row " << b << " diverged from single-stream reference\n";
+                ok = false;
+            }
+        }
+    }
+    cactus_destroy(model);
+    return ok;
+}
+
 int main() {
     TestUtils::TestRunner runner("LLM Tests");
     runner.run_test("1k_context", test_1k_context());
@@ -881,6 +924,7 @@ int main() {
     runner.run_test("complete_thinking_api_clean", test_complete_gemma4_thinking_api_clean());
     runner.run_test("multiturn_thinking_persist", test_multiturn_thinking_persist());
     runner.run_test("multiturn_turn2_distinct", test_multiturn_turn2_distinct());
+    runner.run_test("decode_batch", test_decode_batch());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

@@ -932,6 +932,200 @@ bool run_benchmarks() {
     return true;
 }
 
+bool test_kv_cache_slots_independent() {
+    const size_t b = 1, s = 1, h = 2, kv = 2, d = 16, max_seq = 64;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(d));
+
+    std::vector<__fp16> q(b * s * h * d), k0(b * s * kv * d), v0(b * s * kv * d),
+                        k1(b * s * kv * d), v1(b * s * kv * d);
+    fill_random_fp16(q);
+    fill_random_fp16(k0);
+    fill_random_fp16(v0);
+    fill_random_fp16(k1);
+    fill_random_fp16(v1);
+
+    std::vector<float> ref;
+    {
+        CactusGraph g;
+        size_t kc = g.kv_cache_state(max_seq, kv, d);
+        size_t vc = g.kv_cache_state(max_seq, kv, d);
+        size_t iq = g.input({b, s, h, d}, Precision::FP16);
+        size_t ik = g.input({b, s, kv, d}, Precision::FP16);
+        size_t iv = g.input({b, s, kv, d}, Precision::FP16);
+        g.set_input(iq, q.data(), Precision::FP16);
+        g.set_input(ik, k0.data(), Precision::FP16);
+        g.set_input(iv, v0.data(), Precision::FP16);
+        g.kv_cache_append(ik, kc);
+        g.kv_cache_append(iv, vc);
+        size_t attn = g.attention_cached(iq, ik, iv, kc, vc, scale, 0);
+        g.execute();
+        __fp16* r = static_cast<__fp16*>(g.get_output(attn));
+        ref.assign(r, r + b * s * h * d);
+        g.hard_reset();
+    }
+
+    CactusGraph g;
+    size_t kc = g.kv_cache_state(max_seq, kv, d, 0, 4, 2);
+    size_t vc = g.kv_cache_state(max_seq, kv, d, 0, 4, 2);
+    size_t iq = g.input({b, s, h, d}, Precision::FP16);
+    size_t ik0 = g.input({b, s, kv, d}, Precision::FP16);
+    size_t iv0 = g.input({b, s, kv, d}, Precision::FP16);
+    size_t ik1 = g.input({b, s, kv, d}, Precision::FP16);
+    size_t iv1 = g.input({b, s, kv, d}, Precision::FP16);
+    g.set_input(iq, q.data(), Precision::FP16);
+    g.set_input(ik0, k0.data(), Precision::FP16);
+    g.set_input(iv0, v0.data(), Precision::FP16);
+    g.set_input(ik1, k1.data(), Precision::FP16);
+    g.set_input(iv1, v1.data(), Precision::FP16);
+    g.kv_cache_append(ik0, kc, 0, 4, 0);
+    g.kv_cache_append(iv0, vc, 0, 4, 0);
+    g.kv_cache_append(ik1, kc, 0, 4, 1);
+    g.kv_cache_append(iv1, vc, 0, 4, 1);
+    size_t attn0 = g.attention_cached(iq, ik0, iv0, kc, vc, scale, 0, 0, 0, 0);
+    size_t attn1 = g.attention_cached(iq, ik1, iv1, kc, vc, scale, 0, 0, 0, 1);
+    g.execute();
+
+    __fp16* r0 = static_cast<__fp16*>(g.get_output(attn0));
+    __fp16* r1 = static_cast<__fp16*>(g.get_output(attn1));
+    size_t n = b * s * h * d;
+    bool slot0_matches_ref = true, slots_differ = false;
+    for (size_t i = 0; i < n; i++) {
+        if (!std::isfinite(static_cast<float>(r0[i])) || !std::isfinite(static_cast<float>(r1[i]))) {
+            g.hard_reset();
+            return false;
+        }
+        if (std::abs(static_cast<float>(r0[i]) - ref[i]) > 1e-2f) slot0_matches_ref = false;
+        if (std::abs(static_cast<float>(r0[i]) - static_cast<float>(r1[i])) > 1e-3f) slots_differ = true;
+    }
+    g.hard_reset();
+    return slot0_matches_ref && slots_differ;
+}
+
+bool test_batched_per_slot_attention() {
+    const size_t h = 2, kv = 2, d = 16, max_seq = 64;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(d));
+
+    std::vector<__fp16> q0(h * d), q1(h * d), k0(kv * d), v0(kv * d), k1(kv * d), v1(kv * d);
+    fill_random_fp16(q0);
+    fill_random_fp16(q1);
+    fill_random_fp16(k0);
+    fill_random_fp16(v0);
+    fill_random_fp16(k1);
+    fill_random_fp16(v1);
+
+    CactusGraph g;
+    size_t kc = g.kv_cache_state(max_seq, kv, d, 0, 4, 2);
+    size_t vc = g.kv_cache_state(max_seq, kv, d, 0, 4, 2);
+
+    size_t iq0 = g.input({1, 1, h, d}, Precision::FP16);
+    size_t ik0 = g.input({1, 1, kv, d}, Precision::FP16);
+    size_t iv0 = g.input({1, 1, kv, d}, Precision::FP16);
+    size_t iq1 = g.input({1, 1, h, d}, Precision::FP16);
+    size_t ik1 = g.input({1, 1, kv, d}, Precision::FP16);
+    size_t iv1 = g.input({1, 1, kv, d}, Precision::FP16);
+    g.set_input(iq0, q0.data(), Precision::FP16);
+    g.set_input(ik0, k0.data(), Precision::FP16);
+    g.set_input(iv0, v0.data(), Precision::FP16);
+    g.set_input(iq1, q1.data(), Precision::FP16);
+    g.set_input(ik1, k1.data(), Precision::FP16);
+    g.set_input(iv1, v1.data(), Precision::FP16);
+
+    g.kv_cache_append(ik0, kc, 0, 4, 0);
+    g.kv_cache_append(iv0, vc, 0, 4, 0);
+    g.kv_cache_append(ik1, kc, 0, 4, 1);
+    g.kv_cache_append(iv1, vc, 0, 4, 1);
+
+    size_t a0 = g.attention_cached(iq0, ik0, iv0, kc, vc, scale, 0, 0, 0, 0);
+    size_t a1 = g.attention_cached(iq1, ik1, iv1, kc, vc, scale, 0, 0, 0, 1);
+
+    std::vector<__fp16> qb(q0); qb.insert(qb.end(), q1.begin(), q1.end());
+    std::vector<__fp16> kb(k0); kb.insert(kb.end(), k1.begin(), k1.end());
+    std::vector<__fp16> vb(v0); vb.insert(vb.end(), v1.begin(), v1.end());
+    size_t iqb = g.input({2, 1, h, d}, Precision::FP16);
+    size_t ikb = g.input({2, 1, kv, d}, Precision::FP16);
+    size_t ivb = g.input({2, 1, kv, d}, Precision::FP16);
+    g.set_input(iqb, qb.data(), Precision::FP16);
+    g.set_input(ikb, kb.data(), Precision::FP16);
+    g.set_input(ivb, vb.data(), Precision::FP16);
+    size_t ab = g.attention_cached(iqb, ikb, ivb, kc, vc, scale, 0);
+
+    g.execute();
+
+    __fp16* r0 = static_cast<__fp16*>(g.get_output(a0));
+    __fp16* r1 = static_cast<__fp16*>(g.get_output(a1));
+    __fp16* rb = static_cast<__fp16*>(g.get_output(ab));
+    size_t n = h * d;
+    for (size_t i = 0; i < n; i++) {
+        if (std::abs(static_cast<float>(rb[i]) - static_cast<float>(r0[i])) > 1e-3f) { g.hard_reset(); return false; }
+        if (std::abs(static_cast<float>(rb[n + i]) - static_cast<float>(r1[i])) > 1e-3f) { g.hard_reset(); return false; }
+    }
+    g.hard_reset();
+    return true;
+}
+
+bool test_batched_kv_append() {
+    const size_t h = 2, kv = 2, d = 16, max_seq = 64;
+    const float scale = 1.0f / std::sqrt(static_cast<float>(d));
+
+    std::vector<__fp16> q0(h * d), q1(h * d), k0(kv * d), v0(kv * d), k1(kv * d), v1(kv * d);
+    fill_random_fp16(q0);
+    fill_random_fp16(q1);
+    fill_random_fp16(k0);
+    fill_random_fp16(v0);
+    fill_random_fp16(k1);
+    fill_random_fp16(v1);
+
+    auto run = [&](bool batched_append, std::vector<float>& out0, std::vector<float>& out1) {
+        CactusGraph g;
+        size_t kc = g.kv_cache_state(max_seq, kv, d, 0, 4, 2);
+        size_t vc = g.kv_cache_state(max_seq, kv, d, 0, 4, 2);
+        size_t iq0 = g.input({1, 1, h, d}, Precision::FP16);
+        size_t ik0 = g.input({1, 1, kv, d}, Precision::FP16);
+        size_t iv0 = g.input({1, 1, kv, d}, Precision::FP16);
+        size_t iq1 = g.input({1, 1, h, d}, Precision::FP16);
+        size_t ik1 = g.input({1, 1, kv, d}, Precision::FP16);
+        size_t iv1 = g.input({1, 1, kv, d}, Precision::FP16);
+        g.set_input(iq0, q0.data(), Precision::FP16);
+        g.set_input(ik0, k0.data(), Precision::FP16);
+        g.set_input(iv0, v0.data(), Precision::FP16);
+        g.set_input(iq1, q1.data(), Precision::FP16);
+        g.set_input(ik1, k1.data(), Precision::FP16);
+        g.set_input(iv1, v1.data(), Precision::FP16);
+        if (batched_append) {
+            std::vector<__fp16> kb(k0); kb.insert(kb.end(), k1.begin(), k1.end());
+            std::vector<__fp16> vb(v0); vb.insert(vb.end(), v1.begin(), v1.end());
+            size_t ikb = g.input({2, 1, kv, d}, Precision::FP16);
+            size_t ivb = g.input({2, 1, kv, d}, Precision::FP16);
+            g.set_input(ikb, kb.data(), Precision::FP16);
+            g.set_input(ivb, vb.data(), Precision::FP16);
+            g.kv_cache_append(ikb, kc);
+            g.kv_cache_append(ivb, vc);
+        } else {
+            g.kv_cache_append(ik0, kc, 0, 4, 0);
+            g.kv_cache_append(iv0, vc, 0, 4, 0);
+            g.kv_cache_append(ik1, kc, 0, 4, 1);
+            g.kv_cache_append(iv1, vc, 0, 4, 1);
+        }
+        size_t a0 = g.attention_cached(iq0, ik0, iv0, kc, vc, scale, 0, 0, 0, 0);
+        size_t a1 = g.attention_cached(iq1, ik1, iv1, kc, vc, scale, 0, 0, 0, 1);
+        g.execute();
+        __fp16* r0 = static_cast<__fp16*>(g.get_output(a0));
+        __fp16* r1 = static_cast<__fp16*>(g.get_output(a1));
+        out0.assign(r0, r0 + h * d);
+        out1.assign(r1, r1 + h * d);
+        g.hard_reset();
+    };
+
+    std::vector<float> ref0, ref1, b0, b1;
+    run(false, ref0, ref1);
+    run(true, b0, b1);
+    for (size_t i = 0; i < h * d; i++) {
+        if (std::abs(b0[i] - ref0[i]) > 1e-3f) return false;
+        if (std::abs(b1[i] - ref1[i]) > 1e-3f) return false;
+    }
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("Cache Tests");
 
@@ -946,6 +1140,9 @@ int main() {
     runner.run_test("Padded Rollback Only Pads Evict", test_padded_rollback_only_pads_evict());
     runner.run_test("Padded Rollback Empty Cache", test_padded_rollback_empty_cache());
     runner.run_test("Attention Cached Basic", test_attention_cached_basic());
+    runner.run_test("KV Cache Slots Independent", test_kv_cache_slots_independent());
+    runner.run_test("Batched Per-Slot Attention", test_batched_per_slot_attention());
+    runner.run_test("Batched KV Append", test_batched_kv_append());
     runner.run_test("Attention Cached Multistep", test_attention_cached_multistep());
     runner.run_test("KV Cache Invalidate", test_kv_cache_invalidate());
     runner.run_test("Conv Cache State Init", test_conv_cache_state_init());

@@ -22,6 +22,7 @@ namespace {
     constexpr uint32_t CACTUS_GRAPH_MAGIC = fourcc('C', 'G', 'R', 'F');
     constexpr uint32_t CACTUS_GRAPH_VERSION_LEGACY = 4;
     constexpr uint32_t CACTUS_GRAPH_VERSION_EMBEDDED_INPUTS = 5;
+    constexpr uint32_t CACTUS_GRAPH_VERSION_DYNAMIC_SHAPES = 6;
     constexpr uint32_t FLAG_ORTHOGONAL_ROTATION = 1 << 1;
     constexpr uint32_t FLAG_INTERLEAVED_4ROW = 1 << 2;
     constexpr uint32_t FLAG_EXTENDED_SHAPE = 1 << 4;
@@ -133,6 +134,15 @@ namespace {
                 );
             }
         }
+        if (sg.header.version >= CACTUS_GRAPH_VERSION_DYNAMIC_SHAPES) {
+            write_u32(out, static_cast<uint32_t>(node.dynamic_mask.size()));
+            if (!node.dynamic_mask.empty()) {
+                out.write(
+                    reinterpret_cast<const char*>(node.dynamic_mask.data()),
+                    static_cast<std::streamsize>(node.dynamic_mask.size())
+                );
+            }
+        }
       }
 
       if (!out) {
@@ -218,7 +228,8 @@ namespace {
             throw std::runtime_error("Invalid graph file: bad magic");
         }
         if (header.version != CACTUS_GRAPH_VERSION_LEGACY &&
-            header.version != CACTUS_GRAPH_VERSION_EMBEDDED_INPUTS) {
+            header.version != CACTUS_GRAPH_VERSION_EMBEDDED_INPUTS &&
+            header.version != CACTUS_GRAPH_VERSION_DYNAMIC_SHAPES) {
             throw std::runtime_error("Unsupported graph file version: " +
                 std::to_string(header.version));
         }
@@ -253,6 +264,17 @@ namespace {
                 );
                 if (!in) {
                     throw std::runtime_error("Unexpected EOF while reading embedded graph input data");
+                }
+            }
+        }
+        if (graph_version >= CACTUS_GRAPH_VERSION_DYNAMIC_SHAPES) {
+            uint32_t mask_size = read_u32(in);
+            if (mask_size > 0) {
+                node.dynamic_mask.resize(mask_size);
+                in.read(reinterpret_cast<char*>(node.dynamic_mask.data()),
+                        static_cast<std::streamsize>(mask_size));
+                if (!in) {
+                    throw std::runtime_error("Unexpected EOF while reading dynamic mask");
                 }
             }
         }
@@ -358,6 +380,10 @@ CactusGraph CactusGraph::from_serialized(const GraphFile::SerializedGraph& sg) {
                 || node_entry.op_type == OpType::RECURRENT_CACHE_STATE) {
                 graph.persistent_node_ids_.insert(new_node_id);
             }
+        }
+        if (!node_entry.dynamic_mask.empty()) {
+            graph.nodes_[graph.node_index_map_.at(new_node_id)]->output_buffer.dynamic_dims = node_entry.dynamic_mask;
+            graph.has_dynamic_shapes_ = true;
         }
         runtime_ids.push_back(new_node_id);
         serialized_id_to_runtime_id[node_entry.index] = new_node_id;
@@ -636,7 +662,12 @@ void save_graph(const CactusGraph& graph,
 
   SerializedGraph sg;
   sg.header.magic = CACTUS_GRAPH_MAGIC;
-  sg.header.version = CACTUS_GRAPH_VERSION_EMBEDDED_INPUTS;
+  bool any_dynamic = false;
+  for (const auto& node : graph.nodes_) {
+    if (!node->output_buffer.dynamic_dims.empty()) { any_dynamic = true; break; }
+  }
+  sg.header.version = any_dynamic ? CACTUS_GRAPH_VERSION_DYNAMIC_SHAPES
+                                  : CACTUS_GRAPH_VERSION_EMBEDDED_INPUTS;
   sg.header.node_count = static_cast<uint32_t>(graph.nodes_.size());
   sg.header.flags = 0;
 
@@ -651,6 +682,7 @@ void save_graph(const CactusGraph& graph,
     entry.output_shape = node->output_buffer.shape;
     entry.precision = node->output_buffer.precision;
     entry.params = node->params;
+    entry.dynamic_mask = node->output_buffer.dynamic_dims;
 
     entry.inputs.reserve(node->input_ids.size());
     for (size_t input_id : node->input_ids) {

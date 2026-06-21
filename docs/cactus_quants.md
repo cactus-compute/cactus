@@ -183,22 +183,17 @@ Three patterns are visible:
 
 ## Using CQ Weights
 
-CQ weights are produced by `cactus convert`. The runtime bundle (graph + manifest)
-is then built from those weights with `cactus transpile`, and run via
-`cactus run`:
+`cactus convert` quantizes the weights to CQ and builds the runtime bundle
+(graph + manifest) in one step. Run via `cactus run`:
 
 ```bash
-# 1. Convert at 4-bit (default)
-cactus convert google/gemma-4-E2B-it ./gemma4-weights
+# 1. Convert at 4-bit (default): CQ weights + runtime bundle
+cactus convert google/gemma-4-E2B-it ./gemma4-bundle
 
 # 1'. Convert at 2-bit
-cactus convert google/gemma-4-E2B-it ./gemma4-weights --bits 2
+cactus convert google/gemma-4-E2B-it ./gemma4-bundle --bits 2
 
-# 2. Build the runtime bundle from the CQ weights
-cactus transpile google/gemma-4-E2B-it \
-    --weights-dir ./gemma4-weights --artifact-dir ./gemma4-bundle
-
-# 3. Run (pass either a HF model id or a bundle path)
+# 2. Run (pass either a HF model id or a bundle path)
 cactus run ./gemma4-bundle
 ```
 

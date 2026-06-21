@@ -1251,6 +1251,10 @@ size_t CactusGraph::get_node_sink_size(size_t node_id) const {
     return nodes_[node_index_map_.at(node_id)]->params.cache_sink_size;
 }
 
+size_t CactusGraph::get_node_cache_num_slots(size_t node_id) const {
+    return nodes_[node_index_map_.at(node_id)]->params.cache_num_slots;
+}
+
 size_t CactusGraph::persistent(size_t source_node) {
     const auto& source_buffer = get_output_buffer(source_node);
     OpParams params;
@@ -1397,7 +1401,8 @@ size_t CactusGraph::weighted_stats_pool(size_t input, size_t weights) {
 }
 
 size_t CactusGraph::kv_cache_state(size_t max_seq_len, size_t num_kv_heads, size_t head_dim,
-                                    size_t window_size, size_t sink_size) {
+                                    size_t window_size, size_t sink_size, size_t num_slots) {
+    if (num_slots == 0) num_slots = 1;
     bool fp16_cache = use_fp16_kv_cache_for_builder();
     size_t total_elements = 0;
     Precision precision = Precision::INT8;
@@ -1409,12 +1414,14 @@ size_t CactusGraph::kv_cache_state(size_t max_seq_len, size_t num_kv_heads, size
         total_elements = 64 + max_seq_len * num_kv_heads * head_dim +
                          max_seq_len * num_kv_heads * num_groups * sizeof(float);
     }
+    total_elements *= num_slots;
     OpParams params{};
     params.max_cache_seq_len = max_seq_len;
     params.num_kv_heads = num_kv_heads;
     params.head_dim = head_dim;
     params.window_size = window_size;
     params.cache_sink_size = sink_size;
+    params.cache_num_slots = num_slots;
     params.output_precision = precision;
     size_t node_id = add_node(OpType::KV_CACHE_STATE, {}, {total_elements}, params);
     persistent_node_ids_.insert(node_id);
@@ -1422,10 +1429,11 @@ size_t CactusGraph::kv_cache_state(size_t max_seq_len, size_t num_kv_heads, size
 }
 
 size_t CactusGraph::kv_cache_append(size_t new_kv, size_t cache_state_node,
-                                     size_t window_size, size_t sink_size) {
+                                     size_t window_size, size_t sink_size, size_t cache_slot) {
     OpParams params{};
     params.window_size = window_size;
     params.cache_sink_size = sink_size;
+    params.cache_slot = cache_slot;
     params.output_precision = Precision::FP32;
     return add_node(OpType::KV_CACHE_APPEND, {new_kv, cache_state_node}, {1}, params);
 }
@@ -1617,7 +1625,7 @@ size_t CactusGraph::spectrogram(
 size_t CactusGraph::attention_cached(size_t query, size_t key_new, size_t value_new,
                                       size_t k_cache_state, size_t v_cache_state,
                                       float scale, size_t position_offset,
-                                      size_t window_size, size_t v_head_dim) {
+                                      size_t window_size, size_t v_head_dim, size_t cache_slot) {
     const auto& q_shape = get_output_buffer(query).shape;
     size_t batch = q_shape[0];
     size_t seq_len = q_shape[1];
@@ -1630,6 +1638,7 @@ size_t CactusGraph::attention_cached(size_t query, size_t key_new, size_t value_
     params.position_offset = position_offset;
     params.window_size = window_size;
     params.v_head_dim = v_head_dim;
+    params.cache_slot = cache_slot;
     params.output_precision = Precision::FP16;
     return add_node(OpType::ATTENTION_CACHED,
                     {query, key_new, value_new, k_cache_state, v_cache_state},
