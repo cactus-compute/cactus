@@ -220,6 +220,15 @@ size_t CactusGraph::reduction_op(OpType op, size_t input, int axis) {
     if (axis == -1) {
         out = {1};
     } else {
+        if (buf.shape.empty()) {
+            throw std::runtime_error("Cannot reduce a scalar tensor along an axis");
+        }
+        if (axis < 0) {
+            axis += static_cast<int>(buf.shape.size());
+        }
+        if (axis < 0 || static_cast<size_t>(axis) >= buf.shape.size()) {
+            throw std::runtime_error("Invalid axis for reduction operation");
+        }
         out = buf.shape;
         out.erase(out.begin() + axis);
         if (out.empty()) out = {1};
@@ -1150,7 +1159,15 @@ size_t CactusGraph::slice(size_t input, int axis, size_t start, size_t length) {
         throw std::runtime_error("Cannot slice a scalar tensor");
     }
 
-    size_t axis_index = static_cast<size_t>(axis);
+    int actual_axis = axis;
+    if (actual_axis < 0) {
+        actual_axis += static_cast<int>(input_buffer.shape.size());
+    }
+    if (actual_axis < 0 || static_cast<size_t>(actual_axis) >= input_buffer.shape.size()) {
+        throw std::invalid_argument("Slice axis out of bounds");
+    }
+
+    size_t axis_index = static_cast<size_t>(actual_axis);
     size_t axis_size = input_buffer.shape[axis_index];
 
     if (start + length > axis_size) {
@@ -1220,7 +1237,8 @@ size_t CactusGraph::add_node(OpType op_type, const std::vector<size_t>& inputs, 
     }
 
     Precision result_precision = params.output_precision;
-    if (op_type == OpType::PRECISION_CAST || op_type == OpType::EMBEDDING) {
+    if (op_type == OpType::PRECISION_CAST || op_type == OpType::EMBEDDING ||
+        op_type == OpType::TOPK || op_type == OpType::SAMPLE) {
         result_precision = params.output_precision;
     } else if (!inputs.empty()) {
         result_precision = nodes_[node_index_map_[inputs[0]]]->output_buffer.precision;

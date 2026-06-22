@@ -31,7 +31,11 @@ namespace {
     inline size_t align_offset(size_t offset, size_t alignment) {
         size_t remainder = offset % alignment;
         if (remainder == 0) return offset;
-        return offset + (alignment - remainder);
+        size_t padding = alignment - remainder;
+        if (offset > SIZE_MAX - padding) {
+            throw std::runtime_error("File corrupted: offset alignment overflow");
+        }
+        return offset + padding;
     }
 
     std::string resolve_quantized_weight_file(const std::string& filename) {
@@ -1012,6 +1016,9 @@ void MappedFile::parse_header() {
     }
 
     uint32_t prec_val = *reinterpret_cast<const uint32_t*>(ptr + offset);
+    if (prec_val > static_cast<uint32_t>(Precision::CQ4)) {
+        throw std::runtime_error("Invalid tensor file: unknown precision");
+    }
     precision_ = static_cast<Precision>(prec_val);
     offset += sizeof(uint32_t);
 
@@ -1057,6 +1064,42 @@ void MappedFile::parse_header() {
 
     if (scales_bytes_ > 0) {
         scales_offset_ = aligned_header;
+        if (scales_bytes_ > file_size_ || scales_offset_ > file_size_ - scales_bytes_) {
+            throw std::runtime_error("File corrupted: scales extend beyond file size");
+        }
+        if (PrecisionTraits::is_cq(precision_) && group_size_ > 0) {
+            auto add_checked = [](size_t a, size_t b) -> size_t {
+                if (a > SIZE_MAX - b) {
+                    throw std::runtime_error("File corrupted: CQ scales layout overflow");
+                }
+                return a + b;
+            };
+            auto mul_checked = [](size_t a, size_t b) -> size_t {
+                if (a != 0 && b > SIZE_MAX / a) {
+                    throw std::runtime_error("File corrupted: CQ scales layout overflow");
+                }
+                return a * b;
+            };
+            const size_t fp16 = sizeof(__fp16);
+            const size_t gs = group_size_;
+            const size_t K = mul_checked(gs, num_groups_);
+            const size_t N = shape_.size() >= 2 ? shape_[0] : 1;
+            const size_t cb_size = static_cast<size_t>(1) << PrecisionTraits::cq_bits(precision_);
+
+            size_t footprint = mul_checked(cb_size, fp16);
+            footprint = add_checked(footprint, mul_checked(K, fp16));
+            footprint = add_checked(footprint, mul_checked(K, fp16));
+            footprint = add_checked(footprint, mul_checked(mul_checked(N, num_groups_), fp16));
+            if (is_orthogonal_rotation_) {
+                footprint = add_checked(footprint, mul_checked(mul_checked(gs, gs), fp16));
+            } else {
+                footprint = add_checked(footprint, add_checked(gs, gs));
+                footprint = add_checked(footprint, mul_checked(gs, sizeof(uint32_t)));
+            }
+            if (footprint > scales_bytes_) {
+                throw std::runtime_error("File corrupted: CQ scales smaller than declared layout");
+            }
+        }
         size_t scales_end = scales_offset_ + scales_bytes_;
         data_offset_ = align_offset(scales_end, alignment_);
     } else {
@@ -1064,7 +1107,7 @@ void MappedFile::parse_header() {
         data_offset_ = aligned_header;
     }
 
-    if (data_offset_ + byte_size_ > file_size_) {
+    if (byte_size_ > file_size_ || data_offset_ > file_size_ - byte_size_) {
         throw std::runtime_error("File corrupted: data extends beyond file size");
     }
 

@@ -18,6 +18,16 @@ void compute_image_preprocess_node(
     int ch = node.params.image_channels;
     float rescale = node.params.rescale_factor;
 
+    if (src_w <= 0 || src_h <= 0 || ch <= 0) {
+        throw std::runtime_error("IMAGE_PREPROCESS requires positive source dimensions and channels");
+    }
+    if (ch > 3) {
+        throw std::runtime_error("IMAGE_PREPROCESS supports at most 3 channels");
+    }
+    if (input.total_size != static_cast<size_t>(src_w) * src_h * ch) {
+        throw std::runtime_error("IMAGE_PREPROCESS input size does not match src_width*src_height*channels");
+    }
+
     std::vector<float> src_float(static_cast<size_t>(src_w) * src_h * ch);
     if (input.precision == Precision::FP32) {
         std::memcpy(src_float.data(), input.get_data(), src_float.size() * sizeof(float));

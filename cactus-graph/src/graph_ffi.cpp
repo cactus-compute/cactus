@@ -946,6 +946,9 @@ int cactus_graph_attention_int8_hybrid(cactus_graph_t graph, cactus_node_t query
                                        const int8_t* cached_keys, const int8_t* cached_values, const float* k_scales, const float* v_scales,
                                        size_t cache_len, size_t num_kv_heads, size_t head_dim, size_t window_size, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_attention_int8_hybrid");
+    if (cache_len > 0 && (!cached_keys || !cached_values || !k_scales || !v_scales)) {
+        return fail_invalid("Null cache pointer with cache_len > 0 to cactus_graph_attention_int8_hybrid");
+    }
     try {
         *out = static_cast<cactus_node_t>(as_graph(graph)->graph.attention_int8_hybrid(static_cast<size_t>(query), static_cast<size_t>(key_new), static_cast<size_t>(value_new), scale, position_offset, cached_keys, cached_values, k_scales, v_scales, cache_len, num_kv_heads, head_dim, window_size));
         return 0;

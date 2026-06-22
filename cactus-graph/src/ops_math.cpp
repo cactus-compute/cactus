@@ -107,8 +107,9 @@ void dispatch_binary_op_f16(OpType op, const __fp16* lhs, const __fp16* rhs, __f
 static float apply_binary_op_f32(OpType op, float lhs, float rhs) {
     switch (op) {
         case OpType::ADD:
-        case OpType::ADD_CLIPPED:
             return lhs + rhs;
+        case OpType::ADD_CLIPPED:
+            return std::fmin(std::fmax(lhs + rhs, -65500.0f), 65500.0f);
         case OpType::SUBTRACT:
             return lhs - rhs;
         case OpType::MULTIPLY:
@@ -226,6 +227,11 @@ void compute_binary_op_node(GraphNode& node, const std::vector<std::unique_ptr<G
                                          lhs_strides.data(), rhs_strides.data(),
                                          node.params.broadcast_info.output_shape.data(),
                                          node.params.broadcast_info.output_shape.size());
+                if (node.op_type == OpType::ADD_CLIPPED) {
+                    cactus_clamp_f16(node.output_buffer.data_as<__fp16>(),
+                                     node.output_buffer.data_as<__fp16>(),
+                                     total_elements, -65500.0f, 65500.0f);
+                }
                 break;
             case OpType::SUBTRACT:
                 cactus_subtract_broadcast_f16(lhs.data_as<__fp16>(), rhs.data_as<__fp16>(),
@@ -426,6 +432,10 @@ void compute_reduce_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             }
         }
         return;
+    }
+
+    if (axis != -1 && (axis < 0 || static_cast<size_t>(axis) >= input_buffer.shape.size())) {
+        throw std::runtime_error("Reduction axis out of range");
     }
 
     if (input_buffer.precision == Precision::FP32) {
