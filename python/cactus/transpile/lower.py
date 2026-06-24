@@ -607,9 +607,6 @@ def _lookup_weight_binding(value: IRValue) -> WeightBinding | None:
     return None
 
 
-# Gemma4 stores weights so the residual stream runs at 1/16 of true scale
-# (see cactus.convert.model_adapters.naming.gemma4_scale_factor / GEMMA4_WEIGHT_SCALE).
-# This is the factor needed to lift a 1/16-scale activation back to true scale.
 GEMMA4_RESIDUAL_DOWNSCALE = 16.0
 
 
@@ -1168,19 +1165,7 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             normalize_default = False
             activation = None
         else:
-            # Gemma4 runs the residual stream at 1/16 of true scale. Dense ffn_gate/up
-            # weights are stored x16 so the (stored /16) pre_ffn_norm cancels to a
-            # true-scale GELU input, but the MoE expert weights (w1/w3) are stored at
-            # true scale and the router_scale weight is stored /16. Compensate here so
-            # the experts see a true-scale activation input and the router softmax sees
-            # true-scale logits; the trailing post_feedforward_layernorm_2 (stored /16)
-            # renormalizes the MoE output back into the 1/16 residual stream.
             hidden = g.scalar_multiply(hidden, float(GEMMA4_RESIDUAL_DOWNSCALE))
-            # Select top-k on the LOGITS, not the softmax probabilities: FP16 softmax
-            # probabilities are tiny (~1/num_experts) and nearly equal, so rounding can
-            # flip the selection and silently corrupt expert knowledge. The logits keep
-            # their spread, so top-k on them is a robust, monotonic ordering; the softmax
-            # probabilities are still used for the (renormalized) routing weights.
             router_logits = g.scalar_multiply(router_logits, float(GEMMA4_RESIDUAL_DOWNSCALE))
             routing_probs = g.softmax(router_logits, axis=-1)
             topk_indices = _ensure_tensor_dtype(g, g.index(g.topk(router_logits, num_experts_per_tok), 0, axis=0), Graph.FP32)

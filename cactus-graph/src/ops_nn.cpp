@@ -287,8 +287,6 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
             cactus_multiply_f16(gate, up, gate, selected_count * expert_intermediate_dim);
         }
 
-        // Pad gate rows to the quantized w2 K stride (e.g. 704 -> 768): the quant matmul strides
-        // activations by the weight's K, so unpadded rows misalign when selected_count > 1.
         const size_t w2_k = w2_buffer.shape.size() == 2 ? w2_buffer.shape[1] : 0;
         if (w2_k < expert_intermediate_dim) {
             throw std::runtime_error("moe_layer down-proj weight K smaller than expert intermediate dim");

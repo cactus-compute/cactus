@@ -247,9 +247,9 @@ struct TokenPrinter {
     std::string pending;
     bool in_code_fence = false;
     bool color = false;
-    bool suppress_thinking_stream = false;  // inside a <|channel>…<channel|> reasoning block
-    bool show_thinking = false;             // --thinking: render reasoning dimmed instead of hiding it
-    std::string stream_carry;               // holds a possibly-partial control marker across chunks
+    bool suppress_thinking_stream = false;
+    bool show_thinking = false;
+    std::string stream_carry;
     bool label_printed = false;
     std::thread spinner_thread;
     std::atomic<bool> spinner_running{false};
@@ -449,8 +449,6 @@ struct TokenPrinter {
         std::cout << std::flush;
     }
 
-    // Strip Gemma4 turn/channel control markers from the live stream and hide the
-    // <|channel>…<channel|> reasoning block (rendered inline only under --thinking).
     void feed(const std::string& chunk) {
         static const std::vector<std::string> markers = {
             "<|channel>", "<channel|>", "<|turn>", "<turn|>", "<|think|>", "<think|>",
@@ -471,7 +469,7 @@ struct TokenPrinter {
                 i += matched->size();
                 continue;
             }
-            if (maybe_partial) break;  // a marker may complete on the next chunk
+            if (maybe_partial) break;
             if (!suppress_thinking_stream || show_thinking) emit_visible(stream_carry[i]);
             ++i;
         }
