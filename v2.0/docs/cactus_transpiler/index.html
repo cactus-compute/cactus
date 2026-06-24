@@ -2522,7 +2522,11 @@ reload targets — the runtime can re-lower from saved IR as a fallback.</p>
 </code></pre></div>
 <p>Quantizes the weights to CQ and builds the runtime graph. Pass <code>--weights-only</code> to
 stop after the CQ weights. The graph-build options below are the same ones the
-transpiler accepts:</p>
+transpiler accepts.</p>
+<p>The decoder graph is emitted with a dynamic batch axis and a single baked KV-cache
+slot, so single-stream decode stays lean while fixed-batch decode (<code>decode_batch</code> /
+<code>generate_batch</code>) can size the KV-cache slot pool at runtime via
+<code>Model::set_decode_slots(N)</code>. No separate conversion flag is needed.</p>
 <table>
 <thead>
 <tr>
@@ -2538,14 +2542,6 @@ transpiler accepts:</p>
 <tr>
 <td><code>--weights-only</code></td>
 <td>Stop after CQ quantization; skip the runtime graph</td>
-</tr>
-<tr>
-<td><code>--dynamic-batch</code></td>
-<td>Emit a dynamic-batch decoder graph for batched/continuous decode (Gemma4)</td>
-</tr>
-<tr>
-<td><code>--max-slots &lt;N&gt;</code></td>
-<td>KV-cache slot-pool capacity for batched decode (with <code>--dynamic-batch</code>)</td>
 </tr>
 <tr>
 <td><code>--weights-dir &lt;path&gt;</code></td>
