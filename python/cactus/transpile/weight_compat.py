@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json
 import shutil
 import struct
 from pathlib import Path
@@ -166,6 +167,8 @@ def _is_legacy_packed_int4_tensor(opened: _OpenedTensor) -> bool:
 def _can_materialize_compat_weight(source_tensor: object | None) -> bool:
     if source_tensor is None:
         return False
+    if getattr(source_tensor, "is_meta", False):
+        return False
     if isinstance(source_tensor, (str, bytes, bytearray, Path)):
         return False
     if np.isscalar(source_tensor):
@@ -174,6 +177,24 @@ def _can_materialize_compat_weight(source_tensor: object | None) -> bool:
 
 
 def _compat_weight_scale_factor(source_path: Path) -> float:
+    manifest_path = source_path.parent / "conversion_manifest.json"
+    if manifest_path.exists():
+        try:
+            rows = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"unreadable conversion_manifest.json at {manifest_path}: {exc}") from exc
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get("output_file") == source_path.name:
+                    scale = row.get("scale_factor")
+                    if scale is None:
+                        return 1.0
+                    try:
+                        return float(scale)
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            f"non-numeric scale_factor {scale!r} for {source_path.name} in {manifest_path}"
+                        ) from exc
     parent_name = source_path.parent.name.lower()
     if "gemma-4" in parent_name or "gemma4" in parent_name:
         return gemma4_scale_factor(source_path.name)

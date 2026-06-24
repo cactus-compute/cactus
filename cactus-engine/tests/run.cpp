@@ -247,6 +247,9 @@ struct TokenPrinter {
     std::string pending;
     bool in_code_fence = false;
     bool color = false;
+    bool suppress_thinking_stream = false;  // inside a <|channel>…<channel|> reasoning block
+    bool show_thinking = false;             // --thinking: render reasoning dimmed instead of hiding it
+    std::string stream_carry;               // holds a possibly-partial control marker across chunks
     bool label_printed = false;
     std::thread spinner_thread;
     std::atomic<bool> spinner_running{false};
@@ -261,10 +264,12 @@ struct TokenPrinter {
         in_code_fence = false;
         label_printed = false;
         color = stdout_is_terminal();
+        suppress_thinking_stream = false;
+        stream_carry.clear();
     }
 
     void start_thinking() {
-        if (!color) return;
+        if (!color || spinner_running.load()) return;
         spinner_running = true;
         spinner_thread = std::thread([this]() {
             const char* frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
@@ -434,25 +439,63 @@ struct TokenPrinter {
     }
 
     void on_token(const char* text) {
-        print_label();
         if (!saw_first) {
             first = std::chrono::steady_clock::now();
             saw_first = true;
         }
         ++count;
         if (!text) return;
-        pending += text;
+        feed(text);
+        std::cout << std::flush;
+    }
+
+    // Strip Gemma4 turn/channel control markers from the live stream and hide the
+    // <|channel>…<channel|> reasoning block (rendered inline only under --thinking).
+    void feed(const std::string& chunk) {
+        static const std::vector<std::string> markers = {
+            "<|channel>", "<channel|>", "<|turn>", "<turn|>", "<|think|>", "<think|>",
+        };
+        stream_carry += chunk;
+        size_t i = 0;
+        while (i < stream_carry.size()) {
+            const std::string* matched = nullptr;
+            bool maybe_partial = false;
+            for (const auto& m : markers) {
+                if (stream_carry.compare(i, m.size(), m) == 0) { matched = &m; break; }
+                size_t avail = stream_carry.size() - i;
+                if (avail < m.size() && stream_carry.compare(i, avail, m, 0, avail) == 0) maybe_partial = true;
+            }
+            if (matched) {
+                if (*matched == "<|channel>") { suppress_thinking_stream = true; if (!show_thinking) start_thinking(); }
+                else if (*matched == "<channel|>") { suppress_thinking_stream = false; stop_thinking(); }
+                i += matched->size();
+                continue;
+            }
+            if (maybe_partial) break;  // a marker may complete on the next chunk
+            if (!suppress_thinking_stream || show_thinking) emit_visible(stream_carry[i]);
+            ++i;
+        }
+        stream_carry.erase(0, i);
+    }
+
+    void emit_visible(char c) {
+        print_label();
+        pending += c;
         size_t nl;
         while ((nl = pending.find('\n')) != std::string::npos) {
             render_line(pending.substr(0, nl));
             std::cout << "\n";
             pending.erase(0, nl + 1);
         }
-        std::cout << std::flush;
     }
 
     // Flush the trailing partial line once generation completes (no trailing newline).
     void finish() {
+        stop_thinking();
+        if (!stream_carry.empty() && (!suppress_thinking_stream || show_thinking)) {
+            for (char c : stream_carry) emit_visible(c);
+        }
+        stream_carry.clear();
         print_label();
         if (!pending.empty()) {
             render_line(pending);
@@ -891,6 +934,7 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> current_pcm;
     TokenPrinter printer;
     g_printer = &printer;
+    printer.show_thinking = thinking;
     bool auto_send = !initial_prompt.empty() || !current_audio.empty() || !current_image.empty();
 
     while (true) {
@@ -988,7 +1032,7 @@ int main(int argc, char** argv) {
             + ",\"auto_handoff\":" + (auto_handoff ? "true" : "false")
             + ",\"confidence_threshold\":" + std::to_string(confidence_threshold)
             + ",\"cloud_timeout_ms\":" + std::to_string(cloud_timeout_ms)
-            + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\"]}";
+            + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\",\"<turn|>\"]}";
 
         if (!current_image.empty()) std::cout << "[image: " << current_image << "]\n";
         if (!current_audio.empty()) std::cout << "[audio: " << current_audio << "]\n";

@@ -268,6 +268,23 @@ def _module_device(module: torch.nn.Module) -> torch.device | None:
     return None
 
 
+def _module_has_meta_tensors(module: torch.nn.Module) -> bool:
+    return any(parameter.is_meta for parameter in module.parameters()) or any(
+        buffer.is_meta for buffer in module.buffers()
+    )
+
+
+def _to_meta_example_tensor(tensor: torch.Tensor | None) -> torch.Tensor | None:
+    if tensor is None or tensor.is_meta:
+        return tensor
+    return torch.empty_strided(
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        dtype=tensor.dtype,
+        device="meta",
+    )
+
+
 def _unique_modules(*candidates: object) -> tuple[torch.nn.Module, ...]:
     modules: list[torch.nn.Module] = []
     seen: set[int] = set()
@@ -451,6 +468,52 @@ def _ignore_duplicate_torch_registration(exc: RuntimeError) -> bool:
     return "already" in text or "duplicate" in text or "previously" in text
 
 
+def _moe_normalize_and_scale(routing_weights, normalize_routing, epsilon, routed_scaling_factor):
+    if normalize_routing:
+        routing_weights = routing_weights / (routing_weights.sum(dim=-1, keepdim=True) + float(epsilon))
+    return routing_weights * float(routed_scaling_factor)
+
+
+def _moe_scatter_experts(hidden, selected_experts, routing_weights, w1_weights, w3_weights, w2_weights, num_experts, activation):
+    output = torch.zeros_like(hidden)
+    for expert_idx in range(int(num_experts)):
+        selected = selected_experts == expert_idx
+        if not bool(selected.any()):
+            continue
+        token_idx, topk_pos = torch.where(selected)
+        current = hidden[token_idx]
+        gate = F.linear(current, w1_weights[expert_idx])
+        up = F.linear(current, w3_weights[expert_idx])
+        expert_out = F.linear(activation(gate) * up, w2_weights[expert_idx])
+        expert_out = expert_out * routing_weights[token_idx, topk_pos, None]
+        output.index_add_(0, token_idx, expert_out.to(dtype=output.dtype))
+    return output
+
+
+def _gelu_tanh(x):
+    return F.gelu(x, approximate="tanh")
+
+
+def _register_moe_custom_op(schema, op_name, impl, fake):
+    try:
+        library = torch.library.Library("cactus_transpile", "FRAGMENT")
+        library.define(schema)
+        _CACTUS_TORCH_LIBRARIES.append(library)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+    try:
+        torch.library.impl(op_name, "CompositeExplicitAutograd")(impl)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+    try:
+        torch.library.register_fake(op_name)(fake)
+    except RuntimeError as exc:
+        if not _ignore_duplicate_torch_registration(exc):
+            raise
+
+
 def _ensure_lfm2_moe_custom_op_registered() -> None:
     global _LFM2_MOE_CUSTOM_OP_REGISTERED
     if _LFM2_MOE_CUSTOM_OP_REGISTERED:
@@ -464,80 +527,26 @@ def _ensure_lfm2_moe_custom_op_registered() -> None:
         "bool normalize_routing, float epsilon, float routed_scaling_factor"
         ") -> Tensor"
     )
-    try:
-        library = torch.library.Library("cactus_transpile", "FRAGMENT")
-        library.define(schema)
-        _CACTUS_TORCH_LIBRARIES.append(library)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_torch_registration(exc):
-            raise
 
-    def _impl(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        expert_bias: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        use_expert_bias: bool,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
+    def _impl(hidden, router_logits, expert_bias, w1_weights, w3_weights, w2_weights,
+              num_experts, num_experts_per_tok, use_expert_bias, normalize_routing,
+              epsilon, routed_scaling_factor):
         routing_probs = router_logits.sigmoid()
         if use_expert_bias:
-            scores_for_routing = routing_probs + expert_bias.to(device=routing_probs.device, dtype=routing_probs.dtype)
-            _, selected_experts = torch.topk(scores_for_routing, k=int(num_experts_per_tok), dim=-1)
+            scores = routing_probs + expert_bias.to(device=routing_probs.device, dtype=routing_probs.dtype)
+            _, selected_experts = torch.topk(scores, k=int(num_experts_per_tok), dim=-1)
             routing_weights = torch.gather(routing_probs, dim=1, index=selected_experts).type_as(router_logits)
         else:
             routing_weights, selected_experts = torch.topk(routing_probs, k=int(num_experts_per_tok), dim=-1)
+        routing_weights = _moe_normalize_and_scale(routing_weights, normalize_routing, epsilon, routed_scaling_factor)
+        return _moe_scatter_experts(hidden, selected_experts, routing_weights, w1_weights, w3_weights, w2_weights, num_experts, F.silu)
 
-        if normalize_routing:
-            routing_weights = routing_weights / (routing_weights.sum(dim=-1, keepdim=True) + float(epsilon))
-        routing_weights = routing_weights * float(routed_scaling_factor)
-
-        output = torch.zeros_like(hidden)
-        for expert_idx in range(int(num_experts)):
-            selected = selected_experts == expert_idx
-            if not bool(selected.any()):
-                continue
-            token_idx, topk_pos = torch.where(selected)
-            current = hidden[token_idx]
-            gate = F.linear(current, w1_weights[expert_idx])
-            up = F.linear(current, w3_weights[expert_idx])
-            expert_out = F.linear(F.silu(gate) * up, w2_weights[expert_idx])
-            expert_out = expert_out * routing_weights[token_idx, topk_pos, None]
-            output.index_add_(0, token_idx, expert_out.to(dtype=output.dtype))
-        return output
-
-    def _fake(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        expert_bias: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        use_expert_bias: bool,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
+    def _fake(hidden, router_logits, expert_bias, w1_weights, w3_weights, w2_weights,
+              num_experts, num_experts_per_tok, use_expert_bias, normalize_routing,
+              epsilon, routed_scaling_factor):
         return hidden.new_empty(hidden.shape)
 
-    try:
-        torch.library.impl(_LFM2_MOE_CUSTOM_OP, "CompositeExplicitAutograd")(_impl)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_torch_registration(exc):
-            raise
-    try:
-        torch.library.register_fake(_LFM2_MOE_CUSTOM_OP)(_fake)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_torch_registration(exc):
-            raise
+    _register_moe_custom_op(schema, _LFM2_MOE_CUSTOM_OP, _impl, _fake)
     _LFM2_MOE_CUSTOM_OP_REGISTERED = True
 
 
@@ -554,70 +563,19 @@ def _ensure_qwen2_moe_custom_op_registered() -> None:
         "float epsilon, float routed_scaling_factor"
         ") -> Tensor"
     )
-    try:
-        library = torch.library.Library("cactus_transpile", "FRAGMENT")
-        library.define(schema)
-        _CACTUS_TORCH_LIBRARIES.append(library)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_torch_registration(exc):
-            raise
 
-    def _impl(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
+    def _impl(hidden, router_logits, w1_weights, w3_weights, w2_weights,
+              num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor):
         routing_probs = F.softmax(router_logits, dim=-1, dtype=torch.float32).to(dtype=router_logits.dtype)
         routing_weights, selected_experts = torch.topk(routing_probs, k=int(num_experts_per_tok), dim=-1)
-        if normalize_routing:
-            routing_weights = routing_weights / (routing_weights.sum(dim=-1, keepdim=True) + float(epsilon))
-        routing_weights = routing_weights * float(routed_scaling_factor)
+        routing_weights = _moe_normalize_and_scale(routing_weights, normalize_routing, epsilon, routed_scaling_factor)
+        return _moe_scatter_experts(hidden, selected_experts, routing_weights, w1_weights, w3_weights, w2_weights, num_experts, F.silu)
 
-        output = torch.zeros_like(hidden)
-        for expert_idx in range(int(num_experts)):
-            selected = selected_experts == expert_idx
-            if not bool(selected.any()):
-                continue
-            token_idx, topk_pos = torch.where(selected)
-            current = hidden[token_idx]
-            gate = F.linear(current, w1_weights[expert_idx])
-            up = F.linear(current, w3_weights[expert_idx])
-            expert_out = F.linear(F.silu(gate) * up, w2_weights[expert_idx])
-            expert_out = expert_out * routing_weights[token_idx, topk_pos, None]
-            output.index_add_(0, token_idx, expert_out.to(dtype=output.dtype))
-        return output
-
-    def _fake(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
+    def _fake(hidden, router_logits, w1_weights, w3_weights, w2_weights,
+              num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor):
         return hidden.new_empty(hidden.shape)
 
-    try:
-        torch.library.impl(_QWEN2_MOE_CUSTOM_OP, "CompositeExplicitAutograd")(_impl)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_torch_registration(exc):
-            raise
-    try:
-        torch.library.register_fake(_QWEN2_MOE_CUSTOM_OP)(_fake)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_torch_registration(exc):
-            raise
+    _register_moe_custom_op(schema, _QWEN2_MOE_CUSTOM_OP, _impl, _fake)
     _QWEN2_MOE_CUSTOM_OP_REGISTERED = True
 
 
@@ -634,75 +592,24 @@ def _ensure_gemma4_moe_custom_op_registered() -> None:
         "float epsilon, float routed_scaling_factor"
         ") -> Tensor"
     )
-    try:
-        library = torch.library.Library("cactus_transpile", "FRAGMENT")
-        library.define(schema)
-        _CACTUS_TORCH_LIBRARIES.append(library)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_torch_registration(exc):
-            raise
 
-    def _impl(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
+    def _impl(hidden, router_logits, w1_weights, w3_weights, w2_weights,
+              num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor):
         routing_probs = F.softmax(router_logits, dim=-1, dtype=torch.float32).to(dtype=router_logits.dtype)
-        routing_weights, selected_experts = torch.topk(routing_probs, k=int(num_experts_per_tok), dim=-1)
-        if normalize_routing:
-            routing_weights = routing_weights / (routing_weights.sum(dim=-1, keepdim=True) + float(epsilon))
-        routing_weights = routing_weights * float(routed_scaling_factor)
+        selected_experts = torch.topk(router_logits, k=int(num_experts_per_tok), dim=-1).indices
+        routing_weights = torch.gather(routing_probs, -1, selected_experts)
+        routing_weights = _moe_normalize_and_scale(routing_weights, normalize_routing, epsilon, routed_scaling_factor)
+        return _moe_scatter_experts(hidden, selected_experts, routing_weights, w1_weights, w3_weights, w2_weights, num_experts, _gelu_tanh)
 
-        output = torch.zeros_like(hidden)
-        for expert_idx in range(int(num_experts)):
-            selected = selected_experts == expert_idx
-            if not bool(selected.any()):
-                continue
-            token_idx, topk_pos = torch.where(selected)
-            current = hidden[token_idx]
-            gate = F.linear(current, w1_weights[expert_idx])
-            up = F.linear(current, w3_weights[expert_idx])
-            expert_out = F.linear(F.silu(gate) * up, w2_weights[expert_idx])
-            expert_out = expert_out * routing_weights[token_idx, topk_pos, None]
-            output.index_add_(0, token_idx, expert_out.to(dtype=output.dtype))
-        return output
-
-    def _fake(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
+    def _fake(hidden, router_logits, w1_weights, w3_weights, w2_weights,
+              num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor):
         return hidden.new_empty(hidden.shape)
 
-    try:
-        torch.library.impl(_GEMMA4_MOE_CUSTOM_OP, "CompositeExplicitAutograd")(_impl)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_torch_registration(exc):
-            raise
-    try:
-        torch.library.register_fake(_GEMMA4_MOE_CUSTOM_OP)(_fake)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_torch_registration(exc):
-            raise
+    _register_moe_custom_op(schema, _GEMMA4_MOE_CUSTOM_OP, _impl, _fake)
     _GEMMA4_MOE_CUSTOM_OP_REGISTERED = True
 
 
 class _Lfm2MoeRuntimeMoeBlock(torch.nn.Module):
-    """Export-friendly LFM2-MoE block backed by the Cactus sparse MoE runtime op."""
 
     def __init__(self, block: torch.nn.Module, *, layer_index: int):
         super().__init__()
@@ -799,6 +706,40 @@ def _lfm2_backbone_from_model(model: torch.nn.Module) -> torch.nn.Module | None:
     return backbone if isinstance(backbone, torch.nn.Module) else None
 
 
+def _lfm2_position_embeddings(
+    backbone: torch.nn.Module,
+    hidden_states: torch.Tensor,
+    *,
+    position_ids: torch.Tensor,
+) -> object:
+    rotary_emb = getattr(backbone, "rotary_emb", None)
+    if callable(rotary_emb):
+        return rotary_emb(hidden_states, position_ids=position_ids)
+    pos_emb = getattr(backbone, "pos_emb", None)
+    if callable(pos_emb):
+        return pos_emb(hidden_states, position_ids=position_ids)
+    raise AttributeError(f"{type(backbone).__name__} has neither rotary_emb nor pos_emb")
+
+
+def _lfm2_causal_mask_for_capture(
+    create_causal_mask: Callable[..., object],
+    *,
+    backbone: torch.nn.Module,
+    inputs_embeds: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    position_ids: torch.Tensor,
+) -> object | None:
+    if inputs_embeds.is_meta:
+        return None
+    return create_causal_mask(
+        config=backbone.config,
+        inputs_embeds=inputs_embeds,
+        attention_mask=attention_mask,
+        past_key_values=None,
+        position_ids=position_ids,
+    )
+
+
 def _patch_lfm2_moe_feed_forwards(model: torch.nn.Module) -> None:
     if not _is_lfm2_moe_model(model):
         return
@@ -815,7 +756,6 @@ def _patch_lfm2_moe_feed_forwards(model: torch.nn.Module) -> None:
 
 
 class _Qwen2MoeRuntimeMoeBlock(torch.nn.Module):
-    """Export-friendly Qwen2-MoE block backed by the Cactus sparse MoE runtime op."""
 
     def __init__(self, block: torch.nn.Module, *, layer_index: int):
         super().__init__()
@@ -843,9 +783,19 @@ class _Qwen2MoeRuntimeMoeBlock(torch.nn.Module):
         self.gate = gate
         self.shared_expert = shared_expert
         self.shared_expert_gate = shared_expert_gate
-        self.num_experts = int(getattr(gate, "num_experts", int(gate_up.shape[0])) or int(gate_up.shape[0]))
-        self.top_k = int(getattr(gate, "top_k", 0) or 0)
-        self.normalize_routing = bool(getattr(gate, "norm_topk_prob", False))
+        config = getattr(block, "config", None)
+        def _route_attr(*names, default=None):
+            for obj in (block, config):
+                if obj is None:
+                    continue
+                for name in names:
+                    val = getattr(obj, name, None)
+                    if val is not None:
+                        return val
+            return default
+        self.num_experts = int(_route_attr("num_experts", default=int(gate_up.shape[0])) or int(gate_up.shape[0]))
+        self.top_k = int(_route_attr("top_k", "num_experts_per_tok", default=0) or 0)
+        self.normalize_routing = bool(_route_attr("norm_topk_prob", default=False))
         self.routed_scaling_factor = float(getattr(block, "routed_scaling_factor", 1.0) or 1.0)
         self.epsilon = 1.0e-6
         self.hidden_dim = int(gate_up.shape[2])
@@ -937,14 +887,20 @@ def _patch_qwen2_moe_mlps(model: torch.nn.Module) -> None:
 
 
 class _Gemma4RuntimeMoeBlock(torch.nn.Module):
-    """Export-friendly Gemma4 MoE block with per-expert scale folded into w2."""
 
-    def __init__(self, block: torch.nn.Module, *, layer_index: int):
+    def __init__(
+        self,
+        block: torch.nn.Module,
+        *,
+        layer_index: int,
+        per_expert_scale: torch.Tensor | None = None,
+    ):
         super().__init__()
         _ensure_gemma4_moe_custom_op_registered()
         gate_up = getattr(block, "gate_up_proj", None)
         down = getattr(block, "down_proj", None)
-        per_expert_scale = getattr(block, "per_expert_scale", None)
+        if per_expert_scale is None:
+            per_expert_scale = getattr(block, "per_expert_scale", None)
         if (
             not isinstance(gate_up, torch.Tensor)
             or not isinstance(down, torch.Tensor)
@@ -1012,8 +968,15 @@ class _Gemma4MoeRuntimeDecoderLayer(torch.nn.Module):
         self.config = layer.config
         self.hidden_size = layer.hidden_size
         self.layer_idx = layer.layer_idx
-        self.attention_type = layer.attention_type
         self.self_attn = layer.self_attn
+        config_layer_types = tuple(getattr(self.config, "layer_types", ()))
+        self.attention_type = getattr(layer, "attention_type", getattr(self.self_attn, "attention_type", None))
+        if self.attention_type is None:
+            self.attention_type = (
+                config_layer_types[layer_index]
+                if layer_index < len(config_layer_types)
+                else "full_attention"
+            )
         self.mlp = layer.mlp
         self.input_layernorm = layer.input_layernorm
         self.post_attention_layernorm = layer.post_attention_layernorm
@@ -1028,7 +991,11 @@ class _Gemma4MoeRuntimeDecoderLayer(torch.nn.Module):
             self.post_per_layer_input_norm = layer.post_per_layer_input_norm
         self.enable_moe_block = True
         self.router = layer.router
-        self.moe = _Gemma4RuntimeMoeBlock(layer.moe, layer_index=layer_index)
+        self.moe = _Gemma4RuntimeMoeBlock(
+            layer.experts,
+            layer_index=layer_index,
+            per_expert_scale=layer.router.per_expert_scale,
+        )
         self.post_feedforward_layernorm_1 = layer.post_feedforward_layernorm_1
         self.post_feedforward_layernorm_2 = layer.post_feedforward_layernorm_2
         self.pre_feedforward_layernorm_2 = layer.pre_feedforward_layernorm_2
@@ -1037,8 +1004,12 @@ class _Gemma4MoeRuntimeDecoderLayer(torch.nn.Module):
 
     def _router_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         router_states = self.router.norm(hidden_states)
-        router_states = router_states * self.router.root_size.to(router_states.dtype)
+        scalar_root_size = getattr(self.router, "scalar_root_size", None)
+        if scalar_root_size is None:
+            root_size = getattr(self.router, "root_size", 1.0)
+            scalar_root_size = root_size.to(router_states.dtype) if isinstance(root_size, torch.Tensor) else float(root_size)
         router_states = router_states * self.router.scale.to(router_states.dtype)
+        router_states = router_states * scalar_root_size
         return self.router.proj(router_states)
 
     def forward(
@@ -1050,6 +1021,7 @@ class _Gemma4MoeRuntimeDecoderLayer(torch.nn.Module):
         position_ids: torch.LongTensor | None = None,
         past_key_values: object | None = None,
         use_cache: bool | None = False,
+        shared_kv_states: dict[int, tuple[torch.Tensor, torch.Tensor]] | None = None,
         **kwargs,
     ) -> torch.Tensor:
         residual = hidden_states
@@ -1060,6 +1032,7 @@ class _Gemma4MoeRuntimeDecoderLayer(torch.nn.Module):
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
+            shared_kv_states=shared_kv_states,
             use_cache=use_cache,
             **kwargs,
         )
@@ -1106,7 +1079,7 @@ def _is_gemma4_moe_decoder_layer(layer: object) -> bool:
         isinstance(layer, torch.nn.Module)
         and bool(getattr(layer, "enable_moe_block", False))
         and hasattr(layer, "router")
-        and hasattr(layer, "moe")
+        and hasattr(layer, "experts")
         and not isinstance(layer, _Gemma4MoeRuntimeDecoderLayer)
     )
 
@@ -1261,6 +1234,17 @@ def _gemma4_text_decoder_layer_forward(
     use_cache: bool = False,
     shared_kv_states: dict[int, tuple[torch.Tensor, torch.Tensor]] | None = None,
 ) -> torch.Tensor:
+    if isinstance(layer, _Gemma4MoeRuntimeDecoderLayer):
+        return layer(
+            hidden_states,
+            position_embeddings=position_embeddings,
+            per_layer_input=per_layer_input,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            shared_kv_states=shared_kv_states,
+        )
     manual_attention_required = shared_kv_states is not None
     if not manual_attention_required and not _gemma4_cpu_safe_text_mlp_enabled(layer, hidden_states):
         return layer(
@@ -1335,7 +1319,12 @@ def _gemma4_text_backbone_forward(
     }
     if shared_kv_states is _UNSET:
         num_shared_layers = int(getattr(backbone.config, "num_kv_shared_layers", 0) or 0)
-        shared_kv_states = {} if num_shared_layers > 0 else None
+        has_shared_kv_layers = num_shared_layers > 0 or any(
+            bool(getattr(getattr(layer, "self_attn", None), "is_kv_shared_layer", False))
+            or bool(getattr(getattr(layer, "self_attn", None), "store_full_length_kv", False))
+            for layer in getattr(backbone, "layers", ())
+        )
+        shared_kv_states = {} if has_shared_kv_layers else None
 
     config_layer_types = tuple(getattr(backbone.config, "layer_types", ()))
     end = backbone.config.num_hidden_layers if layer_end is None else min(int(layer_end), int(backbone.config.num_hidden_layers))
@@ -1349,6 +1338,15 @@ def _gemma4_text_backbone_forward(
             "attention_type",
             config_layer_types[layer_index] if layer_index < len(config_layer_types) else "full_attention",
         )
+        layer_shared_kv_states = shared_kv_states
+        if shared_kv_states is not None:
+            layer_attn = getattr(decoder_layer, "self_attn", None)
+            layer_uses_shared_kv = (
+                bool(getattr(layer_attn, "is_kv_shared_layer", False))
+                or bool(getattr(layer_attn, "store_full_length_kv", False))
+            )
+            if not layer_uses_shared_kv:
+                layer_shared_kv_states = None
         hidden_states = _gemma4_text_decoder_layer_forward(
             decoder_layer,
             hidden_states,
@@ -1358,7 +1356,7 @@ def _gemma4_text_backbone_forward(
             position_ids=position_ids,
             past_key_values=None,
             use_cache=False,
-            shared_kv_states=shared_kv_states,
+            shared_kv_states=layer_shared_kv_states,
         )
         if capture_layer_index is not None and layer_index == int(capture_layer_index):
             captured_hidden = hidden_states
@@ -1587,11 +1585,14 @@ def _gemma4_vision_encoder_hidden_states(
 
     if _GEMMA4_CREATE_BIDIRECTIONAL_MASK is None:
         raise RuntimeError("Gemma4 bidirectional mask helper is unavailable in this transformers install")
-    attention_mask = _GEMMA4_CREATE_BIDIRECTIONAL_MASK(
-        config=config,
-        inputs_embeds=inputs_embeds,
-        attention_mask=attention_mask,
-    )
+    if inputs_embeds.is_meta:
+        attention_mask = (attention_mask.unsqueeze(-1) * attention_mask.unsqueeze(1)).unsqueeze(1)
+    else:
+        attention_mask = _GEMMA4_CREATE_BIDIRECTIONAL_MASK(
+            config=config,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+        )
     position_embeddings = rotary_emb(hidden_states, pixel_position_ids)
     for decoder_layer in layers[:num_layers]:
         hidden_states = decoder_layer(
@@ -2067,9 +2068,14 @@ def _gemma4_build_standard_causal_mask_mapping(
     inputs_embeds: torch.Tensor,
     attention_mask: torch.Tensor | None,
     position_ids: torch.Tensor,
-) -> dict[str, torch.Tensor]:
+) -> dict[str, torch.Tensor | None]:
     if not callable(create_causal_mask) or not callable(create_sliding_window_causal_mask):
         raise RuntimeError("Gemma4 standard causal mask helpers are unavailable")
+    if inputs_embeds.is_meta or position_ids.is_meta or (attention_mask is not None and attention_mask.is_meta):
+        return {
+            "full_attention": None,
+            "sliding_attention": None,
+        }
     mask_kwargs = {
         "config": config,
         "inputs_embeds": inputs_embeds,
@@ -2238,16 +2244,16 @@ class Lfm2CausalLMLogitsAdapter(torch.nn.Module):
             else None
         )
         position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).unsqueeze(0)
-        causal_mask = self._create_causal_mask(
-            config=backbone.config,
+        causal_mask = _lfm2_causal_mask_for_capture(
+            self._create_causal_mask,
+            backbone=backbone,
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-            past_key_values=None,
             position_ids=position_ids,
         )
 
         hidden_states = inputs_embeds
-        position_embeddings = backbone.rotary_emb(hidden_states, position_ids=position_ids)
+        position_embeddings = _lfm2_position_embeddings(backbone, hidden_states, position_ids=position_ids)
         layer_types = tuple(getattr(backbone.config, "layer_types", ()))
         linear_attention = attention_mask if inputs_embeds.shape[1] != 1 else None
 
@@ -2309,7 +2315,7 @@ class Lfm2CausalLMStepAdapter(torch.nn.Module):
         causal_mask = None
 
         hidden_states = inputs_embeds
-        position_embeddings = backbone.rotary_emb(hidden_states, position_ids=text_position_ids)
+        position_embeddings = _lfm2_position_embeddings(backbone, hidden_states, position_ids=text_position_ids)
         layer_types = tuple(getattr(backbone.config, "layer_types", ()))
 
         for layer_index, decoder_layer in enumerate(backbone.layers[: backbone.config.num_hidden_layers]):
@@ -2555,15 +2561,15 @@ class Lfm2VlDecoderAdapter(torch.nn.Module):
         attention_mask: torch.Tensor,
         position_ids: torch.Tensor,
     ) -> torch.Tensor:
-        causal_mask = self._create_causal_mask(
-            config=self.backbone.config,
+        causal_mask = _lfm2_causal_mask_for_capture(
+            self._create_causal_mask,
+            backbone=self.backbone,
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-            past_key_values=None,
             position_ids=position_ids,
         )
         hidden_states = inputs_embeds
-        position_embeddings = self.backbone.rotary_emb(hidden_states, position_ids=position_ids)
+        position_embeddings = _lfm2_position_embeddings(self.backbone, hidden_states, position_ids=position_ids)
         layer_types = tuple(getattr(self.backbone.config, "layer_types", ()))
         linear_attention = attention_mask if inputs_embeds.shape[1] != 1 else None
 
@@ -4066,7 +4072,7 @@ class Gemma4DecoderPrefillChunkAdapter(Gemma4DecoderAdapter):
                 shared_kv_states=shared_kv_states,
             )
             tail_masks = {
-                key: value[:, :, -1:, :] if value.ndim == 4 else value
+                key: value[:, :, -1:, :] if value is not None and value.ndim == 4 else value
                 for key, value in causal_mask_mapping.items()
             }
             tail_per_layer_inputs = (
@@ -4261,9 +4267,13 @@ def _build_gemma4_multimodal_component_specs(
     input_ids = named_tensors["input_ids"]
     attention_mask = named_tensors.get("attention_mask")
     token_type_ids = named_tensors["token_type_ids"]
+    planning_input_ids = input_ids
+    low_memory_meta = _module_has_meta_tensors(model)
+    multimodal_backbone = getattr(model, "model", model)
+    model_has_audio = len(_gemma4_audio_modules(multimodal_backbone)) >= 2
 
     has_vision_inputs = pixel_values is not None
-    has_audio_inputs = input_features is not None and input_features_mask is not None
+    has_audio_inputs = model_has_audio and input_features is not None and input_features_mask is not None
     default_components = ["lm_encoder", "decoder"]
     if has_vision_inputs:
         default_components.insert(0, "vision_encoder")
@@ -4327,6 +4337,8 @@ def _build_gemma4_multimodal_component_specs(
     vision_encoder: Gemma4VisionEncoderAdapter | None = None
     vision_encoder_npu: Gemma4VisionEncoderAdapter | None = None
     audio_encoder: Gemma4AudioEncoderAdapter | None = None
+    native_image_soft_token_counts: tuple[int, ...] | None = None
+    native_image_pool_shapes: tuple[tuple[int, int, int], ...] | None = None
     if "vision_encoder" in expanded_components:
         vision_tower = getattr(getattr(model, "model", model), "vision_tower", None)
         pooling_kernel_size = int(_module_or_config_attr(vision_tower, "pooling_kernel_size", 3) or 3)
@@ -4352,6 +4364,15 @@ def _build_gemma4_multimodal_component_specs(
         ).eval()
     if "audio_encoder" in expanded_components:
         audio_encoder = Gemma4AudioEncoderAdapter(model, weights_dir=weights_dir).eval()
+
+    if low_memory_meta:
+        pixel_values = _to_meta_example_tensor(pixel_values)
+        pixel_position_ids = _to_meta_example_tensor(pixel_position_ids)
+        input_features = _to_meta_example_tensor(input_features)
+        input_features_mask = _to_meta_example_tensor(input_features_mask)
+        input_ids = _to_meta_example_tensor(input_ids)
+        attention_mask = _to_meta_example_tensor(attention_mask)
+        token_type_ids = _to_meta_example_tensor(token_type_ids)
 
     image_features: torch.Tensor | None = None
     audio_features: torch.Tensor | None = None
@@ -4386,7 +4407,7 @@ def _build_gemma4_multimodal_component_specs(
             if image_features is not None:
                 native_merge_plan = _gemma4_build_native_merge_plan(
                     getattr(model, "model", model),
-                    input_ids,
+                    planning_input_ids,
                     image_feature_count=_gemma4_feature_token_count(image_features),
                     audio_feature_count=_gemma4_feature_token_count(audio_features),
                 )
@@ -4440,10 +4461,12 @@ def _build_gemma4_multimodal_component_specs(
             )
             decoder_step_inputs = lm_encoder_step(step_input_ids, step_position_ids)
         if "lm_encoder_media_step" in expanded_components:
-            if audio_features is not None and int(audio_features.shape[1]) > 0:
-                media_step_embeds = audio_features[:, :1, :].contiguous()
-            elif image_features is not None and int(image_features.shape[1]) > 0:
-                media_step_embeds = image_features[:, :1, :].contiguous()
+            if audio_features is not None and _gemma4_feature_token_count(audio_features) > 0:
+                media_source = audio_features if audio_features.ndim == 3 else audio_features.unsqueeze(0)
+                media_step_embeds = media_source[:, :1, :].contiguous()
+            elif image_features is not None and _gemma4_feature_token_count(image_features) > 0:
+                media_source = image_features if image_features.ndim == 3 else image_features.unsqueeze(0)
+                media_step_embeds = media_source[:, :1, :].contiguous()
             else:
                 text_config = _gemma4_text_config(getattr(model, "model", model))
                 hidden_size = int(getattr(text_config, "hidden_size", 0) or 0)

@@ -113,6 +113,19 @@ def test_cli_registers_transpile_command() -> None:
     assert args.task == "causal_lm_logits"
 
 
+def test_cli_registers_low_memory_transpile_flag() -> None:
+    parser = cli.create_parser()
+    args = parser.parse_args([
+        "transpile",
+        "Qwen/Qwen3-0.6B",
+        "--weights-dir",
+        "/tmp/x",
+        "--low-memory-load",
+    ])
+
+    assert args.low_memory_load is True
+
+
 def test_run_accepts_local_bundle_path() -> None:
     """`cactus run` accepts a HF id (org/model) OR a local path. Bare names
     like 'whisper-base' (no slash) are rejected."""

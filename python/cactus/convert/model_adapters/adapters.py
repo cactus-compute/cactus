@@ -142,19 +142,31 @@ class Gemma4Adapter(FamilyAdapter):
         out = dict(state_dict)
         provenance: dict[str, TensorProvenance] = {}
         down_pattern = re.compile(
-            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.moe\.down_proj"
+            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.(moe|experts)\.down_proj"
         )
         for source_name, tensor in list(state_dict.items()):
-            if down_pattern.fullmatch(source_name) is None:
-                continue
-            scale_name = source_name[: -len(".down_proj")] + ".per_expert_scale"
-            scale = state_dict.get(scale_name)
-            if scale is None:
+            match = down_pattern.fullmatch(source_name)
+            if match is None:
                 continue
             shape = _tensor_shape(tensor)
-            scale_shape = _tensor_shape(scale)
-            if len(shape) != 3 or len(scale_shape) != 1 or int(shape[0]) != int(scale_shape[0]):
+            if len(shape) != 3:
                 continue
+            block_name = match.group(2)
+            scale_name = source_name[: -len(".down_proj")] + ".per_expert_scale"
+            if block_name == "experts":
+                prefix = source_name[: -len(".experts.down_proj")]
+                scale_name = f"{prefix}.router.per_expert_scale"
+            scale = state_dict.get(scale_name)
+            if scale is None:
+                raise ValueError(
+                    f"gemma4 MoE down_proj {source_name!r} is missing per-expert scale {scale_name!r}"
+                )
+            scale_shape = _tensor_shape(scale)
+            if len(scale_shape) != 1 or int(shape[0]) != int(scale_shape[0]):
+                raise ValueError(
+                    f"gemma4 MoE down_proj {source_name!r} scale {scale_name!r} shape {scale_shape} "
+                    f"does not match {int(shape[0])} experts"
+                )
             if torch is not None and isinstance(tensor, torch.Tensor):
                 scale_tensor = scale if isinstance(scale, torch.Tensor) else torch.as_tensor(scale)
                 scale_value = scale_tensor.to(device=tensor.device, dtype=tensor.dtype).reshape(-1, 1, 1)
@@ -223,14 +235,9 @@ class Gemma4Adapter(FamilyAdapter):
                 return replace(policy, use_gptq=False, fallback_reason=policy.fallback_reason or "shared KV tensor has no per-layer hook module")
         return policy
 
-    def module_target_name(self, source_name: str, _model: Any) -> str | None:
-        if ".moe.gate_up_proj" in source_name or ".moe.down_proj" in source_name:
-            return None
-        return super().module_target_name(source_name, _model)
-
     def name_tensor(self, source_name: str, tensor: Any, num_layers: int | None) -> NameMatch:
         match = re.fullmatch(
-            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.moe\.(gate_up_proj|down_proj)",
+            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.(?:moe|experts)\.(gate_up_proj|down_proj)",
             source_name,
         )
         if match is not None:
@@ -247,7 +254,7 @@ class Gemma4Adapter(FamilyAdapter):
         if match.output_name is None:
             return []
         source_match = re.fullmatch(
-            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.moe\.(gate_up_proj|down_proj)",
+            r"(?:(?:model|language_model|model\.language_model)\.)?layers\.(\d+)\.(?:moe|experts)\.(gate_up_proj|down_proj)",
             match.source_name,
         )
         if source_match is None:
@@ -309,6 +316,13 @@ class Gemma4Adapter(FamilyAdapter):
         return emissions
 
     def module_target_name(self, source_name: str, _model: Any) -> str | None:
+        if (
+            ".moe.gate_up_proj" in source_name
+            or ".moe.down_proj" in source_name
+            or ".experts.gate_up_proj" in source_name
+            or ".experts.down_proj" in source_name
+        ):
+            return None
         target = super().module_target_name(source_name, _model)
         if target and source_name.startswith("model.vision_tower."):
             modules = dict(_model.named_modules()) if _model is not None else {}

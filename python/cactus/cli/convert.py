@@ -65,6 +65,7 @@ def cmd_convert(args):
             token=args.token,
             reconvert=args.reconvert,
             output_dir=output_dir,
+            skip_model_load=bool(getattr(args, "skip_model_load", False)),
         )
         return 0
     except RuntimeError as e:
@@ -79,6 +80,7 @@ def cmd_transpile(args):
     """Build the runtime graph bundle from already-converted CQ weights."""
     from .transpile import run_transpile
     from .model import _default_multimodal_assets
+    from cactus.transpile.component_plan import infer_component_plan_from_output
 
     extra_args = []
     if args.weights_dir:
@@ -96,11 +98,21 @@ def cmd_transpile(args):
 
     image_files = list(args.image_file or [])
     audio_file = args.audio_file
-    if not image_files or not audio_file:
+    weights_dir = Path(args.weights_dir).expanduser() if args.weights_dir else get_weights_dir(args.model_id)
+    from .model import _AUDIO_TASKS
+    plan = infer_component_plan_from_output(str(weights_dir), model_id=args.model_id)
+    default_needs_image = bool(
+        plan.needs_image if plan is not None else args.task == "multimodal_causal_lm_logits"
+    )
+    default_needs_audio = bool(
+        plan.needs_audio if plan is not None
+        else (args.task in _AUDIO_TASKS or args.task == "multimodal_causal_lm_logits")
+    )
+    if (default_needs_image and not image_files) or (default_needs_audio and not audio_file):
         default_images, default_audio = _default_multimodal_assets()
-        if not image_files:
+        if default_needs_image and not image_files:
             image_files = default_images
-        if not audio_file and default_audio:
+        if default_needs_audio and not audio_file and default_audio:
             audio_file = default_audio
 
     for img in image_files:
@@ -121,6 +133,8 @@ def cmd_transpile(args):
         extra_args.append("--trust-remote-code")
     if args.local_files_only:
         extra_args.append("--local-files-only")
+    if getattr(args, "low_memory_load", False):
+        extra_args.append("--low-memory-load")
     if args.artifact_dir:
         extra_args.extend(["--artifact-dir", args.artifact_dir])
     if args.graph_filename:

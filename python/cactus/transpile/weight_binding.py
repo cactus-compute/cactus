@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 
@@ -211,6 +213,31 @@ def _manifest_source_aliases(name: str) -> tuple[str, ...]:
         _add_text_backbone_aliases(candidate)
         _add_multimodal_backbone_aliases(candidate)
 
+    for candidate in tuple(aliases):
+        normalized = candidate
+        for prefix in (
+            "module.model.backbone.",
+            "adapter.model.backbone.",
+            "module.backbone.",
+            "adapter.backbone.",
+            "backbone.",
+            "module.model.",
+            "adapter.model.",
+            "module.",
+            "adapter.",
+        ):
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix) :]
+                break
+        match = re.match(
+            r"^(?:model\.)?layers\.(\d+)\.feed_forward\.(w[123])_weights\.(\d+)$",
+            normalized,
+        )
+        if match is not None:
+            layer, weight_name, expert = match.groups()
+            _add_with_wrappers(f"model.layers.{layer}.feed_forward.experts.{expert}.{weight_name}.weight")
+            _add_with_wrappers(f"layers.{layer}.feed_forward.experts.{expert}.{weight_name}.weight")
+
     return tuple(aliases)
 
 
@@ -270,8 +297,15 @@ def _flatten_convert_manifest(root_manifest: dict[str, Any]) -> dict[str, object
     return flattened
 
 
-def _load_weights_manifest(root: Path) -> dict[str, object]:
-    manifest_path = root / "weights_manifest.json"
+@lru_cache(maxsize=16)
+def _load_weights_manifest_cached(
+    manifest_path_text: str,
+    *,
+    mtime_ns: int,
+    size: int,
+) -> dict[str, object]:
+    del mtime_ns, size
+    manifest_path = Path(manifest_path_text)
     if not manifest_path.exists():
         return {}
     try:
@@ -281,6 +315,18 @@ def _load_weights_manifest(root: Path) -> dict[str, object]:
     if not isinstance(loaded_manifest, dict):
         raise RuntimeError(f"weights_manifest.json at {manifest_path} is not a JSON object")
     return _flatten_convert_manifest(loaded_manifest)
+
+
+def _load_weights_manifest(root: Path) -> dict[str, object]:
+    manifest_path = root / "weights_manifest.json"
+    if not manifest_path.exists():
+        return {}
+    stat = manifest_path.stat()
+    return _load_weights_manifest_cached(
+        str(manifest_path.resolve()),
+        mtime_ns=int(stat.st_mtime_ns),
+        size=int(stat.st_size),
+    )
 
 
 def _binding_from_manifest_entry(root: Path, source_name: str, entry: object) -> WeightBinding | None:

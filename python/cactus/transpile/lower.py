@@ -603,6 +603,25 @@ def _lookup_weight_binding(value: IRValue) -> WeightBinding | None:
     return None
 
 
+# Gemma4 stores weights so the residual stream runs at 1/16 of true scale
+# (see cactus.convert.model_adapters.naming.gemma4_scale_factor / GEMMA4_WEIGHT_SCALE).
+# This is the factor needed to lift a 1/16-scale activation back to true scale.
+GEMMA4_RESIDUAL_DOWNSCALE = 16.0
+
+
+def _activation_enum(name: object, *, default: int = 0) -> int:
+    value = str(name or "").strip().lower()
+    if value in {"gelu", "gelu_tanh", "gelu_pytorch_tanh"}:
+        return 1
+    if value in {"gelu_erf", "gelu_none"}:
+        return 2
+    if value == "relu":
+        return 3
+    if value == "silu":
+        return 0
+    return default
+
+
 def _debug_mmap_binding(value_id: str, binding: WeightBinding) -> None:
     if os.environ.get("CACTUS_TRANSPILER_DEBUG_MMAP") != "1":
         return
@@ -662,6 +681,18 @@ def _matmul_with_quantized_rhs_legalization(
 ) -> Tensor:
     if _is_quantized_runtime_dtype(rhs.dtype) and lhs.dtype == Graph.FP32:
         lhs = g.precision_cast(lhs, Graph.FP16)
+    if (
+        _is_quantized_runtime_dtype(rhs.dtype)
+        and pretransposed_rhs
+        and len(lhs.shape) >= 2
+        and len(rhs.shape) == 2
+        and int(rhs.shape[-1]) > int(lhs.shape[-1])
+    ):
+        pad = int(rhs.shape[-1]) - int(lhs.shape[-1])
+        pad_shape = tuple(int(dim) for dim in lhs.shape[:-1]) + (pad,)
+        pad_dtype = torch.float16 if lhs.dtype == Graph.FP16 else torch.float32
+        zeros = _materialize_constant_tensor(g, torch.zeros(pad_shape, dtype=pad_dtype))
+        lhs = g.cat([lhs, zeros], axis=len(lhs.shape) - 1)
     return g.matmul(lhs, rhs, pretransposed_rhs=pretransposed_rhs, output_dtype=output_dtype)
 
 
@@ -1106,124 +1137,71 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             out = g.precision_cast(out, output_dtype)
         return [out]
 
-    if op == "lfm2_moe_layer_gated":
+    if op in ("lfm2_moe_layer_gated", "qwen2_moe_layer_gated", "gemma4_moe_layer_gated"):
         num_experts = int(node.attrs["num_experts"])
         num_experts_per_tok = int(node.attrs["num_experts_per_tok"])
-        expected_inputs = 3 + 3 * num_experts
+        w1_start = 3 if op == "lfm2_moe_layer_gated" else 2
+        expected_inputs = w1_start + 3 * num_experts
         if len(node.inputs) != expected_inputs:
             raise NotImplementedError(
-                f"lfm2_moe_layer_gated expects {expected_inputs} inputs for {num_experts} experts, "
-                f"got {len(node.inputs)}"
+                f"{op} expects {expected_inputs} inputs for {num_experts} experts, got {len(node.inputs)}"
             )
         hidden = _ensure_tensor_dtype(g, _tensor(env, node.inputs[0]), Graph.FP16)
         router_logits = _ensure_tensor_dtype(g, _tensor(env, node.inputs[1]), Graph.FP16)
-        expert_bias = _tensor(env, node.inputs[2])
-        w1_start = 3
+
+        if op == "lfm2_moe_layer_gated":
+            routing_probs = g.sigmoid(router_logits)
+            topk_source = routing_probs
+            if bool(node.attrs.get("use_expert_bias", False)):
+                expert_bias = _ensure_tensor_dtype(g, _tensor(env, node.inputs[2]), routing_probs.dtype)
+                topk_source = _lower_binary_op(g, routing_probs, expert_bias, "add")
+            topk_indices = _ensure_tensor_dtype(g, g.index(g.topk(topk_source, num_experts_per_tok), 0, axis=0), Graph.FP32)
+            normalize_default = False
+            activation = None
+        elif op == "qwen2_moe_layer_gated":
+            routing_probs = g.softmax(router_logits, axis=-1)
+            topk_indices = _ensure_tensor_dtype(g, g.index(g.topk(routing_probs, num_experts_per_tok), 0, axis=0), Graph.FP32)
+            normalize_default = False
+            activation = None
+        else:
+            # Gemma4 runs the residual stream at 1/16 of true scale. Dense ffn_gate/up
+            # weights are stored x16 so the (stored /16) pre_ffn_norm cancels to a
+            # true-scale GELU input, but the MoE expert weights (w1/w3) are stored at
+            # true scale and the router_scale weight is stored /16. Compensate here so
+            # the experts see a true-scale activation input and the router softmax sees
+            # true-scale logits; the trailing post_feedforward_layernorm_2 (stored /16)
+            # renormalizes the MoE output back into the 1/16 residual stream.
+            hidden = g.scalar_multiply(hidden, float(GEMMA4_RESIDUAL_DOWNSCALE))
+            # Select top-k on the LOGITS, not the softmax probabilities: FP16 softmax
+            # probabilities are tiny (~1/num_experts) and nearly equal, so rounding can
+            # flip the selection and silently corrupt expert knowledge. The logits keep
+            # their spread, so top-k on them is a robust, monotonic ordering; the softmax
+            # probabilities are still used for the (renormalized) routing weights.
+            router_logits = g.scalar_multiply(router_logits, float(GEMMA4_RESIDUAL_DOWNSCALE))
+            routing_probs = g.softmax(router_logits, axis=-1)
+            topk_indices = _ensure_tensor_dtype(g, g.index(g.topk(router_logits, num_experts_per_tok), 0, axis=0), Graph.FP32)
+            normalize_default = True
+            activation = _activation_enum(node.attrs.get("activation"), default=0)
+
         w3_start = w1_start + num_experts
         w2_start = w3_start + num_experts
-        w1_weights = [_tensor(env, value_id) for value_id in node.inputs[w1_start:w3_start]]
-        w3_weights = [_tensor(env, value_id) for value_id in node.inputs[w3_start:w2_start]]
-        w2_weights = [_tensor(env, value_id) for value_id in node.inputs[w2_start:]]
-
-        routing_probs = g.sigmoid(router_logits)
-        topk_source = routing_probs
-        if bool(node.attrs.get("use_expert_bias", False)):
-            expert_bias = _ensure_tensor_dtype(g, expert_bias, routing_probs.dtype)
-            topk_source = _lower_binary_op(g, routing_probs, expert_bias, "add")
-        topk_output = g.topk(topk_source, num_experts_per_tok)
-        topk_indices = _ensure_tensor_dtype(g, g.index(topk_output, 0, axis=0), Graph.FP32)
-        out = g.moe_layer_gated(
-            hidden,
-            routing_probs,
-            topk_indices,
-            w1_weights,
-            w3_weights,
-            w2_weights,
-            num_experts,
-            num_experts_per_tok,
-            normalize_routing=bool(node.attrs.get("normalize_routing", False)),
+        moe_kwargs = dict(
+            normalize_routing=bool(node.attrs.get("normalize_routing", normalize_default)),
             epsilon=float(node.attrs.get("epsilon", 1.0e-6)),
             routed_scaling_factor=float(node.attrs.get("routed_scaling_factor", 1.0)),
         )
-        output_value = ir.values.get(node.outputs[0])
-        output_dtype = _map_ir_dtype(output_value.dtype) if output_value is not None and output_value.dtype is not None else out.dtype
-        if out.dtype != output_dtype:
-            out = g.precision_cast(out, output_dtype)
-        return [out]
-
-    if op == "qwen2_moe_layer_gated":
-        num_experts = int(node.attrs["num_experts"])
-        num_experts_per_tok = int(node.attrs["num_experts_per_tok"])
-        expected_inputs = 2 + 3 * num_experts
-        if len(node.inputs) != expected_inputs:
-            raise NotImplementedError(
-                f"qwen2_moe_layer_gated expects {expected_inputs} inputs for {num_experts} experts, "
-                f"got {len(node.inputs)}"
-            )
-        hidden = _ensure_tensor_dtype(g, _tensor(env, node.inputs[0]), Graph.FP16)
-        router_logits = _ensure_tensor_dtype(g, _tensor(env, node.inputs[1]), Graph.FP16)
-        w1_start = 2
-        w3_start = w1_start + num_experts
-        w2_start = w3_start + num_experts
-        w1_weights = [_tensor(env, value_id) for value_id in node.inputs[w1_start:w3_start]]
-        w3_weights = [_tensor(env, value_id) for value_id in node.inputs[w3_start:w2_start]]
-        w2_weights = [_tensor(env, value_id) for value_id in node.inputs[w2_start:]]
-
-        routing_probs = g.softmax(router_logits, axis=-1)
-        topk_output = g.topk(routing_probs, num_experts_per_tok)
-        topk_indices = _ensure_tensor_dtype(g, g.index(topk_output, 0, axis=0), Graph.FP32)
+        if activation is not None:
+            moe_kwargs["activation"] = activation
         out = g.moe_layer_gated(
             hidden,
             routing_probs,
             topk_indices,
-            w1_weights,
-            w3_weights,
-            w2_weights,
+            [_tensor(env, v) for v in node.inputs[w1_start:w3_start]],
+            [_tensor(env, v) for v in node.inputs[w3_start:w2_start]],
+            [_tensor(env, v) for v in node.inputs[w2_start:]],
             num_experts,
             num_experts_per_tok,
-            normalize_routing=bool(node.attrs.get("normalize_routing", False)),
-            epsilon=float(node.attrs.get("epsilon", 1.0e-6)),
-            routed_scaling_factor=float(node.attrs.get("routed_scaling_factor", 1.0)),
-        )
-        output_value = ir.values.get(node.outputs[0])
-        output_dtype = _map_ir_dtype(output_value.dtype) if output_value is not None and output_value.dtype is not None else out.dtype
-        if out.dtype != output_dtype:
-            out = g.precision_cast(out, output_dtype)
-        return [out]
-
-    if op == "gemma4_moe_layer_gated":
-        num_experts = int(node.attrs["num_experts"])
-        num_experts_per_tok = int(node.attrs["num_experts_per_tok"])
-        expected_inputs = 2 + 3 * num_experts
-        if len(node.inputs) != expected_inputs:
-            raise NotImplementedError(
-                f"gemma4_moe_layer_gated expects {expected_inputs} inputs for {num_experts} experts, "
-                f"got {len(node.inputs)}"
-            )
-        hidden = _ensure_tensor_dtype(g, _tensor(env, node.inputs[0]), Graph.FP16)
-        router_logits = _ensure_tensor_dtype(g, _tensor(env, node.inputs[1]), Graph.FP16)
-        w1_start = 2
-        w3_start = w1_start + num_experts
-        w2_start = w3_start + num_experts
-        w1_weights = [_tensor(env, value_id) for value_id in node.inputs[w1_start:w3_start]]
-        w3_weights = [_tensor(env, value_id) for value_id in node.inputs[w3_start:w2_start]]
-        w2_weights = [_tensor(env, value_id) for value_id in node.inputs[w2_start:]]
-
-        routing_probs = g.softmax(router_logits, axis=-1)
-        topk_output = g.topk(routing_probs, num_experts_per_tok)
-        topk_indices = _ensure_tensor_dtype(g, g.index(topk_output, 0, axis=0), Graph.FP32)
-        out = g.moe_layer_gated(
-            hidden,
-            routing_probs,
-            topk_indices,
-            w1_weights,
-            w3_weights,
-            w2_weights,
-            num_experts,
-            num_experts_per_tok,
-            normalize_routing=bool(node.attrs.get("normalize_routing", True)),
-            epsilon=float(node.attrs.get("epsilon", 1.0e-6)),
-            routed_scaling_factor=float(node.attrs.get("routed_scaling_factor", 1.0)),
+            **moe_kwargs,
         )
         output_value = ir.values.get(node.outputs[0])
         output_dtype = _map_ir_dtype(output_value.dtype) if output_value is not None and output_value.dtype is not None else out.dtype
@@ -1785,6 +1763,13 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         torch_dtype = _materialize_constant_torch_dtype(node.attrs.get("dtype"))
         return [_materialize_constant_tensor(g, torch.ones(shape, dtype=torch_dtype))]
 
+    if op == "new_empty":
+        shape = tuple(int(v) for v in node.attrs.get("shape", ()))
+        if not shape:
+            raise NotImplementedError(f"new_empty requires a static shape, got {shape}")
+        torch_dtype = _materialize_constant_torch_dtype(node.attrs.get("dtype"))
+        return [_materialize_constant_tensor(g, torch.zeros(shape, dtype=torch_dtype))]
+
     if op == "tril":
         x = _tensor(env, node.inputs[0])
         shape = tuple(int(dim) for dim in x.shape)
@@ -1901,7 +1886,8 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         embedding_tensor = _tensor(env, node.inputs[0])
         indices_tensor = _tensor(env, node.inputs[1])
         _debug_embedding_lowering(node, embedding_tensor, indices_tensor)
-        return [g.embedding_from_tensor(embedding_tensor, indices_tensor)]
+        out = g.embedding_from_tensor(embedding_tensor, indices_tensor)
+        return [out]
 
     if op == "conv_module":
         input_index = 0

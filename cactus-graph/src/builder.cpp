@@ -1220,7 +1220,12 @@ size_t CactusGraph::add_node(OpType op_type, const std::vector<size_t>& inputs, 
     }
 
     Precision result_precision = params.output_precision;
-    if (op_type == OpType::PRECISION_CAST || op_type == OpType::EMBEDDING) {
+    if (op_type == OpType::PRECISION_CAST ||
+        op_type == OpType::EMBEDDING ||
+        op_type == OpType::TOPK ||
+        op_type == OpType::SCATTER_TOPK ||
+        op_type == OpType::SAMPLE ||
+        op_type == OpType::GAUSSIAN_TOPK) {
         result_precision = params.output_precision;
     } else if (!inputs.empty()) {
         result_precision = nodes_[node_index_map_[inputs[0]]]->output_buffer.precision;
@@ -1301,8 +1306,12 @@ size_t CactusGraph::altup_correct(size_t coefs, size_t innovation, const size_t*
 
 size_t CactusGraph::gaussian_topk(size_t input, float ppf) {
     const auto& in_buf = get_output_buffer(input);
+    if (in_buf.precision != Precision::FP16) {
+        throw std::runtime_error("gaussian_topk only supports FP16 input");
+    }
     OpParams params;
     params.scalar = ppf;
+    params.output_precision = in_buf.precision;
     return add_node(OpType::GAUSSIAN_TOPK, {input}, in_buf.shape, params);
 }
 

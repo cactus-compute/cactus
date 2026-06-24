@@ -1315,7 +1315,7 @@ int cactus_graph_gaussian_topk(cactus_graph_t graph, cactus_node_t input, float 
 
 int cactus_graph_moe_layer_gated(cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
                                  const cactus_node_t* w1_weights, const cactus_node_t* w3_weights, const cactus_node_t* w2_weights,
-                                 size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, cactus_node_t* out) {
+                                 size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, int32_t activation, cactus_node_t* out) {
     if (!graph || !w1_weights || !w3_weights || !w2_weights || !out) return fail_invalid("Invalid args to cactus_graph_moe_layer_gated");
     try {
         std::vector<size_t> w1(num_experts), w3(num_experts), w2(num_experts);
@@ -1324,7 +1324,7 @@ int cactus_graph_moe_layer_gated(cactus_graph_t graph, cactus_node_t hidden, cac
             w3[i] = static_cast<size_t>(w3_weights[i]);
             w2[i] = static_cast<size_t>(w2_weights[i]);
         }
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.moe_layer(static_cast<size_t>(hidden), static_cast<size_t>(routing_probs), static_cast<size_t>(topk_indices), w1, w3, w2, num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor));
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.moe_layer(static_cast<size_t>(hidden), static_cast<size_t>(routing_probs), static_cast<size_t>(topk_indices), w1, w3, w2, num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor, static_cast<Activation>(activation)));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();

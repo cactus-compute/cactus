@@ -597,7 +597,7 @@ _lib.cactus_graph_gaussian_topk.restype = ctypes.c_int
 _lib.cactus_graph_moe_layer_gated.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t,
     ctypes.POINTER(cactus_node_t), ctypes.POINTER(cactus_node_t), ctypes.POINTER(cactus_node_t),
-    ctypes.c_size_t, ctypes.c_size_t, ctypes.c_bool, ctypes.c_float, ctypes.c_float, ctypes.POINTER(cactus_node_t)
+    ctypes.c_size_t, ctypes.c_size_t, ctypes.c_bool, ctypes.c_float, ctypes.c_float, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_moe_layer_gated.restype = ctypes.c_int
 _bind_optional(
@@ -2460,7 +2460,7 @@ class Graph:
         return self._tensor_from_node(out.value)
 
     def moe_layer_gated(self, hidden, routing_probs, topk_indices, w1_weights, w3_weights, w2_weights,
-                        num_experts, num_experts_per_tok, normalize_routing=True, epsilon=1e-6, routed_scaling_factor=1.0):
+                        num_experts, num_experts_per_tok, normalize_routing=True, epsilon=1e-6, routed_scaling_factor=1.0, activation=0):
         hidden = self._ensure_tensor(hidden)
         routing_probs = self._ensure_tensor(routing_probs)
         topk_indices = self._ensure_tensor(topk_indices)
@@ -2472,7 +2472,7 @@ class Graph:
             self.h, cactus_node_t(hidden.id), cactus_node_t(routing_probs.id), cactus_node_t(topk_indices.id),
             w1, w3, w2, ctypes.c_size_t(int(num_experts)), ctypes.c_size_t(int(num_experts_per_tok)),
             ctypes.c_bool(bool(normalize_routing)), ctypes.c_float(float(epsilon)),
-            ctypes.c_float(float(routed_scaling_factor)), ctypes.byref(out)
+            ctypes.c_float(float(routed_scaling_factor)), ctypes.c_int32(int(activation)), ctypes.byref(out)
         )
         if rc != 0:
             raise RuntimeError(_err("graph_moe_layer_gated failed"))

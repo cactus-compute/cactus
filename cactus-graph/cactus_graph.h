@@ -1050,7 +1050,7 @@ CACTUS_FFI_EXPORT int cactus_graph_gaussian_topk(
 CACTUS_FFI_EXPORT int cactus_graph_moe_layer_gated(
     cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
     const cactus_node_t* w1_weights, const cactus_node_t* w3_weights, const cactus_node_t* w2_weights,
-    size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, cactus_node_t* out);
+    size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, int32_t activation, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_moe_layer_ungated(
     cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
     const cactus_node_t* w1_weights, const cactus_node_t* w2_weights,

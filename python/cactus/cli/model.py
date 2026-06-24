@@ -11,7 +11,7 @@ from .common import GREEN, PROJECT_ROOT, YELLOW, print_color
 
 
 
-def _convert_from_source(model_id, *, bits, token, weights_dir):
+def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=False):
     """Download from HuggingFace and run CQ conversion."""
     print_color(YELLOW, f"Converting {model_id} from HuggingFace source...")
     from ..convert.cli import main as cq_main
@@ -21,6 +21,8 @@ def _convert_from_source(model_id, *, bits, token, weights_dir):
         "--out", str(weights_dir),
         "--bits", str(bits),
     ]
+    if skip_model_load:
+        cq_args.append("--skip-model-load")
     if token:
         os.environ["HF_TOKEN"] = token
         os.environ["HUGGING_FACE_HUB_TOKEN"] = token
@@ -30,7 +32,7 @@ def _convert_from_source(model_id, *, bits, token, weights_dir):
     return weights_dir
 
 
-def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=None):
+def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=None, skip_model_load=False):
     from .download import get_weights_dir
 
     weights_dir = Path(output_dir) if output_dir else get_weights_dir(model_id)
@@ -43,7 +45,13 @@ def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=
         print_color(GREEN, f"Model weights found at {weights_dir}")
         return weights_dir
 
-    return _convert_from_source(model_id, bits=bits, token=token, weights_dir=weights_dir)
+    return _convert_from_source(
+        model_id,
+        bits=bits,
+        token=token,
+        weights_dir=weights_dir,
+        skip_model_load=skip_model_load,
+    )
 
 
 
@@ -187,7 +195,8 @@ class TranspileOptions:
 
 
 def ensure_bundle(model_id, *, bits=4, token=None,
-                  reconvert=False, output_dir=None, transpile=None):
+                  reconvert=False, output_dir=None, transpile=None,
+                  skip_model_load=False):
     from .download import get_weights_dir
     from .transpile import run_transpile
     from cactus.transpile.component_plan import infer_component_plan_from_output
@@ -202,6 +211,7 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     ensure_weights(
         model_id, bits=bits, token=token,
         reconvert=reconvert, output_dir=output_dir,
+        skip_model_load=skip_model_load,
     )
 
     if _has_transpiled_bundle(output_dir):

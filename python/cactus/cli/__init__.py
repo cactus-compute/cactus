@@ -139,6 +139,7 @@ def create_parser():
     --token <token>                    HuggingFace token (defaults to $HF_TOKEN)
     --trust-remote-code                allow HF remote code at transpile time
     --local-files-only                 require model/processor to be local
+    --low-memory-load                  graph capture with meta tensors
     --allow-unconverted-weights        debug-only: skip the CQ-weights check
     --execute-after-transpile          run a reference execution after lowering
     --graph-filename <name>            override saved graph filename
@@ -318,6 +319,8 @@ def create_parser():
                                 help="Path or HF id of a LoRA adapter to merge before converting (requires `peft`)")
     convert_parser.add_argument("--reconvert", action="store_true",
                                 help="Force conversion from source")
+    convert_parser.add_argument("--skip-model-load", action="store_true",
+                                help="Convert directly from checkpoint tensors without loading the full HF model object")
 
     transpile_parser = subparsers.add_parser("transpile",
                                              help="Build a runnable bundle from CQ weights")
@@ -357,6 +360,8 @@ def create_parser():
                                   help="Pass trust_remote_code=True to HF loaders")
     transpile_parser.add_argument("--local-files-only", action="store_true",
                                   help="Require model/processor to already be local")
+    transpile_parser.add_argument("--low-memory-load", action="store_true",
+                                  help="Avoid loading checkpoint tensors during graph capture")
     transpile_parser.add_argument("--allow-unconverted-weights", action="store_true",
                                   help="Debug: transpile without CQ weights")
     transpile_parser.add_argument("--execute-after-transpile", action="store_true",

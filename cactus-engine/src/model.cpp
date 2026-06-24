@@ -999,7 +999,6 @@ void Model::move_cache_states(Component& source, Component& target, size_t logic
                 logical_current != std::numeric_limits<size_t>::max()) {
                 auto* meta = static_cast<uint64_t*>(target.graph->get_output(static_cast<size_t>(dst_node)));
                 if (meta && logical_current < meta[0]) {
-                    meta[4] = std::min<uint64_t>(meta[4], logical_current);
                     meta[0] = logical_current;
                 }
             }
@@ -1014,7 +1013,6 @@ void Model::set_cache_current_len(Component& comp, size_t len) {
             if (comp.graph->get_node_op_type(static_cast<size_t>(node_id)) != OpType::KV_CACHE_STATE) continue;
             auto* meta = static_cast<uint64_t*>(comp.graph->get_output(static_cast<size_t>(node_id)));
             if (!meta || len >= meta[0]) continue;
-            meta[4] = std::min<uint64_t>(meta[4], len);
             meta[0] = len;
         }
     }

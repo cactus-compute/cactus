@@ -44,6 +44,7 @@ _EXACT_RULES: dict[str, str] = {
     "aten.view.default": "reshape",
     "aten.reshape.default": "reshape",
     "aten._unsafe_view.default": "reshape",
+    "aten.new_empty.default": "new_empty",
     "aten.flatten.using_ints": "flatten",
     "aten.t.default": "transpose",
     "aten.gelu.erf": "gelu_erf",

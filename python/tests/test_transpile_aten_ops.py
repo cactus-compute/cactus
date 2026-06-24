@@ -124,199 +124,23 @@ def test_dense_mlp_fusion_uses_topology_not_layer_names() -> None:
     assert graph.nodes["down_linear"].inputs == ["x", "pear_weight", "banana_weight", "plum_weight"]
 
 
-_TEST_LFM2_MOE_OP_REGISTERED = False
-_TEST_QWEN2_MOE_OP_REGISTERED = False
-_TEST_GEMMA4_MOE_OP_REGISTERED = False
-_TEST_TORCH_LIBRARIES: list[object] = []
 
 
-def _ignore_duplicate_registration(exc: RuntimeError) -> bool:
-    text = str(exc).lower()
-    return "already" in text or "duplicate" in text or "previously" in text
 
 
 def _ensure_test_lfm2_moe_op_registered() -> None:
-    global _TEST_LFM2_MOE_OP_REGISTERED
-    if _TEST_LFM2_MOE_OP_REGISTERED:
-        return
-    try:
-        library = torch.library.Library("cactus_transpile", "FRAGMENT")
-        library.define(
-            "lfm2_moe_layer_gated("
-            "Tensor hidden, Tensor router_logits, Tensor expert_bias, "
-            "Tensor[] w1_weights, Tensor[] w3_weights, Tensor[] w2_weights, "
-            "int num_experts, int num_experts_per_tok, bool use_expert_bias, "
-            "bool normalize_routing, float epsilon, float routed_scaling_factor"
-            ") -> Tensor"
-        )
-        _TEST_TORCH_LIBRARIES.append(library)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_registration(exc):
-            raise
-
-    def impl(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        expert_bias: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        use_expert_bias: bool,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
-        return hidden + router_logits.sum() * 0.0
-
-    def fake(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        expert_bias: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        use_expert_bias: bool,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
-        return hidden.new_empty(hidden.shape)
-
-    try:
-        torch.library.impl("cactus_transpile::lfm2_moe_layer_gated", "CompositeExplicitAutograd")(impl)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_registration(exc):
-            raise
-    try:
-        torch.library.register_fake("cactus_transpile::lfm2_moe_layer_gated")(fake)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_registration(exc):
-            raise
-    _TEST_LFM2_MOE_OP_REGISTERED = True
+    from cactus.transpile.model_adapters import _ensure_lfm2_moe_custom_op_registered
+    _ensure_lfm2_moe_custom_op_registered()
 
 
 def _ensure_test_qwen2_moe_op_registered() -> None:
-    global _TEST_QWEN2_MOE_OP_REGISTERED
-    if _TEST_QWEN2_MOE_OP_REGISTERED:
-        return
-    try:
-        library = torch.library.Library("cactus_transpile", "FRAGMENT")
-        library.define(
-            "qwen2_moe_layer_gated("
-            "Tensor hidden, Tensor router_logits, "
-            "Tensor[] w1_weights, Tensor[] w3_weights, Tensor[] w2_weights, "
-            "int num_experts, int num_experts_per_tok, bool normalize_routing, "
-            "float epsilon, float routed_scaling_factor"
-            ") -> Tensor"
-        )
-        _TEST_TORCH_LIBRARIES.append(library)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_registration(exc):
-            raise
-
-    def impl(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
-        return hidden + router_logits.sum() * 0.0
-
-    def fake(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
-        return hidden.new_empty(hidden.shape)
-
-    try:
-        torch.library.impl("cactus_transpile::qwen2_moe_layer_gated", "CompositeExplicitAutograd")(impl)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_registration(exc):
-            raise
-    try:
-        torch.library.register_fake("cactus_transpile::qwen2_moe_layer_gated")(fake)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_registration(exc):
-            raise
-    _TEST_QWEN2_MOE_OP_REGISTERED = True
+    from cactus.transpile.model_adapters import _ensure_qwen2_moe_custom_op_registered
+    _ensure_qwen2_moe_custom_op_registered()
 
 
 def _ensure_test_gemma4_moe_op_registered() -> None:
-    global _TEST_GEMMA4_MOE_OP_REGISTERED
-    if _TEST_GEMMA4_MOE_OP_REGISTERED:
-        return
-    try:
-        library = torch.library.Library("cactus_transpile", "FRAGMENT")
-        library.define(
-            "gemma4_moe_layer_gated("
-            "Tensor hidden, Tensor router_logits, "
-            "Tensor[] w1_weights, Tensor[] w3_weights, Tensor[] w2_weights, "
-            "int num_experts, int num_experts_per_tok, bool normalize_routing, "
-            "float epsilon, float routed_scaling_factor"
-            ") -> Tensor"
-        )
-        _TEST_TORCH_LIBRARIES.append(library)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_registration(exc):
-            raise
-
-    def impl(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
-        return hidden + router_logits.sum() * 0.0
-
-    def fake(
-        hidden: torch.Tensor,
-        router_logits: torch.Tensor,
-        w1_weights: list[torch.Tensor],
-        w3_weights: list[torch.Tensor],
-        w2_weights: list[torch.Tensor],
-        num_experts: int,
-        num_experts_per_tok: int,
-        normalize_routing: bool,
-        epsilon: float,
-        routed_scaling_factor: float,
-    ) -> torch.Tensor:
-        return hidden.new_empty(hidden.shape)
-
-    try:
-        torch.library.impl("cactus_transpile::gemma4_moe_layer_gated", "CompositeExplicitAutograd")(impl)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_registration(exc):
-            raise
-    try:
-        torch.library.register_fake("cactus_transpile::gemma4_moe_layer_gated")(fake)
-    except RuntimeError as exc:
-        if not _ignore_duplicate_registration(exc):
-            raise
-    _TEST_GEMMA4_MOE_OP_REGISTERED = True
+    from cactus.transpile.model_adapters import _ensure_gemma4_moe_custom_op_registered
+    _ensure_gemma4_moe_custom_op_registered()
 
 
 class _FakeLfm2MoeBlock(torch.nn.Module):

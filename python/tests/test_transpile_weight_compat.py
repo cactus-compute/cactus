@@ -259,6 +259,31 @@ def test_resolve_weight_binding_expands_language_model_backbone_aliases(tmp_path
     assert binding.path.endswith("layer_0_scalar.weights")
 
 
+def test_resolve_weight_binding_expands_lfm2_moe_runtime_expert_aliases(tmp_path: Path) -> None:
+    (tmp_path / "layer_2_moe_expert_0_w1.weights").write_bytes(b"")
+    (tmp_path / "weights_manifest.json").write_text(
+        json.dumps(
+            {
+                "weights": [
+                    {
+                        "source_name": "model.layers.2.feed_forward.experts.0.w1.weight",
+                        "output_name": "layer_2_moe_expert_0_w1.weights",
+                        "component": "language",
+                    }
+                ]
+            }
+        )
+    )
+
+    binding = resolve_weight_binding(
+        weights_dir=str(tmp_path),
+        source_name="module.backbone.layers.2.feed_forward.w1_weights.0",
+    )
+
+    assert binding is not None
+    assert binding.path.endswith("layer_2_moe_expert_0_w1.weights")
+
+
 def test_resolve_weight_binding_maps_module_backbone_to_model_manifest(tmp_path: Path) -> None:
     (tmp_path / "layer_0_q.weights").write_bytes(b"")
     (tmp_path / "weights_manifest.json").write_text(

@@ -162,7 +162,7 @@ def _serialize_json_compatible(value: Any) -> Any:
             "dtype": str(value.dtype),
             "shape": list(value.shape),
         }
-        if value.numel() == 1:
+        if value.numel() == 1 and not value.is_meta:
             payload["data"] = value.detach().cpu().reshape(-1)[0].item()
         return payload
     if isinstance(value, np.ndarray):
@@ -1010,6 +1010,105 @@ def _parse_dtype(name: str) -> torch.dtype:
     return mapping[normalized]
 
 
+def _to_meta_tensor(value: torch.Tensor) -> torch.Tensor:
+    if value.is_meta:
+        return value
+    return torch.empty_strided(
+        tuple(value.shape),
+        tuple(value.stride()),
+        dtype=value.dtype,
+        device="meta",
+        requires_grad=value.requires_grad,
+    )
+
+
+def _prepared_inputs_for_meta_capture(prepared: PreparedInputs) -> PreparedInputs:
+    return PreparedInputs(
+        names=prepared.names,
+        tensors=tuple(_to_meta_tensor(tensor) for tensor in prepared.tensors),
+        metadata=prepared.metadata,
+    )
+
+
+def _materialize_meta_rope_buffers(model: torch.nn.Module, *, dtype: torch.dtype) -> None:
+    def _compute_rope(
+        compute_default,
+        config: object,
+        *,
+        layer_type: str | None = None,
+        rope_init_fn=None,
+        rope_type: str | None = None,
+    ) -> torch.Tensor:
+        fn = rope_init_fn or compute_default
+        kwargs: dict[str, object] = {"device": torch.device("cpu")}
+        if layer_type is not None:
+            kwargs["layer_type"] = layer_type
+            if layer_type == "full_attention" and rope_type == "proportional":
+                kwargs["head_dim_key"] = "global_head_dim"
+        try:
+            materialized, _ = fn(config, **kwargs)
+        except TypeError:
+            materialized, _ = fn(config=config, **kwargs)
+        return materialized.to(dtype=dtype)
+
+    for module in model.modules():
+        compute_default = getattr(module, "compute_default_rope_parameters", None)
+        config = getattr(module, "config", None)
+        if not callable(compute_default) or config is None:
+            continue
+        buffers = getattr(module, "_buffers", None)
+        if not isinstance(buffers, dict):
+            continue
+        inv_freq = buffers.get("inv_freq")
+        if isinstance(inv_freq, torch.Tensor) and inv_freq.is_meta:
+            materialized = _compute_rope(compute_default, config)
+            buffers["inv_freq"] = materialized
+            original = buffers.get("original_inv_freq")
+            if isinstance(original, torch.Tensor) and original.is_meta:
+                buffers["original_inv_freq"] = materialized.clone()
+
+        rope_init_fns = getattr(module, "rope_init_fns", None)
+        rope_types = getattr(module, "rope_type", None)
+        layer_types = getattr(module, "layer_types", ())
+        if not isinstance(layer_types, (set, tuple, list)):
+            continue
+        for layer_type in layer_types:
+            if not isinstance(layer_type, str):
+                continue
+            key = f"{layer_type}_inv_freq"
+            inv_freq = buffers.get(key)
+            if not isinstance(inv_freq, torch.Tensor) or not inv_freq.is_meta:
+                continue
+            rope_init_fn = rope_init_fns.get(layer_type) if isinstance(rope_init_fns, dict) else None
+            rope_type = rope_types.get(layer_type) if isinstance(rope_types, dict) else None
+            materialized = _compute_rope(
+                compute_default,
+                config,
+                layer_type=layer_type,
+                rope_init_fn=rope_init_fn,
+                rope_type=rope_type if isinstance(rope_type, str) else None,
+            )
+            buffers[key] = materialized
+            original = buffers.get(f"{layer_type}_original_inv_freq")
+            if isinstance(original, torch.Tensor) and original.is_meta:
+                buffers[f"{layer_type}_original_inv_freq"] = materialized.clone()
+
+
+def _materialize_meta_scalar_buffers(model: torch.nn.Module, *, dtype: torch.dtype) -> None:
+    for module in model.modules():
+        buffers = getattr(module, "_buffers", None)
+        if not isinstance(buffers, dict):
+            continue
+        embed_scale = buffers.get("embed_scale")
+        scalar_embed_scale = getattr(module, "scalar_embed_scale", None)
+        if isinstance(embed_scale, torch.Tensor) and embed_scale.is_meta and scalar_embed_scale is not None:
+            buffers["embed_scale"] = torch.tensor(
+                float(scalar_embed_scale),
+                dtype=embed_scale.dtype if embed_scale.dtype.is_floating_point else dtype,
+                device="cpu",
+            )
+
+
 class TranspileWrapper(torch.nn.Module):
     def __init__(self, adapter_module: torch.nn.Module, *, weights_dir: str | None = None):
         super().__init__()
@@ -1046,6 +1145,8 @@ def _tie_lfm2_vl_lm_head_if_needed(model: torch.nn.Module) -> str | None:
     if not isinstance(lm_head, torch.nn.Linear) or not isinstance(embed_tokens, torch.nn.Embedding):
         return None
     if tuple(lm_head.weight.shape) != tuple(embed_tokens.weight.shape):
+        return None
+    if lm_head.weight.is_meta or embed_tokens.weight.is_meta:
         return None
     if lm_head.weight.data_ptr() == embed_tokens.weight.data_ptr():
         return None
@@ -2617,9 +2718,11 @@ def _prepare_qwen3_5_multimodal_inputs(
     )
 
 
-def _load_model_source(model_id: str, *, local_files_only: bool) -> str:
+def _load_model_source(model_id: str, *, local_files_only: bool, require_weights: bool = True) -> str:
     local_snapshot = _resolve_local_snapshot(model_id)
     if local_snapshot and _snapshot_has_model_weights(local_snapshot):
+        return local_snapshot
+    if local_snapshot and not require_weights:
         return local_snapshot
     if local_snapshot and local_files_only:
         raise RuntimeError(
@@ -2639,6 +2742,7 @@ def _load_transformers_bundle(
     token: str | None,
     trust_remote_code: bool,
     local_files_only: bool,
+    low_memory_load: bool,
 ):
     config = _load_config_json(model_id)
     config_model_type = str(config.get("model_type", "") or "").lower()
@@ -2662,6 +2766,7 @@ def _load_transformers_bundle(
 
     try:
         from transformers import AutoFeatureExtractor  # type: ignore
+        from transformers import AutoConfig  # type: ignore
         from transformers import AutoModel  # type: ignore
         from transformers import AutoModelForCTC  # type: ignore
         from transformers import AutoModelForCausalLM  # type: ignore
@@ -2673,7 +2778,11 @@ def _load_transformers_bundle(
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(f"transformers is not available: {exc}") from exc
 
-    model_source = _load_model_source(model_id, local_files_only=local_files_only)
+    model_source = _load_model_source(
+        model_id,
+        local_files_only=local_files_only,
+        require_weights=not low_memory_load,
+    )
     source_candidates = []
     for candidate in (model_source, model_id):
         if candidate not in source_candidates:
@@ -2684,6 +2793,37 @@ def _load_transformers_bundle(
     }
     if token:
         common_kwargs["token"] = token
+
+    hf_config = None
+    if low_memory_load:
+        if task == "tdt_transcription":
+            raise RuntimeError("--low-memory-load is not supported for TDT transcription models")
+        try:
+            hf_config = AutoConfig.from_pretrained(model_source, **common_kwargs)
+        except Exception as exc:
+            raise RuntimeError(
+                f"--low-memory-load requires loading the HF config without checkpoint weights: {exc}"
+            ) from exc
+
+    def _from_config(loader, *, trust_remote_code_override: bool | None = None):
+        if hf_config is None:
+            raise RuntimeError("internal error: low-memory config was not loaded")
+        with torch.device("meta"):
+            try:
+                model = loader.from_config(
+                    hf_config,
+                    trust_remote_code=(
+                        trust_remote_code
+                        if trust_remote_code_override is None
+                        else bool(trust_remote_code_override)
+                    ),
+                )
+            except TypeError:
+                model = loader.from_config(hf_config)
+        model.to(dtype=torch_dtype)
+        _materialize_meta_rope_buffers(model, dtype=torch_dtype)
+        _materialize_meta_scalar_buffers(model, dtype=torch_dtype)
+        return model.eval()
 
     if task == "tdt_transcription":
         model = load_tdt_local_model(model_source, torch_dtype=torch_dtype).eval()
@@ -2707,13 +2847,16 @@ def _load_transformers_bundle(
                 f"Could not load tokenizer for {model_id}:\n"
                 + "\n".join(tokenizer_errors)
             )
-        model = AutoModel.from_pretrained(
-            model_source,
-            dtype=torch_dtype,
-            device_map=None,
-            low_cpu_mem_usage=True,
-            **remote_kwargs,
-        ).eval()
+        if low_memory_load:
+            model = _from_config(AutoModel, trust_remote_code_override=True)
+        else:
+            model = AutoModel.from_pretrained(
+                model_source,
+                dtype=torch_dtype,
+                device_map=None,
+                low_cpu_mem_usage=True,
+                **remote_kwargs,
+            ).eval()
         return model_source, tokenizer, model, config
 
     if task == "causal_lm_logits":
@@ -2731,32 +2874,41 @@ def _load_transformers_bundle(
                 + "\n".join(tokenizer_errors)
             )
         if config_model_type in {"lfm2_vl", "qwen3_5", "qwen3_vl"}:
-            model = AutoModelForImageTextToText.from_pretrained(
-                model_source,
-                dtype=torch_dtype,
-                device_map=None,
-                low_cpu_mem_usage=True,
-                **common_kwargs,
-            ).eval()
+            if low_memory_load:
+                model = _from_config(AutoModelForImageTextToText)
+            else:
+                model = AutoModelForImageTextToText.from_pretrained(
+                    model_source,
+                    dtype=torch_dtype,
+                    device_map=None,
+                    low_cpu_mem_usage=True,
+                    **common_kwargs,
+                ).eval()
             tie_note = _tie_lfm2_vl_lm_head_if_needed(model)
             if tie_note:
                 print(f"note={tie_note}")
         elif config_model_type in {"qwen3_5", "qwen3_vl"} and isinstance(config.get("text_config"), dict):
-            model = AutoModelForImageTextToText.from_pretrained(
-                model_source,
-                dtype=torch_dtype,
-                device_map=None,
-                low_cpu_mem_usage=True,
-                **common_kwargs,
-            ).eval()
+            if low_memory_load:
+                model = _from_config(AutoModelForImageTextToText)
+            else:
+                model = AutoModelForImageTextToText.from_pretrained(
+                    model_source,
+                    dtype=torch_dtype,
+                    device_map=None,
+                    low_cpu_mem_usage=True,
+                    **common_kwargs,
+                ).eval()
         else:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_source,
-                dtype=torch_dtype,
-                device_map=None,
-                low_cpu_mem_usage=True,
-                **common_kwargs,
-            ).eval()
+            if low_memory_load:
+                model = _from_config(AutoModelForCausalLM)
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_source,
+                    dtype=torch_dtype,
+                    device_map=None,
+                    low_cpu_mem_usage=True,
+                    **common_kwargs,
+                ).eval()
         return model_source, tokenizer, model, config
     if task == "multimodal_causal_lm_logits":
         processor = None
@@ -2791,25 +2943,31 @@ def _load_transformers_bundle(
             )
 
         if config_model_type in {"lfm2_vl", "qwen3_5", "qwen3_vl"}:
-            model = AutoModelForImageTextToText.from_pretrained(
-                model_source,
-                dtype=torch_dtype,
-                device_map=None,
-                low_cpu_mem_usage=True,
-                **common_kwargs,
-            ).eval()
+            if low_memory_load:
+                model = _from_config(AutoModelForImageTextToText)
+            else:
+                model = AutoModelForImageTextToText.from_pretrained(
+                    model_source,
+                    dtype=torch_dtype,
+                    device_map=None,
+                    low_cpu_mem_usage=True,
+                    **common_kwargs,
+                ).eval()
             tie_note = _tie_lfm2_vl_lm_head_if_needed(model)
             if tie_note:
                 print(f"note={tie_note}")
         else:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_source,
-                dtype=torch_dtype,
-                device_map=None,
-                low_cpu_mem_usage=True,
-                **common_kwargs,
-            ).eval()
-        if config_model_type == "gemma4":
+            if low_memory_load:
+                model = _from_config(AutoModelForCausalLM)
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_source,
+                    dtype=torch_dtype,
+                    device_map=None,
+                    low_cpu_mem_usage=True,
+                    **common_kwargs,
+                ).eval()
+        if config_model_type == "gemma4" and not low_memory_load:
             repair_result = _repair_gemma4_checkpoint_weights(model, model_source)
             if repair_result.get("applied"):
                 missing = repair_result.get("missing_keys", [])
@@ -2853,13 +3011,16 @@ def _load_transformers_bundle(
     load_errors: list[str] = []
     for loader in model_loaders:
         try:
-            model = loader.from_pretrained(
-                model_source,
-                dtype=torch_dtype,
-                device_map=None,
-                low_cpu_mem_usage=True,
-                **common_kwargs,
-            ).eval()
+            if low_memory_load:
+                model = _from_config(loader)
+            else:
+                model = loader.from_pretrained(
+                    model_source,
+                    dtype=torch_dtype,
+                    device_map=None,
+                    low_cpu_mem_usage=True,
+                    **common_kwargs,
+                ).eval()
             return model_source, processor, model, config
         except Exception as exc:
             load_errors.append(f"{loader.__name__}: {exc}")
@@ -3097,6 +3258,15 @@ def main() -> int:
         help="Require the model/processor to already exist locally.",
     )
     parser.add_argument(
+        "--low-memory-load",
+        action="store_true",
+        help=(
+            "Instantiate the HF model on the meta device for graph capture instead of "
+            "loading checkpoint tensors into RAM. Requires converted CQ weights and "
+            "only supports bundle generation, not execution or NPU emission."
+        ),
+    )
+    parser.add_argument(
         "--weights-dir",
         default="",
         help="Converted Cactus CQ weights directory for mmap weight binding.",
@@ -3187,6 +3357,15 @@ def main() -> int:
             "\n"
             "For compiler-only debugging, pass --allow-unconverted-weights."
         )
+    if args.low_memory_load:
+        if validated_weights_dir is None:
+            raise RuntimeError("--low-memory-load requires --weights-dir with converted Cactus CQ weights")
+        if args.npu:
+            raise RuntimeError("--low-memory-load cannot emit NPU .mlpackage files because CoreML export needs real weights")
+        if not args.skip_execute:
+            print("note=low_memory_load_forces_skip_execute=true")
+            args.skip_execute = True
+        args.skip_reference_compare = True
 
     image_files = tuple(str(path) for path in args.image_file if str(path).strip())
     if args.task == "auto":
@@ -3214,6 +3393,7 @@ def main() -> int:
         token=args.token,
         trust_remote_code=args.trust_remote_code,
         local_files_only=args.local_files_only,
+        low_memory_load=bool(args.low_memory_load),
     )
     preprocessor_config = _load_optional_json(model_source, "preprocessor_config.json")
     if not preprocessor_config:
@@ -3301,7 +3481,7 @@ def main() -> int:
             weights_dir=weights_dir,
         )
         prime_static_features = getattr(canonical.module, "prime_static_multimodal_features", None)
-        if callable(prime_static_features):
+        if callable(prime_static_features) and not args.low_memory_load:
             prime_static_features(*prepared.tensors)
     elif task == "tdt_transcription":
         if not args.audio_file:
@@ -3356,6 +3536,13 @@ def main() -> int:
             task=task,
             input_names=prepared.names,
         )
+    defer_low_memory_meta_inputs = (
+        bool(args.low_memory_load)
+        and task == "multimodal_causal_lm_logits"
+        and config_model_type == "gemma4"
+    )
+    if args.low_memory_load and not defer_low_memory_meta_inputs:
+        prepared = _prepared_inputs_for_meta_capture(prepared)
     requested_components = None
     if args.components:
         requested_components = tuple(
@@ -3428,6 +3615,8 @@ def main() -> int:
 
     if canonical is None:
         raise RuntimeError(f"task={task} requires a component pipeline but none was selected")
+    if args.low_memory_load and defer_low_memory_meta_inputs:
+        prepared = _prepared_inputs_for_meta_capture(prepared)
     wrapper = TranspileWrapper(canonical.module, weights_dir=weights_dir).eval()
 
     print(f"model_id={args.model_id}")

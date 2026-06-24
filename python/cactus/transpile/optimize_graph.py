@@ -394,7 +394,10 @@ def precompute_rope_tables(graph: IRGraph) -> bool:
             continue
         inv_freq_value_id, position_value_id = match
 
-        inv_freq = graph.constants[inv_freq_value_id].detach().cpu().to(torch.float64).reshape(-1)
+        inv_freq_constant = graph.constants[inv_freq_value_id]
+        if isinstance(inv_freq_constant, torch.Tensor) and inv_freq_constant.is_meta:
+            continue
+        inv_freq = inv_freq_constant.detach().cpu().to(torch.float64).reshape(-1)
         head_dim = int(inv_freq.numel()) * 2
         max_seq = _rope_table_max_seq(graph)
         positions = torch.arange(max_seq, dtype=torch.float64).reshape(max_seq, 1)
