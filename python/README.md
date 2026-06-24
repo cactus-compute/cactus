@@ -20,7 +20,7 @@ cactus build --python
 <!-- --8<-- [end:install] -->
 
 ```bash
-# Download pre-built bundles (defaults to the generic CPU variant)
+# Download pre-built bundles (defaults to --platform auto; use --platform cpu for the generic build)
 cactus download LiquidAI/LFM2-VL-450M
 cactus download openai/whisper-small --platform apple   # CoreML/NPU variant
 
@@ -32,8 +32,7 @@ cactus auth
 
 <!-- --8<-- [start:example] -->
 ```python
-from cactus import ensure_model
-from cactus import cactus_init, cactus_complete, cactus_destroy
+from cactus import ensure_model, cactus_init, cactus_complete, cactus_destroy
 import json
 
 # Downloads the pre-built bundle from HuggingFace if not already present
@@ -63,7 +62,7 @@ bundle = ensure_model("openai/whisper-tiny")
 
 # Or resolve the expected on-disk location explicitly
 bundle_dir = get_bundle_dir("openai/whisper-tiny", bits=4, platform=None)
-# -> Path("transpiled/whisper-tiny-cq4")  (or `-cq4-apple` with platform="apple")
+# -> Path("weights/whisper-tiny-cq4")  (or `-cq4-apple` with platform="apple")
 ```
 
 ### Init / Lifecycle
@@ -78,14 +77,14 @@ cactus_get_last_error() -> str | None
 
 ### Completion
 
-Returns a `dict` with `success`, `error`, `cloud_handoff`, `response`, optional `thinking` (only present when the model emits chain-of-thought content, placed before `function_calls`), `function_calls`, `segments` (always `[]` for completion — populated only in transcription responses), `confidence`, timing stats (`time_to_first_token_ms`, `total_time_ms`, `prefill_tps`, `decode_tps`, `ram_usage_mb`), and token counts (`prefill_tokens`, `decode_tokens`, `total_tokens`).
+Returns a `dict` with `success`, `error`, `cloud_handoff`, `response`, optional `thinking` (only present when the model emits chain-of-thought content, placed before `function_calls`), `function_calls`, `segments` (always `[]` for completion — populated only for Whisper transcription with the `timestamps` option), `confidence`, timing stats (`time_to_first_token_ms`, `total_time_ms`, `prefill_tps`, `decode_tps`, `ram_usage_mb`), and token counts (`prefill_tokens`, `decode_tokens`, `total_tokens`).
 
 ```python
 result = cactus_complete(
     model: int,
-    messages_json: str,              # JSON array of {role, content}
-    options_json: str | None,        # optional inference options
-    tools_json: str | None,          # optional tool definitions
+    messages: list | str,            # list of {role, content} dicts or JSON string
+    options: dict | str | None,        # optional inference options
+    tools: list | str | None,        # optional tool definitions
     callback: Callable[[str, int], None] | None,  # streaming token callback
     pcm_data: list[int] | None = None              # optional raw audio bytes
 ) -> dict
@@ -96,7 +95,7 @@ result = cactus_complete(
 options = json.dumps({"max_tokens": 256, "temperature": 0.7})
 def on_token(token, token_id): print(token, end="", flush=True)
 
-result = cactus_complete(model, messages_json, options, None, on_token)
+result = cactus_complete(model, messages, options, None, on_token)
 if result["cloud_handoff"]:
     # response already contains cloud result
     pass
@@ -112,6 +111,7 @@ if result["cloud_handoff"]:
     "function_calls": [],
     "segments": [],
     "confidence": 0.92,
+    "confidence_threshold": 0.7,
     "time_to_first_token_ms": 45.2,
     "total_time_ms": 163.7,
     "prefill_tps": 619.5,
@@ -130,11 +130,11 @@ Pre-processes input text and populates the KV cache without generating output to
 ```python
 cactus_prefill(
     model: int,
-    messages_json: str,              # JSON array of {role, content}
-    options_json: str | None,        # optional inference options
-    tools_json: str | None,          # optional tool definitions
+    messages: list | str,            # list of {role, content} dicts or JSON string
+    options: dict | str | None,        # optional inference options
+    tools: list | str | None,        # optional tool definitions
     pcm_data: list[int] | None = None              # optional raw audio bytes
-) -> None
+) -> dict
 ```
 
 ```python
@@ -187,20 +187,20 @@ result = cactus_complete(model, completion_messages, None, tools, None)
 
 ### Transcription
 
-Returns a `dict` with the `response` field (transcribed text), the `segments` array (timestamped segments as `{"start": <sec>, "end": <sec>, "text": "<str>"}` — Whisper: phrase-level from timestamp tokens; Parakeet TDT: word-level from frame timing; Parakeet CTC and Moonshine: one segment per transcription window (consecutive VAD speech regions up to 30s)), and other metadata.
+Returns a `dict` with the `response` field (transcribed text) and a `segments` array of `{start, end, text}` objects. `segments` is populated only for Whisper models when the `timestamps` option is set (`{"timestamps": True}`); it is empty otherwise, including for all Parakeet transcription.
 
 ```python
 result = cactus_transcribe(
     model: int,
     audio_path: str | None,
     prompt: str | None,
-    options_json: str | None,
+    options: dict | str | None,
     callback: Callable[[str, int], None] | None,
     pcm_data: list[int] | bytes | None
 ) -> dict
 ```
 
-**Custom vocabulary** biases the decoder toward domain-specific words (supported for Whisper and Moonshine models). Pass `custom_vocabulary` and `vocabulary_boost` in `options_json`:
+**Custom vocabulary** biases the decoder toward domain-specific words (supported for Whisper and Moonshine models). Pass `custom_vocabulary` and `vocabulary_boost` in `options`:
 
 ```python
 options = json.dumps({
@@ -211,10 +211,31 @@ result = cactus_transcribe(model, "medical_notes.wav", None, options, None, None
 ```
 
 ```python
-result = cactus_transcribe(model, "/path/to/audio.wav", None, None, None, None)
+result = cactus_transcribe(model, "/path/to/audio.wav", None, {"timestamps": True}, None, None)
 print(result["response"])
 for seg in result["segments"]:
     print(f"[{seg['start']:.3f}s - {seg['end']:.3f}s] {seg['text']}")
+```
+
+### Streaming transcription
+
+Transcribe continuously while audio is still being captured (Whisper and Parakeet TDT). Open a session, push 16 kHz mono 16-bit PCM chunks, and read text back as it stabilizes: `confirmed` words are final (append them to your transcript), `pending` is the volatile tail (replace it each call, for live display only).
+
+```python
+stream = cactus_stream_transcribe_start(model: int, options: dict | str | None) -> int
+result = cactus_stream_transcribe_process(stream: int, pcm_data: bytes) -> dict  # {"confirmed": str, "pending": str, plus per-call timing stats}
+result = cactus_stream_transcribe_stop(stream: int) -> dict                      # {"confirmed": str, "pending": ""}; destroys the session
+```
+
+`options` is forwarded to `cactus_transcribe` for **Whisper only** (e.g. `language`, `max_tokens`); the Parakeet TDT path ignores it. Chunking is handled internally.
+
+```python
+stream = cactus_stream_transcribe_start(model, {"language": "en"})
+transcript = ""
+for chunk in pcm_chunks:                       # each chunk: 16 kHz mono 16-bit PCM bytes
+    out = cactus_stream_transcribe_process(stream, chunk)
+    transcript += out["confirmed"]             # show out["pending"] separately as a live preview
+transcript += cactus_stream_transcribe_stop(stream)["confirmed"]
 ```
 
 ### Embeddings
@@ -256,7 +277,7 @@ cactus_index_add(index: int, ids: list[int], documents: list[str],
                  metadatas: list[str] | None, embeddings: list[list[float]])
 cactus_index_delete(index: int, ids: list[int])
 result = cactus_index_get(index: int, ids: list[int]) -> dict
-result = cactus_index_query(index: int, embedding: list[float], options_json: str | None) -> dict
+result = cactus_index_query(index: int, embedding: list[float], options: dict | str | None) -> dict
 cactus_index_compact(index: int)
 cactus_index_destroy(index: int)
 ```
@@ -279,7 +300,7 @@ cactus_telemetry_flush()
 cactus_telemetry_shutdown()
 ```
 
-Functions that return a value raise `RuntimeError` on failure. `cactus_prefill`, `cactus_index_add`, `cactus_index_delete`, and `cactus_index_compact` also raise `RuntimeError` on failure despite not returning a value. Truly void functions that never raise: `cactus_destroy`, `cactus_reset`, `cactus_stop`, `cactus_index_destroy`, logging and telemetry functions.
+Functions that return a value raise `RuntimeError` on failure. `cactus_index_add`, `cactus_index_delete`, and `cactus_index_compact` also raise `RuntimeError` on failure despite not returning a value. Truly void functions that never raise: `cactus_destroy`, `cactus_reset`, `cactus_stop`, `cactus_index_destroy`, logging and telemetry functions.
 
 ## Vision (VLM)
 
@@ -335,7 +356,7 @@ g.set_input(a, np.array([[2, 4], [6, 8]], dtype=np.float16))
 g.set_input(b, np.array([[1, 2], [3, 4]], dtype=np.float16))
 g.execute()
 
-print(y.numpy())  # [9. 36. 81. 144.]
+print(y.numpy())  # [9. 144. 729. 2304.]
 ```
 
 Supported ops: `+`, `-`, `*`, `/`, `abs`, `pow`, `view`, `flatten`, `concat`, `cat`, `relu`, `sigmoid`, `tanh`, `gelu`, `softmax`.

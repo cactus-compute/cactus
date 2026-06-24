@@ -307,9 +307,132 @@ static bool check_debug_env() {
            (v3 && v3[0]) || (v4 && v4[0]) || (v5 && v5[0]) || (v6 && v6[0]);
 }
 
+namespace {
+std::vector<size_t> infer_output_shape(const GraphNode& node, const nodes_vector& nodes, const node_index_map_t& idx) {
+    auto in = [&](size_t i) -> const std::vector<size_t>& { return get_input(node, i, nodes, idx).shape; };
+    switch (node.op_type) {
+        case OpType::MATMUL: {
+            const auto& lhs = in(0);
+            const auto& rhs = in(1);
+            std::vector<size_t> out = lhs;
+            out.back() = node.params.pretransposed_rhs ? rhs[rhs.size() - 2] : rhs[rhs.size() - 1];
+            return out;
+        }
+        case OpType::ADD: case OpType::ADD_CLIPPED: case OpType::SUBTRACT:
+        case OpType::MULTIPLY: case OpType::DIVIDE: case OpType::NOT_EQUAL:
+            return BroadcastInfo::compute(in(0), in(1)).output_shape;
+        case OpType::ATTENTION: case OpType::ATTENTION_CACHED: case OpType::ATTENTION_INT8_HYBRID: {
+            std::vector<size_t> out = in(0);
+            if (node.params.v_head_dim > 0) out.back() = node.params.v_head_dim;
+            return out;
+        }
+        case OpType::TRANSPOSE: {
+            const auto& x = in(0);
+            const auto& perm = node.params.permutation;
+            if (perm.size() != x.size()) return x;
+            std::vector<size_t> out(x.size());
+            for (size_t i = 0; i < perm.size(); ++i) out[i] = x[perm[i]];
+            return out;
+        }
+        case OpType::RESHAPE: case OpType::VIEW: case OpType::FLATTEN: {
+            const auto& x = in(0);
+            std::vector<size_t> out = node.params.new_shape;
+            if (out.empty()) return x;
+            size_t in_total = 1;
+            for (size_t d : x) in_total *= d;
+            size_t rest = 1;
+            for (size_t i = 1; i < out.size(); ++i) rest *= out[i];
+            if (rest > 0 && in_total % rest == 0) out[0] = in_total / rest;
+            return out;
+        }
+        case OpType::CONCAT: case OpType::CAT: {
+            std::vector<size_t> out = in(0);
+            size_t axis = node.params.axis < 0 ? out.size() + static_cast<size_t>(node.params.axis)
+                                               : static_cast<size_t>(node.params.axis);
+            size_t sum = 0;
+            for (size_t i = 0; i < node.input_ids.size(); ++i) sum += in(i)[axis];
+            out[axis] = sum;
+            return out;
+        }
+        case OpType::SLICE: {
+            std::vector<size_t> out = in(0);
+            size_t axis = node.params.axis < 0 ? out.size() + static_cast<size_t>(node.params.axis)
+                                               : static_cast<size_t>(node.params.axis);
+            out[axis] = node.params.slice_length;
+            return out;
+        }
+        default: {
+            std::vector<size_t> out = node.output_buffer.shape;
+            if (out.empty()) return in(0);
+            for (size_t i = 0; i < node.input_ids.size(); ++i) {
+                const auto& inp = get_input(node, i, nodes, idx);
+                if (inp.has_dynamic_dims() && !inp.shape.empty()) {
+                    out[0] = inp.shape[0];
+                    return out;
+                }
+            }
+            return out;
+        }
+    }
+}
+
+bool skip_shape_infer(OpType op) {
+    switch (op) {
+        case OpType::KV_CACHE_STATE: case OpType::KV_CACHE_APPEND:
+        case OpType::CONV_CACHE_STATE: case OpType::CONV_CACHE_APPEND: case OpType::CONV_CACHE_INITIALIZE:
+        case OpType::RECURRENT_CACHE_STATE: case OpType::RECURRENT_CACHE_WRITE: case OpType::PERSISTENT:
+            return true;
+        default:
+            return false;
+    }
+}
+}
+
+void CactusGraph::set_runtime_input_shape(size_t node_id, const std::vector<size_t>& shape) {
+    GraphNode& node = *nodes_[node_index_map_.at(node_id)];
+    node.output_buffer.set_shape(shape);
+    node.output_buffer.dynamic_dims.assign(shape.size(), 1);
+    node.output_buffer.data.reset();
+    has_dynamic_shapes_ = true;
+    runtime_shapes_dirty_ = true;
+}
+
+void CactusGraph::set_input_dynamic_dims(size_t node_id, const std::vector<uint8_t>& dynamic_dims) {
+    GraphNode& node = *nodes_[node_index_map_.at(node_id)];
+    node.output_buffer.dynamic_dims = dynamic_dims;
+    if (!dynamic_dims.empty()) has_dynamic_shapes_ = true;
+}
+
+void CactusGraph::infer_shapes() {
+    if (!has_dynamic_shapes_ || !runtime_shapes_dirty_) return;
+    for (auto& np : nodes_) {
+        GraphNode& node = *np;
+        if (node.op_type == OpType::INPUT || persistent_node_ids_.count(node.id) || skip_shape_infer(node.op_type)) continue;
+        bool dyn = false;
+        for (size_t i = 0; i < node.input_ids.size() && !dyn; ++i) {
+            dyn = get_input(node, i, nodes_, node_index_map_).has_dynamic_dims();
+        }
+        if (!dyn) continue;
+        node.output_buffer.set_shape(infer_output_shape(node, nodes_, node_index_map_));
+        switch (node.op_type) {
+            case OpType::ADD: case OpType::ADD_CLIPPED: case OpType::SUBTRACT:
+            case OpType::MULTIPLY: case OpType::DIVIDE: case OpType::NOT_EQUAL:
+                node.params.broadcast_info = BroadcastInfo::compute(
+                    get_input(node, 0, nodes_, node_index_map_).shape,
+                    get_input(node, 1, nodes_, node_index_map_).shape);
+                break;
+            default:
+                break;
+        }
+        node.output_buffer.dynamic_dims.assign(node.output_buffer.shape.size(), 1);
+    }
+    runtime_shapes_dirty_ = false;
+}
+
 void CactusGraph::execute(const std::string& profile_file) {
     BufferPool& pool = buffer_pool_;
     const size_t n = nodes_.size();
+    infer_shapes();
 
     auto get_env_int = [](const char* name, int fallback) -> int {
         const char* val = std::getenv(name);
@@ -436,7 +559,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                 continue;
             }
             if (preallocates_output(*node)) {
-                node->output_buffer.allocate_from_pool(pool);
+                node->output_buffer.resize_from_pool(pool);
             }
             dispatch_node(*node, nodes_, node_index_map_);
             trace_nonfinite(i, *node);

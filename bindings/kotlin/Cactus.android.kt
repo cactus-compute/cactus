@@ -45,6 +45,24 @@ actual fun cactusTranscribe(handle: Long, audioPath: String?, prompt: String, op
     return buffer.decodeToString().trimEnd('\u0000')
 }
 
+actual fun cactusStreamTranscribeStart(handle: Long, optionsJson: String?): Long {
+    val stream = CactusJNI.nativeStreamTranscribeStart(handle, optionsJson)
+    if (stream == 0L) throw RuntimeException(CactusJNI.nativeGetLastError().ifEmpty { "Failed to start streaming transcription" })
+    return stream
+}
+
+actual fun cactusStreamTranscribeProcess(stream: Long, pcmData: ByteArray?): String {
+    val buffer = ByteArray(65536)
+    check(CactusJNI.nativeStreamTranscribeProcess(stream, pcmData, buffer))
+    return buffer.decodeToString().trimEnd('\u0000')
+}
+
+actual fun cactusStreamTranscribeStop(stream: Long): String {
+    val buffer = ByteArray(65536)
+    check(CactusJNI.nativeStreamTranscribeStop(stream, buffer))
+    return buffer.decodeToString().trimEnd('\u0000')
+}
+
 actual fun cactusEmbed(handle: Long, text: String, normalize: Boolean): FloatArray {
     val buffer = FloatArray(4096)
     val outDim = LongArray(1)

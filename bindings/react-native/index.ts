@@ -35,6 +35,12 @@ export interface CactusNativeModule {
     optionsJson: string | null,
     pcmDataBase64: string | null,
   ): Promise<string>;
+  streamTranscribeStart(handle: string, optionsJson: string | null): Promise<string>;
+  streamTranscribeProcess(
+    streamHandle: string,
+    pcmDataBase64: string | null,
+  ): Promise<string>;
+  streamTranscribeStop(streamHandle: string): Promise<string>;
   embed(handle: string, text: string, normalize: boolean): Promise<number[]>;
   imageEmbed(handle: string, imagePath: string): Promise<number[]>;
   audioEmbed(handle: string, audioPath: string): Promise<number[]>;

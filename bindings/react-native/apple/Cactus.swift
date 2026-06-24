@@ -224,6 +224,65 @@ final class Cactus: RCTEventEmitter {
         resolve(stringFromBuffer(buffer))
     }
 
+    @objc(streamTranscribeStart:optionsJson:resolver:rejecter:)
+    func streamTranscribeStart(
+        _ handle: String,
+        optionsJson: String?,
+        resolver resolve: RCTPromiseResolveBlock,
+        rejecter reject: RCTPromiseRejectBlock
+    ) {
+        guard let nativeHandle = decodeHandle(handle) else {
+            self.reject(reject, "Invalid native handle")
+            return
+        }
+        guard let stream = cactus_stream_transcribe_start(nativeHandle, optionsJson) else {
+            self.reject(reject, "Failed to start streaming transcription")
+            return
+        }
+        resolve(encodeHandle(stream))
+    }
+
+    @objc(streamTranscribeProcess:pcmDataBase64:resolver:rejecter:)
+    func streamTranscribeProcess(
+        _ streamHandle: String,
+        pcmDataBase64: String?,
+        resolver resolve: RCTPromiseResolveBlock,
+        rejecter reject: RCTPromiseRejectBlock
+    ) {
+        guard let stream = decodeHandle(streamHandle) else {
+            self.reject(reject, "Invalid stream handle")
+            return
+        }
+        var buffer = [CChar](repeating: 0, count: defaultBufferSize)
+        let rc = decodeBase64(pcmDataBase64)?.withUnsafeBytes { rawBuffer in
+            cactus_stream_transcribe_process(stream, rawBuffer.bindMemory(to: UInt8.self).baseAddress, rawBuffer.count, &buffer, buffer.count)
+        } ?? cactus_stream_transcribe_process(stream, nil, 0, &buffer, buffer.count)
+        guard rc >= 0 else {
+            self.reject(reject, "Stream transcription failed")
+            return
+        }
+        resolve(stringFromBuffer(buffer))
+    }
+
+    @objc(streamTranscribeStop:resolver:rejecter:)
+    func streamTranscribeStop(
+        _ streamHandle: String,
+        resolver resolve: RCTPromiseResolveBlock,
+        rejecter reject: RCTPromiseRejectBlock
+    ) {
+        guard let stream = decodeHandle(streamHandle) else {
+            self.reject(reject, "Invalid stream handle")
+            return
+        }
+        var buffer = [CChar](repeating: 0, count: defaultBufferSize)
+        let rc = cactus_stream_transcribe_stop(stream, &buffer, buffer.count)
+        guard rc >= 0 else {
+            self.reject(reject, "Stream transcription stop failed")
+            return
+        }
+        resolve(stringFromBuffer(buffer))
+    }
+
     @objc(embed:text:normalize:resolver:rejecter:)
     func embed(_ handle: String, text: String, normalize: Bool, resolver resolve: RCTPromiseResolveBlock, rejecter reject: RCTPromiseRejectBlock) {
         guard let nativeHandle = decodeHandle(handle) else {

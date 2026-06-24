@@ -424,6 +424,35 @@ bool test_save_load_preserves_recurrent_cache_persistence() {
     }
 }
 
+bool test_save_load_preserves_kv_cache_num_slots() {
+    try {
+        const std::string filename = "test_kv_slots_save_load.cg";
+
+        CactusGraph graph;
+        size_t cache = graph.kv_cache_state(128, 4, 64, 0, 4, 8);  // num_slots = 8
+        (void)cache;
+        graph.save(filename);
+
+        CactusGraph loaded = CactusGraph::load(filename);
+        size_t loaded_cache_id = 0;
+        bool found = false;
+        for (size_t i = 0; i < loaded.get_node_count(); ++i) {
+            const auto& node = loaded.nodes_[i];
+            if (node->op_type == OpType::KV_CACHE_STATE) {
+                loaded_cache_id = node->id;
+                found = true;
+                break;
+            }
+        }
+        std::remove(filename.c_str());
+        if (!found) return false;
+        return loaded.get_node_cache_num_slots(loaded_cache_id) == 8;
+    } catch (const std::exception& e) {
+        std::cout << "[kv_slots_save_load] exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 bool run_benchmarks() {
     const int ITERS = 100;
     const std::string temp_file = "bench_io_50nodes.cg";
@@ -486,6 +515,8 @@ int main() {
     runner.run_test("Graph Save For Inspection", test_graph_save_for_inspection());
     runner.run_test("Save/Load Preserves Recurrent Cache Persistence",
                     test_save_load_preserves_recurrent_cache_persistence());
+    runner.run_test("Save/Load Preserves KV Cache Num Slots",
+                    test_save_load_preserves_kv_cache_num_slots());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

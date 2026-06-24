@@ -163,7 +163,8 @@ routed to the cloud. The response JSON indicates whether handoff occurred:
     "success": true,
     "cloud_handoff": true,
     "response": "Cloud-provided answer.",
-    "confidence": 0.18
+    "confidence": 0.18,
+    "confidence_threshold": 0.7
 }
 ```
 
@@ -171,9 +172,9 @@ In Python:
 
 ```python
 import json
-from cactus import cactus_init, cactus_complete
+from cactus import get_bundle_dir, cactus_init, cactus_complete
 
-model = cactus_init("weights/gemma-4-E2B-it", None, False)
+model = cactus_init(str(get_bundle_dir("google/gemma-4-E2B-it")), None, False)
 options = json.dumps({
     "confidence_threshold": 0.7,
     "auto_handoff": True

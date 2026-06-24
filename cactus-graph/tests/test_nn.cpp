@@ -559,6 +559,66 @@ bool test_layernorm() {
     return true;
 }
 
+static void apply_activation_reference(Activation act, const __fp16* in, __fp16* out, size_t n) {
+    switch (act) {
+        case Activation::GELU:     cactus_gelu_f16(in, out, n); break;
+        case Activation::GELU_ERF: cactus_gelu_f16_erf(in, out, n); break;
+        case Activation::RELU:     cactus_relu_f16(in, out, n); break;
+        case Activation::SIGMOID:  cactus_sigmoid_f16(in, out, n); break;
+        case Activation::TANH:     cactus_tanh_f16(in, out, n); break;
+        case Activation::SILU:     cactus_silu_f16(in, out, n); break;
+    }
+}
+
+// Verifies the MoE layer dispatches to the requested activation rather than
+// silently falling back to SILU. With identity expert weights and a single
+// token routed to a single expert at probability 1, the layer reduces to
+// out = activation(hidden), so each activation must match its standalone kernel.
+bool test_moe_activations() {
+    const size_t H = 4;
+    std::vector<__fp16> hidden = {(__fp16)-2.0f, (__fp16)-0.5f, (__fp16)0.5f, (__fp16)2.0f};
+
+    std::vector<__fp16> identity(H * H, (__fp16)0.0f);
+    for (size_t i = 0; i < H; ++i) identity[i * H + i] = (__fp16)1.0f;
+
+    std::vector<__fp16> routing = {(__fp16)1.0f};
+    std::vector<float> topk = {0.0f};
+
+    const std::vector<Activation> activations = {
+        Activation::SILU, Activation::GELU, Activation::GELU_ERF,
+        Activation::RELU, Activation::SIGMOID, Activation::TANH,
+    };
+
+    for (Activation act : activations) {
+        CactusGraph g;
+        size_t hidden_id = g.input({1, H}, Precision::FP16);
+        size_t routing_id = g.input({1, 1}, Precision::FP16);
+        size_t topk_id = g.input({1, 1}, Precision::FP32);
+        size_t w1_id = g.input({H, H}, Precision::FP16);
+        size_t w2_id = g.input({H, H}, Precision::FP16);
+
+        size_t out = g.moe_layer(hidden_id, routing_id, topk_id,
+                                 {w1_id}, {w2_id},
+                                 1, 1, false, 1e-6f, 1.0f, act);
+
+        g.set_input(hidden_id, hidden.data(), Precision::FP16);
+        g.set_input(routing_id, routing.data(), Precision::FP16);
+        g.set_input(topk_id, topk.data(), Precision::FP32);
+        g.set_input(w1_id, identity.data(), Precision::FP16);
+        g.set_input(w2_id, identity.data(), Precision::FP16);
+        g.execute();
+
+        std::vector<__fp16> expected(H);
+        apply_activation_reference(act, hidden.data(), expected.data(), H);
+
+        __fp16* result = static_cast<__fp16*>(g.get_output(out));
+        bool ok = TestUtils::compare_arrays(result, expected.data(), H, 0.02f);
+        g.hard_reset();
+        if (!ok) return false;
+    }
+    return true;
+}
+
 bool run_benchmarks() {
     auto bench = [](const char* label, auto setup, auto run) {
         setup();
@@ -696,6 +756,7 @@ int main() {
     runner.run_test("Min/Max Operations", test_min_max_operations());
     runner.run_test("STFT Complex", test_stft());
     runner.run_test("LayerNorm", test_layernorm());
+    runner.run_test("MoE Activations", test_moe_activations());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

@@ -14,6 +14,9 @@ object CactusJNI {
     @JvmStatic external fun nativeTokenize(handle: Long, text: String, tokenBuffer: IntArray, outTokenLen: LongArray): Int
     @JvmStatic external fun nativeScoreWindow(handle: Long, tokens: IntArray, start: Long, end: Long, context: Long, responseBuffer: ByteArray): Int
     @JvmStatic external fun nativeTranscribe(handle: Long, audioPath: String?, prompt: String, responseBuffer: ByteArray, optionsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): Int
+    @JvmStatic external fun nativeStreamTranscribeStart(handle: Long, optionsJson: String?): Long
+    @JvmStatic external fun nativeStreamTranscribeProcess(stream: Long, pcmData: ByteArray?, responseBuffer: ByteArray): Int
+    @JvmStatic external fun nativeStreamTranscribeStop(stream: Long, responseBuffer: ByteArray): Int
     @JvmStatic external fun nativeEmbed(handle: Long, text: String, embeddingsBuffer: FloatArray, outEmbeddingDim: LongArray, normalize: Boolean): Int
     @JvmStatic external fun nativeImageEmbed(handle: Long, imagePath: String, embeddingsBuffer: FloatArray, outEmbeddingDim: LongArray): Int
     @JvmStatic external fun nativeAudioEmbed(handle: Long, audioPath: String, embeddingsBuffer: FloatArray, outEmbeddingDim: LongArray): Int

@@ -158,9 +158,9 @@ cactus download nvidia/parakeet-ctc-1.1b
 For integrating Parakeet into your own applications, use the Python FFI bindings directly:
 
 ```python
-from cactus import cactus_init, cactus_transcribe, cactus_destroy
+from cactus import get_bundle_dir, cactus_init, cactus_transcribe, cactus_destroy
 
-model = cactus_init("weights/parakeet-ctc-1.1b", None, False)
+model = cactus_init(str(get_bundle_dir("nvidia/parakeet-ctc-1.1b")), None, False)
 
 result = cactus_transcribe(model, "/path/to/audio.wav")
 
@@ -206,17 +206,19 @@ use std::ffi::CString;
 use std::os::raw::c_char;
 use std::ptr;
 
+mod cactus;
+
 fn main() {
     let model_path = CString::new("weights/parakeet-ctc-1.1b").unwrap();
     let audio_path = CString::new("audio.wav").unwrap();
 
     let model = unsafe {
-        cactus_sys::cactus_init(model_path.as_ptr(), ptr::null(), false)
+        cactus::cactus_init(model_path.as_ptr(), ptr::null(), false)
     };
 
     let mut buf = vec![0u8; 16384];
     let rc = unsafe {
-        cactus_sys::cactus_transcribe(
+        cactus::cactus_transcribe(
             model,
             audio_path.as_ptr(),
             ptr::null(),
@@ -232,7 +234,7 @@ fn main() {
         println!("Transcript: {}", response);
     }
 
-    unsafe { cactus_sys::cactus_destroy(model) };
+    unsafe { cactus::cactus_destroy(model) };
 }
 ```
 
@@ -241,13 +243,15 @@ fn main() {
 The Swift binding exposes top-level functions that map directly to the C FFI:
 
 ```swift
-import Foundation
+import cactus
 
-let model = try cactusInit("weights/parakeet-ctc-1.1b", nil, false)
-let resultJson = try cactusTranscribe(model, "/path/to/audio.wav", nil, nil, nil, nil)
+let model = cactus_init("weights/parakeet-ctc-1.1b", nil, false)
+var buf = [CChar](repeating: 0, count: 65536)
+cactus_transcribe(model, "/path/to/audio.wav", nil, &buf, buf.count, nil, nil, nil, nil, 0)
+let resultJson = String(cString: buf)
 print(resultJson)
 
-cactusDestroy(model)
+cactus_destroy(model)
 ```
 
 ### 8. Use the [Kotlin Binding](/bindings/kotlin/)
@@ -258,7 +262,7 @@ The Kotlin binding exposes top-level functions that map directly to the C FFI:
 import com.cactus.*
 
 val model = cactusInit("weights/parakeet-ctc-1.1b", null, false)
-val resultJson = cactusTranscribe(model, "/path/to/audio.wav", null, null, null, null)
+val resultJson = cactusTranscribe(model, "/path/to/audio.wav", "", null, null, null)
 println(resultJson)
 
 cactusDestroy(model)

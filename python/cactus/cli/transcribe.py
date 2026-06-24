@@ -1,51 +1,31 @@
-import os
-import subprocess
 from pathlib import Path
 
-from .common import apply_cloud_api_key_env, print_color, resolve_binary, RED, GREEN
+from .common import apply_runtime_env, launch_binary, print_color, RED, GREEN
 
 
 def cmd_transcribe(args):
-    from .model import ensure_bundle, resolve_bundle_dir, TranspileOptions
+    from .model import prepare_bundle, TranspileOptions
 
-    audio_path = Path(args.audio_file).expanduser()
-    if not audio_path.is_file():
-        print_color(RED, f"Audio file not found: {audio_path}")
-        return 1
-    args.audio_file = str(audio_path)
-
-    if args.no_cloud_tele:
-        os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
-
-    if args.force_handoff:
-        os.environ["CACTUS_FORCE_HANDOFF"] = "1"
-    else:
-        os.environ.pop("CACTUS_FORCE_HANDOFF", None)
-
-    apply_cloud_api_key_env()
-
-    bundle_dir = resolve_bundle_dir(args.model_id)
-    if bundle_dir is None:
-        try:
-            bundle_dir = ensure_bundle(
-                args.model_id,
-                token=args.token,
-                reconvert=args.reconvert,
-                transpile=TranspileOptions(audio_file=args.audio_file),
-            )
-        except RuntimeError as e:
-            print_color(RED, f"Model setup failed: {e}")
+    if args.audio_file:
+        audio_path = Path(args.audio_file).expanduser()
+        if not audio_path.is_file():
+            print_color(RED, f"Audio file not found: {audio_path}")
             return 1
+        args.audio_file = str(audio_path)
 
-    binary = resolve_binary("transcribe")
-    if binary is None:
+    apply_runtime_env(args)
+
+    bundle_dir = prepare_bundle(args, transpile=TranspileOptions(audio_file=args.audio_file))
+    if bundle_dir is None:
         return 1
 
-    cmd = [str(binary), str(bundle_dir), args.audio_file]
+    cmd = [str(bundle_dir)]
+    if args.audio_file:
+        cmd.append(args.audio_file)
     if args.language:
         cmd.extend(["--language", args.language])
 
     print_color(GREEN, f"Starting Cactus transcription with model: {args.model_id}")
     print()
 
-    return subprocess.run(cmd).returncode
+    return launch_binary("transcribe", *cmd)

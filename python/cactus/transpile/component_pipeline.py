@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import copy
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from dataclasses import field
 import re
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -28,8 +29,11 @@ class ComponentModuleSpec:
     output_keys: tuple[str, ...]
     graph_meta: dict[str, object] = field(default_factory=dict)
     metadata: dict[str, object] = field(default_factory=dict)
+    dynamic_batch_axis: int | None = None
     npu_module: torch.nn.Module | None = None
     npu_runtime_input_count: int = 1
+    npu_reparam: Callable[[torch.nn.Module], AbstractContextManager] | None = None
+    npu_example_inputs: tuple[torch.Tensor, ...] | None = None
 
 
 @dataclass
@@ -104,6 +108,15 @@ def capture_component_spec(
     lowered_ir = copy.deepcopy(optimized_ir_graph)
     if precompute_rope_tables(lowered_ir):
         canonicalize_exported_graph(lowered_ir)
+    if spec.dynamic_batch_axis is not None:
+        axis = int(spec.dynamic_batch_axis)
+        for vid in lowered_ir.inputs:
+            v = lowered_ir.values.get(vid)
+            if v is None or v.shape is None or axis >= len(v.shape):
+                continue
+            mask = [False] * len(v.shape)
+            mask[axis] = True
+            v.meta["dynamic_dims"] = tuple(mask)
     transpiled_graph = transpile_preoptimized_ir(lowered_ir)
     if len(spec.output_keys) != len(transpiled_graph.outputs):
         raise ValueError(

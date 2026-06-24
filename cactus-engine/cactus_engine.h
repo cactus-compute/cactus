@@ -21,6 +21,7 @@ extern "C" {
 
 typedef void* cactus_model_t;
 typedef void* cactus_index_t;
+typedef void* cactus_stream_transcribe_t;
 typedef void (*cactus_token_callback)(const char* token, uint32_t token_id, void* user_data);
 
 CACTUS_FFI_EXPORT cactus_model_t cactus_init(
@@ -56,6 +57,22 @@ CACTUS_FFI_EXPORT int cactus_prefill(
     const uint8_t* pcm_buffer,             // optional: NULL when not used
     size_t pcm_buffer_size                 // optional: 0 when not used
 );
+
+CACTUS_FFI_EXPORT int cactus_batch_start(
+    cactus_model_t model, 
+    size_t max_slots
+);
+
+CACTUS_FFI_EXPORT uint64_t cactus_submit(
+    cactus_model_t model,
+    const uint32_t* prompt_tokens,
+    size_t num_tokens,
+    size_t max_tokens,
+    cactus_token_callback callback,         // optional; fires per token, then once with NULL on completion
+    void* user_data                         // optional
+);
+CACTUS_FFI_EXPORT int cactus_cancel(cactus_model_t model, uint64_t request_id);
+CACTUS_FFI_EXPORT void cactus_batch_stop(cactus_model_t model);
 
 CACTUS_FFI_EXPORT int cactus_tokenize(
     cactus_model_t model,
@@ -105,6 +122,25 @@ CACTUS_FFI_EXPORT int cactus_transcribe(
     void* user_data,                        // optional
     const uint8_t* pcm_buffer,              // NULL if using audio_file_path
     size_t pcm_buffer_size
+);
+
+CACTUS_FFI_EXPORT cactus_stream_transcribe_t cactus_stream_transcribe_start(
+    cactus_model_t model,
+    const char* options_json
+);
+
+CACTUS_FFI_EXPORT int cactus_stream_transcribe_process(
+    cactus_stream_transcribe_t stream,
+    const uint8_t* pcm_buffer,
+    size_t pcm_buffer_size,
+    char* response_buffer,
+    size_t buffer_size
+);
+
+CACTUS_FFI_EXPORT int cactus_stream_transcribe_stop(
+    cactus_stream_transcribe_t stream,
+    char* response_buffer,
+    size_t buffer_size
 );
 
 CACTUS_FFI_EXPORT int cactus_embed(

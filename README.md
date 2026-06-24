@@ -87,7 +87,9 @@ Example response from Gemma3-270m
     "cloud_handoff": false, // true if cloud model used
     "response": "Hi there!",
     "function_calls": [],   // parsed tool calls
+    "segments": [],         // transcription segments (empty for chat)
     "confidence": 0.8193,   // model confidence
+    "confidence_threshold": 0.7, // resolved handoff threshold (model-dependent)
     "time_to_first_token_ms": 45.23,
     "total_time_ms": 163.67,
     "prefill_tps": 1621.89,
@@ -129,17 +131,18 @@ graph.hard_reset();
 - LLM: Gemma-4-E2B-CQ4 (CPU, no speculative decode), 1k-prefill tps / 100-decode tps
 - VLM: Gemma-4-E2B-CQ4 (NPU prefill, CPU decode), 256px input, latency / decode tps
 - Transcribe: Parakeet-TDT-0.6B-CQ4 (NPU prefill, CPU decode), 20s audio, latency / decode tps
+- Missing latency == no NPU support for device
 
-| Device | Gemma4 Text | Gemma4 Vision | Parakeet 1.1B | RAM |
+| Device | LLM | VLM | Transcribe | RAM |
 |--------|----------|------------|---------------|-----|
-| Mac M4 Pro | - | - | - | - |
-| iPad/Mac M3 | - | - | - | - |
+| Mac M4 Pro | 324 / 39 | 1.2s / 48 | 0.2s / 10.6M | 1385 MB |
+| Mac M3 Pro | 390 / 26 | 2.76s / 28.06 | 0.32s / 2.29M | 1376 MB |
 | iPhone 17 Pro | - | - | - | - |
 | iPhone 13 Mini | - | - | - | - |
-| Galaxy S26 | - | - | - | - |
+| Galaxy S26 | 248 / 21 | - / 16 | - / 5.7M | - |
+| Galaxy A17 5G | - | - | - | - |
 | Pixel 10 Pro | - | - | - | - |
 | Pixel 6a | - | - | - | - |
-| Galaxy A17 5G | - | - | - | - |
 | Raspberry Pi 5 | - | - | - | - |
 
 
@@ -191,44 +194,55 @@ graph.hard_reset();
 │    --status                          show key status                           │
 │    --clear                           remove saved key                          │
 │                                                                                │
-│  cactus run <model|path>             run a model (downloads if needed)         │
+│  cactus run [model|path]             run a model (downloads if needed)         │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform cpu|apple              target accelerator (default: cpu)         │
+│    --platform auto|cpu|apple         target platform (default: auto)           │
 │    --image <path>                    image file for VLM inference              │
 │    --audio <path>                    audio file for audio chat                 │
 │    --system <prompt>                 system prompt                             │
 │    --prompt <text>                   send prompt immediately                   │
 │    --thinking                        enable thinking/reasoning mode            │
 │    --token <token>                   HuggingFace token (gated models)          │
-│    --reconvert                       force local convert+transpile fallback    │
+│    --reconvert                       force local rebuild from source           │
 │                                                                                │
-│  cactus transcribe [model]           transcribe audio with a model             │
-│    --file <audio.wav>                audio file to transcribe (required)       │
+│  cactus transcribe [model]           live microphone transcription with a model│
+│    --file <audio.wav>                audio file to transcribe (WAV)            │
 │    --language <code>                 language code (default: en)               │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --platform auto|cpu|apple         target platform (default: auto)           │
 │    --token <token>                   HuggingFace token (gated models)          │
-│    --reconvert                       force reconversion from source            │
+│    --reconvert                       force local rebuild from source           │
 │                                                                                │
-│  cactus download <model>             download a pre-built bundle               │
+│  cactus download [model]             get a bundle (prebuilt, else build)       │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform cpu|apple              target accelerator (default: cpu)         │
-│    --token <token>                   HuggingFace token                         │
+│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --token <token>                   HuggingFace token (gated models)          │
+│    --reconvert                       force local rebuild from source           │
 │                                                                                │
-│  cactus convert <model> [dir]        convert HuggingFace weights to CQ         │
+│  cactus convert <model> [dir]        HuggingFace -> runnable cactus bundle     │
+│                                      (CQ weights + runtime graph)              │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --token <token>                   HuggingFace token                         │
-│    --reconvert                       force build from source                   │
+│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --token <token>                   HuggingFace token (gated models)          │
+│    --reconvert                       force local rebuild from source           │
 │    --lora <path>                     merge a LoRA adapter before converting    │
-│                                                                                │
-│  cactus transpile <model>            build a runnable bundle from CQ weights   │
-│    --weights-dir <path>              path to CQ weights (default: lookup)      │
-│    --task <auto|...>                 force task type (default: auto)           │
+│    --weights-only                    stop after CQ weights (skip the graph)    │
+│    --dynamic-batch                   dynamic-batch decoder graph (Gemma4)      │
+│    --max-slots <n>                   KV-cache slots for batched decode         │
 │    --artifact-dir <path>             bundle output (default: weights/<model>)  │
 │                                                                                │
 │  cactus serve [model]                OpenAI-compatible local HTTP server       │
 │    --host <addr>                     bind address (default: 127.0.0.1)         │
 │    --port <port>                     port (default: 8080)                      │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --token <token>                   HuggingFace token (gated models)          │
+│    --reconvert                       force local rebuild from source           │
+│    --no-cloud-handoff                disable automatic cloud handoff           │
+│    --confidence-threshold <0..1>     handoff to cloud below this confidence    │
+│    --cloud-timeout-ms <n>            max wait for cloud handoff                │
 │                                                                                │
-│  cactus list                         list local converted weights and bundles  │
+│  cactus list                         list downloaded models                    │
 │                                                                                │
 │  cactus build                        build cactus libraries                    │
 │    --apple                           Apple (iOS/macOS)                         │
@@ -240,15 +254,19 @@ graph.hard_reset();
 │                                      (default: all)                            │
 │    --model <hf-id>                   default: LiquidAI/LFM2-VL-450M            │
 │    --transcription-model <hf-id>     default: openai/whisper-base              │
-│    --suite <name>                    run a single test suite (resolved         │
-│                                      across components; e.g. performance       │
-│                                      → kernels + graph, llm → engine)          │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --token <token>                   HuggingFace token (gated models)          │
+│    --reconvert                       force local rebuild of test models        │
+│    --suite <name>                    run a single test suite by name           │
+│                                      (resolved across components,              │
+│                                      e.g. llm → engine)                        │
 │    --list                            list components and suites                │
 │    --ios                             run on connected iPhone                   │
 │    --android                         run on connected Android                  │
 │    --enable-telemetry                send cloud telemetry (off by default)     │
 │                                                                                │
-│  cactus clean                        delete build artifacts                    │
+│  cactus clean                        delete build artifacts, weights, venv     │
 │  cactus --help                       show this help                            │
 │                                                                                │
 └────────────────────────────────────────────────────────────────────────────────┘

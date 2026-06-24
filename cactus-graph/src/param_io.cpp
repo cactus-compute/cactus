@@ -142,6 +142,7 @@ enum class ParamField : uint32_t {
     CachedVScalesPtr,
     MaxCacheSeqLen,
     CacheSinkSize,
+    CacheNumSlots,
 };
 
 enum class FieldPersistence {
@@ -211,6 +212,7 @@ const Schema& op_schema(OpType op_type) {
             {ParamField::HeadDim, FieldPersistence::Persistent},
             {ParamField::WindowSize, FieldPersistence::Persistent},
             {ParamField::CacheSinkSize, FieldPersistence::Persistent},
+            {ParamField::CacheNumSlots, FieldPersistence::Persistent},
         }},
         {OpType::KV_CACHE_APPEND, {
             {ParamField::WindowSize, FieldPersistence::Persistent},
@@ -300,6 +302,7 @@ void write_field(std::ostream& out, ParamField field, const OpParams& params) {
             throw std::runtime_error("Attempted to serialize runtime-only pointer field");
         case ParamField::MaxCacheSeqLen: write_u64(out, static_cast<uint64_t>(params.max_cache_seq_len)); break;
         case ParamField::CacheSinkSize: write_u64(out, static_cast<uint64_t>(params.cache_sink_size)); break;
+        case ParamField::CacheNumSlots: write_u64(out, static_cast<uint64_t>(params.cache_num_slots)); break;
     }
 }
 
@@ -364,6 +367,7 @@ void read_field(std::istream& in, ParamField field, OpParams& params) {
             throw std::runtime_error("Graph file corrupted: runtime-only field serialized");
         case ParamField::MaxCacheSeqLen: params.max_cache_seq_len = static_cast<size_t>(read_u64(in)); break;
         case ParamField::CacheSinkSize: params.cache_sink_size = static_cast<size_t>(read_u64(in)); break;
+        case ParamField::CacheNumSlots: params.cache_num_slots = static_cast<size_t>(read_u64(in)); break;
     }
 }
 

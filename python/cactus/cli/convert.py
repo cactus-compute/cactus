@@ -42,8 +42,8 @@ def _merge_lora_adapter(base_model_id, lora_path, token=None):
 
 
 def cmd_convert(args):
-    """Convert a HuggingFace model to CQ format. Does not transpile —
-    use `cactus transpile` afterwards to build the runtime graph bundle.
+    """Convert a HuggingFace model into a runnable cactus bundle: quantize weights to CQ,
+    then build the runtime graph. Pass --weights-only to stop after the weight conversion.
     """
     from .model import ensure_weights
 
@@ -67,7 +67,11 @@ def cmd_convert(args):
             output_dir=output_dir,
             skip_model_load=bool(getattr(args, "skip_model_load", False)),
         )
-        return 0
+        if getattr(args, "weights_only", False):
+            return 0
+        args.weights_dir = args.weights_dir or output_dir
+        args.artifact_dir = args.artifact_dir or output_dir
+        return cmd_transpile(args)
     except RuntimeError as e:
         print_color(RED, f"Conversion error: {e}")
         return 1
@@ -163,6 +167,10 @@ def cmd_transpile(args):
             extra_args.extend(["--npu-vision-quantize", str(args.npu_vision_quantize)])
     if args.cache_context_length is not None:
         extra_args.extend(["--cache-context-length", str(args.cache_context_length)])
+    if getattr(args, "dynamic_batch", False):
+        extra_args.append("--dynamic-batch")
+    if getattr(args, "max_slots", 1) and int(args.max_slots) != 1:
+        extra_args.extend(["--max-slots", str(args.max_slots)])
 
     return run_transpile(
         args.model_id,

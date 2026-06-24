@@ -28,7 +28,9 @@ set(ENGINE_SOURCES
     src/init.cpp
     src/embed.cpp
     src/complete.cpp
+    src/batch_scheduler.cpp
     src/transcribe.cpp
+    src/stream.cpp
     src/tokenizer.cpp
 )
 if(APPLE)
@@ -142,6 +144,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_library(cactus_engine_shared SHARED ${CMAKE_BINARY_DIR}/cactus_engine_shared_stub.cpp)
     set_target_properties(cactus_engine_shared PROPERTIES OUTPUT_NAME cactus_engine)
     add_dependencies(cactus_engine_shared ${_CACTUS_ENGINE_DEPS})
+    target_link_libraries(cactus_engine_shared PRIVATE cactus_flags)
 
     if(APPLE)
         target_link_options(cactus_engine_shared PRIVATE

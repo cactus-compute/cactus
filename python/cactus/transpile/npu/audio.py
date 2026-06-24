@@ -24,10 +24,7 @@ class AudioEncoderWrapper(torch.nn.Module):
 
 
 def _import_coremltools() -> Any:
-    try:
-        import coremltools as ct
-    except ImportError as exc:
-        raise RuntimeError("--npu requires `pip install coremltools`") from exc
+    import coremltools as ct
     from .coremltools_patches import apply_all_coremltools_patches
     apply_all_coremltools_patches()
     return ct
@@ -61,7 +58,7 @@ def emit_audio_encoder_mlpackage(
     filename: str = "audio_encoder.mlpackage",
     input_name: str = "x",
     output_name: str = "encoded",
-    minimum_deployment_target: str = "iOS18",
+    minimum_deployment_target: str = "iOS17",
     quantize_bits: int | None = None,
 ) -> str | None:
     ct = _import_coremltools()
@@ -81,6 +78,8 @@ def emit_audio_encoder_mlpackage(
     import gc as _gc
     _gc.collect()
 
+    if quantize_bits == 4:
+        minimum_deployment_target = "iOS18"
     target_attr = getattr(ct.target, minimum_deployment_target, None) or ct.target.iOS17
 
     from .coremltools_patches import build_cactus_pass_pipeline

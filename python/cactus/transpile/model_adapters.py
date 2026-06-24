@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from cactus.transpile.component_pipeline import ComponentModuleSpec
 from cactus.convert.cactus_adapters.tensor_io import CACTUS_MAGIC
 from cactus.convert.cactus_adapters.tensor_io import align_offset
+from cactus.convert.model_adapters.naming import gemma4_scale_factor
 
 
 _GEMMA4_SAFE_TEXT_MLP_PRODUCT_SCALE = 1.0 / 64.0
@@ -1696,6 +1697,30 @@ def _gemma4_compute_native_like_image_features(
     return projected
 
 
+_GEMMA4_NPU_PROJ_WEIGHTS = (
+    ("embed_audio", "embed_audio_proj.weights"),
+    ("embed_vision", "embed_vision_proj.weights"),
+)
+
+
+@contextmanager
+def _gemma4_npu_projection_reparam(module: torch.nn.Module):
+    backbone = getattr(module, "multimodal_backbone", None)
+    scaled: list[tuple[torch.nn.Linear, float]] = []
+    for attr, cactus_name in _GEMMA4_NPU_PROJ_WEIGHTS:
+        projection = getattr(getattr(backbone, attr, None), "embedding_projection", None)
+        factor = gemma4_scale_factor(cactus_name)
+        if isinstance(projection, torch.nn.Linear) and factor != 1.0:
+            scaled.append((projection, factor))
+    for projection, factor in scaled:
+        projection.weight.data.mul_(factor)
+    try:
+        yield
+    finally:
+        for projection, factor in scaled:
+            projection.weight.data.div_(factor)
+
+
 def _gemma4_compute_native_like_audio_features(
     multimodal_backbone: torch.nn.Module,
     input_features: torch.Tensor,
@@ -2311,7 +2336,6 @@ class Lfm2CausalLMStepAdapter(torch.nn.Module):
 
         inputs_embeds = backbone.embed_tokens(input_ids)
         text_position_ids = position_ids.to(dtype=torch.int64)
-        seq_len = int(inputs_embeds.shape[1])
         causal_mask = None
 
         hidden_states = inputs_embeds
@@ -4252,6 +4276,22 @@ def _build_gemma3_causal_lm_component_specs(
     return specs
 
 
+def _gemma4_make_audio_mask_fp16_safe(model: torch.nn.Module) -> None:
+    backbone = getattr(model, "model", model)
+    audio_tower = getattr(backbone, "audio_tower", None)
+    if audio_tower is None:
+        return
+    seen: set[int] = set()
+    for mod in audio_tower.modules():
+        cfg = getattr(mod, "config", None)
+        if cfg is None or id(cfg) in seen:
+            continue
+        seen.add(id(cfg))
+        value = getattr(cfg, "attention_invalid_logits_value", None)
+        if isinstance(value, (int, float)) and value < -1e4:
+            cfg.attention_invalid_logits_value = -1e4
+
+
 def _build_gemma4_multimodal_component_specs(
     model: torch.nn.Module,
     *,
@@ -4259,6 +4299,8 @@ def _build_gemma4_multimodal_component_specs(
     weights_dir: str | None,
     components: tuple[str, ...] | None = None,
     cache_context_length: str | int | None = None,
+    dynamic_batch: bool = False,
+    max_slots: int = 1,
 ) -> list[ComponentModuleSpec]:
     pixel_values = named_tensors.get("pixel_values")
     pixel_position_ids = named_tensors.get("pixel_position_ids")
@@ -4363,6 +4405,7 @@ def _build_gemma4_multimodal_component_specs(
             native_image_pool_shapes=None,
         ).eval()
     if "audio_encoder" in expanded_components:
+        _gemma4_make_audio_mask_fp16_safe(model)
         audio_encoder = Gemma4AudioEncoderAdapter(model, weights_dir=weights_dir).eval()
 
     if low_memory_meta:
@@ -4525,6 +4568,7 @@ def _build_gemma4_multimodal_component_specs(
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
             npu_module=vision_encoder_npu,
             npu_runtime_input_count=2,
+            npu_reparam=_gemma4_npu_projection_reparam,
         ))
     if "audio_encoder" in expanded_components:
         if audio_encoder is None or input_features is None or input_features_mask is None:
@@ -4537,6 +4581,7 @@ def _build_gemma4_multimodal_component_specs(
             output_keys=("audio_features",),
             graph_meta={**common_graph_meta, "component": "audio_encoder"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
+            npu_reparam=_gemma4_npu_projection_reparam,
         ))
     if "lm_encoder" in expanded_components:
         if image_features is None:
@@ -4642,6 +4687,7 @@ def _build_gemma4_multimodal_component_specs(
             output_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
             graph_meta={**common_graph_meta, "component": "lm_encoder_step"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
+            dynamic_batch_axis=0 if dynamic_batch else None,
         ))
     if "lm_encoder_text_chunk" in expanded_components:
         specs.append(ComponentModuleSpec(
@@ -4698,8 +4744,10 @@ def _build_gemma4_multimodal_component_specs(
                 "use_internal_kv_cache": True,
                 "max_cache_seq_len": cache_seq_len,
                 "cache_sink_size": 4,
+                "cache_num_slots": (max_slots if dynamic_batch else 1),
             },
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
+            dynamic_batch_axis=0 if dynamic_batch else None,
         ))
     return specs
 
@@ -5541,7 +5589,7 @@ def _build_qwen_causal_lm_component_specs(
                 },
                 metadata={"family": family, "task": "causal_lm_logits"},
             ))
-        if "decoder_prefill_chunk" in requested_set:
+        if "decoder_embed_chunk" in requested_set:
             specs.append(ComponentModuleSpec(
                 component="decoder_embed_chunk",
                 module=decoder_embed_chunk,
@@ -6886,6 +6934,8 @@ def build_component_module_specs(
     inputs_metadata: dict[str, object] | None = None,
     components: tuple[str, ...] | None = None,
     cache_context_length: str | int | None = None,
+    dynamic_batch: bool = False,
+    max_slots: int = 1,
 ) -> list[ComponentModuleSpec] | None:
     family = _family_key(model)
     if family == "qwen3_5" and task == "multimodal_causal_lm_logits":
@@ -6919,6 +6969,8 @@ def build_component_module_specs(
             weights_dir=weights_dir,
             components=components,
             cache_context_length=cache_context_length,
+            dynamic_batch=dynamic_batch,
+            max_slots=max_slots,
         )
     if family == "lfm2_vl" and task == "multimodal_causal_lm_logits":
         return _build_lfm2_vl_multimodal_component_specs(
@@ -7098,17 +7150,6 @@ def canonicalize_model_interface(
         if not resolved_input_names:
             resolved_input_names = ("input_ids", "attention_mask")
         adapter_factory = NomicTextEmbeddingAdapter
-    elif task == "audio_classification_logits":
-        if not resolved_input_names:
-            resolved_input_names = _infer_input_names(
-                model,
-                preferred=("input_values", "input_features", "attention_mask"),
-            )
-        adapter_factory = lambda inner_model: AudioClassificationLogitsAdapter(  # type: ignore[assignment]
-            inner_model,
-            input_names=resolved_input_names,
-            family=family,
-        )
     else:
         raise NotImplementedError(f"unsupported task={task}")
 

@@ -354,10 +354,16 @@ class TestCliParser:
         args = self.parser.parse_args([])
         assert args.command is None
 
-    def test_transpile_registered(self):
-        args = self.parser.parse_args(["transpile", "google/gemma-4-E2B-it"])
-        assert args.command == "transpile"
+    def test_convert_absorbs_graph_flags(self):
+        import pytest
+        args = self.parser.parse_args(["convert", "google/gemma-4-E2B-it",
+                                       "--task", "causal_lm_logits", "--dynamic-batch"])
+        assert args.command == "convert"
         assert args.model_id == "google/gemma-4-E2B-it"
+        assert args.task == "causal_lm_logits"
+        assert args.dynamic_batch is True
+        with pytest.raises(SystemExit):
+            self.parser.parse_args(["transpile", "google/gemma-4-E2B-it"])
 
     def test_run_rejects_bare_name(self):
         import pytest

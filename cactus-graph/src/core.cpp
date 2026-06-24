@@ -69,10 +69,9 @@ BufferDesc::BufferDesc(const std::vector<size_t>& s, Precision prec)
 }
 
 BufferDesc::~BufferDesc() {
-    if (pooled_data) {
         delete[] pooled_data;
-        pooled_data = nullptr;
-    }
+        
+    
 }
 
 BufferDesc::BufferDesc(BufferDesc&& other) noexcept
@@ -83,6 +82,8 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
       external_data(other.external_data),
       pooled_data(other.pooled_data),
       precision(other.precision),
+      dynamic_dims(std::move(other.dynamic_dims)),
+      pooled_byte_size(other.pooled_byte_size),
       group_size(other.group_size),
       num_groups(other.num_groups),
       activation_scales_data(other.activation_scales_data),
@@ -101,6 +102,7 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
     other.byte_size = 0;
     other.external_data = nullptr;
     other.pooled_data = nullptr;
+    other.pooled_byte_size = 0;
     other.group_size = 0;
     other.num_groups = 0;
     other.activation_scales_data = nullptr;
@@ -118,9 +120,7 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
 
 BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
     if (this != &other) {
-        if (pooled_data) {
-            delete[] pooled_data;
-        }
+            delete[] pooled_data;      
 
         shape = std::move(other.shape);
         total_size = other.total_size;
@@ -129,6 +129,8 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
         external_data = other.external_data;
         pooled_data = other.pooled_data;
         precision = other.precision;
+        dynamic_dims = std::move(other.dynamic_dims);
+        pooled_byte_size = other.pooled_byte_size;
         group_size = other.group_size;
         num_groups = other.num_groups;
         activation_scales_data = other.activation_scales_data;
@@ -148,6 +150,7 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
         other.byte_size = 0;
         other.external_data = nullptr;
         other.pooled_data = nullptr;
+        other.pooled_byte_size = 0;
         other.group_size = 0;
         other.num_groups = 0;
         other.activation_scales_data = nullptr;
@@ -186,13 +189,32 @@ void BufferDesc::allocate() {
 void BufferDesc::allocate_from_pool(BufferPool& pool) {
     if (!data && !external_data && !pooled_data && byte_size > 0) {
         pooled_data = pool.acquire(byte_size);
+        pooled_byte_size = byte_size;
     }
 }
 
 void BufferDesc::release_to_pool(BufferPool& pool) {
-    if (pooled_data && byte_size > 0) {
-        pool.release(pooled_data, byte_size);
+    if (pooled_data) {
+        pool.release(pooled_data, pooled_byte_size > 0 ? pooled_byte_size : byte_size);
         pooled_data = nullptr;
+        pooled_byte_size = 0;
+    }
+}
+
+void BufferDesc::set_shape(const std::vector<size_t>& new_shape) {
+    shape = new_shape;
+    total_size = 1;
+    for (size_t dim : shape) total_size *= dim;
+    byte_size = PrecisionTraits::packed_size_of(precision, total_size);
+}
+
+void BufferDesc::resize_from_pool(BufferPool& pool) {
+    if (data || external_data) return;  
+    if (pooled_data && byte_size == pooled_byte_size) return; 
+    if (pooled_data) release_to_pool(pool); 
+    if (byte_size > 0) {
+        pooled_data = pool.acquire(byte_size);
+        pooled_byte_size = byte_size;
     }
 }
 
@@ -211,16 +233,13 @@ void BufferDesc::set_external(void* ptr) {
     pooled_data = nullptr;
 }
 
-// GraphNode implementation
 GraphNode::GraphNode(size_t node_id, OpType type) : id(node_id), op_type(type) {}
 
-// TensorConfig implementation
 TensorConfig& TensorConfig::global() {
     static TensorConfig instance;
     return instance;
 }
 
-// BroadcastInfo implementation
 BroadcastInfo BroadcastInfo::compute(const std::vector<size_t>& lhs, const std::vector<size_t>& rhs) {
     BroadcastInfo info;
     size_t max_dims = std::max(lhs.size(), rhs.size());

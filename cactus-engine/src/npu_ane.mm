@@ -89,15 +89,24 @@ static void maybe_apply_compute_units_env(const char* env_name, MLComputeUnits& 
     CACTUS_LOG_WARN("npu", "Ignoring invalid " << env_name << "=" << raw);
 }
 
-static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool is_prefill) {
+static MLComputeUnits resolve_compute_units_for_model(NSString* model_path, bool is_prefill,
+                                                      const std::string& compute_units_hint) {
     MLComputeUnits units = MLComputeUnitsCPUAndNeuralEngine;
 
-    // Gemma4 multimodal encoders show better fidelity on CPU+GPU.
     if (!is_prefill && model_path_looks_like_audio_encoder(model_path)) {
         units = MLComputeUnitsCPUAndGPU;
     }
     if (!is_prefill && model_path_looks_like_vision_encoder(model_path)) {
         units = MLComputeUnitsCPUAndGPU;
+    }
+
+    if (!compute_units_hint.empty()) {
+        MLComputeUnits parsed;
+        if (parse_compute_units(compute_units_hint.c_str(), parsed)) {
+            units = parsed;
+        } else {
+            CACTUS_LOG_WARN("npu", "Ignoring invalid compute units hint=" << compute_units_hint);
+        }
     }
 
     maybe_apply_compute_units_env("CACTUS_ANE_COMPUTE_UNITS", units);
@@ -207,7 +216,7 @@ static NSURL* resolve_or_compile_model_url(NSString* path, NSError** error) {
 @property (nonatomic, assign) BOOL hasOutputBackings;
 @property (nonatomic, assign) BOOL hasMultiOutputBackings;
 
-- (instancetype)initWithModelPath:(NSString*)path;
+- (instancetype)initWithModelPath:(NSString*)path computeUnits:(NSString*)cu;
 - (NSArray<NSNumber*>*)getInputShape;
 - (NSArray<NSNumber*>*)getOutputShape;
 - (BOOL)preallocateBuffersWithInput:(NSString*)inputName
@@ -229,14 +238,15 @@ static NSURL* resolve_or_compile_model_url(NSString* path, NSError** error) {
 
 @implementation CactusANEImpl
 
-- (instancetype)initWithModelPath:(NSString*)path {
+- (instancetype)initWithModelPath:(NSString*)path computeUnits:(NSString*)cu {
     self = [super init];
     if (self) {
         NSError* error = nil;
         NSURL* modelURL = resolve_or_compile_model_url(path, &error);
 
         MLModelConfiguration* config = [[MLModelConfiguration alloc] init];
-        config.computeUnits = resolve_compute_units_for_model(path, false);
+        config.computeUnits = resolve_compute_units_for_model(
+            path, false, cu ? std::string([cu UTF8String]) : std::string(""));
         CACTUS_LOG_INFO("npu",
                         "ANEEncoder compute units: "
                             << compute_units_to_string(config.computeUnits)
@@ -794,7 +804,7 @@ ANEEncoder& ANEEncoder::operator=(ANEEncoder&& other) noexcept {
     return *this;
 }
 
-bool ANEEncoder::load(const std::string& model_path) {
+bool ANEEncoder::load(const std::string& model_path, const std::string& compute_units) {
     @autoreleasepool {
         CACTUS_LOG_INFO("npu", "ANEEncoder loading model: " << model_path);
         NSString* path = [NSString stringWithUTF8String:model_path.c_str()];
@@ -804,7 +814,7 @@ bool ANEEncoder::load(const std::string& model_path) {
             return false;
         }
 
-        CactusANEImpl* impl = [[CactusANEImpl alloc] initWithModelPath:path];
+        CactusANEImpl* impl = [[CactusANEImpl alloc] initWithModelPath:path computeUnits:(compute_units.empty() ? nil : [NSString stringWithUTF8String:compute_units.c_str()])];
 
         if (impl && impl.model) {
             impl_ = (__bridge_retained void*)impl;

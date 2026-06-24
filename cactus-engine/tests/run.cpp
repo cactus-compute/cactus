@@ -508,7 +508,8 @@ struct TokenPrinter {
 
     void print_stats(double ram_mb, double confidence, bool cloud_handoff, double threshold,
                      int reported_tokens = -1, double reported_decode_tps = -1.0,
-                     double reported_ttft_ms = -1.0, double reported_total_ms = -1.0) const {
+                     double reported_ttft_ms = -1.0, double reported_total_ms = -1.0,
+                     const std::string& cloud_reason = "") const {
         auto end = std::chrono::steady_clock::now();
         double total_s = std::chrono::duration<double>(end - start).count();
         double ttft_s = saw_first ? std::chrono::duration<double>(first - start).count() : 0.0;
@@ -533,6 +534,9 @@ struct TokenPrinter {
             std::cout << " | threshold: " << std::max(0.0, std::min(100.0, threshold * 100.0)) << "%";
         }
         std::cout << " | cloud: " << (cloud_handoff ? "yes" : "no");
+        if (!cloud_reason.empty()) {
+            std::cout << " (" << cloud_reason << ")";
+        }
         if (ram_mb > 0.0) {
             std::cout << " | RAM: " << ram_mb << " MB";
         }
@@ -709,11 +713,15 @@ bool json_bool_value(const std::string& json, const std::string& key) {
     return json.compare(start, 4, "true") == 0;
 }
 
+struct ChatTurn {
+    std::string role;
+    std::string content;
+    std::string image;
+    std::string audio;
+};
+
 std::string build_messages(const std::string& system_prompt,
-                           const std::vector<std::pair<std::string, std::string>>& history,
-                           const std::string& image,
-                           const std::string& audio,
-                           bool attach_media) {
+                           const std::vector<ChatTurn>& history) {
     std::ostringstream msg;
     msg << "[";
     bool need_comma = false;
@@ -721,15 +729,13 @@ std::string build_messages(const std::string& system_prompt,
         msg << "{\"role\":\"system\",\"content\":\"" << escape_json(system_prompt) << "\"}";
         need_comma = true;
     }
-    for (size_t i = 0; i < history.size(); ++i) {
+    for (const auto& turn : history) {
         if (need_comma) msg << ",";
         need_comma = true;
-        msg << "{\"role\":\"" << history[i].first << "\",\"content\":\""
-            << escape_json(history[i].second) << "\"";
-        if (attach_media && i + 1 == history.size() && history[i].first == "user") {
-            if (!image.empty()) msg << ",\"images\":[\"" << escape_json(image) << "\"]";
-            if (!audio.empty()) msg << ",\"audio\":[\"" << escape_json(audio) << "\"]";
-        }
+        msg << "{\"role\":\"" << turn.role << "\",\"content\":\""
+            << escape_json(turn.content) << "\"";
+        if (!turn.image.empty()) msg << ",\"images\":[\"" << escape_json(turn.image) << "\"]";
+        if (!turn.audio.empty()) msg << ",\"audio\":[\"" << escape_json(turn.audio) << "\"]";
         msg << "}";
     }
     msg << "]";
@@ -899,15 +905,11 @@ int main(int argc, char** argv) {
         if (!auto_handoff) {
             std::cout << d << "Hybrid handoff off (--no-cloud-handoff): answering fully on-device." << r << "\n\n";
         } else {
-            std::string ratio = (confidence_threshold >= 0.0)
-                ? std::to_string(static_cast<int>(confidence_threshold * 100.0 + 0.5)) + "%"
-                : "50% (model default)";
             std::cout << d
-                      << "Hybrid mode: answers on-device and hands off to the cloud when the local\n"
-                      << "model's confidence drops below " << ratio << ". "
-                      << "Tune with --confidence-threshold <0-1>;\n"
-                      << "pass --no-cloud-handoff to stay fully local. "
-                      << "Each reply's confidence is shown in its stats line." << r << "\n\n";
+                      << "Hybrid mode: answers on-device, handing off to the cloud whenever the local\n"
+                      << "model's confidence drops below its default threshold. Set your own with\n"
+                      << "--confidence-threshold <0-1>, or pass --no-cloud-handoff to stay fully local.\n"
+                      << "Each reply's confidence and the active threshold are shown in its stats line." << r << "\n\n";
         }
     }
 
@@ -930,7 +932,7 @@ int main(int argc, char** argv) {
     print_command("exit", "quit");
     std::cout << std::right << "\n";
 
-    std::vector<std::pair<std::string, std::string>> history;
+    std::vector<ChatTurn> history;
     std::vector<uint8_t> current_pcm;
     TokenPrinter printer;
     g_printer = &printer;
@@ -1024,8 +1026,8 @@ int main(int argc, char** argv) {
         if (attach_media) {
             cactus_reset(model);
         }
-        history.push_back({"user", input});
-        std::string messages = build_messages(system_prompt, history, current_image, current_audio, attach_media);
+        history.push_back({"user", input, current_image, current_audio});
+        std::string messages = build_messages(system_prompt, history);
         std::string options = "{\"temperature\":0.7,\"top_p\":0.95,\"top_k\":40,\"max_tokens\":"
             + std::to_string(max_new_tokens)
             + ",\"enable_thinking_if_supported\":" + (thinking ? "true" : "false")
@@ -1068,7 +1070,8 @@ int main(int argc, char** argv) {
         double decode_tps = json_number_value(response_json, "decode_tps", -1.0);
         double ttft_ms = json_number_value(response_json, "time_to_first_token_ms", -1.0);
         double total_ms = json_number_value(response_json, "total_time_ms", -1.0);
-        printer.print_stats(ram_mb, confidence, cloud_handoff, threshold, decode_tokens, decode_tps, ttft_ms, total_ms);
+        std::string cloud_reason = json_string_value(response_json, "cloud_handoff_reason");
+        printer.print_stats(ram_mb, confidence, cloud_handoff, threshold, decode_tokens, decode_tps, ttft_ms, total_ms, cloud_reason);
 
         if (rc < 0) {
             std::cout << "Error: " << response.data() << "\n";
@@ -1078,7 +1081,7 @@ int main(int argc, char** argv) {
 
         std::string assistant = json_string_value(response_json, "context_response");
         if (assistant.empty()) assistant = json_string_value(response_json, "response");
-        history.push_back({"assistant", assistant});
+        history.push_back({"assistant", assistant, "", ""});
         current_image.clear();
         current_audio.clear();
         current_pcm.clear();

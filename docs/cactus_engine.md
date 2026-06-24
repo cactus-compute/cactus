@@ -25,12 +25,12 @@ cactus auth
 `cactus download` fetches a **pre-built runtime bundle** (CQ weights + serialized
 graph + manifest) from
 [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute) into
-`transpiled/<model>-cq<bits>[-<platform>]/`. Defaults to the generic CPU
-bundle; pass `--platform apple` for the Apple Silicon variant. The result
-can be loaded directly via `cactus_init()`.
+`weights/<model>-cq<bits>[-<platform>]/`. Defaults to `--platform auto` (the
+best build for your host, e.g. Apple Silicon on macOS); pass `--platform cpu`
+for the generic build. The result can be loaded directly via `cactus_init()`.
 
 For models not on Cactus-Compute, build a bundle from source with
-`cactus convert <model>` followed by `cactus transpile <model>`.
+`cactus convert <model>` (quantizes the weights and builds the runtime graph).
 
 ## Types
 
@@ -175,7 +175,7 @@ int cactus_complete(
 | `include_stop_sequences` | bool | false | Include stop sequence tokens in the response |
 | `force_tools` | bool | false | Constrain output to tool call format |
 | `tool_rag_top_k` | int | 2 | Select top-k relevant tools via Tool RAG (0 = disabled, use all tools) |
-| `confidence_threshold` | float | model-dependent | Minimum confidence for local generation; triggers cloud_handoff when below. Resolved in this order: `0.5` if the bundle ships a `handoff_probe.bin`; else the model's `default_cloud_handoff_threshold` (Gemma 4 = `0.92`); else `0.7`. |
+| `confidence_threshold` | float | model-dependent | Minimum confidence for local generation; triggers cloud_handoff when below. Resolved in this order: `0.5` if the bundle ships a `handoff_probe.bin`; else the model's `default_cloud_handoff_threshold` (Gemma 4 = `0.81`); else `0.7`. |
 | `auto_handoff` | bool | true | Automatically attempt cloud handoff when confidence is low |
 | `cloud_timeout_ms` | int | 15000 | Timeout in milliseconds for cloud handoff requests |
 | `handoff_with_images` | bool | true | Allow cloud handoff for requests that include images |
@@ -191,6 +191,7 @@ int cactus_complete(
     "function_calls": [],
     "segments": [],
     "confidence": 0.85,
+    "confidence_threshold": 0.7,
     "time_to_first_token_ms": 150.5,
     "total_time_ms": 1250.3,
     "prefill_tps": 166.1,
@@ -201,6 +202,8 @@ int cactus_complete(
     "total_tokens": 33
 }
 ```
+
+`confidence_threshold` is the resolved value `confidence` is compared against — model-dependent (see the options table above), or whatever you pass; the `0.7` here is just the fallback default. `cloud_handoff` becomes `true` when `confidence` drops below it.
 
 The `thinking` field is only present in the JSON when the model produced a chain-of-thought block:
 ```json
@@ -213,6 +216,7 @@ The `thinking` field is only present in the JSON when the model produced a chain
     "function_calls": [],
     "segments": [],
     "confidence": 0.91,
+    "confidence_threshold": 0.7,
     "time_to_first_token_ms": 150.5,
     "total_time_ms": 1250.3,
     "prefill_tps": 166.1,
@@ -234,6 +238,7 @@ The `thinking` field is only present in the JSON when the model produced a chain
     "function_calls": [],
     "segments": [],
     "confidence": 0.18,
+    "confidence_threshold": 0.7,
     "time_to_first_token_ms": 45.2,
     "total_time_ms": 45.2,
     "prefill_tps": 619.5,
@@ -245,7 +250,7 @@ The `thinking` field is only present in the JSON when the model produced a chain
 }
 ```
 
-When `cloud_handoff` is true, the model's confidence dropped below `confidence_threshold` (default: 0.7) and the response was fulfilled by a cloud-based model. The `response` field contains the cloud-provided answer.
+When `cloud_handoff` is true, the model's confidence dropped below the resolved `confidence_threshold` (see the request options above) and the response was fulfilled by a cloud-based model. The `response` field contains the cloud-provided answer.
 
 **Error Response:**
 ```json
@@ -255,7 +260,7 @@ When `cloud_handoff` is true, the model's confidence dropped below `confidence_t
     "cloud_handoff": false,
     "response": null,
     "function_calls": [],
-    "confidence": 0.0,
+    "confidence": null,
     "time_to_first_token_ms": 0.0,
     "total_time_ms": 0.0,
     "prefill_tps": 0.0,
@@ -284,6 +289,7 @@ Note: `ram_usage_mb` reflects actual current RAM usage even in error responses.
     ],
     "segments": [],
     "confidence": 0.92,
+    "confidence_threshold": 0.7,
     "time_to_first_token_ms": 120.0,
     "total_time_ms": 450.5,
     "prefill_tps": 375.0,
@@ -426,6 +432,34 @@ if (result == 0) {
 }
 ```
 
+### `cactus_render_prompt`
+Renders the chat-templated prompt string for the given messages without running inference. Useful for debugging prompt formatting, estimating token budgets, or feeding the rendered text to another tool.
+
+```c
+int cactus_render_prompt(
+    cactus_model_t model,        // Model handle
+    const char* messages_json,   // JSON array of messages (same format as cactus_complete)
+    const char* options_json,    // Optional generation options (can be NULL)
+    const char* tools_json,      // Optional tools definition (can be NULL)
+    char* prompt_buffer,         // Buffer for the rendered prompt text
+    size_t buffer_size           // Size of prompt_buffer
+);
+```
+
+**Returns:** The rendered prompt length in bytes (excluding the null terminator) on success; -1 on invalid parameters or rendering error; -2 if the buffer is too small to hold the rendered prompt and its null terminator.
+
+**Note:** The output is plain prompt text, not JSON.
+
+**Example:**
+```c
+const char* messages = "[{\"role\": \"user\", \"content\": \"Hello!\"}]";
+char prompt[4096];
+int len = cactus_render_prompt(model, messages, NULL, NULL, prompt, sizeof(prompt));
+if (len >= 0) {
+    printf("Rendered prompt:\n%s\n", prompt);
+}
+```
+
 ### `cactus_score_window`
 Scores a window of tokens for perplexity calculation or token probability analysis.
 
@@ -513,13 +547,17 @@ int cactus_transcribe(
 **Options Format:**
 ```json
 {
-    "max_tokens": 448
+    "max_tokens": 448,
+    "language": "en",
+    "timestamps": true
 }
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `max_tokens` | int | auto | Maximum tokens to generate. When unset, it defaults to the larger of 100 and an audio-length estimate (`audio_sec × 20` for Whisper, `audio_sec × 30` for Parakeet). For Whisper the result is then capped so the prompt tokens plus generated tokens fit the decoder's 448-position limit. |
+| `language` | string | model default | Whisper only. Two-letter language code (e.g. `en`, `es`, `de`) substituted into the decoder prompt's language token. Ignored by Parakeet and when an explicit `prompt` is supplied. |
+| `timestamps` | bool | false | Whisper only. Decodes timestamp tokens and populates `segments` with `{start, end, text}` entries (seconds). Empty otherwise, including all Parakeet transcription. |
 
 **Response Format:**
 ```json
@@ -531,6 +569,7 @@ int cactus_transcribe(
     "function_calls": [],
     "segments": [],
     "confidence": 1.0,
+    "confidence_threshold": -1.0,
     "time_to_first_token_ms": 120.0,
     "total_time_ms": 450.0,
     "prefill_tps": 50.0,
@@ -543,8 +582,9 @@ int cactus_transcribe(
 ```
 
 - `response`: Full transcription text
-- `segments`: Always empty for the current native transcription paths
+- `segments`: `{start, end, text}` entries (seconds), populated only for Whisper when the `timestamps` option is set; empty otherwise, including all Parakeet transcription
 - `cloud_handoff`: Always false for transcription
+- `confidence_threshold`: `-1.0` (unset) — transcription does not resolve a cloud-handoff threshold
 
 **Example (file-based):**
 ```c
@@ -567,6 +607,83 @@ char response[16384];
 int result = cactus_transcribe(whisper, NULL, NULL,
                                 response, sizeof(response), NULL, NULL, NULL,
                                 pcm_data, pcm_size);
+```
+
+### Streaming transcription
+Transcribe continuously while audio is still being captured, instead of waiting for a complete recording. You push PCM as it arrives and read back text as soon as it stabilizes. Supported for the dedicated speech models (Whisper and Parakeet TDT).
+
+The session emits text in two parts on every call:
+
+- **`confirmed`** — newly finalized words. Append them to your running transcript; they never change.
+- **`pending`** — the current best guess for the still-changing tail. Replace it on every call (do not append it); it is for live display only.
+
+Text is confirmed once two successive re-transcriptions of the audio agree (LocalAgreement, compared per **segment** for Whisper) or once a following token starts a new word (Parakeet TDT). Confirmed audio is dropped from the front of the buffer as the window advances, so memory stays bounded and the active window never approaches the model's fixed input length.
+
+#### `cactus_stream_transcribe_start`
+Opens a streaming session bound to an already-initialized speech model.
+```c
+cactus_stream_transcribe_t cactus_stream_transcribe_start(
+    cactus_model_t model,       // Whisper or Parakeet TDT model handle
+    const char* options_json    // Optional (can be NULL); forwarded to cactus_transcribe
+);
+```
+**Returns:** an opaque session handle, or `NULL` on error (see `cactus_get_last_error`). Free it with `cactus_stream_transcribe_stop`.
+
+`options_json` (optional) is forwarded to the underlying `cactus_transcribe` call **for Whisper only** (e.g. `language`); the Parakeet TDT path ignores it. Chunking and segmentation are handled internally with no user-facing tunables.
+
+#### `cactus_stream_transcribe_process`
+Feeds the next slice of audio. Input is 16-bit signed PCM, **16 kHz, mono** — the same format as `cactus_transcribe`'s `pcm_buffer`. Feed reasonably small chunks (≈ 0.1–2 s) for low latency.
+```c
+int cactus_stream_transcribe_process(
+    cactus_stream_transcribe_t stream,
+    const uint8_t* pcm_buffer,  // 16-bit PCM, 16 kHz, mono
+    size_t pcm_buffer_size,     // size in bytes
+    char* response_buffer,
+    size_t buffer_size
+);
+```
+**Returns:** bytes written to `response_buffer`, or -1 on error.
+
+**Response Format:** (also includes timing stats: `decode_tps`, `total_time_ms`, `time_to_first_token_ms`, `decode_tokens`)
+```json
+{ "success": true, "confirmed": "the quick brown", "pending": "fox jumps", "decode_tps": 0, "total_time_ms": 0, "time_to_first_token_ms": 0, "decode_tokens": 0 }
+```
+
+#### `cactus_stream_transcribe_stop`
+Flushes any buffered audio, returns the final `confirmed` text, and destroys the session.
+```c
+int cactus_stream_transcribe_stop(
+    cactus_stream_transcribe_t stream,
+    char* response_buffer,      // may be NULL to discard the final text
+    size_t buffer_size
+);
+```
+**Returns:** bytes written (0 when discarded), or -1 on error.
+
+**Example:**
+```c
+cactus_model_t whisper = cactus_init("../../weights/whisper-base", NULL, false);
+cactus_stream_transcribe_t stream = cactus_stream_transcribe_start(whisper, NULL);
+
+char response[16384];
+
+// Push audio as it is captured (here, 0.5s chunks of 16kHz mono PCM16).
+for (each chunk) {
+    int rc = cactus_stream_transcribe_process(
+        stream, chunk_pcm, chunk_bytes, response, sizeof(response));
+    if (rc < 0) break;
+    // Parse "confirmed" from response and append it to your transcript;
+    // show "confirmed-so-far + pending" live.
+}
+
+// Flush the tail; its "confirmed" holds the final words.
+cactus_stream_transcribe_stop(stream, response, sizeof(response));
+```
+
+The `transcribe` CLI uses this streaming path for **live microphone** transcription (no file; a colored UI with running captions, press Enter to stop). With a **file** it does a one-shot transcription (long files are windowed internally, so there is no 30s limit):
+```bash
+cactus transcribe openai/whisper-base                  # live microphone (press Enter to stop)
+cactus transcribe openai/whisper-base --file audio.wav # one-shot file transcription (any length)
 ```
 
 ### `cactus_embed`
@@ -1036,7 +1153,7 @@ int main() {
 ### Tool Calling
 ```c
 const char* tools =
-    "[{\"function\": {"
+    "[{\"type\": \"function\", \"function\": {"
     "    \"name\": \"get_weather\","
     "    \"description\": \"Get weather for a location\","
     "    \"parameters\": {"

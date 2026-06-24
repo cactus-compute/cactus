@@ -333,7 +333,7 @@ bool Model::load_handoff_probe() {
 
     handoff_probe_hidden_.clear();
     handoff_probe_loaded_ = true;
-    CACTUS_LOG_INFO("cloud_handoff", "Loaded Gemma4 v10p6 handoff probe from " << path);
+    CACTUS_LOG_INFO("cloud_handoff", "Loaded handoff probe from " << path);
     return true;
 }
 
@@ -343,21 +343,24 @@ bool Model::has_handoff_probe_rollout() const {
         && handoff_probe_hidden_.size() >= static_cast<size_t>(handoff_probe_feat_dim_);
 }
 
-void Model::maybe_capture_handoff_probe_hidden(const Component& comp) {
+void Model::maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name) {
     if (!handoff_probe_loaded_ || handoff_probe_feat_dim_ == 0) return;
-    int idx = output_index(comp, "probe_hidden");
+    int idx = output_index(comp, output_name);
     if (idx < 0 || static_cast<size_t>(idx) >= comp.output_node_ids.size()) return;
     size_t node = static_cast<size_t>(comp.output_node_ids[idx]);
     const auto& desc = comp.graph->get_output_buffer(node);
     if (desc.total_size < handoff_probe_feat_dim_) return;
+    if (!desc.shape.empty() &&
+        static_cast<size_t>(desc.shape.back()) != static_cast<size_t>(handoff_probe_feat_dim_)) return;
     size_t rows = desc.total_size / handoff_probe_feat_dim_;
     if (rows == 0) return;
-    size_t row = rows - 1;
     const auto* data = static_cast<const uint8_t*>(comp.graph->get_output(node));
     if (!data) return;
-    size_t base = row * static_cast<size_t>(handoff_probe_feat_dim_);
-    for (size_t i = 0; i < handoff_probe_feat_dim_; ++i) {
-        handoff_probe_hidden_.push_back(read_scalar_value(desc.precision, data, base + i));
+    for (size_t row = 0; row < rows; ++row) {
+        size_t base = row * static_cast<size_t>(handoff_probe_feat_dim_);
+        for (size_t i = 0; i < handoff_probe_feat_dim_; ++i) {
+            handoff_probe_hidden_.push_back(read_scalar_value(desc.precision, data, base + i));
+        }
     }
 }
 
@@ -614,7 +617,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
 
     if (!npu_audio_encoder_mlpackage_.empty()) {
         std::string full_path = bundle_dir + "/" + npu_audio_encoder_mlpackage_;
-        if (!load_npu_audio_encoder(full_path)) {
+        if (!load_npu_audio_encoder(full_path, npu_audio_compute_units_)) {
             CACTUS_LOG_WARN("model", "NPU audio encoder load failed for " << full_path << "; falling back to CPU");
         }
     }
@@ -636,10 +639,15 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
             CACTUS_LOG_WARN("model", "NPU source encoder load failed for " << full_path << "; falling back to CPU");
         }
     }
-    if (load_handoff_probe() && decoder_ && output_index(*decoder_, "probe_hidden") < 0) {
-        CACTUS_LOG_WARN("cloud_handoff", "Handoff probe is packaged, but decoder_step does not expose probe_hidden; "
-            "reconvert Gemma4 to enable probe-based handoff");
-        handoff_probe_loaded_ = false;
+    if (load_handoff_probe()) {
+        const bool is_parakeet = config_.model_type == Config::ModelType::PARAKEET_TDT;
+        const Component* probe_comp = is_parakeet ? audio_encoder_ : decoder_;
+        const char* probe_output = is_parakeet ? "encoder_hidden_states" : "probe_hidden";
+        if (!probe_comp || output_index(*probe_comp, probe_output) < 0) {
+            CACTUS_LOG_WARN("cloud_handoff", "Handoff probe is packaged, but its probe input is not exposed; "
+                "reconvert to enable probe-based handoff");
+            handoff_probe_loaded_ = false;
+        }
     }
 
     initialized_ = true;
@@ -661,6 +669,9 @@ bool Model::load_manifest() {
     }
     if (obj.count("npu_audio_encoder") && obj.at("npu_audio_encoder").is<std::string>()) {
         npu_audio_encoder_mlpackage_ = obj.at("npu_audio_encoder").get<std::string>();
+    }
+    if (obj.count("npu_audio_compute_units") && obj.at("npu_audio_compute_units").is<std::string>()) {
+        npu_audio_compute_units_ = obj.at("npu_audio_compute_units").get<std::string>();
     }
     if (obj.count("npu_vision_encoder") && obj.at("npu_vision_encoder").is<std::string>()) {
         npu_vision_encoder_mlpackage_ = obj.at("npu_vision_encoder").get<std::string>();
@@ -886,6 +897,183 @@ void Model::run_encoder_step(uint32_t token_id, size_t position) {
     encoder_->graph->execute();
 }
 
+void Model::set_component_batch(Component& comp, size_t batch) {
+    for (size_t i = 0; i < comp.runtime_input_node_ids.size(); ++i) {
+        size_t node_id = static_cast<size_t>(comp.runtime_input_node_ids[i]);
+        const auto& desc = comp.graph->get_output_buffer(node_id);
+        if (!desc.has_dynamic_dims() || desc.shape.empty() || desc.shape[0] == batch) continue;
+        std::vector<size_t> shape = desc.shape;
+        shape[0] = batch;
+        comp.graph->set_runtime_input_shape(node_id, shape);
+        const auto& resized = comp.graph->get_output_buffer(node_id);
+        comp.input_buffers[i].assign(resized.byte_size, 0);
+        comp.graph->set_external_input(node_id, comp.input_buffers[i].data(), resized.precision);
+    }
+}
+
+size_t Model::decoder_cache_num_slots() {
+    if (!decoder_ || !decoder_->graph) return 1;
+    for (const auto& state : decoder_->cache_states) {
+        int node_id = state.key_node_id;
+        if (node_id < 0) continue;
+        if (decoder_->graph->get_node_op_type(static_cast<size_t>(node_id)) != OpType::KV_CACHE_STATE) continue;
+        size_t num_slots = decoder_->graph->get_node_cache_num_slots(static_cast<size_t>(node_id));
+        return num_slots ? num_slots : 1;
+    }
+    return 1;
+}
+
+void Model::run_step_batch(const std::vector<uint32_t>& token_ids, const std::vector<size_t>& positions) {
+    for (size_t b = 0; b < token_ids.size(); ++b) {
+        write_int_input_at(*encoder_, "input_ids", b, static_cast<int64_t>(token_ids[b]));
+        write_int_input_at(*encoder_, "position_ids", b, static_cast<int64_t>(positions[b]));
+    }
+    encoder_->graph->execute();
+    copy_component_outputs_to_inputs(*encoder_, *decoder_);
+    decoder_->graph->execute();
+    maybe_capture_handoff_probe_hidden(*decoder_);
+}
+
+std::vector<uint32_t> Model::batch_stop_token_ids() const {
+    std::vector<uint32_t> stops;
+    stops.push_back(config_.eos_token_id);
+    Tokenizer* tk = get_tokenizer();
+    auto add_if_single = [&](const std::string& s) {
+        if (!tk || s.empty()) return;
+        std::vector<uint32_t> t = tk->encode(s);
+        if (t.size() == 1) stops.push_back(t[0]);
+    };
+    if (tk) add_if_single(tk->get_default_stop_sequence());
+    if (config_.model_type == Config::ModelType::GEMMA4) add_if_single("<turn|>");
+    return stops;
+}
+
+std::vector<std::vector<uint32_t>> Model::generate_batch(const std::vector<std::vector<uint32_t>>& prompts,
+                                                         size_t max_new_tokens, bool stop_on_eos,
+                                                         const std::function<void(size_t, uint32_t)>* on_token) {
+    size_t batch = prompts.size();
+    if (batch == 0 || !encoder_ || !decoder_ || decode_route_ != DecodeRoute::CACHED_STEP) return {};
+    for (const auto& p : prompts) if (p.empty()) return {};
+    if (!load_component_graph(*encoder_) || !load_component_graph(*decoder_)) return {};
+    if (batch > decoder_cache_num_slots()) return {};
+    auto has_dynamic_input = [](Component& c) {
+        for (int node_id : c.runtime_input_node_ids) {
+            if (node_id < 0) continue;
+            if (c.graph->get_output_buffer(static_cast<size_t>(node_id)).has_dynamic_dims()) return true;
+        }
+        return false;
+    };
+    if (batch > 1 && (!has_dynamic_input(*encoder_) || !has_dynamic_input(*decoder_))) return {};
+
+    reset_component_cache_states(*decoder_);
+    set_component_batch(*encoder_, batch);
+    set_component_batch(*decoder_, batch);
+
+    std::vector<std::vector<uint32_t>> out(batch);
+    std::vector<size_t> fed(batch, 0);
+    std::vector<uint32_t> last(batch, 0);
+    std::vector<bool> done(batch, false);
+    size_t remaining = batch;
+
+    const std::vector<uint32_t> stop_ids = stop_on_eos ? batch_stop_token_ids() : std::vector<uint32_t>{};
+    auto is_stop = [&](uint32_t t) {
+        for (uint32_t s : stop_ids) if (s == t) return true;
+        return false;
+    };
+
+    std::vector<uint32_t> tokens(batch);
+    std::vector<size_t> positions(batch);
+    while (remaining > 0) {
+        for (size_t b = 0; b < batch; ++b) {
+            positions[b] = fed[b];
+            tokens[b] = (fed[b] < prompts[b].size()) ? prompts[b][fed[b]] : last[b];
+        }
+        run_step_batch(tokens, positions);
+        std::vector<uint32_t> sampled = argmax_component_logits_batch(*decoder_, batch);
+        for (size_t b = 0; b < batch; ++b) {
+            ++fed[b];
+            if (done[b]) continue;
+            if (fed[b] >= prompts[b].size()) {
+                last[b] = sampled[b];
+                if (is_stop(sampled[b])) {
+                    done[b] = true;
+                    --remaining;
+                    continue;
+                }
+                out[b].push_back(sampled[b]);
+                if (on_token) (*on_token)(b, sampled[b]);
+                if (out[b].size() >= max_new_tokens) {
+                    done[b] = true;
+                    --remaining;
+                }
+            }
+        }
+    }
+    return out;
+}
+
+std::vector<std::vector<uint32_t>> Model::decode_batch(const std::vector<uint32_t>& seed_tokens,
+                                                       size_t max_new_tokens) {
+    std::vector<std::vector<uint32_t>> prompts;
+    prompts.reserve(seed_tokens.size());
+    for (uint32_t seed : seed_tokens) prompts.push_back({seed});
+    return generate_batch(prompts, max_new_tokens);
+}
+
+size_t Model::batch_slot_capacity() {
+    if (!decoder_) return 1;
+    if (!decoder_->graph && !load_component_graph(*decoder_)) return 1;
+    return decoder_cache_num_slots();
+}
+
+std::vector<uint32_t> Model::decode_step_batch(const std::vector<uint32_t>& tokens,
+                                               const std::vector<size_t>& positions) {
+    size_t batch = tokens.size();
+    if (batch == 0 || !encoder_ || !decoder_ || decode_route_ != DecodeRoute::CACHED_STEP) return {};
+    if (!load_component_graph(*encoder_) || !load_component_graph(*decoder_)) return {};
+    set_component_batch(*encoder_, batch);
+    set_component_batch(*decoder_, batch);
+    run_step_batch(tokens, positions);
+    return argmax_component_logits_batch(*decoder_, batch);
+}
+
+void Model::reset_decode_slot(size_t slot) {
+    if (!decoder_ || !decoder_->graph) return;
+    for (const auto& state : decoder_->cache_states) {
+        for (int node_id : {state.key_node_id, state.value_node_id}) {
+            if (node_id < 0) continue;
+            if (decoder_->graph->get_node_op_type(static_cast<size_t>(node_id)) != OpType::KV_CACHE_STATE) continue;
+            const auto& desc = decoder_->graph->get_output_buffer(static_cast<size_t>(node_id));
+            void* ptr = decoder_->graph->get_output(static_cast<size_t>(node_id));
+            if (!ptr || desc.byte_size < 6 * sizeof(uint64_t)) continue;
+            auto* meta = static_cast<uint64_t*>(ptr);
+            uint64_t num_slots = meta[5] > 0 ? meta[5] : 1;
+            if (slot >= num_slots) continue;
+            size_t stride = desc.byte_size / num_slots;
+            *reinterpret_cast<uint64_t*>(static_cast<char*>(ptr) + slot * stride) = 0;
+        }
+    }
+}
+
+void Model::move_decode_slot(size_t dst_slot, size_t src_slot) {
+    if (!decoder_ || !decoder_->graph || dst_slot == src_slot) return;
+    for (const auto& state : decoder_->cache_states) {
+        for (int node_id : {state.key_node_id, state.value_node_id}) {
+            if (node_id < 0) continue;
+            if (decoder_->graph->get_node_op_type(static_cast<size_t>(node_id)) != OpType::KV_CACHE_STATE) continue;
+            const auto& desc = decoder_->graph->get_output_buffer(static_cast<size_t>(node_id));
+            void* ptr = decoder_->graph->get_output(static_cast<size_t>(node_id));
+            if (!ptr || desc.byte_size < 6 * sizeof(uint64_t)) continue;
+            auto* meta = static_cast<uint64_t*>(ptr);
+            uint64_t num_slots = meta[5] > 0 ? meta[5] : 1;
+            if (dst_slot >= num_slots || src_slot >= num_slots) continue;
+            size_t stride = desc.byte_size / num_slots;
+            char* base = static_cast<char*>(ptr);
+            std::memcpy(base + dst_slot * stride, base + src_slot * stride, stride);
+        }
+    }
+}
+
 #define FOR_EACH_MATCHED_OUTPUT(source, target, body) \
     for (size_t _i = 0; _i < (source).output_node_ids.size() && _i < (source).logical_outputs.size(); ++_i) { \
         const std::string& out_name = (source).logical_outputs[_i]; \
@@ -1030,7 +1218,12 @@ void Model::reset_component_cache_states(Component& comp) {
             switch (op_type) {
                 case OpType::KV_CACHE_STATE:
                     if (desc.byte_size >= sizeof(uint64_t)) {
-                        static_cast<uint64_t*>(ptr)[0] = 0;
+                        auto* meta = static_cast<uint64_t*>(ptr);
+                        uint64_t num_slots = (desc.byte_size >= 6 * sizeof(uint64_t) && meta[5] > 0) ? meta[5] : 1;
+                        size_t slot_stride = num_slots ? desc.byte_size / num_slots : desc.byte_size;
+                        for (uint64_t s = 0; s < num_slots; ++s) {
+                            *reinterpret_cast<uint64_t*>(static_cast<char*>(ptr) + s * slot_stride) = 0;
+                        }
                     }
                     break;
                 case OpType::CONV_CACHE_STATE:
@@ -1260,52 +1453,64 @@ void Model::run_full_context_text() {
     decoder_->graph->execute();
 }
 
-void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
-                           Precision feature_precision) {
-    if (!lm_encoder_media_step_) {
-        run_step(static_cast<uint32_t>(config_.pad_token_id), position, false);
-        return;
-    }
-    int embeds_idx = input_index(*lm_encoder_media_step_, "inputs_embeds");
-    if (embeds_idx < 0) {
-        run_step(static_cast<uint32_t>(config_.pad_token_id), position, false);
-        return;
-    }
-    auto& embeds_buf = lm_encoder_media_step_->input_buffers[embeds_idx];
-    size_t node_id = static_cast<size_t>(lm_encoder_media_step_->runtime_input_node_ids[embeds_idx]);
-    const auto& desc = lm_encoder_media_step_->graph->get_output_buffer(node_id);
+void Model::write_media_embeds_row(Component& comp, int embeds_idx, const uint8_t* feature_row,
+                                   size_t feature_row_bytes, Precision feature_precision) {
+    auto& embeds_buf = comp.input_buffers[embeds_idx];
+    size_t node_id = static_cast<size_t>(comp.runtime_input_node_ids[embeds_idx]);
+    const auto& desc = comp.graph->get_output_buffer(node_id);
     if (desc.precision == feature_precision) {
         size_t to_copy = std::min(feature_row_bytes, embeds_buf.size());
         std::memcpy(embeds_buf.data(), feature_row, to_copy);
         if (to_copy < embeds_buf.size()) {
             std::memset(embeds_buf.data() + to_copy, 0, embeds_buf.size() - to_copy);
         }
-    } else {
-        size_t src_elem = PrecisionTraits::size_of(feature_precision);
-        size_t dst_elem = PrecisionTraits::size_of(desc.precision);
-        size_t src_count = src_elem ? feature_row_bytes / src_elem : 0;
-        size_t dst_count = dst_elem ? embeds_buf.size() / dst_elem : 0;
-        size_t n = std::min(src_count, dst_count);
-        auto load_float = [&](size_t i) -> float {
-            if (feature_precision == Precision::FP16) return static_cast<float>(reinterpret_cast<const __fp16*>(feature_row)[i]);
-            if (feature_precision == Precision::FP32) return reinterpret_cast<const float*>(feature_row)[i];
-            return static_cast<float>(reinterpret_cast<const int8_t*>(feature_row)[i]);
-        };
-        for (size_t i = 0; i < n; ++i) {
-            float v = load_float(i);
-            if (desc.precision == Precision::FP16) reinterpret_cast<__fp16*>(embeds_buf.data())[i] = static_cast<__fp16>(v);
-            else if (desc.precision == Precision::FP32) reinterpret_cast<float*>(embeds_buf.data())[i] = v;
-            else reinterpret_cast<int8_t*>(embeds_buf.data())[i] = static_cast<int8_t>(v);
+        return;
+    }
+    size_t src_elem = PrecisionTraits::size_of(feature_precision);
+    size_t dst_elem = PrecisionTraits::size_of(desc.precision);
+    size_t src_count = src_elem ? feature_row_bytes / src_elem : 0;
+    size_t dst_count = dst_elem ? embeds_buf.size() / dst_elem : 0;
+    size_t n = std::min(src_count, dst_count);
+    auto load_float = [&](size_t i) -> float {
+        if (feature_precision == Precision::FP16) return static_cast<float>(reinterpret_cast<const __fp16*>(feature_row)[i]);
+        if (feature_precision == Precision::FP32) return reinterpret_cast<const float*>(feature_row)[i];
+        return static_cast<float>(reinterpret_cast<const int8_t*>(feature_row)[i]);
+    };
+    for (size_t i = 0; i < n; ++i) {
+        float v = load_float(i);
+        if (desc.precision == Precision::FP16) reinterpret_cast<__fp16*>(embeds_buf.data())[i] = static_cast<__fp16>(v);
+        else if (desc.precision == Precision::FP32) reinterpret_cast<float*>(embeds_buf.data())[i] = v;
+        else reinterpret_cast<int8_t*>(embeds_buf.data())[i] = static_cast<int8_t>(v);
+    }
+    if (n < dst_count) {
+        std::memset(embeds_buf.data() + n * dst_elem, 0, (dst_count - n) * dst_elem);
+    }
+}
+
+void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
+                           Precision feature_precision) {
+    if (lm_encoder_media_step_) {
+        int embeds_idx = input_index(*lm_encoder_media_step_, "inputs_embeds");
+        if (embeds_idx >= 0) {
+            write_media_embeds_row(*lm_encoder_media_step_, embeds_idx, feature_row, feature_row_bytes, feature_precision);
+            write_int_input(*lm_encoder_media_step_, "input_ids", 0);
+            write_int_input(*lm_encoder_media_step_, "position_ids", static_cast<int64_t>(position));
+            lm_encoder_media_step_->graph->execute();
+            copy_encoder_outputs_to_decoder(*lm_encoder_media_step_);
+            decoder_->graph->execute();
+            return;
         }
-        if (n < dst_count) {
-            std::memset(embeds_buf.data() + n * dst_elem, 0, (dst_count - n) * dst_elem);
+    } else if (encoder_ != nullptr && decoder_ != nullptr) {
+        int dec_embeds_idx = input_index(*decoder_, "inputs_embeds");
+        if (dec_embeds_idx >= 0) {
+            run_encoder_step(static_cast<uint32_t>(config_.pad_token_id), position);
+            copy_component_outputs_to_inputs(*encoder_, *decoder_);
+            write_media_embeds_row(*decoder_, dec_embeds_idx, feature_row, feature_row_bytes, feature_precision);
+            decoder_->graph->execute();
+            return;
         }
     }
-    write_int_input(*lm_encoder_media_step_, "input_ids", 0);
-    write_int_input(*lm_encoder_media_step_, "position_ids", static_cast<int64_t>(position));
-    lm_encoder_media_step_->graph->execute();
-    copy_encoder_outputs_to_decoder(*lm_encoder_media_step_);
-    decoder_->graph->execute();
+    run_step(static_cast<uint32_t>(config_.pad_token_id), position, false);
 }
 
 namespace {
@@ -1712,21 +1917,11 @@ void Model::run_audio_encoder(const std::vector<float>& audio_features) {
     }
 }
 
-uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float* out_uncertainty) {
-    size_t out_node = static_cast<size_t>(comp.output_node_ids.empty() ? 0 : comp.output_node_ids[0]);
-    const auto& desc = comp.graph->get_output_buffer(out_node);
-    void* ptr = comp.graph->get_output(out_node);
+uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty) {
     size_t vocab = desc.shape.empty() ? 0 : desc.shape.back();
-    size_t seq = desc.shape.size() >= 2 ? desc.shape[desc.shape.size() - 2] : 1;
-    size_t row = seq > 0 ? seq - 1 : 0;
-    if (logit_row != std::numeric_limits<size_t>::max()) {
-        row = std::min(logit_row, seq > 0 ? seq - 1 : 0);
-    } else if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
-        row = std::min(last_logit_position_, seq > 0 ? seq - 1 : 0);
-    }
-    size_t row_off = row * vocab;
     uint32_t best = 0;
     float best_v = -std::numeric_limits<float>::infinity();
+    float second_v = -std::numeric_limits<float>::infinity();
     const auto& tool_bias = tool_constrainer_.get_bias();
     auto score_with_bias = [&](size_t token_id, float value) {
         auto tool_it = tool_bias.find(static_cast<uint32_t>(token_id));
@@ -1735,8 +1930,8 @@ uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float
         if (vocab_it != vocab_bias_.end()) value += vocab_it->second;
         return value;
     };
-    float second_v = -std::numeric_limits<float>::infinity();
     auto observe_logit = [&](size_t i, float v) {
+        if (static_cast<int64_t>(i) == suppressed_token_id_) return;
         v = score_with_bias(i, v);
         if (v > best_v) {
             second_v = best_v;
@@ -1767,12 +1962,46 @@ uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float
     return best;
 }
 
+uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float* out_uncertainty) {
+    size_t out_node = static_cast<size_t>(comp.output_node_ids.empty() ? 0 : comp.output_node_ids[0]);
+    const auto& desc = comp.graph->get_output_buffer(out_node);
+    void* ptr = comp.graph->get_output(out_node);
+    size_t vocab = desc.shape.empty() ? 0 : desc.shape.back();
+    size_t seq = desc.shape.size() >= 2 ? desc.shape[desc.shape.size() - 2] : 1;
+    size_t row = seq > 0 ? seq - 1 : 0;
+    if (logit_row != std::numeric_limits<size_t>::max()) {
+        row = std::min(logit_row, seq > 0 ? seq - 1 : 0);
+    } else if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
+        row = std::min(last_logit_position_, seq > 0 ? seq - 1 : 0);
+    }
+    return argmax_logits_at(desc, ptr, row * vocab, out_uncertainty);
+}
+
+std::vector<uint32_t> Model::argmax_component_logits_batch(Component& comp, size_t batch) {
+    std::vector<uint32_t> out(batch, 0);
+    if (batch == 0) return out;
+    size_t out_node = static_cast<size_t>(comp.output_node_ids.empty() ? 0 : comp.output_node_ids[0]);
+    const auto& desc = comp.graph->get_output_buffer(out_node);
+    void* ptr = comp.graph->get_output(out_node);
+    size_t vocab = desc.shape.empty() ? 0 : desc.shape.back();
+    if (vocab == 0) return out;
+    size_t total_rows = desc.total_size / vocab;
+    size_t seq = total_rows / batch;
+    for (size_t b = 0; b < batch; ++b) {
+        size_t row = b * seq + (seq > 0 ? seq - 1 : 0);
+        out[b] = argmax_logits_at(desc, ptr, row * vocab, nullptr);
+    }
+    return out;
+}
+
 uint32_t Model::argmax_last_logits(float* out_uncertainty) {
     return argmax_component_logits(*decoder_, std::numeric_limits<size_t>::max(), out_uncertainty);
 }
 
-bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token) {
+bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token,
+                                           float* out_uncertainty) {
     reset_prefill_stats();
+    if (out_uncertainty) *out_uncertainty = 0.0f;
     if (tokens.empty() || !decoder_ || cache_total_seq_len_ != 0) {
         return false;
     }
@@ -1800,7 +2029,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
         context_tokens_.insert(context_tokens_.end(), tokens.begin(), tokens.end());
         run_full_context_text();
         cache_total_seq_len_ = context_tokens_.size();
-        out_token = argmax_last_logits();
+        out_token = argmax_last_logits(out_uncertainty);
         record_sampled_token(out_token);
         return true;
     }
@@ -1809,7 +2038,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
             run_step(tokens[i], i, i + 1 == tokens.size());
         }
         cache_total_seq_len_ = tokens.size();
-        out_token = argmax_last_logits();
+        out_token = argmax_last_logits(out_uncertainty);
         record_sampled_token(out_token);
         return true;
     }
@@ -1825,7 +2054,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
             cache_total_seq_len_ = tokens.size() - 1;
             run_step(tokens.back(), cache_total_seq_len_, true);
             ++cache_total_seq_len_;
-            out_token = argmax_last_logits();
+            out_token = argmax_last_logits(out_uncertainty);
             record_sampled_token(out_token);
             last_prefill_scalar_tail_tokens_ = 1;
             maybe_roll_compact();
@@ -1839,9 +2068,9 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     }
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
     if (chunked.logical_tokens == tokens.size() && chunked.logical_tokens > 0 && decoder_prefill_) {
-        out_token = argmax_component_logits(*decoder_prefill_, chunked.last_logit_row);
+        out_token = argmax_component_logits(*decoder_prefill_, chunked.last_logit_row, out_uncertainty);
     } else {
-        out_token = argmax_last_logits();
+        out_token = argmax_last_logits(out_uncertainty);
     }
     record_sampled_token(out_token);
     maybe_roll_compact();
@@ -2677,8 +2906,8 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
             return;
         }
     }
-    if (!lm_encoder_media_step_) {
-        CACTUS_LOG_WARN("model", "Bundle has neither chunk-prefill nor lm_encoder_media_step; falling back to text-only prefill");
+    if (!supports_warm_media_injection()) {
+        CACTUS_LOG_WARN("model", "Bundle supports neither chunk-prefill nor warm media injection; falling back to text-only prefill");
         prefill(tokens, get_prefill_chunk_size(), profile_file);
         return;
     }
@@ -2746,11 +2975,12 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
     size_t audio_consumed = 0;
     const uint32_t image_tok = config_.image_token_id;
     const uint32_t audio_tok = config_.audio_token_id;
+    const bool warm_media = supports_warm_media_injection();
 
     for (size_t i = 0; i < tokens.size(); ++i) {
         uint32_t t = tokens[i];
         size_t pos = cache_total_seq_len_ + i;
-        if (image_tok != 0 && t == image_tok && !image_feature_name.empty() && lm_encoder_media_step_) {
+        if (image_tok != 0 && t == image_tok && !image_feature_name.empty() && warm_media) {
             const auto& feat = media_features_[image_feature_name];
             const uint8_t* row = feat.data() + image_consumed * image_row_bytes;
             if (image_consumed * image_row_bytes + image_row_bytes <= feat.size()) {
@@ -2759,7 +2989,7 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
                 continue;
             }
         }
-        if (audio_tok != 0 && t == audio_tok && !audio_feature_name.empty() && lm_encoder_media_step_) {
+        if (audio_tok != 0 && t == audio_tok && !audio_feature_name.empty() && warm_media) {
             const auto& feat = media_features_[audio_feature_name];
             const uint8_t* row = feat.data() + audio_consumed * audio_row_bytes;
             if (audio_consumed * audio_row_bytes + audio_row_bytes <= feat.size()) {
@@ -2839,13 +3069,16 @@ std::vector<uint32_t> Model::transcribe_whisper_seq2seq(
     const std::vector<uint32_t>& decoder_prompt_tokens,
     size_t max_tokens,
     const std::vector<std::vector<uint32_t>>& stop_token_sequences,
-    const std::atomic<bool>* should_stop) {
+    const std::atomic<bool>* should_stop,
+    int64_t suppress_token_id) {
     if (decoder_prompt_tokens.empty() || max_tokens == 0) return {};
     if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP || encoder_cross_kv_source_kind_ != "audio_features") {
         CACTUS_LOG_ERROR("model", "Whisper bundle missing encoder_cross_kv_decoder_step route metadata");
         return {};
     }
     if (!prepare_encoder_cross_kv_from_audio(audio_features)) return {};
+    struct SuppressGuard { int64_t& id; ~SuppressGuard() { id = -1; } } guard{suppressed_token_id_};
+    suppressed_token_id_ = suppress_token_id;
     return run_encoder_cross_kv_decode_loop(
         decoder_prompt_tokens,
         max_tokens,
@@ -2853,8 +3086,14 @@ std::vector<uint32_t> Model::transcribe_whisper_seq2seq(
         should_stop);
 }
 
-std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& audio_features) {
+std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& audio_features,
+                                                     ParakeetTdtStreamState* stream, bool is_final,
+                                                     size_t end_frame,
+                                                     const std::atomic<bool>* should_stop) {
     std::vector<uint32_t> emitted;
+    double raw_decode_ms = 0.0;
+
+    reset_handoff_probe_rollout();
 
     Component* audio_enc = components_.count("audio_encoder") ? &components_.at("audio_encoder") : nullptr;
     Component* dec = components_.count("decoder") ? &components_.at("decoder") : nullptr;
@@ -2898,7 +3137,8 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         const std::vector<int> out_shape = npu_audio_encoder_->get_output_shape();
         if (in_shape.size() >= 3 && out_shape.size() >= 3 &&
             in_shape[1] > 0 && in_shape[2] > 0 && out_shape[1] > 0 && out_shape[2] > 0 &&
-            static_cast<size_t>(in_shape[2]) == expected_mels) {
+            static_cast<size_t>(in_shape[2]) == expected_mels &&
+            copy_frames <= static_cast<size_t>(in_shape[1])) {
             const size_t window_frames = static_cast<size_t>(in_shape[1]);
             const size_t window_hidden = static_cast<size_t>(out_shape[1]);
             const size_t hidden_dim_npu = static_cast<size_t>(out_shape[2]);
@@ -2907,9 +3147,12 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
             const size_t num_chunks = (copy_frames + window_frames - 1) / window_frames;
             const size_t total_hidden_T = num_chunks * window_hidden;
             npu_hidden_storage.assign(total_hidden_T * hidden_dim_npu, __fp16(0));
+            const bool want_probe = handoff_probe_loaded_ &&
+                static_cast<size_t>(handoff_probe_feat_dim_) == hidden_dim_npu;
             std::vector<__fp16> input_fp16(chunk_input_elems);
             bool all_ok = num_chunks > 0;
             for (size_t c = 0; c < num_chunks && all_ok; ++c) {
+                if (should_stop && should_stop->load()) return emitted;
                 const size_t frame_start = c * window_frames;
                 const size_t frame_end = std::min(frame_start + window_frames, copy_frames);
                 std::fill(input_fp16.begin(), input_fp16.end(), __fp16(0));
@@ -2932,13 +3175,25 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
                 if (npu_hidden_T > total_hidden_T) npu_hidden_T = total_hidden_T;
                 CACTUS_LOG_INFO("model", "Parakeet audio encoder ran on NPU ("
                                 << num_chunks << " chunks, " << npu_hidden_T << " valid hidden frames)");
+                if (want_probe) {
+                    const size_t probe_elems = npu_hidden_T * hidden_dim_npu;
+                    handoff_probe_hidden_.reserve(handoff_probe_hidden_.size() + probe_elems);
+                    const __fp16* pp = npu_hidden_storage.data();
+                    for (size_t i = 0; i < probe_elems; ++i) {
+                        handoff_probe_hidden_.push_back(static_cast<float>(pp[i]));
+                    }
+                    CACTUS_LOG_INFO("cloud_handoff", "Captured " << npu_hidden_T
+                                    << " NPU probe frames for the handoff probe");
+                }
             } else {
                 CACTUS_LOG_WARN("model", "NPU audio encoder chunk failed; falling back to CPU graph");
             }
         }
     }
     if (!used_npu) {
+        if (should_stop && should_stop->load()) return emitted;
         audio_enc->graph->execute();
+        maybe_capture_handoff_probe_hidden(*audio_enc, "encoder_hidden_states");
     }
 
     int hidden_idx = output_index(*audio_enc, "encoder_hidden_states");
@@ -2970,10 +3225,21 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         auto& buf = dec->input_buffers[idx];
         std::memset(buf.data(), 0, buf.size());
     };
-    zero_state("state_h_0");
-    zero_state("state_c_0");
-    zero_state("state_h_1");
-    zero_state("state_c_1");
+    if (stream && stream->initialized && stream->dec_state.size() == 4) {
+        const char* sn[4] = {"state_h_0", "state_c_0", "state_h_1", "state_c_1"};
+        for (size_t i = 0; i < 4; ++i) {
+            int idx = input_index(*dec, sn[i]);
+            if (idx < 0) continue;
+            auto& buf = dec->input_buffers[idx];
+            std::memcpy(buf.data(), stream->dec_state[i].data(),
+                        std::min(buf.size(), stream->dec_state[i].size()));
+        }
+    } else {
+        zero_state("state_h_0");
+        zero_state("state_c_0");
+        zero_state("state_h_1");
+        zero_state("state_c_1");
+    }
 
     std::vector<uint32_t> durations = config_.tdt_durations;
     if (durations.empty()) {
@@ -2982,8 +3248,8 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     if (durations.empty()) durations.push_back(1);
 
     const uint32_t configured_blank = config_.tdt_blank_id;
-    uint32_t last_token = configured_blank;
-    size_t time_index = 0;
+    uint32_t last_token = (stream && stream->initialized) ? stream->last_token : configured_blank;
+    size_t time_index = (stream && stream->initialized) ? stream->time_index : 0;
 
     const int ef_idx = input_index(*dec, "encoder_frame");
     const int tok_in_idx = input_index(*dec, "token_ids");
@@ -3025,7 +3291,36 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         };
     }
 
-    while (time_index < T) {
+    size_t commit_to = T;
+    if (stream) {
+        size_t valid_hidden = T;
+        if (!used_npu && expected_frames > 0)
+            valid_hidden = std::min<size_t>(T, (copy_frames * T) / expected_frames);
+        commit_to = (end_frame > 0) ? std::min(end_frame, valid_hidden) : valid_hidden;
+    }
+    Tokenizer* stream_tok = stream ? get_tokenizer() : nullptr;
+    const auto& tdt_vocab_bias = get_vocab_bias();
+    const float frame_sec = (160.0f / 16000.0f) *
+        static_cast<float>(std::max<uint32_t>(1, config_.subsampling_factor));
+    constexpr uint32_t kMaxStreamDurationSkipFrames = 2;
+
+    auto snapshot_state = [&]() {
+        std::vector<std::vector<uint8_t>> snap(state_copy_count);
+        for (size_t s = 0; s < state_copy_count; ++s) {
+            const uint8_t* p = static_cast<const uint8_t*>(state_copies[s].in_data);
+            snap[s].assign(p, p + state_copies[s].bytes);
+        }
+        return snap;
+    };
+
+    std::vector<std::vector<uint8_t>> snap_state;
+    uint32_t snap_last_token = last_token;
+    size_t snap_time = time_index;
+    size_t confirmed_count = 0;
+    if (stream) snap_state = snapshot_state();
+
+    while (time_index < commit_to) {
+        if (should_stop && should_stop->load()) break;
         const uint8_t* frame_ptr = hidden_ptr + time_index * frame_bytes;
         write_typed_buffer(ef_buf, ef_desc.precision, frame_ptr, frame_bytes, hidden_precision);
 
@@ -3038,7 +3333,10 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
                 case Precision::INT8: *reinterpret_cast<int8_t*>(tok_data) = static_cast<int8_t>(last_token); break;
                 default: *reinterpret_cast<int32_t*>(tok_data) = static_cast<int32_t>(last_token); break;
             }
+            const auto exec_t0 = std::chrono::steady_clock::now();
             dec->graph->execute();
+            raw_decode_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - exec_t0).count();
 
             const void* logits_ptr = dec->graph->get_output(logits_node);
             auto get_logit = [&](size_t i) -> float {
@@ -3051,6 +3349,10 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
             float best_token_score = -std::numeric_limits<float>::infinity();
             for (size_t i = 0; i < token_class_count; ++i) {
                 float v = get_logit(i);
+                if (stream && !tdt_vocab_bias.empty()) {
+                    auto it = tdt_vocab_bias.find(static_cast<uint32_t>(i));
+                    if (it != tdt_vocab_bias.end()) v += it->second;
+                }
                 if (v > best_token_score) { best_token_score = v; next_token = static_cast<uint32_t>(i); }
             }
             uint32_t best_duration_idx = 0;
@@ -3060,9 +3362,19 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
                 if (v > best_duration_score) { best_duration_score = v; best_duration_idx = static_cast<uint32_t>(i); }
             }
 
-            const uint32_t skip = durations[std::min<uint32_t>(best_duration_idx, static_cast<uint32_t>(durations.size() - 1))];
+            uint32_t skip = durations[std::min<uint32_t>(best_duration_idx, static_cast<uint32_t>(durations.size() - 1))];
+            if (stream && skip > kMaxStreamDurationSkipFrames) skip = kMaxStreamDurationSkipFrames;
 
             if (next_token != effective_blank) {
+                if (stream && !is_final && stream_tok && !emitted.empty()) {
+                    std::string piece = stream_tok->decode({next_token});
+                    if (!piece.empty() && piece[0] == ' ') {
+                        snap_state = snapshot_state();
+                        snap_last_token = last_token;
+                        snap_time = time_index;
+                        confirmed_count = emitted.size();
+                    }
+                }
                 emitted.push_back(next_token);
                 last_token = next_token;
                 for (size_t s = 0; s < state_copy_count; ++s) {
@@ -3085,6 +3397,26 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         }
 
         if (!advanced) time_index += 1;
+    }
+
+    if (stream) {
+        stream->initialized = true;
+        stream->decoded_tokens = emitted.size();
+        stream->raw_decode_ms = raw_decode_ms;
+        stream->pending.clear();
+        if (is_final) {
+            stream->dec_state = snapshot_state();
+            stream->last_token = last_token;
+            stream->time_index = time_index;
+            stream->confirmed_sec = static_cast<float>(time_index) * frame_sec;
+        } else {
+            stream->dec_state = std::move(snap_state);
+            stream->last_token = snap_last_token;
+            stream->time_index = snap_time;
+            stream->confirmed_sec = static_cast<float>(snap_time) * frame_sec;
+            stream->pending.assign(emitted.begin() + confirmed_count, emitted.end());
+            emitted.resize(confirmed_count);
+        }
     }
 
     return emitted;
@@ -3877,7 +4209,7 @@ bool Config::from_json(const std::string& config_path) {
         default_top_p = 0.95f;
         default_top_k = 64;
         if (model_type == ModelType::GEMMA4) {
-            default_cloud_handoff_threshold = 0.92f;
+            default_cloud_handoff_threshold = 0.81f;
         }
     } else if (model_type == ModelType::LFM2) {
         default_temperature = 0.3f;

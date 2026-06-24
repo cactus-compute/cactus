@@ -36,6 +36,7 @@ dependencies = [
     "Pillow>=11.0.0,<12",
     "torchvision>=0.23.0,<1",
     "sentencepiece>=0.2.0",
+    "coremltools>=9.0; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
@@ -66,6 +67,7 @@ include = ["cactus*"]
 [tool.setuptools.package-data]
 "cactus.bindings" = ["lib/*.dylib", "lib/*.so"]
 "cactus" = ["bin/run", "bin/transcribe", "assets/*"]
+"cactus.convert" = ["assets/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

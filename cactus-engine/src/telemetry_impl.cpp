@@ -362,19 +362,16 @@ static void persist_registered_flag(const std::string& file) {
     }
 }
 
-static std::string sysctl_string(const char* key) {
 #if defined(__APPLE__)
+static std::string sysctl_string(const char* key) {
     size_t size = 0;
     if (sysctlbyname(key, nullptr, &size, nullptr, 0) != 0 || size == 0) return {};
     std::string out(size, '\0');
     if (sysctlbyname(key, out.data(), &size, nullptr, 0) != 0) return {};
     if (!out.empty() && out.back() == '\0') out.pop_back();
     return out;
-#else
-    (void)key;
-    return {};
-#endif
 }
+#endif
 
 static Event make_event(EventType type, const char* model, bool success, double ttft_ms, double tps, double response_time_ms, int tokens, const char* message) {
     Event e;
@@ -782,22 +779,6 @@ static std::string format_timestamp(const std::chrono::system_clock::time_point&
                   static_cast<long long>(ms));
     return std::string(buf);
 }
-
-[[maybe_unused]] static bool is_valid_uuid(const std::string& s) {
-    // Simple check used only for validation when accepting user-provided IDs.
-    if (s.size() != 36) return false;
-    for (size_t i = 0; i < s.size(); ++i) {
-        char c = s[i];
-        if (i == 8 || i == 13 || i == 18 || i == 23) {
-            if (c != '-') return false;
-        } else {
-            bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-            if (!hex) return false;
-        }
-    }
-    return true;
-}
-
 
 static void collect_device_info() {
     struct utsname u;

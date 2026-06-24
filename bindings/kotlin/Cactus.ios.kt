@@ -135,6 +135,40 @@ actual fun cactusTranscribe(handle: Long, audioPath: String?, prompt: String, op
 }
 
 @OptIn(ExperimentalForeignApi::class)
+actual fun cactusStreamTranscribeStart(handle: Long, optionsJson: String?): Long {
+    val stream = cactus_stream_transcribe_start(handle.toCPointer(), optionsJson)
+        ?: throw RuntimeException(cactus_get_last_error()?.toKString() ?: "Failed to start streaming transcription")
+    return stream.rawValue.toLong()
+}
+
+@OptIn(ExperimentalForeignApi::class)
+actual fun cactusStreamTranscribeProcess(stream: Long, pcmData: ByteArray?): String {
+    memScoped {
+        val buffer = allocArray<ByteVar>(65536)
+        val pcmPtr = pcmData?.refTo(0)?.getPointer(this)
+        val result = cactus_stream_transcribe_process(
+            stream.toCPointer(),
+            pcmPtr?.reinterpret(),
+            pcmData?.size?.toULong() ?: 0u,
+            buffer,
+            65536u
+        )
+        if (result < 0) throw RuntimeException(cactus_get_last_error()?.toKString() ?: "Unknown error")
+        return buffer.toKString()
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
+actual fun cactusStreamTranscribeStop(stream: Long): String {
+    memScoped {
+        val buffer = allocArray<ByteVar>(65536)
+        val result = cactus_stream_transcribe_stop(stream.toCPointer(), buffer, 65536u)
+        if (result < 0) throw RuntimeException(cactus_get_last_error()?.toKString() ?: "Unknown error")
+        return buffer.toKString()
+    }
+}
+
+@OptIn(ExperimentalForeignApi::class)
 actual fun cactusEmbed(handle: Long, text: String, normalize: Boolean): FloatArray {
     memScoped {
         val buffer = allocArray<FloatVar>(4096)

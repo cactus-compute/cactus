@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <atomic>
 #include <limits>
+#include <functional>
 
 #include "cactus_graph.h"
 #include "kv_compress.h"
@@ -29,7 +30,7 @@ struct NPUNamedInput {
 class NPUEncoder {
 public:
     virtual ~NPUEncoder() = default;
-    virtual bool load(const std::string& model_path) = 0;
+    virtual bool load(const std::string& model_path, const std::string& compute_units = "") = 0;
     virtual bool preallocate(
         const std::vector<int>& input_shape,
         const std::string& input_name = "x",
@@ -631,7 +632,21 @@ public:
     uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
                     size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                     float min_p = 0.15f, float repetition_penalty = 1.1f);
-    bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token);
+    bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token,
+                                        float* out_uncertainty = nullptr);
+
+    std::vector<std::vector<uint32_t>> decode_batch(const std::vector<uint32_t>& seed_tokens,
+                                                    size_t max_new_tokens);
+    std::vector<std::vector<uint32_t>> generate_batch(const std::vector<std::vector<uint32_t>>& prompts,
+                                                      size_t max_new_tokens, bool stop_on_eos = false,
+                                                      const std::function<void(size_t, uint32_t)>* on_token = nullptr);
+
+    size_t batch_slot_capacity();
+    std::vector<uint32_t> batch_stop_token_ids() const;
+    std::vector<uint32_t> decode_step_batch(const std::vector<uint32_t>& tokens,
+                                            const std::vector<size_t>& positions);
+    void reset_decode_slot(size_t slot);
+    void move_decode_slot(size_t dst_slot, size_t src_slot);
 
     void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 128, const std::string& profile_file = "",
                  bool prepare_decode = true);
@@ -660,12 +675,28 @@ public:
                                float min_p = 0.15f, float repetition_penalty = 1.1f,
                                float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
 
-    std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features);
+    struct ParakeetTdtStreamState {
+        bool initialized = false;
+        uint32_t last_token = 0;
+        size_t time_index = 0;
+        std::vector<std::vector<uint8_t>> dec_state;
+        std::vector<uint32_t> pending;
+        float confirmed_sec = 0.0f;
+        size_t decoded_tokens = 0;
+        double raw_decode_ms = 0.0;
+    };
+
+    std::vector<uint32_t> transcribe_parakeet_tdt(const std::vector<float>& audio_features,
+                                                  ParakeetTdtStreamState* stream = nullptr,
+                                                  bool is_final = true,
+                                                  size_t end_frame = 0,
+                                                  const std::atomic<bool>* should_stop = nullptr);
     std::vector<uint32_t> transcribe_whisper_seq2seq(const std::vector<float>& audio_features,
                                                      const std::vector<uint32_t>& decoder_prompt_tokens,
                                                      size_t max_tokens,
                                                      const std::vector<std::vector<uint32_t>>& stop_token_sequences,
-                                                     const std::atomic<bool>* should_stop = nullptr);
+                                                     const std::atomic<bool>* should_stop = nullptr,
+                                                     int64_t suppress_token_id = -1);
 
     std::vector<float> get_embeddings(const std::vector<uint32_t>& tokens, bool pooled = true,
                                        bool normalize = false, const std::string& profile_file = "");
@@ -674,6 +705,11 @@ public:
     std::vector<float> get_lm_embeddings(const std::vector<uint32_t>& tokens, bool normalize = false);
     bool has_lm_embedding() const { return decoder_embed_ != nullptr; }
     bool has_text_embedding() const { return components_.count("text_embedding") > 0; }
+    bool supports_warm_media_injection() const {
+        if (lm_encoder_media_step_ != nullptr) return true;
+        return encoder_ != nullptr && decoder_ != nullptr
+            && input_index(*decoder_, "inputs_embeds") >= 0;
+    }
 
     std::vector<float> get_image_embeddings(const std::string& image_path);
 
@@ -701,7 +737,7 @@ public:
     size_t last_prefill_tail_chunk_tokens() const { return last_prefill_tail_chunk_tokens_; }
     size_t last_prefill_tail_padding_tokens() const { return last_prefill_tail_padding_tokens_; }
 
-    bool load_npu_audio_encoder(const std::string& model_path);
+    bool load_npu_audio_encoder(const std::string& model_path, const std::string& compute_units = "");
     bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
 
     bool load_npu_vision_encoder(const std::string& model_path);
@@ -774,9 +810,14 @@ private:
     void unload_component_graph(Component& comp);
     bool bind_runtime_buffers(Component& comp);
     void run_step(uint32_t token_id, size_t position, bool read_logits);
+    void run_step_batch(const std::vector<uint32_t>& token_ids, const std::vector<size_t>& positions);
+    void set_component_batch(Component& comp, size_t batch);
+    size_t decoder_cache_num_slots();
     void run_encoder_step(uint32_t token_id, size_t position);
     void run_media_step(size_t position, const uint8_t* feature_row, size_t feature_row_bytes,
                         Precision feature_precision);
+    void write_media_embeds_row(Component& comp, int embeds_idx, const uint8_t* feature_row,
+                                size_t feature_row_bytes, Precision feature_precision);
     void reset_encoder_cross_kv_route_state();
     bool finish_encoder_cross_kv_prepare();
     bool finish_encoder_cross_kv_prepare_after_source();
@@ -808,6 +849,8 @@ private:
     void run_full_context_text();
     uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max(),
                                      float* out_uncertainty = nullptr);
+    uint32_t argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty);
+    std::vector<uint32_t> argmax_component_logits_batch(Component& comp, size_t batch);
     void write_int_input(Component& comp, const std::string& name, int64_t value);
     void write_int_input_at(Component& comp, const std::string& name, size_t index, int64_t value);
     void write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size);
@@ -815,7 +858,7 @@ private:
     int output_index(const Component& comp, const std::string& name) const;
     uint32_t argmax_last_logits(float* out_uncertainty = nullptr);
     bool load_handoff_probe();
-    void maybe_capture_handoff_probe_hidden(const Component& comp);
+    void maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name = "probe_hidden");
     void run_vision_encoder(const std::string& image_path);
     void run_vision_encoder_lfm2_vl(const std::string& image_path);
     void encode_lfm2_vl_image_into_features(const std::string& image_path);
@@ -860,6 +903,7 @@ private:
 
     std::string family_;
     std::string npu_audio_encoder_mlpackage_;
+    std::string npu_audio_compute_units_;
     std::string npu_vision_encoder_mlpackage_;
     std::string npu_source_encoder_mlpackage_;
 
@@ -903,6 +947,7 @@ private:
 
     ToolCallConstrainer tool_constrainer_;
     std::unordered_map<uint32_t, float> vocab_bias_;
+    int64_t suppressed_token_id_ = -1;
 
     bool handoff_probe_loaded_ = false;
     uint32_t handoff_probe_feat_dim_ = 0;

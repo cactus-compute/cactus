@@ -33,3 +33,16 @@ const result = await Cactus.complete(handle, messagesJson, null, null, null, fal
 await Cactus.destroy(handle);
 ```
 <!-- --8<-- [end:example] -->
+
+## Streaming transcription
+
+Push 16 kHz mono PCM16 (base64) as it arrives; each call returns `{"success":true,"confirmed":...,"pending":...}` (`confirmed` is final, `pending` is the volatile tail).
+
+```ts
+const stream = await Cactus.streamTranscribeStart(handle, '{"language":"en"}');
+for (const chunkBase64 of pcmChunks) {
+  const json = await Cactus.streamTranscribeProcess(stream, chunkBase64);
+  // parse json -> append "confirmed", show "pending" as a live preview
+}
+const tail = await Cactus.streamTranscribeStop(stream);
+```

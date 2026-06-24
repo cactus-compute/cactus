@@ -68,55 +68,86 @@ def test_cache_context_length_rejects_non_positive_explicit_value() -> None:
         )
 
 
-def test_cmd_convert_does_not_transpile(monkeypatch, tmp_path: Path) -> None:
-    """`cactus convert` does CQ quantization only; the runtime graph is built
-    by `cactus transpile` per docs/cactus_transpiler.md."""
+def test_cmd_convert_builds_graph_after_weights(monkeypatch, tmp_path: Path) -> None:
+    """`cactus convert` quantizes weights and then builds the runtime graph in
+    one step; the graph build is pointed at the weights just written."""
     parser = cli.create_parser()
-    args = parser.parse_args(["convert", "google/gemma-4-E2B-it", str(tmp_path / "out"), "--reconvert"])
+    out = tmp_path / "out"
+    args = parser.parse_args(["convert", "google/gemma-4-E2B-it", str(out), "--reconvert"])
 
-    cq_calls: list[list[str]] = []
+    weight_calls: list[dict] = []
 
-    def _fake_cq_main(command):
-        cq_calls.append(list(command))
-        out_dir = tmp_path / "out"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "config.txt").write_text("model_type=gemma4\n", encoding="utf-8")
+    def _fake_ensure_weights(model_id, **kw):
+        weight_calls.append(kw)
+        Path(kw["output_dir"]).mkdir(parents=True, exist_ok=True)
+        return kw["output_dir"]
+
+    transpile_calls: list[dict] = []
+
+    def _fake_run_transpile(model_id, **kw):
+        transpile_calls.append(kw)
         return 0
 
-    import cactus.convert.cli as cq_cli
-    monkeypatch.setattr(cq_cli, "main", _fake_cq_main)
-
-    # cmd_convert should call ensure_weights, never ensure_bundle (the latter
-    # transpiles as well). Patch ensure_bundle to fail loudly if invoked.
     import cactus.cli.model as model_mod
-
-    def _fail_if_called(*a, **kw):
-        raise AssertionError("cmd_convert must not invoke ensure_bundle (would transpile)")
-
-    monkeypatch.setattr(model_mod, "ensure_bundle", _fail_if_called)
+    import cactus.cli.transpile as transpile_mod
+    monkeypatch.setattr(model_mod, "ensure_weights", _fake_ensure_weights)
+    monkeypatch.setattr(model_mod, "_default_multimodal_assets", lambda: ([], None))
+    monkeypatch.setattr(transpile_mod, "run_transpile", _fake_run_transpile)
 
     rc = convert_cli.cmd_convert(args)
 
     assert rc == 0
-    assert len(cq_calls) == 1
-    assert "--out" in cq_calls[0]
+    assert len(weight_calls) == 1
+    assert len(transpile_calls) == 1
+    extra_args = transpile_calls[0]["extra_args"]
+    assert "--weights-dir" in extra_args
+    assert str(out) in extra_args
 
 
-def test_cli_registers_transpile_command() -> None:
-    """`cactus transpile` is a first-class subcommand per docs/cactus_transpiler.md."""
+def test_cmd_convert_weights_only_skips_graph(monkeypatch, tmp_path: Path) -> None:
+    """`--weights-only` stops after CQ quantization, before the runtime graph."""
     parser = cli.create_parser()
-    args = parser.parse_args(["transpile", "google/gemma-4-E2B-it",
-                              "--weights-dir", "/tmp/x", "--task", "causal_lm_logits"])
-    assert args.command == "transpile"
+    out = tmp_path / "out"
+    args = parser.parse_args(["convert", "google/gemma-4-E2B-it", str(out), "--weights-only"])
+
+    def _fake_ensure_weights(model_id, **kw):
+        Path(kw["output_dir"]).mkdir(parents=True, exist_ok=True)
+        return kw["output_dir"]
+
+    def _fail_if_called(*a, **kw):
+        raise AssertionError("--weights-only must skip the runtime graph build")
+
+    import cactus.cli.model as model_mod
+    import cactus.cli.transpile as transpile_mod
+    monkeypatch.setattr(model_mod, "ensure_weights", _fake_ensure_weights)
+    monkeypatch.setattr(transpile_mod, "run_transpile", _fail_if_called)
+
+    rc = convert_cli.cmd_convert(args)
+    assert rc == 0
+
+
+def test_cli_convert_absorbs_graph_flags() -> None:
+    """The former `transpile` options now live on `cactus convert`; the separate
+    `transpile` subcommand no longer exists."""
+    parser = cli.create_parser()
+    args = parser.parse_args(["convert", "google/gemma-4-E2B-it",
+                              "--weights-dir", "/tmp/x", "--task", "causal_lm_logits",
+                              "--dynamic-batch", "--max-slots", "8"])
+    assert args.command == "convert"
     assert args.model_id == "google/gemma-4-E2B-it"
     assert args.weights_dir == "/tmp/x"
     assert args.task == "causal_lm_logits"
+    assert args.dynamic_batch is True
+    assert args.max_slots == 8
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["transpile", "google/gemma-4-E2B-it"])
 
 
 def test_cli_registers_low_memory_transpile_flag() -> None:
     parser = cli.create_parser()
     args = parser.parse_args([
-        "transpile",
+        "convert",
         "Qwen/Qwen3-0.6B",
         "--weights-dir",
         "/tmp/x",

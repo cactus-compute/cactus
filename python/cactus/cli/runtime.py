@@ -106,7 +106,7 @@ def ensure_python_runtime_library():
     ):
         return library_path
 
-    print_color(YELLOW, "Preparing Cactus shared runtime for transpiler...")
+    print_color(YELLOW, "Preparing Cactus shared runtime...")
     if not static_lib.exists():
         static_lib = ensure_library()
     _link_python_runtime_library(static_lib=static_lib, library_path=library_path)

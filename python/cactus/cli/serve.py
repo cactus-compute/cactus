@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from .common import BLUE, GREEN, RED, YELLOW, print_color, weights_root
+from .common import BLUE, GREEN, RED, YELLOW, apply_runtime_env, is_valid_bundle, print_color, weights_root
 from .download import get_weights_dir
 
 
@@ -19,18 +19,17 @@ def _resolve_model_arg(model: str | None) -> tuple[Path | None, str | None]:
     return None, model
 
 
-def _is_valid_bundle(path: Path) -> bool:
-    return (path / "config.txt").exists() and (path / "components" / "manifest.json").exists()
-
-
 def cmd_serve(args):
     """Start the OpenAI-compatible HTTP server."""
-    model_path, model_name = _resolve_model_arg(args.model)
-    if args.model and model_path is None:
-        print_color(RED, f"Error: model not found: {args.model}")
-        print("Prepare a v2 bundle first with `cactus run <model>` (or `cactus convert <model>` then `cactus transpile <model>`).")
-        return 1
-    if model_path is not None and not _is_valid_bundle(model_path):
+    apply_runtime_env(args)
+    model_path, model_name = _resolve_model_arg(args.model_id)
+    if args.model_id and model_path is None:
+        from .model import prepare_bundle
+        built = prepare_bundle(args, fail_prefix=f"Error: could not prepare {args.model_id}")
+        if built is None:
+            return 1
+        model_path, model_name = built, built.name
+    if model_path is not None and not is_valid_bundle(model_path):
         print_color(RED, f"Error: not a valid v2 Cactus bundle: {model_path}")
         print("Expected config.txt and components/manifest.json.")
         return 1
@@ -52,10 +51,13 @@ def cmd_serve(args):
             weights_root=weights_root(),
             model_path=model_path,
             default_model=model_name,
+            auto_handoff=not args.no_cloud_handoff,
+            confidence_threshold=args.confidence_threshold,
+            cloud_timeout_ms=args.cloud_timeout_ms,
         )
     except RuntimeError as exc:
         print_color(RED, f"Error: {exc}")
-        print("Prepare a v2 bundle first with `cactus run <model>` (or `cactus convert <model>` then `cactus transpile <model>`).")
+        print("Prepare a bundle first with `cactus run <model>` (or `cactus convert <model>`).")
         return 1
 
     models = sorted(application.state.registry.models)

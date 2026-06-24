@@ -8,7 +8,6 @@ import torch
 from cactus.transpile.audio_preprocess import audio_duration_limit_seconds
 from cactus.transpile.audio_preprocess import prepare_native_gemma4_audio_features
 from cactus.transpile.media_limits import resize_static_image
-from cactus.transpile.runtime_support import ensure_transformers_supports_gemma4
 from cactus.transpile.runtime_support import patch_torch_flex_attention_compat
 from cactus.transpile.runtime_support import patch_transformers_torchvision_probe
 from cactus.transpile.runtime_support import PreparedInputs

@@ -29,3 +29,19 @@ let response = String(cString: buf)
 cactus_destroy(model)
 ```
 <!-- --8<-- [end:example] -->
+
+### Streaming transcription
+
+The streaming functions are exposed the same way. Push 16 kHz mono PCM16 as it arrives and read back `{"success":true,"confirmed":...,"pending":...}` — `confirmed` words are final, `pending` is the volatile tail.
+
+```swift
+let stream = cactus_stream_transcribe_start(model, "{\"language\":\"en\"}")
+var buf = [CChar](repeating: 0, count: 65536)
+for chunk in pcmChunks {            // each chunk: 16 kHz mono 16-bit PCM
+    chunk.withUnsafeBytes { raw in
+        _ = cactus_stream_transcribe_process(stream, raw.bindMemory(to: UInt8.self).baseAddress, raw.count, &buf, buf.count)
+    }
+    // parse String(cString: buf) -> append "confirmed", show "pending" live
+}
+cactus_stream_transcribe_stop(stream, &buf, buf.count)
+```

@@ -47,3 +47,21 @@ fn main() {
     }
 }
 ```
+
+## Streaming transcription
+
+Push 16 kHz mono PCM16 as it arrives; each call returns `{"success":true,"confirmed":...,"pending":...}` (`confirmed` is final, `pending` is the volatile tail). All `unsafe`, like the rest:
+
+```rust
+let opts = CString::new(r#"{"language":"en"}"#).unwrap();
+let stream = cactus::cactus_stream_transcribe_start(model, opts.as_ptr());
+let mut buf = vec![0u8; 65536];
+for chunk in pcm_chunks { // each: 16 kHz mono i16 bytes
+    cactus::cactus_stream_transcribe_process(
+        stream, chunk.as_ptr(), chunk.len(),
+        buf.as_mut_ptr() as *mut c_char, buf.len(),
+    );
+    // append "confirmed"; show "pending" as a live preview
+}
+cactus::cactus_stream_transcribe_stop(stream, buf.as_mut_ptr() as *mut c_char, buf.len());
+```

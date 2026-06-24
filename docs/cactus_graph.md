@@ -371,6 +371,7 @@ GraphFile::save_node(graph, node_id, "output.bin");
 
 #### GraphFile Namespace
 ```cpp
+GraphFile::save_graph(graph, "graph.cactus");
 GraphFile::SerializedGraph serialized = GraphFile::load_graph("graph.cactus");
 CactusGraph loaded = CactusGraph::from_serialized(serialized);
 ```
@@ -506,11 +507,11 @@ size_t similarity = fixture.graph().divide(dot_product, fixture.graph().multiply
 4. **Check precision**: Test operations with different precision types
 
 ### Contributing Graph Operations
-1. ** Define the op in core graph types ** 
+1. **Define the op in core graph types** 
 Add the new OpType in `cactus-graph/cactus_graph.h`
 If the op needs additional parameters, add the fields to OpParams in the same file 
 
-2. ** Add a graph builder API **  
+2. **Add a graph builder API**  
 Add a builder method in `cactus-graph/src/builder.cpp` and its declaration in 
 `cactus-graph/cactus_graph.h`
 Follow the pattern of existing builder methods, e.g. for a new "relu" op:
@@ -519,22 +520,22 @@ size_t CactusGraph::relu(size_t input) {
     return add_node(OpType::RELU, {input}, {});
 }
 ```
-3. ** Implement the op in the execution engine **
+3. **Implement the op in the execution engine**
 Implement the kernel or graph op code in the relevant file, usually in `cactus-kernels/src/`
 Register the new op in the dispatch table in `cactus-graph/src/execute.cpp` for the supported backends (CPU, NPU)
 
-4. ** Export op in FFI bindings **
+4. **Export op in FFI bindings**
 - header: `cactus-graph/cactus_graph.h` (in the `extern "C"` block)
 - implementation: `cactus-graph/src/graph_ffi.cpp`
 
-5. ** Add python ctypes declaration ** 
+5. **Add python ctypes declaration** 
 Add `_lib.cactus_graph_my_new_op.argtypes/restype` in `python/cactus/bindings/cactus.py`
 
-6. ** Add python graph wrapper ** 
+6. **Add python graph wrapper** 
 Add `Graph.my_new_op(...)` in `python/cactus/bindings/cactus.py`, and optionally a Tensor
   convenience method.
 
-7. ** Add serialization schema entry if needed **
+7. **Add serialization schema entry if needed**
 If your op has extra parameters that need to be saved/loaded that are not in the 
 default node, add new ParamField enum values. 
 
@@ -554,7 +555,7 @@ The syntax pattern there is:
     {ParamField::Mode, FieldPersistence::Persistent},
 }},
 ```
-8. ** Add test coverage **
+8. **Add test coverage**
 Add unit tests to `cactus-graph/tests/test_graph.cpp` covering the native graph function, and
 add python tests in `python/tests/test_graph.py` covering the Python API and end-to-end execution.
 

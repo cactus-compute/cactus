@@ -9,6 +9,9 @@ expect fun cactusPrefill(handle: Long, messagesJson: String, optionsJson: String
 expect fun cactusTokenize(handle: Long, text: String): IntArray
 expect fun cactusScoreWindow(handle: Long, tokens: IntArray, start: Long, end: Long, context: Long): String
 expect fun cactusTranscribe(handle: Long, audioPath: String?, prompt: String, optionsJson: String?, callback: CactusTokenCallback?, pcmData: ByteArray?): String
+expect fun cactusStreamTranscribeStart(handle: Long, optionsJson: String?): Long
+expect fun cactusStreamTranscribeProcess(stream: Long, pcmData: ByteArray?): String
+expect fun cactusStreamTranscribeStop(stream: Long): String
 expect fun cactusEmbed(handle: Long, text: String, normalize: Boolean): FloatArray
 expect fun cactusImageEmbed(handle: Long, imagePath: String): FloatArray
 expect fun cactusAudioEmbed(handle: Long, audioPath: String): FloatArray

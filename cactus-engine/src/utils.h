@@ -517,6 +517,7 @@ struct InferenceOptions {
     bool force_tools = false;
     bool include_stop_sequences = false;
     bool use_vad = true;
+    bool timestamps = false;
     bool telemetry_enabled = true;
     bool auto_handoff = true;
     bool handoff_with_images = true;
@@ -619,9 +620,20 @@ inline std::string json_array_field(const std::string& json, const std::string& 
 
     int depth = 1;
     size_t end = start + 1;
+    bool in_string = false, escape = false;
     while (end < json.size() && depth > 0) {
-        if (json[end] == '[') depth++;
-        else if (json[end] == ']') depth--;
+        const char c = json[end];
+        if (in_string) {
+            if (escape) escape = false;
+            else if (c == '\\') escape = true;
+            else if (c == '"') in_string = false;
+        } else if (c == '"') {
+            in_string = true;
+        } else if (c == '[') {
+            depth++;
+        } else if (c == ']') {
+            depth--;
+        }
         end++;
     }
     return json.substr(start, end - start);
@@ -1460,6 +1472,13 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         options.use_vad = (json.substr(pos, 4) == "true");
     }
 
+    pos = json.find("\"timestamps\"");
+    if (pos != std::string::npos) {
+        pos = json.find(':', pos) + 1;
+        while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
+        options.timestamps = (json.substr(pos, 4) == "true");
+    }
+
     pos = json.find("\"telemetry_enabled\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
@@ -1643,8 +1662,8 @@ inline void partition_thinking_response(const std::string& input, std::string& t
 }
 
 struct TranscriptSegment {
-    float start;
-    float end;
+    float start = 0.0f;
+    float end = 0.0f;
     std::string text;
 };
 
@@ -1661,12 +1680,14 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            const std::string& thinking = "",
                                            const std::vector<TranscriptSegment>& segments = {},
                                            const std::string& context_response = "",
-                                           float confidence_threshold = -1.0f) {
+                                           float confidence_threshold = -1.0f,
+                                           const std::string& cloud_handoff_reason = "") {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
     json << "\"error\":null,";
     json << "\"cloud_handoff\":" << (cloud_handoff ? "true" : "false") << ",";
+    json << "\"cloud_handoff_reason\":\"" << escape_json_string(cloud_handoff_reason) << "\",";
     json << "\"response\":\"" << escape_json_string(regular_response) << "\",";
     if (!context_response.empty()) {
         json << "\"context_response\":\"" << escape_json_string(context_response) << "\",";

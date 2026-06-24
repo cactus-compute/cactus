@@ -863,6 +863,242 @@ bool test_chunked_prefill_padding() {
     return true;
 }
 
+bool test_decode_batch() {
+    cactus_model_t model = load_gemma4_or_skip();
+    if (!model) return true;
+
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    auto* tok = handle->model->get_tokenizer();
+    std::vector<uint32_t> ids = tok->encode("The");
+    if (ids.empty()) { std::cerr << "  empty seed encode\n"; cactus_destroy(model); return false; }
+    uint32_t seed = ids.back();
+    const size_t M = 12;
+
+    auto two = handle->model->decode_batch(std::vector<uint32_t>(2, seed), M);
+    if (two.empty()) {
+        std::cout << "  [WARN] bundle not dynamic-batch capable (need `cactus convert --dynamic-batch`); skipping\n";
+        cactus_destroy(model);
+        return true;
+    }
+
+    auto ref = handle->model->decode_batch(std::vector<uint32_t>{seed}, M);
+    if (ref.empty() || ref[0].size() != M) { std::cerr << "  single-stream reference failed\n"; cactus_destroy(model); return false; }
+    const std::vector<uint32_t>& ref_stream = ref[0];
+
+    bool ok = true;
+    if (two[0] != ref_stream || two[1] != ref_stream) {
+        std::cerr << "  N=2 batched rows diverged from single-stream reference\n";
+        ok = false;
+    }
+    auto four = handle->model->decode_batch(std::vector<uint32_t>(4, seed), M);
+    if (four.size() != 4) {
+        std::cerr << "  N=4 returned " << four.size() << " streams\n";
+        ok = false;
+    } else {
+        for (size_t b = 0; b < 4; ++b) {
+            if (four[b] != ref_stream) {
+                std::cerr << "  N=4 row " << b << " diverged from single-stream reference\n";
+                ok = false;
+            }
+        }
+    }
+    cactus_destroy(model);
+    return ok;
+}
+
+bool test_generate_batch_ragged() {
+    cactus_model_t model = load_gemma4_or_skip();
+    if (!model) return true;
+
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    auto* tok = handle->model->get_tokenizer();
+    std::vector<uint32_t> a = tok->encode("The capital of France is");
+    std::vector<uint32_t> b = tok->encode("Hello");
+    if (a.empty() || b.empty() || a.size() == b.size()) {
+        std::cerr << "  could not build two ragged prompts\n"; cactus_destroy(model); return false;
+    }
+    const size_t M = 16;
+
+    auto batched = handle->model->generate_batch({a, b}, M);
+    if (batched.empty()) {
+        std::cout << "  [WARN] bundle not dynamic-batch capable (need `cactus convert --dynamic-batch`); skipping\n";
+        cactus_destroy(model);
+        return true;
+    }
+
+    auto ref_a = handle->model->generate_batch({a}, M);
+    auto ref_b = handle->model->generate_batch({b}, M);
+    cactus_destroy(model);
+
+    bool ok = true;
+    if (batched.size() != 2 || ref_a.empty() || ref_b.empty()) { std::cerr << "  unexpected stream counts\n"; return false; }
+    if (batched[0].size() != M || batched[1].size() != M) { std::cerr << "  wrong generated length\n"; ok = false; }
+    if (batched[0] != ref_a[0]) { std::cerr << "  ragged row 0 (len " << a.size() << ") diverged from single-stream\n"; ok = false; }
+    if (batched[1] != ref_b[0]) { std::cerr << "  ragged row 1 (len " << b.size() << ") diverged from single-stream\n"; ok = false; }
+    return ok;
+}
+
+bool test_decode_batch_throughput() {
+    cactus_model_t model = load_gemma4_or_skip();
+    if (!model) return true;
+
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    auto* tok = handle->model->get_tokenizer();
+    std::vector<uint32_t> ids = tok->encode("The");
+    if (ids.empty()) { std::cerr << "  empty seed\n"; cactus_destroy(model); return false; }
+    uint32_t seed = ids.back();
+    const size_t M = 64;
+
+    auto probe = handle->model->decode_batch(std::vector<uint32_t>(2, seed), 2);
+    if (probe.empty()) {
+        std::cout << "  [WARN] bundle not dynamic-batch capable; skipping\n";
+        cactus_destroy(model);
+        return true;
+    }
+
+    std::cout << "  batched decode throughput (" << M << " tokens/stream):\n";
+    std::cout << "    N     agg tok/s   per-stream tok/s   speedup\n";
+    double base_agg = 0.0, best_agg = 0.0;
+    for (size_t N : {(size_t)1, (size_t)2, (size_t)4, (size_t)8, (size_t)16, (size_t)32, (size_t)64}) {
+        std::vector<uint32_t> seeds(N, seed);
+        auto t0 = std::chrono::high_resolution_clock::now();
+        auto streams = handle->model->decode_batch(seeds, M);
+        auto t1 = std::chrono::high_resolution_clock::now();
+        if (streams.size() != N) break;  
+        double secs = std::chrono::duration<double>(t1 - t0).count();
+        if (secs <= 0.0) continue;
+        double agg = double(N * M) / secs;
+        double per = double(M) / secs;
+        if (N == 1) base_agg = agg;
+        if (agg > best_agg) best_agg = agg;
+        std::printf("    %-4zu  %9.1f   %14.1f   %6.2fx\n",
+                    N, agg, per, base_agg > 0.0 ? agg / base_agg : 1.0);
+    }
+    cactus_destroy(model);
+
+    if (base_agg <= 0.0) { std::cerr << "  no N=1 baseline measured\n"; return false; }
+    if (best_agg <= base_agg) {
+        std::cerr << "  batching did not improve aggregate throughput\n";
+        return false;
+    }
+    return true;
+}
+
+bool test_batch_scheduler() {
+    cactus_model_t model = load_gemma4_or_skip();
+    if (!model) return true;
+
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    auto* m = handle->model.get();
+    auto* tok = m->get_tokenizer();
+
+    const std::vector<std::string> questions = {
+        "In one short sentence, what is Paris famous for?",
+        "List three primary colors, comma separated.",
+        "Count from one to five.",
+        "Name two planets in our solar system."
+    };
+    const size_t N = questions.size();
+
+    std::vector<std::vector<uint32_t>> prompts;
+    for (const auto& q : questions) {
+        ChatMessage msg;
+        msg.role = "user";
+        msg.content = q;
+        std::string rendered = tok->format_chat_prompt({msg}, true, "", false);
+        prompts.push_back(tok->encode(rendered));
+    }
+
+    auto probe = m->decode_batch(std::vector<uint32_t>(2, prompts[0].back()), 2);
+    if (probe.empty()) {
+        std::cout << "  [WARN] bundle not dynamic-batch capable; skipping\n";
+        cactus_destroy(model);
+        return true;
+    }
+
+    struct ReqCtx { size_t idx; std::vector<std::string>* out; std::vector<size_t>* counts; std::atomic<int>* completed; };
+    std::vector<std::string> responses(N);
+    std::vector<size_t> counts(N, 0);
+    std::atomic<int> completed{0};
+    std::vector<ReqCtx> ctxs(N);
+    for (size_t i = 0; i < N; ++i) ctxs[i] = {i, &responses, &counts, &completed};
+
+    auto cb = [](const char* text, uint32_t, void* ud) {
+        auto* c = static_cast<ReqCtx*>(ud);
+        if (text == nullptr) { c->completed->fetch_add(1); return; }
+        (*c->out)[c->idx] += text;
+        (*c->counts)[c->idx] += 1;
+        std::cout << "[" << c->idx << "]" << text << std::flush;
+    };
+
+    if (cactus_batch_start(model, 8) != 0) { std::cerr << "  batch_start failed\n"; cactus_destroy(model); return false; }
+    std::cout << "\n  --- live token stream (interleaved across " << N << " agents, [idx]token) ---\n  ";
+    for (size_t i = 0; i < N; ++i)
+        cactus_submit(model, prompts[i].data(), prompts[i].size(), 48, cb, &ctxs[i]);
+
+    for (int t = 0; t < 1200 && completed.load() < static_cast<int>(N); ++t)
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    cactus_batch_stop(model);
+
+    std::cout << "\n\n  --- assembled responses ---\n";
+    bool ok = completed.load() == static_cast<int>(N);
+    bool streamed = false;
+    for (size_t i = 0; i < N; ++i) {
+        std::cout << "  [" << counts[i] << " tokens] Q: " << questions[i] << "\n             A: " << responses[i] << "\n";
+        if (responses[i].empty()) ok = false;
+        if (counts[i] > 1) streamed = true;
+    }
+    if (!ok) std::cerr << "  not all requests completed\n";
+    if (!streamed) { std::cerr << "  no request streamed >1 token (not streaming)\n"; ok = false; }
+    cactus_destroy(model);
+    return ok;
+}
+
+bool test_continuous_batching() {
+    cactus_model_t model = load_gemma4_or_skip();
+    if (!model) return true;
+
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    auto* m = handle->model.get();
+    auto* tok = m->get_tokenizer();
+    auto render = [&](const std::string& q) {
+        ChatMessage msg; msg.role = "user"; msg.content = q;
+        return tok->encode(tok->format_chat_prompt({msg}, true, "", false));
+    };
+    std::vector<uint32_t> shortp = render("Say hello.");
+    std::vector<uint32_t> longp = render("Write a detailed paragraph about the ocean.");
+
+    auto probe = m->decode_batch(std::vector<uint32_t>(2, longp.back()), 2);
+    if (probe.empty()) { std::cout << "  [WARN] bundle not dynamic-batch capable; skipping\n"; cactus_destroy(model); return true; }
+
+    struct Ctx { std::atomic<int>* counter; std::atomic<int> order{-1}; std::atomic<bool> done{false}; std::atomic<int> gen{0}; };
+    std::atomic<int> counter{0};
+    Ctx shortc, longc;
+    shortc.counter = &counter;
+    longc.counter = &counter;
+    auto cb = [](const char* text, uint32_t, void* ud) {
+        auto* c = static_cast<Ctx*>(ud);
+        if (text == nullptr) { c->order.store(c->counter->fetch_add(1)); c->done.store(true); return; }
+        c->gen.fetch_add(1);
+    };
+
+    if (cactus_batch_start(model, 4) != 0) { std::cerr << "  batch_start failed\n"; cactus_destroy(model); return false; }
+    cactus_submit(model, shortp.data(), shortp.size(), 2, cb, &shortc);
+    cactus_submit(model, longp.data(), longp.size(), 64, cb, &longc);
+
+    for (int t = 0; t < 2000 && !(shortc.done.load() && longc.done.load()); ++t)
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    cactus_batch_stop(model);
+
+    std::cout << "  short (max 2):  completed order " << shortc.order.load() << " after " << shortc.gen.load() << " tokens\n";
+    std::cout << "  long  (max 64): completed order " << longc.order.load() << " after " << longc.gen.load() << " tokens\n";
+    bool ok = shortc.done.load() && longc.done.load()
+              && shortc.order.load() == 0 && longc.order.load() == 1;
+    if (!ok) std::cerr << "  short did not complete before long (eviction not continuous)\n";
+    cactus_destroy(model);
+    return ok;
+}
+
 int main() {
     TestUtils::TestRunner runner("LLM Tests");
     runner.run_test("1k_context", test_1k_context());
@@ -881,6 +1117,11 @@ int main() {
     runner.run_test("complete_thinking_api_clean", test_complete_gemma4_thinking_api_clean());
     runner.run_test("multiturn_thinking_persist", test_multiturn_thinking_persist());
     runner.run_test("multiturn_turn2_distinct", test_multiturn_turn2_distinct());
+    runner.run_test("decode_batch", test_decode_batch());
+    runner.run_test("generate_batch_ragged", test_generate_batch_ragged());
+    runner.run_test("decode_batch_throughput", test_decode_batch_throughput());
+    runner.run_test("batch_scheduler", test_batch_scheduler());
+    runner.run_test("continuous_batching", test_continuous_batching());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

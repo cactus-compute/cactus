@@ -43,34 +43,21 @@ def check_libcurl():
 
 
 def _detect_sdl2() -> tuple[list[str], list[str]]:
-    is_darwin = platform.system() == "Darwin"
+    if not check_command("pkg-config"):
+        return [], []
 
-    if is_darwin:
-        if not check_command("brew"):
-            return [], []
-        sdl2_check = subprocess.run(["brew", "list", "sdl2"], capture_output=True)
-        if sdl2_check.returncode == 0:
-            sdl2_prefix_result = subprocess.run(
-                ["brew", "--prefix", "sdl2"], capture_output=True, text=True,
-            )
-            if sdl2_prefix_result.returncode == 0:
-                sdl2_prefix = sdl2_prefix_result.stdout.strip()
-                return (
-                    ["-DHAVE_SDL2", f"-I{sdl2_prefix}/include", f"-I{sdl2_prefix}/include/SDL2"],
-                    [f"-L{sdl2_prefix}/lib", "-lSDL2"],
-                )
-    elif check_command("pkg-config"):
-        sdl2_check = subprocess.run(["pkg-config", "--exists", "sdl2"], capture_output=True)
-        if sdl2_check.returncode == 0:
-            cflags = subprocess.run(["pkg-config", "--cflags", "sdl2"], capture_output=True, text=True)
-            libs = subprocess.run(["pkg-config", "--libs", "sdl2"], capture_output=True, text=True)
-            if cflags.returncode == 0 and libs.returncode == 0:
-                return (
-                    ["-DHAVE_SDL2"] + cflags.stdout.strip().split(),
-                    libs.stdout.strip().split(),
-                )
+    if subprocess.run(["pkg-config", "--exists", "sdl2"], capture_output=True).returncode != 0:
+        return [], []
 
-    return [], []
+    cflags = subprocess.run(["pkg-config", "--cflags", "sdl2"], capture_output=True, text=True)
+    libs = subprocess.run(["pkg-config", "--libs", "sdl2"], capture_output=True, text=True)
+    if cflags.returncode != 0 or libs.returncode != 0:
+        return [], []
+
+    return (
+        ["-DHAVE_SDL2"] + cflags.stdout.strip().split(),
+        libs.stdout.strip().split(),
+    )
 
 
 def build_binary(
@@ -171,7 +158,6 @@ def cmd_build(args):
     cactus_dir = PROJECT_ROOT / "cactus-engine"
     lib_path = cactus_dir / "build" / "libcactus_engine.a"
 
-    print_color(YELLOW, "Building Cactus library...")
     if run_command(str(cactus_dir / "build.sh"), cwd=cactus_dir).returncode != 0:
         print_color(RED, "Failed to build cactus library")
         return 1

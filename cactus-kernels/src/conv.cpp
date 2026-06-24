@@ -15,8 +15,10 @@
 #endif
 
 constexpr size_t T_TILE_F16 = 2;
+#ifdef __APPLE__
 constexpr size_t ACCELERATE_K_THRESHOLD = 32;
 constexpr size_t ACCELERATE_L_THRESHOLD = 128;
+#endif
 
 #ifdef __APPLE__
 static void conv1d_causal_depthwise_f16_accelerate(

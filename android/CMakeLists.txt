@@ -40,5 +40,4 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(cactus_jni PRIVATE CACTUS_ANDROID_ENABLE_LOGGING)
 endif()
 
-target_compile_options(cactus_jni PRIVATE -fvisibility=hidden -fvisibility-inlines-hidden -ffunction-sections -fdata-sections)
-target_link_options(cactus_jni PRIVATE -Wl,--gc-sections -flto -Wl,-z,max-page-size=16384)
+target_link_options(cactus_jni PRIVATE -Wl,-z,max-page-size=16384)

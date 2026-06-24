@@ -105,6 +105,7 @@ Ready to run LFM2-24B locally on your Mac? Here's how to get up and running.
 ```bash
 git clone https://github.com/cactus-compute/cactus.git
 cd cactus
+source ./setup
 
 # Build the Cactus engine (shared library for Python FFI)
 cactus build --python
@@ -134,14 +135,13 @@ For building your own applications and agents, use the Python FFI bindings direc
 
 ```python
 import json
-from cactus import cactus_init, cactus_complete, cactus_reset, cactus_destroy
+from cactus import get_bundle_dir, cactus_init, cactus_complete, cactus_reset, cactus_destroy
 
-# Load the model
-model = cactus_init("weights/lfm2-24b-a2b", None, False)
+model = cactus_init(str(get_bundle_dir("LiquidAI/LFM2-24B-A2B")), None, False)
 
 # Simple chat completion
 messages = json.dumps([{"role": "user", "content": "Write a Python function to sort a list"}])
-response = json.loads(cactus_complete(model, messages, None, None, None))
+response = cactus_complete(model, messages, None, None, None)
 
 print(response["response"])       # Generated text
 print(f"{response['decode_tps']:.1f} tokens/sec")
@@ -180,7 +180,7 @@ tools = [
 ]
 
 messages = json.dumps([{"role": "user", "content": "Calculate the factorial of 10"}])
-response = json.loads(cactus_complete(model, messages, None, json.dumps(tools), None))
+response = cactus_complete(model, messages, None, json.dumps(tools), None)
 
 if response["function_calls"]:
     print(response["function_calls"])  # Model's tool invocation
@@ -192,7 +192,7 @@ Cactus measures model confidence during generation. When the model isn't confide
 
 ```python
 options = json.dumps({"confidence_threshold": 0.7})
-response = json.loads(cactus_complete(model, messages, options, None, None))
+response = cactus_complete(model, messages, options, None, None)
 
 if response["cloud_handoff"]:
     # Route to cloud API for this query

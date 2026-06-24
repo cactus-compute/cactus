@@ -33,36 +33,11 @@ struct CacheMetadata {
     uint64_t num_kv_heads;
     uint64_t head_dim;
     uint64_t sink_size;
-    uint64_t reserved[3];
+    uint64_t num_slots;
+    uint64_t reserved[2];
 };
 
 static_assert(sizeof(CacheMetadata) == 64, "CacheMetadata must be 64 bytes");
-
-inline CacheMetadata* get_meta(BufferDesc& buf) {
-    return static_cast<CacheMetadata*>(buf.get_data());
-}
-
-inline const CacheMetadata* get_meta(const BufferDesc& buf) {
-    return static_cast<const CacheMetadata*>(buf.get_data());
-}
-
-inline int8_t* get_int8_data(BufferDesc& buf) {
-    return reinterpret_cast<int8_t*>(static_cast<char*>(buf.get_data()) + sizeof(CacheMetadata));
-}
-
-inline const int8_t* get_int8_data(const BufferDesc& buf) {
-    return reinterpret_cast<const int8_t*>(static_cast<const char*>(buf.get_data()) + sizeof(CacheMetadata));
-}
-
-inline float* get_scales(BufferDesc& buf, size_t max_seq, size_t kv_heads, size_t head_dim) {
-    size_t int8_bytes = max_seq * kv_heads * head_dim;
-    return reinterpret_cast<float*>(static_cast<char*>(buf.get_data()) + sizeof(CacheMetadata) + int8_bytes);
-}
-
-inline const float* get_scales(const BufferDesc& buf, size_t max_seq, size_t kv_heads, size_t head_dim) {
-    size_t int8_bytes = max_seq * kv_heads * head_dim;
-    return reinterpret_cast<const float*>(static_cast<const char*>(buf.get_data()) + sizeof(CacheMetadata) + int8_bytes);
-}
 
 inline size_t cache_buffer_size(size_t max_seq, size_t kv_heads, size_t head_dim) {
     size_t num_groups = (head_dim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
@@ -73,12 +48,47 @@ inline size_t fp16_cache_elements(size_t max_seq, size_t kv_heads, size_t head_d
     return (sizeof(CacheMetadata) / sizeof(__fp16)) + max_seq * kv_heads * head_dim;
 }
 
-inline __fp16* get_fp16_data(BufferDesc& buf) {
-    return reinterpret_cast<__fp16*>(static_cast<char*>(buf.get_data()) + sizeof(CacheMetadata));
+inline size_t kv_slot_off(const BufferDesc& buf, size_t slot) {
+    if (slot == 0) return 0;
+    const CacheMetadata* m = reinterpret_cast<const CacheMetadata*>(buf.get_data());
+    size_t per_slot = (buf.precision == Precision::FP16)
+        ? fp16_cache_elements(m->max_seq_len, m->num_kv_heads, m->head_dim) * sizeof(__fp16)
+        : cache_buffer_size(m->max_seq_len, m->num_kv_heads, m->head_dim);
+    return slot * per_slot;
 }
 
-inline const __fp16* get_fp16_data(const BufferDesc& buf) {
-    return reinterpret_cast<const __fp16*>(static_cast<const char*>(buf.get_data()) + sizeof(CacheMetadata));
+inline CacheMetadata* get_meta(BufferDesc& buf, size_t slot = 0) {
+    return reinterpret_cast<CacheMetadata*>(static_cast<char*>(buf.get_data()) + kv_slot_off(buf, slot));
+}
+
+inline const CacheMetadata* get_meta(const BufferDesc& buf, size_t slot = 0) {
+    return reinterpret_cast<const CacheMetadata*>(static_cast<const char*>(buf.get_data()) + kv_slot_off(buf, slot));
+}
+
+inline int8_t* get_int8_data(BufferDesc& buf, size_t slot = 0) {
+    return reinterpret_cast<int8_t*>(static_cast<char*>(buf.get_data()) + kv_slot_off(buf, slot) + sizeof(CacheMetadata));
+}
+
+inline const int8_t* get_int8_data(const BufferDesc& buf, size_t slot = 0) {
+    return reinterpret_cast<const int8_t*>(static_cast<const char*>(buf.get_data()) + kv_slot_off(buf, slot) + sizeof(CacheMetadata));
+}
+
+inline float* get_scales(BufferDesc& buf, size_t max_seq, size_t kv_heads, size_t head_dim, size_t slot = 0) {
+    size_t int8_bytes = max_seq * kv_heads * head_dim;
+    return reinterpret_cast<float*>(static_cast<char*>(buf.get_data()) + kv_slot_off(buf, slot) + sizeof(CacheMetadata) + int8_bytes);
+}
+
+inline const float* get_scales(const BufferDesc& buf, size_t max_seq, size_t kv_heads, size_t head_dim, size_t slot = 0) {
+    size_t int8_bytes = max_seq * kv_heads * head_dim;
+    return reinterpret_cast<const float*>(static_cast<const char*>(buf.get_data()) + kv_slot_off(buf, slot) + sizeof(CacheMetadata) + int8_bytes);
+}
+
+inline __fp16* get_fp16_data(BufferDesc& buf, size_t slot = 0) {
+    return reinterpret_cast<__fp16*>(static_cast<char*>(buf.get_data()) + kv_slot_off(buf, slot) + sizeof(CacheMetadata));
+}
+
+inline const __fp16* get_fp16_data(const BufferDesc& buf, size_t slot = 0) {
+    return reinterpret_cast<const __fp16*>(static_cast<const char*>(buf.get_data()) + kv_slot_off(buf, slot) + sizeof(CacheMetadata));
 }
 
 inline bool use_fp16_kv_cache() {
@@ -144,26 +154,123 @@ void compute_kv_cache_state_node(
 
     size_t ceiling = node.params.max_cache_seq_len;
     size_t window = node.params.window_size;
+    size_t num_slots = node.params.cache_num_slots > 0 ? node.params.cache_num_slots : 1;
     bool sliding = window > 0 && window < ceiling;
-    size_t max_seq = sliding ? std::min(ceiling, window + node.params.cache_sink_size + 1)
-                             : std::min(ceiling, kInitialCacheEntries);
+    size_t max_seq;
+    if (sliding) max_seq = std::min(ceiling, window + node.params.cache_sink_size + 1);
+    else if (num_slots > 1) max_seq = ceiling;
+    else max_seq = std::min(ceiling, kInitialCacheEntries);
     size_t kv_heads = node.params.num_kv_heads;
     size_t hdim = node.params.head_dim;
     const bool fp16_cache = use_fp16_kv_cache();
-    size_t total = fp16_cache
+    size_t per_slot = fp16_cache
         ? fp16_cache_elements(max_seq, kv_heads, hdim)
         : cache_buffer_size(max_seq, kv_heads, hdim);
 
-    node.output_buffer = BufferDesc({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
+    node.output_buffer = BufferDesc({num_slots * per_slot}, fp16_cache ? Precision::FP16 : Precision::INT8);
     node.output_buffer.allocate();
     std::memset(node.output_buffer.get_data(), 0, node.output_buffer.byte_size);
 
-    auto* meta = get_meta(node.output_buffer);
-    meta->current_seq_len = 0;
-    meta->max_seq_len = max_seq;
-    meta->num_kv_heads = kv_heads;
-    meta->head_dim = hdim;
-    meta->sink_size = node.params.cache_sink_size;
+    auto* meta0 = get_meta(node.output_buffer, 0);
+    meta0->current_seq_len = 0;
+    meta0->max_seq_len = max_seq;
+    meta0->num_kv_heads = kv_heads;
+    meta0->head_dim = hdim;
+    meta0->sink_size = node.params.cache_sink_size;
+    meta0->num_slots = num_slots;
+    for (size_t s = 1; s < num_slots; ++s) {
+        *get_meta(node.output_buffer, s) = *meta0;
+    }
+}
+
+void kv_append_one_slot(BufferDesc& cache_buf, size_t slot, size_t num_slots,
+                        const __fp16* source, size_t new_seq_len,
+                        size_t window_size, size_t ceiling) {
+    auto* meta = get_meta(cache_buf, slot);
+    size_t current_len = meta->current_seq_len;
+    size_t max_len = meta->max_seq_len;
+    size_t kv_heads = meta->num_kv_heads;
+    size_t hdim = meta->head_dim;
+    size_t sink = meta->sink_size;
+    size_t num_groups = (hdim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
+    size_t int8_stride = kv_heads * hdim;
+    size_t scale_stride = kv_heads * num_groups;
+    bool sliding = window_size > 0 && window_size < ceiling;
+
+    if (num_slots <= 1 && !sliding && current_len + new_seq_len > max_len) {
+        if (grow_cache_buffer(cache_buf, current_len + new_seq_len, ceiling)) {
+            meta = get_meta(cache_buf, slot);
+            max_len = meta->max_seq_len;
+        }
+    }
+
+    if (cache_buf.precision == Precision::FP16) {
+        size_t stride = kv_heads * hdim;
+        __fp16* fp16_base = get_fp16_data(cache_buf, slot);
+        size_t window = sliding ? window_size : max_len;
+        size_t new_total = current_len + new_seq_len;
+        if (new_total > window) {
+            size_t keep_sink = std::min({sink, current_len, window});
+            size_t tail_capacity = window - keep_sink;
+            if (new_seq_len >= tail_capacity) {
+                if (tail_capacity > 0) {
+                    size_t source_offset = new_seq_len - tail_capacity;
+                    std::memcpy(fp16_base + keep_sink * stride, source + source_offset * stride,
+                                tail_capacity * stride * sizeof(__fp16));
+                }
+                meta->current_seq_len = keep_sink + tail_capacity;
+                return;
+            }
+            size_t remaining = std::min(tail_capacity - new_seq_len, current_len - keep_sink);
+            size_t shift_src = current_len - remaining;
+            if (remaining > 0 && shift_src > keep_sink) {
+                std::memmove(fp16_base + keep_sink * stride, fp16_base + shift_src * stride,
+                             remaining * stride * sizeof(__fp16));
+            }
+            size_t append_offset = keep_sink + remaining;
+            std::memcpy(fp16_base + append_offset * stride, source, new_seq_len * stride * sizeof(__fp16));
+            meta->current_seq_len = append_offset + new_seq_len;
+        } else {
+            std::memcpy(fp16_base + current_len * stride, source, new_seq_len * stride * sizeof(__fp16));
+            meta->current_seq_len = new_total;
+        }
+        return;
+    }
+
+    int8_t* int8_base = get_int8_data(cache_buf, slot);
+    float* scale_base = get_scales(cache_buf, max_len, kv_heads, hdim, slot);
+    size_t window = sliding ? window_size : max_len;
+    size_t new_total = current_len + new_seq_len;
+    if (new_total > window) {
+        size_t keep_sink = std::min({sink, current_len, window});
+        size_t tail_capacity = window - keep_sink;
+        if (new_seq_len >= tail_capacity) {
+            if (tail_capacity > 0) {
+                size_t source_offset = new_seq_len - tail_capacity;
+                cactus_quantize_kv_fp16_to_int8(source + source_offset * int8_stride,
+                    int8_base + keep_sink * int8_stride, scale_base + keep_sink * scale_stride,
+                    tail_capacity, kv_heads, hdim);
+            }
+            meta->current_seq_len = keep_sink + tail_capacity;
+            return;
+        }
+        size_t remaining = std::min(tail_capacity - new_seq_len, current_len - keep_sink);
+        size_t shift_src = current_len - remaining;
+        if (remaining > 0 && shift_src > keep_sink) {
+            std::memmove(int8_base + keep_sink * int8_stride, int8_base + shift_src * int8_stride,
+                         remaining * int8_stride);
+            std::memmove(scale_base + keep_sink * scale_stride, scale_base + shift_src * scale_stride,
+                         remaining * scale_stride * sizeof(float));
+        }
+        size_t append_offset = keep_sink + remaining;
+        cactus_quantize_kv_fp16_to_int8(source, int8_base + append_offset * int8_stride,
+            scale_base + append_offset * scale_stride, new_seq_len, kv_heads, hdim);
+        meta->current_seq_len = append_offset + new_seq_len;
+    } else {
+        cactus_quantize_kv_fp16_to_int8(source, int8_base + current_len * int8_stride,
+            scale_base + current_len * scale_stride, new_seq_len, kv_heads, hdim);
+        meta->current_seq_len = new_total;
+    }
 }
 
 void compute_kv_cache_append_node(
@@ -173,130 +280,29 @@ void compute_kv_cache_append_node(
 
     const auto& new_kv = get_input(node, 0, nodes, node_index_map);
     auto& cache_buf = nodes[node_index_map.at(node.input_ids[1])]->output_buffer;
-    auto* meta = get_meta(cache_buf);
-
-    size_t current_len = meta->current_seq_len;
-    size_t max_len = meta->max_seq_len;
-    size_t kv_heads = meta->num_kv_heads;
-    size_t hdim = meta->head_dim;
-    size_t sink = meta->sink_size;
-    size_t num_groups = (hdim + KV_QUANT_GROUP_SIZE - 1) / KV_QUANT_GROUP_SIZE;
-
-    size_t new_seq_len = new_kv.total_size / (kv_heads * hdim);
-    size_t int8_stride = kv_heads * hdim;
-    size_t scale_stride = kv_heads * num_groups;
-
+    size_t slot = node.params.cache_slot;
+    const auto* m0 = get_meta(cache_buf, 0);
+    size_t num_slots = m0->num_slots ? m0->num_slots : 1;
+    size_t kv_heads = m0->num_kv_heads;
+    size_t hdim = m0->head_dim;
     size_t ceiling = nodes[node_index_map.at(node.input_ids[1])]->params.max_cache_seq_len;
-    bool sliding = node.params.window_size > 0 && node.params.window_size < ceiling;
-    if (!sliding && current_len + new_seq_len > max_len) {
-        if (grow_cache_buffer(cache_buf, current_len + new_seq_len, ceiling)) {
-            meta = get_meta(cache_buf);
-            max_len = meta->max_seq_len;
+    size_t window_size = node.params.window_size;
+    const __fp16* src = new_kv.data_as<__fp16>();
+
+    size_t batch = new_kv.shape.empty() ? 1 : new_kv.shape[0];
+    if (num_slots > 1 && batch > 1 && batch <= num_slots) {
+        size_t row_elems = new_kv.total_size / batch;
+        size_t per_row_tokens = row_elems / (kv_heads * hdim);
+        for (size_t i = 0; i < batch; ++i) {
+            kv_append_one_slot(cache_buf, i, num_slots, src + i * row_elems, per_row_tokens, window_size, ceiling);
         }
-    }
-
-    if (cache_buf.precision == Precision::FP16) {
-        size_t stride = kv_heads * hdim;
-        __fp16* fp16_base = get_fp16_data(cache_buf);
-        const __fp16* source = new_kv.data_as<__fp16>();
-        size_t window = sliding ? node.params.window_size : max_len;
-
-        size_t new_total = current_len + new_seq_len;
-        bool needs_eviction = new_total > window;
-        if (needs_eviction) {
-            size_t keep_sink = std::min({sink, current_len, window});
-            size_t tail_capacity = window - keep_sink;
-            if (new_seq_len >= tail_capacity) {
-                if (tail_capacity > 0) {
-                    size_t source_offset = new_seq_len - tail_capacity;
-                    std::memcpy(
-                        fp16_base + keep_sink * stride,
-                        source + source_offset * stride,
-                        tail_capacity * stride * sizeof(__fp16));
-                }
-                meta->current_seq_len = keep_sink + tail_capacity;
-                *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);
-                return;
-            }
-
-            size_t remaining = tail_capacity - new_seq_len;
-            remaining = std::min(remaining, current_len - keep_sink);
-            size_t shift_src = current_len - remaining;
-            if (remaining > 0 && shift_src > keep_sink) {
-                std::memmove(
-                    fp16_base + keep_sink * stride,
-                    fp16_base + shift_src * stride,
-                    remaining * stride * sizeof(__fp16));
-            }
-            size_t append_offset = keep_sink + remaining;
-            std::memcpy(fp16_base + append_offset * stride, source, new_seq_len * stride * sizeof(__fp16));
-            meta->current_seq_len = append_offset + new_seq_len;
-        } else {
-            std::memcpy(fp16_base + current_len * stride, source, new_seq_len * stride * sizeof(__fp16));
-            meta->current_seq_len = new_total;
-        }
-
-        *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);
+        *node.output_buffer.data_as<float>() = static_cast<float>(get_meta(cache_buf, batch - 1)->current_seq_len);
         return;
     }
 
-    int8_t* int8_base = get_int8_data(cache_buf);
-    float* scale_base = get_scales(cache_buf, max_len, kv_heads, hdim);
-
-    size_t window = sliding ? node.params.window_size : max_len;
-
-    size_t new_total = current_len + new_seq_len;
-    bool needs_eviction = new_total > window;
-
-    if (needs_eviction) {
-        size_t keep_sink = std::min({sink, current_len, window});
-        size_t tail_capacity = window - keep_sink;
-        if (new_seq_len >= tail_capacity) {
-            if (tail_capacity > 0) {
-                size_t source_offset = new_seq_len - tail_capacity;
-                cactus_quantize_kv_fp16_to_int8(
-                    new_kv.data_as<__fp16>() + source_offset * int8_stride,
-                    int8_base + keep_sink * int8_stride,
-                    scale_base + keep_sink * scale_stride,
-                    tail_capacity, kv_heads, hdim);
-            }
-            meta->current_seq_len = keep_sink + tail_capacity;
-            *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);
-            return;
-        }
-
-        size_t remaining = tail_capacity - new_seq_len;
-        remaining = std::min(remaining, current_len - keep_sink);
-        size_t shift_src = current_len - remaining;
-
-        if (remaining > 0 && shift_src > keep_sink) {
-            std::memmove(int8_base + keep_sink * int8_stride,
-                         int8_base + shift_src * int8_stride,
-                         remaining * int8_stride);
-            std::memmove(scale_base + keep_sink * scale_stride,
-                         scale_base + shift_src * scale_stride,
-                         remaining * scale_stride * sizeof(float));
-        }
-
-        size_t append_offset = keep_sink + remaining;
-        cactus_quantize_kv_fp16_to_int8(
-            new_kv.data_as<__fp16>(),
-            int8_base + append_offset * int8_stride,
-            scale_base + append_offset * scale_stride,
-            new_seq_len, kv_heads, hdim);
-
-        meta->current_seq_len = append_offset + new_seq_len;
-    } else {
-        cactus_quantize_kv_fp16_to_int8(
-            new_kv.data_as<__fp16>(),
-            int8_base + current_len * int8_stride,
-            scale_base + current_len * scale_stride,
-            new_seq_len, kv_heads, hdim);
-
-        meta->current_seq_len = new_total;
-    }
-
-    *node.output_buffer.data_as<float>() = static_cast<float>(meta->current_seq_len);
+    size_t new_seq_len = new_kv.total_size / (kv_heads * hdim);
+    kv_append_one_slot(cache_buf, slot, num_slots, src, new_seq_len, window_size, ceiling);
+    *node.output_buffer.data_as<float>() = static_cast<float>(get_meta(cache_buf, slot)->current_seq_len);
 }
 
 void compute_attention_cached_node(
@@ -310,20 +316,22 @@ void compute_attention_cached_node(
     const auto& k_cache_buf = get_input(node, 3, nodes, node_index_map);
     const auto& v_cache_buf = get_input(node, 4, nodes, node_index_map);
 
-    const auto* k_meta = get_meta(k_cache_buf);
+    size_t slot = node.params.cache_slot;
+    const auto* k_meta = get_meta(k_cache_buf, slot);
+    size_t num_slots = k_meta->num_slots ? k_meta->num_slots : 1;
     size_t cache_len = k_meta->current_seq_len;
     size_t k_max = k_meta->max_seq_len;
     size_t kv_heads = k_meta->num_kv_heads;
     size_t hdim = k_meta->head_dim;
 
-    const auto* v_meta = get_meta(v_cache_buf);
+    const auto* v_meta = get_meta(v_cache_buf, slot);
     size_t v_hdim = node.params.v_head_dim > 0 ? node.params.v_head_dim : hdim;
     size_t v_max = v_meta->max_seq_len;
 
-    const int8_t* cached_keys = get_int8_data(k_cache_buf);
-    const float* k_scales = get_scales(k_cache_buf, k_max, kv_heads, hdim);
-    const int8_t* cached_values = get_int8_data(v_cache_buf);
-    const float* v_scales = get_scales(v_cache_buf, v_max, kv_heads, v_hdim);
+    const int8_t* cached_keys = get_int8_data(k_cache_buf, slot);
+    const float* k_scales = get_scales(k_cache_buf, k_max, kv_heads, hdim, slot);
+    const int8_t* cached_values = get_int8_data(v_cache_buf, slot);
+    const float* v_scales = get_scales(v_cache_buf, v_max, kv_heads, v_hdim, slot);
 
     const auto& q_shape = query_buf.shape;
     size_t batch_size = q_shape[0];
@@ -343,11 +351,53 @@ void compute_attention_cached_node(
         cache_only_attention = true;
     }
 
+    if (batch_size > 1 && num_slots > 1) {
+        bool fp16_cache = (k_cache_buf.precision == Precision::FP16 || v_cache_buf.precision == Precision::FP16);
+        size_t q_stride = query_buf.total_size / batch_size;
+        size_t knew_stride = key_new_buf.total_size / batch_size;
+        size_t vnew_stride = val_new_buf.total_size / batch_size;
+        size_t out_stride = node.output_buffer.total_size / batch_size;
+        const __fp16* q_all = query_buf.data_as<__fp16>();
+        const __fp16* knew_all = key_new_buf.data_as<__fp16>();
+        const __fp16* vnew_all = val_new_buf.data_as<__fp16>();
+        __fp16* out_all = node.output_buffer.data_as<__fp16>();
+        for (size_t i = 0; i < batch_size; ++i) {
+            size_t ci = get_meta(k_cache_buf, i)->current_seq_len;
+            size_t hist_i = (ci >= seq_len) ? ci - seq_len : 0;
+            if (fp16_cache) {
+                cactus_attention_f16(
+                    q_all + i * q_stride,
+                    get_fp16_data(k_cache_buf, i),
+                    get_fp16_data(v_cache_buf, i),
+                    out_all + i * out_stride,
+                    1, seq_len, ci,
+                    num_q_heads, kv_heads, hdim,
+                    node.params.scale, nullptr, hist_i, node.params.window_size,
+                    true, false, false, v_hdim);
+            } else {
+                cactus_attention_hybrid_int8_fp16(
+                    q_all + i * q_stride,
+                    get_int8_data(k_cache_buf, i),
+                    get_int8_data(v_cache_buf, i),
+                    get_scales(k_cache_buf, k_max, kv_heads, hdim, i),
+                    get_scales(v_cache_buf, v_max, kv_heads, v_hdim, i),
+                    knew_all + i * knew_stride,
+                    vnew_all + i * vnew_stride,
+                    out_all + i * out_stride,
+                    1, seq_len, hist_i, seq_len,
+                    num_q_heads, kv_heads, hdim,
+                    node.params.scale, hist_i, true, node.params.window_size,
+                    KV_QUANT_GROUP_SIZE, v_hdim);
+            }
+        }
+        return;
+    }
+
     if (k_cache_buf.precision == Precision::FP16 || v_cache_buf.precision == Precision::FP16) {
         cactus_attention_f16(
             query_buf.data_as<__fp16>(),
-            get_fp16_data(k_cache_buf),
-            get_fp16_data(v_cache_buf),
+            get_fp16_data(k_cache_buf, slot),
+            get_fp16_data(v_cache_buf, slot),
             node.output_buffer.data_as<__fp16>(),
             batch_size, seq_len, cache_len,
             num_q_heads, kv_heads, hdim,

@@ -1,18 +1,60 @@
 #include "../cactus_engine.h"
 #include "utils.h"
+#include "cloud.h"
 #include "cactus_kernels.h"
 #include "wav.h"
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 
 using namespace cactus::ffi;
 
+namespace {
+
+constexpr float kWhisperTimestampStepSec = 0.02f;
+
+uint32_t whisper_timestamp_begin(cactus::engine::Tokenizer* tokenizer) {
+    return tokenizer->encode("<|notimestamps|>")[0] + 1;
+}
+
+std::vector<TranscriptSegment> parse_whisper_timestamp_segments(
+    cactus::engine::Tokenizer* tokenizer, const std::vector<uint32_t>& tokens,
+    uint32_t timestamp_begin, std::string& clean_text) {
+    std::vector<TranscriptSegment> segments;
+    std::vector<uint32_t> text_tokens;
+    std::vector<uint32_t> flat;
+    float seg_start = -1.0f;
+    auto flush = [&](float end_sec) {
+        if (!text_tokens.empty()) {
+            std::string text = tokenizer->decode(text_tokens);
+            if (!text.empty() && text[0] == ' ') text.erase(0, 1);
+            segments.push_back({seg_start, end_sec, text});
+        }
+        text_tokens.clear();
+    };
+    for (uint32_t tok : tokens) {
+        if (tok >= timestamp_begin) {
+            const float t = static_cast<float>(tok - timestamp_begin) * kWhisperTimestampStepSec;
+            if (seg_start < 0.0f) seg_start = t;
+            else { flush(t); seg_start = t; }
+        } else {
+            text_tokens.push_back(tok);
+            flat.push_back(tok);
+        }
+    }
+    flush(seg_start);
+    clean_text = tokenizer->decode(flat);
+    return segments;
+}
+
+} // namespace
+
 extern "C" {
 
-int cactus_preprocess_audio_features(
+CACTUS_FFI_EXPORT int cactus_preprocess_audio_features(
     const char* audio_file_path,
     const char* model_type,
     size_t mel_bins,
@@ -197,9 +239,11 @@ int cactus_transcribe(
 
         const size_t mel_bins = std::max<size_t>(1, static_cast<size_t>(handle->model->get_config().num_mel_bins));
         std::vector<float> audio_features;
+        std::vector<float> handoff_audio_samples;
         if (is_parakeet) {
             auto cfg = cactus::audio::get_parakeet_spectrogram_config();
             const size_t waveform_samples = audio_samples.size();
+            handoff_audio_samples = audio_samples;
             cactus::audio::apply_preemphasis(audio_samples, 0.97f);
             audio_features = cactus::audio::compute_spectrogram_graph(
                 audio_samples, cfg, mel_bins, 0.0f, 8000.0f,
@@ -231,11 +275,31 @@ int cactus_transcribe(
             return -1;
         }
 
+        const bool want_timestamps = is_whisper && options.timestamps;
+        const uint32_t ts_begin = want_timestamps ? whisper_timestamp_begin(tokenizer) : 0;
+
         std::vector<uint32_t> tokens;
         if (prompt && prompt[0] != '\0') {
             tokens = tokenizer->encode(prompt);
         } else if (is_whisper) {
             tokens = handle->model->get_config().decoder_prompt_token_ids;
+            std::string language = json_string_field(options_json ? options_json : "", "language");
+            if (!language.empty()) {
+                std::vector<uint32_t> language_token = tokenizer->encode("<|" + language + "|>");
+                if (language_token.size() == 1) {
+                    for (uint32_t& token : tokens) {
+                        std::string piece = tokenizer->decode({token});
+                        if (piece.size() == 6 && piece[0] == '<' && piece[1] == '|' &&
+                            piece[4] == '|' && piece[5] == '>' &&
+                            std::islower((unsigned char)piece[2]) && std::islower((unsigned char)piece[3])) {
+                            token = language_token[0];
+                            break;
+                        }
+                    }
+                }
+            }
+            if (want_timestamps)
+                tokens.erase(std::remove(tokens.begin(), tokens.end(), ts_begin - 1), tokens.end());
         }
 
         if (tokens.empty() && is_whisper) {
@@ -267,6 +331,7 @@ int cactus_transcribe(
         }
 
         std::string final_text;
+        std::vector<TranscriptSegment> segments;
         std::vector<uint32_t> generated_tokens;
         generated_tokens.reserve(options.max_tokens);
         const size_t prompt_tokens = tokens.size();
@@ -274,7 +339,8 @@ int cactus_transcribe(
         float total_entropy_sum = 0.0f;
 
         if (is_parakeet) {
-            generated_tokens = handle->model->transcribe_parakeet_tdt(audio_features);
+            generated_tokens = handle->model->transcribe_parakeet_tdt(
+                audio_features, nullptr, true, 0, &handle->should_stop);
             auto t_first = std::chrono::high_resolution_clock::now();
             time_to_first_token =
                 std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
@@ -291,7 +357,8 @@ int cactus_transcribe(
                 tokens,
                 options.max_tokens,
                 stop_token_sequences,
-                &handle->should_stop);
+                &handle->should_stop,
+                want_timestamps ? static_cast<int64_t>(ts_begin) - 1 : -1);
             auto t_first = std::chrono::high_resolution_clock::now();
             time_to_first_token =
                 std::chrono::duration_cast<std::chrono::microseconds>(t_first - start_time).count() / 1000.0;
@@ -302,9 +369,14 @@ int cactus_transcribe(
                     break;
                 }
             }
-            final_text = tokenizer->decode(generated_tokens);
+            if (want_timestamps) {
+                segments = parse_whisper_timestamp_segments(tokenizer, generated_tokens, ts_begin, final_text);
+            } else {
+                final_text = tokenizer->decode(generated_tokens);
+            }
             if (callback) {
                 for (uint32_t tok : generated_tokens) {
+                    if (want_timestamps && tok >= ts_begin) continue;
                     std::string piece = tokenizer->decode({tok});
                     callback(piece.c_str(), tok, user_data);
                 }
@@ -356,6 +428,72 @@ int cactus_transcribe(
             : 0.0f;
         float confidence = 1.0f - mean_entropy;
 
+        bool cloud_handoff_used = false;
+        std::string handoff_reason;
+        float reported_threshold = -1.0f;
+        if (is_parakeet) {
+            const bool cloud_disabled = env_flag_enabled("CACTUS_DISABLE_CLOUD_HANDOFF");
+            const bool cloud_eligible =
+                !cloud_disabled && !handle->cloud_handoff_disabled && options.auto_handoff;
+            float threshold = options.confidence_threshold;
+            if (threshold < 0.0f) {
+                const float model_default = handle->model->get_config().default_cloud_handoff_threshold;
+                threshold = handle->model->has_handoff_probe()
+                    ? 0.50f
+                    : (model_default > 0.0f ? model_default : 0.7f);
+            }
+            reported_threshold = threshold;
+
+            if (!options.auto_handoff) {
+                handoff_reason = "handoff off";
+            } else if (cloud_disabled) {
+                handoff_reason = "disabled (env)";
+            } else if (handle->cloud_handoff_disabled) {
+                handoff_reason = "disabled (auth failed earlier)";
+            }
+
+            if (cloud_eligible && handle->model->has_handoff_probe_rollout()) {
+                float p_wrong = handle->model->handoff_probe_wrong_probability();
+                if (std::isfinite(p_wrong)) {
+                    confidence = std::max(0.0f, std::min(1.0f, 1.0f - p_wrong));
+                    CACTUS_LOG_DEBUG("cloud_handoff", "Parakeet handoff probe p_wrong="
+                        << p_wrong << " confidence=" << confidence);
+                    if (confidence < threshold) {
+                        CACTUS_LOG_WARN("cloud_handoff", "Cloud transcription handoff triggered: p_wrong="
+                            << p_wrong << " confidence=" << confidence << " threshold=" << threshold);
+                        std::vector<int16_t> pcm16(handoff_audio_samples.size());
+                        for (size_t i = 0; i < handoff_audio_samples.size(); ++i) {
+                            float clamped = std::max(-1.0f, std::min(1.0f, handoff_audio_samples[i]));
+                            pcm16[i] = static_cast<int16_t>(std::lround(clamped * 32767.0f));
+                        }
+                        std::vector<uint8_t> wav = cactus::ffi::cloud_build_wav(
+                            reinterpret_cast<const uint8_t*>(pcm16.data()), pcm16.size() * sizeof(int16_t));
+                        std::string audio_b64 = cactus::ffi::cloud_base64_encode(wav.data(), wav.size());
+                        std::string cloud_key = cactus::ffi::resolve_cloud_api_key(nullptr);
+                        CloudResponse cloud = cactus::ffi::cloud_transcribe_request(
+                            audio_b64, final_text,
+                            static_cast<long>(options.cloud_timeout_ms / 1000),
+                            cloud_key.empty() ? nullptr : cloud_key.c_str());
+                        if (cloud.used_cloud && !cloud.transcript.empty()) {
+                            final_text = cloud.transcript;
+                            cloud_handoff_used = true;
+                            handoff_reason = "low confidence (probe)";
+                        } else {
+                            if (cloud.error.rfind("http_401", 0) == 0 || cloud.error.rfind("http_403", 0) == 0) {
+                                handle->cloud_handoff_disabled = true;
+                            }
+                            handoff_reason = "handoff failed: " + cloud.error;
+                            CACTUS_LOG_WARN("cloud_handoff", "Cloud transcription failed, keeping local output: "
+                                << cloud.error);
+                        }
+                    }
+                }
+            }
+            if (handoff_reason.empty()) {
+                handoff_reason = (confidence >= threshold) ? "above threshold" : "kept local";
+            }
+        }
+
         auto end_time = std::chrono::high_resolution_clock::now();
         double total_time_ms =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count() / 1000.0;
@@ -369,7 +507,8 @@ int cactus_transcribe(
         std::string json = construct_response_json(
             final_text, {}, time_to_first_token, total_time_ms,
             prefill_tps, decode_tps, prompt_tokens, completion_tokens,
-            confidence);
+            confidence, cloud_handoff_used, "", segments, "",
+            reported_threshold, handoff_reason);
         if (json.size() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);
             return -1;

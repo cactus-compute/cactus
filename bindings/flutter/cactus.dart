@@ -9,6 +9,7 @@ final DynamicLibrary _lib = (Platform.isAndroid || Platform.isLinux)
 
 typedef CactusModelT = Pointer<Void>;
 typedef CactusIndexT = Pointer<Void>;
+typedef CactusStreamTranscribeT = Pointer<Void>;
 
 typedef TokenCallbackNative = Void Function(
     Pointer<Utf8> token, Uint32 tokenId, Pointer<Void> userData);
@@ -145,6 +146,38 @@ typedef _CactusTranscribeD = int Function(
 final cactusTranscribe =
     _lib.lookupFunction<_CactusTranscribeN, _CactusTranscribeD>(
         'cactus_transcribe');
+
+typedef _CactusStreamTranscribeStartN = Pointer<Void> Function(
+    Pointer<Void> model, Pointer<Utf8> optionsJson);
+typedef _CactusStreamTranscribeStartD = Pointer<Void> Function(
+    Pointer<Void> model, Pointer<Utf8> optionsJson);
+final cactusStreamTranscribeStart = _lib.lookupFunction<
+    _CactusStreamTranscribeStartN,
+    _CactusStreamTranscribeStartD>('cactus_stream_transcribe_start');
+
+typedef _CactusStreamTranscribeProcessN = Int32 Function(
+    Pointer<Void> stream,
+    Pointer<Uint8> pcmBuffer,
+    IntPtr pcmBufferSize,
+    Pointer<Utf8> responseBuffer,
+    IntPtr bufferSize);
+typedef _CactusStreamTranscribeProcessD = int Function(
+    Pointer<Void> stream,
+    Pointer<Uint8> pcmBuffer,
+    int pcmBufferSize,
+    Pointer<Utf8> responseBuffer,
+    int bufferSize);
+final cactusStreamTranscribeProcess = _lib.lookupFunction<
+    _CactusStreamTranscribeProcessN,
+    _CactusStreamTranscribeProcessD>('cactus_stream_transcribe_process');
+
+typedef _CactusStreamTranscribeStopN = Int32 Function(
+    Pointer<Void> stream, Pointer<Utf8> responseBuffer, IntPtr bufferSize);
+typedef _CactusStreamTranscribeStopD = int Function(
+    Pointer<Void> stream, Pointer<Utf8> responseBuffer, int bufferSize);
+final cactusStreamTranscribeStop = _lib.lookupFunction<
+    _CactusStreamTranscribeStopN,
+    _CactusStreamTranscribeStopD>('cactus_stream_transcribe_stop');
 
 typedef _CactusEmbedN = Int32 Function(
     Pointer<Void> model,

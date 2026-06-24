@@ -19,11 +19,24 @@ def _valid_bundle(path: Path) -> bool:
     return (path / "config.txt").exists() and (path / "components" / "manifest.json").exists()
 
 
+def _iter_bundle_candidates(name: str):
+    """Yield the bare bundle dir for `name` plus any suffixed `name-cq*` variants
+    (e.g. `gemma-4-e2b-it-cq4`, `gemma-4-e2b-it-cq4-apple`) so callers that know a
+    model's bare stem still find bundles built under the suffixed convention."""
+    bare = WEIGHTS / name
+    if bare.exists():
+        yield bare
+    if WEIGHTS.is_dir():
+        for candidate in sorted(WEIGHTS.glob(f"{name}-cq*")):
+            if candidate.is_dir():
+                yield candidate
+
+
 def _find_bundle(preferred: list[str], types: set[str], on_missing=pytest.fail) -> Path:
     for name in preferred:
-        candidate = WEIGHTS / name
-        if candidate.exists() and _valid_bundle(candidate) and _read_model_type(candidate) in types:
-            return candidate
+        for candidate in _iter_bundle_candidates(name):
+            if _valid_bundle(candidate) and _read_model_type(candidate) in types:
+                return candidate
     if not WEIGHTS.is_dir():
         on_missing(f"Weights directory not found: {WEIGHTS}")
     for candidate in sorted(WEIGHTS.iterdir()):
