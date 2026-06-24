@@ -1,0 +1,1 @@
+DEFAULT_PROMPT = "What is the capital of France?"
