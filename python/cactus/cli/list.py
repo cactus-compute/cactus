@@ -2,7 +2,7 @@ import itertools
 import stat as _stat
 import struct
 
-from .common import CYAN, print_color, transpiled_root, weights_root
+from .common import BLUE, CYAN, print_color, weights_root
 
 _PREC_TO_BITS = {3: 1, 4: 2, 5: 3, 6: 4}
 
@@ -86,10 +86,34 @@ def _collect(roots):
     return models
 
 
+def _is_runnable_bundle(path):
+    return (path / "components" / "manifest.json").is_file()
+
+
+def _categorize(roots):
+    converted = []
+    runnable = []
+    for item in _collect(roots):
+        path = item[0]
+        if _is_runnable_bundle(path):
+            runnable.append(item)
+        else:
+            converted.append(item)
+    return converted, runnable
+
+
+def _print_section(title, color, models):
+    print_color(color, title)
+    if not models:
+        print("  (none)")
+        return
+    for path, model_type, quant, size in models:
+        print(f"  {path.name:<32} {model_type:<18} {quant:<4} {_human_size(size):>9}  {path}")
+
+
 def cmd_list(_args):
-    roots = (weights_root(), transpiled_root())
-    converted, transpiled = _categorize(roots)
+    converted, runnable = _categorize((weights_root(),))
     _print_section("Converted weights (cactus convert)", BLUE, converted)
     print()
-    _print_section("Runnable bundles (cactus convert / download)", CYAN, transpiled)
+    _print_section("Runnable bundles (cactus download)", CYAN, runnable)
     return 0

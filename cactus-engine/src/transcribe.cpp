@@ -92,7 +92,7 @@ CACTUS_FFI_EXPORT int cactus_preprocess_audio_features(
             cactus::engine::Config cfg;
             cfg.model_type = cactus::engine::Config::ModelType::GEMMA4;
             cfg.audio_input_feat_size = static_cast<uint32_t>(bins);
-            // The Python transpiled runtime shape-specializes Gemma4 audio to
+            // The graph-bundle runtime shape-specializes Gemma4 audio to
             // its requested capacity (currently capped at 30s). Do not apply
             // the native interactive model's shorter audio_soft_tokens limit
             // here, otherwise long-file multimodal prompts are silently

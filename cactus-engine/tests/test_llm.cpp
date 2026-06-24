@@ -876,7 +876,7 @@ bool test_decode_batch() {
 
     auto two = handle->model->decode_batch(std::vector<uint32_t>(2, seed), M);
     if (two.empty()) {
-        std::cout << "  [WARN] bundle not dynamic-batch capable (need `cactus convert --dynamic-batch`); skipping\n";
+        std::cout << "  [WARN] bundle not dynamic-batch capable; skipping\n";
         cactus_destroy(model);
         return true;
     }
@@ -921,7 +921,7 @@ bool test_generate_batch_ragged() {
 
     auto batched = handle->model->generate_batch({a, b}, M);
     if (batched.empty()) {
-        std::cout << "  [WARN] bundle not dynamic-batch capable (need `cactus convert --dynamic-batch`); skipping\n";
+        std::cout << "  [WARN] bundle not dynamic-batch capable; skipping\n";
         cactus_destroy(model);
         return true;
     }

@@ -29,8 +29,9 @@ graph + manifest) from
 best build for your host, e.g. Apple Silicon on macOS); pass `--platform cpu`
 for the generic build. The result can be loaded directly via `cactus_init()`.
 
-For models not on Cactus-Compute, build a bundle from source with
-`cactus convert <model>` (quantizes the weights and builds the runtime graph).
+For models not on Cactus-Compute, `cactus convert <model>` can still quantize
+weights to Cactus CQ format, but local runtime bundle generation is unavailable
+while the graph builder is being rewritten.
 
 ## Types
 

@@ -1,1 +1,0 @@
-"""Cactus graph transpiler package."""

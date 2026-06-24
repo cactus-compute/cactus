@@ -17,7 +17,6 @@ def cmd_clean(args):
 
     destructive_targets = [
         PROJECT_ROOT / "weights",
-        PROJECT_ROOT / "transpiled",
         PROJECT_ROOT / "venv",
     ]
     present = [t for t in destructive_targets if t.exists()]
@@ -55,7 +54,6 @@ def cmd_clean(args):
     remove_if_exists(PROJECT_ROOT / "venv")
 
     remove_if_exists(PROJECT_ROOT / "weights")
-    remove_if_exists(PROJECT_ROOT / "transpiled")
 
     print()
     print("Removing compiled libraries and frameworks...")

@@ -37,13 +37,13 @@ def _require_bundle(relative: Path, types: set[str]) -> Path:
     if not candidate.exists():
         pytest.fail(
             f"Live-test model not found: {relative}\n"
-            f"Prepare it with `cactus convert google/gemma-4-E2B-it` from {PROJECT_ROOT}."
+            f"Prepare it with `cactus download google/gemma-4-E2B-it` from {PROJECT_ROOT}."
         )
     if not _valid_bundle(candidate):
         pytest.fail(
             f"Live-test model is not a prepared v2 bundle: {relative}\n"
             "Expected config.txt and components/manifest.json.\n"
-            f"Prepare it with `cactus convert google/gemma-4-E2B-it` from {PROJECT_ROOT}."
+            f"Prepare it with `cactus download google/gemma-4-E2B-it` from {PROJECT_ROOT}."
         )
     model_type = _read_model_type(candidate)
     if model_type not in types:
@@ -333,7 +333,7 @@ def test_live_long_streaming_generation(live_server) -> None:
 
 def test_live_transcription_wav(live_server) -> None:
     base_url, _ = live_server
-    stt = _find_bundle(["parakeet-tdt-0.6b-v3-transpiled"], STT_TYPES)
+    stt = _find_bundle(["parakeet-tdt-0.6b-v3"], STT_TYPES)
     audio = ASSETS / "test.wav"
     assert audio.exists()
     with audio.open("rb") as f:
@@ -349,7 +349,7 @@ def test_live_transcription_wav(live_server) -> None:
 
 def test_live_transcription_text_response(live_server) -> None:
     base_url, _ = live_server
-    stt = _find_bundle(["parakeet-tdt-0.6b-v3-transpiled"], STT_TYPES)
+    stt = _find_bundle(["parakeet-tdt-0.6b-v3"], STT_TYPES)
     audio = ASSETS / "test.wav"
     with audio.open("rb") as f:
         res = httpx.post(
@@ -365,7 +365,7 @@ def test_live_transcription_text_response(live_server) -> None:
 
 def test_live_transcription_verbose_json_segments(live_server) -> None:
     base_url, _ = live_server
-    stt = _find_bundle(["parakeet-tdt-0.6b-v3-transpiled"], STT_TYPES)
+    stt = _find_bundle(["parakeet-tdt-0.6b-v3"], STT_TYPES)
     audio = ASSETS / "test.wav"
     with audio.open("rb") as f:
         res = httpx.post(
@@ -386,7 +386,7 @@ def test_live_transcription_verbose_json_segments(live_server) -> None:
 
 def test_live_transcription_rejects_unsupported_format(live_server) -> None:
     base_url, _ = live_server
-    stt = _find_bundle(["parakeet-tdt-0.6b-v3-transpiled"], STT_TYPES)
+    stt = _find_bundle(["parakeet-tdt-0.6b-v3"], STT_TYPES)
     audio = ASSETS / "test.wav"
     with audio.open("rb") as f:
         res = httpx.post(
@@ -401,7 +401,7 @@ def test_live_transcription_rejects_unsupported_format(live_server) -> None:
 
 def test_live_transcription_rejects_word_timestamps(live_server) -> None:
     base_url, _ = live_server
-    stt = _find_bundle(["parakeet-tdt-0.6b-v3-transpiled"], STT_TYPES)
+    stt = _find_bundle(["parakeet-tdt-0.6b-v3"], STT_TYPES)
     audio = ASSETS / "test.wav"
     with audio.open("rb") as f:
         res = httpx.post(
@@ -420,7 +420,7 @@ def test_live_transcription_rejects_word_timestamps(live_server) -> None:
 
 def test_live_transcription_rejects_non_wav(live_server) -> None:
     base_url, _ = live_server
-    stt = _find_bundle(["parakeet-tdt-0.6b-v3-transpiled"], STT_TYPES)
+    stt = _find_bundle(["parakeet-tdt-0.6b-v3"], STT_TYPES)
     res = httpx.post(
         f"{base_url}/v1/audio/transcriptions",
         data={"model": stt.name},
@@ -440,7 +440,7 @@ def _find_embed_bundle() -> Path:
             return candidate
     raise RuntimeError(
         "No embedding (nomic/bert) bundle under weights/; "
-        "run `cactus convert nomic-ai/nomic-embed-text-v2-moe`"
+        "run `cactus download nomic-ai/nomic-embed-text-v2-moe`"
     )
 
 

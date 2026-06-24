@@ -42,8 +42,10 @@ def _merge_lora_adapter(base_model_id, lora_path, token=None):
 
 
 def cmd_convert(args):
-    """Convert a HuggingFace model into a runnable cactus bundle: quantize weights to CQ,
-    then build the runtime graph. Pass --weights-only to stop after the weight conversion.
+    """Convert a HuggingFace model into Cactus CQ weights.
+
+    Runtime graph/bundle generation used to happen after this step, but that graph
+    builder has been removed for a rewrite.
     """
     from .model import ensure_weights
 
@@ -66,101 +68,10 @@ def cmd_convert(args):
             reconvert=args.reconvert,
             output_dir=output_dir,
         )
-        if getattr(args, "weights_only", False):
-            return 0
-        args.weights_dir = args.weights_dir or output_dir
-        args.artifact_dir = args.artifact_dir or output_dir
-        return cmd_transpile(args)
+        return 0
     except RuntimeError as e:
         print_color(RED, f"Conversion error: {e}")
         return 1
     finally:
         if merged_dir:
             shutil.rmtree(merged_dir, ignore_errors=True)
-
-
-def cmd_transpile(args):
-    """Build the runtime graph bundle from already-converted CQ weights."""
-    from .transpile import run_transpile
-    from .model import _default_multimodal_assets
-
-    extra_args = []
-    if args.weights_dir:
-        extra_args.extend(["--weights-dir", args.weights_dir])
-    if args.task and args.task != "auto":
-        extra_args.extend(["--task", args.task])
-    if args.prompt is not None:
-        extra_args.extend(["--prompt", args.prompt])
-    if args.system_prompt is not None:
-        extra_args.extend(["--system-prompt", args.system_prompt])
-    if args.enable_thinking:
-        extra_args.append("--enable-thinking")
-    if args.input_ids is not None:
-        extra_args.extend(["--input-ids", args.input_ids])
-
-    image_files = list(args.image_file or [])
-    audio_file = args.audio_file
-    if not image_files or not audio_file:
-        default_images, default_audio = _default_multimodal_assets()
-        if not image_files:
-            image_files = default_images
-        if not audio_file and default_audio:
-            audio_file = default_audio
-
-    for img in image_files:
-        extra_args.extend(["--image-file", img])
-    if audio_file:
-        extra_args.extend(["--audio-file", audio_file])
-    if args.max_new_tokens is not None:
-        extra_args.extend(["--max-new-tokens", str(args.max_new_tokens)])
-    if args.component_pipeline and args.component_pipeline != "auto":
-        extra_args.extend(["--component-pipeline", args.component_pipeline])
-    if args.components:
-        extra_args.extend(["--components", args.components])
-    if args.torch_dtype:
-        extra_args.extend(["--torch-dtype", args.torch_dtype])
-    if args.token:
-        extra_args.extend(["--token", args.token])
-    if args.trust_remote_code:
-        extra_args.append("--trust-remote-code")
-    if args.local_files_only:
-        extra_args.append("--local-files-only")
-    if args.artifact_dir:
-        extra_args.extend(["--artifact-dir", args.artifact_dir])
-    if args.graph_filename:
-        extra_args.extend(["--graph-filename", args.graph_filename])
-    if args.skip_reference_compare:
-        extra_args.append("--skip-reference-compare")
-    if args.no_fuse_rms_norm:
-        extra_args.append("--no-fuse-rms-norm")
-    if args.no_fuse_rope:
-        extra_args.append("--no-fuse-rope")
-    if args.no_fuse_attention:
-        extra_args.append("--no-fuse-attention")
-    if args.no_fuse_attention_block:
-        extra_args.append("--no-fuse-attention-block")
-    if args.no_fuse_add_clipped:
-        extra_args.append("--no-fuse-add-clipped")
-    if args.no_fuse_gated_deltanet:
-        extra_args.append("--no-fuse-gated-deltanet")
-    if args.npu:
-        extra_args.append("--npu")
-        if args.npu_quantize is not None:
-            extra_args.extend(["--npu-quantize", str(args.npu_quantize)])
-        if args.npu_audio_quantize is not None:
-            extra_args.extend(["--npu-audio-quantize", str(args.npu_audio_quantize)])
-        if args.npu_vision_quantize is not None:
-            extra_args.extend(["--npu-vision-quantize", str(args.npu_vision_quantize)])
-    if args.cache_context_length is not None:
-        extra_args.extend(["--cache-context-length", str(args.cache_context_length)])
-    if getattr(args, "dynamic_batch", False):
-        extra_args.append("--dynamic-batch")
-    if getattr(args, "max_slots", 1) and int(args.max_slots) != 1:
-        extra_args.extend(["--max-slots", str(args.max_slots)])
-
-    return run_transpile(
-        args.model_id,
-        extra_args=extra_args,
-        execute_after_transpile=args.execute_after_transpile,
-        allow_unconverted_weights=args.allow_unconverted_weights,
-    )

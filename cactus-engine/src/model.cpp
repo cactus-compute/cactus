@@ -1352,7 +1352,7 @@ void Model::run_full_context_text() {
     size_t input_node = static_cast<size_t>(encoder_->runtime_input_node_ids[input_ids_idx]);
     const auto& input_desc = encoder_->graph->get_output_buffer(input_node);
     if (context_tokens_.size() > input_desc.total_size) {
-        throw std::runtime_error("context exceeds transpiled text_lm_encoder capacity");
+        throw std::runtime_error("context exceeds graph-bundle text_lm_encoder capacity");
     }
     std::fill(encoder_->input_buffers[input_ids_idx].begin(), encoder_->input_buffers[input_ids_idx].end(), 0);
     std::fill(encoder_->input_buffers[attention_mask_idx].begin(), encoder_->input_buffers[attention_mask_idx].end(), 0);
@@ -4213,8 +4213,8 @@ std::unique_ptr<Model> create_model(const std::string& bundle_dir) {
     fs::path manifest = fs::path(bundle_dir) / "components" / "manifest.json";
     if (!fs::exists(manifest)) {
         CACTUS_LOG_ERROR("model",
-            "Not a transpiled bundle (no components/manifest.json at " << bundle_dir << "). "
-            "Run `cactus convert <hf_model>` to produce one.");
+            "Not a runnable Cactus bundle (no components/manifest.json at " << bundle_dir << "). "
+            "Run `cactus download <hf_model>` to fetch one.");
         return nullptr;
     }
     return std::make_unique<Model>();

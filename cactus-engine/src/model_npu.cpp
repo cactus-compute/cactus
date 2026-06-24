@@ -212,7 +212,7 @@ bool Model::vision_encode_via_npu(const std::vector<float>& pixel_values,
     const bool package_takes_positions = npu_vision_encoder_->has_input("pixel_position_ids");
     if (package_takes_positions != (pixel_position_ids != nullptr)) {
         CACTUS_LOG_WARN("model", "NPU vision encoder and pixel_position_ids mismatch; "
-            "falling back to CPU vision encoder (re-transpile with --npu to fix)");
+            "falling back to CPU vision encoder (rebuild the bundle with NPU vision support to fix)");
         return false;
     }
 

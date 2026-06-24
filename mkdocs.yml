@@ -98,7 +98,6 @@ nav:
     - Index API: docs/cactus_index.md
   - Cactus Quants: docs/cactus_quants.md
   - Hybrid Inference: docs/cactus_hybrid.md
-  - Transpiler: docs/cactus_transpiler.md
   - Guides:
     - Fine-tuning & Deployment: docs/finetuning.md
     - Runtime Compatibility: docs/compatibility.md

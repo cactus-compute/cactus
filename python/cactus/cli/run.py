@@ -19,12 +19,9 @@ def cmd_run(args) -> int:
     if args.result_json:
         args.result_json = str(Path(args.result_json).expanduser())
 
-    from .model import TranspileOptions, prepare_bundle
+    from .model import prepare_bundle
 
-    bundle_dir = prepare_bundle(args, transpile=TranspileOptions(
-        image_files=[args.image] if args.image else None,
-        audio_file=args.audio,
-    ))
+    bundle_dir = prepare_bundle(args)
     if bundle_dir is None:
         return 1
 

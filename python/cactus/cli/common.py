@@ -27,12 +27,6 @@ def weights_root() -> Path:
     return Path.home() / ".cache" / "cactus" / "weights"
 
 
-def transpiled_root() -> Path:
-    if is_repo_checkout():
-        return PROJECT_ROOT / "transpiled"
-    return Path.home() / ".cache" / "cactus" / "transpiled"
-
-
 DEFAULT_MODEL_ID = "google/gemma-4-E2B-it"
 DEFAULT_TRANSCRIPTION_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_TEST_MODEL_ID = "LiquidAI/LFM2-VL-450M"

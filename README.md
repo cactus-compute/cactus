@@ -15,7 +15,7 @@ A hybrid edge-cloud AI engine for mobile devices & wearables.
 - **Low RAM:** zero-copy memory mapping ensures 10x lower RAM use than other engines
 - **Multimodal:** one engine for speech, vision, and language models
 - **Cloud fallback:** automatically route requests to cloud models if needed
-- **Model-Agnostic:** Custom PyTorch models can be exported to the Cactus runtime. 
+- **Portable bundles:** download prebuilt Cactus bundles for local on-device inference
 
 ```
 ┌─────────────────┐
@@ -33,10 +33,6 @@ A hybrid edge-cloud AI engine for mobile devices & wearables.
 ┌─────────────────┐
 │ Cactus Quants   │ ←── Cactus Quants at 4-bit uniform matches f16.
 └─────────────────┘  
-         │
-┌─────────────────┐
-│Cactus Transpiler│ ←── Transpiles custom PyTorch model to Cactus.
-└─────────────────┘
 ```
 
 ## Quick Demo (Mac)
@@ -148,10 +144,10 @@ graph.hard_reset();
 
 ## Supported Models
 
-- Any HuggigFace model can be converted using `cactus convert [HF-Name]`, though experimental.
-- Liquid, Gemma. whisper. parakeet and Qwen model families are especially tested. 
-- Some models have been pre-uploaded [here](https://huggingface.co/Cactus-Compute), just run `cactus download [HF-Name]`.
-- `cactus run [HF-Name]` albeit first downloads or convert the model if not found. 
+- Liquid, Gemma, Whisper, Parakeet, and Qwen model families are especially tested.
+- Prebuilt runnable bundles are published [here](https://huggingface.co/Cactus-Compute); run `cactus download [HF-Name]`.
+- `cactus run [HF-Name]` downloads a matching prebuilt bundle when needed.
+- `cactus convert [HF-Name]` currently quantizes weights to Cactus CQ format only; local runtime bundle generation is unavailable while the graph builder is being rewritten.
 
 ## Learn More
 
@@ -162,7 +158,6 @@ graph.hard_reset();
 | [Cactus Kernels](/docs/cactus_kernels.md) | C++ | ARM NEON SIMD kernels for matmul, attention, convolution, quantization, DSP, image processing |
 | [Cactus Quants](/docs/cactus_quants.md) | C++ | Rotation-and-codebook quantization from 4-bit to 1-bit for all weight tensors |
 | [Cactus Hybrid](/docs/cactus_hybrid.md) | C/Python | Route hard queries to the cloud automatically based on local model confidence |
-| [Cactus Transpiler](/docs/cactus_transpiler.md) | Python | Convert any PyTorch model to a Cactus runtime graph for on-device inference |
 | [Python Package](/python/) | Python | Python package and CLI |
 
 ## Bindings
@@ -213,23 +208,17 @@ graph.hard_reset();
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │                                                                                │
-│  cactus download [model]             get a bundle (prebuilt, else build)       │
+│  cactus download [model]             get a prebuilt bundle                     │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --platform auto|cpu|apple         target platform (default: auto)           │
 │    --token <token>                   HuggingFace token (gated models)          │
-│    --reconvert                       force local rebuild from source           │
+│    --reconvert                       refresh cached bundle                     │
 │                                                                                │
-│  cactus convert <model> [dir]        HuggingFace -> runnable cactus bundle     │
-│                                      (CQ weights + runtime graph)              │
+│  cactus convert <model> [dir]        HuggingFace -> Cactus CQ weights          │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform auto|cpu|apple         target platform (default: auto)           │
 │    --token <token>                   HuggingFace token (gated models)          │
-│    --reconvert                       force local rebuild from source           │
+│    --reconvert                       force weight conversion from source       │
 │    --lora <path>                     merge a LoRA adapter before converting    │
-│    --weights-only                    stop after CQ weights (skip the graph)    │
-│    --dynamic-batch                   dynamic-batch decoder graph (Gemma4)      │
-│    --max-slots <n>                   KV-cache slots for batched decode         │
-│    --artifact-dir <path>             bundle output (default: weights/<model>)  │
 │                                                                                │
 │  cactus serve [model]                OpenAI-compatible local HTTP server       │
 │    --host <addr>                     bind address (default: 127.0.0.1)         │

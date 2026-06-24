@@ -183,20 +183,18 @@ Three patterns are visible:
 
 ## Using CQ Weights
 
-`cactus convert` quantizes the weights to CQ and builds the runtime bundle
-(graph + manifest) in one step. Run via `cactus run`:
-`cactus convert <model>` builds a runnable bundle locally; `cactus run` runs a
-bundle path or a model id.
+`cactus convert` quantizes HuggingFace weights to Cactus CQ format. Runtime bundle
+generation is unavailable while the graph builder is being rewritten, so `cactus run`
+expects either a local runnable bundle or a prebuilt bundle from Cactus-Compute.
 
 ```bash
-cactus convert google/gemma-4-E2B-it ./gemma4-bundle
-cactus convert google/gemma-4-E2B-it ./gemma4-bundle --bits 2
-cactus run ./gemma4-bundle
+cactus convert google/gemma-4-E2B-it ./gemma4-weights
+cactus convert google/gemma-4-E2B-it ./gemma4-weights --bits 2
+cactus run google/gemma-4-E2B-it
 ```
 
 For models on huggingface.co/Cactus-Compute, `cactus run <model-id>` (or `cactus
-download <model-id>`) fetches the pre-built bundle, building locally if none is
-published.
+download <model-id>`) fetches the pre-built bundle.
 
 The CQ matmul kernels live in `cactus-kernels/src/matmul.cpp`. At inference,
 the kernel applies a Walsh-Hadamard transform to the FP16 activation (not the weight),

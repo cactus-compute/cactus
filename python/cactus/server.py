@@ -147,7 +147,7 @@ class ModelRegistry:
         for info in sorted(self.models.values(), key=lambda x: x.id):
             if info.model_type in LLM_MODEL_TYPES:
                 return info
-        raise RuntimeError("No valid LLM bundles found. Prepare a transpiled bundle before running `cactus serve`.")
+        raise RuntimeError("No valid LLM bundles found. Download a runnable bundle before running `cactus serve`.")
 
     def default_stt(self) -> ModelInfo | None:
         for info in sorted(self.models.values(), key=lambda x: x.id):
