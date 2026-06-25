@@ -1,20 +1,19 @@
 from pydantic import BaseModel
-from typing import Any
-import model_utils
+from typing import Any, Optional
 import torch
 
 
 class InputtedModel(BaseModel):
     name: str
     input_modalities: list[str]
-#    output_modalities: list[str] -> Possible need for this, but not sure yet
+#    output_modalities: list[str] -> Possible future need for this, but not yet
 
 class LayerRecord(BaseModel):
-    index: str
+    index: int
     name: str
     node_type: str
     target: str
-    schema: str
+    #model_schema: str | None TODO: Need to add this field back and include model_schema during conversion
     args: Any
     kwargs: Any
     users: list[str]
@@ -22,17 +21,17 @@ class LayerRecord(BaseModel):
     module_stack: Any | None
 
     @classmethod
-    def from_node(cls, i:int, node: torch.Node) -> "LayerRecord":
+    def from_node(cls, num:int, x: torch.Node) -> "LayerRecord":
         return cls(
-            index = i,
-            name = str(node.name),
-            node_type = str(node.op),
-            target = str(node.target),
-            args = model_utils.jsonable(node.args),
-            kwargs = model_utils.jsonable(node.kwargs),
-            users = [user.name for user in node.users],
-            tensor_output_meta = model_utils.extract_tensor_meta(node),
-            module_stack = model_utils.extract_module_stack(node)
+            index = num,
+            name = str(x.name),
+            node_type = str(x.op),
+            target = str(x.target),
+            args = jsonable(x.args),
+            kwargs = jsonable(x.kwargs),
+            users = [user.name for user in x.users],
+            tensor_output_meta = extract_tensor_meta(x),
+            module_stack = extract_module_stack(x)
         )
 
 class TensorInstance(BaseModel):
@@ -52,9 +51,124 @@ class Slice(BaseModel):
 
     @classmethod
     def from_slice(cls, x: slice) -> "Slice":
-        return cls(start = model_utils.jsonable(x.start), stop = model_utils.jsonable(x.stop), step = model_utils.jsonable(x.step))
+        return cls(start = jsonable(x.start), stop = jsonable(x.stop), step = jsonable(x.step))
     
 
-class JSONResult(BaseModel):
+class LayerMap(BaseModel):
+    model_name: str
+    task: str
+    graph_signature: str
+    range_constants: str
+    nodes: list[LayerRecord]
 
-class LayerMap(BaseModel)
+    @classmethod
+    def from_data(cls, x:torch.export.ExportedProgram, name:str, model_task:str, nodes_list:list[LayerRecord]) -> "LayerMap":
+        return cls(model_name = name, task = model_task, graph_signature = repr(x.graph_signature), range_constants = repr(x.range_constraints), nodes = nodes_list)
+
+
+
+"""###################################### MODEL UTILS!!!!!!! ######################################"""
+
+def jsonable(x: Any) -> Any:
+    """
+    Convert graph/export objects into JSON-safe values.
+    """
+    if isinstance(x, torch.fx.Node):
+        return {"node": x.name}
+
+    if isinstance(x, torch.Tensor):
+        return TensorInstance.from_tensor(x)
+
+    if isinstance(x, torch.Size):
+        return list(x)
+
+    if isinstance(x, torch.dtype):
+        return str(x)
+
+    if isinstance(x, torch.device):
+        return str(x)
+
+    if isinstance(x, slice):
+        return Slice.from_slice(x)
+
+    if isinstance(x, range):
+        return list(x)
+
+    if isinstance(x, (list, tuple)):
+        return [jsonable(v) for v in x]
+
+    if isinstance(x, dict):
+        return {str(k): jsonable(v) for k, v in x.items()}
+
+    if isinstance(x, (str, int, float, bool)) or x is None:
+        return x
+
+    return repr(x)
+
+
+def aten_name(target: Any) -> str:
+    """
+    Convert default naming to simpler name.
+    For non-ATen targets, falls back to str(target).
+    """
+    schema = getattr(target, "_schema", None)
+
+    if schema is not None:
+        if "::" in schema.name:
+            namespace, op = schema.name.split("::", 1)
+            overload = schema.overload_name if schema.overload_name else "default"
+            return f"{namespace}.{op}.{overload}"
+
+    if hasattr(target, "name"):
+        try:
+            return target.name()
+        except Exception:
+            pass
+
+    return str(target)
+
+
+def extract_tensor_meta(node: torch.fx.Node) -> Optional[Any]:
+    """
+    torch.export usually stores fake tensor output metadata in node.meta["val"].
+    """
+    if "val" not in node.meta:
+        return None
+
+    return jsonable(node.meta["val"])
+
+
+#This function needs to be further optimized and cleaned up
+#CLEANUP: Create object for output dictionary (potentially one outter object as well); Condense down for loop
+def extract_module_stack(node: torch.fx.Node) -> Optional[Any]:
+    """
+    Sometimes torch.export nodes contain original module context here.
+    This can help later when mapping ops back to model.layers.X.self_attn, mlp, etc.
+    """
+    stack = node.meta.get("nn_module_stack", None)
+
+    if stack is None:
+        return None
+
+    out = []
+
+    for key, value in stack.items():
+        if isinstance(value, tuple) and len(value) >= 2:
+            module_path = value[0]
+            module_type = value[1]
+            out.append(
+                {
+                    "key": str(key),
+                    "module_path": str(module_path),
+                    "module_type": getattr(module_type, "__name__", str(module_type)),
+                }
+            )
+        else:
+            out.append(
+                {
+                    "key": str(key),
+                    "value": repr(value),
+                }
+            )
+
+    return out
