@@ -42,6 +42,8 @@ jobs:
         run: |
           (cd cactus-code && npm install --no-audit --no-fund)
           bash cactus-code/scripts/bundle-for-pypi.sh
+          rm -rf python/cactus/code/packages/tui/native/win32
+          rm -rf python/cactus/code/packages/tui/native/darwin/prebuilds/darwin-x64
 
       - name: Build and repair wheel
         working-directory: python
@@ -87,6 +89,7 @@ jobs:
         run: |
           (cd cactus-code && npm install --no-audit --no-fund)
           bash cactus-code/scripts/bundle-for-pypi.sh
+          rm -rf python/cactus/code/packages/tui/native
 
       - name: Build and repair wheel
         working-directory: python
@@ -111,15 +114,6 @@ jobs:
           python-version: "3.12"
 
       - uses: ./.github/actions/stamp-version
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Bundle coding agent into the sdist
-        run: |
-          (cd cactus-code && npm install --no-audit --no-fund)
-          bash cactus-code/scripts/bundle-for-pypi.sh
 
       - name: Build sdist
         working-directory: python
