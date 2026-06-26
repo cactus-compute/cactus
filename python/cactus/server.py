@@ -502,6 +502,55 @@ class _HarmonyStreamSplitter:
         self._buf = ""
         return out
 
+_TOOLCALL_PAIRS = (
+    ("<|tool_call>", "<tool_call|>"),
+    ("<start_function_call>", "<end_function_call>"),
+    ("<tool_call>", "</tool_call>"),
+    ("<|tool_call_start|>", "<|tool_call_end|>"),
+)
+_TOOLCALL_OPENERS = tuple(o for o, _ in _TOOLCALL_PAIRS)
+
+
+def _strip_tool_call_markers(text: str) -> str:
+    if not text or ("call:" not in text and "tool_call" not in text
+                    and "function_call" not in text and '<|"|>' not in text):
+        return text
+    s = text
+    for open_m, close_m in _TOOLCALL_PAIRS:
+        while True:
+            ci = s.find(close_m)
+            if ci == -1:
+                break
+            oi = s.rfind(open_m, 0, ci)
+            if oi == -1:
+                oi = s.rfind("call:", 0, ci)
+            if oi == -1:
+                s = s[:ci] + s[ci + len(close_m):]
+            else:
+                s = s[:oi] + s[ci + len(close_m):]
+    cut = None
+    for open_m in _TOOLCALL_OPENERS:
+        oi = s.find(open_m)
+        if oi != -1:
+            cut = oi if cut is None else min(cut, oi)
+    if cut is not None:
+        s = s[:cut]
+    ci = s.find("call:")
+    while ci != -1:
+        j = ci + 5
+        k = j
+        while k < len(s) and (s[k].isalnum() or s[k] in "_-."):
+            k += 1
+        m = k
+        while m < len(s) and s[m] == " ":
+            m += 1
+        if k > j and m < len(s) and s[m] == "{":
+            s = s[:ci]
+            break
+        ci = s.find("call:", ci + 5)
+    s = s.replace('<|"|>', '"')
+    return s.strip() if s != text else text
+
 
 def _build_chat_response(result: dict[str, Any], model_id: str, request_id: str) -> dict[str, Any]:
     function_calls = result.get("function_calls") or []
@@ -510,6 +559,7 @@ def _build_chat_response(result: dict[str, Any], model_id: str, request_id: str)
     prefill = int(result.get("prefill_tokens") or 0)
     decode = int(result.get("decode_tokens") or 0)
     content, reasoning = _split_harmony_channels(result.get("response", "") or "")
+    content = _strip_tool_call_markers(content)
     message: dict[str, Any] = {"role": "assistant", "content": None if has_tool_calls else content}
     if reasoning:
         message["reasoning_content"] = reasoning
@@ -587,8 +637,17 @@ async def _stream_completion(manager: ModelManager, req: ChatRequest, request_id
             "choices": [{"index": 0, "delta": {field: text}, "logprobs": None, "finish_reason": None}],
         })
 
+    tools_present = bool(tools)
+
     def _consume(pieces: list[tuple[str, str]]) -> list[str]:
-        return [_delta_chunk(piece_kind, piece_text) for piece_kind, piece_text in pieces if piece_text]
+        out: list[str] = []
+        for piece_kind, piece_text in pieces:
+            if not piece_text:
+                continue
+            if tools_present and piece_kind != "reasoning":
+                continue
+            out.append(_delta_chunk(piece_kind, piece_text))
+        return out
 
     while True:
         kind, value = await queue.get()
@@ -622,6 +681,11 @@ async def _stream_completion(manager: ModelManager, req: ChatRequest, request_id
     function_calls = (result or {}).get("function_calls") or []
     tool_calls = _make_tool_calls(function_calls, with_index=True)
     finish_reason = "tool_calls" if tool_calls else "stop"
+    if tools_present and not tool_calls:
+        clean_content, _ = _split_harmony_channels((result or {}).get("response", "") or "")
+        clean_content = _strip_tool_call_markers(clean_content)
+        if clean_content:
+            yield _delta_chunk("content", clean_content)
     if tool_calls:
         yield _event({
             "id": request_id,

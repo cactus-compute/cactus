@@ -781,12 +781,27 @@ inline void parse_function_calls_core(std::string& response, std::vector<std::st
 
     while ((pos = response.find(CALL_START, pos)) != std::string::npos) {
         size_t content_start = pos + CALL_START.length();
-        size_t call_end_pos = response.find(CALL_END, content_start);
+        while (content_start < response.length() &&
+               std::isspace(static_cast<unsigned char>(response[content_start]))) {
+            content_start++;
+        }
+
+        const bool is_call = response.compare(content_start, 5, "call:") == 0;
+        size_t scan_from = content_start;
+        if (is_call) {
+            size_t brace_pos = response.find('{', content_start + 5);
+            if (brace_pos != std::string::npos) {
+                size_t bp = brace_pos;
+                read_balanced(response, bp, '{', '}');
+                scan_from = bp;
+            }
+        }
+        size_t call_end_pos = response.find(CALL_END, scan_from);
 
         size_t content_end = (call_end_pos != std::string::npos) ? call_end_pos : response.length();
         std::string call_content = response.substr(content_start, content_end - content_start);
 
-        if (call_content.compare(0, 5, "call:") == 0) {
+        if (is_call) {
             size_t brace_pos = call_content.find('{');
             if (brace_pos != std::string::npos) {
                 emit_call(call_content.substr(5, brace_pos - 5), call_content.substr(brace_pos));
