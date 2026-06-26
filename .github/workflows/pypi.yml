@@ -34,6 +34,15 @@ jobs:
           mkdir -p python/cactus/bindings/lib
           cp cactus-engine/build/libcactus_engine.dylib python/cactus/bindings/lib/
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Bundle coding agent into the wheel
+        run: |
+          (cd cactus-code && npm install --no-audit --no-fund)
+          bash cactus-code/scripts/bundle-for-pypi.sh
+
       - name: Build and repair wheel
         working-directory: python
         run: |
@@ -68,6 +77,17 @@ jobs:
           mkdir -p python/cactus/bindings/lib
           cp cactus-engine/build/libcactus_engine.so python/cactus/bindings/lib/
 
+      - name: Install Node.js 22
+        run: |
+          curl -fsSL https://nodejs.org/dist/v22.21.0/node-v22.21.0-linux-arm64.tar.xz -o /tmp/node.tar.xz
+          tar -xJf /tmp/node.tar.xz -C /opt
+          echo "/opt/node-v22.21.0-linux-arm64/bin" >> "$GITHUB_PATH"
+
+      - name: Bundle coding agent into the wheel
+        run: |
+          (cd cactus-code && npm install --no-audit --no-fund)
+          bash cactus-code/scripts/bundle-for-pypi.sh
+
       - name: Build and repair wheel
         working-directory: python
         run: |
@@ -91,6 +111,15 @@ jobs:
           python-version: "3.12"
 
       - uses: ./.github/actions/stamp-version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Bundle coding agent into the sdist
+        run: |
+          (cd cactus-code && npm install --no-audit --no-fund)
+          bash cactus-code/scripts/bundle-for-pypi.sh
 
       - name: Build sdist
         working-directory: python

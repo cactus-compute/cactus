@@ -240,6 +240,20 @@ graph.hard_reset();
 │    --confidence-threshold <0..1>     handoff to cloud below this confidence    │
 │    --cloud-timeout-ms <n>            max wait for cloud handoff                │
 │                                                                                │
+│  cactus code                         run the AI coding agent (TUI / print)     │
+│    --serve-model <id>                auto-start a server with this model       │
+│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --token <token>                   HuggingFace token (gated models)          │
+│    --reconvert                       force local rebuild from source           │
+│    --host <addr>                     server address (default: 127.0.0.1)       │
+│    --port <port>                     server port (default: 8080)               │
+│    --no-serve                        require a running server (no auto-start)  │
+│    --no-cloud-handoff                disable automatic cloud handoff           │
+│    --confidence-threshold <0..1>     handoff to cloud below this confidence    │
+│    --cloud-timeout-ms <n>            max wait for cloud handoff                │
+│    -- <args...>                      pass remaining args to the agent          │
+│                                                                                │
 │  cactus list                         list downloaded models                    │
 │                                                                                │
 │  cactus build                        build cactus libraries                    │

@@ -19,9 +19,23 @@ def _resolve_model_arg(model: str | None) -> tuple[Path | None, str | None]:
     return None, model
 
 
+def _ensure_engine_library() -> bool:
+    from .runtime import ensure_python_runtime_library
+
+    try:
+        ensure_python_runtime_library()
+        return True
+    except Exception as exc:
+        print_color(RED, f"Error: could not build the Cactus engine: {exc}")
+        print_color(YELLOW, "Build it manually with `cactus build --python` (needs cmake and a C++ toolchain).")
+        return False
+
+
 def cmd_serve(args):
     """Start the OpenAI-compatible HTTP server."""
     apply_runtime_env(args)
+    if not _ensure_engine_library():
+        return 1
     model_path, model_name = _resolve_model_arg(args.model_id)
     if args.model_id and model_path is None:
         from .model import prepare_bundle
@@ -65,5 +79,6 @@ def cmd_serve(args):
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         print_color(YELLOW, f"Warning: binding to {args.host} exposes the server beyond loopback; no auth is enforced.")
     print_color(BLUE, f"Starting server on {args.host}:{args.port}")
-    uvicorn.run(application, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(application, host=args.host, port=args.port, log_level="info",
+                access_log=not getattr(args, "no_access_log", False))
     return 0

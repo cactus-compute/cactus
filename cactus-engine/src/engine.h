@@ -312,6 +312,33 @@ inline std::string extract_json_string(const std::string& json, size_t& pos) {
             else if (json[pos] == 'r') value += '\r';
             else if (json[pos] == '"') value += '"';
             else if (json[pos] == '\\') value += '\\';
+            else if (json[pos] == 'u' && pos + 4 < json.size()) {
+                unsigned int cp = 0;
+                bool ok = true;
+                for (int k = 1; k <= 4; k++) {
+                    char h = json[pos + k];
+                    cp <<= 4;
+                    if (h >= '0' && h <= '9') cp |= static_cast<unsigned>(h - '0');
+                    else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned>(h - 'a' + 10);
+                    else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned>(h - 'A' + 10);
+                    else { ok = false; break; }
+                }
+                if (ok) {
+                    pos += 4;
+                    if (cp < 0x80) {
+                        value += static_cast<char>(cp);
+                    } else if (cp < 0x800) {
+                        value += static_cast<char>(0xC0 | (cp >> 6));
+                        value += static_cast<char>(0x80 | (cp & 0x3F));
+                    } else {
+                        value += static_cast<char>(0xE0 | (cp >> 12));
+                        value += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                        value += static_cast<char>(0x80 | (cp & 0x3F));
+                    }
+                } else {
+                    value += json[pos];
+                }
+            }
             else value += json[pos];
         } else {
             value += json[pos];

@@ -1,0 +1,24 @@
+{
+	"name": "pi-monorepo",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"packages/*"
+	],
+	"scripts": {
+		"clean": "npm run clean --workspaces",
+		"build": "cd packages/tui && npm run build && cd ../ai && npm run build && cd ../agent && npm run build && cd ../coding-agent && npm run build"
+	},
+	"devDependencies": {
+		"@types/node": "22.19.19",
+		"@typescript/native-preview": "7.0.0-dev.20260120.1",
+		"shx": "0.4.0"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"version": "0.0.3",
+	"overrides": {
+		"rimraf": "6.1.2"
+	}
+}

@@ -29,6 +29,7 @@ from .list import cmd_list
 
 from .auth import cmd_auth
 from .clean import cmd_clean
+from .code import cmd_code
 
 
 def _telemetry_parent():
@@ -188,6 +189,7 @@ def create_parser():
                                        (quantizes weights to CQ, then builds
                                        the runtime graph)
     --bits 1|2|3|4                     CQ quantization (default: 4)
+    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
     --token <token>                    HuggingFace token (defaults to $HF_TOKEN)
     --reconvert                        force weight conversion from source
     --lora <path>                      merge a LoRA adapter before converting
@@ -309,6 +311,27 @@ def create_parser():
                               help="Confidence threshold below which completions hand off to cloud (1.0 forces cloud handoff)")
     serve_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                               help="Maximum time to wait for cloud handoff before falling back locally")
+    serve_parser.add_argument("--no-access-log", action="store_true",
+                              help="Disable per-request HTTP access logging")
+
+    code_parser = subparsers.add_parser("code", help="Run the Cactus coding agent (TUI / print mode)",
+                                        parents=[_build_parent()])
+    code_parser.add_argument("--serve-model", default=None,
+                             help="If no server is running, start `cactus serve` with this model")
+    code_parser.add_argument("--host", default="127.0.0.1",
+                             help="Server bind address to use/start (default: 127.0.0.1)")
+    code_parser.add_argument("--port", type=_port_int, default=8080,
+                             help="Server port to use/start (default: 8080)")
+    code_parser.add_argument("--no-serve", action="store_true",
+                             help="Do not auto-start a server; require one to already be running")
+    code_parser.add_argument("--no-cloud-handoff", action="store_true",
+                             help="Disable automatic cloud handoff on the auto-started server")
+    code_parser.add_argument("--confidence-threshold", type=_unit_float, default=None,
+                             help="Confidence threshold below which completions hand off to cloud")
+    code_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
+                             help="Maximum time to wait for cloud handoff before falling back locally")
+    code_parser.add_argument("agent_args", nargs=argparse.REMAINDER,
+                             help="Arguments passed through to the coding agent (prefix with -- )")
 
     test_parser = subparsers.add_parser("test", help="Run the test suite",
                                         parents=[_build_parent()])
@@ -348,6 +371,8 @@ def create_parser():
                                 help="Output directory (default: weights/<model>)")
     convert_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
                                 help="CQ quantization bits (default: 4)")
+    convert_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
+                                help=_PLATFORM_HELP)
     convert_parser.add_argument("--token", help="HuggingFace token")
     convert_parser.add_argument("--lora",
                                 help="Path or HF id of a LoRA adapter to merge before converting (requires `peft`)")
@@ -439,6 +464,7 @@ _COMMANDS = {
 
     "auth":           cmd_auth,
     "clean":          cmd_clean,
+    "code":           cmd_code,
     "convert":        cmd_convert,
     "upload":         cmd_upload,
 }

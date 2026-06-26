@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 
 from .common import GREEN, RED, YELLOW, print_color
-from .download import get_weights_dir
+from .download import get_bundle_dir, get_weights_dir, resolve_platform
 
 
 def _merge_lora_adapter(base_model_id, lora_path, token=None):
@@ -56,12 +56,19 @@ def cmd_convert(args):
             return 1
         source_model_id = merged_dir
 
-    output_dir = args.output_dir or str(get_weights_dir(args.model_id))
+    platform = resolve_platform(getattr(args, "platform", "auto"))
+    output_dir = args.output_dir or str(
+        get_bundle_dir(args.model_id, bits=args.bits, platform=platform)
+    )
+
+    if platform == "apple" and not getattr(args, "npu", False):
+        args.npu = True
 
     try:
         ensure_weights(
             source_model_id,
             bits=args.bits,
+            platform=platform,
             token=args.token,
             reconvert=args.reconvert,
             output_dir=output_dir,

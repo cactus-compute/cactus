@@ -1,0 +1,70 @@
+{
+	"name": "@earendil-works/pi-ai",
+	"version": "0.80.2",
+	"description": "Unified LLM API with automatic model discovery and provider configuration",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"sideEffects": [
+		"./dist/compat.js"
+	],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./compat": {
+			"types": "./dist/compat.d.ts",
+			"import": "./dist/compat.js"
+		},
+		"./providers/*": {
+			"types": "./dist/providers/*.d.ts",
+			"import": "./dist/providers/*.js"
+		},
+		"./api/*": {
+			"types": "./dist/api/*.d.ts",
+			"import": "./dist/api/*.js"
+		},
+		"./oauth": {
+			"types": "./dist/oauth.d.ts",
+			"import": "./dist/oauth.js"
+		}
+	},
+	"files": [
+		"dist",
+		"README.md"
+	],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"dependencies": {
+		"openai": "6.26.0",
+		"partial-json": "0.1.7",
+		"typebox": "1.1.38"
+	},
+	"keywords": [
+		"ai",
+		"llm",
+		"openai",
+		"anthropic",
+		"gemini",
+		"bedrock",
+		"unified",
+		"api"
+	],
+	"author": "Mario Zechner",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/earendil-works/pi.git",
+		"directory": "packages/ai"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"devDependencies": {
+		"@types/node": "24.12.4"
+	}
+}

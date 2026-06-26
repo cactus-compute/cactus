@@ -28,3 +28,5 @@ python/cactus/bin/
 python/cactus/bindings/lib/
 site/
 site_docs/
+
+python/cactus/code/

@@ -63,10 +63,11 @@ version = {attr = "cactus._version.__version__"}
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cactus*"]
+exclude = ["cactus.code*"]
 
 [tool.setuptools.package-data]
 "cactus.bindings" = ["lib/*.dylib", "lib/*.so"]
-"cactus" = ["bin/run", "bin/transcribe", "assets/*"]
+"cactus" = ["bin/run", "bin/transcribe", "assets/*", "code/**/*"]
 "cactus.convert" = ["assets/*/*"]
 
 [tool.pytest.ini_options]

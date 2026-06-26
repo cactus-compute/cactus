@@ -601,6 +601,34 @@ inline std::string json_string_field(const std::string& json, const std::string&
                 case 'n':  out.push_back('\n'); break;
                 case 'r':  out.push_back('\r'); break;
                 case 't':  out.push_back('\t'); break;
+                case 'u': {
+                    unsigned int cp = 0;
+                    bool ok = i + 4 <= json.size();
+                    for (int k = 0; ok && k < 4; k++) {
+                        char h = json[i + k];
+                        cp <<= 4;
+                        if (h >= '0' && h <= '9') cp |= static_cast<unsigned>(h - '0');
+                        else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned>(h - 'a' + 10);
+                        else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned>(h - 'A' + 10);
+                        else ok = false;
+                    }
+                    if (ok) {
+                        i += 4;
+                        if (cp < 0x80) {
+                            out.push_back(static_cast<char>(cp));
+                        } else if (cp < 0x800) {
+                            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                        } else {
+                            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                        }
+                    } else {
+                        out.push_back('u');
+                    }
+                    break;
+                }
                 default:   out.push_back(e);    break;
             }
             continue;
@@ -674,6 +702,139 @@ inline std::vector<std::string> split_json_array(const std::string& array_json) 
         }
     }
     return out;
+}
+
+namespace jsonval {
+
+inline void skip_ws(const std::string& s, size_t& p) {
+    while (p < s.size() && (s[p] == ' ' || s[p] == '\t' || s[p] == '\n' || s[p] == '\r')) p++;
+}
+
+inline bool parse_value(const std::string& s, size_t& p);
+
+inline bool parse_string(const std::string& s, size_t& p) {
+    if (p >= s.size() || s[p] != '"') return false;
+    p++;
+    while (p < s.size()) {
+        char c = s[p++];
+        if (c == '"') return true;
+        if (c == '\\') {
+            if (p >= s.size()) return false;
+            char e = s[p++];
+            if (e == 'u') {
+                if (p + 4 > s.size()) return false;
+                for (int i = 0; i < 4; i++) {
+                    if (!std::isxdigit(static_cast<unsigned char>(s[p++]))) return false;
+                }
+            } else if (e != '"' && e != '\\' && e != '/' && e != 'b' &&
+                       e != 'f' && e != 'n' && e != 'r' && e != 't') {
+                return false;
+            }
+        } else if (static_cast<unsigned char>(c) < 0x20) {
+            return false;
+        }
+    }
+    return false;
+}
+
+inline bool parse_number(const std::string& s, size_t& p) {
+    size_t start = p;
+    if (p < s.size() && s[p] == '-') p++;
+    if (p < s.size() && s[p] == '0') {
+        p++;
+    } else if (p < s.size() && s[p] >= '1' && s[p] <= '9') {
+        while (p < s.size() && std::isdigit(static_cast<unsigned char>(s[p]))) p++;
+    } else {
+        return false;
+    }
+    if (p < s.size() && s[p] == '.') {
+        p++;
+        if (p >= s.size() || !std::isdigit(static_cast<unsigned char>(s[p]))) return false;
+        while (p < s.size() && std::isdigit(static_cast<unsigned char>(s[p]))) p++;
+    }
+    if (p < s.size() && (s[p] == 'e' || s[p] == 'E')) {
+        p++;
+        if (p < s.size() && (s[p] == '+' || s[p] == '-')) p++;
+        if (p >= s.size() || !std::isdigit(static_cast<unsigned char>(s[p]))) return false;
+        while (p < s.size() && std::isdigit(static_cast<unsigned char>(s[p]))) p++;
+    }
+    return p > start;
+}
+
+inline bool parse_literal(const std::string& s, size_t& p, const std::string& lit) {
+    if (s.compare(p, lit.size(), lit) == 0) {
+        p += lit.size();
+        return true;
+    }
+    return false;
+}
+
+inline bool parse_object(const std::string& s, size_t& p) {
+    p++;
+    skip_ws(s, p);
+    if (p < s.size() && s[p] == '}') { p++; return true; }
+    while (true) {
+        skip_ws(s, p);
+        if (!parse_string(s, p)) return false;
+        skip_ws(s, p);
+        if (p >= s.size() || s[p] != ':') return false;
+        p++;
+        if (!parse_value(s, p)) return false;
+        skip_ws(s, p);
+        if (p >= s.size()) return false;
+        if (s[p] == ',') { p++; continue; }
+        if (s[p] == '}') { p++; return true; }
+        return false;
+    }
+}
+
+inline bool parse_array(const std::string& s, size_t& p) {
+    p++;
+    skip_ws(s, p);
+    if (p < s.size() && s[p] == ']') { p++; return true; }
+    while (true) {
+        if (!parse_value(s, p)) return false;
+        skip_ws(s, p);
+        if (p >= s.size()) return false;
+        if (s[p] == ',') { p++; continue; }
+        if (s[p] == ']') { p++; return true; }
+        return false;
+    }
+}
+
+inline bool parse_value(const std::string& s, size_t& p) {
+    skip_ws(s, p);
+    if (p >= s.size()) return false;
+    char c = s[p];
+    if (c == '{') return parse_object(s, p);
+    if (c == '[') return parse_array(s, p);
+    if (c == '"') return parse_string(s, p);
+    if (c == 't') return parse_literal(s, p, "true");
+    if (c == 'f') return parse_literal(s, p, "false");
+    if (c == 'n') return parse_literal(s, p, "null");
+    return parse_number(s, p);
+}
+
+} // namespace jsonval
+
+inline bool is_valid_json(const std::string& s) {
+    size_t p = 0;
+    if (!jsonval::parse_value(s, p)) return false;
+    jsonval::skip_ws(s, p);
+    return p == s.size();
+}
+
+inline void sanitize_function_calls(std::vector<std::string>& calls) {
+    std::vector<std::string> valid;
+    valid.reserve(calls.size());
+    for (const auto& call : calls) {
+        std::string trimmed = trim_string(call);
+        if (!trimmed.empty() && trimmed.front() == '{' &&
+            trimmed.find("\"name\"") != std::string::npos && is_valid_json(trimmed)) {
+            valid.push_back(trimmed);
+        }
+    }
+    calls.swap(valid);
 }
 
 inline std::string serialize_tools_json(const std::vector<ToolFunction>& tools) {
@@ -1148,6 +1309,34 @@ inline std::vector<std::string> parse_json_string_array_field(const std::string&
                     case 'n': value.push_back('\n'); break;
                     case 'r': value.push_back('\r'); break;
                     case 't': value.push_back('\t'); break;
+                    case 'u': {
+                        unsigned int cp = 0;
+                        bool ok = i + 4 <= array_json.size();
+                        for (int k = 0; ok && k < 4; k++) {
+                            char h = array_json[i + k];
+                            cp <<= 4;
+                            if (h >= '0' && h <= '9') cp |= static_cast<unsigned>(h - '0');
+                            else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned>(h - 'a' + 10);
+                            else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned>(h - 'A' + 10);
+                            else ok = false;
+                        }
+                        if (ok) {
+                            i += 4;
+                            if (cp < 0x80) {
+                                value.push_back(static_cast<char>(cp));
+                            } else if (cp < 0x800) {
+                                value.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                                value.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                            } else {
+                                value.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                                value.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                                value.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                            }
+                        } else {
+                            value.push_back('u');
+                        }
+                        break;
+                    }
                     default: value.push_back(c); break;
                 }
                 escaped = false;
@@ -1535,7 +1724,8 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
 
 inline void parse_function_calls_from_response(const std::string& response_text,
                                                std::string& regular_response,
-                                               std::vector<std::string>& function_calls) {
+                                               std::vector<std::string>& function_calls,
+                                               const std::vector<ToolFunction>& tools = {}) {
     regular_response = response_text;
     function_calls.clear();
 
@@ -1562,12 +1752,13 @@ inline void parse_function_calls_from_response(const std::string& response_text,
                 }
                 regular_response = trim_string(
                     regular_response.substr(0, needle_pos) + regular_response.substr(array_end));
+                sanitize_function_calls(function_calls);
                 return;
             }
         }
     }
 
-    gemma::parse_function_calls(regular_response, function_calls);
+    gemma::parse_function_calls(regular_response, function_calls, tools);
     chat_tools::extract_qwen_tool_calls(regular_response, function_calls);
     chat_tools::extract_lfm2_tool_calls(regular_response, function_calls);
 
@@ -1600,6 +1791,45 @@ inline void parse_function_calls_from_response(const std::string& response_text,
         }
         search_pos = json_end;
     }
+
+    if (function_calls.empty()) {
+        size_t pos = 0;
+        while (pos < regular_response.size()) {
+            char open = regular_response[pos];
+            if (open != '[' && open != '{') { ++pos; continue; }
+            size_t end = find_matching_delimiter(regular_response, pos, open, open == '[' ? ']' : '}');
+            if (end > regular_response.size()) { ++pos; continue; }
+            std::string candidate = regular_response.substr(pos, end - pos);
+            bool call_shape = candidate.find("\"name\"") != std::string::npos &&
+                              (open == '[' || candidate.find("\"arguments\"") != std::string::npos);
+            if (call_shape && is_valid_json(candidate)) {
+                if (open == '[') {
+                    for (const auto& item : split_json_array(candidate)) function_calls.push_back(item);
+                } else {
+                    function_calls.push_back(candidate);
+                }
+                regular_response = trim_string(
+                    regular_response.substr(0, pos) + regular_response.substr(end));
+                pos = 0;
+                continue;
+            }
+            ++pos;
+        }
+    }
+
+    if (function_calls.empty()) {
+        std::string remainder = trim_string(regular_response);
+        if (!remainder.empty() && (remainder.front() == '{' || remainder.front() == '[')) {
+            size_t span_end = find_matching_delimiter(remainder, 0, remainder.front(),
+                                                      remainder.front() == '[' ? ']' : '}');
+            bool whole_span = span_end == remainder.size();
+            bool call_shape = remainder.find("\"name\"") != std::string::npos &&
+                              (remainder.front() == '[' || remainder.find("\"arguments\"") != std::string::npos);
+            if (whole_span && call_shape) regular_response.clear();
+        }
+    }
+
+    sanitize_function_calls(function_calls);
 }
 
 inline void strip_tag_blocks(std::string& text, std::string& extracted,

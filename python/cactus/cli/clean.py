@@ -1,6 +1,8 @@
+import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from .common import (
     PROJECT_ROOT,
@@ -33,32 +35,13 @@ def cmd_clean(args):
             print_color(YELLOW, "Aborted.")
             return 0
 
-    def remove_if_exists(path):
-        if path.is_dir():
-            print(f"Removing: {path}")
-            shutil.rmtree(path)
-        else:
-            print(f"Not found: {path}")
-
-    remove_if_exists(PROJECT_ROOT / "android" / "build")
-
-    for apple_build in sorted((PROJECT_ROOT / "apple").glob("build*")):
-        remove_if_exists(apple_build)
-
-    remove_if_exists(PROJECT_ROOT / "cactus-engine" / "build")
-    remove_if_exists(PROJECT_ROOT / "cactus-engine" / "tests" / "build")
-    remove_if_exists(PROJECT_ROOT / "cactus-graph" / "build")
-    remove_if_exists(PROJECT_ROOT / "cactus-kernels" / "build")
-
-    remove_if_exists(PROJECT_ROOT / "python" / "cactus" / "bin")
-
-    remove_if_exists(PROJECT_ROOT / "venv")
-
-    remove_if_exists(PROJECT_ROOT / "weights")
-    remove_if_exists(PROJECT_ROOT / "transpiled")
-
+    print("Stopping any running Cactus server...")
+    try:
+        stopped = subprocess.run(["pkill", "-f", "cactus serve"], capture_output=True)
+        print("Stopped running Cactus server(s)." if stopped.returncode == 0 else "No running Cactus server found.")
+    except FileNotFoundError:
+        print_color(YELLOW, "Could not stop the server automatically; stop it manually if one is running.")
     print()
-    print("Removing compiled libraries and frameworks...")
 
     preserve_roots = [
         (PROJECT_ROOT / "cactus-engine" / "libs" / "curl").resolve(),
@@ -66,65 +49,58 @@ def cmd_clean(args):
         (PROJECT_ROOT / "libs" / "mbedtls").resolve(),
     ]
 
-    def should_preserve_artifact(path):
+    def should_preserve(path):
         resolved = path.resolve()
         return any(resolved.is_relative_to(root) for root in preserve_roots)
 
-    so_count = 0
-    for so_file in PROJECT_ROOT.rglob("*.so"):
-        so_file.unlink()
-        so_count += 1
-    print(f"Removed {so_count} .so files" if so_count else "No .so files found")
+    def remove_if_exists(path):
+        if path.is_dir():
+            print(f"Removing: {path}")
+            shutil.rmtree(path, ignore_errors=True)
 
-    a_count = 0
-    for a_file in PROJECT_ROOT.rglob("*.a"):
-        if should_preserve_artifact(a_file):
-            continue
-        a_file.unlink()
-        a_count += 1
-    print(f"Removed {a_count} .a files" if a_count else "No .a files found")
+    for tree in ("venv", "weights", "transpiled"):
+        remove_if_exists(PROJECT_ROOT / tree)
+    remove_if_exists(PROJECT_ROOT / "python" / "cactus" / "bin")
+    remove_if_exists(PROJECT_ROOT / "python" / "cactus" / "code")
 
-    bin_count = 0
-    for bin_file in PROJECT_ROOT.rglob("*.bin"):
-        bin_file.unlink()
-        bin_count += 1
-    print(f"Removed {bin_count} .bin files" if bin_count else "No .bin files found")
+    print()
+    print("Sweeping build, dependency, and cache artifacts across the tree...")
 
-    dylib_count = 0
-    for dylib_file in PROJECT_ROOT.rglob("*.dylib"):
-        if should_preserve_artifact(dylib_file):
-            continue
-        dylib_file.unlink()
-        dylib_count += 1
-    print(f"Removed {dylib_count} .dylib files" if dylib_count else "No .dylib files found")
+    def is_artifact_dir(name):
+        return (
+            name in {"node_modules", "dist", "__pycache__", ".pytest_cache"}
+            or name == "build"
+            or name.startswith(("build-", "build_"))
+            or name.endswith((".egg-info", ".xcframework"))
+        )
 
-    xcf_count = 0
-    for xcf_dir in PROJECT_ROOT.rglob("*.xcframework"):
-        if xcf_dir.is_dir():
-            shutil.rmtree(xcf_dir)
-            xcf_count += 1
-    print(f"Removed {xcf_count} .xcframework directories" if xcf_count else "No .xcframework directories found")
+    artifact_file_suffixes = {".so", ".a", ".bin", ".dylib"}
 
-    pycache_count = 0
-    for pycache_dir in PROJECT_ROOT.rglob("__pycache__"):
-        if pycache_dir.is_dir():
-            shutil.rmtree(pycache_dir)
-            pycache_count += 1
-    print(f"Removed {pycache_count} __pycache__ directories" if pycache_count else "No __pycache__ directories found")
-
-    egg_count = 0
-    for egg_dir in PROJECT_ROOT.rglob("*.egg-info"):
-        if egg_dir.is_dir():
-            shutil.rmtree(egg_dir)
-            egg_count += 1
-    print(f"Removed {egg_count} .egg-info directories" if egg_count else "No .egg-info directories found")
-
-    pytest_cache_count = 0
-    for cache_dir in PROJECT_ROOT.rglob(".pytest_cache"):
-        if cache_dir.is_dir():
-            shutil.rmtree(cache_dir)
-            pytest_cache_count += 1
-    print(f"Removed {pytest_cache_count} .pytest_cache directories" if pytest_cache_count else "No .pytest_cache directories found")
+    removed_dirs = 0
+    removed_files = 0
+    for root, dirs, files in os.walk(PROJECT_ROOT, topdown=True):
+        root_path = Path(root)
+        kept = []
+        for d in dirs:
+            if d == ".git":
+                continue
+            full = root_path / d
+            if is_artifact_dir(d) and not should_preserve(full):
+                print(f"Removing: {full}")
+                shutil.rmtree(full, ignore_errors=True)
+                removed_dirs += 1
+            else:
+                kept.append(d)
+        dirs[:] = kept
+        for f in files:
+            full = root_path / f
+            if full.suffix in artifact_file_suffixes and not should_preserve(full):
+                try:
+                    full.unlink()
+                    removed_files += 1
+                except OSError:
+                    pass
+    print(f"Removed {removed_dirs} build/dependency directories and {removed_files} compiled artifacts")
 
     print()
     print_color(GREEN, "Clean complete!")

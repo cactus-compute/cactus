@@ -133,9 +133,19 @@ static std::string build_cloud_text_prompt(const CloudCompletionRequest& request
     oss << "4) If a tool call is required, return ONLY JSON with this exact shape:\\n";
     oss << "[{\"name\":\"tool_name\",\"arguments\":{\"arg\":\"value\"}}]\\n";
     oss << "5) Do not include any prose before or after that JSON tool-call output.\\n";
+    oss << "6) Never write a tool call as a function-call literal such as "
+           "tool_name({...}) or tool_name(arg=value); only the JSON array shape above is accepted.\\n";
     oss << "\\nConversation:\\n";
     for (const auto& m : request.messages) {
-        oss << "[" << m.role << "] " << m.content << "\\n";
+        if (m.role == "tool") {
+            oss << "[tool:" << (m.name.empty() ? "result" : m.name) << "] " << m.content << "\\n";
+            continue;
+        }
+        oss << "[" << m.role << "] " << m.content;
+        for (const auto& tc : m.tool_calls) {
+            oss << " (called tool " << tc.name << " with arguments " << tc.arguments << ")";
+        }
+        oss << "\\n";
     }
 
     if (!request.tools.empty()) {
@@ -150,6 +160,91 @@ static std::string build_cloud_text_prompt(const CloudCompletionRequest& request
     }
 
     return oss.str();
+}
+
+static void extract_textual_tool_calls(std::string& response,
+                                       const std::vector<ToolFunction>& tools,
+                                       std::vector<std::string>& function_calls) {
+    if (tools.empty()) return;
+    for (const auto& tool : tools) {
+        const std::string& name = tool.name;
+        if (name.empty()) continue;
+        size_t search = 0;
+        while (true) {
+            size_t pos = response.find(name, search);
+            if (pos == std::string::npos) break;
+            bool left_ok = (pos == 0) ||
+                !(std::isalnum(static_cast<unsigned char>(response[pos - 1])) || response[pos - 1] == '_');
+            size_t paren = pos + name.size();
+            while (paren < response.size() &&
+                   std::isspace(static_cast<unsigned char>(response[paren]))) {
+                ++paren;
+            }
+            if (!left_ok || paren >= response.size() || response[paren] != '(') {
+                search = pos + name.size();
+                continue;
+            }
+            size_t args_end = find_matching_delimiter(response, paren, '(', ')');
+            if (args_end > response.size()) {
+                search = pos + name.size();
+                continue;
+            }
+            std::string inner = trim_string(response.substr(paren + 1, args_end - paren - 2));
+            std::string args_json;
+            if (inner.empty()) {
+                args_json = "{}";
+            } else if (inner.front() == '{' && inner.back() == '}') {
+                args_json = inner;
+            } else {
+                search = pos + name.size();
+                continue;
+            }
+            function_calls.push_back("{\"name\":\"" + name + "\",\"arguments\":" + args_json + "}");
+            response.erase(pos, args_end - pos);
+            search = pos;
+        }
+    }
+    if (!function_calls.empty()) response = trim_string(response);
+}
+
+static void extract_called_tool_phrases(std::string& response,
+                                        const std::vector<ToolFunction>& tools,
+                                        std::vector<std::string>& function_calls) {
+    const std::string marker = "called tool ";
+    size_t search = 0;
+    while (true) {
+        size_t pos = response.find(marker, search);
+        if (pos == std::string::npos) break;
+        size_t name_start = pos + marker.size();
+        size_t name_end = name_start;
+        while (name_end < response.size() &&
+               (std::isalnum(static_cast<unsigned char>(response[name_end])) || response[name_end] == '_')) {
+            ++name_end;
+        }
+        std::string name = response.substr(name_start, name_end - name_start);
+        bool known = false;
+        for (const auto& t : tools) {
+            if (t.name == name) { known = true; break; }
+        }
+        if (name.empty() || !known) { search = pos + marker.size(); continue; }
+        size_t with = response.find("with arguments", name_end);
+        size_t brace = (with == std::string::npos) ? std::string::npos : response.find('{', with);
+        if (brace == std::string::npos) { search = pos + marker.size(); continue; }
+        size_t end = find_matching_delimiter(response, brace, '{', '}');
+        if (end > response.size()) { search = pos + marker.size(); continue; }
+        std::string args = trim_string(response.substr(brace, end - brace));
+        function_calls.push_back("{\"name\":\"" + name + "\",\"arguments\":" + args + "}");
+        size_t erase_end = end;
+        while (erase_end < response.size() &&
+               std::isspace(static_cast<unsigned char>(response[erase_end]))) {
+            ++erase_end;
+        }
+        if (erase_end < response.size() && response[erase_end] == ')') ++erase_end;
+        size_t erase_start = (pos > 0 && response[pos - 1] == '(') ? pos - 1 : pos;
+        response.erase(erase_start, erase_end - erase_start);
+        search = erase_start;
+    }
+    if (!function_calls.empty()) response = trim_string(response);
 }
 
 static std::string call_cloud_endpoint(const std::string& url,
@@ -443,17 +538,14 @@ CloudCompletionResult cloud_complete_request(const CloudCompletionRequest& reque
     }
 
     if (!response.empty() && function_calls.empty()) {
-        auto first = response.find_first_not_of(" \t\n\r");
-        auto last = response.find_last_not_of(" \t\n\r");
-        if (first != std::string::npos && last != std::string::npos) {
-            std::string trimmed = response.substr(first, last - first + 1);
-            if (!trimmed.empty() && trimmed.front() == '[' && trimmed.back() == ']' &&
-                trimmed.find("\"name\"") != std::string::npos) {
-                function_calls = split_json_array(trimmed);
-                response.clear();
-            }
-        }
+        extract_textual_tool_calls(response, request.tools, function_calls);
     }
+
+    if (!response.empty() && function_calls.empty()) {
+        extract_called_tool_phrases(response, request.tools, function_calls);
+    }
+
+    sanitize_function_calls(function_calls);
 
     if (response.empty() && function_calls.empty()) {
         return {false, false, "", {}, "missing_text"};

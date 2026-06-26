@@ -215,6 +215,55 @@ std::vector<std::string> extract_schema_required(const std::string& schema) {
     return required;
 }
 
+static bool json_object_has_key(const std::string& obj, const std::string& key) {
+    const std::string target = "\"" + key + "\"";
+    int depth = 0;
+    bool in_str = false, esc = false;
+    for (size_t i = 0; i < obj.size(); ++i) {
+        char c = obj[i];
+        if (in_str) {
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') in_str = false;
+            continue;
+        }
+        if (c == '"') {
+            if (depth == 1 && obj.compare(i, target.size(), target) == 0) {
+                size_t j = i + target.size();
+                while (j < obj.size() && std::isspace(static_cast<unsigned char>(obj[j]))) ++j;
+                if (j < obj.size() && obj[j] == ':') return true;
+            }
+            in_str = true;
+            continue;
+        }
+        if (c == '{' || c == '[') ++depth;
+        else if (c == '}' || c == ']') --depth;
+    }
+    return false;
+}
+
+static bool function_calls_missing_required(const std::vector<std::string>& calls,
+                                            const std::vector<ToolFunction>& tools) {
+    if (calls.empty() || tools.empty()) return false;
+    for (const auto& call : calls) {
+        std::string name = json_string_field(call, "name");
+        const ToolFunction* tool = nullptr;
+        for (const auto& t : tools) {
+            if (t.name == name) { tool = &t; break; }
+        }
+        if (!tool) continue;
+        auto schema_it = tool->parameters.find("schema");
+        if (schema_it == tool->parameters.end()) continue;
+        std::vector<std::string> required = extract_schema_required(schema_it->second);
+        if (required.empty()) continue;
+        std::string args = extract_json_object_field(call, "arguments");
+        for (const auto& req : required) {
+            if (!json_object_has_key(args, req)) return true;
+        }
+    }
+    return false;
+}
+
 std::string serialize_needle_tools(const std::vector<ToolFunction>& tools) {
     if (tools.empty()) return "[]";
 
@@ -861,7 +910,7 @@ int cactus_complete(
 
         if (cloud_eligible && prompt.options.confidence_threshold >= 1.0f) {
             pre_generation_cloud_attempted = true;
-            CACTUS_LOG_WARN("cloud_handoff", "Cloud handoff triggered before local generation; waiting up to "
+            CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered before local generation; waiting up to "
                 << prompt.options.cloud_timeout_ms << " ms before falling back");
             auto cloud_result = cloud_complete_request(
                 make_cloud_request("", {}),
@@ -938,7 +987,7 @@ int cactus_complete(
                 && !defer_local_stream_until_probe
                 && !pre_generation_cloud_attempted
                 && confidence < prompt.options.confidence_threshold) {
-                CACTUS_LOG_WARN("cloud_handoff", "Cloud handoff triggered before local streaming; waiting up to "
+                CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered before local streaming; waiting up to "
                     << prompt.options.cloud_timeout_ms << " ms before falling back");
                 CloudCompletionResult cloud_result = cloud_complete_request(
                     make_cloud_request("", {}),
@@ -1028,7 +1077,7 @@ int cactus_complete(
 
         std::string regular_response;
         std::vector<std::string> function_calls;
-        parse_function_calls_from_response(response_text, regular_response, function_calls);
+        parse_function_calls_from_response(response_text, regular_response, function_calls, prompt.tools);
 
         std::string thinking_text;
         if (prompt.model_type == Config::ModelType::GEMMA4 || prompt.options.enable_thinking_if_supported) {
@@ -1051,10 +1100,15 @@ int cactus_complete(
         std::vector<std::string> primary_function_calls = function_calls;
 
         bool handoff_succeeded = false;
-        if (defer_local_stream_until_probe && !pre_generation_cloud_attempted
-            && confidence < prompt.options.confidence_threshold) {
-            CACTUS_LOG_WARN("cloud_handoff", "Cloud handoff triggered by Gemma4 probe: p_wrong="
-                << (1.0f - confidence) << " confidence=" << confidence
+        const bool low_confidence = defer_local_stream_until_probe
+            && confidence < prompt.options.confidence_threshold;
+        const bool invalid_local_tool_call = cloud_eligible && defer_local_stream_until_probe
+            && function_calls_missing_required(function_calls, prompt.tools);
+        if (!pre_generation_cloud_attempted && (low_confidence || invalid_local_tool_call)) {
+            const char* trigger_reason = invalid_local_tool_call && !low_confidence
+                ? "local tool call missing required args" : "low confidence (probe)";
+            CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered (" << trigger_reason
+                << "): p_wrong=" << (1.0f - confidence) << " confidence=" << confidence
                 << "; waiting up to " << prompt.options.cloud_timeout_ms << " ms");
             CloudCompletionResult cloud_result = cloud_complete_request(
                 make_cloud_request(local_completion, function_calls),
@@ -1066,7 +1120,7 @@ int cactus_complete(
                     handle->model->clear_tool_constraints();
                 }
                 return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, confidence, prompt_tokens,
-                                               "low confidence (probe)");
+                                               trigger_reason);
             }
             cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
             CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed after probe handoff, falling back to local output: "
