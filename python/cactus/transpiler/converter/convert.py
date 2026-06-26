@@ -6,7 +6,7 @@ import constants
 
 
 
-def model_ops_to_json(id:str, output_path:str):
+def model_ops_to_json(id:str, output_path:str) -> LayerMap:
     model = load_model(id)
     input = load_input(id)
 
