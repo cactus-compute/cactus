@@ -85,6 +85,11 @@ struct LayerWeights {
     size_t intermediate;
     DenseW gate, up, down;
     std::vector<uint8_t> down_km_inline;
+    // LaRoSA additions: rotation Q (HIDDEN x HIDDEN, int4) + K-major repacks
+    // of gate/up so input-side (column) sparsity becomes contiguous skipping.
+    DenseW rot;
+    std::vector<uint8_t> gate_km_inline;
+    std::vector<uint8_t> up_km_inline;
 };
 
 DenseW build_weights(size_t N, size_t K, unsigned seed) {
@@ -161,6 +166,23 @@ LayerWeights build_layer(size_t intermediate, size_t seed_base) {
         l.down.scales.data(),
         l.down_km_inline.data(),
         intermediate, HIDDEN, GROUP_SIZE);
+
+    // --- LaRoSA: rotation Q (HIDDEN x HIDDEN) + K-major repack of gate/up ---
+    // gate/up are [N=intermediate x K=HIDDEN]; repack on contraction K=HIDDEN
+    // so live (kept) rotated-input groups are contiguous in memory.
+    l.rot = build_weights(HIDDEN, HIDDEN, static_cast<unsigned>(seed_base + 4));
+    const size_t gu_groups   = HIDDEN / GROUP_SIZE;
+    const size_t gu_N_blocks = (intermediate + INTERLEAVE - 1) / INTERLEAVE;
+    l.gate_km_inline.resize(gu_groups * gu_N_blocks * 72);
+    l.up_km_inline.resize(gu_groups * gu_N_blocks * 72);
+    cactus_repack_int4_kmajor_inline(
+        reinterpret_cast<const int8_t*>(l.gate.packed.data()),
+        l.gate.scales.data(), l.gate_km_inline.data(),
+        HIDDEN, intermediate, GROUP_SIZE);
+    cactus_repack_int4_kmajor_inline(
+        reinterpret_cast<const int8_t*>(l.up.packed.data()),
+        l.up.scales.data(), l.up_km_inline.data(),
+        HIDDEN, intermediate, GROUP_SIZE);
     return l;
 }
 
@@ -228,6 +250,11 @@ struct MlpScratch {
     std::vector<uint16_t> up_live_groups;  // N-group live list for real sparse up
     std::vector<__fp16>  out_dense;
     std::vector<__fp16>  out_sparse;
+    // LaRoSA scratch: rotated input (fp16), its int8 quant, masked int8, live groups.
+    std::vector<__fp16>  x_rot;
+    std::vector<int8_t>  x_rot_q;
+    std::vector<int8_t>  x_rot_masked;
+    std::vector<uint16_t> rot_live_groups;
 };
 
 void init_scratch(MlpScratch& s, unsigned seed) {
@@ -248,6 +275,10 @@ void init_scratch(MlpScratch& s, unsigned seed) {
     s.up_live_groups.resize(num_groups);
     s.out_dense.resize(HIDDEN);
     s.out_sparse.resize(HIDDEN);
+    s.x_rot.resize(HIDDEN);
+    s.x_rot_q.resize(HIDDEN);
+    s.x_rot_masked.resize(HIDDEN);
+    s.rot_live_groups.resize(HIDDEN / GROUP_SIZE);
 }
 
 double ns_to_us(std::chrono::steady_clock::duration d) {
@@ -431,12 +462,82 @@ double mlp_sparse_up_real(const LayerWeights& L, MlpScratch& s, float x_scale,
     return ns_to_us(t1 - t0);
 }
 
+// mlp_larosa: LaRoSA input-side (column) sparsity, optimized with the SAME
+// K-major repack + K-outer kmi4_v2 kernel that makes CLAWS's down-proj fast.
+//
+//   x_rot = Q^T x                       (dense HIDDEN x HIDDEN int4 rotation)
+//   mask  = top-K over rotated input    (router precompute, excluded from time)
+//   gate  = W_g · (mask ⊙ x_rot)        K-major kmi4_v2, skip dead input groups
+//   up    = W_u · (mask ⊙ x_rot)        K-major kmi4_v2, skip dead input groups
+//   h     = GELU(gate) * up
+//   out   = W_down · h                  DENSE (LaRoSA keeps down dense)
+//
+// vs CLAWS (gate dense + up/down sparse): symmetric 2-sparse + 1-dense, the
+// only structural extra is the rotation. The earlier "LaRoSA is slow on ARM"
+// result used column-sparse access on ROW-major weights (scattered reads, no
+// byte savings); this variant repacks gate/up K-major so input sparsity skips
+// contiguous bytes — the apples-to-apples test of whether that closes the gap.
+inline float quantize_f16_to_int8(const __fp16* src, int8_t* dst, size_t n) {
+    float max_abs = 1e-5f;
+    for (size_t i = 0; i < n; ++i)
+        max_abs = std::max(max_abs, std::fabs(static_cast<float>(src[i])));
+    float scale = max_abs / 127.0f;
+    float inv = 1.0f / scale;
+    for (size_t i = 0; i < n; ++i) {
+        int v = static_cast<int>(std::lround(static_cast<float>(src[i]) * inv));
+        dst[i] = static_cast<int8_t>(std::max(-127, std::min(127, v)));
+    }
+    return scale;
+}
+
+double mlp_larosa(const LayerWeights& L, MlpScratch& s, float x_scale,
+                  const uint64_t* rot_bitmask)
+{
+    const size_t INTER = L.intermediate;
+    auto t0 = std::chrono::steady_clock::now();
+
+    // 1. Rotation Q^T x — dense HIDDEN x HIDDEN int4 GEMV.
+    cactus_gemv_int4(s.x_q.data(), x_scale,
+                     reinterpret_cast<const int8_t*>(L.rot.packed.data()),
+                     L.rot.scales.data(), s.x_rot.data(),
+                     HIDDEN, HIDDEN, GROUP_SIZE);
+    // 2. Requantize rotated input fp16 -> int8 for the int4 gate/up matmuls.
+    float rot_scale = quantize_f16_to_int8(s.x_rot.data(), s.x_rot_q.data(), HIDDEN);
+    // 3. Apply input-side mask: zero dead groups, build live K-group list.
+    size_t num_rot_live = cactus_apply_actsparse_bitmask(
+        rot_bitmask, s.x_rot_q.data(), HIDDEN, GROUP_SIZE,
+        s.x_rot_masked.data(), s.rot_live_groups.data());
+    // 4. gate — K-major kmi4_v2 over live rotated-input groups (K=HIDDEN, N=INTER).
+    cactus_gemv_int4_actsparse_kmi4_v2(
+        s.x_rot_masked.data(), rot_scale, L.gate_km_inline.data(),
+        s.rot_live_groups.data(), num_rot_live,
+        s.gate_out.data(), HIDDEN, INTER, GROUP_SIZE);
+    // 5. up — same kernel/mask.
+    cactus_gemv_int4_actsparse_kmi4_v2(
+        s.x_rot_masked.data(), rot_scale, L.up_km_inline.data(),
+        s.rot_live_groups.data(), num_rot_live,
+        s.up_out.data(), HIDDEN, INTER, GROUP_SIZE);
+    // 6. GELU(gate)*up + quantize (full INTER).
+    cactus_gelu_mul_quant_fp16_to_int8(
+        s.gate_out.data(), s.up_out.data(), s.h_q.data(), INTER, 8.0f);
+    // 7. down — DENSE (LaRoSA does not sparsify the down projection).
+    cactus_gemv_int4(s.h_q.data(), 0.125f,
+                     reinterpret_cast<const int8_t*>(L.down.packed.data()),
+                     L.down.scales.data(), s.out_sparse.data(),
+                     INTER, HIDDEN, GROUP_SIZE);
+    auto t1 = std::chrono::steady_clock::now();
+    return ns_to_us(t1 - t0);
+}
+
 // ---------------------------------------------------------------------------
 
 struct Pool {
     std::vector<LayerWeights> layers;
     std::vector<std::vector<float>> scores;
     std::vector<std::vector<std::vector<uint64_t>>> router_bitmask;
+    // LaRoSA: rotated-input scores (over HIDDEN) + per-sparsity bitmask.
+    std::vector<std::vector<float>> rot_scores;
+    std::vector<std::vector<std::vector<uint64_t>>> rot_bitmask;
 };
 
 Pool build_pool(const std::vector<float>& sparsities) {
@@ -463,6 +564,19 @@ Pool build_pool(const std::vector<float>& sparsities) {
                 p.router_bitmask[si][l]);
         }
     }
+    // LaRoSA: scores + bitmask over the rotated INPUT axis (HIDDEN dims).
+    p.rot_scores.resize(NUM_LAYERS);
+    for (size_t l = 0; l < NUM_LAYERS; ++l)
+        make_blocky_scores(p.rot_scores[l], HIDDEN,
+                           static_cast<unsigned>(0x5A5A + l * 53), GROUP_SIZE);
+    p.rot_bitmask.resize(sparsities.size());
+    for (size_t si = 0; si < sparsities.size(); ++si) {
+        p.rot_bitmask[si].resize(NUM_LAYERS);
+        for (size_t l = 0; l < NUM_LAYERS; ++l)
+            build_group_bitmask_from_scores(
+                p.rot_scores[l], HIDDEN, GROUP_SIZE, sparsities[si],
+                p.rot_bitmask[si][l]);
+    }
     return p;
 }
 
@@ -476,6 +590,8 @@ struct Row {
     double small_sparse_mean, large_sparse_mean;
     double small_updown_mean, large_updown_mean;
     double small_upreal_mean, large_upreal_mean;
+    double larosa_layer_sum;
+    double small_larosa_mean, large_larosa_mean;
 };
 
 Row run_sweep(Pool& pool, float sparsity, size_t si,
@@ -490,11 +606,13 @@ Row run_sweep(Pool& pool, float sparsity, size_t si,
     std::vector<double> sparse_stack(bench_passes, 0.0);
     std::vector<double> updown_stack(bench_passes, 0.0);
     std::vector<double> upreal_stack(bench_passes, 0.0);
+    std::vector<double> larosa_stack(bench_passes, 0.0);
 
     double small_dense_sum = 0, small_sparse_sum = 0;
     double small_updown_sum = 0, small_upreal_sum = 0;
     double large_dense_sum = 0, large_sparse_sum = 0;
     double large_updown_sum = 0, large_upreal_sum = 0;
+    double small_larosa_sum = 0, large_larosa_sum = 0;
     size_t small_count = 0, large_count = 0;
 
     auto run_pass = [&](auto fn, std::vector<double>& stack_out,
@@ -540,6 +658,10 @@ Row run_sweep(Pool& pool, float sparsity, size_t si,
                                   sparsity);
     }, upreal_stack, small_upreal_sum, large_upreal_sum);
 
+    run_pass([&](const LayerWeights& L, MlpScratch& sc, size_t l) {
+        return mlp_larosa(L, sc, 0.05f, pool.rot_bitmask[si][l].data());
+    }, larosa_stack, small_larosa_sum, large_larosa_sum);
+
     auto median = [](std::vector<double>& v) {
         std::sort(v.begin(), v.end()); return v[v.size() / 2];
     };
@@ -550,6 +672,7 @@ Row run_sweep(Pool& pool, float sparsity, size_t si,
     r.sparse_down_layer_sum     = median(sparse_stack);
     r.sparse_up_down_layer_sum  = median(updown_stack);
     r.sparse_up_real_layer_sum  = median(upreal_stack);
+    r.larosa_layer_sum          = median(larosa_stack);
     double small_calls = static_cast<double>(small_count * bench_passes);
     double large_calls = static_cast<double>(large_count * bench_passes);
     r.small_dense_mean  = small_calls ? small_dense_sum  / small_calls : 0;
@@ -560,6 +683,8 @@ Row run_sweep(Pool& pool, float sparsity, size_t si,
     r.large_updown_mean = large_calls ? large_updown_sum / large_calls : 0;
     r.small_upreal_mean = small_calls ? small_upreal_sum / small_calls : 0;
     r.large_upreal_mean = large_calls ? large_upreal_sum / large_calls : 0;
+    r.small_larosa_mean = small_calls ? small_larosa_sum / small_calls : 0;
+    r.large_larosa_mean = large_calls ? large_larosa_sum / large_calls : 0;
     return r;
 }
 
@@ -611,16 +736,20 @@ int main() {
     }
 
     std::printf("\n===== FULL 35-LAYER MLP STACK (median µs, cold cache) =====\n");
-    std::printf("%-5s  %10s  %12s  %14s  %14s\n",
-                "sp%", "dense_us", "spDn_us(x)", "spUpDn_us(x)", "spUpReal_us(x)");
+    std::printf("  CLAWS = spUpReal (gate dense + up/down sparse); "
+                "LaRoSA = rotation + gate/up K-major sparse + down dense\n");
+    std::printf("%-5s  %10s  %12s  %14s  %14s  %14s\n",
+                "sp%", "dense_us", "spDn_us(x)", "spUpReal_us(x)",
+                "LaRoSA_us(x)", "CLAWS/LaRoSA");
     for (const auto& r : rows) {
         double d = r.dense_all_layer_sum;
-        std::printf("%4.0f%%  %10.1f  %8.1f(%4.2fx)  %10.1f(%4.2fx)  %10.1f(%4.2fx)\n",
+        std::printf("%4.0f%%  %10.1f  %8.1f(%4.2fx)  %10.1f(%4.2fx)  %10.1f(%4.2fx)  %10.2fx\n",
                     r.sparsity * 100.0,
                     d,
                     r.sparse_down_layer_sum,     d / r.sparse_down_layer_sum,
-                    r.sparse_up_down_layer_sum,  d / r.sparse_up_down_layer_sum,
-                    r.sparse_up_real_layer_sum,  d / r.sparse_up_real_layer_sum);
+                    r.sparse_up_real_layer_sum,  d / r.sparse_up_real_layer_sum,
+                    r.larosa_layer_sum,          d / r.larosa_layer_sum,
+                    r.larosa_layer_sum / r.sparse_up_real_layer_sum);
     }
 
     // CSV
@@ -633,17 +762,20 @@ int main() {
                      "large_dense_mean_us,large_sparse_down_mean_us,"
                      "large_sparse_up_down_mean_us,large_sparse_up_real_mean_us,"
                      "stack_dense_us,stack_sparse_down_us,"
-                     "stack_sparse_up_down_us,stack_sparse_up_real_us\n");
+                     "stack_sparse_up_down_us,stack_sparse_up_real_us,"
+                     "small_larosa_mean_us,large_larosa_mean_us,stack_larosa_us\n");
         for (const auto& r : rows) {
             std::fprintf(csv,
-                         "%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                         "%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
+                         "%.4f,%.4f,%.4f\n",
                          r.sparsity,
                          r.small_dense_mean, r.small_sparse_mean,
                          r.small_updown_mean, r.small_upreal_mean,
                          r.large_dense_mean, r.large_sparse_mean,
                          r.large_updown_mean, r.large_upreal_mean,
                          r.dense_all_layer_sum, r.sparse_down_layer_sum,
-                         r.sparse_up_down_layer_sum, r.sparse_up_real_layer_sum);
+                         r.sparse_up_down_layer_sum, r.sparse_up_real_layer_sum,
+                         r.small_larosa_mean, r.large_larosa_mean, r.larosa_layer_sum);
         }
         std::fclose(csv);
     }
@@ -828,6 +960,39 @@ int main() {
                                    s.live_groups.data(), num_live_down,
                                    s.out_sparse.data(), INTER, HIDDEN, GROUP_SIZE);
             });
+
+            // --- LaRoSA components: rotation + K-major sparse gate/up ---
+            std::vector<uint64_t> rbm60;
+            build_group_bitmask_from_scores(pool.rot_scores[l_idx_c], HIDDEN,
+                                            GROUP_SIZE, 0.60f, rbm60);
+            cactus_gemv_int4(s.x_q.data(), 0.05f,
+                             reinterpret_cast<const int8_t*>(c.L->rot.packed.data()),
+                             c.L->rot.scales.data(), s.x_rot.data(),
+                             HIDDEN, HIDDEN, GROUP_SIZE);
+            float rot_scale = quantize_f16_to_int8(s.x_rot.data(), s.x_rot_q.data(), HIDDEN);
+            size_t num_rot_live = cactus_apply_actsparse_bitmask(
+                rbm60.data(), s.x_rot_q.data(), HIDDEN, GROUP_SIZE,
+                s.x_rot_masked.data(), s.rot_live_groups.data());
+            double rot_us = bench_component("rotation", [&]() {
+                cactus_gemv_int4(s.x_q.data(), 0.05f,
+                                 reinterpret_cast<const int8_t*>(c.L->rot.packed.data()),
+                                 c.L->rot.scales.data(), s.x_rot.data(),
+                                 HIDDEN, HIDDEN, GROUP_SIZE);
+                quantize_f16_to_int8(s.x_rot.data(), s.x_rot_q.data(), HIDDEN);
+            });
+            double gate_sparse_us = bench_component("gate_sparse", [&]() {
+                cactus_gemv_int4_actsparse_kmi4_v2(
+                    s.x_rot_masked.data(), rot_scale, c.L->gate_km_inline.data(),
+                    s.rot_live_groups.data(), num_rot_live,
+                    s.gate_out.data(), HIDDEN, INTER, GROUP_SIZE);
+            });
+            double up_sparse_us = bench_component("up_sparse", [&]() {
+                cactus_gemv_int4_actsparse_kmi4_v2(
+                    s.x_rot_masked.data(), rot_scale, c.L->up_km_inline.data(),
+                    s.rot_live_groups.data(), num_rot_live,
+                    s.up_out.data(), HIDDEN, INTER, GROUP_SIZE);
+            });
+
             double dense_mlp = gate_us + up_dense + down_dense;
             std::printf("\n  %s   N_live=%zu\n", c.tag, N_live);
             std::printf("    gate_dense    = %7.1f µs\n", gate_us);
@@ -847,6 +1012,14 @@ int main() {
             std::printf("    spUpReal+Dn(honest)= %7.1f µs   -> %.2fx  [real scatter-gather]\n",
                         gate_us + up_real + down_sparse,
                         dense_mlp / (gate_us + up_real + down_sparse));
+            double larosa_mlp = rot_us + gate_sparse_us + up_sparse_us + down_dense;
+            std::printf("    rotation      = %7.1f µs  (Q^T x, dense HIDDENxHIDDEN + requant)\n", rot_us);
+            std::printf("    gate_sparse   = %7.1f µs  (K-major kmi4_v2, live input groups)\n", gate_sparse_us);
+            std::printf("    up_sparse     = %7.1f µs\n", up_sparse_us);
+            std::printf("    LaRoSA MLP         = %7.1f µs   -> %.2fx  [rot + Kmajor gate/up + dense down]\n",
+                        larosa_mlp, dense_mlp / larosa_mlp);
+            std::printf("       (CLAWS spUpReal+Dn / LaRoSA = %.2fx)\n",
+                        larosa_mlp / (gate_us + up_real + down_sparse));
         }
     }
 
