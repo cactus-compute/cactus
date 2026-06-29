@@ -562,6 +562,8 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP && !components_.count("audio_encoder")) {
         CACTUS_LOG_WARN("model", "Bundle has no decoder_prefill_chunk component; prompts will prefill token-by-token (prefill speed ~= decode speed).");
     }
+    if (decoder_ && decoder_->graph) decoder_->graph->prewarm_gpu_quant_weights();
+    if (decoder_prefill_ && decoder_prefill_->graph) decoder_prefill_->graph->prewarm_gpu_quant_weights();
     if (components_.count("decoder_embed_chunk") && components_.at("decoder_embed_chunk").graph) {
         decoder_embed_ = &components_.at("decoder_embed_chunk");
     }
@@ -881,13 +883,27 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/) {
     if (decode_route_ == DecodeRoute::DIRECT_DECODER_STEP) {
         write_int_input(*decoder_, "input_ids", static_cast<int64_t>(token_id));
         write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
-        decoder_->graph->execute();
+        const bool fused = cactus_backend_fused();
+        if (!fused || !decoder_->graph->execute_gpu_fused()) decoder_->graph->execute();
         maybe_capture_handoff_probe_hidden(*decoder_);
         return;
     }
+    const bool fused = cactus_backend_fused();
+    static const bool nofold = std::getenv("CACTUS_FUSED_NOFOLD") != nullptr;
+    if (fused && !nofold) {
+        static int state = 0; static FusedEmbedCtx ctx;            // 0=unknown 1=ok 2=unsupported
+        if (state == 0) state = encoder_->graph->extract_ple_pathway(ctx) ? 1 : 2;
+        if (state == 1) {
+            ctx.token_id = static_cast<int>(token_id); ctx.position = static_cast<int>(position);
+            cactus_graph_set_fused_embed(&ctx);
+            bool ok = decoder_->graph->execute_gpu_fused();
+            cactus_graph_set_fused_embed(nullptr);
+            if (ok) { maybe_capture_handoff_probe_hidden(*decoder_); return; }
+        }
+    }
     run_encoder_step(token_id, position);
     copy_component_outputs_to_inputs(*encoder_, *decoder_);
-    decoder_->graph->execute();
+    if (!fused || !decoder_->graph->execute_gpu_fused()) decoder_->graph->execute();
     maybe_capture_handoff_probe_hidden(*decoder_);
 }
 
@@ -1905,6 +1921,21 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
     float best_v = -std::numeric_limits<float>::infinity();
     float second_v = -std::numeric_limits<float>::infinity();
     const auto& tool_bias = tool_constrainer_.get_bias();
+    {
+        uint32_t gidx; float gbest, gsecond;
+        if (tool_bias.empty() && vocab_bias_.empty() && suppressed_token_id_ < 0 &&
+            cactus_graph_gpu_argmax(&gidx, &gbest, &gsecond)) {
+            if (out_uncertainty) {
+                float confidence = 1.0f;
+                if (std::isfinite(gbest) && std::isfinite(gsecond)) {
+                    float margin = std::max(-60.0f, std::min(60.0f, gbest - gsecond));
+                    confidence = 1.0f / (1.0f + std::exp(-margin));
+                }
+                *out_uncertainty = std::max(0.0f, std::min(1.0f, 1.0f - confidence));
+            }
+            return gidx;
+        }
+    }
     auto score_with_bias = [&](size_t token_id, float value) {
         auto tool_it = tool_bias.find(static_cast<uint32_t>(token_id));
         if (tool_it != tool_bias.end()) value += tool_it->second;

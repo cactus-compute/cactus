@@ -17,6 +17,13 @@
 #include <iostream>
 #include <arm_neon.h>
 
+// Backend selection: "metal" or "cpu". Overrides the CACTUS_GPU[_FUSED] env default.
+// cactus_backend_metal() gates the GPU op path; cactus_backend_fused() gates the fully-fused decode.
+void cactus_backend_select(const char* backend);
+bool cactus_backend_metal();
+bool cactus_backend_fused();
+const char* cactus_backend_name();
+
 namespace cactus {
 
 enum class LogLevel { 
@@ -81,7 +88,7 @@ private:
 #define CACTUS_LOG_WARN(component, msg)  CACTUS_LOG(cactus::LogLevel::WARN, component, msg)
 #define CACTUS_LOG_ERROR(component, msg) CACTUS_LOG(cactus::LogLevel::ERROR, component, msg)
 
-enum class ComputeBackend { CPU, NPU };
+enum class ComputeBackend { CPU, NPU, GPU };
 
 enum class Activation { SILU, GELU, GELU_ERF, RELU, SIGMOID, TANH };
 
@@ -452,6 +459,20 @@ namespace GraphFile {
     struct SerializedGraph;
 }
 
+struct FusedEmbedCtx {
+    int token_id = -1, position = 0;
+    CactusQuantMatrix ple{};
+    CactusQuantMatrix proj{};
+    const void* rms_weight = nullptr;
+    float emb_scale = 0, ple_scale = 0, proj_scale = 0, final_scale = 0, rms_eps = 1e-6f;
+    bool ok = false;
+};
+void cactus_graph_set_fused_embed(const FusedEmbedCtx* ctx);
+
+bool cactus_graph_gpu_argmax(uint32_t* idx, float* best, float* second);
+
+extern bool g_cactus_force_cpu;
+
 class CactusGraph {
 public:
     CactusGraph();
@@ -705,6 +726,8 @@ public:
     void invalidate_persistent(size_t persistent_node_id);
 
     void execute(const std::string& profile_file = "");
+    bool execute_gpu_fused();
+    bool extract_ple_pathway(FusedEmbedCtx& ctx) const;
     void hard_reset();
     void soft_reset();
     void soft_reset_keep_pool();
@@ -730,6 +753,7 @@ public:
                                       const std::vector<uint8_t>& backup);
     void allocate_buffers();
     size_t get_node_count() const;
+    void prewarm_gpu_quant_weights();
     void set_runtime_input_shape(size_t node_id, const std::vector<size_t>& shape);
     void set_input_dynamic_dims(size_t node_id, const std::vector<uint8_t>& dynamic_dims);
     bool has_dynamic_shapes() const { return has_dynamic_shapes_; }
@@ -756,6 +780,7 @@ private:
     std::unordered_set<size_t> populated_node_ids_;
     std::unordered_set<size_t> embedded_input_node_ids_;
     std::unordered_set<size_t> retained_output_node_ids_;
+    std::unordered_map<size_t, std::pair<void*, size_t>> gpu_persistent_acts_;
 };
 
 namespace GraphFile {

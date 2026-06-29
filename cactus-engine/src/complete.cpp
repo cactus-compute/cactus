@@ -816,6 +816,7 @@ int cactus_complete(
 
         CACTUS_LOG_DEBUG("complete", "Prompt tokens: " << prompt.tokens.size()
             << ", max_tokens: " << prompt.options.max_tokens);
+        g_cactus_force_cpu = false;
 
         bool has_images = prompt.has_images();
         bool has_audio = prompt.has_audio();
@@ -1428,6 +1429,7 @@ int cactus_benchmark_tokens(
             peak_ram_usage_mb = std::max(peak_ram_usage_mb, get_ram_usage_mb());
         };
         handle->model->reset_cache();
+        g_cactus_force_cpu = false;
         auto prefill_start_time = std::chrono::high_resolution_clock::now();
         size_t cache_prime_tokens = 0;
         uint32_t next_token = 0;

@@ -314,7 +314,7 @@ void read_field(std::istream& in, ParamField field, OpParams& params) {
         case ParamField::PretransposedRhs: params.pretransposed_rhs = (read_u32(in) != 0); break;
         case ParamField::Backend: {
             uint32_t backend_val = read_u32(in);
-            if (backend_val > static_cast<uint32_t>(ComputeBackend::NPU)) {
+            if (backend_val > static_cast<uint32_t>(ComputeBackend::GPU)) {
                 throw std::runtime_error("Graph file corrupted: invalid backend");
             }
             params.backend = static_cast<ComputeBackend>(backend_val);

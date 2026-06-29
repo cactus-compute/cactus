@@ -1,5 +1,6 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
+#include "metal_backend.h"
 #include <cstring>
 #include <algorithm>
 #include <limits>
@@ -101,6 +102,10 @@ inline bool use_fp16_kv_cache() {
 
 constexpr size_t kInitialCacheEntries = 256;
 
+inline bool kv_cache_resident() {
+    return cactus_backend_metal();
+}
+
 inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     auto* meta = get_meta(buf);
     size_t cur = meta->max_seq_len;
@@ -114,7 +119,17 @@ inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     size_t total = fp16_cache ? fp16_cache_elements(new_max, kv_heads, hdim)
                               : cache_buffer_size(new_max, kv_heads, hdim);
     BufferDesc resized({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
-    resized.allocate();
+    // Keep the cache GPU-resident across grows: a plain CPU realloc would drop it out of the Metal
+    // shared map, forcing the fused/executor decode to snapshot the whole KV every token (O(context)
+    // CPU cost). Allocating shared keeps the live, offset-aware read path. CPU build: active=false.
+    bool shared = kv_cache_resident();
+    void* old_data = buf.get_data();
+    if (shared) {
+        void* p = cactus_metal_alloc_shared(resized.byte_size);
+        if (p) resized.set_external(p); else { resized.allocate(); shared = false; }
+    } else {
+        resized.allocate();
+    }
     std::memset(resized.get_data(), 0, resized.byte_size);
 
     std::memcpy(resized.get_data(), buf.get_data(), sizeof(CacheMetadata));
@@ -130,6 +145,7 @@ inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     }
     get_meta(resized)->max_seq_len = new_max;
     buf = std::move(resized);
+    if (shared) cactus_metal_free_shared(old_data);   // reclaim the old shared buffer (no-op if not shared)
     return true;
 }
 
@@ -145,6 +161,10 @@ inline bool grow_cache_buffer(BufferDesc& buf, size_t needed, size_t ceiling) {
 
 } // namespace
 
+bool cactus_kv_cache_grow(BufferDesc& buf, size_t needed, size_t ceiling) {
+    return grow_cache_buffer(buf, needed, ceiling);
+}
+
 void compute_kv_cache_state_node(
     GraphNode& node,
     const nodes_vector&,
@@ -159,6 +179,7 @@ void compute_kv_cache_state_node(
     size_t max_seq;
     if (sliding) max_seq = std::min(ceiling, window + node.params.cache_sink_size + 1);
     else if (num_slots > 1) max_seq = ceiling;
+    else if (kv_cache_resident()) max_seq = std::min(ceiling, static_cast<size_t>(4000));
     else max_seq = std::min(ceiling, kInitialCacheEntries);
     size_t kv_heads = node.params.num_kv_heads;
     size_t hdim = node.params.head_dim;
@@ -168,7 +189,12 @@ void compute_kv_cache_state_node(
         : cache_buffer_size(max_seq, kv_heads, hdim);
 
     node.output_buffer = BufferDesc({num_slots * per_slot}, fp16_cache ? Precision::FP16 : Precision::INT8);
-    node.output_buffer.allocate();
+    if (kv_cache_resident()) {                         // GPU-resident shared cache (no snapshots)
+        void* p = cactus_metal_alloc_shared(node.output_buffer.byte_size);
+        if (p) node.output_buffer.set_external(p); else node.output_buffer.allocate();
+    } else {
+        node.output_buffer.allocate();
+    }
     std::memset(node.output_buffer.get_data(), 0, node.output_buffer.byte_size);
 
     auto* meta0 = get_meta(node.output_buffer, 0);
