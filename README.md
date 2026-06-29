@@ -161,7 +161,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 
 ## Supported Models
 
-- Any HuggigFace model can be converted using `cactus convert [HF-Name]`, though experimental. 
+- Any HuggingFace model can be converted using `cactus convert [HF-Name]`, though experimental. 
 - Liquid, Gemma. whisper. parakeet and Qwen model families are especially tested. 
 - Some models have been pre-uploaded [here](https://huggingface.co/Cactus-Compute), just run `cactus download [HF-Name]`.
 - `cactus run [HF-Name]` albeit first downloads or convert the model if not found. 
