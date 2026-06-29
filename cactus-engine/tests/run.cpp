@@ -742,7 +742,7 @@ std::string build_messages(const std::string& system_prompt,
 
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
-              << " <model_path> [--system <prompt>] [--image <path>] [--audio <path>]"
+              << " <model_path> [--backend cpu|metal] [--system <prompt>] [--image <path>] [--audio <path>]"
               << " [--prompt <text>] [--input-ids <ids>] [--input-ids-file <path>] [--max-new-tokens <n>]"
               << " [--result-json <path>] [--thinking] [--no-cloud-handoff]"
               << " [--confidence-threshold <value>] [--cloud-timeout-ms <ms>] [-h|--help]\n";
@@ -772,6 +772,7 @@ int main(int argc, char** argv) {
     bool auto_handoff = true;
     double confidence_threshold = -1.0;
     int cloud_timeout_ms = 15000;
+    std::string backend;
 
     int i = 2;
     auto need_value = [&](const char* flag) -> bool {
@@ -821,6 +822,9 @@ int main(int argc, char** argv) {
         } else if (arg == "--cloud-timeout-ms") {
             if (!need_value("--cloud-timeout-ms")) return 1;
             cloud_timeout_ms = std::max(0, std::atoi(argv[++i]));
+        } else if (arg == "--backend") {
+            if (!need_value("--backend")) return 1;
+            backend = argv[++i];
         } else {
             std::cerr << "Error: unknown option '" << arg << "'\n";
             print_usage(argv[0]);
@@ -849,6 +853,16 @@ int main(int argc, char** argv) {
             std::cerr << "Failed to read input ids file: " << input_ids_file << "\n";
             return 1;
         }
+    }
+
+    // --backend metal enables the fused Metal GPU path, gated by CACTUS_GPU_FUSED in cactus-graph
+    // (read once at the first forward, so it must be set before cactus_init). Default is CPU.
+    if (backend == "metal" || backend == "gpu") {
+        setenv("CACTUS_GPU_FUSED", "1", 1);
+        std::cout << "Backend: Metal GPU\n";
+    } else if (!backend.empty() && backend != "cpu") {
+        std::cerr << "Error: unknown backend '" << backend << "' (expected 'cpu' or 'metal')\n";
+        return 1;
     }
 
     cactus_log_set_callback(log_callback, nullptr);

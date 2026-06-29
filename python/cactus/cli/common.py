@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 import os
+import platform
 import subprocess
 import sys
 from pathlib import Path
+
+
+def default_backend() -> str:
+    """Prefer the Metal GPU backend on Apple hardware, else CPU."""
+    return "metal" if platform.system() == "Darwin" else "cpu"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -86,6 +92,12 @@ def apply_runtime_env(args) -> None:
     and load the stored cloud API key."""
     if getattr(args, "no_cloud_tele", False):
         os.environ["CACTUS_NO_CLOUD_TELE"] = "1"
+    backend = getattr(args, "backend", None)
+    if backend == "metal":
+        os.environ["CACTUS_GPU_FUSED"] = "1"
+    elif backend == "cpu":
+        os.environ.pop("CACTUS_GPU_FUSED", None)
+        os.environ.pop("CACTUS_GPU", None)
     apply_cloud_api_key_env()
 
 

@@ -40,6 +40,7 @@ def cmd_run(args) -> int:
         ("--result-json", args.result_json),
         ("--confidence-threshold", args.confidence_threshold),
         ("--cloud-timeout-ms", args.cloud_timeout_ms),
+        ("--backend", args.backend),
     ):
         if value is not None:
             cmd.extend([flag, str(value)])

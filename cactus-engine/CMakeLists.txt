@@ -56,7 +56,7 @@ target_link_libraries(cactus_engine PUBLIC cactus_graph)
 
 if(APPLE)
     target_link_libraries(cactus_engine PUBLIC
-        "-framework CoreML" "-framework Foundation"
+        "-framework CoreML" "-framework Foundation" "-framework Metal"
         "-framework Security" "-framework SystemConfiguration" "-framework CFNetwork"
     )
 
@@ -156,7 +156,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
             target_link_libraries(cactus_engine_shared PRIVATE "${_curl}")
         endif()
         target_link_libraries(cactus_engine_shared PRIVATE
-            "-framework Accelerate" "-framework CoreML" "-framework Foundation"
+            "-framework Accelerate" "-framework CoreML" "-framework Foundation" "-framework Metal"
             "-framework Security" "-framework SystemConfiguration" "-framework CFNetwork"
         )
     else()

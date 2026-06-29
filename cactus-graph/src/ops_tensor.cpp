@@ -76,15 +76,15 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
         slice_length = axis_size - slice_start;
     }
 
-    if (axis_index == 0) {
-        auto dims0 = AxisDims::from_shape(input_buffer.shape, 0);
+    auto dims = AxisDims::from_shape(input_buffer.shape, axis_index);
 
+    if (dims.outer == 1) {
         auto* base_ptr = static_cast<char*>(input_buffer.get_data());
         if (!base_ptr) {
             throw std::runtime_error("Slice input buffer is not available");
         }
 
-        const size_t byte_offset = PrecisionTraits::byte_offset_of(input_buffer.precision, slice_start * dims0.inner);
+        const size_t byte_offset = PrecisionTraits::byte_offset_of(input_buffer.precision, slice_start * dims.inner);
 
         node.output_buffer.set_external(base_ptr + byte_offset);
         node.output_buffer.precision = input_buffer.precision;
@@ -100,8 +100,6 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
     if (!input_ptr) {
         throw std::runtime_error("Slice input buffer is not available");
     }
-
-    auto dims = AxisDims::from_shape(input_buffer.shape, axis_index);
 
     node.output_buffer.external_data = nullptr;
     node.output_buffer.allocate();

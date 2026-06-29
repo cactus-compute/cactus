@@ -1,5 +1,6 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
+#include "metal_backend.h"
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -594,14 +595,24 @@ void compute_reshape_node(GraphNode& node, const std::vector<std::unique_ptr<Gra
                                 ") must match output elements (" + std::to_string(output_total_elements) + ")");
     }
 
-    std::memcpy(node.output_buffer.get_data(), input_buffer.get_data(), input_buffer.byte_size);
+    // On the GPU path, reshape/view/flatten is a pure view — alias the input (no copy/dispatch);
+    // liveness is extended via may_alias_input in execute(). On CPU, keep the copy (aliasing there
+    // disturbed the CPU executor's buffer liveness).
+    if (cactus_metal_active_mode()) {
+        node.output_buffer.set_external(const_cast<void*>(input_buffer.get_data()));
+    } else {
+        std::memcpy(node.output_buffer.get_data(), input_buffer.get_data(), input_buffer.byte_size);
+    }
 }
 
 void compute_precision_cast_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input_buf = get_input(node, 0, nodes, node_index_map);
 
     if (input_buf.precision == node.output_buffer.precision) {
-        std::memcpy(node.output_buffer.get_data(), input_buf.get_data(), input_buf.byte_size);
+        if (cactus_metal_active_mode())   // GPU: same-precision cast is a no-op view -> alias
+            node.output_buffer.set_external(const_cast<void*>(input_buf.get_data()));
+        else
+            std::memcpy(node.output_buffer.get_data(), input_buf.get_data(), input_buf.byte_size);
         return;
     }
 

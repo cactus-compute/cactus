@@ -1,5 +1,6 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
+#include "metal_backend.h"
 #include <cstring>
 #include <vector>
 #include <stdexcept>
@@ -54,10 +55,17 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         __fp16* output = node.output_buffer.data_as<__fp16>();
 
         CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
-        if (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
+        const bool is_orthogonal = (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0;
+        static const bool gpu_matmul_env =
+            (std::getenv("CACTUS_GPU_MATMUL") != nullptr) && cactus_metal_available();
+        if ((backend == ComputeBackend::GPU || gpu_matmul_env) && !is_orthogonal) {
+            // GPU fast path (M==1 4-bit Hadamard); falls back to CPU internally otherwise.
+            cactus_metal_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
+        } else if (is_orthogonal) {
             cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
-        else
+        } else {
             cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
+        }
     } else {
         if (lhs_buffer.precision != Precision::FP16) {
             throw std::runtime_error("FP16 matmul requires FP16 activations (got precision " + std::to_string(static_cast<int>(lhs_buffer.precision)) + ")");

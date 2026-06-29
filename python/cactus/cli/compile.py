@@ -99,6 +99,7 @@ def build_binary(
             "-framework", "Accelerate",
             "-framework", "CoreML",
             "-framework", "Foundation",
+            "-framework", "Metal",
             "-framework", "Security",
             "-framework", "SystemConfiguration",
             "-framework", "CFNetwork",
