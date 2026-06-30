@@ -1,12 +1,17 @@
+"""
+The code in this directory is responsible for taking in the raw components lists from the converter folder and transform
+it into a valid computation DAG (consisting of both operation nodes and value nodes). Topological sort will then be performed
+on the DAG to generate an in-order execution list.
+"""
+
 import models, constants
 import converter.models as CVModels
 import models
 
-function_map = {
-    "placeholder" : models.Value.from_placeholder,
-    "call_function" : models.Operation.from_op,
-    "output" : models.Output.from_output,
-}
-
 def simplify(messy_ir:CVModels.LayerMap):
-    for value in messy_ir.nodes:
+    graph:models.CompGraph = models.CompGraph()
+
+    for node in messy_ir.nodes:
+        function_map[node.node_type](node)
+
+    
