@@ -8,11 +8,12 @@ import constants
 class ValueNode(BaseModel):
     id:str
     type:str
+    users:list[str]
     # shape:list[int] | None TODO: May need shape (value or output) later on, but may not be necessary since graph is known to be complete/correct
 
     @classmethod
     def from_placeholder(cls, x:CVModels.LayerRecord) -> "ValueNode":
-        return cls(id = x.name, type = x.node_type)
+        return cls(id = x.name, type = x.node_type, users = x.users)
 
 
 class OperationNode(BaseModel):
