@@ -281,6 +281,7 @@ struct ChatMessage {
 struct ToolConstraintSpec {
     std::string name;
     std::vector<std::string> parameter_names;
+    std::vector<std::vector<std::string>> parameter_enums;
     std::vector<std::string> required_parameter_names;
 };
 
@@ -510,9 +511,8 @@ public:
         DONE,
         GEMMA_START,
         GEMMA_EXPECT_CALL,
-        GEMMA_IN_FUNC_NAME,
-        GEMMA_EXPECT_BRACE,
-        GEMMA_IN_ARGUMENTS,
+        GEMMA_NAME,
+        GEMMA_ARGS,
         GEMMA_EXPECT_END,
         NEEDLE_START
     };
@@ -530,16 +530,19 @@ public:
     bool is_active() const { return active_; }
 
 private:
+    enum class Region { FREE, IN_NAME, IN_ARG_KEY };
+    struct TrieNode {
+        std::unordered_map<char, std::unique_ptr<TrieNode>> children;
+        bool is_terminal = false;
+    };
+
     bool active_ = false;
     State state_ = State::GEMMA_START;
     Config::ModelType model_type_ = Config::ModelType::GEMMA4;
     Tokenizer* tokenizer_ = nullptr;
 
     std::vector<ToolConstraintSpec> tool_specs_;
-    std::vector<std::string> function_names_;
     std::string generated_text_;
-    int brace_depth_ = 0;
-    bool in_argument_string_ = false;
 
     std::string call_start_tag_;
     std::string call_end_tag_;
@@ -548,65 +551,65 @@ private:
     std::vector<uint32_t> call_end_sequence_;
     size_t forced_tag_progress_ = 0;
 
-    std::unordered_set<uint32_t> all_func_name_tokens_;
-    std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;
-
     std::unordered_set<uint32_t> gemma_call_start_tokens_;
     std::unordered_set<uint32_t> gemma_call_end_tokens_;
     std::unordered_set<uint32_t> gemma_response_start_tokens_;
     std::unordered_set<uint32_t> gemma_call_prefix_tokens_;
-    std::unordered_set<uint32_t> escape_tokens_;
 
     std::unordered_set<uint32_t> backtick_tokens_;
     std::unordered_set<uint32_t> open_brace_tokens_;
     std::unordered_set<uint32_t> close_brace_tokens_;
-    std::unordered_set<uint32_t> colon_tokens_;
-    std::unordered_set<uint32_t> comma_tokens_;
 
     std::unordered_map<uint32_t, float> current_bias_;
 
     void compute_bias();
     void tokenize_grammar_elements();
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
-    void add_tokens_for_prefix_string(const std::string& prefix, std::unordered_set<uint32_t>& token_set);
     void advance_forced_tag(const std::vector<uint32_t>& sequence, uint32_t token_id);
-    void tokenize_function_names(bool quote_names);
     void init_common_tokens();
 
     bool is_needle() const { return model_type_ == Config::ModelType::NEEDLE; }
-    enum class NeedleJsonState {
-        FREE,
-        IN_NAME,
-        IN_ARG_KEY
-    };
-    struct NeedleTrieNode {
-        std::unordered_map<char, std::unique_ptr<NeedleTrieNode>> children;
-        bool is_terminal = false;
-    };
 
-    NeedleJsonState needle_json_state_ = NeedleJsonState::FREE;
-    std::string needle_buffer_;
-    std::string needle_constrained_buf_;
-    std::string needle_current_function_;
-    bool needle_in_arguments_ = false;
-    int needle_arguments_depth_ = 0;
-    int needle_nesting_depth_ = 0;
-    bool needle_in_string_value_ = false;
-    bool needle_prev_char_escape_ = false;
-    std::unique_ptr<NeedleTrieNode> needle_name_trie_;
-    std::unordered_map<std::string, std::unique_ptr<NeedleTrieNode>> needle_param_tries_;
-    std::vector<std::string> needle_token_strings_;
-    std::unordered_map<char, std::vector<uint32_t>> needle_token_index_;
+    Region region_ = Region::FREE;
+    std::string constraint_buffer_;
+    std::string constrained_buf_;
+    std::string current_function_;
+    bool in_arguments_ = false;
+    int arguments_depth_ = 0;
+    int nesting_depth_ = 0;
+    bool in_string_value_ = false;
+    bool prev_char_escape_ = false;
+    bool at_key_start_ = false;
+    bool await_enum_open_ = false;
+    const TrieNode* active_enum_trie_ = nullptr;
+    std::unordered_set<std::string> emitted_keys_;
+    std::unique_ptr<TrieNode> name_trie_;
+    std::unordered_map<std::string, std::unique_ptr<TrieNode>> param_tries_;
+    std::unordered_map<std::string, std::unordered_map<std::string, std::unique_ptr<TrieNode>>> enum_tries_;
+    std::unique_ptr<TrieNode> remaining_key_trie_;
+    std::vector<std::string> token_strings_;
+    std::unordered_map<char, std::vector<uint32_t>> token_index_;
+    uint32_t escape_tag_token_ = 0;
+    bool escape_tag_valid_ = false;
 
-    void init_needle_constraints();
-    void reset_needle_constraints();
+    void build_constraint_tables();
+    void reset_constraint_state();
+    void trie_insert(TrieNode* root, const std::string& word);
+    const TrieNode* trie_seek(const TrieNode* root, const std::string& prefix) const;
+    bool trie_token_valid(const std::string& token_text, const TrieNode* node, char terminator) const;
+    void mark_trie_bias(const TrieNode* node, char terminator, const std::vector<char>& extra_allowed,
+                        int32_t terminal_token = -1, bool exact_terminator = false);
+    const TrieNode* current_param_trie() const;
+    void rebuild_remaining_keys();
+    bool required_satisfied() const;
+
     void feed_needle_text(const std::string& text);
     void feed_needle_char(char ch);
     bool needle_at_arg_key_start() const;
     bool needle_is_value_string_start() const;
-    void needle_insert_word(NeedleTrieNode* root, const std::string& word);
-    const NeedleTrieNode* needle_get_trie_node(const NeedleTrieNode* root, const std::string& prefix) const;
-    bool needle_check_token_valid(const std::string& token_text, const NeedleTrieNode* trie_node) const;
+
+    void feed_gemma_text(const std::string& text);
+    void feed_gemma_char(char ch);
 };
 
 class Model {
