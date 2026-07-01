@@ -628,164 +628,99 @@ kernel void attn_decode_i8(
     constant uint& head_dim    [[buffer(10)]], constant uint& v_hdim      [[buffer(11)]],
     constant uint& history_len [[buffer(12)]], constant float& scale      [[buffer(13)]],
     constant uint& kv_start    [[buffer(14)]], constant uint& kv_end      [[buffer(15)]],
-    uint h [[threadgroup_position_in_grid]], uint t [[thread_position_in_threadgroup]],
-    uint T [[threads_per_threadgroup]], threadgroup float* sc [[threadgroup(0)]])
-{
-    uint kvh = h / (num_q_heads / num_kv_heads);
-    uint ngK = (head_dim + 31u)/32u, ngV = (v_hdim + 31u)/32u;
-    device const half* qh = q + (size_t)h*head_dim;
-    threadgroup float* red = sc + kv_end;
-
-    float lmax = -INFINITY;
-    for (uint k = kv_start + t; k < kv_end; k += T) {
-        float dot = 0;
-        if (k < history_len) {
-            device const char* kk = kc + ((size_t)k*num_kv_heads + kvh)*head_dim;
-            device const float* kss = ks + ((size_t)k*num_kv_heads + kvh)*ngK;
-            for (uint d=0; d<head_dim; ++d) dot += (float)qh[d] * ((float)kk[d] * kss[d/32]);
-        } else {
-            device const half* kk = knew + ((size_t)(k-history_len)*num_kv_heads + kvh)*head_dim;
-            for (uint d=0; d<head_dim; ++d) dot += (float)qh[d] * (float)kk[d];
-        }
-        float s = dot * scale; sc[k] = s; lmax = max(lmax, s);
-    }
-    red[t]=lmax; threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint s=T/2;s>0;s>>=1){ if(t<s) red[t]=max(red[t],red[t+s]); threadgroup_barrier(mem_flags::mem_threadgroup); }
-    float gmax = red[0]; threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    float lsum=0;
-    for (uint k = kv_start + t; k < kv_end; k += T){ float e=exp(sc[k]-gmax); sc[k]=e; lsum+=e; }
-    red[t]=lsum; threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint s=T/2;s>0;s>>=1){ if(t<s) red[t]+=red[t+s]; threadgroup_barrier(mem_flags::mem_threadgroup); }
-    float inv = red[0] > 0 ? 1.0f/red[0] : 0.0f;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    for (uint d = t; d < v_hdim; d += T) {
-        float acc=0;
-        for (uint k=kv_start; k<kv_end; ++k) {
-            float vv;
-            if (k < history_len) {
-                device const char* vvv = vc + ((size_t)k*num_kv_heads+kvh)*v_hdim;
-                device const float* vss = vs + ((size_t)k*num_kv_heads+kvh)*ngV;
-                vv = (float)vvv[d]*vss[d/32];
-            } else {
-                device const half* vvv = vnew + ((size_t)(k-history_len)*num_kv_heads+kvh)*v_hdim;
-                vv = (float)vvv[d];
-            }
-            acc += sc[k]*vv;
-        }
-        out[(size_t)h*v_hdim + d] = (half)(acc*inv);
-    }
-}
-
-kernel void attn_decode_i8_partial(
-    device const half*  q     [[buffer(0)]],
-    device const half*  knew  [[buffer(1)]],
-    device const half*  vnew  [[buffer(2)]],
-    device const char*  kc    [[buffer(3)]],
-    device const char*  vc    [[buffer(4)]],
-    device const float* ks    [[buffer(5)]],
-    device const float* vs    [[buffer(6)]],
-    device       float* part_o[[buffer(7)]],
-    device       float* part_m[[buffer(8)]],
-    device       float* part_l[[buffer(9)]],
-    constant uint& num_q_heads [[buffer(10)]], constant uint& num_kv_heads [[buffer(11)]],
-    constant uint& head_dim    [[buffer(12)]], constant uint& v_hdim      [[buffer(13)]],
-    constant uint& history_len [[buffer(14)]], constant float& scale      [[buffer(15)]],
-    constant uint& kv_start    [[buffer(16)]], constant uint& kv_end      [[buffer(17)]],
-    constant uint& chunk       [[buffer(18)]], constant uint& C           [[buffer(19)]],
-    uint flat [[threadgroup_position_in_grid]], uint t [[thread_position_in_threadgroup]],
+    device       float* part_o [[buffer(16)]], device float* part_ml [[buffer(17)]],
+    constant uint& nwg         [[buffer(18)]],
+    uint tg [[threadgroup_position_in_grid]], uint t [[thread_position_in_threadgroup]],
     uint T [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],
-    uint sg [[simdgroup_index_in_threadgroup]], threadgroup float* sc [[threadgroup(0)]])
+    uint sg [[simdgroup_index_in_threadgroup]], threadgroup float* smem [[threadgroup(0)]])
 {
-    uint h = flat / C, c = flat % C;
+    uint h = tg / nwg, w = tg % nwg;
     uint kvh = h / (num_q_heads / num_kv_heads);
     uint ngK = (head_dim + 31u)/32u, ngV = (v_hdim + 31u)/32u;
-    device const half* qh = q + (size_t)h*head_dim;
-    uint cstart = kv_start + c*chunk;
-    uint cend   = min(kv_end, cstart + chunk);
-    uint rc = cend - cstart;
     uint nsg = T / 32u;
-    threadgroup float* red = sc + chunk;
-    if (cstart >= cend) {
-        if (t == 0) { part_m[(size_t)h*C+c] = -INFINITY; part_l[(size_t)h*C+c] = 0.0f; }
-        for (uint d=t; d<v_hdim; d+=T) part_o[((size_t)h*C+c)*v_hdim + d] = 0.0f;
-        return;
-    }
+    device const half* qh = q + (size_t)h*head_dim;
 
-    for (uint k = cstart + sg; k < cend; k += nsg) {
-        float partial = 0;
+    float qreg[16];
+    { uint i=0; for (uint d=lane; d<head_dim; d+=32) qreg[i++] = (float)qh[d]; }
+
+    float o_acc[16];
+    for (uint i=0;i<16;++i) o_acc[i] = 0.0f;
+    float m_i = -INFINITY, l_i = 0.0f;
+
+    uint gsg = w*nsg + sg, stride = nwg*nsg;
+    for (uint k = kv_start + gsg; k < kv_end; k += stride) {
+        float partial = 0.0f;
         if (k < history_len) {
-            device const char* kk = kc + ((size_t)k*num_kv_heads + kvh)*head_dim;
+            device const char*  kk  = kc + ((size_t)k*num_kv_heads + kvh)*head_dim;
             device const float* kss = ks + ((size_t)k*num_kv_heads + kvh)*ngK;
-            for (uint d=lane; d<head_dim; d+=32) partial += (float)qh[d] * ((float)kk[d] * kss[d/32]);
+            uint i=0; for (uint d=lane; d<head_dim; d+=32) { partial += qreg[i] * ((float)kk[d]*kss[d/32]); ++i; }
         } else {
-            device const half* kk = knew + ((size_t)(k-history_len)*num_kv_heads + kvh)*head_dim;
-            for (uint d=lane; d<head_dim; d+=32) partial += (float)qh[d] * (float)kk[d];
+            device const half*  kk = knew + ((size_t)(k-history_len)*num_kv_heads + kvh)*head_dim;
+            uint i=0; for (uint d=lane; d<head_dim; d+=32) { partial += qreg[i] * (float)kk[d]; ++i; }
         }
-        float dot = simd_sum(partial);
-        if (lane == 0) sc[k-cstart] = dot * scale;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    float lmax = -INFINITY;
-    for (uint j=t; j<rc; j+=T) lmax = max(lmax, sc[j]);
-    lmax = simd_max(lmax);
-    if (lane == 0) red[sg] = lmax;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    float m = -INFINITY; for (uint i=0;i<nsg;++i) m = max(m, red[i]);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    float lsum = 0;
-    for (uint j=t; j<rc; j+=T){ float e=exp(sc[j]-m); sc[j]=e; lsum+=e; }
-    lsum = simd_sum(lsum);
-    if (lane == 0) red[sg] = lsum;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    float l = 0; for (uint i=0;i<nsg;++i) l += red[i];
-    if (t == 0) { part_m[(size_t)h*C+c] = m; part_l[(size_t)h*C+c] = l; }
-
-    float acc[16];
-    uint nd = 0; for (uint d=t; d<v_hdim; d+=T) acc[nd++] = 0.0f;
-    for (uint k=cstart; k<cend; ++k) {
-        float e = sc[k-cstart];
+        float s = simd_sum(partial) * scale;
+        float m_new = max(m_i, s);
+        float resc  = exp(m_i - m_new);
+        float p     = exp(s - m_new);
+        l_i = l_i * resc + p;
         if (k < history_len) {
-            device const char* vvv = vc + ((size_t)k*num_kv_heads+kvh)*v_hdim;
+            device const char*  vvv = vc + ((size_t)k*num_kv_heads+kvh)*v_hdim;
             device const float* vss = vs + ((size_t)k*num_kv_heads+kvh)*ngV;
-            uint i=0; for (uint d=t; d<v_hdim; d+=T) acc[i++] += e * ((float)vvv[d]*vss[d/32]);
+            uint i=0; for (uint d=lane; d<v_hdim; d+=32) { o_acc[i] = o_acc[i]*resc + p*((float)vvv[d]*vss[d/32]); ++i; }
         } else {
-            device const half* vvv = vnew + ((size_t)(k-history_len)*num_kv_heads+kvh)*v_hdim;
-            uint i=0; for (uint d=t; d<v_hdim; d+=T) acc[i++] += e * (float)vvv[d];
+            device const half*  vvv = vnew + ((size_t)(k-history_len)*num_kv_heads+kvh)*v_hdim;
+            uint i=0; for (uint d=lane; d<v_hdim; d+=32) { o_acc[i] = o_acc[i]*resc + p*(float)vvv[d]; ++i; }
+        }
+        m_i = m_new;
+    }
+
+    threadgroup float* Otg = smem;
+    threadgroup float* mtg = Otg + (size_t)nsg*v_hdim;
+    threadgroup float* ltg = mtg + nsg;
+    if (lane == 0) { mtg[sg] = m_i; ltg[sg] = l_i; }
+    { uint i=0; for (uint d=lane; d<v_hdim; d+=32) { Otg[(size_t)sg*v_hdim + d] = o_acc[i]; ++i; } }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float gm = -INFINITY;
+    for (uint i=0;i<nsg;++i) gm = max(gm, mtg[i]);
+    float gl = 0.0f;
+    for (uint i=0;i<nsg;++i) gl += ltg[i] * exp(mtg[i] - gm);
+
+    if (nwg == 1u) {
+        float inv = gl > 0.0f ? 1.0f/gl : 0.0f;
+        for (uint d=t; d<v_hdim; d+=T) {
+            float acc = 0.0f;
+            for (uint i=0;i<nsg;++i) acc += Otg[(size_t)i*v_hdim + d] * exp(mtg[i] - gm);
+            out[(size_t)h*v_hdim + d] = (half)(acc * inv);
+        }
+    } else {
+        uint slot = h*nwg + w;
+        if (t == 0) { part_ml[(size_t)slot*2] = gm; part_ml[(size_t)slot*2 + 1] = gl; }
+        for (uint d=t; d<v_hdim; d+=T) {
+            float acc = 0.0f;
+            for (uint i=0;i<nsg;++i) acc += Otg[(size_t)i*v_hdim + d] * exp(mtg[i] - gm);
+            part_o[(size_t)slot*v_hdim + d] = acc;
         }
     }
-    uint i=0; for (uint d=t; d<v_hdim; d+=T) part_o[((size_t)h*C+c)*v_hdim + d] = acc[i++];
 }
 
 kernel void attn_decode_combine(
     device const float* part_o [[buffer(0)]],
-    device const float* part_m [[buffer(1)]],
-    device const float* part_l [[buffer(2)]],
-    device       half*  out    [[buffer(3)]],
-    constant uint& num_q_heads [[buffer(4)]], constant uint& v_hdim [[buffer(5)]],
-    constant uint& C           [[buffer(6)]],
+    device const float* part_ml[[buffer(1)]],
+    device       half*  out    [[buffer(2)]],
+    constant uint& v_hdim [[buffer(3)]], constant uint& nwg [[buffer(4)]],
     uint h [[threadgroup_position_in_grid]], uint t [[thread_position_in_threadgroup]],
-    uint T [[threads_per_threadgroup]], threadgroup float* sm [[threadgroup(0)]])
+    uint T [[threads_per_threadgroup]])
 {
-    for (uint c=t; c<C; c+=T) sm[c] = part_m[(size_t)h*C+c];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    threadgroup float gmaxs[1], gls[1];
-    if (t == 0) {
-        float gmax=-INFINITY;
-        for (uint c=0;c<C;++c) gmax = max(gmax, sm[c]);
-        float gl=0;
-        for (uint c=0;c<C;++c) gl += part_l[(size_t)h*C+c]*exp(sm[c]-gmax);
-        gmaxs[0]=gmax; gls[0]=gl;
-    }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    float gmax = gmaxs[0]; float inv = gls[0] > 0 ? 1.0f/gls[0] : 0.0f;
+    float gm = -INFINITY;
+    for (uint w=0;w<nwg;++w) gm = max(gm, part_ml[(size_t)(h*nwg+w)*2]);
+    float gl = 0.0f;
+    for (uint w=0;w<nwg;++w) gl += part_ml[(size_t)(h*nwg+w)*2 + 1] * exp(part_ml[(size_t)(h*nwg+w)*2] - gm);
+    float inv = gl > 0.0f ? 1.0f/gl : 0.0f;
     for (uint d=t; d<v_hdim; d+=T) {
-        float acc=0;
-        for (uint c=0;c<C;++c) acc += part_o[((size_t)h*C+c)*v_hdim + d]*exp(sm[c]-gmax);
-        out[(size_t)h*v_hdim + d] = (half)(acc*inv);
+        float acc = 0.0f;
+        for (uint w=0;w<nwg;++w) acc += part_o[(size_t)(h*nwg+w)*v_hdim + d] * exp(part_ml[(size_t)(h*nwg+w)*2] - gm);
+        out[(size_t)h*v_hdim + d] = (half)(acc * inv);
     }
 }
 

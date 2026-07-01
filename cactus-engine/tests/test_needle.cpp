@@ -90,6 +90,7 @@ bool test_needle_tool_call() {
 }
 
 int main() {
+    TestUtils::apply_backend();
     bool ok = true;
     ok &= test_needle_tool_call();
     std::cout << "\n" << (ok ? "✓ needle tool-call test passed" : "✗ needle tool-call test failed") << "\n";

@@ -120,9 +120,6 @@ inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     size_t total = fp16_cache ? fp16_cache_elements(new_max, kv_heads, hdim)
                               : cache_buffer_size(new_max, kv_heads, hdim);
     BufferDesc resized({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
-    // Keep the cache GPU-resident across grows: a plain CPU realloc would drop it out of the Metal
-    // shared map, forcing the fused/executor decode to snapshot the whole KV every token (O(context)
-    // CPU cost). Allocating shared keeps the live, offset-aware read path. CPU build: active=false.
     bool shared = kv_cache_resident();
     void* old_data = buf.get_data();
     if (shared) {

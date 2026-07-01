@@ -595,9 +595,6 @@ void compute_reshape_node(GraphNode& node, const std::vector<std::unique_ptr<Gra
                                 ") must match output elements (" + std::to_string(output_total_elements) + ")");
     }
 
-    // On the GPU path, reshape/view/flatten is a pure view — alias the input (no copy/dispatch);
-    // liveness is extended via may_alias_input in execute(). On CPU, keep the copy (aliasing there
-    // disturbed the CPU executor's buffer liveness).
     if (cactus_metal_active_mode()) {
         node.output_buffer.set_external(const_cast<void*>(input_buffer.get_data()));
     } else {

@@ -31,6 +31,7 @@ def _component_args(component, args):
     if component == "engine":
         cmd.extend(["--model", args.model_id])
         cmd.extend(["--transcription-model", args.transcription_model_id])
+        cmd.extend(["--backend", getattr(args, "backend", "auto")])
         if args.android:
             cmd.append("--android")
         if args.ios:
