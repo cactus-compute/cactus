@@ -16,6 +16,7 @@
 #include <utility>
 #include <cstdint>
 #include <mutex>
+#include <chrono>
 
 #include "cactus_kernels_msl.h"
 
@@ -26,31 +27,36 @@ struct MetalCtx {
     id<MTLCommandQueue> queue = nil;
     id<MTLComputePipelineState> psoT = nil;
     id<MTLComputePipelineState> psoTsimd = nil;
-    id<MTLComputePipelineState> psoG = nil;
+    id<MTLComputePipelineState> psoTbatch = nil;
+    id<MTLComputePipelineState> psoG = nil, psoGmr = nil;
     id<MTLComputePipelineState> psoTm = nil, psoGm = nil;
-    id<MTLComputePipelineState> psoGmma = nil;
+    id<MTLComputePipelineState> psoGmma = nil, psoGdense = nil, psoDeq = nil;
     id<MTLComputePipelineState> psoRotate = nil;
     id<MTLComputePipelineState> psoEmbO = nil, psoEmbH = nil;
     id<MTLComputePipelineState> psoEmbOm = nil, psoEmbHm = nil;
-    id<MTLComputePipelineState> psoCopy=nil, psoBinary=nil, psoScalar=nil, psoUnary=nil, psoRms=nil, psoSwiglu=nil, psoRmsAdd=nil;
+    id<MTLComputePipelineState> psoCopy=nil, psoBinary=nil, psoScalar=nil, psoUnary=nil, psoRms=nil, psoSwiglu=nil, psoRmsAdd=nil, psoRmsAddScale=nil;
     id<MTLComputePipelineState> psoCF16F32=nil, psoCF32F16=nil, psoCI8F16=nil, psoCF16I8=nil;
     id<MTLComputePipelineState> psoAttn=nil, psoAttnC=nil, psoStrided=nil, psoScatter=nil, psoBcast=nil, psoKvAppend=nil;
     id<MTLComputePipelineState> psoAttnPre=nil, psoAttnPreMma2=nil, psoAttnPreHd256=nil;
     id<MTLComputePipelineState> psoKvAppendM=nil, psoKvAppendRingM=nil;
     id<MTLComputePipelineState> psoSlideS=nil, psoSlideR=nil, psoSlideRM=nil;
-    id<MTLComputePipelineState> psoRope=nil, psoRopeM=nil;
+    id<MTLComputePipelineState> psoRope=nil, psoRopeM=nil, psoRmsRope=nil;
     id<MTLComputePipelineState> psoArgmax=nil;
     id<MTLComputePipelineState> psoGather=nil;
     id<MTLBuffer> dummy=nil;
     bool ok = false;
 
     MetalCtx() { @autoreleasepool {
+        const bool prof = getenv("CACTUS_PROF_INIT")!=nullptr;
+        auto t0 = std::chrono::high_resolution_clock::now();
+        auto ms = [&](){ auto n=std::chrono::high_resolution_clock::now(); return std::chrono::duration<double,std::milli>(n-t0).count(); };
         dev = MTLCreateSystemDefaultDevice();
         if (!dev) return;
         queue = [dev newCommandQueue];
         NSError* err = nil;
         id<MTLLibrary> lib = [dev newLibraryWithSource:[NSString stringWithUTF8String:kCactusMSL]
                                                options:nil error:&err];
+        if (prof) fprintf(stderr,"[prof-init] MSL compile: %.1fms\n", ms());
 
         if (!lib) { if (err) fprintf(stderr,"[cactus-metal] MSL compile failed: %s\n",[[err localizedDescription] UTF8String]); return; }
         auto pso = [&](const char* name) -> id<MTLComputePipelineState> {
@@ -60,14 +66,15 @@ struct MetalCtx {
             if (!p) fprintf(stderr,"[cactus-metal] pipeline '%s' failed: %s\n", name, e?[[e localizedDescription] UTF8String]:"function not found");
             return p;
         };
-        psoT=pso("cq4_transform"); psoTsimd=pso("cq4_transform_simd"); psoG=pso("cq4_gemv");
+        psoT=pso("cq4_transform"); psoTsimd=pso("cq4_transform_simd"); psoG=pso("cq4_gemv"); psoTbatch=pso("cq4_transform_batch"); psoGmr=pso("cq4_gemv_mr");
         psoTm=pso("cq4_transform_m"); psoGm=pso("cq4_gemm"); psoGmma=pso("cq4_gemm_mma");
+        psoGdense=pso("cq4_gemm_dense_f16"); psoDeq=pso("cq4_dequant_f16");
         psoRotate=pso("lmhead_rotate");
         psoEmbO=pso("emb_ortho"); psoEmbH=pso("emb_hadamard");
         psoEmbOm=pso("emb_ortho_m"); psoEmbHm=pso("emb_hadamard_m");
         psoGather=pso("gather_f16");
         psoCopy=pso("copy_bytes"); psoBinary=pso("binary_f16"); psoScalar=pso("scalar_f16");
-        psoUnary=pso("unary_f16"); psoRms=pso("rms_norm_f16"); psoSwiglu=pso("swiglu_f16"); psoRmsAdd=pso("rms_norm_add_f16");
+        psoUnary=pso("unary_f16"); psoRms=pso("rms_norm_f16"); psoSwiglu=pso("swiglu_f16"); psoRmsAdd=pso("rms_norm_add_f16"); psoRmsAddScale=pso("rms_norm_add_scale_f16");
         psoCF16F32=pso("cast_f16_f32"); psoCF32F16=pso("cast_f32_f16");
         psoCI8F16=pso("cast_i8_f16"); psoCF16I8=pso("cast_f16_i8");
         psoAttn=pso("attn_decode_i8"); psoAttnC=pso("attn_decode_combine");
@@ -75,8 +82,9 @@ struct MetalCtx {
         psoAttnPre=pso("attn_prefill_i8"); psoAttnPreMma2=pso("attn_prefill_mma2"); psoAttnPreHd256=pso("attn_prefill_mma_hd256"); psoKvAppendM=pso("kv_append_i8_m");
         psoKvAppendRingM=pso("kv_append_ring_i8_m");
         psoSlideS=pso("kv_slide_save"); psoSlideR=pso("kv_slide_restore"); psoSlideRM=pso("kv_slide_restore_m");
-        psoScatter=pso("strided_scatter_f16"); psoKvAppend=pso("kv_append_i8"); psoRope=pso("rope_f16"); psoRopeM=pso("rope_f16_m");
+        psoScatter=pso("strided_scatter_f16"); psoKvAppend=pso("kv_append_i8"); psoRope=pso("rope_f16"); psoRopeM=pso("rope_f16_m"); psoRmsRope=pso("rms_norm_rope_f16");
         psoArgmax=pso("argmax_logits");
+        if (prof) fprintf(stderr,"[prof-init] pso creation: %.1fms total\n", ms());
         dummy=[dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
         ok = psoT&&psoG&&psoTm&&psoGm&&psoRotate&&psoEmbO&&psoEmbH&&psoEmbOm&&psoEmbHm&&psoCopy&&psoBinary&&psoScalar&&psoUnary&&psoRms&&psoSwiglu&&psoRmsAdd&&psoCF16F32&&psoCF32F16&&psoCI8F16&&psoCF16I8
              &&psoAttn&&psoAttnC&&psoAttnPre&&psoAttnPreMma2&&psoKvAppendM&&psoKvAppendRingM&&psoSlideS&&psoSlideR&&psoSlideRM&&psoStrided&&psoBcast&&psoScatter&&psoKvAppend&&psoRope&&psoRopeM&&psoArgmax&&psoGather;
@@ -93,6 +101,7 @@ inline id<MTLBuffer> buf(const void* p, size_t bytes) {
 struct ResW {
     id<MTLBuffer> packed=nil, norms=nil, codebook=nil, lsign=nil, rsign=nil, perm=nil, recip=nil;
     id<MTLBuffer> rotation=nil;
+    id<MTLBuffer> wf16=nil;   // lazily-dequantized dense fp16 weight (prefill pre-dequant path)
 };
 std::unordered_map<const void*, ResW> g_resident;
 std::mutex g_resident_mu;
@@ -166,7 +175,11 @@ static const bool g_prof_gpu = (std::getenv("CACTUS_PROF_GPU") != nullptr);
 // Per-op-type GPU-time profiler: flush+time each dispatch, attribute to the current op tag g_op.
 // Perturbing (serializes), but gives an exact per-category GPU-time breakdown of a forward pass.
 static const bool g_prof_ops = (std::getenv("CACTUS_PROF_OPS") != nullptr);
+static const bool g_gemv_mr = (std::getenv("CACTUS_NO_GEMV_MR") == nullptr);   // multi-row M=1 gemv (default on; CACTUS_NO_GEMV_MR disables)
+static const uint32_t g_mr_rows = 8u * 2u;   // ROWS * CQ4_NR — MUST match cactus_kernels.metal CQ4_NR
 static const bool g_skip_mm=(std::getenv("CACTUS_SKIP_MM")!=nullptr), g_skip_attn=(std::getenv("CACTUS_SKIP_ATTN")!=nullptr), g_skip_norm=(std::getenv("CACTUS_SKIP_NORM")!=nullptr);
+static const bool g_skip_transform=(std::getenv("CACTUS_SKIP_TRANSFORM")!=nullptr);
+static const bool g_predequant=(std::getenv("CACTUS_NO_PREDEQUANT")==nullptr);   // prefill: dense fp16 gemm on pre-dequantized weights (default on; +~1.25GB RAM)
 static const char* g_op = "other";
 struct OpProf {
     std::map<std::string,std::pair<double,long>> t;
@@ -362,6 +375,23 @@ bool cactus_metal_encode_rope_m(void* out, const void* x, const void* cos_m, con
     barrier();
     return true;
 }
+bool cactus_metal_encode_rms_norm_rope(void* out, const void* x, const void* weight,
+                                       const void* cos, const void* sin,
+                                       uint32_t heads, uint32_t head_dim, float eps) {
+    if (!ctx().ok || !ctx().psoRmsRope) return false;
+    ensureEncoder();
+    g_op="rmsnorm";
+    uint32_t total=heads*head_dim; uint32_t hd=head_dim; float e=eps;
+    [g_enc setComputePipelineState:ctx().psoRmsRope];
+    setBufAt(x, (size_t)total*2, 0); setBufAt(weight, (size_t)head_dim*2, 1);
+    setBufAt(cos, (size_t)head_dim*2, 2); setBufAt(sin, (size_t)head_dim*2, 3);
+    setBufAt(out, (size_t)total*2, 4);
+    [g_enc setBytes:&hd length:4 atIndex:5]; [g_enc setBytes:&e length:4 atIndex:6];
+    [g_enc setThreadgroupMemoryLength:256*sizeof(float) atIndex:0];
+    if(!g_skip_norm) [g_enc dispatchThreadgroups:MTLSizeMake(heads,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    barrier();
+    return true;
+}
 bool cactus_metal_encode_rms_norm(void* out, const void* in, const void* weight,
                                   size_t rows, size_t dim, float eps) {
     if (!ctx().ok) return false;
@@ -385,6 +415,20 @@ bool cactus_metal_encode_rms_norm_add(void* out, const void* in, const void* wei
     [g_enc setComputePipelineState:ctx().psoRmsAdd];
     setBufAt(in, rows*dim*2, 0); setBufAt(weight, dim*2, 1); setBufAt(res, rows*dim*2, 2); setBufAt(out, rows*dim*2, 3);
     [g_enc setBytes:&d length:4 atIndex:4]; [g_enc setBytes:&e length:4 atIndex:5];
+    [g_enc setThreadgroupMemoryLength:256*sizeof(float) atIndex:0];
+    if(!g_skip_norm) [g_enc dispatchThreadgroups:MTLSizeMake(rows,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    barrier();
+    return true;
+}
+bool cactus_metal_encode_rms_norm_add_scale(void* out, const void* in, const void* weight, const void* res,
+                                            size_t rows, size_t dim, float eps, float out_scale) {
+    if (!ctx().ok || !ctx().psoRmsAddScale) return false;
+    ensureEncoder();
+    g_op="rmsnorm";
+    uint32_t d=(uint32_t)dim; float e=eps, os=out_scale;
+    [g_enc setComputePipelineState:ctx().psoRmsAddScale];
+    setBufAt(in, rows*dim*2, 0); setBufAt(weight, dim*2, 1); setBufAt(res, rows*dim*2, 2); setBufAt(out, rows*dim*2, 3);
+    [g_enc setBytes:&d length:4 atIndex:4]; [g_enc setBytes:&e length:4 atIndex:5]; [g_enc setBytes:&os length:4 atIndex:6];
     [g_enc setThreadgroupMemoryLength:256*sizeof(float) atIndex:0];
     if(!g_skip_norm) [g_enc dispatchThreadgroups:MTLSizeMake(rows,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     barrier();
@@ -456,7 +500,8 @@ bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQu
     [g_enc setBytes:&gs length:4 atIndex:6]; [g_enc setThreadgroupMemoryLength:gs*sizeof(float) atIndex:0];
     [g_enc dispatchThreadgroups:MTLSizeMake(ng,1,1) threadsPerThreadgroup:MTLSizeMake(simdT?32u:(gs>1024u?1024u:gs),1,1)];
     barrier();
-    [g_enc setComputePipelineState:ctx().psoG];
+    bool umr = g_gemv_mr && ctx().psoGmr && (N % g_mr_rows == 0u);
+    [g_enc setComputePipelineState:(umr?ctx().psoGmr:ctx().psoG)];
     [g_enc setBuffer:g_code_buf offset:0 atIndex:0]; [g_enc setBuffer:rw.packed offset:0 atIndex:1];
     [g_enc setBuffer:rw.codebook offset:0 atIndex:2]; [g_enc setBuffer:rw.norms offset:0 atIndex:3];
     setBufAt(out, (size_t)N*2, 4);
@@ -464,7 +509,57 @@ bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQu
     [g_enc setBytes:&pgb length:4 atIndex:7]; [g_enc setBytes:&N length:4 atIndex:8];
     uint32_t ROWS=8;
     g_op="matmul";
-    if(!g_skip_mm) [g_enc dispatchThreadgroups:MTLSizeMake((N+ROWS-1)/ROWS,1,1) threadsPerThreadgroup:MTLSizeMake(ROWS*32,1,1)];
+    uint32_t grid = umr ? (N+g_mr_rows-1u)/g_mr_rows : (N+ROWS-1u)/ROWS;
+    if(!g_skip_mm) [g_enc dispatchThreadgroups:MTLSizeMake(grid,1,1) threadsPerThreadgroup:MTLSizeMake(ROWS*32,1,1)];
+    barrier();
+    return true;
+}
+
+// Batched CQ4 transform for up to 3 weights sharing the input `x` (recip). One dispatch instead of B.
+bool cactus_metal_encode_transform_batch(const void* x, const CactusQuantMatrix* const* Ws, int B, void* const* codes) {
+    if (!ctx().ok || B < 1 || B > 3 || !ctx().psoTbatch) return false;
+    const uint32_t gs=Ws[0]->group_size, K=Ws[0]->K, ng=Ws[0]->num_groups;
+    if (gs != 128u || !quant_fast_eligible(Ws[0])) return false;
+    ResW& r0 = resident(Ws[0]);
+    ResW* rw[3] = { &r0, &r0, &r0 };
+    for (int b=1;b<B;b++) rw[b] = &resident(Ws[b]);
+    ensureEncoder();
+    g_op = "transform";
+    [g_enc setComputePipelineState:ctx().psoTbatch];
+    setBufAt(x, (size_t)K*2, 0);
+    [g_enc setBuffer:r0.recip offset:0 atIndex:1];
+    for (int b=0;b<3;b++) {
+        ResW* R = rw[b<B?b:0];
+        [g_enc setBuffer:R->lsign offset:0 atIndex:2+b];
+        [g_enc setBuffer:R->rsign offset:0 atIndex:5+b];
+        [g_enc setBuffer:R->perm  offset:0 atIndex:8+b];
+        setBufAt(codes[b<B?b:0], (size_t)K*2, 11+b);
+    }
+    [g_enc setBytes:&ng length:4 atIndex:14];
+    [g_enc setThreadgroupMemoryLength:gs*sizeof(float) atIndex:0];
+    [g_enc dispatchThreadgroups:MTLSizeMake((size_t)ng*B,1,1) threadsPerThreadgroup:MTLSizeMake(32,1,1)];
+    barrier();
+    return true;
+}
+
+// CQ4 gemv with a pre-computed transformed activation `code` (no transform dispatch here).
+bool cactus_metal_encode_gemv_precoded(void* out, const void* code, const CactusQuantMatrix* W) {
+    if (!ctx().ok) return false;
+    const uint32_t gs=W->group_size, K=W->K, N=W->N, ng=W->num_groups, pgb=(gs*4u+7u)/8u;
+    if (!quant_fast_eligible(W)) return false;
+    ResW& rw = resident(W);
+    ensureEncoder();
+    g_op = "matmul";
+    bool umr = g_gemv_mr && ctx().psoGmr && (N % g_mr_rows == 0u);
+    [g_enc setComputePipelineState:(umr?ctx().psoGmr:ctx().psoG)];
+    setBufAt(code, (size_t)K*2, 0); [g_enc setBuffer:rw.packed offset:0 atIndex:1];
+    [g_enc setBuffer:rw.codebook offset:0 atIndex:2]; [g_enc setBuffer:rw.norms offset:0 atIndex:3];
+    setBufAt(out, (size_t)N*2, 4);
+    [g_enc setBytes:&gs length:4 atIndex:5]; [g_enc setBytes:&ng length:4 atIndex:6];
+    [g_enc setBytes:&pgb length:4 atIndex:7]; [g_enc setBytes:&N length:4 atIndex:8];
+    uint32_t ROWS=8;
+    uint32_t grid = umr ? (N+g_mr_rows-1u)/g_mr_rows : (N+ROWS-1u)/ROWS;
+    if(!g_skip_mm) [g_enc dispatchThreadgroups:MTLSizeMake(grid,1,1) threadsPerThreadgroup:MTLSizeMake(ROWS*32,1,1)];
     barrier();
     return true;
 }
@@ -495,8 +590,32 @@ bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const Cactus
     [g_enc setBytes:&gs length:4 atIndex:6]; [g_enc setBytes:&K length:4 atIndex:7];
     [g_enc setThreadgroupMemoryLength:gs*sizeof(float) atIndex:0];
     g_op="transform";
-    [g_enc dispatchThreadgroups:MTLSizeMake((size_t)ng*M,1,1) threadsPerThreadgroup:MTLSizeMake(gs>1024u?1024u:gs,1,1)];
+    if (!g_skip_transform) [g_enc dispatchThreadgroups:MTLSizeMake((size_t)ng*M,1,1) threadsPerThreadgroup:MTLSizeMake(gs>1024u?1024u:gs,1,1)];
     barrier();
+
+    // Pre-dequant dense path: dequantize the weight to fp16 ONCE (cached in rw.wf16), then run a plain
+    // fp16 SG_MAT gemm — avoids the codebook LUT in the gemm fill (~33% faster gemm). The one-time dequant
+    // is triggered inside the load-time prefill warmup, so real prefill only pays the fast dense gemm.
+    if (g_predequant && ctx().psoGdense && ctx().psoDeq) {
+        if (!rw.wf16) {
+            rw.wf16 = [ctx().dev newBufferWithLength:(size_t)N*K*2 options:MTLResourceStorageModeShared];
+            [g_enc setComputePipelineState:ctx().psoDeq];
+            [g_enc setBuffer:rw.packed offset:0 atIndex:0]; [g_enc setBuffer:rw.codebook offset:0 atIndex:1];
+            [g_enc setBuffer:rw.norms offset:0 atIndex:2]; [g_enc setBuffer:rw.wf16 offset:0 atIndex:3];
+            [g_enc setBytes:&gs length:4 atIndex:4]; [g_enc setBytes:&ng length:4 atIndex:5];
+            [g_enc setBytes:&pgb length:4 atIndex:6]; [g_enc setBytes:&N length:4 atIndex:7];
+            [g_enc dispatchThreads:MTLSizeMake((size_t)N*ng,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+            barrier();
+        }
+        [g_enc setComputePipelineState:ctx().psoGdense];
+        [g_enc setBuffer:g_code_buf_m offset:0 atIndex:0]; [g_enc setBuffer:rw.wf16 offset:0 atIndex:1];
+        setBufAt(out, (size_t)M*N*2, 2);
+        [g_enc setBytes:&K length:4 atIndex:3]; [g_enc setBytes:&N length:4 atIndex:4]; [g_enc setBytes:&M length:4 atIndex:5];
+        g_op="matmul";
+        if (!g_skip_mm) [g_enc dispatchThreadgroups:MTLSizeMake((M+31)/32,(N+63)/64,1) threadsPerThreadgroup:MTLSizeMake(128,1,1)];
+        barrier();
+        return true;
+    }
 
     bool mma = (ctx().psoGmma != nil);
     [g_enc setComputePipelineState:(mma?ctx().psoGmma:ctx().psoGm)];
@@ -532,14 +651,16 @@ bool cactus_metal_encode_quant_matmul_ortho(void* out, const void* act, void* co
     [g_enc dispatchThreads:MTLSizeMake(K,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     barrier();
 
-    [g_enc setComputePipelineState:ctx().psoG];
+    bool umr = g_gemv_mr && ctx().psoGmr && (N % g_mr_rows == 0u);
+    [g_enc setComputePipelineState:(umr?ctx().psoGmr:ctx().psoG)];
     setBufAt(code, (size_t)K*2, 0); [g_enc setBuffer:rw.packed offset:0 atIndex:1];
     [g_enc setBuffer:rw.codebook offset:0 atIndex:2]; [g_enc setBuffer:rw.norms offset:0 atIndex:3];
     setBufAt(out, (size_t)N*2, 4);
     [g_enc setBytes:&gs length:4 atIndex:5]; [g_enc setBytes:&ng length:4 atIndex:6];
     [g_enc setBytes:&pgb length:4 atIndex:7]; [g_enc setBytes:&N length:4 atIndex:8];
     uint32_t ROWS=8;
-    if(!g_skip_mm) [g_enc dispatchThreadgroups:MTLSizeMake((N+ROWS-1)/ROWS,1,1) threadsPerThreadgroup:MTLSizeMake(ROWS*32,1,1)];
+    uint32_t grid = umr ? (N+g_mr_rows-1u)/g_mr_rows : (N+ROWS-1u)/ROWS;
+    if(!g_skip_mm) [g_enc dispatchThreadgroups:MTLSizeMake(grid,1,1) threadsPerThreadgroup:MTLSizeMake(ROWS*32,1,1)];
     barrier();
     return true;
 }
@@ -751,7 +872,7 @@ bool cactus_metal_encode_attention_i8_prefill(
     const uint32_t T = 128;
     if (total_keys == 0 || M == 0 || (num_q_heads % num_kv_heads) != 0) return false;
     uint32_t maxsc = (ring > 0u) ? ((total_keys > sink + ring) ? (sink + ring) : total_keys) : 256u;
-    static const bool en_hd256 = (std::getenv("CACTUS_HD256") != nullptr);
+    static const bool en_hd256 = (std::getenv("CACTUS_NO_HD256") == nullptr);  // tiled local (hd=256) prefill attention (default on)
     bool mma2 = (ring == 0u && is_causal && total_keys >= 2048u && head_dim == 512u && v_hdim == 512u && num_q_heads == 8u && num_kv_heads == 1u);
     // Route ALL global (hd=512, full-attention / window==0) layers through the tiled mma2 kernel, not just
     // the long-context ones — the tiled kernel loads each KV tile into shared once and reuses it across a

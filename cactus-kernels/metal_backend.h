@@ -45,12 +45,19 @@ bool cactus_metal_encode_rope_m(void* out, const void* x, const void* cos_m, con
                                 uint32_t heads, uint32_t head_dim, uint32_t M);
 bool cactus_metal_encode_rms_norm(void* out, const void* in, const void* weight,
                                   size_t rows, size_t dim, float eps);
+bool cactus_metal_encode_rms_norm_rope(void* out, const void* x, const void* weight,
+                                       const void* cos, const void* sin,
+                                       uint32_t heads, uint32_t head_dim, float eps);
 bool cactus_metal_encode_rms_norm_add(void* out, const void* in, const void* weight, const void* res,
                                       size_t rows, size_t dim, float eps);
+bool cactus_metal_encode_rms_norm_add_scale(void* out, const void* in, const void* weight, const void* res,
+                                            size_t rows, size_t dim, float eps, float out_scale);
 bool cactus_metal_encode_argmax(const void* logits, uint32_t vocab, void* out3);
 bool cactus_metal_encode_cast(void* out, int out_prec, const void* in, int in_prec, size_t n);
 bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQuantMatrix* W);
 bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const CactusQuantMatrix* W, uint32_t M);
+bool cactus_metal_encode_transform_batch(const void* x, const CactusQuantMatrix* const* Ws, int B, void* const* codes);
+bool cactus_metal_encode_gemv_precoded(void* out, const void* code, const CactusQuantMatrix* W);
 bool cactus_metal_prewarm_quant(const CactusQuantMatrix* W);
 bool cactus_metal_encode_quant_matmul_ortho(void* out, const void* act, void* code,
                                             const CactusQuantMatrix* W);

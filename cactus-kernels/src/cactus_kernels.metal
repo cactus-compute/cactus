@@ -62,6 +62,48 @@ kernel void cq4_transform_simd(
     code[b+2]=(half)zmem[perm[k+2]]; code[b+3]=(half)zmem[perm[k+3]];
 }
 
+// Batched CQ4 transform: one dispatch transforms the SAME input `x` for up to 3 weights that share the
+// input (q/k/v use xn; gate/up use xn2 — verified `recip` is identical, only lsign/rsign/perm differ per
+// weight). Grid = ng*B threadgroups; threadgroup (g + ng*b) transforms group g with weight b's params into
+// code[b]. Replaces B separate transform dispatches + removes the g_code_buf WAR serialization.
+kernel void cq4_transform_batch(
+    device const half*  x       [[buffer(0)]],
+    device const half*  recip   [[buffer(1)]],
+    device const char*  lsign0  [[buffer(2)]], device const char* lsign1 [[buffer(3)]], device const char* lsign2 [[buffer(4)]],
+    device const char*  rsign0  [[buffer(5)]], device const char* rsign1 [[buffer(6)]], device const char* rsign2 [[buffer(7)]],
+    device const uint*  perm0   [[buffer(8)]], device const uint* perm1  [[buffer(9)]], device const uint* perm2  [[buffer(10)]],
+    device       half*  code0   [[buffer(11)]], device half* code1 [[buffer(12)]], device half* code2 [[buffer(13)]],
+    constant uint& ng           [[buffer(14)]],
+    uint tgpos [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
+    threadgroup float* zmem     [[threadgroup(0)]])
+{
+    uint g = tgpos % ng, b = tgpos / ng;
+    device const char* lsign = (b==0u)?lsign0:((b==1u)?lsign1:lsign2);
+    device const char* rsign = (b==0u)?rsign0:((b==1u)?rsign1:rsign2);
+    device const uint* perm  = (b==0u)?perm0 :((b==1u)?perm1 :perm2 );
+    device       half* code  = (b==0u)?code0 :((b==1u)?code1 :code2 );
+    uint base = g*128u + lane*4u;
+    uint k = lane*4u;
+    float x0=(float)x[base+0]*(float)recip[base+0]*(float)lsign[k+0];
+    float x1=(float)x[base+1]*(float)recip[base+1]*(float)lsign[k+1];
+    float x2=(float)x[base+2]*(float)recip[base+2]*(float)lsign[k+2];
+    float x3=(float)x[base+3]*(float)recip[base+3]*(float)lsign[k+3];
+    float a0=x0+x1,a1=x0-x1,a2=x2+x3,a3=x2-x3;
+    x0=a0+a2; x1=a1+a3; x2=a0-a2; x3=a1-a3;
+    #pragma clang loop unroll(full)
+    for (uint d=1u; d<=16u; d<<=1){
+        bool hi=(lane&d)!=0u;
+        float p0=simd_shuffle_xor(x0,d),p1=simd_shuffle_xor(x1,d),p2=simd_shuffle_xor(x2,d),p3=simd_shuffle_xor(x3,d);
+        x0=hi?p0-x0:x0+p0; x1=hi?p1-x1:x1+p1; x2=hi?p2-x2:x2+p2; x3=hi?p3-x3:x3+p3;
+    }
+    float s=rsqrt(128.0f);
+    zmem[k+0]=x0*s*(float)rsign[k+0]; zmem[k+1]=x1*s*(float)rsign[k+1];
+    zmem[k+2]=x2*s*(float)rsign[k+2]; zmem[k+3]=x3*s*(float)rsign[k+3];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    code[base+0]=(half)zmem[perm[k+0]]; code[base+1]=(half)zmem[perm[k+1]];
+    code[base+2]=(half)zmem[perm[k+2]]; code[base+3]=(half)zmem[perm[k+3]];
+}
+
 #define CQ4_VPL 16u
 kernel void cq4_gemv(
     device const half*  code     [[buffer(0)]],
@@ -104,6 +146,58 @@ kernel void cq4_gemv(
     }
     acc=simd_sum(acc);
     if (lane==0) y[n]=(half)acc;
+}
+
+// Multi-row CQ4 gemv (M=1 decode): each simdgroup computes CQ4_NR output rows instead of 1. The shared
+// activation `code` is read once per K-step and reused across the NR rows, while the NR weight streams are
+// read interleaved (unrolled) — more independent memory requests in flight to hide M=1 latency (llama
+// mul_mv `nr0` technique). ROWS*CQ4_NR rows per threadgroup; N is a multiple of 32 for all matmuls so no tail.
+#define CQ4_NR 2u
+kernel void cq4_gemv_mr(
+    device const half*  code     [[buffer(0)]],
+    device const uchar* packed   [[buffer(1)]],
+    device const half*  codebook [[buffer(2)]],
+    device const half*  norms    [[buffer(3)]],
+    device       half*  y        [[buffer(4)]],
+    constant uint& gs            [[buffer(5)]],
+    constant uint& num_groups    [[buffer(6)]],
+    constant uint& pgb           [[buffer(7)]],
+    constant uint& N             [[buffer(8)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint tl   [[thread_index_in_threadgroup]])
+{
+    threadgroup float cb[16];
+    if (tl<16) cb[tl]=(float)codebook[tl];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint n0 = (tg*ROWS + sgid)*CQ4_NR;
+    if (n0>=N) return;
+    uint K = num_groups*gs;
+    float acc[CQ4_NR];
+    #pragma clang loop unroll(full)
+    for (uint r=0;r<CQ4_NR;r++) acc[r]=0;
+    for (uint base=lane*CQ4_VPL; base<K; base+=32u*CQ4_VPL){
+        uint g = base/gs, off = base - g*gs;
+        device const half4* cbase = (device const half4*)(code + g*gs + off);
+        half4 c0=cbase[0], c1=cbase[1], c2=cbase[2], c3=cbase[3];
+        #pragma clang loop unroll(full)
+        for (uint r=0;r<CQ4_NR;r++){
+            uint n = n0+r;
+            device const ushort4* pr = (device const ushort4*)(packed + ((size_t)n*num_groups+g)*pgb + off/2u);
+            ushort4 w = pr[0];
+            float p = (float)c0.x*cb[w[0]&0xF] + (float)c0.y*cb[(w[0]>>4)&0xF] + (float)c0.z*cb[(w[0]>>8)&0xF] + (float)c0.w*cb[(w[0]>>12)&0xF]
+                    + (float)c1.x*cb[w[1]&0xF] + (float)c1.y*cb[(w[1]>>4)&0xF] + (float)c1.z*cb[(w[1]>>8)&0xF] + (float)c1.w*cb[(w[1]>>12)&0xF]
+                    + (float)c2.x*cb[w[2]&0xF] + (float)c2.y*cb[(w[2]>>4)&0xF] + (float)c2.z*cb[(w[2]>>8)&0xF] + (float)c2.w*cb[(w[2]>>12)&0xF]
+                    + (float)c3.x*cb[w[3]&0xF] + (float)c3.y*cb[(w[3]>>4)&0xF] + (float)c3.z*cb[(w[3]>>8)&0xF] + (float)c3.w*cb[(w[3]>>12)&0xF];
+            acc[r] += (float)norms[(size_t)n*num_groups+g]*p;
+        }
+    }
+    #pragma clang loop unroll(full)
+    for (uint r=0;r<CQ4_NR;r++){
+        float a = simd_sum(acc[r]);
+        if (lane==0) y[n0+r]=(half)a;
+    }
 }
 
 kernel void cq4_transform_m(
@@ -249,6 +343,91 @@ kernel void cq4_gemm_mma(
         }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);   // MMAs done reading sa/sb before Cs reuses pool
+    uint m_sg = 16u*(sg>>1u), n_sg = 32u*(sg&1u);
+    for (uint i=0;i<8u;i++)
+        simdgroup_store(mc[i], &Cs[(m_sg+8u*(i/4u))*64u + n_sg+8u*(i%4u)], 64u);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint idx=tl; idx<32u*64u; idx+=128u){
+        uint m=idx/64u, n=idx%64u;
+        if (r1+m<M && r0+n<N) y[(size_t)(r1+m)*N + r0+n] = (half)Cs[m*64u+n];
+    }
+}
+
+// Dequantize a CQ4 weight [N,K] to dense fp16 (W[n][k] = norms[n][g] * codebook[nibble]) so prefill can
+// run a plain fp16 SG_MAT gemm instead of dequantizing in the gemm fill (the ~33% CQ4 tax). One thread per
+// (row,group) writes gs values. Done ONCE per weight (cached), so the cost amortizes across all chunks.
+kernel void cq4_dequant_f16(
+    device const uchar* packed   [[buffer(0)]],
+    device const half*  codebook [[buffer(1)]],
+    device const half*  norms    [[buffer(2)]],
+    device       half*  wf16     [[buffer(3)]],
+    constant uint& gs            [[buffer(4)]],
+    constant uint& num_groups    [[buffer(5)]],
+    constant uint& pgb           [[buffer(6)]],
+    constant uint& N             [[buffer(7)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= N*num_groups) return;
+    uint n = gid / num_groups, g = gid % num_groups;
+    uint K = num_groups*gs;
+    float nrm = (float)norms[(size_t)n*num_groups + g];
+    device const uchar* pr = packed + ((size_t)n*num_groups + g)*pgb;
+    device half* wr = wf16 + (size_t)n*K + (size_t)g*gs;
+    for (uint e=0; e<gs; ++e){
+        uchar by = pr[e>>1];
+        uint nib = (e&1u)?(uint)(by>>4):(uint)(by&0xF);
+        wr[e] = (half)(nrm * (float)codebook[nib]);
+    }
+}
+
+// Dense fp16 SG_MAT gemm: out[M,N] = code[M,K] @ dequant(W)[N,K]^T, reading pre-dequantized wf16 (no
+// codebook LUT in the fill). Same tile/schedule as cq4_gemm_mma (64N x 32M x 32K, 128 threads) but the
+// weight fill is a direct load, so it hits the dense microbench rate (~5257 vs ~3522 GFLOP/s dequant-in-fill).
+kernel void cq4_gemm_dense_f16(
+    device const half*  code [[buffer(0)]],
+    device const half*  wf16 [[buffer(1)]],
+    device       half*  y    [[buffer(2)]],
+    constant uint& K [[buffer(3)]], constant uint& N [[buffer(4)]], constant uint& M [[buffer(5)]],
+    uint2 tg [[threadgroup_position_in_grid]], uint tl [[thread_index_in_threadgroup]], uint sg [[simdgroup_index_in_threadgroup]])
+{
+    threadgroup float pool[2048];
+    threadgroup half* sa = (threadgroup half*)pool;
+    threadgroup half* sb = sa + 2048u;
+    threadgroup float* Cs = pool;
+    const uint NK=32u, NL0=2u, NL1=4u;
+    uint r0 = tg.y*64u, r1 = tg.x*32u;
+    uint lr0 = tl/NL0, lr1 = tl/NL1, il0 = tl%NL0;
+    uint nrow = r0+lr0;
+    uint iy = 8u*(tl%NL1);
+    device const half* yrow = code + (size_t)(r1+lr1)*K;
+    device const half* wrow = wf16 + (size_t)nrow*K;
+    simdgroup_matrix<half,8,8> ma[4], mb[2];
+    simdgroup_matrix<float,8,8> mc[8];
+    for (uint i=0;i<8u;i++) mc[i]=make_filled_simdgroup_matrix<float,8,8>(0.f);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint loop_k=0; loop_k<K; loop_k+=NK){
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i=0;i<16u;i++){
+            uint sx=2u*il0+i/8u, sy=(tl/NL0)/8u, lx=(tl/NL0)%8u, ly=i%8u, ib=8u*sx+sy;
+            uint k=loop_k+16u*il0+i;
+            half v=(k<K && nrow<N)? wrow[k] : (half)0;
+            sa[64u*ib+8u*ly+lx]=v;
+        }
+        for (uint i=0;i<8u;i++){
+            uint sx=tl%NL1, sy=(tl/NL1)/8u, lx=i, ly=(tl/NL1)%8u, ib=4u*sx+sy;
+            sb[64u*ib+8u*ly+lx]=(loop_k+iy+i<K && r1+lr1<M)?yrow[loop_k+iy+i]:(half)0;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        threadgroup const half* lsma = sa + 4u*64u*(sg%2u);
+        threadgroup const half* lsmb = sb + 2u*64u*(sg/2u);
+        for (uint ik=0; ik<NK/8u; ik++){
+            for (uint i=0;i<4u;i++) simdgroup_load(ma[i], lsma+64u*i, 8u);
+            for (uint i=0;i<2u;i++) simdgroup_load(mb[i], lsmb+64u*i, 8u);
+            for (uint i=0;i<8u;i++) simdgroup_multiply_accumulate(mc[i], mb[i/4u], ma[i%4u], mc[i]);
+            lsma += 8u*64u; lsmb += 4u*64u;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     uint m_sg = 16u*(sg>>1u), n_sg = 32u*(sg&1u);
     for (uint i=0;i<8u;i++)
         simdgroup_store(mc[i], &Cs[(m_sg+8u*(i/4u))*64u + n_sg+8u*(i%4u)], 64u);
@@ -407,6 +586,39 @@ kernel void rope_f16_m(device const half* x [[buffer(0)]], device half* out [[bu
     out[gid]=(half)((float)x[gid]*(float)cs[ci] + rot*(float)sn[ci]);
 }
 
+// Fused per-head RMSNorm + RoPE (decode q/k): one threadgroup per head reduces over hd, applies the
+// norm weight, then rotates — removing the separate normed intermediate (write + reread) that
+// rms_norm→rope would round-trip. RMSNorm is per-head over hd, and rope is per-head, so both fit one pass.
+kernel void rms_norm_rope_f16(
+    device const half* x    [[buffer(0)]],
+    device const half* w    [[buffer(1)]],
+    device const half* cs   [[buffer(2)]],
+    device const half* sn   [[buffer(3)]],
+    device       half* out  [[buffer(4)]],
+    constant uint& hd       [[buffer(5)]],
+    constant float& eps     [[buffer(6)]],
+    uint head [[threadgroup_position_in_grid]],
+    uint t    [[thread_position_in_threadgroup]],
+    uint nt   [[threads_per_threadgroup]],
+    threadgroup float* red  [[threadgroup(0)]])
+{
+    device const half* xh = x + (size_t)head*hd;
+    device       half* oh = out + (size_t)head*hd;
+    float partial=0;
+    for (uint i=t;i<hd;i+=nt){ float v=(float)xh[i]; partial+=v*v; }
+    red[t]=partial; threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s=nt/2; s>0; s>>=1){ if (t<s) red[t]+=red[t+s]; threadgroup_barrier(mem_flags::mem_threadgroup); }
+    float inv = 1.0f/sqrt(red[0]/(float)hd + eps);
+    uint hh=hd/2;
+    for (uint i=t;i<hd;i+=nt){
+        uint j = (i<hh) ? i+hh : i-hh;
+        float xi = (float)xh[i]*inv*(float)w[i];
+        float xj = (float)xh[j]*inv*(float)w[j];
+        float rot = (i<hh) ? -xj : xj;
+        oh[i] = (half)(xi*(float)cs[i] + rot*(float)sn[i]);
+    }
+}
+
 kernel void scalar_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
                        constant uint& n [[buffer(2)]], constant int& op [[buffer(3)]],
                        constant float& p [[buffer(4)]], uint i [[thread_position_in_grid]]) {
@@ -467,6 +679,23 @@ kernel void rms_norm_add_f16(device const half* in [[buffer(0)]], device const h
     for (uint s=nt/2; s>0; s>>=1){ if (t<s) red[t]+=red[t+s]; threadgroup_barrier(mem_flags::mem_threadgroup); }
     float inv = 1.0f/sqrt(red[0]/(float)dim + eps);
     for (uint i=t;i<dim;i+=nt){ float rr=(float)r[i]+(float)(half)((float)x[i]*inv*(float)w[i]); o[i]=(half)clamp(rr,-65500.0f,65500.0f); }
+}
+// rms_norm_add with a uniform output scale folded in: y = ((norm(x)*w) + res) * out_scale. Lets the
+// decode per-layer residual scalar ride on the post-PLE norm+residual instead of a separate pass.
+kernel void rms_norm_add_scale_f16(device const half* in [[buffer(0)]], device const half* w [[buffer(1)]],
+                             device const half* res [[buffer(2)]], device half* y [[buffer(3)]],
+                             constant uint& dim [[buffer(4)]], constant float& eps [[buffer(5)]],
+                             constant float& out_scale [[buffer(6)]],
+                             uint row [[threadgroup_position_in_grid]], uint t [[thread_position_in_threadgroup]],
+                             uint nt [[threads_per_threadgroup]], threadgroup float* red [[threadgroup(0)]]) {
+    device const half* x = in + (size_t)row*dim;
+    device const half* r = res + (size_t)row*dim;
+    device half* o = y + (size_t)row*dim;
+    float partial=0; for (uint i=t;i<dim;i+=nt){ float v=(float)x[i]; partial+=v*v; }
+    red[t]=partial; threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s=nt/2; s>0; s>>=1){ if (t<s) red[t]+=red[t+s]; threadgroup_barrier(mem_flags::mem_threadgroup); }
+    float inv = 1.0f/sqrt(red[0]/(float)dim + eps);
+    for (uint i=t;i<dim;i+=nt){ float rr=((float)r[i]+(float)(half)((float)x[i]*inv*(float)w[i]))*out_scale; o[i]=(half)clamp(rr,-65500.0f,65500.0f); }
 }
 kernel void cast_f16_f32(device const half* in [[buffer(0)]], device float* out [[buffer(1)]], constant uint& n [[buffer(2)]], uint i [[thread_position_in_grid]]){ if(i<n) out[i]=(float)in[i]; }
 kernel void cast_f32_f16(device const float* in [[buffer(0)]], device half* out [[buffer(1)]], constant uint& n [[buffer(2)]], uint i [[thread_position_in_grid]]){ if(i<n) out[i]=(half)in[i]; }

@@ -15,6 +15,10 @@ namespace {
 constexpr int NL = 35, HID = 1536, NQH = 8, PLE_DIM = 256;
 constexpr float RMS_EPS = 1e-6f, GATE_SCALE = 0.015625f, SOFTCAP = 30.0f;
 
+// Fuse per-head rmsnorm+rope for q/k and fold the per-layer residual scalar into the post-PLE norm+add.
+// Cuts non-gemv decode GPU work ~3% (Amdahl-capped to ~1% of total since gemv dominates). Default on.
+static const bool g_fuse_nr = (std::getenv("CACTUS_NO_FUSE_NR") == nullptr);
+
 struct LayerW {
     CactusQuantMatrix q, o, ple_down, ple_up, gate, up, down;
     CactusQuantMatrix k, v;
@@ -210,20 +214,33 @@ bool CactusGraph::execute_gpu_fused() {
         size_t mx = km[1], ng = (hd+31)/32;
 
         void* xn = fresh(HID);  cactus_metal_encode_rms_norm(xn, h, w.in_norm, 1, HID, RMS_EPS);
-        void* q  = fresh(QD);   cactus_metal_encode_quant_matmul(q, xn, &w.q);
-        void* qn = fresh(QD);   cactus_metal_encode_rms_norm(qn, q, w.q_norm, NQH, hd, RMS_EPS);
-        void* qr = fresh(QD);   cactus_metal_encode_rope(qr, qn, rc, rs, NQH, hd);
+        // q/k/v share input xn — batch their CQ4 transforms into one dispatch (non-shared layers).
+        void *cq=nullptr,*ck=nullptr,*cv=nullptr; bool qkv_batched=false;
+        if (!w.shared) {
+            cq=fresh(HID); ck=fresh(HID); cv=fresh(HID);
+            const CactusQuantMatrix* Wqkv[3]={&w.q,&w.k,&w.v}; void* codes[3]={cq,ck,cv};
+            qkv_batched = cactus_metal_encode_transform_batch(xn, Wqkv, 3, codes);
+        }
+        void* q  = fresh(QD);   if(qkv_batched) cactus_metal_encode_gemv_precoded(q, cq, &w.q); else cactus_metal_encode_quant_matmul(q, xn, &w.q);
+        void* qr = fresh(QD);
+        if (!g_fuse_nr || !cactus_metal_encode_rms_norm_rope(qr, q, w.q_norm, rc, rs, NQH, hd, RMS_EPS)) {
+            void* qn = fresh(QD); cactus_metal_encode_rms_norm(qn, q, w.q_norm, NQH, hd, RMS_EPS);
+            cactus_metal_encode_rope(qr, qn, rc, rs, NQH, hd);
+        }
 
         size_t hist, total; const void *knewp, *vnewp; size_t kv_start = 0, kv_end;
         const uint32_t Wn = w.global ? 0u : (uint32_t)(km[1] - km[4] - 1);
         const uint32_t Sn = w.global ? 0u : (uint32_t)km[4];
         const uint32_t Rn = (Wn > Sn) ? (Wn - Sn) : 1u;
         if (!w.shared) {
-            void* k  = fresh(hd); cactus_metal_encode_quant_matmul(k, xn, &w.k);
-            void* v  = fresh(hd); cactus_metal_encode_quant_matmul(v, xn, &w.v);
-            void* kn = fresh(hd); cactus_metal_encode_rms_norm(kn, k, w.k_norm, 1, hd, RMS_EPS);
+            void* k  = fresh(hd); if(qkv_batched) cactus_metal_encode_gemv_precoded(k, ck, &w.k); else cactus_metal_encode_quant_matmul(k, xn, &w.k);
+            void* v  = fresh(hd); if(qkv_batched) cactus_metal_encode_gemv_precoded(v, cv, &w.v); else cactus_metal_encode_quant_matmul(v, xn, &w.v);
+            void* kr = fresh(hd);
+            if (!g_fuse_nr || !cactus_metal_encode_rms_norm_rope(kr, k, w.k_norm, rc, rs, 1, hd, RMS_EPS)) {
+                void* kn = fresh(hd); cactus_metal_encode_rms_norm(kn, k, w.k_norm, 1, hd, RMS_EPS);
+                cactus_metal_encode_rope(kr, kn, rc, rs, 1, hd);
+            }
             void* vn = fresh(hd); cactus_metal_encode_rms_norm(vn, v, w.global ? G.vnorm_g : G.vnorm, 1, hd, RMS_EPS);
-            void* kr = fresh(hd); cactus_metal_encode_rope(kr, kn, rc, rs, 1, hd);
             size_t clen = km[0];
             size_t slot = (!w.global && clen >= (size_t)Wn) ? (size_t)(Sn + ((clen - Sn) % Rn)) : clen;
             cactus_metal_encode_kv_append_i8(kr, (char*)w.kc+64, (char*)w.kc+64+mx*hd,
@@ -256,8 +273,11 @@ bool CactusGraph::execute_gpu_fused() {
 
         const int M = w.mlp;
         void* xn2 = fresh(HID); cactus_metal_encode_rms_norm(xn2, h, w.pre_ffn, 1, HID, RMS_EPS);
-        void* gate= fresh(M);   cactus_metal_encode_quant_matmul(gate, xn2, &w.gate);
-        void* up  = fresh(M);   cactus_metal_encode_quant_matmul(up, xn2, &w.up);
+        // gate/up share input xn2 — batch their transforms.
+        void *cg=fresh(HID), *cu=fresh(HID); const CactusQuantMatrix* Wgu[2]={&w.gate,&w.up}; void* cgu[2]={cg,cu};
+        bool gu_batched = cactus_metal_encode_transform_batch(xn2, Wgu, 2, cgu);
+        void* gate= fresh(M);   if(gu_batched) cactus_metal_encode_gemv_precoded(gate, cg, &w.gate); else cactus_metal_encode_quant_matmul(gate, xn2, &w.gate);
+        void* up  = fresh(M);   if(gu_batched) cactus_metal_encode_gemv_precoded(up, cu, &w.up); else cactus_metal_encode_quant_matmul(up, xn2, &w.up);
         void* g3  = fresh(M);   cactus_metal_encode_swiglu(g3, gate, up, M, GATE_SCALE);
         void* mo  = fresh(HID); cactus_metal_encode_quant_matmul(mo, g3, &w.down);
         void* h2  = fresh(HID); cactus_metal_encode_rms_norm_add(h2, mo, w.post_ffn, h, 1, HID, RMS_EPS); h = h2;
@@ -265,10 +285,15 @@ bool CactusGraph::execute_gpu_fused() {
         void* ps  = fresh(PLE_DIM); cactus_metal_encode_quant_matmul(ps, h, &w.ple_down);
         void* pm  = fresh(PLE_DIM); cactus_metal_encode_swiglu(pm, ps, (const char*)pleBase + (size_t)l*PLE_DIM*2, PLE_DIM, 1.0f);
         void* pu  = fresh(HID); cactus_metal_encode_quant_matmul(pu, pm, &w.ple_up);
-        void* h3  = fresh(HID); cactus_metal_encode_rms_norm_add(h3, pu, w.post_ple, h, 1, HID, RMS_EPS); h = h3;
-
+        // fold the per-layer residual scalar into the post-PLE norm+residual (one pass instead of two)
         float ls = (float)(*(const __fp16*)w.scalar);
-        void* h4 = fresh(HID); cactus_metal_encode_scalar(2, h4, h, HID, ls); h = h4;
+        void* h3  = fresh(HID);
+        if (g_fuse_nr && cactus_metal_encode_rms_norm_add_scale(h3, pu, w.post_ple, h, 1, HID, RMS_EPS, ls)) {
+            h = h3;
+        } else {
+            cactus_metal_encode_rms_norm_add(h3, pu, w.post_ple, h, 1, HID, RMS_EPS);
+            void* h4 = fresh(HID); cactus_metal_encode_scalar(2, h4, h3, HID, ls); h = h4;
+        }
     }
 
     size_t V = B(3860).total_size;

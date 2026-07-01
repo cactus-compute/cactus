@@ -223,16 +223,25 @@ def _tile_to_length(tensor: torch.Tensor, length: int) -> torch.Tensor:
 
 
 def _resolve_model_pad_token_id(model: torch.nn.Module) -> int | None:
+    def _coerce(value: object) -> int | None:
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else None
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
     config = getattr(model, "config", None)
     for attr_name in ("pad_token_id", "eos_token_id", "bos_token_id"):
-        value = getattr(config, attr_name, None)
-        if value is not None:
-            return int(value)
+        resolved = _coerce(getattr(config, attr_name, None))
+        if resolved is not None:
+            return resolved
     generation_config = getattr(model, "generation_config", None)
     for attr_name in ("pad_token_id", "eos_token_id", "bos_token_id"):
-        value = getattr(generation_config, attr_name, None)
-        if value is not None:
-            return int(value)
+        resolved = _coerce(getattr(generation_config, attr_name, None))
+        if resolved is not None:
+            return resolved
     return None
 
 
@@ -1162,6 +1171,7 @@ def _gemma4_text_attention_forward(
             hidden_states=hidden_states,
             position_embeddings=position_embeddings,
             attention_mask=attention_mask,
+            shared_kv_states={},
             position_ids=position_ids,
             past_key_values=past_key_values,
             use_cache=use_cache,
@@ -4281,6 +4291,138 @@ def _build_gemma3_causal_lm_component_specs(
     return specs
 
 
+def _build_gemma4_causal_lm_component_specs(
+    model: torch.nn.Module,
+    *,
+    named_tensors: dict[str, torch.Tensor],
+    weights_dir: str | None = None,
+    components: tuple[str, ...] | None = None,
+    cache_context_length: str | int | None = None,
+    dynamic_batch: bool = True,
+    max_slots: int = 1,
+) -> list[ComponentModuleSpec] | None:
+    input_ids = named_tensors.get("input_ids")
+    if input_ids is None:
+        return None
+    pad_token_id = _resolve_model_pad_token_id(model)
+    requested_set = set(components or ())
+    if not requested_set or "decoder" in requested_set:
+        requested_set |= {
+            "decoder",
+            "lm_encoder_step",
+            "lm_encoder_text_chunk",
+            "decoder_prefill_chunk",
+            "decoder_step",
+        }
+    common_graph_meta = {
+        "weights_dir": weights_dir,
+        "task": "causal_lm_logits",
+        "adapter_family": "gemma4",
+    }
+    metadata = {"family": "gemma4", "task": "causal_lm_logits"}
+
+    specs: list[ComponentModuleSpec] = []
+    if "decoder" in requested_set:
+        decoder = Gemma4CausalLMLogitsAdapter(model, pad_token_id=pad_token_id).eval()
+        specs.append(ComponentModuleSpec(
+            component="decoder",
+            module=decoder,
+            example_inputs=(input_ids,),
+            input_keys=("input_ids",),
+            output_keys=("logits",),
+            graph_meta={**common_graph_meta, "component": "decoder"},
+            metadata=metadata,
+        ))
+
+    cached_components = {"lm_encoder_step", "lm_encoder_text_chunk", "decoder_prefill_chunk", "decoder_step"}
+    if not (cached_components & requested_set):
+        return specs
+
+    lm_encoder_step = Gemma4LMEncoderStepAdapter(model, weights_dir=weights_dir).eval()
+    lm_encoder_text_chunk = Gemma4LMEncoderTextChunkAdapter(model, weights_dir=weights_dir).eval()
+    decoder_prefill_chunk = Gemma4DecoderPrefillChunkAdapter(model, weights_dir=weights_dir).eval()
+    decoder_step = Gemma4DecoderStepAdapter(model, weights_dir=weights_dir).eval()
+    cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
+    prefill_chunk_size = max(2, int(os.environ.get("CACTUS_GEMMA4_PREFILL_CHUNK", "128") or "128"))
+
+    step_input_ids = input_ids[:, -1:].contiguous()
+    step_position_ids = torch.full(
+        (int(input_ids.shape[0]), 1),
+        max(0, int(input_ids.shape[1]) - 1),
+        dtype=torch.long,
+        device=input_ids.device,
+    )
+    chunk_input_ids = _tile_to_length(input_ids, prefill_chunk_size)
+    chunk_position_ids = torch.arange(
+        prefill_chunk_size, dtype=torch.long, device=input_ids.device,
+    ).unsqueeze(0).expand(int(input_ids.shape[0]), -1).contiguous()
+    with torch.no_grad():
+        decoder_step_inputs = lm_encoder_step(step_input_ids, step_position_ids)
+        prefill_decoder_inputs = lm_encoder_text_chunk(chunk_input_ids, chunk_position_ids)
+
+    if "lm_encoder_step" in requested_set:
+        specs.append(ComponentModuleSpec(
+            component="lm_encoder_step",
+            module=lm_encoder_step,
+            example_inputs=(step_input_ids, step_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
+            graph_meta={**common_graph_meta, "component": "lm_encoder_step"},
+            metadata=metadata,
+            dynamic_batch_axis=0 if dynamic_batch else None,
+        ))
+    if "lm_encoder_text_chunk" in requested_set:
+        specs.append(ComponentModuleSpec(
+            component="lm_encoder_text_chunk",
+            module=lm_encoder_text_chunk,
+            example_inputs=(chunk_input_ids, chunk_position_ids),
+            input_keys=("input_ids", "position_ids"),
+            output_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
+            graph_meta={
+                **common_graph_meta,
+                "component": "lm_encoder_text_chunk",
+                "encoder_chunk_size": prefill_chunk_size,
+            },
+            metadata=metadata,
+        ))
+    if "decoder_prefill_chunk" in requested_set:
+        specs.append(ComponentModuleSpec(
+            component="decoder_prefill_chunk",
+            module=decoder_prefill_chunk,
+            example_inputs=tuple(prefill_decoder_inputs),
+            input_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
+            output_keys=("logits",),
+            graph_meta={
+                **common_graph_meta,
+                "component": "decoder_prefill_chunk",
+                "use_internal_kv_cache": True,
+                "max_cache_seq_len": cache_seq_len,
+                "cache_sink_size": 4,
+                "prefill_chunk_size": prefill_chunk_size,
+            },
+            metadata=metadata,
+        ))
+    if "decoder_step" in requested_set:
+        specs.append(ComponentModuleSpec(
+            component="decoder_step",
+            module=decoder_step,
+            example_inputs=tuple(decoder_step_inputs),
+            input_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
+            output_keys=("logits", "probe_hidden"),
+            graph_meta={
+                **common_graph_meta,
+                "component": "decoder_step",
+                "use_internal_kv_cache": True,
+                "max_cache_seq_len": cache_seq_len,
+                "cache_sink_size": 4,
+                "cache_num_slots": (max_slots if dynamic_batch else 1),
+            },
+            metadata=metadata,
+            dynamic_batch_axis=0 if dynamic_batch else None,
+        ))
+    return specs
+
+
 def _gemma4_make_audio_mask_fp16_safe(model: torch.nn.Module) -> None:
     backbone = getattr(model, "model", model)
     audio_tower = getattr(backbone, "audio_tower", None)
@@ -6970,6 +7112,16 @@ def build_component_module_specs(
         )
     if family == "gemma3" and task == "causal_lm_logits":
         return _build_gemma3_causal_lm_component_specs(
+            model,
+            named_tensors=named_tensors,
+            weights_dir=weights_dir,
+            components=components,
+            cache_context_length=cache_context_length,
+            dynamic_batch=dynamic_batch,
+            max_slots=max_slots,
+        )
+    if family == "gemma4" and task == "causal_lm_logits":
+        return _build_gemma4_causal_lm_component_specs(
             model,
             named_tensors=named_tensors,
             weights_dir=weights_dir,

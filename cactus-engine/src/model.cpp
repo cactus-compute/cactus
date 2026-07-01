@@ -602,6 +602,27 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         bound.insert(comp);
     }
 
+    // Prewarm the prefill executor. The generic graph executor allocates every intermediate GPU
+    // buffer (gpu_persistent_acts_) lazily on the FIRST execute() — a ~190ms one-time cost that
+    // otherwise lands in the first real prefill chunk, inflating TTFT (dominant at short prompts and
+    // the reason pp512 measured slower than pp2048). Run each prefill graph once on zeroed inputs
+    // here, then reset the KV cache states the warmup dirtied so real inference starts clean.
+    if (decoder_prefill_ && decoder_prefill_->graph
+        && std::getenv("CACTUS_NO_PREFILL_WARM") == nullptr) {
+        try {
+            if (prefill_encoder_ && prefill_encoder_->graph) {
+                for (auto& b : prefill_encoder_->input_buffers) std::fill(b.begin(), b.end(), 0);
+                prefill_encoder_->graph->execute();
+                reset_component_cache_states(*prefill_encoder_);
+            }
+            for (auto& b : decoder_prefill_->input_buffers) std::fill(b.begin(), b.end(), 0);
+            decoder_prefill_->graph->execute();
+            reset_component_cache_states(*decoder_prefill_);
+        } catch (const std::exception& e) {
+            CACTUS_LOG_WARN("model", std::string("prefill warmup skipped: ") + e.what());
+        }
+    }
+
     if (vision_encoder_ && tokenizer_ && !vision_encoder_->output_node_ids.empty()) {
         size_t out_node = static_cast<size_t>(vision_encoder_->output_node_ids[0]);
         const auto& desc = vision_encoder_->graph->get_output_buffer(out_node);
