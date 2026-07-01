@@ -51,6 +51,8 @@ bool cactus_metal_encode_kv_append_i8(const void*, void*, void*, uint32_t, uint3
     uint32_t, size_t, size_t, size_t) { return false; }
 bool cactus_metal_encode_kv_append_sliding_i8(const void*, void*, void*, uint32_t, uint32_t, uint32_t,
     uint32_t, uint32_t, uint32_t, size_t, size_t, size_t) { return false; }
+bool cactus_metal_encode_kv_append_sliding_i8_m(const void*, void*, void*, uint32_t, uint32_t, uint32_t,
+    uint32_t, uint32_t, uint32_t, uint32_t, size_t, size_t, size_t) { return false; }
 bool cactus_metal_encode_kv_append_i8_m(const void*, void*, void*, uint32_t, uint32_t, uint32_t,
     uint32_t, uint32_t, size_t, size_t, size_t) { return false; }
 bool cactus_metal_encode_kv_append_ring_i8_m(const void*, void*, void*, uint32_t, uint32_t, uint32_t,

@@ -98,7 +98,6 @@ bool CactusGraph::extract_ple_pathway(FusedEmbedCtx& ctx) const {
 }
 
 bool CactusGraph::execute_gpu_fused() {
-    static const bool dbg = std::getenv("CACTUS_FUSED_DEBUG") != nullptr;
     if (!cactus_metal_available()) return false;
     const size_t n = nodes_.size();
     if (n < 3861) return false;
@@ -164,18 +163,12 @@ bool CactusGraph::execute_gpu_fused() {
 
     for (int l = 0; l < 15; ++l) {
         const uint64_t* km = (const uint64_t*)G.L[l].kc;
-        if (G.L[l].global && km[0] + 1 > km[1]) {
-            static const bool dbg2 = (std::getenv("CACTUS_FUSED_TIMER") != nullptr);
-            if (dbg2) { static int n=0; if (n++<3) fprintf(stderr,"[fused-bail] L%d clen=%llu max=%llu hd=%d\n",
-                l,(unsigned long long)km[0],(unsigned long long)km[1],G.L[l].hd); }
-            return false;
-        }
+        if (G.L[l].global && km[0] + 1 > km[1]) return false;
     }
 
     G.arena.reset();
     auto fresh = [&](size_t elems){ return G.arena.fresh(elems * 2); };
     cactus_metal_session_begin();
-    auto g_t0 = std::chrono::high_resolution_clock::now();
     cactus_metal_set_active(true);
 
     void* h = fresh(HID);
@@ -202,10 +195,6 @@ bool CactusGraph::execute_gpu_fused() {
         std::memcpy(h, G.hidden, HID*2);
         pleBase = G.ple;
     }
-    if (dbg) { cactus_metal_session_sync(); const __fp16* hh=(const __fp16*)h; const __fp16* pp=(const __fp16*)pleBase;
-        fprintf(stderr,"[embed %s] tok=%d h[0..3]= %.5f %.5f %.5f %.5f | ple[0..3]= %.5f %.5f %.5f %.5f\n",
-            fold?"FOLD":"node", fold?g_fe.token_id:-1, (float)hh[0],(float)hh[1],(float)hh[2],(float)hh[3],
-            (float)pp[0],(float)pp[1],(float)pp[2],(float)pp[3]); }
 
     auto gather = [&](const void* tbl, void* dst, int hd){ std::memcpy(dst, (const char*)tbl + (size_t)pos*hd*2, hd*2); };
     gather(G.cosL, G.cos_s, 256); gather(G.sinL, G.sin_s, 256);
@@ -280,9 +269,6 @@ bool CactusGraph::execute_gpu_fused() {
 
         float ls = (float)(*(const __fp16*)w.scalar);
         void* h4 = fresh(HID); cactus_metal_encode_scalar(2, h4, h, HID, ls); h = h4;
-
-        if (dbg) { cactus_metal_session_sync(); const __fp16* p=(const __fp16*)h;
-            fprintf(stderr,"[fused] L%d out: %.5f %.5f %.5f %.5f (ls=%.6f)\n",l,(float)p[0],(float)p[1],(float)p[2],(float)p[3],ls); }
     }
 
     size_t V = B(3860).total_size;
@@ -306,17 +292,6 @@ bool CactusGraph::execute_gpu_fused() {
     }
 
     cactus_metal_set_active(false);
-    static const bool g_tmr = (std::getenv("CACTUS_FUSED_TIMER") != nullptr);
-    if (g_tmr) {
-        auto t1 = std::chrono::high_resolution_clock::now();
-        cactus_metal_session_end();
-        auto t2 = std::chrono::high_resolution_clock::now();
-        double enc = std::chrono::duration<double,std::milli>(t1 - g_t0).count();
-        double syn = std::chrono::duration<double,std::milli>(t2 - t1).count();
-        fprintf(stderr, "[fused-timer] pos=%d encode_cpu=%.2fms commit+wait=%.2fms total=%.2fms\n",
-                pos, enc, syn, enc+syn);
-    } else {
-        cactus_metal_session_end();
-    }
+    cactus_metal_session_end();
     return true;
 }
