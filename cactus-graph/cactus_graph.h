@@ -17,12 +17,9 @@
 #include <iostream>
 #include <arm_neon.h>
 
-// Backend selection: "metal" or "cpu". Overrides the CACTUS_GPU[_FUSED] env default.
-// cactus_backend_metal() gates the GPU op path; cactus_backend_fused() gates the fully-fused decode.
-void cactus_backend_select(const char* backend);
+int cactus_backend_select(const char* backend);
 bool cactus_backend_metal();
 bool cactus_backend_fused();
-const char* cactus_backend_name();
 
 namespace cactus {
 
@@ -88,7 +85,7 @@ private:
 #define CACTUS_LOG_WARN(component, msg)  CACTUS_LOG(cactus::LogLevel::WARN, component, msg)
 #define CACTUS_LOG_ERROR(component, msg) CACTUS_LOG(cactus::LogLevel::ERROR, component, msg)
 
-enum class ComputeBackend { CPU, NPU, GPU };
+enum class ComputeBackend { CPU, NPU };
 
 enum class Activation { SILU, GELU, GELU_ERF, RELU, SIGMOID, TANH };
 
@@ -464,14 +461,12 @@ struct FusedEmbedCtx {
     CactusQuantMatrix ple{};
     CactusQuantMatrix proj{};
     const void* rms_weight = nullptr;
-    float emb_scale = 0, ple_scale = 0, proj_scale = 0, final_scale = 0, rms_eps = 1e-6f;
+    float emb_scale = 0.0f, ple_scale = 0.0f, proj_scale = 0.0f, final_scale = 0.0f, rms_eps = 1e-6f;
     bool ok = false;
 };
 void cactus_graph_set_fused_embed(const FusedEmbedCtx* ctx);
 
 bool cactus_graph_gpu_argmax(uint32_t* idx, float* best, float* second);
-
-extern bool g_cactus_force_cpu;
 
 class CactusGraph {
 public:

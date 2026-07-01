@@ -855,13 +855,13 @@ int main(int argc, char** argv) {
         }
     }
 
-    // --backend metal enables the fused Metal GPU path, gated by CACTUS_GPU_FUSED in cactus-graph
-    // (read once at the first forward, so it must be set before cactus_init). Default is CPU.
-    if (backend == "metal" || backend == "gpu") {
-        setenv("CACTUS_GPU_FUSED", "1", 1);
-        std::cout << "Backend: Metal GPU\n";
-    } else if (!backend.empty() && backend != "cpu") {
-        std::cerr << "Error: unknown backend '" << backend << "' (expected 'cpu' or 'metal')\n";
+    if (backend == "cpu" || backend == "metal") {
+        if (cactus_set_backend(backend.c_str()) == 0)
+            std::cout << "Backend: " << (backend == "metal" ? "Metal GPU" : "CPU") << "\n";
+        else
+            std::cout << "Metal not available; using CPU\n";
+    } else if (!backend.empty() && backend != "auto") {
+        std::cerr << "Error: unknown backend '" << backend << "' (expected 'cpu', 'metal', or 'auto')\n";
         return 1;
     }
 

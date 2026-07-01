@@ -56,13 +56,10 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 
         CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
         const bool is_orthogonal = (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0;
-        static const bool gpu_matmul_env =
-            (std::getenv("CACTUS_GPU_MATMUL") != nullptr) && cactus_metal_available();
-        if ((backend == ComputeBackend::GPU || gpu_matmul_env) && !is_orthogonal) {
-            // GPU fast path (M==1 4-bit Hadamard); falls back to CPU internally otherwise.
-            cactus_metal_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
-        } else if (is_orthogonal) {
+        if (is_orthogonal) {
             cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
+        } else if (cactus_backend_metal()) {
+            cactus_metal_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
         } else {
             cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
         }

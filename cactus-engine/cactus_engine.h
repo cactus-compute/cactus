@@ -34,11 +34,8 @@ CACTUS_FFI_EXPORT void cactus_destroy(cactus_model_t model);
 CACTUS_FFI_EXPORT void cactus_reset(cactus_model_t model);
 CACTUS_FFI_EXPORT void cactus_stop(cactus_model_t model);
 
-// Backend selection. "metal" runs the Apple GPU / Metal fused path (when available), "cpu" the CPU path.
-// Overrides the CACTUS_GPU[_FUSED] env default. Call before cactus_init / the first forward.
-CACTUS_FFI_EXPORT void cactus_set_backend(const char* backend);
-CACTUS_FFI_EXPORT const char* cactus_get_backend(void);   // resolved: "metal" or "cpu"
-CACTUS_FFI_EXPORT bool cactus_metal_available(void);      // true if a Metal device is present
+// backend: "auto", "cpu", or "metal". Returns 0 on success, -1 on failure
+CACTUS_FFI_EXPORT int cactus_set_backend(const char* backend);
 
 CACTUS_FFI_EXPORT int cactus_complete(
     cactus_model_t model,

@@ -197,6 +197,7 @@ graph.hard_reset();
 │  cactus run [model|path]             run a model (downloads if needed)         │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --backend auto|cpu|metal          inference backend (default: auto)         │
 │    --image <path>                    image file for VLM inference              │
 │    --audio <path>                    audio file for audio chat                 │
 │    --system <prompt>                 system prompt                             │
@@ -210,6 +211,7 @@ graph.hard_reset();
 │    --language <code>                 language code (default: en)               │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --backend auto|cpu|metal          inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │                                                                                │
@@ -234,6 +236,7 @@ graph.hard_reset();
 │    --port <port>                     port (default: 8080)                      │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --backend auto|cpu|metal          inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │    --no-cloud-handoff                disable automatic cloud handoff           │
@@ -244,6 +247,7 @@ graph.hard_reset();
 │    --serve-model <id>                auto-start a server with this model       │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --backend auto|cpu|metal          inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │    --host <addr>                     server address (default: 127.0.0.1)       │

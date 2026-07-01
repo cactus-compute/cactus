@@ -7,7 +7,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from .common import BLUE, DEFAULT_MODEL_ID, GREEN, RED, YELLOW, default_backend, is_valid_bundle, print_color, weights_root
+from .common import BLUE, DEFAULT_MODEL_ID, GREEN, RED, YELLOW, is_valid_bundle, print_color, weights_root
 
 _PACKAGE_DIR = Path(__file__).resolve().parent.parent
 _PROJECT_ROOT = _PACKAGE_DIR.parent.parent
@@ -147,7 +147,7 @@ def cmd_code(args) -> int:
             "--host", args.host, "--port", str(args.port), "--no-access-log",
             "--bits", str(getattr(args, "bits", 4)),
             "--platform", getattr(args, "platform", "auto"),
-            "--backend", getattr(args, "backend", default_backend()),
+            "--backend", getattr(args, "backend", "auto"),
         ]
         if getattr(args, "token", None):
             serve_cmd += ["--token", args.token]

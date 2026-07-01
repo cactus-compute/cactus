@@ -145,7 +145,7 @@ inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     }
     get_meta(resized)->max_seq_len = new_max;
     buf = std::move(resized);
-    if (shared) cactus_metal_free_shared(old_data);   // reclaim the old shared buffer (no-op if not shared)
+    if (shared) cactus_metal_free_shared(old_data);
     return true;
 }
 
@@ -189,7 +189,7 @@ void compute_kv_cache_state_node(
         : cache_buffer_size(max_seq, kv_heads, hdim);
 
     node.output_buffer = BufferDesc({num_slots * per_slot}, fp16_cache ? Precision::FP16 : Precision::INT8);
-    if (kv_cache_resident()) {                         // GPU-resident shared cache (no snapshots)
+    if (kv_cache_resident()) {
         void* p = cactus_metal_alloc_shared(node.output_buffer.byte_size);
         if (p) node.output_buffer.set_external(p); else node.output_buffer.allocate();
     } else {
