@@ -25,6 +25,8 @@ namespace {
 
 std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema);
 std::vector<std::string> extract_schema_required(const std::string& schema);
+std::vector<std::string> extract_string_array(const std::string& json, const std::string& key);
+std::string extract_json_object_field(const std::string& json, const std::string& key);
 
 std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
@@ -65,9 +67,13 @@ std::vector<ToolConstraintSpec> build_tool_constraint_specs(const std::vector<To
         auto schema_it = tool.parameters.find("schema");
         if (schema_it != tool.parameters.end()) {
             auto properties = extract_schema_property_types(schema_it->second);
+            std::string properties_object = extract_json_object_field(schema_it->second, "properties");
             spec.parameter_names.reserve(properties.size());
+            spec.parameter_enums.reserve(properties.size());
             for (const auto& [name, _] : properties) {
                 spec.parameter_names.push_back(name);
+                spec.parameter_enums.push_back(
+                    extract_string_array(extract_json_object_field(properties_object, name), "enum"));
             }
             spec.required_parameter_names = extract_schema_required(schema_it->second);
         }
@@ -194,25 +200,30 @@ std::vector<std::pair<std::string, std::string>> extract_schema_property_types(c
     return properties;
 }
 
-std::vector<std::string> extract_schema_required(const std::string& schema) {
-    std::vector<std::string> required;
-    std::string key = "\"required\"";
-    size_t key_pos = schema.find(key);
-    if (key_pos == std::string::npos) return required;
-    size_t arr_start = schema.find('[', key_pos + key.size());
-    if (arr_start == std::string::npos) return required;
-    size_t arr_end = schema.find(']', arr_start);
-    if (arr_end == std::string::npos) return required;
+std::vector<std::string> extract_string_array(const std::string& json, const std::string& key) {
+    std::vector<std::string> values;
+    if (json.empty()) return values;
+    std::string pattern = "\"" + key + "\"";
+    size_t key_pos = json.find(pattern);
+    if (key_pos == std::string::npos) return values;
+    size_t arr_start = json.find('[', key_pos + pattern.size());
+    if (arr_start == std::string::npos) return values;
+    size_t arr_end = json.find(']', arr_start);
+    if (arr_end == std::string::npos) return values;
     size_t pos = arr_start + 1;
     while (pos < arr_end) {
-        size_t qs = schema.find('"', pos);
+        size_t qs = json.find('"', pos);
         if (qs == std::string::npos || qs >= arr_end) break;
-        size_t qe = schema.find('"', qs + 1);
+        size_t qe = json.find('"', qs + 1);
         if (qe == std::string::npos || qe > arr_end) break;
-        required.push_back(schema.substr(qs + 1, qe - qs - 1));
+        values.push_back(json.substr(qs + 1, qe - qs - 1));
         pos = qe + 1;
     }
-    return required;
+    return values;
+}
+
+std::vector<std::string> extract_schema_required(const std::string& schema) {
+    return extract_string_array(schema, "required");
 }
 
 static bool json_object_has_key(const std::string& obj, const std::string& key) {
@@ -1139,6 +1150,10 @@ int cactus_complete(
             handoff_reason = (confidence >= prompt.options.confidence_threshold)
                 ? "above threshold"
                 : "kept local";
+        }
+
+        if (prompt.options.force_tools && !prompt.tools.empty() && primary_function_calls.empty()) {
+            CACTUS_LOG_WARN("force_tools", "force_tools was set but no tool call was parsed from the constrained output");
         }
 
         std::string result = construct_response_json(primary_response, primary_function_calls, time_to_first_token,
