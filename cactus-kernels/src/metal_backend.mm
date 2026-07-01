@@ -80,7 +80,7 @@ struct MetalCtx {
         psoArgmax=pso("argmax_logits");
         dummy=[dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
         ok = psoT&&psoG&&psoTm&&psoGm&&psoRotate&&psoEmbO&&psoEmbH&&psoEmbOm&&psoEmbHm&&psoCopy&&psoBinary&&psoScalar&&psoUnary&&psoRms&&psoSwiglu&&psoRmsAdd&&psoCF16F32&&psoCF32F16&&psoCI8F16&&psoCF16I8
-             &&psoAttn&&psoAttnP&&psoAttnC&&psoAttnPre&&psoAttnPreMma2&&psoKvAppendM&&psoKvAppendRingM&&psoSlideS&&psoSlideR&&psoStrided&&psoBcast&&psoScatter&&psoKvAppend&&psoRope&&psoArgmax&&psoGather;
+             &&psoAttn&&psoAttnP&&psoAttnC&&psoAttnPre&&psoAttnPreMma2&&psoKvAppendM&&psoKvAppendRingM&&psoSlideS&&psoSlideR&&psoSlideRM&&psoStrided&&psoBcast&&psoScatter&&psoKvAppend&&psoRope&&psoArgmax&&psoGather;
     }}
 };
 
@@ -192,17 +192,7 @@ std::pair<id<MTLBuffer>, size_t> bufForPtrOff(const void* p, size_t bytes) {
             return { it->second, static_cast<size_t>(a - base) };
     }
 
-    static const bool g_replay = (std::getenv("CACTUS_GPU_REPLAY") != nullptr);
     size_t nb = bytes ? bytes : 1;
-    if (g_replay) {
-        static std::unordered_map<const void*, id<MTLBuffer>> g_snap;
-        auto sit = g_snap.find(p);
-        id<MTLBuffer> b;
-        if (sit != g_snap.end() && (size_t)sit->second.length >= nb) b = sit->second;
-        else { b = [ctx().dev newBufferWithLength:nb options:MTLResourceStorageModeShared]; g_snap[p] = b; }
-        std::memcpy([b contents], p, nb);
-        return { b, 0 };
-    }
     id<MTLBuffer> b = recycled(bytes);
     std::memcpy([b contents], p, nb);
     return { b, 0 };
@@ -211,12 +201,6 @@ std::pair<id<MTLBuffer>, size_t> bufForPtrOff(const void* p, size_t bytes) {
 inline void setBufAt(const void* p, size_t bytes, int idx) {
     auto pr = bufForPtrOff(p, bytes);
     [g_enc setBuffer:pr.first offset:pr.second atIndex:idx];
-}
-
-inline void setBufFresh(const void* p, size_t bytes, int idx) {
-    id<MTLBuffer> b = recycled(bytes);
-    std::memcpy([b contents], p, bytes ? bytes : 1);
-    [g_enc setBuffer:b offset:0 atIndex:idx];
 }
 
 }
@@ -229,24 +213,17 @@ bool cactus_metal_active_mode() { return ctx().ok && g_active; }
 bool cactus_metal_concurrent() { return g_concurrent; }
 void cactus_metal_barrier() { if (g_concurrent && g_enc) [g_enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; }
 
-void cactus_metal_session_begin() {  }
-static int g_sync_count = 0;
-static double g_gpu_ms = 0;
+void cactus_metal_session_begin() {}
 void cactus_metal_session_sync() {
     if (g_enc) {
         [g_enc endEncoding]; [g_cmd commit]; [g_cmd waitUntilCompleted];
-        g_gpu_ms += ([g_cmd GPUEndTime] - [g_cmd GPUStartTime]) * 1000.0;
-        g_enc = nil; g_cmd = nil; ++g_sync_count;
+        g_enc = nil; g_cmd = nil;
     }
     for (id<MTLBuffer> b : g_pending) g_free[(size_t)b.length].push_back(b);
     g_pending.clear();
 }
 void cactus_metal_session_end() {
     cactus_metal_session_sync();
-    if (getenv("CACTUS_GPU_STATS")) {
-        fprintf(stderr, "[gpu-stats] syncs=%d  on-GPU=%.3f ms\n", g_sync_count, g_gpu_ms);
-        g_sync_count = 0; g_gpu_ms = 0;
-    }
 }
 
 void* cactus_metal_alloc_shared(size_t bytes) {
@@ -395,6 +372,12 @@ bool cactus_metal_encode_cast(void* out, int out_prec, const void* in, int in_pr
     barrier();
     return true;
 }
+static inline bool quant_fast_eligible(const CactusQuantMatrix* W) {
+    return W->bits == 4 && W->group_size >= 128 && (W->group_size % 128) == 0 && (W->N % 4) == 0 &&
+           !(W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) && W->input_scale_recip && W->left_signs &&
+           W->right_signs && W->permutation && W->codebook && W->norms && W->packed_indices;
+}
+
 bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQuantMatrix* W) {
     const uint32_t gs=W->group_size, K=W->K, N=W->N, ng=W->num_groups, pgb=(gs*4u+7u)/8u;
     if (ctx().ok && (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) && W->rotation && ng==1 && gs==K && (N%4)==0) {
@@ -402,9 +385,7 @@ bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQu
         if (ortho_code_k < K) { ortho_code = cactus_metal_alloc_shared((size_t)K*sizeof(__fp16)); ortho_code_k = K; }
         if (ortho_code) return cactus_metal_encode_quant_matmul_ortho(out, lhs, ortho_code, W);
     }
-    bool fast = ctx().ok && W->bits==4 && gs>=128 && (gs%128)==0 && (N%4)==0 &&
-        !(W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) && W->input_scale_recip && W->left_signs &&
-        W->right_signs && W->permutation && W->codebook && W->norms && W->packed_indices;
+    bool fast = ctx().ok && quant_fast_eligible(W);
     if (!fast) return false;
     ResW& rw = resident(W);
 
@@ -434,11 +415,7 @@ bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQu
 
 bool cactus_metal_prewarm_quant(const CactusQuantMatrix* W) {
     if (!ctx().ok) return false;
-    const uint32_t gs=W->group_size, N=W->N;
-    bool fast = W->bits==4 && gs>=128 && (gs%128)==0 && (N%4)==0 &&
-        !(W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) && W->input_scale_recip && W->left_signs &&
-        W->right_signs && W->permutation && W->codebook && W->norms && W->packed_indices;
-    if (!fast) return false;
+    if (!quant_fast_eligible(W)) return false;
     resident(W);
     return true;
 }
@@ -446,9 +423,7 @@ bool cactus_metal_prewarm_quant(const CactusQuantMatrix* W) {
 bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const CactusQuantMatrix* W, uint32_t M) {
     if (M == 1) return cactus_metal_encode_quant_matmul(out, lhs, W);
     const uint32_t gs=W->group_size, K=W->K, N=W->N, ng=W->num_groups, pgb=(gs*4u+7u)/8u;
-    bool fast = ctx().ok && W->bits==4 && gs>=128 && (gs%128)==0 && (N%4)==0 &&
-        !(W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) && W->input_scale_recip && W->left_signs &&
-        W->right_signs && W->permutation && W->codebook && W->norms && W->packed_indices;
+    bool fast = ctx().ok && quant_fast_eligible(W);
     if (!fast) return false;
     ResW& rw = resident(W);
     size_t code_bytes = (size_t)M*ng*gs*sizeof(__fp16);
@@ -673,13 +648,10 @@ bool cactus_metal_encode_attention_i8(
         setCache(ks, ks_bytes, 5); setCache(vs, vs_bytes, 6);
     };
 
-    static const bool g_nosplit = (std::getenv("CACTUS_ATTN_NOSPLIT") != nullptr);
-    static const uint32_t CHUNK_BASE = std::getenv("CACTUS_ATTN_CHUNK") ? (uint32_t)atoi(std::getenv("CACTUS_ATTN_CHUNK")) : 96;
-    static const uint32_t C_MAX = std::getenv("CACTUS_ATTN_CMAX") ? (uint32_t)atoi(std::getenv("CACTUS_ATTN_CMAX")) : 64;
+    constexpr uint32_t kAttnChunkKeys = 96, kAttnMaxParts = 64;
     const uint32_t R = kv_end - kv_start;
-    uint32_t chunk = CHUNK_BASE, C = (R + chunk - 1) / chunk;
-    if (C > C_MAX) { C = C_MAX; chunk = (R + C - 1) / C; }
-    if (g_nosplit) { C = 1; chunk = R; }
+    uint32_t chunk = kAttnChunkKeys, C = (R + chunk - 1) / chunk;
+    if (C > kAttnMaxParts) { C = kAttnMaxParts; chunk = (R + C - 1) / C; }
 
     if (C <= 1) {
         const uint32_t T = 256;
@@ -698,7 +670,7 @@ bool cactus_metal_encode_attention_i8(
 
     uint32_t TP = chunk < 128 ? chunk : 128;
     TP = (TP + 31u) & ~31u;
-    if (TP < 32) TP = 32; if (TP > 128) TP = 128;
+    if (TP < 32) TP = 32;
     id<MTLBuffer> partO = recycled((size_t)num_q_heads*C*v_hdim*sizeof(float));
     id<MTLBuffer> partM = recycled((size_t)num_q_heads*C*sizeof(float));
     id<MTLBuffer> partL = recycled((size_t)num_q_heads*C*sizeof(float));
@@ -946,21 +918,7 @@ bool cactus_metal_encode_kv_append_sliding_i8_m(const void* src, void* int8base,
 void cactus_metal_quant_matmul(const CactusQuantMatrix* W, const __fp16* A,
                                uint32_t M, __fp16* C) {
     const uint32_t gs = W->group_size;
-    const bool fast =
-        ctx().ok && M == 1 && W->bits == 4 && gs >= 128 && (gs % 128) == 0 &&
-        !(W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) && (W->N % 4) == 0 &&
-        W->input_scale_recip != nullptr && W->left_signs != nullptr &&
-        W->right_signs != nullptr && W->permutation != nullptr &&
-        W->codebook != nullptr && W->norms != nullptr && W->packed_indices != nullptr;
-
-    if (getenv("CACTUS_GPU_DEBUG") && M == 1) {
-        static std::atomic<int> dbg{0};
-        if (dbg++ < 14)
-            fprintf(stderr, "[metal] M=%u bits=%u gs=%u flags=0x%x recip=%d ls=%d rs=%d perm=%d -> %s\n",
-                    M, W->bits, gs, W->flags, W->input_scale_recip != nullptr,
-                    W->left_signs != nullptr, W->right_signs != nullptr,
-                    W->permutation != nullptr, fast ? "GPU" : "CPU-fallback");
-    }
+    const bool fast = ctx().ok && M == 1 && quant_fast_eligible(W);
 
     if (!fast) { cactus_quant_matmul(W, A, M, C); return; }
 

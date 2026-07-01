@@ -101,6 +101,7 @@ inline bool use_fp16_kv_cache() {
 }
 
 constexpr size_t kInitialCacheEntries = 256;
+constexpr size_t kMetalInitialCacheEntries = 4000;
 
 inline bool kv_cache_resident() {
     return cactus_backend_metal();
@@ -179,7 +180,7 @@ void compute_kv_cache_state_node(
     size_t max_seq;
     if (sliding) max_seq = std::min(ceiling, window + node.params.cache_sink_size + 1);
     else if (num_slots > 1) max_seq = ceiling;
-    else if (kv_cache_resident()) max_seq = std::min(ceiling, static_cast<size_t>(4000));
+    else if (kv_cache_resident()) max_seq = std::min(ceiling, kMetalInitialCacheEntries);
     else max_seq = std::min(ceiling, kInitialCacheEntries);
     size_t kv_heads = node.params.num_kv_heads;
     size_t hdim = node.params.head_dim;

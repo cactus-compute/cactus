@@ -889,12 +889,15 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/) {
         return;
     }
     const bool fused = cactus_backend_fused();
-    static const bool nofold = std::getenv("CACTUS_FUSED_NOFOLD") != nullptr;
-    if (fused && !nofold) {
-        static int state = 0; static FusedEmbedCtx ctx;
-        if (state == 0) state = encoder_->graph->extract_ple_pathway(ctx) ? 1 : 2;
-        if (state == 1) {
-            ctx.token_id = static_cast<int>(token_id); ctx.position = static_cast<int>(position);
+    if (fused) {
+        enum class PleProbe { Untried, Available, Unavailable };
+        static PleProbe probe = PleProbe::Untried;
+        static FusedEmbedCtx ctx;
+        if (probe == PleProbe::Untried)
+            probe = encoder_->graph->extract_ple_pathway(ctx) ? PleProbe::Available : PleProbe::Unavailable;
+        if (probe == PleProbe::Available) {
+            ctx.token_id = static_cast<int>(token_id);
+            ctx.position = static_cast<int>(position);
             cactus_graph_set_fused_embed(&ctx);
             bool ok = decoder_->graph->execute_gpu_fused();
             cactus_graph_set_fused_embed(nullptr);
@@ -1915,6 +1918,15 @@ void Model::run_audio_encoder(const std::vector<float>& audio_features) {
     }
 }
 
+static float uncertainty_from_margin(float best, float second) {
+    float confidence = 1.0f;
+    if (std::isfinite(best) && std::isfinite(second)) {
+        float margin = std::max(-60.0f, std::min(60.0f, best - second));
+        confidence = 1.0f / (1.0f + std::exp(-margin));
+    }
+    return std::max(0.0f, std::min(1.0f, 1.0f - confidence));
+}
+
 uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty) {
     size_t vocab = desc.shape.empty() ? 0 : desc.shape.back();
     uint32_t best = 0;
@@ -1925,14 +1937,7 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
         uint32_t gidx; float gbest, gsecond;
         if (tool_bias.empty() && vocab_bias_.empty() && suppressed_token_id_ < 0 &&
             cactus_graph_gpu_argmax(&gidx, &gbest, &gsecond)) {
-            if (out_uncertainty) {
-                float confidence = 1.0f;
-                if (std::isfinite(gbest) && std::isfinite(gsecond)) {
-                    float margin = std::max(-60.0f, std::min(60.0f, gbest - gsecond));
-                    confidence = 1.0f / (1.0f + std::exp(-margin));
-                }
-                *out_uncertainty = std::max(0.0f, std::min(1.0f, 1.0f - confidence));
-            }
+            if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(gbest, gsecond);
             return gidx;
         }
     }
@@ -1964,14 +1969,7 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
         int8_t* p = static_cast<int8_t*>(ptr) + row_off;
         for (size_t i = 0; i < vocab; ++i) observe_logit(i, static_cast<float>(p[i]));
     }
-    if (out_uncertainty) {
-        float confidence = 1.0f;
-        if (std::isfinite(best_v) && std::isfinite(second_v)) {
-            float margin = std::max(-60.0f, std::min(60.0f, best_v - second_v));
-            confidence = 1.0f / (1.0f + std::exp(-margin));
-        }
-        *out_uncertainty = std::max(0.0f, std::min(1.0f, 1.0f - confidence));
-    }
+    if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(best_v, second_v);
     return best;
 }
 
