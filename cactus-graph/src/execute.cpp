@@ -15,23 +15,20 @@
 #include <sstream>
 #include <system_error>
 
-static int g_backend_override = -1; // -1 = env default, 0 = cpu, 1 = metal
-void cactus_backend_select(const char* backend) {
-    if (!backend) { g_backend_override = -1; return; }
-    if (std::strcmp(backend, "metal") == 0) g_backend_override = 1;
-    else if (std::strcmp(backend, "cpu") == 0) g_backend_override = 0;
+static int g_backend_override = -1;
+int cactus_backend_select(const char* backend) {
+    if (!backend) return -1;
+    if (std::strcmp(backend, "auto") == 0) { g_backend_override = -1; return 0; }
+    if (std::strcmp(backend, "metal") == 0) {
+        if (!cactus_metal_available()) return -1;
+        g_backend_override = 1;
+        return 0;
+    }
+    if (std::strcmp(backend, "cpu") == 0) { g_backend_override = 0; return 0; }
+    return -1;
 }
-bool cactus_backend_metal() {
-    if (g_backend_override == 0) return false;
-    if (g_backend_override == 1) return cactus_metal_available();
-    return (std::getenv("CACTUS_GPU") != nullptr || std::getenv("CACTUS_GPU_FUSED") != nullptr) && cactus_metal_available();
-}
-bool cactus_backend_fused() {
-    if (g_backend_override == 0) return false;
-    if (g_backend_override == 1) return cactus_metal_available();
-    return std::getenv("CACTUS_GPU_FUSED") != nullptr && cactus_metal_available();
-}
-const char* cactus_backend_name() { return cactus_backend_metal() ? "metal" : "cpu"; }
+bool cactus_backend_metal() { return g_backend_override != 0 && cactus_metal_available(); }
+bool cactus_backend_fused() { return g_backend_override != 0 && cactus_metal_available(); }
 
 using ComputeFn = void(*)(GraphNode&, const nodes_vector&, const node_index_map_t&);
 

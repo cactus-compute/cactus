@@ -60,8 +60,6 @@ static const float* g_gpu_argmax_buf = nullptr;
 
 }
 
-bool g_cactus_force_cpu = false;
-
 bool cactus_graph_gpu_argmax(uint32_t* idx, float* best, float* second) {
     if (!g_gpu_argmax_valid || !g_gpu_argmax_buf) return false;
     g_gpu_argmax_valid = false;
@@ -102,7 +100,6 @@ bool CactusGraph::extract_ple_pathway(FusedEmbedCtx& ctx) const {
 bool CactusGraph::execute_gpu_fused() {
     static const bool dbg = std::getenv("CACTUS_FUSED_DEBUG") != nullptr;
     if (!cactus_metal_available()) return false;
-    if (g_cactus_force_cpu) return false;
     const size_t n = nodes_.size();
     if (n < 3861) return false;
     auto B = [&](size_t idx) -> BufferDesc& { return nodes_[idx]->output_buffer; };

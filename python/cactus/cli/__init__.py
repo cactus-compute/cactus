@@ -8,10 +8,7 @@ from .common import (
     DEFAULT_TEST_MODEL_ID,
     DEFAULT_TEST_TRANSCRIPTION_MODEL_ID,
     SUPPORTED_PLATFORMS,
-    default_backend,
 )
-
-_BACKEND_HELP = "Inference backend: metal (fused Apple GPU / Metal path) or cpu. Defaults to metal when the device supports it."
 from .download import cmd_download
 
 _PLATFORM_CHOICES = ("auto", "cpu", *SUPPORTED_PLATFORMS)
@@ -288,8 +285,8 @@ def create_parser():
                             help="Confidence threshold below which local completions may hand off to cloud")
     run_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                             help="Maximum time to wait for cloud handoff before falling back locally")
-    run_parser.add_argument("--backend", choices=["cpu", "metal"], default=default_backend(),
-                            help=_BACKEND_HELP)
+    run_parser.add_argument("--backend", choices=["auto", "cpu", "metal"], default="auto",
+                            help="Inference backend, default auto (Metal on Apple GPU, gemma-4-E2B-it only)")
 
     transcribe_parser = subparsers.add_parser("transcribe", help="Transcribe audio with a model",
                                               parents=[_telemetry_parent(), _build_parent()])
@@ -300,8 +297,8 @@ def create_parser():
                                    help="Audio file to transcribe (WAV)")
     transcribe_parser.add_argument("--language", default="en",
                                    help="Language code (default: en)")
-    transcribe_parser.add_argument("--backend", choices=["cpu", "metal"], default=default_backend(),
-                                   help=_BACKEND_HELP)
+    transcribe_parser.add_argument("--backend", choices=["auto", "cpu", "metal"], default="auto",
+                                   help="Inference backend, default auto (Metal on Apple GPU, gemma-4-E2B-it only)")
 
     serve_parser = subparsers.add_parser("serve", help="OpenAI-compatible local HTTP server",
                                          parents=[_telemetry_parent(), _build_parent()])
@@ -320,8 +317,8 @@ def create_parser():
                               help="Maximum time to wait for cloud handoff before falling back locally")
     serve_parser.add_argument("--no-access-log", action="store_true",
                               help="Disable per-request HTTP access logging")
-    serve_parser.add_argument("--backend", choices=["cpu", "metal"], default=default_backend(),
-                              help=_BACKEND_HELP)
+    serve_parser.add_argument("--backend", choices=["auto", "cpu", "metal"], default="auto",
+                              help="Inference backend, default auto (Metal on Apple GPU, gemma-4-E2B-it only)")
 
     code_parser = subparsers.add_parser("code", help="Run the Cactus coding agent (TUI / print mode)",
                                         parents=[_build_parent()])
@@ -339,8 +336,8 @@ def create_parser():
                              help="Confidence threshold below which completions hand off to cloud")
     code_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                              help="Maximum time to wait for cloud handoff before falling back locally")
-    code_parser.add_argument("--backend", choices=["cpu", "metal"], default=default_backend(),
-                             help=_BACKEND_HELP)
+    code_parser.add_argument("--backend", choices=["auto", "cpu", "metal"], default="auto",
+                             help="Inference backend, default auto (Metal on Apple GPU, gemma-4-E2B-it only)")
     code_parser.add_argument("agent_args", nargs=argparse.REMAINDER,
                              help="Arguments passed through to the coding agent (prefix with -- )")
 

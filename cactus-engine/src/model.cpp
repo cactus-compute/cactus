@@ -891,7 +891,7 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/) {
     const bool fused = cactus_backend_fused();
     static const bool nofold = std::getenv("CACTUS_FUSED_NOFOLD") != nullptr;
     if (fused && !nofold) {
-        static int state = 0; static FusedEmbedCtx ctx;            // 0=unknown 1=ok 2=unsupported
+        static int state = 0; static FusedEmbedCtx ctx;
         if (state == 0) state = encoder_->graph->extract_ple_pathway(ctx) ? 1 : 2;
         if (state == 1) {
             ctx.token_id = static_cast<int>(token_id); ctx.position = static_cast<int>(position);
