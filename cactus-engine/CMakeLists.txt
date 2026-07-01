@@ -48,8 +48,8 @@ set_target_properties(cactus_engine PROPERTIES
 
 target_include_directories(cactus_engine
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+           ${CMAKE_CURRENT_SOURCE_DIR}/libs
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-            ${CMAKE_CURRENT_SOURCE_DIR}/libs
 )
 
 target_link_libraries(cactus_engine PUBLIC cactus_graph)
