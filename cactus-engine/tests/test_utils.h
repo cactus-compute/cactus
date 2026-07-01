@@ -27,6 +27,9 @@ private:
     int total_count_;
 };
 
+// Select the inference backend from CACTUS_TEST_BACKEND ("auto"/"cpu"/"metal"). Applied once.
+void apply_backend();
+
 }
 
 namespace EngineTestUtils {

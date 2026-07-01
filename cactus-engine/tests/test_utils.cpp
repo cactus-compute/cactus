@@ -1,10 +1,25 @@
 #include "test_utils.h"
 #include <sstream>
+#include <cstdlib>
+#include <cstring>
 
 namespace TestUtils {
 
+void apply_backend() {
+    static bool applied = false;
+    if (applied) return;
+    applied = true;
+    const char* b = std::getenv("CACTUS_TEST_BACKEND");
+    if (!b || !*b || std::strcmp(b, "auto") == 0) return;
+    if (cactus_set_backend(b) == 0)
+        std::cout << "Backend: " << (std::strcmp(b, "metal") == 0 ? "Metal GPU" : "CPU") << "\n";
+    else
+        std::cout << "Backend '" << b << "' unavailable; using default\n";
+}
+
 TestRunner::TestRunner(const std::string& suite_name)
     : suite_name_(suite_name), passed_count_(0), total_count_(0) {
+    apply_backend();
     std::cout << "\n╔══════════════════════════════════════════════════════════════════════════════════════╗\n"
               << "║ Running " << std::left << std::setw(76) << suite_name_ << " ║\n"
               << "╚══════════════════════════════════════════════════════════════════════════════════════╝\n";
