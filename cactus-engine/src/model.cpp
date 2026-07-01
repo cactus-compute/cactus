@@ -1290,7 +1290,9 @@ void Model::execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, si
             copy_component_outputs_to_chunk_inputs(*encoder_, chunk_comp, i);
         }
     }
-    chunk_comp.graph->execute();
+    static const bool fused_prefill = std::getenv("CACTUS_FUSED_PREFILL") != nullptr;
+    if (!fused_prefill || !chunk_comp.graph->execute_gpu_fused_prefill(static_cast<uint32_t>(chunk_tokens)))
+        chunk_comp.graph->execute();
 }
 
 void Model::reset_prefill_stats() {

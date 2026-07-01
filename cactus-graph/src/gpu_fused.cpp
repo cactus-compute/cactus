@@ -295,3 +295,207 @@ bool CactusGraph::execute_gpu_fused() {
     cactus_metal_session_end();
     return true;
 }
+
+namespace {
+struct PreAttn { size_t window=0, v_hdim=0, po=0; bool causal=true; float scale=0.f; };
+struct GpuModelP {
+    bool init = false;
+    LayerW L[NL];
+    size_t kc_idx[15], vc_idx[15];
+    PreAttn A[NL];
+    const void *vnorm, *vnorm_g, *cosL, *sinL, *cosG, *sinG, *final_norm;
+    CactusQuantMatrix lm_head;
+    Arena arena;
+};
+static GpuModelP GP;
+}
+
+// Fused M>1 prefill: mirrors execute_gpu_fused (decode) for a chunk of M tokens, keeping every
+// intermediate on-chip instead of round-tripping the generic graph executor. Weight/norm node
+// indices are IDENTICAL to the decode graph (verified). Falls back (returns false) on any KV wrap
+// or unsupported shape so the generic path stays authoritative for the hard cases.
+bool CactusGraph::execute_gpu_fused_prefill(uint32_t M) {
+    if (!cactus_metal_available() || M <= 1) return false;
+    const size_t n = nodes_.size();
+    if (n < 3861) return false;
+    auto B = [&](size_t idx) -> BufferDesc& { return nodes_[idx]->output_buffer; };
+    auto P = [&](size_t idx) -> void* { return B(idx).get_data(); };
+    if (B(0).total_size != (size_t)M*HID || nodes_[0]->op_type != OpType::INPUT) return false;
+    g_gpu_argmax_valid = false;
+
+    if (!GP.init) {
+        auto cq = [&](size_t idx){ return B(idx).to_cq_matrix(); };
+        for (int l = 0; l < NL; ++l) {
+            LayerW& w = GP.L[l];
+            w.global = (l % 5 == 4); w.hd = w.global ? 512 : 256; w.shared = (l >= 15);
+            if (!w.shared) {
+                size_t b1 = 3 + 10*l, b2 = 334 + 6*l;
+                w.in_norm=P(b1); w.q_norm=P(b1+1); w.k_norm=P(b1+2); w.post_attn=P(b1+3);
+                w.pre_ffn=P(b1+4); w.gate=cq(b1+5); w.up=cq(b1+6); w.down=cq(b1+7);
+                w.post_ffn=P(b1+8); w.post_ple=P(b1+9);
+                w.q=cq(b2); w.k=cq(b2+1); w.v=cq(b2+2); w.o=cq(b2+3); w.ple_down=cq(b2+4); w.ple_up=cq(b2+5);
+                w.mlp = 6144;
+            } else {
+                int j = l - 15; size_t b1 = 153 + 9*j, b2 = 424 + 4*j;
+                w.in_norm=P(b1); w.q_norm=P(b1+1); w.post_attn=P(b1+2); w.pre_ffn=P(b1+3);
+                w.gate=cq(b1+4); w.up=cq(b1+5); w.down=cq(b1+6); w.post_ffn=P(b1+7); w.post_ple=P(b1+8);
+                w.q=cq(b2); w.o=cq(b2+1); w.ple_down=cq(b2+2); w.ple_up=cq(b2+3);
+                w.mlp = 12288;
+            }
+            w.scalar = P(505 + l);
+        }
+        GP.vnorm=P(540); GP.vnorm_g=P(541); GP.cosL=P(542); GP.sinL=P(543); GP.cosG=P(544); GP.sinG=P(545);
+        GP.final_norm=P(333); GP.lm_head=B(504).to_cq_matrix();
+        std::vector<size_t> cidx;
+        for (size_t i = 0; i < n && cidx.size() < 30; ++i)
+            if (nodes_[i]->op_type == OpType::KV_CACHE_STATE) cidx.push_back(i);
+        if (cidx.size() < 30) return false;
+        for (int l = 0; l < 15; ++l) { GP.kc_idx[l]=cidx[2*l]; GP.vc_idx[l]=cidx[2*l+1]; }
+        // per-layer attention params from the graph's ATTENTION_CACHED nodes (in layer order)
+        int ai = 0;
+        for (size_t i = 0; i < n && ai < NL; ++i) {
+            if (nodes_[i]->op_type != OpType::ATTENTION_CACHED) continue;
+            auto& pr = nodes_[i]->params;
+            GP.A[ai].window = pr.window_size; GP.A[ai].causal = pr.is_causal;
+            GP.A[ai].scale = pr.scale; GP.A[ai].v_hdim = pr.v_head_dim; GP.A[ai].po = pr.position_offset;
+            ai++;
+        }
+        if (ai < NL) return false;
+        GP.init = true;
+    }
+
+    for (int l = 0; l < 15; ++l) { GP.L[l].kc = P(GP.kc_idx[l]); GP.L[l].vc = P(GP.vc_idx[l]); }
+    for (int l = 15; l < NL; ++l) { int src = GP.L[l].global ? 14 : 13; GP.L[l].kc = GP.L[src].kc; GP.L[l].vc = GP.L[src].vc; }
+    for (int l = 0; l < NL; ++l) if (!GP.L[l].kc || !GP.L[l].vc) return false;
+
+    // Chunk start position = tokens already in the cache (before this chunk's append). RoPE rotates
+    // this chunk's tokens at absolute positions pos0..pos0+M-1. Derive from the KV header (robust to
+    // however the graph's position input is populated).
+    int pos0 = (int)((const uint64_t*)GP.L[0].kc)[0];
+    // Safe first version: bail (generic handles it) if any owned KV cache would wrap this chunk.
+    for (int l = 0; l < 15; ++l) {
+        const uint64_t* km = (const uint64_t*)GP.L[l].kc;
+        if (km[0] + M > km[1]) return false;   // would exceed cache capacity -> ring/sliding path
+    }
+
+    GP.arena.reset();
+    auto fresh = [&](size_t elems){ return GP.arena.fresh(elems * 2); };
+    cactus_metal_session_begin();
+    cactus_metal_set_active(true);
+    auto bail = [&](){ cactus_metal_set_active(false); cactus_metal_session_end(); return false; };
+
+    // gather per-token cos/sin for the M positions (local hd=256, global hd=512)
+    void* csL = fresh((size_t)M*256); void* snL = fresh((size_t)M*256);
+    void* csG = fresh((size_t)M*512); void* snG = fresh((size_t)M*512);
+    for (uint32_t m = 0; m < M; ++m) {
+        int p = pos0 + (int)m;
+        std::memcpy((char*)csL+(size_t)m*256*2, (const char*)GP.cosL+(size_t)p*256*2, 256*2);
+        std::memcpy((char*)snL+(size_t)m*256*2, (const char*)GP.sinL+(size_t)p*256*2, 256*2);
+        std::memcpy((char*)csG+(size_t)m*512*2, (const char*)GP.cosG+(size_t)p*512*2, 512*2);
+        std::memcpy((char*)snG+(size_t)m*512*2, (const char*)GP.sinG+(size_t)p*512*2, 512*2);
+    }
+
+    void* h = fresh((size_t)M*HID);
+    std::memcpy(h, P(0), (size_t)M*HID*2);
+    const void* pleBase = P(1);
+
+    for (int l = 0; l < NL; ++l) {
+        LayerW& w = GP.L[l];
+        const int hd = w.hd, QD = NQH*hd;
+        const void* rc = w.global ? csG : csL;
+        const void* rs = w.global ? snG : snL;
+        uint64_t* km = (uint64_t*)w.kc;
+        size_t max_seq = km[1], kv_heads = km[2], sink = km[4];
+        size_t ngK = (hd+31)/32;
+        PreAttn& AP = GP.A[l];
+        float ascale = AP.scale != 0.f ? AP.scale : 1.0f/std::sqrt((float)hd);
+
+        void* xn = fresh((size_t)M*HID); cactus_metal_encode_rms_norm(xn, h, w.in_norm, M, HID, RMS_EPS);
+        void* q  = fresh((size_t)M*QD);  if(!cactus_metal_encode_quant_matmul_m(q, xn, &w.q, M)) return bail();
+        void* qn = fresh((size_t)M*QD);  cactus_metal_encode_rms_norm(qn, q, w.q_norm, (size_t)M*NQH, hd, RMS_EPS);
+        void* qr = fresh((size_t)M*QD);  cactus_metal_encode_rope_m(qr, qn, rc, rs, NQH, hd, M);
+
+        size_t hist, newlen; const void *knewp, *vnewp; size_t attn_pos;
+        if (!w.shared) {
+            void* k  = fresh((size_t)M*hd); if(!cactus_metal_encode_quant_matmul_m(k, xn, &w.k, M)) return bail();
+            void* v  = fresh((size_t)M*hd); if(!cactus_metal_encode_quant_matmul_m(v, xn, &w.v, M)) return bail();
+            void* kn = fresh((size_t)M*hd); cactus_metal_encode_rms_norm(kn, k, w.k_norm, M, hd, RMS_EPS);
+            void* vn = fresh((size_t)M*hd); cactus_metal_encode_rms_norm(vn, v, w.global ? GP.vnorm_g : GP.vnorm, M, hd, RMS_EPS);
+            void* kr = fresh((size_t)M*hd); cactus_metal_encode_rope_m(kr, kn, rc, rs, 1, hd, M);
+            size_t clen = km[0];
+            size_t vhd0 = GP.A[l].v_hdim > 0 ? GP.A[l].v_hdim : (size_t)hd;
+            size_t vmax0 = ((uint64_t*)w.vc)[1], ngV0 = (vhd0+31)/32;
+            char* kbase = (char*)w.kc; char* vbase = (char*)w.vc;
+            if (!cactus_metal_encode_kv_append_i8_m(kr, kbase+64, kbase+64+max_seq*kv_heads*hd,
+                    (uint32_t)kv_heads, (uint32_t)hd, (uint32_t)clen, 32, M,
+                    (size_t)M*hd*2, max_seq*kv_heads*hd, max_seq*kv_heads*ngK*sizeof(float)))
+                return bail();
+            if (!cactus_metal_encode_kv_append_i8_m(vn, vbase+64, vbase+64+vmax0*kv_heads*vhd0,
+                    (uint32_t)kv_heads, (uint32_t)vhd0, (uint32_t)clen, 32, M,
+                    (size_t)M*vhd0*2, vmax0*kv_heads*vhd0, vmax0*kv_heads*ngV0*sizeof(float)))
+                return bail();
+            km[0] = clen + M; ((uint64_t*)w.vc)[0] = clen + M;
+            hist = clen; newlen = M; knewp = kr; vnewp = vn; attn_pos = clen;
+        } else {
+            size_t clen = km[0];
+            hist = clen; newlen = 0; knewp = nullptr; vnewp = nullptr;
+            attn_pos = (clen >= M) ? clen - M : 0;
+        }
+
+        size_t v_hdim = AP.v_hdim > 0 ? AP.v_hdim : (size_t)hd;
+        size_t v_max = ((uint64_t*)w.vc)[1];
+        size_t ngV = (v_hdim+31)/32;
+        size_t win = AP.window;
+        uint32_t ringv = (win > 0 && max_seq > 2*sink + 1) ? (uint32_t)(max_seq - 2*sink - 1) : 0u;
+        char* bk = (char*)w.kc; char* bv = (char*)w.vc;
+        void* attn = fresh((size_t)M*QD);
+        if (!cactus_metal_encode_attention_i8_prefill(attn, qr, knewp, vnewp,
+                bk+64, bv+64, bk+64+max_seq*kv_heads*hd, bv+64+v_max*kv_heads*v_hdim,
+                (uint32_t)NQH, (uint32_t)kv_heads, (uint32_t)hd, (uint32_t)v_hdim,
+                (uint32_t)hist, (uint32_t)newlen, (uint32_t)attn_pos,
+                (uint32_t)win, AP.causal?1u:0u, (uint32_t)M, ascale,
+                max_seq*kv_heads*hd, v_max*kv_heads*v_hdim,
+                max_seq*kv_heads*ngK*sizeof(float), v_max*kv_heads*ngV*sizeof(float),
+                (uint32_t)sink, ringv))
+            return bail();
+
+        void* o  = fresh((size_t)M*HID); if(!cactus_metal_encode_quant_matmul_m(o, attn, &w.o, M)) return bail();
+        void* h1 = fresh((size_t)M*HID); cactus_metal_encode_rms_norm_add(h1, o, w.post_attn, h, M, HID, RMS_EPS); h = h1;
+
+        const int MLP = w.mlp;
+        void* xn2 = fresh((size_t)M*HID); cactus_metal_encode_rms_norm(xn2, h, w.pre_ffn, M, HID, RMS_EPS);
+        void* gate= fresh((size_t)M*MLP); if(!cactus_metal_encode_quant_matmul_m(gate, xn2, &w.gate, M)) return bail();
+        void* up  = fresh((size_t)M*MLP); if(!cactus_metal_encode_quant_matmul_m(up, xn2, &w.up, M)) return bail();
+        void* g3  = fresh((size_t)M*MLP); cactus_metal_encode_swiglu(g3, gate, up, (size_t)M*MLP, GATE_SCALE);
+        void* mo  = fresh((size_t)M*HID); if(!cactus_metal_encode_quant_matmul_m(mo, g3, &w.down, M)) return bail();
+        void* h2  = fresh((size_t)M*HID); cactus_metal_encode_rms_norm_add(h2, mo, w.post_ffn, h, M, HID, RMS_EPS); h = h2;
+
+        // PLE: gather ple[*, l, *] (strided by NL*PLE_DIM) into a contiguous [M, PLE_DIM] slice
+        void* ps  = fresh((size_t)M*PLE_DIM); if(!cactus_metal_encode_quant_matmul_m(ps, h, &w.ple_down, M)) return bail();
+        void* pled= fresh((size_t)M*PLE_DIM);
+        { uint32_t osh[2]={M,(uint32_t)PLE_DIM}; uint32_t sst[2]={(uint32_t)(NL*PLE_DIM),1};
+          if(!cactus_metal_encode_strided_copy(pled, pleBase, osh, sst, 2, M*PLE_DIM, (uint32_t)(l*PLE_DIM),
+                (size_t)M*NL*PLE_DIM*2, (size_t)M*PLE_DIM*2)) return bail(); }
+        void* pm  = fresh((size_t)M*PLE_DIM); cactus_metal_encode_swiglu(pm, ps, pled, (size_t)M*PLE_DIM, 1.0f);
+        void* pu  = fresh((size_t)M*HID); if(!cactus_metal_encode_quant_matmul_m(pu, pm, &w.ple_up, M)) return bail();
+        void* h3  = fresh((size_t)M*HID); cactus_metal_encode_rms_norm_add(h3, pu, w.post_ple, h, M, HID, RMS_EPS); h = h3;
+
+        float ls = (float)(*(const __fp16*)w.scalar);
+        void* h4 = fresh((size_t)M*HID); cactus_metal_encode_scalar(2, h4, h, (size_t)M*HID, ls); h = h4;
+    }
+
+    // logits for the LAST token only (prepare_decode needs just that one)
+    const void* hlast = (const char*)h + (size_t)(M-1)*HID*2;
+    size_t V = B(n-1).total_size;
+    void* fn = fresh(HID); cactus_metal_encode_rms_norm(fn, hlast, GP.final_norm, 1, HID, RMS_EPS);
+    void* code = fresh(HID);
+    void* lg = fresh(V);
+    if (!cactus_metal_encode_quant_matmul_ortho(lg, fn, code, &GP.lm_head)) return bail();
+    cactus_metal_encode_scalar(3, lg, lg, V, SOFTCAP);
+    cactus_metal_encode_unary(1, lg, lg, V);
+    cactus_metal_encode_scalar(2, lg, lg, V, SOFTCAP);
+    B(n-1).set_external(lg);
+    cactus_metal_set_active(false);
+    cactus_metal_session_end();
+    return true;
+}

@@ -722,6 +722,7 @@ public:
 
     void execute(const std::string& profile_file = "");
     bool execute_gpu_fused();
+    bool execute_gpu_fused_prefill(uint32_t M);
     bool extract_ple_pathway(FusedEmbedCtx& ctx) const;
     void hard_reset();
     void soft_reset();
