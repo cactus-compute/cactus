@@ -1489,6 +1489,7 @@ class Graph:
     CQ4 = 6
     CPU = 0
     NPU = 1
+    METAL = 2
     ACT_SILU = 0
     ACT_GELU = 1
     ACT_GELU_ERF = 2

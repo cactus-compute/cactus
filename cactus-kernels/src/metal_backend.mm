@@ -260,11 +260,24 @@ std::pair<id<MTLBuffer>, size_t> wrapHostPtr(const void* p, size_t bytes) {
             return { it->second, (size_t)(a - it->first) };
     }
     size_t wraplen = (need + 16383u) & ~(size_t)16383u;
-    id<MTLBuffer> b = [ctx().dev newBufferWithBytesNoCopy:(void*)base length:wraplen
+    uintptr_t lo = base, hi = base + wraplen;
+    auto ov = g_wrapped.lower_bound(lo);
+    if (ov != g_wrapped.begin()) {
+        auto prev = std::prev(ov);
+        if (prev->first + (size_t)prev->second.length > lo) ov = prev;
+    }
+    while (ov != g_wrapped.end() && ov->first < hi) {
+        if (ov->first + (size_t)ov->second.length > lo) {
+            if (ov->first < lo) lo = ov->first;
+            if (ov->first + (size_t)ov->second.length > hi) hi = ov->first + (size_t)ov->second.length;
+            ov = g_wrapped.erase(ov);
+        } else ++ov;
+    }
+    id<MTLBuffer> b = [ctx().dev newBufferWithBytesNoCopy:(void*)lo length:(size_t)(hi - lo)
                        options:MTLResourceStorageModeShared deallocator:nil];
     if (!b) return { nil, 0 };
-    g_wrapped[base] = b;
-    return { b, (size_t)(a - base) };
+    g_wrapped[lo] = b;
+    return { b, (size_t)(a - lo) };
 }
 
 std::pair<id<MTLBuffer>, size_t> bufForPtrOff(const void* p, size_t bytes) {
@@ -337,6 +350,26 @@ void* cactus_metal_alloc_shared(size_t bytes) {
     void* c = [b contents];
     g_shared[reinterpret_cast<uintptr_t>(c)] = b;
     return c;
+}
+
+static char* g_slab = nullptr;
+static size_t g_slab_used = 0, g_slab_cap = 0;
+void* cactus_metal_alloc_pooled(size_t bytes) {
+    if (!ctx().ok) return nullptr;
+    if (bytes > (4u << 20)) return cactus_metal_alloc_shared(bytes);
+    size_t need = (bytes + 255) & ~size_t(255);
+    if (!g_slab || g_slab_used + need > g_slab_cap) {
+        size_t cap = 32u << 20;
+        id<MTLBuffer> b = [ctx().dev newBufferWithLength:cap options:MTLResourceStorageModeShared];
+        if (!b) return cactus_metal_alloc_shared(bytes);
+        g_slab = (char*)[b contents];
+        g_slab_used = 0;
+        g_slab_cap = cap;
+        g_shared[reinterpret_cast<uintptr_t>(g_slab)] = b;
+    }
+    void* p = g_slab + g_slab_used;
+    g_slab_used += need;
+    return p;
 }
 void cactus_metal_free_shared(void* contents) {
     auto it = g_shared.find(reinterpret_cast<uintptr_t>(contents));

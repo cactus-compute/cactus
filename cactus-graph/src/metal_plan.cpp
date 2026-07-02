@@ -1,0 +1,913 @@
+#include "../cactus_graph.h"
+#include "cactus_kernels.h"
+#include "metal_backend.h"
+#include <cmath>
+#include <cstring>
+#include <algorithm>
+#include <cstdlib>
+
+namespace {
+
+bool is_alias_op(OpType op) {
+    return op == OpType::VIEW || op == OpType::RESHAPE || op == OpType::FLATTEN;
+}
+
+bool is_noop_transpose(const GraphNode& nd) {
+    if (nd.op_type != OpType::TRANSPOSE) return false;
+    size_t real = 0;
+    for (size_t d : nd.output_buffer.shape) if (d != 1) ++real;
+    return real <= 1;
+}
+
+bool is_same_cast(const GraphNode& nd, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                  const std::unordered_map<size_t, size_t>& map) {
+    if (nd.op_type != OpType::PRECISION_CAST || nd.input_ids.empty()) return false;
+    auto it = map.find(nd.input_ids[0]);
+    return it != map.end() && nodes[it->second]->output_buffer.precision == nd.output_buffer.precision;
+}
+
+}
+
+struct MetalCluster {
+    int rule = 0;
+    size_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0, a5 = 0;
+    size_t b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0;
+    float f0 = 0.0f, f1 = 0.0f;
+    uint32_t u0 = 0, u1 = 0;
+    void* s0 = nullptr;
+    void* s1 = nullptr;
+    void* sc[3] = {nullptr, nullptr, nullptr};
+};
+
+bool cactus_graph_metal_tail(void* logits, size_t vocab);
+struct FusedEmbedCtx;
+const FusedEmbedCtx* cactus_graph_fused_embed();
+bool cactus_graph_metal_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
+                                      const CactusQuantMatrix* lm_head, size_t nl, size_t ple_dim);
+
+struct MetalFusePlan {
+    bool built = false;
+    std::vector<int32_t> action;
+    std::vector<MetalCluster> clusters;
+    long fold_h = -1, fold_ple = -1, fold_pos = -1, fold_w = -1;
+    size_t fold_nl = 0, fold_pd = 0;
+    std::vector<uint32_t> exec_list;
+    std::vector<long> arena_off;
+    char* arena_base = nullptr;
+};
+
+MetalFusePlan* cactus_metal_plan_build(
+    const std::vector<std::unique_ptr<GraphNode>>& nodes,
+    const std::unordered_map<size_t, size_t>& map) {
+    const size_t n = nodes.size();
+    auto plan = new MetalFusePlan();
+    plan->built = true;
+    plan->action.assign(n, -1);
+
+    auto idxof = [&](size_t id) -> long {
+        auto it = map.find(id);
+        return it == map.end() ? -1 : (long)it->second;
+    };
+    std::vector<std::vector<size_t>> cons(n);
+    for (size_t i = 0; i < n; ++i)
+        for (size_t id : nodes[i]->input_ids) { long j = idxof(id); if (j >= 0) cons[(size_t)j].push_back(i); }
+
+    auto passthrough = [&](const GraphNode& nd) {
+        return is_alias_op(nd.op_type) || is_same_cast(nd, nodes, map) || is_noop_transpose(nd);
+    };
+    auto up = [&](long i) -> long {
+        while (i >= 0) {
+            const GraphNode& nd = *nodes[(size_t)i];
+            if (passthrough(nd) && !nd.input_ids.empty()) {
+                i = idxof(nd.input_ids[0]);
+                continue;
+            }
+            return i;
+        }
+        return -1;
+    };
+    auto up_in = [&](size_t i, size_t k) -> long {
+        if (k >= nodes[i]->input_ids.size()) return -1;
+        return up(idxof(nodes[i]->input_ids[k]));
+    };
+    auto deep_f16_source = [&](long i) -> long {
+        long cur = i;
+        while (cur >= 0) {
+            const GraphNode& nd = *nodes[(size_t)cur];
+            if ((passthrough(nd) || nd.op_type == OpType::PRECISION_CAST) && !nd.input_ids.empty()) {
+                cur = idxof(nd.input_ids[0]);
+                continue;
+            }
+            break;
+        }
+        if (cur >= 0 && nodes[(size_t)cur]->output_buffer.precision == Precision::FP16) return cur;
+        return i;
+    };
+    auto collect_chain = [&](size_t from, long to, std::vector<size_t>& out_chain) {
+        long i = (long)from;
+        while (i >= 0 && i != to) {
+            const GraphNode& nd = *nodes[(size_t)i];
+            if (!passthrough(nd)) break;
+            out_chain.push_back((size_t)i);
+            i = nd.input_ids.empty() ? -1 : idxof(nd.input_ids[0]);
+        }
+    };
+    auto sole_use = [&](long i, const std::vector<size_t>& allowed) -> bool {
+        if (i < 0) return false;
+        for (size_t c : cons[(size_t)i]) {
+            bool ok = false;
+            for (size_t a : allowed) if (a == c) { ok = true; break; }
+            if (!ok) {
+                const GraphNode& cn = *nodes[c];
+                if (is_alias_op(cn.op_type) || is_same_cast(cn, nodes, map) || is_noop_transpose(cn)) {
+                    std::vector<size_t> sub = allowed;
+                    sub.push_back(c);
+                    bool subok = true;
+                    for (size_t cc : cons[c]) {
+                        bool found = false;
+                        for (size_t a : allowed) if (a == cc) { found = true; break; }
+                        if (!found) { subok = false; break; }
+                    }
+                    if (!subok) return false;
+                } else return false;
+            }
+        }
+        return true;
+    };
+
+    auto match_rope = [&](long add_i, long* x_out, long* cos_out, long* sin_out,
+                          std::vector<size_t>& cover) -> bool {
+        if (add_i < 0 || nodes[(size_t)add_i]->op_type != OpType::ADD) return false;
+        long m0 = up_in((size_t)add_i, 0), m1 = up_in((size_t)add_i, 1);
+        if (m0 < 0 || m1 < 0) return false;
+        if (nodes[(size_t)m0]->op_type != OpType::MULTIPLY) std::swap(m0, m1);
+        if (m0 < 0 || m1 < 0) return false;
+        if (nodes[(size_t)m0]->op_type != OpType::MULTIPLY ||
+            nodes[(size_t)m1]->op_type != OpType::MULTIPLY) return false;
+        long rot = up_in((size_t)m1, 0);
+        long sinb = up_in((size_t)m1, 1);
+        if (rot < 0 || nodes[(size_t)rot]->op_type != OpType::CAT) { std::swap(rot, sinb); }
+        if (rot < 0 || sinb < 0 || nodes[(size_t)rot]->op_type != OpType::CAT) {
+            std::swap(m0, m1);
+            rot = up_in((size_t)m1, 0); sinb = up_in((size_t)m1, 1);
+            if (rot < 0 || nodes[(size_t)rot]->op_type != OpType::CAT) { std::swap(rot, sinb); }
+            if (rot < 0 || sinb < 0 || nodes[(size_t)rot]->op_type != OpType::CAT) return false;
+        }
+        long x = up_in((size_t)m0, 0), cosb = up_in((size_t)m0, 1);
+        if (x < 0 || cosb < 0) return false;
+        if (nodes[(size_t)rot]->input_ids.size() != 2) return false;
+        long neg = up_in((size_t)rot, 0), lo = up_in((size_t)rot, 1);
+        if (neg < 0 || lo < 0) return false;
+        if (nodes[(size_t)neg]->op_type != OpType::SCALAR_MULTIPLY ||
+            nodes[(size_t)neg]->params.scalar != -1.0f) return false;
+        long hi = up_in((size_t)neg, 0);
+        if (hi < 0 || nodes[(size_t)hi]->op_type != OpType::SLICE ||
+            nodes[(size_t)lo]->op_type != OpType::SLICE) return false;
+        long xs1 = up_in((size_t)hi, 0), xs2 = up_in((size_t)lo, 0);
+        if (xs1 != x || xs2 != x) {
+            long xa = up_in((size_t)m0, 1);
+            if (xs1 == xa && xs2 == xa) { x = xa; cosb = up_in((size_t)m0, 0); }
+            else return false;
+        }
+        *x_out = x; *cos_out = cosb; *sin_out = sinb;
+        cover.push_back((size_t)add_i); cover.push_back((size_t)m0); cover.push_back((size_t)m1);
+        cover.push_back((size_t)rot); cover.push_back((size_t)neg);
+        cover.push_back((size_t)hi); cover.push_back((size_t)lo);
+        return true;
+    };
+
+    auto add_cluster = [&](MetalCluster c, size_t anchor, const std::vector<size_t>& cover) {
+        int32_t cid = (int32_t)plan->clusters.size();
+        plan->clusters.push_back(c);
+        for (size_t v : cover) if (v != anchor) plan->action[v] = -2;
+        plan->action[anchor] = cid;
+    };
+
+    struct AttnCand {
+        MetalCluster c;
+        size_t anchor;
+        std::vector<size_t> cover;
+        size_t kcache;
+        long kapp, vapp;
+    };
+    std::vector<AttnCand> cands;
+
+    for (size_t i = 0; i < n; ++i) {
+        if (plan->action[i] != -1) continue;
+        GraphNode& nd = *nodes[i];
+
+        if (nd.op_type == OpType::ATTENTION_CACHED && nd.input_ids.size() >= 5) {
+            const BufferDesc& qb = nodes[(size_t)idxof(nd.input_ids[0])]->output_buffer;
+            if (qb.shape.size() < 4 || qb.shape[0] != 1 || qb.shape[1] != 1) continue;
+            uint32_t nqh = (uint32_t)qb.shape[2], hd = (uint32_t)qb.shape[3];
+            long qk = idxof(nd.input_ids[1]);
+            long vk = idxof(nd.input_ids[2]);
+            long kcache = idxof(nd.input_ids[3]);
+            long vcache = idxof(nd.input_ids[4]);
+            if (qk < 0 || vk < 0 || kcache < 0 || vcache < 0) continue;
+
+            std::vector<size_t> cover;
+            long q_rope = up_in(i, 0);
+            long qx = -1, qcos = -1, qsin = -1;
+            if (!match_rope(q_rope, &qx, &qcos, &qsin, cover)) continue;
+            long qnorm = qx;
+            if (qnorm < 0 || nodes[(size_t)qnorm]->op_type != OpType::RMS_NORM) continue;
+            long qraw = up_in((size_t)qnorm, 0);
+            long qw = up_in((size_t)qnorm, 1);
+            if (qraw < 0 || qw < 0) continue;
+            cover.push_back((size_t)qnorm);
+
+            long k_rope = up(qk);
+            long kx = -1, kcos = -1, ksin = -1;
+            std::vector<size_t> kcover;
+            long knorm = -1, kraw = -1, kw = -1, vnorm = -1, vraw = -1, vw = -1;
+            long kapp = -1, vapp = -1;
+            bool has_new = false;
+            if (match_rope(k_rope, &kx, &kcos, &ksin, kcover)) {
+                knorm = kx;
+                if (knorm >= 0 && nodes[(size_t)knorm]->op_type == OpType::RMS_NORM) {
+                    kraw = up_in((size_t)knorm, 0);
+                    kw = up_in((size_t)knorm, 1);
+                    long vn = up(vk);
+                    if (kraw >= 0 && kw >= 0 && vn >= 0 && nodes[(size_t)vn]->op_type == OpType::RMS_NORM) {
+                        vnorm = vn;
+                        vraw = up_in((size_t)vn, 0);
+                        vw = up_in((size_t)vn, 1);
+                        for (size_t c = 0; c < n; ++c) {
+                            if (nodes[c]->op_type != OpType::KV_CACHE_APPEND || nodes[c]->input_ids.size() < 2) continue;
+                            long src = up(idxof(nodes[c]->input_ids[0]));
+                            long cache = idxof(nodes[c]->input_ids[1]);
+                            if (src == k_rope && cache == kcache) kapp = (long)c;
+                            if (src == (long)vnorm && cache == vcache) vapp = (long)c;
+                        }
+                        if (kapp >= 0 && vapp >= 0 && vraw >= 0 && vw >= 0) has_new = true;
+                    }
+                }
+            }
+            bool shared = false;
+            if (has_new) {
+                for (auto& pc : cands)
+                    if (pc.kapp == kapp || pc.kcache == (size_t)kcache) { shared = true; break; }
+            }
+
+            AttnCand cand;
+            cand.anchor = i;
+            cand.kcache = (size_t)kcache;
+            cand.kapp = kapp; cand.vapp = vapp;
+            MetalCluster& c = cand.c;
+            c.rule = 1;
+            c.b0 = (size_t)qcos; c.b1 = (size_t)qsin;
+            c.b2 = (size_t)kcache; c.b3 = (size_t)vcache;
+            c.b4 = i;
+            c.a0 = (size_t)qraw; c.a3 = (size_t)deep_f16_source(qw);
+            c.f0 = nodes[(size_t)qnorm]->params.epsilon;
+            c.f1 = nd.params.scale != 0.0f ? nd.params.scale : 1.0f / std::sqrt((float)hd);
+            c.u0 = nqh; c.u1 = hd;
+            cand.cover = cover;
+            collect_chain((size_t)idxof(nd.input_ids[0]), q_rope, cand.cover);
+            if (has_new && !shared) {
+                c.a1 = (size_t)kraw; c.a2 = (size_t)vraw;
+                c.a4 = (size_t)deep_f16_source(kw); c.a5 = (size_t)deep_f16_source(vw);
+                c.u1 |= 0x10000u;
+                cand.cover.insert(cand.cover.end(), kcover.begin(), kcover.end());
+                cand.cover.push_back((size_t)knorm);
+                cand.cover.push_back((size_t)vnorm);
+                cand.cover.push_back((size_t)kapp);
+                cand.cover.push_back((size_t)vapp);
+                collect_chain((size_t)idxof(nd.input_ids[1]), k_rope, cand.cover);
+                collect_chain((size_t)idxof(nd.input_ids[2]), vnorm, cand.cover);
+                collect_chain((size_t)idxof(nodes[(size_t)kapp]->input_ids[0]), k_rope, cand.cover);
+                collect_chain((size_t)idxof(nodes[(size_t)vapp]->input_ids[0]), vnorm, cand.cover);
+            } else if (!shared) {
+                continue;
+            }
+            cands.push_back(std::move(cand));
+            continue;
+        }
+
+        if (nd.op_type == OpType::MATMUL && nd.input_ids.size() >= 2) {
+            long r = idxof(nd.input_ids[1]);
+            const BufferDesc* rb = r >= 0 ? &nodes[(size_t)r]->output_buffer : nullptr;
+            size_t M = 1;
+            for (size_t d = 0; d + 1 < nd.output_buffer.shape.size(); ++d) M *= nd.output_buffer.shape[d];
+            if (rb && M == 1 && PrecisionTraits::is_cq(rb->precision) && rb->group_size > 0
+                && PrecisionTraits::cq_bits(rb->precision) == 4
+                && !(rb->cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)) {
+                long mul = up_in(i, 0);
+                if (mul >= 0 && nodes[(size_t)mul]->op_type == OpType::MULTIPLY && sole_use(mul, {i})) {
+                    long g0 = up_in((size_t)mul, 0), u0v = up_in((size_t)mul, 1);
+                    float gsc = 1.0f;
+                    long smul = -1;
+                    for (int side = 0; side < 2; ++side) {
+                        long gel = side == 0 ? g0 : u0v;
+                        long other = side == 0 ? u0v : g0;
+                        long sm = -1;
+                        float sc_val = 1.0f;
+                        if (gel >= 0 && nodes[(size_t)gel]->op_type == OpType::SCALAR_MULTIPLY
+                            && sole_use(gel, {(size_t)mul})) {
+                            sm = gel;
+                            sc_val = nodes[(size_t)gel]->params.scalar;
+                            gel = up_in((size_t)gel, 0);
+                        }
+                        if (gel >= 0 && other >= 0 && nodes[(size_t)gel]->op_type == OpType::GELU
+                            && sole_use(gel, {sm >= 0 ? (size_t)sm : (size_t)mul})) {
+                            long gate = up_in((size_t)gel, 0);
+                            if (gate < 0) break;
+                            if (sc_val == 1.0f && nodes[(size_t)gate]->op_type == OpType::MATMUL
+                                && nodes[(size_t)gate]->input_ids.size() >= 2
+                                && sole_use(gate, {(size_t)gel})) {
+                                long gr = idxof(nodes[(size_t)gate]->input_ids[1]);
+                                const BufferDesc* grb = gr >= 0 ? &nodes[(size_t)gr]->output_buffer : nullptr;
+                                size_t gM = 1;
+                                for (size_t d = 0; d + 1 < nodes[(size_t)gate]->output_buffer.shape.size(); ++d)
+                                    gM *= nodes[(size_t)gate]->output_buffer.shape[d];
+                                if (grb && gM == 1 && PrecisionTraits::is_cq(grb->precision)
+                                    && grb->group_size == 128 && PrecisionTraits::cq_bits(grb->precision) == 4
+                                    && !(grb->cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)) {
+                                    long gx = up_in((size_t)gate, 0);
+                                    if (gx >= 0) {
+                                        MetalCluster c7;
+                                        c7.rule = 7;
+                                        c7.a0 = (size_t)gx;
+                                        c7.a1 = (size_t)other;
+                                        c7.b0 = (size_t)gate;
+                                        c7.b4 = i;
+                                        c7.s0 = cactus_metal_alloc_shared(nodes[(size_t)gate]->output_buffer.total_size * 2);
+                                        std::vector<size_t> cover;
+                                        cover.push_back((size_t)mul);
+                                        cover.push_back((size_t)gel);
+                                        cover.push_back((size_t)gate);
+                                        collect_chain((size_t)idxof(nd.input_ids[0]), mul, cover);
+                                        collect_chain((size_t)idxof(nodes[(size_t)gel]->input_ids[0]), gate, cover);
+                                        const GraphNode& rn = *nodes[(size_t)other];
+                                        if (rn.op_type == OpType::INDEX && !rn.input_ids.empty()
+                                            && sole_use(other, {(size_t)mul})) {
+                                            long ib = idxof(rn.input_ids[0]);
+                                            if (ib >= 0) {
+                                                size_t rowlen = rn.output_buffer.total_size;
+                                                c7.a1 = (size_t)ib;
+                                                c7.u1 = (uint32_t)(rn.params.index_value * rowlen * 2);
+                                                c7.u0 = 1u;
+                                                cover.push_back((size_t)other);
+                                            }
+                                        }
+                                        add_cluster(c7, i, cover);
+                                        break;
+                                    }
+                                }
+                            }
+                            MetalCluster c;
+                            c.rule = 4;
+                            c.a0 = (size_t)gate;
+                            c.a1 = (size_t)other;
+                            c.b4 = i;
+                            c.f0 = sc_val;
+                            const BufferDesc& gb = nodes[(size_t)gate]->output_buffer;
+                            c.s0 = cactus_metal_alloc_shared(gb.total_size * 2);
+                            std::vector<size_t> cover;
+                            cover.push_back((size_t)mul);
+                            cover.push_back((size_t)gel);
+                            if (sm >= 0) cover.push_back((size_t)sm);
+                            collect_chain((size_t)idxof(nd.input_ids[0]), mul, cover);
+                            add_cluster(c, i, cover);
+                            gsc = sc_val; smul = sm;
+                            break;
+                        }
+                    }
+                    (void)gsc; (void)smul;
+                    if (plan->action[i] >= 0) continue;
+                }
+            }
+        }
+
+        if (nd.op_type == OpType::SCALAR_MULTIPLY && !nd.output_buffer.shape.empty()
+            && nd.output_buffer.shape.back() >= 32768
+            && nd.output_buffer.total_size == nd.output_buffer.shape.back()) {
+            long th = up_in(i, 0);
+            if (th >= 0 && nodes[(size_t)th]->op_type == OpType::TANH) {
+                long dv = up_in((size_t)th, 0);
+                if (dv >= 0 && nodes[(size_t)dv]->op_type == OpType::SCALAR_DIVIDE
+                    && nodes[(size_t)dv]->params.scalar == nd.params.scalar) {
+                    long mm = up_in((size_t)dv, 0);
+                    if (mm >= 0 && nodes[(size_t)mm]->op_type == OpType::MATMUL
+                        && nodes[(size_t)mm]->input_ids.size() >= 2) {
+                        long wnode = idxof(nodes[(size_t)mm]->input_ids[1]);
+                        long xn = up_in((size_t)mm, 0);
+                        if (wnode >= 0 && xn >= 0) {
+                            const BufferDesc& wb = nodes[(size_t)wnode]->output_buffer;
+                            if (PrecisionTraits::is_cq(wb.precision) && wb.group_size > 0
+                                && (wb.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
+                                && sole_use(mm, {(size_t)dv}) && sole_use(dv, {(size_t)th})
+                                && sole_use(th, {i})) {
+                                MetalCluster c;
+                                c.rule = 5;
+                                c.a0 = (size_t)xn; c.a1 = (size_t)wnode; c.b4 = i;
+                                c.f0 = nd.params.scalar;
+                                c.s0 = cactus_metal_alloc_shared(wb.shape.empty() ? 0 : wb.to_cq_matrix().K * 2);
+                                std::vector<size_t> cover;
+                                cover.push_back((size_t)mm);
+                                cover.push_back((size_t)dv);
+                                cover.push_back((size_t)th);
+                                collect_chain((size_t)idxof(nodes[(size_t)dv]->input_ids[0]), mm, cover);
+                                collect_chain((size_t)idxof(nd.input_ids[0]), th, cover);
+                                add_cluster(c, i, cover);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (nd.op_type == OpType::ADD_CLIPPED && nd.input_ids.size() == 2) {
+            long n0 = up_in(i, 0), n1 = up_in(i, 1);
+            long norm = -1, res = -1;
+            if (n0 >= 0 && nodes[(size_t)n0]->op_type == OpType::RMS_NORM) { norm = n0; res = n1; }
+            else if (n1 >= 0 && nodes[(size_t)n1]->op_type == OpType::RMS_NORM) { norm = n1; res = n0; }
+            if (norm >= 0 && res >= 0 && sole_use(norm, {i})) {
+                long src = up_in((size_t)norm, 0);
+                long w = up_in((size_t)norm, 1);
+                auto f16 = [&](long j) {
+                    return j >= 0 && nodes[(size_t)j]->output_buffer.precision == Precision::FP16;
+                };
+                if (w >= 0) w = deep_f16_source(w);
+                bool one_row = src >= 0 && !nodes[(size_t)src]->output_buffer.shape.empty()
+                    && nodes[(size_t)src]->output_buffer.total_size ==
+                       nodes[(size_t)src]->output_buffer.shape.back();
+                if (src >= 0 && w >= 0 && one_row && f16((long)i) && f16(src) && f16(res) && f16(w) && f16(norm)) {
+                    MetalCluster c;
+                    c.rule = 3;
+                    c.a0 = (size_t)src; c.a1 = (size_t)w; c.a2 = (size_t)res;
+                    c.b4 = i;
+                    c.f0 = nodes[(size_t)norm]->params.epsilon;
+                    std::vector<size_t> cover;
+                    cover.push_back((size_t)norm);
+                    size_t h_node = i;
+                    if (cons[i].size() == 1) {
+                        long mt = (long)cons[i][0];
+                        while (mt >= 0 && passthrough(*nodes[(size_t)mt]) && cons[(size_t)mt].size() == 1)
+                            mt = (long)cons[(size_t)mt][0];
+                        if (mt >= 0 && nodes[(size_t)mt]->op_type == OpType::MULTIPLY
+                            && nodes[(size_t)mt]->input_ids.size() == 2
+                            && nodes[(size_t)mt]->output_buffer.precision == Precision::FP16) {
+                            long o0 = up_in((size_t)mt, 0), o1 = up_in((size_t)mt, 1);
+                            long scn = (o0 == (long)i || (o0 >= 0 && up(o0) == (long)i)) ? o1 : o0;
+                            long base = scn == o1 ? o0 : o1;
+                            if (base >= 0 && scn >= 0
+                                && nodes[(size_t)scn]->output_buffer.total_size == 1
+                                && nodes[(size_t)scn]->output_buffer.precision == Precision::FP16) {
+                                c.b1 = (size_t)scn;
+                                c.u1 = 1u;
+                                collect_chain(cons[i][0], (long)i, cover);
+                                cover.push_back((size_t)mt);
+                                h_node = (size_t)mt;
+                                c.b4 = h_node;
+                                cover.push_back(i);
+                            }
+                        }
+                    }
+                    long next_norm = -1;
+                    for (size_t cc : cons[h_node]) {
+                        long t = (long)cc;
+                        while (t >= 0 && passthrough(*nodes[(size_t)t])) {
+                            if (cons[(size_t)t].size() != 1) { t = -1; break; }
+                            t = (long)cons[(size_t)t][0];
+                        }
+                        if (t >= 0 && nodes[(size_t)t]->op_type == OpType::RMS_NORM
+                            && up_in((size_t)t, 0) == (long)h_node
+                            && nodes[(size_t)t]->output_buffer.precision == Precision::FP16) {
+                            next_norm = t;
+                            break;
+                        }
+                    }
+                    if (next_norm >= 0) {
+                        long nw = deep_f16_source(up_in((size_t)next_norm, 1));
+                        size_t ndim = nodes[(size_t)next_norm]->output_buffer.shape.empty() ? 0
+                                      : nodes[(size_t)next_norm]->output_buffer.shape.back();
+                        size_t adim = nodes[i]->output_buffer.shape.empty() ? 0
+                                      : nodes[i]->output_buffer.shape.back();
+                        if (nw >= 0 && ndim == adim && f16(nw)) {
+                            c.u0 = 1u;
+                            c.a4 = (size_t)nw;
+                            c.a5 = (size_t)next_norm;
+                            c.s1 = cactus_metal_alloc_shared(nodes[(size_t)next_norm]->output_buffer.total_size * 2);
+                            cover.push_back((size_t)next_norm);
+                            long ch = idxof(nodes[(size_t)next_norm]->input_ids[0]);
+                            collect_chain((size_t)ch, (long)h_node, cover);
+                        }
+                    }
+                    add_cluster(c, h_node, cover);
+                    continue;
+                }
+            }
+        }
+    }
+    {
+        std::unordered_map<long, std::vector<size_t>> groups;
+        std::vector<long> order;
+        for (size_t i = 0; i < n; ++i) {
+            if (plan->action[i] != -1) continue;
+            const GraphNode& mn = *nodes[i];
+            if (mn.op_type != OpType::MATMUL || mn.input_ids.size() < 2) continue;
+            long r = idxof(mn.input_ids[1]);
+            if (r < 0) continue;
+            const BufferDesc& rb = nodes[(size_t)r]->output_buffer;
+            size_t M = 1;
+            for (size_t d = 0; d + 1 < mn.output_buffer.shape.size(); ++d) M *= mn.output_buffer.shape[d];
+            if (M != 1 || !PrecisionTraits::is_cq(rb.precision) || rb.group_size != 128
+                || PrecisionTraits::cq_bits(rb.precision) != 4
+                || (rb.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)) continue;
+            long src = up_in(i, 0);
+            if (src < 0) continue;
+            auto it = groups.find(src);
+            if (it == groups.end()) { groups[src] = {i}; order.push_back(src); }
+            else it->second.push_back(i);
+        }
+        for (long src : order) {
+            auto& mms = groups[src];
+            if (mms.size() < 2) continue;
+            for (size_t base = 0; base + 1 < mms.size(); base += 3) {
+                size_t cnt = std::min<size_t>(3, mms.size() - base);
+                if (cnt < 2) break;
+                size_t anchor_i = mms[base + cnt - 1];
+                bool ordered = true;
+                for (size_t mi = 0; mi < cnt && ordered; ++mi)
+                    for (size_t cc : cons[mms[base + mi]])
+                        if (cc < anchor_i && plan->action[cc] != -2) { ordered = false; break; }
+                if (!ordered) continue;
+                MetalCluster c;
+                c.rule = 2;
+                c.a0 = (size_t)src;
+                c.b0 = mms[base];
+                c.b1 = mms[base + 1];
+                c.b2 = cnt > 2 ? mms[base + 2] : 0;
+                c.u0 = (uint32_t)cnt;
+                size_t maxK = 0;
+                for (size_t mi = 0; mi < cnt; ++mi) {
+                    const BufferDesc& rb = nodes[(size_t)idxof(nodes[mms[base + mi]]->input_ids[1])]->output_buffer;
+                    CactusQuantMatrix W = rb.to_cq_matrix();
+                    if (W.K > maxK) maxK = W.K;
+                }
+                for (uint32_t bi = 0; bi < c.u0; ++bi)
+                    if (!c.sc[bi]) c.sc[bi] = cactus_metal_alloc_shared(maxK * 2);
+                std::vector<size_t> cover;
+                add_cluster(c, mms[base + cnt - 1], cover);
+                for (size_t mi = 0; mi + 1 < cnt; ++mi) plan->action[mms[base + mi]] = -3;
+            }
+        }
+    }
+
+    if (!cands.empty()) {
+        std::vector<uint8_t> mark(n, 0);
+        for (auto& cd : cands) {
+            mark[cd.anchor] = 2;
+            for (size_t v : cd.cover) if (mark[v] == 0) mark[v] = 1;
+        }
+        for (size_t ri = n; ri-- > 0;) {
+            if (mark[ri]) continue;
+            const GraphNode& ndp = *nodes[ri];
+            if (!(is_alias_op(ndp.op_type) || is_same_cast(ndp, nodes, map) || is_noop_transpose(ndp))) continue;
+            if (cons[ri].empty()) { mark[ri] = 3; continue; }
+            bool all_in = true;
+            for (size_t cc : cons[ri]) if (!mark[cc]) { all_in = false; break; }
+            if (all_in) mark[ri] = 3;
+        }
+        bool valid = true;
+        for (size_t v = 0; v < n && valid; ++v) {
+            if (mark[v] != 1 && mark[v] != 3) continue;
+            for (size_t cc : cons[v]) {
+                if (!mark[cc]) {
+                    valid = false;
+                    break;
+                }
+            }
+        }
+        if (valid) {
+            for (size_t v = 0; v < n; ++v)
+                if ((mark[v] == 1 || mark[v] == 3) && plan->action[v] == -1) plan->action[v] = -2;
+            for (auto& cd : cands) {
+                int32_t cid = (int32_t)plan->clusters.size();
+                plan->clusters.push_back(cd.c);
+                plan->action[cd.anchor] = cid;
+            }
+        }
+    }
+
+    for (auto& cl : plan->clusters) {
+        if (cl.rule != 5) continue;
+        const auto& sh0 = nodes[0]->output_buffer;
+        const auto& sh1 = n > 1 ? nodes[1]->output_buffer : nodes[0]->output_buffer;
+        const auto& sh2 = n > 2 ? nodes[2]->output_buffer : nodes[0]->output_buffer;
+        if (n > 2 && nodes[0]->op_type == OpType::INPUT && nodes[1]->op_type == OpType::INPUT
+            && nodes[2]->op_type == OpType::INPUT
+            && sh0.precision == Precision::FP16 && sh0.total_size > 0
+            && sh1.precision == Precision::FP16 && sh1.shape.size() >= 2
+            && sh2.total_size == 1) {
+            plan->fold_h = 0;
+            plan->fold_ple = 1;
+            plan->fold_pos = 2;
+            plan->fold_w = (long)cl.a1;
+            plan->fold_nl = sh1.shape[sh1.shape.size() - 2];
+            plan->fold_pd = sh1.shape.back();
+        }
+        break;
+    }
+
+    plan->exec_list.reserve(n);
+    for (size_t i = 0; i < n; ++i)
+        if (plan->action[i] != -2 && nodes[i]->op_type != OpType::INPUT)
+            plan->exec_list.push_back((uint32_t)i);
+
+    if (!plan->clusters.empty()) {
+        std::vector<size_t> last_read(n, 0);
+        auto base_of = [&](size_t i) -> size_t {
+            size_t cur = i;
+            while (passthrough(*nodes[cur]) || plan->action[cur] == -2 || is_noop_transpose(*nodes[cur])
+                   || nodes[cur]->op_type == OpType::SLICE || nodes[cur]->op_type == OpType::INDEX) {
+                if (nodes[cur]->input_ids.empty()) break;
+                long j = idxof(nodes[cur]->input_ids[0]);
+                if (j < 0) break;
+                if (plan->action[cur] != -2 && !passthrough(*nodes[cur])
+                    && !is_noop_transpose(*nodes[cur])) {
+                    bool aliasing = false;
+                    const GraphNode& sn = *nodes[cur];
+                    if (sn.op_type == OpType::INDEX && sn.params.axis == 0) aliasing = true;
+                    if (sn.op_type == OpType::SLICE) {
+                        size_t ax = (size_t)sn.params.axis;
+                        long jj = idxof(sn.input_ids[0]);
+                        if (jj >= 0 && ax < nodes[(size_t)jj]->output_buffer.shape.size()) {
+                            size_t outer = 1;
+                            for (size_t d = 0; d < ax; ++d) outer *= nodes[(size_t)jj]->output_buffer.shape[d];
+                            if (outer == 1) aliasing = true;
+                        }
+                    }
+                    if (!aliasing) break;
+                }
+                cur = (size_t)j;
+            }
+            return cur;
+        };
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t id : nodes[i]->input_ids) {
+                long j = idxof(id);
+                if (j >= 0) {
+                    size_t b = base_of((size_t)j);
+                    if (i > last_read[b]) last_read[b] = i;
+                }
+            }
+        }
+        for (auto& cl : plan->clusters) {
+            size_t anchor = cl.b4 ? cl.b4 : (cl.rule == 2 ? std::max(cl.b0, std::max(cl.b1, cl.b2)) : 0);
+            if (!anchor) continue;
+            for (size_t arg : {cl.a0, cl.a1, cl.a2, cl.a3, cl.a4, cl.a5, cl.b0, cl.b1, cl.b2, cl.b3}) {
+                if (arg == 0 || arg >= n) continue;
+                size_t b = base_of(arg);
+                if (anchor > last_read[b]) last_read[b] = anchor;
+            }
+        }
+        plan->arena_off.assign(n, -1);
+        struct Range { size_t off, size, free_at; };
+        std::vector<Range> live;
+        size_t cursor = 0, peak = 0;
+        for (uint32_t ui : plan->exec_list) {
+            size_t i = ui;
+            const GraphNode& nd = *nodes[i];
+            if (plan->action[i] == -2) continue;
+            if (nd.op_type == OpType::KV_CACHE_STATE || nd.op_type == OpType::CONV_CACHE_STATE
+                || nd.op_type == OpType::RECURRENT_CACHE_STATE || nd.op_type == OpType::KV_CACHE_APPEND
+                || nd.op_type == OpType::PERSISTENT) continue;
+            if (passthrough(nd) || is_noop_transpose(nd)) continue;
+            if (nd.op_type == OpType::SLICE || nd.op_type == OpType::INDEX) continue;
+            if (last_read[i] == 0) continue;
+            size_t need = (nd.output_buffer.byte_size + 255) & ~size_t(255);
+            if (need == 0 || need > (8u << 20)) continue;
+            bool placed = false;
+            for (auto& r : live) {
+                if (r.free_at < i && r.size >= need) {
+                    plan->arena_off[i] = (long)r.off;
+                    r.free_at = last_read[i];
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) {
+                plan->arena_off[i] = (long)cursor;
+                live.push_back({cursor, need, last_read[i]});
+                cursor += need;
+                if (cursor > peak) peak = cursor;
+            }
+        }
+        if (peak > 0 && peak < (256u << 20))
+            plan->arena_base = (char*)cactus_metal_alloc_shared(peak);
+        if (!plan->arena_base) plan->arena_off.assign(n, -1);
+    }
+
+    return plan;
+}
+
+void cactus_metal_plan_free(MetalFusePlan* p) { delete p; }
+
+void cactus_metal_plan_disable(MetalFusePlan* p) {
+    if (!p) return;
+    std::fill(p->action.begin(), p->action.end(), -1);
+    p->clusters.clear();
+    p->fold_h = -1;
+    p->exec_list.clear();
+    for (size_t i = 0; i < p->action.size(); ++i) p->exec_list.push_back((uint32_t)i);
+}
+
+int32_t cactus_metal_plan_action(const MetalFusePlan* p, size_t i) {
+    return p && i < p->action.size() ? p->action[i] : -1;
+}
+
+const std::vector<uint32_t>* cactus_metal_plan_exec_list(const MetalFusePlan* p) {
+    return p ? &p->exec_list : nullptr;
+}
+
+void* cactus_metal_plan_arena_ptr(const MetalFusePlan* p, size_t i) {
+    if (!p || !p->arena_base || i >= p->arena_off.size() || p->arena_off[i] < 0) return nullptr;
+    return p->arena_base + p->arena_off[i];
+}
+
+bool cactus_metal_plan_fold(MetalFusePlan* p,
+                            const std::vector<std::unique_ptr<GraphNode>>& nodes) {
+    if (!p || p->fold_h < 0 || !cactus_graph_fused_embed()) return false;
+    void* h = nodes[(size_t)p->fold_h]->output_buffer.get_data();
+    void* ple = nodes[(size_t)p->fold_ple]->output_buffer.get_data();
+    void* pos = nodes[(size_t)p->fold_pos]->output_buffer.get_data();
+    if (!h || !ple) return false;
+    CactusQuantMatrix W = nodes[(size_t)p->fold_w]->output_buffer.to_cq_matrix();
+    return cactus_graph_metal_fold_prologue(h, ple, pos, &W, p->fold_nl, p->fold_pd);
+}
+
+bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
+                              const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                              const std::unordered_map<size_t, size_t>& map) {
+    MetalCluster& c = p->clusters[(size_t)cid];
+    auto data = [&](size_t i) { return nodes[i]->output_buffer.get_data(); };
+    switch (c.rule) {
+        case 1: {
+            GraphNode& anchor = *nodes[c.b4];
+            BufferDesc& kc = nodes[c.b2]->output_buffer;
+            BufferDesc& vc = nodes[c.b3]->output_buffer;
+            uint64_t* km = reinterpret_cast<uint64_t*>(kc.get_data());
+            uint64_t* vm = reinterpret_cast<uint64_t*>(vc.get_data());
+            if (!km || !vm) return false;
+            size_t clen = km[0], mx = km[1], sink = km[4];
+            uint32_t hd = c.u1 & 0xFFFFu, nqh = c.u0;
+            bool has_new = (c.u1 & 0x10000u) != 0;
+            size_t ng = (hd + 31) / 32;
+            size_t win = anchor.params.window_size;
+            bool sliding = win > 0;
+            uint32_t Wn = sliding ? (uint32_t)(mx - sink - 1) : 0u;
+            uint32_t Sn = sliding ? (uint32_t)sink : 0u;
+            uint32_t Rn = (Wn > Sn) ? (Wn - Sn) : 1u;
+            char* kb = (char*)kc.get_data();
+            char* vb = (char*)vc.get_data();
+            size_t slot = 0, kv_end;
+            if (has_new) {
+                bool wrap = sliding && clen >= (size_t)Wn;
+                slot = wrap ? (size_t)(Sn + ((clen - Sn) % Rn)) : clen;
+                kv_end = wrap ? (size_t)Wn : clen + 1;
+            } else {
+                kv_end = (sliding && clen > (size_t)Wn) ? (size_t)Wn : clen;
+            }
+            bool ok = cactus_metal_encode_attention_fused_i8(
+                anchor.output_buffer.get_data(), data(c.a0),
+                has_new ? data(c.a1) : nullptr, has_new ? data(c.a2) : nullptr,
+                kb + 64, vb + 64, kb + 64 + mx * hd, vb + 64 + mx * hd,
+                data(c.a3), has_new ? data(c.a4) : nullptr, has_new ? data(c.a5) : nullptr,
+                data(c.b0), data(c.b1),
+                nqh, hd, hd,
+                0u, (uint32_t)kv_end, (uint32_t)slot, has_new ? 1u : 0u,
+                c.f0, c.f1,
+                mx * hd, mx * hd, mx * ng * sizeof(float), mx * ng * sizeof(float));
+            if (!ok) return false;
+            if (has_new) { km[0] = clen + 1; vm[0] = clen + 1; }
+            return true;
+        }
+        case 2: {
+            size_t mm[3] = { c.b0, c.b1, c.b2 };
+            CactusQuantMatrix W[3];
+            void* outs[3];
+            const CactusQuantMatrix* Wp[3];
+            for (uint32_t bi = 0; bi < c.u0; ++bi) {
+                GraphNode& mn = *nodes[mm[bi]];
+                auto it = map.find(mn.input_ids[1]);
+                if (it == map.end()) return false;
+                W[bi] = nodes[it->second]->output_buffer.to_cq_matrix();
+                Wp[bi] = &W[bi];
+                outs[bi] = mn.output_buffer.get_data();
+                if (!outs[bi] || !c.sc[bi]) return false;
+            }
+            const void* x = nodes[c.a0]->output_buffer.get_data();
+            void* codes[3] = { c.sc[0], c.sc[1], c.sc[2] };
+            if (cactus_metal_encode_transform_batch(x, Wp, (int)c.u0, codes)) {
+                const void* ccodes[3] = { c.sc[0], c.sc[1], c.sc[2] };
+                if (!cactus_metal_encode_gemv_cat(outs, ccodes, Wp, (int)c.u0)) {
+                    for (uint32_t bi = 0; bi < c.u0; ++bi)
+                        if (!cactus_metal_encode_gemv_precoded(outs[bi], c.sc[bi], Wp[bi])) return false;
+                }
+                return true;
+            }
+            for (uint32_t bi = 0; bi < c.u0; ++bi)
+                if (!cactus_metal_encode_quant_matmul(outs[bi], x, Wp[bi])) return false;
+            return true;
+        }
+        case 7: {
+            GraphNode& anchor = *nodes[c.b4];
+            GraphNode& down = *nodes[c.b0];
+            auto itd = map.find(down.input_ids[1]);
+            auto itu = map.find(anchor.input_ids[1]);
+            if (itd == map.end() || itu == map.end() || !c.s0) return false;
+            CactusQuantMatrix Wd = nodes[itd->second]->output_buffer.to_cq_matrix();
+            CactusQuantMatrix Wu = nodes[itu->second]->output_buffer.to_cq_matrix();
+            const void* x = nodes[c.a0]->output_buffer.get_data();
+            const void* row = nodes[c.a1]->output_buffer.get_data();
+            if (row && c.u0 == 1u) row = (const char*)row + c.u1;
+            void* out = anchor.output_buffer.get_data();
+            if (!x || !row || !out) return false;
+            if (!cactus_metal_encode_transform_gemv(c.s0, x, &Wd, row)) return false;
+            if (!cactus_metal_encode_transform_gemv(out, c.s0, &Wu, nullptr)
+                && !cactus_metal_encode_quant_matmul(out, c.s0, &Wu)) return false;
+            return true;
+        }
+        case 4: {
+            GraphNode& anchor = *nodes[c.b4];
+            auto it = map.find(anchor.input_ids[1]);
+            if (it == map.end() || !c.s0) return false;
+            CactusQuantMatrix W = nodes[it->second]->output_buffer.to_cq_matrix();
+            void* out = anchor.output_buffer.get_data();
+            const void* gate = nodes[c.a0]->output_buffer.get_data();
+            const void* up = nodes[c.a1]->output_buffer.get_data();
+            if (!out || !gate || !up) return false;
+            if (cactus_metal_encode_swiglu_transform(c.s0, gate, up, &W, c.f0)
+                && cactus_metal_encode_gemv_precoded(out, c.s0, &W)) return true;
+            size_t M = W.K;
+            if (!cactus_metal_encode_swiglu(c.s0, gate, up, M, c.f0)) return false;
+            return cactus_metal_encode_quant_matmul(out, c.s0, &W);
+        }
+        case 3: {
+            GraphNode& anchor = *nodes[c.b4];
+            const BufferDesc& src = nodes[c.a0]->output_buffer;
+            size_t dim = anchor.output_buffer.shape.empty() ? 0 : anchor.output_buffer.shape.back();
+            if (dim == 0) return false;
+            size_t rows = src.total_size / dim;
+            float out_scale = 1.0f;
+            if (c.u1 == 1u) {
+                const void* sp = nodes[c.b1]->output_buffer.get_data();
+                if (!sp) return false;
+                out_scale = (float)*(const __fp16*)sp;
+            }
+            if (c.u0 == 1u && rows == 1) {
+                GraphNode& nn = *nodes[c.a5];
+                if (!nn.output_buffer.get_data()) {
+                    if (!c.s1) return false;
+                    nn.output_buffer.set_external(c.s1);
+                }
+                if (cactus_metal_encode_rms_norm_add_rms(
+                        anchor.output_buffer.get_data(), nn.output_buffer.get_data(),
+                        src.get_data(), data(c.a1), data(c.a2), data(c.a4),
+                        rows, dim, c.f0, out_scale)) return true;
+            }
+            if (c.u1 == 1u && c.u0 != 1u && rows == 1) {
+                if (cactus_metal_encode_rms_norm_add_scale(
+                        anchor.output_buffer.get_data(), src.get_data(), data(c.a1), data(c.a2),
+                        rows, dim, c.f0, out_scale)) return true;
+                return false;
+            }
+            if (c.u1 == 1u) return false;
+            if (c.u0 == 1u) {
+                GraphNode& nn = *nodes[c.a5];
+                if (!nn.output_buffer.get_data()) {
+                    if (!c.s1) return false;
+                    nn.output_buffer.set_external(c.s1);
+                }
+                if (!cactus_metal_encode_rms_norm_add(
+                        anchor.output_buffer.get_data(), src.get_data(), data(c.a1), data(c.a2),
+                        rows, dim, c.f0)) return false;
+                return cactus_metal_encode_rms_norm(
+                    nn.output_buffer.get_data(), anchor.output_buffer.get_data(), data(c.a4),
+                    rows, dim, c.f0);
+            }
+            return cactus_metal_encode_rms_norm_add(
+                anchor.output_buffer.get_data(), src.get_data(), data(c.a1), data(c.a2),
+                rows, dim, c.f0);
+        }
+        case 5: {
+            GraphNode& anchor = *nodes[c.b4];
+            const BufferDesc& wb = nodes[c.a1]->output_buffer;
+            CactusQuantMatrix W = wb.to_cq_matrix();
+            void* lg = anchor.output_buffer.get_data();
+            if (!c.s0 || !cactus_metal_encode_quant_matmul_ortho(lg, data(c.a0), c.s0, &W)) return false;
+            size_t V = anchor.output_buffer.total_size;
+            if (!cactus_metal_encode_softcap(lg, lg, V, c.f0)) {
+                cactus_metal_encode_scalar(3, lg, lg, V, c.f0);
+                cactus_metal_encode_unary(1, lg, lg, V);
+                cactus_metal_encode_scalar(2, lg, lg, V, c.f0);
+            }
+            return cactus_graph_metal_tail(lg, V);
+        }
+        default: return false;
+    }
+}

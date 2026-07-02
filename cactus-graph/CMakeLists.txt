@@ -12,7 +12,8 @@ add_library(cactus_graph STATIC
     src/core.cpp
     src/builder.cpp
     src/execute.cpp
-    src/gpu_fused.cpp
+    src/metal_runtime.cpp
+    src/metal_plan.cpp
     src/io.cpp
     src/param_io.cpp
     src/ops_math.cpp

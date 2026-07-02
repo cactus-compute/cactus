@@ -31,6 +31,7 @@ void  cactus_metal_invalidate_host_wraps();
 void  cactus_metal_session_end();
 
 void* cactus_metal_alloc_shared(size_t bytes);
+void* cactus_metal_alloc_pooled(size_t bytes);
 void  cactus_metal_free_shared(void* contents);
 
 bool cactus_metal_encode_copy(void* out, const void* in, size_t bytes);

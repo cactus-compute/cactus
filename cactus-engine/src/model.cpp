@@ -562,8 +562,8 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP && !components_.count("audio_encoder")) {
         CACTUS_LOG_WARN("model", "Bundle has no decoder_prefill_chunk component; prompts will prefill token-by-token (prefill speed ~= decode speed).");
     }
-    if (decoder_ && decoder_->graph) decoder_->graph->prewarm_gpu_quant_weights();
-    if (decoder_prefill_ && decoder_prefill_->graph) decoder_prefill_->graph->prewarm_gpu_quant_weights();
+    if (decoder_ && decoder_->graph) decoder_->graph->prewarm_metal_quant_weights();
+    if (decoder_prefill_ && decoder_prefill_->graph) decoder_prefill_->graph->prewarm_metal_quant_weights();
     if (components_.count("decoder_embed_chunk") && components_.at("decoder_embed_chunk").graph) {
         decoder_embed_ = &components_.at("decoder_embed_chunk");
     }
@@ -900,30 +900,31 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/, b
     if (decode_route_ == DecodeRoute::DIRECT_DECODER_STEP) {
         write_int_input(*decoder_, "input_ids", static_cast<int64_t>(token_id));
         write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
-        const bool fused = use_fused && cactus_backend_fused();
-        if (!fused) cactus_graph_set_prefill_consistent(true);
-        if (!fused || !decoder_->graph->execute_gpu_fused()) decoder_->graph->execute();
+        if (!use_fused || !cactus_backend_metal()) cactus_graph_set_prefill_consistent(true);
+        decoder_->graph->execute();
         cactus_graph_set_prefill_consistent(false);
         maybe_capture_handoff_probe_hidden(*decoder_);
         return;
     }
     if (!use_fused) cactus_graph_set_prefill_consistent(true);
-    const bool fused = use_fused && cactus_backend_fused();
-    if (fused) {
+    if (use_fused && cactus_backend_metal()) {
         if (ple_probe_state_ == 0)
             ple_probe_state_ = encoder_->graph->extract_ple_pathway(fused_embed_ctx_) ? 1 : 2;
         if (ple_probe_state_ == 1) {
             fused_embed_ctx_.token_id = static_cast<int>(token_id);
             fused_embed_ctx_.position = static_cast<int>(position);
             cactus_graph_set_fused_embed(&fused_embed_ctx_);
-            bool ok = decoder_->graph->execute_gpu_fused();
+            write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
+            decoder_->graph->execute();
             cactus_graph_set_fused_embed(nullptr);
-            if (ok) { cactus_graph_set_prefill_consistent(false); maybe_capture_handoff_probe_hidden(*decoder_); return; }
+            cactus_graph_set_prefill_consistent(false);
+            maybe_capture_handoff_probe_hidden(*decoder_);
+            return;
         }
     }
     run_encoder_step(token_id, position);
     copy_component_outputs_to_inputs(*encoder_, *decoder_);
-    if (!fused || !decoder_->graph->execute_gpu_fused()) decoder_->graph->execute();
+    decoder_->graph->execute();
     cactus_graph_set_prefill_consistent(false);
     maybe_capture_handoff_probe_hidden(*decoder_);
 }
@@ -1020,9 +1021,13 @@ std::vector<std::vector<uint32_t>> Model::generate_batch(const std::vector<std::
         }
     }
 
+    size_t exec_batch = batch;
+    if (batch > 1 || cactus_backend_metal()) {
+        exec_batch = std::max(batch, decoder_cache_num_slots());
+    }
     reset_component_cache_states(*decoder_);
-    if (cached) set_component_batch(*encoder_, batch);
-    set_component_batch(*decoder_, batch);
+    if (cached) set_component_batch(*encoder_, exec_batch);
+    set_component_batch(*decoder_, exec_batch);
 
     std::vector<std::vector<uint32_t>> out(batch);
     std::vector<size_t> fed(batch, 0);
@@ -1036,12 +1041,16 @@ std::vector<std::vector<uint32_t>> Model::generate_batch(const std::vector<std::
         return false;
     };
 
-    std::vector<uint32_t> tokens(batch);
-    std::vector<size_t> positions(batch);
+    std::vector<uint32_t> tokens(exec_batch);
+    std::vector<size_t> positions(exec_batch);
     while (remaining > 0) {
         for (size_t b = 0; b < batch; ++b) {
             positions[b] = fed[b];
             tokens[b] = (fed[b] < prompts[b].size()) ? prompts[b][fed[b]] : last[b];
+        }
+        for (size_t b = batch; b < exec_batch; ++b) {
+            positions[b] = positions[0];
+            tokens[b] = tokens[0];
         }
         run_step_batch(tokens, positions);
         std::vector<uint32_t> sampled = argmax_component_logits_batch(*decoder_, batch);
@@ -1959,7 +1968,7 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
     {
         uint32_t gidx; float gbest, gsecond;
         if (!tool_dense && tool_bias.empty() && vocab_bias_.empty() && suppressed_token_id_ < 0 &&
-            cactus_graph_gpu_argmax(&gidx, &gbest, &gsecond)) {
+            cactus_graph_metal_argmax(&gidx, &gbest, &gsecond)) {
             if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(gbest, gsecond);
             return gidx;
         }
@@ -2094,7 +2103,7 @@ uint32_t Model::sample_component_logits(Component& comp, float temperature, floa
     auto get = [&](size_t i) -> float { return fp16 ? (float)h[i] : f[i]; };
     auto put = [&](size_t i, float v) { if (fp16) h[i] = (__fp16)v; else f[i] = v; };
 
-    if (samp_ctx_active_ && !cactus_graph_gpu_adjusted()) {
+    if (samp_ctx_active_ && !cactus_graph_metal_adjusted()) {
         if (samp_penalty_ != 1.0f) {
             for (uint32_t id : samp_recent_) {
                 if (id >= vocab) continue;
@@ -2107,8 +2116,8 @@ uint32_t Model::sample_component_logits(Component& comp, float temperature, floa
     }
     if (greedy) {
         uint32_t gidx; float gbest, gsecond;
-        if ((!samp_has_bias_ || cactus_graph_gpu_argmax_biased()) &&
-            cactus_graph_gpu_argmax(&gidx, &gbest, &gsecond)) {
+        if ((!samp_has_bias_ || cactus_graph_metal_argmax_biased()) &&
+            cactus_graph_metal_argmax(&gidx, &gbest, &gsecond)) {
             if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(gbest, gsecond);
             return gidx;
         }

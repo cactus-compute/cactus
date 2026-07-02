@@ -23,6 +23,7 @@ void  cactus_metal_session_flush() {}
 void  cactus_metal_invalidate_host_wraps() {}
 void  cactus_metal_session_end() {}
 void* cactus_metal_alloc_shared(size_t) { return nullptr; }
+void* cactus_metal_alloc_pooled(size_t) { return nullptr; }
 void  cactus_metal_free_shared(void*) {}
 bool cactus_metal_encode_copy(void*, const void*, size_t) { return false; }
 bool cactus_metal_encode_binary(int, void*, const void*, const void*, size_t) { return false; }

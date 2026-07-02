@@ -19,7 +19,6 @@
 
 int cactus_backend_select(const char* backend);
 bool cactus_backend_metal();
-bool cactus_backend_fused();
 
 namespace cactus {
 
@@ -85,7 +84,7 @@ private:
 #define CACTUS_LOG_WARN(component, msg)  CACTUS_LOG(cactus::LogLevel::WARN, component, msg)
 #define CACTUS_LOG_ERROR(component, msg) CACTUS_LOG(cactus::LogLevel::ERROR, component, msg)
 
-enum class ComputeBackend { CPU, NPU };
+enum class ComputeBackend { CPU, NPU, METAL };
 
 enum class Activation { SILU, GELU, GELU_ERF, RELU, SIGMOID, TANH };
 
@@ -466,7 +465,7 @@ struct FusedEmbedCtx {
 };
 void cactus_graph_set_fused_embed(const FusedEmbedCtx* ctx);
 
-bool cactus_graph_gpu_argmax(uint32_t* idx, float* best, float* second);
+bool cactus_graph_metal_argmax(uint32_t* idx, float* best, float* second);
 void cactus_graph_mark_unadjusted();
 void cactus_graph_set_prefill_consistent(bool on);
 bool cactus_graph_prefill_consistent();
@@ -475,8 +474,8 @@ void cactus_graph_set_sampling(const uint32_t* recent, int n_recent, float rep_p
                                const float* bias_dense, size_t bias_len,
                                long long suppressed);
 void cactus_graph_clear_sampling();
-bool cactus_graph_gpu_adjusted();
-bool cactus_graph_gpu_argmax_biased();
+bool cactus_graph_metal_adjusted();
+bool cactus_graph_metal_argmax_biased();
 
 class CactusGraph {
 public:
@@ -731,8 +730,8 @@ public:
     void invalidate_persistent(size_t persistent_node_id);
 
     void execute(const std::string& profile_file = "");
-    bool execute_gpu_fused();
-    void build_gpu_retype_plan();
+    void build_metal_retype_plan();
+    std::unordered_map<uint64_t, struct MetalFusePlan*> metal_plans_;
     bool extract_ple_pathway(FusedEmbedCtx& ctx) const;
     void hard_reset();
     void soft_reset();
@@ -759,7 +758,7 @@ public:
                                       const std::vector<uint8_t>& backup);
     void allocate_buffers();
     size_t get_node_count() const;
-    void prewarm_gpu_quant_weights();
+    void prewarm_metal_quant_weights();
     void set_runtime_input_shape(size_t node_id, const std::vector<size_t>& shape);
     void set_input_dynamic_dims(size_t node_id, const std::vector<uint8_t>& dynamic_dims);
     bool has_dynamic_shapes() const { return has_dynamic_shapes_; }
@@ -786,10 +785,10 @@ private:
     std::unordered_set<size_t> populated_node_ids_;
     std::unordered_set<size_t> embedded_input_node_ids_;
     std::unordered_set<size_t> retained_output_node_ids_;
-    std::vector<uint8_t> gpu_retype_plan_;
-    bool gpu_retype_built_ = false;
-    bool gpu_retype_disabled_ = false;
-    std::unordered_map<size_t, std::pair<void*, size_t>> gpu_persistent_acts_;
+    std::vector<uint8_t> metal_retype_plan_;
+    bool metal_retype_built_ = false;
+    bool metal_retype_disabled_ = false;
+    std::unordered_map<size_t, std::pair<void*, size_t>> metal_persistent_acts_;
 };
 
 namespace GraphFile {
