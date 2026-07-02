@@ -148,7 +148,11 @@ bool cactus_metal_encode_groupnorm(void* out, const void* x, const void* w, cons
 bool cactus_metal_encode_bias_add_rows(void* y, const void* bias, uint32_t C, uint32_t total);
 bool cactus_metal_encode_elemwise_chain(void* out, const void* in, const float* steps,
                                         uint32_t nsteps, const void* side0, const void* side1,
-                                        const void* side2, size_t n, uint32_t flags);
+                                        const void* side2, const size_t* side_elems,
+                                        size_t n, uint32_t flags, uint32_t inner);
+bool cactus_metal_encode_rms_norm_add_rows(void* ysum, void* ynorm, const void* x, const void* res,
+                                           const void* w, uint32_t rows, uint32_t dim, float eps,
+                                           int clipped);
 bool cactus_metal_encode_gemm_batch(void* out, const void* a, const void* b,
                                     uint32_t M, uint32_t K, uint32_t N, uint32_t batch, int f32out, int f32a);
 bool cactus_metal_encode_conv1d_dw(void* out, const void* x, const void* w,

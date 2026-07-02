@@ -926,6 +926,44 @@ MetalFusePlan* cactus_metal_plan_build(
         auto retyped = [&](size_t idx) { return idx < retype.size() && retype[idx] != 0; };
         for (size_t i = 0; i < n; ++i) {
             if (plan->action[i] != -1) continue;
+            GraphNode& nd0 = *nodes[i];
+            if (nd0.op_type != OpType::RMS_NORM || nd0.input_ids.size() < 2) continue;
+            if (nd0.output_buffer.precision != Precision::FP16 || retyped(i)) continue;
+            const auto& osh = nd0.output_buffer.shape;
+            if (osh.empty()) continue;
+            size_t dim = osh.back();
+            size_t rows = nd0.output_buffer.total_size / dim;
+            if (rows < 2 || dim < 32) continue;
+            long ai = idxof(nd0.input_ids[0]);
+            long wi = idxof(nd0.input_ids[1]);
+            if (ai < 0 || wi < 0 || plan->action[(size_t)ai] != -1 || retyped((size_t)ai)) continue;
+            const GraphNode& an = *nodes[(size_t)ai];
+            if ((an.op_type != OpType::ADD && an.op_type != OpType::ADD_CLIPPED)
+                || an.input_ids.size() != 2
+                || an.output_buffer.precision != Precision::FP16
+                || an.output_buffer.total_size != nd0.output_buffer.total_size
+                || pinned[(size_t)ai]) continue;
+            long x0 = idxof(an.input_ids[0]);
+            long x1 = idxof(an.input_ids[1]);
+            if (x0 < 0 || x1 < 0
+                || nodes[(size_t)x0]->output_buffer.precision != Precision::FP16
+                || nodes[(size_t)x1]->output_buffer.precision != Precision::FP16
+                || nodes[(size_t)x0]->output_buffer.total_size != an.output_buffer.total_size
+                || nodes[(size_t)x1]->output_buffer.total_size != an.output_buffer.total_size) continue;
+            long ww = deep_f16_source(wi);
+            if (ww < 0 || nodes[(size_t)ww]->output_buffer.total_size != dim) continue;
+            MetalCluster c;
+            c.rule = 12;
+            c.a0 = (size_t)x0; c.a1 = (size_t)x1; c.a2 = (size_t)ai; c.a3 = (size_t)ww;
+            c.u0 = (uint32_t)rows; c.u1 = (uint32_t)dim;
+            c.f0 = nd0.params.epsilon;
+            c.b0 = an.op_type == OpType::ADD_CLIPPED ? 1 : 0;
+            c.b4 = i;
+            std::vector<size_t> cover;
+            if (add_cluster(c, i, cover)) plan->action[(size_t)ai] = -3;
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (plan->action[i] != -1) continue;
             int kind, code; float p0, p1;
             if (!ew_kind(*nodes[i], &kind, &code, &p0, &p1)) continue;
             if (!prec_ok(nodes[i]->output_buffer.precision) || retyped(i)) continue;
@@ -990,8 +1028,17 @@ MetalFusePlan* cactus_metal_plan_build(
                     if (side < 0 || chain_in < 0
                         || nodes[(size_t)side]->output_buffer.precision != run
                         || retyped((size_t)side)
-                        || nodes[(size_t)side]->output_buffer.total_size != total
                         || plan->action[(size_t)side] == -2) { ok = false; break; }
+                    size_t inner = nodes[i]->output_buffer.shape.empty()
+                        ? 1 : nodes[i]->output_buffer.shape.back();
+                    size_t stotal = nodes[(size_t)side]->output_buffer.total_size;
+                    int bmode;
+                    if (stotal == total) bmode = 0;
+                    else if (inner > 1 && stotal * inner == total
+                             && !nodes[(size_t)side]->output_buffer.shape.empty()
+                             && nodes[(size_t)side]->output_buffer.shape.back() == 1) bmode = 1;
+                    else if (inner > 1 && stotal == inner) bmode = 2;
+                    else { ok = false; break; }
                     size_t slot = sides.size();
                     for (size_t si = 0; si < sides.size(); ++si)
                         if (sides[si] == (size_t)side) slot = si;
@@ -1000,7 +1047,7 @@ MetalFusePlan* cactus_metal_plan_build(
                         sides.push_back((size_t)side);
                         side_f32.push_back(run == Precision::FP32 ? 1 : 0);
                     } else if (side_f32[slot] != (run == Precision::FP32 ? 1 : 0)) { ok = false; break; }
-                    c2 |= (rhs ? 16 : 0) | (run == Precision::FP32 ? 32 : 0) | ((int)slot << 6);
+                    c2 |= (rhs ? 16 : 0) | (run == Precision::FP32 ? 32 : 0) | ((int)slot << 6) | (bmode << 8);
                 }
                 if (k2 == 4) {
                     Precision from = ci == 0 ? run : nodes[(size_t)prev]->output_buffer.precision;
@@ -1392,14 +1439,29 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             void* out = anchor.output_buffer.get_data();
             if (!in || !out) return false;
             const void* sides[3] = { nullptr, nullptr, nullptr };
+            size_t side_elems[3] = { 0, 0, 0 };
             size_t side_idx[3] = { c.a1, c.a2, c.a3 };
             for (uint32_t si = 0; si < c.u1; ++si) {
                 sides[si] = nodes[side_idx[si]]->output_buffer.get_data();
+                side_elems[si] = nodes[side_idx[si]]->output_buffer.total_size;
                 if (!sides[si]) return false;
             }
             const auto& blob = p->blobs[c.b0];
+            size_t inner = anchor.output_buffer.shape.empty() ? 1 : anchor.output_buffer.shape.back();
             return cactus_metal_encode_elemwise_chain(out, in, blob.data(), c.u0,
-                sides[0], sides[1], sides[2], anchor.output_buffer.total_size, (uint32_t)c.b1);
+                sides[0], sides[1], sides[2], side_elems, anchor.output_buffer.total_size,
+                (uint32_t)c.b1, (uint32_t)inner);
+        }
+        case 12: {
+            GraphNode& anchor = *nodes[c.b4];
+            const void* x = nodes[c.a0]->output_buffer.get_data();
+            const void* res = nodes[c.a1]->output_buffer.get_data();
+            void* ysum = nodes[c.a2]->output_buffer.get_data();
+            const void* w = nodes[c.a3]->output_buffer.get_data();
+            void* ynorm = anchor.output_buffer.get_data();
+            if (!x || !res || !ysum || !w || !ynorm) return false;
+            return cactus_metal_encode_rms_norm_add_rows(ysum, ynorm, x, res, w,
+                c.u0, c.u1, c.f0, (int)c.b0);
         }
         default: return false;
     }

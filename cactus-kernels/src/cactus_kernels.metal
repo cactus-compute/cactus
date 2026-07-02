@@ -1016,6 +1016,38 @@ kernel void swiglu_f16(device const half* gate [[buffer(0)]], device const half*
     y[i]=(half)((float)g2*(float)up[i]);
 }
 
+kernel void rms_norm_add_simd_f16(device const half* x [[buffer(0)]], device const half* res [[buffer(1)]],
+                                  device const half* w [[buffer(2)]], device half* ysum [[buffer(3)]],
+                                  device half* ynorm [[buffer(4)]], constant uint& dim [[buffer(5)]],
+                                  constant float& eps [[buffer(6)]], constant uint& rows [[buffer(7)]],
+                                  constant uint& clipped [[buffer(8)]],
+                                  uint tg [[threadgroup_position_in_grid]],
+                                  uint sgid [[simdgroup_index_in_threadgroup]],
+                                  uint lane [[thread_index_in_simdgroup]]) {
+    uint row = tg * 4 + sgid;
+    if (row >= rows) return;
+    device const half* xr = x + (size_t)row * dim;
+    device const half* rr = res + (size_t)row * dim;
+    device half* os = ysum + (size_t)row * dim;
+    device half* on = ynorm + (size_t)row * dim;
+    float partial = 0;
+    for (uint i = lane; i < dim; i += 32) {
+        float v = (float)xr[i] + (float)rr[i];
+        if (clipped) v = clamp(v, -65500.0f, 65500.0f);
+        half h = (half)v;
+        os[i] = h;
+        float f = (float)h;
+        partial += f * f;
+    }
+    partial += simd_shuffle_xor(partial, 16);
+    partial += simd_shuffle_xor(partial, 8);
+    partial += simd_shuffle_xor(partial, 4);
+    partial += simd_shuffle_xor(partial, 2);
+    partial += simd_shuffle_xor(partial, 1);
+    float inv = 1.0f / sqrt(partial / (float)dim + eps);
+    for (uint i = lane; i < dim; i += 32) on[i] = (half)((float)os[i] * inv * (float)w[i]);
+}
+
 kernel void rms_norm_simd_f16(device const half* in [[buffer(0)]], device const half* w [[buffer(1)]],
                               device half* y [[buffer(2)]], constant uint& dim [[buffer(3)]],
                               constant float& eps [[buffer(4)]], constant uint& rows [[buffer(5)]],
@@ -2131,6 +2163,7 @@ kernel void elemwise_chain_f16(device const uchar* in [[buffer(0)]], device ucha
                                device const uchar* s0 [[buffer(4)]], device const uchar* s1 [[buffer(5)]],
                                device const uchar* s2 [[buffer(6)]], constant uint& n [[buffer(7)]],
                                constant uint& flags [[buffer(8)]],
+                               constant uint& inner [[buffer(9)]],
                                uint gid [[thread_position_in_grid]]) {
     uint i0 = gid * 4;
     if (i0 >= n) return;
@@ -2149,8 +2182,12 @@ kernel void elemwise_chain_f16(device const uchar* in [[buffer(0)]], device ucha
             bool rhs = (st.code & 16) != 0;
             bool sf32 = (st.code & 32) != 0;
             device const uchar* sp = slot == 0 ? s0 : slot == 1 ? s1 : s2;
+            uint bmode = (st.code >> 8) & 3u;
             for (uint q = 0; q < cnt; ++q) {
-                float o = sf32 ? ((device const float*)sp)[i0+q] : (float)((device const half*)sp)[i0+q];
+                uint si = i0 + q;
+                if (bmode == 1u) si = si / inner;
+                else if (bmode == 2u) si = si % inner;
+                float o = sf32 ? ((device const float*)sp)[si] : (float)((device const half*)sp)[si];
                 float a = rhs ? o : xv[q], b = rhs ? xv[q] : o;
                 float r;
                 switch (op) { case 2: r=a-b; break; case 3: r=a*b; break; case 4: r=a/b; break;
