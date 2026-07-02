@@ -117,6 +117,10 @@ bool cactus_metal_encode_gemm_f16(void* out, const void* lhs, const void* rhs,
 bool cactus_metal_encode_attention_f16(void* out, const void* q, const void* k, const void* v, const void* mask,
     uint32_t B, uint32_t T, uint32_t S, uint32_t HQ, uint32_t HKV, uint32_t D, uint32_t DV,
     float scale, uint32_t causal, uint32_t pos_off, uint32_t window, float logit_cap, uint32_t mask_mode);
+bool cactus_metal_encode_gemm_batch(void* out, const void* a, const void* b,
+                                    uint32_t M, uint32_t K, uint32_t N, uint32_t batch, int f32out, int f32a);
+bool cactus_metal_encode_conv1d_dw(void* out, const void* x, const void* w,
+                                   uint32_t C, uint32_t L, uint32_t Lout, uint32_t K, uint32_t stride);
 bool cactus_metal_encode_strided_copy(void* out, const void* in, const uint32_t* oshape,
     const uint32_t* sstride, uint32_t ndim, uint32_t total, uint32_t base, size_t in_bytes, size_t out_bytes);
 

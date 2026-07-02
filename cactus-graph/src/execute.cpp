@@ -1194,7 +1194,9 @@ void CactusGraph::execute(const std::string& profile_file) {
                     if (it != node_index_map_.end()) flip(nodes_[it->second]->output_buffer);
                 }
             }
-            bool encoded = try_encode_metal(*node, nodes_, node_index_map_);
+            bool force_cpu = ot == OpType::PRECISION_CAST
+                && node->output_buffer.total_size <= 8 && !input_metal_live(*node);
+            bool encoded = !force_cpu && try_encode_metal(*node, nodes_, node_index_map_);
             for (auto& fp : flipped) fp.first->precision = fp.second;
             if (!encoded && rplan && rplan[i] == 2) {
                 metal_retype_disabled_ = true;

@@ -1091,6 +1091,20 @@ kernel void strided_copy_f16(device const half* in [[buffer(0)]], device half* o
     out[i]=in[src];
 }
 
+kernel void strided_copy_rows_f16(device const half* in [[buffer(0)]], device half* out [[buffer(1)]],
+    constant uint* oshape [[buffer(2)]], constant uint* sstride [[buffer(3)]],
+    constant uint& ndim [[buffer(4)]], constant uint& rows [[buffer(5)]], constant uint& base [[buffer(6)]],
+    constant uint& inner4 [[buffer(7)]],
+    uint2 gid [[thread_position_in_grid]]) {
+    uint v = gid.x, row = gid.y;
+    if (v >= inner4 || row >= rows) return;
+    uint rem = row, src = base;
+    for (int d = int(ndim) - 1; d >= 0; --d) { uint c = rem % oshape[d]; rem /= oshape[d]; src += c * sstride[d]; }
+    device const half4* s4 = (device const half4*)(in + src);
+    device half4* d4 = (device half4*)(out + (size_t)row * inner4 * 4);
+    d4[v] = s4[v];
+}
+
 kernel void kv_append_i8(device const half* src [[buffer(0)]], device char* int8base [[buffer(1)]],
     device float* scalebase [[buffer(2)]], constant uint& kv_heads [[buffer(3)]],
     constant uint& hdim [[buffer(4)]], constant uint& current_len [[buffer(5)]], constant uint& group_size [[buffer(6)]],
@@ -1507,6 +1521,62 @@ kernel void attn_f16_d64(device const half* q [[buffer(0)]], device const half* 
         vv[3] = acc[r][3] + simd_shuffle_xor(acc[r][3], (ushort)16);
         if (l < 16u && dl < dv4) orow[dl] = half4(vv*inv);
     }
+}
+
+kernel void attn_maskfill_f16(device const half* mask [[buffer(0)]], device half* out [[buffer(1)]],
+                              constant uint& ts [[buffer(2)]],
+                              uint2 gid [[thread_position_in_grid]]) {
+    uint i = gid.x, h = gid.y;
+    if (i >= ts) return;
+    out[(size_t)h*ts + i] = (mask[i] == (half)0.0f) ? (half)(-30000.0f) : (half)0.0f;
+}
+
+kernel void gemm_batch_f32a(device const float* a [[buffer(0)]], device const half* b [[buffer(1)]],
+                            device uchar* y [[buffer(2)]],
+                            constant uint& M [[buffer(3)]], constant uint& K [[buffer(4)]],
+                            constant uint& N [[buffer(5)]], constant uint& f32out [[buffer(6)]],
+                            uint2 gid [[thread_position_in_grid]]) {
+    uint mn = gid.x, bidx = gid.y;
+    if (mn >= M*N) return;
+    uint m = mn / N, nn = mn % N;
+    device const float* ar = a + (size_t)bidx*M*K + (size_t)m*K;
+    device const half* br = b + (size_t)bidx*K*N + nn;
+    float acc = 0;
+    for (uint k = 0; k < K; ++k) acc = fma((float)((half)ar[k]), (float)br[(size_t)k*N], acc);
+    size_t oi = (size_t)bidx*M*N + mn;
+    if (f32out != 0u) ((device float*)y)[oi] = acc;
+    else ((device half*)y)[oi] = (half)acc;
+}
+
+kernel void gemm_batch_f16(device const half* a [[buffer(0)]], device const half* b [[buffer(1)]],
+                           device uchar* y [[buffer(2)]],
+                           constant uint& M [[buffer(3)]], constant uint& K [[buffer(4)]],
+                           constant uint& N [[buffer(5)]], constant uint& f32out [[buffer(6)]],
+                           uint2 gid [[thread_position_in_grid]]) {
+    uint mn = gid.x, bidx = gid.y;
+    if (mn >= M*N) return;
+    uint m = mn / N, nn = mn % N;
+    device const half* ar = a + (size_t)bidx*M*K + (size_t)m*K;
+    device const half* br = b + (size_t)bidx*K*N + nn;
+    float acc = 0;
+    for (uint k = 0; k < K; ++k) acc = fma((float)ar[k], (float)br[(size_t)k*N], acc);
+    size_t oi = (size_t)bidx*M*N + mn;
+    if (f32out != 0u) ((device float*)y)[oi] = acc;
+    else ((device half*)y)[oi] = (half)acc;
+}
+
+kernel void conv1d_dw_f16(device const half* x [[buffer(0)]], device const half* w [[buffer(1)]],
+                          device half* y [[buffer(2)]],
+                          constant uint& L [[buffer(3)]], constant uint& Lout [[buffer(4)]],
+                          constant uint& Kk [[buffer(5)]], constant uint& stride [[buffer(6)]],
+                          uint2 gid [[thread_position_in_grid]]) {
+    uint l = gid.x, c = gid.y;
+    if (l >= Lout) return;
+    device const half* xc = x + (size_t)c*L + (size_t)l*stride;
+    device const half* wc = w + (size_t)c*Kk;
+    float acc = 0;
+    for (uint k = 0; k < Kk; ++k) acc = fma((float)xc[k], (float)wc[k], acc);
+    y[(size_t)c*Lout + l] = (half)acc;
 }
 
 kernel void bcast_binary_f16(device const half* a [[buffer(0)]], device const half* b [[buffer(1)]],

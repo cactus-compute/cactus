@@ -6,6 +6,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#include <mach/mach_vm.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #include <vector>
 #include <cstring>
@@ -49,6 +50,7 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoBinF32=nil, psoScaF32=nil, psoUnaF32=nil;
     id<MTLComputePipelineState> psoClampF16=nil, psoClampF32=nil, psoGlu=nil;
     id<MTLComputePipelineState> psoLayerNorm=nil, psoSoftmaxR=nil, psoConv1dK3=nil, psoAttnDense=nil, psoAttnD64=nil;
+    id<MTLComputePipelineState> psoGemmBatch=nil, psoGemmBatchF32A=nil, psoConvDw=nil, psoStridedRows=nil, psoMaskFill=nil;
     id<MTLBuffer> dummy=nil;
     bool ok = false;
 
@@ -94,6 +96,8 @@ struct MetalCtx {
         psoClampF16=pso("clamp_f16"); psoClampF32=pso("clamp_f32"); psoGlu=pso("glu_f16");
         psoLayerNorm=pso("layer_norm_f16"); psoSoftmaxR=pso("softmax_rows_f16");
         psoConv1dK3=pso("conv1d_k3_f16"); psoAttnDense=pso("attn_f16"); psoAttnD64=pso("attn_f16_d64");
+        psoGemmBatch=pso("gemm_batch_f16"); psoGemmBatchF32A=pso("gemm_batch_f32a"); psoConvDw=pso("conv1d_dw_f16");
+        psoStridedRows=pso("strided_copy_rows_f16"); psoMaskFill=pso("attn_maskfill_f16");
         dummy=[dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
         ok = psoT&&psoG&&psoTm&&psoGm&&psoRotate&&psoEmbO&&psoEmbH&&psoEmbOm&&psoEmbHm&&psoCopy&&psoBinary&&psoScalar&&psoUnary&&psoRms&&psoSwiglu&&psoRmsAdd&&psoCF16F32&&psoCF32F16&&psoCI8F16&&psoCF16I8
              &&psoAttn&&psoAttnC&&psoAttnPre&&psoAttnPreMma2&&psoKvAppendM&&psoKvAppendRingM&&psoSlideS&&psoSlideR&&psoSlideRM&&psoStrided&&psoBcast&&psoScatter&&psoKvAppend&&psoRope&&psoArgmax&&psoGather;
@@ -261,6 +265,22 @@ std::pair<id<MTLBuffer>, size_t> wrapHostPtr(const void* p, size_t bytes) {
     }
     size_t wraplen = (need + 16383u) & ~(size_t)16383u;
     uintptr_t lo = base, hi = base + wraplen;
+    {
+        mach_vm_address_t raddr = a;
+        mach_vm_size_t rsize = 0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t obj = MACH_PORT_NULL;
+        if (mach_vm_region(mach_task_self(), &raddr, &rsize, VM_REGION_BASIC_INFO_64,
+                           (vm_region_info_t)&info, &cnt, &obj) == KERN_SUCCESS
+            && raddr <= base && raddr + rsize >= hi
+            && (info.protection & VM_PROT_READ) && (info.protection & VM_PROT_WRITE)
+            && rsize <= (512u << 20)) {
+            lo = (uintptr_t)raddr;
+            hi = (uintptr_t)(raddr + rsize);
+        }
+        if (obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), obj);
+    }
     auto ov = g_wrapped.lower_bound(lo);
     if (ov != g_wrapped.begin()) {
         auto prev = std::prev(ov);
@@ -312,11 +332,17 @@ void cactus_metal_set_active(bool a) { g_active = a; }
 bool cactus_metal_active_mode() { return ctx().ok && g_active; }
 
 void cactus_metal_session_begin() {}
+static id<MTLCommandBuffer> g_last_cmd = nil;
 void cactus_metal_session_sync() {
     if (g_enc) { [g_enc endEncoding]; g_enc = nil; }
     if (g_cmd) {
-        [g_cmd commit]; [g_cmd waitUntilCompleted];
+        [g_cmd commit];
+        g_last_cmd = g_cmd;
         g_cmd = nil;
+    }
+    if (g_last_cmd) {
+        [g_last_cmd waitUntilCompleted];
+        g_last_cmd = nil;
     }
     for (id<MTLBuffer> b : g_pending) g_free[(size_t)b.length].push_back(b);
     g_pending.clear();
@@ -336,7 +362,7 @@ void cactus_metal_invalidate_host_wraps() {
 
 void cactus_metal_session_flush() {
     if (g_enc) { [g_enc endEncoding]; g_enc = nil; }
-    if (g_cmd) { [g_cmd commit]; g_cmd = nil; }
+    if (g_cmd) { [g_cmd commit]; g_last_cmd = g_cmd; g_cmd = nil; }
 }
 
 
@@ -1314,16 +1340,25 @@ bool cactus_metal_encode_conv1d_k3(void* out, const void* x, const void* w, int 
     [g_enc dispatchThreads:MTLSizeMake(Lout,Cout,1) threadsPerThreadgroup:MTLSizeMake(64,4,1)];
     return true;
 }
-static MPSMatrixMultiplication* mps_gemm(uint32_t M, uint32_t N, uint32_t K, bool tr) {
-    static std::map<std::tuple<uint32_t,uint32_t,uint32_t,bool>, MPSMatrixMultiplication*> cache;
-    auto key = std::make_tuple(M,N,K,tr);
+static MPSMatrixMultiplication* mps_gemm_ab(uint32_t M, uint32_t N, uint32_t K, bool tr, float alpha, float beta) {
+    static std::map<std::tuple<uint32_t,uint32_t,uint32_t,bool,uint64_t>, MPSMatrixMultiplication*> cache;
+    uint32_t ab, bb;
+    std::memcpy(&ab, &alpha, 4);
+    std::memcpy(&bb, &beta, 4);
+    auto key = std::make_tuple(M,N,K,tr,((uint64_t)ab<<32)|bb);
     auto it = cache.find(key);
     if (it != cache.end()) return it->second;
     MPSMatrixMultiplication* mm = [[MPSMatrixMultiplication alloc]
         initWithDevice:ctx().dev transposeLeft:false transposeRight:tr
-        resultRows:M resultColumns:N interiorColumns:K alpha:1.0 beta:0.0];
+        resultRows:M resultColumns:N interiorColumns:K alpha:alpha beta:beta];
     cache[key] = mm;
     return mm;
+}
+static MPSMatrixMultiplication* mps_gemm_a(uint32_t M, uint32_t N, uint32_t K, bool tr, float alpha) {
+    return mps_gemm_ab(M, N, K, tr, alpha, 0.0f);
+}
+static MPSMatrixMultiplication* mps_gemm(uint32_t M, uint32_t N, uint32_t K, bool tr) {
+    return mps_gemm_a(M, N, K, tr, 1.0f);
 }
 
 bool cactus_metal_encode_gemm_f16(void* out, const void* lhs, const void* rhs,
@@ -1333,13 +1368,14 @@ bool cactus_metal_encode_gemm_f16(void* out, const void* lhs, const void* rhs,
     auto a = bufForPtrOff(lhs, (size_t)M*K*2);
     auto b = bufForPtrOff(rhs, (size_t)N*K*2);
     auto c = bufForPtrOff(out, (size_t)M*N*2);
+    int use_tr = pretransposed;
     if (mps_ok && (a.second % 16)==0 && (b.second % 16)==0 && (c.second % 16)==0
         && (K % 8)==0 && (N % 8)==0) {
         if (g_enc) { [g_enc endEncoding]; g_enc = nil; }
         if (!g_cmd) g_cmd = [ctx().queue commandBuffer];
         MPSMatrixDescriptor* da = [MPSMatrixDescriptor matrixDescriptorWithRows:M columns:K
             rowBytes:(size_t)K*2 dataType:MPSDataTypeFloat16];
-        MPSMatrixDescriptor* db = pretransposed
+        MPSMatrixDescriptor* db = use_tr
             ? [MPSMatrixDescriptor matrixDescriptorWithRows:N columns:K rowBytes:(size_t)K*2 dataType:MPSDataTypeFloat16]
             : [MPSMatrixDescriptor matrixDescriptorWithRows:K columns:N rowBytes:(size_t)N*2 dataType:MPSDataTypeFloat16];
         MPSMatrixDescriptor* dc = [MPSMatrixDescriptor matrixDescriptorWithRows:M columns:N
@@ -1356,7 +1392,7 @@ bool cactus_metal_encode_gemm_f16(void* out, const void* lhs, const void* rhs,
         MPSMatrix* ma = mat(a.first, a.second, da);
         MPSMatrix* mb = mat(b.first, b.second, db);
         MPSMatrix* mc = mat(c.first, c.second, dc);
-        [mps_gemm(M, N, K, pretransposed != 0) encodeToCommandBuffer:g_cmd
+        [mps_gemm(M, N, K, use_tr != 0) encodeToCommandBuffer:g_cmd
             leftMatrix:ma rightMatrix:mb resultMatrix:mc];
         return true;
     }
@@ -1388,6 +1424,73 @@ bool cactus_metal_encode_attention_f16(void* out, const void* q, const void* k, 
     float scale, uint32_t causal, uint32_t pos_off, uint32_t window, float logit_cap, uint32_t mask_mode) {
     if (!ctx().ok || !ctx().psoAttnDense) return false;
     if (D > 128 || DV > 128 || (D % 4) != 0 || (DV % 4) != 0 || HKV == 0 || HQ % HKV != 0) return false;
+    static const bool mps_attn_ok = MPSSupportsMTLDevice(ctx().dev);
+    bool mask_ok = mask_mode == 0 || (mask_mode == 2 && mask && ctx().psoMaskFill);
+    if (mps_attn_ok && B == 1 && HQ == HKV && !causal && mask_ok && window == 0
+        && logit_cap == 0.0f && S >= 512 && (S % 8) == 0 && (D % 8) == 0 && (DV % 8) == 0
+        && ctx().psoSoftmaxR) {
+        auto qb = bufForPtrOff(q, (size_t)T*HQ*D*2);
+        auto kb = bufForPtrOff(k, (size_t)S*HKV*D*2);
+        auto vb = bufForPtrOff(v, (size_t)S*HKV*DV*2);
+        auto ob = bufForPtrOff(out, (size_t)T*HQ*DV*2);
+        bool aligned = (qb.second % 16)==0 && (kb.second % 16)==0 && (vb.second % 16)==0 && (ob.second % 16)==0
+            && ((D*2) % 16)==0 && ((DV*2) % 16)==0;
+        if (aligned) {
+            static id<MTLBuffer> sbuf = nil;
+            size_t need = (size_t)HQ*T*S*2;
+            if (!sbuf || sbuf.length < need)
+                sbuf = [ctx().dev newBufferWithLength:need options:MTLResourceStorageModeShared];
+            if (sbuf) {
+                float beta = 0.0f;
+                if (mask_mode == 2) {
+                    ensureEncoder();
+                    [g_enc setComputePipelineState:ctx().psoMaskFill];
+                    setBufAt(mask, (size_t)T*S*2, 0);
+                    [g_enc setBuffer:sbuf offset:0 atIndex:1];
+                    uint32_t ts = T*S;
+                    [g_enc setBytes:&ts length:4 atIndex:2];
+                    [g_enc dispatchThreads:MTLSizeMake(ts, HQ, 1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+                    beta = 1.0f;
+                }
+                if (g_enc) { [g_enc endEncoding]; g_enc = nil; }
+                if (!g_cmd) g_cmd = [ctx().queue commandBuffer];
+                MPSMatrixDescriptor* dq = [MPSMatrixDescriptor matrixDescriptorWithRows:T columns:D
+                    rowBytes:(size_t)HQ*D*2 dataType:MPSDataTypeFloat16];
+                MPSMatrixDescriptor* dk = [MPSMatrixDescriptor matrixDescriptorWithRows:S columns:D
+                    rowBytes:(size_t)HKV*D*2 dataType:MPSDataTypeFloat16];
+                MPSMatrixDescriptor* ds = [MPSMatrixDescriptor matrixDescriptorWithRows:T columns:S
+                    rowBytes:(size_t)S*2 dataType:MPSDataTypeFloat16];
+                MPSMatrixDescriptor* dv = [MPSMatrixDescriptor matrixDescriptorWithRows:S columns:DV
+                    rowBytes:(size_t)HKV*DV*2 dataType:MPSDataTypeFloat16];
+                MPSMatrixDescriptor* do2 = [MPSMatrixDescriptor matrixDescriptorWithRows:T columns:DV
+                    rowBytes:(size_t)HQ*DV*2 dataType:MPSDataTypeFloat16];
+                MPSMatrixMultiplication* mqk = mps_gemm_ab(T, S, D, true, scale, beta);
+                for (uint32_t h = 0; h < HQ; ++h) {
+                    MPSMatrix* mq = [[MPSMatrix alloc] initWithBuffer:qb.first offset:qb.second + (size_t)h*D*2 descriptor:dq];
+                    MPSMatrix* mk = [[MPSMatrix alloc] initWithBuffer:kb.first offset:kb.second + (size_t)h*D*2 descriptor:dk];
+                    MPSMatrix* msc = [[MPSMatrix alloc] initWithBuffer:sbuf offset:(size_t)h*T*S*2 descriptor:ds];
+                    [mqk encodeToCommandBuffer:g_cmd leftMatrix:mq rightMatrix:mk resultMatrix:msc];
+                }
+                ensureEncoder();
+                [g_enc setComputePipelineState:ctx().psoSoftmaxR];
+                [g_enc setBuffer:sbuf offset:0 atIndex:0];
+                [g_enc setBuffer:sbuf offset:0 atIndex:1];
+                uint32_t cols = S;
+                [g_enc setBytes:&cols length:4 atIndex:2];
+                [g_enc setThreadgroupMemoryLength:256*4 atIndex:0];
+                [g_enc dispatchThreadgroups:MTLSizeMake((size_t)HQ*T,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+                [g_enc endEncoding]; g_enc = nil;
+                MPSMatrixMultiplication* mpv = mps_gemm(T, DV, S, false);
+                for (uint32_t h = 0; h < HQ; ++h) {
+                    MPSMatrix* msc = [[MPSMatrix alloc] initWithBuffer:sbuf offset:(size_t)h*T*S*2 descriptor:ds];
+                    MPSMatrix* mv = [[MPSMatrix alloc] initWithBuffer:vb.first offset:vb.second + (size_t)h*DV*2 descriptor:dv];
+                    MPSMatrix* mo = [[MPSMatrix alloc] initWithBuffer:ob.first offset:ob.second + (size_t)h*DV*2 descriptor:do2];
+                    [mpv encodeToCommandBuffer:g_cmd leftMatrix:msc rightMatrix:mv resultMatrix:mo];
+                }
+                return true;
+            }
+        }
+    }
     ensureEncoder();
     struct { uint32_t T,S,HQ,HKV,D,DV; float scale; uint32_t causal,pos_off,window; float logit_cap; uint32_t mask_mode; } U =
         { T,S,HQ,HKV,D,DV, scale, causal,pos_off,window, logit_cap, mask_mode };
@@ -1404,10 +1507,47 @@ bool cactus_metal_encode_attention_f16(void* out, const void* q, const void* k, 
     return true;
 }
 
+bool cactus_metal_encode_gemm_batch(void* out, const void* a, const void* b,
+                                    uint32_t M, uint32_t K, uint32_t N, uint32_t batch, int f32out, int f32a) {
+    if (!ctx().ok || !ctx().psoGemmBatch || !ctx().psoGemmBatchF32A) return false;
+    ensureEncoder();
+    uint32_t fo = f32out ? 1u : 0u;
+    [g_enc setComputePipelineState:(f32a ? ctx().psoGemmBatchF32A : ctx().psoGemmBatch)];
+    setBufAt(a, (size_t)batch*M*K*(f32a?4:2), 0); setBufAt(b, (size_t)batch*K*N*2, 1);
+    setBufAt(out, (size_t)batch*M*N*(f32out?4:2), 2);
+    [g_enc setBytes:&M length:4 atIndex:3]; [g_enc setBytes:&K length:4 atIndex:4];
+    [g_enc setBytes:&N length:4 atIndex:5]; [g_enc setBytes:&fo length:4 atIndex:6];
+    [g_enc dispatchThreads:MTLSizeMake((size_t)M*N, batch, 1) threadsPerThreadgroup:MTLSizeMake(64,4,1)];
+    return true;
+}
+bool cactus_metal_encode_conv1d_dw(void* out, const void* x, const void* w,
+                                   uint32_t C, uint32_t L, uint32_t Lout, uint32_t K, uint32_t stride) {
+    if (!ctx().ok || !ctx().psoConvDw) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoConvDw];
+    setBufAt(x, (size_t)C*L*2, 0); setBufAt(w, (size_t)C*K*2, 1); setBufAt(out, (size_t)C*Lout*2, 2);
+    [g_enc setBytes:&L length:4 atIndex:3]; [g_enc setBytes:&Lout length:4 atIndex:4];
+    [g_enc setBytes:&K length:4 atIndex:5]; [g_enc setBytes:&stride length:4 atIndex:6];
+    [g_enc dispatchThreads:MTLSizeMake(Lout, C, 1) threadsPerThreadgroup:MTLSizeMake(64,4,1)];
+    return true;
+}
 bool cactus_metal_encode_strided_copy(void* out, const void* in, const uint32_t* oshape,
     const uint32_t* sstride, uint32_t ndim, uint32_t total, uint32_t base, size_t in_bytes, size_t out_bytes) {
     if (!ctx().ok || ndim == 0 || ndim > 8) return false;
     ensureEncoder();
+    if (ndim >= 2 && sstride[ndim-1] == 1 && (oshape[ndim-1] % 4) == 0 && ctx().psoStridedRows) {
+        uint32_t inner = oshape[ndim-1];
+        uint32_t inner4 = inner / 4;
+        uint32_t nd2 = ndim - 1;
+        uint32_t rows = total / inner;
+        [g_enc setComputePipelineState:ctx().psoStridedRows];
+        setBufAt(in, in_bytes, 0); setBufAt(out, out_bytes, 1);
+        [g_enc setBytes:oshape length:nd2*4 atIndex:2]; [g_enc setBytes:sstride length:nd2*4 atIndex:3];
+        [g_enc setBytes:&nd2 length:4 atIndex:4]; [g_enc setBytes:&rows length:4 atIndex:5];
+        [g_enc setBytes:&base length:4 atIndex:6]; [g_enc setBytes:&inner4 length:4 atIndex:7];
+        [g_enc dispatchThreads:MTLSizeMake(inner4, rows, 1) threadsPerThreadgroup:MTLSizeMake(std::min(inner4, 64u), 4, 1)];
+        return true;
+    }
     [g_enc setComputePipelineState:ctx().psoStrided];
     setBufAt(in, in_bytes, 0); setBufAt(out, out_bytes, 1);
     [g_enc setBytes:oshape length:ndim*4 atIndex:2]; [g_enc setBytes:sstride length:ndim*4 atIndex:3];

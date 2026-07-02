@@ -176,6 +176,42 @@ MetalFusePlan* cactus_metal_plan_build(
         return true;
     };
 
+    auto alias_base = [&](long i, long* off_out) -> long {
+        long off = 0;
+        while (i >= 0) {
+            const GraphNode& nd = *nodes[(size_t)i];
+            if (passthrough(nd) && !nd.input_ids.empty()) {
+                i = idxof(nd.input_ids[0]);
+                continue;
+            }
+            if (nd.op_type == OpType::INDEX && nd.params.axis == 0 && !nd.input_ids.empty()) {
+                long blk = 1;
+                for (size_t d : nd.output_buffer.shape) blk *= (long)d;
+                off += (long)nd.params.index_value * blk;
+                i = idxof(nd.input_ids[0]);
+                continue;
+            }
+            if (nd.op_type == OpType::SLICE && !nd.input_ids.empty()) {
+                long j = idxof(nd.input_ids[0]);
+                if (j < 0) break;
+                const auto& ish = nodes[(size_t)j]->output_buffer.shape;
+                size_t ax = (size_t)nd.params.axis;
+                if (ax >= ish.size()) break;
+                size_t outer = 1;
+                for (size_t d = 0; d < ax; ++d) outer *= ish[d];
+                if (outer != 1) break;
+                long inner = 1;
+                for (size_t d = ax + 1; d < ish.size(); ++d) inner *= (long)ish[d];
+                off += (long)nd.params.slice_start * inner;
+                i = j;
+                continue;
+            }
+            break;
+        }
+        *off_out = off;
+        return i;
+    };
+
     auto add_cluster = [&](MetalCluster c, size_t anchor, const std::vector<size_t>& cover) {
         int32_t cid = (int32_t)plan->clusters.size();
         plan->clusters.push_back(c);
@@ -419,6 +455,228 @@ MetalFusePlan* cactus_metal_plan_build(
             }
         }
 
+        if (nd.op_type == OpType::CAT && nd.input_ids.size() >= 4 && !nd.output_buffer.shape.empty()) {
+            size_t cnt = nd.input_ids.size();
+            bool blocky = true;
+            {
+                size_t ax = (size_t)nd.params.axis;
+                const auto& osh = nd.output_buffer.shape;
+                if (ax >= osh.size()) blocky = false;
+                for (size_t d = 0; blocky && d < ax; ++d) if (osh[d] != 1) blocky = false;
+                long fi = idxof(nd.input_ids[0]);
+                if (blocky && fi >= 0) {
+                    const auto& ish = nodes[(size_t)fi]->output_buffer.shape;
+                    size_t ip = 1, op2 = 1;
+                    for (size_t d : ish) ip *= d;
+                    for (size_t d : osh) op2 *= d;
+                    if (ip * cnt != op2) blocky = false;
+                } else blocky = false;
+            }
+            if (!blocky) { }
+            else {
+            long m0 = -1;
+            {
+                long t = up_in(i, 0);
+                while (t >= 0 && nodes[(size_t)t]->op_type == OpType::PRECISION_CAST
+                       && !nodes[(size_t)t]->input_ids.empty())
+                    t = up(idxof(nodes[(size_t)t]->input_ids[0]));
+                m0 = t;
+            }
+            if (m0 >= 0 && nodes[(size_t)m0]->op_type == OpType::MATMUL
+                && nodes[(size_t)m0]->output_buffer.shape.size() == 2
+                && nodes[(size_t)m0]->output_buffer.precision == Precision::FP16) {
+                size_t M = nodes[(size_t)m0]->output_buffer.shape[0];
+                size_t N = nodes[(size_t)m0]->output_buffer.shape[1];
+                long ka = idxof(nodes[(size_t)m0]->input_ids[0]);
+                size_t K = ka >= 0 ? nodes[(size_t)ka]->output_buffer.shape.back() : 0;
+                bool f32out = nd.output_buffer.precision == Precision::FP32;
+                long parentA = -1, parentB = -1, offA0 = 0, offB0 = 0;
+                bool ok = K > 0;
+                bool f32a = false;
+                std::vector<size_t> cover;
+                for (size_t j = 0; j < cnt && ok; ++j) {
+                    long t = idxof(nd.input_ids[j]);
+                    std::vector<size_t> chain;
+                    while (t >= 0 && (passthrough(*nodes[(size_t)t])
+                           || (nodes[(size_t)t]->op_type == OpType::PRECISION_CAST))) {
+                        if (cons[(size_t)t].size() != 1) { t = -1; break; }
+                        chain.push_back((size_t)t);
+                        t = idxof(nodes[(size_t)t]->input_ids[0]);
+                    }
+                    if (t < 0 || nodes[(size_t)t]->op_type != OpType::MATMUL
+                        || plan->action[(size_t)t] != -1
+                        || cons[(size_t)t].size() != 1
+                        || nodes[(size_t)t]->output_buffer.shape.size() != 2
+                        || nodes[(size_t)t]->output_buffer.shape[0] != M
+                        || nodes[(size_t)t]->output_buffer.shape[1] != N
+                        || nodes[(size_t)t]->params.pretransposed_rhs) { ok = false; break; }
+                    long offA, offB;
+                    long lin = idxof(nodes[(size_t)t]->input_ids[0]);
+                    bool jf32 = false;
+                    long lcast = -1;
+                    if (lin >= 0 && nodes[(size_t)lin]->op_type == OpType::PRECISION_CAST
+                        && nodes[(size_t)lin]->output_buffer.precision == Precision::FP16
+                        && cons[(size_t)lin].size() == 1
+                        && !nodes[(size_t)lin]->input_ids.empty()) {
+                        long ci = idxof(nodes[(size_t)lin]->input_ids[0]);
+                        if (ci >= 0 && nodes[(size_t)ci]->output_buffer.precision == Precision::FP32) {
+                            jf32 = true; lcast = lin; lin = ci;
+                        }
+                    }
+                    long pa = alias_base(lin, &offA);
+                    long pb = alias_base(idxof(nodes[(size_t)t]->input_ids[1]), &offB);
+                    Precision wantA = jf32 ? Precision::FP32 : Precision::FP16;
+                    if (pa < 0 || pb < 0
+                        || nodes[(size_t)pa]->output_buffer.precision != wantA
+                        || nodes[(size_t)pb]->output_buffer.precision != Precision::FP16) { ok = false; break; }
+                    if (j == 0) { parentA = pa; parentB = pb; offA0 = offA; offB0 = offB; f32a = jf32; }
+                    else if (jf32 != f32a) { ok = false; break; }
+                    else if (pa != parentA || pb != parentB
+                             || offA != offA0 + (long)(j * M * K)
+                             || offB != offB0 + (long)(j * K * N)) { ok = false; break; }
+                    cover.push_back((size_t)t);
+                    if (lcast >= 0) cover.push_back((size_t)lcast);
+                    for (size_t cnode : chain) cover.push_back(cnode);
+                }
+                if (ok) {
+                    MetalCluster c;
+                    c.rule = 8;
+                    c.a0 = (size_t)parentA; c.a1 = (size_t)parentB;
+                    c.a2 = (size_t)offA0; c.a3 = (size_t)offB0;
+                    c.u0 = (uint32_t)cnt; c.u1 = (uint32_t)M;
+                    c.b0 = K; c.b1 = N; c.b2 = f32out ? 1 : 0;
+                    c.b3 = f32a ? 1 : 0;
+                    c.b4 = i;
+                    add_cluster(c, i, cover);
+                    continue;
+                }
+            }
+            }
+            bool samesz = true;
+            {
+                long fi = idxof(nd.input_ids[0]);
+                if (fi < 0) samesz = false;
+                else {
+                    size_t ip = nodes[(size_t)fi]->output_buffer.total_size;
+                    samesz = ip * cnt == nd.output_buffer.total_size;
+                }
+            }
+            long tp0 = samesz ? up_in(i, 0) : -1;
+            if (tp0 >= 0 && nodes[(size_t)tp0]->op_type == OpType::TRANSPOSE
+                && nodes[(size_t)tp0]->output_buffer.precision == Precision::FP16
+                && nd.output_buffer.precision == Precision::FP16
+                && nodes[(size_t)tp0]->output_buffer.shape.size() + 1 <= 8
+                && !is_noop_transpose(*nodes[(size_t)tp0])) {
+                const auto& perm0 = nodes[(size_t)tp0]->params.permutation;
+                const auto& tsh0 = nodes[(size_t)tp0]->output_buffer.shape;
+                long parentP = -1, offP0 = 0, strideP = -1;
+                size_t blk = nodes[(size_t)tp0]->output_buffer.total_size;
+                bool ok = !perm0.empty();
+                std::vector<size_t> cover;
+                for (size_t j = 0; j < cnt && ok; ++j) {
+                    long t = idxof(nd.input_ids[j]);
+                    std::vector<size_t> chain;
+                    while (t >= 0 && passthrough(*nodes[(size_t)t])) {
+                        if (cons[(size_t)t].size() != 1) { t = -1; break; }
+                        chain.push_back((size_t)t);
+                        t = idxof(nodes[(size_t)t]->input_ids[0]);
+                    }
+                    if (t < 0 || nodes[(size_t)t]->op_type != OpType::TRANSPOSE
+                        || plan->action[(size_t)t] != -1
+                        || cons[(size_t)t].size() != 1
+                        || nodes[(size_t)t]->params.permutation != perm0
+                        || nodes[(size_t)t]->output_buffer.shape != tsh0
+                        || nodes[(size_t)t]->output_buffer.precision != Precision::FP16) { ok = false; break; }
+                    long offP;
+                    long pp = alias_base(idxof(nodes[(size_t)t]->input_ids[0]), &offP);
+                    if (pp < 0 || nodes[(size_t)pp]->output_buffer.precision != Precision::FP16) { ok = false; break; }
+                    long ii = idxof(nodes[(size_t)t]->input_ids[0]);
+                    if (ii < 0 || nodes[(size_t)ii]->output_buffer.total_size != blk) { ok = false; break; }
+                    if (j == 0) { parentP = pp; offP0 = offP; }
+                    else if (j == 1 && pp == parentP && offP > offP0) { strideP = offP - offP0; }
+                    else if (j == 1 || pp != parentP || offP != offP0 + (long)j * strideP) { ok = false; break; }
+                    cover.push_back((size_t)t);
+                    for (size_t cnode : chain) cover.push_back(cnode);
+                }
+                if (ok && (strideP < 0 || cnt < 2)) ok = false;
+                if (ok) {
+                    size_t ax = (size_t)nd.params.axis;
+                    long fi = idxof(nd.input_ids[0]);
+                    const auto& fsh = nodes[(size_t)fi]->output_buffer.shape;
+                    if (ax >= fsh.size()) ok = false;
+                    else {
+                        size_t pre = 1;
+                        for (size_t d = 0; d < ax && d < fsh.size(); ++d) pre *= fsh[d];
+                        size_t fpre = 1;
+                        const auto& csh = nd.output_buffer.shape;
+                        for (size_t d = 0; d < ax && d < csh.size(); ++d) fpre *= csh[d];
+                        if (pre != fpre) ok = false;
+                    }
+                }
+                if (ok) {
+                    MetalCluster c;
+                    c.rule = 10;
+                    c.a0 = (size_t)parentP; c.a1 = (size_t)up_in(i, 0);
+                    c.a2 = (size_t)offP0;
+                    c.u0 = (uint32_t)cnt;
+                    c.u1 = (uint32_t)nd.params.axis;
+                    c.b0 = (size_t)strideP;
+                    c.b4 = i;
+                    add_cluster(c, i, cover);
+                    continue;
+                }
+            }
+
+            long c0 = up_in(i, 0);
+            if (!blocky) c0 = -1;
+            if (c0 >= 0 && nodes[(size_t)c0]->op_type == OpType::CONV1D
+                && nodes[(size_t)c0]->output_buffer.precision == Precision::FP16) {
+                const auto& osh = nodes[(size_t)c0]->output_buffer.shape;
+                size_t Lout = osh.empty() ? 0 : osh.back();
+                size_t stride = nodes[(size_t)c0]->params.stride ? nodes[(size_t)c0]->params.stride : 1;
+                long parentX = -1, parentW = -1, offX0 = 0, offW0 = 0;
+                size_t L = 0, Kk = 0;
+                bool ok = Lout > 0;
+                std::vector<size_t> cover;
+                for (size_t j = 0; j < cnt && ok; ++j) {
+                    long t = up(idxof(nd.input_ids[j]));
+                    if (t < 0 || nodes[(size_t)t]->op_type != OpType::CONV1D
+                        || plan->action[(size_t)t] != -1
+                        || cons[(size_t)t].size() != 1
+                        || nodes[(size_t)t]->input_ids.size() != 2
+                        || nodes[(size_t)t]->output_buffer.shape.back() != Lout) { ok = false; break; }
+                    long offX, offW;
+                    long px = alias_base(idxof(nodes[(size_t)t]->input_ids[0]), &offX);
+                    long pw = alias_base(idxof(nodes[(size_t)t]->input_ids[1]), &offW);
+                    if (px < 0 || pw < 0
+                        || nodes[(size_t)px]->output_buffer.precision != Precision::FP16
+                        || nodes[(size_t)pw]->output_buffer.precision != Precision::FP16) { ok = false; break; }
+                    long xin = idxof(nodes[(size_t)t]->input_ids[0]);
+                    long win = idxof(nodes[(size_t)t]->input_ids[1]);
+                    size_t Lj = nodes[(size_t)xin]->output_buffer.shape.back();
+                    size_t Kj = nodes[(size_t)win]->output_buffer.shape.back();
+                    if (j == 0) {
+                        parentX = px; parentW = pw; offX0 = offX; offW0 = offW; L = Lj; Kk = Kj;
+                        if ((L - Kk) / stride + 1 != Lout) { ok = false; break; }
+                    } else if (px != parentX || pw != parentW || Lj != L || Kj != Kk
+                               || offX != offX0 + (long)(j * L)
+                               || offW != offW0 + (long)(j * Kk)) { ok = false; break; }
+                    cover.push_back((size_t)t);
+                }
+                if (ok) {
+                    MetalCluster c;
+                    c.rule = 9;
+                    c.a0 = (size_t)parentX; c.a1 = (size_t)parentW;
+                    c.a2 = (size_t)offX0; c.a3 = (size_t)offW0;
+                    c.u0 = (uint32_t)cnt; c.u1 = (uint32_t)L;
+                    c.b0 = Lout; c.b1 = Kk; c.b2 = stride;
+                    c.b4 = i;
+                    add_cluster(c, i, cover);
+                    continue;
+                }
+            }
+        }
+
         if (nd.op_type == OpType::ADD_CLIPPED && nd.input_ids.size() == 2) {
             long n0 = up_in(i, 0), n1 = up_in(i, 1);
             long norm = -1, res = -1;
@@ -618,7 +876,9 @@ MetalFusePlan* cactus_metal_plan_build(
         if (plan->action[i] != -2 && nodes[i]->op_type != OpType::INPUT)
             plan->exec_list.push_back((uint32_t)i);
 
-    if (!plan->clusters.empty()) {
+    bool decode_like = false;
+    for (auto& cl : plan->clusters) if (cl.rule == 1) { decode_like = true; break; }
+    if (decode_like) {
         std::vector<size_t> last_read(n, 0);
         auto base_of = [&](size_t i) -> size_t {
             size_t cur = i;
@@ -706,6 +966,7 @@ MetalFusePlan* cactus_metal_plan_build(
 }
 
 void cactus_metal_plan_free(MetalFusePlan* p) { delete p; }
+
 
 void cactus_metal_plan_disable(MetalFusePlan* p) {
     if (!p) return;
@@ -907,6 +1168,59 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
                 cactus_metal_encode_scalar(2, lg, lg, V, c.f0);
             }
             return cactus_graph_metal_tail(lg, V);
+        }
+        case 8: {
+            GraphNode& anchor = *nodes[c.b4];
+            const char* pa = (const char*)nodes[c.a0]->output_buffer.get_data();
+            const char* pb = (const char*)nodes[c.a1]->output_buffer.get_data();
+            void* out = anchor.output_buffer.get_data();
+            if (!pa || !pb || !out) return false;
+            return cactus_metal_encode_gemm_batch(out, pa + c.a2 * (c.b3 ? 4 : 2), pb + c.a3 * 2,
+                c.u1, (uint32_t)c.b0, (uint32_t)c.b1, c.u0, (int)c.b2, (int)c.b3);
+        }
+        case 9: {
+            GraphNode& anchor = *nodes[c.b4];
+            const char* px = (const char*)nodes[c.a0]->output_buffer.get_data();
+            const char* pw = (const char*)nodes[c.a1]->output_buffer.get_data();
+            void* out = anchor.output_buffer.get_data();
+            if (!px || !pw || !out) return false;
+            return cactus_metal_encode_conv1d_dw(out, px + c.a2 * 2, pw + c.a3 * 2,
+                c.u0, c.u1, (uint32_t)c.b0, (uint32_t)c.b1, (uint32_t)c.b2);
+        }
+        case 10: {
+            GraphNode& anchor = *nodes[c.b4];
+            GraphNode& tn = *nodes[c.a1];
+            const char* pp = (const char*)nodes[c.a0]->output_buffer.get_data();
+            void* out = anchor.output_buffer.get_data();
+            if (!pp || !out) return false;
+            long ii = -1;
+            {
+                auto it = map.find(tn.input_ids[0]);
+                if (it == map.end()) return false;
+                ii = (long)it->second;
+            }
+            const auto& ish = nodes[(size_t)ii]->output_buffer.shape;
+            const auto& osh = tn.output_buffer.shape;
+            const auto& perm = tn.params.permutation;
+            uint32_t ndim = (uint32_t)perm.size();
+            uint32_t ax = c.u1;
+            if (ndim == 0 || ndim + 1 > 8 || ish.size() != ndim || osh.size() != ndim || ax > ndim) return false;
+            size_t istr[8];
+            istr[ndim - 1] = 1;
+            for (size_t d = ndim - 1; d > 0; --d) istr[d - 1] = istr[d] * ish[d];
+            uint32_t oshape[8], sstride[8];
+            for (uint32_t d = 0; d < ax; ++d) {
+                oshape[d] = (uint32_t)osh[d];
+                sstride[d] = (uint32_t)istr[perm[d]];
+            }
+            oshape[ax] = c.u0; sstride[ax] = (uint32_t)c.b0;
+            for (uint32_t d = ax; d < ndim; ++d) {
+                oshape[d + 1] = (uint32_t)osh[d];
+                sstride[d + 1] = (uint32_t)istr[perm[d]];
+            }
+            size_t total = (size_t)c.u0 * tn.output_buffer.total_size;
+            return cactus_metal_encode_strided_copy(out, pp + c.a2 * 2, oshape, sstride, ndim + 1,
+                (uint32_t)total, 0, nodes[c.a0]->output_buffer.byte_size - c.a2 * 2, anchor.output_buffer.byte_size);
         }
         default: return false;
     }

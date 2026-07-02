@@ -74,6 +74,8 @@ bool cactus_metal_encode_gemm_f16(void*, const void*, const void*, uint32_t, uin
 bool cactus_metal_encode_attention_f16(void*, const void*, const void*, const void*, const void*,
     uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
     float, uint32_t, uint32_t, uint32_t, float, uint32_t) { return false; }
+bool cactus_metal_encode_gemm_batch(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, int, int) { return false; }
+bool cactus_metal_encode_conv1d_dw(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
 bool cactus_metal_encode_strided_copy(void*, const void*, const uint32_t*, const uint32_t*,
     uint32_t, uint32_t, uint32_t, size_t, size_t) { return false; }
 bool cactus_metal_encode_bcast_binary(int, void*, const void*, const void*, const uint32_t*,
