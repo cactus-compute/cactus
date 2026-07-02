@@ -616,7 +616,14 @@ struct PaddedAppendBackup {
     uint64_t overshoot;
     uint64_t keep_sink;
     uint64_t kept_padded;
+    uint64_t ring_rows;
 };
+
+size_t ring_row_for_pos(size_t pos, size_t sink, size_t ring_capacity) {
+    if (pos < ring_capacity) return pos;
+    size_t recent = ring_capacity > sink ? ring_capacity - sink : 1;
+    return sink + (pos - sink) % recent;
+}
 
 struct CacheRowRegion {
     size_t offset;
@@ -649,6 +656,27 @@ std::vector<uint8_t> CactusGraph::snapshot_cache_padded_append(size_t node_id, s
     const auto* meta = get_meta(buf);
     const size_t len0 = meta->current_seq_len;
     const size_t appended = real_tokens + pad_tokens;
+    if (kv_cache_resident()) {
+        const size_t ring_window = meta->max_seq_len - meta->sink_size - 1;
+        if (ring_window <= meta->sink_size || appended >= ring_window - meta->sink_size) {
+            throw std::runtime_error("padded cache append larger than the attention window is not supported");
+        }
+        std::vector<uint8_t> backup(sizeof(PaddedAppendBackup));
+        auto* header = reinterpret_cast<PaddedAppendBackup*>(backup.data());
+        header->overshoot = 0;
+        header->keep_sink = meta->sink_size;
+        header->kept_padded = ring_window;
+        header->ring_rows = pad_tokens;
+        const auto* base = static_cast<const uint8_t*>(buf.get_data());
+        for (const auto& region : cache_row_regions(buf, meta)) {
+            for (size_t t = 0; t < pad_tokens; ++t) {
+                size_t row = ring_row_for_pos(len0 + real_tokens + t, meta->sink_size, ring_window);
+                const uint8_t* src = base + region.offset + row * region.row_bytes;
+                backup.insert(backup.end(), src, src + region.row_bytes);
+            }
+        }
+        return backup;
+    }
     if (len0 == 0 || len0 + appended <= window) return {};
     const size_t keep_sink = std::min({static_cast<size_t>(meta->sink_size), len0, window});
     const size_t tail_capacity = window - keep_sink;
@@ -686,6 +714,23 @@ void CactusGraph::rollback_cache_padded_append(size_t node_id, size_t real_token
         return;
     }
     const auto* header = reinterpret_cast<const PaddedAppendBackup*>(backup.data());
+    if (header->ring_rows > 0) {
+        const size_t ring_window = header->kept_padded;
+        const size_t sink = header->keep_sink;
+        const size_t len_after = meta->current_seq_len;
+        const size_t len0 = len_after >= real_tokens + pad_tokens ? len_after - real_tokens - pad_tokens : 0;
+        auto* base = static_cast<uint8_t*>(buf.get_data());
+        const uint8_t* saved = backup.data() + sizeof(PaddedAppendBackup);
+        for (const auto& region : cache_row_regions(buf, meta)) {
+            for (size_t t = 0; t < header->ring_rows; ++t) {
+                size_t row = ring_row_for_pos(len0 + real_tokens + t, sink, ring_window);
+                std::memcpy(base + region.offset + row * region.row_bytes, saved, region.row_bytes);
+                saved += region.row_bytes;
+            }
+        }
+        meta->current_seq_len = len0 + real_tokens;
+        return;
+    }
     const size_t overshoot = header->overshoot;
     const size_t keep_sink = header->keep_sink;
     const size_t kept_padded = header->kept_padded;

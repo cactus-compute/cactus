@@ -51,6 +51,10 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoClampF16=nil, psoClampF32=nil, psoGlu=nil;
     id<MTLComputePipelineState> psoLayerNorm=nil, psoSoftmaxR=nil, psoConv1dK3=nil, psoAttnDense=nil, psoAttnD64=nil;
     id<MTLComputePipelineState> psoGemmBatch=nil, psoGemmBatchF32A=nil, psoConvDw=nil, psoStridedRows=nil, psoMaskFill=nil;
+    id<MTLComputePipelineState> psoReduceF16=nil, psoReduceF32=nil, psoCumsumF16=nil, psoCumsumF32=nil;
+    id<MTLComputePipelineState> psoConcat2=nil, psoGatherF32Idx=nil, psoRopeFull=nil, psoMaxpool1d=nil;
+    id<MTLComputePipelineState> psoBilinear=nil, psoConv1dGen=nil, psoConv1dNlcDw=nil, psoConv2d=nil;
+    id<MTLComputePipelineState> psoBatchnorm=nil, psoGroupnorm=nil, psoBiasAddRows=nil;
     id<MTLBuffer> dummy=nil;
     bool ok = false;
 
@@ -98,6 +102,14 @@ struct MetalCtx {
         psoConv1dK3=pso("conv1d_k3_f16"); psoAttnDense=pso("attn_f16"); psoAttnD64=pso("attn_f16_d64");
         psoGemmBatch=pso("gemm_batch_f16"); psoGemmBatchF32A=pso("gemm_batch_f32a"); psoConvDw=pso("conv1d_dw_f16");
         psoStridedRows=pso("strided_copy_rows_f16"); psoMaskFill=pso("attn_maskfill_f16");
+        psoReduceF16=pso("reduce_axis_f16"); psoReduceF32=pso("reduce_axis_f32");
+        psoCumsumF16=pso("cumsum_f16"); psoCumsumF32=pso("cumsum_f32");
+        psoConcat2=pso("concat2_f16"); psoGatherF32Idx=pso("gather_f32idx_f16");
+        psoRopeFull=pso("rope_full_f16"); psoMaxpool1d=pso("maxpool1d_f16");
+        psoBilinear=pso("bilinear_f16"); psoConv1dGen=pso("conv1d_gen_f16");
+        psoConv1dNlcDw=pso("conv1d_nlc_dw_f16"); psoConv2d=pso("conv2d_f16");
+        psoBatchnorm=pso("batchnorm_f16"); psoGroupnorm=pso("groupnorm_f16");
+        psoBiasAddRows=pso("bias_add_rows_f16");
         dummy=[dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
         ok = psoT&&psoG&&psoTm&&psoGm&&psoRotate&&psoEmbO&&psoEmbH&&psoEmbOm&&psoEmbHm&&psoCopy&&psoBinary&&psoScalar&&psoUnary&&psoRms&&psoSwiglu&&psoRmsAdd&&psoCF16F32&&psoCF32F16&&psoCI8F16&&psoCF16I8
              &&psoAttn&&psoAttnC&&psoAttnPre&&psoAttnPreMma2&&psoKvAppendM&&psoKvAppendRingM&&psoSlideS&&psoSlideR&&psoSlideRM&&psoStrided&&psoBcast&&psoScatter&&psoKvAppend&&psoRope&&psoArgmax&&psoGather;
@@ -1507,6 +1519,186 @@ bool cactus_metal_encode_attention_f16(void* out, const void* q, const void* k, 
     return true;
 }
 
+bool cactus_metal_encode_reduce_axis(int op, void* out, const void* in, uint32_t outer,
+                                     uint32_t axis_size, uint32_t inner, int f32) {
+    if (!ctx().ok || !ctx().psoReduceF16 || !ctx().psoReduceF32) return false;
+    ensureEncoder();
+    size_t es = f32 ? 4 : 2;
+    uint32_t n = outer * inner;
+    [g_enc setComputePipelineState:(f32 ? ctx().psoReduceF32 : ctx().psoReduceF16)];
+    setBufAt(in, (size_t)outer*axis_size*inner*es, 0); setBufAt(out, (size_t)n*es, 1);
+    [g_enc setBytes:&axis_size length:4 atIndex:2]; [g_enc setBytes:&inner length:4 atIndex:3];
+    [g_enc setBytes:&n length:4 atIndex:4]; [g_enc setBytes:&op length:4 atIndex:5];
+    [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    return true;
+}
+bool cactus_metal_encode_cumsum(void* out, const void* in, uint32_t outer,
+                                uint32_t axis_size, uint32_t inner, int f32) {
+    if (!ctx().ok || !ctx().psoCumsumF16 || !ctx().psoCumsumF32) return false;
+    ensureEncoder();
+    size_t es = f32 ? 4 : 2;
+    uint32_t n = outer * inner;
+    size_t bytes = (size_t)outer*axis_size*inner*es;
+    [g_enc setComputePipelineState:(f32 ? ctx().psoCumsumF32 : ctx().psoCumsumF16)];
+    setBufAt(in, bytes, 0); setBufAt(out, bytes, 1);
+    [g_enc setBytes:&axis_size length:4 atIndex:2]; [g_enc setBytes:&inner length:4 atIndex:3];
+    [g_enc setBytes:&n length:4 atIndex:4];
+    [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    return true;
+}
+bool cactus_metal_encode_concat2(void* out, const void* a, const void* b,
+                                 uint32_t outer, uint32_t a_axis, uint32_t b_axis, uint32_t inner) {
+    if (!ctx().ok || !ctx().psoConcat2) return false;
+    ensureEncoder();
+    uint32_t n = outer * (a_axis + b_axis) * inner;
+    [g_enc setComputePipelineState:ctx().psoConcat2];
+    setBufAt(a, (size_t)outer*a_axis*inner*2, 0); setBufAt(b, (size_t)outer*b_axis*inner*2, 1);
+    setBufAt(out, (size_t)n*2, 2);
+    [g_enc setBytes:&a_axis length:4 atIndex:3]; [g_enc setBytes:&b_axis length:4 atIndex:4];
+    [g_enc setBytes:&inner length:4 atIndex:5]; [g_enc setBytes:&n length:4 atIndex:6];
+    [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    return true;
+}
+bool cactus_metal_encode_gather_f32idx(void* out, const void* table, const void* idx,
+                                       uint32_t rows, uint32_t D, size_t table_bytes) {
+    if (!ctx().ok || !ctx().psoGatherF32Idx) return false;
+    ensureEncoder();
+    uint32_t n = rows * D;
+    [g_enc setComputePipelineState:ctx().psoGatherF32Idx];
+    setBufAt(table, table_bytes, 0); setBufAt(idx, (size_t)rows*4, 1); setBufAt(out, (size_t)n*2, 2);
+    [g_enc setBytes:&D length:4 atIndex:3]; [g_enc setBytes:&n length:4 atIndex:4];
+    [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    return true;
+}
+bool cactus_metal_encode_rope_full(void* out, const void* in, uint32_t tokens, uint32_t S,
+                                   uint32_t H, uint32_t D, uint32_t rot, uint32_t pos0,
+                                   float theta, int gptj) {
+    if (!ctx().ok || !ctx().psoRopeFull) return false;
+    ensureEncoder();
+    uint32_t gj = gptj ? 1u : 0u;
+    [g_enc setComputePipelineState:ctx().psoRopeFull];
+    setBufAt(in, (size_t)tokens*D*2, 0); setBufAt(out, (size_t)tokens*D*2, 1);
+    [g_enc setBytes:&S length:4 atIndex:2]; [g_enc setBytes:&H length:4 atIndex:3];
+    [g_enc setBytes:&D length:4 atIndex:4]; [g_enc setBytes:&rot length:4 atIndex:5];
+    [g_enc setBytes:&pos0 length:4 atIndex:6]; [g_enc setBytes:&theta length:4 atIndex:7];
+    [g_enc setBytes:&gj length:4 atIndex:8];
+    [g_enc dispatchThreads:MTLSizeMake(D, tokens, 1) threadsPerThreadgroup:MTLSizeMake(std::min(D, 64u), 4, 1)];
+    return true;
+}
+bool cactus_metal_encode_maxpool1d(void* out, const void* in, uint32_t NC, uint32_t L,
+                                   uint32_t Lout, uint32_t K, uint32_t stride) {
+    if (!ctx().ok || !ctx().psoMaxpool1d) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoMaxpool1d];
+    setBufAt(in, (size_t)NC*L*2, 0); setBufAt(out, (size_t)NC*Lout*2, 1);
+    [g_enc setBytes:&L length:4 atIndex:2]; [g_enc setBytes:&Lout length:4 atIndex:3];
+    [g_enc setBytes:&K length:4 atIndex:4]; [g_enc setBytes:&stride length:4 atIndex:5];
+    [g_enc dispatchThreads:MTLSizeMake(Lout, NC, 1) threadsPerThreadgroup:MTLSizeMake(std::min(Lout, 64u), 4, 1)];
+    return true;
+}
+bool cactus_metal_encode_bilinear(void* out, const void* in, uint32_t sh, uint32_t sw,
+                                  uint32_t dh, uint32_t dw, uint32_t E, int align) {
+    if (!ctx().ok || !ctx().psoBilinear) return false;
+    ensureEncoder();
+    uint32_t al = align ? 1u : 0u;
+    [g_enc setComputePipelineState:ctx().psoBilinear];
+    setBufAt(in, (size_t)sh*sw*E*2, 0); setBufAt(out, (size_t)dh*dw*E*2, 1);
+    [g_enc setBytes:&sh length:4 atIndex:2]; [g_enc setBytes:&sw length:4 atIndex:3];
+    [g_enc setBytes:&dh length:4 atIndex:4]; [g_enc setBytes:&dw length:4 atIndex:5];
+    [g_enc setBytes:&E length:4 atIndex:6]; [g_enc setBytes:&al length:4 atIndex:7];
+    [g_enc dispatchThreads:MTLSizeMake(E, dh*dw, 1) threadsPerThreadgroup:MTLSizeMake(std::min(E, 64u), 4, 1)];
+    return true;
+}
+bool cactus_metal_encode_conv1d_gen(void* out, const void* x, const void* w, const void* bias,
+                                    uint32_t N, uint32_t Cin, uint32_t L, uint32_t Cout,
+                                    uint32_t Lout, uint32_t K, uint32_t stride, int w_ck_co) {
+    if (!ctx().ok || !ctx().psoConv1dGen) return false;
+    ensureEncoder();
+    uint32_t hb = bias ? 1u : 0u, wl = w_ck_co ? 1u : 0u;
+    [g_enc setComputePipelineState:ctx().psoConv1dGen];
+    setBufAt(x, (size_t)N*Cin*L*2, 0); setBufAt(w, (size_t)Cout*Cin*K*2, 1);
+    setBufAt(bias ? bias : x, bias ? (size_t)Cout*2 : 2, 2);
+    setBufAt(out, (size_t)N*Cout*Lout*2, 3);
+    [g_enc setBytes:&Cin length:4 atIndex:4]; [g_enc setBytes:&L length:4 atIndex:5];
+    [g_enc setBytes:&Cout length:4 atIndex:6]; [g_enc setBytes:&Lout length:4 atIndex:7];
+    [g_enc setBytes:&K length:4 atIndex:8]; [g_enc setBytes:&stride length:4 atIndex:9];
+    [g_enc setBytes:&hb length:4 atIndex:10]; [g_enc setBytes:&wl length:4 atIndex:11];
+    [g_enc dispatchThreads:MTLSizeMake(Lout, Cout, N) threadsPerThreadgroup:MTLSizeMake(std::min(Lout, 64u), 4, 1)];
+    return true;
+}
+bool cactus_metal_encode_conv1d_nlc_dw(void* out, const void* x, const void* w, const void* bias,
+                                       uint32_t N, uint32_t L, uint32_t C, uint32_t K,
+                                       uint32_t dil, uint32_t pad) {
+    if (!ctx().ok || !ctx().psoConv1dNlcDw) return false;
+    ensureEncoder();
+    uint32_t hb = bias ? 1u : 0u;
+    [g_enc setComputePipelineState:ctx().psoConv1dNlcDw];
+    setBufAt(x, (size_t)N*L*C*2, 0); setBufAt(w, (size_t)C*K*2, 1);
+    setBufAt(bias ? bias : x, bias ? (size_t)C*2 : 2, 2);
+    setBufAt(out, (size_t)N*L*C*2, 3);
+    [g_enc setBytes:&L length:4 atIndex:4]; [g_enc setBytes:&C length:4 atIndex:5];
+    [g_enc setBytes:&K length:4 atIndex:6]; [g_enc setBytes:&dil length:4 atIndex:7];
+    [g_enc setBytes:&pad length:4 atIndex:8]; [g_enc setBytes:&hb length:4 atIndex:9];
+    [g_enc dispatchThreads:MTLSizeMake(C, L, N) threadsPerThreadgroup:MTLSizeMake(std::min(C, 64u), 4, 1)];
+    return true;
+}
+bool cactus_metal_encode_conv2d(void* out, const void* x, const void* w, const void* bias,
+                                uint32_t N, uint32_t Cin, uint32_t H, uint32_t W, uint32_t Cout,
+                                uint32_t Ho, uint32_t Wo, uint32_t K, uint32_t stride,
+                                uint32_t pad, int dw) {
+    if (!ctx().ok || !ctx().psoConv2d) return false;
+    ensureEncoder();
+    uint32_t hb = bias ? 1u : 0u, dwf = dw ? 1u : 0u;
+    size_t wbytes = dw ? (size_t)Cout*K*K*2 : (size_t)Cout*Cin*K*K*2;
+    [g_enc setComputePipelineState:ctx().psoConv2d];
+    setBufAt(x, (size_t)N*Cin*H*W*2, 0); setBufAt(w, wbytes, 1);
+    setBufAt(bias ? bias : x, bias ? (size_t)Cout*2 : 2, 2);
+    setBufAt(out, (size_t)N*Cout*Ho*Wo*2, 3);
+    [g_enc setBytes:&Cin length:4 atIndex:4]; [g_enc setBytes:&H length:4 atIndex:5];
+    [g_enc setBytes:&W length:4 atIndex:6]; [g_enc setBytes:&Cout length:4 atIndex:7];
+    [g_enc setBytes:&Ho length:4 atIndex:8]; [g_enc setBytes:&Wo length:4 atIndex:9];
+    [g_enc setBytes:&K length:4 atIndex:10]; [g_enc setBytes:&stride length:4 atIndex:11];
+    [g_enc setBytes:&pad length:4 atIndex:12]; [g_enc setBytes:&dwf length:4 atIndex:13];
+    [g_enc setBytes:&hb length:4 atIndex:14];
+    [g_enc dispatchThreads:MTLSizeMake(Wo, Ho, (size_t)N*Cout) threadsPerThreadgroup:MTLSizeMake(std::min(Wo, 32u), std::min(Ho, 8u), 1)];
+    return true;
+}
+bool cactus_metal_encode_batchnorm(void* out, const void* x, const void* w, const void* b,
+                                   const void* rm, const void* rv, uint32_t C, uint32_t inner,
+                                   uint32_t total, float eps) {
+    if (!ctx().ok || !ctx().psoBatchnorm) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoBatchnorm];
+    setBufAt(x, (size_t)total*2, 0); setBufAt(w, (size_t)C*2, 1); setBufAt(b, (size_t)C*2, 2);
+    setBufAt(rm, (size_t)C*2, 3); setBufAt(rv, (size_t)C*2, 4); setBufAt(out, (size_t)total*2, 5);
+    [g_enc setBytes:&C length:4 atIndex:6]; [g_enc setBytes:&inner length:4 atIndex:7];
+    [g_enc setBytes:&eps length:4 atIndex:8]; [g_enc setBytes:&total length:4 atIndex:9];
+    [g_enc dispatchThreads:MTLSizeMake(total,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    return true;
+}
+bool cactus_metal_encode_groupnorm(void* out, const void* x, const void* w, const void* b,
+                                   uint32_t N, uint32_t C, uint32_t S, uint32_t groups, float eps) {
+    if (!ctx().ok || !ctx().psoGroupnorm || groups == 0 || C % groups != 0) return false;
+    ensureEncoder();
+    uint32_t cpg = C / groups;
+    [g_enc setComputePipelineState:ctx().psoGroupnorm];
+    setBufAt(x, (size_t)N*C*S*2, 0); setBufAt(w, (size_t)C*2, 1); setBufAt(b, (size_t)C*2, 2);
+    setBufAt(out, (size_t)N*C*S*2, 3);
+    [g_enc setBytes:&cpg length:4 atIndex:4]; [g_enc setBytes:&S length:4 atIndex:5];
+    [g_enc setBytes:&C length:4 atIndex:6]; [g_enc setBytes:&eps length:4 atIndex:7];
+    [g_enc setThreadgroupMemoryLength:256*4 atIndex:0];
+    [g_enc dispatchThreadgroups:MTLSizeMake(groups, N, 1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    return true;
+}
+bool cactus_metal_encode_bias_add_rows(void* y, const void* bias, uint32_t C, uint32_t total) {
+    if (!ctx().ok || !ctx().psoBiasAddRows) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoBiasAddRows];
+    setBufAt(y, (size_t)total*2, 0); setBufAt(bias, (size_t)C*2, 1);
+    [g_enc setBytes:&C length:4 atIndex:2]; [g_enc setBytes:&total length:4 atIndex:3];
+    [g_enc dispatchThreads:MTLSizeMake(total,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    return true;
+}
 bool cactus_metal_encode_gemm_batch(void* out, const void* a, const void* b,
                                     uint32_t M, uint32_t K, uint32_t N, uint32_t batch, int f32out, int f32a) {
     if (!ctx().ok || !ctx().psoGemmBatch || !ctx().psoGemmBatchF32A) return false;

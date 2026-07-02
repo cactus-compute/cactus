@@ -930,7 +930,8 @@ kernel void binary_f16(device const half* a [[buffer(0)]], device const half* b 
                        device half* y [[buffer(2)]], constant uint& n [[buffer(3)]],
                        constant int& op [[buffer(4)]], uint i [[thread_position_in_grid]]) {
     if (i>=n) return; float av=(float)a[i], bv=(float)b[i], r;
-    switch(op){ case 2: r=av-bv; break; case 3: r=av*bv; break; case 4: r=av/bv; break; default: r=av+bv; }
+    switch(op){ case 2: r=av-bv; break; case 3: r=av*bv; break; case 4: r=av/bv; break;
+                case 5: r=(av!=bv)?1.0f:0.0f; break; default: r=av+bv; }
     if (op==1) r=clamp(r,-65500.0f,65500.0f);
     y[i]=(half)r;
 }
@@ -976,12 +977,38 @@ kernel void rms_norm_rope_f16(
     }
 }
 
+static inline float erf_approx(float x) {
+    float sgn = x < 0.0f ? -1.0f : 1.0f;
+    float ax = fabs(x);
+    float t = 1.0f / (1.0f + 0.3275911f * ax);
+    float poly = t * (0.254829592f + t * (-0.284496736f + t * (1.421413741f
+               + t * (-1.453152027f + t * 1.061405429f))));
+    return sgn * (1.0f - poly * precise::exp(-ax * ax));
+}
+
+static inline float scalar_apply(float v, float p, int op) {
+    switch (op) {
+        case 0: return v+p;
+        case 1: return v-p;
+        case 3: return v/p;
+        case 4: return precise::exp(v);
+        case 5: return precise::sqrt(v);
+        case 6: return precise::cos(v);
+        case 7: return precise::sin(v);
+        case 8: return precise::log(v);
+        case 9: return fabs(v);
+        case 10: return precise::pow(v, p);
+        case 11: return (v != p) ? 1.0f : 0.0f;
+        case 12: return (v > 0.0f) ? v : v*p;
+        default: return v*p;
+    }
+}
+
 kernel void scalar_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
                        constant uint& n [[buffer(2)]], constant int& op [[buffer(3)]],
                        constant float& p [[buffer(4)]], uint i [[thread_position_in_grid]]) {
-    if (i>=n) return; float v=(float)in[i], r;
-    switch(op){ case 0: r=v+p; break; case 1: r=v-p; break; case 3: r=v/p; break; default: r=v*p; }
-    y[i]=(half)r;
+    if (i>=n) return;
+    y[i]=(half)scalar_apply((float)in[i], p, op);
 }
 
 kernel void unary_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
@@ -991,6 +1018,8 @@ kernel void unary_f16(device const half* in [[buffer(0)]], device half* y [[buff
     if (op==0) r=gelu_tanh(x);
     else if (op==1) r=precise::tanh(x);
     else if (op==2) r=x/(1.0f+precise::exp(-x));
+    else if (op==4) r=0.5f*x*(1.0f+erf_approx(x*0.70710678f));
+    else if (op==5) r=1.0f/(1.0f+precise::exp(-x));
     else r=max(x,0.0f);
     y[i]=(half)r;
 }
@@ -1203,7 +1232,7 @@ kernel void binary_f32(device const float* a [[buffer(0)]], device const float* 
                        device float* y [[buffer(2)]], constant uint& n [[buffer(3)]],
                        constant int& op [[buffer(4)]], uint i [[thread_position_in_grid]]) {
     if (i>=n) return; float av=a[i], bv=b[i], r;
-    switch(op){ case 2: r=av-bv; break; case 3: r=av*bv; break; case 4: r=av/bv; break; default: r=av+bv; }
+    switch(op){ case 2: r=av-bv; break; case 3: r=av*bv; break; case 4: r=av/bv; break; case 5: r=(av!=bv)?1.0f:0.0f; break; default: r=av+bv; }
     if (op==1) r=clamp(r,-65500.0f,65500.0f);
     y[i]=r;
 }
@@ -1211,9 +1240,8 @@ kernel void binary_f32(device const float* a [[buffer(0)]], device const float* 
 kernel void scalar_f32(device const float* in [[buffer(0)]], device float* y [[buffer(1)]],
                        constant uint& n [[buffer(2)]], constant int& op [[buffer(3)]],
                        constant float& p [[buffer(4)]], uint i [[thread_position_in_grid]]) {
-    if (i>=n) return; float v=in[i], r;
-    switch(op){ case 0: r=v+p; break; case 1: r=v-p; break; case 3: r=v/p; break; default: r=v*p; }
-    y[i]=r;
+    if (i>=n) return;
+    y[i]=scalar_apply(in[i], p, op);
 }
 
 kernel void unary_f32(device const float* in [[buffer(0)]], device float* y [[buffer(1)]],
@@ -1223,6 +1251,8 @@ kernel void unary_f32(device const float* in [[buffer(0)]], device float* y [[bu
     if (op==0) r=gelu_tanh(x);
     else if (op==1) r=precise::tanh(x);
     else if (op==2) r=x/(1.0f+precise::exp(-x));
+    else if (op==4) r=0.5f*x*(1.0f+erf_approx(x*0.70710678f));
+    else if (op==5) r=1.0f/(1.0f+precise::exp(-x));
     else r=max(x,0.0f);
     y[i]=r;
 }
@@ -1577,6 +1607,288 @@ kernel void conv1d_dw_f16(device const half* x [[buffer(0)]], device const half*
     float acc = 0;
     for (uint k = 0; k < Kk; ++k) acc = fma((float)xc[k], (float)wc[k], acc);
     y[(size_t)c*Lout + l] = (half)acc;
+}
+
+kernel void reduce_axis_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
+                            constant uint& axis_size [[buffer(2)]], constant uint& inner [[buffer(3)]],
+                            constant uint& n [[buffer(4)]], constant int& op [[buffer(5)]],
+                            uint i [[thread_position_in_grid]]) {
+    if (i >= n) return;
+    uint outer = i / inner, in_i = i % inner;
+    size_t base = (size_t)outer * axis_size * inner + in_i;
+    float r;
+    if (op <= 2) {
+        float sum = 0;
+        for (uint a = 0; a < axis_size; ++a) sum += (float)in[base + (size_t)a*inner];
+        float mean = sum / (float)max(axis_size, 1u);
+        if (op == 0) r = sum;
+        else if (op == 1) r = mean;
+        else {
+            float var = 0;
+            for (uint a = 0; a < axis_size; ++a) { float d = (float)in[base + (size_t)a*inner] - mean; var += d*d; }
+            r = var / (float)max(axis_size, 1u);
+        }
+    } else {
+        r = axis_size ? (float)in[base] : 0.0f;
+        for (uint a = 1; a < axis_size; ++a) {
+            float v = (float)in[base + (size_t)a*inner];
+            r = (op == 3) ? min(r, v) : max(r, v);
+        }
+    }
+    y[i] = (half)r;
+}
+
+kernel void reduce_axis_f32(device const float* in [[buffer(0)]], device float* y [[buffer(1)]],
+                            constant uint& axis_size [[buffer(2)]], constant uint& inner [[buffer(3)]],
+                            constant uint& n [[buffer(4)]], constant int& op [[buffer(5)]],
+                            uint i [[thread_position_in_grid]]) {
+    if (i >= n) return;
+    uint outer = i / inner, in_i = i % inner;
+    size_t base = (size_t)outer * axis_size * inner + in_i;
+    float r;
+    if (op <= 2) {
+        float sum = 0;
+        for (uint a = 0; a < axis_size; ++a) sum += in[base + (size_t)a*inner];
+        float mean = sum / (float)max(axis_size, 1u);
+        if (op == 0) r = sum;
+        else if (op == 1) r = mean;
+        else {
+            float var = 0;
+            for (uint a = 0; a < axis_size; ++a) { float d = in[base + (size_t)a*inner] - mean; var += d*d; }
+            r = var / (float)max(axis_size, 1u);
+        }
+    } else {
+        r = axis_size ? in[base] : 0.0f;
+        for (uint a = 1; a < axis_size; ++a) {
+            float v = in[base + (size_t)a*inner];
+            r = (op == 3) ? min(r, v) : max(r, v);
+        }
+    }
+    y[i] = r;
+}
+
+kernel void cumsum_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
+                       constant uint& axis_size [[buffer(2)]], constant uint& inner [[buffer(3)]],
+                       constant uint& n [[buffer(4)]], uint i [[thread_position_in_grid]]) {
+    if (i >= n) return;
+    uint outer = i / inner, in_i = i % inner;
+    size_t base = (size_t)outer * axis_size * inner + in_i;
+    float run = 0;
+    for (uint a = 0; a < axis_size; ++a) {
+        run += (float)in[base + (size_t)a*inner];
+        y[base + (size_t)a*inner] = (half)run;
+    }
+}
+
+kernel void cumsum_f32(device const float* in [[buffer(0)]], device float* y [[buffer(1)]],
+                       constant uint& axis_size [[buffer(2)]], constant uint& inner [[buffer(3)]],
+                       constant uint& n [[buffer(4)]], uint i [[thread_position_in_grid]]) {
+    if (i >= n) return;
+    uint outer = i / inner, in_i = i % inner;
+    size_t base = (size_t)outer * axis_size * inner + in_i;
+    float run = 0;
+    for (uint a = 0; a < axis_size; ++a) {
+        run += in[base + (size_t)a*inner];
+        y[base + (size_t)a*inner] = run;
+    }
+}
+
+kernel void concat2_f16(device const half* a [[buffer(0)]], device const half* b [[buffer(1)]],
+                        device half* y [[buffer(2)]], constant uint& a_axis [[buffer(3)]],
+                        constant uint& b_axis [[buffer(4)]], constant uint& inner [[buffer(5)]],
+                        constant uint& n [[buffer(6)]], uint i [[thread_position_in_grid]]) {
+    if (i >= n) return;
+    uint in_i = i % inner, rest = i / inner;
+    uint ab = a_axis + b_axis;
+    uint ax = rest % ab, outer = rest / ab;
+    y[i] = (ax < a_axis) ? a[((size_t)outer*a_axis + ax)*inner + in_i]
+                         : b[((size_t)outer*b_axis + (ax - a_axis))*inner + in_i];
+}
+
+kernel void gather_f32idx_f16(device const half* table [[buffer(0)]], device const float* rows [[buffer(1)]],
+                              device half* out [[buffer(2)]], constant uint& D [[buffer(3)]],
+                              constant uint& n [[buffer(4)]], uint i [[thread_position_in_grid]]) {
+    if (i >= n) return;
+    uint row = i / D, d = i % D;
+    out[i] = table[(size_t)(uint)rows[row]*D + d];
+}
+
+kernel void rope_full_f16(device const half* x [[buffer(0)]], device half* y [[buffer(1)]],
+                          constant uint& S [[buffer(2)]], constant uint& H [[buffer(3)]],
+                          constant uint& D [[buffer(4)]], constant uint& rot [[buffer(5)]],
+                          constant uint& pos0 [[buffer(6)]], constant float& theta [[buffer(7)]],
+                          constant uint& gptj [[buffer(8)]],
+                          uint2 gid [[thread_position_in_grid]]) {
+    uint d = gid.x, tok = gid.y;
+    if (d >= D) return;
+    size_t off = (size_t)tok * D + d;
+    uint hd = D;
+    uint seq = (tok / H) % S;
+    if (d >= rot) { y[off] = x[off]; return; }
+    uint hr = rot / 2;
+    uint pair_i = gptj ? d / 2 : (d % hr);
+    float freq = 1.0f / precise::pow(theta, (2.0f * pair_i) / (float)rot);
+    float angle = (float)(pos0 + seq) * freq;
+    float c = (float)(half)precise::cos(angle);
+    float sn = (float)(half)precise::sin(angle);
+    float v = (float)x[off];
+    float other;
+    bool first;
+    if (gptj) { first = (d % 2) == 0; other = (float)x[off + (first ? 1 : -1)]; }
+    else { first = d < hr; other = (float)x[off + (first ? (long)hr : -(long)hr)]; }
+    y[off] = (half)(first ? v*c - other*sn : v*c + other*sn);
+    (void)hd;
+}
+
+kernel void maxpool1d_f16(device const half* x [[buffer(0)]], device half* y [[buffer(1)]],
+                          constant uint& L [[buffer(2)]], constant uint& Lout [[buffer(3)]],
+                          constant uint& K [[buffer(4)]], constant uint& stride [[buffer(5)]],
+                          uint2 gid [[thread_position_in_grid]]) {
+    uint lo = gid.x, nc = gid.y;
+    if (lo >= Lout) return;
+    size_t base = (size_t)nc * L + (size_t)lo * stride;
+    float r = -INFINITY;
+    for (uint k = 0; k < K && lo * stride + k < L; ++k) r = max(r, (float)x[base + k]);
+    y[(size_t)nc * Lout + lo] = (half)r;
+}
+
+kernel void bilinear_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
+                         constant uint& sh [[buffer(2)]], constant uint& sw [[buffer(3)]],
+                         constant uint& dh [[buffer(4)]], constant uint& dw [[buffer(5)]],
+                         constant uint& E [[buffer(6)]], constant uint& align [[buffer(7)]],
+                         uint2 gid [[thread_position_in_grid]]) {
+    uint e = gid.x, pix = gid.y;
+    if (e >= E || pix >= dh * dw) return;
+    uint dy = pix / dw, dx = pix % dw;
+    float syf, sxf;
+    if (align) {
+        float sc_h = (sh > 1 && dh > 1) ? (float)(sh - 1) / (float)(dh - 1) : 0.0f;
+        float sc_w = (sw > 1 && dw > 1) ? (float)(sw - 1) / (float)(dw - 1) : 0.0f;
+        syf = dy * sc_h; sxf = dx * sc_w;
+    } else {
+        float sc_h = dh ? (float)sh / (float)dh : 0.0f;
+        float sc_w = dw ? (float)sw / (float)dw : 0.0f;
+        syf = clamp((dy + 0.5f) * sc_h - 0.5f, 0.0f, (float)sh - 1.0f);
+        sxf = clamp((dx + 0.5f) * sc_w - 0.5f, 0.0f, (float)sw - 1.0f);
+    }
+    int y0 = (int)floor(syf), x0 = (int)floor(sxf);
+    int y1 = min(y0 + 1, (int)sh - 1), x1 = min(x0 + 1, (int)sw - 1);
+    float fy = syf - y0, fx = sxf - x0;
+    float v00 = (float)in[((size_t)y0*sw + x0)*E + e], v01 = (float)in[((size_t)y0*sw + x1)*E + e];
+    float v10 = (float)in[((size_t)y1*sw + x0)*E + e], v11 = (float)in[((size_t)y1*sw + x1)*E + e];
+    y[(size_t)pix*E + e] = (half)(v00*(1-fx)*(1-fy) + v01*fx*(1-fy) + v10*(1-fx)*fy + v11*fx*fy);
+}
+
+kernel void conv1d_gen_f16(device const half* x [[buffer(0)]], device const half* w [[buffer(1)]],
+                           device const half* bias [[buffer(2)]], device half* y [[buffer(3)]],
+                           constant uint& Cin [[buffer(4)]], constant uint& L [[buffer(5)]],
+                           constant uint& Cout [[buffer(6)]], constant uint& Lout [[buffer(7)]],
+                           constant uint& K [[buffer(8)]], constant uint& stride [[buffer(9)]],
+                           constant uint& has_bias [[buffer(10)]], constant uint& w_ck_co [[buffer(11)]],
+                           uint3 gid [[thread_position_in_grid]]) {
+    uint lo = gid.x, co = gid.y, n = gid.z;
+    if (lo >= Lout || co >= Cout) return;
+    float acc = has_bias ? (float)bias[co] : 0.0f;
+    for (uint ci = 0; ci < Cin; ++ci) {
+        device const half* xr = x + ((size_t)n*Cin + ci)*L + (size_t)lo*stride;
+        for (uint k = 0; k < K; ++k) {
+            float wv = w_ck_co ? (float)w[((size_t)ci*K + k)*Cout + co]
+                               : (float)w[((size_t)co*Cin + ci)*K + k];
+            acc = fma((float)xr[k], wv, acc);
+        }
+    }
+    y[((size_t)n*Cout + co)*Lout + lo] = (half)acc;
+}
+
+kernel void conv1d_nlc_dw_f16(device const half* x [[buffer(0)]], device const half* w [[buffer(1)]],
+                              device const half* bias [[buffer(2)]], device half* y [[buffer(3)]],
+                              constant uint& L [[buffer(4)]], constant uint& C [[buffer(5)]],
+                              constant uint& K [[buffer(6)]], constant uint& dil [[buffer(7)]],
+                              constant uint& pad [[buffer(8)]], constant uint& has_bias [[buffer(9)]],
+                              uint3 gid [[thread_position_in_grid]]) {
+    uint c = gid.x, l = gid.y, n = gid.z;
+    if (c >= C || l >= L) return;
+    float acc = has_bias ? (float)bias[c] : 0.0f;
+    for (uint k = 0; k < K; ++k) {
+        long p = (long)l - (long)pad + (long)k * dil;
+        if (p >= 0 && p < (long)L)
+            acc = fma((float)x[((size_t)n*L + p)*C + c], (float)w[(size_t)c*K + k], acc);
+    }
+    y[((size_t)n*L + l)*C + c] = (half)acc;
+}
+
+kernel void conv2d_f16(device const half* x [[buffer(0)]], device const half* w [[buffer(1)]],
+                       device const half* bias [[buffer(2)]], device half* y [[buffer(3)]],
+                       constant uint& Cin [[buffer(4)]], constant uint& H [[buffer(5)]],
+                       constant uint& W [[buffer(6)]], constant uint& Cout [[buffer(7)]],
+                       constant uint& Ho [[buffer(8)]], constant uint& Wo [[buffer(9)]],
+                       constant uint& K [[buffer(10)]], constant uint& stride [[buffer(11)]],
+                       constant uint& pad [[buffer(12)]], constant uint& dw [[buffer(13)]],
+                       constant uint& has_bias [[buffer(14)]],
+                       uint3 gid [[thread_position_in_grid]]) {
+    uint wo = gid.x, ho = gid.y, nco = gid.z;
+    if (wo >= Wo || ho >= Ho) return;
+    uint n = nco / Cout, co = nco % Cout;
+    float acc = has_bias ? (float)bias[co] : 0.0f;
+    uint ci0 = dw ? co : 0, ci1 = dw ? co + 1 : Cin;
+    for (uint ci = ci0; ci < ci1; ++ci) {
+        for (uint kh = 0; kh < K; ++kh) {
+            long h = (long)ho * stride - (long)pad + kh;
+            if (h < 0 || h >= (long)H) continue;
+            for (uint kw = 0; kw < K; ++kw) {
+                long ww = (long)wo * stride - (long)pad + kw;
+                if (ww < 0 || ww >= (long)W) continue;
+                float wv = dw ? (float)w[((size_t)co*K + kh)*K + kw]
+                              : (float)w[(((size_t)co*Cin + ci)*K + kh)*K + kw];
+                acc = fma((float)x[(((size_t)n*Cin + ci)*H + h)*W + ww], wv, acc);
+            }
+        }
+    }
+    y[(((size_t)n*Cout + co)*Ho + ho)*Wo + wo] = (half)acc;
+}
+
+kernel void batchnorm_f16(device const half* x [[buffer(0)]], device const half* w [[buffer(1)]],
+                          device const half* b [[buffer(2)]], device const half* rm [[buffer(3)]],
+                          device const half* rv [[buffer(4)]], device half* y [[buffer(5)]],
+                          constant uint& C [[buffer(6)]], constant uint& inner [[buffer(7)]],
+                          constant float& eps [[buffer(8)]], constant uint& n [[buffer(9)]],
+                          uint i [[thread_position_in_grid]]) {
+    if (i >= n) return;
+    uint c = (i / inner) % C;
+    float inv = 1.0f / precise::sqrt((float)rv[c] + eps);
+    y[i] = (half)(((float)x[i] - (float)rm[c]) * inv * (float)w[c] + (float)b[c]);
+}
+
+kernel void groupnorm_f16(device const half* x [[buffer(0)]], device const half* w [[buffer(1)]],
+                          device const half* b [[buffer(2)]], device half* y [[buffer(3)]],
+                          constant uint& cpg [[buffer(4)]], constant uint& S [[buffer(5)]],
+                          constant uint& C [[buffer(6)]], constant float& eps [[buffer(7)]],
+                          uint2 tgp [[threadgroup_position_in_grid]],
+                          uint2 tp [[thread_position_in_threadgroup]], uint2 ntp [[threads_per_threadgroup]],
+                          threadgroup float* red [[threadgroup(0)]]) {
+    uint g = tgp.x, n = tgp.y, t = tp.x, nt = ntp.x;
+    size_t base = ((size_t)n*C + (size_t)g*cpg) * S;
+    uint count = cpg * S;
+    float sum = 0, sq = 0;
+    for (uint i = t; i < count; i += nt) { float v = (float)x[base + i]; sum += v; sq += v*v; }
+    red[t] = sum; threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s2 = nt/2; s2 > 0; s2 >>= 1) { if (t < s2) red[t] += red[t+s2]; threadgroup_barrier(mem_flags::mem_threadgroup); }
+    sum = red[0]; threadgroup_barrier(mem_flags::mem_threadgroup);
+    red[t] = sq; threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s2 = nt/2; s2 > 0; s2 >>= 1) { if (t < s2) red[t] += red[t+s2]; threadgroup_barrier(mem_flags::mem_threadgroup); }
+    sq = red[0];
+    float mean = sum / count;
+    float inv = 1.0f / precise::sqrt(sq / count - mean*mean + eps);
+    for (uint i = t; i < count; i += nt) {
+        uint c = g*cpg + i / S;
+        y[base + i] = (half)(((float)x[base + i] - mean) * inv * (float)w[c] + (float)b[c]);
+    }
+}
+
+kernel void bias_add_rows_f16(device half* y [[buffer(0)]], device const half* bias [[buffer(1)]],
+                              constant uint& C [[buffer(2)]], constant uint& n [[buffer(3)]],
+                              uint i [[thread_position_in_grid]]) {
+    if (i < n) y[i] = (half)((float)y[i] + (float)bias[i % C]);
 }
 
 kernel void bcast_binary_f16(device const half* a [[buffer(0)]], device const half* b [[buffer(1)]],

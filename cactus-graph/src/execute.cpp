@@ -489,11 +489,12 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
                 (uint32_t)rows, (uint32_t)K, (uint32_t)N, node.params.pretransposed_rhs ? 1 : 0);
         }
         case OpType::ADD: case OpType::ADD_CLIPPED: case OpType::SUBTRACT:
-        case OpType::MULTIPLY: case OpType::DIVIDE: {
+        case OpType::MULTIPLY: case OpType::DIVIDE: case OpType::NOT_EQUAL: {
             const auto& a = get_input(node, 0, nodes, map);
             const auto& b = get_input(node, 1, nodes, map);
             int code = node.op_type==OpType::ADD?0: node.op_type==OpType::ADD_CLIPPED?1:
-                       node.op_type==OpType::SUBTRACT?2: node.op_type==OpType::MULTIPLY?3:4;
+                       node.op_type==OpType::SUBTRACT?2: node.op_type==OpType::MULTIPLY?3:
+                       node.op_type==OpType::DIVIDE?4:5;
             bool f32 = a.precision == Precision::FP32 && b.precision == Precision::FP32
                     && out.precision == Precision::FP32;
             if (f32 && a.total_size == out.total_size && b.total_size == out.total_size)
@@ -566,22 +567,226 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             return true;
         }
         case OpType::SCALAR_ADD: case OpType::SCALAR_SUBTRACT:
-        case OpType::SCALAR_MULTIPLY: case OpType::SCALAR_DIVIDE: {
+        case OpType::SCALAR_MULTIPLY: case OpType::SCALAR_DIVIDE:
+        case OpType::SCALAR_EXP: case OpType::SCALAR_SQRT: case OpType::SCALAR_COS:
+        case OpType::SCALAR_SIN: case OpType::SCALAR_LOG: case OpType::ABS:
+        case OpType::POW: case OpType::SCALAR_NOT_EQUAL: case OpType::LEAKY_RELU: {
             const auto& in = get_input(node, 0, nodes, map);
-            int code = node.op_type==OpType::SCALAR_ADD?0: node.op_type==OpType::SCALAR_SUBTRACT?1:
-                       node.op_type==OpType::SCALAR_MULTIPLY?2:3;
+            int code;
+            switch (node.op_type) {
+                case OpType::SCALAR_ADD: code = 0; break;
+                case OpType::SCALAR_SUBTRACT: code = 1; break;
+                case OpType::SCALAR_MULTIPLY: code = 2; break;
+                case OpType::SCALAR_DIVIDE: code = 3; break;
+                case OpType::SCALAR_EXP: code = 4; break;
+                case OpType::SCALAR_SQRT: code = 5; break;
+                case OpType::SCALAR_COS: code = 6; break;
+                case OpType::SCALAR_SIN: code = 7; break;
+                case OpType::SCALAR_LOG: code = 8; break;
+                case OpType::ABS: code = 9; break;
+                case OpType::POW: code = 10; break;
+                case OpType::SCALAR_NOT_EQUAL: code = 11; break;
+                default: code = 12; break;
+            }
             if (in.precision == Precision::FP32 && out.precision == Precision::FP32)
                 return cactus_metal_encode_scalar_f32(code, out.get_data(), in.get_data(), out.total_size, node.params.scalar);
             if (!fp16(in) || !fp16(out)) return false;
             return cactus_metal_encode_scalar(code, out.get_data(), in.get_data(), out.total_size, node.params.scalar);
         }
-        case OpType::GELU: case OpType::TANH: case OpType::SILU: case OpType::RELU: {
+        case OpType::GELU: case OpType::TANH: case OpType::SILU: case OpType::RELU:
+        case OpType::GELU_ERF: case OpType::SIGMOID: {
             const auto& in = get_input(node, 0, nodes, map);
-            int code = node.op_type==OpType::GELU?0: node.op_type==OpType::TANH?1: node.op_type==OpType::SILU?2:3;
+            int code = node.op_type==OpType::GELU?0: node.op_type==OpType::TANH?1: node.op_type==OpType::SILU?2:
+                       node.op_type==OpType::GELU_ERF?4: node.op_type==OpType::SIGMOID?5:3;
             if (in.precision == Precision::FP32 && out.precision == Precision::FP32)
                 return cactus_metal_encode_unary_f32(code, out.get_data(), in.get_data(), out.total_size);
             if (!fp16(in) || !fp16(out)) return false;
             return cactus_metal_encode_unary(code, out.get_data(), in.get_data(), out.total_size);
+        }
+        case OpType::SUM: case OpType::MEAN: case OpType::VARIANCE:
+        case OpType::MIN: case OpType::MAX: {
+            const auto& in = get_input(node, 0, nodes, map);
+            int axis = node.params.axis;
+            if (axis < 0 || (size_t)axis >= in.shape.size()) return false;
+            bool f32 = in.precision == Precision::FP32 && out.precision == Precision::FP32;
+            if (!f32 && (!fp16(in) || !fp16(out))) return false;
+            int code = node.op_type==OpType::SUM?0: node.op_type==OpType::MEAN?1:
+                       node.op_type==OpType::VARIANCE?2: node.op_type==OpType::MIN?3:4;
+            size_t outer = 1, inner = 1;
+            for (size_t d = 0; d < (size_t)axis; ++d) outer *= in.shape[d];
+            for (size_t d = (size_t)axis + 1; d < in.shape.size(); ++d) inner *= in.shape[d];
+            return cactus_metal_encode_reduce_axis(code, out.get_data(), in.get_data(),
+                (uint32_t)outer, (uint32_t)in.shape[(size_t)axis], (uint32_t)inner, f32 ? 1 : 0);
+        }
+        case OpType::CUMSUM: {
+            const auto& in = get_input(node, 0, nodes, map);
+            int axis = node.params.axis;
+            if (axis < 0 || (size_t)axis >= in.shape.size()) return false;
+            bool f32 = in.precision == Precision::FP32 && out.precision == Precision::FP32;
+            if (!f32 && (!fp16(in) || !fp16(out))) return false;
+            size_t outer = 1, inner = 1;
+            for (size_t d = 0; d < (size_t)axis; ++d) outer *= in.shape[d];
+            for (size_t d = (size_t)axis + 1; d < in.shape.size(); ++d) inner *= in.shape[d];
+            return cactus_metal_encode_cumsum(out.get_data(), in.get_data(),
+                (uint32_t)outer, (uint32_t)in.shape[(size_t)axis], (uint32_t)inner, f32 ? 1 : 0);
+        }
+        case OpType::CONCAT: {
+            if (node.input_ids.size() != 2) return false;
+            const auto& a = get_input(node, 0, nodes, map);
+            const auto& b = get_input(node, 1, nodes, map);
+            if (!fp16(a) || !fp16(b) || !fp16(out)) return false;
+            int axis = node.params.axis;
+            if (axis < 0) axis += (int)a.shape.size();
+            if (axis < 0 || (size_t)axis >= a.shape.size() || a.shape.size() != b.shape.size()) return false;
+            size_t outer = 1, inner = 1;
+            for (size_t d = 0; d < (size_t)axis; ++d) outer *= a.shape[d];
+            for (size_t d = (size_t)axis + 1; d < a.shape.size(); ++d) inner *= a.shape[d];
+            return cactus_metal_encode_concat2(out.get_data(), a.get_data(), b.get_data(),
+                (uint32_t)outer, (uint32_t)a.shape[(size_t)axis], (uint32_t)b.shape[(size_t)axis], (uint32_t)inner);
+        }
+        case OpType::GATHER: {
+            const auto& t = get_input(node, 0, nodes, map);
+            const auto& idx = get_input(node, 1, nodes, map);
+            if (!fp16(t) || !fp16(out) || idx.precision != Precision::FP32) return false;
+            if (t.shape.size() < 2) return false;
+            size_t D = t.total_size / t.shape[0];
+            return cactus_metal_encode_gather_f32idx(out.get_data(), t.get_data(), idx.get_data(),
+                (uint32_t)idx.total_size, (uint32_t)D, t.byte_size);
+        }
+        case OpType::ROPE: case OpType::ROPE_GPTJ: {
+            const auto& in = get_input(node, 0, nodes, map);
+            if (!fp16(in) || !fp16(out) || in.shape.size() < 4) return false;
+            size_t S = in.shape[1], H = in.shape[2], D = in.shape[3];
+            bool gptj = node.op_type == OpType::ROPE_GPTJ;
+            size_t rot = gptj ? (size_t)node.params.scalar : D;
+            if (rot == 0 || rot > D || (rot % 2) != 0) return false;
+            size_t tokens = in.total_size / D;
+            return cactus_metal_encode_rope_full(out.get_data(), in.get_data(),
+                (uint32_t)tokens, (uint32_t)S, (uint32_t)H, (uint32_t)D, (uint32_t)rot,
+                (uint32_t)node.params.position_offset, node.params.theta, gptj ? 1 : 0);
+        }
+        case OpType::MAXPOOL1D: {
+            const auto& in = get_input(node, 0, nodes, map);
+            if (!fp16(in) || !fp16(out) || in.shape.size() != 3 || out.shape.size() != 3) return false;
+            return cactus_metal_encode_maxpool1d(out.get_data(), in.get_data(),
+                (uint32_t)(in.shape[0] * in.shape[1]), (uint32_t)in.shape[2],
+                (uint32_t)out.shape[2], (uint32_t)node.params.kernel_size, (uint32_t)node.params.stride);
+        }
+        case OpType::BILINEAR_INTERPOLATION: {
+            const auto& in = get_input(node, 0, nodes, map);
+            if (!fp16(in) || !fp16(out) || in.shape.size() != 2) return false;
+            size_t src = (size_t)std::sqrt((double)in.shape[0]);
+            if (src * src != in.shape[0]) return false;
+            return cactus_metal_encode_bilinear(out.get_data(), in.get_data(),
+                (uint32_t)src, (uint32_t)src, (uint32_t)node.params.dst_height,
+                (uint32_t)node.params.dst_width, (uint32_t)in.shape[1],
+                node.params.align_corners ? 1 : 0);
+        }
+        case OpType::CONV1D: case OpType::CONV1D_K7S3: {
+            if (node.input_ids.size() < 2) return false;
+            const auto& x = get_input(node, 0, nodes, map);
+            const auto& w = get_input(node, 1, nodes, map);
+            const BufferDesc* b = node.input_ids.size() > 2 ? &get_input(node, 2, nodes, map) : nullptr;
+            if (!fp16(x) || !fp16(w) || !fp16(out)) return false;
+            if (b && b->precision != Precision::FP16) return false;
+            if (x.shape.size() != 3 || w.shape.size() != 3 || out.shape.size() != 3) return false;
+            bool ck_co = node.op_type == OpType::CONV1D_K7S3;
+            size_t K = ck_co ? w.shape[1] : w.shape[2];
+            size_t Cout = ck_co ? w.shape[2] : w.shape[0];
+            return cactus_metal_encode_conv1d_gen(out.get_data(), x.get_data(), w.get_data(),
+                b ? b->get_data() : nullptr, (uint32_t)x.shape[0], (uint32_t)x.shape[1],
+                (uint32_t)x.shape[2], (uint32_t)Cout, (uint32_t)out.shape[2], (uint32_t)K,
+                (uint32_t)(node.params.stride ? node.params.stride : 1), ck_co ? 1 : 0);
+        }
+        case OpType::CONV1D_CAUSAL: case OpType::CONV1D_SAME_DEPTHWISE_K9: {
+            if (node.input_ids.size() < 2) return false;
+            const auto& x = get_input(node, 0, nodes, map);
+            const auto& w = get_input(node, 1, nodes, map);
+            bool causal = node.op_type == OpType::CONV1D_CAUSAL;
+            const BufferDesc* b = (!causal && node.input_ids.size() > 2) ? &get_input(node, 2, nodes, map) : nullptr;
+            if (!fp16(x) || !fp16(w) || !fp16(out)) return false;
+            if (b && b->precision != Precision::FP16) return false;
+            if (x.shape.size() != 3) return false;
+            size_t C = x.shape[2];
+            size_t K;
+            if (causal) {
+                if (w.shape.size() != 3 || w.shape[0] != C || w.shape[1] != 1) return false;
+                K = w.shape[2];
+            } else {
+                K = w.shape.back();
+                if (w.total_size != C * K) return false;
+            }
+            size_t dil = causal ? (node.params.dilation ? node.params.dilation : 1) : 1;
+            size_t pad = causal ? (K - 1) * dil : K / 2;
+            return cactus_metal_encode_conv1d_nlc_dw(out.get_data(), x.get_data(), w.get_data(),
+                b ? b->get_data() : nullptr, (uint32_t)x.shape[0], (uint32_t)x.shape[1],
+                (uint32_t)C, (uint32_t)K, (uint32_t)dil, (uint32_t)pad);
+        }
+        case OpType::CONV2D_K3S2P1: case OpType::CONV2D_K3S1P1:
+        case OpType::CONV2D_DEPTHWISE_K3S2P1: case OpType::CONV2D_POINTWISE_1X1: {
+            if (node.input_ids.size() < 2) return false;
+            const auto& x = get_input(node, 0, nodes, map);
+            const auto& w = get_input(node, 1, nodes, map);
+            const BufferDesc* b = node.input_ids.size() > 2 ? &get_input(node, 2, nodes, map) : nullptr;
+            if (!fp16(x) || !fp16(w) || !fp16(out)) return false;
+            if (b && b->precision != Precision::FP16) return false;
+            if (x.shape.size() != 4 || out.shape.size() != 4) return false;
+            bool dw = node.op_type == OpType::CONV2D_DEPTHWISE_K3S2P1;
+            bool pw = node.op_type == OpType::CONV2D_POINTWISE_1X1;
+            uint32_t K = pw ? 1 : 3;
+            uint32_t stride = (node.op_type == OpType::CONV2D_K3S1P1 || pw) ? 1 : 2;
+            uint32_t pad = pw ? 0 : 1;
+            return cactus_metal_encode_conv2d(out.get_data(), x.get_data(), w.get_data(),
+                b ? b->get_data() : nullptr, (uint32_t)x.shape[0], (uint32_t)x.shape[1],
+                (uint32_t)x.shape[2], (uint32_t)x.shape[3], (uint32_t)out.shape[1],
+                (uint32_t)out.shape[2], (uint32_t)out.shape[3], K, stride, pad, dw ? 1 : 0);
+        }
+        case OpType::CONV1D_POINTWISE: {
+            if (node.input_ids.size() < 2) return false;
+            const auto& x = get_input(node, 0, nodes, map);
+            const auto& w = get_input(node, 1, nodes, map);
+            const BufferDesc* b = node.input_ids.size() > 2 ? &get_input(node, 2, nodes, map) : nullptr;
+            if (!fp16(x) || !fp16(w) || !fp16(out)) return false;
+            if (b && b->precision != Precision::FP16) return false;
+            if (x.shape.size() != 3 || out.shape.size() != 3) return false;
+            size_t Cin = x.shape[2], Cout = out.shape[2];
+            if (w.total_size != Cin * Cout) return false;
+            size_t rows = x.shape[0] * x.shape[1];
+            if (!cactus_metal_encode_gemm_f16(out.get_data(), x.get_data(), w.get_data(),
+                    (uint32_t)rows, (uint32_t)Cin, (uint32_t)Cout, 1)) return false;
+            if (b) return cactus_metal_encode_bias_add_rows(out.get_data(), b->get_data(),
+                    (uint32_t)Cout, (uint32_t)out.total_size);
+            return true;
+        }
+        case OpType::BATCHNORM: {
+            if (node.input_ids.size() != 5) return false;
+            const auto& x = get_input(node, 0, nodes, map);
+            const auto& w = get_input(node, 1, nodes, map);
+            const auto& b = get_input(node, 2, nodes, map);
+            const auto& rm = get_input(node, 3, nodes, map);
+            const auto& rv = get_input(node, 4, nodes, map);
+            if (!fp16(x) || !fp16(out) || !fp16(w) || !fp16(b) || !fp16(rm) || !fp16(rv)) return false;
+            int axis = node.params.axis;
+            if (axis < 0) axis += (int)x.shape.size();
+            if (axis < 0 || (size_t)axis >= x.shape.size()) return false;
+            size_t inner = 1;
+            for (size_t d = (size_t)axis + 1; d < x.shape.size(); ++d) inner *= x.shape[d];
+            return cactus_metal_encode_batchnorm(out.get_data(), x.get_data(), w.get_data(),
+                b.get_data(), rm.get_data(), rv.get_data(), (uint32_t)x.shape[(size_t)axis],
+                (uint32_t)inner, (uint32_t)x.total_size, node.params.epsilon);
+        }
+        case OpType::GROUPNORM: {
+            if (node.input_ids.size() < 3) return false;
+            const auto& x = get_input(node, 0, nodes, map);
+            const auto& w = get_input(node, 1, nodes, map);
+            const auto& b = get_input(node, 2, nodes, map);
+            if (!fp16(x) || !fp16(out) || !fp16(w) || !fp16(b) || x.shape.size() < 2) return false;
+            size_t spatial = 1;
+            for (size_t d = 2; d < x.shape.size(); ++d) spatial *= x.shape[d];
+            size_t groups = node.params.num_groups ? node.params.num_groups : 32;
+            return cactus_metal_encode_groupnorm(out.get_data(), x.get_data(), w.get_data(),
+                b.get_data(), (uint32_t)x.shape[0], (uint32_t)x.shape[1], (uint32_t)spatial,
+                (uint32_t)groups, node.params.epsilon);
         }
         case OpType::CLAMP: {
             const auto& in = get_input(node, 0, nodes, map);
@@ -908,6 +1113,7 @@ void CactusGraph::build_metal_retype_plan() {
         if (!ok[ri]) continue;
         const GraphNode& nd = *nodes_[ri];
         if (retained_output_node_ids_.count(nd.id) || persistent_node_ids_.count(nd.id)) { ok[ri] = 0; continue; }
+        if (cons[ri].empty()) { ok[ri] = 0; continue; }
         for (size_t c : cons[ri]) {
             const GraphNode& cn = *nodes_[c];
             bool absorbs = (cn.op_type == OpType::PRECISION_CAST

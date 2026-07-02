@@ -117,6 +117,37 @@ bool cactus_metal_encode_gemm_f16(void* out, const void* lhs, const void* rhs,
 bool cactus_metal_encode_attention_f16(void* out, const void* q, const void* k, const void* v, const void* mask,
     uint32_t B, uint32_t T, uint32_t S, uint32_t HQ, uint32_t HKV, uint32_t D, uint32_t DV,
     float scale, uint32_t causal, uint32_t pos_off, uint32_t window, float logit_cap, uint32_t mask_mode);
+bool cactus_metal_encode_reduce_axis(int op, void* out, const void* in, uint32_t outer,
+                                     uint32_t axis_size, uint32_t inner, int f32);
+bool cactus_metal_encode_cumsum(void* out, const void* in, uint32_t outer,
+                                uint32_t axis_size, uint32_t inner, int f32);
+bool cactus_metal_encode_concat2(void* out, const void* a, const void* b,
+                                 uint32_t outer, uint32_t a_axis, uint32_t b_axis, uint32_t inner);
+bool cactus_metal_encode_gather_f32idx(void* out, const void* table, const void* idx,
+                                       uint32_t rows, uint32_t D, size_t table_bytes);
+bool cactus_metal_encode_rope_full(void* out, const void* in, uint32_t tokens, uint32_t S,
+                                   uint32_t H, uint32_t D, uint32_t rot, uint32_t pos0,
+                                   float theta, int gptj);
+bool cactus_metal_encode_maxpool1d(void* out, const void* in, uint32_t NC, uint32_t L,
+                                   uint32_t Lout, uint32_t K, uint32_t stride);
+bool cactus_metal_encode_bilinear(void* out, const void* in, uint32_t sh, uint32_t sw,
+                                  uint32_t dh, uint32_t dw, uint32_t E, int align);
+bool cactus_metal_encode_conv1d_gen(void* out, const void* x, const void* w, const void* bias,
+                                    uint32_t N, uint32_t Cin, uint32_t L, uint32_t Cout,
+                                    uint32_t Lout, uint32_t K, uint32_t stride, int w_ck_co);
+bool cactus_metal_encode_conv1d_nlc_dw(void* out, const void* x, const void* w, const void* bias,
+                                       uint32_t N, uint32_t L, uint32_t C, uint32_t K,
+                                       uint32_t dil, uint32_t pad);
+bool cactus_metal_encode_conv2d(void* out, const void* x, const void* w, const void* bias,
+                                uint32_t N, uint32_t Cin, uint32_t H, uint32_t W, uint32_t Cout,
+                                uint32_t Ho, uint32_t Wo, uint32_t K, uint32_t stride,
+                                uint32_t pad, int dw);
+bool cactus_metal_encode_batchnorm(void* out, const void* x, const void* w, const void* b,
+                                   const void* rm, const void* rv, uint32_t C, uint32_t inner,
+                                   uint32_t total, float eps);
+bool cactus_metal_encode_groupnorm(void* out, const void* x, const void* w, const void* b,
+                                   uint32_t N, uint32_t C, uint32_t S, uint32_t groups, float eps);
+bool cactus_metal_encode_bias_add_rows(void* y, const void* bias, uint32_t C, uint32_t total);
 bool cactus_metal_encode_gemm_batch(void* out, const void* a, const void* b,
                                     uint32_t M, uint32_t K, uint32_t N, uint32_t batch, int f32out, int f32a);
 bool cactus_metal_encode_conv1d_dw(void* out, const void* x, const void* w,
