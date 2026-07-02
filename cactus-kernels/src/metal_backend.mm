@@ -28,20 +28,22 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoT = nil;
     id<MTLComputePipelineState> psoTsimd = nil;
     id<MTLComputePipelineState> psoTbatch = nil;
+    id<MTLComputePipelineState> psoMega = nil, psoSwiT = nil, psoCat = nil;
     id<MTLComputePipelineState> psoG = nil, psoGmr = nil;
     id<MTLComputePipelineState> psoTm = nil, psoGm = nil;
     id<MTLComputePipelineState> psoGmma = nil, psoGdense = nil, psoDeq = nil;
-    id<MTLComputePipelineState> psoRotate = nil;
+    id<MTLComputePipelineState> psoRotate = nil, psoRotW = nil, psoEmbOW = nil, psoRmsAddRms = nil;
     id<MTLComputePipelineState> psoEmbO = nil, psoEmbH = nil;
     id<MTLComputePipelineState> psoEmbOm = nil, psoEmbHm = nil;
     id<MTLComputePipelineState> psoCopy=nil, psoBinary=nil, psoScalar=nil, psoUnary=nil, psoRms=nil, psoSwiglu=nil, psoRmsAdd=nil, psoRmsAddScale=nil;
     id<MTLComputePipelineState> psoCF16F32=nil, psoCF32F16=nil, psoCI8F16=nil, psoCF16I8=nil;
-    id<MTLComputePipelineState> psoAttn=nil, psoAttnC=nil, psoStrided=nil, psoScatter=nil, psoBcast=nil, psoKvAppend=nil;
+    id<MTLComputePipelineState> psoAttn=nil, psoAttnC=nil, psoAttnF=nil, psoStrided=nil, psoScatter=nil, psoBcast=nil, psoKvAppend=nil;
     id<MTLComputePipelineState> psoAttnPre=nil, psoAttnPreMma2=nil, psoAttnPreHd256=nil;
     id<MTLComputePipelineState> psoKvAppendM=nil, psoKvAppendRingM=nil;
     id<MTLComputePipelineState> psoSlideS=nil, psoSlideR=nil, psoSlideRM=nil;
     id<MTLComputePipelineState> psoRope=nil, psoRopeM=nil, psoRmsRope=nil;
     id<MTLComputePipelineState> psoArgmax=nil;
+    id<MTLComputePipelineState> psoArgmaxP=nil, psoArgmaxF=nil, psoSoftcap=nil, psoAdjust=nil;
     id<MTLComputePipelineState> psoGather=nil;
     id<MTLBuffer> dummy=nil;
     bool ok = false;
@@ -67,9 +69,10 @@ struct MetalCtx {
             return p;
         };
         psoT=pso("cq4_transform"); psoTsimd=pso("cq4_transform_simd"); psoG=pso("cq4_gemv"); psoTbatch=pso("cq4_transform_batch"); psoGmr=pso("cq4_gemv_mr");
+        psoMega=pso("cq4_gemv_mega"); psoSwiT=pso("cq4_swiglu_transform"); psoCat=pso("cq4_gemv_cat");
         psoTm=pso("cq4_transform_m"); psoGm=pso("cq4_gemm"); psoGmma=pso("cq4_gemm_mma");
         psoGdense=pso("cq4_gemm_dense_f16"); psoDeq=pso("cq4_dequant_f16");
-        psoRotate=pso("lmhead_rotate");
+        psoRotate=pso("lmhead_rotate"); psoRotW=pso("lmhead_rotate_wide"); psoEmbOW=pso("emb_ortho_wide"); psoRmsAddRms=pso("rms_norm_add_rms_f16");
         psoEmbO=pso("emb_ortho"); psoEmbH=pso("emb_hadamard");
         psoEmbOm=pso("emb_ortho_m"); psoEmbHm=pso("emb_hadamard_m");
         psoGather=pso("gather_f16");
@@ -77,13 +80,15 @@ struct MetalCtx {
         psoUnary=pso("unary_f16"); psoRms=pso("rms_norm_f16"); psoSwiglu=pso("swiglu_f16"); psoRmsAdd=pso("rms_norm_add_f16"); psoRmsAddScale=pso("rms_norm_add_scale_f16");
         psoCF16F32=pso("cast_f16_f32"); psoCF32F16=pso("cast_f32_f16");
         psoCI8F16=pso("cast_i8_f16"); psoCF16I8=pso("cast_f16_i8");
-        psoAttn=pso("attn_decode_i8"); psoAttnC=pso("attn_decode_combine");
+        psoAttn=pso("attn_decode_i8"); psoAttnC=pso("attn_decode_combine"); psoAttnF=pso("attn_decode_fused_i8");
         psoStrided=pso("strided_copy_f16"); psoBcast=pso("bcast_binary_f16");
         psoAttnPre=pso("attn_prefill_i8"); psoAttnPreMma2=pso("attn_prefill_mma2"); psoAttnPreHd256=pso("attn_prefill_mma_hd256"); psoKvAppendM=pso("kv_append_i8_m");
         psoKvAppendRingM=pso("kv_append_ring_i8_m");
         psoSlideS=pso("kv_slide_save"); psoSlideR=pso("kv_slide_restore"); psoSlideRM=pso("kv_slide_restore_m");
         psoScatter=pso("strided_scatter_f16"); psoKvAppend=pso("kv_append_i8"); psoRope=pso("rope_f16"); psoRopeM=pso("rope_f16_m"); psoRmsRope=pso("rms_norm_rope_f16");
         psoArgmax=pso("argmax_logits");
+        psoArgmaxP=pso("argmax_part"); psoArgmaxF=pso("argmax_final"); psoSoftcap=pso("softcap_f16");
+        psoAdjust=pso("adjust_logits");
         if (prof) fprintf(stderr,"[prof-init] pso creation: %.1fms total\n", ms());
         dummy=[dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
         ok = psoT&&psoG&&psoTm&&psoGm&&psoRotate&&psoEmbO&&psoEmbH&&psoEmbOm&&psoEmbHm&&psoCopy&&psoBinary&&psoScalar&&psoUnary&&psoRms&&psoSwiglu&&psoRmsAdd&&psoCF16F32&&psoCF32F16&&psoCI8F16&&psoCF16I8
@@ -101,9 +106,10 @@ inline id<MTLBuffer> buf(const void* p, size_t bytes) {
 struct ResW {
     id<MTLBuffer> packed=nil, norms=nil, codebook=nil, lsign=nil, rsign=nil, perm=nil, recip=nil;
     id<MTLBuffer> rotation=nil;
-    id<MTLBuffer> wf16=nil;   // lazily-dequantized dense fp16 weight (prefill pre-dequant path)
+    id<MTLBuffer> wf16=nil;
 };
 std::unordered_map<const void*, ResW> g_resident;
+std::unordered_map<const void*, ResW> g_resident_emb;
 std::mutex g_resident_mu;
 
 void deinterleave_4row(const CactusQuantMatrix* W,
@@ -165,21 +171,20 @@ id<MTLBuffer> g_code_buf_m = nil;
 inline size_t bucket(size_t b) { return (b + 4095) & ~size_t(4095); }
 
 struct GemmProf {
-    double gpu_ns=0; long cmdbufs=0;   // non-perturbing: total GPU-busy across all committed command buffers
+    double gpu_ns=0; long cmdbufs=0;
     ~GemmProf(){ if(std::getenv("CACTUS_PROF_GPU") && cmdbufs>0)
         fprintf(stderr,"[PROF gpu-busy] cmdbufs=%ld total_gpu=%.2fms\n", cmdbufs, gpu_ns/1e6); }
 };
 static GemmProf g_gemmprof;
 static const bool g_prof_gpu = (std::getenv("CACTUS_PROF_GPU") != nullptr);
 
-// Per-op-type GPU-time profiler: flush+time each dispatch, attribute to the current op tag g_op.
-// Perturbing (serializes), but gives an exact per-category GPU-time breakdown of a forward pass.
 static const bool g_prof_ops = (std::getenv("CACTUS_PROF_OPS") != nullptr);
-static const bool g_gemv_mr = (std::getenv("CACTUS_NO_GEMV_MR") == nullptr);   // multi-row M=1 gemv (default on; CACTUS_NO_GEMV_MR disables)
-static const uint32_t g_mr_rows = 8u * 2u;   // ROWS * CQ4_NR — MUST match cactus_kernels.metal CQ4_NR
+static const bool g_gemv_mr = (std::getenv("CACTUS_NO_GEMV_MR") == nullptr);
+static const uint32_t g_mr_rows = 8u * 2u;
+
 static const bool g_skip_mm=(std::getenv("CACTUS_SKIP_MM")!=nullptr), g_skip_attn=(std::getenv("CACTUS_SKIP_ATTN")!=nullptr), g_skip_norm=(std::getenv("CACTUS_SKIP_NORM")!=nullptr);
 static const bool g_skip_transform=(std::getenv("CACTUS_SKIP_TRANSFORM")!=nullptr);
-static const bool g_predequant=(std::getenv("CACTUS_NO_PREDEQUANT")==nullptr);   // prefill: dense fp16 gemm on pre-dequantized weights (default on; +~1.25GB RAM)
+static const bool g_predequant=(std::getenv("CACTUS_NO_PREDEQUANT")==nullptr);
 static const char* g_op = "other";
 struct OpProf {
     std::map<std::string,std::pair<double,long>> t;
@@ -192,19 +197,28 @@ struct OpProf {
 static OpProf g_opprof;
 
 static const bool g_concurrent = (std::getenv("CACTUS_GPU_CONCURRENT") != nullptr);
+static const bool g_no_groups = (std::getenv("CACTUS_NO_GROUPS") != nullptr);
+bool g_session_concurrent = false;
+bool g_group = false;
 
 id<MTLComputeCommandEncoder> ensureEncoder() {
     if (!g_enc) {
         g_cmd = [ctx().queue commandBuffer];
-        g_enc = g_concurrent ? [g_cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent]
+        g_enc = (g_concurrent || g_session_concurrent)
+                             ? [g_cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent]
                              : [g_cmd computeCommandEncoder];
     }
     return g_enc;
 }
 
+inline void hard_barrier() {
+    if ((g_concurrent || g_session_concurrent) && g_enc)
+        [g_enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+}
+
 inline void barrier() {
     static const bool force = (std::getenv("CACTUS_FORCE_BARRIER") != nullptr);
-    if (g_prof_ops && g_enc) {   // flush + time this single dispatch, attribute to g_op
+    if (g_prof_ops && g_enc) {
         [g_enc endEncoding]; [g_cmd commit]; [g_cmd waitUntilCompleted];
         g_opprof.t[g_op].first += (g_cmd.GPUEndTime - g_cmd.GPUStartTime)*1e9;
         g_opprof.t[g_op].second += 1;
@@ -214,7 +228,8 @@ inline void barrier() {
         g_op = "other";
         return;
     }
-    if (g_concurrent || force) [g_enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    if (g_group) return;
+    if (g_concurrent || g_session_concurrent || force) [g_enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
 }
 
 id<MTLBuffer> recycled(size_t bytes) {
@@ -227,6 +242,25 @@ id<MTLBuffer> recycled(size_t bytes) {
     return b;
 }
 
+std::map<uintptr_t, id<MTLBuffer>> g_wrapped;
+std::unordered_map<const void*, id<MTLBuffer>> g_readonly;
+std::pair<id<MTLBuffer>, size_t> wrapHostPtr(const void* p, size_t bytes) {
+    uintptr_t a = (uintptr_t)p, base = a & ~(uintptr_t)16383u;
+    size_t need = (a - base) + (bytes ? bytes : 1);
+    auto it = g_wrapped.upper_bound(a);
+    if (it != g_wrapped.begin()) {
+        --it;
+        if (a >= it->first && a + (bytes?bytes:1) <= it->first + (size_t)it->second.length)
+            return { it->second, (size_t)(a - it->first) };
+    }
+    size_t wraplen = (need + 16383u) & ~(size_t)16383u;
+    id<MTLBuffer> b = [ctx().dev newBufferWithBytesNoCopy:(void*)base length:wraplen
+                       options:MTLResourceStorageModeShared deallocator:nil];
+    if (!b) return { nil, 0 };
+    g_wrapped[base] = b;
+    return { b, (size_t)(a - base) };
+}
+
 std::pair<id<MTLBuffer>, size_t> bufForPtrOff(const void* p, size_t bytes) {
     uintptr_t a = reinterpret_cast<uintptr_t>(p);
     auto it = g_shared.upper_bound(a);
@@ -236,6 +270,9 @@ std::pair<id<MTLBuffer>, size_t> bufForPtrOff(const void* p, size_t bytes) {
         if (a < base + static_cast<uintptr_t>(it->second.length))
             return { it->second, static_cast<size_t>(a - base) };
     }
+
+    auto wr = wrapHostPtr(p, bytes);
+    if (wr.first) return wr;
 
     size_t nb = bytes ? bytes : 1;
     id<MTLBuffer> b = recycled(bytes);
@@ -256,7 +293,16 @@ void cactus_metal_set_active(bool a) { g_active = a; }
 bool cactus_metal_active_mode() { return ctx().ok && g_active; }
 
 bool cactus_metal_concurrent() { return g_concurrent; }
-void cactus_metal_barrier() { if (g_concurrent && g_enc) [g_enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; }
+void cactus_metal_barrier() { if ((g_concurrent || g_session_concurrent) && g_enc) [g_enc memoryBarrierWithScope:MTLBarrierScopeBuffers]; }
+
+void cactus_metal_session_set_concurrent(bool on) {
+    if (g_no_groups) return;
+    if (g_enc) return;
+    g_session_concurrent = on;
+    if (!on) g_group = false;
+}
+void cactus_metal_group_begin() { if (g_session_concurrent && !g_prof_ops) g_group = true; }
+void cactus_metal_group_end()   { if (g_group) { g_group = false; barrier(); } }
 
 void cactus_metal_session_begin() {}
 void cactus_metal_session_sync() {
@@ -273,6 +319,23 @@ void cactus_metal_session_sync() {
 void cactus_metal_session_end() {
     cactus_metal_session_sync();
 }
+void cactus_metal_invalidate_host_wraps() {
+    std::lock_guard<std::mutex> lk(g_resident_mu);
+    g_wrapped.clear();
+    g_readonly.clear();
+    g_resident.clear();
+    g_resident_emb.clear();
+}
+
+void cactus_metal_session_flush() {
+    if (!g_enc) return;
+    [g_enc endEncoding];
+    if (g_prof_gpu) [g_cmd addCompletedHandler:^(id<MTLCommandBuffer> cb){
+        g_gemmprof.gpu_ns += (cb.GPUEndTime-cb.GPUStartTime)*1e9; g_gemmprof.cmdbufs += 1; }];
+    [g_cmd commit];
+    g_enc = nil; g_cmd = nil;
+}
+
 
 void* cactus_metal_alloc_shared(size_t bytes) {
     if (!ctx().ok) return nullptr;
@@ -434,11 +497,53 @@ bool cactus_metal_encode_rms_norm_add_scale(void* out, const void* in, const voi
     barrier();
     return true;
 }
+bool cactus_metal_encode_rms_norm_add_rms(void* h_out, void* xn_out, const void* in, const void* w1,
+                                          const void* res, const void* w2,
+                                          size_t rows, size_t dim, float eps, float out_scale) {
+    if (!ctx().ok || !ctx().psoRmsAddRms) return false;
+    ensureEncoder();
+    g_op="rmsnorm";
+    uint32_t d=(uint32_t)dim; float e=eps, os=out_scale;
+    [g_enc setComputePipelineState:ctx().psoRmsAddRms];
+    setBufAt(in, rows*dim*2, 0); setBufAt(w1, dim*2, 1); setBufAt(res, rows*dim*2, 2);
+    setBufAt(h_out, rows*dim*2, 3); setBufAt(w2, dim*2, 4); setBufAt(xn_out, rows*dim*2, 5);
+    [g_enc setBytes:&d length:4 atIndex:6]; [g_enc setBytes:&e length:4 atIndex:7]; [g_enc setBytes:&os length:4 atIndex:8];
+    [g_enc setThreadgroupMemoryLength:256*sizeof(float) atIndex:0];
+    if(!g_skip_norm) [g_enc dispatchThreadgroups:MTLSizeMake(rows,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    barrier();
+    return true;
+}
+
 bool cactus_metal_encode_argmax(const void* logits, uint32_t vocab, void* out3) {
     if (!ctx().ok) return false;
     ensureEncoder();
     g_op="argmax";
-    uint32_t V = vocab, T = 1024;
+    uint32_t V = vocab;
+    if (ctx().psoArgmaxP && ctx().psoArgmaxF && V >= 32768u) {
+        const uint32_t NP = 128u, T = 256u;
+        uint32_t chunk = (V + NP - 1u)/NP;
+        id<MTLBuffer> part = recycled((size_t)NP*3*sizeof(float));
+        [g_enc setComputePipelineState:ctx().psoArgmaxP];
+        setBufAt(logits, (size_t)vocab*2, 0);
+        [g_enc setBuffer:part offset:0 atIndex:1];
+        [g_enc setBytes:&V length:4 atIndex:2]; [g_enc setBytes:&chunk length:4 atIndex:3];
+        [g_enc setThreadgroupMemoryLength:T*sizeof(float) atIndex:0];
+        [g_enc setThreadgroupMemoryLength:T*sizeof(uint) atIndex:1];
+        [g_enc setThreadgroupMemoryLength:T*sizeof(float) atIndex:2];
+        [g_enc dispatchThreadgroups:MTLSizeMake(NP,1,1) threadsPerThreadgroup:MTLSizeMake(T,1,1)];
+        hard_barrier();
+        [g_enc setComputePipelineState:ctx().psoArgmaxF];
+        [g_enc setBuffer:part offset:0 atIndex:0];
+        setBufAt(out3, 3*sizeof(float), 1);
+        [g_enc setBytes:&NP length:4 atIndex:2];
+        [g_enc setThreadgroupMemoryLength:NP*sizeof(float) atIndex:0];
+        [g_enc setThreadgroupMemoryLength:NP*sizeof(uint) atIndex:1];
+        [g_enc setThreadgroupMemoryLength:NP*sizeof(float) atIndex:2];
+        [g_enc dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(NP,1,1)];
+        barrier();
+        return true;
+    }
+    uint32_t T = 1024;
     [g_enc setComputePipelineState:ctx().psoArgmax];
     setBufAt(logits, (size_t)vocab*2, 0);
     setBufAt(out3, 3*sizeof(float), 1);
@@ -447,6 +552,42 @@ bool cactus_metal_encode_argmax(const void* logits, uint32_t vocab, void* out3) 
     [g_enc setThreadgroupMemoryLength:T*sizeof(uint) atIndex:1];
     [g_enc setThreadgroupMemoryLength:T*sizeof(float) atIndex:2];
     [g_enc dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(T,1,1)];
+    barrier();
+    return true;
+}
+bool cactus_metal_encode_adjust_logits(void* logits, size_t vocab,
+                                       const uint32_t* recent, uint32_t n_recent,
+                                       const uint32_t* bias_ids, const float* bias_vals, uint32_t n_bias,
+                                       int64_t suppressed, float penalty) {
+    if (!ctx().ok || !ctx().psoAdjust) return false;
+    if (n_recent > 4096u || n_bias > 65536u) return false;
+    ensureEncoder();
+    g_op="other";
+    id<MTLBuffer> rb = ctx().dummy, bi = ctx().dummy, bv = ctx().dummy;
+    if (n_recent) { rb = recycled((size_t)n_recent*4); std::memcpy([rb contents], recent, (size_t)n_recent*4); }
+    if (n_bias)   { bi = recycled((size_t)n_bias*4);   std::memcpy([bi contents], bias_ids, (size_t)n_bias*4);
+                    bv = recycled((size_t)n_bias*4);   std::memcpy([bv contents], bias_vals, (size_t)n_bias*4); }
+    struct { uint32_t n_recent, n_bias, suppress_flag, suppress_id; float penalty; } U =
+        { n_recent, n_bias,
+          (uint32_t)(suppressed >= 0 ? 1 : 0), (uint32_t)(suppressed >= 0 ? suppressed : 0), penalty };
+    [g_enc setComputePipelineState:ctx().psoAdjust];
+    setBufAt(logits, vocab*2, 0);
+    [g_enc setBuffer:rb offset:0 atIndex:1];
+    [g_enc setBuffer:bi offset:0 atIndex:2]; [g_enc setBuffer:bv offset:0 atIndex:3];
+    [g_enc setBytes:&U length:sizeof(U) atIndex:4];
+    [g_enc dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1024,1,1)];
+    barrier();
+    return true;
+}
+
+bool cactus_metal_encode_softcap(void* out, const void* in, size_t n, float cap) {
+    if (!ctx().ok || !ctx().psoSoftcap) return false;
+    ensureEncoder();
+    uint32_t nn=(uint32_t)n; float c=cap;
+    [g_enc setComputePipelineState:ctx().psoSoftcap];
+    setBufAt(in, n*2, 0); setBufAt(out, n*2, 1);
+    [g_enc setBytes:&nn length:4 atIndex:2]; [g_enc setBytes:&c length:4 atIndex:3];
+    [g_enc dispatchThreads:MTLSizeMake(nn,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     barrier();
     return true;
 }
@@ -499,7 +640,7 @@ bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQu
     [g_enc setBuffer:rw.perm offset:0 atIndex:4];  [g_enc setBuffer:g_code_buf offset:0 atIndex:5];
     [g_enc setBytes:&gs length:4 atIndex:6]; [g_enc setThreadgroupMemoryLength:gs*sizeof(float) atIndex:0];
     [g_enc dispatchThreadgroups:MTLSizeMake(ng,1,1) threadsPerThreadgroup:MTLSizeMake(simdT?32u:(gs>1024u?1024u:gs),1,1)];
-    barrier();
+    hard_barrier();
     bool umr = g_gemv_mr && ctx().psoGmr && (N % g_mr_rows == 0u);
     [g_enc setComputePipelineState:(umr?ctx().psoGmr:ctx().psoG)];
     [g_enc setBuffer:g_code_buf offset:0 atIndex:0]; [g_enc setBuffer:rw.packed offset:0 atIndex:1];
@@ -515,7 +656,6 @@ bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQu
     return true;
 }
 
-// Batched CQ4 transform for up to 3 weights sharing the input `x` (recip). One dispatch instead of B.
 bool cactus_metal_encode_transform_batch(const void* x, const CactusQuantMatrix* const* Ws, int B, void* const* codes) {
     if (!ctx().ok || B < 1 || B > 3 || !ctx().psoTbatch) return false;
     const uint32_t gs=Ws[0]->group_size, K=Ws[0]->K, ng=Ws[0]->num_groups;
@@ -542,7 +682,6 @@ bool cactus_metal_encode_transform_batch(const void* x, const CactusQuantMatrix*
     return true;
 }
 
-// CQ4 gemv with a pre-computed transformed activation `code` (no transform dispatch here).
 bool cactus_metal_encode_gemv_precoded(void* out, const void* code, const CactusQuantMatrix* W) {
     if (!ctx().ok) return false;
     const uint32_t gs=W->group_size, K=W->K, N=W->N, ng=W->num_groups, pgb=(gs*4u+7u)/8u;
@@ -560,6 +699,106 @@ bool cactus_metal_encode_gemv_precoded(void* out, const void* code, const Cactus
     uint32_t ROWS=8;
     uint32_t grid = umr ? (N+g_mr_rows-1u)/g_mr_rows : (N+ROWS-1u)/ROWS;
     if(!g_skip_mm) [g_enc dispatchThreadgroups:MTLSizeMake(grid,1,1) threadsPerThreadgroup:MTLSizeMake(ROWS*32,1,1)];
+    barrier();
+    return true;
+}
+
+bool cactus_metal_encode_gemv_mega_ex(void* const* outs, const void* x, const void* normw, float eps,
+                                   const CactusQuantMatrix* const* Ws, int B, const void* osw,
+                                   bool pswi, float pscale) {
+    if (!ctx().ok || !ctx().psoMega || B < 1 || B > 3) return false;
+    const uint32_t gs=Ws[0]->group_size, K=Ws[0]->K, ng=Ws[0]->num_groups;
+    if (gs != 128u) return false;
+    uint32_t Ns[3]={0,0,0};
+    for (int i=0;i<B;i++){
+        if (!quant_fast_eligible(Ws[i]) || Ws[i]->K != K || (Ws[i]->N % 16u) != 0u) return false;
+        Ns[i]=Ws[i]->N;
+    }
+    ResW* rw[3]; rw[0]=&resident(Ws[0]); rw[1]=rw[0]; rw[2]=rw[0];
+    for (int i=1;i<B;i++) rw[i]=&resident(Ws[i]);
+    ensureEncoder();
+    g_op="matmul";
+    struct { uint32_t K, ng, nw, N0, N1, N2, flags; float eps, pscale; } U =
+        { K, ng, (uint32_t)B, Ns[0], Ns[1], Ns[2],
+          (uint32_t)((normw?1u:0u) | ((osw && !pswi)?2u:0u) | (pswi?4u:0u)), eps, pscale };
+    [g_enc setComputePipelineState:ctx().psoMega];
+    setBufAt(x, (size_t)K*2, 0);
+    if (normw) setBufAt(normw, (size_t)K*2, 1); else [g_enc setBuffer:ctx().dummy offset:0 atIndex:1];
+    [g_enc setBuffer:rw[0]->recip offset:0 atIndex:2];
+    for (int i=0;i<3;i++){
+        ResW* R=rw[i];
+        [g_enc setBuffer:R->lsign offset:0 atIndex:3+i];
+        [g_enc setBuffer:R->rsign offset:0 atIndex:6+i];
+        [g_enc setBuffer:R->perm offset:0 atIndex:9+i];
+        [g_enc setBuffer:R->codebook offset:0 atIndex:12+i];
+        [g_enc setBuffer:R->norms offset:0 atIndex:15+i];
+        [g_enc setBuffer:R->packed offset:0 atIndex:18+i];
+        setBufAt(outs[i<B?i:0], (size_t)Ns[i<B?i:0]*2, 21+i);
+    }
+    if (osw) setBufAt(osw, pswi ? (size_t)K*2 : (size_t)Ns[0]*2, 24); else [g_enc setBuffer:ctx().dummy offset:0 atIndex:24];
+    [g_enc setBytes:&U length:sizeof(U) atIndex:25];
+    [g_enc setThreadgroupMemoryLength:(size_t)K*2 atIndex:0];
+    [g_enc setThreadgroupMemoryLength:8*128*sizeof(float) atIndex:1];
+    [g_enc setThreadgroupMemoryLength:256*sizeof(float) atIndex:2];
+    uint32_t total = Ns[0]+Ns[1]+Ns[2];
+    if(!g_skip_mm)[g_enc dispatchThreadgroups:MTLSizeMake(total/16u,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    barrier();
+    return true;
+}
+
+bool cactus_metal_encode_gemv_mega(void* const* outs, const void* x, const void* normw, float eps,
+                                   const CactusQuantMatrix* const* Ws, int B, const void* osw) {
+    return cactus_metal_encode_gemv_mega_ex(outs, x, normw, eps, Ws, B, osw, false, 0.f);
+}
+
+bool cactus_metal_encode_swiglu_transform(void* code, const void* gate, const void* up,
+                                          const CactusQuantMatrix* W, float scale) {
+    if (!ctx().ok || !ctx().psoSwiT || W->group_size != 128u || !quant_fast_eligible(W)) return false;
+    const uint32_t K=W->K, ng=W->num_groups;
+    ResW& rw = resident(W);
+    ensureEncoder();
+    g_op="transform";
+    float s = scale;
+    [g_enc setComputePipelineState:ctx().psoSwiT];
+    setBufAt(gate, (size_t)K*2, 0); setBufAt(up, (size_t)K*2, 1);
+    [g_enc setBuffer:rw.recip offset:0 atIndex:2];
+    [g_enc setBuffer:rw.lsign offset:0 atIndex:3]; [g_enc setBuffer:rw.rsign offset:0 atIndex:4];
+    [g_enc setBuffer:rw.perm offset:0 atIndex:5];
+    setBufAt(code, (size_t)K*2, 6);
+    [g_enc setBytes:&s length:4 atIndex:7];
+    [g_enc setThreadgroupMemoryLength:128*sizeof(float) atIndex:0];
+    [g_enc dispatchThreadgroups:MTLSizeMake(ng,1,1) threadsPerThreadgroup:MTLSizeMake(32,1,1)];
+    barrier();
+    return true;
+}
+
+bool cactus_metal_encode_gemv_cat(void* const* outs, const void* const* codes,
+                                  const CactusQuantMatrix* const* Ws, int B) {
+    if (!ctx().ok || !ctx().psoCat || B < 1 || B > 3) return false;
+    const uint32_t gs=Ws[0]->group_size, K=Ws[0]->K, ng=Ws[0]->num_groups;
+    if (gs != 128u) return false;
+    uint32_t Ns[3]={0,0,0};
+    for (int i=0;i<B;i++){
+        if (!quant_fast_eligible(Ws[i]) || Ws[i]->K != K || (Ws[i]->N % 16u) != 0u) return false;
+        Ns[i]=Ws[i]->N;
+    }
+    ResW* rw[3]; rw[0]=&resident(Ws[0]); rw[1]=rw[0]; rw[2]=rw[0];
+    for (int i=1;i<B;i++) rw[i]=&resident(Ws[i]);
+    ensureEncoder();
+    g_op="matmul";
+    struct { uint32_t ng, N0, N1, N2; } U = { ng, Ns[0], Ns[1], Ns[2] };
+    [g_enc setComputePipelineState:ctx().psoCat];
+    for (int i=0;i<3;i++){
+        int j = i<B?i:0;
+        setBufAt(codes[j], (size_t)K*2, 0+i);
+        [g_enc setBuffer:rw[j]->packed offset:0 atIndex:3+i];
+        [g_enc setBuffer:rw[j]->codebook offset:0 atIndex:6+i];
+        [g_enc setBuffer:rw[j]->norms offset:0 atIndex:9+i];
+        setBufAt(outs[j], (size_t)Ns[j]*2, 12+i);
+    }
+    [g_enc setBytes:&U length:sizeof(U) atIndex:15];
+    uint32_t total = Ns[0]+Ns[1]+Ns[2];
+    if(!g_skip_mm)[g_enc dispatchThreadgroups:MTLSizeMake(total/16u,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     barrier();
     return true;
 }
@@ -591,11 +830,8 @@ bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const Cactus
     [g_enc setThreadgroupMemoryLength:gs*sizeof(float) atIndex:0];
     g_op="transform";
     if (!g_skip_transform) [g_enc dispatchThreadgroups:MTLSizeMake((size_t)ng*M,1,1) threadsPerThreadgroup:MTLSizeMake(gs>1024u?1024u:gs,1,1)];
-    barrier();
+    hard_barrier();
 
-    // Pre-dequant dense path: dequantize the weight to fp16 ONCE (cached in rw.wf16), then run a plain
-    // fp16 SG_MAT gemm — avoids the codebook LUT in the gemm fill (~33% faster gemm). The one-time dequant
-    // is triggered inside the load-time prefill warmup, so real prefill only pays the fast dense gemm.
     if (g_predequant && ctx().psoGdense && ctx().psoDeq) {
         if (!rw.wf16) {
             rw.wf16 = [ctx().dev newBufferWithLength:(size_t)N*K*2 options:MTLResourceStorageModeShared];
@@ -605,7 +841,7 @@ bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const Cactus
             [g_enc setBytes:&gs length:4 atIndex:4]; [g_enc setBytes:&ng length:4 atIndex:5];
             [g_enc setBytes:&pgb length:4 atIndex:6]; [g_enc setBytes:&N length:4 atIndex:7];
             [g_enc dispatchThreads:MTLSizeMake((size_t)N*ng,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
-            barrier();
+            hard_barrier();
         }
         [g_enc setComputePipelineState:ctx().psoGdense];
         [g_enc setBuffer:g_code_buf_m offset:0 atIndex:0]; [g_enc setBuffer:rw.wf16 offset:0 atIndex:1];
@@ -644,12 +880,21 @@ bool cactus_metal_encode_quant_matmul_ortho(void* out, const void* act, void* co
     if (!rw.rotation || !rw.packed) return false;
     ensureEncoder();
 
-    [g_enc setComputePipelineState:ctx().psoRotate];
-    setBufAt(act, (size_t)K*2, 0); [g_enc setBuffer:rw.recip offset:0 atIndex:1];
-    [g_enc setBuffer:rw.rotation offset:0 atIndex:2]; setBufAt(code, (size_t)K*2, 3);
-    [g_enc setBytes:&K length:4 atIndex:4];
-    [g_enc dispatchThreads:MTLSizeMake(K,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
-    barrier();
+    if (ctx().psoRotW) {
+        [g_enc setComputePipelineState:ctx().psoRotW];
+        setBufAt(act, (size_t)K*2, 0); [g_enc setBuffer:rw.recip offset:0 atIndex:1];
+        [g_enc setBuffer:rw.rotation offset:0 atIndex:2]; setBufAt(code, (size_t)K*2, 3);
+        [g_enc setBytes:&K length:4 atIndex:4];
+        [g_enc setThreadgroupMemoryLength:256*sizeof(float) atIndex:0];
+        [g_enc dispatchThreadgroups:MTLSizeMake((K+31)/32,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    } else {
+        [g_enc setComputePipelineState:ctx().psoRotate];
+        setBufAt(act, (size_t)K*2, 0); [g_enc setBuffer:rw.recip offset:0 atIndex:1];
+        [g_enc setBuffer:rw.rotation offset:0 atIndex:2]; setBufAt(code, (size_t)K*2, 3);
+        [g_enc setBytes:&K length:4 atIndex:4];
+        [g_enc dispatchThreads:MTLSizeMake(K,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    }
+    hard_barrier();
 
     bool umr = g_gemv_mr && ctx().psoGmr && (N % g_mr_rows == 0u);
     [g_enc setComputePipelineState:(umr?ctx().psoGmr:ctx().psoG)];
@@ -665,13 +910,26 @@ bool cactus_metal_encode_quant_matmul_ortho(void* out, const void* act, void* co
     return true;
 }
 
-bool cactus_metal_encode_embedding_ortho(void* out, uint32_t row, const CactusQuantMatrix* W) {
+bool cactus_metal_encode_embedding_ortho(void* out, uint32_t row, const CactusQuantMatrix* W, float scale) {
     if (!ctx().ok || !W->rotation || W->bits != 4) return false;
     const uint32_t K=W->K, ng=W->num_groups, gs=W->group_size;
     if (ng != 1 || gs != K) return false;
     ResW& rw = resident(W);
     if (!rw.packed || !rw.rotation || !rw.codebook || !rw.norms || !rw.recip) return false;
     ensureEncoder();
+    if (!(ctx().psoEmbOW && (K % 8u) == 0u) && scale != 1.0f) return false;
+    if (ctx().psoEmbOW && (K % 8u) == 0u) {
+        [g_enc setComputePipelineState:ctx().psoEmbOW];
+        [g_enc setBuffer:rw.packed offset:0 atIndex:0]; [g_enc setBuffer:rw.codebook offset:0 atIndex:1];
+        [g_enc setBuffer:rw.norms offset:0 atIndex:2]; [g_enc setBuffer:rw.recip offset:0 atIndex:3];
+        [g_enc setBuffer:rw.rotation offset:0 atIndex:4]; setBufAt(out, (size_t)K*2, 5);
+        [g_enc setBytes:&K length:4 atIndex:6]; [g_enc setBytes:&row length:4 atIndex:7];
+        [g_enc setBytes:&scale length:4 atIndex:8];
+        [g_enc setThreadgroupMemoryLength:(size_t)K*sizeof(float) atIndex:0];
+        [g_enc dispatchThreadgroups:MTLSizeMake(K/8u,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+        barrier();
+        return true;
+    }
     [g_enc setComputePipelineState:ctx().psoEmbO];
     [g_enc setBuffer:rw.packed offset:0 atIndex:0]; [g_enc setBuffer:rw.codebook offset:0 atIndex:1];
     [g_enc setBuffer:rw.norms offset:0 atIndex:2]; [g_enc setBuffer:rw.recip offset:0 atIndex:3];
@@ -684,7 +942,6 @@ bool cactus_metal_encode_embedding_ortho(void* out, uint32_t row, const CactusQu
     return true;
 }
 
-std::unordered_map<const void*, ResW> g_resident_emb;
 ResW& resident_emb_meta(const CactusQuantMatrix* W) {
     std::lock_guard<std::mutex> lk(g_resident_mu);
     auto it = g_resident_emb.find(W->packed_indices);
@@ -722,6 +979,18 @@ bool cactus_metal_encode_embedding_hadamard(void* out, uint32_t row, const Cactu
     [g_enc dispatchThreadgroups:MTLSizeMake(ng,1,1) threadsPerThreadgroup:MTLSizeMake(gs,1,1)];
     barrier();
     return true;
+}
+
+static id<MTLBuffer> registerReadonly(const void* p, size_t bytes) {
+    if (!p) return nil;
+    auto it = g_readonly.find(p);
+    if (it != g_readonly.end()) return it->second;
+    uintptr_t a = (uintptr_t)p, base = a & ~(uintptr_t)16383u;
+    size_t wraplen = (((a - base) + bytes + 16383u) & ~(size_t)16383u);
+    id<MTLBuffer> b = [ctx().dev newBufferWithBytesNoCopy:(void*)base length:wraplen
+                       options:MTLResourceStorageModeShared deallocator:nil];
+    if (b) g_readonly[p] = b;
+    return b;
 }
 
 bool cactus_metal_encode_embedding_ortho_m(void* out, const CactusQuantMatrix* W, const uint32_t* rows, uint32_t M) {
@@ -770,18 +1039,6 @@ bool cactus_metal_encode_embedding_hadamard_m(void* out, const CactusQuantMatrix
     return true;
 }
 
-static std::unordered_map<const void*, id<MTLBuffer>> g_readonly;
-static id<MTLBuffer> registerReadonly(const void* p, size_t bytes) {
-    if (!p) return nil;
-    auto it = g_readonly.find(p);
-    if (it != g_readonly.end()) return it->second;
-    uintptr_t a = (uintptr_t)p, base = a & ~(uintptr_t)16383u;
-    size_t wraplen = (((a - base) + bytes + 16383u) & ~(size_t)16383u);
-    id<MTLBuffer> b = [ctx().dev newBufferWithBytesNoCopy:(void*)base length:wraplen
-                       options:MTLResourceStorageModeShared deallocator:nil];
-    if (b) g_readonly[p] = b;
-    return b;
-}
 
 bool cactus_metal_encode_gather_f16(void* out, const void* table, size_t table_bytes,
                                     const uint32_t* rows, uint32_t M, uint32_t D) {
@@ -831,7 +1088,7 @@ bool cactus_metal_encode_attention_i8(
 
     const uint32_t T = 256, nsg = T / 32u;
     const uint32_t R = kv_end - kv_start;
-    uint32_t nwg = (R <= 256u) ? 1u : R / 96u; if (nwg > 32u) nwg = 32u;
+    uint32_t nwg = R / 24u; if (nwg < 1u) nwg = 1u; if (nwg > 32u) nwg = 32u;
     id<MTLBuffer> partO = ctx().dummy, partML = ctx().dummy;
     if (nwg > 1u) {
         partO  = recycled((size_t)num_q_heads*nwg*v_hdim*sizeof(float));
@@ -848,7 +1105,7 @@ bool cactus_metal_encode_attention_i8(
     [g_enc setBytes:&nwg length:4 atIndex:18];
     [g_enc setThreadgroupMemoryLength:((size_t)nsg*v_hdim + 2*nsg)*sizeof(float) atIndex:0];
     if(!g_skip_attn)[g_enc dispatchThreadgroups:MTLSizeMake(num_q_heads*nwg,1,1) threadsPerThreadgroup:MTLSizeMake(T,1,1)];
-    barrier();
+    hard_barrier();
     if (nwg > 1u) {
         [g_enc setComputePipelineState:ctx().psoAttnC];
         [g_enc setBuffer:partO offset:0 atIndex:0];  [g_enc setBuffer:partML offset:0 atIndex:1];
@@ -857,6 +1114,56 @@ bool cactus_metal_encode_attention_i8(
         [g_enc dispatchThreadgroups:MTLSizeMake(num_q_heads,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
         barrier();
     }
+    return true;
+}
+
+bool cactus_metal_encode_attention_fused_i8(
+    void* out, const void* q, const void* kraw, const void* vraw,
+    void* kc, void* vc, void* ks, void* vs,
+    const void* qw, const void* kw, const void* vw, const void* cs, const void* sn,
+    uint32_t nqh, uint32_t hd, uint32_t vhd,
+    uint32_t kv_start, uint32_t kv_end, uint32_t slot, uint32_t has_new,
+    float eps, float scale,
+    size_t kc_bytes, size_t vc_bytes, size_t ks_bytes, size_t vs_bytes) {
+    if (!ctx().ok || !ctx().psoAttnF) return false;
+    if (kv_end <= kv_start) return false;
+    ensureEncoder();
+    g_op="attention";
+    const uint32_t T = 256, nsg = T / 32u;
+    const uint32_t R = kv_end - kv_start;
+    uint32_t nwg = R / 24u; if (nwg < 1u) nwg = 1u; if (nwg > 32u) nwg = 32u;
+    id<MTLBuffer> partO = ctx().dummy, partML = ctx().dummy;
+    if (nwg > 1u) {
+        partO  = recycled((size_t)nqh*nwg*vhd*sizeof(float));
+        partML = recycled((size_t)nqh*nwg*2*sizeof(float));
+    }
+    struct { uint32_t nqh, nkvh, hd, vhd, hist, kv_start, kv_end, nwg, slot, has_new; float eps, scale; } U =
+        { nqh, 1u, hd, vhd, 0u, kv_start, kv_end, nwg, slot, has_new, eps, scale };
+    [g_enc setComputePipelineState:ctx().psoAttnF];
+    setBufAt(q, (size_t)nqh*hd*2, 0);
+    if (has_new && kraw && vraw) { setBufAt(kraw, (size_t)hd*2, 1); setBufAt(vraw, (size_t)vhd*2, 2); }
+    else { [g_enc setBuffer:ctx().dummy offset:0 atIndex:1]; [g_enc setBuffer:ctx().dummy offset:0 atIndex:2]; }
+    setBufAt(kc, kc_bytes, 3); setBufAt(vc, vc_bytes, 4);
+    setBufAt(ks, ks_bytes, 5); setBufAt(vs, vs_bytes, 6);
+    setBufAt(out, (size_t)nqh*vhd*2, 7);
+    setBufAt(qw, (size_t)hd*2, 8);
+    if (has_new && kw) setBufAt(kw, (size_t)hd*2, 9); else [g_enc setBuffer:ctx().dummy offset:0 atIndex:9];
+    if (has_new && vw) setBufAt(vw, (size_t)vhd*2, 10); else [g_enc setBuffer:ctx().dummy offset:0 atIndex:10];
+    setBufAt(cs, (size_t)hd*2, 11); setBufAt(sn, (size_t)hd*2, 12);
+    [g_enc setBuffer:partO offset:0 atIndex:13]; [g_enc setBuffer:partML offset:0 atIndex:14];
+    [g_enc setBytes:&U length:sizeof(U) atIndex:15];
+    [g_enc setThreadgroupMemoryLength:((size_t)nsg*vhd + 2*nsg + 256)*sizeof(float) atIndex:0];
+    [g_enc setThreadgroupMemoryLength:(size_t)(2*hd + vhd)*2 atIndex:1];
+    if(!g_skip_attn)[g_enc dispatchThreadgroups:MTLSizeMake(nqh*nwg,1,1) threadsPerThreadgroup:MTLSizeMake(T,1,1)];
+    hard_barrier();
+    if (nwg > 1u) {
+        [g_enc setComputePipelineState:ctx().psoAttnC];
+        [g_enc setBuffer:partO offset:0 atIndex:0];  [g_enc setBuffer:partML offset:0 atIndex:1];
+        setBufAt(out, (size_t)nqh*vhd*2, 2);
+        [g_enc setBytes:&vhd length:4 atIndex:3]; [g_enc setBytes:&nwg length:4 atIndex:4];
+        [g_enc dispatchThreadgroups:MTLSizeMake(nqh,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    }
+    barrier();
     return true;
 }
 
@@ -872,15 +1179,10 @@ bool cactus_metal_encode_attention_i8_prefill(
     const uint32_t T = 128;
     if (total_keys == 0 || M == 0 || (num_q_heads % num_kv_heads) != 0) return false;
     uint32_t maxsc = (ring > 0u) ? ((total_keys > sink + ring) ? (sink + ring) : total_keys) : 256u;
-    static const bool en_hd256 = (std::getenv("CACTUS_NO_HD256") == nullptr);  // tiled local (hd=256) prefill attention (default on)
+    static const bool en_hd256 = (std::getenv("CACTUS_NO_HD256") == nullptr);
     bool mma2 = (ring == 0u && is_causal && total_keys >= 2048u && head_dim == 512u && v_hdim == 512u && num_q_heads == 8u && num_kv_heads == 1u);
-    // Route ALL global (hd=512, full-attention / window==0) layers through the tiled mma2 kernel, not just
-    // the long-context ones — the tiled kernel loads each KV tile into shared once and reuses it across a
-    // block of 8 queries, vs the scalar path re-reading the whole KV cache per query. Always correct for
-    // window==0 (no sliding-window eviction). Biggest prefill attention win (pp2048 +22%).
     if (!mma2 && is_causal && head_dim == 512u && v_hdim == 512u && num_q_heads == 8u && num_kv_heads == 1u
         && window == 0u) mma2 = true;
-    // hd256 now handles the sliding-window (sink + ring slot mapping), so it's valid for local layers too.
     bool hd256 = (en_hd256 && ctx().psoAttnPreHd256 != nil && is_causal && head_dim == 256u && v_hdim == 256u
                   && num_q_heads == 8u && num_kv_heads == 1u);
     if (mma2 || hd256) {
@@ -1044,7 +1346,7 @@ bool cactus_metal_encode_kv_append_sliding_i8(const void* src, void* int8base, v
         [g_enc setBytes:&group_size length:4 atIndex:6]; [g_enc setBytes:&shift_src length:4 atIndex:7];
         [g_enc setBytes:&remaining length:4 atIndex:8];
         [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(n<256?n:256,1,1)];
-        barrier();
+        hard_barrier();
     }
     uint32_t n2 = (remaining+1)*per;
     [g_enc setComputePipelineState:ctx().psoSlideR];
@@ -1076,7 +1378,7 @@ bool cactus_metal_encode_kv_append_sliding_i8_m(const void* src, void* int8base,
         [g_enc setBytes:&group_size length:4 atIndex:6]; [g_enc setBytes:&shift_src length:4 atIndex:7];
         [g_enc setBytes:&remaining length:4 atIndex:8];
         [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(n<256?n:256,1,1)];
-        barrier();
+        hard_barrier();
     }
     uint32_t n2 = (remaining+M)*per;
     [g_enc setComputePipelineState:ctx().psoSlideRM];

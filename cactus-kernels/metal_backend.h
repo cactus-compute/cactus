@@ -24,11 +24,17 @@ bool cactus_metal_active_mode();
 bool cactus_metal_concurrent();
 void cactus_metal_barrier();
 
+void cactus_metal_session_set_concurrent(bool on);
+void cactus_metal_group_begin();
+void cactus_metal_group_end();
+
 void cactus_metal_quant_matmul(const CactusQuantMatrix* W, const __fp16* A,
                                uint32_t M, __fp16* C);
 
 void  cactus_metal_session_begin();
 void  cactus_metal_session_sync();
+void  cactus_metal_session_flush();
+void  cactus_metal_invalidate_host_wraps();
 void  cactus_metal_session_end();
 
 void* cactus_metal_alloc_shared(size_t bytes);
@@ -50,18 +56,35 @@ bool cactus_metal_encode_rms_norm_rope(void* out, const void* x, const void* wei
                                        uint32_t heads, uint32_t head_dim, float eps);
 bool cactus_metal_encode_rms_norm_add(void* out, const void* in, const void* weight, const void* res,
                                       size_t rows, size_t dim, float eps);
+bool cactus_metal_encode_rms_norm_add_rms(void* h_out, void* xn_out, const void* in, const void* w1,
+                                          const void* res, const void* w2,
+                                          size_t rows, size_t dim, float eps, float out_scale);
 bool cactus_metal_encode_rms_norm_add_scale(void* out, const void* in, const void* weight, const void* res,
                                             size_t rows, size_t dim, float eps, float out_scale);
 bool cactus_metal_encode_argmax(const void* logits, uint32_t vocab, void* out3);
+bool cactus_metal_encode_softcap(void* out, const void* in, size_t n, float cap);
+bool cactus_metal_encode_adjust_logits(void* logits, size_t vocab,
+                                       const uint32_t* recent, uint32_t n_recent,
+                                       const uint32_t* bias_ids, const float* bias_vals, uint32_t n_bias,
+                                       int64_t suppressed, float penalty);
 bool cactus_metal_encode_cast(void* out, int out_prec, const void* in, int in_prec, size_t n);
 bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQuantMatrix* W);
 bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const CactusQuantMatrix* W, uint32_t M);
 bool cactus_metal_encode_transform_batch(const void* x, const CactusQuantMatrix* const* Ws, int B, void* const* codes);
 bool cactus_metal_encode_gemv_precoded(void* out, const void* code, const CactusQuantMatrix* W);
+bool cactus_metal_encode_gemv_mega(void* const* outs, const void* x, const void* normw, float eps,
+                                   const CactusQuantMatrix* const* Ws, int B, const void* osw);
+bool cactus_metal_encode_gemv_mega_ex(void* const* outs, const void* x, const void* normw, float eps,
+                                   const CactusQuantMatrix* const* Ws, int B, const void* osw,
+                                   bool pswi, float pscale);
+bool cactus_metal_encode_gemv_cat(void* const* outs, const void* const* codes,
+                                  const CactusQuantMatrix* const* Ws, int B);
+bool cactus_metal_encode_swiglu_transform(void* code, const void* gate, const void* up,
+                                          const CactusQuantMatrix* W, float scale);
 bool cactus_metal_prewarm_quant(const CactusQuantMatrix* W);
 bool cactus_metal_encode_quant_matmul_ortho(void* out, const void* act, void* code,
                                             const CactusQuantMatrix* W);
-bool cactus_metal_encode_embedding_ortho(void* out, uint32_t row, const CactusQuantMatrix* W);
+bool cactus_metal_encode_embedding_ortho(void* out, uint32_t row, const CactusQuantMatrix* W, float scale);
 bool cactus_metal_encode_embedding_hadamard(void* out, uint32_t row, const CactusQuantMatrix* W);
 bool cactus_metal_encode_embedding_ortho_m(void* out, const CactusQuantMatrix* W, const uint32_t* rows, uint32_t M);
 bool cactus_metal_encode_embedding_hadamard_m(void* out, const CactusQuantMatrix* W, const uint32_t* rows, uint32_t M);
@@ -73,6 +96,15 @@ bool cactus_metal_encode_attention_i8(
     uint32_t num_q_heads, uint32_t num_kv_heads, uint32_t head_dim, uint32_t v_hdim,
     uint32_t history_len, uint32_t total_keys, uint32_t kv_start, uint32_t kv_end,
     float scale, size_t kc_bytes, size_t vc_bytes, size_t ks_bytes, size_t vs_bytes);
+
+bool cactus_metal_encode_attention_fused_i8(
+    void* out, const void* q, const void* kraw, const void* vraw,
+    void* kc, void* vc, void* ks, void* vs,
+    const void* qw, const void* kw, const void* vw, const void* cs, const void* sn,
+    uint32_t nqh, uint32_t hd, uint32_t vhd,
+    uint32_t kv_start, uint32_t kv_end, uint32_t slot, uint32_t has_new,
+    float eps, float scale,
+    size_t kc_bytes, size_t vc_bytes, size_t ks_bytes, size_t vs_bytes);
 
 bool cactus_metal_encode_attention_i8_prefill(
     void* out, const void* q, const void* knew, const void* vnew,

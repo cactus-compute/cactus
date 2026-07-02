@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <random>
 #include <string>
 #include <map>
 #include <unordered_map>
@@ -845,6 +846,9 @@ private:
                                size_t chunk_tokens, const std::vector<uint32_t>& tokens,
                                size_t processed, size_t start_position);
     void run_full_context_text();
+    void prepare_sampling_context(float repetition_penalty);
+    uint32_t sample_component_logits(Component& comp, float temperature, float top_p, size_t top_k,
+                                     float min_p, bool greedy, float* out_uncertainty);
     uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max(),
                                      float* out_uncertainty = nullptr);
     uint32_t argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty);
@@ -942,6 +946,14 @@ private:
 
     static constexpr size_t MAX_TOKEN_HISTORY = 128;
     std::vector<uint32_t> token_history_;
+    std::vector<uint32_t> samp_recent_;
+    std::vector<uint32_t> samp_bias_ids_;
+    std::vector<float> samp_bias_vals_;
+    float samp_penalty_ = 1.0f;
+    bool samp_ctx_active_ = false;
+    std::mt19937 sample_rng_{std::random_device{}()};
+    FusedEmbedCtx fused_embed_ctx_;
+    int ple_probe_state_ = 0;
 
     ToolCallConstrainer tool_constrainer_;
     std::unordered_map<uint32_t, float> vocab_bias_;

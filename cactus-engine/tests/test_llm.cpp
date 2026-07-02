@@ -437,7 +437,7 @@ struct LengthTokenizer : public Tokenizer {
 bool test_tool_constraint_clear_releases_bias() {
     LengthTokenizer tok;
     ToolCallConstrainer constrainer;
-    constrainer.init(Config::ModelType::GEMMA4, {{"get_weather", {"location"}, {"location"}}}, &tok);
+    constrainer.init(Config::ModelType::GEMMA4, {{"get_weather", {"location"}, {}, {"location"}}}, &tok);
     if (constrainer.get_bias().empty()) {
         std::cerr << "  expected bias after activating init\n";
         return false;

@@ -602,11 +602,6 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         bound.insert(comp);
     }
 
-    // Prewarm the prefill executor. The generic graph executor allocates every intermediate GPU
-    // buffer (gpu_persistent_acts_) lazily on the FIRST execute() — a ~190ms one-time cost that
-    // otherwise lands in the first real prefill chunk, inflating TTFT (dominant at short prompts and
-    // the reason pp512 measured slower than pp2048). Run each prefill graph once on zeroed inputs
-    // here, then reset the KV cache states the warmup dirtied so real inference starts clean.
     if (decoder_prefill_ && decoder_prefill_->graph
         && std::getenv("CACTUS_NO_PREFILL_WARM") == nullptr) {
         try {
@@ -911,15 +906,12 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/) {
     }
     const bool fused = cactus_backend_fused();
     if (fused) {
-        enum class PleProbe { Untried, Available, Unavailable };
-        static PleProbe probe = PleProbe::Untried;
-        static FusedEmbedCtx ctx;
-        if (probe == PleProbe::Untried)
-            probe = encoder_->graph->extract_ple_pathway(ctx) ? PleProbe::Available : PleProbe::Unavailable;
-        if (probe == PleProbe::Available) {
-            ctx.token_id = static_cast<int>(token_id);
-            ctx.position = static_cast<int>(position);
-            cactus_graph_set_fused_embed(&ctx);
+        if (ple_probe_state_ == 0)
+            ple_probe_state_ = encoder_->graph->extract_ple_pathway(fused_embed_ctx_) ? 1 : 2;
+        if (ple_probe_state_ == 1) {
+            fused_embed_ctx_.token_id = static_cast<int>(token_id);
+            fused_embed_ctx_.position = static_cast<int>(position);
+            cactus_graph_set_fused_embed(&fused_embed_ctx_);
             bool ok = decoder_->graph->execute_gpu_fused();
             cactus_graph_set_fused_embed(nullptr);
             if (ok) { maybe_capture_handoff_probe_hidden(*decoder_); return; }
@@ -2032,6 +2024,143 @@ uint32_t Model::argmax_last_logits(float* out_uncertainty) {
     return argmax_component_logits(*decoder_, std::numeric_limits<size_t>::max(), out_uncertainty);
 }
 
+void Model::prepare_sampling_context(float repetition_penalty) {
+    samp_recent_.clear();
+    samp_bias_ids_.clear();
+    samp_bias_vals_.clear();
+    samp_penalty_ = repetition_penalty;
+    constexpr size_t kPenaltyWindow = 64;
+    size_t start = token_history_.size() > kPenaltyWindow ? token_history_.size() - kPenaltyWindow : 0;
+    for (size_t i = start; i < token_history_.size(); ++i) {
+        uint32_t id = token_history_[i];
+        bool dup = false;
+        for (uint32_t r : samp_recent_) if (r == id) { dup = true; break; }
+        if (!dup) samp_recent_.push_back(id);
+    }
+    for (const auto& kv : tool_constrainer_.get_bias()) { samp_bias_ids_.push_back(kv.first); samp_bias_vals_.push_back(kv.second); }
+    for (const auto& kv : vocab_bias_) { samp_bias_ids_.push_back(kv.first); samp_bias_vals_.push_back(kv.second); }
+    samp_ctx_active_ = (repetition_penalty != 1.0f && !samp_recent_.empty()) ||
+                       !samp_bias_ids_.empty() || suppressed_token_id_ >= 0;
+    if (samp_ctx_active_) {
+        cactus_graph_set_sampling(samp_recent_.data(), (int)samp_recent_.size(), repetition_penalty,
+                                  samp_bias_ids_.data(), samp_bias_vals_.data(), (int)samp_bias_ids_.size(),
+                                  suppressed_token_id_);
+    } else {
+        cactus_graph_clear_sampling();
+    }
+}
+
+uint32_t Model::sample_component_logits(Component& comp, float temperature, float top_p, size_t top_k,
+                                        float min_p, bool greedy, float* out_uncertainty) {
+    size_t out_node = static_cast<size_t>(comp.output_node_ids.empty() ? 0 : comp.output_node_ids[0]);
+    const auto& desc = comp.graph->get_output_buffer(out_node);
+    void* ptr = comp.graph->get_output(out_node);
+    size_t vocab = desc.shape.empty() ? 0 : desc.shape.back();
+    size_t seq = desc.shape.size() >= 2 ? desc.shape[desc.shape.size() - 2] : 1;
+    size_t row = seq > 0 ? seq - 1 : 0;
+    if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
+        row = std::min(last_logit_position_, seq > 0 ? seq - 1 : 0);
+    }
+    size_t off = row * vocab;
+    if (vocab == 0 || (desc.precision != Precision::FP16 && desc.precision != Precision::FP32)) {
+        return argmax_component_logits(comp, std::numeric_limits<size_t>::max(), out_uncertainty);
+    }
+    const bool fp16 = desc.precision == Precision::FP16;
+    __fp16* h = fp16 ? static_cast<__fp16*>(ptr) + off : nullptr;
+    float*  f = fp16 ? nullptr : static_cast<float*>(ptr) + off;
+    auto get = [&](size_t i) -> float { return fp16 ? (float)h[i] : f[i]; };
+    auto put = [&](size_t i, float v) { if (fp16) h[i] = (__fp16)v; else f[i] = v; };
+
+    if (samp_ctx_active_ && !cactus_graph_gpu_adjusted()) {
+        if (samp_penalty_ != 1.0f) {
+            for (uint32_t id : samp_recent_) {
+                if (id >= vocab) continue;
+                float v = get(id);
+                put(id, v > 0.0f ? v / samp_penalty_ : v * samp_penalty_);
+            }
+        }
+        for (size_t i = 0; i < samp_bias_ids_.size(); ++i) {
+            uint32_t id = samp_bias_ids_[i];
+            if (id < vocab) put(id, get(id) + samp_bias_vals_[i]);
+        }
+        if (suppressed_token_id_ >= 0 && (size_t)suppressed_token_id_ < vocab)
+            put((size_t)suppressed_token_id_, -65504.0f);
+    }
+
+    if (greedy) {
+        uint32_t gidx; float gbest, gsecond;
+        if ((!samp_ctx_active_ || cactus_graph_gpu_adjusted()) &&
+            cactus_graph_gpu_argmax(&gidx, &gbest, &gsecond)) {
+            if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(gbest, gsecond);
+            return gidx;
+        }
+        uint32_t best = 0;
+        float bv = -std::numeric_limits<float>::infinity(), sv = bv;
+        for (size_t i = 0; i < vocab; ++i) {
+            float v = get(i);
+            if (v > bv) { sv = bv; bv = v; best = (uint32_t)i; }
+            else if (v > sv) sv = v;
+        }
+        if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(bv, sv);
+        return best;
+    }
+
+    size_t K = std::min<size_t>(std::max<size_t>(top_k, 1), 512);
+    std::vector<std::pair<float, uint32_t>> cand;
+    cand.reserve(2 * K + 16);
+    float kmin = -std::numeric_limits<float>::infinity();
+    for (size_t i = 0; i < vocab; ++i) {
+        float v = get(i);
+        if (v <= kmin) continue;
+        cand.emplace_back(v, (uint32_t)i);
+        if (cand.size() >= 2 * K) {
+            std::nth_element(cand.begin(), cand.begin() + (K - 1), cand.end(),
+                             [](const auto& a, const auto& b) { return a.first > b.first; });
+            cand.resize(K);
+            kmin = cand.back().first;
+            for (const auto& c : cand) if (c.first < kmin) kmin = c.first;
+        }
+    }
+    std::sort(cand.begin(), cand.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    if (cand.size() > K) cand.resize(K);
+    if (cand.empty()) return 0;
+    if (out_uncertainty) {
+        float sv = cand.size() > 1 ? cand[1].first : -std::numeric_limits<float>::infinity();
+        *out_uncertainty = uncertainty_from_margin(cand[0].first, sv);
+    }
+    if (cand.size() == 1) return cand[0].second;
+
+    float t = std::max(temperature, 1e-3f);
+    float maxl = cand[0].first;
+    std::vector<float> probs(cand.size());
+    double denom = 0.0;
+    for (size_t i = 0; i < cand.size(); ++i) {
+        probs[i] = std::exp((cand[i].first - maxl) / t);
+        denom += probs[i];
+    }
+    size_t keep = cand.size();
+    if (top_p > 0.0f && top_p < 1.0f) {
+        double cum = 0.0;
+        for (size_t i = 0; i < cand.size(); ++i) {
+            cum += probs[i] / denom;
+            if (cum >= top_p) { keep = i + 1; break; }
+        }
+    }
+    if (min_p > 0.0f) {
+        float cut = min_p * probs[0];
+        while (keep > 1 && probs[keep - 1] < cut) --keep;
+    }
+    double mass = 0.0;
+    for (size_t i = 0; i < keep; ++i) mass += probs[i];
+    double r = std::uniform_real_distribution<double>(0.0, mass)(sample_rng_);
+    double cum = 0.0;
+    for (size_t i = 0; i < keep; ++i) {
+        cum += probs[i];
+        if (r <= cum) return cand[i].second;
+    }
+    return cand[keep - 1].second;
+}
+
 bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token,
                                            float* out_uncertainty) {
     reset_prefill_stats();
@@ -3039,10 +3168,15 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
     (void)profile_file;
 }
 
-uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*/, float /*top_p*/,
-                        size_t /*top_k*/, const std::string& /*profile_file*/, float* out_entropy,
-                        float /*min_p*/, float /*repetition_penalty*/) {
+uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, float top_p,
+                        size_t top_k, const std::string& /*profile_file*/, float* out_entropy,
+                        float min_p, float repetition_penalty) {
     if (tokens.empty()) return 0;
+    float temp = temperature < 0.0f ? config_.default_temperature : temperature;
+    float tp = (top_p <= 0.0f || top_p > 1.0f) ? config_.default_top_p : top_p;
+    size_t tk = top_k == 0 ? config_.default_top_k : top_k;
+    const bool greedy = temp <= 0.011f;
+    prepare_sampling_context(repetition_penalty);
     if (decode_route_ == DecodeRoute::ENCODER_CROSS_KV_STEP) {
         if (!encoder_cross_kv_ready_ && encoder_cross_kv_source_kind_ == "text_tokens") {
             std::vector<uint32_t> source_tokens = tokens;
@@ -3074,7 +3208,11 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
         run_full_context_text();
         cache_total_seq_len_ = context_tokens_.size();
         cache_token_ids_ = context_tokens_;
-        uint32_t result = argmax_last_logits(out_entropy);
+        uint32_t result = (greedy && !samp_ctx_active_)
+            ? argmax_last_logits(out_entropy)
+            : sample_component_logits(*decoder_, temp, tp, tk, min_p, greedy, out_entropy);
+        cactus_graph_clear_sampling();
+        samp_ctx_active_ = false;
         record_sampled_token(result);
         return result;
     }
@@ -3085,7 +3223,11 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
     cache_total_seq_len_ += tokens.size();
     cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
     maybe_roll_compact();
-    uint32_t result = argmax_last_logits(out_entropy);
+    uint32_t result = (greedy && !samp_ctx_active_)
+        ? argmax_last_logits(out_entropy)
+        : sample_component_logits(*decoder_, temp, tp, tk, min_p, greedy, out_entropy);
+    cactus_graph_clear_sampling();
+    samp_ctx_active_ = false;
     record_sampled_token(result);
     return result;
 }

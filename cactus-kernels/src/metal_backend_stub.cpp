@@ -7,12 +7,29 @@ void cactus_metal_set_active(bool) {}
 bool cactus_metal_active_mode() { return false; }
 bool cactus_metal_concurrent() { return false; }
 void cactus_metal_barrier() {}
+void cactus_metal_session_set_concurrent(bool) {}
+void cactus_metal_group_begin() {}
+void cactus_metal_group_end() {}
+bool cactus_metal_encode_softcap(void*, const void*, size_t, float) { return false; }
+bool cactus_metal_encode_adjust_logits(void*, size_t, const uint32_t*, uint32_t,
+                                       const uint32_t*, const float*, uint32_t,
+                                       int64_t, float) { return false; }
+bool cactus_metal_encode_gemv_mega(void* const*, const void*, const void*, float,
+                                   const CactusQuantMatrix* const*, int, const void*) { return false; }
+bool cactus_metal_encode_gemv_mega_ex(void* const*, const void*, const void*, float,
+                                   const CactusQuantMatrix* const*, int, const void*, bool, float) { return false; }
+bool cactus_metal_encode_gemv_cat(void* const*, const void* const*,
+                                  const CactusQuantMatrix* const*, int) { return false; }
+bool cactus_metal_encode_swiglu_transform(void*, const void*, const void*,
+                                          const CactusQuantMatrix*, float) { return false; }
 void cactus_metal_quant_matmul(const CactusQuantMatrix* W, const __fp16* A,
                                uint32_t M, __fp16* C) {
     cactus_quant_matmul(W, A, M, C);
 }
 void  cactus_metal_session_begin() {}
 void  cactus_metal_session_sync() {}
+void  cactus_metal_session_flush() {}
+void  cactus_metal_invalidate_host_wraps() {}
 void  cactus_metal_session_end() {}
 void* cactus_metal_alloc_shared(size_t) { return nullptr; }
 void  cactus_metal_free_shared(void*) {}
@@ -26,6 +43,8 @@ bool cactus_metal_encode_rope_m(void*, const void*, const void*, const void*, ui
 bool cactus_metal_encode_rms_norm(void*, const void*, const void*, size_t, size_t, float) { return false; }
 bool cactus_metal_encode_rms_norm_rope(void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, float) { return false; }
 bool cactus_metal_encode_rms_norm_add(void*, const void*, const void*, const void*, size_t, size_t, float) { return false; }
+bool cactus_metal_encode_rms_norm_add_rms(void*, void*, const void*, const void*, const void*, const void*,
+                                          size_t, size_t, float, float) { return false; }
 bool cactus_metal_encode_rms_norm_add_scale(void*, const void*, const void*, const void*, size_t, size_t, float, float) { return false; }
 bool cactus_metal_encode_argmax(const void*, uint32_t, void*) { return false; }
 bool cactus_metal_encode_cast(void*, int, const void*, int, size_t) { return false; }
@@ -35,7 +54,7 @@ bool cactus_metal_encode_transform_batch(const void*, const CactusQuantMatrix* c
 bool cactus_metal_encode_gemv_precoded(void*, const void*, const CactusQuantMatrix*) { return false; }
 bool cactus_metal_prewarm_quant(const CactusQuantMatrix*) { return false; }
 bool cactus_metal_encode_quant_matmul_ortho(void*, const void*, void*, const CactusQuantMatrix*) { return false; }
-bool cactus_metal_encode_embedding_ortho(void*, uint32_t, const CactusQuantMatrix*) { return false; }
+bool cactus_metal_encode_embedding_ortho(void*, uint32_t, const CactusQuantMatrix*, float) { return false; }
 bool cactus_metal_encode_embedding_hadamard(void*, uint32_t, const CactusQuantMatrix*) { return false; }
 bool cactus_metal_encode_embedding_ortho_m(void*, const CactusQuantMatrix*, const uint32_t*, uint32_t) { return false; }
 bool cactus_metal_encode_embedding_hadamard_m(void*, const CactusQuantMatrix*, const uint32_t*, uint32_t) { return false; }
@@ -43,6 +62,10 @@ bool cactus_metal_encode_gather_f16(void*, const void*, size_t, const uint32_t*,
 bool cactus_metal_encode_attention_i8(void*, const void*, const void*, const void*, const void*, const void*,
     const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
     float, size_t, size_t, size_t, size_t) { return false; }
+bool cactus_metal_encode_attention_fused_i8(void*, const void*, const void*, const void*,
+    void*, void*, void*, void*, const void*, const void*, const void*, const void*, const void*,
+    uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+    float, float, size_t, size_t, size_t, size_t) { return false; }
 bool cactus_metal_encode_attention_i8_prefill(void*, const void*, const void*, const void*, const void*, const void*,
     const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
     uint32_t, uint32_t, float, size_t, size_t, size_t, size_t, uint32_t, uint32_t) { return false; }

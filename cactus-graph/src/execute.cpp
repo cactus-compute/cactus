@@ -748,6 +748,7 @@ static bool try_encode_gpu(GraphNode& node, const nodes_vector& nodes, const nod
 }
 
 void CactusGraph::execute(const std::string& profile_file) {
+    cactus_graph_mark_unadjusted();
     BufferPool& pool = buffer_pool_;
     const size_t n = nodes_.size();
     infer_shapes();

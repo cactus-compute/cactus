@@ -467,11 +467,18 @@ struct FusedEmbedCtx {
 void cactus_graph_set_fused_embed(const FusedEmbedCtx* ctx);
 
 bool cactus_graph_gpu_argmax(uint32_t* idx, float* best, float* second);
+void cactus_graph_mark_unadjusted();
+void cactus_graph_on_destroy(const void* graph);
+void cactus_graph_set_sampling(const uint32_t* recent, int n_recent, float rep_penalty,
+                               const uint32_t* bias_ids, const float* bias_vals, int n_bias,
+                               long long suppressed);
+void cactus_graph_clear_sampling();
+bool cactus_graph_gpu_adjusted();
 
 class CactusGraph {
 public:
     CactusGraph();
-    ~CactusGraph() = default;
+    ~CactusGraph();
     CactusGraph(const CactusGraph&) = delete;
     CactusGraph& operator=(const CactusGraph&) = delete;
     CactusGraph(CactusGraph&&) noexcept = default;
