@@ -241,7 +241,9 @@ MetalFusePlan* cactus_metal_plan_build(
         GraphNode& nd = *nodes[i];
 
         if (nd.op_type == OpType::ATTENTION_CACHED && nd.input_ids.size() >= 5) {
-            const BufferDesc& qb = nodes[(size_t)idxof(nd.input_ids[0])]->output_buffer;
+            long qidx = idxof(nd.input_ids[0]);
+            if (qidx < 0) continue;
+            const BufferDesc& qb = nodes[(size_t)qidx]->output_buffer;
             if (qb.shape.size() < 4 || qb.shape[0] != 1 || qb.shape[1] != 1) continue;
             uint32_t nqh = (uint32_t)qb.shape[2], hd = (uint32_t)qb.shape[3];
             long qk = idxof(nd.input_ids[1]);
@@ -340,8 +342,6 @@ MetalFusePlan* cactus_metal_plan_build(
                 long mul = up_in(i, 0);
                 if (mul >= 0 && nodes[(size_t)mul]->op_type == OpType::MULTIPLY && sole_use(mul, {i})) {
                     long g0 = up_in((size_t)mul, 0), u0v = up_in((size_t)mul, 1);
-                    float gsc = 1.0f;
-                    long smul = -1;
                     for (int side = 0; side < 2; ++side) {
                         long gel = side == 0 ? g0 : u0v;
                         long other = side == 0 ? u0v : g0;
@@ -414,11 +414,9 @@ MetalFusePlan* cactus_metal_plan_build(
                             if (sm >= 0) cover.push_back((size_t)sm);
                             collect_chain((size_t)idxof(nd.input_ids[0]), mul, cover);
                             add_cluster(c, i, cover);
-                            gsc = sc_val; smul = sm;
                             break;
                         }
                     }
-                    (void)gsc; (void)smul;
                     if (plan->action[i] >= 0) continue;
                 }
             }
@@ -480,8 +478,7 @@ MetalFusePlan* cactus_metal_plan_build(
                     if (ip * cnt != op2) blocky = false;
                 } else blocky = false;
             }
-            if (!blocky) { }
-            else {
+            if (blocky) {
             long m0 = -1;
             {
                 long t = up_in(i, 0);

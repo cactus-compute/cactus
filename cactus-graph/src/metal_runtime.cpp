@@ -40,8 +40,6 @@ struct GSampling {
     long long suppressed = -1;
 };
 static GSampling g_samp;
-static bool g_step_adjusted = false;
-static bool g_step_amax_biased = false;
 static float* g_bias_dense = nullptr;
 static size_t g_bias_dense_n = 0;
 
@@ -111,10 +109,6 @@ void cactus_graph_metal_tail_commit() {
     g_last_amax_biased = g_plan_tail_biased;
 }
 
-static inline bool sampling_needs_adjust() {
-    return g_samp.active &&
-           ((g_samp.rep_penalty != 1.0f && !g_samp.recent.empty()) || g_samp.suppressed >= 0);
-}
 
 bool cactus_graph_metal_argmax(uint32_t* idx, float* best, float* second) {
     if (!g_metal_argmax_valid || !g_metal_argmax_buf) return false;

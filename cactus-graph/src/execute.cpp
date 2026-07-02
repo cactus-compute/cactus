@@ -1299,6 +1299,20 @@ void CactusGraph::execute(const std::string& profile_file) {
             GraphNode& nd = *nodes_[idx];
             if (aliases_input(nd)) nd.output_buffer.external_data = nullptr;
         };
+        auto assign_persistent_act = [&](GraphNode& nd) {
+            size_t need = nd.output_buffer.byte_size;
+            auto pit = metal_persistent_acts_.find(nd.id);
+            void* p = nullptr;
+            if (pit != metal_persistent_acts_.end() && pit->second.second >= need) {
+                p = pit->second.first;
+            } else {
+                if (pit != metal_persistent_acts_.end()) cactus_metal_free_shared(pit->second.first);
+                p = cactus_metal_alloc_pooled(need);
+                if (p) metal_persistent_acts_[nd.id] = { p, need };
+            }
+            if (p) { nd.output_buffer.release_to_pool(pool); nd.output_buffer.set_external(p); }
+            else nd.output_buffer.resize_from_pool(pool);
+        };
         size_t since_flush = 0;
         if (fplan) cactus_metal_plan_fold(fplan, nodes_);
         std::vector<uint8_t> metal_live(n, 0);
@@ -1329,17 +1343,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                 continue;
             }
             if (fact == -3) {
-                size_t need = node->output_buffer.byte_size;
-                auto pit = metal_persistent_acts_.find(node->id);
-                void* p = nullptr;
-                if (pit != metal_persistent_acts_.end() && pit->second.second >= need) p = pit->second.first;
-                else {
-                    if (pit != metal_persistent_acts_.end()) cactus_metal_free_shared(pit->second.first);
-                    p = cactus_metal_alloc_pooled(need);
-                    if (p) metal_persistent_acts_[node->id] = { p, need };
-                }
-                if (p) { node->output_buffer.release_to_pool(pool); node->output_buffer.set_external(p); }
-                else node->output_buffer.resize_from_pool(pool);
+                assign_persistent_act(*node);
                 metal_live[i] = 1;
                 for (size_t r : release_after[i]) metal_release(r);
                 continue;
@@ -1361,18 +1365,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                     node->output_buffer.release_to_pool(pool);
                     node->output_buffer.set_external(ap);
                 } else {
-                    size_t need = node->output_buffer.byte_size;
-                    auto pit = metal_persistent_acts_.find(node->id);
-                    void* p = nullptr;
-                    if (pit != metal_persistent_acts_.end() && pit->second.second >= need) {
-                        p = pit->second.first;
-                    } else {
-                        if (pit != metal_persistent_acts_.end()) cactus_metal_free_shared(pit->second.first);
-                        p = cactus_metal_alloc_pooled(need);
-                        if (p) metal_persistent_acts_[node->id] = { p, need };
-                    }
-                    if (p) { node->output_buffer.release_to_pool(pool); node->output_buffer.set_external(p); }
-                    else node->output_buffer.resize_from_pool(pool);
+                    assign_persistent_act(*node);
                 }
             }
             if (fact >= 0) {
@@ -1924,8 +1917,7 @@ void CactusGraph::soft_reset_keep_pool() {
 }
 
 void CactusGraph::prewarm_metal_quant_weights() {
-    const bool gpu = cactus_backend_metal();
-    if (!gpu) return;
+    if (!cactus_backend_metal()) return;
     for (auto& np : nodes_) {
         GraphNode& node = *np;
         if (node.op_type != OpType::MATMUL || node.input_ids.size() < 2) continue;

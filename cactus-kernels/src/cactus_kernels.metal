@@ -947,36 +947,6 @@ kernel void rope_f16(device const half* x [[buffer(0)]], device half* out [[buff
 }
 
 
-kernel void rms_norm_rope_f16(
-    device const half* x    [[buffer(0)]],
-    device const half* w    [[buffer(1)]],
-    device const half* cs   [[buffer(2)]],
-    device const half* sn   [[buffer(3)]],
-    device       half* out  [[buffer(4)]],
-    constant uint& hd       [[buffer(5)]],
-    constant float& eps     [[buffer(6)]],
-    uint head [[threadgroup_position_in_grid]],
-    uint t    [[thread_position_in_threadgroup]],
-    uint nt   [[threads_per_threadgroup]],
-    threadgroup float* red  [[threadgroup(0)]])
-{
-    device const half* xh = x + (size_t)head*hd;
-    device       half* oh = out + (size_t)head*hd;
-    float partial=0;
-    for (uint i=t;i<hd;i+=nt){ float v=(float)xh[i]; partial+=v*v; }
-    red[t]=partial; threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint s=nt/2; s>0; s>>=1){ if (t<s) red[t]+=red[t+s]; threadgroup_barrier(mem_flags::mem_threadgroup); }
-    float inv = 1.0f/sqrt(red[0]/(float)hd + eps);
-    uint hh=hd/2;
-    for (uint i=t;i<hd;i+=nt){
-        uint j = (i<hh) ? i+hh : i-hh;
-        float xi = (float)xh[i]*inv*(float)w[i];
-        float xj = (float)xh[j]*inv*(float)w[j];
-        float rot = (i<hh) ? -xj : xj;
-        oh[i] = (half)(xi*(float)cs[i] + rot*(float)sn[i]);
-    }
-}
-
 static inline float erf_approx(float x) {
     float sgn = x < 0.0f ? -1.0f : 1.0f;
     float ax = fabs(x);

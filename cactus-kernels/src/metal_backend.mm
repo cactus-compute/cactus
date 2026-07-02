@@ -647,10 +647,15 @@ static inline bool quant_lowbit_eligible(const CactusQuantMatrix* W) {
 }
 
 bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQuantMatrix* W) {
+    if (!ctx().ok || !W) return false;
     const uint32_t gs=W->group_size, K=W->K, N=W->N, ng=W->num_groups;
     if (ctx().ok && (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) && W->rotation && ng==1 && gs==K && (N%4)==0) {
         static void* ortho_code = nullptr; static uint32_t ortho_code_k = 0;
-        if (ortho_code_k < K) { ortho_code = cactus_metal_alloc_shared((size_t)K*sizeof(__fp16)); ortho_code_k = K; }
+        if (ortho_code_k < K) {
+            if (ortho_code) cactus_metal_free_shared(ortho_code);
+            ortho_code = cactus_metal_alloc_shared((size_t)K*sizeof(__fp16));
+            ortho_code_k = K;
+        }
         if (ortho_code) return cactus_metal_encode_quant_matmul_ortho(out, lhs, ortho_code, W);
     }
     const bool fast = ctx().ok && quant_fast_eligible(W);
@@ -823,6 +828,7 @@ bool cactus_metal_prewarm_quant(const CactusQuantMatrix* W) {
 }
 
 bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const CactusQuantMatrix* W, uint32_t M) {
+    if (!ctx().ok || !W) return false;
 
     const uint32_t gs=W->group_size, K=W->K, N=W->N, ng=W->num_groups;
     const uint32_t bits=W->bits, pgb=(gs*bits+7u)/8u;
@@ -1327,9 +1333,9 @@ bool cactus_metal_encode_conv1d_k3(void* out, const void* x, const void* w, int 
         auto it = g_dequant_cache.find(w);
         if (it == g_dequant_cache.end()) {
             size_t rows = Cout, cols = (size_t)Cin*3;
-            id<MTLBuffer> buf = [ctx().dev newBufferWithLength:rows*cols*2 options:MTLResourceStorageModeShared];
-            if (!buf) return false;
-            __fp16* dst = (__fp16*)[buf contents];
+            id<MTLBuffer> dq = [ctx().dev newBufferWithLength:rows*cols*2 options:MTLResourceStorageModeShared];
+            if (!dq) return false;
+            __fp16* dst = (__fp16*)[dq contents];
             const int8_t* src = (const int8_t*)w;
             if (w_gs == 0 || !w_scales) {
                 for (size_t i = 0; i < rows*cols; ++i) dst[i] = (__fp16)src[i];
@@ -1340,7 +1346,7 @@ bool cactus_metal_encode_conv1d_k3(void* out, const void* x, const void* w, int 
                     for (size_t c = 0; c < cols; ++c)
                         dst[r*cols+c] = (__fp16)((float)src[r*cols+c] * (float)scales[r*ngr + c/w_gs]);
             }
-            it = g_dequant_cache.emplace(w, buf).first;
+            it = g_dequant_cache.emplace(w, dq).first;
         }
         wf16 = [it->second contents];
     }
@@ -1788,33 +1794,33 @@ bool cactus_metal_encode_strided_scatter(void* out, const void* in, const uint32
     [g_enc dispatchThreads:MTLSizeMake(total,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
-bool cactus_metal_encode_kv_append_i8(const void* src, void* int8base, void* scalebase,
-    uint32_t kv_heads, uint32_t hdim, uint32_t current_len, uint32_t group_size,
-    size_t src_bytes, size_t int8_bytes, size_t scale_bytes) {
-    if (!ctx().ok) return false;
-    uint32_t num_groups = (hdim + group_size - 1)/group_size, n = kv_heads*num_groups;
-    ensureEncoder();
-    [g_enc setComputePipelineState:ctx().psoKvAppend];
-    setBufAt(src, src_bytes, 0); setBufAt(int8base, int8_bytes, 1); setBufAt(scalebase, scale_bytes, 2);
-    [g_enc setBytes:&kv_heads length:4 atIndex:3]; [g_enc setBytes:&hdim length:4 atIndex:4];
-    [g_enc setBytes:&current_len length:4 atIndex:5]; [g_enc setBytes:&group_size length:4 atIndex:6];
-    [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(n<256?n:256,1,1)];
-    return true;
-}
-
-bool cactus_metal_encode_kv_append_i8_m(const void* src, void* int8base, void* scalebase,
+static bool encode_kv_append(const void* src, void* int8base, void* scalebase,
     uint32_t kv_heads, uint32_t hdim, uint32_t current_len, uint32_t group_size, uint32_t M,
     size_t src_bytes, size_t int8_bytes, size_t scale_bytes) {
     if (!ctx().ok) return false;
     uint32_t num_groups = (hdim + group_size - 1)/group_size, n = M*kv_heads*num_groups;
     ensureEncoder();
-    [g_enc setComputePipelineState:ctx().psoKvAppendM];
+    [g_enc setComputePipelineState:(M == 1 ? ctx().psoKvAppend : ctx().psoKvAppendM)];
     setBufAt(src, src_bytes, 0); setBufAt(int8base, int8_bytes, 1); setBufAt(scalebase, scale_bytes, 2);
     [g_enc setBytes:&kv_heads length:4 atIndex:3]; [g_enc setBytes:&hdim length:4 atIndex:4];
     [g_enc setBytes:&current_len length:4 atIndex:5]; [g_enc setBytes:&group_size length:4 atIndex:6];
-    [g_enc setBytes:&M length:4 atIndex:7];
+    if (M != 1) [g_enc setBytes:&M length:4 atIndex:7];
     [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(n<256?n:256,1,1)];
     return true;
+}
+
+bool cactus_metal_encode_kv_append_i8(const void* src, void* int8base, void* scalebase,
+    uint32_t kv_heads, uint32_t hdim, uint32_t current_len, uint32_t group_size,
+    size_t src_bytes, size_t int8_bytes, size_t scale_bytes) {
+    return encode_kv_append(src, int8base, scalebase, kv_heads, hdim, current_len, group_size, 1,
+        src_bytes, int8_bytes, scale_bytes);
+}
+
+bool cactus_metal_encode_kv_append_i8_m(const void* src, void* int8base, void* scalebase,
+    uint32_t kv_heads, uint32_t hdim, uint32_t current_len, uint32_t group_size, uint32_t M,
+    size_t src_bytes, size_t int8_bytes, size_t scale_bytes) {
+    return encode_kv_append(src, int8base, scalebase, kv_heads, hdim, current_len, group_size, M,
+        src_bytes, int8_bytes, scale_bytes);
 }
 
 bool cactus_metal_encode_kv_append_ring_i8_m(const void* src, void* int8base, void* scalebase,
@@ -1833,36 +1839,7 @@ bool cactus_metal_encode_kv_append_ring_i8_m(const void* src, void* int8base, vo
     return true;
 }
 
-bool cactus_metal_encode_kv_append_sliding_i8(const void* src, void* int8base, void* scalebase,
-    uint32_t kv_heads, uint32_t hdim, uint32_t keep_sink, uint32_t remaining, uint32_t shift_src,
-    uint32_t group_size, size_t src_bytes, size_t int8_bytes, size_t scale_bytes) {
-    if (!ctx().ok) return false;
-    uint32_t num_groups = (hdim + group_size - 1)/group_size, per = kv_heads*num_groups;
-    id<MTLBuffer> scrI8 = recycled((size_t)(remaining?remaining:1)*kv_heads*hdim);
-    id<MTLBuffer> scrSc = recycled((size_t)(remaining?remaining:1)*kv_heads*num_groups*sizeof(float));
-    ensureEncoder();
-    if (remaining > 0) {
-        uint32_t n = remaining*per;
-        [g_enc setComputePipelineState:ctx().psoSlideS];
-        setBufAt(int8base, int8_bytes, 0); setBufAt(scalebase, scale_bytes, 1);
-        [g_enc setBuffer:scrI8 offset:0 atIndex:2]; [g_enc setBuffer:scrSc offset:0 atIndex:3];
-        [g_enc setBytes:&kv_heads length:4 atIndex:4]; [g_enc setBytes:&hdim length:4 atIndex:5];
-        [g_enc setBytes:&group_size length:4 atIndex:6]; [g_enc setBytes:&shift_src length:4 atIndex:7];
-        [g_enc setBytes:&remaining length:4 atIndex:8];
-        [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(n<256?n:256,1,1)];
-    }
-    uint32_t n2 = (remaining+1)*per;
-    [g_enc setComputePipelineState:ctx().psoSlideR];
-    setBufAt(src, src_bytes, 0); setBufAt(int8base, int8_bytes, 1); setBufAt(scalebase, scale_bytes, 2);
-    [g_enc setBuffer:scrI8 offset:0 atIndex:3]; [g_enc setBuffer:scrSc offset:0 atIndex:4];
-    [g_enc setBytes:&kv_heads length:4 atIndex:5]; [g_enc setBytes:&hdim length:4 atIndex:6];
-    [g_enc setBytes:&group_size length:4 atIndex:7]; [g_enc setBytes:&keep_sink length:4 atIndex:8];
-    [g_enc setBytes:&remaining length:4 atIndex:9];
-    [g_enc dispatchThreads:MTLSizeMake(n2,1,1) threadsPerThreadgroup:MTLSizeMake(n2<256?n2:256,1,1)];
-    return true;
-}
-
-bool cactus_metal_encode_kv_append_sliding_i8_m(const void* src, void* int8base, void* scalebase,
+static bool encode_kv_append_sliding(const void* src, void* int8base, void* scalebase,
     uint32_t kv_heads, uint32_t hdim, uint32_t keep_sink, uint32_t remaining, uint32_t shift_src,
     uint32_t group_size, uint32_t M, size_t src_bytes, size_t int8_bytes, size_t scale_bytes) {
     if (!ctx().ok) return false;
@@ -1881,14 +1858,29 @@ bool cactus_metal_encode_kv_append_sliding_i8_m(const void* src, void* int8base,
         [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(n<256?n:256,1,1)];
     }
     uint32_t n2 = (remaining+M)*per;
-    [g_enc setComputePipelineState:ctx().psoSlideRM];
+    [g_enc setComputePipelineState:(M == 1 ? ctx().psoSlideR : ctx().psoSlideRM)];
     setBufAt(src, src_bytes, 0); setBufAt(int8base, int8_bytes, 1); setBufAt(scalebase, scale_bytes, 2);
     [g_enc setBuffer:scrI8 offset:0 atIndex:3]; [g_enc setBuffer:scrSc offset:0 atIndex:4];
     [g_enc setBytes:&kv_heads length:4 atIndex:5]; [g_enc setBytes:&hdim length:4 atIndex:6];
     [g_enc setBytes:&group_size length:4 atIndex:7]; [g_enc setBytes:&keep_sink length:4 atIndex:8];
-    [g_enc setBytes:&remaining length:4 atIndex:9]; [g_enc setBytes:&M length:4 atIndex:10];
+    [g_enc setBytes:&remaining length:4 atIndex:9];
+    if (M != 1) [g_enc setBytes:&M length:4 atIndex:10];
     [g_enc dispatchThreads:MTLSizeMake(n2,1,1) threadsPerThreadgroup:MTLSizeMake(n2<256?n2:256,1,1)];
     return true;
+}
+
+bool cactus_metal_encode_kv_append_sliding_i8(const void* src, void* int8base, void* scalebase,
+    uint32_t kv_heads, uint32_t hdim, uint32_t keep_sink, uint32_t remaining, uint32_t shift_src,
+    uint32_t group_size, size_t src_bytes, size_t int8_bytes, size_t scale_bytes) {
+    return encode_kv_append_sliding(src, int8base, scalebase, kv_heads, hdim, keep_sink, remaining,
+        shift_src, group_size, 1, src_bytes, int8_bytes, scale_bytes);
+}
+
+bool cactus_metal_encode_kv_append_sliding_i8_m(const void* src, void* int8base, void* scalebase,
+    uint32_t kv_heads, uint32_t hdim, uint32_t keep_sink, uint32_t remaining, uint32_t shift_src,
+    uint32_t group_size, uint32_t M, size_t src_bytes, size_t int8_bytes, size_t scale_bytes) {
+    return encode_kv_append_sliding(src, int8base, scalebase, kv_heads, hdim, keep_sink, remaining,
+        shift_src, group_size, M, src_bytes, int8_bytes, scale_bytes);
 }
 
 void cactus_metal_quant_matmul(const CactusQuantMatrix* W, const __fp16* A,
