@@ -40,8 +40,6 @@ bool cactus_metal_encode_binary(int op_type, void* out, const void* a, const voi
 bool cactus_metal_encode_scalar(int op_type, void* out, const void* in, size_t n, float param);
 bool cactus_metal_encode_unary(int op_type, void* out, const void* in, size_t n);
 bool cactus_metal_encode_swiglu(void* out, const void* gate, const void* up, size_t n, float scale);
-bool cactus_metal_encode_rope(void* out, const void* x, const void* cos, const void* sin,
-                              uint32_t heads, uint32_t head_dim);
 bool cactus_metal_encode_rms_norm(void* out, const void* in, const void* weight,
                                   size_t rows, size_t dim, float eps);
 bool cactus_metal_encode_rms_norm_add(void* out, const void* in, const void* weight, const void* res,

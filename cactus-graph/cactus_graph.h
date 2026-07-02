@@ -464,6 +464,11 @@ struct FusedEmbedCtx {
     bool ok = false;
 };
 void cactus_graph_set_fused_embed(const FusedEmbedCtx* ctx);
+const FusedEmbedCtx* cactus_graph_fused_embed();
+bool cactus_graph_metal_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
+                                      const CactusQuantMatrix* lm_head, size_t nl, size_t ple_dim);
+bool cactus_graph_metal_tail(void* logits, size_t vocab);
+void cactus_graph_metal_tail_commit();
 
 bool cactus_graph_metal_argmax(uint32_t* idx, float* best, float* second);
 void cactus_graph_mark_unadjusted();
@@ -730,8 +735,6 @@ public:
     void invalidate_persistent(size_t persistent_node_id);
 
     void execute(const std::string& profile_file = "");
-    void build_metal_retype_plan();
-    std::unordered_map<uint64_t, struct MetalFusePlan*> metal_plans_;
     bool extract_ple_pathway(FusedEmbedCtx& ctx) const;
     void hard_reset();
     void soft_reset();
@@ -785,6 +788,9 @@ private:
     std::unordered_set<size_t> populated_node_ids_;
     std::unordered_set<size_t> embedded_input_node_ids_;
     std::unordered_set<size_t> retained_output_node_ids_;
+    void build_metal_retype_plan();
+    void invalidate_metal_state();
+    std::unordered_map<uint64_t, struct MetalFusePlan*> metal_plans_;
     std::vector<uint8_t> metal_retype_plan_;
     bool metal_retype_built_ = false;
     bool metal_retype_disabled_ = false;

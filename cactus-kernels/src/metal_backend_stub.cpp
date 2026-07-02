@@ -31,8 +31,6 @@ bool cactus_metal_encode_binary(int, void*, const void*, const void*, size_t) { 
 bool cactus_metal_encode_scalar(int, void*, const void*, size_t, float) { return false; }
 bool cactus_metal_encode_unary(int, void*, const void*, size_t) { return false; }
 bool cactus_metal_encode_swiglu(void*, const void*, const void*, size_t, float) { return false; }
-bool cactus_metal_encode_rope(void*, const void*, const void*, const void*, uint32_t, uint32_t) { return false; }
-bool cactus_metal_encode_rope_m(void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t) { return false; }
 bool cactus_metal_encode_rms_norm(void*, const void*, const void*, size_t, size_t, float) { return false; }
 bool cactus_metal_encode_rms_norm_add(void*, const void*, const void*, const void*, size_t, size_t, float) { return false; }
 bool cactus_metal_encode_rms_norm_add_rms(void*, void*, const void*, const void*, const void*, const void*,

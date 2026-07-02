@@ -2,11 +2,7 @@
 #include "cactus_kernels.h"
 #include "metal_backend.h"
 
-struct MetalFusePlan;
-void cactus_metal_plan_free(MetalFusePlan* p);
-#include <cstdlib>
 #include <cstring>
-#include <cmath>
 #include <vector>
 #include <cstdint>
 
@@ -62,14 +58,13 @@ static bool g_plan_tail_pending = false;
 static bool g_plan_tail_adjusted = false;
 static bool g_plan_tail_biased = false;
 
-bool cactus_graph_metal_tail(void* logits, size_t vocab);
-void cactus_graph_metal_tail_commit();
 
 static const float* update_bias_dense(size_t vocab) {
     if (!g_samp.bias_dense || g_samp.bias_len == 0) return nullptr;
     if (!g_bias_dense || g_bias_dense_n < vocab) {
+        if (g_bias_dense) cactus_metal_free_shared(g_bias_dense);
         g_bias_dense = (float*)cactus_metal_alloc_shared(vocab * sizeof(float));
-        if (!g_bias_dense) return nullptr;
+        if (!g_bias_dense) { g_bias_dense_n = 0; return nullptr; }
         g_bias_dense_n = vocab;
     }
     size_t n = g_samp.bias_len < vocab ? g_samp.bias_len : vocab;
@@ -132,13 +127,22 @@ bool cactus_graph_metal_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
     static void* pj = nullptr;
     static void* pjs = nullptr;
     static size_t cap = 0;
+    static size_t cap_pe = 0;
     const size_t PK = g_fe.proj.N;
+    const size_t EK = g_fe.ple.K;
+    if (cap_pe < EK) {
+        if (pe) cactus_metal_free_shared(pe);
+        pe = cactus_metal_alloc_shared(EK * 2);
+        cap_pe = pe ? EK : 0;
+    }
     if (cap < PK) {
-        pe = cactus_metal_alloc_shared(g_fe.ple.K * 2);
+        if (pa) cactus_metal_free_shared(pa);
+        if (pj) cactus_metal_free_shared(pj);
+        if (pjs) cactus_metal_free_shared(pjs);
         pa = cactus_metal_alloc_shared(PK * 2);
         pj = cactus_metal_alloc_shared(PK * 2);
         pjs = cactus_metal_alloc_shared(PK * 2);
-        cap = PK;
+        cap = (pa && pj && pjs) ? PK : 0;
     }
     if (!pe || !pa || !pj || !pjs) return false;
     uint32_t tok = (uint32_t)g_fe.token_id;
@@ -188,5 +192,5 @@ void cactus_graph_on_destroy(const void* graph) {
 
 CactusGraph::~CactusGraph() {
     cactus_graph_on_destroy(this);
-    for (auto& kv : metal_plans_) cactus_metal_plan_free(kv.second);
+    invalidate_metal_state();
 }

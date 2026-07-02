@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
-#include <cstdlib>
 
 namespace {
 
@@ -39,14 +38,7 @@ struct MetalCluster {
     void* sc[3] = {nullptr, nullptr, nullptr};
 };
 
-bool cactus_graph_metal_tail(void* logits, size_t vocab);
-struct FusedEmbedCtx;
-const FusedEmbedCtx* cactus_graph_fused_embed();
-bool cactus_graph_metal_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
-                                      const CactusQuantMatrix* lm_head, size_t nl, size_t ple_dim);
-
 struct MetalFusePlan {
-    bool built = false;
     std::vector<int32_t> action;
     std::vector<MetalCluster> clusters;
     long fold_h = -1, fold_ple = -1, fold_pos = -1, fold_w = -1;
@@ -71,7 +63,6 @@ MetalFusePlan* cactus_metal_plan_build(
     const std::vector<uint8_t>& retype) {
     const size_t n = nodes.size();
     auto plan = new MetalFusePlan();
-    plan->built = true;
     plan->action.assign(n, -1);
     std::vector<uint8_t> pinned(n, 0);
     for (size_t i = 0; i < n; ++i)
@@ -85,6 +76,7 @@ MetalFusePlan* cactus_metal_plan_build(
     for (size_t i = 0; i < n; ++i)
         for (size_t id : nodes[i]->input_ids) { long j = idxof(id); if (j >= 0) cons[(size_t)j].push_back(i); }
 
+    auto retyped = [&](size_t idx) { return idx < retype.size() && retype[idx] != 0; };
     auto passthrough = [&](const GraphNode& nd) {
         return is_alias_op(nd.op_type) || is_same_cast(nd, nodes, map) || is_noop_transpose(nd);
     };
@@ -133,8 +125,6 @@ MetalFusePlan* cactus_metal_plan_build(
             if (!ok) {
                 const GraphNode& cn = *nodes[c];
                 if (is_alias_op(cn.op_type) || is_same_cast(cn, nodes, map) || is_noop_transpose(cn)) {
-                    std::vector<size_t> sub = allowed;
-                    sub.push_back(c);
                     bool subok = true;
                     for (size_t cc : cons[c]) {
                         bool found = false;
@@ -474,6 +464,7 @@ MetalFusePlan* cactus_metal_plan_build(
             {
                 size_t ax = (size_t)nd.params.axis;
                 const auto& osh = nd.output_buffer.shape;
+                if (retyped(i)) blocky = false;
                 if (ax >= osh.size()) blocky = false;
                 for (size_t d = 0; blocky && d < ax; ++d) if (osh[d] != 1) blocky = false;
                 long fi = idxof(nd.input_ids[0]);
@@ -540,6 +531,7 @@ MetalFusePlan* cactus_metal_plan_build(
                     Precision wantA = jf32 ? Precision::FP32 : Precision::FP16;
                     if (pa < 0 || pb < 0
                         || nodes[(size_t)pa]->output_buffer.precision != wantA
+                        || (jf32 && retyped((size_t)pa))
                         || nodes[(size_t)pb]->output_buffer.precision != Precision::FP16) { ok = false; break; }
                     if (j == 0) { parentA = pa; parentB = pb; offA0 = offA; offB0 = offB; f32a = jf32; }
                     else if (jf32 != f32a) { ok = false; break; }
@@ -724,6 +716,7 @@ MetalFusePlan* cactus_metal_plan_build(
                             long scn = (o0 == (long)i || (o0 >= 0 && up(o0) == (long)i)) ? o1 : o0;
                             long base = scn == o1 ? o0 : o1;
                             if (base >= 0 && scn >= 0
+                                && nodes[(size_t)scn]->op_type == OpType::INPUT
                                 && nodes[(size_t)scn]->output_buffer.total_size == 1
                                 && nodes[(size_t)scn]->output_buffer.precision == Precision::FP16) {
                                 c.b1 = (size_t)scn;
@@ -923,7 +916,6 @@ MetalFusePlan* cactus_metal_plan_build(
             }
         };
         auto prec_ok = [](Precision p) { return p == Precision::FP16 || p == Precision::FP32; };
-        auto retyped = [&](size_t idx) { return idx < retype.size() && retype[idx] != 0; };
         for (size_t i = 0; i < n; ++i) {
             if (plan->action[i] != -1) continue;
             GraphNode& nd0 = *nodes[i];
@@ -952,6 +944,10 @@ MetalFusePlan* cactus_metal_plan_build(
                 || nodes[(size_t)x1]->output_buffer.total_size != an.output_buffer.total_size) continue;
             long ww = deep_f16_source(wi);
             if (ww < 0 || nodes[(size_t)ww]->output_buffer.total_size != dim) continue;
+            bool ordered = true;
+            for (size_t cc : cons[(size_t)ai])
+                if (cc < i) { ordered = false; break; }
+            if (!ordered) continue;
             MetalCluster c;
             c.rule = 12;
             c.a0 = (size_t)x0; c.a1 = (size_t)x1; c.a2 = (size_t)ai; c.a3 = (size_t)ww;
@@ -1005,12 +1001,6 @@ MetalFusePlan* cactus_metal_plan_build(
                 long prev = ci == 0 ? -1 : (long)chain[ci - 1];
                 if (ci == 0) {
                     long hi2 = idxof(cn.input_ids[0]);
-                    if (k2 == 2) {
-                        long in0 = idxof(cn.input_ids[0]);
-                        long in1 = idxof(cn.input_ids[1]);
-                        hi2 = in0;
-                        (void)in1;
-                    }
                     if (hi2 < 0 || !prec_ok(nodes[(size_t)hi2]->output_buffer.precision)
                         || retyped((size_t)hi2)
                         || nodes[(size_t)hi2]->output_buffer.total_size != total) { ok = false; break; }
@@ -1176,11 +1166,24 @@ MetalFusePlan* cactus_metal_plan_build(
     return plan;
 }
 
-void cactus_metal_plan_free(MetalFusePlan* p) { delete p; }
+static void release_cluster_buffers(MetalFusePlan* p) {
+    for (auto& c : p->clusters) {
+        if (c.s0) { cactus_metal_free_shared(c.s0); c.s0 = nullptr; }
+        if (c.s1) { cactus_metal_free_shared(c.s1); c.s1 = nullptr; }
+        for (auto& s : c.sc) if (s) { cactus_metal_free_shared(s); s = nullptr; }
+    }
+}
 
+void cactus_metal_plan_free(MetalFusePlan* p) {
+    if (!p) return;
+    release_cluster_buffers(p);
+    if (p->arena_base) { cactus_metal_free_shared(p->arena_base); p->arena_base = nullptr; }
+    delete p;
+}
 
 void cactus_metal_plan_disable(MetalFusePlan* p) {
     if (!p) return;
+    release_cluster_buffers(p);
     std::fill(p->action.begin(), p->action.end(), -1);
     p->clusters.clear();
     p->fold_h = -1;

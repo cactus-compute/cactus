@@ -30,7 +30,6 @@ kernel void cq4_transform(
     uint T  [[threads_per_threadgroup]],
     threadgroup float* z         [[threadgroup(0)]])
 {
-
     for (uint k=t; k<gs; k+=T){ uint gk=g*gs+k; z[k]=(float)x[gk]*(float)recip[gk]*(float)lsign[k]; }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -131,7 +130,6 @@ kernel void cq4_gemv(
     uint lane [[thread_index_in_simdgroup]],
     uint tl   [[thread_index_in_threadgroup]])
 {
-
     threadgroup float cb[16];
     if (tl<16) cb[tl]=(float)codebook[tl];
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -759,15 +757,6 @@ kernel void cq4_gemm_dense_f16(
     }
 }
 
-kernel void lmhead_rotate(device const half* act [[buffer(0)]], device const half* recip [[buffer(1)]],
-                          device const half* rotation [[buffer(2)]], device half* code [[buffer(3)]],
-                          constant uint& K [[buffer(4)]], uint i [[thread_position_in_grid]]) {
-    if (i>=K) return;
-    float acc = 0;
-    for (uint k=0; k<K; ++k) acc += (float)act[k]*(float)recip[k]*(float)rotation[(size_t)k*K + i];
-    code[i] = (half)acc;
-}
-
 kernel void lmhead_rotate_wide(device const half* act [[buffer(0)]], device const half* recip [[buffer(1)]],
                           device const half* rotation [[buffer(2)]], device half* code [[buffer(3)]],
                           constant uint& K [[buffer(4)]],
@@ -940,17 +929,6 @@ kernel void binary_f16(device const half* a [[buffer(0)]], device const half* b 
         y[i0+j]=(half)r;
     }
 }
-
-kernel void rope_f16(device const half* x [[buffer(0)]], device half* out [[buffer(1)]],
-                     device const half* cs [[buffer(2)]], device const half* sn [[buffer(3)]],
-                     constant uint& heads [[buffer(4)]], constant uint& hd [[buffer(5)]],
-                     uint gid [[thread_position_in_grid]]) {
-    uint total=heads*hd; if (gid>=total) return;
-    uint d=gid%hd, h=gid/hd, hh=hd/2;
-    float rot = (d<hh) ? -(float)x[h*hd+d+hh] : (float)x[h*hd+d-hh];
-    out[gid]=(half)((float)x[gid]*(float)cs[d] + rot*(float)sn[d]);
-}
-
 
 static inline float erf_approx(float x) {
     float sgn = x < 0.0f ? -1.0f : 1.0f;
@@ -1334,14 +1312,19 @@ kernel void scalar_f32(device const float* in [[buffer(0)]], device float* y [[b
 kernel void unary_f32(device const float* in [[buffer(0)]], device float* y [[buffer(1)]],
                       constant uint& n [[buffer(2)]], constant int& op [[buffer(3)]],
                       uint i [[thread_position_in_grid]]) {
-    if (i>=n) return; float x=in[i], r;
-    if (op==0) r=gelu_tanh(x);
-    else if (op==1) r=precise::tanh(x);
-    else if (op==2) r=x/(1.0f+precise::exp(-x));
-    else if (op==4) r=0.5f*x*(1.0f+erf_approx(x*0.70710678f));
-    else if (op==5) r=1.0f/(1.0f+precise::exp(-x));
-    else r=max(x,0.0f);
-    y[i]=r;
+    uint i0 = i * 4;
+    if (i0 >= n) return;
+    uint cnt = min(4u, n - i0);
+    for (uint j = 0; j < cnt; ++j) {
+        float x=in[i0+j], r;
+        if (op==0) r=gelu_tanh(x);
+        else if (op==1) r=precise::tanh(x);
+        else if (op==2) r=x/(1.0f+precise::exp(-x));
+        else if (op==4) r=0.5f*x*(1.0f+erf_approx(x*0.70710678f));
+        else if (op==5) r=1.0f/(1.0f+precise::exp(-x));
+        else r=max(x,0.0f);
+        y[i0+j]=r;
+    }
 }
 
 kernel void clamp_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
@@ -1656,8 +1639,9 @@ kernel void attn_flash_f16(device const half* q [[buffer(0)]], device const half
                            uint sgid [[simdgroup_index_in_threadgroup]],
                            uint lane [[thread_index_in_simdgroup]]) {
     constexpr uint BQ = 64, BK = 32, D = 64, NT = 256;
-    threadgroup half Ks[BK * D];
-    threadgroup half Vs[BK * D];
+    threadgroup half KVs[2 * BK * D];
+    threadgroup half* Ks = KVs;
+    threadgroup half* Vs = KVs + BK * D;
     threadgroup float Ss[8][8 * BK];
     threadgroup half Ps[8][8 * BK];
     threadgroup half Dg[8][64];
@@ -1678,7 +1662,7 @@ kernel void attn_flash_f16(device const half* q [[buffer(0)]], device const half
         for (uint d = 0; d < 8; ++d)
             simdgroup_load(qf[d], q + ((size_t)row0 * H + h) * D + d * 8, (size_t)H * D);
     } else {
-        threadgroup half* Qe = Ks;
+        threadgroup half* Qe = KVs;
         for (uint x = tid; x < BQ * D; x += NT) {
             uint r = x / D, d = x % D;
             uint t = q0 + r;
@@ -1797,7 +1781,7 @@ kernel void attn_flash_f16(device const half* q [[buffer(0)]], device const half
                 simdgroup_store(of[d], y + ((size_t)row0 * H + h) * D + d * 8, (size_t)H * D);
             }
         } else {
-            threadgroup half* Oe = Ks;
+            threadgroup half* Oe = KVs;
             for (uint d = 0; d < 8; ++d) {
                 simdgroup_multiply(of[d], dgf, of[d]);
                 simdgroup_store(of[d], Oe + (size_t)sgid * 8 * D + d * 8, D);
@@ -1981,7 +1965,6 @@ kernel void rope_full_f16(device const half* x [[buffer(0)]], device half* y [[b
     uint d = gid.x, tok = gid.y;
     if (d >= D) return;
     size_t off = (size_t)tok * D + d;
-    uint hd = D;
     uint seq = (tok / H) % S;
     if (d >= rot) { y[off] = x[off]; return; }
     uint hr = rot / 2;
@@ -1996,7 +1979,6 @@ kernel void rope_full_f16(device const half* x [[buffer(0)]], device half* y [[b
     if (gptj) { first = (d % 2) == 0; other = (float)x[off + (first ? 1 : -1)]; }
     else { first = d < hr; other = (float)x[off + (first ? (long)hr : -(long)hr)]; }
     y[off] = (half)(first ? v*c - other*sn : v*c + other*sn);
-    (void)hd;
 }
 
 kernel void maxpool1d_f16(device const half* x [[buffer(0)]], device half* y [[buffer(1)]],
@@ -2228,7 +2210,8 @@ kernel void bcast_binary_rows_f16(device const half* a [[buffer(0)]], device con
     uint rem = row, ai = 0, bi = 0;
     for (int d = int(ndim) - 1; d >= 0; --d) { uint c = rem % oshape[d]; rem /= oshape[d]; ai += c * astride[d]; bi += c * bstride[d]; }
     float av = (float)a[ai + v * ainner], bv = (float)b[bi + v * binner], r;
-    switch(op){ case 2:r=av-bv;break; case 3:r=av*bv;break; case 4:r=av/bv;break; default:r=av+bv; }
+    switch(op){ case 2:r=av-bv;break; case 3:r=av*bv;break; case 4:r=av/bv;break;
+                case 5:r=(av!=bv)?1.0f:0.0f;break; default:r=av+bv; }
     if (op==1) r=clamp(r,-65500.0f,65500.0f);
     out[(size_t)row * inner + v] = (half)r;
 }
@@ -2242,7 +2225,8 @@ kernel void bcast_binary_f16(device const half* a [[buffer(0)]], device const ha
     uint rem=i, ai=0, bi=0;
     for (int d=int(ndim)-1; d>=0; --d){ uint c=rem%oshape[d]; rem/=oshape[d]; ai+=c*astride[d]; bi+=c*bstride[d]; }
     float av=(float)a[ai], bv=(float)b[bi], r;
-    switch(op){ case 2:r=av-bv;break; case 3:r=av*bv;break; case 4:r=av/bv;break; default:r=av+bv; }
+    switch(op){ case 2:r=av-bv;break; case 3:r=av*bv;break; case 4:r=av/bv;break;
+                case 5:r=(av!=bv)?1.0f:0.0f;break; default:r=av+bv; }
     if (op==1) r=clamp(r,-65500.0f,65500.0f);
     out[i]=(half)r;
 }

@@ -602,8 +602,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         bound.insert(comp);
     }
 
-    if (decoder_prefill_ && decoder_prefill_->graph
-        ) {
+    if (decoder_prefill_ && decoder_prefill_->graph) {
         try {
             if (prefill_encoder_ && prefill_encoder_->graph) {
                 for (auto& b : prefill_encoder_->input_buffers) std::fill(b.begin(), b.end(), 0);

@@ -74,7 +74,6 @@ struct ParityCase {
     bool check() {
         std::vector<float> cpu = run("cpu");
         std::vector<float> metal = run("metal");
-        if (metal.empty()) return true;
         if (cpu.size() != metal.size() || cpu.empty()) return false;
         for (size_t i = 0; i < cpu.size(); ++i) {
             float scale = std::max(1.0f, std::fabs(cpu[i]));
@@ -124,6 +123,24 @@ bool parity_not_equal() {
     c.add_input({2, 31});
     c.build = [](CactusGraph& g, const std::vector<size_t>& in) { return g.not_equal(in[0], in[1]); };
     return c.check();
+}
+
+bool parity_broadcast_binary() {
+    {
+        ParityCase c;
+        c.add_input({4, 33});
+        c.add_input({1, 33});
+        c.build = [](CactusGraph& g, const std::vector<size_t>& in) { return g.multiply(in[0], in[1]); };
+        if (!c.check()) return false;
+    }
+    {
+        ParityCase c;
+        c.add_input({4, 33});
+        c.add_input({1, 33});
+        c.build = [](CactusGraph& g, const std::vector<size_t>& in) { return g.not_equal(in[0], in[1]); };
+        if (!c.check()) return false;
+    }
+    return true;
 }
 
 bool parity_concat() {
@@ -288,6 +305,7 @@ int main() {
     runner.run_test("leaky_relu", parity_scalar(&CactusGraph::leaky_relu, 0.1f));
     runner.run_test("scalar_not_equal", parity_scalar(&CactusGraph::scalar_not_equal, 0.0f));
     runner.run_test("not_equal", parity_not_equal());
+    runner.run_test("broadcast_binary", parity_broadcast_binary());
     runner.run_test("sum", parity_reduce(&CactusGraph::sum));
     runner.run_test("mean", parity_reduce(&CactusGraph::mean));
     runner.run_test("variance", parity_reduce(&CactusGraph::variance));
