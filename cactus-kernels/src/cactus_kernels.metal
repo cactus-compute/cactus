@@ -929,11 +929,16 @@ kernel void copy_bytes(device const uchar* in [[buffer(0)]], device uchar* out [
 kernel void binary_f16(device const half* a [[buffer(0)]], device const half* b [[buffer(1)]],
                        device half* y [[buffer(2)]], constant uint& n [[buffer(3)]],
                        constant int& op [[buffer(4)]], uint i [[thread_position_in_grid]]) {
-    if (i>=n) return; float av=(float)a[i], bv=(float)b[i], r;
-    switch(op){ case 2: r=av-bv; break; case 3: r=av*bv; break; case 4: r=av/bv; break;
-                case 5: r=(av!=bv)?1.0f:0.0f; break; default: r=av+bv; }
-    if (op==1) r=clamp(r,-65500.0f,65500.0f);
-    y[i]=(half)r;
+    uint i0 = i * 4;
+    if (i0 >= n) return;
+    uint cnt = min(4u, n - i0);
+    for (uint j = 0; j < cnt; ++j) {
+        float av=(float)a[i0+j], bv=(float)b[i0+j], r;
+        switch(op){ case 2: r=av-bv; break; case 3: r=av*bv; break; case 4: r=av/bv; break;
+                    case 5: r=(av!=bv)?1.0f:0.0f; break; default: r=av+bv; }
+        if (op==1) r=clamp(r,-65500.0f,65500.0f);
+        y[i0+j]=(half)r;
+    }
 }
 
 kernel void rope_f16(device const half* x [[buffer(0)]], device half* out [[buffer(1)]],
@@ -977,21 +982,28 @@ static inline float scalar_apply(float v, float p, int op) {
 kernel void scalar_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
                        constant uint& n [[buffer(2)]], constant int& op [[buffer(3)]],
                        constant float& p [[buffer(4)]], uint i [[thread_position_in_grid]]) {
-    if (i>=n) return;
-    y[i]=(half)scalar_apply((float)in[i], p, op);
+    uint i0 = i * 4;
+    if (i0 >= n) return;
+    uint cnt = min(4u, n - i0);
+    for (uint j = 0; j < cnt; ++j) y[i0+j]=(half)scalar_apply((float)in[i0+j], p, op);
 }
 
 kernel void unary_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
                       constant uint& n [[buffer(2)]], constant int& op [[buffer(3)]],
                       uint i [[thread_position_in_grid]]) {
-    if (i>=n) return; float x=(float)in[i], r;
-    if (op==0) r=gelu_tanh(x);
-    else if (op==1) r=precise::tanh(x);
-    else if (op==2) r=x/(1.0f+precise::exp(-x));
-    else if (op==4) r=0.5f*x*(1.0f+erf_approx(x*0.70710678f));
-    else if (op==5) r=1.0f/(1.0f+precise::exp(-x));
-    else r=max(x,0.0f);
-    y[i]=(half)r;
+    uint i0 = i * 4;
+    if (i0 >= n) return;
+    uint cnt = min(4u, n - i0);
+    for (uint j = 0; j < cnt; ++j) {
+        float x=(float)in[i0+j], r;
+        if (op==0) r=gelu_tanh(x);
+        else if (op==1) r=precise::tanh(x);
+        else if (op==2) r=x/(1.0f+precise::exp(-x));
+        else if (op==4) r=0.5f*x*(1.0f+erf_approx(x*0.70710678f));
+        else if (op==5) r=1.0f/(1.0f+precise::exp(-x));
+        else r=max(x,0.0f);
+        y[i0+j]=(half)r;
+    }
 }
 
 kernel void swiglu_f16(device const half* gate [[buffer(0)]], device const half* up [[buffer(1)]],
@@ -1002,6 +1014,38 @@ kernel void swiglu_f16(device const half* gate [[buffer(0)]], device const half*
     half g1=(half)gelu_tanh(x);
     half g2=(half)((float)g1*scale);
     y[i]=(half)((float)g2*(float)up[i]);
+}
+
+kernel void rms_norm_simd_f16(device const half* in [[buffer(0)]], device const half* w [[buffer(1)]],
+                              device half* y [[buffer(2)]], constant uint& dim [[buffer(3)]],
+                              constant float& eps [[buffer(4)]], constant uint& rows [[buffer(5)]],
+                              uint tg [[threadgroup_position_in_grid]],
+                              uint sgid [[simdgroup_index_in_threadgroup]],
+                              uint lane [[thread_index_in_simdgroup]]) {
+    uint row = tg * 4 + sgid;
+    if (row >= rows) return;
+    device const half* x = in + (size_t)row * dim;
+    device half* o = y + (size_t)row * dim;
+    float partial = 0;
+    for (uint i = lane * 4; i + 3 < dim; i += 128) {
+        half4 v4 = *(device const half4*)(x + i);
+        float4 f = float4(v4);
+        partial += f.x*f.x + f.y*f.y + f.z*f.z + f.w*f.w;
+    }
+    for (uint i = (dim & ~3u) + lane; i < dim; i += 32) { float v = (float)x[i]; partial += v*v; }
+    partial += simd_shuffle_xor(partial, 16);
+    partial += simd_shuffle_xor(partial, 8);
+    partial += simd_shuffle_xor(partial, 4);
+    partial += simd_shuffle_xor(partial, 2);
+    partial += simd_shuffle_xor(partial, 1);
+    float inv = 1.0f / sqrt(partial / (float)dim + eps);
+    for (uint i = lane * 4; i + 3 < dim; i += 128) {
+        half4 v4 = *(device const half4*)(x + i);
+        half4 w4 = *(device const half4*)(w + i);
+        float4 f = float4(v4) * inv * float4(w4);
+        *(device half4*)(o + i) = half4(f);
+    }
+    for (uint i = (dim & ~3u) + lane; i < dim; i += 32) o[i] = (half)((float)x[i] * inv * (float)w[i]);
 }
 
 kernel void rms_norm_f16(device const half* in [[buffer(0)]], device const half* w [[buffer(1)]],
@@ -1088,6 +1132,27 @@ kernel void strided_copy_f16(device const half* in [[buffer(0)]], device half* o
     uint rem=i, src=base;
     for (int d=int(ndim)-1; d>=0; --d){ uint c=rem%oshape[d]; rem/=oshape[d]; src+=c*sstride[d]; }
     out[i]=in[src];
+}
+
+kernel void transpose2d_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
+                             constant uint& R [[buffer(2)]], constant uint& C [[buffer(3)]],
+                             uint3 tgid [[threadgroup_position_in_grid]],
+                             uint3 tp3 [[thread_position_in_threadgroup]]) {
+    uint2 tp = tp3.xy;
+    threadgroup half tile[32][33];
+    uint b = tgid.z;
+    uint c0 = tgid.x * 32, r0 = tgid.y * 32;
+    device const half* src = in + (size_t)b * R * C;
+    device half* dst = y + (size_t)b * R * C;
+    for (uint dr = tp.y; dr < 32; dr += 8) {
+        uint r = r0 + dr, c = c0 + tp.x;
+        tile[dr][tp.x] = (r < R && c < C) ? src[(size_t)r * C + c] : (half)0;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint dr = tp.y; dr < 32; dr += 8) {
+        uint c = c0 + dr, r = r0 + tp.x;
+        if (c < C && r < R) dst[(size_t)c * R + r] = tile[tp.x][dr];
+    }
 }
 
 kernel void strided_copy_rows_f16(device const half* in [[buffer(0)]], device half* out [[buffer(1)]],
@@ -1198,22 +1263,42 @@ kernel void strided_scatter_f16(device const half* in [[buffer(0)]], device half
     out[dst]=in[i];
 }
 
+kernel void strided_scatter_rows_f16(device const half* in [[buffer(0)]], device half* out [[buffer(1)]],
+    constant uint* ishape [[buffer(2)]], constant uint* ostride [[buffer(3)]],
+    constant uint& ndim [[buffer(4)]], constant uint& rows [[buffer(5)]], constant uint& base [[buffer(6)]],
+    constant uint& inner4 [[buffer(7)]],
+    uint2 gid [[thread_position_in_grid]]) {
+    uint v = gid.x, row = gid.y;
+    if (v >= inner4 || row >= rows) return;
+    uint rem = row, dst = base;
+    for (int d = int(ndim) - 1; d >= 0; --d) { uint c = rem % ishape[d]; rem /= ishape[d]; dst += c * ostride[d]; }
+    device const half4* s4 = (device const half4*)(in + (size_t)row * inner4 * 4);
+    device half4* d4 = (device half4*)(out + dst);
+    d4[v] = s4[v];
+}
+
 kernel void binary_f32(device const float* a [[buffer(0)]], device const float* b [[buffer(1)]],
                        device float* y [[buffer(2)]], constant uint& n [[buffer(3)]],
                        constant int& op [[buffer(4)]], uint i [[thread_position_in_grid]]) {
-    if (i>=n) return; float av=a[i], bv=b[i], r;
-    switch(op){ case 2: r=av-bv; break; case 3: r=av*bv; break; case 4: r=av/bv; break; case 5: r=(av!=bv)?1.0f:0.0f; break; default: r=av+bv; }
-    if (op==1) r=clamp(r,-65500.0f,65500.0f);
-    y[i]=r;
+    uint i0 = i * 4;
+    if (i0 >= n) return;
+    uint cnt = min(4u, n - i0);
+    for (uint j = 0; j < cnt; ++j) {
+        float av=a[i0+j], bv=b[i0+j], r;
+        switch(op){ case 2: r=av-bv; break; case 3: r=av*bv; break; case 4: r=av/bv; break;
+                    case 5: r=(av!=bv)?1.0f:0.0f; break; default: r=av+bv; }
+        if (op==1) r=clamp(r,-65500.0f,65500.0f);
+        y[i0+j]=r;
+    }
 }
-
 kernel void scalar_f32(device const float* in [[buffer(0)]], device float* y [[buffer(1)]],
                        constant uint& n [[buffer(2)]], constant int& op [[buffer(3)]],
                        constant float& p [[buffer(4)]], uint i [[thread_position_in_grid]]) {
-    if (i>=n) return;
-    y[i]=scalar_apply(in[i], p, op);
+    uint i0 = i * 4;
+    if (i0 >= n) return;
+    uint cnt = min(4u, n - i0);
+    for (uint j = 0; j < cnt; ++j) y[i0+j]=scalar_apply(in[i0+j], p, op);
 }
-
 kernel void unary_f32(device const float* in [[buffer(0)]], device float* y [[buffer(1)]],
                       constant uint& n [[buffer(2)]], constant int& op [[buffer(3)]],
                       uint i [[thread_position_in_grid]]) {
@@ -1230,15 +1315,20 @@ kernel void unary_f32(device const float* in [[buffer(0)]], device float* y [[bu
 kernel void clamp_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
                       constant uint& n [[buffer(2)]], constant float& lo [[buffer(3)]],
                       constant float& hi [[buffer(4)]], uint i [[thread_position_in_grid]]) {
-    if (i<n) y[i]=(half)clamp((float)in[i], lo, hi);
+    uint i0 = i * 4;
+    if (i0 >= n) return;
+    uint cnt = min(4u, n - i0);
+    for (uint j = 0; j < cnt; ++j) y[i0+j]=(half)clamp((float)in[i0+j], lo, hi);
 }
 
 kernel void clamp_f32(device const float* in [[buffer(0)]], device float* y [[buffer(1)]],
                       constant uint& n [[buffer(2)]], constant float& lo [[buffer(3)]],
                       constant float& hi [[buffer(4)]], uint i [[thread_position_in_grid]]) {
-    if (i<n) y[i]=clamp(in[i], lo, hi);
+    uint i0 = i * 4;
+    if (i0 >= n) return;
+    uint cnt = min(4u, n - i0);
+    for (uint j = 0; j < cnt; ++j) y[i0+j]=clamp(in[i0+j], lo, hi);
 }
-
 kernel void glu_f16(device const half* x [[buffer(0)]], device half* y [[buffer(1)]],
                     constant uint& split [[buffer(2)]], constant uint& inner [[buffer(3)]],
                     constant uint& n [[buffer(4)]], uint i [[thread_position_in_grid]]) {
@@ -1523,6 +1613,173 @@ kernel void attn_f16_d64(device const half* q [[buffer(0)]], device const half* 
     }
 }
 
+kernel void attn_flash_f16(device const half* q [[buffer(0)]], device const half* k [[buffer(1)]],
+                           device const half* v [[buffer(2)]], device half* y [[buffer(3)]],
+                           device const half* mask [[buffer(4)]],
+                           constant uint& T [[buffer(5)]], constant uint& S [[buffer(6)]],
+                           constant uint& H [[buffer(7)]], constant float& scale [[buffer(8)]],
+                           constant uint& mask_mode [[buffer(9)]],
+                           uint2 tgid [[threadgroup_position_in_grid]],
+                           uint tid [[thread_index_in_threadgroup]],
+                           uint sgid [[simdgroup_index_in_threadgroup]],
+                           uint lane [[thread_index_in_simdgroup]]) {
+    constexpr uint BQ = 64, BK = 32, D = 64, NT = 256;
+    threadgroup half Ks[BK * D];
+    threadgroup half Vs[BK * D];
+    threadgroup float Ss[8][8 * BK];
+    threadgroup half Ps[8][8 * BK];
+    threadgroup half Dg[8][64];
+    threadgroup float Ms[8][8];
+    threadgroup float Ls[8][8];
+    threadgroup uint Rf[8];
+
+    uint qb = tgid.x, h = tgid.y;
+    uint q0 = qb * BQ;
+    uint row0 = q0 + sgid * 8;
+    bool interior = row0 + 8 <= T;
+
+    for (uint x = tid; x < 8 * 64; x += NT) Dg[x / 64][x % 64] = 0;
+    if (tid < 64) { Ms[tid / 8][tid % 8] = -INFINITY; Ls[tid / 8][tid % 8] = 0; }
+
+    simdgroup_half8x8 qf[8];
+    if (interior) {
+        for (uint d = 0; d < 8; ++d)
+            simdgroup_load(qf[d], q + ((size_t)row0 * H + h) * D + d * 8, (size_t)H * D);
+    } else {
+        threadgroup half* Qe = Ks;
+        for (uint x = tid; x < BQ * D; x += NT) {
+            uint r = x / D, d = x % D;
+            uint t = q0 + r;
+            Qe[x] = (t < T) ? q[((size_t)t * H + h) * D + d] : (half)0;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint d = 0; d < 8; ++d)
+            simdgroup_load(qf[d], Qe + (size_t)sgid * 8 * D + d * 8, D);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    simdgroup_half8x8 of[8];
+    for (uint d = 0; d < 8; ++d) of[d] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+
+    for (uint kb = 0; kb < S; kb += BK) {
+        for (uint x = tid; x < BK * D / 4; x += NT) {
+            uint r = (x * 4) / D, d = (x * 4) % D;
+            uint sidx = kb + r;
+            half4 kv4 = half4(0.0h), vv4 = half4(0.0h);
+            if (sidx < S) {
+                kv4 = *(device const half4*)(k + ((size_t)sidx * H + h) * D + d);
+                vv4 = *(device const half4*)(v + ((size_t)sidx * H + h) * D + d);
+            }
+            *(threadgroup half4*)(Ks + r * D + d) = kv4;
+            *(threadgroup half4*)(Vs + r * D + d) = vv4;
+        }
+        if (lane == 0) Rf[sgid] = 0;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint j = 0; j < 4; ++j) {
+            simdgroup_float8x8 sf = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+            for (uint d = 0; d < 8; ++d) {
+                simdgroup_half8x8 kt;
+                simdgroup_load(kt, Ks + (size_t)j * 8 * D + d * 8, D, 0, true);
+                simdgroup_multiply_accumulate(sf, qf[d], kt, sf);
+            }
+            simdgroup_store(sf, Ss[sgid] + j * 8, BK);
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+
+        uint r = lane / 4, c0 = (lane % 4) * 8;
+        uint t = row0 + r;
+        float sv[8];
+        float mloc = -INFINITY;
+        for (uint c = 0; c < 8; ++c) {
+            uint sidx = kb + c0 + c;
+            float val = Ss[sgid][r * BK + c0 + c] * scale;
+            bool dead = sidx >= S || t >= T;
+            if (!dead && mask_mode == 2u && mask[(size_t)t * S + sidx] == (half)0.0h) dead = true;
+            sv[c] = dead ? -INFINITY : val;
+            mloc = max(mloc, sv[c]);
+        }
+        mloc = max(mloc, simd_shuffle_xor(mloc, 1));
+        mloc = max(mloc, simd_shuffle_xor(mloc, 2));
+        float mold = Ms[sgid][r];
+        float mnew = max(mold, mloc);
+        float sloc = 0;
+        for (uint c = 0; c < 8; ++c) {
+            float pv = (mnew == -INFINITY || sv[c] == -INFINITY) ? 0.0f : fast::exp(sv[c] - mnew);
+            Ps[sgid][r * BK + c0 + c] = (half)pv;
+            sloc += pv;
+        }
+        sloc += simd_shuffle_xor(sloc, 1);
+        sloc += simd_shuffle_xor(sloc, 2);
+        float alpha = (mold == -INFINITY) ? 0.0f : fast::exp(mold - mnew);
+        bool first = mold == -INFINITY;
+        if ((lane % 4) == 0) {
+            Ms[sgid][r] = mnew;
+            Ls[sgid][r] = Ls[sgid][r] * alpha + sloc;
+            if (mnew != mold && !first) Rf[sgid] = 1;
+            Dg[sgid][r * 8 + r] = (half)alpha;
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+
+        bool rescale = Rf[sgid] != 0 || kb == 0;
+        simdgroup_half8x8 pf[4];
+        for (uint j = 0; j < 4; ++j)
+            simdgroup_load(pf[j], Ps[sgid] + j * 8, BK);
+        if (rescale) {
+            simdgroup_half8x8 dgf;
+            simdgroup_load(dgf, Dg[sgid], 8);
+            for (uint d = 0; d < 8; ++d) {
+                simdgroup_half8x8 acc;
+                simdgroup_multiply(acc, dgf, of[d]);
+                for (uint j = 0; j < 4; ++j) {
+                    simdgroup_half8x8 vf;
+                    simdgroup_load(vf, Vs + (size_t)j * 8 * D + d * 8, D);
+                    simdgroup_multiply_accumulate(acc, pf[j], vf, acc);
+                }
+                of[d] = acc;
+            }
+        } else {
+            for (uint d = 0; d < 8; ++d) {
+                for (uint j = 0; j < 4; ++j) {
+                    simdgroup_half8x8 vf;
+                    simdgroup_load(vf, Vs + (size_t)j * 8 * D + d * 8, D);
+                    simdgroup_multiply_accumulate(of[d], pf[j], vf, of[d]);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    {
+        uint r = lane / 4;
+        if ((lane % 4) == 0) {
+            float l = Ls[sgid][r];
+            Dg[sgid][r * 8 + r] = (half)(l > 0.0f ? 1.0f / l : 0.0f);
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_half8x8 dgf;
+        simdgroup_load(dgf, Dg[sgid], 8);
+        if (interior) {
+            for (uint d = 0; d < 8; ++d) {
+                simdgroup_multiply(of[d], dgf, of[d]);
+                simdgroup_store(of[d], y + ((size_t)row0 * H + h) * D + d * 8, (size_t)H * D);
+            }
+        } else {
+            threadgroup half* Oe = Ks;
+            for (uint d = 0; d < 8; ++d) {
+                simdgroup_multiply(of[d], dgf, of[d]);
+                simdgroup_store(of[d], Oe + (size_t)sgid * 8 * D + d * 8, D);
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            for (uint x = tid; x < BQ * D; x += NT) {
+                uint r2 = x / D, d = x % D;
+                uint t = q0 + r2;
+                if (t < T) y[((size_t)t * H + h) * D + d] = Oe[x];
+            }
+        }
+    }
+}
+
 kernel void attn_maskfill_f16(device const half* mask [[buffer(0)]], device half* out [[buffer(1)]],
                               constant uint& ts [[buffer(2)]],
                               uint2 gid [[thread_position_in_grid]]) {
@@ -1796,25 +2053,31 @@ kernel void conv2d_f16(device const half* x [[buffer(0)]], device const half* w 
                        constant uint& pad [[buffer(12)]], constant uint& dw [[buffer(13)]],
                        constant uint& has_bias [[buffer(14)]],
                        uint3 gid [[thread_position_in_grid]]) {
-    uint wo = gid.x, ho = gid.y, nco = gid.z;
-    if (wo >= Wo || ho >= Ho) return;
+    uint wo0 = gid.x * 4, ho = gid.y, nco = gid.z;
+    if (wo0 >= Wo || ho >= Ho) return;
     uint n = nco / Cout, co = nco % Cout;
-    float acc = has_bias ? (float)bias[co] : 0.0f;
+    float acc[4];
+    float bv = has_bias ? (float)bias[co] : 0.0f;
+    for (uint q = 0; q < 4; ++q) acc[q] = bv;
     uint ci0 = dw ? co : 0, ci1 = dw ? co + 1 : Cin;
     for (uint ci = ci0; ci < ci1; ++ci) {
         for (uint kh = 0; kh < K; ++kh) {
             long h = (long)ho * stride - (long)pad + kh;
             if (h < 0 || h >= (long)H) continue;
+            device const half* xr = x + (((size_t)n*Cin + ci)*H + h)*W;
             for (uint kw = 0; kw < K; ++kw) {
-                long ww = (long)wo * stride - (long)pad + kw;
-                if (ww < 0 || ww >= (long)W) continue;
                 float wv = dw ? (float)w[((size_t)co*K + kh)*K + kw]
                               : (float)w[(((size_t)co*Cin + ci)*K + kh)*K + kw];
-                acc = fma((float)x[(((size_t)n*Cin + ci)*H + h)*W + ww], wv, acc);
+                for (uint q = 0; q < 4; ++q) {
+                    long ww = (long)(wo0 + q) * stride - (long)pad + kw;
+                    if (ww >= 0 && ww < (long)W && wo0 + q < Wo)
+                        acc[q] = fma((float)xr[ww], wv, acc[q]);
+                }
             }
         }
     }
-    y[(((size_t)n*Cout + co)*Ho + ho)*Wo + wo] = (half)acc;
+    for (uint q = 0; q < 4 && wo0 + q < Wo; ++q)
+        y[(((size_t)n*Cout + co)*Ho + ho)*Wo + wo0 + q] = (half)acc[q];
 }
 
 kernel void batchnorm_f16(device const half* x [[buffer(0)]], device const half* w [[buffer(1)]],
@@ -1863,41 +2126,74 @@ kernel void bias_add_rows_f16(device half* y [[buffer(0)]], device const half* b
 
 struct EwStep { int kind; int code; float p0; float p1; };
 
-kernel void elemwise_chain_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
+kernel void elemwise_chain_f16(device const uchar* in [[buffer(0)]], device uchar* y [[buffer(1)]],
                                constant EwStep* steps [[buffer(2)]], constant uint& nsteps [[buffer(3)]],
-                               device const half* s0 [[buffer(4)]], device const half* s1 [[buffer(5)]],
-                               device const half* s2 [[buffer(6)]], constant uint& n [[buffer(7)]],
-                               uint i [[thread_position_in_grid]]) {
-    if (i >= n) return;
-    float x = (float)in[i];
+                               device const uchar* s0 [[buffer(4)]], device const uchar* s1 [[buffer(5)]],
+                               device const uchar* s2 [[buffer(6)]], constant uint& n [[buffer(7)]],
+                               constant uint& flags [[buffer(8)]],
+                               uint gid [[thread_position_in_grid]]) {
+    uint i0 = gid * 4;
+    if (i0 >= n) return;
+    uint cnt = min(4u, n - i0);
+    float xv[4];
+    bool in32 = (flags & 1u) != 0;
+    for (uint q = 0; q < cnt; ++q)
+        xv[q] = in32 ? ((device const float*)in)[i0+q] : (float)((device const half*)in)[i0+q];
+    bool prec32 = in32;
     for (uint s = 0; s < nsteps; ++s) {
         EwStep st = steps[s];
-        if (st.kind == 0) {
-            if (st.code == 0) x = gelu_tanh(x);
-            else if (st.code == 1) x = precise::tanh(x);
-            else if (st.code == 2) x = x/(1.0f+precise::exp(-x));
-            else if (st.code == 4) x = 0.5f*x*(1.0f+erf_approx(x*0.70710678f));
-            else if (st.code == 5) x = 1.0f/(1.0f+precise::exp(-x));
-            else x = max(x, 0.0f);
-        } else if (st.kind == 1) {
-            x = scalar_apply(x, st.p0, st.code);
-        } else if (st.kind == 2) {
-            uint slot = st.code >> 5;
+        if (st.kind == 4) { prec32 = st.code != 0; continue; }
+        if (st.kind == 2) {
+            uint slot = (st.code >> 6) & 3u;
             int op = st.code & 15;
             bool rhs = (st.code & 16) != 0;
-            float o = (float)(slot == 0 ? s0[i] : slot == 1 ? s1[i] : s2[i]);
-            float a = rhs ? o : x, b = rhs ? x : o;
-            float r;
-            switch (op) { case 2: r=a-b; break; case 3: r=a*b; break; case 4: r=a/b; break;
-                          case 5: r=(a!=b)?1.0f:0.0f; break; default: r=a+b; }
-            if (op == 1) r = clamp(r, -65500.0f, 65500.0f);
-            x = r;
+            bool sf32 = (st.code & 32) != 0;
+            device const uchar* sp = slot == 0 ? s0 : slot == 1 ? s1 : s2;
+            for (uint q = 0; q < cnt; ++q) {
+                float o = sf32 ? ((device const float*)sp)[i0+q] : (float)((device const half*)sp)[i0+q];
+                float a = rhs ? o : xv[q], b = rhs ? xv[q] : o;
+                float r;
+                switch (op) { case 2: r=a-b; break; case 3: r=a*b; break; case 4: r=a/b; break;
+                              case 5: r=(a!=b)?1.0f:0.0f; break; default: r=a+b; }
+                if (op == 1) r = clamp(r, -65500.0f, 65500.0f);
+                xv[q] = r;
+            }
+        } else if (st.kind == 0) {
+            for (uint q = 0; q < cnt; ++q) {
+                float x = xv[q];
+                if (st.code == 0) x = gelu_tanh(x);
+                else if (st.code == 1) x = precise::tanh(x);
+                else if (st.code == 2) x = x/(1.0f+precise::exp(-x));
+                else if (st.code == 4) x = 0.5f*x*(1.0f+erf_approx(x*0.70710678f));
+                else if (st.code == 5) x = 1.0f/(1.0f+precise::exp(-x));
+                else x = max(x, 0.0f);
+                xv[q] = x;
+            }
+        } else if (st.kind == 1) {
+            for (uint q = 0; q < cnt; ++q) xv[q] = scalar_apply(xv[q], st.p0, st.code);
         } else {
-            x = clamp(x, st.p0, st.p1);
+            for (uint q = 0; q < cnt; ++q) xv[q] = clamp(xv[q], st.p0, st.p1);
         }
-        x = (float)(half)x;
+        if (!prec32) for (uint q = 0; q < cnt; ++q) xv[q] = (float)(half)xv[q];
     }
-    y[i] = (half)x;
+    if ((flags & 2u) != 0) { for (uint q = 0; q < cnt; ++q) ((device float*)y)[i0+q] = xv[q]; }
+    else { for (uint q = 0; q < cnt; ++q) ((device half*)y)[i0+q] = (half)xv[q]; }
+}
+
+kernel void bcast_binary_rows_f16(device const half* a [[buffer(0)]], device const half* b [[buffer(1)]],
+    device half* out [[buffer(2)]], constant uint* oshape [[buffer(3)]],
+    constant uint* astride [[buffer(4)]], constant uint* bstride [[buffer(5)]],
+    constant uint& ndim [[buffer(6)]], constant uint& rows [[buffer(7)]], constant int& op [[buffer(8)]],
+    constant uint& inner [[buffer(9)]], constant uint& ainner [[buffer(10)]], constant uint& binner [[buffer(11)]],
+    uint2 gid [[thread_position_in_grid]]) {
+    uint v = gid.x, row = gid.y;
+    if (v >= inner || row >= rows) return;
+    uint rem = row, ai = 0, bi = 0;
+    for (int d = int(ndim) - 1; d >= 0; --d) { uint c = rem % oshape[d]; rem /= oshape[d]; ai += c * astride[d]; bi += c * bstride[d]; }
+    float av = (float)a[ai + v * ainner], bv = (float)b[bi + v * binner], r;
+    switch(op){ case 2:r=av-bv;break; case 3:r=av*bv;break; case 4:r=av/bv;break; default:r=av+bv; }
+    if (op==1) r=clamp(r,-65500.0f,65500.0f);
+    out[(size_t)row * inner + v] = (half)r;
 }
 
 kernel void bcast_binary_f16(device const half* a [[buffer(0)]], device const half* b [[buffer(1)]],

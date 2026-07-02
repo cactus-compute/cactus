@@ -67,7 +67,8 @@ struct EwChainStep {
 MetalFusePlan* cactus_metal_plan_build(
     const std::vector<std::unique_ptr<GraphNode>>& nodes,
     const std::unordered_map<size_t, size_t>& map,
-    const std::unordered_set<size_t>& pinned_ids) {
+    const std::unordered_set<size_t>& pinned_ids,
+    const std::vector<uint8_t>& retype) {
     const size_t n = nodes.size();
     auto plan = new MetalFusePlan();
     plan->built = true;
@@ -886,7 +887,6 @@ MetalFusePlan* cactus_metal_plan_build(
 
     {
         auto ew_kind = [&](const GraphNode& nd, int* kind, int* code, float* p0, float* p1) -> bool {
-            if (nd.output_buffer.precision != Precision::FP16) return false;
             *p0 = 0; *p1 = 0;
             switch (nd.op_type) {
                 case OpType::GELU: *kind = 0; *code = 0; return true;
@@ -915,22 +915,30 @@ MetalFusePlan* cactus_metal_plan_build(
                 case OpType::DIVIDE: *kind = 2; *code = 4; return true;
                 case OpType::NOT_EQUAL: *kind = 2; *code = 5; return true;
                 case OpType::CLAMP: *kind = 3; *code = 0; *p0 = nd.params.scalar; *p1 = nd.params.scale; return true;
+                case OpType::PRECISION_CAST: *kind = 4;
+                    *code = nd.output_buffer.precision == Precision::FP32 ? 1 : 0;
+                    return nd.output_buffer.precision == Precision::FP16
+                        || nd.output_buffer.precision == Precision::FP32;
                 default: return false;
             }
         };
+        auto prec_ok = [](Precision p) { return p == Precision::FP16 || p == Precision::FP32; };
+        auto retyped = [&](size_t idx) { return idx < retype.size() && retype[idx] != 0; };
         for (size_t i = 0; i < n; ++i) {
             if (plan->action[i] != -1) continue;
             int kind, code; float p0, p1;
             if (!ew_kind(*nodes[i], &kind, &code, &p0, &p1)) continue;
+            if (!prec_ok(nodes[i]->output_buffer.precision) || retyped(i)) continue;
             size_t total = nodes[i]->output_buffer.total_size;
             std::vector<size_t> chain{i};
             size_t cur = i;
-            while (chain.size() < 8) {
+            while (chain.size() < 12) {
                 if (cons[cur].size() != 1) break;
                 size_t nxt = cons[cur][0];
                 if (plan->action[nxt] != -1) break;
                 int k2, c2; float q0, q1;
                 if (!ew_kind(*nodes[nxt], &k2, &c2, &q0, &q1)) break;
+                if (!prec_ok(nodes[nxt]->output_buffer.precision) || retyped(nxt)) break;
                 if (nodes[nxt]->output_buffer.total_size != total) break;
                 bool feeds = false;
                 for (size_t a = 0; a < nodes[nxt]->input_ids.size() && a < 2; ++a)
@@ -939,16 +947,38 @@ MetalFusePlan* cactus_metal_plan_build(
                 chain.push_back(nxt);
                 cur = nxt;
             }
-            if (chain.size() < 2) continue;
+            size_t real_ops = 0;
+            for (size_t ci = 0; ci < chain.size(); ++ci) {
+                int k2, c2; float q0, q1;
+                ew_kind(*nodes[chain[ci]], &k2, &c2, &q0, &q1);
+                if (k2 != 4) ++real_ops;
+            }
+            if (chain.size() < 2 || real_ops == 0) continue;
             std::vector<float> blob;
             std::vector<size_t> sides;
+            std::vector<int> side_f32;
             bool ok = true;
             long head_in = -1;
+            Precision run = Precision::FP16;
             for (size_t ci = 0; ci < chain.size() && ok; ++ci) {
                 const GraphNode& cn = *nodes[chain[ci]];
                 int k2, c2; float q0, q1;
                 ew_kind(cn, &k2, &c2, &q0, &q1);
                 long prev = ci == 0 ? -1 : (long)chain[ci - 1];
+                if (ci == 0) {
+                    long hi2 = idxof(cn.input_ids[0]);
+                    if (k2 == 2) {
+                        long in0 = idxof(cn.input_ids[0]);
+                        long in1 = idxof(cn.input_ids[1]);
+                        hi2 = in0;
+                        (void)in1;
+                    }
+                    if (hi2 < 0 || !prec_ok(nodes[(size_t)hi2]->output_buffer.precision)
+                        || retyped((size_t)hi2)
+                        || nodes[(size_t)hi2]->output_buffer.total_size != total) { ok = false; break; }
+                    head_in = hi2;
+                    run = nodes[(size_t)hi2]->output_buffer.precision;
+                }
                 if (k2 == 2) {
                     long in0 = idxof(cn.input_ids[0]);
                     long in1 = idxof(cn.input_ids[1]);
@@ -958,7 +988,8 @@ MetalFusePlan* cactus_metal_plan_build(
                     else if (ci > 0 && in1 == prev) { chain_in = in1; side = in0; rhs = true; }
                     else { chain_in = in0; side = in1; rhs = false; }
                     if (side < 0 || chain_in < 0
-                        || nodes[(size_t)side]->output_buffer.precision != Precision::FP16
+                        || nodes[(size_t)side]->output_buffer.precision != run
+                        || retyped((size_t)side)
                         || nodes[(size_t)side]->output_buffer.total_size != total
                         || plan->action[(size_t)side] == -2) { ok = false; break; }
                     size_t slot = sides.size();
@@ -967,20 +998,26 @@ MetalFusePlan* cactus_metal_plan_build(
                     if (slot == sides.size()) {
                         if (sides.size() >= 3) { ok = false; break; }
                         sides.push_back((size_t)side);
-                    }
-                    c2 |= (rhs ? 16 : 0) | ((int)slot << 5);
-                    if (ci == 0) head_in = chain_in;
-                } else if (ci == 0) {
-                    head_in = idxof(cn.input_ids[0]);
+                        side_f32.push_back(run == Precision::FP32 ? 1 : 0);
+                    } else if (side_f32[slot] != (run == Precision::FP32 ? 1 : 0)) { ok = false; break; }
+                    c2 |= (rhs ? 16 : 0) | (run == Precision::FP32 ? 32 : 0) | ((int)slot << 6);
                 }
+                if (k2 == 4) {
+                    Precision from = ci == 0 ? run : nodes[(size_t)prev]->output_buffer.precision;
+                    if (from == cn.output_buffer.precision) { ok = false; break; }
+                    run = cn.output_buffer.precision;
+                } else if (cn.output_buffer.precision != run) { ok = false; break; }
                 EwChainStep st{k2, c2, q0, q1};
                 float packed[4];
                 std::memcpy(packed, &st, sizeof(st));
                 blob.insert(blob.end(), packed, packed + 4);
             }
-            if (!ok || head_in < 0
-                || nodes[(size_t)head_in]->output_buffer.precision != Precision::FP16
-                || nodes[(size_t)head_in]->output_buffer.total_size != total) continue;
+            if (!ok || head_in < 0) continue;
+            Precision head_prec = nodes[(size_t)head_in]->output_buffer.precision;
+            uint32_t flags = (head_prec == Precision::FP32 ? 1u : 0u)
+                           | (nodes[chain.back()]->output_buffer.precision == Precision::FP32 ? 2u : 0u);
+            for (size_t si = 0; si < sides.size(); ++si)
+                if (side_f32[si]) flags |= (4u << si);
             MetalCluster c;
             c.rule = 11;
             c.a0 = (size_t)head_in;
@@ -990,6 +1027,7 @@ MetalFusePlan* cactus_metal_plan_build(
             c.u0 = (uint32_t)chain.size();
             c.u1 = (uint32_t)sides.size();
             c.b0 = plan->blobs.size();
+            c.b1 = flags;
             c.b4 = chain.back();
             plan->blobs.push_back(std::move(blob));
             std::vector<size_t> cover(chain.begin(), chain.end() - 1);
@@ -1361,7 +1399,7 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             }
             const auto& blob = p->blobs[c.b0];
             return cactus_metal_encode_elemwise_chain(out, in, blob.data(), c.u0,
-                sides[0], sides[1], sides[2], anchor.output_buffer.total_size);
+                sides[0], sides[1], sides[2], anchor.output_buffer.total_size, (uint32_t)c.b1);
         }
         default: return false;
     }

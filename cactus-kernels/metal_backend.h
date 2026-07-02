@@ -148,11 +148,12 @@ bool cactus_metal_encode_groupnorm(void* out, const void* x, const void* w, cons
 bool cactus_metal_encode_bias_add_rows(void* y, const void* bias, uint32_t C, uint32_t total);
 bool cactus_metal_encode_elemwise_chain(void* out, const void* in, const float* steps,
                                         uint32_t nsteps, const void* side0, const void* side1,
-                                        const void* side2, size_t n);
+                                        const void* side2, size_t n, uint32_t flags);
 bool cactus_metal_encode_gemm_batch(void* out, const void* a, const void* b,
                                     uint32_t M, uint32_t K, uint32_t N, uint32_t batch, int f32out, int f32a);
 bool cactus_metal_encode_conv1d_dw(void* out, const void* x, const void* w,
                                    uint32_t C, uint32_t L, uint32_t Lout, uint32_t K, uint32_t stride);
+bool cactus_metal_encode_transpose2d(void* out, const void* in, uint32_t batch, uint32_t R, uint32_t C);
 bool cactus_metal_encode_strided_copy(void* out, const void* in, const uint32_t* oshape,
     const uint32_t* sstride, uint32_t ndim, uint32_t total, uint32_t base, size_t in_bytes, size_t out_bytes);
 

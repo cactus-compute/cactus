@@ -55,6 +55,8 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoConcat2=nil, psoGatherF32Idx=nil, psoRopeFull=nil, psoMaxpool1d=nil;
     id<MTLComputePipelineState> psoBilinear=nil, psoConv1dGen=nil, psoConv1dNlcDw=nil, psoConv2d=nil;
     id<MTLComputePipelineState> psoBatchnorm=nil, psoGroupnorm=nil, psoBiasAddRows=nil, psoEwChain=nil;
+    id<MTLComputePipelineState> psoAttnFlash=nil, psoRmsSimd=nil, psoScatterRows=nil;
+    id<MTLComputePipelineState> psoTranspose2d=nil, psoBcastRows=nil;
     id<MTLBuffer> dummy=nil;
     bool ok = false;
 
@@ -110,6 +112,9 @@ struct MetalCtx {
         psoConv1dNlcDw=pso("conv1d_nlc_dw_f16"); psoConv2d=pso("conv2d_f16");
         psoBatchnorm=pso("batchnorm_f16"); psoGroupnorm=pso("groupnorm_f16");
         psoBiasAddRows=pso("bias_add_rows_f16"); psoEwChain=pso("elemwise_chain_f16");
+        psoAttnFlash=pso("attn_flash_f16"); psoRmsSimd=pso("rms_norm_simd_f16");
+        psoScatterRows=pso("strided_scatter_rows_f16"); psoTranspose2d=pso("transpose2d_f16");
+        psoBcastRows=pso("bcast_binary_rows_f16");
         dummy=[dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
         ok = psoT&&psoG&&psoTm&&psoGm&&psoRotate&&psoEmbO&&psoEmbH&&psoEmbOm&&psoEmbHm&&psoCopy&&psoBinary&&psoScalar&&psoUnary&&psoRms&&psoSwiglu&&psoRmsAdd&&psoCF16F32&&psoCF32F16&&psoCI8F16&&psoCF16I8
              &&psoAttn&&psoAttnC&&psoAttnPre&&psoAttnPreMma2&&psoKvAppendM&&psoKvAppendRingM&&psoSlideS&&psoSlideR&&psoSlideRM&&psoStrided&&psoBcast&&psoScatter&&psoKvAppend&&psoRope&&psoArgmax&&psoGather;
@@ -435,7 +440,7 @@ bool cactus_metal_encode_binary(int op, void* out, const void* a, const void* b,
     [g_enc setComputePipelineState:ctx().psoBinary];
     setBufAt(a, n*2, 0); setBufAt(b, n*2, 1); setBufAt(out, n*2, 2);
     [g_enc setBytes:&nn length:4 atIndex:3]; [g_enc setBytes:&o length:4 atIndex:4];
-    [g_enc dispatchThreads:MTLSizeMake(nn,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [g_enc dispatchThreads:MTLSizeMake((nn+3)/4,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
 bool cactus_metal_encode_scalar(int op, void* out, const void* in, size_t n, float param) {
@@ -445,7 +450,7 @@ bool cactus_metal_encode_scalar(int op, void* out, const void* in, size_t n, flo
     [g_enc setComputePipelineState:ctx().psoScalar];
     setBufAt(in, n*2, 0); setBufAt(out, n*2, 1);
     [g_enc setBytes:&nn length:4 atIndex:2]; [g_enc setBytes:&o length:4 atIndex:3]; [g_enc setBytes:&p length:4 atIndex:4];
-    [g_enc dispatchThreads:MTLSizeMake(nn,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [g_enc dispatchThreads:MTLSizeMake((nn+3)/4,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
 bool cactus_metal_encode_unary(int op, void* out, const void* in, size_t n) {
@@ -455,7 +460,7 @@ bool cactus_metal_encode_unary(int op, void* out, const void* in, size_t n) {
     [g_enc setComputePipelineState:ctx().psoUnary];
     setBufAt(in, n*2, 0); setBufAt(out, n*2, 1);
     [g_enc setBytes:&nn length:4 atIndex:2]; [g_enc setBytes:&o length:4 atIndex:3];
-    [g_enc dispatchThreads:MTLSizeMake(nn,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [g_enc dispatchThreads:MTLSizeMake((nn+3)/4,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
 bool cactus_metal_encode_swiglu(void* out, const void* gate, const void* up, size_t n, float scale) {
@@ -485,6 +490,15 @@ bool cactus_metal_encode_rms_norm(void* out, const void* in, const void* weight,
     if (!ctx().ok) return false;
     ensureEncoder();
     uint32_t d=(uint32_t)dim; float e=eps;
+    if (rows > 1 && ctx().psoRmsSimd) {
+        uint32_t r=(uint32_t)rows;
+        [g_enc setComputePipelineState:ctx().psoRmsSimd];
+        setBufAt(in, rows*dim*2, 0); setBufAt(weight, dim*2, 1); setBufAt(out, rows*dim*2, 2);
+        [g_enc setBytes:&d length:4 atIndex:3]; [g_enc setBytes:&e length:4 atIndex:4];
+        [g_enc setBytes:&r length:4 atIndex:5];
+        [g_enc dispatchThreadgroups:MTLSizeMake((rows+3)/4,1,1) threadsPerThreadgroup:MTLSizeMake(128,1,1)];
+        return true;
+    }
     [g_enc setComputePipelineState:ctx().psoRms];
     setBufAt(in, rows*dim*2, 0); setBufAt(weight, dim*2, 1); setBufAt(out, rows*dim*2, 2);
     [g_enc setBytes:&d length:4 atIndex:3]; [g_enc setBytes:&e length:4 atIndex:4];
@@ -1250,7 +1264,7 @@ bool cactus_metal_encode_binary_f32(int op, void* out, const void* a, const void
     [g_enc setComputePipelineState:ctx().psoBinF32];
     setBufAt(a, n*4, 0); setBufAt(b, n*4, 1); setBufAt(out, n*4, 2);
     [g_enc setBytes:&nn length:4 atIndex:3]; [g_enc setBytes:&o length:4 atIndex:4];
-    [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [g_enc dispatchThreads:MTLSizeMake((n+3)/4,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
 bool cactus_metal_encode_scalar_f32(int op, void* out, const void* in, size_t n, float p) {
@@ -1260,7 +1274,7 @@ bool cactus_metal_encode_scalar_f32(int op, void* out, const void* in, size_t n,
     [g_enc setComputePipelineState:ctx().psoScaF32];
     setBufAt(in, n*4, 0); setBufAt(out, n*4, 1);
     [g_enc setBytes:&nn length:4 atIndex:2]; [g_enc setBytes:&o length:4 atIndex:3]; [g_enc setBytes:&p length:4 atIndex:4];
-    [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [g_enc dispatchThreads:MTLSizeMake((n+3)/4,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
 bool cactus_metal_encode_unary_f32(int op, void* out, const void* in, size_t n) {
@@ -1281,7 +1295,8 @@ bool cactus_metal_encode_clamp(void* out, const void* in, size_t n, float lo, fl
     [g_enc setComputePipelineState:pso];
     setBufAt(in, n*es, 0); setBufAt(out, n*es, 1);
     [g_enc setBytes:&nn length:4 atIndex:2]; [g_enc setBytes:&lo length:4 atIndex:3]; [g_enc setBytes:&hi length:4 atIndex:4];
-    [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    size_t grid = (n + 3) / 4;
+    [g_enc dispatchThreads:MTLSizeMake(grid,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
 bool cactus_metal_encode_glu(void* out, const void* in, size_t split, size_t inner, size_t n_out) {
@@ -1442,6 +1457,21 @@ bool cactus_metal_encode_attention_f16(void* out, const void* q, const void* k, 
     if (D > 128 || DV > 128 || (D % 4) != 0 || (DV % 4) != 0 || HKV == 0 || HQ % HKV != 0) return false;
     static const bool mps_attn_ok = MPSSupportsMTLDevice(ctx().dev);
     bool mask_ok = mask_mode == 0 || (mask_mode == 2 && mask && ctx().psoMaskFill);
+    if (ctx().psoAttnFlash && B == 1 && HQ == HKV && !causal && window == 0
+        && logit_cap == 0.0f && D == 64 && DV == 64 && S >= 256
+        && (mask_mode == 0 || (mask_mode == 2 && mask))) {
+        ensureEncoder();
+        [g_enc setComputePipelineState:ctx().psoAttnFlash];
+        setBufAt(q, (size_t)T*HQ*D*2, 0); setBufAt(k, (size_t)S*HKV*D*2, 1);
+        setBufAt(v, (size_t)S*HKV*DV*2, 2); setBufAt(out, (size_t)T*HQ*DV*2, 3);
+        if (mask_mode == 2 && mask) setBufAt(mask, (size_t)T*S*2, 4);
+        else [g_enc setBuffer:ctx().dummy offset:0 atIndex:4];
+        [g_enc setBytes:&T length:4 atIndex:5]; [g_enc setBytes:&S length:4 atIndex:6];
+        [g_enc setBytes:&HQ length:4 atIndex:7]; [g_enc setBytes:&scale length:4 atIndex:8];
+        [g_enc setBytes:&mask_mode length:4 atIndex:9];
+        [g_enc dispatchThreadgroups:MTLSizeMake((T + 63) / 64, HQ, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        return true;
+    }
     if (mps_attn_ok && B == 1 && HQ == HKV && !causal && mask_ok && window == 0
         && logit_cap == 0.0f && S >= 512 && (S % 8) == 0 && (D % 8) == 0 && (DV % 8) == 0
         && ctx().psoSoftmaxR) {
@@ -1664,7 +1694,8 @@ bool cactus_metal_encode_conv2d(void* out, const void* x, const void* w, const v
     [g_enc setBytes:&K length:4 atIndex:10]; [g_enc setBytes:&stride length:4 atIndex:11];
     [g_enc setBytes:&pad length:4 atIndex:12]; [g_enc setBytes:&dwf length:4 atIndex:13];
     [g_enc setBytes:&hb length:4 atIndex:14];
-    [g_enc dispatchThreads:MTLSizeMake(Wo, Ho, (size_t)N*Cout) threadsPerThreadgroup:MTLSizeMake(std::min(Wo, 32u), std::min(Ho, 8u), 1)];
+    uint32_t wq = (Wo + 3) / 4;
+    [g_enc dispatchThreads:MTLSizeMake(wq, Ho, (size_t)N*Cout) threadsPerThreadgroup:MTLSizeMake(std::min(wq, 32u), std::min(Ho, 8u), 1)];
     return true;
 }
 bool cactus_metal_encode_batchnorm(void* out, const void* x, const void* w, const void* b,
@@ -1705,19 +1736,21 @@ bool cactus_metal_encode_bias_add_rows(void* y, const void* bias, uint32_t C, ui
 }
 bool cactus_metal_encode_elemwise_chain(void* out, const void* in, const float* steps,
                                         uint32_t nsteps, const void* side0, const void* side1,
-                                        const void* side2, size_t n) {
-    if (!ctx().ok || !ctx().psoEwChain || nsteps == 0 || nsteps > 8) return false;
+                                        const void* side2, size_t n, uint32_t flags) {
+    if (!ctx().ok || !ctx().psoEwChain || nsteps == 0 || nsteps > 12) return false;
     ensureEncoder();
     uint32_t ns = nsteps, nn = (uint32_t)n;
+    size_t ein = (flags & 1u) ? 4 : 2, eout = (flags & 2u) ? 4 : 2;
     [g_enc setComputePipelineState:ctx().psoEwChain];
-    setBufAt(in, n*2, 0); setBufAt(out, n*2, 1);
+    setBufAt(in, n*ein, 0); setBufAt(out, n*eout, 1);
     [g_enc setBytes:steps length:nsteps*16 atIndex:2];
     [g_enc setBytes:&ns length:4 atIndex:3];
-    setBufAt(side0 ? side0 : in, n*2, 4);
-    setBufAt(side1 ? side1 : in, n*2, 5);
-    setBufAt(side2 ? side2 : in, n*2, 6);
+    setBufAt(side0 ? side0 : in, n*((flags & 4u) ? 4 : 2), 4);
+    setBufAt(side1 ? side1 : in, n*((flags & 8u) ? 4 : 2), 5);
+    setBufAt(side2 ? side2 : in, n*((flags & 16u) ? 4 : 2), 6);
     [g_enc setBytes:&nn length:4 atIndex:7];
-    [g_enc dispatchThreads:MTLSizeMake(nn,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [g_enc setBytes:&flags length:4 atIndex:8];
+    [g_enc dispatchThreads:MTLSizeMake((nn+3)/4,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
 bool cactus_metal_encode_gemm_batch(void* out, const void* a, const void* b,
@@ -1742,6 +1775,15 @@ bool cactus_metal_encode_conv1d_dw(void* out, const void* x, const void* w,
     [g_enc setBytes:&L length:4 atIndex:3]; [g_enc setBytes:&Lout length:4 atIndex:4];
     [g_enc setBytes:&K length:4 atIndex:5]; [g_enc setBytes:&stride length:4 atIndex:6];
     [g_enc dispatchThreads:MTLSizeMake(Lout, C, 1) threadsPerThreadgroup:MTLSizeMake(64,4,1)];
+    return true;
+}
+bool cactus_metal_encode_transpose2d(void* out, const void* in, uint32_t batch, uint32_t R, uint32_t C) {
+    if (!ctx().ok || !ctx().psoTranspose2d) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoTranspose2d];
+    setBufAt(in, (size_t)batch*R*C*2, 0); setBufAt(out, (size_t)batch*R*C*2, 1);
+    [g_enc setBytes:&R length:4 atIndex:2]; [g_enc setBytes:&C length:4 atIndex:3];
+    [g_enc dispatchThreadgroups:MTLSizeMake((C+31)/32, (R+31)/32, batch) threadsPerThreadgroup:MTLSizeMake(32,8,1)];
     return true;
 }
 bool cactus_metal_encode_strided_copy(void* out, const void* in, const uint32_t* oshape,
@@ -1774,6 +1816,21 @@ bool cactus_metal_encode_bcast_binary(int op, void* out, const void* a, const vo
     if (!ctx().ok || ndim == 0 || ndim > 8) return false;
     ensureEncoder();
     int o = op;
+    if (ndim >= 2 && oshape[ndim-1] > 1 && ctx().psoBcastRows) {
+        uint32_t inner = oshape[ndim-1];
+        uint32_t ainner = astride[ndim-1], binner = bstride[ndim-1];
+        uint32_t nd2 = ndim - 1;
+        uint32_t rows = total / inner;
+        [g_enc setComputePipelineState:ctx().psoBcastRows];
+        setBufAt(a, a_bytes, 0); setBufAt(b, b_bytes, 1); setBufAt(out, out_bytes, 2);
+        [g_enc setBytes:oshape length:nd2*4 atIndex:3]; [g_enc setBytes:astride length:nd2*4 atIndex:4];
+        [g_enc setBytes:bstride length:nd2*4 atIndex:5];
+        [g_enc setBytes:&nd2 length:4 atIndex:6]; [g_enc setBytes:&rows length:4 atIndex:7];
+        [g_enc setBytes:&o length:4 atIndex:8]; [g_enc setBytes:&inner length:4 atIndex:9];
+        [g_enc setBytes:&ainner length:4 atIndex:10]; [g_enc setBytes:&binner length:4 atIndex:11];
+        [g_enc dispatchThreads:MTLSizeMake(inner, rows, 1) threadsPerThreadgroup:MTLSizeMake(std::min(inner, 64u), 4, 1)];
+        return true;
+    }
     [g_enc setComputePipelineState:ctx().psoBcast];
     setBufAt(a, a_bytes, 0); setBufAt(b, b_bytes, 1); setBufAt(out, out_bytes, 2);
     [g_enc setBytes:oshape length:ndim*4 atIndex:3]; [g_enc setBytes:astride length:ndim*4 atIndex:4]; [g_enc setBytes:bstride length:ndim*4 atIndex:5];
@@ -1785,6 +1842,19 @@ bool cactus_metal_encode_strided_scatter(void* out, const void* in, const uint32
     const uint32_t* ostride, uint32_t ndim, uint32_t total, uint32_t base, size_t in_bytes, size_t out_bytes) {
     if (!ctx().ok || ndim == 0 || ndim > 8) return false;
     ensureEncoder();
+    if (ndim >= 2 && ostride[ndim-1] == 1 && (ishape[ndim-1] % 4) == 0 && ctx().psoScatterRows) {
+        uint32_t inner = ishape[ndim-1];
+        uint32_t inner4 = inner / 4;
+        uint32_t nd2 = ndim - 1;
+        uint32_t rows = total / inner;
+        [g_enc setComputePipelineState:ctx().psoScatterRows];
+        setBufAt(in, in_bytes, 0); setBufAt(out, out_bytes, 1);
+        [g_enc setBytes:ishape length:nd2*4 atIndex:2]; [g_enc setBytes:ostride length:nd2*4 atIndex:3];
+        [g_enc setBytes:&nd2 length:4 atIndex:4]; [g_enc setBytes:&rows length:4 atIndex:5];
+        [g_enc setBytes:&base length:4 atIndex:6]; [g_enc setBytes:&inner4 length:4 atIndex:7];
+        [g_enc dispatchThreads:MTLSizeMake(inner4, rows, 1) threadsPerThreadgroup:MTLSizeMake(std::min(inner4, 64u), 4, 1)];
+        return true;
+    }
     [g_enc setComputePipelineState:ctx().psoScatter];
     setBufAt(in, in_bytes, 0); setBufAt(out, out_bytes, 1);
     [g_enc setBytes:ishape length:ndim*4 atIndex:2]; [g_enc setBytes:ostride length:ndim*4 atIndex:3];

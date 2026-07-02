@@ -517,6 +517,15 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             const auto& perm = node.params.permutation;
             uint32_t nd = (uint32_t)perm.size();
             if (nd == 0 || nd > 8 || in.shape.size() != nd || out.shape.size() != nd) return false;
+            bool tailswap = nd >= 2;
+            for (uint32_t d = 0; d + 2 < nd && tailswap; ++d) if (perm[d] != d) tailswap = false;
+            if (tailswap && (perm[nd-2] != nd-1 || perm[nd-1] != nd-2)) tailswap = false;
+            if (tailswap) {
+                size_t batch = 1;
+                for (uint32_t d = 0; d + 2 < nd; ++d) batch *= in.shape[d];
+                return cactus_metal_encode_transpose2d(out.get_data(), in.get_data(),
+                    (uint32_t)batch, (uint32_t)in.shape[nd-2], (uint32_t)in.shape[nd-1]);
+            }
             size_t istr[8]; row_strides(in.shape, istr);
             uint32_t oshape[8], sstride[8];
             for (uint32_t d=0; d<nd; ++d){ oshape[d]=(uint32_t)out.shape[d]; sstride[d]=(uint32_t)istr[perm[d]]; }
@@ -1053,7 +1062,8 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
 struct MetalFusePlan;
 MetalFusePlan* cactus_metal_plan_build(const std::vector<std::unique_ptr<GraphNode>>& nodes,
                                        const std::unordered_map<size_t, size_t>& map,
-                                       const std::unordered_set<size_t>& pinned_ids);
+                                       const std::unordered_set<size_t>& pinned_ids,
+                                       const std::vector<uint8_t>& retype);
 void cactus_metal_plan_free(MetalFusePlan* p);
 void cactus_graph_metal_tail_commit();
 void cactus_metal_plan_disable(MetalFusePlan* p);
@@ -1226,7 +1236,10 @@ void CactusGraph::execute(const std::string& profile_file) {
         if (it == metal_plans_.end()) {
             std::unordered_set<size_t> pinned(retained_output_node_ids_.begin(), retained_output_node_ids_.end());
             pinned.insert(persistent_node_ids_.begin(), persistent_node_ids_.end());
-            it = metal_plans_.emplace(sig, cactus_metal_plan_build(nodes_, node_index_map_, pinned)).first;
+            static const std::vector<uint8_t> no_retype;
+            const std::vector<uint8_t>& rt = (!metal_retype_disabled_ && metal_retype_plan_.size() == n)
+                ? metal_retype_plan_ : no_retype;
+            it = metal_plans_.emplace(sig, cactus_metal_plan_build(nodes_, node_index_map_, pinned, rt)).first;
         }
         fplan = it->second;
     }
