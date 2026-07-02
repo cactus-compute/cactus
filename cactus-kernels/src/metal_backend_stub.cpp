@@ -7,15 +7,19 @@ void cactus_metal_set_active(bool) {}
 bool cactus_metal_active_mode() { return false; }
 bool cactus_metal_concurrent() { return false; }
 void cactus_metal_barrier() {}
+void cactus_metal_manual_begin() {}
+void cactus_metal_manual_end() {}
 void cactus_metal_quant_matmul(const CactusQuantMatrix* W, const __fp16* A,
                                uint32_t M, __fp16* C) {
     cactus_quant_matmul(W, A, M, C);
 }
 void  cactus_metal_session_begin() {}
+void  cactus_metal_session_flush() {}
 void  cactus_metal_session_sync() {}
 void  cactus_metal_session_end() {}
 void* cactus_metal_alloc_shared(size_t) { return nullptr; }
 void  cactus_metal_free_shared(void*) {}
+bool  cactus_metal_register_readonly(const void*, size_t) { return false; }
 bool cactus_metal_encode_copy(void*, const void*, size_t) { return false; }
 bool cactus_metal_encode_binary(int, void*, const void*, const void*, size_t) { return false; }
 bool cactus_metal_encode_scalar(int, void*, const void*, size_t, float) { return false; }
@@ -23,14 +27,20 @@ bool cactus_metal_encode_unary(int, void*, const void*, size_t) { return false; 
 bool cactus_metal_encode_swiglu(void*, const void*, const void*, size_t, float) { return false; }
 bool cactus_metal_encode_rope(void*, const void*, const void*, const void*, uint32_t, uint32_t) { return false; }
 bool cactus_metal_encode_rms_norm(void*, const void*, const void*, size_t, size_t, float) { return false; }
-bool cactus_metal_encode_rms_norm_add(void*, const void*, const void*, const void*, size_t, size_t, float) { return false; }
+bool cactus_metal_encode_rms_norm_add(void*, const void*, const void*, const void*, size_t, size_t, float, float) { return false; }
+bool cactus_metal_encode_softcap(void*, const void*, size_t, float) { return false; }
+bool cactus_metal_encode_rms_norm_add_rms(void*, void*, const void*, const void*, const void*, const void*,
+                                          size_t, size_t, float, float) { return false; }
+bool cactus_metal_encode_quant_matmul_swiglu(void*, const void*, const void*, float, const CactusQuantMatrix*) { return false; }
+bool cactus_metal_encode_rms_rope(void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, float) { return false; }
 bool cactus_metal_encode_argmax(const void*, uint32_t, void*) { return false; }
 bool cactus_metal_encode_cast(void*, int, const void*, int, size_t) { return false; }
 bool cactus_metal_encode_quant_matmul(void*, const void*, const CactusQuantMatrix*) { return false; }
 bool cactus_metal_encode_quant_matmul_m(void*, const void*, const CactusQuantMatrix*, uint32_t) { return false; }
+bool cactus_metal_encode_quant_matmul_many(void* const*, const void*, const CactusQuantMatrix* const*, uint32_t) { return false; }
 bool cactus_metal_prewarm_quant(const CactusQuantMatrix*) { return false; }
 bool cactus_metal_encode_quant_matmul_ortho(void*, const void*, void*, const CactusQuantMatrix*) { return false; }
-bool cactus_metal_encode_embedding_ortho(void*, uint32_t, const CactusQuantMatrix*) { return false; }
+bool cactus_metal_encode_embedding_ortho(void*, uint32_t, const CactusQuantMatrix*, float) { return false; }
 bool cactus_metal_encode_embedding_hadamard(void*, uint32_t, const CactusQuantMatrix*) { return false; }
 bool cactus_metal_encode_embedding_ortho_m(void*, const CactusQuantMatrix*, const uint32_t*, uint32_t) { return false; }
 bool cactus_metal_encode_embedding_hadamard_m(void*, const CactusQuantMatrix*, const uint32_t*, uint32_t) { return false; }

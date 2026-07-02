@@ -144,6 +144,16 @@ bool CactusGraph::execute_gpu_fused() {
         auto sh = [&](size_t bytes){ void* p = cactus_metal_alloc_shared(bytes); if (p) std::memset(p,0,bytes); return p; };
         G.cos_s = sh(256*2); G.sin_s = sh(256*2); G.cos_g = sh(512*2); G.sin_g = sh(512*2);
         G.argmax_buf = sh(3*sizeof(float));
+        // wrap frequently-bound weight pointers so encoding doesn't memcpy them per token
+        for (int l = 0; l < NL; ++l) {
+            LayerW& w = G.L[l];
+            const void* ptrs[] = { w.in_norm, w.q_norm, w.k_norm, w.post_attn, w.pre_ffn, w.post_ffn, w.post_ple };
+            size_t sizes[]     = { (size_t)HID*2, (size_t)w.hd*2, (size_t)w.hd*2, (size_t)HID*2, (size_t)HID*2, (size_t)HID*2, (size_t)HID*2 };
+            for (int i = 0; i < 7; ++i) if (ptrs[i]) cactus_metal_register_readonly(ptrs[i], sizes[i]);
+        }
+        cactus_metal_register_readonly(G.vnorm, 256*2);
+        cactus_metal_register_readonly(G.vnorm_g, 512*2);
+        cactus_metal_register_readonly(G.final_norm, (size_t)HID*2);
         G.init = true;
     }
 
@@ -170,27 +180,30 @@ bool CactusGraph::execute_gpu_fused() {
     auto fresh = [&](size_t elems){ return G.arena.fresh(elems * 2); };
     cactus_metal_session_begin();
     cactus_metal_set_active(true);
+    cactus_metal_manual_begin();
+    auto bail = [&](){ cactus_metal_manual_end(); cactus_metal_set_active(false); cactus_metal_session_end(); return false; };
+    auto sync_point = [&](){ cactus_metal_barrier(); };
 
     void* h = fresh(HID);
     const void* pleBase;
     if (fold) {
-        auto bail = [&](){ cactus_metal_set_active(false); cactus_metal_session_end(); return false; };
         const uint32_t tok = (uint32_t)g_fe.token_id;
         const int PK = (int)g_fe.proj.N;
 
-        void* hr = fresh(HID);
-        if (!cactus_metal_encode_embedding_ortho(hr, tok, &G.lm_head)) return bail();
-        cactus_metal_encode_scalar(2, h, hr, HID, g_fe.emb_scale);
-
+        // h = emb(tok)*emb_scale and pe = ple_emb(tok) are independent
+        if (!cactus_metal_encode_embedding_ortho(h, tok, &G.lm_head, g_fe.emb_scale)) return bail();
         void* pe = fresh(g_fe.ple.K);
         if (!cactus_metal_encode_embedding_hadamard(pe, tok, &g_fe.ple)) return bail();
+        sync_point();
         void* pa = fresh(PK); cactus_metal_encode_scalar(2, pa, pe, PK, g_fe.ple_scale);
         void* pj = fresh(PK);
         if (!cactus_metal_encode_quant_matmul(pj, h, &g_fe.proj)) return bail();
+        sync_point();
         void* pjs= fresh(PK); cactus_metal_encode_scalar(2, pjs, pj, PK, g_fe.proj_scale);
-        void* psum=fresh(PK); cactus_metal_encode_rms_norm_add(psum, pjs, g_fe.rms_weight, pa, NL, PLE_DIM, g_fe.rms_eps);
-        void* plt= fresh(PK); cactus_metal_encode_scalar(2, plt, psum, PK, g_fe.final_scale);
-        pleBase = plt;
+        sync_point();
+        void* psum=fresh(PK); cactus_metal_encode_rms_norm_add(psum, pjs, g_fe.rms_weight, pa, NL, PLE_DIM, g_fe.rms_eps, g_fe.final_scale);
+        pleBase = psum;
+        sync_point();
     } else {
         std::memcpy(h, G.hidden, HID*2);
         pleBase = G.ple;
@@ -199,6 +212,11 @@ bool CactusGraph::execute_gpu_fused() {
     auto gather = [&](const void* tbl, void* dst, int hd){ std::memcpy(dst, (const char*)tbl + (size_t)pos*hd*2, hd*2); };
     gather(G.cosL, G.cos_s, 256); gather(G.sinL, G.sin_s, 256);
     gather(G.cosG, G.cos_g, 512); gather(G.sinG, G.sin_g, 512);
+
+    // xn for layer 0; later layers get xn from the fused residual+norm kernel
+    void* xn = fresh(HID);
+    cactus_metal_encode_rms_norm(xn, h, G.L[0].in_norm, 1, HID, RMS_EPS);
+    sync_point();
 
     for (int l = 0; l < NL; ++l) {
 
@@ -209,35 +227,51 @@ bool CactusGraph::execute_gpu_fused() {
         uint64_t* km = (uint64_t*)w.kc; uint64_t* vm = (uint64_t*)w.vc;
         size_t mx = km[1], ng = (hd+31)/32;
 
-        void* xn = fresh(HID);  cactus_metal_encode_rms_norm(xn, h, w.in_norm, 1, HID, RMS_EPS);
-        void* q  = fresh(QD);   cactus_metal_encode_quant_matmul(q, xn, &w.q);
-        void* qn = fresh(QD);   cactus_metal_encode_rms_norm(qn, q, w.q_norm, NQH, hd, RMS_EPS);
-        void* qr = fresh(QD);   cactus_metal_encode_rope(qr, qn, rc, rs, NQH, hd);
-
         size_t hist, total; const void *knewp, *vnewp; size_t kv_start = 0, kv_end;
         const uint32_t Wn = w.global ? 0u : (uint32_t)(km[1] - km[4] - 1);
         const uint32_t Sn = w.global ? 0u : (uint32_t)km[4];
         const uint32_t Rn = (Wn > Sn) ? (Wn - Sn) : 1u;
+        void* q  = fresh(QD);
+        void* qr = fresh(QD);
+        bool ring_wrapped = false;
         if (!w.shared) {
-            void* k  = fresh(hd); cactus_metal_encode_quant_matmul(k, xn, &w.k);
-            void* v  = fresh(hd); cactus_metal_encode_quant_matmul(v, xn, &w.v);
-            void* kn = fresh(hd); cactus_metal_encode_rms_norm(kn, k, w.k_norm, 1, hd, RMS_EPS);
+            void* k  = fresh(hd);
+            void* v  = fresh(hd);
+            void* qkv_outs[3] = { q, k, v };
+            const CactusQuantMatrix* qkv_ws[3] = { &w.q, &w.k, &w.v };
+            if (!cactus_metal_encode_quant_matmul_many(qkv_outs, xn, qkv_ws, 3)) {
+                cactus_metal_encode_quant_matmul(q, xn, &w.q);
+                cactus_metal_encode_quant_matmul(k, xn, &w.k);
+                cactus_metal_encode_quant_matmul(v, xn, &w.v);
+            }
+            sync_point();
+            // qn+rope, kn+rope, vn are independent
+            cactus_metal_encode_rms_rope(qr, q, w.q_norm, rc, rs, NQH, hd, RMS_EPS);
+            void* kr = fresh(hd); cactus_metal_encode_rms_rope(kr, k, w.k_norm, rc, rs, 1, hd, RMS_EPS);
             void* vn = fresh(hd); cactus_metal_encode_rms_norm(vn, v, w.global ? G.vnorm_g : G.vnorm, 1, hd, RMS_EPS);
-            void* kr = fresh(hd); cactus_metal_encode_rope(kr, kn, rc, rs, 1, hd);
+            sync_point();
             size_t clen = km[0];
-            size_t slot = (!w.global && clen >= (size_t)Wn) ? (size_t)(Sn + ((clen - Sn) % Rn)) : clen;
+            ring_wrapped = (!w.global && clen >= (size_t)Wn);
+            size_t slot = ring_wrapped ? (size_t)(Sn + ((clen - Sn) % Rn)) : clen;
             cactus_metal_encode_kv_append_i8(kr, (char*)w.kc+64, (char*)w.kc+64+mx*hd,
                 1, hd, (uint32_t)slot, 32, hd*2, mx*hd, mx*ng*sizeof(float));
             cactus_metal_encode_kv_append_i8(vn, (char*)w.vc+64, (char*)w.vc+64+mx*hd,
                 1, hd, (uint32_t)slot, 32, hd*2, mx*hd, mx*ng*sizeof(float));
             km[0] = clen + 1; vm[0] = clen + 1;
-            if (!w.global && clen >= (size_t)Wn) {
+            if (ring_wrapped) {
                 hist = Wn; total = Wn; knewp = nullptr; vnewp = nullptr; kv_end = Wn;
+                sync_point();  // attention reads the slot the appends just wrote
             } else {
                 hist = clen; total = clen + 1; knewp = kr; vnewp = vn;
                 kv_end = std::min(total, (size_t)pos + 1);
+                // attention reads cache[0..hist) plus kr/vn directly; appends write
+                // slot==hist, so they can run concurrently with attention
             }
         } else {
+            cactus_metal_encode_quant_matmul(q, xn, &w.q);
+            sync_point();
+            cactus_metal_encode_rms_rope(qr, q, w.q_norm, rc, rs, NQH, hd, RMS_EPS);
+            sync_point();
             size_t clen = km[0];
             if (!w.global && clen > (size_t)Wn) {
                 hist = Wn; total = Wn; knewp = nullptr; vnewp = nullptr; kv_end = Wn;
@@ -251,38 +285,74 @@ bool CactusGraph::execute_gpu_fused() {
             (char*)w.kc+64, (char*)w.vc+64, (char*)w.kc+64+mx*hd, (char*)w.vc+64+mx*hd,
             NQH, 1, hd, hd, (uint32_t)hist, (uint32_t)total, (uint32_t)kv_start, (uint32_t)kv_end, 1.0f,
             hist*hd, hist*hd, hist*ng*sizeof(float), hist*ng*sizeof(float));
+        sync_point();
         void* o  = fresh(HID);  cactus_metal_encode_quant_matmul(o, attn, &w.o);
-        void* h1 = fresh(HID);  cactus_metal_encode_rms_norm_add(h1, o, w.post_attn, h, 1, HID, RMS_EPS); h = h1;
+        sync_point();
+        void* h1 = fresh(HID);
+        void* xn2 = fresh(HID);
+        cactus_metal_encode_rms_norm_add_rms(h1, xn2, o, w.post_attn, h, w.pre_ffn, 1, HID, RMS_EPS, 1.0f);
+        h = h1;
+        sync_point();
 
         const int M = w.mlp;
-        void* xn2 = fresh(HID); cactus_metal_encode_rms_norm(xn2, h, w.pre_ffn, 1, HID, RMS_EPS);
-        void* gate= fresh(M);   cactus_metal_encode_quant_matmul(gate, xn2, &w.gate);
-        void* up  = fresh(M);   cactus_metal_encode_quant_matmul(up, xn2, &w.up);
-        void* g3  = fresh(M);   cactus_metal_encode_swiglu(g3, gate, up, M, GATE_SCALE);
-        void* mo  = fresh(HID); cactus_metal_encode_quant_matmul(mo, g3, &w.down);
+        void* gate= fresh(M);
+        void* up  = fresh(M);
+        {
+            void* gu_outs[2] = { gate, up };
+            const CactusQuantMatrix* gu_ws[2] = { &w.gate, &w.up };
+            if (!cactus_metal_encode_quant_matmul_many(gu_outs, xn2, gu_ws, 2)) {
+                cactus_metal_encode_quant_matmul(gate, xn2, &w.gate);
+                cactus_metal_encode_quant_matmul(up, xn2, &w.up);
+            }
+        }
+        sync_point();
+        void* mo  = fresh(HID);
+        if (!cactus_metal_encode_quant_matmul_swiglu(mo, gate, up, GATE_SCALE, &w.down)) {
+            void* g3 = fresh(M);
+            cactus_metal_encode_swiglu(g3, gate, up, M, GATE_SCALE);
+            sync_point();
+            cactus_metal_encode_quant_matmul(mo, g3, &w.down);
+        }
+        sync_point();
         void* h2  = fresh(HID); cactus_metal_encode_rms_norm_add(h2, mo, w.post_ffn, h, 1, HID, RMS_EPS); h = h2;
+        sync_point();
 
         void* ps  = fresh(PLE_DIM); cactus_metal_encode_quant_matmul(ps, h, &w.ple_down);
-        void* pm  = fresh(PLE_DIM); cactus_metal_encode_swiglu(pm, ps, (const char*)pleBase + (size_t)l*PLE_DIM*2, PLE_DIM, 1.0f);
-        void* pu  = fresh(HID); cactus_metal_encode_quant_matmul(pu, pm, &w.ple_up);
-        void* h3  = fresh(HID); cactus_metal_encode_rms_norm_add(h3, pu, w.post_ple, h, 1, HID, RMS_EPS); h = h3;
+        sync_point();
+        void* pu  = fresh(HID);
+        if (!cactus_metal_encode_quant_matmul_swiglu(pu, ps, (const char*)pleBase + (size_t)l*PLE_DIM*2, 1.0f, &w.ple_up)) {
+            void* pm = fresh(PLE_DIM);
+            cactus_metal_encode_swiglu(pm, ps, (const char*)pleBase + (size_t)l*PLE_DIM*2, PLE_DIM, 1.0f);
+            sync_point();
+            cactus_metal_encode_quant_matmul(pu, pm, &w.ple_up);
+        }
+        sync_point();
 
         float ls = (float)(*(const __fp16*)w.scalar);
-        void* h4 = fresh(HID); cactus_metal_encode_scalar(2, h4, h, HID, ls); h = h4;
+        void* h3 = fresh(HID);
+        void* xnn = fresh(HID);
+        const void* next_norm = (l+1 < NL) ? G.L[l+1].in_norm : G.final_norm;
+        cactus_metal_encode_rms_norm_add_rms(h3, xnn, pu, w.post_ple, h, next_norm, 1, HID, RMS_EPS, ls);
+        h = h3; xn = xnn;
+        sync_point();
+        // let the GPU start on the first half while the CPU encodes the rest
+        if (l % 6 == 5) cactus_metal_session_flush();
     }
 
     size_t V = B(3860).total_size;
-    void* fn   = fresh(HID); cactus_metal_encode_rms_norm(fn, h, G.final_norm, 1, HID, RMS_EPS);
+    void* fn   = xn;  // final rms-norm was fused into the last layer's residual kernel
     void* code = fresh(HID);
     void* lg   = fresh(V);
     if (cactus_metal_encode_quant_matmul_ortho(lg, fn, code, &G.lm_head)) {
-        cactus_metal_encode_scalar(3, lg, lg, V, SOFTCAP);
-        cactus_metal_encode_unary(1, lg, lg, V);
-        cactus_metal_encode_scalar(2, lg, lg, V, SOFTCAP);
+        sync_point();
+        cactus_metal_encode_softcap(lg, lg, V, SOFTCAP);
         B(3860).set_external(lg);
-        if (G.argmax_buf && cactus_metal_encode_argmax(lg, (uint32_t)V, G.argmax_buf)) {
-            g_gpu_argmax_buf = (const float*)G.argmax_buf;
-            g_gpu_argmax_valid = true;
+        if (G.argmax_buf) {
+            sync_point();
+            if (cactus_metal_encode_argmax(lg, (uint32_t)V, G.argmax_buf)) {
+                g_gpu_argmax_buf = (const float*)G.argmax_buf;
+                g_gpu_argmax_valid = true;
+            }
         }
     } else {
         cactus_metal_session_sync();
@@ -291,6 +361,7 @@ bool CactusGraph::execute_gpu_fused() {
         B(3860).set_external(lg);
     }
 
+    cactus_metal_manual_end();
     cactus_metal_set_active(false);
     cactus_metal_session_end();
     return true;

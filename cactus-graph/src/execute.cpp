@@ -945,6 +945,19 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
             hazard_barrier(*node);
             bool encoded = try_encode_gpu(*node, nodes_, node_index_map_);
+            static const bool prof = (std::getenv("CACTUS_METAL_PROF") != nullptr);
+            if (prof) {
+                static size_t counts[2][512] = {};
+                static bool reg = (std::atexit([]{
+                    for (int e = 0; e < 2; ++e) for (int t = 0; t < 512; ++t)
+                        if (counts[e][t])
+                            std::fprintf(stderr, "[cactus-gpu-prof] op=%s %s count=%zu\n",
+                                         get_op_name((OpType)t), e ? "gpu" : "CPU-FALLBACK", counts[e][t]);
+                }), true);
+                (void)reg;
+                int t = (int)node->op_type;
+                if (t >= 0 && t < 512) ++counts[encoded ? 1 : 0][t];
+            }
             if (!encoded) {
                 cactus_metal_session_sync();
                 accessed.clear();
