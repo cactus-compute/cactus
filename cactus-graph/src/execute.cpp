@@ -846,7 +846,6 @@ void CactusGraph::execute(const std::string& profile_file) {
         }
         return false;
     };
-    auto may_alias_input = aliases_input;
     auto preallocates_output = [&](const GraphNode& node) { return !aliases_input(node); };
 
     std::vector<size_t> last_use(n, 0);
@@ -864,7 +863,7 @@ void CactusGraph::execute(const std::string& profile_file) {
     std::vector<bool> keep_until_graph_cleanup(n, false);
     for (size_t i = 0; i < n; ++i) {
         const auto& node = *nodes_[i];
-        if (!may_alias_input(node) || node.input_ids.empty()) continue;
+        if (!aliases_input(node) || node.input_ids.empty()) continue;
         auto it = node_index_map_.find(node.input_ids[0]);
         if (it == node_index_map_.end()) continue;
         size_t base_idx = it->second;
@@ -887,32 +886,6 @@ void CactusGraph::execute(const std::string& profile_file) {
         auto gpu_release = [&](size_t idx) {
             GraphNode& nd = *nodes_[idx];
             if (aliases_input(nd)) nd.output_buffer.external_data = nullptr;
-        };
-        const bool concurrent = cactus_metal_concurrent();
-        struct Acc { uintptr_t lo, hi; bool w; };
-        std::vector<Acc> accessed;
-        auto conflicts = [&](uintptr_t lo, uintptr_t hi, bool w) {
-            for (auto& a : accessed) if ((w || a.w) && lo < a.hi && a.lo < hi) return true;
-            return false;
-        };
-        auto hazard_barrier = [&](GraphNode& nd) {
-            if (!concurrent) return;
-            const bool allW = (nd.op_type == OpType::KV_CACHE_APPEND);
-            std::vector<Acc> mine; bool hit = false;
-            for (size_t j = 0; j < nd.input_ids.size(); ++j) {
-                const auto& ib = get_input(nd, j, nodes_, node_index_map_);
-                if (!ib.get_data()) continue;
-                uintptr_t lo = (uintptr_t)ib.get_data(), hi = lo + ib.byte_size;
-                if (conflicts(lo, hi, allW)) hit = true;
-                mine.push_back({lo, hi, allW});
-            }
-            if (nd.output_buffer.get_data()) {
-                uintptr_t lo = (uintptr_t)nd.output_buffer.get_data(), hi = lo + nd.output_buffer.byte_size;
-                if (conflicts(lo, hi, true)) hit = true;
-                mine.push_back({lo, hi, true});
-            }
-            if (hit) { cactus_metal_barrier(); accessed.clear(); }
-            for (auto& m : mine) accessed.push_back(m);
         };
         for (size_t i = 0; i < n; ++i) {
             auto& node = nodes_[i];
@@ -944,11 +917,9 @@ void CactusGraph::execute(const std::string& profile_file) {
                 if (p) { node->output_buffer.release_to_pool(pool); node->output_buffer.set_external(p); }
                 else node->output_buffer.resize_from_pool(pool);
             }
-            hazard_barrier(*node);
             bool encoded = try_encode_gpu(*node, nodes_, node_index_map_);
             if (!encoded) {
                 cactus_metal_session_sync();
-                accessed.clear();
                 dispatch_node(*node, nodes_, node_index_map_);
             }
             if (ot == OpType::PERSISTENT) populated_node_ids_.insert(node->id);

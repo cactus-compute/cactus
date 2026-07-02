@@ -55,14 +55,12 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         __fp16* output = node.output_buffer.data_as<__fp16>();
 
         CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
-        const bool is_orthogonal = (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0;
-        if (is_orthogonal) {
+        if (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
             cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
-        } else if (cactus_backend_metal()) {
+        else if (cactus_backend_metal())
             cactus_metal_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
-        } else {
+        else
             cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
-        }
     } else {
         if (lhs_buffer.precision != Precision::FP16) {
             throw std::runtime_error("FP16 matmul requires FP16 activations (got precision " + std::to_string(static_cast<int>(lhs_buffer.precision)) + ")");

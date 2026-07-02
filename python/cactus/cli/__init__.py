@@ -297,8 +297,6 @@ def create_parser():
                                    help="Audio file to transcribe (WAV)")
     transcribe_parser.add_argument("--language", default="en",
                                    help="Language code (default: en)")
-    transcribe_parser.add_argument("--backend", choices=["auto", "cpu", "metal"], default="auto",
-                                   help="Inference backend, default auto (Metal on Apple GPU, gemma-4-E2B-it only)")
 
     serve_parser = subparsers.add_parser("serve", help="OpenAI-compatible local HTTP server",
                                          parents=[_telemetry_parent(), _build_parent()])

@@ -603,7 +603,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     }
 
     if (decoder_prefill_ && decoder_prefill_->graph
-        && std::getenv("CACTUS_NO_PREFILL_WARM") == nullptr) {
+        ) {
         try {
             if (prefill_encoder_ && prefill_encoder_->graph) {
                 for (auto& b : prefill_encoder_->input_buffers) std::fill(b.begin(), b.end(), 0);
@@ -1303,9 +1303,7 @@ void Model::execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, si
             copy_component_outputs_to_chunk_inputs(*encoder_, chunk_comp, i);
         }
     }
-    static const bool fused_prefill = std::getenv("CACTUS_FUSED_PREFILL") != nullptr;
-    if (!fused_prefill || !chunk_comp.graph->execute_gpu_fused_prefill(static_cast<uint32_t>(chunk_tokens)))
-        chunk_comp.graph->execute();
+    chunk_comp.graph->execute();
 }
 
 void Model::reset_prefill_stats() {

@@ -5,19 +5,11 @@
 bool cactus_metal_available() { return false; }
 void cactus_metal_set_active(bool) {}
 bool cactus_metal_active_mode() { return false; }
-bool cactus_metal_concurrent() { return false; }
-void cactus_metal_barrier() {}
-void cactus_metal_session_set_concurrent(bool) {}
-void cactus_metal_group_begin() {}
-void cactus_metal_group_end() {}
 bool cactus_metal_encode_softcap(void*, const void*, size_t, float) { return false; }
 bool cactus_metal_encode_adjust_logits(void*, size_t, const uint32_t*, uint32_t,
                                        const uint32_t*, const float*, uint32_t,
                                        int64_t, float) { return false; }
-bool cactus_metal_encode_gemv_mega(void* const*, const void*, const void*, float,
-                                   const CactusQuantMatrix* const*, int, const void*) { return false; }
-bool cactus_metal_encode_gemv_mega_ex(void* const*, const void*, const void*, float,
-                                   const CactusQuantMatrix* const*, int, const void*, bool, float) { return false; }
+bool cactus_metal_encode_transform_gemv(void*, const void*, const CactusQuantMatrix*, const void*) { return false; }
 bool cactus_metal_encode_gemv_cat(void* const*, const void* const*,
                                   const CactusQuantMatrix* const*, int) { return false; }
 bool cactus_metal_encode_swiglu_transform(void*, const void*, const void*,

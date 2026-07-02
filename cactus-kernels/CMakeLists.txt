@@ -74,9 +74,7 @@ if(APPLE)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
         DEPENDS ${_msl_in} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
         VERBATIM)
-    add_custom_target(cactus_msl_header DEPENDS ${_msl_out})
-    target_sources(cactus_kernels PRIVATE src/metal_backend.mm)
-    add_dependencies(cactus_kernels cactus_msl_header)
+    target_sources(cactus_kernels PRIVATE src/metal_backend.mm ${_msl_out})
     target_include_directories(cactus_kernels PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
     set_source_files_properties(src/metal_backend.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_link_libraries(cactus_kernels PUBLIC "-framework Metal" "-framework Foundation")

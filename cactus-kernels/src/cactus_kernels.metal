@@ -207,57 +207,28 @@ kernel void cq4_gemv_mr(
     }
 }
 
-struct MegaU { uint K, ng, nw, N0, N1, N2, flags; float eps; float pscale; };
-kernel void cq4_gemv_mega(
+struct TGU { uint K, ng, oswi; };
+kernel void cq4_transform_gemv(
     device const half*  x        [[buffer(0)]],
-    device const half*  normw    [[buffer(1)]],
-    device const half*  recip    [[buffer(2)]],
-    device const char*  lsign0   [[buffer(3)]],  device const char* lsign1 [[buffer(4)]],  device const char* lsign2 [[buffer(5)]],
-    device const char*  rsign0   [[buffer(6)]],  device const char* rsign1 [[buffer(7)]],  device const char* rsign2 [[buffer(8)]],
-    device const uint*  perm0    [[buffer(9)]],  device const uint* perm1  [[buffer(10)]], device const uint* perm2  [[buffer(11)]],
-    device const half*  cbook0   [[buffer(12)]], device const half* cbook1 [[buffer(13)]], device const half* cbook2 [[buffer(14)]],
-    device const half*  norms0   [[buffer(15)]], device const half* norms1 [[buffer(16)]], device const half* norms2 [[buffer(17)]],
-    device const uchar* packed0  [[buffer(18)]], device const uchar* packed1[[buffer(19)]], device const uchar* packed2[[buffer(20)]],
-    device       half*  y0       [[buffer(21)]], device half* y1 [[buffer(22)]], device half* y2 [[buffer(23)]],
-    device const half*  osw      [[buffer(24)]],
-    constant MegaU& U             [[buffer(25)]],
+    device const half*  recip    [[buffer(1)]],
+    device const char*  lsign    [[buffer(2)]],
+    device const char*  rsign    [[buffer(3)]],
+    device const uint*  perm     [[buffer(4)]],
+    device const half*  cbook    [[buffer(5)]],
+    device const half*  norms    [[buffer(6)]],
+    device const uchar* packed   [[buffer(7)]],
+    device       half*  y        [[buffer(8)]],
+    device const half*  osw      [[buffer(9)]],
+    constant TGU& U              [[buffer(10)]],
     uint tg   [[threadgroup_position_in_grid]],
     uint sg   [[simdgroup_index_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]],
     uint t    [[thread_position_in_threadgroup]],
     threadgroup half*  coded     [[threadgroup(0)]],
-    threadgroup float* zwave     [[threadgroup(1)]],
-    threadgroup float* red       [[threadgroup(2)]])
+    threadgroup float* zwave     [[threadgroup(1)]])
 {
     const uint K = U.K, ng = U.ng;
-    const bool do_norm = (U.flags & 1u) != 0u;
-    const bool do_oswi = (U.flags & 2u) != 0u;
-    const bool do_pswi = (U.flags & 4u) != 0u;
-
-    uint n0 = tg*16u;
-    uint b, nbase;
-    if (n0 < U.N0)              { b = 0u; nbase = 0u; }
-    else if (n0 < U.N0 + U.N1)  { b = 1u; nbase = U.N0; }
-    else                        { b = 2u; nbase = U.N0 + U.N1; }
-    device const char*  lsign = (b==0u)?lsign0:((b==1u)?lsign1:lsign2);
-    device const char*  rsign = (b==0u)?rsign0:((b==1u)?rsign1:rsign2);
-    device const uint*  perm  = (b==0u)?perm0 :((b==1u)?perm1 :perm2 );
-    device const half*  cbook = (b==0u)?cbook0:((b==1u)?cbook1:cbook2);
-    device const half*  norms = (b==0u)?norms0:((b==1u)?norms1:norms2);
-    device const uchar* packed= (b==0u)?packed0:((b==1u)?packed1:packed2);
-    device       half*  y     = (b==0u)?y0    :((b==1u)?y1    :y2    );
-
-    threadgroup float* cb = red;
-
-    float inv = 1.0f;
-    if (do_norm) {
-        float partial = 0;
-        for (uint i=t; i<K; i+=256u){ float v=(float)x[i]; partial += v*v; }
-        red[t]=partial; threadgroup_barrier(mem_flags::mem_threadgroup);
-        for (uint s=128u; s>0u; s>>=1){ if (t<s) red[t]+=red[t+s]; threadgroup_barrier(mem_flags::mem_threadgroup); }
-        inv = 1.0f/sqrt(red[0]/(float)K + U.eps);
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-    }
+    threadgroup float cb[16];
     if (t < 16u) cb[t] = (float)cbook[t];
 
     uint k = lane*4u;
@@ -265,24 +236,10 @@ kernel void cq4_gemv_mega(
         uint g = g0 + sg;
         if (g < ng) {
             uint base = g*128u + k;
-            float x0,x1,x2,x3;
-            if (do_norm) {
-                x0=(float)(half)((float)x[base+0]*inv*(float)normw[base+0]);
-                x1=(float)(half)((float)x[base+1]*inv*(float)normw[base+1]);
-                x2=(float)(half)((float)x[base+2]*inv*(float)normw[base+2]);
-                x3=(float)(half)((float)x[base+3]*inv*(float)normw[base+3]);
-            } else if (do_pswi) {
-                x0=(float)(half)clamp(gelu_tanh((float)x[base+0])*U.pscale*(float)osw[base+0],-65504.0f,65504.0f);
-                x1=(float)(half)clamp(gelu_tanh((float)x[base+1])*U.pscale*(float)osw[base+1],-65504.0f,65504.0f);
-                x2=(float)(half)clamp(gelu_tanh((float)x[base+2])*U.pscale*(float)osw[base+2],-65504.0f,65504.0f);
-                x3=(float)(half)clamp(gelu_tanh((float)x[base+3])*U.pscale*(float)osw[base+3],-65504.0f,65504.0f);
-            } else {
-                x0=(float)x[base+0]; x1=(float)x[base+1]; x2=(float)x[base+2]; x3=(float)x[base+3];
-            }
-            x0 *= (float)recip[base+0]*(float)lsign[k+0];
-            x1 *= (float)recip[base+1]*(float)lsign[k+1];
-            x2 *= (float)recip[base+2]*(float)lsign[k+2];
-            x3 *= (float)recip[base+3]*(float)lsign[k+3];
+            float x0=(float)x[base+0]*(float)recip[base+0]*(float)lsign[k+0];
+            float x1=(float)x[base+1]*(float)recip[base+1]*(float)lsign[k+1];
+            float x2=(float)x[base+2]*(float)recip[base+2]*(float)lsign[k+2];
+            float x3=(float)x[base+3]*(float)recip[base+3]*(float)lsign[k+3];
             float a0=x0+x1,a1=x0-x1,a2=x2+x3,a3=x2-x3;
             x0=a0+a2; x1=a1+a3; x2=a0-a2; x3=a1-a3;
             #pragma clang loop unroll(full)
@@ -291,19 +248,20 @@ kernel void cq4_gemv_mega(
                 float p0=simd_shuffle_xor(x0,d),p1=simd_shuffle_xor(x1,d),p2=simd_shuffle_xor(x2,d),p3=simd_shuffle_xor(x3,d);
                 x0=hi?p0-x0:x0+p0; x1=hi?p1-x1:x1+p1; x2=hi?p2-x2:x2+p2; x3=hi?p3-x3:x3+p3;
             }
-            float s=rsqrt(128.0f);
-            zwave[sg*128u+k+0]=x0*s*(float)rsign[k+0]; zwave[sg*128u+k+1]=x1*s*(float)rsign[k+1];
-            zwave[sg*128u+k+2]=x2*s*(float)rsign[k+2]; zwave[sg*128u+k+3]=x3*s*(float)rsign[k+3];
+            float sc=rsqrt(128.0f);
+            zwave[sg*128u+k+0]=x0*sc*(float)rsign[k+0]; zwave[sg*128u+k+1]=x1*sc*(float)rsign[k+1];
+            zwave[sg*128u+k+2]=x2*sc*(float)rsign[k+2]; zwave[sg*128u+k+3]=x3*sc*(float)rsign[k+3];
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (g < ng) {
-            coded[g*128u+k+0]=(half)zwave[sg*128u+perm[k+0]]; coded[g*128u+k+1]=(half)zwave[sg*128u+perm[k+1]];
-            coded[g*128u+k+2]=(half)zwave[sg*128u+perm[k+2]]; coded[g*128u+k+3]=(half)zwave[sg*128u+perm[k+3]];
+            uint base = g*128u + k;
+            coded[base+0]=(half)zwave[sg*128u+perm[k+0]]; coded[base+1]=(half)zwave[sg*128u+perm[k+1]];
+            coded[base+2]=(half)zwave[sg*128u+perm[k+2]]; coded[base+3]=(half)zwave[sg*128u+perm[k+3]];
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    uint nloc0 = (n0 - nbase) + sg*2u;
+    uint n0 = tg*16u + sg*2u;
     float acc[2]; acc[0]=0; acc[1]=0;
     for (uint base=lane*16u; base<K; base+=512u){
         uint g = base/128u, off = base - g*128u;
@@ -311,7 +269,7 @@ kernel void cq4_gemv_mega(
         half4 c0=cbase[0], c1=cbase[1], c2=cbase[2], c3=cbase[3];
         #pragma clang loop unroll(full)
         for (uint r=0u;r<2u;r++){
-            uint n = nloc0+r;
+            uint n = n0+r;
             device const ushort4* pr = (device const ushort4*)(packed + ((size_t)n*ng+g)*64u + off/2u);
             ushort4 w = pr[0];
             float p = (float)c0.x*cb[w[0]&0xF] + (float)c0.y*cb[(w[0]>>4)&0xF] + (float)c0.z*cb[(w[0]>>8)&0xF] + (float)c0.w*cb[(w[0]>>12)&0xF]
@@ -325,8 +283,8 @@ kernel void cq4_gemv_mega(
     for (uint r=0u;r<2u;r++){
         float a = simd_sum(acc[r]);
         if (lane==0u){
-            uint n = nloc0+r;
-            if (do_oswi) {
+            uint n = n0+r;
+            if (U.oswi != 0u) {
                 float gg = gelu_tanh((float)(half)a) * (float)osw[n];
                 y[n] = (half)clamp(gg,-65504.0f,65504.0f);
             } else {
@@ -987,17 +945,6 @@ kernel void rope_f16(device const half* x [[buffer(0)]], device half* out [[buff
     out[gid]=(half)((float)x[gid]*(float)cs[d] + rot*(float)sn[d]);
 }
 
-kernel void rope_f16_m(device const half* x [[buffer(0)]], device half* out [[buffer(1)]],
-                       device const half* cs [[buffer(2)]], device const half* sn [[buffer(3)]],
-                       constant uint& heads [[buffer(4)]], constant uint& hd [[buffer(5)]],
-                       constant uint& M [[buffer(6)]], uint gid [[thread_position_in_grid]]) {
-    uint per=heads*hd, total=M*per; if (gid>=total) return;
-    uint m=gid/per, r=gid%per, d=r%hd, hh=hd/2;
-    uint base=m*per + (r/hd)*hd;
-    float rot = (d<hh) ? -(float)x[base+d+hh] : (float)x[base+d-hh];
-    uint ci=m*hd+d;
-    out[gid]=(half)((float)x[gid]*(float)cs[ci] + rot*(float)sn[ci]);
-}
 
 kernel void rms_norm_rope_f16(
     device const half* x    [[buffer(0)]],

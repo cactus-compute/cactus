@@ -211,7 +211,6 @@ graph.hard_reset();
 │    --language <code>                 language code (default: en)               │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --platform auto|cpu|apple         target platform (default: auto)           │
-│    --backend auto|cpu|metal          inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │                                                                                │

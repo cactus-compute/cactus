@@ -21,13 +21,6 @@ bool cactus_metal_available();
 void cactus_metal_set_active(bool active);
 bool cactus_metal_active_mode();
 
-bool cactus_metal_concurrent();
-void cactus_metal_barrier();
-
-void cactus_metal_session_set_concurrent(bool on);
-void cactus_metal_group_begin();
-void cactus_metal_group_end();
-
 void cactus_metal_quant_matmul(const CactusQuantMatrix* W, const __fp16* A,
                                uint32_t M, __fp16* C);
 
@@ -47,8 +40,6 @@ bool cactus_metal_encode_unary(int op_type, void* out, const void* in, size_t n)
 bool cactus_metal_encode_swiglu(void* out, const void* gate, const void* up, size_t n, float scale);
 bool cactus_metal_encode_rope(void* out, const void* x, const void* cos, const void* sin,
                               uint32_t heads, uint32_t head_dim);
-bool cactus_metal_encode_rope_m(void* out, const void* x, const void* cos_m, const void* sin_m,
-                                uint32_t heads, uint32_t head_dim, uint32_t M);
 bool cactus_metal_encode_rms_norm(void* out, const void* in, const void* weight,
                                   size_t rows, size_t dim, float eps);
 bool cactus_metal_encode_rms_norm_rope(void* out, const void* x, const void* weight,
@@ -72,11 +63,7 @@ bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQu
 bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const CactusQuantMatrix* W, uint32_t M);
 bool cactus_metal_encode_transform_batch(const void* x, const CactusQuantMatrix* const* Ws, int B, void* const* codes);
 bool cactus_metal_encode_gemv_precoded(void* out, const void* code, const CactusQuantMatrix* W);
-bool cactus_metal_encode_gemv_mega(void* const* outs, const void* x, const void* normw, float eps,
-                                   const CactusQuantMatrix* const* Ws, int B, const void* osw);
-bool cactus_metal_encode_gemv_mega_ex(void* const* outs, const void* x, const void* normw, float eps,
-                                   const CactusQuantMatrix* const* Ws, int B, const void* osw,
-                                   bool pswi, float pscale);
+bool cactus_metal_encode_transform_gemv(void* out, const void* x, const CactusQuantMatrix* W, const void* osw);
 bool cactus_metal_encode_gemv_cat(void* const* outs, const void* const* codes,
                                   const CactusQuantMatrix* const* Ws, int B);
 bool cactus_metal_encode_swiglu_transform(void* code, const void* gate, const void* up,
