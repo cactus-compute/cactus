@@ -28,6 +28,7 @@ void  cactus_metal_session_begin();
 void  cactus_metal_session_sync();
 void  cactus_metal_session_flush();
 void  cactus_metal_invalidate_host_wraps();
+void  cactus_metal_trim_prefill_cache();
 void  cactus_metal_session_end();
 
 void* cactus_metal_alloc_shared(size_t bytes);

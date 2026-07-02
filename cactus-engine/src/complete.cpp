@@ -4,6 +4,7 @@
 #include "chat_tools.h"
 #include "telemetry.h"
 #include "cactus_kernels.h"
+#include "metal_backend.h"
 #include "wav.h"
 #include <algorithm>
 #include <chrono>
@@ -796,6 +797,10 @@ int cactus_complete(
     const uint8_t* pcm_buffer,
     size_t pcm_buffer_size
 ) {
+    struct MetalTrimGuard {
+        ~MetalTrimGuard() { cactus_metal_trim_prefill_cache(); }
+    } metal_trim_guard;
+
     if (!model) {
         std::string error_msg = last_error_message.empty() ?
             "Model not initialized. Check model path and files." : last_error_message;

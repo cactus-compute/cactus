@@ -131,6 +131,8 @@ struct ResW {
     id<MTLBuffer> wf16=nil;
 };
 std::unordered_map<const void*, ResW> g_resident;
+bool g_wf16_live = false;
+id<MTLBuffer> g_attn_scores = nil;
 std::unordered_map<const void*, ResW> g_resident_emb;
 std::mutex g_resident_mu;
 
@@ -364,6 +366,7 @@ void cactus_metal_session_end() {
 }
 void cactus_metal_invalidate_host_wraps() {
     std::lock_guard<std::mutex> lk(g_resident_mu);
+    g_attn_scores = nil;
     g_wrapped.clear();
     g_readonly.clear();
     g_resident.clear();
@@ -646,6 +649,13 @@ static inline bool quant_lowbit_eligible(const CactusQuantMatrix* W) {
            W->codebook && W->norms && W->packed_indices;
 }
 
+void cactus_metal_trim_prefill_cache() {
+    if (!g_wf16_live) return;
+    std::lock_guard<std::mutex> lk(g_resident_mu);
+    for (auto& kv : g_resident) kv.second.wf16 = nil;
+    g_wf16_live = false;
+}
+
 bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQuantMatrix* W) {
     if (!ctx().ok || !W) return false;
     const uint32_t gs=W->group_size, K=W->K, N=W->N, ng=W->num_groups;
@@ -853,6 +863,7 @@ bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const Cactus
     if ((g_predequant && ctx().psoGdense && ctx().psoDeq) || lowbit) {
         if (!rw.wf16) {
             rw.wf16 = [ctx().dev newBufferWithLength:(size_t)N*K*2 options:MTLResourceStorageModeShared];
+            g_wf16_live = true;
             [g_enc setComputePipelineState:(lowbit?ctx().psoDeqLow:ctx().psoDeq)];
             [g_enc setBuffer:rw.packed offset:0 atIndex:0]; [g_enc setBuffer:rw.codebook offset:0 atIndex:1];
             [g_enc setBuffer:rw.norms offset:0 atIndex:2]; [g_enc setBuffer:rw.wf16 offset:0 atIndex:3];
@@ -1454,10 +1465,10 @@ bool cactus_metal_encode_attention_f16(void* out, const void* q, const void* k, 
         bool aligned = (qb.second % 16)==0 && (kb.second % 16)==0 && (vb.second % 16)==0 && (ob.second % 16)==0
             && ((D*2) % 16)==0 && ((DV*2) % 16)==0;
         if (aligned) {
-            static id<MTLBuffer> sbuf = nil;
             size_t need = (size_t)HQ*T*S*2;
-            if (!sbuf || sbuf.length < need)
-                sbuf = [ctx().dev newBufferWithLength:need options:MTLResourceStorageModeShared];
+            if (!g_attn_scores || g_attn_scores.length < need)
+                g_attn_scores = [ctx().dev newBufferWithLength:need options:MTLResourceStorageModeShared];
+            id<MTLBuffer> sbuf = g_attn_scores;
             if (sbuf) {
                 float beta = 0.0f;
                 if (mask_mode == 2) {
