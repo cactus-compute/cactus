@@ -66,11 +66,15 @@ struct EwChainStep {
 
 MetalFusePlan* cactus_metal_plan_build(
     const std::vector<std::unique_ptr<GraphNode>>& nodes,
-    const std::unordered_map<size_t, size_t>& map) {
+    const std::unordered_map<size_t, size_t>& map,
+    const std::unordered_set<size_t>& pinned_ids) {
     const size_t n = nodes.size();
     auto plan = new MetalFusePlan();
     plan->built = true;
     plan->action.assign(n, -1);
+    std::vector<uint8_t> pinned(n, 0);
+    for (size_t i = 0; i < n; ++i)
+        if (pinned_ids.count(nodes[i]->id)) pinned[i] = 1;
 
     auto idxof = [&](size_t id) -> long {
         auto it = map.find(id);
@@ -220,11 +224,13 @@ MetalFusePlan* cactus_metal_plan_build(
         return i;
     };
 
-    auto add_cluster = [&](MetalCluster c, size_t anchor, const std::vector<size_t>& cover) {
+    auto add_cluster = [&](MetalCluster c, size_t anchor, const std::vector<size_t>& cover) -> bool {
+        for (size_t v : cover) if (v != anchor && pinned[v]) return false;
         int32_t cid = (int32_t)plan->clusters.size();
         plan->clusters.push_back(c);
         for (size_t v : cover) if (v != anchor) plan->action[v] = -2;
         plan->action[anchor] = cid;
+        return true;
     };
 
     struct AttnCand {
@@ -814,8 +820,8 @@ MetalFusePlan* cactus_metal_plan_build(
                 for (uint32_t bi = 0; bi < c.u0; ++bi)
                     if (!c.sc[bi]) c.sc[bi] = cactus_metal_alloc_shared(maxK * 2);
                 std::vector<size_t> cover;
-                add_cluster(c, mms[base + cnt - 1], cover);
-                for (size_t mi = 0; mi + 1 < cnt; ++mi) plan->action[mms[base + mi]] = -3;
+                if (add_cluster(c, mms[base + cnt - 1], cover))
+                    for (size_t mi = 0; mi + 1 < cnt; ++mi) plan->action[mms[base + mi]] = -3;
             }
         }
     }
@@ -845,6 +851,8 @@ MetalFusePlan* cactus_metal_plan_build(
                 }
             }
         }
+        for (size_t v = 0; v < n && valid; ++v)
+            if ((mark[v] == 1 || mark[v] == 3) && pinned[v]) valid = false;
         if (valid) {
             for (size_t v = 0; v < n; ++v)
                 if ((mark[v] == 1 || mark[v] == 3) && plan->action[v] == -1) plan->action[v] = -2;

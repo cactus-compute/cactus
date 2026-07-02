@@ -1749,24 +1749,37 @@ void cactus_quant_matmul(
 
     constexpr size_t TILE_M = 8;
 
+    struct ExpandEntry {
+        uint64_t fingerprint = 0;
+        std::vector<int8_t> weights;
+        std::vector<float> norms;
+    };
     static std::mutex s_expand_mutex;
-    static std::unordered_map<const void*, std::pair<std::vector<int8_t>, std::vector<float>>> s_expand_cache;
+    static std::unordered_map<const void*, ExpandEntry> s_expand_cache;
+    const size_t packed_bytes = static_cast<size_t>(W->N) * num_groups * pgb;
+    uint64_t fp = 1469598103934665603ull;
+    auto fp_mix = [&fp](uint64_t v) { fp ^= v; fp *= 1099511628211ull; };
+    fp_mix(bits); fp_mix(W->K); fp_mix(W->N); fp_mix(gs);
+    const uint8_t* pb = static_cast<const uint8_t*>(W->packed_indices);
+    for (size_t i = 0; i < 64 && i < packed_bytes; ++i) fp_mix(pb[i]);
+    for (size_t i = packed_bytes > 64 ? packed_bytes - 64 : 0; i < packed_bytes; ++i) fp_mix(pb[i]);
     const int8_t* w_il;
     const float* n_f32;
     {
         std::lock_guard<std::mutex> lock(s_expand_mutex);
         auto& entry = s_expand_cache[W->packed_indices];
-        if (entry.first.empty()) {
+        if (entry.weights.empty() || entry.fingerprint != fp) {
             int8_t cb_i8[16] = {};
             const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, codebook_size);
             const int8x16_t cb_lut = vld1q_s8(cb_i8);
-            entry.first.resize(expanded_size);
-            entry.second.resize(expanded_norms_size);
+            entry.weights.assign(expanded_size, 0);
+            entry.norms.assign(expanded_norms_size, 0.0f);
             tq_preexpand_weights(W, bits, num_groups, gs, pgb, cb_lut, cb_scale,
-                                 N_blocks, entry.first.data(), entry.second.data());
+                                 N_blocks, entry.weights.data(), entry.norms.data());
+            entry.fingerprint = fp;
         }
-        w_il = entry.first.data();
-        n_f32 = entry.second.data();
+        w_il = entry.weights.data();
+        n_f32 = entry.norms.data();
     }
 
     const size_t M_blocks = (M + TILE_M - 1) / TILE_M;

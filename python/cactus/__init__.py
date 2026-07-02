@@ -15,6 +15,7 @@ __all__ = [
     "Graph",
     "Tensor",
     "cactus_init",
+    "cactus_set_backend",
     "cactus_destroy",
     "cactus_reset",
     "cactus_stop",

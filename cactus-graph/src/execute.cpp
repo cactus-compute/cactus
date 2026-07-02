@@ -1052,7 +1052,8 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
 
 struct MetalFusePlan;
 MetalFusePlan* cactus_metal_plan_build(const std::vector<std::unique_ptr<GraphNode>>& nodes,
-                                       const std::unordered_map<size_t, size_t>& map);
+                                       const std::unordered_map<size_t, size_t>& map,
+                                       const std::unordered_set<size_t>& pinned_ids);
 void cactus_metal_plan_free(MetalFusePlan* p);
 void cactus_graph_metal_tail_commit();
 void cactus_metal_plan_disable(MetalFusePlan* p);
@@ -1222,8 +1223,11 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
         }
         auto it = metal_plans_.find(sig);
-        if (it == metal_plans_.end())
-            it = metal_plans_.emplace(sig, cactus_metal_plan_build(nodes_, node_index_map_)).first;
+        if (it == metal_plans_.end()) {
+            std::unordered_set<size_t> pinned(retained_output_node_ids_.begin(), retained_output_node_ids_.end());
+            pinned.insert(persistent_node_ids_.begin(), persistent_node_ids_.end());
+            it = metal_plans_.emplace(sig, cactus_metal_plan_build(nodes_, node_index_map_, pinned)).first;
+        }
         fplan = it->second;
     }
     const uint8_t* rplan = (metal_mode && !need_debug && !metal_retype_disabled_

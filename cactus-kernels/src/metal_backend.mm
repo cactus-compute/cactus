@@ -43,7 +43,7 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoAttnPre=nil, psoAttnPreMma2=nil, psoAttnPreHd256=nil;
     id<MTLComputePipelineState> psoKvAppendM=nil, psoKvAppendRingM=nil;
     id<MTLComputePipelineState> psoSlideS=nil, psoSlideR=nil, psoSlideRM=nil;
-    id<MTLComputePipelineState> psoRope=nil, psoRmsRope=nil;
+    id<MTLComputePipelineState> psoRope=nil;
     id<MTLComputePipelineState> psoArgmax=nil;
     id<MTLComputePipelineState> psoArgmaxP=nil, psoArgmaxF=nil, psoSoftcap=nil, psoAdjust=nil;
     id<MTLComputePipelineState> psoGather=nil;
@@ -92,7 +92,7 @@ struct MetalCtx {
         psoAttnPre=pso("attn_prefill_i8"); psoAttnPreMma2=pso("attn_prefill_mma2"); psoAttnPreHd256=pso("attn_prefill_mma_hd256"); psoKvAppendM=pso("kv_append_i8_m");
         psoKvAppendRingM=pso("kv_append_ring_i8_m");
         psoSlideS=pso("kv_slide_save"); psoSlideR=pso("kv_slide_restore"); psoSlideRM=pso("kv_slide_restore_m");
-        psoScatter=pso("strided_scatter_f16"); psoKvAppend=pso("kv_append_i8"); psoRope=pso("rope_f16"); psoRmsRope=pso("rms_norm_rope_f16");
+        psoScatter=pso("strided_scatter_f16"); psoKvAppend=pso("kv_append_i8"); psoRope=pso("rope_f16");
         psoArgmax=pso("argmax_logits");
         psoArgmaxP=pso("argmax_part"); psoArgmaxF=pso("argmax_final"); psoSoftcap=pso("softcap_f16");
         psoAdjust=pso("adjust_logits");
@@ -480,21 +480,6 @@ bool cactus_metal_encode_rope(void* out, const void* x, const void* cos, const v
     [g_enc dispatchThreads:MTLSizeMake(total,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
-bool cactus_metal_encode_rms_norm_rope(void* out, const void* x, const void* weight,
-                                       const void* cos, const void* sin,
-                                       uint32_t heads, uint32_t head_dim, float eps) {
-    if (!ctx().ok || !ctx().psoRmsRope) return false;
-    ensureEncoder();
-    uint32_t total=heads*head_dim; uint32_t hd=head_dim; float e=eps;
-    [g_enc setComputePipelineState:ctx().psoRmsRope];
-    setBufAt(x, (size_t)total*2, 0); setBufAt(weight, (size_t)head_dim*2, 1);
-    setBufAt(cos, (size_t)head_dim*2, 2); setBufAt(sin, (size_t)head_dim*2, 3);
-    setBufAt(out, (size_t)total*2, 4);
-    [g_enc setBytes:&hd length:4 atIndex:5]; [g_enc setBytes:&e length:4 atIndex:6];
-    [g_enc setThreadgroupMemoryLength:256*sizeof(float) atIndex:0];
-    [g_enc dispatchThreadgroups:MTLSizeMake(heads,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
-    return true;
-}
 bool cactus_metal_encode_rms_norm(void* out, const void* in, const void* weight,
                                   size_t rows, size_t dim, float eps) {
     if (!ctx().ok) return false;
@@ -638,12 +623,14 @@ bool cactus_metal_encode_cast(void* out, int out_prec, const void* in, int in_pr
 }
 static inline bool quant_fast_eligible(const CactusQuantMatrix* W) {
     return W->bits == 4 && W->group_size >= 128 && (W->group_size % 128) == 0 && (W->N % 4) == 0 &&
+           (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) &&
            !(W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) && W->input_scale_recip && W->left_signs &&
            W->right_signs && W->permutation && W->codebook && W->norms && W->packed_indices;
 }
 
 static inline bool quant_lowbit_eligible(const CactusQuantMatrix* W) {
     return (W->bits == 2 || W->bits == 3) && W->group_size == 128 && (W->N % 16) == 0 &&
+           (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) &&
            !(W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) &&
            W->input_scale_recip && W->left_signs && W->right_signs && W->permutation &&
            W->codebook && W->norms && W->packed_indices;

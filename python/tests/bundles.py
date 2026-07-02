@@ -27,7 +27,7 @@ def _iter_bundle_candidates(name: str):
     if bare.exists():
         yield bare
     if WEIGHTS.is_dir():
-        for candidate in sorted(WEIGHTS.glob(f"{name}-cq*")):
+        for candidate in sorted(WEIGHTS.glob(f"{name}-cq*"), reverse=True):
             if candidate.is_dir():
                 yield candidate
 
