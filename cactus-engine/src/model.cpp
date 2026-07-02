@@ -895,16 +895,19 @@ void Model::copy_encoder_outputs_to_decoder(const Component& enc) {
     }
 }
 
-void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/) {
+void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/, bool use_fused) {
     if (decode_route_ == DecodeRoute::DIRECT_DECODER_STEP) {
         write_int_input(*decoder_, "input_ids", static_cast<int64_t>(token_id));
         write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
-        const bool fused = cactus_backend_fused();
+        const bool fused = use_fused && cactus_backend_fused();
+        if (!fused) cactus_graph_set_prefill_consistent(true);
         if (!fused || !decoder_->graph->execute_gpu_fused()) decoder_->graph->execute();
+        cactus_graph_set_prefill_consistent(false);
         maybe_capture_handoff_probe_hidden(*decoder_);
         return;
     }
-    const bool fused = cactus_backend_fused();
+    if (!use_fused) cactus_graph_set_prefill_consistent(true);
+    const bool fused = use_fused && cactus_backend_fused();
     if (fused) {
         if (ple_probe_state_ == 0)
             ple_probe_state_ = encoder_->graph->extract_ple_pathway(fused_embed_ctx_) ? 1 : 2;
@@ -914,12 +917,13 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/) {
             cactus_graph_set_fused_embed(&fused_embed_ctx_);
             bool ok = decoder_->graph->execute_gpu_fused();
             cactus_graph_set_fused_embed(nullptr);
-            if (ok) { maybe_capture_handoff_probe_hidden(*decoder_); return; }
+            if (ok) { cactus_graph_set_prefill_consistent(false); maybe_capture_handoff_probe_hidden(*decoder_); return; }
         }
     }
     run_encoder_step(token_id, position);
     copy_component_outputs_to_inputs(*encoder_, *decoder_);
     if (!fused || !decoder_->graph->execute_gpu_fused()) decoder_->graph->execute();
+    cactus_graph_set_prefill_consistent(false);
     maybe_capture_handoff_probe_hidden(*decoder_);
 }
 
@@ -1946,15 +1950,17 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
     float best_v = -std::numeric_limits<float>::infinity();
     float second_v = -std::numeric_limits<float>::infinity();
     const auto& tool_bias = tool_constrainer_.get_bias();
+    const std::vector<float>* tool_dense = tool_constrainer_.get_dense_bias();
     {
         uint32_t gidx; float gbest, gsecond;
-        if (tool_bias.empty() && vocab_bias_.empty() && suppressed_token_id_ < 0 &&
+        if (!tool_dense && tool_bias.empty() && vocab_bias_.empty() && suppressed_token_id_ < 0 &&
             cactus_graph_gpu_argmax(&gidx, &gbest, &gsecond)) {
             if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(gbest, gsecond);
             return gidx;
         }
     }
     auto score_with_bias = [&](size_t token_id, float value) {
+        if (tool_dense && token_id < tool_dense->size()) value += (*tool_dense)[token_id];
         auto tool_it = tool_bias.find(static_cast<uint32_t>(token_id));
         if (tool_it != tool_bias.end()) value += tool_it->second;
         auto vocab_it = vocab_bias_.find(static_cast<uint32_t>(token_id));
@@ -2024,8 +2030,7 @@ uint32_t Model::argmax_last_logits(float* out_uncertainty) {
 
 void Model::prepare_sampling_context(float repetition_penalty) {
     samp_recent_.clear();
-    samp_bias_ids_.clear();
-    samp_bias_vals_.clear();
+    samp_has_bias_ = false;
     samp_penalty_ = repetition_penalty;
     constexpr size_t kPenaltyWindow = 64;
     size_t start = token_history_.size() > kPenaltyWindow ? token_history_.size() - kPenaltyWindow : 0;
@@ -2035,13 +2040,28 @@ void Model::prepare_sampling_context(float repetition_penalty) {
         for (uint32_t r : samp_recent_) if (r == id) { dup = true; break; }
         if (!dup) samp_recent_.push_back(id);
     }
-    for (const auto& kv : tool_constrainer_.get_bias()) { samp_bias_ids_.push_back(kv.first); samp_bias_vals_.push_back(kv.second); }
-    for (const auto& kv : vocab_bias_) { samp_bias_ids_.push_back(kv.first); samp_bias_vals_.push_back(kv.second); }
+    const std::vector<float>* tool_dense = tool_constrainer_.get_dense_bias();
+    const auto& tool_bias = tool_constrainer_.get_bias();
+    if (tool_dense || !tool_bias.empty() || !vocab_bias_.empty()) {
+        size_t n = tokenizer_ ? tokenizer_->get_vocab_size() : 0;
+        if (tool_dense && tool_dense->size() > n) n = tool_dense->size();
+        if (n > 0) {
+            if (tool_dense) samp_bias_dense_.assign(tool_dense->begin(), tool_dense->end());
+            else samp_bias_dense_.assign(n, 0.0f);
+            if (samp_bias_dense_.size() < n) samp_bias_dense_.resize(n, 0.0f);
+            for (const auto& kv : tool_bias)
+                if (kv.first < samp_bias_dense_.size()) samp_bias_dense_[kv.first] += kv.second;
+            for (const auto& kv : vocab_bias_)
+                if (kv.first < samp_bias_dense_.size()) samp_bias_dense_[kv.first] += kv.second;
+            samp_has_bias_ = true;
+        }
+    }
     samp_ctx_active_ = (repetition_penalty != 1.0f && !samp_recent_.empty()) ||
-                       !samp_bias_ids_.empty() || suppressed_token_id_ >= 0;
+                       samp_has_bias_ || suppressed_token_id_ >= 0;
     if (samp_ctx_active_) {
         cactus_graph_set_sampling(samp_recent_.data(), (int)samp_recent_.size(), repetition_penalty,
-                                  samp_bias_ids_.data(), samp_bias_vals_.data(), (int)samp_bias_ids_.size(),
+                                  samp_has_bias_ ? samp_bias_dense_.data() : nullptr,
+                                  samp_has_bias_ ? samp_bias_dense_.size() : 0,
                                   suppressed_token_id_);
     } else {
         cactus_graph_clear_sampling();
@@ -2077,25 +2097,30 @@ uint32_t Model::sample_component_logits(Component& comp, float temperature, floa
                 put(id, v > 0.0f ? v / samp_penalty_ : v * samp_penalty_);
             }
         }
-        for (size_t i = 0; i < samp_bias_ids_.size(); ++i) {
-            uint32_t id = samp_bias_ids_[i];
-            if (id < vocab) put(id, get(id) + samp_bias_vals_[i]);
-        }
         if (suppressed_token_id_ >= 0 && (size_t)suppressed_token_id_ < vocab)
             put((size_t)suppressed_token_id_, -65504.0f);
     }
-
     if (greedy) {
         uint32_t gidx; float gbest, gsecond;
-        if ((!samp_ctx_active_ || cactus_graph_gpu_adjusted()) &&
+        if ((!samp_has_bias_ || cactus_graph_gpu_argmax_biased()) &&
             cactus_graph_gpu_argmax(&gidx, &gbest, &gsecond)) {
             if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(gbest, gsecond);
             return gidx;
         }
+    }
+    const float* bd = samp_has_bias_ ? samp_bias_dense_.data() : nullptr;
+    const size_t bn = samp_has_bias_ ? samp_bias_dense_.size() : 0;
+    auto biased = [&](size_t i) -> float {
+        float v = get(i);
+        if (i < bn) v += bd[i];
+        return v;
+    };
+
+    if (greedy) {
         uint32_t best = 0;
         float bv = -std::numeric_limits<float>::infinity(), sv = bv;
         for (size_t i = 0; i < vocab; ++i) {
-            float v = get(i);
+            float v = biased(i);
             if (v > bv) { sv = bv; bv = v; best = (uint32_t)i; }
             else if (v > sv) sv = v;
         }
@@ -2108,7 +2133,7 @@ uint32_t Model::sample_component_logits(Component& comp, float temperature, floa
     cand.reserve(2 * K + 16);
     float kmin = -std::numeric_limits<float>::infinity();
     for (size_t i = 0; i < vocab; ++i) {
-        float v = get(i);
+        float v = biased(i);
         if (v <= kmin) continue;
         cand.emplace_back(v, (uint32_t)i);
         if (cand.size() >= 2 * K) {
@@ -2213,7 +2238,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
             // Cache already moved into the step component; drop the padded last row and re-run it for logits.
             set_cache_current_len(*decoder_, tokens.size() - 1);
             cache_total_seq_len_ = tokens.size() - 1;
-            run_step(tokens.back(), cache_total_seq_len_, true);
+            run_step(tokens.back(), cache_total_seq_len_, true, /*use_fused=*/false);
             ++cache_total_seq_len_;
             out_token = argmax_last_logits(out_uncertainty);
             record_sampled_token(out_token);
@@ -2224,7 +2249,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
         cache_total_seq_len_ += chunked.logical_tokens;
     }
     for (size_t i = chunked.logical_tokens; i < tokens.size(); ++i) {
-        run_step(tokens[i], cache_total_seq_len_, i + 1 == tokens.size());
+        run_step(tokens[i], cache_total_seq_len_, i + 1 == tokens.size(), /*use_fused=*/false);
         ++cache_total_seq_len_;
     }
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
@@ -2255,7 +2280,7 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     ChunkedPrefillResult chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), prepare_decode);
     cache_total_seq_len_ += chunked.logical_tokens;
     for (size_t i = chunked.logical_tokens; i < tokens.size(); ++i) {
-        run_step(tokens[i], cache_total_seq_len_, /*read_logits=*/false);
+        run_step(tokens[i], cache_total_seq_len_, /*read_logits=*/false, /*use_fused=*/false);
         ++cache_total_seq_len_;
     }
     cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());

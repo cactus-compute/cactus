@@ -61,39 +61,62 @@ static const float* g_gpu_argmax_buf = nullptr;
 }
 
 static bool g_last_step_adjusted = false;
+static bool g_last_amax_biased = false;
+static bool g_prefill_consistent = false;
 
 void cactus_graph_mark_unadjusted() {
     g_last_step_adjusted = false;
+    g_last_amax_biased = false;
+    g_gpu_argmax_valid = false;
 }
+
+void cactus_graph_set_prefill_consistent(bool on) { g_prefill_consistent = on; }
+bool cactus_graph_prefill_consistent() { return g_prefill_consistent; }
 
 struct GSampling {
     bool active = false;
     float rep_penalty = 1.0f;
     std::vector<uint32_t> recent;
-    std::vector<uint32_t> bias_ids;
-    std::vector<float> bias_vals;
+    const float* bias_dense = nullptr;
+    size_t bias_len = 0;
     long long suppressed = -1;
 };
 static GSampling g_samp;
 static bool g_step_adjusted = false;
+static bool g_step_amax_biased = false;
+static float* g_bias_dense = nullptr;
+static size_t g_bias_dense_n = 0;
 
 void cactus_graph_set_sampling(const uint32_t* recent, int n_recent, float rep_penalty,
-                               const uint32_t* bias_ids, const float* bias_vals, int n_bias,
+                               const float* bias_dense, size_t bias_len,
                                long long suppressed) {
     g_samp.active = true;
     g_samp.rep_penalty = rep_penalty;
     g_samp.recent.assign(recent, recent + (n_recent > 0 ? n_recent : 0));
-    g_samp.bias_ids.assign(bias_ids, bias_ids + (n_bias > 0 ? n_bias : 0));
-    g_samp.bias_vals.assign(bias_vals, bias_vals + (n_bias > 0 ? n_bias : 0));
+    g_samp.bias_dense = bias_dense;
+    g_samp.bias_len = bias_dense ? bias_len : 0;
     g_samp.suppressed = suppressed;
 }
-void cactus_graph_clear_sampling() { g_samp.active = false; }
+void cactus_graph_clear_sampling() { g_samp = GSampling(); }
 bool cactus_graph_gpu_adjusted() { return g_last_step_adjusted; }
+bool cactus_graph_gpu_argmax_biased() { return g_last_amax_biased; }
+
+static const float* update_bias_dense(size_t vocab) {
+    if (!g_samp.bias_dense || g_samp.bias_len == 0) return nullptr;
+    if (!g_bias_dense || g_bias_dense_n < vocab) {
+        g_bias_dense = (float*)cactus_metal_alloc_shared(vocab * sizeof(float));
+        if (!g_bias_dense) return nullptr;
+        g_bias_dense_n = vocab;
+    }
+    size_t n = g_samp.bias_len < vocab ? g_samp.bias_len : vocab;
+    std::memcpy(g_bias_dense, g_samp.bias_dense, n * sizeof(float));
+    if (n < vocab) std::memset(g_bias_dense + n, 0, (vocab - n) * sizeof(float));
+    return g_bias_dense;
+}
 
 static inline bool sampling_needs_adjust() {
     return g_samp.active &&
-           ((g_samp.rep_penalty != 1.0f && !g_samp.recent.empty()) ||
-            !g_samp.bias_ids.empty() || g_samp.suppressed >= 0);
+           ((g_samp.rep_penalty != 1.0f && !g_samp.recent.empty()) || g_samp.suppressed >= 0);
 }
 
 bool cactus_graph_gpu_argmax(uint32_t* idx, float* best, float* second) {
@@ -435,12 +458,13 @@ bool CactusGraph::execute_gpu_fused() {
             if (sampling_needs_adjust()) {
                 adjusted = cactus_metal_encode_adjust_logits(lg, V,
                     g_samp.recent.data(), (uint32_t)g_samp.recent.size(),
-                    g_samp.bias_ids.data(), g_samp.bias_vals.data(), (uint32_t)g_samp.bias_ids.size(),
                     g_samp.suppressed, g_samp.rep_penalty);
                 if (!adjusted) return 0;
             }
             g_step_adjusted = adjusted;
-            cactus_metal_encode_argmax(lg, (uint32_t)V, G.amax);
+            const float* bias = g_samp.active ? update_bias_dense(V) : nullptr;
+            if (!cactus_metal_encode_argmax(lg, (uint32_t)V, G.amax, bias)) return 0;
+            g_step_amax_biased = (bias != nullptr);
             return 1;
         }
         cactus_metal_session_sync();
@@ -463,9 +487,11 @@ bool CactusGraph::execute_gpu_fused() {
         g_gpu_argmax_buf = (const float*)G.amax;
         g_gpu_argmax_valid = true;
         g_last_step_adjusted = g_step_adjusted;
+        g_last_amax_biased = g_step_amax_biased;
     } else {
         B(3860).set_external(lg);
         g_last_step_adjusted = false;
+        g_last_amax_biased = false;
     }
     return true;
 }
@@ -473,6 +499,7 @@ bool CactusGraph::execute_gpu_fused() {
 
 void cactus_graph_on_destroy(const void* graph) {
     if (G.init && G.owner == graph) G.init = false;
+    g_samp = GSampling();
     cactus_metal_invalidate_host_wraps();
 }
 

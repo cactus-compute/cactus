@@ -472,7 +472,8 @@ static bool try_encode_gpu(GraphNode& node, const nodes_vector& nodes, const nod
             if (!(PrecisionTraits::is_cq(rhs.precision) && rhs.group_size > 0)) return false;
             if (!fp16(lhs)) return false;
             CactusQuantMatrix mat = rhs.to_cq_matrix();
-            if (M == 1) return cactus_metal_encode_quant_matmul(out.get_data(), lhs.get_data(), &mat);
+            if (M == 1 && !cactus_graph_prefill_consistent())
+                return cactus_metal_encode_quant_matmul(out.get_data(), lhs.get_data(), &mat);
             return cactus_metal_encode_quant_matmul_m(out.get_data(), lhs.get_data(), &mat, (uint32_t)M);
         }
         case OpType::ADD: case OpType::ADD_CLIPPED: case OpType::SUBTRACT:

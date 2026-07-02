@@ -7,7 +7,6 @@ void cactus_metal_set_active(bool) {}
 bool cactus_metal_active_mode() { return false; }
 bool cactus_metal_encode_softcap(void*, const void*, size_t, float) { return false; }
 bool cactus_metal_encode_adjust_logits(void*, size_t, const uint32_t*, uint32_t,
-                                       const uint32_t*, const float*, uint32_t,
                                        int64_t, float) { return false; }
 bool cactus_metal_encode_transform_gemv(void*, const void*, const CactusQuantMatrix*, const void*) { return false; }
 bool cactus_metal_encode_gemv_cat(void* const*, const void* const*,
@@ -38,7 +37,7 @@ bool cactus_metal_encode_rms_norm_add(void*, const void*, const void*, const voi
 bool cactus_metal_encode_rms_norm_add_rms(void*, void*, const void*, const void*, const void*, const void*,
                                           size_t, size_t, float, float) { return false; }
 bool cactus_metal_encode_rms_norm_add_scale(void*, const void*, const void*, const void*, size_t, size_t, float, float) { return false; }
-bool cactus_metal_encode_argmax(const void*, uint32_t, void*) { return false; }
+bool cactus_metal_encode_argmax(const void*, uint32_t, void*, const void*) { return false; }
 bool cactus_metal_encode_cast(void*, int, const void*, int, size_t) { return false; }
 bool cactus_metal_encode_quant_matmul(void*, const void*, const CactusQuantMatrix*) { return false; }
 bool cactus_metal_encode_quant_matmul_m(void*, const void*, const CactusQuantMatrix*, uint32_t) { return false; }

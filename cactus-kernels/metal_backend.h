@@ -52,11 +52,10 @@ bool cactus_metal_encode_rms_norm_add_rms(void* h_out, void* xn_out, const void*
                                           size_t rows, size_t dim, float eps, float out_scale);
 bool cactus_metal_encode_rms_norm_add_scale(void* out, const void* in, const void* weight, const void* res,
                                             size_t rows, size_t dim, float eps, float out_scale);
-bool cactus_metal_encode_argmax(const void* logits, uint32_t vocab, void* out3);
+bool cactus_metal_encode_argmax(const void* logits, uint32_t vocab, void* out3, const void* bias);
 bool cactus_metal_encode_softcap(void* out, const void* in, size_t n, float cap);
 bool cactus_metal_encode_adjust_logits(void* logits, size_t vocab,
                                        const uint32_t* recent, uint32_t n_recent,
-                                       const uint32_t* bias_ids, const float* bias_vals, uint32_t n_bias,
                                        int64_t suppressed, float penalty);
 bool cactus_metal_encode_cast(void* out, int out_prec, const void* in, int in_prec, size_t n);
 bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQuantMatrix* W);

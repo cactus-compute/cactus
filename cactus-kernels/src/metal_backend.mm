@@ -462,18 +462,22 @@ bool cactus_metal_encode_rms_norm_add_rms(void* h_out, void* xn_out, const void*
     return true;
 }
 
-bool cactus_metal_encode_argmax(const void* logits, uint32_t vocab, void* out3) {
+bool cactus_metal_encode_argmax(const void* logits, uint32_t vocab, void* out3, const void* bias) {
     if (!ctx().ok) return false;
+    if (bias && !(ctx().psoArgmaxP && ctx().psoArgmaxF && vocab >= 32768u)) return false;
     ensureEncoder();
     uint32_t V = vocab;
     if (ctx().psoArgmaxP && ctx().psoArgmaxF && V >= 32768u) {
         const uint32_t NP = 128u, T = 256u;
         uint32_t chunk = (V + NP - 1u)/NP;
+        uint32_t has_bias = bias ? 1u : 0u;
         id<MTLBuffer> part = recycled((size_t)NP*3*sizeof(float));
         [g_enc setComputePipelineState:ctx().psoArgmaxP];
         setBufAt(logits, (size_t)vocab*2, 0);
         [g_enc setBuffer:part offset:0 atIndex:1];
         [g_enc setBytes:&V length:4 atIndex:2]; [g_enc setBytes:&chunk length:4 atIndex:3];
+        if (bias) setBufAt(bias, (size_t)vocab*sizeof(float), 4); else [g_enc setBuffer:ctx().dummy offset:0 atIndex:4];
+        [g_enc setBytes:&has_bias length:4 atIndex:5];
         [g_enc setThreadgroupMemoryLength:T*sizeof(float) atIndex:0];
         [g_enc setThreadgroupMemoryLength:T*sizeof(uint) atIndex:1];
         [g_enc setThreadgroupMemoryLength:T*sizeof(float) atIndex:2];
@@ -501,23 +505,20 @@ bool cactus_metal_encode_argmax(const void* logits, uint32_t vocab, void* out3) 
 }
 bool cactus_metal_encode_adjust_logits(void* logits, size_t vocab,
                                        const uint32_t* recent, uint32_t n_recent,
-                                       const uint32_t* bias_ids, const float* bias_vals, uint32_t n_bias,
                                        int64_t suppressed, float penalty) {
     if (!ctx().ok || !ctx().psoAdjust) return false;
-    if (n_recent > 4096u || n_bias > 65536u) return false;
+    if (n_recent > 4096u) return false;
     ensureEncoder();
-    id<MTLBuffer> rb = ctx().dummy, bi = ctx().dummy, bv = ctx().dummy;
+    id<MTLBuffer> rb = ctx().dummy;
     if (n_recent) { rb = recycled((size_t)n_recent*4); std::memcpy([rb contents], recent, (size_t)n_recent*4); }
-    if (n_bias)   { bi = recycled((size_t)n_bias*4);   std::memcpy([bi contents], bias_ids, (size_t)n_bias*4);
-                    bv = recycled((size_t)n_bias*4);   std::memcpy([bv contents], bias_vals, (size_t)n_bias*4); }
-    struct { uint32_t n_recent, n_bias, suppress_flag, suppress_id; float penalty; } U =
-        { n_recent, n_bias,
-          (uint32_t)(suppressed >= 0 ? 1 : 0), (uint32_t)(suppressed >= 0 ? suppressed : 0), penalty };
+    struct { uint32_t n_recent, suppress_flag, suppress_id, vocab_n; float penalty; } U =
+        { n_recent,
+          (uint32_t)(suppressed >= 0 ? 1 : 0), (uint32_t)(suppressed >= 0 ? suppressed : 0),
+          (uint32_t)vocab, penalty };
     [g_enc setComputePipelineState:ctx().psoAdjust];
     setBufAt(logits, vocab*2, 0);
     [g_enc setBuffer:rb offset:0 atIndex:1];
-    [g_enc setBuffer:bi offset:0 atIndex:2]; [g_enc setBuffer:bv offset:0 atIndex:3];
-    [g_enc setBytes:&U length:sizeof(U) atIndex:4];
+    [g_enc setBytes:&U length:sizeof(U) atIndex:2];
     [g_enc dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(1024,1,1)];
     return true;
 }
@@ -741,7 +742,7 @@ bool cactus_metal_prewarm_quant(const CactusQuantMatrix* W) {
 }
 
 bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const CactusQuantMatrix* W, uint32_t M) {
-    if (M == 1) return cactus_metal_encode_quant_matmul(out, lhs, W);
+
     const uint32_t gs=W->group_size, K=W->K, N=W->N, ng=W->num_groups;
     const uint32_t bits=W->bits, pgb=(gs*bits+7u)/8u;
     const bool fast = ctx().ok && quant_fast_eligible(W);

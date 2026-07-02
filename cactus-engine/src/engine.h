@@ -523,6 +523,7 @@ public:
               Tokenizer* tokenizer);
 
     const std::unordered_map<uint32_t, float>& get_bias() const { return current_bias_; }
+    const std::vector<float>* get_dense_bias() const { return dense_ready_ ? &dense_bias_ : nullptr; }
 
     void update(uint32_t token_id, const std::string& decoded_text);
 
@@ -562,6 +563,8 @@ private:
     std::unordered_set<uint32_t> close_brace_tokens_;
 
     std::unordered_map<uint32_t, float> current_bias_;
+    std::vector<float> dense_bias_;
+    bool dense_ready_ = false;
 
     void compute_bias();
     void tokenize_grammar_elements();
@@ -808,7 +811,7 @@ private:
     bool load_component_graph(Component& comp);
     void unload_component_graph(Component& comp);
     bool bind_runtime_buffers(Component& comp);
-    void run_step(uint32_t token_id, size_t position, bool read_logits);
+    void run_step(uint32_t token_id, size_t position, bool read_logits, bool use_fused = true);
     void run_step_batch(const std::vector<uint32_t>& token_ids, const std::vector<size_t>& positions);
     void set_component_batch(Component& comp, size_t batch);
     size_t decoder_cache_num_slots();
@@ -947,8 +950,8 @@ private:
     static constexpr size_t MAX_TOKEN_HISTORY = 128;
     std::vector<uint32_t> token_history_;
     std::vector<uint32_t> samp_recent_;
-    std::vector<uint32_t> samp_bias_ids_;
-    std::vector<float> samp_bias_vals_;
+    std::vector<float> samp_bias_dense_;
+    bool samp_has_bias_ = false;
     float samp_penalty_ = 1.0f;
     bool samp_ctx_active_ = false;
     std::mt19937 sample_rng_{std::random_device{}()};

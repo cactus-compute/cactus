@@ -124,11 +124,11 @@ void ToolCallConstrainer::mark_trie_bias(const TrieNode* node, char terminator,
     }
     if (!has_valid) return;
 
+    dense_bias_.assign(valid.size(), TRIE_BLOCK_BIAS);
     for (size_t token_id = 0; token_id < valid.size(); ++token_id) {
-        if (!valid[token_id]) {
-            current_bias_[static_cast<uint32_t>(token_id)] = TRIE_BLOCK_BIAS;
-        }
+        if (valid[token_id]) dense_bias_[token_id] = 0.0f;
     }
+    dense_ready_ = true;
 }
 
 void ToolCallConstrainer::reset_constraint_state() {
@@ -432,6 +432,7 @@ void ToolCallConstrainer::init(Config::ModelType model_type,
     tokenizer_ = tokenizer;
     generated_text_.clear();
     current_bias_.clear();
+    dense_ready_ = false;
     forced_tag_progress_ = 0;
     const bool model_supported = is_needle() || Config::is_gemma_family(model_type_);
     active_ = model_supported && !tool_specs_.empty() && tokenizer != nullptr;
@@ -520,6 +521,7 @@ void ToolCallConstrainer::update(uint32_t token_id, const std::string& decoded_t
 
 void ToolCallConstrainer::compute_bias() {
     current_bias_.clear();
+    dense_ready_ = false;
 
     if (!active_) return;
 
@@ -615,6 +617,7 @@ void ToolCallConstrainer::compute_bias() {
 void ToolCallConstrainer::reset() {
     generated_text_.clear();
     current_bias_.clear();
+    dense_ready_ = false;
     forced_tag_progress_ = 0;
     reset_constraint_state();
 

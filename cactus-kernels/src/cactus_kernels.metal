@@ -2051,26 +2051,22 @@ kernel void kv_append_ring_i8_m(device const half* src [[buffer(0)]], device cha
     for (uint k=0;k<gcount;++k){ float qv = clamp(rint((float)hs[k]*inv), -128.0f, 127.0f); dst[k]=(char)qv; }
     scalebase[(size_t)slot*scs + (size_t)h*num_groups + g] = scale;
 }
-struct AdjU { uint n_recent, n_bias, suppress_flag, suppress_id; float penalty; };
+struct AdjU { uint n_recent, suppress_flag, suppress_id, vocab; float penalty; };
 kernel void adjust_logits(device half* logits [[buffer(0)]],
                           device const uint* recent [[buffer(1)]],
-                          device const uint* bias_ids [[buffer(2)]],
-                          device const float* bias_vals [[buffer(3)]],
-                          constant AdjU& U [[buffer(4)]],
+                          constant AdjU& U [[buffer(2)]],
                           uint t [[thread_position_in_threadgroup]],
                           uint T [[threads_per_threadgroup]]) {
     if (U.penalty != 1.0f) {
         for (uint i=t; i<U.n_recent; i+=T) {
             uint id = recent[i];
+            if (id >= U.vocab) continue;
             float v = (float)logits[id];
             logits[id] = (half)(v > 0.0f ? v/U.penalty : v*U.penalty);
         }
     }
     threadgroup_barrier(mem_flags::mem_device);
-    for (uint i=t; i<U.n_bias; i+=T)
-        logits[bias_ids[i]] = (half)((float)logits[bias_ids[i]] + bias_vals[i]);
-    threadgroup_barrier(mem_flags::mem_device);
-    if (t == 0u && U.suppress_flag != 0u) logits[U.suppress_id] = half(-65504.0f);
+    if (t == 0u && U.suppress_flag != 0u && U.suppress_id < U.vocab) logits[U.suppress_id] = half(-65504.0f);
 }
 
 kernel void softcap_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
@@ -2086,6 +2082,8 @@ kernel void argmax_part(device const half* logits [[buffer(0)]],
                         device float* part [[buffer(1)]],
                         constant uint& V [[buffer(2)]],
                         constant uint& chunk [[buffer(3)]],
+                        device const float* bias [[buffer(4)]],
+                        constant uint& has_bias [[buffer(5)]],
                         uint p [[threadgroup_position_in_grid]],
                         uint t [[thread_position_in_threadgroup]],
                         uint T [[threads_per_threadgroup]],
@@ -2096,6 +2094,7 @@ kernel void argmax_part(device const half* logits [[buffer(0)]],
     float b = -INFINITY, s = -INFINITY; uint bi = lo;
     for (uint i = lo+t; i < hi; i += T) {
         float v = (float)logits[i];
+        if (has_bias != 0u) v += bias[i];
         if (v > b) { s = b; b = v; bi = i; }
         else if (v > s) { s = v; }
     }
