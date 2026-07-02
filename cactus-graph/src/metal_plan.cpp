@@ -54,6 +54,14 @@ struct MetalFusePlan {
     std::vector<uint32_t> exec_list;
     std::vector<long> arena_off;
     char* arena_base = nullptr;
+    std::vector<std::vector<float>> blobs;
+};
+
+struct EwChainStep {
+    int32_t kind;
+    int32_t code;
+    float p0;
+    float p1;
 };
 
 MetalFusePlan* cactus_metal_plan_build(
@@ -871,6 +879,119 @@ MetalFusePlan* cactus_metal_plan_build(
         break;
     }
 
+    {
+        auto ew_kind = [&](const GraphNode& nd, int* kind, int* code, float* p0, float* p1) -> bool {
+            if (nd.output_buffer.precision != Precision::FP16) return false;
+            *p0 = 0; *p1 = 0;
+            switch (nd.op_type) {
+                case OpType::GELU: *kind = 0; *code = 0; return true;
+                case OpType::TANH: *kind = 0; *code = 1; return true;
+                case OpType::SILU: *kind = 0; *code = 2; return true;
+                case OpType::RELU: *kind = 0; *code = 3; return true;
+                case OpType::GELU_ERF: *kind = 0; *code = 4; return true;
+                case OpType::SIGMOID: *kind = 0; *code = 5; return true;
+                case OpType::SCALAR_ADD: *kind = 1; *code = 0; *p0 = nd.params.scalar; return true;
+                case OpType::SCALAR_SUBTRACT: *kind = 1; *code = 1; *p0 = nd.params.scalar; return true;
+                case OpType::SCALAR_MULTIPLY: *kind = 1; *code = 2; *p0 = nd.params.scalar; return true;
+                case OpType::SCALAR_DIVIDE: *kind = 1; *code = 3; *p0 = nd.params.scalar; return true;
+                case OpType::SCALAR_EXP: *kind = 1; *code = 4; return true;
+                case OpType::SCALAR_SQRT: *kind = 1; *code = 5; return true;
+                case OpType::SCALAR_COS: *kind = 1; *code = 6; return true;
+                case OpType::SCALAR_SIN: *kind = 1; *code = 7; return true;
+                case OpType::SCALAR_LOG: *kind = 1; *code = 8; return true;
+                case OpType::ABS: *kind = 1; *code = 9; return true;
+                case OpType::POW: *kind = 1; *code = 10; *p0 = nd.params.scalar; return true;
+                case OpType::SCALAR_NOT_EQUAL: *kind = 1; *code = 11; *p0 = nd.params.scalar; return true;
+                case OpType::LEAKY_RELU: *kind = 1; *code = 12; *p0 = nd.params.scalar; return true;
+                case OpType::ADD: *kind = 2; *code = 0; return true;
+                case OpType::ADD_CLIPPED: *kind = 2; *code = 1; return true;
+                case OpType::SUBTRACT: *kind = 2; *code = 2; return true;
+                case OpType::MULTIPLY: *kind = 2; *code = 3; return true;
+                case OpType::DIVIDE: *kind = 2; *code = 4; return true;
+                case OpType::NOT_EQUAL: *kind = 2; *code = 5; return true;
+                case OpType::CLAMP: *kind = 3; *code = 0; *p0 = nd.params.scalar; *p1 = nd.params.scale; return true;
+                default: return false;
+            }
+        };
+        for (size_t i = 0; i < n; ++i) {
+            if (plan->action[i] != -1) continue;
+            int kind, code; float p0, p1;
+            if (!ew_kind(*nodes[i], &kind, &code, &p0, &p1)) continue;
+            size_t total = nodes[i]->output_buffer.total_size;
+            std::vector<size_t> chain{i};
+            size_t cur = i;
+            while (chain.size() < 8) {
+                if (cons[cur].size() != 1) break;
+                size_t nxt = cons[cur][0];
+                if (plan->action[nxt] != -1) break;
+                int k2, c2; float q0, q1;
+                if (!ew_kind(*nodes[nxt], &k2, &c2, &q0, &q1)) break;
+                if (nodes[nxt]->output_buffer.total_size != total) break;
+                bool feeds = false;
+                for (size_t a = 0; a < nodes[nxt]->input_ids.size() && a < 2; ++a)
+                    if (idxof(nodes[nxt]->input_ids[a]) == (long)cur) feeds = true;
+                if (!feeds) break;
+                chain.push_back(nxt);
+                cur = nxt;
+            }
+            if (chain.size() < 2) continue;
+            std::vector<float> blob;
+            std::vector<size_t> sides;
+            bool ok = true;
+            long head_in = -1;
+            for (size_t ci = 0; ci < chain.size() && ok; ++ci) {
+                const GraphNode& cn = *nodes[chain[ci]];
+                int k2, c2; float q0, q1;
+                ew_kind(cn, &k2, &c2, &q0, &q1);
+                long prev = ci == 0 ? -1 : (long)chain[ci - 1];
+                if (k2 == 2) {
+                    long in0 = idxof(cn.input_ids[0]);
+                    long in1 = idxof(cn.input_ids[1]);
+                    long side, chain_in;
+                    bool rhs;
+                    if (ci > 0 && in0 == prev) { chain_in = in0; side = in1; rhs = false; }
+                    else if (ci > 0 && in1 == prev) { chain_in = in1; side = in0; rhs = true; }
+                    else { chain_in = in0; side = in1; rhs = false; }
+                    if (side < 0 || chain_in < 0
+                        || nodes[(size_t)side]->output_buffer.precision != Precision::FP16
+                        || nodes[(size_t)side]->output_buffer.total_size != total
+                        || plan->action[(size_t)side] == -2) { ok = false; break; }
+                    size_t slot = sides.size();
+                    for (size_t si = 0; si < sides.size(); ++si)
+                        if (sides[si] == (size_t)side) slot = si;
+                    if (slot == sides.size()) {
+                        if (sides.size() >= 3) { ok = false; break; }
+                        sides.push_back((size_t)side);
+                    }
+                    c2 |= (rhs ? 16 : 0) | ((int)slot << 5);
+                    if (ci == 0) head_in = chain_in;
+                } else if (ci == 0) {
+                    head_in = idxof(cn.input_ids[0]);
+                }
+                EwChainStep st{k2, c2, q0, q1};
+                float packed[4];
+                std::memcpy(packed, &st, sizeof(st));
+                blob.insert(blob.end(), packed, packed + 4);
+            }
+            if (!ok || head_in < 0
+                || nodes[(size_t)head_in]->output_buffer.precision != Precision::FP16
+                || nodes[(size_t)head_in]->output_buffer.total_size != total) continue;
+            MetalCluster c;
+            c.rule = 11;
+            c.a0 = (size_t)head_in;
+            c.a1 = sides.size() > 0 ? sides[0] : (size_t)0;
+            c.a2 = sides.size() > 1 ? sides[1] : (size_t)0;
+            c.a3 = sides.size() > 2 ? sides[2] : (size_t)0;
+            c.u0 = (uint32_t)chain.size();
+            c.u1 = (uint32_t)sides.size();
+            c.b0 = plan->blobs.size();
+            c.b4 = chain.back();
+            plan->blobs.push_back(std::move(blob));
+            std::vector<size_t> cover(chain.begin(), chain.end() - 1);
+            add_cluster(c, chain.back(), cover);
+        }
+    }
+
     plan->exec_list.reserve(n);
     for (size_t i = 0; i < n; ++i)
         if (plan->action[i] != -2 && nodes[i]->op_type != OpType::INPUT)
@@ -1221,6 +1342,21 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             size_t total = (size_t)c.u0 * tn.output_buffer.total_size;
             return cactus_metal_encode_strided_copy(out, pp + c.a2 * 2, oshape, sstride, ndim + 1,
                 (uint32_t)total, 0, nodes[c.a0]->output_buffer.byte_size - c.a2 * 2, anchor.output_buffer.byte_size);
+        }
+        case 11: {
+            GraphNode& anchor = *nodes[c.b4];
+            const void* in = nodes[c.a0]->output_buffer.get_data();
+            void* out = anchor.output_buffer.get_data();
+            if (!in || !out) return false;
+            const void* sides[3] = { nullptr, nullptr, nullptr };
+            size_t side_idx[3] = { c.a1, c.a2, c.a3 };
+            for (uint32_t si = 0; si < c.u1; ++si) {
+                sides[si] = nodes[side_idx[si]]->output_buffer.get_data();
+                if (!sides[si]) return false;
+            }
+            const auto& blob = p->blobs[c.b0];
+            return cactus_metal_encode_elemwise_chain(out, in, blob.data(), c.u0,
+                sides[0], sides[1], sides[2], anchor.output_buffer.total_size);
         }
         default: return false;
     }

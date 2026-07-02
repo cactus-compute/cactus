@@ -1891,6 +1891,45 @@ kernel void bias_add_rows_f16(device half* y [[buffer(0)]], device const half* b
     if (i < n) y[i] = (half)((float)y[i] + (float)bias[i % C]);
 }
 
+struct EwStep { int kind; int code; float p0; float p1; };
+
+kernel void elemwise_chain_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
+                               constant EwStep* steps [[buffer(2)]], constant uint& nsteps [[buffer(3)]],
+                               device const half* s0 [[buffer(4)]], device const half* s1 [[buffer(5)]],
+                               device const half* s2 [[buffer(6)]], constant uint& n [[buffer(7)]],
+                               uint i [[thread_position_in_grid]]) {
+    if (i >= n) return;
+    float x = (float)in[i];
+    for (uint s = 0; s < nsteps; ++s) {
+        EwStep st = steps[s];
+        if (st.kind == 0) {
+            if (st.code == 0) x = gelu_tanh(x);
+            else if (st.code == 1) x = precise::tanh(x);
+            else if (st.code == 2) x = x/(1.0f+precise::exp(-x));
+            else if (st.code == 4) x = 0.5f*x*(1.0f+erf_approx(x*0.70710678f));
+            else if (st.code == 5) x = 1.0f/(1.0f+precise::exp(-x));
+            else x = max(x, 0.0f);
+        } else if (st.kind == 1) {
+            x = scalar_apply(x, st.p0, st.code);
+        } else if (st.kind == 2) {
+            uint slot = st.code >> 5;
+            int op = st.code & 15;
+            bool rhs = (st.code & 16) != 0;
+            float o = (float)(slot == 0 ? s0[i] : slot == 1 ? s1[i] : s2[i]);
+            float a = rhs ? o : x, b = rhs ? x : o;
+            float r;
+            switch (op) { case 2: r=a-b; break; case 3: r=a*b; break; case 4: r=a/b; break;
+                          case 5: r=(a!=b)?1.0f:0.0f; break; default: r=a+b; }
+            if (op == 1) r = clamp(r, -65500.0f, 65500.0f);
+            x = r;
+        } else {
+            x = clamp(x, st.p0, st.p1);
+        }
+        x = (float)(half)x;
+    }
+    y[i] = (half)x;
+}
+
 kernel void bcast_binary_f16(device const half* a [[buffer(0)]], device const half* b [[buffer(1)]],
     device half* out [[buffer(2)]], constant uint* oshape [[buffer(3)]],
     constant uint* astride [[buffer(4)]], constant uint* bstride [[buffer(5)]],

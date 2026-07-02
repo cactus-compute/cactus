@@ -54,7 +54,7 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoReduceF16=nil, psoReduceF32=nil, psoCumsumF16=nil, psoCumsumF32=nil;
     id<MTLComputePipelineState> psoConcat2=nil, psoGatherF32Idx=nil, psoRopeFull=nil, psoMaxpool1d=nil;
     id<MTLComputePipelineState> psoBilinear=nil, psoConv1dGen=nil, psoConv1dNlcDw=nil, psoConv2d=nil;
-    id<MTLComputePipelineState> psoBatchnorm=nil, psoGroupnorm=nil, psoBiasAddRows=nil;
+    id<MTLComputePipelineState> psoBatchnorm=nil, psoGroupnorm=nil, psoBiasAddRows=nil, psoEwChain=nil;
     id<MTLBuffer> dummy=nil;
     bool ok = false;
 
@@ -109,7 +109,7 @@ struct MetalCtx {
         psoBilinear=pso("bilinear_f16"); psoConv1dGen=pso("conv1d_gen_f16");
         psoConv1dNlcDw=pso("conv1d_nlc_dw_f16"); psoConv2d=pso("conv2d_f16");
         psoBatchnorm=pso("batchnorm_f16"); psoGroupnorm=pso("groupnorm_f16");
-        psoBiasAddRows=pso("bias_add_rows_f16");
+        psoBiasAddRows=pso("bias_add_rows_f16"); psoEwChain=pso("elemwise_chain_f16");
         dummy=[dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
         ok = psoT&&psoG&&psoTm&&psoGm&&psoRotate&&psoEmbO&&psoEmbH&&psoEmbOm&&psoEmbHm&&psoCopy&&psoBinary&&psoScalar&&psoUnary&&psoRms&&psoSwiglu&&psoRmsAdd&&psoCF16F32&&psoCF32F16&&psoCI8F16&&psoCF16I8
              &&psoAttn&&psoAttnC&&psoAttnPre&&psoAttnPreMma2&&psoKvAppendM&&psoKvAppendRingM&&psoSlideS&&psoSlideR&&psoSlideRM&&psoStrided&&psoBcast&&psoScatter&&psoKvAppend&&psoRope&&psoArgmax&&psoGather;
@@ -1697,6 +1697,23 @@ bool cactus_metal_encode_bias_add_rows(void* y, const void* bias, uint32_t C, ui
     setBufAt(y, (size_t)total*2, 0); setBufAt(bias, (size_t)C*2, 1);
     [g_enc setBytes:&C length:4 atIndex:2]; [g_enc setBytes:&total length:4 atIndex:3];
     [g_enc dispatchThreads:MTLSizeMake(total,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    return true;
+}
+bool cactus_metal_encode_elemwise_chain(void* out, const void* in, const float* steps,
+                                        uint32_t nsteps, const void* side0, const void* side1,
+                                        const void* side2, size_t n) {
+    if (!ctx().ok || !ctx().psoEwChain || nsteps == 0 || nsteps > 8) return false;
+    ensureEncoder();
+    uint32_t ns = nsteps, nn = (uint32_t)n;
+    [g_enc setComputePipelineState:ctx().psoEwChain];
+    setBufAt(in, n*2, 0); setBufAt(out, n*2, 1);
+    [g_enc setBytes:steps length:nsteps*16 atIndex:2];
+    [g_enc setBytes:&ns length:4 atIndex:3];
+    setBufAt(side0 ? side0 : in, n*2, 4);
+    setBufAt(side1 ? side1 : in, n*2, 5);
+    setBufAt(side2 ? side2 : in, n*2, 6);
+    [g_enc setBytes:&nn length:4 atIndex:7];
+    [g_enc dispatchThreads:MTLSizeMake(nn,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
 bool cactus_metal_encode_gemm_batch(void* out, const void* a, const void* b,
