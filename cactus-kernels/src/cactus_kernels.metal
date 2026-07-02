@@ -2,6 +2,16 @@
 using namespace metal;
 #define ROWS 8u
 
+inline uint cq_idx(device const uchar* packed, uint k, uint bits) {
+    if (bits == 4u) return (packed[k >> 1] >> ((k & 1u) * 4u)) & 0xFu;
+    if (bits == 2u) return (packed[k >> 2] >> ((k & 3u) * 2u)) & 0x3u;
+    uint bit_pos = k * 3u;
+    uint byte_idx = bit_pos >> 3, bit_idx = bit_pos & 7u;
+    uint val = (uint)packed[byte_idx] >> bit_idx;
+    if (bit_idx > 5u) val |= (uint)packed[byte_idx + 1u] << (8u - bit_idx);
+    return val & 0x7u;
+}
+
 inline float gelu_tanh(float x) {
     float c = 0.7978845608028654f * (x + 0.044715f*x*x*x);
     return 0.5f * x * (1.0f + precise::tanh(c));
@@ -421,6 +431,149 @@ kernel void cq4_gemv_cat(
     }
 }
 
+kernel void cq_gemv_mr_lowbit(
+    device const half*  code     [[buffer(0)]],
+    device const uchar* packed   [[buffer(1)]],
+    device const half*  codebook [[buffer(2)]],
+    device const half*  norms    [[buffer(3)]],
+    device       half*  y        [[buffer(4)]],
+    constant uint& gs            [[buffer(5)]],
+    constant uint& num_groups    [[buffer(6)]],
+    constant uint& pgb           [[buffer(7)]],
+    constant uint& N             [[buffer(8)]],
+    constant uint& bits          [[buffer(9)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint tl   [[thread_index_in_threadgroup]])
+{
+    threadgroup float cb[8];
+    uint cbn = 1u << bits;
+    if (tl < cbn) cb[tl] = (float)codebook[tl];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint n0 = (tg*ROWS + sgid)*CQ4_NR;
+    if (n0 >= N) return;
+    uint K = num_groups*gs;
+    float acc[CQ4_NR];
+    #pragma clang loop unroll(full)
+    for (uint r=0;r<CQ4_NR;r++) acc[r]=0;
+    for (uint base=lane*16u; base<K; base+=512u){
+        uint g = base/gs, off = base - g*gs;
+        device const half4* cbase = (device const half4*)(code + g*gs + off);
+        half4 c0=cbase[0], c1=cbase[1], c2=cbase[2], c3=cbase[3];
+        uint byte_off = (off*bits) >> 3;
+        #pragma clang loop unroll(full)
+        for (uint r=0;r<CQ4_NR;r++){
+            uint n = n0+r;
+            device const uchar* pr = packed + ((size_t)n*num_groups+g)*pgb + byte_off;
+            float w0,w1,w2,w3,w4,w5,w6,w7,w8,w9,wa,wb,wc,wd,we,wf;
+            if (bits == 2u) {
+                uint w = *(device const uint*)pr;
+                w0=cb[w&3u];        w1=cb[(w>>2)&3u];  w2=cb[(w>>4)&3u];  w3=cb[(w>>6)&3u];
+                w4=cb[(w>>8)&3u];   w5=cb[(w>>10)&3u]; w6=cb[(w>>12)&3u]; w7=cb[(w>>14)&3u];
+                w8=cb[(w>>16)&3u];  w9=cb[(w>>18)&3u]; wa=cb[(w>>20)&3u]; wb=cb[(w>>22)&3u];
+                wc=cb[(w>>24)&3u];  wd=cb[(w>>26)&3u]; we=cb[(w>>28)&3u]; wf=cb[(w>>30)&3u];
+            } else {
+                device const ushort* ps = (device const ushort*)pr;
+                ulong v = (ulong)ps[0] | ((ulong)ps[1] << 16) | ((ulong)ps[2] << 32);
+                w0=cb[v&7u];        w1=cb[(v>>3)&7u];  w2=cb[(v>>6)&7u];  w3=cb[(v>>9)&7u];
+                w4=cb[(v>>12)&7u];  w5=cb[(v>>15)&7u]; w6=cb[(v>>18)&7u]; w7=cb[(v>>21)&7u];
+                w8=cb[(v>>24)&7u];  w9=cb[(v>>27)&7u]; wa=cb[(v>>30)&7u]; wb=cb[(v>>33)&7u];
+                wc=cb[(v>>36)&7u];  wd=cb[(v>>39)&7u]; we=cb[(v>>42)&7u]; wf=cb[(v>>45)&7u];
+            }
+            float pacc = (float)c0.x*w0 + (float)c0.y*w1 + (float)c0.z*w2 + (float)c0.w*w3
+                       + (float)c1.x*w4 + (float)c1.y*w5 + (float)c1.z*w6 + (float)c1.w*w7
+                       + (float)c2.x*w8 + (float)c2.y*w9 + (float)c2.z*wa + (float)c2.w*wb
+                       + (float)c3.x*wc + (float)c3.y*wd + (float)c3.z*we + (float)c3.w*wf;
+            acc[r] += (float)norms[(size_t)n*num_groups+g]*pacc;
+        }
+    }
+    #pragma clang loop unroll(full)
+    for (uint r=0;r<CQ4_NR;r++){
+        float a = simd_sum(acc[r]);
+        if (lane==0) y[n0+r]=(half)a;
+    }
+}
+
+kernel void cq_dequant_lowbit_f16(
+    device const uchar* packed   [[buffer(0)]],
+    device const half*  codebook [[buffer(1)]],
+    device const half*  norms    [[buffer(2)]],
+    device       half*  wf16     [[buffer(3)]],
+    constant uint& gs            [[buffer(4)]],
+    constant uint& num_groups    [[buffer(5)]],
+    constant uint& pgb           [[buffer(6)]],
+    constant uint& N             [[buffer(7)]],
+    constant uint& bits          [[buffer(8)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= N*num_groups) return;
+    uint n = gid / num_groups, g = gid % num_groups;
+    uint K = num_groups*gs;
+    float nrm = (float)norms[(size_t)n*num_groups + g];
+    device const uchar* pr = packed + ((size_t)n*num_groups + g)*pgb;
+    device half* wr = wf16 + (size_t)n*K + (size_t)g*gs;
+    for (uint e=0; e<gs; ++e)
+        wr[e] = (half)(nrm * (float)codebook[cq_idx(pr, e, bits)]);
+}
+
+kernel void cq_act_quant_i8(
+    device const half*  code       [[buffer(0)]],
+    device       char*  act_i8     [[buffer(1)]],
+    device       float* act_scales [[buffer(2)]],
+    constant uint& gs              [[buffer(3)]],
+    uint g    [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]])
+{
+    device const half* z = code + (size_t)g*gs;
+    float m = 0.f;
+    for (uint k=lane; k<gs; k+=32u) m = max(m, fabs((float)z[k]));
+    m = simd_max(m);
+    float scale = m / 127.f;
+    if (scale < 1e-10f) scale = 1e-10f;
+    float inv = 1.f / scale;
+    device char* a = act_i8 + (size_t)g*gs;
+    for (uint k=lane; k<gs; k+=32u)
+        a[k] = (char)clamp(rint((float)z[k] * inv), -128.f, 127.f);
+    if (lane == 0u) act_scales[g] = scale;
+}
+
+kernel void cq2_gemv_i8(
+    device const char*  act_i8     [[buffer(0)]],
+    device const float* act_scales [[buffer(1)]],
+    device const uchar* packed     [[buffer(2)]],
+    device const char*  cb_i8     [[buffer(3)]],
+    device const half*  norms      [[buffer(4)]],
+    device       half*  y          [[buffer(5)]],
+    constant uint& num_groups      [[buffer(6)]],
+    constant uint& N               [[buffer(7)]],
+    constant float& cb_scale       [[buffer(8)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint tl   [[thread_index_in_threadgroup]])
+{
+    threadgroup int cb[4];
+    if (tl < 4u) cb[tl] = (int)cb_i8[tl];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint n = tg*8u + sgid;
+    if (n >= N) return;
+    float acc = 0.f;
+    for (uint g = 0u; g < num_groups; ++g) {
+        uchar b = packed[((size_t)n*num_groups + g)*32u + lane];
+        device const char* a = act_i8 + (size_t)g*128u + lane*4u;
+        int partial = (int)a[0]*cb[b & 3u] + (int)a[1]*cb[(b >> 2) & 3u]
+                    + (int)a[2]*cb[(b >> 4) & 3u] + (int)a[3]*cb[(b >> 6) & 3u];
+        int idot = simd_sum(partial);
+        if (lane == 0u) {
+            float ns = (float)norms[(size_t)n*num_groups + g] * cb_scale;
+            float sc = ns * act_scales[g];
+            acc = fma((float)idot, sc, acc);
+        }
+    }
+    if (lane == 0u) y[n] = (half)acc;
+}
+
 kernel void cq4_transform_m(
     device const half*  x        [[buffer(0)]],
     device const half*  recip    [[buffer(1)]],
@@ -684,14 +837,15 @@ kernel void emb_ortho_wide(device const uchar* packed [[buffer(0)]],
                       device half* out [[buffer(5)]],
                       constant uint& K [[buffer(6)]], constant uint& row [[buffer(7)]],
                       constant float& oscale [[buffer(8)]],
+                      constant uint& bits [[buffer(9)]],
                       uint tg [[threadgroup_position_in_grid]],
                       uint t [[thread_position_in_threadgroup]],
                       uint sg [[simdgroup_index_in_threadgroup]],
                       uint lane [[thread_index_in_simdgroup]],
                       threadgroup float* dq [[threadgroup(0)]]) {
-    uint pgb = K/2u;
+    uint pgb = (K*bits + 7u)/8u;
     device const uchar* prow = packed + (size_t)row*pgb;
-    for (uint i=t; i<K; i+=256u) { uchar b=prow[i>>1]; uint idx=(i&1u)?(uint)(b>>4):(uint)(b&0xF); dq[i]=(float)codebook[idx]; }
+    for (uint i=t; i<K; i+=256u) { dq[i]=(float)codebook[cq_idx(prow, i, bits)]; }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     float nrm = (float)norms[row];
     uint j = tg*8u + sg;
@@ -735,14 +889,14 @@ kernel void emb_hadamard(device const uchar* packed_row [[buffer(0)]],
                          device const char* rsign [[buffer(5)]],
                          device const uint* perm [[buffer(6)]],
                          device half* out [[buffer(7)]], constant uint& gs [[buffer(8)]],
+                         constant uint& bits [[buffer(9)]],
                          uint g [[threadgroup_position_in_grid]],
                          uint t [[thread_position_in_threadgroup]], uint T [[threads_per_threadgroup]],
                          threadgroup float* z [[threadgroup(0)]]) {
-    uint pgb = (gs*4u+7u)/8u;
+    uint pgb = (gs*bits+7u)/8u;
     device const uchar* pg = packed_row + (size_t)g*pgb;
     for (uint k=t; k<gs; k+=T) {
-        uchar b=pg[k>>1]; uint idx=(k&1u)?(uint)(b>>4):(uint)(b&0xF);
-        uint dst=perm[k]; z[dst]=(float)codebook[idx]*(float)rsign[dst];
+        uint dst=perm[k]; z[dst]=(float)codebook[cq_idx(pg, k, bits)]*(float)rsign[dst];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint h=1; h<gs; h<<=1) {
@@ -758,16 +912,17 @@ kernel void emb_ortho_m(device const uchar* packed [[buffer(0)]], device const h
                         device const half* norms [[buffer(2)]], device const half* recip [[buffer(3)]],
                         device const half* rotation [[buffer(4)]], device const uint* rows [[buffer(5)]],
                         device half* out [[buffer(6)]], constant uint& K [[buffer(7)]], constant uint& M [[buffer(8)]],
+                        constant uint& bits [[buffer(9)]],
                         uint tg [[threadgroup_position_in_grid]], uint tid [[thread_position_in_threadgroup]]) {
     threadgroup half As[EM_TM*EM_TK];
     threadgroup half Bs[EM_TN*EM_TK];
     uint nJ = (K+EM_TN-1)/EM_TN, jt = tg%nJ, mt = tg/nJ;
-    uint m0 = mt*EM_TM, j0 = jt*EM_TN, tm = tid/EM_TN, tn = tid%EM_TN, pgb = K/2u;
+    uint m0 = mt*EM_TM, j0 = jt*EM_TN, tm = tid/EM_TN, tn = tid%EM_TN, pgb = (K*bits+7u)/8u;
     float acc = 0;
     for (uint k0=0; k0<K; k0+=EM_TK) {
         for (uint e=tid; e<EM_TM*EM_TK; e+=EM_TM*EM_TN) {
             uint r=e/EM_TK, c=e%EM_TK, mm=m0+r; half v=0;
-            if (mm<M) { uint row=rows[mm], ki=k0+c; uchar b=packed[(size_t)row*pgb+(ki>>1)]; uint idx=(ki&1u)?(uint)(b>>4):(uint)(b&0xF); v=codebook[idx]; }
+            if (mm<M) { uint row=rows[mm], ki=k0+c; v=codebook[cq_idx(packed + (size_t)row*pgb, ki, bits)]; }
             As[e]=v;
         }
         for (uint e=tid; e<EM_TN*EM_TK; e+=EM_TM*EM_TN) {
@@ -788,11 +943,12 @@ kernel void emb_hadamard_m(device const uchar* packed [[buffer(0)]], device cons
                            device const char* lsign [[buffer(4)]], device const char* rsign [[buffer(5)]],
                            device const uint* perm [[buffer(6)]], device half* out [[buffer(7)]],
                            constant uint& gs [[buffer(8)]], constant uint& ng [[buffer(9)]], constant uint& K [[buffer(10)]],
+                           constant uint& bits [[buffer(11)]],
                            uint tg [[threadgroup_position_in_grid]], uint t [[thread_position_in_threadgroup]],
                            uint T [[threads_per_threadgroup]], threadgroup float* z [[threadgroup(0)]]) {
-    uint g=tg%ng, m=tg/ng, pgb=(gs*4u+7u)/8u;
+    uint g=tg%ng, m=tg/ng, pgb=(gs*bits+7u)/8u;
     device const uchar* pg = packed + ((size_t)m*ng + g)*pgb;
-    for (uint k=t;k<gs;k+=T){ uchar b=pg[k>>1]; uint idx=(k&1u)?(uint)(b>>4):(uint)(b&0xF); uint dst=perm[k]; z[dst]=(float)codebook[idx]*(float)rsign[dst]; }
+    for (uint k=t;k<gs;k+=T){ uint dst=perm[k]; z[dst]=(float)codebook[cq_idx(pg, k, bits)]*(float)rsign[dst]; }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     for (uint h=1;h<gs;h<<=1){ for(uint k=t;k<gs;k+=T) if((k&h)==0){float a=z[k],b=z[k+h]; z[k]=a+b; z[k+h]=a-b;} threadgroup_barrier(mem_flags::mem_threadgroup); }
     float nrm=(float)norms[(size_t)m*ng+g], inv=rsqrt((float)gs);
