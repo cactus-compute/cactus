@@ -100,6 +100,22 @@ bool cactus_metal_encode_attention_i8_prefill(
     float scale, size_t kc_bytes, size_t vc_bytes, size_t ks_bytes, size_t vs_bytes,
     uint32_t sink, uint32_t ring);
 
+bool cactus_metal_encode_binary_f32(int op, void* out, const void* a, const void* b, size_t n);
+bool cactus_metal_encode_scalar_f32(int op, void* out, const void* in, size_t n, float p);
+bool cactus_metal_encode_unary_f32(int op, void* out, const void* in, size_t n);
+bool cactus_metal_encode_clamp(void* out, const void* in, size_t n, float lo, float hi, int f32);
+bool cactus_metal_encode_glu(void* out, const void* in, size_t split, size_t inner, size_t n_out);
+bool cactus_metal_encode_layer_norm(void* out, const void* in, const void* w, const void* b,
+                                    size_t rows, size_t dim, float eps);
+bool cactus_metal_encode_softmax_rows(void* out, const void* in, size_t rows, size_t cols);
+bool cactus_metal_encode_conv1d_k3(void* out, const void* x, const void* w, int w_int8,
+                                   const void* w_scales, uint32_t w_gs,
+                                   uint32_t Cin, uint32_t L, uint32_t Cout, uint32_t Lout, uint32_t stride);
+bool cactus_metal_encode_gemm_f16(void* out, const void* lhs, const void* rhs,
+                                  uint32_t M, uint32_t K, uint32_t N, int pretransposed);
+bool cactus_metal_encode_attention_f16(void* out, const void* q, const void* k, const void* v, const void* mask,
+    uint32_t B, uint32_t T, uint32_t S, uint32_t HQ, uint32_t HKV, uint32_t D, uint32_t DV,
+    float scale, uint32_t causal, uint32_t pos_off, uint32_t window, float logit_cap, uint32_t mask_mode);
 bool cactus_metal_encode_strided_copy(void* out, const void* in, const uint32_t* oshape,
     const uint32_t* sstride, uint32_t ndim, uint32_t total, uint32_t base, size_t in_bytes, size_t out_bytes);
 

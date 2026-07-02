@@ -732,6 +732,7 @@ public:
 
     void execute(const std::string& profile_file = "");
     bool execute_gpu_fused();
+    void build_gpu_retype_plan();
     bool extract_ple_pathway(FusedEmbedCtx& ctx) const;
     void hard_reset();
     void soft_reset();
@@ -785,6 +786,9 @@ private:
     std::unordered_set<size_t> populated_node_ids_;
     std::unordered_set<size_t> embedded_input_node_ids_;
     std::unordered_set<size_t> retained_output_node_ids_;
+    std::vector<uint8_t> gpu_retype_plan_;
+    bool gpu_retype_built_ = false;
+    bool gpu_retype_disabled_ = false;
     std::unordered_map<size_t, std::pair<void*, size_t>> gpu_persistent_acts_;
 };
 

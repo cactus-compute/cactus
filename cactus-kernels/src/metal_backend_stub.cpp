@@ -60,6 +60,19 @@ bool cactus_metal_encode_attention_fused_i8(void*, const void*, const void*, con
 bool cactus_metal_encode_attention_i8_prefill(void*, const void*, const void*, const void*, const void*, const void*,
     const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
     uint32_t, uint32_t, float, size_t, size_t, size_t, size_t, uint32_t, uint32_t) { return false; }
+bool cactus_metal_encode_binary_f32(int, void*, const void*, const void*, size_t) { return false; }
+bool cactus_metal_encode_scalar_f32(int, void*, const void*, size_t, float) { return false; }
+bool cactus_metal_encode_unary_f32(int, void*, const void*, size_t) { return false; }
+bool cactus_metal_encode_clamp(void*, const void*, size_t, float, float, int) { return false; }
+bool cactus_metal_encode_glu(void*, const void*, size_t, size_t, size_t) { return false; }
+bool cactus_metal_encode_layer_norm(void*, const void*, const void*, const void*, size_t, size_t, float) { return false; }
+bool cactus_metal_encode_softmax_rows(void*, const void*, size_t, size_t) { return false; }
+bool cactus_metal_encode_conv1d_k3(void*, const void*, const void*, int, const void*, uint32_t,
+                                   uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
+bool cactus_metal_encode_gemm_f16(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, int) { return false; }
+bool cactus_metal_encode_attention_f16(void*, const void*, const void*, const void*, const void*,
+    uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+    float, uint32_t, uint32_t, uint32_t, float, uint32_t) { return false; }
 bool cactus_metal_encode_strided_copy(void*, const void*, const uint32_t*, const uint32_t*,
     uint32_t, uint32_t, uint32_t, size_t, size_t) { return false; }
 bool cactus_metal_encode_bcast_binary(int, void*, const void*, const void*, const uint32_t*,

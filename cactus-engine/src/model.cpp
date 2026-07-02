@@ -808,6 +808,7 @@ bool Model::load_component_graph(Component& comp) {
 }
 
 void Model::unload_component_graph(Component& comp) {
+    if (cactus_backend_metal()) return;
     if (comp.graph) {
         comp.graph->release_runtime_buffers();
         comp.graph->release_all_weight_pages();
@@ -1615,8 +1616,10 @@ void Model::run_vision_encoder(const std::string& image_path) {
         media_feature_shapes_[name] = desc.shape;
         media_feature_precisions_[name] = desc.precision;
     }
-    vision_encoder_->graph->release_runtime_buffers();
-    vision_encoder_->graph->release_all_weight_pages();
+    if (!cactus_backend_metal()) {
+        vision_encoder_->graph->release_runtime_buffers();
+        vision_encoder_->graph->release_all_weight_pages();
+    }
     unload_component_graph(*vision_encoder_);
 }
 
@@ -1830,8 +1833,10 @@ void Model::run_audio_encoder_messages(const std::vector<std::vector<float>>& au
         if (mel.empty()) continue;
         run_audio_encoder(mel);
     }
-    audio_encoder_->graph->release_runtime_buffers();
-    audio_encoder_->graph->release_all_weight_pages();
+    if (!cactus_backend_metal()) {
+        audio_encoder_->graph->release_runtime_buffers();
+        audio_encoder_->graph->release_all_weight_pages();
+    }
     unload_component_graph(*audio_encoder_);
 }
 
@@ -3687,10 +3692,15 @@ std::vector<float> Model::get_image_embeddings(const std::string& image_path) {
     if (vision_encoder_->logical_outputs.empty()) {
         throw std::runtime_error("vision_encoder has no logical outputs");
     }
-    const std::string output_name = vision_encoder_->logical_outputs[0];
+    std::string output_name = vision_encoder_->logical_outputs[0];
 
     run_vision_encoder(image_path);
 
+    if (!media_features_.count(output_name)) {
+        for (const char* name : {"image_features", "image_embeddings", "vision_features"}) {
+            if (media_features_.count(name)) { output_name = name; break; }
+        }
+    }
     auto bytes_it = media_features_.find(output_name);
     auto shape_it = media_feature_shapes_.find(output_name);
     auto prec_it = media_feature_precisions_.find(output_name);
@@ -3707,6 +3717,9 @@ std::vector<float> Model::get_image_embeddings(const std::string& image_path) {
         media_feature_shapes_.erase(name);
         media_feature_precisions_.erase(name);
     }
+    media_features_.erase(output_name);
+    media_feature_shapes_.erase(output_name);
+    media_feature_precisions_.erase(output_name);
     // run_vision_encoder unloads the graph; restore so subsequent paths that
     // assume the encoder is loaded (e.g. transcribe_*) keep working.
     load_component_graph(*vision_encoder_);

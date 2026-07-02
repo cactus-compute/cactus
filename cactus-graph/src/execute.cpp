@@ -469,20 +469,37 @@ static bool try_encode_gpu(GraphNode& node, const nodes_vector& nodes, const nod
             const auto& lhs = get_input(node, 0, nodes, map);
             const auto& rhs = get_input(node, 1, nodes, map);
             size_t M = lhs.shape[lhs.shape.size() - 2];
-            if (!(PrecisionTraits::is_cq(rhs.precision) && rhs.group_size > 0)) return false;
             if (!fp16(lhs)) return false;
-            CactusQuantMatrix mat = rhs.to_cq_matrix();
-            if (M == 1 && !cactus_graph_prefill_consistent())
-                return cactus_metal_encode_quant_matmul(out.get_data(), lhs.get_data(), &mat);
-            return cactus_metal_encode_quant_matmul_m(out.get_data(), lhs.get_data(), &mat, (uint32_t)M);
+            if (PrecisionTraits::is_cq(rhs.precision) && rhs.group_size > 0) {
+                CactusQuantMatrix mat = rhs.to_cq_matrix();
+                if (M == 1 && !cactus_graph_prefill_consistent())
+                    return cactus_metal_encode_quant_matmul(out.get_data(), lhs.get_data(), &mat);
+                return cactus_metal_encode_quant_matmul_m(out.get_data(), lhs.get_data(), &mat, (uint32_t)M);
+            }
+            if (!fp16(rhs) || !fp16(out) || rhs.shape.size() != 2) return false;
+            size_t K = lhs.shape.back();
+            size_t N = node.params.pretransposed_rhs ? rhs.shape[0] : rhs.shape[1];
+            size_t rhs_k = node.params.pretransposed_rhs ? rhs.shape[1] : rhs.shape[0];
+            if (K == 0 || rhs_k != K || lhs.total_size % K != 0) return false;
+            size_t rows = lhs.total_size / K;
+            if (rows != M) {
+                size_t batch = rows / M;
+                if (batch * M != rows) return false;
+            }
+            return cactus_metal_encode_gemm_f16(out.get_data(), lhs.get_data(), rhs.get_data(),
+                (uint32_t)rows, (uint32_t)K, (uint32_t)N, node.params.pretransposed_rhs ? 1 : 0);
         }
         case OpType::ADD: case OpType::ADD_CLIPPED: case OpType::SUBTRACT:
         case OpType::MULTIPLY: case OpType::DIVIDE: {
             const auto& a = get_input(node, 0, nodes, map);
             const auto& b = get_input(node, 1, nodes, map);
-            if (!fp16(a) || !fp16(b) || !fp16(out)) return false;
             int code = node.op_type==OpType::ADD?0: node.op_type==OpType::ADD_CLIPPED?1:
                        node.op_type==OpType::SUBTRACT?2: node.op_type==OpType::MULTIPLY?3:4;
+            bool f32 = a.precision == Precision::FP32 && b.precision == Precision::FP32
+                    && out.precision == Precision::FP32;
+            if (f32 && a.total_size == out.total_size && b.total_size == out.total_size)
+                return cactus_metal_encode_binary_f32(code, out.get_data(), a.get_data(), b.get_data(), out.total_size);
+            if (!fp16(a) || !fp16(b) || !fp16(out)) return false;
             if (a.total_size == out.total_size && b.total_size == out.total_size)
                 return cactus_metal_encode_binary(code, out.get_data(), a.get_data(), b.get_data(), out.total_size);
             const auto& osh = out.shape;
@@ -552,16 +569,97 @@ static bool try_encode_gpu(GraphNode& node, const nodes_vector& nodes, const nod
         case OpType::SCALAR_ADD: case OpType::SCALAR_SUBTRACT:
         case OpType::SCALAR_MULTIPLY: case OpType::SCALAR_DIVIDE: {
             const auto& in = get_input(node, 0, nodes, map);
-            if (!fp16(in) || !fp16(out)) return false;
             int code = node.op_type==OpType::SCALAR_ADD?0: node.op_type==OpType::SCALAR_SUBTRACT?1:
                        node.op_type==OpType::SCALAR_MULTIPLY?2:3;
+            if (in.precision == Precision::FP32 && out.precision == Precision::FP32)
+                return cactus_metal_encode_scalar_f32(code, out.get_data(), in.get_data(), out.total_size, node.params.scalar);
+            if (!fp16(in) || !fp16(out)) return false;
             return cactus_metal_encode_scalar(code, out.get_data(), in.get_data(), out.total_size, node.params.scalar);
         }
         case OpType::GELU: case OpType::TANH: case OpType::SILU: case OpType::RELU: {
             const auto& in = get_input(node, 0, nodes, map);
-            if (!fp16(in) || !fp16(out)) return false;
             int code = node.op_type==OpType::GELU?0: node.op_type==OpType::TANH?1: node.op_type==OpType::SILU?2:3;
+            if (in.precision == Precision::FP32 && out.precision == Precision::FP32)
+                return cactus_metal_encode_unary_f32(code, out.get_data(), in.get_data(), out.total_size);
+            if (!fp16(in) || !fp16(out)) return false;
             return cactus_metal_encode_unary(code, out.get_data(), in.get_data(), out.total_size);
+        }
+        case OpType::CLAMP: {
+            const auto& in = get_input(node, 0, nodes, map);
+            bool f32 = in.precision == Precision::FP32 && out.precision == Precision::FP32;
+            if (!f32 && (!fp16(in) || !fp16(out))) return false;
+            return cactus_metal_encode_clamp(out.get_data(), in.get_data(), out.total_size,
+                node.params.scalar, node.params.scale, f32 ? 1 : 0);
+        }
+        case OpType::GLU: {
+            const auto& in = get_input(node, 0, nodes, map);
+            if (!fp16(in) || !fp16(out) || out.shape.empty()) return false;
+            int axis = node.params.axis;
+            if (axis < 0) axis += (int)in.shape.size();
+            if (axis < 0 || (size_t)axis >= in.shape.size()) return false;
+            size_t split = in.shape[(size_t)axis] / 2;
+            size_t inner = 1;
+            for (size_t i = (size_t)axis + 1; i < in.shape.size(); ++i) inner *= in.shape[i];
+            return cactus_metal_encode_glu(out.get_data(), in.get_data(), split, inner, out.total_size);
+        }
+        case OpType::SOFTMAX: {
+            const auto& in = get_input(node, 0, nodes, map);
+            if (!fp16(in) || !fp16(out) || out.shape.empty()) return false;
+            size_t cols = out.shape.back();
+            if (cols == 0) return false;
+            return cactus_metal_encode_softmax_rows(out.get_data(), in.get_data(), out.total_size / cols, cols);
+        }
+        case OpType::LAYERNORM: {
+            if (node.input_ids.size() < 2 || out.shape.empty()) return false;
+            const auto& in = get_input(node, 0, nodes, map);
+            const auto& w  = get_input(node, 1, nodes, map);
+            const BufferDesc* b = node.input_ids.size() > 2 ? &get_input(node, 2, nodes, map) : nullptr;
+            if (!fp16(in) || !fp16(out) || !fp16(w) || (b && b->precision != Precision::FP16)) return false;
+            size_t dim = out.shape.back();
+            if (dim == 0 || w.total_size != dim) return false;
+            return cactus_metal_encode_layer_norm(out.get_data(), in.get_data(), w.get_data(),
+                b ? b->get_data() : nullptr, out.total_size / dim, dim, node.params.epsilon);
+        }
+        case OpType::CONV1D_K3: {
+            if (node.input_ids.size() < 2) return false;
+            const auto& x = get_input(node, 0, nodes, map);
+            const auto& w = get_input(node, 1, nodes, map);
+            if (!fp16(x) || !fp16(out)) return false;
+            if (x.shape.size() != 3 || w.shape.size() != 3 || x.shape[0] != 1 || w.shape[2] != 3) return false;
+            size_t Cin = x.shape[1], L = x.shape[2], Cout = w.shape[0];
+            size_t stride = node.params.stride ? node.params.stride : 1;
+            size_t Lout = ((L - 1) / stride) + 1;
+            int w_int8 = w.precision == Precision::INT8 ? 1 : 0;
+            if (!w_int8 && w.precision != Precision::FP16) return false;
+            if (out.total_size != Cout * Lout) return false;
+            return cactus_metal_encode_conv1d_k3(out.get_data(), x.get_data(), w.get_data(), w_int8,
+                w.activation_scales_data, (uint32_t)w.group_size,
+                (uint32_t)Cin, (uint32_t)L, (uint32_t)Cout, (uint32_t)Lout, (uint32_t)stride);
+        }
+        case OpType::ATTENTION: {
+            if (node.input_ids.size() < 3) return false;
+            const auto& q = get_input(node, 0, nodes, map);
+            const auto& k = get_input(node, 1, nodes, map);
+            const auto& v = get_input(node, 2, nodes, map);
+            const BufferDesc* mk = node.input_ids.size() > 3 ? &get_input(node, 3, nodes, map) : nullptr;
+            if (!fp16(q) || !fp16(k) || !fp16(v) || !fp16(out)) return false;
+            if (q.shape.size() != 4 || k.shape.size() != 4 || v.shape.size() != 4) return false;
+            size_t B = q.shape[0], T = q.shape[1], HQ = q.shape[2], D = q.shape[3];
+            size_t S = k.shape[1], HKV = k.shape[2], DV = v.shape[3];
+            if (HKV == 0 || HQ % HKV != 0) return false;
+            uint32_t mask_mode = 0;
+            if (mk) {
+                if (mk->precision != Precision::FP16) return false;
+                bool per_head = mk->shape.size() == 4;
+                if (!per_head && mk->shape.size() != 3) return false;
+                mask_mode = (node.params.attention_mask_is_additive ? 1u : 2u) + (per_head ? 2u : 0u);
+            }
+            float scale = node.params.scale != 0.0f ? node.params.scale : 1.0f/std::sqrt((float)D);
+            return cactus_metal_encode_attention_f16(out.get_data(), q.get_data(), k.get_data(), v.get_data(),
+                mk ? mk->get_data() : nullptr,
+                (uint32_t)B, (uint32_t)T, (uint32_t)S, (uint32_t)HQ, (uint32_t)HKV, (uint32_t)D, (uint32_t)DV,
+                scale, node.params.is_causal ? 1u : 0u, (uint32_t)node.params.position_offset,
+                (uint32_t)node.params.window_size, node.params.logit_cap, mask_mode);
         }
         case OpType::RMS_NORM: {
             if (node.input_ids.size() < 2 || out.shape.empty()) return false;
@@ -748,6 +846,76 @@ static bool try_encode_gpu(GraphNode& node, const nodes_vector& nodes, const nod
     }
 }
 
+void CactusGraph::build_gpu_retype_plan() {
+    gpu_retype_built_ = true;
+    const size_t n = nodes_.size();
+    gpu_retype_plan_.assign(n, 0);
+    auto idxof = [&](size_t id) -> long {
+        auto it = node_index_map_.find(id);
+        return it == node_index_map_.end() ? -1 : (long)it->second;
+    };
+    std::vector<std::vector<size_t>> cons(n);
+    for (size_t i = 0; i < n; ++i)
+        for (size_t id : nodes_[i]->input_ids) { long j = idxof(id); if (j >= 0) cons[(size_t)j].push_back(i); }
+    auto interior = [&](const GraphNode& nd) {
+        if (nd.output_buffer.precision != Precision::FP32) return false;
+        if (nd.output_buffer.shape.size() > 8) return false;
+        switch (nd.op_type) {
+            case OpType::ADD: case OpType::ADD_CLIPPED: case OpType::SUBTRACT:
+            case OpType::MULTIPLY: case OpType::DIVIDE:
+            case OpType::SCALAR_ADD: case OpType::SCALAR_SUBTRACT:
+            case OpType::SCALAR_MULTIPLY: case OpType::SCALAR_DIVIDE:
+            case OpType::CLAMP: case OpType::GELU: case OpType::TANH:
+            case OpType::SILU: case OpType::RELU:
+            case OpType::VIEW: case OpType::RESHAPE: case OpType::FLATTEN:
+            case OpType::TRANSPOSE: case OpType::CAT:
+                return std::fabs(nd.params.scalar) < 60000.0f && std::fabs(nd.params.scale) < 60000.0f;
+            default: return false;
+        }
+    };
+    std::vector<uint8_t> cand(n, 0);
+    for (size_t i = 0; i < n; ++i) {
+        const GraphNode& nd = *nodes_[i];
+        if (nd.op_type == OpType::PRECISION_CAST && nd.output_buffer.precision == Precision::FP32
+            && !nd.input_ids.empty()) {
+            long j = idxof(nd.input_ids[0]);
+            if (j >= 0 && nodes_[(size_t)j]->output_buffer.precision == Precision::FP16) cand[i] = 1;
+            continue;
+        }
+        if (!interior(nd) || nd.input_ids.empty()) continue;
+        bool all = true;
+        for (size_t id : nd.input_ids) {
+            long j = idxof(id);
+            if (j < 0 || !cand[(size_t)j]) { all = false; break; }
+        }
+        cand[i] = all ? 1 : 0;
+    }
+    std::vector<uint8_t> ok = cand;
+    for (size_t ri = n; ri-- > 0;) {
+        if (!ok[ri]) continue;
+        const GraphNode& nd = *nodes_[ri];
+        if (retained_output_node_ids_.count(nd.id) || persistent_node_ids_.count(nd.id)) { ok[ri] = 0; continue; }
+        for (size_t c : cons[ri]) {
+            const GraphNode& cn = *nodes_[c];
+            bool absorbs = (cn.op_type == OpType::PRECISION_CAST
+                            && cn.output_buffer.precision == Precision::FP16)
+                        || (cand[c] && ok[c]);
+            if (!absorbs) { ok[ri] = 0; break; }
+        }
+    }
+    for (size_t i = 0; i < n; ++i) {
+        if (!ok[i]) continue;
+        gpu_retype_plan_[i] = nodes_[i]->op_type == OpType::PRECISION_CAST ? 1 : 2;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        const GraphNode& nd = *nodes_[i];
+        if (nd.op_type != OpType::PRECISION_CAST || nd.output_buffer.precision != Precision::FP16
+            || nd.input_ids.empty()) continue;
+        long j = idxof(nd.input_ids[0]);
+        if (j >= 0 && gpu_retype_plan_[(size_t)j] != 0) gpu_retype_plan_[i] = 1;
+    }
+}
+
 void CactusGraph::execute(const std::string& profile_file) {
     cactus_graph_mark_unadjusted();
     BufferPool& pool = buffer_pool_;
@@ -823,7 +991,16 @@ void CactusGraph::execute(const std::string& profile_file) {
     };
 
     const bool gpu_mode = cactus_backend_metal();
+    if (gpu_mode && !need_debug && !gpu_retype_built_) build_gpu_retype_plan();
+    const uint8_t* rplan = (gpu_mode && !need_debug && !gpu_retype_disabled_
+                            && gpu_retype_plan_.size() == n) ? gpu_retype_plan_.data() : nullptr;
+    auto plan_of = [&](const GraphNode& node) -> uint8_t {
+        if (!rplan) return 0;
+        auto it = node_index_map_.find(node.id);
+        return it == node_index_map_.end() ? 0 : rplan[it->second];
+    };
     auto aliases_input = [&](const GraphNode& node) -> bool {
+        if (plan_of(node) == 1) return true;
         if (node.op_type == OpType::SLICE && !node.input_ids.empty()) {
             auto it = node_index_map_.find(node.input_ids[0]);
             if (it != node_index_map_.end()) {
@@ -888,6 +1065,15 @@ void CactusGraph::execute(const std::string& profile_file) {
             GraphNode& nd = *nodes_[idx];
             if (aliases_input(nd)) nd.output_buffer.external_data = nullptr;
         };
+        size_t since_flush = 0;
+        std::vector<uint8_t> gpu_live(n, 0);
+        auto input_gpu_live = [&](const GraphNode& nd) -> bool {
+            for (size_t id : nd.input_ids) {
+                auto it = node_index_map_.find(id);
+                if (it != node_index_map_.end() && gpu_live[it->second]) return true;
+            }
+            return false;
+        };
         for (size_t i = 0; i < n; ++i) {
             auto& node = nodes_[i];
             const OpType ot = node->op_type;
@@ -900,7 +1086,13 @@ void CactusGraph::execute(const std::string& profile_file) {
                 continue;
             }
             if (aliases_input(*node)) {
-                dispatch_node(*node, nodes_, node_index_map_);
+                if (rplan && rplan[i] == 1) {
+                    const auto& src = get_input(*node, 0, nodes_, node_index_map_);
+                    node->output_buffer.set_external(const_cast<void*>(static_cast<const void*>(src.get_data())));
+                } else {
+                    dispatch_node(*node, nodes_, node_index_map_);
+                }
+                gpu_live[i] = input_gpu_live(*node) ? 1 : 0;
                 for (size_t r : release_after[i]) gpu_release(r);
                 continue;
             }
@@ -918,13 +1110,39 @@ void CactusGraph::execute(const std::string& profile_file) {
                 if (p) { node->output_buffer.release_to_pool(pool); node->output_buffer.set_external(p); }
                 else node->output_buffer.resize_from_pool(pool);
             }
+            std::vector<std::pair<BufferDesc*, Precision>> flipped;
+            if (rplan && rplan[i] == 2) {
+                auto flip = [&](BufferDesc& b) {
+                    if (b.precision == Precision::FP32) { flipped.push_back({&b, b.precision}); b.precision = Precision::FP16; }
+                };
+                flip(node->output_buffer);
+                for (size_t id : node->input_ids) {
+                    auto it = node_index_map_.find(id);
+                    if (it != node_index_map_.end()) flip(nodes_[it->second]->output_buffer);
+                }
+            }
             bool encoded = try_encode_gpu(*node, nodes_, node_index_map_);
-            if (!encoded) {
+            for (auto& fp : flipped) fp.first->precision = fp.second;
+            if (!encoded && rplan && rplan[i] == 2) {
+                gpu_retype_disabled_ = true;
                 cactus_metal_session_sync();
+                cactus_metal_set_active(false);
+                cactus_metal_session_end();
+                execute(profile_file);
+                return;
+            }
+            if (!encoded) {
+                if (input_gpu_live(*node)) {
+                    cactus_metal_session_sync();
+                    std::fill(gpu_live.begin(), gpu_live.end(), 0);
+                }
                 dispatch_node(*node, nodes_, node_index_map_);
+            } else {
+                gpu_live[i] = 1;
             }
             if (ot == OpType::PERSISTENT) populated_node_ids_.insert(node->id);
             for (size_t r : release_after[i]) gpu_release(r);
+            if (encoded && ++since_flush >= 256) { cactus_metal_session_flush(); since_flush = 0; }
         }
         cactus_metal_set_active(false);
         cactus_metal_session_end();
