@@ -446,6 +446,8 @@ void CactusGraph::infer_shapes() {
     runtime_shapes_dirty_ = false;
 }
 
+static bool try_encode_gpu(GraphNode& node, const nodes_vector& nodes, const node_index_map_t& map);
+
 static void row_strides(const std::vector<size_t>& shape, size_t* out) {
     size_t s=1; for (int k=(int)shape.size()-1; k>=0; --k){ out[k]=s; s*=shape[k]; }
 }
@@ -454,6 +456,10 @@ static void bcast_strides(const std::vector<size_t>& in_shape, const std::vector
     size_t istr[8]; row_strides(in_shape, istr);
     for (size_t d=0; d<out_shape.size(); ++d)
         out[d] = (d < off) ? 0u : (in_shape[d-off]==1 ? 0u : (uint32_t)istr[d-off]);
+}
+
+bool CactusGraph::encode_node_gpu(size_t idx) {
+    return try_encode_gpu(*nodes_[idx], nodes_, node_index_map_);
 }
 
 static bool try_encode_gpu(GraphNode& node, const nodes_vector& nodes, const node_index_map_t& map) {
@@ -469,11 +475,16 @@ static bool try_encode_gpu(GraphNode& node, const nodes_vector& nodes, const nod
             const auto& lhs = get_input(node, 0, nodes, map);
             const auto& rhs = get_input(node, 1, nodes, map);
             size_t M = lhs.shape[lhs.shape.size() - 2];
-            if (!(PrecisionTraits::is_cq(rhs.precision) && rhs.group_size > 0)) return false;
             if (!fp16(lhs)) return false;
-            CactusQuantMatrix mat = rhs.to_cq_matrix();
-            if (M == 1) return cactus_metal_encode_quant_matmul(out.get_data(), lhs.get_data(), &mat);
-            return cactus_metal_encode_quant_matmul_m(out.get_data(), lhs.get_data(), &mat, (uint32_t)M);
+            if (PrecisionTraits::is_cq(rhs.precision) && rhs.group_size > 0) {
+                CactusQuantMatrix mat = rhs.to_cq_matrix();
+                if (M == 1) return cactus_metal_encode_quant_matmul(out.get_data(), lhs.get_data(), &mat);
+                return cactus_metal_encode_quant_matmul_m(out.get_data(), lhs.get_data(), &mat, (uint32_t)M);
+            }
+            if (fp16(rhs) && node.params.pretransposed_rhs && M == 1 && rhs.shape.size() == 2)
+                return cactus_metal_encode_matmul_f16_gemv(out.get_data(), lhs.get_data(), rhs.get_data(),
+                                                           (uint32_t)rhs.shape[1], (uint32_t)rhs.shape[0]);
+            return false;
         }
         case OpType::ADD: case OpType::ADD_CLIPPED: case OpType::SUBTRACT:
         case OpType::MULTIPLY: case OpType::DIVIDE: {
@@ -719,6 +730,52 @@ static bool try_encode_gpu(GraphNode& node, const nodes_vector& nodes, const nod
             if (out.get_data()) *out.data_as<float>() = static_cast<float>(new_total);
             return true;
         }
+        case OpType::SOFTMAX: {
+            const auto& in = get_input(node, 0, nodes, map);
+            if (!fp16(in) || !fp16(out) || in.shape.empty()) return false;
+            size_t dim = in.shape.back();
+            if (dim == 0) return false;
+            return cactus_metal_encode_softmax_rows(out.get_data(), in.get_data(), in.total_size / dim, dim);
+        }
+        case OpType::TOPK: {
+            const auto& in = get_input(node, 0, nodes, map);
+            if (!fp16(in) || in.shape.size() != 2 || in.shape[0] != 1) return false;
+            if (out.precision != Precision::FP32) return false;
+            size_t k = node.params.top_k;
+            if (k == 0 || k > 32) return false;
+            return cactus_metal_encode_topk_row(out.get_data(), in.get_data(), (uint32_t)in.shape[1], (uint32_t)k);
+        }
+        case OpType::MOE_LAYER: {
+            const size_t E = node.params.num_experts;
+            const size_t top_k = node.params.num_experts_per_tok;
+            if (!node.params.moe_gated || E == 0 || top_k == 0) return false;
+            if (node.input_ids.size() != 3 + 3*E) return false;  // no per-expert scale
+            const auto& hidden = get_input(node, 0, nodes, map);
+            const auto& routing = get_input(node, 1, nodes, map);
+            const auto& topk = get_input(node, 2, nodes, map);
+            if (!fp16(hidden) || !fp16(out) || !fp16(routing)) return false;
+            if (topk.precision != Precision::FP32) return false;
+            if (hidden.shape.size() != 2 || hidden.shape[0] != 1) return false;
+            static std::unordered_map<size_t, std::vector<CactusQuantMatrix>> mats_cache;
+            auto mit = mats_cache.find(node.id);
+            if (mit == mats_cache.end()) {
+                std::vector<CactusQuantMatrix> mats;
+                mats.reserve(3*E);
+                for (size_t i = 0; i < 3*E; ++i) {
+                    const auto& wb = get_input(node, 3 + i, nodes, map);
+                    if (!(PrecisionTraits::is_cq(wb.precision) && wb.group_size > 0)) return false;
+                    mats.push_back(wb.to_cq_matrix());
+                }
+                mit = mats_cache.emplace(node.id, std::move(mats)).first;
+            }
+            const CactusQuantMatrix* w1s = mit->second.data();
+            const CactusQuantMatrix* w3s = w1s + E;
+            const CactusQuantMatrix* w2s = w1s + 2*E;
+            return cactus_metal_encode_moe_gated_cq2(out.get_data(), hidden.get_data(), routing.get_data(),
+                topk.get_data(), w1s, w3s, w2s, (uint32_t)E, (uint32_t)top_k,
+                (uint32_t)node.params.activation, node.params.normalize_routing ? 1u : 0u,
+                node.params.epsilon, node.params.scalar);
+        }
         case OpType::EMBEDDING: {
             if (node.input_ids.size() < 2) return false;
             const auto& emb = get_input(node, 0, nodes, map);
@@ -821,6 +878,36 @@ void CactusGraph::execute(const std::string& profile_file) {
     };
 
     const bool gpu_mode = cactus_backend_metal();
+    {
+        static const char* dump_path = std::getenv("CACTUS_DUMP_GRAPH");
+        static std::set<const void*> dumped;
+        if (dump_path && !dumped.count(this)) {
+            dumped.insert(this);
+            std::ofstream df(dump_path, std::ios::app);
+            df << "=== GRAPH this=" << (const void*)this << " nodes=" << n << " ===\n";
+            for (size_t i = 0; i < n; ++i) {
+                const GraphNode& nd = *nodes_[i];
+                const auto& ob = nd.output_buffer;
+                df << i << " id=" << nd.id << " op=" << get_op_name(nd.op_type)
+                   << " prec=" << (int)ob.precision << " gs=" << ob.group_size << " shape=[";
+                for (size_t d2 = 0; d2 < ob.shape.size(); ++d2) { if (d2) df << ","; df << ob.shape[d2]; }
+                df << "] in=[";
+                for (size_t d2 = 0; d2 < nd.input_ids.size(); ++d2) { if (d2) df << ","; df << nd.input_ids[d2]; }
+                df << "] scalar=" << nd.params.scalar << " eps=" << nd.params.epsilon
+                   << " axis=" << nd.params.axis << " win=" << nd.params.window_size
+                   << " topk=" << nd.params.top_k << " nexp=" << nd.params.num_experts
+                   << " npt=" << nd.params.num_experts_per_tok
+                   << " causal=" << (int)nd.params.is_causal
+                   << " scale=" << nd.params.scale
+                   << " posoff=" << nd.params.position_offset
+                   << " pret=" << (int)nd.params.pretransposed_rhs
+                   << " act=" << (int)nd.params.activation
+                   << " norm_rt=" << (int)nd.params.normalize_routing
+                   << " vhd=" << nd.params.v_head_dim
+                   << "\n";
+            }
+        }
+    }
     auto aliases_input = [&](const GraphNode& node) -> bool {
         if (node.op_type == OpType::SLICE && !node.input_ids.empty()) {
             auto it = node_index_map_.find(node.input_ids[0]);
@@ -888,6 +975,7 @@ void CactusGraph::execute(const std::string& profile_file) {
             if (aliases_input(nd)) nd.output_buffer.external_data = nullptr;
         };
         const bool concurrent = cactus_metal_concurrent();
+        size_t encoded_since_flush = 0;
         struct Acc { uintptr_t lo, hi; bool w; };
         std::vector<Acc> accessed;
         auto conflicts = [&](uintptr_t lo, uintptr_t hi, bool w) {
@@ -944,6 +1032,23 @@ void CactusGraph::execute(const std::string& profile_file) {
                 else node->output_buffer.resize_from_pool(pool);
             }
             hazard_barrier(*node);
+            // CACTUS_NL_ABLATE: skip encoding whole op classes (garbage output,
+            // perf attribution only): matmul,moe,attn,cast,rms,glue,softtop
+            static const char* nla = std::getenv("CACTUS_NL_ABLATE");
+            if (nla) {
+                const OpType o = node->op_type;
+                bool skip =
+                    (std::strstr(nla,"matmul") && o==OpType::MATMUL) ||
+                    (std::strstr(nla,"moe") && o==OpType::MOE_LAYER) ||
+                    (std::strstr(nla,"attn") && (o==OpType::ATTENTION_CACHED || o==OpType::KV_CACHE_APPEND)) ||
+                    (std::strstr(nla,"cast") && o==OpType::PRECISION_CAST) ||
+                    (std::strstr(nla,"rms") && o==OpType::RMS_NORM) ||
+                    (std::strstr(nla,"softtop") && (o==OpType::SOFTMAX || o==OpType::TOPK)) ||
+                    (std::strstr(nla,"glue") && (o==OpType::ADD || o==OpType::ADD_CLIPPED || o==OpType::MULTIPLY ||
+                        o==OpType::SLICE || o==OpType::CAT || o==OpType::SCALAR_MULTIPLY || o==OpType::GELU ||
+                        o==OpType::SCALAR_DIVIDE || o==OpType::TANH));
+                if (skip) { for (size_t r : release_after[i]) gpu_release(r); continue; }
+            }
             bool encoded = try_encode_gpu(*node, nodes_, node_index_map_);
             static const bool prof = (std::getenv("CACTUS_METAL_PROF") != nullptr);
             if (prof) {
@@ -957,11 +1062,35 @@ void CactusGraph::execute(const std::string& profile_file) {
                 (void)reg;
                 int t = (int)node->op_type;
                 if (t >= 0 && t < 512) ++counts[encoded ? 1 : 0][t];
+                if (!encoded && node->op_type == OpType::MATMUL) {
+                    static int shown = 0;
+                    if (shown < 12) {
+                        const auto& l = get_input(*node, 0, nodes_, node_index_map_);
+                        const auto& r = get_input(*node, 1, nodes_, node_index_map_);
+                        std::fprintf(stderr, "[mm-fb] M=%zu lhsP=%d rhsP=%d rhs=[%zu,%zu] gs=%zu pret=%d\n",
+                                     l.shape.size()>=2?l.shape[l.shape.size()-2]:0,
+                                     (int)l.precision, (int)r.precision,
+                                     r.shape.size()>=1?r.shape[0]:0, r.shape.size()>=2?r.shape[1]:0,
+                                     (size_t)r.group_size, (int)node->params.pretransposed_rhs);
+                        ++shown;
+                    }
+                }
             }
             if (!encoded) {
                 cactus_metal_session_sync();
                 accessed.clear();
+                encoded_since_flush = 0;
                 dispatch_node(*node, nodes_, node_index_map_);
+            } else {
+                // let the GPU start while the CPU keeps encoding
+                static const size_t flush_every = []{
+                    const char* e = std::getenv("CACTUS_GPU_FLUSH_NODES");
+                    return e ? (size_t)atol(e) : (size_t)192;
+                }();
+                if (++encoded_since_flush >= flush_every) {
+                    cactus_metal_session_flush();
+                    encoded_since_flush = 0;
+                }
             }
             if (ot == OpType::PERSISTENT) populated_node_ids_.insert(node->id);
             for (size_t r : release_after[i]) gpu_release(r);

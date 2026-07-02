@@ -2,6 +2,12 @@
 using namespace metal;
 #define ROWS 8u
 
+inline float gelu_tanh(float x) {
+    float c = 0.7978845608028654f * (x + 0.044715f*x*x*x);
+    return 0.5f * x * (1.0f + precise::tanh(c));
+}
+
+
 kernel void cq4_transform(
     device const half*  x        [[buffer(0)]],
     device const half*  recip    [[buffer(1)]],
@@ -82,6 +88,59 @@ kernel void cq4_gemv(
     threadgroup float cb[16];
     if (tl<16) cb[tl]=(float)codebook[tl];
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    // 4 rows per simdgroup: independent FMA chains hide load latency
+    // (requires N % 4 == 0, guaranteed by quant_fast_eligible)
+    uint K = num_groups*gs;
+    uint n0 = (tg*ROWS + sgid)*4u;
+    if (n0>=N) return;
+    float a0=0,a1=0,a2=0,a3=0;
+    for (uint base=lane*CQ4_VPL; base<K; base+=32u*CQ4_VPL){
+        uint g = base/gs, off = base - g*gs;
+        device const half4* cbase=(device const half4*)(code + g*gs + off);
+        device const ushort4* p0=(device const ushort4*)(packed + ((size_t)(n0+0)*num_groups+g)*pgb + off/2u);
+        device const ushort4* p1=(device const ushort4*)(packed + ((size_t)(n0+1)*num_groups+g)*pgb + off/2u);
+        device const ushort4* p2=(device const ushort4*)(packed + ((size_t)(n0+2)*num_groups+g)*pgb + off/2u);
+        device const ushort4* p3=(device const ushort4*)(packed + ((size_t)(n0+3)*num_groups+g)*pgb + off/2u);
+        ushort4 w0=p0[0], w1=p1[0], w2=p2[0], w3=p3[0];
+        float q0=0,q1=0,q2=0,q3=0;
+        #pragma clang loop unroll(full)
+        for (uint q=0;q<4;++q){
+            half4 c=cbase[q];
+            ushort wa=w0[q],wb=w1[q],wc=w2[q],wd=w3[q];
+            float cx=(float)c.x, cy=(float)c.y, cz=(float)c.z, cw=(float)c.w;
+            q0 += cx*cb[wa&0xF] + cy*cb[(wa>>4)&0xF] + cz*cb[(wa>>8)&0xF] + cw*cb[(wa>>12)&0xF];
+            q1 += cx*cb[wb&0xF] + cy*cb[(wb>>4)&0xF] + cz*cb[(wb>>8)&0xF] + cw*cb[(wb>>12)&0xF];
+            q2 += cx*cb[wc&0xF] + cy*cb[(wc>>4)&0xF] + cz*cb[(wc>>8)&0xF] + cw*cb[(wc>>12)&0xF];
+            q3 += cx*cb[wd&0xF] + cy*cb[(wd>>4)&0xF] + cz*cb[(wd>>8)&0xF] + cw*cb[(wd>>12)&0xF];
+        }
+        a0 += (float)norms[(size_t)(n0+0)*num_groups+g]*q0;
+        a1 += (float)norms[(size_t)(n0+1)*num_groups+g]*q1;
+        a2 += (float)norms[(size_t)(n0+2)*num_groups+g]*q2;
+        a3 += (float)norms[(size_t)(n0+3)*num_groups+g]*q3;
+    }
+    a0=simd_sum(a0); a1=simd_sum(a1); a2=simd_sum(a2); a3=simd_sum(a3);
+    if (lane==0){ y[n0]=(half)a0; y[n0+1]=(half)a1; y[n0+2]=(half)a2; y[n0+3]=(half)a3; }
+}
+
+// single row per simdgroup: better threadgroup count for small N
+kernel void cq4_gemv_n1(
+    device const half*  code     [[buffer(0)]],
+    device const uchar* packed   [[buffer(1)]],
+    device const half*  codebook [[buffer(2)]],
+    device const half*  norms    [[buffer(3)]],
+    device       half*  y        [[buffer(4)]],
+    constant uint& gs            [[buffer(5)]],
+    constant uint& num_groups    [[buffer(6)]],
+    constant uint& pgb           [[buffer(7)]],
+    constant uint& N             [[buffer(8)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint tl   [[thread_index_in_threadgroup]])
+{
+    threadgroup float cb[16];
+    if (tl<16) cb[tl]=(float)codebook[tl];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     uint n = tg*ROWS + sgid;
     if (n>=N) return;
     uint K = num_groups*gs;
@@ -104,6 +163,480 @@ kernel void cq4_gemv(
     }
     acc=simd_sum(acc);
     if (lane==0) y[n]=(half)acc;
+}
+
+// 2-bit CQ gemv, 4 rows per simdgroup. Same activation-transform scheme as
+// cq4; packed bytes hold 4 consecutive 2-bit indices (little-endian),
+// codebook has 4 entries. 16 values per lane per iteration = uchar4.
+kernel void cq2_gemv(
+    device const half*  code     [[buffer(0)]],
+    device const uchar* packed   [[buffer(1)]],
+    device const half*  codebook [[buffer(2)]],
+    device const half*  norms    [[buffer(3)]],
+    device       half*  y        [[buffer(4)]],
+    constant uint& gs            [[buffer(5)]],
+    constant uint& num_groups    [[buffer(6)]],
+    constant uint& pgb           [[buffer(7)]],
+    constant uint& N             [[buffer(8)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint tl   [[thread_index_in_threadgroup]])
+{
+    threadgroup float cb[4];
+    if (tl<4) cb[tl]=(float)codebook[tl];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint K = num_groups*gs;
+    uint n0 = (tg*ROWS + sgid)*4u;
+    if (n0>=N) return;
+    float a0=0,a1=0,a2=0,a3=0;
+    for (uint base=lane*CQ4_VPL; base<K; base+=32u*CQ4_VPL){
+        uint g = base/gs, off = base - g*gs;
+        device const half4* cbase=(device const half4*)(code + g*gs + off);
+        device const uchar4* p0=(device const uchar4*)(packed + ((size_t)(n0+0)*num_groups+g)*pgb + off/4u);
+        device const uchar4* p1=(device const uchar4*)(packed + ((size_t)(n0+1)*num_groups+g)*pgb + off/4u);
+        device const uchar4* p2=(device const uchar4*)(packed + ((size_t)(n0+2)*num_groups+g)*pgb + off/4u);
+        device const uchar4* p3=(device const uchar4*)(packed + ((size_t)(n0+3)*num_groups+g)*pgb + off/4u);
+        uchar4 w0=p0[0], w1=p1[0], w2=p2[0], w3=p3[0];
+        float q0=0,q1=0,q2=0,q3=0;
+        #pragma clang loop unroll(full)
+        for (uint q=0;q<4;++q){
+            half4 c=cbase[q];
+            uchar a=w0[q],b=w1[q],d=w2[q],e=w3[q];
+            float cx=(float)c.x, cy=(float)c.y, cz=(float)c.z, cw=(float)c.w;
+            q0 += cx*cb[a&3u] + cy*cb[(a>>2)&3u] + cz*cb[(a>>4)&3u] + cw*cb[(a>>6)&3u];
+            q1 += cx*cb[b&3u] + cy*cb[(b>>2)&3u] + cz*cb[(b>>4)&3u] + cw*cb[(b>>6)&3u];
+            q2 += cx*cb[d&3u] + cy*cb[(d>>2)&3u] + cz*cb[(d>>4)&3u] + cw*cb[(d>>6)&3u];
+            q3 += cx*cb[e&3u] + cy*cb[(e>>2)&3u] + cz*cb[(e>>4)&3u] + cw*cb[(e>>6)&3u];
+        }
+        a0 += (float)norms[(size_t)(n0+0)*num_groups+g]*q0;
+        a1 += (float)norms[(size_t)(n0+1)*num_groups+g]*q1;
+        a2 += (float)norms[(size_t)(n0+2)*num_groups+g]*q2;
+        a3 += (float)norms[(size_t)(n0+3)*num_groups+g]*q3;
+    }
+    a0=simd_sum(a0); a1=simd_sum(a1); a2=simd_sum(a2); a3=simd_sum(a3);
+    if (lane==0){ y[n0]=(half)a0; y[n0+1]=(half)a1; y[n0+2]=(half)a2; y[n0+3]=(half)a3; }
+}
+
+// 2-bit CQ gemv, single row per simdgroup (small N)
+kernel void cq2_gemv_n1(
+    device const half*  code     [[buffer(0)]],
+    device const uchar* packed   [[buffer(1)]],
+    device const half*  codebook [[buffer(2)]],
+    device const half*  norms    [[buffer(3)]],
+    device       half*  y        [[buffer(4)]],
+    constant uint& gs            [[buffer(5)]],
+    constant uint& num_groups    [[buffer(6)]],
+    constant uint& pgb           [[buffer(7)]],
+    constant uint& N             [[buffer(8)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint tl   [[thread_index_in_threadgroup]])
+{
+    threadgroup float cb[4];
+    if (tl<4) cb[tl]=(float)codebook[tl];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint n = tg*ROWS + sgid;
+    if (n>=N) return;
+    uint K = num_groups*gs;
+    float acc=0;
+    for (uint base=lane*CQ4_VPL; base<K; base+=32u*CQ4_VPL){
+        uint g = base/gs, off = base - g*gs;
+        device const half4* cbase=(device const half4*)(code + g*gs + off);
+        device const uchar4* pr=(device const uchar4*)(packed + ((size_t)n*num_groups+g)*pgb + off/4u);
+        uchar4 w=pr[0];
+        float p = 0;
+        #pragma clang loop unroll(full)
+        for (uint q=0;q<4;++q){
+            half4 c=cbase[q];
+            uchar b = w[q];
+            p += (float)c.x*cb[b&3u] + (float)c.y*cb[(b>>2)&3u]
+               + (float)c.z*cb[(b>>4)&3u] + (float)c.w*cb[(b>>6)&3u];
+        }
+        acc += (float)norms[(size_t)n*num_groups+g]*p;
+    }
+    acc=simd_sum(acc);
+    if (lane==0) y[n]=(half)acc;
+}
+
+// plain fp16 gemv: y[n] = dot(x, w[n*K..]) for pretransposed [N,K] weights
+kernel void gemv_f16(
+    device const half* x [[buffer(0)]],
+    device const half* w [[buffer(1)]],
+    device       half* y [[buffer(2)]],
+    constant uint& K     [[buffer(3)]],
+    constant uint& N     [[buffer(4)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]])
+{
+    uint n = tg*8u + sgid;
+    if (n>=N) return;
+    device const half* row = w + (size_t)n*K;
+    float acc=0;
+    for (uint k=lane*4u; k+3u<K; k+=128u){
+        half4 xv = *(device const half4*)(x+k);
+        half4 wv = *(device const half4*)(row+k);
+        acc += (float)xv.x*(float)wv.x + (float)xv.y*(float)wv.y
+             + (float)xv.z*(float)wv.z + (float)xv.w*(float)wv.w;
+    }
+    for (uint k=(K & ~3u)+lane; k<K; k+=32u) acc += (float)x[k]*(float)row[k];
+    acc=simd_sum(acc);
+    if (lane==0) y[n]=(half)acc;
+}
+
+
+
+// single-dispatch 2-bit matmul: Hadamard transform into threadgroup memory,
+// then 4-rows-per-simdgroup gemv (gs==128, K<=4096)
+kernel void cq2_gemv_fused(
+    device const half*  x        [[buffer(0)]],
+    device const uchar* packed   [[buffer(1)]],
+    device const half*  codebook [[buffer(2)]],
+    device const half*  norms    [[buffer(3)]],
+    device       half*  y        [[buffer(4)]],
+    constant uint& gs            [[buffer(5)]],
+    constant uint& num_groups    [[buffer(6)]],
+    constant uint& pgb           [[buffer(7)]],
+    constant uint& N             [[buffer(8)]],
+    device const half* recip     [[buffer(9)]],
+    device const char* lsign     [[buffer(10)]],
+    device const char* rsign     [[buffer(11)]],
+    device const uint* perm      [[buffer(12)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint tl   [[thread_index_in_threadgroup]],
+    threadgroup half* codem      [[threadgroup(0)]])
+{
+    threadgroup float cb[4];
+    if (tl<4) cb[tl]=(float)codebook[tl];
+    const uint K = num_groups*gs;
+    threadgroup float* zs = (threadgroup float*)(codem + K) + sgid*128u;
+    for (uint g=sgid; g<num_groups; g+=ROWS) {
+        uint b = g*128u + lane*4u;
+        uint k = lane*4u;
+        float x0=(float)x[b+0]*(float)recip[b+0]*(float)lsign[k+0];
+        float x1=(float)x[b+1]*(float)recip[b+1]*(float)lsign[k+1];
+        float x2=(float)x[b+2]*(float)recip[b+2]*(float)lsign[k+2];
+        float x3=(float)x[b+3]*(float)recip[b+3]*(float)lsign[k+3];
+        float a0=x0+x1,a1=x0-x1,a2=x2+x3,a3=x2-x3;
+        x0=a0+a2; x1=a1+a3; x2=a0-a2; x3=a1-a3;
+        #pragma clang loop unroll(full)
+        for (uint d=1u; d<=16u; d<<=1){
+            bool hi=(lane&d)!=0u;
+            float p0=simd_shuffle_xor(x0,d),p1=simd_shuffle_xor(x1,d),p2=simd_shuffle_xor(x2,d),p3=simd_shuffle_xor(x3,d);
+            x0=hi?p0-x0:x0+p0; x1=hi?p1-x1:x1+p1; x2=hi?p2-x2:x2+p2; x3=hi?p3-x3:x3+p3;
+        }
+        float s=rsqrt(128.0f);
+        zs[k+0]=x0*s*(float)rsign[k+0]; zs[k+1]=x1*s*(float)rsign[k+1];
+        zs[k+2]=x2*s*(float)rsign[k+2]; zs[k+3]=x3*s*(float)rsign[k+3];
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        codem[g*128u+k+0]=(half)zs[perm[k+0]]; codem[g*128u+k+1]=(half)zs[perm[k+1]];
+        codem[g*128u+k+2]=(half)zs[perm[k+2]]; codem[g*128u+k+3]=(half)zs[perm[k+3]];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint n0 = (tg*ROWS + sgid)*4u;
+    if (n0>=N) return;
+    float a0=0,a1=0,a2=0,a3=0;
+    for (uint base=lane*CQ4_VPL; base<K; base+=32u*CQ4_VPL){
+        uint g = base/gs, off = base - g*gs;
+        threadgroup const half4* cbase=(threadgroup const half4*)(codem + g*gs + off);
+        device const uchar4* p0=(device const uchar4*)(packed + ((size_t)(n0+0)*num_groups+g)*pgb + off/4u);
+        device const uchar4* p1=(device const uchar4*)(packed + ((size_t)(n0+1)*num_groups+g)*pgb + off/4u);
+        device const uchar4* p2=(device const uchar4*)(packed + ((size_t)(n0+2)*num_groups+g)*pgb + off/4u);
+        device const uchar4* p3=(device const uchar4*)(packed + ((size_t)(n0+3)*num_groups+g)*pgb + off/4u);
+        uchar4 w0=p0[0], w1=p1[0], w2=p2[0], w3=p3[0];
+        float q0=0,q1=0,q2=0,q3=0;
+        #pragma clang loop unroll(full)
+        for (uint q=0;q<4;++q){
+            half4 c=cbase[q];
+            uchar a=w0[q],b=w1[q],d=w2[q],e=w3[q];
+            float cx=(float)c.x, cy=(float)c.y, cz=(float)c.z, cw=(float)c.w;
+            q0 += cx*cb[a&3u] + cy*cb[(a>>2)&3u] + cz*cb[(a>>4)&3u] + cw*cb[(a>>6)&3u];
+            q1 += cx*cb[b&3u] + cy*cb[(b>>2)&3u] + cz*cb[(b>>4)&3u] + cw*cb[(b>>6)&3u];
+            q2 += cx*cb[d&3u] + cy*cb[(d>>2)&3u] + cz*cb[(d>>4)&3u] + cw*cb[(d>>6)&3u];
+            q3 += cx*cb[e&3u] + cy*cb[(e>>2)&3u] + cz*cb[(e>>4)&3u] + cw*cb[(e>>6)&3u];
+        }
+        a0 += (float)norms[(size_t)(n0+0)*num_groups+g]*q0;
+        a1 += (float)norms[(size_t)(n0+1)*num_groups+g]*q1;
+        a2 += (float)norms[(size_t)(n0+2)*num_groups+g]*q2;
+        a3 += (float)norms[(size_t)(n0+3)*num_groups+g]*q3;
+    }
+    a0=simd_sum(a0); a1=simd_sum(a1); a2=simd_sum(a2); a3=simd_sum(a3);
+    if (lane==0){ y[n0]=(half)a0; y[n0+1]=(half)a1; y[n0+2]=(half)a2; y[n0+3]=(half)a3; }
+}
+
+
+// out = clip( rms(a)*wa + rms(b)*wb )  — merges two branch norms + add
+kernel void rms2_add_clip_f16(device const half* a [[buffer(0)]], device const half* wa [[buffer(1)]],
+                              device const half* b [[buffer(2)]], device const half* wb [[buffer(3)]],
+                              device half* y [[buffer(4)]],
+                              constant uint& dim [[buffer(5)]], constant float& eps [[buffer(6)]],
+                              uint t [[thread_position_in_threadgroup]],
+                              uint nt [[threads_per_threadgroup]], threadgroup float* red [[threadgroup(0)]]) {
+    float pa=0, pb=0;
+    for (uint i=t;i<dim;i+=nt){ float v=(float)a[i]; pa+=v*v; float u=(float)b[i]; pb+=u*u; }
+    pa=simd_sum(pa); pb=simd_sum(pb);
+    uint sg=t/32u, lane=t%32u, nsg=nt/32u;
+    if (lane==0){ red[sg]=pa; red[nsg+sg]=pb; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float sa=0, sb=0;
+    for (uint i=0;i<nsg;++i){ sa+=red[i]; sb+=red[nsg+i]; }
+    float ia = 1.0f/sqrt(sa/(float)dim + eps);
+    float ib = 1.0f/sqrt(sb/(float)dim + eps);
+    for (uint i=t;i<dim;i+=nt){
+        float r = (float)(half)((float)a[i]*ia*(float)wa[i]) + (float)(half)((float)b[i]*ib*(float)wb[i]);
+        y[i]=(half)clamp(r,-65500.0f,65500.0f);
+    }
+}
+
+// ---- MoE (M=1 decode) + router support ----------------------------------
+
+kernel void softmax_rows_f16(device const half* in [[buffer(0)]], device half* out [[buffer(1)]],
+                             constant uint& dim [[buffer(2)]],
+                             uint row [[threadgroup_position_in_grid]], uint t [[thread_position_in_threadgroup]],
+                             uint nt [[threads_per_threadgroup]], threadgroup float* red [[threadgroup(0)]]) {
+    device const half* x = in + (size_t)row*dim;
+    device half* o = out + (size_t)row*dim;
+    float mx=-INFINITY; for (uint i=t;i<dim;i+=nt) mx=max(mx,(float)x[i]);
+    red[t]=mx; threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s=nt/2;s>0;s>>=1){ if(t<s) red[t]=max(red[t],red[t+s]); threadgroup_barrier(mem_flags::mem_threadgroup); }
+    float m=red[0]; threadgroup_barrier(mem_flags::mem_threadgroup);
+    float sum=0; for (uint i=t;i<dim;i+=nt) sum+=exp((float)x[i]-m);
+    red[t]=sum; threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s=nt/2;s>0;s>>=1){ if(t<s) red[t]+=red[t+s]; threadgroup_barrier(mem_flags::mem_threadgroup); }
+    float inv=1.0f/red[0];
+    for (uint i=t;i<dim;i+=nt) o[i]=(half)(exp((float)x[i]-m)*inv);
+}
+
+// top-k of a single row; output fp32 [k indices][k values], descending
+kernel void topk_row_f16(device const half* in [[buffer(0)]], device float* out [[buffer(1)]],
+                         constant uint& F [[buffer(2)]], constant uint& k [[buffer(3)]],
+                         uint lane [[thread_index_in_simdgroup]]) {
+    for (uint j=0;j<k;++j){
+        float best=-INFINITY; uint bi=0xFFFFFFFFu;
+        for (uint i=lane;i<F;i+=32u){
+            bool taken=false;
+            for (uint p=0;p<j;++p) if ((uint)out[p]==i) taken=true;
+            float v=(float)in[i];
+            if (!taken && (v>best || (v==best && i<bi))){ best=v; bi=i; }
+        }
+        float gb = simd_max(best);
+        uint cand = (best==gb) ? bi : 0xFFFFFFFFu;
+        uint gi = simd_min(cand);
+        if (lane==0){ out[j]=(float)gi; out[k+j]=gb; }
+    }
+}
+
+// Hadamard transform of the shared hidden vector using each selected expert's
+// per-matrix params (concatenated across experts). One threadgroup per
+// (group g, slot). x element for (slot,k) = k<k_valid ? x[slot*x_stride+k] : 0.
+kernel void cq2_moe_transform(
+    device const half*  x        [[buffer(0)]],
+    device const float* topk     [[buffer(1)]],
+    device const half*  recip_c  [[buffer(2)]],
+    device const char*  lsign_c  [[buffer(3)]],
+    device const char*  rsign_c  [[buffer(4)]],
+    device const uint*  perm_c   [[buffer(5)]],
+    device       half*  code     [[buffer(6)]],
+    constant uint& K             [[buffer(7)]],
+    constant uint& k_valid       [[buffer(8)]],
+    constant uint& x_stride      [[buffer(9)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint2 lp  [[thread_position_in_threadgroup]],
+    threadgroup float* zmem      [[threadgroup(0)]])
+{
+    const uint g = tgp.x, slot = tgp.y, lane = lp.x;
+    const uint e = (uint)topk[slot];
+    device const half* recip = recip_c + (size_t)e*K;
+    device const char* lsign = lsign_c + (size_t)e*128u;
+    device const char* rsign = rsign_c + (size_t)e*128u;
+    device const uint* perm  = perm_c  + (size_t)e*128u;
+    device const half* xs = x + (size_t)slot*x_stride;
+    uint b = g*128u + lane*4u;
+    uint k = lane*4u;
+    float xv[4];
+    #pragma clang loop unroll(full)
+    for (uint j=0;j<4;++j){
+        float v = (b+j < k_valid) ? (float)xs[b+j] : 0.0f;
+        xv[j] = v*(float)recip[b+j]*(float)lsign[k+j];
+    }
+    float x0=xv[0],x1=xv[1],x2=xv[2],x3=xv[3];
+    float a0=x0+x1,a1=x0-x1,a2=x2+x3,a3=x2-x3;
+    x0=a0+a2; x1=a1+a3; x2=a0-a2; x3=a1-a3;
+    #pragma clang loop unroll(full)
+    for (uint d=1u; d<=16u; d<<=1){
+        bool hi=(lane&d)!=0u;
+        float p0=simd_shuffle_xor(x0,d),p1=simd_shuffle_xor(x1,d),p2=simd_shuffle_xor(x2,d),p3=simd_shuffle_xor(x3,d);
+        x0=hi?p0-x0:x0+p0; x1=hi?p1-x1:x1+p1; x2=hi?p2-x2:x2+p2; x3=hi?p3-x3:x3+p3;
+    }
+    float s=rsqrt(128.0f);
+    zmem[k+0]=x0*s*(float)rsign[k+0]; zmem[k+1]=x1*s*(float)rsign[k+1];
+    zmem[k+2]=x2*s*(float)rsign[k+2]; zmem[k+3]=x3*s*(float)rsign[k+3];
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+    device half* co = code + (size_t)slot*K + g*128u;
+    co[k+0]=(half)zmem[perm[k+0]]; co[k+1]=(half)zmem[perm[k+1]];
+    co[k+2]=(half)zmem[perm[k+2]]; co[k+3]=(half)zmem[perm[k+3]];
+}
+
+// gate/up projections + activation*multiply, 4 rows per simdgroup per slot
+kernel void cq2_moe_gemv_up(
+    device const half*  code1    [[buffer(0)]],
+    device const half*  code3    [[buffer(1)]],
+    device const float* topk     [[buffer(2)]],
+    device const uchar* pk1      [[buffer(3)]],
+    device const half*  nm1      [[buffer(4)]],
+    device const half*  cb1      [[buffer(5)]],
+    device const uchar* pk3      [[buffer(6)]],
+    device const half*  nm3      [[buffer(7)]],
+    device const half*  cb3      [[buffer(8)]],
+    device       half*  y        [[buffer(9)]],
+    constant uint& K             [[buffer(10)]],
+    constant uint& N             [[buffer(11)]],
+    constant uint& act           [[buffer(12)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint tl   [[thread_index_in_threadgroup]])
+{
+    const uint slot = tgp.y;
+    const uint e = (uint)topk[slot];
+    const uint ng = K/128u, pgb = 32u;
+    threadgroup float c1[4], c3[4];
+    if (tl<4){ c1[tl]=(float)cb1[(size_t)e*8u+tl]; c3[tl]=(float)cb3[(size_t)e*8u+tl]; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint n0 = (tgp.x*8u + sgid)*4u;
+    if (n0>=N) return;
+    float g[4]={0,0,0,0}, u[4]={0,0,0,0};
+    for (int m=0;m<2;++m){
+        device const uchar* pb = (m==0) ? pk1 + (size_t)e*N*ng*pgb : pk3 + (size_t)e*N*ng*pgb;
+        device const half*  nb = (m==0) ? nm1 + (size_t)e*N*ng : nm3 + (size_t)e*N*ng;
+        device const half*  cd = (m==0) ? code1 + (size_t)slot*K : code3 + (size_t)slot*K;
+        threadgroup float* cb = (m==0) ? c1 : c3;
+        float a0=0,a1=0,a2=0,a3=0;
+        for (uint base=lane*16u; base<K; base+=512u){
+            uint gg = base/128u, off = base - gg*128u;
+            device const half4* cp=(device const half4*)(cd + gg*128u + off);
+            device const uchar4* q0=(device const uchar4*)(pb + ((size_t)(n0+0)*ng+gg)*pgb + off/4u);
+            device const uchar4* q1=(device const uchar4*)(pb + ((size_t)(n0+1)*ng+gg)*pgb + off/4u);
+            device const uchar4* q2=(device const uchar4*)(pb + ((size_t)(n0+2)*ng+gg)*pgb + off/4u);
+            device const uchar4* q3=(device const uchar4*)(pb + ((size_t)(n0+3)*ng+gg)*pgb + off/4u);
+            uchar4 w0=q0[0], w1=q1[0], w2=q2[0], w3=q3[0];
+            float s0=0,s1=0,s2=0,s3=0;
+            #pragma clang loop unroll(full)
+            for (uint qq=0;qq<4;++qq){
+                half4 c=cp[qq];
+                uchar a=w0[qq],b=w1[qq],d=w2[qq],f=w3[qq];
+                float cx=(float)c.x, cy=(float)c.y, cz=(float)c.z, cw=(float)c.w;
+                s0 += cx*cb[a&3u] + cy*cb[(a>>2)&3u] + cz*cb[(a>>4)&3u] + cw*cb[(a>>6)&3u];
+                s1 += cx*cb[b&3u] + cy*cb[(b>>2)&3u] + cz*cb[(b>>4)&3u] + cw*cb[(b>>6)&3u];
+                s2 += cx*cb[d&3u] + cy*cb[(d>>2)&3u] + cz*cb[(d>>4)&3u] + cw*cb[(d>>6)&3u];
+                s3 += cx*cb[f&3u] + cy*cb[(f>>2)&3u] + cz*cb[(f>>4)&3u] + cw*cb[(f>>6)&3u];
+            }
+            a0 += (float)nb[(size_t)(n0+0)*ng+gg]*s0;
+            a1 += (float)nb[(size_t)(n0+1)*ng+gg]*s1;
+            a2 += (float)nb[(size_t)(n0+2)*ng+gg]*s2;
+            a3 += (float)nb[(size_t)(n0+3)*ng+gg]*s3;
+        }
+        a0=simd_sum(a0); a1=simd_sum(a1); a2=simd_sum(a2); a3=simd_sum(a3);
+        if (m==0){ g[0]=a0;g[1]=a1;g[2]=a2;g[3]=a3; } else { u[0]=a0;u[1]=a1;u[2]=a2;u[3]=a3; }
+    }
+    if (lane==0){
+        device half* ys = y + (size_t)slot*N;
+        for (uint r=0;r<4;++r){
+            float gg2 = g[r];
+            float aa = (act==1u) ? gelu_tanh(gg2) : gg2/(1.0f+precise::exp(-gg2));
+            ys[n0+r]=(half)((float)(half)aa*(float)(half)u[r]);
+        }
+    }
+}
+
+// v2 down: 8 rows per simdgroup (K is short: 768)
+
+// down projection per slot, 4 rows per simdgroup
+kernel void cq2_moe_gemv_down(
+    device const half*  code2    [[buffer(0)]],
+    device const float* topk     [[buffer(1)]],
+    device const uchar* pk2      [[buffer(2)]],
+    device const half*  nm2      [[buffer(3)]],
+    device const half*  cb2      [[buffer(4)]],
+    device       half*  y        [[buffer(5)]],
+    constant uint& K             [[buffer(6)]],
+    constant uint& N             [[buffer(7)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint tl   [[thread_index_in_threadgroup]])
+{
+    const uint slot = tgp.y;
+    const uint e = (uint)topk[slot];
+    const uint ng = K/128u, pgb = 32u;
+    threadgroup float cb[4];
+    if (tl<4) cb[tl]=(float)cb2[(size_t)e*8u+tl];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint n0 = (tgp.x*8u + sgid)*8u;
+    if (n0>=N) return;
+    device const uchar* pbase = pk2 + (size_t)e*N*ng*pgb;
+    device const half*  nbase = nm2 + (size_t)e*N*ng;
+    device const half*  cd = code2 + (size_t)slot*K;
+    float acc[8]={0,0,0,0,0,0,0,0};
+    for (uint base=lane*16u; base<K; base+=512u){
+        uint gg = base/128u, off = base - gg*128u;
+        device const half4* cp=(device const half4*)(cd + gg*128u + off);
+        half4 c0=cp[0], c1=cp[1], c2=cp[2], c3=cp[3];
+        #pragma clang loop unroll(full)
+        for (uint r=0;r<8;++r){
+            device const uchar4* qq=(device const uchar4*)(pbase + ((size_t)(n0+r)*ng+gg)*pgb + off/4u);
+            uchar4 w=qq[0];
+            float s=0;
+            {
+                uchar a=w.x; s += (float)c0.x*cb[a&3u] + (float)c0.y*cb[(a>>2)&3u] + (float)c0.z*cb[(a>>4)&3u] + (float)c0.w*cb[(a>>6)&3u];
+                a=w.y; s += (float)c1.x*cb[a&3u] + (float)c1.y*cb[(a>>2)&3u] + (float)c1.z*cb[(a>>4)&3u] + (float)c1.w*cb[(a>>6)&3u];
+                a=w.z; s += (float)c2.x*cb[a&3u] + (float)c2.y*cb[(a>>2)&3u] + (float)c2.z*cb[(a>>4)&3u] + (float)c2.w*cb[(a>>6)&3u];
+                a=w.w; s += (float)c3.x*cb[a&3u] + (float)c3.y*cb[(a>>2)&3u] + (float)c3.z*cb[(a>>4)&3u] + (float)c3.w*cb[(a>>6)&3u];
+            }
+            acc[r] += (float)nbase[(size_t)(n0+r)*ng+gg]*s;
+        }
+    }
+    #pragma clang loop unroll(full)
+    for (uint r=0;r<8;++r) acc[r]=simd_sum(acc[r]);
+    if (lane==0){
+        device half* ys = y + (size_t)slot*N;
+        for (uint r=0;r<8;++r) ys[n0+r]=(half)acc[r];
+    }
+}
+
+// v3 up: sequential w1/w3, 8 rows per simdgroup
+
+// out[d] = sum_slots route_weight(slot) * eout[slot*D+d]
+kernel void moe_accum_f16(
+    device const half*  eout   [[buffer(0)]],
+    device const half*  probs  [[buffer(1)]],
+    device const float* topk   [[buffer(2)]],
+    device       half*  out    [[buffer(3)]],
+    constant uint& D           [[buffer(4)]],
+    constant uint& k           [[buffer(5)]],
+    constant uint& normalize   [[buffer(6)]],
+    constant float& eps        [[buffer(7)]],
+    constant float& scaling    [[buffer(8)]],
+    uint d [[thread_position_in_grid]])
+{
+    if (d>=D) return;
+    float denom = 1.0f;
+    if (normalize != 0u){
+        float s=0; for (uint j=0;j<k;++j) s += (float)probs[(uint)topk[j]];
+        denom = s + eps;
+    }
+    float acc=0;
+    for (uint j=0;j<k;++j){
+        float p = (float)probs[(uint)topk[j]];
+        if (p <= 0.0f) continue;
+        float w = p/denom*scaling;
+        acc += w*(float)eout[(size_t)j*D + d];
+    }
+    out[d]=(half)acc;
 }
 
 kernel void cq4_gemv_fused(
@@ -153,27 +686,237 @@ kernel void cq4_gemv_fused(
         codem[g*128u+k+2]=(half)zs[perm[k+2]]; codem[g*128u+k+3]=(half)zs[perm[k+3]];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    uint n = tg*ROWS + sgid;
-    if (n>=N) return;
-    float acc=0;
+    uint n0 = (tg*ROWS + sgid)*4u;
+    if (n0>=N) return;
+    float a0=0,a1=0,a2=0,a3=0;
     for (uint base=lane*CQ4_VPL; base<K; base+=32u*CQ4_VPL){
-        uint g = base/gs;
-        uint off = base - g*gs;
+        uint g = base/gs, off = base - g*gs;
         threadgroup const half4* cbase=(threadgroup const half4*)(codem + g*gs + off);
-        device const ushort4* pr=(device const ushort4*)(packed + ((size_t)n*num_groups+g)*pgb + off/2u);
-        ushort4 w=pr[0];
-        float p = 0;
+        device const ushort4* p0=(device const ushort4*)(packed + ((size_t)(n0+0)*num_groups+g)*pgb + off/2u);
+        device const ushort4* p1=(device const ushort4*)(packed + ((size_t)(n0+1)*num_groups+g)*pgb + off/2u);
+        device const ushort4* p2=(device const ushort4*)(packed + ((size_t)(n0+2)*num_groups+g)*pgb + off/2u);
+        device const ushort4* p3=(device const ushort4*)(packed + ((size_t)(n0+3)*num_groups+g)*pgb + off/2u);
+        ushort4 w0=p0[0], w1=p1[0], w2=p2[0], w3=p3[0];
+        float q0=0,q1=0,q2=0,q3=0;
         #pragma clang loop unroll(full)
         for (uint q=0;q<4;++q){
             half4 c=cbase[q];
-            ushort ww = w[q];
-            p += (float)c.x*cb[ww&0xF] + (float)c.y*cb[(ww>>4)&0xF]
-               + (float)c.z*cb[(ww>>8)&0xF] + (float)c.w*cb[(ww>>12)&0xF];
+            ushort wa=w0[q],wb=w1[q],wc=w2[q],wd=w3[q];
+            float cx=(float)c.x, cy=(float)c.y, cz=(float)c.z, cw=(float)c.w;
+            q0 += cx*cb[wa&0xF] + cy*cb[(wa>>4)&0xF] + cz*cb[(wa>>8)&0xF] + cw*cb[(wa>>12)&0xF];
+            q1 += cx*cb[wb&0xF] + cy*cb[(wb>>4)&0xF] + cz*cb[(wb>>8)&0xF] + cw*cb[(wb>>12)&0xF];
+            q2 += cx*cb[wc&0xF] + cy*cb[(wc>>4)&0xF] + cz*cb[(wc>>8)&0xF] + cw*cb[(wc>>12)&0xF];
+            q3 += cx*cb[wd&0xF] + cy*cb[(wd>>4)&0xF] + cz*cb[(wd>>8)&0xF] + cw*cb[(wd>>12)&0xF];
         }
-        acc += (float)norms[(size_t)n*num_groups+g]*p;
+        a0 += (float)norms[(size_t)(n0+0)*num_groups+g]*q0;
+        a1 += (float)norms[(size_t)(n0+1)*num_groups+g]*q1;
+        a2 += (float)norms[(size_t)(n0+2)*num_groups+g]*q2;
+        a3 += (float)norms[(size_t)(n0+3)*num_groups+g]*q3;
     }
-    acc=simd_sum(acc);
-    if (lane==0) y[n]=(half)acc;
+    a0=simd_sum(a0); a1=simd_sum(a1); a2=simd_sum(a2); a3=simd_sum(a3);
+    if (lane==0){ y[n0]=(half)a0; y[n0+1]=(half)a1; y[n0+2]=(half)a2; y[n0+3]=(half)a3; }
+}
+
+// Transform for up-to-3 matrices sharing one input, with the producing
+// residual+norm chain fused in as a prologue:
+//   h = clamp(res + rms(in)*w1)*out_scale   (written to h_out by tg (0,0))
+//   xn = rms(h)*w2                          (kept in threadgroup memory)
+// Each threadgroup redundantly computes the prologue (one simdgroup, cheap),
+// then Hadamard-transforms its (group, matrix) slice of xn.
+kernel void cq4_transform_multi_resid(
+    device const half*  in       [[buffer(0)]],
+    device const half*  w1       [[buffer(1)]],
+    device const half*  res      [[buffer(2)]],
+    device const half*  w2       [[buffer(3)]],
+    device const half*  recip0   [[buffer(4)]],
+    device const half*  recip1   [[buffer(5)]],
+    device const half*  recip2   [[buffer(6)]],
+    device const char*  lsign0   [[buffer(7)]],
+    device const char*  lsign1   [[buffer(8)]],
+    device const char*  lsign2   [[buffer(9)]],
+    device const char*  rsign0   [[buffer(10)]],
+    device const char*  rsign1   [[buffer(11)]],
+    device const char*  rsign2   [[buffer(12)]],
+    device const uint*  perm0    [[buffer(13)]],
+    device const uint*  perm1    [[buffer(14)]],
+    device const uint*  perm2    [[buffer(15)]],
+    device       half*  code0    [[buffer(16)]],
+    device       half*  code1    [[buffer(17)]],
+    device       half*  code2    [[buffer(18)]],
+    device       half*  h_out    [[buffer(19)]],
+    constant uint&  K            [[buffer(20)]],
+    constant float& out_scale    [[buffer(21)]],
+    constant float& eps          [[buffer(22)]],
+    uint2 tgp [[threadgroup_position_in_grid]],
+    uint2 lp  [[thread_position_in_threadgroup]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    threadgroup half* xn         [[threadgroup(0)]])
+{
+    const uint m = tgp.y, tl = lp.x;
+    threadgroup half* hm = xn + K;
+    threadgroup float* zsb = (threadgroup float*)(hm + K);   // 8*128 floats
+    threadgroup float* red = zsb + 8u*128u;                  // 8 floats
+    // ---- prologue with all 256 threads ----
+    {
+        float p=0; for (uint i=tl;i<K;i+=256u){ float v=(float)in[i]; p+=v*v; }
+        p = simd_sum(p);
+        if (lane==0) red[sgid]=p;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        float s2=0; for (uint i=0;i<8u;++i) s2+=red[i];
+        float inv1 = 1.0f/sqrt(s2/(float)K + eps);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        float p2=0;
+        for (uint i=tl;i<K;i+=256u){
+            float rr=(float)res[i]+(float)(half)((float)in[i]*inv1*(float)w1[i]);
+            half hv=(half)((float)(half)clamp(rr,-65500.0f,65500.0f)*out_scale);
+            hm[i]=hv;
+            float v=(float)hv; p2+=v*v;
+        }
+        p2 = simd_sum(p2);
+        if (lane==0) red[sgid]=p2;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        float s3=0; for (uint i=0;i<8u;++i) s3+=red[i];
+        float inv2 = 1.0f/sqrt(s3/(float)K + eps);
+        for (uint i=tl;i<K;i+=256u) xn[i]=(half)((float)hm[i]*inv2*(float)w2[i]);
+        if (tgp.x==0u && m==0u) for (uint i=tl;i<K;i+=256u) h_out[i]=hm[i];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    device const half* recip = (m==0u)?recip0:(m==1u)?recip1:recip2;
+    device const char* lsign = (m==0u)?lsign0:(m==1u)?lsign1:lsign2;
+    device const char* rsign = (m==0u)?rsign0:(m==1u)?rsign1:rsign2;
+    device const uint* perm  = (m==0u)?perm0:(m==1u)?perm1:perm2;
+    device       half* code  = (m==0u)?code0:(m==1u)?code1:code2;
+
+    // each simdgroup transforms one 128-group
+    uint g = tgp.x*8u + sgid;
+    if (g >= K/128u) return;
+    threadgroup float* zs = zsb + sgid*128u;
+    uint b = g*128u + lane*4u;
+    uint k = lane*4u;
+    float x0=(float)xn[b+0]*(float)recip[b+0]*(float)lsign[k+0];
+    float x1=(float)xn[b+1]*(float)recip[b+1]*(float)lsign[k+1];
+    float x2=(float)xn[b+2]*(float)recip[b+2]*(float)lsign[k+2];
+    float x3=(float)xn[b+3]*(float)recip[b+3]*(float)lsign[k+3];
+    float a0=x0+x1,a1=x0-x1,a2=x2+x3,a3=x2-x3;
+    x0=a0+a2; x1=a1+a3; x2=a0-a2; x3=a1-a3;
+    #pragma clang loop unroll(full)
+    for (uint d=1u; d<=16u; d<<=1){
+        bool hi=(lane&d)!=0u;
+        float p0=simd_shuffle_xor(x0,d),p1=simd_shuffle_xor(x1,d),p2s=simd_shuffle_xor(x2,d),p3=simd_shuffle_xor(x3,d);
+        x0=hi?p0-x0:x0+p0; x1=hi?p1-x1:x1+p1; x2=hi?p2s-x2:x2+p2s; x3=hi?p3-x3:x3+p3;
+    }
+    float s=rsqrt(128.0f);
+    zs[k+0]=x0*s*(float)rsign[k+0]; zs[k+1]=x1*s*(float)rsign[k+1];
+    zs[k+2]=x2*s*(float)rsign[k+2]; zs[k+3]=x3*s*(float)rsign[k+3];
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+    code[b+0]=(half)zs[perm[k+0]]; code[b+1]=(half)zs[perm[k+1]];
+    code[b+2]=(half)zs[perm[k+2]]; code[b+3]=(half)zs[perm[k+3]];
+}
+
+// pd projection (single-dispatch transform+gemv) with its producing
+// residual fused in: x = h2 = clamp(res + rms(in)*w1); tg 0 writes h2.
+kernel void cq4_gemv_fused_resid(
+    device const half*  in       [[buffer(0)]],
+    device const uchar* packed   [[buffer(1)]],
+    device const half*  codebook [[buffer(2)]],
+    device const half*  norms    [[buffer(3)]],
+    device       half*  y        [[buffer(4)]],
+    constant uint& gs            [[buffer(5)]],
+    constant uint& num_groups    [[buffer(6)]],
+    constant uint& pgb           [[buffer(7)]],
+    constant uint& N             [[buffer(8)]],
+    device const half* recip     [[buffer(9)]],
+    device const char* lsign     [[buffer(10)]],
+    device const char* rsign     [[buffer(11)]],
+    device const uint* perm      [[buffer(12)]],
+    device const half* w1        [[buffer(13)]],
+    device const half* res       [[buffer(14)]],
+    device       half* h_out     [[buffer(15)]],
+    constant float& eps          [[buffer(16)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint tl   [[thread_index_in_threadgroup]],
+    threadgroup half* codem      [[threadgroup(0)]])
+{
+    threadgroup float cb[16];
+    if (tl<16) cb[tl]=(float)codebook[tl];
+    const uint K = num_groups*gs;
+    threadgroup half* hm = codem + K;                          // K halves
+    threadgroup float* zsb = (threadgroup float*)(hm + K);     // ROWS*128 floats
+    threadgroup float* red = zsb + ROWS*128u;                  // ROWS floats
+
+    // prologue: h2 into tg memory (all threads)
+    {
+        float p=0; for (uint i=tl;i<K;i+=256u){ float v=(float)in[i]; p+=v*v; }
+        p = simd_sum(p);
+        if (lane==0) red[sgid]=p;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        float s2=0; for (uint i=0;i<ROWS;++i) s2+=red[i];
+        float inv1 = 1.0f/sqrt(s2/(float)K + eps);
+        for (uint i=tl;i<K;i+=256u){
+            float rr=(float)res[i]+(float)(half)((float)in[i]*inv1*(float)w1[i]);
+            hm[i]=(half)clamp(rr,-65500.0f,65500.0f);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tg==0u) for (uint i=tl;i<K;i+=256u) h_out[i]=hm[i];
+    }
+    // transform from tg memory
+    threadgroup float* zs = zsb + sgid*128u;
+    for (uint g=sgid; g<num_groups; g+=ROWS) {
+        uint b = g*128u + lane*4u;
+        uint k = lane*4u;
+        float x0=(float)hm[b+0]*(float)recip[b+0]*(float)lsign[k+0];
+        float x1=(float)hm[b+1]*(float)recip[b+1]*(float)lsign[k+1];
+        float x2=(float)hm[b+2]*(float)recip[b+2]*(float)lsign[k+2];
+        float x3=(float)hm[b+3]*(float)recip[b+3]*(float)lsign[k+3];
+        float a0=x0+x1,a1=x0-x1,a2=x2+x3,a3=x2-x3;
+        x0=a0+a2; x1=a1+a3; x2=a0-a2; x3=a1-a3;
+        #pragma clang loop unroll(full)
+        for (uint d=1u; d<=16u; d<<=1){
+            bool hi=(lane&d)!=0u;
+            float p0=simd_shuffle_xor(x0,d),p1=simd_shuffle_xor(x1,d),p2=simd_shuffle_xor(x2,d),p3=simd_shuffle_xor(x3,d);
+            x0=hi?p0-x0:x0+p0; x1=hi?p1-x1:x1+p1; x2=hi?p2-x2:x2+p2; x3=hi?p3-x3:x3+p3;
+        }
+        float s=rsqrt(128.0f);
+        zs[k+0]=x0*s*(float)rsign[k+0]; zs[k+1]=x1*s*(float)rsign[k+1];
+        zs[k+2]=x2*s*(float)rsign[k+2]; zs[k+3]=x3*s*(float)rsign[k+3];
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        codem[g*128u+k+0]=(half)zs[perm[k+0]]; codem[g*128u+k+1]=(half)zs[perm[k+1]];
+        codem[g*128u+k+2]=(half)zs[perm[k+2]]; codem[g*128u+k+3]=(half)zs[perm[k+3]];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint n0 = (tg*ROWS + sgid)*4u;
+    if (n0>=N) return;
+    float a0=0,a1=0,a2=0,a3=0;
+    for (uint base=lane*CQ4_VPL; base<K; base+=32u*CQ4_VPL){
+        uint g = base/gs, off = base - g*gs;
+        threadgroup const half4* cbase=(threadgroup const half4*)(codem + g*gs + off);
+        device const ushort4* p0=(device const ushort4*)(packed + ((size_t)(n0+0)*num_groups+g)*pgb + off/2u);
+        device const ushort4* p1=(device const ushort4*)(packed + ((size_t)(n0+1)*num_groups+g)*pgb + off/2u);
+        device const ushort4* p2=(device const ushort4*)(packed + ((size_t)(n0+2)*num_groups+g)*pgb + off/2u);
+        device const ushort4* p3=(device const ushort4*)(packed + ((size_t)(n0+3)*num_groups+g)*pgb + off/2u);
+        ushort4 w0=p0[0], w1v=p1[0], w2v=p2[0], w3v=p3[0];
+        float q0=0,q1=0,q2=0,q3=0;
+        #pragma clang loop unroll(full)
+        for (uint q=0;q<4;++q){
+            half4 c=cbase[q];
+            ushort wa=w0[q],wb=w1v[q],wc=w2v[q],wd=w3v[q];
+            float cx=(float)c.x, cy=(float)c.y, cz=(float)c.z, cw=(float)c.w;
+            q0 += cx*cb[wa&0xF] + cy*cb[(wa>>4)&0xF] + cz*cb[(wa>>8)&0xF] + cw*cb[(wa>>12)&0xF];
+            q1 += cx*cb[wb&0xF] + cy*cb[(wb>>4)&0xF] + cz*cb[(wb>>8)&0xF] + cw*cb[(wb>>12)&0xF];
+            q2 += cx*cb[wc&0xF] + cy*cb[(wc>>4)&0xF] + cz*cb[(wc>>8)&0xF] + cw*cb[(wc>>12)&0xF];
+            q3 += cx*cb[wd&0xF] + cy*cb[(wd>>4)&0xF] + cz*cb[(wd>>8)&0xF] + cw*cb[(wd>>12)&0xF];
+        }
+        a0 += (float)norms[(size_t)(n0+0)*num_groups+g]*q0;
+        a1 += (float)norms[(size_t)(n0+1)*num_groups+g]*q1;
+        a2 += (float)norms[(size_t)(n0+2)*num_groups+g]*q2;
+        a3 += (float)norms[(size_t)(n0+3)*num_groups+g]*q3;
+    }
+    a0=simd_sum(a0); a1=simd_sum(a1); a2=simd_sum(a2); a3=simd_sum(a3);
+    if (lane==0){ y[n0]=(half)a0; y[n0+1]=(half)a1; y[n0+2]=(half)a2; y[n0+3]=(half)a3; }
 }
 
 kernel void cq4_transform_m(
@@ -642,11 +1385,6 @@ kernel void scalar_f16(device const half* in [[buffer(0)]], device half* y [[buf
     y[i]=(half)r;
 }
 
-inline float gelu_tanh(float x) {
-    float c = 0.7978845608028654f * (x + 0.044715f*x*x*x);
-    return 0.5f * x * (1.0f + precise::tanh(c));
-}
-
 kernel void unary_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
                       constant uint& n [[buffer(2)]], constant int& op [[buffer(3)]],
                       uint i [[thread_position_in_grid]]) {
@@ -825,27 +1563,35 @@ kernel void cq4_gemv_fused_swiglu(
         codem[g*128u+k+2]=(half)zs[perm[k+2]]; codem[g*128u+k+3]=(half)zs[perm[k+3]];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    uint n = tg*ROWS + sgid;
-    if (n>=N) return;
-    float acc=0;
+    uint n0 = (tg*ROWS + sgid)*4u;
+    if (n0>=N) return;
+    float a0v=0,a1v=0,a2v=0,a3v=0;
     for (uint base=lane*CQ4_VPL; base<K; base+=32u*CQ4_VPL){
-        uint g = base/gs;
-        uint off = base - g*gs;
+        uint g = base/gs, off = base - g*gs;
         threadgroup const half4* cbase=(threadgroup const half4*)(codem + g*gs + off);
-        device const ushort4* pr=(device const ushort4*)(packed + ((size_t)n*num_groups+g)*pgb + off/2u);
-        ushort4 w=pr[0];
-        float p = 0;
+        device const ushort4* q0p=(device const ushort4*)(packed + ((size_t)(n0+0)*num_groups+g)*pgb + off/2u);
+        device const ushort4* q1p=(device const ushort4*)(packed + ((size_t)(n0+1)*num_groups+g)*pgb + off/2u);
+        device const ushort4* q2p=(device const ushort4*)(packed + ((size_t)(n0+2)*num_groups+g)*pgb + off/2u);
+        device const ushort4* q3p=(device const ushort4*)(packed + ((size_t)(n0+3)*num_groups+g)*pgb + off/2u);
+        ushort4 w0=q0p[0], w1=q1p[0], w2=q2p[0], w3=q3p[0];
+        float q0=0,q1=0,q2=0,q3=0;
         #pragma clang loop unroll(full)
         for (uint q=0;q<4;++q){
             half4 c=cbase[q];
-            ushort ww = w[q];
-            p += (float)c.x*cb[ww&0xF] + (float)c.y*cb[(ww>>4)&0xF]
-               + (float)c.z*cb[(ww>>8)&0xF] + (float)c.w*cb[(ww>>12)&0xF];
+            ushort wa=w0[q],wb=w1[q],wc=w2[q],wd=w3[q];
+            float cx=(float)c.x, cy=(float)c.y, cz=(float)c.z, cw=(float)c.w;
+            q0 += cx*cb[wa&0xF] + cy*cb[(wa>>4)&0xF] + cz*cb[(wa>>8)&0xF] + cw*cb[(wa>>12)&0xF];
+            q1 += cx*cb[wb&0xF] + cy*cb[(wb>>4)&0xF] + cz*cb[(wb>>8)&0xF] + cw*cb[(wb>>12)&0xF];
+            q2 += cx*cb[wc&0xF] + cy*cb[(wc>>4)&0xF] + cz*cb[(wc>>8)&0xF] + cw*cb[(wc>>12)&0xF];
+            q3 += cx*cb[wd&0xF] + cy*cb[(wd>>4)&0xF] + cz*cb[(wd>>8)&0xF] + cw*cb[(wd>>12)&0xF];
         }
-        acc += (float)norms[(size_t)n*num_groups+g]*p;
+        a0v += (float)norms[(size_t)(n0+0)*num_groups+g]*q0;
+        a1v += (float)norms[(size_t)(n0+1)*num_groups+g]*q1;
+        a2v += (float)norms[(size_t)(n0+2)*num_groups+g]*q2;
+        a3v += (float)norms[(size_t)(n0+3)*num_groups+g]*q3;
     }
-    acc=simd_sum(acc);
-    if (lane==0) y[n]=(half)acc;
+    a0v=simd_sum(a0v); a1v=simd_sum(a1v); a2v=simd_sum(a2v); a3v=simd_sum(a3v);
+    if (lane==0){ y[n0]=(half)a0v; y[n0+1]=(half)a1v; y[n0+2]=(half)a2v; y[n0+3]=(half)a3v; }
 }
 
 kernel void cast_f16_f32(device const half* in [[buffer(0)]], device float* out [[buffer(1)]], constant uint& n [[buffer(2)]], uint i [[thread_position_in_grid]]){ if(i<n) out[i]=(float)in[i]; }
@@ -1056,6 +1802,185 @@ kernel void attn_decode_i8(
             float acc = 0.0f;
             for (uint i=0;i<nsg;++i) acc += Otg[(size_t)i*v_hdim + d] * exp(mtg[i] - gm);
             part_o[(size_t)slot*v_hdim + d] = acc;
+        }
+    }
+}
+
+// Fused decode-attention prologue + flash attention:
+// per-head rms-norm + rope for q, rms+rope for the new k, rms for the new v,
+// int8 kv-cache append (by threadgroup 0), and attention — one dispatch.
+// use_local: the key/value at position local_slot comes from the freshly
+// computed kr/vn instead of the cache (covers both append-at-end and
+// ring-slot-replacement). All threadgroups recompute kr/vn redundantly.
+kernel void attn_decode_fused_i8(
+    device const half*  qraw  [[buffer(0)]],
+    device const half*  kraw  [[buffer(1)]],
+    device const half*  vraw  [[buffer(2)]],
+    device const half*  qw    [[buffer(3)]],
+    device const half*  kw    [[buffer(4)]],
+    device const half*  vw    [[buffer(5)]],
+    device const half*  cs    [[buffer(6)]],
+    device const half*  sn    [[buffer(7)]],
+    device       char*  kc    [[buffer(8)]],
+    device       char*  vc    [[buffer(9)]],
+    device       float* ks    [[buffer(10)]],
+    device       float* vs    [[buffer(11)]],
+    device       half*  out   [[buffer(12)]],
+    constant uint& num_q_heads [[buffer(13)]],
+    constant uint& head_dim    [[buffer(14)]],
+    constant float& scale      [[buffer(15)]],
+    constant uint& kv_start    [[buffer(16)]],
+    constant uint& kv_end      [[buffer(17)]],
+    constant uint& use_local   [[buffer(18)]],
+    constant uint& local_slot  [[buffer(19)]],
+    constant float& eps        [[buffer(20)]],
+    device       float* part_o [[buffer(21)]],
+    device       float* part_ml[[buffer(22)]],
+    constant uint& nwg         [[buffer(23)]],
+    uint tg [[threadgroup_position_in_grid]], uint t [[thread_position_in_threadgroup]],
+    uint T [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+    uint sg [[simdgroup_index_in_threadgroup]], threadgroup float* smem [[threadgroup(0)]])
+{
+    const uint hd = head_dim;
+    uint h = tg / nwg, w = tg % nwg;
+    uint nsg = T / 32u;
+    uint hh = hd/2u;
+
+    // smem layout (floats): Otg[nsg*hd] | mtg[nsg] | ltg[nsg] | kr[hd] | vn[hd] | red[256]
+    threadgroup float* Otg = smem;
+    threadgroup float* mtg = Otg + (size_t)nsg*hd;
+    threadgroup float* ltg = mtg + nsg;
+    threadgroup float* krm = ltg + nsg;
+    threadgroup float* vnm = krm + hd;
+    threadgroup float* red = vnm + hd;
+
+    // fast rms sum: per-simdgroup simd_sum, then combine across simdgroups
+    auto rms_inv = [&](device const half* src) {
+        float p=0; for (uint i=t;i<hd;i+=T){ float v=(float)src[i]; p+=v*v; }
+        p = simd_sum(p);
+        if (lane==0) red[sg]=p;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        float s=0; for (uint i=0;i<nsg;++i) s+=red[i];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        return 1.0f/sqrt(s/(float)hd + eps);
+    };
+
+    // ---- q: rms + rope for this head ----
+    device const half* qh = qraw + (size_t)h*hd;
+    float inv_q = rms_inv(qh);
+
+    float qreg[16];
+    { uint i=0; for (uint d=lane; d<hd; d+=32){
+        float xn = (float)(half)((float)qh[d]*inv_q*(float)qw[d]);
+        uint dr = (d<hh)?(d+hh):(d-hh);
+        float xr = (float)(half)((float)qh[dr]*inv_q*(float)qw[dr]);
+        float rot = (d<hh)? -xr : xr;
+        qreg[i++] = (float)(half)(xn*(float)cs[d] + rot*(float)sn[d]);
+    } }
+
+    // ---- new k/v: rms(+rope) into threadgroup memory ----
+    // only the workgroup whose key stripe covers local_slot (and the appender,
+    // threadgroup 0) actually needs kr/vn
+    bool need_local = false;
+    if (use_local != 0u) {
+        uint stride0 = nwg*nsg;
+        uint gsg0 = (local_slot - kv_start) % stride0;
+        uint w0 = gsg0 / nsg;
+        need_local = (w == w0) || (tg == 0u);
+    }
+    if (need_local) {
+        float inv_k = rms_inv(kraw);
+        float inv_v = rms_inv(vraw);
+        for (uint d=t; d<hd; d+=T){
+            float xn = (float)(half)((float)kraw[d]*inv_k*(float)kw[d]);
+            uint dr = (d<hh)?(d+hh):(d-hh);
+            float xr = (float)(half)((float)kraw[dr]*inv_k*(float)kw[dr]);
+            float rot = (d<hh)? -xr : xr;
+            krm[d] = (float)(half)(xn*(float)cs[d] + rot*(float)sn[d]);
+            vnm[d] = (float)(half)((float)vraw[d]*inv_v*(float)vw[d]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        // append to cache: threadgroup 0 only, matching kv_append_i8 exactly
+        if (tg == 0u) {
+            uint num_groups = hd/32u;
+            for (uint g=t; g<num_groups; g+=T){
+                uint gstart=g*32u;
+                float maxabs=0;
+                for (uint k2=0;k2<32u;++k2) maxabs = max(maxabs, fabs(krm[gstart+k2]));
+                float sc = maxabs/127.0f; if (sc < 1e-10f) sc = 1e-10f;
+                float inv = 1.0f/sc;
+                device char* dst = kc + (size_t)local_slot*hd + gstart;
+                for (uint k2=0;k2<32u;++k2) dst[k2]=(char)clamp(rint(krm[gstart+k2]*inv), -128.0f, 127.0f);
+                ks[(size_t)local_slot*num_groups + g] = sc;
+                maxabs=0;
+                for (uint k2=0;k2<32u;++k2) maxabs = max(maxabs, fabs(vnm[gstart+k2]));
+                sc = maxabs/127.0f; if (sc < 1e-10f) sc = 1e-10f;
+                inv = 1.0f/sc;
+                device char* dstv = vc + (size_t)local_slot*hd + gstart;
+                for (uint k2=0;k2<32u;++k2) dstv[k2]=(char)clamp(rint(vnm[gstart+k2]*inv), -128.0f, 127.0f);
+                vs[(size_t)local_slot*num_groups + g] = sc;
+            }
+        }
+    } else {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // ---- flash attention over [kv_start, kv_end) ----
+    uint ngK = hd/32u;
+    float o_acc[16];
+    for (uint i=0;i<16;++i) o_acc[i] = 0.0f;
+    float m_i = -INFINITY, l_i = 0.0f;
+
+    uint gsg = w*nsg + sg, stride = nwg*nsg;
+    for (uint k = kv_start + gsg; k < kv_end; k += stride) {
+        float partial = 0.0f;
+        bool local = (use_local != 0u) && (k == local_slot);
+        if (local) {
+            uint i=0; for (uint d=lane; d<hd; d+=32){ partial += qreg[i]*krm[d]; ++i; }
+        } else {
+            device const char*  kk  = kc + (size_t)k*hd;
+            device const float* kss = ks + (size_t)k*ngK;
+            uint i=0; for (uint d=lane; d<hd; d+=32){ partial += qreg[i] * ((float)kk[d]*kss[d/32]); ++i; }
+        }
+        float s = simd_sum(partial) * scale;
+        float m_new = max(m_i, s);
+        float resc  = exp(m_i - m_new);
+        float p     = exp(s - m_new);
+        l_i = l_i * resc + p;
+        if (local) {
+            uint i=0; for (uint d=lane; d<hd; d+=32){ o_acc[i] = o_acc[i]*resc + p*vnm[d]; ++i; }
+        } else {
+            device const char*  vvv = vc + (size_t)k*hd;
+            device const float* vss = vs + (size_t)k*ngK;
+            uint i=0; for (uint d=lane; d<hd; d+=32){ o_acc[i] = o_acc[i]*resc + p*((float)vvv[d]*vss[d/32]); ++i; }
+        }
+        m_i = m_new;
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (lane == 0) { mtg[sg] = m_i; ltg[sg] = l_i; }
+    { uint i=0; for (uint d=lane; d<hd; d+=32) { Otg[(size_t)sg*hd + d] = o_acc[i]; ++i; } }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float gm = -INFINITY;
+    for (uint i=0;i<nsg;++i) gm = max(gm, mtg[i]);
+    float gl = 0.0f;
+    for (uint i=0;i<nsg;++i) gl += ltg[i] * exp(mtg[i] - gm);
+
+    if (nwg == 1u) {
+        float inv = gl > 0.0f ? 1.0f/gl : 0.0f;
+        for (uint d=t; d<hd; d+=T) {
+            float acc = 0.0f;
+            for (uint i=0;i<nsg;++i) acc += Otg[(size_t)i*hd + d] * exp(mtg[i] - gm);
+            out[(size_t)h*hd + d] = (half)(acc * inv);
+        }
+    } else {
+        uint slot2 = h*nwg + w;
+        if (t == 0) { part_ml[(size_t)slot2*2] = gm; part_ml[(size_t)slot2*2 + 1] = gl; }
+        for (uint d=t; d<hd; d+=T) {
+            float acc = 0.0f;
+            for (uint i=0;i<nsg;++i) acc += Otg[(size_t)i*hd + d] * exp(mtg[i] - gm);
+            part_o[(size_t)slot2*hd + d] = acc;
         }
     }
 }
