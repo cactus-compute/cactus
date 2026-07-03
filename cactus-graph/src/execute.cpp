@@ -1368,13 +1368,13 @@ void CactusGraph::execute(const std::string& profile_file) {
     }
 
     std::vector<bool> keep_until_graph_cleanup(n, false);
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = n; i-- > 0;) {
         const auto& node = *nodes_[i];
         if (!aliases_input(node) || node.input_ids.empty()) continue;
         auto it = node_index_map_.find(node.input_ids[0]);
         if (it == node_index_map_.end()) continue;
         size_t base_idx = it->second;
-        if (use_count[i] == 0) {
+        if (use_count[i] == 0 || keep_until_graph_cleanup[i]) {
             keep_until_graph_cleanup[base_idx] = true;
         } else {
             last_use[base_idx] = std::max(last_use[base_idx], last_use[i]);
@@ -1474,6 +1474,12 @@ void CactusGraph::execute(const std::string& profile_file) {
         };
         const std::vector<uint32_t>* elist = fplan ? cactus_metal_plan_exec_list(fplan) : nullptr;
         size_t iter_count = elist ? elist->size() : n;
+        if (fplan) {
+            for (size_t ii = 0; ii < iter_count; ++ii) {
+                size_t i = elist ? (size_t)(*elist)[ii] : ii;
+                if (cactus_metal_plan_action(fplan, i) == -3) assign_persistent_act(*nodes_[i]);
+            }
+        }
         for (size_t ii = 0; ii < iter_count; ++ii) {
             size_t i = elist ? (size_t)(*elist)[ii] : ii;
             auto& node = nodes_[i];

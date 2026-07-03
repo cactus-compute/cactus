@@ -215,8 +215,13 @@ MetalFusePlan* cactus_metal_plan_build(
         return i;
     };
 
+    auto release_scratch = [&](MetalCluster& c) {
+        if (c.s0) { cactus_metal_free_shared(c.s0); c.s0 = nullptr; }
+        if (c.s1) { cactus_metal_free_shared(c.s1); c.s1 = nullptr; }
+        for (auto& sp : c.sc) if (sp) { cactus_metal_free_shared(sp); sp = nullptr; }
+    };
     auto add_cluster = [&](MetalCluster c, size_t anchor, const std::vector<size_t>& cover) -> bool {
-        for (size_t v : cover) if (v != anchor && pinned[v]) return false;
+        for (size_t v : cover) if (v != anchor && pinned[v]) { release_scratch(c); return false; }
         int32_t cid = (int32_t)plan->clusters.size();
         plan->clusters.push_back(c);
         for (size_t v : cover) if (v != anchor) plan->action[v] = -2;
@@ -792,12 +797,7 @@ MetalFusePlan* cactus_metal_plan_build(
             for (size_t base = 0; base + 1 < mms.size(); base += 3) {
                 size_t cnt = std::min<size_t>(3, mms.size() - base);
                 if (cnt < 2) break;
-                size_t anchor_i = mms[base + cnt - 1];
-                bool ordered = true;
-                for (size_t mi = 0; mi < cnt && ordered; ++mi)
-                    for (size_t cc : cons[mms[base + mi]])
-                        if (cc < anchor_i && plan->action[cc] != -2) { ordered = false; break; }
-                if (!ordered) continue;
+                size_t anchor_i = mms[base];
                 MetalCluster c;
                 c.rule = 2;
                 c.a0 = (size_t)src;
@@ -805,6 +805,7 @@ MetalFusePlan* cactus_metal_plan_build(
                 c.b1 = mms[base + 1];
                 c.b2 = cnt > 2 ? mms[base + 2] : 0;
                 c.u0 = (uint32_t)cnt;
+                c.b4 = anchor_i;
                 size_t maxK = 0;
                 for (size_t mi = 0; mi < cnt; ++mi) {
                     const BufferDesc& rb = nodes[(size_t)idxof(nodes[mms[base + mi]]->input_ids[1])]->output_buffer;
@@ -814,8 +815,8 @@ MetalFusePlan* cactus_metal_plan_build(
                 for (uint32_t bi = 0; bi < c.u0; ++bi)
                     if (!c.sc[bi]) c.sc[bi] = cactus_metal_alloc_shared(maxK * 2);
                 std::vector<size_t> cover;
-                if (add_cluster(c, mms[base + cnt - 1], cover))
-                    for (size_t mi = 0; mi + 1 < cnt; ++mi) plan->action[mms[base + mi]] = -3;
+                if (add_cluster(c, anchor_i, cover))
+                    for (size_t mi = 1; mi < cnt; ++mi) plan->action[mms[base + mi]] = -3;
             }
         }
     }
@@ -1177,6 +1178,7 @@ MetalFusePlan* cactus_metal_plan_build(
             size_t i = ui;
             const GraphNode& nd = *nodes[i];
             if (plan->action[i] == -2) continue;
+            if (pinned[i]) continue;
             if (nd.op_type == OpType::KV_CACHE_STATE || nd.op_type == OpType::CONV_CACHE_STATE
                 || nd.op_type == OpType::RECURRENT_CACHE_STATE || nd.op_type == OpType::KV_CACHE_APPEND
                 || nd.op_type == OpType::PERSISTENT) continue;
@@ -1256,6 +1258,7 @@ int32_t cactus_metal_plan_action(const MetalFusePlan* p, size_t i) {
     return p && i < p->action.size() ? p->action[i] : -1;
 }
 
+
 const std::vector<uint32_t>* cactus_metal_plan_exec_list(const MetalFusePlan* p) {
     return p ? &p->exec_list : nullptr;
 }
@@ -1291,6 +1294,7 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             if (!km || !vm) return false;
             size_t clen = km[0], mx = km[1], sink = km[4];
             uint32_t hd = c.u1 & 0xFFFFu, nqh = c.u0;
+            if (km[2] != 1 || vm[3] != km[3] || hd == 0 || hd > 512u) return false;
             bool has_new = (c.u1 & 0x10000u) != 0;
             size_t ng = (hd + 31) / 32;
             size_t win = anchor.params.window_size;
@@ -1337,6 +1341,7 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
                 if (!outs[bi] || !c.sc[bi]) return false;
             }
             const void* x = nodes[c.a0]->output_buffer.get_data();
+            if (!x) return false;
             void* codes[3] = { c.sc[0], c.sc[1], c.sc[2] };
             if (cactus_metal_encode_transform_batch(x, Wp, (int)c.u0, codes)) {
                 const void* ccodes[3] = { c.sc[0], c.sc[1], c.sc[2] };

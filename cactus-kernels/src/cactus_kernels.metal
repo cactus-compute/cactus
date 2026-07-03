@@ -17,6 +17,28 @@ inline float gelu_tanh(float x) {
     return 0.5f * x * (1.0f + precise::tanh(c));
 }
 
+static inline void cq4_hada128(thread float& x0, thread float& x1,
+                               thread float& x2, thread float& x3, uint lane) {
+    float a0=x0+x1,a1=x0-x1,a2=x2+x3,a3=x2-x3;
+    x0=a0+a2; x1=a1+a3; x2=a0-a2; x3=a1-a3;
+    #pragma clang loop unroll(full)
+    for (uint d=1u; d<=16u; d<<=1){
+        bool hi=(lane&d)!=0u;
+        float p0=simd_shuffle_xor(x0,d),p1=simd_shuffle_xor(x1,d),p2=simd_shuffle_xor(x2,d),p3=simd_shuffle_xor(x3,d);
+        x0=hi?p0-x0:x0+p0; x1=hi?p1-x1:x1+p1; x2=hi?p2-x2:x2+p2; x3=hi?p3-x3:x3+p3;
+    }
+    float s=rsqrt(128.0f);
+    x0*=s; x1*=s; x2*=s; x3*=s;
+}
+
+static inline float cq4_dot64(half4 c0, half4 c1, half4 c2, half4 c3,
+                              ushort4 w, threadgroup const float* cb) {
+    return (float)c0.x*cb[w[0]&0xF] + (float)c0.y*cb[(w[0]>>4)&0xF] + (float)c0.z*cb[(w[0]>>8)&0xF] + (float)c0.w*cb[(w[0]>>12)&0xF]
+         + (float)c1.x*cb[w[1]&0xF] + (float)c1.y*cb[(w[1]>>4)&0xF] + (float)c1.z*cb[(w[1]>>8)&0xF] + (float)c1.w*cb[(w[1]>>12)&0xF]
+         + (float)c2.x*cb[w[2]&0xF] + (float)c2.y*cb[(w[2]>>4)&0xF] + (float)c2.z*cb[(w[2]>>8)&0xF] + (float)c2.w*cb[(w[2]>>12)&0xF]
+         + (float)c3.x*cb[w[3]&0xF] + (float)c3.y*cb[(w[3]>>4)&0xF] + (float)c3.z*cb[(w[3]>>8)&0xF] + (float)c3.w*cb[(w[3]>>12)&0xF];
+}
+
 kernel void cq4_transform(
     device const half*  x        [[buffer(0)]],
     device const half*  recip    [[buffer(1)]],
@@ -60,17 +82,9 @@ kernel void cq4_transform_simd(
     float x1=(float)x[b+1]*(float)recip[b+1]*(float)lsign[k+1];
     float x2=(float)x[b+2]*(float)recip[b+2]*(float)lsign[k+2];
     float x3=(float)x[b+3]*(float)recip[b+3]*(float)lsign[k+3];
-    float a0=x0+x1,a1=x0-x1,a2=x2+x3,a3=x2-x3;
-    x0=a0+a2; x1=a1+a3; x2=a0-a2; x3=a1-a3;
-    #pragma clang loop unroll(full)
-    for (uint d=1u; d<=16u; d<<=1){
-        bool hi=(lane&d)!=0u;
-        float p0=simd_shuffle_xor(x0,d),p1=simd_shuffle_xor(x1,d),p2=simd_shuffle_xor(x2,d),p3=simd_shuffle_xor(x3,d);
-        x0=hi?p0-x0:x0+p0; x1=hi?p1-x1:x1+p1; x2=hi?p2-x2:x2+p2; x3=hi?p3-x3:x3+p3;
-    }
-    float s=rsqrt(128.0f);
-    zmem[k+0]=x0*s*(float)rsign[k+0]; zmem[k+1]=x1*s*(float)rsign[k+1];
-    zmem[k+2]=x2*s*(float)rsign[k+2]; zmem[k+3]=x3*s*(float)rsign[k+3];
+    cq4_hada128(x0, x1, x2, x3, lane);
+    zmem[k+0]=x0*(float)rsign[k+0]; zmem[k+1]=x1*(float)rsign[k+1];
+    zmem[k+2]=x2*(float)rsign[k+2]; zmem[k+3]=x3*(float)rsign[k+3];
     threadgroup_barrier(mem_flags::mem_threadgroup);
     code[b+0]=(half)zmem[perm[k+0]]; code[b+1]=(half)zmem[perm[k+1]];
     code[b+2]=(half)zmem[perm[k+2]]; code[b+3]=(half)zmem[perm[k+3]];
@@ -98,17 +112,9 @@ kernel void cq4_transform_batch(
     float x1=(float)x[base+1]*(float)recip[base+1]*(float)lsign[k+1];
     float x2=(float)x[base+2]*(float)recip[base+2]*(float)lsign[k+2];
     float x3=(float)x[base+3]*(float)recip[base+3]*(float)lsign[k+3];
-    float a0=x0+x1,a1=x0-x1,a2=x2+x3,a3=x2-x3;
-    x0=a0+a2; x1=a1+a3; x2=a0-a2; x3=a1-a3;
-    #pragma clang loop unroll(full)
-    for (uint d=1u; d<=16u; d<<=1){
-        bool hi=(lane&d)!=0u;
-        float p0=simd_shuffle_xor(x0,d),p1=simd_shuffle_xor(x1,d),p2=simd_shuffle_xor(x2,d),p3=simd_shuffle_xor(x3,d);
-        x0=hi?p0-x0:x0+p0; x1=hi?p1-x1:x1+p1; x2=hi?p2-x2:x2+p2; x3=hi?p3-x3:x3+p3;
-    }
-    float s=rsqrt(128.0f);
-    zmem[k+0]=x0*s*(float)rsign[k+0]; zmem[k+1]=x1*s*(float)rsign[k+1];
-    zmem[k+2]=x2*s*(float)rsign[k+2]; zmem[k+3]=x3*s*(float)rsign[k+3];
+    cq4_hada128(x0, x1, x2, x3, lane);
+    zmem[k+0]=x0*(float)rsign[k+0]; zmem[k+1]=x1*(float)rsign[k+1];
+    zmem[k+2]=x2*(float)rsign[k+2]; zmem[k+3]=x3*(float)rsign[k+3];
     threadgroup_barrier(mem_flags::mem_threadgroup);
     code[base+0]=(half)zmem[perm[k+0]]; code[base+1]=(half)zmem[perm[k+1]];
     code[base+2]=(half)zmem[perm[k+2]]; code[base+3]=(half)zmem[perm[k+3]];
@@ -191,10 +197,7 @@ kernel void cq4_gemv_mr(
             uint n = n0+r;
             device const ushort4* pr = (device const ushort4*)(packed + ((size_t)n*num_groups+g)*pgb + off/2u);
             ushort4 w = pr[0];
-            float p = (float)c0.x*cb[w[0]&0xF] + (float)c0.y*cb[(w[0]>>4)&0xF] + (float)c0.z*cb[(w[0]>>8)&0xF] + (float)c0.w*cb[(w[0]>>12)&0xF]
-                    + (float)c1.x*cb[w[1]&0xF] + (float)c1.y*cb[(w[1]>>4)&0xF] + (float)c1.z*cb[(w[1]>>8)&0xF] + (float)c1.w*cb[(w[1]>>12)&0xF]
-                    + (float)c2.x*cb[w[2]&0xF] + (float)c2.y*cb[(w[2]>>4)&0xF] + (float)c2.z*cb[(w[2]>>8)&0xF] + (float)c2.w*cb[(w[2]>>12)&0xF]
-                    + (float)c3.x*cb[w[3]&0xF] + (float)c3.y*cb[(w[3]>>4)&0xF] + (float)c3.z*cb[(w[3]>>8)&0xF] + (float)c3.w*cb[(w[3]>>12)&0xF];
+            float p = cq4_dot64(c0, c1, c2, c3, w, cb);
             acc[r] += (float)norms[(size_t)n*num_groups+g]*p;
         }
     }
@@ -238,17 +241,9 @@ kernel void cq4_transform_gemv(
             float x1=(float)x[base+1]*(float)recip[base+1]*(float)lsign[k+1];
             float x2=(float)x[base+2]*(float)recip[base+2]*(float)lsign[k+2];
             float x3=(float)x[base+3]*(float)recip[base+3]*(float)lsign[k+3];
-            float a0=x0+x1,a1=x0-x1,a2=x2+x3,a3=x2-x3;
-            x0=a0+a2; x1=a1+a3; x2=a0-a2; x3=a1-a3;
-            #pragma clang loop unroll(full)
-            for (uint d=1u; d<=16u; d<<=1){
-                bool hi=(lane&d)!=0u;
-                float p0=simd_shuffle_xor(x0,d),p1=simd_shuffle_xor(x1,d),p2=simd_shuffle_xor(x2,d),p3=simd_shuffle_xor(x3,d);
-                x0=hi?p0-x0:x0+p0; x1=hi?p1-x1:x1+p1; x2=hi?p2-x2:x2+p2; x3=hi?p3-x3:x3+p3;
-            }
-            float sc=rsqrt(128.0f);
-            zwave[sg*128u+k+0]=x0*sc*(float)rsign[k+0]; zwave[sg*128u+k+1]=x1*sc*(float)rsign[k+1];
-            zwave[sg*128u+k+2]=x2*sc*(float)rsign[k+2]; zwave[sg*128u+k+3]=x3*sc*(float)rsign[k+3];
+            cq4_hada128(x0, x1, x2, x3, lane);
+            zwave[sg*128u+k+0]=x0*(float)rsign[k+0]; zwave[sg*128u+k+1]=x1*(float)rsign[k+1];
+            zwave[sg*128u+k+2]=x2*(float)rsign[k+2]; zwave[sg*128u+k+3]=x3*(float)rsign[k+3];
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (g < ng) {
@@ -270,10 +265,7 @@ kernel void cq4_transform_gemv(
             uint n = n0+r;
             device const ushort4* pr = (device const ushort4*)(packed + ((size_t)n*ng+g)*64u + off/2u);
             ushort4 w = pr[0];
-            float p = (float)c0.x*cb[w[0]&0xF] + (float)c0.y*cb[(w[0]>>4)&0xF] + (float)c0.z*cb[(w[0]>>8)&0xF] + (float)c0.w*cb[(w[0]>>12)&0xF]
-                    + (float)c1.x*cb[w[1]&0xF] + (float)c1.y*cb[(w[1]>>4)&0xF] + (float)c1.z*cb[(w[1]>>8)&0xF] + (float)c1.w*cb[(w[1]>>12)&0xF]
-                    + (float)c2.x*cb[w[2]&0xF] + (float)c2.y*cb[(w[2]>>4)&0xF] + (float)c2.z*cb[(w[2]>>8)&0xF] + (float)c2.w*cb[(w[2]>>12)&0xF]
-                    + (float)c3.x*cb[w[3]&0xF] + (float)c3.y*cb[(w[3]>>4)&0xF] + (float)c3.z*cb[(w[3]>>8)&0xF] + (float)c3.w*cb[(w[3]>>12)&0xF];
+            float p = cq4_dot64(c0, c1, c2, c3, w, cb);
             acc[r] += (float)norms[(size_t)n*ng+g]*p;
         }
     }
@@ -318,17 +310,9 @@ kernel void cq4_swiglu_transform(
         x2=(float)(half)clamp(g2,-65504.0f,65504.0f)*(float)recip[b+2]*(float)lsign[k+2];
         x3=(float)(half)clamp(g3,-65504.0f,65504.0f)*(float)recip[b+3]*(float)lsign[k+3];
     }
-    float a0=x0+x1,a1=x0-x1,a2=x2+x3,a3=x2-x3;
-    x0=a0+a2; x1=a1+a3; x2=a0-a2; x3=a1-a3;
-    #pragma clang loop unroll(full)
-    for (uint d=1u; d<=16u; d<<=1){
-        bool hi=(lane&d)!=0u;
-        float p0=simd_shuffle_xor(x0,d),p1=simd_shuffle_xor(x1,d),p2=simd_shuffle_xor(x2,d),p3=simd_shuffle_xor(x3,d);
-        x0=hi?p0-x0:x0+p0; x1=hi?p1-x1:x1+p1; x2=hi?p2-x2:x2+p2; x3=hi?p3-x3:x3+p3;
-    }
-    float s=rsqrt(128.0f);
-    zmem[k+0]=x0*s*(float)rsign[k+0]; zmem[k+1]=x1*s*(float)rsign[k+1];
-    zmem[k+2]=x2*s*(float)rsign[k+2]; zmem[k+3]=x3*s*(float)rsign[k+3];
+    cq4_hada128(x0, x1, x2, x3, lane);
+    zmem[k+0]=x0*(float)rsign[k+0]; zmem[k+1]=x1*(float)rsign[k+1];
+    zmem[k+2]=x2*(float)rsign[k+2]; zmem[k+3]=x3*(float)rsign[k+3];
     threadgroup_barrier(mem_flags::mem_threadgroup);
     code[b+0]=(half)zmem[perm[k+0]]; code[b+1]=(half)zmem[perm[k+1]];
     code[b+2]=(half)zmem[perm[k+2]]; code[b+3]=(half)zmem[perm[k+3]];
@@ -373,10 +357,7 @@ kernel void cq4_gemv_cat(
             uint n = nl0+r;
             device const ushort4* pr = (device const ushort4*)(packed + ((size_t)n*ng+g)*64u + off/2u);
             ushort4 w = pr[0];
-            float p = (float)c0.x*cb[w[0]&0xF] + (float)c0.y*cb[(w[0]>>4)&0xF] + (float)c0.z*cb[(w[0]>>8)&0xF] + (float)c0.w*cb[(w[0]>>12)&0xF]
-                    + (float)c1.x*cb[w[1]&0xF] + (float)c1.y*cb[(w[1]>>4)&0xF] + (float)c1.z*cb[(w[1]>>8)&0xF] + (float)c1.w*cb[(w[1]>>12)&0xF]
-                    + (float)c2.x*cb[w[2]&0xF] + (float)c2.y*cb[(w[2]>>4)&0xF] + (float)c2.z*cb[(w[2]>>8)&0xF] + (float)c2.w*cb[(w[2]>>12)&0xF]
-                    + (float)c3.x*cb[w[3]&0xF] + (float)c3.y*cb[(w[3]>>4)&0xF] + (float)c3.z*cb[(w[3]>>8)&0xF] + (float)c3.w*cb[(w[3]>>12)&0xF];
+            float p = cq4_dot64(c0, c1, c2, c3, w, cb);
             acc[r] += (float)norms[(size_t)n*ng+g]*p;
         }
     }

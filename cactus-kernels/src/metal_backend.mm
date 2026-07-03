@@ -136,6 +136,7 @@ struct ResW {
     id<MTLBuffer> cb_i8=nil;
     float cb_scale=1.f;
     id<MTLBuffer> wf16=nil;
+    bool wf16_volatile=false;
 };
 std::unordered_map<uint64_t, ResW> g_resident;
 
@@ -383,6 +384,9 @@ void cactus_metal_session_sync() {
     }
     if (g_last_cmd) {
         [g_last_cmd waitUntilCompleted];
+        if (g_last_cmd.status == MTLCommandBufferStatusError)
+            fprintf(stderr, "[cactus-metal] command buffer failed: %s\n",
+                    g_last_cmd.error ? [[g_last_cmd.error localizedDescription] UTF8String] : "unknown");
         g_last_cmd = nil;
     }
     for (id<MTLBuffer> b : g_pending) g_free[(size_t)b.length].push_back(b);
@@ -667,7 +671,12 @@ static inline bool quant_lowbit_eligible(const CactusQuantMatrix* W) {
 void cactus_metal_trim_prefill_cache() {
     if (!g_wf16_live) return;
     std::lock_guard<std::mutex> lk(g_resident_mu);
-    for (auto& kv : g_resident) kv.second.wf16 = nil;
+    for (auto& kv : g_resident) {
+        if (kv.second.wf16 && !kv.second.wf16_volatile) {
+            [kv.second.wf16 setPurgeableState:MTLPurgeableStateVolatile];
+            kv.second.wf16_volatile = true;
+        }
+    }
     g_wf16_live = false;
 }
 
@@ -878,9 +887,16 @@ bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const Cactus
     [g_enc dispatchThreadgroups:MTLSizeMake((size_t)ng*M,1,1) threadsPerThreadgroup:MTLSizeMake(gs>1024u?1024u:gs,1,1)];
 
     if ((g_predequant && ctx().psoGdense && ctx().psoDeq) || lowbit) {
+        bool need_dequant = false;
         if (!rw.wf16) {
             rw.wf16 = [ctx().dev newBufferWithLength:(size_t)N*K*2 options:MTLResourceStorageModeShared];
-            g_wf16_live = true;
+            need_dequant = true;
+        } else if (rw.wf16_volatile) {
+            need_dequant = [rw.wf16 setPurgeableState:MTLPurgeableStateNonVolatile] == MTLPurgeableStateEmpty;
+        }
+        rw.wf16_volatile = false;
+        g_wf16_live = true;
+        if (need_dequant) {
             [g_enc setComputePipelineState:(lowbit?ctx().psoDeqLow:ctx().psoDeq)];
             [g_enc setBuffer:rw.packed offset:0 atIndex:0]; [g_enc setBuffer:rw.codebook offset:0 atIndex:1];
             [g_enc setBuffer:rw.norms offset:0 atIndex:2]; [g_enc setBuffer:rw.wf16 offset:0 atIndex:3];
@@ -1095,6 +1111,11 @@ bool cactus_metal_encode_gather_f16(void* out, const void* table, size_t table_b
     return true;
 }
 
+static void setCacheAt(const void* p, size_t bytes, int idx) {
+    if (p && bytes) setBufAt(p, bytes, idx);
+    else [g_enc setBuffer:ctx().dummy offset:0 atIndex:idx];
+}
+
 bool cactus_metal_encode_attention_i8(
     void* out, const void* q, const void* knew, const void* vnew,
     const void* kc, const void* vc, const void* ks, const void* vs,
@@ -1105,10 +1126,6 @@ bool cactus_metal_encode_attention_i8(
     if (kv_end <= kv_start || (num_q_heads % num_kv_heads) != 0) return false;
     if (head_dim > 512u || v_hdim > 512u) return false;
     ensureEncoder();
-    auto setCache = [&](const void* p, size_t bytes, int idx) {
-        if (p && bytes) setBufAt(p, bytes, idx);
-        else [g_enc setBuffer:ctx().dummy offset:0 atIndex:idx];
-    };
     auto setInputs = [&]() {
         setBufAt(q, (size_t)num_q_heads*head_dim*2, 0);
         if (total_keys > history_len && knew && vnew) {
@@ -1117,8 +1134,8 @@ bool cactus_metal_encode_attention_i8(
         } else {
             [g_enc setBuffer:ctx().dummy offset:0 atIndex:1]; [g_enc setBuffer:ctx().dummy offset:0 atIndex:2];
         }
-        setCache(kc, kc_bytes, 3); setCache(vc, vc_bytes, 4);
-        setCache(ks, ks_bytes, 5); setCache(vs, vs_bytes, 6);
+        setCacheAt(kc, kc_bytes, 3); setCacheAt(vc, vc_bytes, 4);
+        setCacheAt(ks, ks_bytes, 5); setCacheAt(vs, vs_bytes, 6);
     };
 
     const uint32_t T = 256, nsg = T / 32u;
@@ -1209,6 +1226,7 @@ bool cactus_metal_encode_attention_i8_prefill(
     const uint32_t T = 128;
     if (total_keys == 0 || M == 0 || (num_q_heads % num_kv_heads) != 0) return false;
     uint32_t maxsc = (ring > 0u) ? ((total_keys > sink + ring) ? (sink + ring) : total_keys) : 256u;
+    if (maxsc > 7936u) return false;
     bool mma2 = (ring == 0u && window == 0u && is_causal && head_dim == 512u && v_hdim == 512u
                  && num_q_heads == 8u && num_kv_heads == 1u);
     bool hd256 = (ctx().psoAttnPreHd256 != nil && is_causal && head_dim == 256u && v_hdim == 256u
@@ -1223,10 +1241,7 @@ bool cactus_metal_encode_attention_i8_prefill(
         } else {
             [g_enc setBuffer:ctx().dummy offset:0 atIndex:1]; [g_enc setBuffer:ctx().dummy offset:0 atIndex:2];
         }
-        auto setCacheM = [&](const void* p, size_t bytes, int idx) {
-            if (p && bytes) setBufAt(p, bytes, idx); else [g_enc setBuffer:ctx().dummy offset:0 atIndex:idx];
-        };
-        setCacheM(kc, kc_bytes, 3); setCacheM(vc, vc_bytes, 4); setCacheM(ks, ks_bytes, 5); setCacheM(vs, vs_bytes, 6);
+        setCacheAt(kc, kc_bytes, 3); setCacheAt(vc, vc_bytes, 4); setCacheAt(ks, ks_bytes, 5); setCacheAt(vs, vs_bytes, 6);
         setBufAt(out, (size_t)M*num_q_heads*v_hdim*2, 7);
         [g_enc setBytes:&num_q_heads length:4 atIndex:8]; [g_enc setBytes:&num_kv_heads length:4 atIndex:9];
         [g_enc setBytes:&head_dim length:4 atIndex:10];   [g_enc setBytes:&v_hdim length:4 atIndex:11];
@@ -1247,10 +1262,7 @@ bool cactus_metal_encode_attention_i8_prefill(
     } else {
         [g_enc setBuffer:ctx().dummy offset:0 atIndex:1]; [g_enc setBuffer:ctx().dummy offset:0 atIndex:2];
     }
-    auto setCache = [&](const void* p, size_t bytes, int idx) {
-        if (p && bytes) setBufAt(p, bytes, idx); else [g_enc setBuffer:ctx().dummy offset:0 atIndex:idx];
-    };
-    setCache(kc, kc_bytes, 3); setCache(vc, vc_bytes, 4); setCache(ks, ks_bytes, 5); setCache(vs, vs_bytes, 6);
+    setCacheAt(kc, kc_bytes, 3); setCacheAt(vc, vc_bytes, 4); setCacheAt(ks, ks_bytes, 5); setCacheAt(vs, vs_bytes, 6);
     setBufAt(out, (size_t)M*num_q_heads*v_hdim*2, 7);
     [g_enc setBytes:&num_q_heads length:4 atIndex:8]; [g_enc setBytes:&num_kv_heads length:4 atIndex:9];
     [g_enc setBytes:&head_dim length:4 atIndex:10];   [g_enc setBytes:&v_hdim length:4 atIndex:11];
