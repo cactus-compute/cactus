@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <string>
 
-namespace {
 std::vector<__fp16> dequantize_int8_weights_to_fp16(
     const BufferDesc& W,
     size_t rows,
@@ -39,7 +38,6 @@ std::vector<__fp16> dequantize_int8_weights_to_fp16(
         }
     }
     return W_fp16;
-}
 }
 
 void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {

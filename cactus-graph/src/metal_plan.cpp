@@ -960,6 +960,49 @@ MetalFusePlan* cactus_metal_plan_build(
         }
         for (size_t i = 0; i < n; ++i) {
             if (plan->action[i] != -1) continue;
+            GraphNode& nd0 = *nodes[i];
+            if (nd0.op_type != OpType::ADD || nd0.input_ids.size() != 2) continue;
+            if (nd0.output_buffer.precision != Precision::FP16 || retyped(i)) continue;
+            long i0 = idxof(nd0.input_ids[0]);
+            long i1 = idxof(nd0.input_ids[1]);
+            if (i0 < 0 || i1 < 0 || i0 == i1) continue;
+            long mm = -1, bs = -1;
+            if (nodes[(size_t)i0]->op_type == OpType::MATMUL) { mm = i0; bs = i1; }
+            else if (nodes[(size_t)i1]->op_type == OpType::MATMUL) { mm = i1; bs = i0; }
+            if (mm < 0 || plan->action[(size_t)mm] != -1 || pinned[(size_t)mm]) continue;
+            if (plan->action[(size_t)bs] == -2) continue;
+            if (retyped((size_t)mm) || retyped((size_t)bs)) continue;
+            if (cons[(size_t)mm].size() != 1) continue;
+            GraphNode& m = *nodes[(size_t)mm];
+            if (m.input_ids.size() < 2) continue;
+            long li = idxof(m.input_ids[0]);
+            long ri = idxof(m.input_ids[1]);
+            if (li < 0 || ri < 0 || retyped((size_t)li) || retyped((size_t)ri)) continue;
+            if (plan->action[(size_t)li] == -2 || plan->action[(size_t)ri] == -2) continue;
+            const BufferDesc& lb = nodes[(size_t)li]->output_buffer;
+            const BufferDesc& rb = nodes[(size_t)ri]->output_buffer;
+            const BufferDesc& bb = nodes[(size_t)bs]->output_buffer;
+            if (lb.precision != Precision::FP16 || rb.precision != Precision::FP16
+                || bb.precision != Precision::FP16) continue;
+            if (rb.shape.size() != 2 || lb.shape.empty()) continue;
+            size_t K = lb.shape.back();
+            if (K == 0 || lb.total_size != K) continue;
+            size_t N = m.params.pretransposed_rhs ? rb.shape[0] : rb.shape[1];
+            size_t rk = m.params.pretransposed_rhs ? rb.shape[1] : rb.shape[0];
+            if (rk != K || N == 0 || m.output_buffer.total_size != N) continue;
+            if (bb.total_size != N || nd0.output_buffer.total_size != N) continue;
+            MetalCluster c;
+            c.rule = 13;
+            c.a0 = (size_t)li; c.a1 = (size_t)ri; c.a2 = (size_t)bs;
+            c.u0 = (uint32_t)K; c.u1 = (uint32_t)N;
+            c.b0 = m.params.pretransposed_rhs ? 1 : 0;
+            c.b4 = i;
+            std::vector<size_t> cover;
+            cover.push_back((size_t)mm);
+            add_cluster(c, i, cover);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (plan->action[i] != -1) continue;
             int kind, code; float p0, p1;
             if (!ew_kind(*nodes[i], &kind, &code, &p0, &p1)) continue;
             if (!prec_ok(nodes[i]->output_buffer.precision) || retyped(i)) continue;
@@ -1179,6 +1222,24 @@ void cactus_metal_plan_free(MetalFusePlan* p) {
     release_cluster_buffers(p);
     if (p->arena_base) { cactus_metal_free_shared(p->arena_base); p->arena_base = nullptr; }
     delete p;
+}
+
+bool cactus_metal_plan_has_arena(const MetalFusePlan* p) {
+    if (!p) return false;
+    if (p->arena_base) return true;
+    for (const auto& c : p->clusters) if (c.rule == 1) return true;
+    return false;
+}
+
+void cactus_metal_plan_extend_last_use(const MetalFusePlan* p, std::vector<size_t>& last_use) {
+    if (!p) return;
+    const size_t n = last_use.size();
+    for (const auto& c : p->clusters) {
+        size_t ai = c.b4;
+        if (ai >= n) continue;
+        for (size_t v : {c.a0, c.a1, c.a2, c.a3, c.a4, c.a5, c.b0, c.b1, c.b2, c.b3})
+            if (v < n && last_use[v] < ai) last_use[v] = ai;
+    }
 }
 
 void cactus_metal_plan_disable(MetalFusePlan* p) {
@@ -1465,6 +1526,15 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             if (!x || !res || !ysum || !w || !ynorm) return false;
             return cactus_metal_encode_rms_norm_add_rows(ysum, ynorm, x, res, w,
                 c.u0, c.u1, c.f0, (int)c.b0);
+        }
+        case 13: {
+            GraphNode& anchor = *nodes[c.b4];
+            const void* x = nodes[c.a0]->output_buffer.get_data();
+            const void* w = nodes[c.a1]->output_buffer.get_data();
+            const void* b = nodes[c.a2]->output_buffer.get_data();
+            void* y = anchor.output_buffer.get_data();
+            if (!x || !w || !b || !y) return false;
+            return cactus_metal_encode_gemv_bias(y, x, w, b, c.u0, c.u1, (int)c.b0);
         }
         default: return false;
     }

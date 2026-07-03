@@ -106,4 +106,10 @@ bool cactus_metal_encode_kv_append_i8_m(const void*, void*, void*, uint32_t, uin
     uint32_t, uint32_t, size_t, size_t, size_t) { return false; }
 bool cactus_metal_encode_kv_append_ring_i8_m(const void*, void*, void*, uint32_t, uint32_t, uint32_t,
     uint32_t, uint32_t, uint32_t, uint32_t, size_t, size_t, size_t) { return false; }
+bool cactus_metal_encode_conv_cache_append(void*, const void*, void*, uint32_t, uint32_t, uint32_t,
+    uint32_t, uint32_t, uint32_t, int) { return false; }
+bool cactus_metal_encode_rel_pos_bias(void*, const void*, const void*, uint32_t, uint32_t, uint32_t,
+    uint32_t, uint32_t, int, float) { return false; }
+bool cactus_metal_encode_gemv_bias(void*, const void*, const void*, const void*,
+    uint32_t, uint32_t, int) { return false; }
 #endif

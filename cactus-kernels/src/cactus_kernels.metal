@@ -3060,6 +3060,70 @@ kernel void kv_append_i8_m(device const half* src [[buffer(0)]], device char* in
     for (uint k=0;k<gcount;++k){ float qv = clamp(rint((float)hs[k]*inv), -128.0f, 127.0f); dst[k]=(char)qv; }
     scalebase[(size_t)(current_len+i)*scs + (size_t)h*num_groups + g] = scale;
 }
+kernel void gemv_bias_f16(device const half* x [[buffer(0)]], device const half* w [[buffer(1)]],
+    device const half* bias [[buffer(2)]], device half* y [[buffer(3)]],
+    constant uint& K [[buffer(4)]], constant uint& N [[buffer(5)]],
+    constant uint& tr [[buffer(6)]],
+    uint tg [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+    uint n = tg * 4u + sgid;
+    if (n >= N) return;
+    float acc = 0;
+    if (tr != 0u) {
+        device const half* wr = w + (size_t)n * K;
+        for (uint k = lane; k < K; k += 32u) acc = fma((float)x[k], (float)wr[k], acc);
+    } else {
+        for (uint k = lane; k < K; k += 32u) acc = fma((float)x[k], (float)w[(size_t)k * N + n], acc);
+    }
+    acc = simd_sum(acc);
+    if (lane == 0) y[n] = (half)((float)(half)acc + (float)bias[n]);
+}
+kernel void rel_pos_bias_f16(device const half* q [[buffer(0)]], device const half* r [[buffer(1)]],
+    device half* y [[buffer(2)]], constant uint& T [[buffer(3)]], constant uint& H [[buffer(4)]],
+    constant uint& D [[buffer(5)]], constant uint& rbs [[buffer(6)]],
+    constant float& scale [[buffer(7)]],
+    uint3 gid [[thread_position_in_grid]]) {
+    uint tj = gid.x, h = gid.y, b = gid.z;
+    if (tj >= T * T || h >= H) return;
+    uint t = tj / T, j = tj % T;
+    device const half* qv = q + ((size_t)b * T + t) * H * D + h * D;
+    uint rel = (T - 1u) - t + j;
+    device const half* rv = r + (size_t)b * rbs + (size_t)rel * H * D + h * D;
+    float acc = 0;
+    for (uint d = 0; d < D; ++d) acc = fma((float)qv[d], (float)rv[d], acc);
+    y[((size_t)b * H + h) * T * T + (size_t)t * T + j] = (half)(acc * scale);
+}
+kernel void conv_cache_append_f16(device const uchar* src [[buffer(0)]],
+    device half* ring [[buffer(1)]], device half* out [[buffer(2)]],
+    constant uint& hd [[buffer(3)]], constant uint& ws [[buffer(4)]],
+    constant uint& nnew [[buffer(5)]], constant uint& head0 [[buffer(6)]],
+    constant uint& count_new [[buffer(7)]], constant uint& num_rows [[buffer(8)]],
+    constant uint& src_f32 [[buffer(9)]],
+    uint2 gid [[thread_position_in_grid]]) {
+    uint x = gid.x, y = gid.y;
+    if (x >= hd || y >= ws + nnew) return;
+    uint start_row = num_rows - nnew;
+    if (y >= ws) {
+        uint i = y - ws;
+        uint sidx = (start_row + i) * hd + x;
+        half v = src_f32 ? (half)((device const float*)src)[sidx] : ((device const half*)src)[sidx];
+        ring[((head0 + i) % ws) * hd + x] = v;
+        return;
+    }
+    uint pad = ws - count_new;
+    if (y < pad) { out[y * hd + x] = 0.0h; return; }
+    uint a = count_new - 1u - (y - pad);
+    half v;
+    if (a < nnew) {
+        uint sidx = (num_rows - 1u - a) * hd + x;
+        v = src_f32 ? (half)((device const float*)src)[sidx] : ((device const half*)src)[sidx];
+    } else {
+        uint b = a - nnew;
+        v = ring[((head0 + 2u * ws - 1u - b) % ws) * hd + x];
+    }
+    out[y * hd + x] = v;
+}
 kernel void kv_append_ring_i8_m(device const half* src [[buffer(0)]], device char* int8base [[buffer(1)]],
     device float* scalebase [[buffer(2)]], constant uint& kv_heads [[buffer(3)]],
     constant uint& hdim [[buffer(4)]], constant uint& current_len [[buffer(5)]],

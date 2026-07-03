@@ -184,4 +184,14 @@ bool cactus_metal_encode_kv_append_ring_i8_m(const void* src, void* int8base, vo
     uint32_t kv_heads, uint32_t hdim, uint32_t current_len, uint32_t group_size, uint32_t M,
     uint32_t sink, uint32_t W, size_t src_bytes, size_t int8_bytes, size_t scale_bytes);
 
+bool cactus_metal_encode_conv_cache_append(void* out, const void* src, void* ring,
+    uint32_t hd, uint32_t ws, uint32_t nnew, uint32_t head0, uint32_t count_new,
+    uint32_t num_rows, int src_f32);
+
+bool cactus_metal_encode_rel_pos_bias(void* y, const void* q, const void* r,
+    uint32_t B, uint32_t T, uint32_t H, uint32_t D, uint32_t R, int r_batched, float scale);
+
+bool cactus_metal_encode_gemv_bias(void* out, const void* x, const void* w, const void* bias,
+    uint32_t K, uint32_t N, int pretransposed);
+
 #endif
