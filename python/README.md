@@ -20,9 +20,9 @@ cactus build --python
 <!-- --8<-- [end:install] -->
 
 ```bash
-# Download pre-built bundles (defaults to --platform auto; use --platform cpu for the generic build)
+# Download pre-built bundles (defaults to --weights general, the portable build)
 cactus download LiquidAI/LFM2-VL-450M
-cactus download openai/whisper-small --platform apple   # CoreML/NPU variant
+cactus download openai/whisper-small --weights apple    # CoreML/NPU variant
 
 # Optional: set your Cactus Cloud API key for automatic cloud fallback
 cactus auth

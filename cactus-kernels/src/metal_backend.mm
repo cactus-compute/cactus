@@ -6,7 +6,10 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
 #include <mach/mach_vm.h>
+#endif
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 #include <vector>
 #include <cstring>
@@ -279,7 +282,9 @@ inline bool tg_mem_ok(size_t bytes) {
 size_t wf16_budget() {
     static const size_t cap = [] {
         if (const char* e = std::getenv("CACTUS_WF16_CAP_MB")) return (size_t)atoll(e) << 20;
-        return (size_t)([ctx().dev recommendedMaxWorkingSetSize] / 4);
+        if (@available(macOS 10.12, iOS 16.0, *))
+            return (size_t)([ctx().dev recommendedMaxWorkingSetSize] / 4);
+        return (size_t)([NSProcessInfo processInfo].physicalMemory / 4);
     }();
     return cap;
 }
@@ -334,6 +339,10 @@ std::pair<id<MTLBuffer>, size_t> wrapHostPtr(const void* p, size_t bytes) {
     }
     size_t wraplen = (need + 16383u) & ~(size_t)16383u;
     uintptr_t lo = base, hi = base + wraplen;
+#if TARGET_OS_OSX
+    // Expand the wrap to the whole VM region so neighboring host pointers hit
+    // the same MTLBuffer. mach_vm.h is macOS-only; elsewhere the page-aligned
+    // span above is used as-is (correct, just more wrap entries).
     {
         mach_vm_address_t raddr = a;
         mach_vm_size_t rsize = 0;
@@ -350,6 +359,7 @@ std::pair<id<MTLBuffer>, size_t> wrapHostPtr(const void* p, size_t bytes) {
         }
         if (obj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), obj);
     }
+#endif
     auto ov = g_wrapped.lower_bound(lo);
     if (ov != g_wrapped.begin()) {
         auto prev = std::prev(ov);

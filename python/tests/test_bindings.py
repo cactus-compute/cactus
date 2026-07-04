@@ -336,14 +336,14 @@ class TestCliParser:
         with pytest.raises(SystemExit):
             self.parser.parse_args(["run", "whisper-base", "--prompt", "hi"])
 
-    def test_run_platform_flag(self):
-        args = self.parser.parse_args(["run", "Foo/Bar", "--platform", "apple"])
-        assert args.platform == "apple"
+    def test_run_weights_flag(self):
+        args = self.parser.parse_args(["run", "Foo/Bar", "--weights", "apple"])
+        assert args.weights == "apple"
         assert args.bits == 4
 
-    def test_download_platform_flag(self):
-        args = self.parser.parse_args(["download", "Foo/Bar", "--platform", "cpu", "--bits", "2"])
-        assert args.platform == "cpu"
+    def test_download_weights_flag(self):
+        args = self.parser.parse_args(["download", "Foo/Bar", "--weights", "general", "--bits", "2"])
+        assert args.weights == "general"
         assert args.bits == 2
 
 

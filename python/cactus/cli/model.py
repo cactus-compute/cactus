@@ -238,15 +238,15 @@ def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
 
 def prepare_bundle(args, *, model_id=None, transpile=None, prebuilt=True,
                    output_dir=None, fail_prefix="Model setup failed"):
-    """Resolve the platform from args and return a runnable bundle, with uniform
+    """Resolve the weights variant from args and return a runnable bundle, with uniform
     error handling shared by every model command. Returns the bundle Path, or
     None (after printing the error) on failure."""
-    from .download import resolve_platform
+    from .download import resolve_weights_variant
     try:
         return ensure_runnable_bundle(
             args.model_id if model_id is None else model_id,
             bits=getattr(args, "bits", 4),
-            platform=resolve_platform(getattr(args, "platform", "auto")),
+            platform=resolve_weights_variant(getattr(args, "weights", "general")),
             token=getattr(args, "token", None),
             reconvert=getattr(args, "reconvert", False),
             prebuilt=prebuilt,

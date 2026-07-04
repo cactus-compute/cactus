@@ -17,10 +17,10 @@ from cactus import (
     cactus_transcribe,
 )
 from cactus.cli.model import ensure_bundle
-from cactus.cli.download import resolve_platform
+from cactus.cli.download import resolve_weights_variant
 
 
-_PLATFORM = resolve_platform("auto")
+_PLATFORM = resolve_weights_variant("general")
 _ASSETS_DIR = PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
 _TEST_IMAGE = _ASSETS_DIR / "test_monkey.png"
 _TEST_AUDIO = _ASSETS_DIR / "test.wav"

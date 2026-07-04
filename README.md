@@ -196,7 +196,7 @@ graph.hard_reset();
 │                                                                                │
 │  cactus run [model|path]             run a model (downloads if needed)         │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --weights general|apple           weights bundle variant (default: general) │
 │    --backend auto|cpu|metal          inference backend (default: auto)         │
 │    --image <path>                    image file for VLM inference              │
 │    --audio <path>                    audio file for audio chat                 │
@@ -210,20 +210,20 @@ graph.hard_reset();
 │    --file <audio.wav>                audio file to transcribe (WAV)            │
 │    --language <code>                 language code (default: en)               │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --weights general|apple           weights bundle variant (default: general) │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │                                                                                │
 │  cactus download [model]             get a bundle (prebuilt, else build)       │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --weights general|apple           weights bundle variant (default: general) │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │                                                                                │
 │  cactus convert <model> [dir]        HuggingFace -> runnable cactus bundle     │
 │                                      (CQ weights + runtime graph)              │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --weights general|apple           weights bundle variant (default: general) │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │    --lora <path>                     merge a LoRA adapter before converting    │
@@ -234,7 +234,7 @@ graph.hard_reset();
 │    --host <addr>                     bind address (default: 127.0.0.1)         │
 │    --port <port>                     port (default: 8080)                      │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --weights general|apple           weights bundle variant (default: general) │
 │    --backend auto|cpu|metal          inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
@@ -245,7 +245,7 @@ graph.hard_reset();
 │  cactus code                         run the AI coding agent (TUI / print)     │
 │    --serve-model <id>                auto-start a server with this model       │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --weights general|apple           weights bundle variant (default: general) │
 │    --backend auto|cpu|metal          inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
@@ -270,7 +270,7 @@ graph.hard_reset();
 │    --model <hf-id>                   default: LiquidAI/LFM2-VL-450M            │
 │    --transcription-model <hf-id>     default: openai/whisper-base              │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --platform auto|cpu|apple         target platform (default: auto)           │
+│    --weights general|apple           weights bundle variant (default: general) │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild of test models        │
 │    --suite <name>                    run a single test suite by name           │

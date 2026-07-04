@@ -39,7 +39,7 @@ def test_cmd_run_forwards_chunked_bundle_flags(monkeypatch, tmp_path: Path) -> N
         no_cloud_tele=False,
         model_id="org/model",
         bits=4,
-        platform="cpu",
+        weights="general",
         token=None,
         reconvert=False,
         system=None,
@@ -52,6 +52,7 @@ def test_cmd_run_forwards_chunked_bundle_flags(monkeypatch, tmp_path: Path) -> N
         result_json=str(result_json),
         confidence_threshold=None,
         cloud_timeout_ms=None,
+        backend="auto",
         thinking=False,
         no_cloud_handoff=False,
     )

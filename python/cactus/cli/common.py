@@ -39,8 +39,9 @@ DEFAULT_TEST_MODEL_ID = "LiquidAI/LFM2-VL-450M"
 DEFAULT_TEST_TRANSCRIPTION_MODEL_ID = "openai/whisper-base"
 
 
-# Add a new vendor platform by appending its name here.
-SUPPORTED_PLATFORMS: tuple[str, ...] = ("apple",)
+# Vendor-specific weight-bundle variants; add a new vendor by appending its
+# name here. "general" (the portable bundle) is always available and default.
+SUPPORTED_WEIGHTS_VARIANTS: tuple[str, ...] = ("apple",)
 
 
 RED = '\033[0;31m'

@@ -3,7 +3,7 @@ from pathlib import Path
 
 from .common import (
     BLUE, GREEN,
-    SUPPORTED_PLATFORMS,
+    SUPPORTED_WEIGHTS_VARIANTS,
     print_color, weights_root,
 )
 
@@ -21,23 +21,15 @@ def get_bundle_dir(model_id: str, *, bits: int = 4, platform: str | None = None)
     return weights_root() / f"{get_model_dir_name(model_id)}-{variant_suffix(bits, platform)}"
 
 
-def _host_platform() -> str | None:
-    """Best-fit platform for the current host: apple on macOS, else generic CPU."""
-    import platform as _platform
-
-    if _platform.system() == "Darwin" and "apple" in SUPPORTED_PLATFORMS:
-        return "apple"
-    return None
-
-
-def resolve_platform(choice: str) -> str | None:
-    if choice == "auto":
-        return _host_platform()
-    if choice == "cpu":
+def resolve_weights_variant(choice: str | None) -> str | None:
+    """Map the --weights choice to the bundle variant suffix: general (the
+    default on every platform) selects the portable bundle (no suffix)."""
+    if choice in (None, "general"):
         return None
-    if choice in SUPPORTED_PLATFORMS:
+    if choice in SUPPORTED_WEIGHTS_VARIANTS:
         return choice
-    raise ValueError(f"unknown platform {choice!r}; supported: auto, cpu, {', '.join(SUPPORTED_PLATFORMS)}")
+    raise ValueError(f"unknown weights variant {choice!r}; "
+                     f"supported: general, {', '.join(SUPPORTED_WEIGHTS_VARIANTS)}")
 
 
 def ensure_model(model_id: str) -> Path:

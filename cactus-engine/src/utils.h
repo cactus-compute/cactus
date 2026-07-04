@@ -507,7 +507,7 @@ struct InferenceOptions {
     float temperature = 0.0f;
     float top_p = 0.0f;
     float min_p = 0.15f;
-    float repetition_penalty = 1.0f;
+    float repetition_penalty = 1.1f;
     uint64_t sample_seed = 0;
     float confidence_threshold = -1.0f;
     size_t top_k = 0;

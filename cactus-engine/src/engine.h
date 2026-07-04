@@ -637,7 +637,7 @@ public:
 
     uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
                     size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
-                    float min_p = 0.15f, float repetition_penalty = 1.0f);
+                    float min_p = 0.15f, float repetition_penalty = 1.1f);
     void set_sample_seed(uint64_t seed) { sample_rng_.seed(static_cast<std::mt19937::result_type>(seed)); }
     bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token,
                                         float* out_uncertainty = nullptr);
@@ -669,13 +669,13 @@ public:
     uint32_t decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& image_paths,
                                 float temperature = -1.0f, float top_p = -1.0f,
                                 size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
-                                float min_p = 0.15f, float repetition_penalty = 1.0f);
+                                float min_p = 0.15f, float repetition_penalty = 1.1f);
 
     uint32_t decode_with_audio(const std::vector<uint32_t>& tokens,
                                const std::vector<std::vector<float>>& audio_features_per_message,
                                float temperature = 0.0f, float top_p = 0.0f,
                                size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
-                               float min_p = 0.15f, float repetition_penalty = 1.0f,
+                               float min_p = 0.15f, float repetition_penalty = 1.1f,
                                float* out_token_time_start = nullptr, float* out_token_time_end = nullptr);
 
     struct ParakeetTdtStreamState {

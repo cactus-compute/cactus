@@ -130,7 +130,7 @@ def cmd_code(args) -> int:
         model_flags_given = (
             getattr(args, "reconvert", False)
             or getattr(args, "bits", 4) != 4
-            or getattr(args, "platform", "auto") != "auto"
+            or getattr(args, "weights", "general") != "general"
             or bool(getattr(args, "token", None))
         )
         if args.serve_model:
@@ -146,7 +146,7 @@ def cmd_code(args) -> int:
             sys.executable, "-m", "cactus", "serve", serve_model,
             "--host", args.host, "--port", str(args.port), "--no-access-log",
             "--bits", str(getattr(args, "bits", 4)),
-            "--platform", getattr(args, "platform", "auto"),
+            "--weights", getattr(args, "weights", "general"),
             "--backend", getattr(args, "backend", "auto"),
         ]
         if getattr(args, "token", None):

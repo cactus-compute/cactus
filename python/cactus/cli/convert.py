@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 
 from .common import GREEN, RED, YELLOW, print_color
-from .download import get_bundle_dir, get_weights_dir, resolve_platform
+from .download import get_bundle_dir, get_weights_dir, resolve_weights_variant
 
 
 def _merge_lora_adapter(base_model_id, lora_path, token=None):
@@ -56,7 +56,7 @@ def cmd_convert(args):
             return 1
         source_model_id = merged_dir
 
-    platform = resolve_platform(getattr(args, "platform", "auto"))
+    platform = resolve_weights_variant(getattr(args, "weights", "general"))
     output_dir = args.output_dir or str(
         get_bundle_dir(args.model_id, bits=args.bits, platform=platform)
     )

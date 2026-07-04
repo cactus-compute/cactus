@@ -7,17 +7,16 @@ from .common import (
     DEFAULT_TRANSCRIPTION_MODEL_ID,
     DEFAULT_TEST_MODEL_ID,
     DEFAULT_TEST_TRANSCRIPTION_MODEL_ID,
-    SUPPORTED_PLATFORMS,
+    SUPPORTED_WEIGHTS_VARIANTS,
 )
 from .download import cmd_download
 
-_PLATFORM_CHOICES = ("auto", "cpu", *SUPPORTED_PLATFORMS)
-_PLATFORM_HELP = (
-    f"target platform: auto = best for this host, e.g. apple on macOS (default); "
-    f"cpu = generic ARM; "
-    f"or one of: {', '.join(SUPPORTED_PLATFORMS) if SUPPORTED_PLATFORMS else '(none yet)'}"
+_WEIGHTS_CHOICES = ("general", *SUPPORTED_WEIGHTS_VARIANTS)
+_WEIGHTS_HELP = (
+    f"weights bundle variant: general = portable bundle for every platform (default); "
+    f"or a vendor variant: {', '.join(SUPPORTED_WEIGHTS_VARIANTS) if SUPPORTED_WEIGHTS_VARIANTS else '(none yet)'}"
 )
-_PLATFORM_PIPE = "|".join(_PLATFORM_CHOICES)
+_WEIGHTS_PIPE = "|".join(_WEIGHTS_CHOICES)
 from .compile import cmd_build
 from .serve import cmd_serve
 from .transcribe import cmd_transcribe
@@ -45,8 +44,8 @@ def _build_parent():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
                    help="CQ quantization (default: 4)")
-    p.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
-                   help=_PLATFORM_HELP)
+    p.add_argument("--weights", choices=_WEIGHTS_CHOICES, default="general",
+                   help=_WEIGHTS_HELP)
     p.add_argument("--token", help="HuggingFace token")
     p.add_argument("--reconvert", action="store_true",
                    help="Force local rebuild from source")
@@ -111,7 +110,7 @@ def create_parser():
 
   cactus run [model|path]              run a model (default: {DEFAULT_MODEL_ID})
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
     --image <path>                     image file for VLM inference
     --audio <path>                     audio file for audio chat
     --system <prompt>                  system prompt
@@ -124,19 +123,19 @@ def create_parser():
     --file <audio.wav>                 audio file to transcribe (WAV)
     --language <code>                  language code (default: en)
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
 
   cactus download [model]              fetch a prebuilt bundle, else build locally (default: {DEFAULT_MODEL_ID})
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
 
   cactus convert <model> [dir]         build a runnable bundle locally (skips prebuilt fetch)
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
     --lora <path>                      merge a LoRA adapter before converting
@@ -145,7 +144,7 @@ def create_parser():
     --host <addr>                      bind address (default: 127.0.0.1)
     --port <port>                      port (default: 8080)
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
     --no-cloud-handoff                 disable automatic cloud handoff
@@ -165,7 +164,7 @@ def create_parser():
     --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
     --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild of test models
     --suite <name>                     run a single test suite from any
@@ -189,7 +188,7 @@ def create_parser():
                                        (quantizes weights to CQ, then builds
                                        the runtime graph)
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
     --token <token>                    HuggingFace token (defaults to $HF_TOKEN)
     --reconvert                        force weight conversion from source
     --lora <path>                      merge a LoRA adapter before converting
@@ -379,8 +378,8 @@ def create_parser():
                                 help="Output directory (default: weights/<model>)")
     convert_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
                                 help="CQ quantization bits (default: 4)")
-    convert_parser.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
-                                help=_PLATFORM_HELP)
+    convert_parser.add_argument("--weights", choices=_WEIGHTS_CHOICES, default="general",
+                                help=_WEIGHTS_HELP)
     convert_parser.add_argument("--token", help="HuggingFace token")
     convert_parser.add_argument("--lora",
                                 help="Path or HF id of a LoRA adapter to merge before converting (requires `peft`)")
