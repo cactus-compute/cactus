@@ -13,6 +13,7 @@
 #include <cstring>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <unordered_set>
@@ -437,6 +438,7 @@ struct PreparedPrompt {
 
     std::vector<std::vector<float>> audio_features;
     size_t audio_num_frames = 0;
+    std::vector<uint32_t> handoff_eot_actors;
 
     bool has_images() const {
         return std::any_of(images.begin(), images.end(),
@@ -448,6 +450,69 @@ struct PreparedPrompt {
             [](const auto& mel) { return !mel.empty(); });
     }
 };
+
+std::vector<uint32_t> build_gemma4_handoff_eot_actors(
+    const std::vector<ChatMessage>& messages,
+    const std::string& actor_tags,
+    bool emits_system_turn,
+    bool add_generation_prompt
+) {
+    std::vector<uint32_t> actors;
+    if (emits_system_turn) actors.push_back(0);
+
+    size_t first_msg = 0;
+    if (!messages.empty() && (messages[0].role == "system" || messages[0].role == "developer")) {
+        first_msg = 1;
+    }
+
+    size_t assistant_index = 0;
+    auto next_assistant_actor = [&]() -> uint32_t {
+        uint32_t actor = 0;
+        if (assistant_index < actor_tags.size()) {
+            char c = actor_tags[assistant_index];
+            actor = (c == 'C' || c == 'c' || c == '1') ? 1u : 0u;
+        }
+        ++assistant_index;
+        return actor;
+    };
+
+    bool in_model_turn = false;
+    uint32_t model_turn_actor = 0;
+    auto close_model_turn = [&]() {
+        if (!in_model_turn) return;
+        actors.push_back(model_turn_actor);
+        in_model_turn = false;
+        model_turn_actor = 0;
+    };
+
+    for (size_t i = first_msg; i < messages.size(); ++i) {
+        const auto& msg = messages[i];
+        const std::string role = (msg.role == "assistant") ? "model"
+            : (msg.role == "developer") ? "system" : msg.role;
+
+        if (role == "model") {
+            uint32_t actor = next_assistant_actor();
+            if (!in_model_turn) {
+                in_model_turn = true;
+                model_turn_actor = actor;
+            } else {
+                model_turn_actor = std::max(model_turn_actor, actor);
+            }
+            if (msg.tool_calls.empty()) close_model_turn();
+        } else if (role == "tool") {
+            if (!in_model_turn) {
+                in_model_turn = true;
+                model_turn_actor = 0;
+            }
+        } else {
+            close_model_turn();
+            actors.push_back(0);
+        }
+    }
+
+    if (!add_generation_prompt) close_model_turn();
+    return actors;
+}
 
 CactusModelHandle::ProcessedImage image_signature(const std::string& image_path) {
     std::filesystem::path normalized_path(image_path);
@@ -565,9 +630,11 @@ PreparedPrompt prepare_prompt(
 
     if (prompt.options.confidence_threshold < 0.0f) {
         if (handle->model->has_handoff_probe()) {
-            // The Gemma4 probe returns p_wrong; confidence is 1 - p_wrong.
-            // Route when the probe is less than 50% confident in local output.
-            prompt.options.confidence_threshold = 0.50f;
+            if (handle->model->handoff_probe_returns_advantage()) {
+                prompt.options.confidence_threshold = 0.05f;
+            } else {
+                prompt.options.confidence_threshold = 0.50f;
+            }
         } else {
             float model_default = handle->model->get_config().default_cloud_handoff_threshold;
             prompt.options.confidence_threshold = (model_default > 0.0f) ? model_default : 0.7f;
@@ -612,7 +679,6 @@ PreparedPrompt prepare_prompt(
         prompt.options.force_tools = true;
     }
 
-    // Build the tool-definition block in the format each model family was trained on.
     std::string formatted_tools;
     if (prompt.model_type == Config::ModelType::NEEDLE) {
         formatted_tools = serialize_needle_tools(prompt.tools);
@@ -622,6 +688,20 @@ PreparedPrompt prepare_prompt(
         formatted_tools = chat_tools::serialize_tools_lfm2(prompt.tools);
     } else {
         formatted_tools = gemma::format_tools(prompt.tools, !Config::is_gemma3_family(prompt.model_type));
+    }
+
+    if (prompt.model_type == Config::ModelType::GEMMA4 && handle->model->handoff_probe_returns_advantage()) {
+        bool has_system_turn = prompt.options.enable_thinking_if_supported || !formatted_tools.empty();
+        if (!prompt.messages.empty() &&
+            (prompt.messages[0].role == "system" || prompt.messages[0].role == "developer") &&
+            !prompt.messages[0].content.empty()) {
+            has_system_turn = true;
+        }
+        prompt.handoff_eot_actors = build_gemma4_handoff_eot_actors(
+            prompt.messages,
+            prompt.options.handoff_actors,
+            has_system_turn,
+            add_generation_prompt);
     }
 
     if (apply_tool_constraints) {
@@ -849,12 +929,19 @@ int cactus_complete(
         }
         auto friendly_cloud_error = [](const std::string& e) -> std::string {
             if (e == "missing_api_key") return "no API key";
+            if (e == "missing_openai_api_key") return "no OpenAI API key";
             if (e.rfind("http_401", 0) == 0) return "auth failed (401)";
             if (e.rfind("http_403", 0) == 0) return "auth failed (403)";
             if (e == "cloud_handoff_disabled") return "disabled";
             if (e == "curl_init_failed") return "curl init failed";
             if (e.empty()) return "cloud error";
             return e;
+        };
+        auto confidence_from_advantage = [](float advantage) -> float {
+            if (!std::isfinite(advantage)) return 0.0f;
+            if (advantage > 80.0f) return 0.0f;
+            if (advantage < -80.0f) return 1.0f;
+            return static_cast<float>(1.0 / (1.0 + std::exp(static_cast<double>(advantage))));
         };
 
         auto make_cloud_request = [&](const std::string& local_output_hint,
@@ -935,9 +1022,7 @@ int cactus_complete(
             std::string cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
             CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed before local generation: " << cloud_error);
             disable_handoff_on_auth_failure(cloud_error);
-            handle_error_response(("cloud handoff failed before local generation: " + cloud_error).c_str(),
-                                  response_buffer, buffer_size);
-            return -1;
+            handoff_reason = "handoff failed: " + friendly_cloud_error(cloud_error);
         }
 
         auto stop_token_sequences = build_stop_sequences(tokenizer, prompt.options.stop_sequences, prompt.model_type, !prompt.tools.empty());
@@ -1060,14 +1145,36 @@ int cactus_complete(
             trim_stop_suffix(generated_tokens, stop_token_sequences, prompt.options.include_stop_sequences);
         }
 
+        float handoff_advantage = std::numeric_limits<float>::quiet_NaN();
         if (defer_local_stream_until_probe) {
             confidence = entropy.mean_confidence();
+            if (handle->model->handoff_probe_uses_turn_streams() && !generated_tokens.empty()) {
+                const size_t wanted_rows = prompt.tokens.size() + generated_tokens.size();
+                while (handle->model->handoff_probe_captured_rows() < wanted_rows) {
+                    const size_t captured = handle->model->handoff_probe_captured_rows();
+                    if (captured < prompt.tokens.size()) break;
+                    const size_t generated_index = captured - prompt.tokens.size();
+                    if (generated_index >= generated_tokens.size()) break;
+                    if (!handle->model->capture_handoff_probe_token(generated_tokens[generated_index])) break;
+                }
+            }
             if (handle->model->has_handoff_probe_rollout()) {
-                float wrong_probability = handle->model->handoff_probe_wrong_probability();
-                if (std::isfinite(wrong_probability)) {
-                    confidence = std::max(0.0f, std::min(1.0f, 1.0f - wrong_probability));
-                    CACTUS_LOG_DEBUG("cloud_handoff", "Gemma4 handoff probe p_wrong="
-                        << wrong_probability << " confidence=" << confidence);
+                if (handle->model->handoff_probe_returns_advantage()) {
+                    handoff_advantage = handle->model->handoff_probe_advantage(
+                        prompt.tokens, generated_tokens, prompt.handoff_eot_actors);
+                    if (std::isfinite(handoff_advantage)) {
+                        confidence = confidence_from_advantage(handoff_advantage);
+                        CACTUS_LOG_DEBUG("cloud_handoff", "Gemma4 handoff probe advantage="
+                            << handoff_advantage << " lambda=" << prompt.options.confidence_threshold
+                            << " local_confidence=" << confidence);
+                    }
+                } else {
+                    float wrong_probability = handle->model->handoff_probe_wrong_probability();
+                    if (std::isfinite(wrong_probability)) {
+                        confidence = std::max(0.0f, std::min(1.0f, 1.0f - wrong_probability));
+                        CACTUS_LOG_DEBUG("cloud_handoff", "Gemma4 handoff probe p_wrong="
+                            << wrong_probability << " confidence=" << confidence);
+                    }
                 }
             }
         }
@@ -1111,16 +1218,28 @@ int cactus_complete(
         std::vector<std::string> primary_function_calls = function_calls;
 
         bool handoff_succeeded = false;
+        const bool advantage_probe = defer_local_stream_until_probe
+            && handle->model->handoff_probe_returns_advantage();
         const bool low_confidence = defer_local_stream_until_probe
-            && confidence < prompt.options.confidence_threshold;
+            && (advantage_probe
+                ? (std::isfinite(handoff_advantage) && handoff_advantage > prompt.options.confidence_threshold)
+                : confidence < prompt.options.confidence_threshold);
         const bool invalid_local_tool_call = cloud_eligible && defer_local_stream_until_probe
             && function_calls_missing_required(function_calls, prompt.tools);
         if (!pre_generation_cloud_attempted && (low_confidence || invalid_local_tool_call)) {
             const char* trigger_reason = invalid_local_tool_call && !low_confidence
-                ? "local tool call missing required args" : "low confidence (probe)";
-            CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered (" << trigger_reason
-                << "): p_wrong=" << (1.0f - confidence) << " confidence=" << confidence
-                << "; waiting up to " << prompt.options.cloud_timeout_ms << " ms");
+                ? "local tool call missing required args"
+                : (advantage_probe ? "high cloud advantage (probe)" : "low confidence (probe)");
+            if (advantage_probe) {
+                CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered (" << trigger_reason
+                    << "): advantage=" << handoff_advantage
+                    << " lambda=" << prompt.options.confidence_threshold
+                    << "; waiting up to " << prompt.options.cloud_timeout_ms << " ms");
+            } else {
+                CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered (" << trigger_reason
+                    << "): p_wrong=" << (1.0f - confidence) << " confidence=" << confidence
+                    << "; waiting up to " << prompt.options.cloud_timeout_ms << " ms");
+            }
             CloudCompletionResult cloud_result = cloud_complete_request(
                 make_cloud_request(local_completion, function_calls),
                 static_cast<long>(prompt.options.cloud_timeout_ms));
@@ -1144,12 +1263,18 @@ int cactus_complete(
             callback(primary_response.c_str(), 0, user_data);
         }
 
-        // No cloud handoff happened (success paths returned early above). If we never recorded a
-        // reason, the request was eligible and the local model cleared the threshold.
         if (handoff_reason.empty()) {
-            handoff_reason = (confidence >= prompt.options.confidence_threshold)
-                ? "above threshold"
-                : "kept local";
+            if (advantage_probe && std::isfinite(handoff_advantage)) {
+                handoff_reason = (handoff_advantage <= prompt.options.confidence_threshold)
+                    ? "advantage below threshold"
+                    : "kept local";
+            } else if (advantage_probe) {
+                handoff_reason = "probe unavailable";
+            } else {
+                handoff_reason = (confidence >= prompt.options.confidence_threshold)
+                    ? "above threshold"
+                    : "kept local";
+            }
         }
 
         if (prompt.options.force_tools && !prompt.tools.empty() && primary_function_calls.empty()) {

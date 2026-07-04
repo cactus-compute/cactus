@@ -290,6 +290,7 @@ class ChatRequest(Permissive):
     reasoning_effort: str | None = None
     tools: list[Tool] | None = None
     tool_choice: str | ToolChoiceObject | None = None
+    handoff_actors: str | None = None
 
 
 class EmbeddingRequest(Permissive):
@@ -430,6 +431,8 @@ def _chat_options(req: ChatRequest) -> dict[str, Any]:
         options["stop_sequences"] = [req.stop] if isinstance(req.stop, str) else req.stop
     if req.reasoning_effort and req.reasoning_effort.lower() not in ("none", "off"):
         options["enable_thinking_if_supported"] = True
+    if req.handoff_actors:
+        options["handoff_actors"] = req.handoff_actors
     return options
 
 

@@ -522,6 +522,7 @@ struct InferenceOptions {
     bool auto_handoff = true;
     bool handoff_with_images = true;
     bool enable_thinking_if_supported = false;
+    std::string handoff_actors;
 };
 
 } // namespace ffi
@@ -1252,6 +1253,45 @@ inline bool try_parse_json_uint(const std::string& json, const std::string& key,
     }
 }
 
+inline bool try_parse_json_string(const std::string& json, const std::string& key, std::string& out_value) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return false;
+
+    size_t start = pos + pattern.size();
+    while (start < json.size() && std::isspace(static_cast<unsigned char>(json[start]))) ++start;
+    if (start >= json.size() || json[start] != '"') return false;
+    ++start;
+
+    std::string parsed;
+    bool escaped = false;
+    for (size_t i = start; i < json.size(); ++i) {
+        char c = json[i];
+        if (escaped) {
+            switch (c) {
+                case '"': parsed.push_back('"'); break;
+                case '\\': parsed.push_back('\\'); break;
+                case '/': parsed.push_back('/'); break;
+                case 'b': parsed.push_back('\b'); break;
+                case 'f': parsed.push_back('\f'); break;
+                case 'n': parsed.push_back('\n'); break;
+                case 'r': parsed.push_back('\r'); break;
+                case 't': parsed.push_back('\t'); break;
+                default: parsed.push_back(c); break;
+            }
+            escaped = false;
+        } else if (c == '\\') {
+            escaped = true;
+        } else if (c == '"') {
+            out_value = std::move(parsed);
+            return true;
+        } else {
+            parsed.push_back(c);
+        }
+    }
+    return false;
+}
+
 inline std::vector<std::string> parse_json_string_array_field(const std::string& json, const std::string& key) {
     std::vector<std::string> out;
     std::string pattern = "\"" + key + "\":";
@@ -1699,6 +1739,11 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         pos = json.find(':', pos) + 1;
         while (pos < json.length() && std::isspace(static_cast<unsigned char>(json[pos]))) pos++;
         options.enable_thinking_if_supported = (json.substr(pos, 4) == "true");
+    }
+
+    std::string parsed_handoff_actors;
+    if (try_parse_json_string(json, "handoff_actors", parsed_handoff_actors)) {
+        options.handoff_actors = parsed_handoff_actors;
     }
 
     pos = json.find("\"stop_sequences\"");

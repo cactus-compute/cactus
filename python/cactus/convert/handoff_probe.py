@@ -10,7 +10,7 @@ from typing import Any
 
 
 _PROBE_MAGIC = b"CHP10P6\0"
-_ORDERED_KEYS = (
+_V1_ORDERED_KEYS = (
     "norm.weight",
     "norm.bias",
     "proj.weight",
@@ -23,6 +23,11 @@ _ORDERED_KEYS = (
     "head.4.weight",
     "head.4.bias",
 )
+_SINGLE_KV_MAXCTX = 2560
+_SINGLE_KV_MAXGEN = 512
+_SINGLE_KV_N_OBS = 128
+_SINGLE_KV_MAXSUM = 40
+_GEMMA4_EOT_TOKEN_ID = 106
 
 
 def _packaged_asset_dir(model_id: str | None) -> Path | None:
@@ -38,13 +43,19 @@ def _candidate_probe_files(output_dir: Path, model_id: str | None = None) -> lis
     candidates: list[Path] = []
     asset_dir = _packaged_asset_dir(model_id)
     if asset_dir is not None:
+        candidates.append(asset_dir / "prod_probe.pt")
         candidates.append(asset_dir / "probe.pt")
     candidates += [
+        output_dir / "prod_probe.pt",
         output_dir / "probe.pt",
         output_dir / "global_attn_probe_v10p6.pt",
+        cwd / "prod_probe.pt",
         cwd / "probe.pt",
+        cwd / "handoff_probe_pkg" / "prod_probe.pt",
         cwd / "v10p6_probe_release" / "global_attn_probe_v10p6.pt",
+        Path.home() / "Downloads" / "prod_probe.pt",
         Path.home() / "Downloads" / "probe.pt",
+        Path.home() / "Downloads" / "handoff_probe_pkg" / "prod_probe.pt",
         Path.home() / "Downloads" / "v10p6_probe_release" / "global_attn_probe_v10p6.pt",
     ]
     return candidates
@@ -53,8 +64,11 @@ def _candidate_probe_files(output_dir: Path, model_id: str | None = None) -> lis
 def _candidate_probe_zips(output_dir: Path) -> list[Path]:
     cwd = Path.cwd()
     return [
+        output_dir / "handoff_probe_pkg.zip",
         output_dir / "v10p6_probe_release.zip",
+        cwd / "handoff_probe_pkg.zip",
         cwd / "v10p6_probe_release.zip",
+        Path.home() / "Downloads" / "handoff_probe_pkg.zip",
         Path.home() / "Downloads" / "v10p6_probe_release.zip",
     ]
 
@@ -65,6 +79,8 @@ def _load_checkpoint_from_zip(zip_path: Path) -> Any:
     with zipfile.ZipFile(zip_path) as zf:
         names = set(zf.namelist())
         for name in (
+            "handoff_probe_pkg/prod_probe.pt",
+            "prod_probe.pt",
             "v10p6_probe_release/global_attn_probe_v10p6.pt",
             "global_attn_probe_v10p6.pt",
             "probe.pt",
@@ -77,6 +93,9 @@ def _load_checkpoint_from_zip(zip_path: Path) -> Any:
 
 def _state_dict_from_checkpoint(checkpoint: Any) -> dict[str, Any]:
     if isinstance(checkpoint, dict):
+        value = checkpoint.get("state")
+        if isinstance(value, dict):
+            return value
         for key in ("state_dict", "model_state"):
             value = checkpoint.get(key)
             if isinstance(value, dict):
@@ -96,9 +115,9 @@ def _load_checkpoint(output_dir: Path, model_id: str | None = None) -> tuple[Any
     return None, None
 
 
-def _tensor_hash(state: dict[str, Any]) -> str:
+def _tensor_hash(state: dict[str, Any], keys: tuple[str, ...]) -> str:
     digest = hashlib.sha256()
-    for key in sorted(_ORDERED_KEYS):
+    for key in sorted(keys):
         tensor = state[key].detach().cpu().contiguous().float()
         digest.update(key.encode("utf-8"))
         digest.update(str(tuple(tensor.shape)).encode("utf-8"))
@@ -106,22 +125,22 @@ def _tensor_hash(state: dict[str, Any]) -> str:
     return digest.hexdigest()
 
 
-def _probe_state_dict(checkpoint: Any) -> dict[str, Any]:
+def _probe_state_dict(checkpoint: Any, required_keys: tuple[str, ...]) -> dict[str, Any]:
     state = _state_dict_from_checkpoint(checkpoint)
-    missing = [key for key in _ORDERED_KEYS if key not in state]
+    missing = [key for key in required_keys if key not in state]
     if missing:
         raise RuntimeError(f"handoff probe checkpoint missing tensors: {', '.join(missing)}")
     return state
 
 
-def _write_probe_bundle(out_dir: Path, state: dict[str, Any], *, feat_dim: int, t_h: int,
-                        h1: int, h2: int, fmt: str, layer: int, source: str | None) -> bool:
+def _write_probe_bundle_v1(out_dir: Path, state: dict[str, Any], *, feat_dim: int, t_h: int,
+                           h1: int, h2: int, fmt: str, layer: int, source: str | None) -> bool:
     out_dir.mkdir(parents=True, exist_ok=True)
     probe_path = out_dir / "handoff_probe.bin"
     with probe_path.open("wb") as f:
         f.write(_PROBE_MAGIC)
         f.write(struct.pack("<IIIII", 1, feat_dim, t_h, h1, h2))
-        for key in _ORDERED_KEYS:
+        for key in _V1_ORDERED_KEYS:
             tensor = state[key].detach().cpu().contiguous().float().numpy()
             f.write(tensor.tobytes(order="C"))
 
@@ -132,14 +151,110 @@ def _write_probe_bundle(out_dir: Path, state: dict[str, Any], *, feat_dim: int, 
         "feat_dim": feat_dim,
         "t_h": t_h,
         "output": probe_path.name,
-        "tensor_sha256": _tensor_hash(state),
+        "tensor_sha256": _tensor_hash(state, _V1_ORDERED_KEYS),
+    }
+    (out_dir / "handoff_probe.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    return True
+
+
+def _single_kv_keys(n_streams: int) -> tuple[str, ...]:
+    keys: list[str] = ["norm.weight", "norm.bias"]
+    for prefix in ("pk", "pv"):
+        for idx in range(n_streams):
+            keys.append(f"{prefix}.{idx}.weight")
+            keys.append(f"{prefix}.{idx}.bias")
+    keys.extend((
+        "aemb.weight",
+        "q",
+        "head.0.weight",
+        "head.0.bias",
+        "head.2.weight",
+        "head.2.bias",
+    ))
+    return tuple(keys)
+
+
+def _checkpoint_meta(checkpoint: Any) -> dict[str, Any]:
+    if not isinstance(checkpoint, dict):
+        return {}
+    return {k: v for k, v in checkpoint.items() if k not in ("state", "state_dict", "model_state")}
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return str(value)
+
+
+def _jsonable_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    return {str(k): _jsonable(v) for k, v in meta.items()}
+
+
+def _write_single_kv_probe_bundle(out_dir: Path, checkpoint: Any, *, layer: int, source: str | None) -> bool:
+    meta = _checkpoint_meta(checkpoint)
+    n_streams = int(meta.get("n_streams", 3))
+    keys = _single_kv_keys(n_streams)
+    state = _probe_state_dict(checkpoint, keys)
+
+    feat_dim = int(state["norm.weight"].shape[0])
+    t_h = int(meta.get("t_h", state["q"].shape[0]))
+    mlp = int(state["head.0.weight"].shape[0])
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    probe_path = out_dir / "handoff_probe.bin"
+    with probe_path.open("wb") as f:
+        f.write(_PROBE_MAGIC)
+        f.write(struct.pack(
+            "<IIIIIIIIII",
+            2,
+            feat_dim,
+            t_h,
+            mlp,
+            n_streams,
+            _SINGLE_KV_MAXCTX,
+            _SINGLE_KV_MAXGEN,
+            _SINGLE_KV_N_OBS,
+            _SINGLE_KV_MAXSUM,
+            _GEMMA4_EOT_TOKEN_ID,
+        ))
+        for key in keys:
+            tensor = state[key].detach().cpu().contiguous().float().numpy()
+            f.write(tensor.tobytes(order="C"))
+
+    metadata = {
+        "format": "cactus_handoff_probe_singlekv_v1",
+        "source": source,
+        "layer": layer,
+        "feat_dim": feat_dim,
+        "t_h": t_h,
+        "mlp": mlp,
+        "n_streams": n_streams,
+        "max_context_tokens": _SINGLE_KV_MAXCTX,
+        "max_generation_tokens": _SINGLE_KV_MAXGEN,
+        "observation_tokens": _SINGLE_KV_N_OBS,
+        "summary_tokens": _SINGLE_KV_MAXSUM,
+        "eot_token_id": _GEMMA4_EOT_TOKEN_ID,
+        "output": probe_path.name,
+        "tensor_sha256": _tensor_hash(state, keys),
+        "checkpoint_meta": _jsonable_meta(meta),
     }
     (out_dir / "handoff_probe.json").write_text(json.dumps(metadata, indent=2) + "\n")
     return True
 
 
 def export_gemma4_handoff_probe(output_dir: str | Path, *, model_id: str | None = None) -> bool:
-    """Package the Gemma4 v10p6 cloud-handoff probe into a C++-readable bundle file."""
+    """Package the Gemma4 cloud-handoff probe into a C++-readable bundle file."""
     model_key = (model_id or "").lower()
     if model_key and "gemma-4" not in model_key and "gemma4" not in model_key:
         return False
@@ -149,8 +264,12 @@ def export_gemma4_handoff_probe(output_dir: str | Path, *, model_id: str | None 
     if checkpoint is None:
         return False
 
-    state = _probe_state_dict(checkpoint)
-    return _write_probe_bundle(
+    state = _state_dict_from_checkpoint(checkpoint)
+    if "pk.0.weight" in state and "pv.0.weight" in state and "q" in state:
+        return _write_single_kv_probe_bundle(out_dir, checkpoint, layer=28, source=source)
+
+    state = _probe_state_dict(checkpoint, _V1_ORDERED_KEYS)
+    return _write_probe_bundle_v1(
         out_dir, state, feat_dim=1536, t_h=32, h1=128, h2=64,
         fmt="cactus_handoff_probe_v10p6", layer=28, source=source,
     )
@@ -190,8 +309,8 @@ def export_parakeet_handoff_probe(output_dir: str | Path, *, model_id: str | Non
     if checkpoint is None:
         return False
 
-    state = _probe_state_dict(checkpoint)
-    return _write_probe_bundle(
+    state = _probe_state_dict(checkpoint, _V1_ORDERED_KEYS)
+    return _write_probe_bundle_v1(
         out_dir, state,
         feat_dim=int(state["norm.weight"].shape[0]),
         t_h=int(state["proj.weight"].shape[0]),

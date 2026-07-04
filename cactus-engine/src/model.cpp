@@ -277,6 +277,11 @@ bool read_float_vector(std::ifstream& in, std::vector<float>& out, size_t count)
     return read_exact(in, out.data(), count * sizeof(float));
 }
 
+bool read_float_vector_at(std::ifstream& in, std::vector<float>& out, size_t offset, size_t count) {
+    if (offset + count > out.size()) return false;
+    return read_exact(in, out.data() + offset, count * sizeof(float));
+}
+
 float relu(float x) {
     return x > 0.0f ? x : 0.0f;
 }
@@ -287,6 +292,20 @@ bool Model::load_handoff_probe() {
     fs::path path = fs::path(bundle_dir_) / "handoff_probe.bin";
     if (!fs::exists(path)) return false;
 
+    handoff_probe_loaded_ = false;
+    handoff_probe_kind_ = HandoffProbeKind::NONE;
+    handoff_probe_feat_dim_ = 0;
+    handoff_probe_t_h_ = 0;
+    handoff_probe_h1_ = 0;
+    handoff_probe_h2_ = 0;
+    handoff_probe_n_streams_ = 0;
+    handoff_probe_max_context_tokens_ = 0;
+    handoff_probe_max_generation_tokens_ = 0;
+    handoff_probe_observation_tokens_ = 0;
+    handoff_probe_summary_tokens_ = 0;
+    handoff_probe_eot_token_id_ = 0;
+    handoff_probe_hidden_.clear();
+
     std::ifstream in(path, std::ios::binary);
     if (!in.is_open()) return false;
 
@@ -296,16 +315,68 @@ bool Model::load_handoff_probe() {
         CACTUS_LOG_WARN("cloud_handoff", "Ignoring invalid handoff probe header at " << path);
         return false;
     }
-    if (!read_exact(in, &version, sizeof(version))
-        || !read_exact(in, &handoff_probe_feat_dim_, sizeof(handoff_probe_feat_dim_))
-        || !read_exact(in, &handoff_probe_t_h_, sizeof(handoff_probe_t_h_))
-        || !read_exact(in, &handoff_probe_h1_, sizeof(handoff_probe_h1_))
-        || !read_exact(in, &handoff_probe_h2_, sizeof(handoff_probe_h2_))) {
+    if (!read_exact(in, &version, sizeof(version))) {
         CACTUS_LOG_WARN("cloud_handoff", "Ignoring truncated handoff probe header at " << path);
         return false;
     }
-    if (version != 1 || handoff_probe_feat_dim_ == 0 || handoff_probe_t_h_ == 0
-        || handoff_probe_h1_ == 0 || handoff_probe_h2_ == 0) {
+
+    if (version == 1) {
+        if (!read_exact(in, &handoff_probe_feat_dim_, sizeof(handoff_probe_feat_dim_))
+            || !read_exact(in, &handoff_probe_t_h_, sizeof(handoff_probe_t_h_))
+            || !read_exact(in, &handoff_probe_h1_, sizeof(handoff_probe_h1_))
+            || !read_exact(in, &handoff_probe_h2_, sizeof(handoff_probe_h2_))) {
+            CACTUS_LOG_WARN("cloud_handoff", "Ignoring truncated handoff probe header at " << path);
+            return false;
+        }
+        if (handoff_probe_feat_dim_ == 0 || handoff_probe_t_h_ == 0
+            || handoff_probe_h1_ == 0 || handoff_probe_h2_ == 0) {
+            CACTUS_LOG_WARN("cloud_handoff", "Ignoring unsupported handoff probe metadata at " << path);
+            return false;
+        }
+
+        const size_t feat = handoff_probe_feat_dim_;
+        const size_t th = handoff_probe_t_h_;
+        const size_t h1 = handoff_probe_h1_;
+        const size_t h2 = handoff_probe_h2_;
+        bool ok = true;
+        ok = ok && read_float_vector(in, handoff_probe_norm_weight_, feat);
+        ok = ok && read_float_vector(in, handoff_probe_norm_bias_, feat);
+        ok = ok && read_float_vector(in, handoff_probe_proj_weight_, th * feat);
+        ok = ok && read_float_vector(in, handoff_probe_proj_bias_, th);
+        ok = ok && read_float_vector(in, handoff_probe_attn_query_, th);
+        ok = ok && read_float_vector(in, handoff_probe_head0_weight_, h1 * th);
+        ok = ok && read_float_vector(in, handoff_probe_head0_bias_, h1);
+        ok = ok && read_float_vector(in, handoff_probe_head2_weight_, h2 * h1);
+        ok = ok && read_float_vector(in, handoff_probe_head2_bias_, h2);
+        ok = ok && read_float_vector(in, handoff_probe_head4_weight_, h2);
+        ok = ok && read_float_vector(in, handoff_probe_head4_bias_, 1);
+        if (!ok) {
+            CACTUS_LOG_WARN("cloud_handoff", "Ignoring truncated handoff probe weights at " << path);
+            return false;
+        }
+
+        handoff_probe_kind_ = HandoffProbeKind::GLOBAL_P_WRONG;
+        handoff_probe_loaded_ = true;
+        CACTUS_LOG_INFO("cloud_handoff", "Loaded handoff probe from " << path);
+        return true;
+    }
+
+    if (version != 2
+        || !read_exact(in, &handoff_probe_feat_dim_, sizeof(handoff_probe_feat_dim_))
+        || !read_exact(in, &handoff_probe_t_h_, sizeof(handoff_probe_t_h_))
+        || !read_exact(in, &handoff_probe_h1_, sizeof(handoff_probe_h1_))
+        || !read_exact(in, &handoff_probe_n_streams_, sizeof(handoff_probe_n_streams_))
+        || !read_exact(in, &handoff_probe_max_context_tokens_, sizeof(handoff_probe_max_context_tokens_))
+        || !read_exact(in, &handoff_probe_max_generation_tokens_, sizeof(handoff_probe_max_generation_tokens_))
+        || !read_exact(in, &handoff_probe_observation_tokens_, sizeof(handoff_probe_observation_tokens_))
+        || !read_exact(in, &handoff_probe_summary_tokens_, sizeof(handoff_probe_summary_tokens_))
+        || !read_exact(in, &handoff_probe_eot_token_id_, sizeof(handoff_probe_eot_token_id_))) {
+        CACTUS_LOG_WARN("cloud_handoff", "Ignoring truncated handoff probe header at " << path);
+        return false;
+    }
+    if (handoff_probe_feat_dim_ == 0 || handoff_probe_t_h_ == 0
+        || handoff_probe_h1_ == 0 || handoff_probe_n_streams_ < 3
+        || handoff_probe_max_context_tokens_ == 0 || handoff_probe_max_generation_tokens_ == 0) {
         CACTUS_LOG_WARN("cloud_handoff", "Ignoring unsupported handoff probe metadata at " << path);
         return false;
     }
@@ -313,25 +384,34 @@ bool Model::load_handoff_probe() {
     const size_t feat = handoff_probe_feat_dim_;
     const size_t th = handoff_probe_t_h_;
     const size_t h1 = handoff_probe_h1_;
-    const size_t h2 = handoff_probe_h2_;
+    const size_t streams = handoff_probe_n_streams_;
     bool ok = true;
     ok = ok && read_float_vector(in, handoff_probe_norm_weight_, feat);
     ok = ok && read_float_vector(in, handoff_probe_norm_bias_, feat);
-    ok = ok && read_float_vector(in, handoff_probe_proj_weight_, th * feat);
-    ok = ok && read_float_vector(in, handoff_probe_proj_bias_, th);
-    ok = ok && read_float_vector(in, handoff_probe_attn_query_, th);
-    ok = ok && read_float_vector(in, handoff_probe_head0_weight_, h1 * th);
-    ok = ok && read_float_vector(in, handoff_probe_head0_bias_, h1);
-    ok = ok && read_float_vector(in, handoff_probe_head2_weight_, h2 * h1);
-    ok = ok && read_float_vector(in, handoff_probe_head2_bias_, h2);
-    ok = ok && read_float_vector(in, handoff_probe_head4_weight_, h2);
-    ok = ok && read_float_vector(in, handoff_probe_head4_bias_, 1);
+    handoff_probe_pk_weight_.assign(streams * th * feat, 0.0f);
+    handoff_probe_pk_bias_.assign(streams * th, 0.0f);
+    handoff_probe_pv_weight_.assign(streams * th * feat, 0.0f);
+    handoff_probe_pv_bias_.assign(streams * th, 0.0f);
+    for (size_t s = 0; s < streams; ++s) {
+        ok = ok && read_float_vector_at(in, handoff_probe_pk_weight_, s * th * feat, th * feat);
+        ok = ok && read_float_vector_at(in, handoff_probe_pk_bias_, s * th, th);
+    }
+    for (size_t s = 0; s < streams; ++s) {
+        ok = ok && read_float_vector_at(in, handoff_probe_pv_weight_, s * th * feat, th * feat);
+        ok = ok && read_float_vector_at(in, handoff_probe_pv_bias_, s * th, th);
+    }
+    ok = ok && read_float_vector(in, handoff_probe_actor_embedding_, 2 * th);
+    ok = ok && read_float_vector(in, handoff_probe_singlekv_query_, th);
+    ok = ok && read_float_vector(in, handoff_probe_singlekv_head0_weight_, h1 * th);
+    ok = ok && read_float_vector(in, handoff_probe_singlekv_head0_bias_, h1);
+    ok = ok && read_float_vector(in, handoff_probe_singlekv_head2_weight_, h1);
+    ok = ok && read_float_vector(in, handoff_probe_singlekv_head2_bias_, 1);
     if (!ok) {
         CACTUS_LOG_WARN("cloud_handoff", "Ignoring truncated handoff probe weights at " << path);
         return false;
     }
 
-    handoff_probe_hidden_.clear();
+    handoff_probe_kind_ = HandoffProbeKind::SINGLE_KV_ADVANTAGE;
     handoff_probe_loaded_ = true;
     CACTUS_LOG_INFO("cloud_handoff", "Loaded handoff probe from " << path);
     return true;
@@ -341,6 +421,35 @@ bool Model::has_handoff_probe_rollout() const {
     return handoff_probe_loaded_
         && handoff_probe_feat_dim_ > 0
         && handoff_probe_hidden_.size() >= static_cast<size_t>(handoff_probe_feat_dim_);
+}
+
+bool Model::handoff_probe_returns_advantage() const {
+    return handoff_probe_loaded_ && handoff_probe_kind_ == HandoffProbeKind::SINGLE_KV_ADVANTAGE;
+}
+
+bool Model::handoff_probe_uses_turn_streams() const {
+    return handoff_probe_returns_advantage();
+}
+
+size_t Model::handoff_probe_captured_rows() const {
+    if (handoff_probe_feat_dim_ == 0) return 0;
+    return handoff_probe_hidden_.size() / static_cast<size_t>(handoff_probe_feat_dim_);
+}
+
+void Model::reset_handoff_probe_rollout() {
+    handoff_probe_hidden_.clear();
+}
+
+bool Model::capture_handoff_probe_token(uint32_t token_id) {
+    if (!handoff_probe_uses_turn_streams() || !decoder_ || !decoder_->graph) return false;
+    if (decode_route_ == DecodeRoute::CACHED_STEP && (!encoder_ || !encoder_->graph)) return false;
+    if (decode_route_ != DecodeRoute::CACHED_STEP && decode_route_ != DecodeRoute::DIRECT_DECODER_STEP) return false;
+
+    run_step(token_id, cache_total_seq_len_, /*read_logits=*/false);
+    ++cache_total_seq_len_;
+    cache_token_ids_.push_back(token_id);
+    maybe_roll_compact();
+    return true;
 }
 
 void Model::maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name) {
@@ -365,7 +474,9 @@ void Model::maybe_capture_handoff_probe_hidden(const Component& comp, const std:
 }
 
 float Model::handoff_probe_wrong_probability() const {
-    if (!has_handoff_probe_rollout()) return std::numeric_limits<float>::quiet_NaN();
+    if (handoff_probe_kind_ != HandoffProbeKind::GLOBAL_P_WRONG || !has_handoff_probe_rollout()) {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
 
     const size_t feat = handoff_probe_feat_dim_;
     const size_t th = handoff_probe_t_h_;
@@ -431,6 +542,210 @@ float Model::handoff_probe_wrong_probability() const {
     double logit = handoff_probe_head4_bias_[0];
     for (size_t j = 0; j < h2; ++j) logit += static_cast<double>(handoff_probe_head4_weight_[j]) * y2[j];
     return static_cast<float>(1.0 / (1.0 + std::exp(-logit)));
+}
+
+float Model::handoff_probe_advantage(const std::vector<uint32_t>& prompt_tokens,
+                                     const std::vector<uint32_t>& generated_tokens,
+                                     const std::vector<uint32_t>& summary_eot_actors) const {
+    if (handoff_probe_kind_ != HandoffProbeKind::SINGLE_KV_ADVANTAGE || generated_tokens.empty()) {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    if (!has_handoff_probe_rollout()) return std::numeric_limits<float>::quiet_NaN();
+
+    const size_t feat = handoff_probe_feat_dim_;
+    const size_t th = handoff_probe_t_h_;
+    const size_t mlp = handoff_probe_h1_;
+    const size_t streams = handoff_probe_n_streams_;
+    if (streams < 3 || th == 0 || feat == 0 || mlp == 0) {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    const size_t captured_rows = handoff_probe_captured_rows();
+    const size_t prompt_rows = prompt_tokens.size();
+    if (captured_rows < prompt_rows) {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    const size_t available_gen_rows = captured_rows - prompt_rows;
+    const size_t max_gen = handoff_probe_max_generation_tokens_ > 0
+        ? static_cast<size_t>(handoff_probe_max_generation_tokens_) : generated_tokens.size();
+    size_t gen_count = std::min(generated_tokens.size(), max_gen);
+    gen_count = std::min(gen_count, available_gen_rows);
+    if (gen_count == 0) return std::numeric_limits<float>::quiet_NaN();
+
+    const size_t gen_token_offset = generated_tokens.size() - gen_count;
+    const size_t gen_row_offset = prompt_rows + gen_token_offset;
+
+    std::vector<uint32_t> prompt_eot_actor(prompt_rows, 0);
+    size_t eot_index = 0;
+    for (size_t i = 0; i < prompt_rows; ++i) {
+        if (prompt_tokens[i] != handoff_probe_eot_token_id_) continue;
+        if (eot_index < summary_eot_actors.size()) {
+            prompt_eot_actor[i] = summary_eot_actors[eot_index] ? 1u : 0u;
+        }
+        ++eot_index;
+    }
+
+    struct ProbeRowRef {
+        size_t row;
+        uint32_t token;
+        bool generated;
+    };
+    std::vector<ProbeRowRef> rows;
+    rows.reserve(prompt_rows + gen_count);
+    for (size_t i = 0; i < prompt_rows; ++i) {
+        rows.push_back({i, prompt_tokens[i], false});
+    }
+    for (size_t j = 0; j < gen_count; ++j) {
+        rows.push_back({gen_row_offset + j, generated_tokens[gen_token_offset + j], true});
+    }
+    const size_t max_ctx = handoff_probe_max_context_tokens_ > 0
+        ? static_cast<size_t>(handoff_probe_max_context_tokens_) : rows.size();
+    if (rows.size() > max_ctx) {
+        rows.erase(rows.begin(), rows.end() - static_cast<std::ptrdiff_t>(max_ctx));
+    }
+
+    size_t ctx_end = 0;
+    while (ctx_end < rows.size() && !rows[ctx_end].generated) ++ctx_end;
+
+    struct SummaryRef {
+        size_t pos;
+        uint32_t actor;
+    };
+    std::vector<SummaryRef> summary_positions;
+    for (size_t i = 0; i < ctx_end; ++i) {
+        if (rows[i].token == handoff_probe_eot_token_id_) {
+            uint32_t actor = rows[i].row < prompt_eot_actor.size() ? prompt_eot_actor[rows[i].row] : 0;
+            summary_positions.push_back({i, actor});
+        }
+    }
+    const size_t max_summary = handoff_probe_summary_tokens_ > 0
+        ? static_cast<size_t>(handoff_probe_summary_tokens_) : summary_positions.size();
+    if (summary_positions.size() > max_summary) {
+        summary_positions.erase(summary_positions.begin(),
+                                summary_positions.end() - static_cast<std::ptrdiff_t>(max_summary));
+    }
+
+    struct FeatureRef {
+        size_t row;
+        uint32_t stream;
+        uint32_t pos;
+        uint32_t actor;
+    };
+    std::vector<FeatureRef> features;
+    features.reserve(summary_positions.size()
+        + std::min(ctx_end, static_cast<size_t>(handoff_probe_observation_tokens_))
+        + rows.size() - ctx_end);
+
+    const uint32_t summary_count = static_cast<uint32_t>(summary_positions.size());
+    for (size_t i = 0; i < summary_positions.size(); ++i) {
+        features.push_back({
+            rows[summary_positions[i].pos].row,
+            0,
+            static_cast<uint32_t>(i),
+            summary_positions[i].actor,
+        });
+    }
+    const size_t obs_count = handoff_probe_observation_tokens_ > 0
+        ? static_cast<size_t>(handoff_probe_observation_tokens_) : ctx_end;
+    const size_t obs_start = ctx_end > obs_count ? ctx_end - obs_count : 0;
+    for (size_t i = obs_start; i < ctx_end; ++i) {
+        features.push_back({rows[i].row, 1, summary_count, 0});
+    }
+    for (size_t i = ctx_end; i < rows.size(); ++i) {
+        features.push_back({rows[i].row, 2, summary_count, 0});
+    }
+    if (features.empty()) return std::numeric_limits<float>::quiet_NaN();
+
+    std::vector<float> values(features.size() * th, 0.0f);
+    std::vector<float> scores(features.size(), 0.0f);
+    const double inv_sqrt_th = 1.0 / std::sqrt(static_cast<double>(th));
+    const size_t half = th / 2;
+    if (half == 0) return std::numeric_limits<float>::quiet_NaN();
+
+    auto rope_value = [&](const std::vector<float>& x, size_t j, uint32_t pos) -> float {
+        const size_t pair = j < half ? j : j - half;
+        const double inv = std::pow(10000.0, -static_cast<double>(pair) / static_cast<double>(half));
+        const double angle = static_cast<double>(pos) * inv;
+        const float c = static_cast<float>(std::cos(angle));
+        const float s = static_cast<float>(std::sin(angle));
+        const float rotated = j < half ? -x[j + half] : x[j - half];
+        return x[j] * c + rotated * s;
+    };
+
+    std::vector<float> normalized(feat);
+    std::vector<float> key(th);
+    std::vector<float> query_rot(th);
+    for (size_t j = 0; j < th; ++j) {
+        query_rot[j] = rope_value(handoff_probe_singlekv_query_, j, summary_count);
+    }
+
+    for (size_t f = 0; f < features.size(); ++f) {
+        const FeatureRef& ref = features[f];
+        if (ref.row >= captured_rows || ref.stream >= streams || ref.actor > 1) {
+            return std::numeric_limits<float>::quiet_NaN();
+        }
+        const float* x = handoff_probe_hidden_.data() + ref.row * feat;
+        double mean = 0.0;
+        for (size_t i = 0; i < feat; ++i) mean += x[i];
+        mean /= static_cast<double>(feat);
+        double var = 0.0;
+        for (size_t i = 0; i < feat; ++i) {
+            const double d = static_cast<double>(x[i]) - mean;
+            var += d * d;
+        }
+        var /= static_cast<double>(feat);
+        const float inv_std = static_cast<float>(1.0 / std::sqrt(var + 1e-5));
+        for (size_t i = 0; i < feat; ++i) {
+            float xn = (x[i] - static_cast<float>(mean)) * inv_std;
+            normalized[i] = xn * handoff_probe_norm_weight_[i] + handoff_probe_norm_bias_[i];
+        }
+
+        const size_t stream_base_w = static_cast<size_t>(ref.stream) * th * feat;
+        const size_t stream_base_b = static_cast<size_t>(ref.stream) * th;
+        for (size_t j = 0; j < th; ++j) {
+            double k_acc = handoff_probe_pk_bias_[stream_base_b + j];
+            double v_acc = handoff_probe_pv_bias_[stream_base_b + j];
+            const float* kw = handoff_probe_pk_weight_.data() + stream_base_w + j * feat;
+            const float* vw = handoff_probe_pv_weight_.data() + stream_base_w + j * feat;
+            for (size_t i = 0; i < feat; ++i) {
+                k_acc += static_cast<double>(kw[i]) * normalized[i];
+                v_acc += static_cast<double>(vw[i]) * normalized[i];
+            }
+            key[j] = relu(static_cast<float>(k_acc))
+                + handoff_probe_actor_embedding_[static_cast<size_t>(ref.actor) * th + j];
+            values[f * th + j] = relu(static_cast<float>(v_acc));
+        }
+
+        double score = 0.0;
+        for (size_t j = 0; j < th; ++j) {
+            score += static_cast<double>(rope_value(key, j, ref.pos)) * query_rot[j];
+        }
+        scores[f] = static_cast<float>(score * inv_sqrt_th);
+    }
+
+    const float max_score = *std::max_element(scores.begin(), scores.end());
+    double denom = 0.0;
+    for (float s : scores) denom += std::exp(static_cast<double>(s - max_score));
+    if (denom == 0.0 || !std::isfinite(denom)) return std::numeric_limits<float>::quiet_NaN();
+
+    std::vector<float> pooled(th, 0.0f);
+    for (size_t f = 0; f < features.size(); ++f) {
+        const float alpha = static_cast<float>(std::exp(static_cast<double>(scores[f] - max_score)) / denom);
+        const float* v = values.data() + f * th;
+        for (size_t j = 0; j < th; ++j) pooled[j] += alpha * v[j];
+    }
+
+    std::vector<float> hidden(mlp, 0.0f);
+    for (size_t i = 0; i < mlp; ++i) {
+        double acc = handoff_probe_singlekv_head0_bias_[i];
+        const float* w = handoff_probe_singlekv_head0_weight_.data() + i * th;
+        for (size_t j = 0; j < th; ++j) acc += static_cast<double>(w[j]) * pooled[j];
+        hidden[i] = relu(static_cast<float>(acc));
+    }
+    double advantage = handoff_probe_singlekv_head2_bias_[0];
+    for (size_t i = 0; i < mlp; ++i) {
+        advantage += static_cast<double>(handoff_probe_singlekv_head2_weight_[i]) * hidden[i];
+    }
+    return static_cast<float>(advantage);
 }
 
 bool Model::init(const std::string& bundle_dir, size_t context_size,
@@ -1285,6 +1600,7 @@ void Model::reset_prefill_stats() {
 Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position, size_t chunk_size, bool prepare_decode) {
     ChunkedPrefillResult result;
     reset_prefill_stats();
+    if (handoff_probe_uses_turn_streams()) return result;
     if (decode_route_ != DecodeRoute::CACHED_STEP || !encoder_ || !decoder_ || !decoder_prefill_) return result;
     if (start_position != 0) return result;
     if (!load_component_graph(*decoder_prefill_)) return result;
@@ -1480,6 +1796,7 @@ void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t f
             lm_encoder_media_step_->graph->execute();
             copy_encoder_outputs_to_decoder(*lm_encoder_media_step_);
             decoder_->graph->execute();
+            maybe_capture_handoff_probe_hidden(*decoder_);
             return;
         }
     } else if (encoder_ != nullptr && decoder_ != nullptr) {
@@ -1489,6 +1806,7 @@ void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t f
             copy_component_outputs_to_inputs(*encoder_, *decoder_);
             write_media_embeds_row(*decoder_, dec_embeds_idx, feature_row, feature_row_bytes, feature_precision);
             decoder_->graph->execute();
+            maybe_capture_handoff_probe_hidden(*decoder_);
             return;
         }
     }
@@ -2536,6 +2854,7 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
 bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                    const std::vector<std::string>& image_paths,
                                    const std::vector<std::vector<float>>& audio_features_per_message) {
+    if (handoff_probe_uses_turn_streams()) return false;
     if (cache_total_seq_len_ > 0) return false;
     const bool have_images = !image_paths.empty() && vision_encoder_ != nullptr;
     bool any_audio = false;
