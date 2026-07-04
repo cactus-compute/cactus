@@ -176,7 +176,7 @@ void compute_kv_cache_state_node(
     bool sliding = window > 0 && window < ceiling;
     size_t max_seq;
     if (sliding) max_seq = std::min(ceiling, window + node.params.cache_sink_size + 1);
-    else if (num_slots > 1) max_seq = ceiling;
+    else if (num_slots > 1 || window > 0) max_seq = ceiling;
     else max_seq = std::min(ceiling, kInitialCacheEntries);
     size_t kv_heads = node.params.num_kv_heads;
     size_t hdim = node.params.head_dim;

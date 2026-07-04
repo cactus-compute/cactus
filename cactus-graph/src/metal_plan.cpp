@@ -1302,7 +1302,7 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             bool has_new = (c.u1 & 0x10000u) != 0;
             size_t ng = (hd + 31) / 32;
             size_t win = anchor.params.window_size;
-            bool sliding = win > 0 && win < nodes[c.b2]->params.max_cache_seq_len;
+            bool sliding = win > 0;
             if (has_new && !sliding && clen >= mx) {
                 size_t ceiling = nodes[c.b2]->params.max_cache_seq_len;
                 if (!cactus_kv_cache_grow(kc, clen + 1, ceiling)
