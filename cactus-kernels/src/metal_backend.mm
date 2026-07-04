@@ -18,6 +18,7 @@
 #include <utility>
 #include <cstdint>
 #include <mutex>
+#include <atomic>
 
 #include "cactus_kernels_msl.h"
 
@@ -137,6 +138,7 @@ struct ResW {
     float cb_scale=1.f;
     id<MTLBuffer> wf16=nil;
     bool wf16_volatile=false;
+    uint64_t wf16_tick=0;
 };
 std::unordered_map<uint64_t, ResW> g_resident;
 
@@ -153,6 +155,8 @@ static uint64_t resident_key(const CactusQuantMatrix* W) {
     return h;
 }
 bool g_wf16_live = false;
+size_t g_wf16_bytes = 0;
+uint64_t g_wf16_clock = 0;
 id<MTLBuffer> g_attn_scores = nil;
 std::unordered_map<const void*, ResW> g_resident_emb;
 std::mutex g_resident_mu;
@@ -268,6 +272,35 @@ inline size_t bucket(size_t b) { return (b + 4095) & ~size_t(4095); }
 static const uint32_t g_mr_rows = 8u * 2u;
 static const bool g_predequant=(std::getenv("CACTUS_NO_PREDEQUANT")==nullptr);
 
+inline bool tg_mem_ok(size_t bytes) {
+    return bytes <= (size_t)[ctx().dev maxThreadgroupMemoryLength];
+}
+
+size_t wf16_budget() {
+    static const size_t cap = [] {
+        if (const char* e = std::getenv("CACTUS_WF16_CAP_MB")) return (size_t)atoll(e) << 20;
+        return (size_t)([ctx().dev recommendedMaxWorkingSetSize] / 4);
+    }();
+    return cap;
+}
+
+void wf16_evict_for(size_t need, const ResW* keep) {
+    std::lock_guard<std::mutex> lk(g_resident_mu);
+    const size_t cap = wf16_budget();
+    while (g_wf16_bytes + need > cap) {
+        ResW* victim = nullptr;
+        for (auto& kv : g_resident) {
+            ResW& r = kv.second;
+            if (!r.wf16 || &r == keep) continue;
+            if (!victim || r.wf16_tick < victim->wf16_tick) victim = &r;
+        }
+        if (!victim) break;
+        g_wf16_bytes -= (size_t)victim->wf16.length;
+        victim->wf16 = nil;
+        victim->wf16_volatile = false;
+    }
+}
+
 id<MTLComputeCommandEncoder> ensureEncoder() {
     if (!g_enc) {
         if (!g_cmd) g_cmd = [ctx().queue commandBuffer];
@@ -375,22 +408,32 @@ void cactus_metal_session_begin() {
     if (!g_arpool) g_arpool = objc_autoreleasePoolPush();
 }
 static id<MTLCommandBuffer> g_last_cmd = nil;
+static std::atomic<bool> g_cmd_failed{false};
+static void watch_cmd_errors(id<MTLCommandBuffer> cmd) {
+    [cmd addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+        if (cb.status == MTLCommandBufferStatusError) {
+            g_cmd_failed.store(true, std::memory_order_relaxed);
+            fprintf(stderr, "[cactus-metal] command buffer failed: %s\n",
+                    cb.error ? [[cb.error localizedDescription] UTF8String] : "unknown");
+        }
+    }];
+}
+static void reclaim_dead_slabs();
 void cactus_metal_session_sync() {
     if (g_enc) { [g_enc endEncoding]; g_enc = nil; }
     if (g_cmd) {
+        watch_cmd_errors(g_cmd);
         [g_cmd commit];
         g_last_cmd = g_cmd;
         g_cmd = nil;
     }
     if (g_last_cmd) {
         [g_last_cmd waitUntilCompleted];
-        if (g_last_cmd.status == MTLCommandBufferStatusError)
-            fprintf(stderr, "[cactus-metal] command buffer failed: %s\n",
-                    g_last_cmd.error ? [[g_last_cmd.error localizedDescription] UTF8String] : "unknown");
         g_last_cmd = nil;
     }
     for (id<MTLBuffer> b : g_pending) g_free[(size_t)b.length].push_back(b);
     g_pending.clear();
+    reclaim_dead_slabs();
 }
 void cactus_metal_session_end() {
     cactus_metal_session_sync();
@@ -405,11 +448,12 @@ void cactus_metal_invalidate_host_wraps() {
     g_resident_emb.clear();
     g_dequant_cache.clear();
     g_mps_mats.clear();
+    g_wf16_bytes = 0;
 }
 
 void cactus_metal_session_flush() {
     if (g_enc) { [g_enc endEncoding]; g_enc = nil; }
-    if (g_cmd) { [g_cmd commit]; g_last_cmd = g_cmd; g_cmd = nil; }
+    if (g_cmd) { watch_cmd_errors(g_cmd); [g_cmd commit]; g_last_cmd = g_cmd; g_cmd = nil; }
 }
 
 
@@ -425,30 +469,54 @@ void* cactus_metal_alloc_shared(size_t bytes) {
     return c;
 }
 
+struct SlabInfo { size_t cap = 0, used = 0, live = 0; };
 static char* g_slab = nullptr;
-static size_t g_slab_used = 0, g_slab_cap = 0;
-static std::unordered_set<uintptr_t> g_slab_bases;
+static std::map<uintptr_t, SlabInfo> g_slabs;
+
+static void reclaim_dead_slabs() {
+    for (auto it = g_slabs.begin(); it != g_slabs.end();) {
+        SlabInfo& s = it->second;
+        if (s.live != 0 || s.used == 0) { ++it; continue; }
+        if ((char*)it->first == g_slab) { s.used = 0; ++it; continue; }
+        g_shared.erase(it->first);
+        it = g_slabs.erase(it);
+    }
+}
+
 void* cactus_metal_alloc_pooled(size_t bytes) {
     if (!ctx().ok) return nullptr;
     if (bytes > (4u << 20)) return cactus_metal_alloc_shared(bytes);
     size_t need = (bytes + 255) & ~size_t(255);
-    if (!g_slab || g_slab_used + need > g_slab_cap) {
+    SlabInfo* cur = nullptr;
+    if (g_slab) {
+        auto it = g_slabs.find(reinterpret_cast<uintptr_t>(g_slab));
+        if (it != g_slabs.end()) cur = &it->second;
+    }
+    if (!cur || cur->used + need > cur->cap) {
         size_t cap = 32u << 20;
         id<MTLBuffer> b = [ctx().dev newBufferWithLength:cap options:MTLResourceStorageModeShared];
         if (!b) return cactus_metal_alloc_shared(bytes);
         g_slab = (char*)[b contents];
-        g_slab_used = 0;
-        g_slab_cap = cap;
         g_shared[reinterpret_cast<uintptr_t>(g_slab)] = b;
-        g_slab_bases.insert(reinterpret_cast<uintptr_t>(g_slab));
+        cur = &g_slabs[reinterpret_cast<uintptr_t>(g_slab)];
+        *cur = SlabInfo{cap, 0, 0};
     }
-    void* p = g_slab + g_slab_used;
-    g_slab_used += need;
+    void* p = g_slab + cur->used;
+    cur->used += need;
+    cur->live += 1;
     return p;
 }
 void cactus_metal_free_shared(void* contents) {
-    if (g_slab_bases.count(reinterpret_cast<uintptr_t>(contents))) return;
-    auto it = g_shared.find(reinterpret_cast<uintptr_t>(contents));
+    uintptr_t a = reinterpret_cast<uintptr_t>(contents);
+    auto sit = g_slabs.upper_bound(a);
+    if (sit != g_slabs.begin()) {
+        --sit;
+        if (a < sit->first + sit->second.cap) {
+            if (sit->second.live > 0) --sit->second.live;
+            return;
+        }
+    }
+    auto it = g_shared.find(a);
     if (it != g_shared.end()) { g_pending.push_back(it->second); g_shared.erase(it); }
 }
 
@@ -701,6 +769,7 @@ bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQu
     size_t code_bytes = (size_t)ng*gs*sizeof(__fp16);
     if (!g_code_buf || (size_t)g_code_buf.length < code_bytes)
         g_code_buf = [ctx().dev newBufferWithLength:code_bytes options:MTLResourceStorageModeShared];
+    if (!g_code_buf) return false;
     ensureEncoder();
     bool simdT = (gs==128u && ctx().psoTsimd);
     [g_enc setComputePipelineState:(simdT?ctx().psoTsimd:ctx().psoT)];
@@ -784,10 +853,15 @@ bool cactus_metal_encode_gemv_precoded(void* out, const void* code, const Cactus
     return true;
 }
 
+bool cactus_metal_transform_gemv_fits(uint32_t K) {
+    return ctx().ok && tg_mem_ok((size_t)K*2 + 8*128*sizeof(float) + 64);
+}
+
 bool cactus_metal_encode_transform_gemv(void* out, const void* x, const CactusQuantMatrix* W, const void* osw) {
     if (!ctx().ok || !ctx().psoMega) return false;
     const uint32_t gs=W->group_size, K=W->K, ng=W->num_groups, N=W->N;
     if (gs != 128u || !quant_fast_eligible(W) || (N % 16u) != 0u) return false;
+    if (!cactus_metal_transform_gemv_fits(K)) return false;
     ResW& rw = resident(W);
     ensureEncoder();
     struct { uint32_t K, ng, oswi; } U = { K, ng, (uint32_t)(osw ? 1 : 0) };
@@ -876,6 +950,7 @@ bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const Cactus
     size_t code_bytes = (size_t)M*ng*gs*sizeof(__fp16);
     if (!g_code_buf_m || (size_t)g_code_buf_m.length < code_bytes)
         g_code_buf_m = [ctx().dev newBufferWithLength:code_bytes options:MTLResourceStorageModeShared];
+    if (!g_code_buf_m) return false;
     ensureEncoder();
 
     [g_enc setComputePipelineState:ctx().psoTm];
@@ -886,15 +961,26 @@ bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const Cactus
     [g_enc setThreadgroupMemoryLength:gs*sizeof(float) atIndex:0];
     [g_enc dispatchThreadgroups:MTLSizeMake((size_t)ng*M,1,1) threadsPerThreadgroup:MTLSizeMake(gs>1024u?1024u:gs,1,1)];
 
-    if ((g_predequant && ctx().psoGdense && ctx().psoDeq) || lowbit) {
-        bool need_dequant = false;
+    bool dense = (g_predequant && ctx().psoGdense && ctx().psoDeq) || lowbit;
+    bool need_dequant = false;
+    if (dense) {
         if (!rw.wf16) {
-            rw.wf16 = [ctx().dev newBufferWithLength:(size_t)N*K*2 options:MTLResourceStorageModeShared];
+            size_t wbytes = (size_t)N*K*2;
+            wf16_evict_for(wbytes, &rw);
+            rw.wf16 = [ctx().dev newBufferWithLength:wbytes options:MTLResourceStorageModeShared];
+            if (rw.wf16) g_wf16_bytes += (size_t)rw.wf16.length;
             need_dequant = true;
         } else if (rw.wf16_volatile) {
             need_dequant = [rw.wf16 setPurgeableState:MTLPurgeableStateNonVolatile] == MTLPurgeableStateEmpty;
         }
+        if (!rw.wf16) {
+            if (lowbit) return false;
+            dense = false;
+        }
+    }
+    if (dense) {
         rw.wf16_volatile = false;
+        rw.wf16_tick = ++g_wf16_clock;
         g_wf16_live = true;
         if (need_dequant) {
             [g_enc setComputePipelineState:(lowbit?ctx().psoDeqLow:ctx().psoDeq)];
@@ -967,6 +1053,7 @@ bool cactus_metal_encode_embedding_ortho(void* out, uint32_t row, const CactusQu
     if (!ctx().ok || !W->rotation || (W->bits != 4 && W->bits != 2 && W->bits != 3)) return false;
     const uint32_t K=W->K, ng=W->num_groups, gs=W->group_size, bits=W->bits;
     if (ng != 1 || gs != K) return false;
+    if (!tg_mem_ok((size_t)K*sizeof(float))) return false;
     if (bits != 4 && !(ctx().psoEmbOW && (K % 8u) == 0u)) return false;
     ResW& rw = resident(W);
     if (!rw.packed || !rw.rotation || !rw.codebook || !rw.norms || !rw.recip) return false;
@@ -1635,7 +1722,9 @@ bool cactus_metal_encode_rope_full(void* out, const void* in, uint32_t tokens, u
     [g_enc setBytes:&D length:4 atIndex:4]; [g_enc setBytes:&rot length:4 atIndex:5];
     [g_enc setBytes:&pos0 length:4 atIndex:6]; [g_enc setBytes:&theta length:4 atIndex:7];
     [g_enc setBytes:&gj length:4 atIndex:8];
-    [g_enc dispatchThreads:MTLSizeMake(D, tokens, 1) threadsPerThreadgroup:MTLSizeMake(std::min(D, 64u), 4, 1)];
+    uint32_t gx = rot/2 + (D > rot ? D - rot : 0);
+    if (gx == 0) gx = 1;
+    [g_enc dispatchThreads:MTLSizeMake(gx, tokens, 1) threadsPerThreadgroup:MTLSizeMake(std::min(gx, 64u), 4, 1)];
     return true;
 }
 bool cactus_metal_encode_maxpool1d(void* out, const void* in, uint32_t NC, uint32_t L,

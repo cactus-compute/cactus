@@ -101,7 +101,6 @@ inline bool use_fp16_kv_cache() {
 }
 
 constexpr size_t kInitialCacheEntries = 256;
-constexpr size_t kMetalInitialCacheEntries = 4000;
 
 inline bool kv_cache_resident() {
     return cactus_backend_metal();
@@ -120,11 +119,12 @@ inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     size_t total = fp16_cache ? fp16_cache_elements(new_max, kv_heads, hdim)
                               : cache_buffer_size(new_max, kv_heads, hdim);
     BufferDesc resized({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
-    bool shared = kv_cache_resident();
+    const bool metal = kv_cache_resident();
     void* old_data = buf.get_data();
-    if (shared) {
+    if (metal) {
+        cactus_metal_session_sync();
         void* p = cactus_metal_alloc_shared(resized.byte_size);
-        if (p) resized.set_external(p); else { resized.allocate(); shared = false; }
+        if (p) resized.set_external(p); else resized.allocate();
     } else {
         resized.allocate();
     }
@@ -143,7 +143,7 @@ inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     }
     get_meta(resized)->max_seq_len = new_max;
     buf = std::move(resized);
-    if (shared) cactus_metal_free_shared(old_data);
+    cactus_metal_free_shared(old_data);
     return true;
 }
 
@@ -177,7 +177,6 @@ void compute_kv_cache_state_node(
     size_t max_seq;
     if (sliding) max_seq = std::min(ceiling, window + node.params.cache_sink_size + 1);
     else if (num_slots > 1) max_seq = ceiling;
-    else if (kv_cache_resident()) max_seq = std::min(ceiling, kMetalInitialCacheEntries);
     else max_seq = std::min(ceiling, kInitialCacheEntries);
     size_t kv_heads = node.params.num_kv_heads;
     size_t hdim = node.params.head_dim;

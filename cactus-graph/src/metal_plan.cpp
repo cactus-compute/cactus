@@ -5,6 +5,8 @@
 #include <cstring>
 #include <algorithm>
 
+bool cactus_kv_cache_grow(BufferDesc&, size_t, size_t);
+
 namespace {
 
 bool is_alias_op(OpType op) {
@@ -369,7 +371,9 @@ MetalFusePlan* cactus_metal_plan_build(
                                     gM *= nodes[(size_t)gate]->output_buffer.shape[d];
                                 if (grb && gM == 1 && PrecisionTraits::is_cq(grb->precision)
                                     && grb->group_size == 128 && PrecisionTraits::cq_bits(grb->precision) == 4
-                                    && !(grb->cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)) {
+                                    && !(grb->cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
+                                    && cactus_metal_transform_gemv_fits((uint32_t)(
+                                           grb->shape.size() >= 2 ? grb->shape[1] : grb->shape[0]))) {
                                     long gx = up_in((size_t)gate, 0);
                                     if (gx >= 0) {
                                         MetalCluster c7;
@@ -1298,7 +1302,16 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             bool has_new = (c.u1 & 0x10000u) != 0;
             size_t ng = (hd + 31) / 32;
             size_t win = anchor.params.window_size;
-            bool sliding = win > 0;
+            bool sliding = win > 0 && win < nodes[c.b2]->params.max_cache_seq_len;
+            if (has_new && !sliding && clen >= mx) {
+                size_t ceiling = nodes[c.b2]->params.max_cache_seq_len;
+                if (!cactus_kv_cache_grow(kc, clen + 1, ceiling)
+                    || !cactus_kv_cache_grow(vc, clen + 1, ceiling)) return false;
+                km = reinterpret_cast<uint64_t*>(kc.get_data());
+                vm = reinterpret_cast<uint64_t*>(vc.get_data());
+                if (!km || !vm) return false;
+                mx = km[1];
+            }
             uint32_t Wn = sliding ? (uint32_t)(mx - sink - 1) : 0u;
             uint32_t Sn = sliding ? (uint32_t)sink : 0u;
             uint32_t Rn = (Wn > Sn) ? (Wn - Sn) : 1u;

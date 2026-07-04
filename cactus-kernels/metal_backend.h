@@ -60,6 +60,7 @@ bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const Cactus
 bool cactus_metal_encode_transform_batch(const void* x, const CactusQuantMatrix* const* Ws, int B, void* const* codes);
 bool cactus_metal_encode_gemv_precoded(void* out, const void* code, const CactusQuantMatrix* W);
 bool cactus_metal_encode_transform_gemv(void* out, const void* x, const CactusQuantMatrix* W, const void* osw);
+bool cactus_metal_transform_gemv_fits(uint32_t K);
 bool cactus_metal_encode_gemv_cat(void* const* outs, const void* const* codes,
                                   const CactusQuantMatrix* const* Ws, int B);
 bool cactus_metal_encode_swiglu_transform(void* code, const void* gate, const void* up,

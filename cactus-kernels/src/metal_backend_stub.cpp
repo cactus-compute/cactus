@@ -9,6 +9,7 @@ bool cactus_metal_encode_softcap(void*, const void*, size_t, float) { return fal
 bool cactus_metal_encode_adjust_logits(void*, size_t, const uint32_t*, uint32_t,
                                        int64_t, float) { return false; }
 bool cactus_metal_encode_transform_gemv(void*, const void*, const CactusQuantMatrix*, const void*) { return false; }
+bool cactus_metal_transform_gemv_fits(uint32_t) { return false; }
 bool cactus_metal_encode_gemv_cat(void* const*, const void* const*,
                                   const CactusQuantMatrix* const*, int) { return false; }
 bool cactus_metal_encode_swiglu_transform(void*, const void*, const void*,

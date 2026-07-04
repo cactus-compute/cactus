@@ -507,7 +507,8 @@ struct InferenceOptions {
     float temperature = 0.0f;
     float top_p = 0.0f;
     float min_p = 0.15f;
-    float repetition_penalty = 1.1f;
+    float repetition_penalty = 1.0f;
+    uint64_t sample_seed = 0;
     float confidence_threshold = -1.0f;
     size_t top_k = 0;
     size_t max_tokens = 100;
@@ -1617,6 +1618,11 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         if (std::isfinite(parsed_rep_penalty) && parsed_rep_penalty > 0.0f) {
             options.repetition_penalty = parsed_rep_penalty;
         }
+    }
+
+    size_t parsed_seed = 0;
+    if (try_parse_json_uint(json, "seed", parsed_seed)) {
+        options.sample_seed = parsed_seed;
     }
 
     size_t parsed_top_k = options.top_k;

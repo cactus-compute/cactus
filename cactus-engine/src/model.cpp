@@ -3213,6 +3213,10 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     size_t tk = top_k == 0 ? config_.default_top_k : top_k;
     const bool greedy = temp <= 0.011f;
     prepare_sampling_context(repetition_penalty);
+    struct SampClearGuard {
+        Model* m;
+        ~SampClearGuard() { cactus_graph_clear_sampling(); m->samp_ctx_active_ = false; }
+    } samp_guard{this};
     if (decode_route_ == DecodeRoute::ENCODER_CROSS_KV_STEP) {
         if (!encoder_cross_kv_ready_ && encoder_cross_kv_source_kind_ == "text_tokens") {
             std::vector<uint32_t> source_tokens = tokens;
@@ -3247,8 +3251,6 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
         uint32_t result = (greedy && !samp_ctx_active_)
             ? argmax_last_logits(out_entropy)
             : sample_component_logits(*decoder_, temp, tp, tk, min_p, greedy, out_entropy);
-        cactus_graph_clear_sampling();
-        samp_ctx_active_ = false;
         record_sampled_token(result);
         return result;
     }
@@ -3262,8 +3264,6 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     uint32_t result = (greedy && !samp_ctx_active_)
         ? argmax_last_logits(out_entropy)
         : sample_component_logits(*decoder_, temp, tp, tk, min_p, greedy, out_entropy);
-    cactus_graph_clear_sampling();
-    samp_ctx_active_ = false;
     record_sampled_token(result);
     return result;
 }

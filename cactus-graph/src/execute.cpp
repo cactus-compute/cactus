@@ -979,6 +979,18 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
                     max_seq*kv_heads*ngK*sizeof(float), v_max*kv_heads*ngV*sizeof(float),
                     (uint32_t)sink, ringv);
             }
+            size_t cache_ceiling = nodes[map.at(node.input_ids[3])]->params.max_cache_seq_len;
+            if (win > 0 && win < cache_ceiling) {
+                size_t sink = km[4];
+                size_t ringW = max_seq > sink + 1 ? max_seq - sink - 1 : 0;
+                if (ringW == 0) return false;
+                if (total_keys > ringW) {
+                    history_len = ringW;
+                    total_keys = ringW;
+                    kv_start = 0;
+                    kv_end = ringW;
+                }
+            }
             bool ok = cactus_metal_encode_attention_i8(
                 out.get_data(), qb.get_data(), knew.get_data(), vnew.get_data(),
                 bk + 64, bv + 64,
@@ -1006,6 +1018,7 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             size_t ngK = (hdim + 31)/32;
             if (new_seq_len > 1) {
                 if (sliding) {
+                    if (max_len <= sink + 1) return false;
                     uint32_t W = (uint32_t)(max_len - sink - 1);
                     if (!cactus_metal_encode_kv_append_ring_i8_m(new_kv.get_data(), base + 64,
                             base + 64 + max_len*kv_heads*hdim, (uint32_t)kv_heads, (uint32_t)hdim,
@@ -1043,13 +1056,25 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
                 if (out.get_data()) *out.data_as<float>() = static_cast<float>(km[0]);
                 return true;
             }
-            if (!sliding && new_total > max_len) {
+            if (sliding) {
+                if (max_len <= sink + 1) return false;
+                uint32_t W = (uint32_t)(max_len - sink - 1);
+                if (!cactus_metal_encode_kv_append_ring_i8_m(new_kv.get_data(), base + 64,
+                        base + 64 + max_len*kv_heads*hdim, (uint32_t)kv_heads, (uint32_t)hdim,
+                        (uint32_t)current_len, 32, 1u, (uint32_t)sink, W,
+                        new_kv.byte_size, max_len*kv_heads*hdim, max_len*kv_heads*ngK*sizeof(float)))
+                    return false;
+                km[0] = new_total;
+                if (out.get_data()) *out.data_as<float>() = static_cast<float>(new_total);
+                return true;
+            }
+            if (new_total > max_len) {
                 if (!cactus_kv_cache_grow(cache, new_total, ceiling)) return false;
                 km = reinterpret_cast<uint64_t*>(cache.get_data());
                 max_len = km[1]; base = static_cast<char*>(cache.get_data());
                 if (new_total > max_len) return false;
             }
-            size_t window = sliding ? ws : max_len;
+            size_t window = max_len;
             if (new_total > window) {
                 size_t keep_sink = std::min({sink, current_len, window});
                 size_t tail_capacity = window - keep_sink;
@@ -1390,12 +1415,38 @@ void CactusGraph::execute(const std::string& profile_file) {
     }
 
     if (metal_mode && !need_debug) {
-        cactus_metal_session_begin();
-        cactus_metal_set_active(true);
         const bool transient_acts = n >= 1500 && !cactus_metal_plan_has_arena(fplan);
         std::vector<void*> transient_ptr(transient_acts ? n : 0, nullptr);
         std::vector<void*> transient_dead;
         std::vector<uint8_t> transient_ok(transient_acts ? n : 0, 0);
+        auto release_transients = [&]() {
+            for (void* p : transient_dead) cactus_metal_free_shared(p);
+            transient_dead.clear();
+            for (size_t i = 0; i < transient_ptr.size(); ++i)
+                if (transient_ptr[i]) { cactus_metal_free_shared(transient_ptr[i]); transient_ptr[i] = nullptr; }
+        };
+        struct CacheWordSnap { size_t idx; size_t word; uint64_t value; };
+        std::vector<CacheWordSnap> kv_snapshot;
+        auto kv_restore = [&]() {
+            for (const auto& s : kv_snapshot) {
+                uint64_t* km = reinterpret_cast<uint64_t*>(nodes_[s.idx]->output_buffer.get_data());
+                if (km) km[s.word] = s.value;
+            }
+        };
+        auto metal_abort_cleanup = [&]() {
+            cactus_metal_session_sync();
+            kv_restore();
+            release_transients();
+            cactus_metal_set_active(false);
+            cactus_metal_session_end();
+        };
+        struct MetalExecGuard {
+            decltype(metal_abort_cleanup)& cleanup;
+            bool armed = true;
+            ~MetalExecGuard() { if (armed) cleanup(); }
+        } metal_guard{metal_abort_cleanup};
+        cactus_metal_session_begin();
+        cactus_metal_set_active(true);
         if (transient_acts) {
             for (size_t i = 0; i < n; ++i) {
                 size_t id = nodes_[i]->id;
@@ -1405,12 +1456,6 @@ void CactusGraph::execute(const std::string& profile_file) {
                     && nodes_[i]->output_buffer.byte_size >= (256u << 10);
             }
         }
-        auto release_transients = [&]() {
-            for (void* p : transient_dead) cactus_metal_free_shared(p);
-            transient_dead.clear();
-            for (size_t i = 0; i < transient_ptr.size(); ++i)
-                if (transient_ptr[i]) { cactus_metal_free_shared(transient_ptr[i]); transient_ptr[i] = nullptr; }
-        };
         auto metal_release = [&](size_t idx) {
             GraphNode& nd = *nodes_[idx];
             if (aliases_input(nd)) nd.output_buffer.external_data = nullptr;
@@ -1445,8 +1490,6 @@ void CactusGraph::execute(const std::string& profile_file) {
             since_flush = 0;
             since_recycle = 0;
         };
-        struct CacheWordSnap { size_t idx; size_t word; uint64_t value; };
-        std::vector<CacheWordSnap> kv_snapshot;
         for (size_t i = 0; i < n; ++i) {
             const GraphNode& nd = *nodes_[i];
             bool kv = nd.op_type == OpType::KV_CACHE_APPEND;
@@ -1459,12 +1502,6 @@ void CactusGraph::execute(const std::string& profile_file) {
             kv_snapshot.push_back({ci->second, 0, km[0]});
             if (conv) kv_snapshot.push_back({ci->second, 1, km[1]});
         }
-        auto kv_restore = [&]() {
-            for (const auto& s : kv_snapshot) {
-                uint64_t* km = reinterpret_cast<uint64_t*>(nodes_[s.idx]->output_buffer.get_data());
-                if (km) km[s.word] = s.value;
-            }
-        };
         auto input_metal_live = [&](const GraphNode& nd) -> bool {
             for (size_t id : nd.input_ids) {
                 auto it = node_index_map_.find(id);
@@ -1537,11 +1574,8 @@ void CactusGraph::execute(const std::string& profile_file) {
                     continue;
                 }
                 cactus_metal_plan_disable(fplan);
-                cactus_metal_session_sync();
-                kv_restore();
-                release_transients();
-                cactus_metal_set_active(false);
-                cactus_metal_session_end();
+                metal_guard.armed = false;
+                metal_abort_cleanup();
                 execute(profile_file);
                 return;
             }
@@ -1563,11 +1597,8 @@ void CactusGraph::execute(const std::string& profile_file) {
             for (auto& fp : flipped) fp.first->precision = fp.second;
             if (!encoded && rplan && rplan[i] == 2) {
                 metal_retype_disabled_ = true;
-                cactus_metal_session_sync();
-                kv_restore();
-                release_transients();
-                cactus_metal_set_active(false);
-                cactus_metal_session_end();
+                metal_guard.armed = false;
+                metal_abort_cleanup();
                 execute(profile_file);
                 return;
             }
@@ -1585,6 +1616,7 @@ void CactusGraph::execute(const std::string& profile_file) {
             if (encoded && ++since_flush >= 48) { cactus_metal_session_flush(); since_flush = 0; }
             if (encoded) maybe_recycle();
         }
+        metal_guard.armed = false;
         release_transients();
         cactus_metal_set_active(false);
         cactus_metal_session_end();

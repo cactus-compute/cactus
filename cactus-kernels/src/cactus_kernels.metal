@@ -849,13 +849,13 @@ kernel void emb_ortho_m(device const uchar* packed [[buffer(0)]], device const h
     float acc = 0;
     for (uint k0=0; k0<K; k0+=EM_TK) {
         for (uint e=tid; e<EM_TM*EM_TK; e+=EM_TM*EM_TN) {
-            uint r=e/EM_TK, c=e%EM_TK, mm=m0+r; half v=0;
-            if (mm<M) { uint row=rows[mm], ki=k0+c; v=codebook[cq_idx(packed + (size_t)row*pgb, ki, bits)]; }
+            uint r=e/EM_TK, c=e%EM_TK, mm=m0+r, ki=k0+c; half v=0;
+            if (mm<M && ki<K) { uint row=rows[mm]; v=codebook[cq_idx(packed + (size_t)row*pgb, ki, bits)]; }
             As[e]=v;
         }
         for (uint e=tid; e<EM_TN*EM_TK; e+=EM_TM*EM_TN) {
-            uint r=e/EM_TK, c=e%EM_TK, jj=j0+r; half v=0;
-            if (jj<K) v=rotation[(size_t)jj*K + k0 + c];
+            uint r=e/EM_TK, c=e%EM_TK, jj=j0+r, ki=k0+c; half v=0;
+            if (jj<K && ki<K) v=rotation[(size_t)jj*K + ki];
             Bs[e]=v;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -1625,7 +1625,7 @@ kernel void attn_flash_f16(device const half* q [[buffer(0)]], device const half
     threadgroup half* Vs = KVs + BK * D;
     threadgroup float Ss[8][8 * BK];
     threadgroup half Ps[8][8 * BK];
-    threadgroup half Dg[8][64];
+    threadgroup float Dg[8][64];
     threadgroup float Ms[8][8];
     threadgroup float Ls[8][8];
     threadgroup uint Rf[8];
@@ -1633,7 +1633,7 @@ kernel void attn_flash_f16(device const half* q [[buffer(0)]], device const half
     uint qb = tgid.x, h = tgid.y;
     uint q0 = qb * BQ;
     uint row0 = q0 + sgid * 8;
-    bool interior = row0 + 8 <= T;
+    bool interior = q0 + BQ <= T;
 
     for (uint x = tid; x < 8 * 64; x += NT) Dg[x / 64][x % 64] = 0;
     if (tid < 64) { Ms[tid / 8][tid % 8] = -INFINITY; Ls[tid / 8][tid % 8] = 0; }
@@ -1655,8 +1655,8 @@ kernel void attn_flash_f16(device const half* q [[buffer(0)]], device const half
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    simdgroup_half8x8 of[8];
-    for (uint d = 0; d < 8; ++d) of[d] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+    simdgroup_float8x8 of[8];
+    for (uint d = 0; d < 8; ++d) of[d] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
 
     for (uint kb = 0; kb < S; kb += BK) {
         for (uint x = tid; x < BK * D / 4; x += NT) {
@@ -1714,7 +1714,7 @@ kernel void attn_flash_f16(device const half* q [[buffer(0)]], device const half
             Ms[sgid][r] = mnew;
             Ls[sgid][r] = Ls[sgid][r] * alpha + sloc;
             if (mnew != mold && !first) Rf[sgid] = 1;
-            Dg[sgid][r * 8 + r] = (half)alpha;
+            Dg[sgid][r * 8 + r] = alpha;
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -1723,10 +1723,10 @@ kernel void attn_flash_f16(device const half* q [[buffer(0)]], device const half
         for (uint j = 0; j < 4; ++j)
             simdgroup_load(pf[j], Ps[sgid] + j * 8, BK);
         if (rescale) {
-            simdgroup_half8x8 dgf;
+            simdgroup_float8x8 dgf;
             simdgroup_load(dgf, Dg[sgid], 8);
             for (uint d = 0; d < 8; ++d) {
-                simdgroup_half8x8 acc;
+                simdgroup_float8x8 acc;
                 simdgroup_multiply(acc, dgf, of[d]);
                 for (uint j = 0; j < 4; ++j) {
                     simdgroup_half8x8 vf;
@@ -1751,21 +1751,33 @@ kernel void attn_flash_f16(device const half* q [[buffer(0)]], device const half
         uint r = lane / 4;
         if ((lane % 4) == 0) {
             float l = Ls[sgid][r];
-            Dg[sgid][r * 8 + r] = (half)(l > 0.0f ? 1.0f / l : 0.0f);
+            Dg[sgid][r * 8 + r] = l > 0.0f ? 1.0f / l : 0.0f;
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
-        simdgroup_half8x8 dgf;
+        simdgroup_float8x8 dgf;
         simdgroup_load(dgf, Dg[sgid], 8);
         if (interior) {
             for (uint d = 0; d < 8; ++d) {
                 simdgroup_multiply(of[d], dgf, of[d]);
-                simdgroup_store(of[d], y + ((size_t)row0 * H + h) * D + d * 8, (size_t)H * D);
+                simdgroup_store(of[d], Ss[sgid], 8);
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+                for (uint e = lane; e < 64; e += 32) {
+                    uint r2 = e / 8, cc = e % 8;
+                    y[((size_t)(row0 + r2) * H + h) * D + d * 8 + cc] = (half)Ss[sgid][e];
+                }
+                simdgroup_barrier(mem_flags::mem_threadgroup);
             }
         } else {
             threadgroup half* Oe = KVs;
             for (uint d = 0; d < 8; ++d) {
                 simdgroup_multiply(of[d], dgf, of[d]);
-                simdgroup_store(of[d], Oe + (size_t)sgid * 8 * D + d * 8, D);
+                simdgroup_store(of[d], Ss[sgid], 8);
+                simdgroup_barrier(mem_flags::mem_threadgroup);
+                for (uint e = lane; e < 64; e += 32) {
+                    uint r2 = e / 8, cc = e % 8;
+                    Oe[(size_t)sgid * 8 * D + r2 * D + d * 8 + cc] = (half)Ss[sgid][e];
+                }
+                simdgroup_barrier(mem_flags::mem_threadgroup);
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);
             for (uint x = tid; x < BQ * D; x += NT) {
@@ -1796,7 +1808,7 @@ kernel void gemm_batch_f32a(device const float* a [[buffer(0)]], device const ha
     device const float* ar = a + (size_t)bidx*M*K + (size_t)m*K;
     device const half* br = b + (size_t)bidx*K*N + nn;
     float acc = 0;
-    for (uint k = 0; k < K; ++k) acc = fma((float)((half)ar[k]), (float)br[(size_t)k*N], acc);
+    for (uint k = 0; k < K; ++k) acc = fma(ar[k], (float)br[(size_t)k*N], acc);
     size_t oi = (size_t)bidx*M*N + mn;
     if (f32out != 0u) ((device float*)y)[oi] = acc;
     else ((device half*)y)[oi] = (half)acc;
@@ -1943,23 +1955,26 @@ kernel void rope_full_f16(device const half* x [[buffer(0)]], device half* y [[b
                           constant uint& pos0 [[buffer(6)]], constant float& theta [[buffer(7)]],
                           constant uint& gptj [[buffer(8)]],
                           uint2 gid [[thread_position_in_grid]]) {
-    uint d = gid.x, tok = gid.y;
-    if (d >= D) return;
-    size_t off = (size_t)tok * D + d;
-    uint seq = (tok / H) % S;
-    if (d >= rot) { y[off] = x[off]; return; }
+    uint idx = gid.x, tok = gid.y;
     uint hr = rot / 2;
-    uint pair_i = gptj ? d / 2 : (d % hr);
-    float freq = 1.0f / precise::pow(theta, (2.0f * pair_i) / (float)rot);
+    if (idx >= hr) {
+        uint d = rot + (idx - hr);
+        if (d >= D) return;
+        size_t off = (size_t)tok * D + d;
+        y[off] = x[off];
+        return;
+    }
+    uint seq = (tok / H) % S;
+    float freq = 1.0f / precise::pow(theta, (2.0f * idx) / (float)rot);
     float angle = (float)(pos0 + seq) * freq;
     float c = (float)(half)precise::cos(angle);
     float sn = (float)(half)precise::sin(angle);
-    float v = (float)x[off];
-    float other;
-    bool first;
-    if (gptj) { first = (d % 2) == 0; other = (float)x[off + (first ? 1 : -1)]; }
-    else { first = d < hr; other = (float)x[off + (first ? (long)hr : -(long)hr)]; }
-    y[off] = (half)(first ? v*c - other*sn : v*c + other*sn);
+    uint d0 = gptj ? 2u * idx : idx;
+    uint d1 = gptj ? 2u * idx + 1u : idx + hr;
+    size_t off0 = (size_t)tok * D + d0, off1 = (size_t)tok * D + d1;
+    float v0 = (float)x[off0], v1 = (float)x[off1];
+    y[off0] = (half)(v0*c - v1*sn);
+    y[off1] = (half)(v1*c + v0*sn);
 }
 
 kernel void maxpool1d_f16(device const half* x [[buffer(0)]], device half* y [[buffer(1)]],
@@ -3124,6 +3139,7 @@ kernel void kv_append_ring_i8_m(device const half* src [[buffer(0)]], device cha
     uint pos = current_len + i;
     uint R = (W > sink) ? (W - sink) : 1u;
     uint slot = (pos < W) ? pos : sink + ((pos - sink) % R);
+    if (pos >= sink && pos + R < current_len + M) return;
     device char* dst = int8base + (size_t)slot*i8s + (size_t)h*hdim + gstart;
     for (uint k=0;k<gcount;++k){ float qv = clamp(rint((float)hs[k]*inv), -128.0f, 127.0f); dst[k]=(char)qv; }
     scalebase[(size_t)slot*scs + (size_t)h*num_groups + g] = scale;

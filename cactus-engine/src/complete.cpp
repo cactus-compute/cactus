@@ -829,6 +829,9 @@ int cactus_complete(
         }
         auto* tokenizer = handle->model->get_tokenizer();
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true, pcm_buffer, pcm_buffer_size);
+        if (prompt.options.sample_seed != 0) {
+            handle->model->set_sample_seed(prompt.options.sample_seed);
+        }
 
         CACTUS_LOG_DEBUG("complete", "Prompt tokens: " << prompt.tokens.size()
             << ", max_tokens: " << prompt.options.max_tokens);
