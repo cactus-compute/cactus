@@ -1,8 +1,4 @@
-file(READ "${IN}" SRC)
-if(SRC MATCHES "\\)${DELIM}\"")
-  message(FATAL_ERROR "embed_msl: source contains the raw-string delimiter )${DELIM}\" - choose another DELIM")
-endif()
+file(READ "${IN}" SRC_HEX HEX)
+string(REGEX REPLACE "(..)" "0x\\1," SRC_BYTES "${SRC_HEX}")
 file(WRITE "${OUT}"
-  "static const char* kCactusMSL = R\"${DELIM}(\n"
-  "${SRC}\n"
-  ")${DELIM}\";\n")
+  "static const char kCactusMSL[] = {${SRC_BYTES}0x00};\n")

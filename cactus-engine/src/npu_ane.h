@@ -14,7 +14,6 @@ namespace npu {
 
 #if CACTUS_HAS_ANE
 
-
 class ANEEncoder : public NPUEncoder {
 public:
     ANEEncoder();

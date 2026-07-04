@@ -282,9 +282,7 @@ inline bool tg_mem_ok(size_t bytes) {
 size_t wf16_budget() {
     static const size_t cap = [] {
         if (const char* e = std::getenv("CACTUS_WF16_CAP_MB")) return (size_t)atoll(e) << 20;
-        if (@available(macOS 10.12, iOS 16.0, *))
-            return (size_t)([ctx().dev recommendedMaxWorkingSetSize] / 4);
-        return (size_t)([NSProcessInfo processInfo].physicalMemory / 4);
+        return (size_t)([ctx().dev recommendedMaxWorkingSetSize] / 4);
     }();
     return cap;
 }

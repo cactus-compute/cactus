@@ -1016,7 +1016,7 @@ size_t ANEEncoder::encode_multimodal_input(
 }
 
 std::unique_ptr<NPUEncoder> create_encoder() {
-        return std::make_unique<ANEEncoder>();
+    return std::make_unique<ANEEncoder>();
 }
 
 bool is_npu_available() {
