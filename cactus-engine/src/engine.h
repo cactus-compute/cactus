@@ -766,11 +766,20 @@ public:
     const std::unordered_map<uint32_t, float>& get_vocab_bias() const { return vocab_bias_; }
 
     bool has_handoff_probe() const { return handoff_probe_loaded_; }
-    void reset_handoff_probe_rollout() { handoff_probe_hidden_.clear(); }
+    bool handoff_probe_returns_advantage() const;
+    bool handoff_probe_uses_turn_streams() const;
+    size_t handoff_probe_captured_rows() const;
+    bool capture_handoff_probe_token(uint32_t token_id);
+    void reset_handoff_probe_rollout();
     bool has_handoff_probe_rollout() const;
     float handoff_probe_wrong_probability() const;
+    float handoff_probe_advantage(const std::vector<uint32_t>& prompt_tokens,
+                                  const std::vector<uint32_t>& generated_tokens,
+                                  const std::vector<uint32_t>& summary_eot_actors = {}) const;
 
 private:
+    enum class HandoffProbeKind { NONE, GLOBAL_P_WRONG, SINGLE_KV_ADVANTAGE };
+
     struct Binding {
         int node_id = -1;
         std::string path;
@@ -964,10 +973,17 @@ private:
     int64_t suppressed_token_id_ = -1;
 
     bool handoff_probe_loaded_ = false;
+    HandoffProbeKind handoff_probe_kind_ = HandoffProbeKind::NONE;
     uint32_t handoff_probe_feat_dim_ = 0;
     uint32_t handoff_probe_t_h_ = 0;
     uint32_t handoff_probe_h1_ = 0;
     uint32_t handoff_probe_h2_ = 0;
+    uint32_t handoff_probe_n_streams_ = 0;
+    uint32_t handoff_probe_max_context_tokens_ = 0;
+    uint32_t handoff_probe_max_generation_tokens_ = 0;
+    uint32_t handoff_probe_observation_tokens_ = 0;
+    uint32_t handoff_probe_summary_tokens_ = 0;
+    uint32_t handoff_probe_eot_token_id_ = 0;
     std::vector<float> handoff_probe_norm_weight_;
     std::vector<float> handoff_probe_norm_bias_;
     std::vector<float> handoff_probe_proj_weight_;
@@ -979,6 +995,16 @@ private:
     std::vector<float> handoff_probe_head2_bias_;
     std::vector<float> handoff_probe_head4_weight_;
     std::vector<float> handoff_probe_head4_bias_;
+    std::vector<float> handoff_probe_pk_weight_;
+    std::vector<float> handoff_probe_pk_bias_;
+    std::vector<float> handoff_probe_pv_weight_;
+    std::vector<float> handoff_probe_pv_bias_;
+    std::vector<float> handoff_probe_actor_embedding_;
+    std::vector<float> handoff_probe_singlekv_query_;
+    std::vector<float> handoff_probe_singlekv_head0_weight_;
+    std::vector<float> handoff_probe_singlekv_head0_bias_;
+    std::vector<float> handoff_probe_singlekv_head2_weight_;
+    std::vector<float> handoff_probe_singlekv_head2_bias_;
     std::vector<float> handoff_probe_hidden_;
 
     mutable std::vector<DebugNode> debug_nodes_;

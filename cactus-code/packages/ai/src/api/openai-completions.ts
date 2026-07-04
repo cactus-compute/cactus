@@ -76,6 +76,15 @@ function hasToolHistory(messages: Message[]): boolean {
 	return false;
 }
 
+function buildCactusHandoffActors(messages: Message[]): string {
+	let actors = "";
+	for (const msg of messages) {
+		if (msg.role !== "assistant") continue;
+		actors += msg.cloudHandoff ? "C" : "L";
+	}
+	return actors;
+}
+
 function isTextContentBlock(block: { type: string }): block is TextContent {
 	return block.type === "text";
 }
@@ -109,6 +118,7 @@ function isEncryptedReasoningDetail(detail: unknown): detail is OpenAIEncryptedR
 export interface OpenAICompletionsOptions extends StreamOptions {
 	toolChoice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+	handoffActors?: string;
 }
 
 interface OpenAICompatCacheControl {
@@ -574,6 +584,13 @@ function buildParams(
 
 	if (options?.temperature !== undefined) {
 		params.temperature = options.temperature;
+	}
+
+	if (model.provider === "cactus") {
+		const handoffActors = options?.handoffActors ?? buildCactusHandoffActors(context.messages);
+		if (handoffActors.length > 0) {
+			(params as any).handoff_actors = handoffActors;
+		}
 	}
 
 	if (context.tools && context.tools.length > 0) {

@@ -42,7 +42,7 @@ std::string compact_error_detail(std::string detail) {
 
 std::string resolve_cloud_api_key(const char* cloud_key_param) {
     const char* env_cloud = std::getenv("CACTUS_CLOUD_KEY");
-    const char* env_cloud_legacy = std::getenv("CACTUS_CLOUD_API_KEY"); // keeping this cuz Matthew Hayes had some code reliant on Cactus_cloud_api_key
+    const char* env_cloud_legacy = std::getenv("CACTUS_CLOUD_API_KEY");
     std::string resolved_cloud_key;
     bool key_from_param_or_env = false;
 
@@ -330,6 +330,266 @@ static std::string call_cloud_endpoint(const std::string& url,
 
     return response_body;
 }
+
+static std::string lower_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+static bool use_openai_cloud_provider() {
+    std::string provider = lower_ascii(trim_string(env_or_default("CACTUS_CLOUD_PROVIDER", "")));
+    return provider == "openai" || provider == "codex" ||
+           provider == "openai_responses" || provider == "responses";
+}
+
+static std::string trim_trailing_slash(std::string value) {
+    while (!value.empty() && value.back() == '/') value.pop_back();
+    return value;
+}
+
+static std::string env_value(const char* key) {
+    const char* value = std::getenv(key);
+    return (value && value[0] != '\0') ? trim_string(value) : std::string();
+}
+
+static std::string resolve_openai_api_key(const std::string& request_key) {
+    std::string key = env_value("CACTUS_OPENAI_API_KEY");
+    if (!key.empty()) return key;
+    key = env_value("OPENAI_API_KEY");
+    if (!key.empty()) return key;
+    key = env_value("CODEX_API_KEY");
+    if (!key.empty()) return key;
+    if (env_flag_enabled("CACTUS_OPENAI_USE_CACHED_CLOUD_KEY")) {
+        return trim_string(request_key);
+    }
+    return {};
+}
+
+static bool is_positive_small_integer_string(const std::string& value) {
+    if (value.empty() || value.size() > 9) return false;
+    if (!std::all_of(value.begin(), value.end(), [](unsigned char c) {
+        return std::isdigit(c);
+    })) {
+        return false;
+    }
+    return value.find_first_not_of('0') != std::string::npos;
+}
+
+static std::string env_uint_or_default(const char* primary_key,
+                                       const char* secondary_key,
+                                       const char* fallback) {
+    std::string value = env_value(primary_key);
+    if (value.empty() && secondary_key) value = env_value(secondary_key);
+    if (value.empty()) return fallback;
+    if (is_positive_small_integer_string(value)) return value;
+    CACTUS_LOG_WARN("cloud_handoff", "Ignoring invalid " << primary_key << "=" << value);
+    return fallback;
+}
+
+static std::string env_reasoning_effort_or_default() {
+    std::string effort = lower_ascii(env_value("CACTUS_OPENAI_REASONING_EFFORT"));
+    if (effort.empty()) return "low";
+    if (effort == "minimal" || effort == "low" || effort == "medium" || effort == "high") {
+        return effort;
+    }
+    CACTUS_LOG_WARN("cloud_handoff", "Ignoring invalid CACTUS_OPENAI_REASONING_EFFORT=" << effort);
+    return "low";
+}
+
+static std::string serialize_openai_responses_tools_json(const std::vector<ToolFunction>& tools) {
+    if (tools.empty()) return "[]";
+    std::ostringstream oss;
+    oss << "[";
+    for (size_t i = 0; i < tools.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << "{\"type\":\"function\",";
+        oss << "\"name\":\"" << escape_json_string(tools[i].name) << "\",";
+        oss << "\"description\":\"" << escape_json_string(tools[i].description) << "\"";
+        auto schema_it = tools[i].parameters.find("schema");
+        if (schema_it != tools[i].parameters.end() && !trim_string(schema_it->second).empty()) {
+            oss << ",\"parameters\":" << schema_it->second;
+        } else {
+            oss << ",\"parameters\":{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}";
+        }
+        oss << ",\"strict\":false}";
+    }
+    oss << "]";
+    return oss.str();
+}
+
+static std::string build_openai_responses_payload(const CloudCompletionRequest& request) {
+    std::string model = env_value("CACTUS_OPENAI_MODEL");
+    if (model.empty()) model = env_value("CACTUS_CLOUD_MODEL");
+    if (model.empty()) model = "gpt-5.5";
+
+    std::string max_output_tokens = env_uint_or_default(
+        "CACTUS_OPENAI_MAX_OUTPUT_TOKENS",
+        "CACTUS_CLOUD_MAX_OUTPUT_TOKENS",
+        "512");
+    std::string reasoning_effort = env_reasoning_effort_or_default();
+
+    std::ostringstream payload;
+    payload << "{";
+    payload << "\"model\":\"" << escape_json_string(model) << "\",";
+    payload << "\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\""
+            << escape_json_string(build_cloud_text_prompt(request)) << "\"}]}],";
+    payload << "\"max_output_tokens\":" << max_output_tokens;
+    if (!reasoning_effort.empty()) {
+        payload << ",\"reasoning\":{\"effort\":\"" << escape_json_string(reasoning_effort) << "\"}";
+    }
+    if (!request.tools.empty()) {
+        payload << ",\"tools\":" << serialize_openai_responses_tools_json(request.tools);
+    }
+    if (!env_flag_enabled("CACTUS_OPENAI_STORE")) {
+        payload << ",\"store\":false";
+    }
+    payload << "}";
+    return payload.str();
+}
+
+static std::string call_openai_responses_endpoint(const std::string& payload,
+                                                  long timeout_ms,
+                                                  const std::string& api_key,
+                                                  std::string& err_out) {
+    if (api_key.empty()) {
+        err_out = "missing_openai_api_key";
+        return {};
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        err_out = "curl_init_failed";
+        return {};
+    }
+
+    std::string base = env_value("CACTUS_OPENAI_API_BASE");
+    if (base.empty()) base = "https://api.openai.com/v1";
+    std::string endpoint = env_value("CACTUS_OPENAI_RESPONSES_URL");
+    if (endpoint.empty()) endpoint = trim_trailing_slash(base) + "/responses";
+
+    std::string response_body;
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, ("Authorization: Bearer " + api_key).c_str());
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, endpoint.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(payload.size()));
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, std::min<long>(timeout_ms, 2000L));
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+    if (env_flag_enabled("CACTUS_OPENAI_INSECURE_SSL")) {
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    } else {
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+        apply_curl_tls_trust(curl);
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        err_out = curl_easy_strerror(res);
+        return {};
+    }
+
+    if (http_status >= 400) {
+        std::string detail = json_string_field(response_body, "message");
+        if (detail.empty()) detail = json_string_field(response_body, "error");
+        detail = compact_error_detail(detail);
+
+        err_out = "http_" + std::to_string(http_status);
+        if (!detail.empty()) {
+            err_out += ":" + detail;
+        }
+        return {};
+    }
+
+    return response_body;
+}
+
+static void append_openai_text_from_content(const std::string& content_json,
+                                            std::string& response) {
+    for (const auto& content_item : split_json_array(content_json)) {
+        std::string type = json_string_field(content_item, "type");
+        if (type == "output_text") {
+            std::string text = json_string_field(content_item, "text");
+            if (!text.empty()) response += text;
+        } else if (type == "refusal") {
+            std::string refusal = json_string_field(content_item, "refusal");
+            if (!refusal.empty()) response += refusal;
+        }
+    }
+}
+
+static CloudCompletionResult parse_openai_responses_body(const std::string& body) {
+    std::string response;
+    std::vector<std::string> function_calls;
+
+    std::string output = json_array_field(body, "output");
+    for (const auto& output_item : split_json_array(output)) {
+        std::string type = json_string_field(output_item, "type");
+        if (type == "message") {
+            append_openai_text_from_content(json_array_field(output_item, "content"), response);
+        } else if (type == "function_call") {
+            std::string name = json_string_field(output_item, "name");
+            std::string args = trim_string(json_string_field(output_item, "arguments"));
+            if (args.empty()) args = "{}";
+            if (!is_valid_json(args)) {
+                return {false, false, "", {}, "invalid_function_arguments"};
+            }
+            if (!name.empty()) {
+                function_calls.push_back("{\"name\":\"" + escape_json_string(name) +
+                    "\",\"arguments\":" + args + "}");
+            }
+        }
+    }
+
+    if (response.empty()) {
+        response = json_string_field(body, "output_text");
+    }
+    if (response.empty()) {
+        response = json_string_field(body, "text");
+    }
+
+    sanitize_function_calls(function_calls);
+
+    if (response.empty() && function_calls.empty()) {
+        return {false, false, "", {}, "missing_text"};
+    }
+
+    CloudCompletionResult out;
+    out.ok = true;
+    out.used_cloud = true;
+    out.response = trim_string(response);
+    out.function_calls = std::move(function_calls);
+    return out;
+}
+
+static CloudCompletionResult openai_complete_request(const CloudCompletionRequest& request,
+                                                     long timeout_ms) {
+    std::string err;
+    std::string body = call_openai_responses_endpoint(
+        build_openai_responses_payload(request),
+        timeout_ms,
+        resolve_openai_api_key(request.cloud_key),
+        err);
+    if (body.empty()) {
+        return {false, false, "", {}, err.empty() ? "request_failed" : err};
+    }
+    return parse_openai_responses_body(body);
+}
 #endif
 
 } // namespace
@@ -447,6 +707,10 @@ CloudCompletionResult cloud_complete_request(const CloudCompletionRequest& reque
         return result;
     }
 #ifdef CACTUS_USE_CURL
+    if (use_openai_cloud_provider()) {
+        return openai_complete_request(request, timeout_ms);
+    }
+
     std::string base = env_or_default("CACTUS_CLOUD_API_BASE", "https://104.198.76.3/api/v1");
     std::string model = env_or_default("CACTUS_CLOUD_MODEL", "gemini-2.5-flash");
 
