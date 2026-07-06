@@ -66,7 +66,7 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoTopkRows=nil, psoMoeT=nil, psoMoeUp=nil;
     id<MTLComputePipelineState> psoMoeT2=nil, psoMoeDownAcc=nil, psoRopePair=nil;
     id<MTLComputePipelineState> psoRmsScale=nil, psoSoftmaxTopk=nil, psoRopePairRms=nil;
-    id<MTLComputePipelineState> psoRms2AddClip=nil;
+    id<MTLComputePipelineState> psoRms2AddClip=nil, psoDeltanet=nil, psoDeltanetPre=nil;
     id<MTLBuffer> dummy=nil;
     bool ok = false;
 
@@ -132,6 +132,7 @@ struct MetalCtx {
         psoMoeDownAcc=pso("cq4_moe_gemv_down_acc"); psoRopePair=pso("rope_pair_f16");
         psoRmsScale=pso("rms_norm_scale_f16"); psoSoftmaxTopk=pso("softmax_topk_f16");
         psoRopePairRms=pso("rope_pair_rms_f16"); psoRms2AddClip=pso("rms2_add_clip_f16");
+        psoDeltanet=pso("gated_deltanet_decode_f16"); psoDeltanetPre=pso("gated_deltanet_prefill_f16");
         dummy=[dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
         ok = psoT&&psoG&&psoTm&&psoGm&&psoRotW&&psoEmbO&&psoEmbH&&psoEmbOm&&psoEmbHm&&psoCopy&&psoBinary&&psoScalar&&psoUnary&&psoRms&&psoSwiglu&&psoRmsAdd&&psoCF16F32&&psoCF32F16&&psoCI8F16&&psoCF16I8
              &&psoAttn&&psoAttnC&&psoAttnPre&&psoAttnPreMma2&&psoKvAppendM&&psoKvAppendRingM&&psoSlideS&&psoSlideR&&psoSlideRM&&psoStrided&&psoBcast&&psoScatter&&psoKvAppend&&psoArgmax&&psoGather;
@@ -1147,6 +1148,54 @@ bool cactus_metal_encode_moe_gated_cq4(void* out, const void* hidden, const void
         [g_enc dispatchThreadgroups:MTLSizeMake((N2+15u)/16u, 1, tokens)
               threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     }
+    return true;
+}
+
+bool cactus_metal_encode_deltanet_decode(void* out, const void* q, const void* k, const void* v,
+                                         const void* g, const void* b, const void* s,
+                                         uint32_t B, uint32_t Hq, uint32_t Hv,
+                                         uint32_t K, uint32_t V, float scale) {
+    if (!ctx().ok || !ctx().psoDeltanet) return false;
+    if (B == 0 || Hq == 0 || Hv == 0 || K == 0 || V == 0 || V > 1024 || (Hv % Hq) != 0) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoDeltanet];
+    setBufAt(q, (size_t)B*Hq*K*2, 0);
+    setBufAt(k, (size_t)B*Hq*K*2, 1);
+    setBufAt(v, (size_t)B*Hv*V*2, 2);
+    setBufAt(g, (size_t)B*Hv*2, 3);
+    setBufAt(b, (size_t)B*Hv*2, 4);
+    setBufAt(s, (size_t)B*K*Hv*V*2, 5);
+    setBufAt(out, (size_t)B*(1+K)*Hv*V*2, 6);
+    [g_enc setBytes:&Hq length:4 atIndex:7]; [g_enc setBytes:&Hv length:4 atIndex:8];
+    [g_enc setBytes:&K length:4 atIndex:9]; [g_enc setBytes:&V length:4 atIndex:10];
+    [g_enc setBytes:&scale length:4 atIndex:11];
+    [g_enc setThreadgroupMemoryLength:(size_t)K*4 atIndex:0];
+    [g_enc dispatchThreadgroups:MTLSizeMake(Hv, B, 1) threadsPerThreadgroup:MTLSizeMake(V, 1, 1)];
+    return true;
+}
+
+bool cactus_metal_encode_deltanet_prefill(void* out, const void* q, const void* k, const void* v,
+                                          const void* g, const void* b, const void* s,
+                                          uint32_t B, uint32_t T, uint32_t Hq, uint32_t Hv,
+                                          uint32_t K, uint32_t V, float scale) {
+    if (!ctx().ok || !ctx().psoDeltanetPre) return false;
+    if (B == 0 || T == 0 || Hq == 0 || Hv == 0 || K == 0 || V == 0 || V > 1024 || (Hv % Hq) != 0) return false;
+    ensureEncoder();
+    id<MTLBuffer> scratch = recycled((size_t)B*Hv*K*V*sizeof(float));
+    [g_enc setComputePipelineState:ctx().psoDeltanetPre];
+    setBufAt(q, (size_t)B*T*Hq*K*2, 0);
+    setBufAt(k, (size_t)B*T*Hq*K*2, 1);
+    setBufAt(v, (size_t)B*T*Hv*V*2, 2);
+    setBufAt(g, (size_t)B*T*Hv*2, 3);
+    setBufAt(b, (size_t)B*T*Hv*2, 4);
+    setBufAt(s, (size_t)B*K*Hv*V*2, 5);
+    setBufAt(out, (size_t)B*(T+K)*Hv*V*2, 6);
+    [g_enc setBuffer:scratch offset:0 atIndex:7];
+    [g_enc setBytes:&T length:4 atIndex:8]; [g_enc setBytes:&Hq length:4 atIndex:9];
+    [g_enc setBytes:&Hv length:4 atIndex:10]; [g_enc setBytes:&K length:4 atIndex:11];
+    [g_enc setBytes:&V length:4 atIndex:12]; [g_enc setBytes:&scale length:4 atIndex:13];
+    [g_enc setThreadgroupMemoryLength:(size_t)K*4 atIndex:0];
+    [g_enc dispatchThreadgroups:MTLSizeMake(Hv, B, 1) threadsPerThreadgroup:MTLSizeMake(V, 1, 1)];
     return true;
 }
 

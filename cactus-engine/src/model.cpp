@@ -1353,7 +1353,8 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     const bool has_recurrent_state = any_cache_node([&](size_t id) {
         return decoder_prefill_->graph->get_node_op_type(id) == OpType::RECURRENT_CACHE_STATE;
     });
-    if (has_recurrent_state && whole_chunks_end > effective_chunk) {
+    static const bool recurrent_multichunk = std::getenv("CACTUS_RECURRENT_MULTICHUNK") != nullptr;
+    if (has_recurrent_state && !recurrent_multichunk && whole_chunks_end > effective_chunk) {
         whole_chunks_end = effective_chunk;
     }
     const bool has_sliding_window_cache = any_cache_node([&](size_t id) {

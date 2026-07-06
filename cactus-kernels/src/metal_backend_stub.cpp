@@ -117,6 +117,10 @@ bool cactus_metal_encode_rope_pair(void*, const void*, const void*, const void*,
     uint32_t, uint32_t) { return false; }
 bool cactus_metal_encode_rope_pair_rms(void*, const void*, const void*, const void*,
     const void*, uint32_t, uint32_t, float) { return false; }
+bool cactus_metal_encode_deltanet_decode(void*, const void*, const void*, const void*,
+    const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float) { return false; }
+bool cactus_metal_encode_deltanet_prefill(void*, const void*, const void*, const void*,
+    const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float) { return false; }
 bool cactus_metal_encode_rms2_add_clip(void*, const void*, const void*,
     const void*, const void*, size_t, float, float) { return false; }
 bool cactus_metal_encode_rms_norm_scale(void*, const void*, const void*,

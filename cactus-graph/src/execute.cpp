@@ -869,6 +869,53 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             if (cols == 0) return false;
             return cactus_metal_encode_softmax_rows(out.get_data(), in.get_data(), out.total_size / cols, cols);
         }
+        case OpType::GATED_DELTANET_DECODE: {
+            if (node.input_ids.size() != 6) return false;
+            const auto& q = get_input(node, 0, nodes, map);
+            const auto& k = get_input(node, 1, nodes, map);
+            const auto& v = get_input(node, 2, nodes, map);
+            const auto& g = get_input(node, 3, nodes, map);
+            const auto& b = get_input(node, 4, nodes, map);
+            const auto& st = get_input(node, 5, nodes, map);
+            if (!fp16(q) || !fp16(k) || !fp16(v) || !fp16(g) || !fp16(b) || !fp16(st) || !fp16(out)) return false;
+            if (q.shape.size() != 4 || v.shape.size() != 4 || st.shape.size() != 4) return false;
+            if (q.shape[1] != 1) return false;
+            size_t B = q.shape[0], Hq = q.shape[2], K = q.shape[3];
+            size_t Hv = v.shape[2], V = v.shape[3];
+            if (Hq == 0 || (Hv % Hq) != 0) return false;
+            if (st.shape[0] != B || st.shape[1] != K || st.shape[2] != Hv || st.shape[3] != V) return false;
+            if (out.total_size != B * (1 + K) * Hv * V) return false;
+            return cactus_metal_encode_deltanet_decode(out.get_data(), q.get_data(), k.get_data(),
+                v.get_data(), g.get_data(), b.get_data(), st.get_data(),
+                (uint32_t)B, (uint32_t)Hq, (uint32_t)Hv, (uint32_t)K, (uint32_t)V, node.params.scale);
+        }
+        case OpType::GATED_DELTANET_PREFILL: {
+            if (node.input_ids.size() != 6) return false;
+            const auto& q = get_input(node, 0, nodes, map);
+            const auto& k = get_input(node, 1, nodes, map);
+            const auto& v = get_input(node, 2, nodes, map);
+            const auto& g = get_input(node, 3, nodes, map);
+            const auto& b = get_input(node, 4, nodes, map);
+            const auto& st = get_input(node, 5, nodes, map);
+            if (!fp16(q) || !fp16(k) || !fp16(v) || !fp16(g) || !fp16(b) || !fp16(st) || !fp16(out)) return false;
+            if (q.shape.size() != 4 || v.shape.size() != 4 || st.shape.size() != 4) return false;
+            size_t B = q.shape[0], T = q.shape[1], Hq = q.shape[2], K = q.shape[3];
+            size_t Hv = v.shape[2], V = v.shape[3];
+            if (Hq == 0 || (Hv % Hq) != 0) return false;
+            if (st.shape[0] != B || st.shape[1] != K || st.shape[2] != Hv || st.shape[3] != V) return false;
+            if (out.total_size != B * (T + K) * Hv * V) return false;
+            return cactus_metal_encode_deltanet_prefill(out.get_data(), q.get_data(), k.get_data(),
+                v.get_data(), g.get_data(), b.get_data(), st.get_data(),
+                (uint32_t)B, (uint32_t)T, (uint32_t)Hq, (uint32_t)Hv, (uint32_t)K, (uint32_t)V, node.params.scale);
+        }
+        case OpType::RECURRENT_CACHE_WRITE: {
+            if (node.input_ids.size() < 2) return false;
+            const auto& src = get_input(node, 0, nodes, map);
+            BufferDesc& cache = nodes[map.at(node.input_ids[1])]->output_buffer;
+            if (!src.get_data() || !cache.get_data() || src.byte_size == 0) return false;
+            if (src.byte_size > cache.byte_size) return false;
+            return cactus_metal_encode_copy(cache.get_data(), src.get_data(), src.byte_size);
+        }
         case OpType::TOPK: {
             const auto& in = get_input(node, 0, nodes, map);
             if (!fp16(in) || out.precision != Precision::FP32) return false;

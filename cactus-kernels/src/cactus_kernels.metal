@@ -3669,3 +3669,124 @@ kernel void rms2_add_clip_f16(
         y[i] = (half)clamp((float)ya + (float)yb, -65500.0f, 65500.0f);
     }
 }
+
+kernel void gated_deltanet_decode_f16(
+    device const half* q  [[buffer(0)]],
+    device const half* k  [[buffer(1)]],
+    device const half* v  [[buffer(2)]],
+    device const half* g  [[buffer(3)]],
+    device const half* b  [[buffer(4)]],
+    device const half* s  [[buffer(5)]],
+    device       half* y  [[buffer(6)]],
+    constant uint& Hq     [[buffer(7)]],
+    constant uint& Hv     [[buffer(8)]],
+    constant uint& K      [[buffer(9)]],
+    constant uint& V      [[buffer(10)]],
+    constant float& scale [[buffer(11)]],
+    uint3 tgp [[threadgroup_position_in_grid]],
+    uint t    [[thread_index_in_threadgroup]],
+    threadgroup half* kq  [[threadgroup(0)]])
+{
+    const uint h = tgp.x, batch = tgp.y;
+    const uint qk_head = h / (Hv / Hq);
+    const uint qk_base = (batch * Hq + qk_head) * K;
+    threadgroup half* kk = kq;
+    threadgroup half* qq = kq + K;
+    for (uint i = t; i < K; i += V) {
+        kk[i] = k[qk_base + i];
+        qq[i] = q[qk_base + i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (t >= V) return;
+
+    float gate_log = (float)g[batch * Hv + h];
+    if (!isfinite(gate_log)) gate_log = -20.0f;
+    float beta = (float)b[batch * Hv + h];
+    beta = isfinite(beta) ? clamp(beta, 0.0f, 1.0f) : 0.0f;
+    const float alpha = exp(clamp(gate_log, -20.0f, 6.0f));
+
+    const size_t s_stride = (size_t)Hv * V;
+    device const half* sp = s + ((size_t)batch * K) * s_stride + (size_t)h * V + t;
+    float proj = 0.0f;
+    for (uint kd = 0; kd < K; ++kd) proj += (float)sp[kd * s_stride] * (float)kk[kd];
+    const float delta = ((float)v[((size_t)batch * Hv + h) * V + t] - alpha * proj) * beta;
+
+    device half* yp = y + ((size_t)batch * (1 + K) + 1) * s_stride + (size_t)h * V + t;
+    float acc = 0.0f;
+    for (uint kd = 0; kd < K; ++kd) {
+        float s_new = (float)sp[kd * s_stride] * alpha + (float)kk[kd] * delta;
+        if (!isfinite(s_new)) s_new = 0.0f;
+        yp[kd * s_stride] = (half)s_new;
+        acc += s_new * (float)qq[kd];
+    }
+    if (!isfinite(acc)) acc = 0.0f;
+    y[((size_t)batch * (1 + K)) * s_stride + (size_t)h * V + t] = (half)(acc * scale);
+}
+
+kernel void gated_deltanet_prefill_f16(
+    device const half* q   [[buffer(0)]],
+    device const half* k   [[buffer(1)]],
+    device const half* v   [[buffer(2)]],
+    device const half* g   [[buffer(3)]],
+    device const half* b   [[buffer(4)]],
+    device const half* s   [[buffer(5)]],
+    device       half* y   [[buffer(6)]],
+    device      float* st  [[buffer(7)]],
+    constant uint& T       [[buffer(8)]],
+    constant uint& Hq      [[buffer(9)]],
+    constant uint& Hv      [[buffer(10)]],
+    constant uint& K       [[buffer(11)]],
+    constant uint& V       [[buffer(12)]],
+    constant float& scale  [[buffer(13)]],
+    uint3 tgp [[threadgroup_position_in_grid]],
+    uint t    [[thread_index_in_threadgroup]],
+    threadgroup half* kq   [[threadgroup(0)]])
+{
+    const uint h = tgp.x, batch = tgp.y;
+    const uint qk_head = h / (Hv / Hq);
+    threadgroup half* kk = kq;
+    threadgroup half* qq = kq + K;
+    const size_t hv_stride = (size_t)Hv * V;
+    device float* col = st + (((size_t)batch * Hv + h) * K) * V + t;
+
+    if (t < V) {
+        device const half* sp = s + ((size_t)batch * K) * hv_stride + (size_t)h * V + t;
+        for (uint kd = 0; kd < K; ++kd) col[(size_t)kd * V] = (float)sp[kd * hv_stride];
+    }
+
+    for (uint step = 0; step < T; ++step) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        const size_t qk_base = ((size_t)(batch * T + step) * Hq + qk_head) * K;
+        for (uint i = t; i < K; i += V) {
+            kk[i] = k[qk_base + i];
+            qq[i] = q[qk_base + i];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (t >= V) continue;
+
+        float gate_log = (float)g[(size_t)(batch * T + step) * Hv + h];
+        if (!isfinite(gate_log)) gate_log = -20.0f;
+        float beta = (float)b[(size_t)(batch * T + step) * Hv + h];
+        beta = isfinite(beta) ? clamp(beta, 0.0f, 1.0f) : 0.0f;
+        const float alpha = exp(clamp(gate_log, -20.0f, 6.0f));
+
+        float proj = 0.0f;
+        for (uint kd = 0; kd < K; ++kd) proj += col[(size_t)kd * V] * (float)kk[kd];
+        const float delta = ((float)v[((size_t)(batch * T + step) * Hv + h) * V + t] - alpha * proj) * beta;
+
+        float acc = 0.0f;
+        for (uint kd = 0; kd < K; ++kd) {
+            float s_new = col[(size_t)kd * V] * alpha + (float)kk[kd] * delta;
+            if (!isfinite(s_new)) s_new = 0.0f;
+            col[(size_t)kd * V] = s_new;
+            acc += s_new * (float)qq[kd];
+        }
+        if (!isfinite(acc)) acc = 0.0f;
+        y[((size_t)(batch * (T + K) + step)) * hv_stride + (size_t)h * V + t] = (half)(acc * scale);
+    }
+
+    if (t < V) {
+        for (uint kd = 0; kd < K; ++kd)
+            y[((size_t)(batch * (T + K) + T + kd)) * hv_stride + (size_t)h * V + t] = (half)col[(size_t)kd * V];
+    }
+}

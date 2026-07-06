@@ -71,6 +71,14 @@ bool cactus_metal_encode_rope_pair(void* out, const void* x, const void* c, cons
 bool cactus_metal_encode_rope_pair_rms(void* out, const void* x, const void* w,
                                        const void* c, const void* s,
                                        uint32_t H, uint32_t D, float eps);
+bool cactus_metal_encode_deltanet_decode(void* out, const void* q, const void* k, const void* v,
+                                         const void* g, const void* b, const void* s,
+                                         uint32_t B, uint32_t Hq, uint32_t Hv,
+                                         uint32_t K, uint32_t V, float scale);
+bool cactus_metal_encode_deltanet_prefill(void* out, const void* q, const void* k, const void* v,
+                                          const void* g, const void* b, const void* s,
+                                          uint32_t B, uint32_t T, uint32_t Hq, uint32_t Hv,
+                                          uint32_t K, uint32_t V, float scale);
 bool cactus_metal_encode_rms2_add_clip(void* out, const void* a, const void* wa,
                                        const void* b, const void* wb, size_t dim,
                                        float eps_a, float eps_b);
