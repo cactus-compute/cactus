@@ -1207,7 +1207,6 @@ MetalFusePlan* cactus_metal_plan_build(const std::vector<std::unique_ptr<GraphNo
                                        const std::vector<uint8_t>& retype,
                                        const std::unordered_set<size_t>* banned = nullptr);
 void cactus_metal_plan_free(MetalFusePlan* p);
-void cactus_metal_plan_disable(MetalFusePlan* p);
 bool cactus_metal_plan_fold(MetalFusePlan* p, const std::vector<std::unique_ptr<GraphNode>>& nodes);
 const std::vector<uint32_t>* cactus_metal_plan_exec_list(const MetalFusePlan* p);
 void* cactus_metal_plan_arena_ptr(const MetalFusePlan* p, size_t i);

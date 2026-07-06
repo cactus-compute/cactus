@@ -1473,16 +1473,6 @@ void cactus_metal_plan_extend_last_use(const MetalFusePlan* p, std::vector<size_
     }
 }
 
-void cactus_metal_plan_disable(MetalFusePlan* p) {
-    if (!p) return;
-    release_cluster_buffers(p);
-    std::fill(p->action.begin(), p->action.end(), -1);
-    p->clusters.clear();
-    p->fold_h = -1;
-    p->exec_list.clear();
-    for (size_t i = 0; i < p->action.size(); ++i) p->exec_list.push_back((uint32_t)i);
-}
-
 int32_t cactus_metal_plan_action(const MetalFusePlan* p, size_t i) {
     return p && i < p->action.size() ? p->action[i] : -1;
 }
