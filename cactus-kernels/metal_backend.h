@@ -71,6 +71,9 @@ bool cactus_metal_encode_rope_pair(void* out, const void* x, const void* c, cons
 bool cactus_metal_encode_rope_pair_rms(void* out, const void* x, const void* w,
                                        const void* c, const void* s,
                                        uint32_t H, uint32_t D, float eps);
+bool cactus_metal_encode_rms2_add_clip(void* out, const void* a, const void* wa,
+                                       const void* b, const void* wb, size_t dim,
+                                       float eps_a, float eps_b);
 bool cactus_metal_encode_rms_norm_scale(void* out, const void* in, const void* weight,
                                         size_t rows, size_t dim, float eps, float oscale);
 bool cactus_metal_encode_softmax_topk(void* probs, void* topk, const void* in,

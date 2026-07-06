@@ -695,6 +695,44 @@ MetalFusePlan* cactus_metal_plan_build(
 
         if (nd.op_type == OpType::ADD_CLIPPED && nd.input_ids.size() == 2) {
             long n0 = up_in(i, 0), n1 = up_in(i, 1);
+            auto rms2_side = [&](long nrm, long* src, long* w) -> bool {
+                if (nrm < 0 || nodes[(size_t)nrm]->op_type != OpType::RMS_NORM
+                    || nodes[(size_t)nrm]->input_ids.size() < 2
+                    || plan->action[(size_t)nrm] != -1 || pinned[(size_t)nrm] || retyped((size_t)nrm)
+                    || nodes[(size_t)nrm]->output_buffer.precision != Precision::FP16
+                    || !sole_use(nrm, {i})) return false;
+                long s0 = up_in((size_t)nrm, 0);
+                long w0 = up_in((size_t)nrm, 1);
+                if (w0 >= 0) w0 = deep_f16_source(w0);
+                if (s0 < 0 || w0 < 0
+                    || nodes[(size_t)s0]->output_buffer.precision != Precision::FP16
+                    || nodes[(size_t)w0]->output_buffer.precision != Precision::FP16
+                    || nodes[(size_t)s0]->output_buffer.shape.empty()
+                    || nodes[(size_t)s0]->output_buffer.total_size !=
+                       nodes[(size_t)s0]->output_buffer.shape.back()) return false;
+                *src = s0; *w = w0;
+                return true;
+            };
+            size_t D2 = nd.output_buffer.shape.empty() ? 0 : nd.output_buffer.shape.back();
+            long srcA = -1, wA = -1, srcB = -1, wB = -1;
+            if (n0 != n1 && D2 > 0 && nd.output_buffer.total_size == D2
+                && nd.output_buffer.precision == Precision::FP16 && !retyped(i)
+                && rms2_side(n0, &srcA, &wA) && rms2_side(n1, &srcB, &wB)
+                && nodes[(size_t)srcA]->output_buffer.total_size == D2
+                && nodes[(size_t)srcB]->output_buffer.total_size == D2
+                && nodes[(size_t)wA]->output_buffer.total_size == D2
+                && nodes[(size_t)wB]->output_buffer.total_size == D2) {
+                MetalCluster c;
+                c.rule = 18;
+                c.a0 = (size_t)srcA; c.a1 = (size_t)wA;
+                c.a2 = (size_t)srcB; c.a3 = (size_t)wB;
+                c.u1 = (uint32_t)D2;
+                c.f0 = nodes[(size_t)n0]->params.epsilon;
+                c.f1 = nodes[(size_t)n1]->params.epsilon;
+                c.b4 = i;
+                std::vector<size_t> cover{(size_t)n0, (size_t)n1};
+                if (add_cluster(c, i, cover)) continue;
+            }
             long norm = -1, res = -1;
             if (n0 >= 0 && nodes[(size_t)n0]->op_type == OpType::RMS_NORM) { norm = n0; res = n1; }
             else if (n1 >= 0 && nodes[(size_t)n1]->op_type == OpType::RMS_NORM) { norm = n1; res = n0; }
@@ -1765,6 +1803,16 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             void* tk = anchor.output_buffer.get_data();
             if (!lg || !probs || !tk) return false;
             return cactus_metal_encode_softmax_topk(probs, tk, lg, c.u0, c.u1, c.b0, c.f0);
+        }
+        case 18: {
+            GraphNode& anchor = *nodes[c.b4];
+            const void* a = nodes[c.a0]->output_buffer.get_data();
+            const void* wa = nodes[c.a1]->output_buffer.get_data();
+            const void* b = nodes[c.a2]->output_buffer.get_data();
+            const void* wb = nodes[c.a3]->output_buffer.get_data();
+            void* y = anchor.output_buffer.get_data();
+            if (!a || !wa || !b || !wb || !y) return false;
+            return cactus_metal_encode_rms2_add_clip(y, a, wa, b, wb, c.u1, c.f0, c.f1);
         }
         case 17: {
             GraphNode& anchor = *nodes[c.b4];

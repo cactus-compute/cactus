@@ -66,6 +66,7 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoTopkRows=nil, psoMoeT=nil, psoMoeUp=nil;
     id<MTLComputePipelineState> psoMoeT2=nil, psoMoeDownAcc=nil, psoRopePair=nil;
     id<MTLComputePipelineState> psoRmsScale=nil, psoSoftmaxTopk=nil, psoRopePairRms=nil;
+    id<MTLComputePipelineState> psoRms2AddClip=nil;
     id<MTLBuffer> dummy=nil;
     bool ok = false;
 
@@ -130,7 +131,7 @@ struct MetalCtx {
         psoMoeUp=pso("cq4_moe_gemv_up"); psoMoeT2=pso("cq4_moe_transform2");
         psoMoeDownAcc=pso("cq4_moe_gemv_down_acc"); psoRopePair=pso("rope_pair_f16");
         psoRmsScale=pso("rms_norm_scale_f16"); psoSoftmaxTopk=pso("softmax_topk_f16");
-        psoRopePairRms=pso("rope_pair_rms_f16");
+        psoRopePairRms=pso("rope_pair_rms_f16"); psoRms2AddClip=pso("rms2_add_clip_f16");
         dummy=[dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
         ok = psoT&&psoG&&psoTm&&psoGm&&psoRotW&&psoEmbO&&psoEmbH&&psoEmbOm&&psoEmbHm&&psoCopy&&psoBinary&&psoScalar&&psoUnary&&psoRms&&psoSwiglu&&psoRmsAdd&&psoCF16F32&&psoCF32F16&&psoCI8F16&&psoCF16I8
              &&psoAttn&&psoAttnC&&psoAttnPre&&psoAttnPreMma2&&psoKvAppendM&&psoKvAppendRingM&&psoSlideS&&psoSlideR&&psoSlideRM&&psoStrided&&psoBcast&&psoScatter&&psoKvAppend&&psoArgmax&&psoGather;
@@ -1146,6 +1147,23 @@ bool cactus_metal_encode_moe_gated_cq4(void* out, const void* hidden, const void
         [g_enc dispatchThreadgroups:MTLSizeMake((N2+15u)/16u, 1, tokens)
               threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     }
+    return true;
+}
+
+bool cactus_metal_encode_rms2_add_clip(void* out, const void* a, const void* wa,
+                                       const void* b, const void* wb, size_t dim,
+                                       float eps_a, float eps_b) {
+    if (!ctx().ok || !ctx().psoRms2AddClip || dim == 0) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoRms2AddClip];
+    setBufAt(a, dim*2, 0); setBufAt(wa, dim*2, 1);
+    setBufAt(b, dim*2, 2); setBufAt(wb, dim*2, 3);
+    setBufAt(out, dim*2, 4);
+    uint32_t d=(uint32_t)dim; float ea=eps_a, eb=eps_b;
+    [g_enc setBytes:&d length:4 atIndex:5]; [g_enc setBytes:&ea length:4 atIndex:6];
+    [g_enc setBytes:&eb length:4 atIndex:7];
+    [g_enc setThreadgroupMemoryLength:512*sizeof(float) atIndex:0];
+    [g_enc dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
 

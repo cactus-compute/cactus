@@ -3635,3 +3635,36 @@ kernel void rope_pair_rms_f16(
         yr[i] = xv*c[i] + rh*s[i];
     }
 }
+
+kernel void rms2_add_clip_f16(
+    device const half* a  [[buffer(0)]],
+    device const half* wa [[buffer(1)]],
+    device const half* b  [[buffer(2)]],
+    device const half* wb [[buffer(3)]],
+    device       half* y  [[buffer(4)]],
+    constant uint& D      [[buffer(5)]],
+    constant float& eps_a [[buffer(6)]],
+    constant float& eps_b [[buffer(7)]],
+    uint t [[thread_position_in_threadgroup]],
+    uint T [[threads_per_threadgroup]],
+    threadgroup float* red [[threadgroup(0)]])
+{
+    float sa = 0, sb = 0;
+    for (uint i = t; i < D; i += T) {
+        float va = (float)a[i], vb = (float)b[i];
+        sa += va*va; sb += vb*vb;
+    }
+    red[t] = sa; red[T+t] = sb;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = T/2; s > 0; s >>= 1) {
+        if (t < s) { red[t] += red[t+s]; red[T+t] += red[T+t+s]; }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float inva = rsqrt(red[0]/(float)D + eps_a);
+    float invb = rsqrt(red[T]/(float)D + eps_b);
+    for (uint i = t; i < D; i += T) {
+        half ya = (half)((float)a[i]*inva*(float)wa[i]);
+        half yb = (half)((float)b[i]*invb*(float)wb[i]);
+        y[i] = (half)clamp((float)ya + (float)yb, -65500.0f, 65500.0f);
+    }
+}
