@@ -865,6 +865,53 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             if (cols == 0) return false;
             return cactus_metal_encode_softmax_rows(out.get_data(), in.get_data(), out.total_size / cols, cols);
         }
+        case OpType::TOPK: {
+            const auto& in = get_input(node, 0, nodes, map);
+            if (!fp16(in) || out.precision != Precision::FP32) return false;
+            if (in.shape.size() != 2 || node.params.top_k == 0 || node.params.top_k > 16) return false;
+            return cactus_metal_encode_topk_rows(out.get_data(), in.get_data(),
+                in.shape[0], in.shape[1], node.params.top_k);
+        }
+        case OpType::MOE_LAYER: {
+            const size_t num_experts = node.params.num_experts;
+            const size_t top_k = node.params.num_experts_per_tok;
+            if (!node.params.moe_gated || num_experts == 0 || top_k == 0 || top_k > 16) return false;
+            if (node.input_ids.size() != 3 + 3 * num_experts) return false;
+            const auto& hidden = get_input(node, 0, nodes, map);
+            const auto& probs = get_input(node, 1, nodes, map);
+            const auto& topk = get_input(node, 2, nodes, map);
+            if (!fp16(hidden) || !fp16(out) || !fp16(probs)) return false;
+            if (topk.precision != Precision::FP32) return false;
+            if (hidden.shape.size() != 2 || probs.shape.size() != 2 || probs.shape[1] != num_experts) return false;
+            uint32_t act;
+            switch (node.params.activation) {
+                case Activation::SILU: act = 0u; break;
+                case Activation::GELU: act = 1u; break;
+                default: return false;
+            }
+            const auto& w1_0 = get_input(node, 3, nodes, map);
+            if (!PrecisionTraits::is_cq(w1_0.precision) || w1_0.group_size == 0) return false;
+            CactusQuantMatrix key = w1_0.to_cq_matrix();
+            if (!cactus_metal_moe_cq4_ready(&key)) {
+                std::vector<CactusQuantMatrix> w1s(num_experts), w3s(num_experts), w2s(num_experts);
+                for (size_t e = 0; e < num_experts; ++e) {
+                    const auto& b1 = get_input(node, 3 + e, nodes, map);
+                    const auto& b3 = get_input(node, 3 + num_experts + e, nodes, map);
+                    const auto& b2 = get_input(node, 3 + 2 * num_experts + e, nodes, map);
+                    if (!PrecisionTraits::is_cq(b1.precision) || b1.group_size == 0 ||
+                        !PrecisionTraits::is_cq(b3.precision) || b3.group_size == 0 ||
+                        !PrecisionTraits::is_cq(b2.precision) || b2.group_size == 0) return false;
+                    w1s[e] = b1.to_cq_matrix();
+                    w3s[e] = b3.to_cq_matrix();
+                    w2s[e] = b2.to_cq_matrix();
+                }
+                if (!cactus_metal_moe_cq4_build(w1s.data(), w3s.data(), w2s.data(), (uint32_t)num_experts))
+                    return false;
+            }
+            return cactus_metal_encode_moe_gated_cq4(out.get_data(), hidden.get_data(), probs.get_data(),
+                topk.get_data(), &key, (uint32_t)num_experts, (uint32_t)top_k, (uint32_t)hidden.shape[0],
+                act, node.params.normalize_routing ? 1u : 0u, node.params.epsilon, node.params.scalar);
+        }
         case OpType::LAYERNORM: {
             if (node.input_ids.size() < 2 || out.shape.empty()) return false;
             const auto& in = get_input(node, 0, nodes, map);
@@ -1153,7 +1200,8 @@ struct MetalFusePlan;
 MetalFusePlan* cactus_metal_plan_build(const std::vector<std::unique_ptr<GraphNode>>& nodes,
                                        const std::unordered_map<size_t, size_t>& map,
                                        const std::unordered_set<size_t>& pinned_ids,
-                                       const std::vector<uint8_t>& retype);
+                                       const std::vector<uint8_t>& retype,
+                                       const std::unordered_set<size_t>* banned = nullptr);
 void cactus_metal_plan_free(MetalFusePlan* p);
 void cactus_metal_plan_disable(MetalFusePlan* p);
 bool cactus_metal_plan_fold(MetalFusePlan* p, const std::vector<std::unique_ptr<GraphNode>>& nodes);
@@ -1249,6 +1297,7 @@ void CactusGraph::execute(const std::string& profile_file) {
     };
 
     bool trace_execution = get_env_int("CACTUS_TRACE_EXECUTE", 0) != 0;
+    static const size_t flush_cadence = (size_t)get_env_int("CACTUS_FLUSH_CADENCE", 48);
     bool trace_nan = get_env_int("CACTUS_TRACE_NAN", 0) != 0;
     bool need_debug = !profile_file.empty();
     if (!need_debug) {
@@ -1342,9 +1391,13 @@ void CactusGraph::execute(const std::string& profile_file) {
             static const std::vector<uint8_t> no_retype;
             const std::vector<uint8_t>& rt = (!metal_retype_disabled_ && metal_retype_plan_.size() == n)
                 ? metal_retype_plan_ : no_retype;
-            it = metal_plans_.emplace(sig, cactus_metal_plan_build(nodes_, node_index_map_, pinned, rt)).first;
+            auto bit = metal_plan_banned_.find(sig);
+            const std::unordered_set<size_t>* banned =
+                bit == metal_plan_banned_.end() ? nullptr : &bit->second;
+            it = metal_plans_.emplace(sig, cactus_metal_plan_build(nodes_, node_index_map_, pinned, rt, banned)).first;
         }
         fplan = it->second;
+        metal_plan_sig_ = sig;
     }
     const uint8_t* rplan = (metal_mode && !need_debug && !metal_retype_disabled_
                             && metal_retype_plan_.size() == n) ? metal_retype_plan_.data() : nullptr;
@@ -1569,13 +1622,15 @@ void CactusGraph::execute(const std::string& profile_file) {
                 if (cactus_metal_plan_encode(fplan, fact, nodes_, node_index_map_)) {
                     metal_live[i] = 1;
                     for (size_t r : release_after[i]) metal_release(r);
-                    if (++since_flush >= 48) { cactus_metal_session_flush(); since_flush = 0; }
+                    if (++since_flush >= flush_cadence) { cactus_metal_session_flush(); since_flush = 0; }
                     maybe_recycle();
                     continue;
                 }
-                cactus_metal_plan_disable(fplan);
                 metal_guard.armed = false;
                 metal_abort_cleanup();
+                metal_plan_banned_[metal_plan_sig_].insert(i);
+                metal_plans_.erase(metal_plan_sig_);
+                cactus_metal_plan_free(fplan);
                 execute(profile_file);
                 return;
             }
@@ -1613,7 +1668,7 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
             if (ot == OpType::PERSISTENT) populated_node_ids_.insert(node->id);
             for (size_t r : release_after[i]) metal_release(r);
-            if (encoded && ++since_flush >= 48) { cactus_metal_session_flush(); since_flush = 0; }
+            if (encoded && ++since_flush >= flush_cadence) { cactus_metal_session_flush(); since_flush = 0; }
             if (encoded) maybe_recycle();
         }
         metal_guard.armed = false;

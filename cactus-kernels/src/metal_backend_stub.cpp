@@ -113,4 +113,18 @@ bool cactus_metal_encode_rel_pos_bias(void*, const void*, const void*, uint32_t,
     uint32_t, uint32_t, int, float) { return false; }
 bool cactus_metal_encode_gemv_bias(void*, const void*, const void*, const void*,
     uint32_t, uint32_t, int) { return false; }
+bool cactus_metal_encode_rope_pair(void*, const void*, const void*, const void*,
+    uint32_t, uint32_t) { return false; }
+bool cactus_metal_encode_rope_pair_rms(void*, const void*, const void*, const void*,
+    const void*, uint32_t, uint32_t, float) { return false; }
+bool cactus_metal_encode_rms_norm_scale(void*, const void*, const void*,
+    size_t, size_t, float, float) { return false; }
+bool cactus_metal_encode_softmax_topk(void*, void*, const void*,
+    size_t, size_t, size_t, float) { return false; }
+bool cactus_metal_encode_topk_rows(void*, const void*, size_t, size_t, size_t) { return false; }
+bool cactus_metal_moe_cq4_ready(const CactusQuantMatrix*) { return false; }
+bool cactus_metal_moe_cq4_build(const CactusQuantMatrix*, const CactusQuantMatrix*,
+    const CactusQuantMatrix*, uint32_t) { return false; }
+bool cactus_metal_encode_moe_gated_cq4(void*, const void*, const void*, const void*, const CactusQuantMatrix*,
+    uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, float) { return false; }
 #endif

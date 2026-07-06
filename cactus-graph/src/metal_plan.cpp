@@ -62,7 +62,8 @@ MetalFusePlan* cactus_metal_plan_build(
     const std::vector<std::unique_ptr<GraphNode>>& nodes,
     const std::unordered_map<size_t, size_t>& map,
     const std::unordered_set<size_t>& pinned_ids,
-    const std::vector<uint8_t>& retype) {
+    const std::vector<uint8_t>& retype,
+    const std::unordered_set<size_t>* banned) {
     const size_t n = nodes.size();
     auto plan = new MetalFusePlan();
     plan->action.assign(n, -1);
@@ -223,6 +224,7 @@ MetalFusePlan* cactus_metal_plan_build(
         for (auto& sp : c.sc) if (sp) { cactus_metal_free_shared(sp); sp = nullptr; }
     };
     auto add_cluster = [&](MetalCluster c, size_t anchor, const std::vector<size_t>& cover) -> bool {
+        if (banned && banned->count(anchor)) { release_scratch(c); return false; }
         for (size_t v : cover) if (v != anchor && pinned[v]) { release_scratch(c); return false; }
         int32_t cid = (int32_t)plan->clusters.size();
         plan->clusters.push_back(c);
@@ -255,6 +257,7 @@ MetalFusePlan* cactus_metal_plan_build(
             long kcache = idxof(nd.input_ids[3]);
             long vcache = idxof(nd.input_ids[4]);
             if (qk < 0 || vk < 0 || kcache < 0 || vcache < 0) continue;
+            if (nodes[(size_t)kcache]->params.num_kv_heads != 1) continue;
 
             std::vector<size_t> cover;
             long q_rope = up_in(i, 0);
@@ -1008,6 +1011,190 @@ MetalFusePlan* cactus_metal_plan_build(
         }
         for (size_t i = 0; i < n; ++i) {
             if (plan->action[i] != -1) continue;
+            GraphNode& nd0 = *nodes[i];
+            if (nd0.op_type != OpType::ADD || nd0.input_ids.size() != 2) continue;
+            if (nd0.output_buffer.precision != Precision::FP16 || retyped(i)) continue;
+            const auto& osh = nd0.output_buffer.shape;
+            if (osh.size() < 2) continue;
+            size_t D = osh.back();
+            if (D == 0 || (D % 2) != 0) continue;
+            size_t H = nd0.output_buffer.total_size / D;
+            if (H == 0 || H * D != nd0.output_buffer.total_size) continue;
+            long mA = up_in(i, 0), mB = up_in(i, 1);
+            if (mA < 0 || mB < 0 || mA == mB) continue;
+            auto is_mul = [&](long j) {
+                return nodes[(size_t)j]->op_type == OpType::MULTIPLY
+                    && nodes[(size_t)j]->input_ids.size() == 2
+                    && plan->action[(size_t)j] == -1 && !pinned[(size_t)j] && !retyped((size_t)j)
+                    && nodes[(size_t)j]->output_buffer.precision == Precision::FP16
+                    && nodes[(size_t)j]->output_buffer.total_size == H * D;
+            };
+            if (!is_mul(mA) || !is_mul(mB)) continue;
+            auto split_mul = [&](long m, long* big, long* small) -> bool {
+                long i0 = up_in((size_t)m, 0), i1 = up_in((size_t)m, 1);
+                if (i0 < 0 || i1 < 0) return false;
+                size_t t0 = nodes[(size_t)i0]->output_buffer.total_size;
+                size_t t1 = nodes[(size_t)i1]->output_buffer.total_size;
+                if (t0 == H * D && t1 == D) { *big = i0; *small = i1; return true; }
+                if (t1 == H * D && t0 == D) { *big = i1; *small = i0; return true; }
+                return false;
+            };
+            long xA = -1, cA = -1, xB = -1, sB = -1;
+            if (!split_mul(mA, &xA, &cA) || !split_mul(mB, &xB, &sB)) continue;
+            long mulCos = -1, mulSin = -1, xi = -1, ci = -1, si = -1, cat = -1;
+            if (nodes[(size_t)xB]->op_type == OpType::CAT) {
+                mulCos = mA; mulSin = mB; xi = xA; ci = cA; si = sB; cat = xB;
+            } else if (nodes[(size_t)xA]->op_type == OpType::CAT) {
+                mulCos = mB; mulSin = mA; xi = xB; ci = sB; si = cA; cat = xA;
+            } else continue;
+            GraphNode& cn = *nodes[(size_t)cat];
+            if (cn.input_ids.size() != 2 || plan->action[(size_t)cat] != -1
+                || pinned[(size_t)cat] || retyped((size_t)cat)) continue;
+            if (cn.output_buffer.total_size != H * D) continue;
+            size_t cat_ax = (size_t)cn.params.axis;
+            if (cat_ax != cn.output_buffer.shape.size() - 1) continue;
+            long neg = up_in((size_t)cat, 0);
+            long lo = up_in((size_t)cat, 1);
+            if (neg < 0 || lo < 0) continue;
+            GraphNode& ng = *nodes[(size_t)neg];
+            if (ng.op_type != OpType::SCALAR_MULTIPLY || ng.params.scalar != -1.0f
+                || plan->action[(size_t)neg] != -1 || pinned[(size_t)neg] || retyped((size_t)neg)) continue;
+            long hi = up_in((size_t)neg, 0);
+            if (hi < 0) continue;
+            GraphNode& hs = *nodes[(size_t)hi];
+            GraphNode& ls = *nodes[(size_t)lo];
+            if (hs.op_type != OpType::SLICE || ls.op_type != OpType::SLICE) continue;
+            if (plan->action[(size_t)hi] != -1 || plan->action[(size_t)lo] != -1
+                || pinned[(size_t)hi] || pinned[(size_t)lo]) continue;
+            if (hs.params.slice_start != D / 2 || ls.params.slice_start != 0) continue;
+            size_t hlen = hs.params.slice_length ? hs.params.slice_length : D / 2;
+            size_t llen = ls.params.slice_length ? ls.params.slice_length : D / 2;
+            if (hlen != D / 2 || llen != D / 2) continue;
+            if ((size_t)hs.params.axis != hs.output_buffer.shape.size() - 1
+                || (size_t)ls.params.axis != ls.output_buffer.shape.size() - 1) continue;
+            long xh = up_in((size_t)hi, 0), xl = up_in((size_t)lo, 0);
+            if (xh != xi || xl != xi) continue;
+            if (nodes[(size_t)xi]->output_buffer.precision != Precision::FP16
+                || nodes[(size_t)ci]->output_buffer.precision != Precision::FP16
+                || nodes[(size_t)si]->output_buffer.precision != Precision::FP16) continue;
+            if (!sole_use(mulCos, {i}) || !sole_use(mulSin, {i})
+                || !sole_use(cat, {(size_t)mulSin}) || !sole_use(neg, {(size_t)cat})
+                || !sole_use(hi, {(size_t)neg}) || !sole_use(lo, {(size_t)cat})) continue;
+            MetalCluster c;
+            c.rule = 14;
+            c.a0 = (size_t)xi; c.a1 = (size_t)ci; c.a2 = (size_t)si;
+            c.u0 = (uint32_t)H; c.u1 = (uint32_t)D;
+            c.b4 = i;
+            std::vector<size_t> cover{(size_t)mulCos, (size_t)mulSin, (size_t)cat,
+                                      (size_t)neg, (size_t)hi, (size_t)lo};
+            collect_chain((size_t)idxof(nd0.input_ids[0]), mulCos, cover);
+            collect_chain((size_t)idxof(nd0.input_ids[1]), mulSin, cover);
+            GraphNode& xn = *nodes[(size_t)xi];
+            if (D <= 1024 && xn.op_type == OpType::RMS_NORM && xn.input_ids.size() >= 2
+                && plan->action[(size_t)xi] == -1 && !pinned[(size_t)xi] && !retyped((size_t)xi)
+                && sole_use(xi, {(size_t)mulCos, (size_t)hi, (size_t)lo})) {
+                long rsrc = up_in((size_t)xi, 0);
+                long rw = up_in((size_t)xi, 1);
+                if (rw >= 0) rw = deep_f16_source(rw);
+                if (rsrc >= 0 && rw >= 0
+                    && nodes[(size_t)rsrc]->output_buffer.precision == Precision::FP16
+                    && nodes[(size_t)rsrc]->output_buffer.total_size == H * D
+                    && nodes[(size_t)rw]->output_buffer.precision == Precision::FP16
+                    && nodes[(size_t)rw]->output_buffer.total_size == D) {
+                    c.rule = 17;
+                    c.a0 = (size_t)rsrc; c.a3 = (size_t)rw;
+                    c.f0 = xn.params.epsilon;
+                    cover.push_back((size_t)xi);
+                }
+            }
+            add_cluster(c, i, cover);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (plan->action[i] != -1) continue;
+            GraphNode& nd0 = *nodes[i];
+            if (nd0.op_type != OpType::SCALAR_MULTIPLY || nd0.input_ids.empty()) continue;
+            if (nd0.output_buffer.precision != Precision::FP16 || retyped(i)) continue;
+            const auto& osh = nd0.output_buffer.shape;
+            if (osh.empty()) continue;
+            size_t D = osh.back();
+            size_t rows = nd0.output_buffer.total_size / D;
+            if (D < 32 || rows == 0 || rows * D != nd0.output_buffer.total_size) continue;
+            long rn = up_in(i, 0);
+            if (rn < 0 || nodes[(size_t)rn]->op_type != OpType::RMS_NORM
+                || nodes[(size_t)rn]->input_ids.size() < 2
+                || plan->action[(size_t)rn] != -1 || pinned[(size_t)rn] || retyped((size_t)rn)
+                || nodes[(size_t)rn]->output_buffer.precision != Precision::FP16
+                || nodes[(size_t)rn]->output_buffer.total_size != rows * D) continue;
+            if (!sole_use(rn, {i})) continue;
+            long src = up_in((size_t)rn, 0);
+            long w = up_in((size_t)rn, 1);
+            if (w >= 0) w = deep_f16_source(w);
+            if (src < 0 || w < 0
+                || nodes[(size_t)src]->output_buffer.precision != Precision::FP16
+                || nodes[(size_t)w]->output_buffer.precision != Precision::FP16
+                || nodes[(size_t)w]->output_buffer.total_size != D) continue;
+            MetalCluster c;
+            c.rule = 15;
+            c.a0 = (size_t)src; c.a1 = (size_t)w;
+            c.u0 = (uint32_t)rows; c.u1 = (uint32_t)D;
+            c.f0 = nodes[(size_t)rn]->params.epsilon;
+            c.f1 = nd0.params.scalar;
+            c.b4 = i;
+            std::vector<size_t> cover{(size_t)rn};
+            collect_chain((size_t)idxof(nd0.input_ids[0]), rn, cover);
+            add_cluster(c, i, cover);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (plan->action[i] != -1) continue;
+            GraphNode& nd0 = *nodes[i];
+            if (nd0.op_type != OpType::TOPK || nd0.input_ids.empty()) continue;
+            if (nd0.output_buffer.precision != Precision::FP32) continue;
+            size_t k = nd0.params.top_k;
+            if (k == 0 || k > 16) continue;
+            long sm = up_in(i, 0);
+            if (sm < 0 || nodes[(size_t)sm]->op_type != OpType::SCALAR_MULTIPLY
+                || nodes[(size_t)sm]->input_ids.empty()
+                || plan->action[(size_t)sm] != -1 || pinned[(size_t)sm] || retyped((size_t)sm)
+                || nodes[(size_t)sm]->output_buffer.precision != Precision::FP16) continue;
+            const auto& ssh = nodes[(size_t)sm]->output_buffer.shape;
+            if (ssh.size() != 2) continue;
+            size_t rows = ssh[0], E = ssh[1];
+            if (rows == 0 || E == 0 || E > 4096) continue;
+            if (nd0.output_buffer.total_size != 2 * rows * k) continue;
+            long sfm = -1;
+            for (size_t cc : cons[(size_t)sm]) {
+                if (cc == i) continue;
+                const GraphNode& cn = *nodes[cc];
+                if (cn.op_type == OpType::SOFTMAX && plan->action[cc] == -1
+                    && !pinned[cc] && !retyped(cc)
+                    && cn.output_buffer.precision == Precision::FP16
+                    && cn.output_buffer.total_size == rows * E) {
+                    if (sfm < 0) sfm = (long)cc;
+                    else { sfm = -1; break; }
+                } else if (!is_alias_op(cn.op_type)) { sfm = -1; break; }
+            }
+            if (sfm < 0 || !sole_use(sm, {i, (size_t)sfm})) continue;
+            if ((size_t)sfm > i) continue;
+            bool ordered = true;
+            for (size_t cc : cons[(size_t)sfm])
+                if (cc < i) { ordered = false; break; }
+            if (!ordered) continue;
+            long lg = up_in((size_t)sm, 0);
+            if (lg < 0 || nodes[(size_t)lg]->output_buffer.precision != Precision::FP16
+                || nodes[(size_t)lg]->output_buffer.total_size != rows * E) continue;
+            MetalCluster c;
+            c.rule = 16;
+            c.a0 = (size_t)lg; c.a1 = (size_t)sfm;
+            c.u0 = (uint32_t)rows; c.u1 = (uint32_t)E;
+            c.b0 = k;
+            c.f0 = nodes[(size_t)sm]->params.scalar;
+            c.b4 = i;
+            std::vector<size_t> cover{(size_t)sm};
+            collect_chain((size_t)idxof(nd0.input_ids[0]), sm, cover);
+            if (add_cluster(c, i, cover)) plan->action[(size_t)sfm] = -3;
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (plan->action[i] != -1) continue;
             int kind, code; float p0, p1;
             if (!ew_kind(*nodes[i], &kind, &code, &p0, &p1)) continue;
             if (!prec_ok(nodes[i]->output_buffer.precision) || retyped(i)) continue;
@@ -1553,6 +1740,41 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             void* y = anchor.output_buffer.get_data();
             if (!x || !w || !b || !y) return false;
             return cactus_metal_encode_gemv_bias(y, x, w, b, c.u0, c.u1, (int)c.b0);
+        }
+        case 14: {
+            GraphNode& anchor = *nodes[c.b4];
+            const void* x = nodes[c.a0]->output_buffer.get_data();
+            const void* cs = nodes[c.a1]->output_buffer.get_data();
+            const void* sn = nodes[c.a2]->output_buffer.get_data();
+            void* y = anchor.output_buffer.get_data();
+            if (!x || !cs || !sn || !y) return false;
+            return cactus_metal_encode_rope_pair(y, x, cs, sn, c.u0, c.u1);
+        }
+        case 15: {
+            GraphNode& anchor = *nodes[c.b4];
+            const void* x = nodes[c.a0]->output_buffer.get_data();
+            const void* w = nodes[c.a1]->output_buffer.get_data();
+            void* y = anchor.output_buffer.get_data();
+            if (!x || !w || !y) return false;
+            return cactus_metal_encode_rms_norm_scale(y, x, w, c.u0, c.u1, c.f0, c.f1);
+        }
+        case 16: {
+            GraphNode& anchor = *nodes[c.b4];
+            const void* lg = nodes[c.a0]->output_buffer.get_data();
+            void* probs = nodes[c.a1]->output_buffer.get_data();
+            void* tk = anchor.output_buffer.get_data();
+            if (!lg || !probs || !tk) return false;
+            return cactus_metal_encode_softmax_topk(probs, tk, lg, c.u0, c.u1, c.b0, c.f0);
+        }
+        case 17: {
+            GraphNode& anchor = *nodes[c.b4];
+            const void* x = nodes[c.a0]->output_buffer.get_data();
+            const void* w = nodes[c.a3]->output_buffer.get_data();
+            const void* cs = nodes[c.a1]->output_buffer.get_data();
+            const void* sn = nodes[c.a2]->output_buffer.get_data();
+            void* y = anchor.output_buffer.get_data();
+            if (!x || !w || !cs || !sn || !y) return false;
+            return cactus_metal_encode_rope_pair_rms(y, x, w, cs, sn, c.u0, c.u1, c.f0);
         }
         default: return false;
     }

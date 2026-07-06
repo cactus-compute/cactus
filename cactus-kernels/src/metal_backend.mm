@@ -24,6 +24,8 @@
 #include <atomic>
 
 #include "cactus_kernels_msl.h"
+#include "threading.h"
+#include <sys/mman.h>
 
 namespace {
 
@@ -61,6 +63,9 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoAttnFlash=nil, psoRmsSimd=nil, psoScatterRows=nil;
     id<MTLComputePipelineState> psoTranspose2d=nil, psoBcastRows=nil, psoRmsAddSimd=nil;
     id<MTLComputePipelineState> psoConvCacheAppend=nil, psoRelPosBias=nil, psoGemvBias=nil;
+    id<MTLComputePipelineState> psoTopkRows=nil, psoMoeT=nil, psoMoeUp=nil;
+    id<MTLComputePipelineState> psoMoeT2=nil, psoMoeDownAcc=nil, psoRopePair=nil;
+    id<MTLComputePipelineState> psoRmsScale=nil, psoSoftmaxTopk=nil, psoRopePairRms=nil;
     id<MTLBuffer> dummy=nil;
     bool ok = false;
 
@@ -121,6 +126,11 @@ struct MetalCtx {
         psoBcastRows=pso("bcast_binary_rows_f16"); psoRmsAddSimd=pso("rms_norm_add_simd_f16");
         psoConvCacheAppend=pso("conv_cache_append_f16"); psoRelPosBias=pso("rel_pos_bias_f16");
         psoGemvBias=pso("gemv_bias_f16");
+        psoTopkRows=pso("topk_rows_f16"); psoMoeT=pso("cq4_moe_transform");
+        psoMoeUp=pso("cq4_moe_gemv_up"); psoMoeT2=pso("cq4_moe_transform2");
+        psoMoeDownAcc=pso("cq4_moe_gemv_down_acc"); psoRopePair=pso("rope_pair_f16");
+        psoRmsScale=pso("rms_norm_scale_f16"); psoSoftmaxTopk=pso("softmax_topk_f16");
+        psoRopePairRms=pso("rope_pair_rms_f16");
         dummy=[dev newBufferWithLength:16 options:MTLResourceStorageModeShared];
         ok = psoT&&psoG&&psoTm&&psoGm&&psoRotW&&psoEmbO&&psoEmbH&&psoEmbOm&&psoEmbHm&&psoCopy&&psoBinary&&psoScalar&&psoUnary&&psoRms&&psoSwiglu&&psoRmsAdd&&psoCF16F32&&psoCF32F16&&psoCI8F16&&psoCF16I8
              &&psoAttn&&psoAttnC&&psoAttnPre&&psoAttnPreMma2&&psoKvAppendM&&psoKvAppendRingM&&psoSlideS&&psoSlideR&&psoSlideRM&&psoStrided&&psoBcast&&psoScatter&&psoKvAppend&&psoArgmax&&psoGather;
@@ -163,6 +173,14 @@ uint64_t g_wf16_clock = 0;
 id<MTLBuffer> g_attn_scores = nil;
 std::unordered_map<const void*, ResW> g_resident_emb;
 std::mutex g_resident_mu;
+
+struct MoESet4 {
+    id<MTLBuffer> pk=nil, nm=nil, rc=nil, ls=nil, rs=nil, pm=nil, cb=nil;
+    uint32_t K=0, N=0, ng=0;
+};
+struct MoECat4 { MoESet4 w1, w3, w2; bool ok=false; };
+std::unordered_map<uint64_t, MoECat4> g_moe_cat;
+size_t g_moe_bytes = 0;
 
 void deinterleave_4row(const CactusQuantMatrix* W,
                        uint8_t* packed_nat, __fp16* norms_nat) {
@@ -284,7 +302,10 @@ size_t wf16_budget() {
         if (const char* e = std::getenv("CACTUS_WF16_CAP_MB")) return (size_t)atoll(e) << 20;
         return (size_t)([ctx().dev recommendedMaxWorkingSetSize] / 4);
     }();
-    return cap;
+    const size_t floor_cap = 64u << 20;
+    if (g_moe_bytes >= cap) return floor_cap;
+    size_t left = cap - g_moe_bytes;
+    return left < floor_cap ? floor_cap : left;
 }
 
 void wf16_evict_for(size_t need, const ResW* keep) {
@@ -457,6 +478,8 @@ void cactus_metal_invalidate_host_wraps() {
     g_dequant_cache.clear();
     g_mps_mats.clear();
     g_wf16_bytes = 0;
+    g_moe_cat.clear();
+    g_moe_bytes = 0;
 }
 
 void cactus_metal_session_flush() {
@@ -940,6 +963,270 @@ bool cactus_metal_prewarm_quant(const CactusQuantMatrix* W) {
     if (!ctx().ok) return false;
     if (!quant_fast_eligible(W) && !quant_lowbit_eligible(W)) return false;
     resident(W);
+    return true;
+}
+
+namespace {
+void moe_release_source(const CactusQuantMatrix* W) {
+    const uint32_t pgb = (W->group_size*W->bits + 7u)/8u;
+    struct Span { const void* p; size_t len; };
+    Span spans[7] = {
+        { W->packed_indices, (size_t)W->N*W->num_groups*pgb },
+        { W->norms, (size_t)W->N*W->num_groups*2 },
+        { W->input_scale_recip, (size_t)W->K*2 },
+        { W->left_signs, (size_t)W->group_size },
+        { W->right_signs, (size_t)W->group_size },
+        { W->permutation, (size_t)W->group_size*4 },
+        { W->codebook, (size_t)(1u<<W->bits)*2 },
+    };
+    uintptr_t lo = UINTPTR_MAX, hi = 0;
+    for (const auto& s : spans) {
+        if (!s.p) continue;
+        uintptr_t a = (uintptr_t)s.p;
+        if (a < lo) lo = a;
+        if (a + s.len > hi) hi = a + s.len;
+    }
+    if (hi <= lo) return;
+    const uintptr_t pg = 16384;
+    uintptr_t start = (lo + pg - 1) & ~(pg - 1), end = hi & ~(pg - 1);
+    if (end > start) madvise((void*)start, end - start, MADV_DONTNEED);
+}
+
+bool moe_build_set4(MoESet4& S, const CactusQuantMatrix* Ws, uint32_t count) {
+    const uint32_t K=Ws[0].K, N=Ws[0].N, gs=Ws[0].group_size, ng=Ws[0].num_groups;
+    if (gs != 128u || Ws[0].bits != 4u || (N % 4u) != 0u || (K % 128u) != 0u) return false;
+    for (uint32_t e = 0; e < count; ++e) {
+        const CactusQuantMatrix* W = &Ws[e];
+        if (!quant_fast_eligible(W) || W->K != K || W->N != N || W->num_groups != ng) return false;
+    }
+    const uint32_t pgb = 64u;
+    const size_t pk_stride = (size_t)N*ng*pgb, nm_stride = (size_t)N*ng;
+    S.K=K; S.N=N; S.ng=ng;
+    S.pk=[ctx().dev newBufferWithLength:pk_stride*count options:MTLResourceStorageModeShared];
+    S.nm=[ctx().dev newBufferWithLength:nm_stride*count*2 options:MTLResourceStorageModeShared];
+    S.rc=[ctx().dev newBufferWithLength:(size_t)K*count*2 options:MTLResourceStorageModeShared];
+    S.ls=[ctx().dev newBufferWithLength:(size_t)128*count options:MTLResourceStorageModeShared];
+    S.rs=[ctx().dev newBufferWithLength:(size_t)128*count options:MTLResourceStorageModeShared];
+    S.pm=[ctx().dev newBufferWithLength:(size_t)128*count*4 options:MTLResourceStorageModeShared];
+    S.cb=[ctx().dev newBufferWithLength:(size_t)16*count*2 options:MTLResourceStorageModeShared];
+    if (!S.pk||!S.nm||!S.rc||!S.ls||!S.rs||!S.pm||!S.cb) return false;
+    CactusThreading::parallel_for(count, CactusThreading::ParallelConfig(1, 1),
+        [&](size_t start, size_t end) {
+            for (size_t e = start; e < end; ++e) {
+                const CactusQuantMatrix* W = &Ws[e];
+                deinterleave_4row(W, (uint8_t*)S.pk.contents + pk_stride*e,
+                                  (__fp16*)S.nm.contents + nm_stride*e);
+                std::memcpy((__fp16*)S.rc.contents + (size_t)K*e, W->input_scale_recip, (size_t)K*2);
+                std::memcpy((char*)S.ls.contents + 128*e, W->left_signs, 128);
+                std::memcpy((char*)S.rs.contents + 128*e, W->right_signs, 128);
+                std::memcpy((uint32_t*)S.pm.contents + 128*e, W->permutation, 128*4);
+                std::memcpy((__fp16*)S.cb.contents + 16*e, W->codebook, 16*2);
+                moe_release_source(W);
+            }
+        });
+    return true;
+}
+}
+
+bool cactus_metal_moe_cq4_ready(const CactusQuantMatrix* w1_0) {
+    std::lock_guard<std::mutex> lk(g_resident_mu);
+    auto it = g_moe_cat.find(resident_key(w1_0));
+    return it != g_moe_cat.end() && it->second.ok;
+}
+
+bool cactus_metal_moe_cq4_build(const CactusQuantMatrix* w1s, const CactusQuantMatrix* w3s,
+                                const CactusQuantMatrix* w2s, uint32_t num_experts) {
+    if (!ctx().ok || !ctx().psoMoeT || !ctx().psoMoeT2 || !ctx().psoMoeUp || !ctx().psoMoeDownAcc)
+        return false;
+    const uint64_t key = resident_key(&w1s[0]);
+    {
+        std::lock_guard<std::mutex> lk(g_resident_mu);
+        auto it = g_moe_cat.find(key);
+        if (it != g_moe_cat.end()) return it->second.ok;
+    }
+    MoECat4 cat;
+    cat.ok = moe_build_set4(cat.w1, w1s, num_experts)
+          && moe_build_set4(cat.w3, w3s, num_experts)
+          && moe_build_set4(cat.w2, w2s, num_experts)
+          && cat.w1.K == cat.w3.K && cat.w1.N == cat.w3.N && cat.w2.K >= cat.w1.N;
+    if (!cat.ok) cat = MoECat4{};
+    std::lock_guard<std::mutex> lk(g_resident_mu);
+    auto ins = g_moe_cat.emplace(key, cat);
+    if (ins.second && cat.ok) {
+        for (const MoESet4* st : {&cat.w1, &cat.w3, &cat.w2})
+            for (id<MTLBuffer> b : {st->pk, st->nm, st->rc, st->ls, st->rs, st->pm, st->cb})
+                if (b) g_moe_bytes += (size_t)b.length;
+    }
+    return ins.first->second.ok;
+}
+
+bool cactus_metal_encode_moe_gated_cq4(void* out, const void* hidden, const void* probs,
+                                       const void* topk, const CactusQuantMatrix* w1_0,
+                                       uint32_t num_experts, uint32_t top_k, uint32_t tokens,
+                                       uint32_t act, uint32_t normalize, float eps, float scaling) {
+    if (!ctx().ok || !ctx().psoMoeT || top_k == 0 || top_k > 16 || tokens == 0) return false;
+    g_resident_mu.lock();
+    auto it = g_moe_cat.find(resident_key(w1_0));
+    bool hit = it != g_moe_cat.end() && it->second.ok;
+    g_resident_mu.unlock();
+    if (!hit) return false;
+    MoECat4& C = it->second;
+    const uint32_t K1=C.w1.K, N1=C.w1.N, K2=C.w2.K, N2=C.w2.N;
+    const size_t slots = (size_t)tokens*top_k;
+    ensureEncoder();
+
+    id<MTLBuffer> code1 = recycled(slots*K1*2);
+    id<MTLBuffer> code3 = recycled(slots*K1*2);
+    id<MTLBuffer> gu    = recycled(slots*N1*2);
+    id<MTLBuffer> code2 = recycled(slots*K2*2);
+
+    {
+        [g_enc setComputePipelineState:ctx().psoMoeT2];
+        setBufAt(hidden, (size_t)tokens*K1*2, 0);
+        setBufAt(topk, slots*sizeof(float), 1);
+        [g_enc setBuffer:C.w1.rc offset:0 atIndex:2];
+        [g_enc setBuffer:C.w1.ls offset:0 atIndex:3];
+        [g_enc setBuffer:C.w1.rs offset:0 atIndex:4];
+        [g_enc setBuffer:C.w1.pm offset:0 atIndex:5];
+        [g_enc setBuffer:C.w3.rc offset:0 atIndex:6];
+        [g_enc setBuffer:C.w3.ls offset:0 atIndex:7];
+        [g_enc setBuffer:C.w3.rs offset:0 atIndex:8];
+        [g_enc setBuffer:C.w3.pm offset:0 atIndex:9];
+        [g_enc setBuffer:code1 offset:0 atIndex:10];
+        [g_enc setBuffer:code3 offset:0 atIndex:11];
+        uint32_t Kc=K1, tk=top_k;
+        [g_enc setBytes:&Kc length:4 atIndex:12]; [g_enc setBytes:&tk length:4 atIndex:13];
+        [g_enc setThreadgroupMemoryLength:128*sizeof(float) atIndex:0];
+        [g_enc dispatchThreadgroups:MTLSizeMake(K1/128u, 2u*top_k, tokens)
+              threadsPerThreadgroup:MTLSizeMake(32,1,1)];
+    }
+    {
+        [g_enc setComputePipelineState:ctx().psoMoeUp];
+        [g_enc setBuffer:code1 offset:0 atIndex:0]; [g_enc setBuffer:code3 offset:0 atIndex:1];
+        setBufAt(topk, slots*sizeof(float), 2);
+        [g_enc setBuffer:C.w1.pk offset:0 atIndex:3]; [g_enc setBuffer:C.w1.nm offset:0 atIndex:4]; [g_enc setBuffer:C.w1.cb offset:0 atIndex:5];
+        [g_enc setBuffer:C.w3.pk offset:0 atIndex:6]; [g_enc setBuffer:C.w3.nm offset:0 atIndex:7]; [g_enc setBuffer:C.w3.cb offset:0 atIndex:8];
+        [g_enc setBuffer:gu offset:0 atIndex:9];
+        uint32_t Kc=K1, Nc=N1, a=act, tk=top_k;
+        [g_enc setBytes:&Kc length:4 atIndex:10]; [g_enc setBytes:&Nc length:4 atIndex:11];
+        [g_enc setBytes:&a length:4 atIndex:12]; [g_enc setBytes:&tk length:4 atIndex:13];
+        [g_enc dispatchThreadgroups:MTLSizeMake((N1+31u)/32u, top_k, tokens)
+              threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    }
+    {
+        [g_enc setComputePipelineState:ctx().psoMoeT];
+        [g_enc setBuffer:gu offset:0 atIndex:0];
+        setBufAt(topk, slots*sizeof(float), 1);
+        [g_enc setBuffer:C.w2.rc offset:0 atIndex:2];
+        [g_enc setBuffer:C.w2.ls offset:0 atIndex:3];
+        [g_enc setBuffer:C.w2.rs offset:0 atIndex:4];
+        [g_enc setBuffer:C.w2.pm offset:0 atIndex:5];
+        [g_enc setBuffer:code2 offset:0 atIndex:6];
+        uint32_t Kc=K2, kv=N1, xz=top_k*N1, xy=N1, tk=top_k;
+        [g_enc setBytes:&Kc length:4 atIndex:7]; [g_enc setBytes:&kv length:4 atIndex:8];
+        [g_enc setBytes:&xz length:4 atIndex:9]; [g_enc setBytes:&xy length:4 atIndex:10];
+        [g_enc setBytes:&tk length:4 atIndex:11];
+        [g_enc setThreadgroupMemoryLength:128*sizeof(float) atIndex:0];
+        [g_enc dispatchThreadgroups:MTLSizeMake(K2/128u, top_k, tokens)
+              threadsPerThreadgroup:MTLSizeMake(32,1,1)];
+    }
+    {
+        [g_enc setComputePipelineState:ctx().psoMoeDownAcc];
+        [g_enc setBuffer:code2 offset:0 atIndex:0];
+        setBufAt(topk, slots*sizeof(float), 1);
+        setBufAt(probs, (size_t)tokens*num_experts*2, 2);
+        [g_enc setBuffer:C.w2.pk offset:0 atIndex:3]; [g_enc setBuffer:C.w2.nm offset:0 atIndex:4]; [g_enc setBuffer:C.w2.cb offset:0 atIndex:5];
+        setBufAt(out, (size_t)tokens*N2*2, 6);
+        uint32_t Kc=K2, Nc=N2, tk=top_k, nz=normalize, Ec=num_experts;
+        [g_enc setBytes:&Kc length:4 atIndex:7]; [g_enc setBytes:&Nc length:4 atIndex:8];
+        [g_enc setBytes:&tk length:4 atIndex:9]; [g_enc setBytes:&nz length:4 atIndex:10];
+        [g_enc setBytes:&eps length:4 atIndex:11]; [g_enc setBytes:&scaling length:4 atIndex:12];
+        [g_enc setBytes:&Ec length:4 atIndex:13];
+        [g_enc setThreadgroupMemoryLength:top_k*16*sizeof(float) atIndex:0];
+        [g_enc dispatchThreadgroups:MTLSizeMake((N2+15u)/16u, 1, tokens)
+              threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    }
+    return true;
+}
+
+bool cactus_metal_encode_rms_norm_scale(void* out, const void* in, const void* weight,
+                                        size_t rows, size_t dim, float eps, float oscale) {
+    if (!ctx().ok || !ctx().psoRmsScale || rows == 0 || dim == 0) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoRmsScale];
+    setBufAt(in, rows*dim*2, 0); setBufAt(weight, dim*2, 1); setBufAt(out, rows*dim*2, 2);
+    uint32_t d=(uint32_t)dim; float e=eps, sc=oscale;
+    [g_enc setBytes:&d length:4 atIndex:3]; [g_enc setBytes:&e length:4 atIndex:4];
+    [g_enc setBytes:&sc length:4 atIndex:5];
+    [g_enc setThreadgroupMemoryLength:256*sizeof(float) atIndex:0];
+    [g_enc dispatchThreadgroups:MTLSizeMake(rows,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    return true;
+}
+
+bool cactus_metal_encode_softmax_topk(void* probs, void* topk, const void* in,
+                                      size_t rows, size_t cols, size_t k, float scale) {
+    if (!ctx().ok || !ctx().psoSoftmaxTopk || k == 0 || k > 16 || rows == 0 || cols == 0) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoSoftmaxTopk];
+    setBufAt(in, rows*cols*2, 0);
+    setBufAt(probs, rows*cols*2, 1);
+    setBufAt(topk, rows*k*2*sizeof(float), 2);
+    uint32_t E=(uint32_t)cols, kc=(uint32_t)k, B=(uint32_t)rows; float sc=scale;
+    [g_enc setBytes:&E length:4 atIndex:3];
+    [g_enc setBytes:&kc length:4 atIndex:4];
+    [g_enc setBytes:&B length:4 atIndex:5];
+    [g_enc setBytes:&sc length:4 atIndex:6];
+    [g_enc dispatchThreadgroups:MTLSizeMake(rows,1,1) threadsPerThreadgroup:MTLSizeMake(32,1,1)];
+    return true;
+}
+
+bool cactus_metal_encode_rope_pair(void* out, const void* x, const void* c, const void* s,
+                                   uint32_t H, uint32_t D) {
+    if (!ctx().ok || !ctx().psoRopePair || H == 0 || D == 0 || (D % 2) != 0) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoRopePair];
+    setBufAt(x, (size_t)H*D*2, 0);
+    setBufAt(c, (size_t)D*2, 1);
+    setBufAt(s, (size_t)D*2, 2);
+    setBufAt(out, (size_t)H*D*2, 3);
+    [g_enc setBytes:&H length:4 atIndex:4];
+    [g_enc setBytes:&D length:4 atIndex:5];
+    [g_enc dispatchThreads:MTLSizeMake(D, H, 1) threadsPerThreadgroup:MTLSizeMake(64, 4, 1)];
+    return true;
+}
+
+bool cactus_metal_encode_rope_pair_rms(void* out, const void* x, const void* w,
+                                       const void* c, const void* s,
+                                       uint32_t H, uint32_t D, float eps) {
+    if (!ctx().ok || !ctx().psoRopePairRms || H == 0 || D == 0 || (D % 2) != 0 || D > 1024) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoRopePairRms];
+    setBufAt(x, (size_t)H*D*2, 0);
+    setBufAt(w, (size_t)D*2, 1);
+    setBufAt(c, (size_t)D*2, 2);
+    setBufAt(s, (size_t)D*2, 3);
+    setBufAt(out, (size_t)H*D*2, 4);
+    float e = eps;
+    [g_enc setBytes:&D length:4 atIndex:5];
+    [g_enc setBytes:&e length:4 atIndex:6];
+    uint32_t T = D < 256 ? D : 256;
+    [g_enc setThreadgroupMemoryLength:T*sizeof(float) atIndex:0];
+    [g_enc setThreadgroupMemoryLength:(size_t)D*2 atIndex:1];
+    [g_enc dispatchThreadgroups:MTLSizeMake(H,1,1) threadsPerThreadgroup:MTLSizeMake(T,1,1)];
+    return true;
+}
+
+bool cactus_metal_encode_topk_rows(void* out, const void* in, size_t rows, size_t cols, size_t k) {
+    if (!ctx().ok || !ctx().psoTopkRows || k == 0 || k > 16 || rows == 0 || cols == 0) return false;
+    ensureEncoder();
+    [g_enc setComputePipelineState:ctx().psoTopkRows];
+    setBufAt(in, rows*cols*2, 0);
+    setBufAt(out, rows*k*2*sizeof(float), 1);
+    uint32_t F=(uint32_t)cols, kc=(uint32_t)k, B=(uint32_t)rows;
+    [g_enc setBytes:&F length:4 atIndex:2];
+    [g_enc setBytes:&kc length:4 atIndex:3];
+    [g_enc setBytes:&B length:4 atIndex:4];
+    [g_enc dispatchThreadgroups:MTLSizeMake(rows,1,1) threadsPerThreadgroup:MTLSizeMake(32,1,1)];
     return true;
 }
 

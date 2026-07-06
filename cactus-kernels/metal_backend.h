@@ -66,6 +66,23 @@ bool cactus_metal_encode_gemv_cat(void* const* outs, const void* const* codes,
 bool cactus_metal_encode_swiglu_transform(void* code, const void* gate, const void* up,
                                           const CactusQuantMatrix* W, float scale);
 bool cactus_metal_prewarm_quant(const CactusQuantMatrix* W);
+bool cactus_metal_encode_rope_pair(void* out, const void* x, const void* c, const void* s,
+                                   uint32_t H, uint32_t D);
+bool cactus_metal_encode_rope_pair_rms(void* out, const void* x, const void* w,
+                                       const void* c, const void* s,
+                                       uint32_t H, uint32_t D, float eps);
+bool cactus_metal_encode_rms_norm_scale(void* out, const void* in, const void* weight,
+                                        size_t rows, size_t dim, float eps, float oscale);
+bool cactus_metal_encode_softmax_topk(void* probs, void* topk, const void* in,
+                                      size_t rows, size_t cols, size_t k, float scale);
+bool cactus_metal_encode_topk_rows(void* out, const void* in, size_t rows, size_t cols, size_t k);
+bool cactus_metal_moe_cq4_ready(const CactusQuantMatrix* w1_0);
+bool cactus_metal_moe_cq4_build(const CactusQuantMatrix* w1s, const CactusQuantMatrix* w3s,
+                                const CactusQuantMatrix* w2s, uint32_t num_experts);
+bool cactus_metal_encode_moe_gated_cq4(void* out, const void* hidden, const void* probs,
+                                       const void* topk, const CactusQuantMatrix* w1_0,
+                                       uint32_t num_experts, uint32_t top_k, uint32_t tokens,
+                                       uint32_t act, uint32_t normalize, float eps, float scaling);
 bool cactus_metal_encode_quant_matmul_ortho(void* out, const void* act, void* code,
                                             const CactusQuantMatrix* W);
 bool cactus_metal_encode_embedding_ortho(void* out, uint32_t row, const CactusQuantMatrix* W, float scale);

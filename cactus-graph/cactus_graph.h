@@ -791,6 +791,8 @@ private:
     void build_metal_retype_plan();
     void invalidate_metal_state();
     std::unordered_map<uint64_t, struct MetalFusePlan*> metal_plans_;
+    std::unordered_map<uint64_t, std::unordered_set<size_t>> metal_plan_banned_;
+    uint64_t metal_plan_sig_ = 0;
     std::vector<uint8_t> metal_retype_plan_;
     bool metal_retype_built_ = false;
     bool metal_retype_disabled_ = false;
