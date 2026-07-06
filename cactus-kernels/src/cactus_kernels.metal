@@ -1932,13 +1932,14 @@ kernel void cumsum_f32(device const float* in [[buffer(0)]], device float* y [[b
 kernel void concat2_f16(device const half* a [[buffer(0)]], device const half* b [[buffer(1)]],
                         device half* y [[buffer(2)]], constant uint& a_axis [[buffer(3)]],
                         constant uint& b_axis [[buffer(4)]], constant uint& inner [[buffer(5)]],
-                        constant uint& n [[buffer(6)]], uint i [[thread_position_in_grid]]) {
+                        constant uint& n [[buffer(6)]], constant uint& a_outer [[buffer(7)]],
+                        constant uint& b_outer [[buffer(8)]], uint i [[thread_position_in_grid]]) {
     if (i >= n) return;
     uint in_i = i % inner, rest = i / inner;
     uint ab = a_axis + b_axis;
     uint ax = rest % ab, outer = rest / ab;
-    y[i] = (ax < a_axis) ? a[((size_t)outer*a_axis + ax)*inner + in_i]
-                         : b[((size_t)outer*b_axis + (ax - a_axis))*inner + in_i];
+    y[i] = (ax < a_axis) ? a[((size_t)(outer % a_outer)*a_axis + ax)*inner + in_i]
+                         : b[((size_t)(outer % b_outer)*b_axis + (ax - a_axis))*inner + in_i];
 }
 
 kernel void gather_f32idx_f16(device const half* table [[buffer(0)]], device const float* rows [[buffer(1)]],

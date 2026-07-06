@@ -139,7 +139,8 @@ bool cactus_metal_encode_reduce_axis(int op, void* out, const void* in, uint32_t
 bool cactus_metal_encode_cumsum(void* out, const void* in, uint32_t outer,
                                 uint32_t axis_size, uint32_t inner, int f32);
 bool cactus_metal_encode_concat2(void* out, const void* a, const void* b,
-                                 uint32_t outer, uint32_t a_axis, uint32_t b_axis, uint32_t inner);
+                                 uint32_t a_outer, uint32_t b_outer,
+                                 uint32_t a_axis, uint32_t b_axis, uint32_t inner);
 bool cactus_metal_encode_gather_f32idx(void* out, const void* table, const void* idx,
                                        uint32_t rows, uint32_t D, size_t table_bytes);
 bool cactus_metal_encode_rope_full(void* out, const void* in, uint32_t tokens, uint32_t S,

@@ -592,9 +592,12 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
                 const auto& cin = get_input(node, ii, nodes, map);
                 uint32_t ishape[8], ostride[8];
                 for (uint32_t d=0; d<nd; ++d){ ishape[d]=(uint32_t)cin.shape[d]; ostride[d]=(uint32_t)ostr[d]; }
-                if (!cactus_metal_encode_strided_scatter(out.get_data(), cin.get_data(), ishape, ostride, nd,
-                        (uint32_t)cin.total_size, (uint32_t)(axis_off * ostr[axis]), cin.byte_size, out.byte_size))
-                    return false;
+                size_t bcast = (axis > 0 && cin.shape[0] == 1 && out.shape[0] > 1) ? out.shape[0] : 1;
+                for (size_t r = 0; r < bcast; ++r) {
+                    if (!cactus_metal_encode_strided_scatter(out.get_data(), cin.get_data(), ishape, ostride, nd,
+                            (uint32_t)cin.total_size, (uint32_t)(axis_off * ostr[axis] + r * ostr[0]), cin.byte_size, out.byte_size))
+                        return false;
+                }
                 axis_off += cin.shape[axis];
             }
             return true;
@@ -671,11 +674,12 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             int axis = node.params.axis;
             if (axis < 0) axis += (int)a.shape.size();
             if (axis < 0 || (size_t)axis >= a.shape.size() || a.shape.size() != b.shape.size()) return false;
-            size_t outer = 1, inner = 1;
-            for (size_t d = 0; d < (size_t)axis; ++d) outer *= a.shape[d];
+            size_t a_outer = 1, b_outer = 1, inner = 1;
+            for (size_t d = 0; d < (size_t)axis; ++d) { a_outer *= a.shape[d]; b_outer *= b.shape[d]; }
             for (size_t d = (size_t)axis + 1; d < a.shape.size(); ++d) inner *= a.shape[d];
             return cactus_metal_encode_concat2(out.get_data(), a.get_data(), b.get_data(),
-                (uint32_t)outer, (uint32_t)a.shape[(size_t)axis], (uint32_t)b.shape[(size_t)axis], (uint32_t)inner);
+                (uint32_t)a_outer, (uint32_t)b_outer,
+                (uint32_t)a.shape[(size_t)axis], (uint32_t)b.shape[(size_t)axis], (uint32_t)inner);
         }
         case OpType::GATHER: {
             const auto& t = get_input(node, 0, nodes, map);
@@ -1642,7 +1646,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                 flip(node->output_buffer);
                 for (size_t id : node->input_ids) {
                     auto it = node_index_map_.find(id);
-                    if (it != node_index_map_.end()) flip(nodes_[it->second]->output_buffer);
+                    if (it != node_index_map_.end() && rplan[it->second] != 0) flip(nodes_[it->second]->output_buffer);
                 }
             }
             bool force_cpu = (ot == OpType::PRECISION_CAST

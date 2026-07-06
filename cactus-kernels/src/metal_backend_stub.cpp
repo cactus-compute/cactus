@@ -75,7 +75,7 @@ bool cactus_metal_encode_attention_f16(void*, const void*, const void*, const vo
     float, uint32_t, uint32_t, uint32_t, float, uint32_t) { return false; }
 bool cactus_metal_encode_reduce_axis(int, void*, const void*, uint32_t, uint32_t, uint32_t, int) { return false; }
 bool cactus_metal_encode_cumsum(void*, const void*, uint32_t, uint32_t, uint32_t, int) { return false; }
-bool cactus_metal_encode_concat2(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
+bool cactus_metal_encode_concat2(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
 bool cactus_metal_encode_gather_f32idx(void*, const void*, const void*, uint32_t, uint32_t, size_t) { return false; }
 bool cactus_metal_encode_rope_full(void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, int) { return false; }
 bool cactus_metal_encode_maxpool1d(void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }

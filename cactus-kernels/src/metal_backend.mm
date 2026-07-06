@@ -2000,15 +2000,18 @@ bool cactus_metal_encode_cumsum(void* out, const void* in, uint32_t outer,
     return true;
 }
 bool cactus_metal_encode_concat2(void* out, const void* a, const void* b,
-                                 uint32_t outer, uint32_t a_axis, uint32_t b_axis, uint32_t inner) {
-    if (!ctx().ok || !ctx().psoConcat2) return false;
+                                 uint32_t a_outer, uint32_t b_outer,
+                                 uint32_t a_axis, uint32_t b_axis, uint32_t inner) {
+    if (!ctx().ok || !ctx().psoConcat2 || a_outer == 0 || b_outer == 0) return false;
     ensureEncoder();
+    uint32_t outer = a_outer > b_outer ? a_outer : b_outer;
     uint32_t n = outer * (a_axis + b_axis) * inner;
     [g_enc setComputePipelineState:ctx().psoConcat2];
-    setBufAt(a, (size_t)outer*a_axis*inner*2, 0); setBufAt(b, (size_t)outer*b_axis*inner*2, 1);
+    setBufAt(a, (size_t)a_outer*a_axis*inner*2, 0); setBufAt(b, (size_t)b_outer*b_axis*inner*2, 1);
     setBufAt(out, (size_t)n*2, 2);
     [g_enc setBytes:&a_axis length:4 atIndex:3]; [g_enc setBytes:&b_axis length:4 atIndex:4];
     [g_enc setBytes:&inner length:4 atIndex:5]; [g_enc setBytes:&n length:4 atIndex:6];
+    [g_enc setBytes:&a_outer length:4 atIndex:7]; [g_enc setBytes:&b_outer length:4 atIndex:8];
     [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
     return true;
 }
