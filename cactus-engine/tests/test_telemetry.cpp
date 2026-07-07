@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <dirent.h>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <sys/stat.h>
@@ -15,9 +16,11 @@
 #include <random>
 
 std::string make_temp_dir(const char* prefix) {
-    char pattern[256] = {0};
-    std::snprintf(pattern, sizeof(pattern), "/tmp/%s_XXXXXX", prefix);
-    return std::string(mkdtemp(pattern));
+    const std::string base = std::filesystem::temp_directory_path().string();
+    char pattern[512] = {0};
+    std::snprintf(pattern, sizeof(pattern), "%s/%s_XXXXXX", base.c_str(), prefix);
+    const char* dir = mkdtemp(pattern);
+    return dir ? std::string(dir) : std::string();
 }
 
 int count_events(const std::string& file_path) {

@@ -64,7 +64,7 @@ def generate_app_delegate(output_path, test_files)
 
 #if !TARGET_OS_SIMULATOR
     freopen("cactus_test.log", "w", stdout);
-    freopen("cactus_test.log", "a", stderr);
+    dup2(fileno(stdout), fileno(stderr));
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
 #endif
@@ -206,7 +206,7 @@ end
 
 target.build_configurations.each do |config|
   config.build_settings['HEADER_SEARCH_PATHS'] ||= ['$(inherited)']
-  [tests_root, cactus_engine_dir, cactus_graph_dir, cactus_kernels_dir, File.join(cactus_kernels_dir, 'src')].each do |path|
+  [tests_root, cactus_engine_dir, File.join(cactus_engine_dir, 'libs'), cactus_graph_dir, cactus_kernels_dir, File.join(cactus_kernels_dir, 'src')].each do |path|
     config.build_settings['HEADER_SEARCH_PATHS'] << path unless config.build_settings['HEADER_SEARCH_PATHS'].include?(path)
   end
   if curl_root && !curl_root.empty?
@@ -218,6 +218,7 @@ target.build_configurations.each do |config|
 
   config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++20'
   config.build_settings['CLANG_CXX_LIBRARY'] = 'libc++'
+  config.build_settings['GCC_ENABLE_CPP_RTTI'] = 'NO'
   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
   config.build_settings['CODE_SIGN_STYLE'] = 'Automatic'
   config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = bundle_id if bundle_id
@@ -231,7 +232,7 @@ target.build_configurations.each do |config|
   config.build_settings['OTHER_LDFLAGS'].reject! { |flag| flag.to_s.include?('libcactus') }
   config.build_settings['OTHER_LDFLAGS'] << static_lib_path
 
-  ['-framework CoreML', '-framework Foundation', '-framework Accelerate', '-framework Security', '-framework SystemConfiguration', '-framework CFNetwork'].each do |framework|
+  ['-framework CoreML', '-framework Foundation', '-framework Accelerate', '-framework Security', '-framework SystemConfiguration', '-framework CFNetwork', '-framework Metal', '-framework MetalPerformanceShaders'].each do |framework|
     config.build_settings['OTHER_LDFLAGS'] << framework unless config.build_settings['OTHER_LDFLAGS'].include?(framework)
   end
   if vendored_curl_lib

@@ -813,9 +813,22 @@ bool test_chunked_prefill_padding() {
               << "╚══════════════════════════════════════════╝\n";
     if (!g_model_path) { std::cout << "  [WARN] CACTUS_TEST_MODEL not set; skipping\n"; return true; }
 
+    std::vector<uint32_t> sentence;
+    {
+        cactus_model_t tok_model = cactus_init(g_model_path, nullptr, false);
+        if (!tok_model) { std::cerr << "  [✗] model init failed\n"; return false; }
+        auto* tok = static_cast<CactusModelHandle*>(tok_model)->model->get_tokenizer();
+        sentence = tok->encode(
+            "The quick brown fox jumps over the lazy dog. Paris is the capital of France. "
+            "Water is composed of hydrogen and oxygen. The Earth orbits the Sun once every year. "
+            "Photosynthesis converts sunlight into chemical energy in plants.");
+        cactus_destroy(tok_model);
+        if (sentence.empty()) { std::cerr << "  [✗] tokenizer produced no ids\n"; return false; }
+    }
+
     for (size_t prompt_len : {size_t(95), size_t(600)}) {
         std::vector<uint32_t> ids(prompt_len);
-        for (size_t i = 0; i < ids.size(); i++) ids[i] = static_cast<uint32_t>(100 + (i % 200));
+        for (size_t i = 0; i < ids.size(); i++) ids[i] = sentence[i % sentence.size()];
 
         cactus_model_t model = cactus_init(g_model_path, nullptr, false);
         if (!model) { std::cerr << "  [✗] model init failed\n"; return false; }

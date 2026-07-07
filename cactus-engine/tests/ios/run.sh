@@ -363,6 +363,7 @@ if [ "$device_type" = "simulator" ]; then
         "SIMCTL_CHILD_CACTUS_INDEX_PATH=assets"
         "SIMCTL_CHILD_CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE:-1}"
         "SIMCTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_SUITE:-}"
+        "SIMCTL_CHILD_CACTUS_TEST_BACKEND=${CACTUS_TEST_BACKEND:-auto}"
     )
 
     env "${sim_env[@]}" xcrun simctl launch --console-pty --terminate-running-process "$device_uuid" "$bundle_id"
@@ -401,6 +402,7 @@ else
         "DEVICECTL_CHILD_CACTUS_INDEX_PATH=assets"
         "DEVICECTL_CHILD_CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE:-1}"
         "DEVICECTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_SUITE:-}"
+        "DEVICECTL_CHILD_CACTUS_TEST_BACKEND=${CACTUS_TEST_BACKEND:-auto}"
     )
 
     env "${device_env[@]}" \
