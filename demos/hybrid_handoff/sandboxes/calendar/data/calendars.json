@@ -1,0 +1,11 @@
+[
+  {"person": "Dana Cole",  "date": "2026-06-25", "start": "09:00", "end": "09:15", "title": "Standup"},
+  {"person": "Dana Cole",  "date": "2026-06-25", "start": "10:00", "end": "11:00", "title": "Budget review"},
+  {"person": "Dana Cole",  "date": "2026-06-25", "start": "13:30", "end": "14:00", "title": "1:1"},
+  {"person": "Marco Lin",  "date": "2026-06-25", "start": "09:00", "end": "09:15", "title": "Standup"},
+  {"person": "Marco Lin",  "date": "2026-06-25", "start": "11:00", "end": "12:00", "title": "Design crit"},
+  {"person": "Marco Lin",  "date": "2026-06-25", "start": "15:00", "end": "16:00", "title": "Vendor call"},
+  {"person": "Priya Nair", "date": "2026-06-25", "start": "09:00", "end": "09:15", "title": "Standup"},
+  {"person": "Priya Nair", "date": "2026-06-25", "start": "10:00", "end": "11:00", "title": "Budget review"},
+  {"person": "Priya Nair", "date": "2026-06-25", "start": "14:00", "end": "15:00", "title": "User interviews"}
+]

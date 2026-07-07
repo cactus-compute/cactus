@@ -873,7 +873,8 @@ private:
     int output_index(const Component& comp, const std::string& name) const;
     uint32_t argmax_last_logits(float* out_uncertainty = nullptr);
     bool load_handoff_probe();
-    void maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name = "probe_hidden");
+    void maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name = "probe_hidden", size_t max_rows = SIZE_MAX);
+    void clamp_handoff_probe_prompt_rows(size_t prompt_rows);
     void run_vision_encoder(const std::string& image_path);
     void run_vision_encoder_lfm2_vl(const std::string& image_path);
     void encode_lfm2_vl_image_into_features(const std::string& image_path);

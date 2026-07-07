@@ -1,0 +1,5 @@
+# Already satisfied by ./venv (rich ships with the cactus dev env). Listed for
+# standalone installs:  ./venv/bin/pip install -r demos/hybrid_handoff/requirements.txt
+rich>=13
+# No other third-party deps: .env is parsed by a tiny built-in reader (cactus_env.py),
+# and cloud token cost comes from the engine (no API client needed here).

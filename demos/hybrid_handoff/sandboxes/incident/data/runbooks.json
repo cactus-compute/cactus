@@ -1,0 +1,17 @@
+[
+  {
+    "service": "checkout",
+    "thresholds": "SEV1 if error rate > 10% or sustained > 30 min; SEV2 if 5-10%; SEV3 if < 5%.",
+    "body": "Checkout depends on payments-client. A circuit breaker OPEN means payments is failing and checkout is shedding load. If error rate is 5-10% and the breaker has tripped, declare SEV2, page the payments on-call, and post in #incidents. Cached-cart fallback keeps browsing alive, so customer impact is partial."
+  },
+  {
+    "service": "payments",
+    "thresholds": "SEV1 if processor success rate < 90%; SEV2 if 90-97%; SEV3 otherwise.",
+    "body": "402 spikes usually indicate a processor-side issue. Check the processor status page, fail over to the backup processor if success rate < 95%, and notify finance if charges may be affected."
+  },
+  {
+    "service": "search",
+    "thresholds": "SEV3 for latency-only alerts that auto-resolve.",
+    "body": "Slow index warm-up after a deploy is expected and self-heals. No action unless p99 stays above 1000ms for over 15 minutes."
+  }
+]

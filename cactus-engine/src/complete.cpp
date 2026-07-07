@@ -981,7 +981,8 @@ int cactus_complete(
                                            double total_ms,
                                            float confidence,
                                            size_t prompt_token_count,
-                                           const std::string& reason) {
+                                           const std::string& reason,
+                                           float advantage = std::numeric_limits<float>::quiet_NaN()) {
             std::string cloud_response = cloud_result.response;
             std::vector<std::string> cloud_calls = cloud_result.function_calls;
             if (callback && !cloud_response.empty()) {
@@ -990,7 +991,7 @@ int cactus_complete(
             std::string result = construct_response_json(cloud_response, cloud_calls, ttft_ms,
                                                          total_ms, 0.0, 0.0, prompt_token_count,
                                                          0, confidence, true, "", {}, "",
-                                                         prompt.options.confidence_threshold, reason);
+                                                         prompt.options.confidence_threshold, reason, advantage);
             if (result.length() >= buffer_size) {
                 handle_error_response("Response buffer too small", response_buffer, buffer_size);
                 return -1;
@@ -1258,7 +1259,7 @@ int cactus_complete(
                     handle->model->clear_tool_constraints();
                 }
                 return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, confidence, prompt_tokens,
-                                               trigger_reason);
+                                               trigger_reason, handoff_advantage);
             }
             cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
             CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed after probe handoff, falling back to local output: "
@@ -1293,7 +1294,7 @@ int cactus_complete(
                                                      total_time_ms, prefill_tps, decode_tps, prompt_tokens,
                                                      completion_tokens, confidence, handoff_succeeded,
                                                      thinking_text, {}, response_text,
-                                                     prompt.options.confidence_threshold, handoff_reason);
+                                                     prompt.options.confidence_threshold, handoff_reason, handoff_advantage);
 
         if (result.length() >= buffer_size) {
             handle_error_response("Response buffer too small", response_buffer, buffer_size);

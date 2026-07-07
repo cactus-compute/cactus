@@ -452,7 +452,7 @@ bool Model::capture_handoff_probe_token(uint32_t token_id) {
     return true;
 }
 
-void Model::maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name) {
+void Model::maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name, size_t max_rows) {
     if (!handoff_probe_loaded_ || handoff_probe_feat_dim_ == 0) return;
     int idx = output_index(comp, output_name);
     if (idx < 0 || static_cast<size_t>(idx) >= comp.output_node_ids.size()) return;
@@ -462,6 +462,7 @@ void Model::maybe_capture_handoff_probe_hidden(const Component& comp, const std:
     if (!desc.shape.empty() &&
         static_cast<size_t>(desc.shape.back()) != static_cast<size_t>(handoff_probe_feat_dim_)) return;
     size_t rows = desc.total_size / handoff_probe_feat_dim_;
+    if (max_rows < rows) rows = max_rows;  // exclude chunk padding rows
     if (rows == 0) return;
     const auto* data = static_cast<const uint8_t*>(comp.graph->get_output(node));
     if (!data) return;
@@ -471,6 +472,15 @@ void Model::maybe_capture_handoff_probe_hidden(const Component& comp, const std:
             handoff_probe_hidden_.push_back(read_scalar_value(desc.precision, data, base + i));
         }
     }
+}
+
+// After prefill, chunked capture (+ scalar tail / logits re-run) can leave one trailing
+// duplicate row from padded-tail handling. Trim to exactly the prompt-token count so the
+// captured layer-28 rows line up 1:1 with the prompt before decode appends generated rows.
+void Model::clamp_handoff_probe_prompt_rows(size_t prompt_rows) {
+    if (!handoff_probe_uses_turn_streams() || handoff_probe_feat_dim_ == 0) return;
+    size_t want = prompt_rows * static_cast<size_t>(handoff_probe_feat_dim_);
+    if (handoff_probe_hidden_.size() > want) handoff_probe_hidden_.resize(want);
 }
 
 float Model::handoff_probe_wrong_probability() const {
@@ -1632,6 +1642,13 @@ void Model::execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, si
         }
     }
     chunk_comp.graph->execute();
+    // Capture the layer-28 residual for this chunk's REAL tokens (exclude padding) so the
+    // advantage probe works without falling back to one-at-a-time prefill.
+    if (handoff_probe_uses_turn_streams()) {
+        size_t real_rows = processed < tokens.size()
+            ? std::min<size_t>(chunk_tokens, tokens.size() - processed) : 0;
+        maybe_capture_handoff_probe_hidden(chunk_comp, "probe_hidden", real_rows);
+    }
 }
 
 void Model::reset_prefill_stats() {
@@ -1645,8 +1662,10 @@ void Model::reset_prefill_stats() {
 Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position, size_t chunk_size, bool prepare_decode) {
     ChunkedPrefillResult result;
     reset_prefill_stats();
-    if (handoff_probe_uses_turn_streams()) return result;
     if (decode_route_ != DecodeRoute::CACHED_STEP || !encoder_ || !decoder_ || !decoder_prefill_) return result;
+    // Only fall back to slow one-at-a-time prefill for the probe when the prefill chunk
+    // can't expose the layer-28 residual (old bundles). New bundles capture it in-chunk.
+    if (handoff_probe_uses_turn_streams() && output_index(*decoder_prefill_, "probe_hidden") < 0) return result;
     if (start_position != 0) return result;
     if (!load_component_graph(*decoder_prefill_)) return result;
     if (prefill_encoder_ && !load_component_graph(*prefill_encoder_)) return result;
@@ -2574,6 +2593,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
             out_token = argmax_last_logits(out_uncertainty);
             record_sampled_token(out_token);
             last_prefill_scalar_tail_tokens_ = 1;
+            clamp_handoff_probe_prompt_rows(tokens.size());
             maybe_roll_compact();
             return true;
         }
@@ -2584,6 +2604,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
         ++cache_total_seq_len_;
     }
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
+    clamp_handoff_probe_prompt_rows(tokens.size());
     if (chunked.logical_tokens == tokens.size() && chunked.logical_tokens > 0 && decoder_prefill_) {
         out_token = argmax_component_logits(*decoder_prefill_, chunked.last_logit_row, out_uncertainty);
     } else {
@@ -2616,6 +2637,7 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     }
     cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
+    clamp_handoff_probe_prompt_rows(tokens.size());
 
     if (prepare_decode) {
         // After the prompt reaches full length here -- never mid-chunk -- bound it to target_len.

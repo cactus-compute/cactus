@@ -1,0 +1,8 @@
+[
+  {"id": "r001", "vendor": "Ippudo Ramen", "amount": 412.50, "category": "meals", "date": "2026-06-20", "attendees": 6, "description": "Team dinner after the design sprint"},
+  {"id": "r002", "vendor": "Uber", "amount": 38.20, "category": "travel", "date": "2026-06-20", "description": "Ride to client site"},
+  {"id": "r003", "vendor": "Marriott", "amount": 540.00, "category": "lodging", "date": "2026-06-18", "description": "1 night, conference"},
+  {"id": "r004", "vendor": "Amazon", "amount": 129.99, "category": "equipment", "date": "2026-06-15", "description": "Mechanical keyboard"},
+  {"id": "r005", "vendor": "Blue Bottle", "amount": 92.00, "category": "meals", "date": "2026-06-19", "attendees": 1, "description": "Solo lunch + coffees for the week"},
+  {"id": "r006", "vendor": "Delta Airlines", "amount": 880.00, "category": "travel", "date": "2026-06-10", "description": "Round-trip to customer conf"}
+]

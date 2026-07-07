@@ -1,0 +1,152 @@
+[
+  {
+    "id": "m001",
+    "thread_id": "t_meeting",
+    "from": "Jake Tran <jake@partnerco.com>",
+    "to": "me@cactus.ai",
+    "date": "2026-06-22T09:14:00",
+    "subject": "Re: Our meeting + the Cactus Hybrid discussion",
+    "unread": true,
+    "body": "Hey -- following up on our chat. Can we lock a time this week to go deeper on the Cactus Hybrid approach you mentioned? I have Thursday afternoon free, ideally 2pm. I want to understand how the on-device vs cloud routing actually decides per step, and whether it would fit our latency budget. Could you also send over whatever context doc you have on it? Thanks, Jake"
+  },
+  {
+    "id": "m002",
+    "thread_id": "t_meeting",
+    "from": "me@cactus.ai",
+    "to": "Jake Tran <jake@partnerco.com>",
+    "date": "2026-06-18T16:40:00",
+    "subject": "Our meeting + the Cactus Hybrid discussion",
+    "unread": false,
+    "body": "Great talking today, Jake. I'll pull together a short doc on the Cactus Hybrid routing and we can find time next week to walk through it."
+  },
+  {
+    "id": "m003",
+    "thread_id": "t_offsite",
+    "from": "Dana Cole <dana@cactus.ai>",
+    "to": "team@cactus.ai",
+    "date": "2026-06-21T11:02:00",
+    "subject": "Q3 offsite — location poll closes Friday",
+    "unread": true,
+    "body": "Please vote on the offsite location by Friday. Current options: Tahoe, Santa Cruz, or a downtown SF venue. We're targeting the second week of August. Reply with your top choice and any dietary restrictions."
+  },
+  {
+    "id": "m004",
+    "thread_id": "t_offsite",
+    "from": "Marco Lin <marco@cactus.ai>",
+    "to": "team@cactus.ai",
+    "date": "2026-06-21T12:20:00",
+    "subject": "Re: Q3 offsite — location poll closes Friday",
+    "unread": true,
+    "body": "+1 for Santa Cruz. Also can we make sure there's a vegetarian option this time? Last offsite was rough."
+  },
+  {
+    "id": "m005",
+    "thread_id": "t_budget",
+    "from": "Priya Nair <priya@cactus.ai>",
+    "to": "me@cactus.ai",
+    "date": "2026-06-20T08:05:00",
+    "subject": "Q3 budget review — numbers needed",
+    "unread": true,
+    "body": "Can you send me the inference cost projections for Q3 by Wednesday? Finance wants the cloud vs on-device split broken out. The hybrid routing savings story is the part they care most about."
+  },
+  {
+    "id": "m006",
+    "thread_id": "t_budget",
+    "from": "Priya Nair <priya@cactus.ai>",
+    "to": "me@cactus.ai",
+    "date": "2026-06-23T08:05:00",
+    "subject": "Re: Q3 budget review — numbers needed",
+    "unread": true,
+    "body": "Gentle nudge on the projections -- the review moved up to Thursday morning. Even rough numbers help."
+  },
+  {
+    "id": "m007",
+    "thread_id": "t_recruiting",
+    "from": "Sam Okafor <sam@cactus.ai>",
+    "to": "me@cactus.ai",
+    "date": "2026-06-19T15:30:00",
+    "subject": "Candidate debrief — staff ML role",
+    "unread": false,
+    "body": "Debrief notes are in the doc. Strong on systems, lighter on eval methodology. I'm a weak yes; curious what you thought after the on-device inference deep dive."
+  },
+  {
+    "id": "m008",
+    "thread_id": "t_newsletter",
+    "from": "AI Weekly <digest@aiweekly.example>",
+    "to": "me@cactus.ai",
+    "date": "2026-06-23T06:00:00",
+    "subject": "On-device LLMs are eating the edge",
+    "unread": true,
+    "body": "This week: speculative decoding tricks, a new 2B model that punches above its weight, and why routing between local and cloud is the sleeper trend of 2026."
+  },
+  {
+    "id": "m009",
+    "thread_id": "t_invoice",
+    "from": "billing@cloudvendor.example",
+    "to": "me@cactus.ai",
+    "date": "2026-06-17T03:11:00",
+    "subject": "Your May invoice is ready",
+    "unread": false,
+    "body": "Your May usage invoice totaling $4,210.55 is now available. Most of the increase came from cloud inference overage. Consider a committed-use discount."
+  },
+  {
+    "id": "m010",
+    "thread_id": "t_jake_intro",
+    "from": "Jake Tran <jake@partnerco.com>",
+    "to": "me@cactus.ai",
+    "date": "2026-06-10T10:00:00",
+    "subject": "Intro from the conference",
+    "unread": false,
+    "body": "Good to meet you at the edge-AI panel. Let's keep in touch -- I think there's a real fit between what PartnerCo needs and your on-device routing work."
+  },
+  {
+    "id": "m011",
+    "thread_id": "t_oncall",
+    "from": "PagerDuty <alerts@pd.example>",
+    "to": "me@cactus.ai",
+    "date": "2026-06-23T02:47:00",
+    "subject": "[RESOLVED] elevated latency on inference-gateway",
+    "unread": false,
+    "body": "An incident on inference-gateway auto-resolved after 6 minutes. Peak p99 latency 1240ms. No action required."
+  },
+  {
+    "id": "m012",
+    "thread_id": "t_legal",
+    "from": "Lena Park <lena@cactus.ai>",
+    "to": "me@cactus.ai",
+    "date": "2026-06-22T17:25:00",
+    "subject": "Data residency question for PartnerCo deal",
+    "unread": true,
+    "body": "PartnerCo (Jake's team) asked whether on-device inference means customer data never leaves the device. Short answer matters for the contract. Can you confirm what stays local vs goes to cloud under the hybrid setup?"
+  },
+  {
+    "id": "m013",
+    "thread_id": "t_standup",
+    "from": "Marco Lin <marco@cactus.ai>",
+    "to": "team@cactus.ai",
+    "date": "2026-06-23T09:00:00",
+    "subject": "Standup notes 6/23",
+    "unread": false,
+    "body": "Shipped the probe threshold tuning. Next: visualize per-turn routing for the demo. Blocked on nothing."
+  },
+  {
+    "id": "m014",
+    "thread_id": "t_lunch",
+    "from": "Dana Cole <dana@cactus.ai>",
+    "to": "me@cactus.ai",
+    "date": "2026-06-23T10:15:00",
+    "subject": "Lunch Thursday?",
+    "unread": true,
+    "body": "Want to grab lunch Thursday around 12:30? Trying that new ramen place. No worries if you're slammed with the budget review."
+  },
+  {
+    "id": "m015",
+    "thread_id": "t_jake_intro",
+    "from": "Jake Tran <jake@partnerco.com>",
+    "to": "me@cactus.ai",
+    "date": "2026-06-15T14:30:00",
+    "subject": "Re: Intro from the conference",
+    "unread": false,
+    "body": "By the way, our hard constraint is sub-300ms median response. If the hybrid routing can keep most turns on-device and only burst to cloud occasionally, that could work for us."
+  }
+]

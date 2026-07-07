@@ -1,0 +1,7 @@
+[
+  {"name": "Dana Cole", "team": "design", "role": "Design lead"},
+  {"name": "Marco Lin", "team": "design", "role": "Product designer"},
+  {"name": "Priya Nair", "team": "design", "role": "UX researcher"},
+  {"name": "Sam Okafor", "team": "engineering", "role": "Staff engineer"},
+  {"name": "Lena Park", "team": "engineering", "role": "Backend engineer"}
+]

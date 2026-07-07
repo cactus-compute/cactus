@@ -1,0 +1,8 @@
+[
+  {"id": "e1", "title": "Q3 Budget Review (Finance)", "date": "2026-06-25", "start": "10:00", "end": "11:00", "attendees": ["me", "Priya Nair"]},
+  {"id": "e2", "title": "1:1 with Dana", "date": "2026-06-25", "start": "13:30", "end": "14:00", "attendees": ["me", "Dana Cole"]},
+  {"id": "e3", "title": "Eng interview — staff ML candidate", "date": "2026-06-25", "start": "14:00", "end": "15:00", "attendees": ["me", "Sam Okafor"]},
+  {"id": "e4", "title": "Design review", "date": "2026-06-26", "start": "11:00", "end": "12:00", "attendees": ["me", "Marco Lin"]},
+  {"id": "e5", "title": "Focus block", "date": "2026-06-25", "start": "15:00", "end": "17:00", "attendees": ["me"]},
+  {"id": "e6", "title": "Team standup", "date": "2026-06-25", "start": "09:00", "end": "09:15", "attendees": ["me", "team"]}
+]

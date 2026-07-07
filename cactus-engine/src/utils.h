@@ -1962,7 +1962,8 @@ inline std::string construct_response_json(const std::string& regular_response,
                                            const std::vector<TranscriptSegment>& segments = {},
                                            const std::string& context_response = "",
                                            float confidence_threshold = -1.0f,
-                                           const std::string& cloud_handoff_reason = "") {
+                                           const std::string& cloud_handoff_reason = "",
+                                           float cloud_advantage = std::numeric_limits<float>::quiet_NaN()) {
     std::ostringstream json;
     json << "{";
     json << "\"success\":true,";
@@ -1992,6 +1993,13 @@ inline std::string construct_response_json(const std::string& regular_response,
     json << "],";
     json << "\"confidence\":" << std::fixed << std::setprecision(4) << confidence << ",";
     json << "\"confidence_threshold\":" << std::fixed << std::setprecision(4) << confidence_threshold << ",";
+    // Raw "cloud advantage" metric the advantage probe decides on (handoff when advantage >
+    // confidence_threshold). null when unavailable (non-advantage probe or not computed).
+    // NOTE: confidence = sigmoid(-cloud_advantage) is a squashed 0-1 view on a different scale.
+    json << "\"cloud_advantage\":";
+    if (std::isfinite(cloud_advantage)) json << std::fixed << std::setprecision(4) << cloud_advantage;
+    else json << "null";
+    json << ",";
     json << "\"time_to_first_token_ms\":" << std::fixed << std::setprecision(2) << time_to_first_token << ",";
     json << "\"total_time_ms\":" << std::fixed << std::setprecision(2) << total_time_ms << ",";
     json << "\"prefill_tps\":" << std::fixed << std::setprecision(2) << prefill_tps << ",";

@@ -1,0 +1,5 @@
+[
+  {"id": "a001", "service": "checkout", "active": true, "fired_at": "2026-06-23T14:02:00", "summary": "Error rate on checkout-api above 5% for 10 min"},
+  {"id": "a002", "service": "search", "active": false, "fired_at": "2026-06-23T03:10:00", "summary": "Elevated p99 latency on search, auto-resolved"},
+  {"id": "a003", "service": "payments", "active": true, "fired_at": "2026-06-23T14:20:00", "summary": "Increased 402 responses from payment processor"}
+]

@@ -1,0 +1,20 @@
+[
+  {
+    "id": "d_hybrid",
+    "title": "Cactus Hybrid Routing — overview",
+    "tags": ["cactus hybrid", "routing", "on-device", "cloud", "handoff"],
+    "body": "Cactus Hybrid routing decides PER TURN whether the local on-device model answers or the request is handed off to the cloud. A small probe over the local model's hidden states estimates p_wrong (the probability the local answer is wrong); confidence = 1 - p_wrong. If confidence falls below a threshold, that single turn is escalated to a frontier cloud model; otherwise it stays on-device. In a multi-step agent this happens independently each step, so mechanical steps (tool calls, lookups) typically stay local while hard synthesis/judgment steps escalate. Benefits: most tokens and user data stay on-device (privacy + cost), and cloud is used only when it adds value. Data residency: for local turns, prompts and outputs never leave the device; only escalated turns send context to the cloud."
+  },
+  {
+    "id": "d_latency",
+    "title": "Latency budget notes",
+    "tags": ["latency", "performance", "partnerco"],
+    "body": "Median on-device response is ~120-180ms for short turns. Cloud handoff adds network round-trip (~400-800ms). Keeping the escalation rate low keeps median latency near the on-device baseline while occasional bursts to cloud handle the hard turns. PartnerCo's hard constraint is sub-300ms median."
+  },
+  {
+    "id": "d_pricing",
+    "title": "Inference cost model",
+    "tags": ["cost", "budget", "pricing", "cloud"],
+    "body": "On-device inference is effectively $0 marginal. Cloud (gemini-2.5-flash) is billed per token. Q3 savings story: if hybrid routing keeps ~70-80% of turns on-device, cloud spend drops proportionally vs an all-cloud baseline while preserving frontier-quality answers on the hard turns."
+  }
+]

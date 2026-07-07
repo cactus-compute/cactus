@@ -4065,7 +4065,7 @@ class Gemma4DecoderPrefillChunkAdapter(Gemma4DecoderAdapter):
         inputs_embeds: torch.Tensor,
         per_layer_inputs: torch.Tensor,
         position_ids: torch.LongTensor,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         normalized_per_layer_inputs = per_layer_inputs
         if normalized_per_layer_inputs.numel() == 0:
             normalized_per_layer_inputs = None
@@ -4082,50 +4082,23 @@ class Gemma4DecoderPrefillChunkAdapter(Gemma4DecoderAdapter):
             attention_mask=attention_mask,
             position_ids=position_ids,
         )
-        num_layers = int(getattr(self.backbone.config, "num_hidden_layers", len(self.backbone.layers)))
-        num_shared_layers = int(getattr(self.backbone.config, "num_kv_shared_layers", 0) or 0)
-        first_shared_layer = max(0, num_layers - num_shared_layers)
-        if first_shared_layer <= 0 or first_shared_layer >= num_layers or int(inputs_embeds.shape[1]) <= 1:
-            hidden_states = _gemma4_text_backbone_forward(
-                self.backbone,
-                inputs_embeds=inputs_embeds,
-                per_layer_inputs=normalized_per_layer_inputs,
-                causal_mask_mapping=causal_mask_mapping,
-                position_ids=position_ids,
-            )
-        else:
-            shared_kv_states: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
-            hidden_states = _gemma4_text_backbone_forward(
-                self.backbone,
-                inputs_embeds=inputs_embeds,
-                per_layer_inputs=normalized_per_layer_inputs,
-                causal_mask_mapping=causal_mask_mapping,
-                position_ids=position_ids,
-                layer_end=first_shared_layer,
-                apply_norm=False,
-                shared_kv_states=shared_kv_states,
-            )
-            tail_masks = {
-                key: value[:, :, -1:, :] if value is not None and value.ndim == 4 else value
-                for key, value in causal_mask_mapping.items()
-            }
-            tail_per_layer_inputs = (
-                None
-                if normalized_per_layer_inputs is None
-                else normalized_per_layer_inputs[:, -1:, :, :]
-            )
-            hidden_states = _gemma4_text_backbone_forward(
-                self.backbone,
-                inputs_embeds=hidden_states[:, -1:, :],
-                per_layer_inputs=tail_per_layer_inputs,
-                causal_mask_mapping=tail_masks,
-                position_ids=position_ids[:, -1:],
-                layer_start=first_shared_layer,
-                apply_norm=True,
-                shared_kv_states=shared_kv_states,
-            )
+        # The handoff probe reads the layer-28 residual of EVERY prompt token. The
+        # shared-KV last-token shortcut (full sequence only to first_shared_layer, then
+        # the tail for the last token only) never computes layer 28 for the middle tokens,
+        # which forces the engine into slow one-at-a-time prefill. Run the full backbone
+        # over all tokens and capture layer 28 for all of them, so the engine can keep
+        # chunked (all-at-once) prefill with the probe active.
+        hidden_states, probe_hidden = _gemma4_text_backbone_forward(
+            self.backbone,
+            inputs_embeds=inputs_embeds,
+            per_layer_inputs=normalized_per_layer_inputs,
+            causal_mask_mapping=causal_mask_mapping,
+            position_ids=position_ids,
+            capture_layer_index=28,
+        )
         logits = self.model.lm_head(hidden_states[:, -1:, :])
-        return _gemma4_apply_final_logit_softcapping(self.model, logits)
+        logits = _gemma4_apply_final_logit_softcapping(self.model, logits)
+        return logits, probe_hidden
 
 
 class Gemma4DecoderEmbedChunkAdapter(Gemma4DecoderAdapter):
@@ -4391,7 +4364,7 @@ def _build_gemma4_causal_lm_component_specs(
             module=decoder_prefill_chunk,
             example_inputs=tuple(prefill_decoder_inputs),
             input_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
-            output_keys=("logits",),
+            output_keys=("logits", "probe_hidden"),
             graph_meta={
                 **common_graph_meta,
                 "component": "decoder_prefill_chunk",
@@ -4784,7 +4757,7 @@ def _build_gemma4_multimodal_component_specs(
             module=decoder_prefill,
             example_inputs=chunk_inputs,
             input_keys=_GEMMA4_DECODER_PIPELINE_IO_KEYS,
-            output_keys=("logits",),
+            output_keys=("logits", "probe_hidden"),
             graph_meta={
                 **common_graph_meta,
                 "component": "decoder_prefill_chunk",

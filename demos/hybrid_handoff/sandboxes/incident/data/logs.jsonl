@@ -1,0 +1,10 @@
+{"ts": "2026-06-23T14:00:05", "service": "checkout", "level": "INFO", "msg": "checkout request ok order=88123"}
+{"ts": "2026-06-23T14:01:10", "service": "checkout", "level": "ERROR", "msg": "downstream payments timeout after 3000ms order=88130"}
+{"ts": "2026-06-23T14:01:42", "service": "checkout", "level": "ERROR", "msg": "downstream payments timeout after 3000ms order=88131"}
+{"ts": "2026-06-23T14:02:01", "service": "checkout", "level": "ERROR", "msg": "circuit breaker OPEN for payments-client"}
+{"ts": "2026-06-23T14:02:30", "service": "checkout", "level": "WARN", "msg": "serving cached cart, payments degraded"}
+{"ts": "2026-06-23T14:03:00", "service": "checkout", "level": "ERROR", "msg": "downstream payments timeout after 3000ms order=88140"}
+{"ts": "2026-06-23T14:05:00", "service": "checkout", "level": "INFO", "msg": "checkout request ok order=88150"}
+{"ts": "2026-06-23T14:18:00", "service": "payments", "level": "ERROR", "msg": "processor returned 402 insufficient_funds_rate spike"}
+{"ts": "2026-06-23T14:19:30", "service": "payments", "level": "ERROR", "msg": "processor latency 4200ms p99"}
+{"ts": "2026-06-23T03:09:00", "service": "search", "level": "WARN", "msg": "index warm-up slow p99=1240ms"}
