@@ -9,9 +9,8 @@ import converter.models as CVModels
 import models
 
 def simplify(messy_ir:CVModels.LayerMap):
-    graph:models.CompGraph = models.CompGraph()
+    graph: models.Graph = models.Graph(messy_ir)
 
-    for node in messy_ir.nodes:
-        function_map[node.node_type](node)
+    
 
     
