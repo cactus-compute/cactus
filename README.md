@@ -11,19 +11,13 @@
 
 A hybrid edge-cloud AI engine for mobile devices & wearables.
 
-- **Fast & accurate:** fastest inference on ARM CPU, Cactus quants at 4-bit matches f16
-- **Low RAM:** zero-copy memory mapping ensures 10x lower RAM use than other engines
-- **Multimodal:** one engine for speech, vision, and language models
-- **Cloud fallback:** automatically route requests to cloud models if needed
-- **Model-Agnostic:** Custom PyTorch models can be exported to the Cactus runtime. 
-
 ```
 ┌─────────────────┐
 │  Cactus Engine  │ ←── OpenAI-compatible APIs for text, speech, and vision.
 └─────────────────┘     
          │
 ┌─────────────────┐
-│  Cactus Graph   │ ←── Zero-copy computation graph ensures 10x lower RAM 
+│  Cactus Graph   │ ←── Zero-copy computation graph 
 └─────────────────┘     
          │
 ┌─────────────────┐
@@ -128,14 +122,14 @@ graph.hard_reset();
 
 ## Benchmarks
 
-- LLM: Gemma-4-E2B-CQ4 (CPU, no speculative decode), 1k-prefill tps / 100-decode tps
-- VLM: Gemma-4-E2B-CQ4 (NPU prefill, CPU decode), 256px input, latency / decode tps
-- Transcribe: Parakeet-TDT-0.6B-CQ4 (NPU prefill, CPU decode), 20s audio, latency / decode tps
+- LLM: Gemma-4-E2B-CQ4, 1k-prefill tps / 100-decode tps
+- VLM: Gemma-4-E2B-CQ4  256px input, latency / decode tps
+- Transcribe: Parakeet-TDT-0.6B-CQ4, 20s audio, latency / decode tps
 - Missing latency == no NPU support for device
 
-| Device | LLM | VLM | Transcribe | RAM |
+| Device | LLM | VLM | Transcribe | 1k-Context RAM |
 |--------|----------|------------|---------------|-----|
-| Mac M4 Pro | 324 / 39 | 1.2s / 48 | 0.2s / 10.6M | 1385 MB |
+| Mac M4 Pro | 2619tps / 139tps | 0.4s / 160tps | 0.1s / 11Mtps | 1327 MB |
 | Mac M3 Pro | 390 / 26 | 2.76s / 28.06 | 0.32s / 2.29M | 1376 MB |
 | iPhone 17 Pro | - | - | - | - |
 | iPhone 13 Mini | - | - | - | - |
