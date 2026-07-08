@@ -442,6 +442,12 @@ def create_parser():
     convert_parser.add_argument("--cache-context-length", default=None,
                                 help="KV cache context length for cached decode graphs (default: model config)")
 
+    upload_parser = subparsers.add_parser("upload",
+                                          parents=[_build_parent()],
+                                          help="Build a runnable bundle locally and upload it to Cactus-Compute on HuggingFace")
+    upload_parser.add_argument("model_id", type=_hf_id_or_path,
+                               help="HuggingFace model id (e.g. openai/whisper-base)")
+
     return parser
 
 

@@ -87,9 +87,14 @@ def _collect(roots):
 
 
 def cmd_list(_args):
-    roots = (weights_root(), transpiled_root())
-    converted, transpiled = _categorize(roots)
-    _print_section("Converted weights (cactus convert)", BLUE, converted)
-    print()
-    _print_section("Runnable bundles (cactus convert / download)", CYAN, transpiled)
+    models = _collect((weights_root(), transpiled_root()))
+    print_color(CYAN, "Available models")
+    if not models:
+        print("  (none)")
+        return 0
+    name_w = max(len(p.name) for p, _, _, _ in models)
+    type_w = max(len("type"), max(len(t) for _, t, _, _ in models))
+    print(f"  {'name':<{name_w}}  {'type':<{type_w}}  {'quant':<5}  {'size':>10}  location")
+    for p, model_type, quant, size in models:
+        print(f"  {p.name:<{name_w}}  {model_type:<{type_w}}  {quant:<5}  {_human_size(size):>10}  {p.parent}")
     return 0

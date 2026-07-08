@@ -227,21 +227,21 @@ cactus convert nvidia/parakeet-tdt-0.6b-v3 ./parakeet-weights --bits 4 \
 
 ## Running Saved Bundles
 
-Transpiled bundles are saved to `./weights/<model>/` by default (alongside their CQ
-weights). Run them later without re-transpiling:
+Transpiled bundles are saved to `./weights/<model>-cq<bits>/` by default (alongside
+their CQ weights). Run them later without re-transpiling:
 
 ```bash
 # Text
-cactus run ./weights/qwen3-0.6b --prompt "Write a haiku"
+cactus run ./weights/qwen3-0.6b-cq4 --prompt "Write a haiku"
 
 # Multimodal
-cactus run ./weights/gemma-4-e2b-it \
+cactus run ./weights/gemma-4-e2b-it-cq4 \
   --image photo.jpg \
   --audio speech.wav \
   --prompt "What do you see?"
 
 # Audio
-cactus run ./weights/parakeet-tdt-0.6b-v3 \
+cactus run ./weights/parakeet-tdt-0.6b-v3-cq4 \
   --audio meeting.wav
 ```
 
@@ -374,7 +374,7 @@ component. Use `loaded.reset()` between independent generations.
 A transpiled bundle looks like this:
 
 ```
-weights/<model>/
+weights/<model>-cq<bits>/
   raw_ir.json              # IR before optimization (debugging)
   optimized_ir.json        # IR after fusion passes (debugging)
   graph.cactus             # serialized runtime graph
