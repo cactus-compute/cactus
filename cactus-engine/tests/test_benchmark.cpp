@@ -130,7 +130,8 @@ static bool vlm_benchmark() {
     }
 
     std::string image_path = std::string(g_assets_path) + "/test_monkey.png";
-    const size_t embed_buffer_size = 4 * 1024 * 1024;
+    std::string audio_path = std::string(g_assets_path) + "/test.wav";
+    const size_t embed_buffer_size = 16 * 1024 * 1024;
     std::vector<float> embeddings(embed_buffer_size / sizeof(float));
 
     std::vector<double> embed_ms;
@@ -151,6 +152,26 @@ static bool vlm_benchmark() {
             continue;
         }
         embed_ms.push_back(elapsed);
+    }
+
+    std::vector<double> audio_ms;
+    for (int run = 0; run <= kMeasuredRuns; run++) {
+        size_t dim = 0;
+        Timer t;
+        int rc = cactus_audio_embed(model, audio_path.c_str(), embeddings.data(),
+                                    embed_buffer_size, &dim);
+        double elapsed = t.elapsed_ms();
+        if (rc <= 0 || dim == 0) {
+            std::cerr << "[✗] Audio embedding failed\n";
+            cactus_destroy(model);
+            return false;
+        }
+        if (run == 0) {
+            std::cout << "├─ Warmup: audio_embed=" << std::fixed << std::setprecision(2)
+                      << elapsed << "ms (dim " << dim << ")\n";
+            continue;
+        }
+        audio_ms.push_back(elapsed);
     }
 
     std::string messages = "[{\"role\": \"user\", "
@@ -189,6 +210,7 @@ static bool vlm_benchmark() {
 
     std::cout << "\n[Mean of " << kMeasuredRuns << " runs]\n";
     print_mean("image_embed", "ms",    embed_ms);
+    print_mean("audio_embed", "ms",    audio_ms);
     print_mean("decode_tps",  "tok/s", decode_tps);
     std::cout << "└─ Status: PASSED ✓\n";
     return true;
