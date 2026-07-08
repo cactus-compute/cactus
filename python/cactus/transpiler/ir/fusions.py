@@ -6,6 +6,13 @@ class FusionPatter:
     target:str
     ops:tuple[str]
     path:tuple[int]
+    required_attrs:dict[str, Any]
+    input_refs:tuple[tuple[int]]
+    shared_input_refs:tuple[tuple[int]]
+
+    def match(self):
+
+
     
 
 
