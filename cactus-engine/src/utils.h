@@ -510,6 +510,7 @@ struct InferenceOptions {
     float repetition_penalty = 1.1f;
     uint64_t sample_seed = 0;
     float confidence_threshold = -1.0f;
+    bool has_confidence_threshold = false;
     size_t top_k = 0;
     size_t max_tokens = 100;
     size_t tool_rag_top_k = 2;
@@ -1690,7 +1691,9 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
     pos = json.find("\"confidence_threshold\"");
     if (pos != std::string::npos) {
         pos = json.find(':', pos) + 1;
-        options.confidence_threshold = std::stof(json.substr(pos));
+        float parsed_confidence_threshold = std::stof(json.substr(pos));
+        options.confidence_threshold = parsed_confidence_threshold;
+        options.has_confidence_threshold = parsed_confidence_threshold != -1.0f;
     }
 
     pos = json.find("\"include_stop_sequences\"");
@@ -1993,9 +1996,7 @@ inline std::string construct_response_json(const std::string& regular_response,
     json << "],";
     json << "\"confidence\":" << std::fixed << std::setprecision(4) << confidence << ",";
     json << "\"confidence_threshold\":" << std::fixed << std::setprecision(4) << confidence_threshold << ",";
-    // Raw "cloud advantage" metric the advantage probe decides on (handoff when advantage >
-    // confidence_threshold). null when unavailable (non-advantage probe or not computed).
-    // NOTE: confidence = sigmoid(-cloud_advantage) is a squashed 0-1 view on a different scale.
+    // Raw probe scalar compared against confidence_threshold. For router probes this is g(s).
     json << "\"cloud_advantage\":";
     if (std::isfinite(cloud_advantage)) json << std::fixed << std::setprecision(4) << cloud_advantage;
     else json << "null";

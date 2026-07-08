@@ -629,10 +629,11 @@ PreparedPrompt prepare_prompt(
 
     prompt.model_type = handle->model->get_config().model_type;
 
-    if (prompt.options.confidence_threshold < 0.0f) {
+    if (!prompt.options.has_confidence_threshold) {
         if (handle->model->has_handoff_probe()) {
             if (handle->model->handoff_probe_returns_advantage()) {
-                prompt.options.confidence_threshold = 0.05f;
+                prompt.options.confidence_threshold =
+                    handle->model->handoff_probe_outputs_router_score() ? 0.35f : 0.05f;
             } else {
                 prompt.options.confidence_threshold = 0.50f;
             }
@@ -1015,7 +1016,9 @@ int cactus_complete(
             return static_cast<int>(result.length());
         };
 
-        if (cloud_eligible && prompt.options.confidence_threshold >= 1.0f) {
+        if (cloud_eligible
+            && !handle->model->handoff_probe_outputs_router_score()
+            && prompt.options.confidence_threshold >= 1.0f) {
             pre_generation_cloud_attempted = true;
             CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered before local generation; waiting up to "
                 << prompt.options.cloud_timeout_ms << " ms before falling back");
@@ -1172,10 +1175,20 @@ int cactus_complete(
                     handoff_advantage = handle->model->handoff_probe_advantage(
                         prompt.tokens, generated_tokens, prompt.handoff_eot_actors);
                     if (std::isfinite(handoff_advantage)) {
-                        confidence = confidence_from_advantage(handoff_advantage);
-                        CACTUS_LOG_DEBUG("cloud_handoff", "Gemma4 handoff probe advantage="
-                            << handoff_advantage << " lambda=" << prompt.options.confidence_threshold
-                            << " local_confidence=" << confidence);
+                        if (handle->model->handoff_probe_outputs_router_score()) {
+                            const float route_probability = handle->model->handoff_probe_route_probability(
+                                handoff_advantage, prompt.options.confidence_threshold);
+                            if (std::isfinite(route_probability)) confidence = 1.0f - route_probability;
+                            CACTUS_LOG_DEBUG("cloud_handoff", "Gemma4 handoff router score="
+                                << handoff_advantage << " lambda=" << prompt.options.confidence_threshold
+                                << " route_probability=" << route_probability
+                                << " local_confidence=" << confidence);
+                        } else {
+                            confidence = confidence_from_advantage(handoff_advantage);
+                            CACTUS_LOG_DEBUG("cloud_handoff", "Gemma4 handoff probe advantage="
+                                << handoff_advantage << " lambda=" << prompt.options.confidence_threshold
+                                << " local_confidence=" << confidence);
+                        }
                     }
                 } else {
                     float wrong_probability = handle->model->handoff_probe_wrong_probability();
@@ -1236,14 +1249,25 @@ int cactus_complete(
         const bool invalid_local_tool_call = cloud_eligible && defer_local_stream_until_probe
             && function_calls_missing_required(function_calls, prompt.tools);
         if (!pre_generation_cloud_attempted && (low_confidence || invalid_local_tool_call)) {
+            const bool router_score_probe = advantage_probe
+                && handle->model->handoff_probe_outputs_router_score();
             const char* trigger_reason = invalid_local_tool_call && !low_confidence
                 ? "local tool call missing required args"
-                : (advantage_probe ? "high cloud advantage (probe)" : "low confidence (probe)");
+                : (advantage_probe
+                    ? (router_score_probe ? "high router score (probe)" : "high cloud advantage (probe)")
+                    : "low confidence (probe)");
             if (advantage_probe) {
-                CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered (" << trigger_reason
-                    << "): advantage=" << handoff_advantage
-                    << " lambda=" << prompt.options.confidence_threshold
-                    << "; waiting up to " << prompt.options.cloud_timeout_ms << " ms");
+                if (router_score_probe) {
+                    CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered (" << trigger_reason
+                        << "): router_score=" << handoff_advantage
+                        << " lambda=" << prompt.options.confidence_threshold
+                        << "; waiting up to " << prompt.options.cloud_timeout_ms << " ms");
+                } else {
+                    CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered (" << trigger_reason
+                        << "): advantage=" << handoff_advantage
+                        << " lambda=" << prompt.options.confidence_threshold
+                        << "; waiting up to " << prompt.options.cloud_timeout_ms << " ms");
+                }
             } else {
                 CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered (" << trigger_reason
                     << "): p_wrong=" << (1.0f - confidence) << " confidence=" << confidence
@@ -1274,9 +1298,15 @@ int cactus_complete(
 
         if (handoff_reason.empty()) {
             if (advantage_probe && std::isfinite(handoff_advantage)) {
-                handoff_reason = (handoff_advantage <= prompt.options.confidence_threshold)
-                    ? "advantage below threshold"
-                    : "kept local";
+                if (handle->model->handoff_probe_outputs_router_score()) {
+                    handoff_reason = (handoff_advantage <= prompt.options.confidence_threshold)
+                        ? "router score below threshold"
+                        : "kept local";
+                } else {
+                    handoff_reason = (handoff_advantage <= prompt.options.confidence_threshold)
+                        ? "advantage below threshold"
+                        : "kept local";
+                }
             } else if (advantage_probe) {
                 handoff_reason = "probe unavailable";
             } else {

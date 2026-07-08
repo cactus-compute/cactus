@@ -767,6 +767,8 @@ public:
 
     bool has_handoff_probe() const { return handoff_probe_loaded_; }
     bool handoff_probe_returns_advantage() const;
+    bool handoff_probe_outputs_router_score() const;
+    float handoff_probe_route_probability(float score, float threshold) const;
     bool handoff_probe_uses_turn_streams() const;
     size_t handoff_probe_captured_rows() const;
     bool capture_handoff_probe_token(uint32_t token_id);
@@ -778,7 +780,7 @@ public:
                                   const std::vector<uint32_t>& summary_eot_actors = {}) const;
 
 private:
-    enum class HandoffProbeKind { NONE, GLOBAL_P_WRONG, SINGLE_KV_ADVANTAGE };
+    enum class HandoffProbeKind { NONE, GLOBAL_P_WRONG, SINGLE_KV_ADVANTAGE, GEN_ROUTER_SCORE };
 
     struct Binding {
         int node_id = -1;
@@ -985,6 +987,7 @@ private:
     uint32_t handoff_probe_observation_tokens_ = 0;
     uint32_t handoff_probe_summary_tokens_ = 0;
     uint32_t handoff_probe_eot_token_id_ = 0;
+    float handoff_probe_beta_ = 1.0f;
     std::vector<float> handoff_probe_norm_weight_;
     std::vector<float> handoff_probe_norm_bias_;
     std::vector<float> handoff_probe_proj_weight_;

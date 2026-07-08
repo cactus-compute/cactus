@@ -440,7 +440,7 @@ int cactus_transcribe(
             const bool cloud_eligible =
                 !cloud_disabled && !handle->cloud_handoff_disabled && options.auto_handoff;
             float threshold = options.confidence_threshold;
-            if (threshold < 0.0f) {
+            if (!options.has_confidence_threshold) {
                 const float model_default = handle->model->get_config().default_cloud_handoff_threshold;
                 threshold = handle->model->has_handoff_probe()
                     ? 0.50f

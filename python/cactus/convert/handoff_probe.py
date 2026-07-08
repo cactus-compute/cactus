@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import hashlib
 import json
+import math
 import struct
 import zipfile
 from pathlib import Path
@@ -28,6 +29,25 @@ _SINGLE_KV_MAXGEN = 512
 _SINGLE_KV_N_OBS = 128
 _SINGLE_KV_MAXSUM = 40
 _GEMMA4_EOT_TOKEN_ID = 106
+_GEN_ROUTER_PROBE_FILE = "wide_router_probe.pt"
+_GEN_ROUTER_MAXCTX = 2560
+_GEN_ROUTER_MAXGEN = 512
+_GEN_ROUTER_N_OBS = 128
+_GEN_ROUTER_MAXSUM = 40
+_GEN_ROUTER_DEFAULT_BETA = 5.0
+_GEN_ROUTER_ORDERED_KEYS = (
+    "norm.weight",
+    "norm.bias",
+    "k.weight",
+    "k.bias",
+    "v.weight",
+    "v.bias",
+    "q",
+    "head.0.weight",
+    "head.0.bias",
+    "head.2.weight",
+    "head.2.bias",
+)
 
 
 def _packaged_asset_dir(model_id: str | None) -> Path | None:
@@ -43,16 +63,20 @@ def _candidate_probe_files(output_dir: Path, model_id: str | None = None) -> lis
     candidates: list[Path] = []
     asset_dir = _packaged_asset_dir(model_id)
     if asset_dir is not None:
+        candidates.append(asset_dir / _GEN_ROUTER_PROBE_FILE)
         candidates.append(asset_dir / "prod_probe.pt")
         candidates.append(asset_dir / "probe.pt")
     candidates += [
+        output_dir / _GEN_ROUTER_PROBE_FILE,
         output_dir / "prod_probe.pt",
         output_dir / "probe.pt",
         output_dir / "global_attn_probe_v10p6.pt",
+        cwd / _GEN_ROUTER_PROBE_FILE,
         cwd / "prod_probe.pt",
         cwd / "probe.pt",
         cwd / "handoff_probe_pkg" / "prod_probe.pt",
         cwd / "v10p6_probe_release" / "global_attn_probe_v10p6.pt",
+        Path.home() / "Downloads" / _GEN_ROUTER_PROBE_FILE,
         Path.home() / "Downloads" / "prod_probe.pt",
         Path.home() / "Downloads" / "probe.pt",
         Path.home() / "Downloads" / "handoff_probe_pkg" / "prod_probe.pt",
@@ -64,10 +88,16 @@ def _candidate_probe_files(output_dir: Path, model_id: str | None = None) -> lis
 def _candidate_probe_zips(output_dir: Path) -> list[Path]:
     cwd = Path.cwd()
     return [
+        output_dir / "handoff_router_probe.zip",
+        output_dir / "handoff-router-probe.zip",
         output_dir / "handoff_probe_pkg.zip",
         output_dir / "v10p6_probe_release.zip",
+        cwd / "handoff_router_probe.zip",
+        cwd / "handoff-router-probe.zip",
         cwd / "handoff_probe_pkg.zip",
         cwd / "v10p6_probe_release.zip",
+        Path.home() / "Downloads" / "handoff_router_probe.zip",
+        Path.home() / "Downloads" / "handoff-router-probe.zip",
         Path.home() / "Downloads" / "handoff_probe_pkg.zip",
         Path.home() / "Downloads" / "v10p6_probe_release.zip",
     ]
@@ -79,6 +109,8 @@ def _load_checkpoint_from_zip(zip_path: Path) -> Any:
     with zipfile.ZipFile(zip_path) as zf:
         names = set(zf.namelist())
         for name in (
+            f"handoff_router_probe/{_GEN_ROUTER_PROBE_FILE}",
+            _GEN_ROUTER_PROBE_FILE,
             "handoff_probe_pkg/prod_probe.pt",
             "prod_probe.pt",
             "v10p6_probe_release/global_attn_probe_v10p6.pt",
@@ -253,6 +285,59 @@ def _write_single_kv_probe_bundle(out_dir: Path, checkpoint: Any, *, layer: int,
     return True
 
 
+def _write_gen_router_probe_bundle(out_dir: Path, checkpoint: Any, *, layer: int, source: str | None) -> bool:
+    meta = _checkpoint_meta(checkpoint)
+    state = _probe_state_dict(checkpoint, _GEN_ROUTER_ORDERED_KEYS)
+
+    feat_dim = int(state["norm.weight"].shape[0])
+    t_h = int(state["q"].shape[0])
+    mlp = int(state["head.0.weight"].shape[0])
+    beta = float(meta.get("beta", _GEN_ROUTER_DEFAULT_BETA))
+    if not math.isfinite(beta) or beta <= 0.0:
+        raise RuntimeError(f"unsupported Gemma4 router probe beta: {beta!r}")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    probe_path = out_dir / "handoff_probe.bin"
+    with probe_path.open("wb") as f:
+        f.write(_PROBE_MAGIC)
+        f.write(struct.pack(
+            "<IIIIIIIII",
+            3,
+            feat_dim,
+            t_h,
+            mlp,
+            _GEN_ROUTER_MAXCTX,
+            _GEN_ROUTER_MAXGEN,
+            _GEN_ROUTER_N_OBS,
+            _GEN_ROUTER_MAXSUM,
+            _GEMMA4_EOT_TOKEN_ID,
+        ))
+        f.write(struct.pack("<f", beta))
+        for key in _GEN_ROUTER_ORDERED_KEYS:
+            tensor = state[key].detach().cpu().contiguous().float().numpy()
+            f.write(tensor.tobytes(order="C"))
+
+    metadata = {
+        "format": "cactus_handoff_probe_gen512_router_v1",
+        "source": source,
+        "layer": layer,
+        "feat_dim": feat_dim,
+        "t_h": t_h,
+        "mlp": mlp,
+        "max_context_tokens": _GEN_ROUTER_MAXCTX,
+        "max_generation_tokens": _GEN_ROUTER_MAXGEN,
+        "observation_tokens": _GEN_ROUTER_N_OBS,
+        "summary_tokens": _GEN_ROUTER_MAXSUM,
+        "eot_token_id": _GEMMA4_EOT_TOKEN_ID,
+        "beta": beta,
+        "output": probe_path.name,
+        "tensor_sha256": _tensor_hash(state, _GEN_ROUTER_ORDERED_KEYS),
+        "checkpoint_meta": _jsonable_meta(meta),
+    }
+    (out_dir / "handoff_probe.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    return True
+
+
 def export_gemma4_handoff_probe(output_dir: str | Path, *, model_id: str | None = None) -> bool:
     """Package the Gemma4 cloud-handoff probe into a C++-readable bundle file."""
     model_key = (model_id or "").lower()
@@ -265,6 +350,12 @@ def export_gemma4_handoff_probe(output_dir: str | Path, *, model_id: str | None 
         return False
 
     state = _state_dict_from_checkpoint(checkpoint)
+    meta = _checkpoint_meta(checkpoint)
+    probe_name = meta.get("probe")
+    if probe_name == "gen512":
+        return _write_gen_router_probe_bundle(out_dir, checkpoint, layer=28, source=source)
+    if {"k.weight", "v.weight", "q"}.issubset(state):
+        raise RuntimeError(f"unsupported Gemma4 handoff probe type: {probe_name!r}")
     if "pk.0.weight" in state and "pv.0.weight" in state and "q" in state:
         return _write_single_kv_probe_bundle(out_dir, checkpoint, layer=28, source=source)
 
