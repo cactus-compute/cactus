@@ -122,22 +122,35 @@ graph.hard_reset();
 
 ## Benchmarks
 
-- LLM: Gemma-4-E2B-CQ4, 1k-prefill tps / 100-decode tps
-- VLM: Gemma-4-E2B-CQ4  256px input, latency / decode tps
-- Transcribe: Parakeet-TDT-0.6B-CQ4, 20s audio, latency / decode tps
-- Missing latency == no NPU support for device
+- LLM: Gemma-4-E2B-CQ4 — prefill tok/s / decode tok/s (1k-token prefill, 100-token decode)
+- VLM: Gemma-4-E2B-CQ4, 256px image — image encode time / decode tok/s
+- Transcribe: Parakeet-TDT-0.6B-CQ4, 20s audio — audio encode time / decode tok/s
+- 1k-Context RAM: peak MB during the LLM benchmark
+
+### CPU
 
 | Device | LLM | VLM | Transcribe | 1k-Context RAM |
-|--------|----------|------------|---------------|-----|
-| Mac M4 Pro | 2619tps / 139tps | 0.4s / 160tps | 0.1s / 11Mtps | 1327 MB |
-| Mac M3 Pro | 390 / 26 | 2.76s / 28.06 | 0.32s / 2.29M | 1376 MB |
+|--------|-----|-----|------------|---------------|
+| Mac M4 Pro | 595 / 47 | 2.40s / 50 | 1.00s / 10.0M | 998 |
+| Mac M3 Pro | 390 / 26 | 2.76s / 28 | 0.32s / 2.3M | 1376 |
 | iPhone 17 Pro | - | - | - | - |
+| iPhone 15 Pro | 249 / 24 | 8.85s / 20 | 3.04s / 6.8M | 564 |
 | iPhone 13 Mini | - | - | - | - |
 | Galaxy S26 | 248 / 21 | - / 16 | - / 5.7M | - |
 | Galaxy A17 5G | - | - | - | - |
 | Pixel 10 Pro | - | - | - | - |
 | Pixel 6a | - | - | - | - |
 | Raspberry Pi 5 | - | - | - | - |
+
+### Metal
+
+| Device | LLM | VLM | Transcribe | 1k-Context RAM |
+|--------|-----|-----|------------|---------------|
+| Mac M4 Pro | 1947 / 97 | 0.25s / 108 | 0.28s / 11.1M | 1225 |
+| Mac M3 Pro | - | - | - | - |
+| iPhone 17 Pro | - | - | - | - |
+| iPhone 15 Pro | 511 / 25 | 1.16s / 27 | 1.40s / 10.9M | 635 |
+| iPhone 13 Mini | - | - | - | - |
 
 
 ## Supported Models
