@@ -438,10 +438,6 @@ slot, so single-stream decode stays lean while fixed-batch decode (`decode_batch
 | `--no-fuse-rope` | Disable RoPE fusion |
 | `--no-fuse-attention` | Disable attention fusion |
 
-NPU emission (CoreML `.mlpackage`s for Apple Silicon audio and vision encoders)
-is available through the `--npu`, `--npu-quantize`, `--npu-audio-quantize`, and
-`--npu-vision-quantize` flags on `cactus convert`.
-
 ### `cactus run`
 
 ```bash
@@ -454,7 +450,6 @@ huggingface.co/Cactus-Compute) or a local path to a bundle directory.
 | Option | Description |
 |--------|-------------|
 | `--bits 1\|2\|3\|4` | CQ quantization bits when downloading (default: 4) |
-| `--weights general\|apple` | Weights bundle variant (default: general — portable on every platform) |
 | `--token <token>` | HuggingFace token (gated models) |
 | `--prompt <text>` | Input prompt |
 | `--input-ids <ids>` | Comma-separated token IDs |

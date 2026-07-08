@@ -20,9 +20,9 @@ cactus build --python
 <!-- --8<-- [end:install] -->
 
 ```bash
-# Download pre-built bundles (defaults to --weights general, the portable build)
+# Download pre-built bundles
 cactus download LiquidAI/LFM2-VL-450M
-cactus download openai/whisper-small --weights apple    # CoreML/NPU variant
+cactus download openai/whisper-small
 
 # Optional: set your Cactus Cloud API key for automatic cloud fallback
 cactus auth
@@ -61,8 +61,8 @@ from cactus import ensure_model, get_bundle_dir
 bundle = ensure_model("openai/whisper-tiny")
 
 # Or resolve the expected on-disk location explicitly
-bundle_dir = get_bundle_dir("openai/whisper-tiny", bits=4, platform=None)
-# -> Path("weights/whisper-tiny-cq4")  (or `-cq4-apple` with platform="apple")
+bundle_dir = get_bundle_dir("openai/whisper-tiny", bits=4)
+# -> Path("weights/whisper-tiny-cq4")
 ```
 
 ### Init / Lifecycle

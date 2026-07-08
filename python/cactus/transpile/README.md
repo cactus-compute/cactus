@@ -667,9 +667,7 @@ cactus run <bundle-path>
 ```
 
 The runtime reads `components/manifest.json` from the bundle directory, mmaps
-the `.weights` files, and loads the serialized `.cactus` graphs. Per-platform
-`.mlpackage` files (Apple CoreML / future vendor platforms) are dispatched
-to the matching hardware when present.
+the `.weights` files, and loads the serialized `.cactus` graphs.
 
 ## Major Situations And How They Are Handled
 

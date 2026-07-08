@@ -232,7 +232,7 @@ target.build_configurations.each do |config|
   config.build_settings['OTHER_LDFLAGS'].reject! { |flag| flag.to_s.include?('libcactus') }
   config.build_settings['OTHER_LDFLAGS'] << static_lib_path
 
-  ['-framework CoreML', '-framework Foundation', '-framework Accelerate', '-framework Security', '-framework SystemConfiguration', '-framework CFNetwork', '-framework Metal', '-framework MetalPerformanceShaders'].each do |framework|
+  ['-framework Foundation', '-framework Accelerate', '-framework Security', '-framework SystemConfiguration', '-framework CFNetwork', '-framework Metal', '-framework MetalPerformanceShaders'].each do |framework|
     config.build_settings['OTHER_LDFLAGS'] << framework unless config.build_settings['OTHER_LDFLAGS'].include?(framework)
   end
   if vendored_curl_lib

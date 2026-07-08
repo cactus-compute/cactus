@@ -16,7 +16,6 @@ import torch.nn.functional as F
 from cactus.transpile.component_pipeline import ComponentModuleSpec
 from cactus.convert.cactus_adapters.tensor_io import CACTUS_MAGIC
 from cactus.convert.cactus_adapters.tensor_io import align_offset
-from cactus.convert.model_adapters.naming import gemma4_scale_factor
 
 
 _GEMMA4_SAFE_TEXT_MLP_PRODUCT_SCALE = 1.0 / 64.0
@@ -1705,30 +1704,6 @@ def _gemma4_compute_native_like_image_features(
             eps=_gemma4_layer_norm_eps(multimodal_backbone),
         )
     return projected
-
-
-_GEMMA4_NPU_PROJ_WEIGHTS = (
-    ("embed_audio", "embed_audio_proj.weights"),
-    ("embed_vision", "embed_vision_proj.weights"),
-)
-
-
-@contextmanager
-def _gemma4_npu_projection_reparam(module: torch.nn.Module):
-    backbone = getattr(module, "multimodal_backbone", None)
-    scaled: list[tuple[torch.nn.Linear, float]] = []
-    for attr, cactus_name in _GEMMA4_NPU_PROJ_WEIGHTS:
-        projection = getattr(getattr(backbone, attr, None), "embedding_projection", None)
-        factor = gemma4_scale_factor(cactus_name)
-        if isinstance(projection, torch.nn.Linear) and factor != 1.0:
-            scaled.append((projection, factor))
-    for projection, factor in scaled:
-        projection.weight.data.mul_(factor)
-    try:
-        yield
-    finally:
-        for projection, factor in scaled:
-            projection.weight.data.div_(factor)
 
 
 def _gemma4_compute_native_like_audio_features(
@@ -4524,7 +4499,6 @@ def _build_gemma4_multimodal_component_specs(
         raise RuntimeError("Gemma4 audio component requested but input_features/input_features_mask were not prepared")
 
     vision_encoder: Gemma4VisionEncoderAdapter | None = None
-    vision_encoder_npu: Gemma4VisionEncoderAdapter | None = None
     audio_encoder: Gemma4AudioEncoderAdapter | None = None
     native_image_soft_token_counts: tuple[int, ...] | None = None
     native_image_pool_shapes: tuple[tuple[int, int, int], ...] | None = None
@@ -4544,12 +4518,6 @@ def _build_gemma4_multimodal_component_specs(
             weights_dir=weights_dir,
             native_image_soft_token_counts=native_image_soft_token_counts,
             native_image_pool_shapes=native_image_pool_shapes,
-        ).eval()
-        vision_encoder_npu = Gemma4VisionEncoderAdapter(
-            model,
-            weights_dir=weights_dir,
-            native_image_soft_token_counts=native_image_soft_token_counts,
-            native_image_pool_shapes=None,
         ).eval()
     if "audio_encoder" in expanded_components:
         _gemma4_make_audio_mask_fp16_safe(model)
@@ -4703,7 +4671,7 @@ def _build_gemma4_multimodal_component_specs(
     }
     specs: list[ComponentModuleSpec] = []
     if "vision_encoder" in expanded_components:
-        if vision_encoder is None or vision_encoder_npu is None or pixel_values is None:
+        if vision_encoder is None or pixel_values is None:
             raise RuntimeError("Gemma4 vision_encoder spec requires prepared pixel_values")
         specs.append(ComponentModuleSpec(
             component="vision_encoder",
@@ -4713,9 +4681,6 @@ def _build_gemma4_multimodal_component_specs(
             output_keys=("image_features",),
             graph_meta={**common_graph_meta, "component": "vision_encoder"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
-            npu_module=vision_encoder_npu,
-            npu_runtime_input_count=2,
-            npu_reparam=_gemma4_npu_projection_reparam,
         ))
     if "audio_encoder" in expanded_components:
         if audio_encoder is None or input_features is None or input_features_mask is None:
@@ -4728,7 +4693,6 @@ def _build_gemma4_multimodal_component_specs(
             output_keys=("audio_features",),
             graph_meta={**common_graph_meta, "component": "audio_encoder"},
             metadata={"family": "gemma4", "task": "multimodal_causal_lm_logits"},
-            npu_reparam=_gemma4_npu_projection_reparam,
         ))
     if "lm_encoder" in expanded_components:
         if image_features is None:
@@ -7006,7 +6970,6 @@ def _build_lfm2_vl_multimodal_component_specs(
             output_keys=("last_hidden_state",),
             graph_meta={**common_graph_meta, "component": "vision_encoder"},
             metadata=metadata,
-            npu_runtime_input_count=3,
         ))
     if "vision_projector" in expanded_components:
         specs.append(ComponentModuleSpec(

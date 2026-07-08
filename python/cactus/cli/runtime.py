@@ -75,7 +75,6 @@ def _link_python_runtime_library(*, static_lib, library_path):
             "-Wl,-install_name,@rpath/libcactus_engine.dylib",
             "-lcurl",
             "-framework", "Accelerate",
-            "-framework", "CoreML",
             "-framework", "Foundation",
             "-framework", "Metal",
             "-framework", "MetalPerformanceShaders",

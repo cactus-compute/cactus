@@ -25,9 +25,7 @@ cactus auth
 `cactus download` fetches a **pre-built runtime bundle** (CQ weights + serialized
 graph + manifest) from
 [huggingface.co/Cactus-Compute](https://huggingface.co/Cactus-Compute) into
-`weights/<model>-cq<bits>[-<variant>]/`. Defaults to `--weights general` (the
-portable build, used on every platform); pass `--weights apple` for the
-Apple-specific (CoreML/NPU) variant. The result can be loaded directly via
+`weights/<model>-cq<bits>/`. The result can be loaded directly via
 `cactus_init()`.
 
 For models not on Cactus-Compute, build a bundle from source with

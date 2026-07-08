@@ -45,13 +45,9 @@ class TestCqDownloadResolver(unittest.TestCase):
         )
 
     def test_parse_cq_variant(self):
-        self.assertEqual(parse_cq_variant("gemma-4-E2B-it-cq1.zip"), (1, None))
-        self.assertEqual(parse_cq_variant("gemma-4-E2B-it-cq4.zip"), (4, None))
-        self.assertEqual(parse_cq_variant("gemma-4-E2B-it-CQ3.tar.gz"), (3, None))
-        self.assertEqual(parse_cq_variant("gemma-4-E2B-it-cq4-apple.tar.gz"), (4, "apple"))
-        self.assertEqual(parse_cq_variant("model-cq2-APPLE.zip"), (2, "apple"))
-        # Forward-compatible: any vendor name matching [a-z]+ parses.
-        self.assertEqual(parse_cq_variant("model-cq4-qualcomm.tar.gz"), (4, "qualcomm"))
+        self.assertEqual(parse_cq_variant("gemma-4-E2B-it-cq1.zip"), 1)
+        self.assertEqual(parse_cq_variant("gemma-4-E2B-it-cq4.zip"), 4)
+        self.assertEqual(parse_cq_variant("gemma-4-E2B-it-CQ3.tar.gz"), 3)
         self.assertIsNone(parse_cq_variant("README.md"))
         self.assertIsNone(parse_cq_variant("L4V4A4.zip"))
 
@@ -61,39 +57,28 @@ class TestCqDownloadResolver(unittest.TestCase):
             "gemma-4-E2B-it-cq2.zip",
             "gemma-4-E2B-it-cq3.zip",
             "gemma-4-E2B-it-cq4.zip",
-            "gemma-4-E2B-it-cq4-apple.zip",
             "README.md",
             "config.json",
         ]
         sizes = {"gemma-4-E2B-it-cq4.zip": 500_000_000}
         archives = archives_from_repo_files(files, sizes=sizes)
-        self.assertEqual(len(archives), 5)
+        self.assertEqual(len(archives), 4)
         self.assertEqual(archives[0].bits, 1)
-        self.assertIsNone(archives[0].platform)
-        # Generic CPU bundle sorts BEFORE vendor-specific for the same bits.
-        self.assertEqual((archives[3].bits, archives[3].platform), (4, None))
-        self.assertEqual((archives[4].bits, archives[4].platform), (4, "apple"))
+        self.assertEqual(archives[3].bits, 4)
         self.assertEqual(archives[3].size, 500_000_000)
 
     def test_resolve_archive_finds_match(self):
-        files = ["model-cq1.zip", "model-cq2.zip", "model-cq3.zip", "model-cq4.zip", "model-cq4-apple.zip"]
+        files = ["model-cq1.zip", "model-cq2.zip", "model-cq3.zip", "model-cq4.zip"]
         archives = archives_from_repo_files(files)
         resolution = resolve_archive("Cactus-Compute/model", "model", archives, 4)
         self.assertEqual(resolution.archive.filename, "model-cq4.zip")
         self.assertEqual(resolution.archive.bits, 4)
-        self.assertIsNone(resolution.archive.platform)
-
-        apple = resolve_archive("Cactus-Compute/model", "model", archives, 4, platform="apple")
-        self.assertEqual(apple.archive.filename, "model-cq4-apple.zip")
-        self.assertEqual(apple.archive.platform, "apple")
 
     def test_resolve_archive_missing_variant_errors(self):
         files = ["model-cq1.zip", "model-cq2.zip"]
         archives = archives_from_repo_files(files)
         with self.assertRaisesRegex(RuntimeError, "cq4 not found"):
             resolve_archive("Cactus-Compute/model", "model", archives, 4)
-        with self.assertRaisesRegex(RuntimeError, "cq2-apple not found"):
-            resolve_archive("Cactus-Compute/model", "model", archives, 2, platform="apple")
 
     def test_resolve_archive_empty_errors(self):
         with self.assertRaisesRegex(RuntimeError, "No CQ archives"):

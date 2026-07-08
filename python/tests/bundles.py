@@ -21,8 +21,8 @@ def _valid_bundle(path: Path) -> bool:
 
 def _iter_bundle_candidates(name: str):
     """Yield the bare bundle dir for `name` plus any suffixed `name-cq*` variants
-    (e.g. `gemma-4-e2b-it-cq4`, `gemma-4-e2b-it-cq4-apple`) so callers that know a
-    model's bare stem still find bundles built under the suffixed convention."""
+    (e.g. `gemma-4-e2b-it-cq4`) so callers that know a model's bare stem still
+    find bundles built under the suffixed convention."""
     bare = WEIGHTS / name
     if bare.exists():
         yield bare

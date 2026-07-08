@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 
 from .common import GREEN, RED, YELLOW, print_color
-from .download import get_bundle_dir, get_weights_dir, resolve_weights_variant
+from .download import get_bundle_dir, get_weights_dir
 
 
 def _merge_lora_adapter(base_model_id, lora_path, token=None):
@@ -56,19 +56,14 @@ def cmd_convert(args):
             return 1
         source_model_id = merged_dir
 
-    platform = resolve_weights_variant(getattr(args, "weights", "general"))
     output_dir = args.output_dir or str(
-        get_bundle_dir(args.model_id, bits=args.bits, platform=platform)
+        get_bundle_dir(args.model_id, bits=args.bits)
     )
-
-    if platform == "apple" and not getattr(args, "npu", False):
-        args.npu = True
 
     try:
         ensure_weights(
             source_model_id,
             bits=args.bits,
-            platform=platform,
             token=args.token,
             reconvert=args.reconvert,
             output_dir=output_dir,
@@ -164,14 +159,6 @@ def cmd_transpile(args):
         extra_args.append("--no-fuse-add-clipped")
     if args.no_fuse_gated_deltanet:
         extra_args.append("--no-fuse-gated-deltanet")
-    if args.npu:
-        extra_args.append("--npu")
-        if args.npu_quantize is not None:
-            extra_args.extend(["--npu-quantize", str(args.npu_quantize)])
-        if args.npu_audio_quantize is not None:
-            extra_args.extend(["--npu-audio-quantize", str(args.npu_audio_quantize)])
-        if args.npu_vision_quantize is not None:
-            extra_args.extend(["--npu-vision-quantize", str(args.npu_vision_quantize)])
     if args.cache_context_length is not None:
         extra_args.extend(["--cache-context-length", str(args.cache_context_length)])
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from .common import GREEN, PROJECT_ROOT, RED, YELLOW, print_color
@@ -32,10 +32,10 @@ def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=
     return weights_dir
 
 
-def ensure_weights(model_id, *, bits=4, platform=None, token=None, reconvert=False, output_dir=None, skip_model_load=False):
+def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=None, skip_model_load=False):
     from .download import get_bundle_dir
 
-    weights_dir = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits, platform=platform)
+    weights_dir = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits)
 
     if reconvert and weights_dir.exists():
         print_color(YELLOW, "Removing cached weights for reconversion...")
@@ -191,14 +191,10 @@ class TranspileOptions:
     system_prompt: str | None = None
     trust_remote_code: bool = False
     local_files_only: bool = False
-    npu: bool = False
-    npu_quantize: int | None = None
-    npu_audio_quantize: int | None = None
-    npu_vision_quantize: int | None = None
     cache_context_length: str | int | None = None
 
 
-def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
+def ensure_runnable_bundle(model_id, *, bits=4, token=None,
                            reconvert=False, prebuilt=True, output_dir=None,
                            transpile=None):
     """Resolve a runnable bundle via the full fallback ladder, building if needed.
@@ -218,35 +214,31 @@ def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
     if str(model_id).startswith(("/", "./", "../", "~")) and not Path(model_id).expanduser().exists():
         raise RuntimeError(f"path not found: {model_id}")
 
-    cached = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits, platform=platform)
+    cached = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits)
     if _has_transpiled_bundle(cached) and not reconvert:
         return cached
 
     if prebuilt and not reconvert:
         try:
-            return download_bundle(model_id, bits=bits, platform=platform,
+            return download_bundle(model_id, bits=bits,
                                    token=token, output_dir=cached)
         except (RuntimeError, OSError) as exc:
             print_color(YELLOW, f"No prebuilt bundle ({exc}); building locally")
 
     opts = transpile or TranspileOptions()
-    if platform == "apple" and not opts.npu:
-        opts = replace(opts, npu=True)
-    return ensure_bundle(model_id, bits=bits, platform=platform, token=token,
+    return ensure_bundle(model_id, bits=bits, token=token,
                          reconvert=reconvert, output_dir=cached, transpile=opts)
 
 
 def prepare_bundle(args, *, model_id=None, transpile=None, prebuilt=True,
                    output_dir=None, fail_prefix="Model setup failed"):
-    """Resolve the weights variant from args and return a runnable bundle, with uniform
-    error handling shared by every model command. Returns the bundle Path, or
-    None (after printing the error) on failure."""
-    from .download import resolve_weights_variant
+    """Return a runnable bundle, with uniform error handling shared by every
+    model command. Returns the bundle Path, or None (after printing the error)
+    on failure."""
     try:
         return ensure_runnable_bundle(
             args.model_id if model_id is None else model_id,
             bits=getattr(args, "bits", 4),
-            platform=resolve_weights_variant(getattr(args, "weights", "general")),
             token=getattr(args, "token", None),
             reconvert=getattr(args, "reconvert", False),
             prebuilt=prebuilt,
@@ -258,7 +250,7 @@ def prepare_bundle(args, *, model_id=None, transpile=None, prebuilt=True,
         return None
 
 
-def ensure_bundle(model_id, *, bits=4, platform=None, token=None,
+def ensure_bundle(model_id, *, bits=4, token=None,
                   reconvert=False, output_dir=None, transpile=None,
                   skip_model_load=False):
     from .download import get_bundle_dir
@@ -270,10 +262,10 @@ def ensure_bundle(model_id, *, bits=4, platform=None, token=None,
     if output_dir is not None:
         output_dir = Path(output_dir).expanduser().resolve()
     else:
-        output_dir = get_bundle_dir(model_id, bits=bits, platform=platform)
+        output_dir = get_bundle_dir(model_id, bits=bits)
 
     ensure_weights(
-        model_id, bits=bits, platform=platform, token=token,
+        model_id, bits=bits, token=token,
         reconvert=reconvert, output_dir=output_dir,
         skip_model_load=skip_model_load,
     )
@@ -362,14 +354,6 @@ def ensure_bundle(model_id, *, bits=4, platform=None, token=None,
         extra_args.append("--trust-remote-code")
     if opts.local_files_only:
         extra_args.append("--local-files-only")
-    if opts.npu:
-        extra_args.append("--npu")
-        if opts.npu_quantize is not None:
-            extra_args.extend(["--npu-quantize", str(int(opts.npu_quantize))])
-        if opts.npu_audio_quantize is not None:
-            extra_args.extend(["--npu-audio-quantize", str(int(opts.npu_audio_quantize))])
-        if opts.npu_vision_quantize is not None:
-            extra_args.extend(["--npu-vision-quantize", str(int(opts.npu_vision_quantize))])
     if opts.cache_context_length is not None:
         extra_args.extend(["--cache-context-length", str(opts.cache_context_length)])
 

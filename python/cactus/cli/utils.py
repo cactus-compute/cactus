@@ -15,25 +15,24 @@ from pathlib import Path
 from typing import Iterable
 
 
-CQ_VARIANT_RE = re.compile(r"-cq([1-4])(?:-([a-z]+))?$", re.IGNORECASE)
+CQ_VARIANT_RE = re.compile(r"-cq([1-4])$", re.IGNORECASE)
 ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
 
 
-def variant_suffix(bits: int, platform: str | None) -> str:
-    return f"cq{bits}-{platform.lower()}" if platform else f"cq{bits}"
+def variant_suffix(bits: int) -> str:
+    return f"cq{bits}"
 
 
 @dataclass(frozen=True)
 class CqArchive:
     filename: str
     bits: int
-    platform: str | None = None  # None = generic CPU bundle
     size: int | None = None
     sha256: str | None = None
 
     @property
     def suffix(self) -> str:
-        return variant_suffix(self.bits, self.platform)
+        return variant_suffix(self.bits)
 
 
 @dataclass(frozen=True)
@@ -46,7 +45,7 @@ class CqResolution:
 
 def suggested_cq_repo(model_id: str) -> str:
     name = str(model_id).strip().replace("_", "-").split("/")[-1]
-    name = re.sub(r"-cq\d*(?:-[a-z]+)?$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"-cq\d*$", "", name, flags=re.IGNORECASE)
     return f"Cactus-Compute/{name}"
 
 
@@ -57,22 +56,17 @@ def archive_stem(filename: str) -> str:
     return filename
 
 
-def parse_cq_variant(filename: str) -> tuple[int, str | None] | None:
+def parse_cq_variant(filename: str) -> int | None:
     stem = archive_stem(Path(filename).name)
     m = CQ_VARIANT_RE.search(stem)
     if not m:
         return None
-    platform = m.group(2).lower() if m.group(2) else None
-    return int(m.group(1)), platform
+    return int(m.group(1))
 
 
 def is_supported_archive(filename: str) -> bool:
     lower = filename.lower()
     return any(lower.endswith(suffix) for suffix in ARCHIVE_SUFFIXES)
-
-
-def _platform_sort_key(platform: str | None) -> tuple[int, str]:
-    return (0, "") if platform is None else (1, platform)
 
 
 def archives_from_repo_files(repo_files: Iterable[str], sizes: dict[str, int] | None = None,
@@ -83,13 +77,12 @@ def archives_from_repo_files(repo_files: Iterable[str], sizes: dict[str, int] | 
     for filename in repo_files:
         if not is_supported_archive(filename):
             continue
-        variant = parse_cq_variant(filename)
-        if variant is None:
+        bits = parse_cq_variant(filename)
+        if bits is None:
             continue
-        bits, platform = variant
-        archives.append(CqArchive(filename=filename, bits=bits, platform=platform,
+        archives.append(CqArchive(filename=filename, bits=bits,
                                   size=sizes.get(filename), sha256=sha256s.get(filename)))
-    return tuple(sorted(archives, key=lambda a: (a.bits, _platform_sort_key(a.platform))))
+    return tuple(sorted(archives, key=lambda a: a.bits))
 
 
 VERSION_TAG_RE = re.compile(r"^v?(\d+(?:\.\d+){0,2})$", re.IGNORECASE)
@@ -147,13 +140,13 @@ def resolve_weight_revision(repo_id: str, runtime_version: str | None = None,
 
 
 def resolve_archive(repo_id: str, local_name: str, archives: Iterable[CqArchive],
-                    bits: int, platform: str | None = None) -> CqResolution:
+                    bits: int) -> CqResolution:
     available = tuple(archives)
     if not available:
         raise RuntimeError(f"No CQ archives found in {repo_id}")
 
-    wanted = variant_suffix(bits, platform)
-    match = next((a for a in available if a.bits == bits and a.platform == platform), None)
+    wanted = variant_suffix(bits)
+    match = next((a for a in available if a.bits == bits), None)
     if not match:
         choices = ", ".join(a.suffix for a in available)
         raise RuntimeError(f"{wanted} not found in {repo_id}. Available: {choices}")

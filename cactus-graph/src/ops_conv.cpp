@@ -41,10 +41,6 @@ std::vector<__fp16> dequantize_int8_weights_to_fp16(
 }
 
 void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    if (node.params.backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU causal convolution operation not yet implemented");
-    }
-
     const auto& X = get_input(node, 0, nodes, node_index_map);
     const auto& W = get_input(node, 1, nodes, node_index_map);
     auto& Y = node.output_buffer;
@@ -118,10 +114,6 @@ void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_p
 }
 
 void compute_conv1d_k3_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    if (node.params.backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU causal convolution operation not yet implemented");
-    }
-
     const auto& X = get_input(node, 0, nodes, node_index_map);
     const auto& W = get_input(node, 1, nodes, node_index_map);
     auto& Y = node.output_buffer;
@@ -238,10 +230,6 @@ void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 
 void compute_conv1d_same_depthwise_k9_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                                            const std::unordered_map<size_t, size_t>& node_index_map) {
-    if (node.params.backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU conv1d_same_depthwise_k9 operation not yet implemented");
-    }
-
     const auto& X = get_input(node, 0, nodes, node_index_map);
     const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;
@@ -322,10 +310,6 @@ void compute_conv1d_same_depthwise_k9_node(GraphNode& node, const std::vector<st
 
 void compute_conv2d_k3s2p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                                 const std::unordered_map<size_t, size_t>& node_index_map) {
-    if (node.params.backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU conv2d_k3s2p1 operation not yet implemented");
-    }
-
     const auto& X = get_input(node, 0, nodes, node_index_map);
     const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;
@@ -399,10 +383,6 @@ void compute_conv2d_k3s2p1_node(GraphNode& node, const std::vector<std::unique_p
 
 void compute_conv2d_depthwise_k3s2p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                                           const std::unordered_map<size_t, size_t>& node_index_map) {
-    if (node.params.backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU conv2d_depthwise_k3s2p1 operation not yet implemented");
-    }
-
     const auto& X = get_input(node, 0, nodes, node_index_map);
     const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;
@@ -488,10 +468,6 @@ void compute_conv2d_depthwise_k3s2p1_node(GraphNode& node, const std::vector<std
 
 void compute_conv2d_pointwise_1x1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                                        const std::unordered_map<size_t, size_t>& node_index_map) {
-    if (node.params.backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU conv2d_pointwise_1x1 operation not yet implemented");
-    }
-
     const auto& X = get_input(node, 0, nodes, node_index_map);
     const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;
@@ -578,10 +554,6 @@ void compute_conv2d_pointwise_1x1_node(GraphNode& node, const std::vector<std::u
 
 void compute_conv1d_pointwise_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                                    const std::unordered_map<size_t, size_t>& node_index_map) {
-    if (node.params.backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU conv1d_pointwise operation not yet implemented");
-    }
-
     const auto& X = get_input(node, 0, nodes, node_index_map);
     const auto& W = get_input(node, 1, nodes, node_index_map);
     const BufferDesc* B = nullptr;

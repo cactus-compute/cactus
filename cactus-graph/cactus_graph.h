@@ -84,7 +84,7 @@ private:
 #define CACTUS_LOG_WARN(component, msg)  CACTUS_LOG(cactus::LogLevel::WARN, component, msg)
 #define CACTUS_LOG_ERROR(component, msg) CACTUS_LOG(cactus::LogLevel::ERROR, component, msg)
 
-enum class ComputeBackend { CPU, NPU, METAL };
+enum class ComputeBackend { CPU, METAL };
 
 enum class Activation { SILU, GELU, GELU_ERF, RELU, SIGMOID, TANH };
 

@@ -39,11 +39,6 @@ DEFAULT_TEST_MODEL_ID = DEFAULT_MODEL_ID
 DEFAULT_TEST_TRANSCRIPTION_MODEL_ID = DEFAULT_TRANSCRIPTION_MODEL_ID
 
 
-# Vendor-specific weight-bundle variants; add a new vendor by appending its
-# name here. "general" (the portable bundle) is always available and default.
-SUPPORTED_WEIGHTS_VARIANTS: tuple[str, ...] = ("apple",)
-
-
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
 YELLOW = '\033[1;33m'

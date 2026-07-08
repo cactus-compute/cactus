@@ -336,14 +336,8 @@ class TestCliParser:
         with pytest.raises(SystemExit):
             self.parser.parse_args(["run", "whisper-base", "--prompt", "hi"])
 
-    def test_run_weights_flag(self):
-        args = self.parser.parse_args(["run", "Foo/Bar", "--weights", "apple"])
-        assert args.weights == "apple"
-        assert args.bits == 4
-
-    def test_download_weights_flag(self):
-        args = self.parser.parse_args(["download", "Foo/Bar", "--weights", "general", "--bits", "2"])
-        assert args.weights == "general"
+    def test_download_bits_flag(self):
+        args = self.parser.parse_args(["download", "Foo/Bar", "--bits", "2"])
         assert args.bits == 2
 
 

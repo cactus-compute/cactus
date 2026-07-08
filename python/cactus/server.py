@@ -118,7 +118,7 @@ class ModelRegistry:
 
     def _resolve(self, model_id: str) -> ModelInfo | None:
         """Match an exact bundle id, or fall back to the HuggingFace id / bare
-        stem (e.g. 'google/gemma-4-E2B-it' -> 'gemma-4-e2b-it-cq4-apple') when it
+        stem (e.g. 'google/gemma-4-E2B-it' -> 'gemma-4-e2b-it-cq4') when it
         is unambiguous."""
         info = self.models.get(model_id)
         if info is not None:

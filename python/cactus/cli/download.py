@@ -3,7 +3,6 @@ from pathlib import Path
 
 from .common import (
     BLUE, GREEN,
-    SUPPORTED_WEIGHTS_VARIANTS,
     print_color, weights_root,
 )
 
@@ -16,27 +15,16 @@ def get_weights_dir(model_id: str) -> Path:
     return weights_root() / get_model_dir_name(model_id)
 
 
-def get_bundle_dir(model_id: str, *, bits: int = 4, platform: str | None = None) -> Path:
+def get_bundle_dir(model_id: str, *, bits: int = 4) -> Path:
     from .utils import variant_suffix
-    return weights_root() / f"{get_model_dir_name(model_id)}-{variant_suffix(bits, platform)}"
-
-
-def resolve_weights_variant(choice: str | None) -> str | None:
-    """Map the --weights choice to the bundle variant suffix: general (the
-    default on every platform) selects the portable bundle (no suffix)."""
-    if choice in (None, "general"):
-        return None
-    if choice in SUPPORTED_WEIGHTS_VARIANTS:
-        return choice
-    raise ValueError(f"unknown weights variant {choice!r}; "
-                     f"supported: general, {', '.join(SUPPORTED_WEIGHTS_VARIANTS)}")
+    return weights_root() / f"{get_model_dir_name(model_id)}-{variant_suffix(bits)}"
 
 
 def ensure_model(model_id: str) -> Path:
     return download_bundle(model_id)
 
 
-def download_bundle(model_id: str, *, bits: int = 4, platform: str | None = None,
+def download_bundle(model_id: str, *, bits: int = 4,
                     token: str | None = None, output_dir: Path | None = None) -> Path:
     from .utils import (
         download_cq_archive,
@@ -49,10 +37,10 @@ def download_bundle(model_id: str, *, bits: int = 4, platform: str | None = None
 
     repo_id = suggested_cq_repo(model_id)
     local_name = get_model_dir_name(model_id)
-    bundle_dir = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits, platform=platform)
+    bundle_dir = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits)
 
     revision = resolve_weight_revision(repo_id, token=token)
-    label = variant_suffix(bits, platform)
+    label = variant_suffix(bits)
     print()
     print_color(BLUE, f"Fetching {repo_id} [{label}] @ {revision or 'main'}")
 
@@ -60,7 +48,7 @@ def download_bundle(model_id: str, *, bits: int = 4, platform: str | None = None
     if not archives:
         raise RuntimeError(f"no bundles published at {repo_id}")
 
-    resolution = resolve_archive(repo_id, local_name, archives, bits, platform=platform)
+    resolution = resolve_archive(repo_id, local_name, archives, bits)
     download_cq_archive(resolution, bundle_dir, token=token, revision=revision)
     print_color(GREEN, f"Ready at {bundle_dir}")
     return bundle_dir

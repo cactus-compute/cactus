@@ -41,7 +41,7 @@ most people read at roughly 4-5 words per second, so even the Raspberry Pi's 30 
 Second, the RAM gap between Apple and Android: 56-85 MB versus 300-330 MB for the same 355 MB model.
 That gap is not a bug. It's a direct consequence of how the two platforms handle memory-mapped files, which we'll get into in the Cactus format section below.
 
-## Why CPU, Not GPU or NPU
+## Why CPU, Not GPU or Dedicated Accelerators
 
 It is tempting to reach for the GPU. On paper, mobile GPUs have 10-50x the FLOPS of a single CPU core. 
 But inference on a 350M-parameter model is not a FLOPS problem, it's a memory bandwidth problem. 
@@ -55,17 +55,17 @@ That's two separate shader codepaths to maintain, with different memory models, 
 And GPU inference holds a persistent GPU context, which competes with the UI rendering pipeline and drains battery even when the inference workload is light.
 GPUs are also energy-inefficient. On Macs and PCs this barely matters since they're plugged into a power source most of the time, and GPU inference works well there. But mobile devices run on battery, and every watt spent on GPU inference cuts directly into the user's runtime. The GPU path that works fine on a MacBook becomes a battery killer on a phone.
 
-NPU is a more interesting target. Apple's Neural Engine and Qualcomm's Hexagon DSP both offer high-throughput inference at good power efficiency. 
-The problem is access. Apple's Neural Engine requires CoreML model conversion, which imposes its own quantization and graph constraints.
+Dedicated AI accelerators are a more interesting target. Apple's Neural Engine and Qualcomm's Hexagon DSP both offer high-throughput inference at good power efficiency. 
+The problem is access. Apple's Neural Engine requires conversion into a proprietary model format, which imposes its own quantization and graph constraints.
 You don't control the execution schedule, the memory layout, or the precision semantics. 
-The quantisation techniques available through CoreML severely lag the state-of-the-art methods used by GGML and Cactus.
+The quantisation techniques available through that toolchain severely lag the state-of-the-art methods used by GGML and Cactus.
 Qualcomm's QNN SDK has similar restrictions (limited quantisation scheme support) and not all Android devices ship Qualcomm chips. 
-Both lock you into a vendor-specific format that may not support your model architecture at all, and neither works on budget devices that lack the NPU entirely.
+Both lock you into a vendor-specific format that may not support your model architecture at all, and neither works on budget devices that lack the accelerator entirely.
 
 CPU is the universal target. Every ARM device, flagship, budget, wearable, Raspberry Pi, and most recent ones support DOTPROD or I8MM extensions. 
-A single well-optimized CPU codepath works everywhere, the main challenge is energy-inefficiency compared to NPU.
+A single well-optimized CPU codepath works everywhere, the main challenge is energy-inefficiency compared to dedicated accelerators.
 
-ARM is also closing this gap. The progression from NEON to DOTPROD to I8MM to SME2 reflects a deliberate push to bring matrix-processing efficiency onto the CPU itself. Each generation narrows the energy and throughput gap with dedicated NPUs. SME2, landing on upcoming ARMv9.2-A cores, adds streaming matrix operations that approach NPU-class efficiency for INT8 workloads while remaining fully programmable. The bet is that general-purpose CPU silicon will continue absorbing the capabilities that once justified a separate accelerator.
+ARM is also closing this gap. The progression from NEON to DOTPROD to I8MM to SME2 reflects a deliberate push to bring matrix-processing efficiency onto the CPU itself. Each generation narrows the energy and throughput gap with dedicated accelerators. SME2, landing on upcoming ARMv9.2-A cores, adds streaming matrix operations that approach accelerator-class efficiency for INT8 workloads while remaining fully programmable. The bet is that general-purpose CPU silicon will continue absorbing the capabilities that once justified a separate accelerator.
 
 ## Why Single Core for Decode
 

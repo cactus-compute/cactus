@@ -489,9 +489,9 @@ size_t similarity = fixture.graph().divide(dot_product, fixture.graph().multiply
 1. **Batch operations**: Process multiple samples together
 2. **Pre-transpose weights**: Use `pretransposed_rhs=true` for matmul when possible
 3. **Fused operations**: The framework automatically fuses compatible operations
-4. **Backend selection**: Use NPU backend for supported operations:
+4. **Backend selection**: Use the Metal backend for supported operations:
    ```cpp
-   size_t result = graph.matmul(a, b, false, ComputeBackend::NPU);
+   size_t result = graph.matmul(a, b, false, ComputeBackend::METAL);
    ```
 
 ### Graph Construction
@@ -522,7 +522,7 @@ size_t CactusGraph::relu(size_t input) {
 ```
 3. **Implement the op in the execution engine**
 Implement the kernel or graph op code in the relevant file, usually in `cactus-kernels/src/`
-Register the new op in the dispatch table in `cactus-graph/src/execute.cpp` for the supported backends (CPU, NPU)
+Register the new op in the dispatch table in `cactus-graph/src/execute.cpp` for the supported backends (CPU, Metal)
 
 4. **Export op in FFI bindings**
 - header: `cactus-graph/cactus_graph.h` (in the `extern "C"` block)
