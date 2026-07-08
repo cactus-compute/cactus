@@ -122,35 +122,17 @@ graph.hard_reset();
 
 ## Benchmarks
 
-- LLM: Gemma-4-E2B-CQ4 — prefill tok/s / decode tok/s (1k-token prefill, 100-token decode)
-- VLM: Gemma-4-E2B-CQ4, 256px image — image encode time / decode tok/s
-- Transcribe: Parakeet-TDT-0.6B-CQ4, 20s audio — audio encode time / decode tok/s
+- LLM: Gemma-4-E2B-CQ4 (1k-context prefill / decode for 100 tokens)
+- VLM: Gemma-4-E2B-CQ4 (256px image encode time / decode)
+- Transcribe: Parakeet-TDT-0.6B-CQ4 (20s audio encode time / decode)
 - 1k-Context RAM: peak MB during the LLM benchmark
 
-### CPU
+Reproduce command: `cactus test --component engine --suite benchmark`
 
 | Device | LLM | VLM | Transcribe | 1k-Context RAM |
 |--------|-----|-----|------------|---------------|
-| Mac M4 Pro | 595 / 47 | 2.40s / 50 | 1.00s / 10.0M | 998 |
-| Mac M3 Pro | 390 / 26 | 2.76s / 28 | 0.32s / 2.3M | 1376 |
-| iPhone 17 Pro | - | - | - | - |
-| iPhone 15 Pro | 249 / 24 | 8.85s / 20 | 3.04s / 6.8M | 564 |
-| iPhone 13 Mini | - | - | - | - |
-| Galaxy S26 | 248 / 21 | - / 16 | - / 5.7M | - |
-| Galaxy A17 5G | - | - | - | - |
-| Pixel 10 Pro | - | - | - | - |
-| Pixel 6a | - | - | - | - |
-| Raspberry Pi 5 | - | - | - | - |
-
-### Metal
-
-| Device | LLM | VLM | Transcribe | 1k-Context RAM |
-|--------|-----|-----|------------|---------------|
-| Mac M4 Pro | 1947 / 97 | 0.25s / 108 | 0.28s / 11.1M | 1225 |
-| Mac M3 Pro | - | - | - | - |
-| iPhone 17 Pro | - | - | - | - |
-| iPhone 15 Pro | 511 / 25 | 1.16s / 27 | 1.40s / 10.9M | 635 |
-| iPhone 13 Mini | - | - | - | - |
+| Mac M4 Pro | 1947tps / 97tps | 0.25s / 108tps | 0.28s / 11.1Mtps | 1225MB |
+| iPhone 15 Pro | 511tps / 25tps | 1.16s / 27tps | 1.40s / 10.9Mtps | 635MB |
 
 
 ## Supported Models
