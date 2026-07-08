@@ -4,6 +4,7 @@ import constants
 import models
 
 
+
 @dataclass(slots=True)
 class FusionPattern:
     target:str
@@ -13,7 +14,7 @@ class FusionPattern:
     input_refs:tuple[tuple[int, int],...]
     shared_input_refs:tuple[tuple[tuple[int, int], tuple[int, int]], ...]
 
-
+#TODO: Update with str paths and their respective fusion object
 OPS_MAP: dict[str, list[FusionPattern]] = {}
 
 def len_match(fusion: FusionPattern, nodes: list[models.Node]) -> bool:
@@ -27,6 +28,9 @@ def match_ops(fusion: FusionPattern, nodes: list[models.Node]) -> bool:
 
 
 def match_path(fusion: FusionPattern, nodes: list[models.Node]) -> bool:
+    if len(fusion.path) != len(nodes) - 1:
+        return False
+
     for i, parent_index in enumerate(fusion.path):
         if parent_index < 0 or parent_index >= len(nodes[i].parents):
             return False
@@ -89,11 +93,35 @@ def match_shared_input_refs(fusion: FusionPattern, nodes: list[models.Node]) -> 
     return True
 
 
+def match_no_external_internal_children(fusion: FusionPattern, nodes: list[models.Node]) -> bool:
+    fused_node_names = {node.layer.name for node in nodes}
+
+    for node in nodes[1:]:
+        for child in node.children:
+            if child.layer.name not in fused_node_names:
+                return False
+
+    return True
+
+
+def match(fusion: FusionPattern, nodes: list[models.Node]) -> bool:
+    return len_match(fusion, nodes) and match_attrs(fusion, nodes) and match_input_refs(fusion, nodes) and match_ops(fusion, nodes) and match_path(fusion, nodes) and match_shared_input_refs(fusion, nodes) and match_no_external_internal_children(fusion, nodes)
+
+#Update this with any additional matching functions if any are added
+MATCHERS = (
+    len_match,
+    match_attrs,
+    match_input_refs,
+    match_ops,
+    match_path,
+    match_shared_input_refs,
+    match_no_external_internal_children
+)
 
 def fusion_match(ops:str, nodes: list[models.Node]) -> FusionPattern | None:
     if ops in OPS_MAP:
         for fusion in OPS_MAP[ops]:
-            if match(fusion, nodes):
+            if all(matcher(fusion, nodes) for matcher in MATCHERS):
                 return fusion
         
         return None

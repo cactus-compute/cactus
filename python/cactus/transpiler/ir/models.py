@@ -27,6 +27,7 @@ class Graph:
 """###################################### MODEL UTILS!!!!!!! ######################################"""
 
 def extract_attrs(layer_: CVModels.LayerRecord) -> dict[str, Any]:
+    
     def contains_node_ref(value: Any) -> bool:
         if isinstance(value, dict):
             if "node" in value:
