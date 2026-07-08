@@ -1,4 +1,4 @@
-import models
+import models, constants
 #TODO: Update with str paths and their respective fusion object
 OPS_MAP: dict[str, list[models.FusionPattern]] = {}
 
@@ -93,9 +93,17 @@ def match_no_external_internal_children(fusion: models.FusionPattern, nodes: lis
 
     return True
 
+def match_external_inputs(fusion: models.FusionPattern, nodes: list[models.Node]):
+    proposed_fusion_node_names = {node.layer.name for node in nodes}
 
-def match(fusion: models.FusionPattern, nodes: list[models.Node]) -> bool:
-    return len_match(fusion, nodes) and match_attrs(fusion, nodes) and match_input_refs(fusion, nodes) and match_ops(fusion, nodes) and match_path(fusion, nodes) and match_shared_input_refs(fusion, nodes) and match_no_external_internal_children(fusion, nodes)
+    declared_inputs = {nodes[node_index].parents[parent_index].layer.name for node_index, parent_index in fusion.input_refs}
+
+    for node in nodes:
+        for parent in node.parents:
+            if parent.layer.name not in proposed_fusion_node_names and parent.layer.name not in declared_inputs:
+                return False
+            
+    return True
 
 #Update this with any additional matching functions if any are added
 MATCHERS = (
@@ -105,7 +113,8 @@ MATCHERS = (
     match_ops,
     match_path,
     match_shared_input_refs,
-    match_no_external_internal_children
+    match_no_external_internal_children,
+    match_external_inputs,
 )
 
 def fusion_match(ops:str, nodes: list[models.Node]) -> models.FusionPattern | None:
@@ -115,3 +124,24 @@ def fusion_match(ops:str, nodes: list[models.Node]) -> models.FusionPattern | No
                 return fusion
         
         return None
+    
+"""###################################### FUSION GRAPH TRAVERSAL UTILS!!!!!!! ######################################"""
+def dfs_path_gen(path:list[models.Node], graph:models.Graph, max_depth: int = constants.DFS_DEPTH):
+    if len(path) >= max_depth or not path[-1].parents:
+        yield path
+        return
+    
+    added_to_path = False
+
+    for parent in path[-1].parents:
+        if parent.layer.name in graph.consumed_ids:
+            continue
+            
+        if any(existing.layer.name == parent.layer.name for existing in path):
+            continue
+
+        added_to_path = True
+        yield from dfs_path_gen([*path, parent], graph, max_depth)
+
+    if not added_to_path:
+        yield path

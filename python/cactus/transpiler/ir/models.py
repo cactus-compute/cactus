@@ -15,13 +15,14 @@ class Node:
 @dataclass(slots=True)
 class Graph:
     name_map:dict[str, Node]
-    source_nodes: deque[Node]
+    source_nodes: list[Node]
     consumed_ids: set[str]
 
     @classmethod
-    def from_layer_map(cls, map:CVModels.LayerMap):
+    def from_layer_map(cls, map:CVModels.LayerMap) -> "Graph":
         return generate_graph(map)
-    
+
+	    
 @dataclass(slots=True)
 class FusionPattern:
     #Input requirements
@@ -50,7 +51,19 @@ class FusionResult:
     @classmethod
     def from_match(cls, fusion: FusionPattern, nodes: list[Node]) -> "FusionResult":
         return generate_fusion(fusion, nodes)
-        
+
+
+@dataclass(slots=True)
+class SimplifiedGraph:
+    raw_graph: Graph
+    name_map: dict[str, Node]
+    source_nodes: list[Node]
+    replacement_map: dict[str, str]
+    fused_results: list[FusionResult]
+
+    @classmethod
+    def from_graph(cls, graph: Graph) -> "SimplifiedGraph":
+        return cls(raw_graph=graph, name_map={}, source_nodes=[], replacement_map={}, fused_results=[])
     
 
 """###################################### MODEL UTILS!!!!!!! ######################################"""
@@ -117,7 +130,7 @@ def extract_attrs(layer_: CVModels.LayerRecord) -> dict[str, Any]:
 
 def generate_graph(map: CVModels.LayerMap):
     temp_map:dict[str, Node] = {}
-    temp_source = deque()
+    temp_source = []
 
     for layer_ in map.nodes:
         temp = Node(layer=layer_, normalized_attrs=extract_attrs(layer_), parents=[], children=[])
@@ -133,6 +146,5 @@ def generate_graph(map: CVModels.LayerMap):
                 temp_map[layer_.name].parents.append(temp_map[item["node"]])
 
     return Graph(name_map=temp_map, source_nodes=temp_source, consumed_ids={})
-
 
 
