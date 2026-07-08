@@ -39,3 +39,6 @@ LAYER_ATTRS_MAP = {
     "aten.view.default": ["shape"],
     "aten.where.self": [],
 }
+
+#Dictates maximum DFS depth during fusion search
+DFS_DEPTH = 10
