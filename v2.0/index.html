@@ -1873,11 +1873,12 @@ Example response from Gemma3-270m
 </code></pre></div>
 <h2 id="benchmarks">Benchmarks<a class="headerlink" href="#benchmarks" title="Permanent link">&para;</a></h2>
 <ul>
-<li>LLM: Gemma-4-E2B-CQ4, 1k-prefill tps / 100-decode tps</li>
-<li>VLM: Gemma-4-E2B-CQ4  256px input, latency / decode tps</li>
-<li>Transcribe: Parakeet-TDT-0.6B-CQ4, 20s audio, latency / decode tps</li>
-<li>Missing latency == no NPU support for device</li>
+<li>LLM: Gemma-4-E2B-CQ4 (1k-context prefill / decode for 100 tokens)</li>
+<li>VLM: Gemma-4-E2B-CQ4 (256px image encode time / decode)</li>
+<li>Transcribe: Parakeet-TDT-0.6B-CQ4 (20s audio encode time / decode)</li>
+<li>1k-Context RAM: peak MB during the LLM benchmark</li>
 </ul>
+<p>Reproduce command: <code>cactus test --component engine --suite benchmark</code></p>
 <table>
 <thead>
 <tr>
@@ -1891,66 +1892,17 @@ Example response from Gemma3-270m
 <tbody>
 <tr>
 <td>Mac M4 Pro</td>
-<td>2619tps / 139tps</td>
-<td>0.4s / 160tps</td>
-<td>0.1s / 11Mtps</td>
-<td>1327 MB</td>
+<td>1947tps / 97tps</td>
+<td>0.25s / 108tps</td>
+<td>0.28s / 11.1Mtps</td>
+<td>1225MB</td>
 </tr>
 <tr>
-<td>Mac M3 Pro</td>
-<td>390 / 26</td>
-<td>2.76s / 28.06</td>
-<td>0.32s / 2.29M</td>
-<td>1376 MB</td>
-</tr>
-<tr>
-<td>iPhone 17 Pro</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>iPhone 13 Mini</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>Galaxy S26</td>
-<td>248 / 21</td>
-<td>- / 16</td>
-<td>- / 5.7M</td>
-<td>-</td>
-</tr>
-<tr>
-<td>Galaxy A17 5G</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>Pixel 10 Pro</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>Pixel 6a</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>Raspberry Pi 5</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
-<td>-</td>
+<td>iPhone 15 Pro</td>
+<td>511tps / 25tps</td>
+<td>1.16s / 27tps</td>
+<td>1.40s / 10.9Mtps</td>
+<td>635MB</td>
 </tr>
 </tbody>
 </table>
