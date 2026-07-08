@@ -1,16 +1,108 @@
 from dataclasses import dataclass, field
 from typing import Any
+import constants
+import models
+
 
 @dataclass(slots=True)
-class FusionPatter:
+class FusionPattern:
     target:str
-    ops:tuple[str]
-    path:tuple[int]
-    required_attrs:dict[str, Any]
-    input_refs:tuple[tuple[int]]
-    shared_input_refs:tuple[tuple[int]]
+    ops:tuple[str, ...]
+    path:tuple[int, ...]
+    required_attrs:dict[int, dict[str, Any]]
+    input_refs:tuple[tuple[int, int],...]
+    shared_input_refs:tuple[tuple[tuple[int, int], tuple[int, int]], ...]
 
-    def match(self):
+
+OPS_MAP: dict[str, list[FusionPattern]] = {}
+
+def len_match(fusion: FusionPattern, nodes: list[models.Node]) -> bool:
+    return len(fusion.ops) == len(nodes)
+
+def match_ops(fusion: FusionPattern, nodes: list[models.Node]) -> bool:
+    for i in range(len(fusion.ops)):
+        if(fusion.ops[i] != nodes[i].layer.target):
+            return False
+    return True
+
+
+def match_path(fusion: FusionPattern, nodes: list[models.Node]) -> bool:
+    for i, parent_index in enumerate(fusion.path):
+        if parent_index < 0 or parent_index >= len(nodes[i].parents):
+            return False
+
+        if nodes[i].parents[parent_index].layer.name != nodes[i + 1].layer.name:
+            return False
+
+    return True
+
+def match_attrs(fusion: FusionPattern, nodes: list[models.Node]) -> bool:
+    for node_index, required_attrs in fusion.required_attrs.items():
+        if node_index < 0 or node_index >= len(nodes):
+            return False
+
+        node_attrs = nodes[node_index].normalized_attrs
+        for attr_name, expected_value in required_attrs.items():
+            if attr_name not in node_attrs:
+                return False
+
+            if node_attrs[attr_name] != expected_value:
+                return False
+
+    return True
+
+
+def match_input_refs(fusion: FusionPattern, nodes: list[models.Node]) -> bool:
+    for node_index, parent_index in fusion.input_refs:
+        if node_index < 0 or node_index >= len(nodes):
+            return False
+
+        if parent_index < 0 or parent_index >= len(nodes[node_index].parents):
+            return False
+
+    return True
+
+
+def match_shared_input_refs(fusion: FusionPattern, nodes: list[models.Node]) -> bool:
+    for left_ref, right_ref in fusion.shared_input_refs:
+        left_node_index, left_parent_index = left_ref
+        right_node_index, right_parent_index = right_ref
+
+        if left_node_index < 0 or left_node_index >= len(nodes):
+            return False
+
+        if right_node_index < 0 or right_node_index >= len(nodes):
+            return False
+
+        if left_parent_index < 0 or left_parent_index >= len(nodes[left_node_index].parents):
+            return False
+
+        if right_parent_index < 0 or right_parent_index >= len(nodes[right_node_index].parents):
+            return False
+
+        left_parent = nodes[left_node_index].parents[left_parent_index]
+        right_parent = nodes[right_node_index].parents[right_parent_index]
+
+        if left_parent.layer.name != right_parent.layer.name:
+            return False
+
+    return True
+
+
+
+def fusion_match(ops:str, nodes: list[models.Node]) -> FusionPattern | None:
+    if ops in OPS_MAP:
+        for fusion in OPS_MAP[ops]:
+            if match(fusion, nodes):
+                return fusion
+        
+        return None
+
+
+
+
+        
+
 
 
     
