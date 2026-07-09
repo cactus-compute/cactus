@@ -170,7 +170,7 @@ def cmd_build(args):
         print_color(YELLOW, "SDL2 not found - voice input disabled")
         print_color(YELLOW, "Install SDL2 to enable voice input: brew install sdl2 (macOS)")
 
-    rc = build_binary("run", lib_path, sdl2=sdl2)
+    rc = build_binary("run", lib_path, sdl2=([], []))
     if rc != 0:
         return rc
     rc = build_binary("transcribe", lib_path, sdl2=sdl2)

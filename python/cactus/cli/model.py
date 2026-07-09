@@ -13,6 +13,10 @@ from .common import GREEN, PROJECT_ROOT, RED, YELLOW, print_color
 
 def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=False):
     """Download from HuggingFace and run CQ conversion."""
+    from .common import convert_toolchain_error
+    err = convert_toolchain_error()
+    if err:
+        raise RuntimeError(err)
     print_color(YELLOW, f"Converting {model_id} from HuggingFace source...")
     from ..convert.cli import main as cq_main
 
@@ -253,6 +257,10 @@ def prepare_bundle(args, *, model_id=None, transpile=None, prebuilt=True,
 def ensure_bundle(model_id, *, bits=4, token=None,
                   reconvert=False, output_dir=None, transpile=None,
                   skip_model_load=False):
+    from .common import convert_toolchain_error
+    err = convert_toolchain_error()
+    if err:
+        raise RuntimeError(err)
     from .download import get_bundle_dir
     from .transpile import run_transpile
     from cactus.transpile.component_plan import infer_component_plan_from_output

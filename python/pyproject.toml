@@ -28,20 +28,22 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Recognition",
 ]
 dependencies = [
-    "torch>=2.8.0,<3",
-    "transformers==5.5.4",
     "numpy>=1.26.0,<3",
     "huggingface-hub>=1.5.0,<2.0",
-    "scipy>=1.13",
-    "Pillow>=11.0.0,<12",
-    "torchvision>=0.23.0,<1",
-    "sentencepiece>=0.2.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "httpx>=0.25.0", "einops>=0.7"]
 lora = ["peft>=0.15"]
 serve = ["fastapi>=0.100.0", "uvicorn>=0.20.0", "python-multipart>=0.0.5"]
+convert = [
+    "torch>=2.8.0,<3",
+    "torchvision>=0.23.0,<1",
+    "transformers==5.5.4",
+    "scipy>=1.13",
+    "Pillow>=11.0.0,<12",
+    "sentencepiece>=0.2.0",
+]
 
 [project.urls]
 Homepage = "https://cactuscompute.com"

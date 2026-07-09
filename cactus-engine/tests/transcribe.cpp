@@ -337,8 +337,8 @@ static int run_live_transcription(cactus_model_t model, const std::string& langu
 #else
 
 static int run_live_transcription(cactus_model_t, const std::string&) {
-    std::cerr << "Live microphone transcription requires SDL2. Install SDL2 and rebuild, "
-                 "or pass an audio file (brew install sdl2 / apt-get install libsdl2-dev).\n";
+    std::cerr << "Live microphone transcription is unavailable in this build.\n"
+                 "Transcribe an audio file instead:  cactus transcribe <model> --file audio.wav\n";
     return 1;
 }
 

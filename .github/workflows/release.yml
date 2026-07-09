@@ -34,7 +34,7 @@ jobs:
           version=$(python3 -c "raw='${raw}'; print(raw + '.0' if raw.count('.') == 1 else raw)")
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve sdist URL and SHA256 from PyPI
+      - name: Resolve platform wheel URLs and SHA256 from PyPI
         id: pypi
         env:
           VERSION: ${{ steps.ver.outputs.version }}
@@ -47,16 +47,22 @@ jobs:
             sleep 30
           done
           [ -n "$json" ] || { echo "PyPI metadata not available for ${PACKAGE} ${VERSION}"; exit 1; }
-          url=$(echo "$json" | jq -er '.urls[] | select(.packagetype == "sdist") | .url')
-          sha=$(echo "$json" | jq -er '.urls[] | select(.packagetype == "sdist") | .digests.sha256')
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          pick() { echo "$json" | jq -er --arg re "$1" '.urls[] | select(.packagetype=="bdist_wheel" and (.filename|test($re))) | .'"$2"; }
+          {
+            echo "macos_url=$(pick macosx url)"
+            echo "macos_sha=$(pick macosx digests.sha256)"
+            echo "linux_url=$(pick manylinux url)"
+            echo "linux_sha=$(pick manylinux digests.sha256)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Update tap formula
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          URL: ${{ steps.pypi.outputs.url }}
-          SHA: ${{ steps.pypi.outputs.sha }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          MACOS_URL: ${{ steps.pypi.outputs.macos_url }}
+          MACOS_SHA: ${{ steps.pypi.outputs.macos_sha }}
+          LINUX_URL: ${{ steps.pypi.outputs.linux_url }}
+          LINUX_SHA: ${{ steps.pypi.outputs.linux_sha }}
         run: |
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP}.git" tap
           mkdir -p tap/Formula
@@ -64,13 +70,21 @@ jobs:
           class Cactus < Formula
             desc "On-device AI inference"
             homepage "https://cactuscompute.com"
-            url "${URL}"
-            sha256 "${SHA}"
+            version "${VERSION}"
             license "Cactus Compute License"
             include Language::Python::Virtualenv
             depends_on "python@3.12"
-            depends_on macos: :sonoma
             depends_on arch: :arm64
+
+            on_macos do
+              url "${MACOS_URL}"
+              sha256 "${MACOS_SHA}"
+            end
+
+            on_linux do
+              url "${LINUX_URL}"
+              sha256 "${LINUX_SHA}"
+            end
 
             livecheck do
               url "https://pypi.org/pypi/${PACKAGE}/json"
@@ -78,13 +92,18 @@ jobs:
             end
 
             def install
-              venv = virtualenv_create(libexec, "python3.12")
-              venv.pip_install "${PACKAGE}==#{version}"
+              virtualenv_create(libexec, "python3.12")
+              wheel = Dir[buildpath/"*.whl"].first
+              odie "no wheel found in build directory" if wheel.nil?
+              system Formula["python@3.12"].opt_bin/"python3.12", "-m", "pip",
+                     "--python=#{libexec}/bin/python", "install", "--no-deps", wheel
               bin.install_symlink libexec/"bin/cactus"
             end
 
             test do
               assert_equal "cactus #{version}\n", shell_output("#{bin}/cactus --version")
+              assert_match "libcactus_engine",
+                Dir[libexec/"lib/python*/site-packages/cactus/bindings/lib/*"].join
             end
           end
           EOF
