@@ -126,6 +126,7 @@ graph.hard_reset();
 - VLM: Gemma-4-E2B-CQ4 (256px image encode time / decode)
 - Transcribe: Parakeet-TDT-0.6B-CQ4 (20s audio ens-to-end transcribe time)
 - 1k-Context RAM: peak MB during the LLM benchmark
+- No speculative decode or MTP, pure decode. 
 
 Command: `cactus benchmark` [optional `--ios` or `--android`]
 
