@@ -8,7 +8,7 @@ ASSETS_DIR="$(pwd)/tests/assets"
 IOS_MODE=false
 ANDROID_MODE=false
 SUITE=""
-BACKEND="auto"
+BACKEND=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in

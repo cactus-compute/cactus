@@ -437,6 +437,33 @@ int cactus_graph_pow(cactus_graph_t graph, cactus_node_t x, float exponent, cact
     }
 }
 
+int32_t cactus_graph_default_backend(void) {
+    return static_cast<int32_t>(cactus_default_backend());
+}
+
+static bool valid_backend(int32_t backend) {
+    switch (static_cast<ComputeBackend>(backend)) {
+        case ComputeBackend::CPU:
+        case ComputeBackend::METAL:
+            return true;
+    }
+    return false;
+}
+
+int cactus_graph_set_node_backend(cactus_graph_t graph, cactus_node_t node, int32_t backend) {
+    if (!graph || !valid_backend(backend)) {
+        last_error_message = "Invalid args to cactus_graph_set_node_backend";
+        return -1;
+    }
+    try {
+        as_graph(graph)->graph.set_node_backend(static_cast<size_t>(node), static_cast<ComputeBackend>(backend));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_view(cactus_graph_t graph, cactus_node_t x, const size_t* shape, size_t rank, cactus_node_t* out) {
     if (!graph || !shape || rank == 0 || !out) {
         last_error_message = "Invalid args to cactus_graph_view";

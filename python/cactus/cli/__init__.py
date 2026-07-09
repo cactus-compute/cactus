@@ -45,8 +45,8 @@ def _build_parent():
 def _engine_test_parent():
     """Args shared by `test` and `benchmark`."""
     p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("--backend", choices=["auto", "cpu", "metal"], default="auto",
-                   help="Inference backend, default auto (Metal on Apple Silicon GPUs)")
+    p.add_argument("--backend", choices=["cpu", "metal"], default=None,
+                   help="Inference backend (default: auto)")
     p.add_argument("--model", dest="model_id", default=None,
                    type=_hf_id_or_path,
                    help=f"HF model ID under test (default: {DEFAULT_TEST_MODEL_ID})")
@@ -180,7 +180,7 @@ def create_parser():
     --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
     --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --backend auto|cpu|metal           inference backend (default: auto)
+    --backend cpu|metal                inference backend (default: auto)
     --ios                              run on connected iPhone
     --android                          run on connected Android
 
@@ -289,8 +289,8 @@ def create_parser():
                             help="Confidence threshold below which local completions may hand off to cloud")
     run_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                             help="Maximum time to wait for cloud handoff before falling back locally")
-    run_parser.add_argument("--backend", choices=["auto", "cpu", "metal"], default="auto",
-                            help="Inference backend, default auto (Metal on Apple Silicon GPUs)")
+    run_parser.add_argument("--backend", choices=["cpu", "metal"], default=None,
+                            help="Inference backend (default: auto)")
 
     transcribe_parser = subparsers.add_parser("transcribe", help="Transcribe audio with a model",
                                               parents=[_telemetry_parent(), _build_parent()])
@@ -319,8 +319,8 @@ def create_parser():
                               help="Maximum time to wait for cloud handoff before falling back locally")
     serve_parser.add_argument("--no-access-log", action="store_true",
                               help="Disable per-request HTTP access logging")
-    serve_parser.add_argument("--backend", choices=["auto", "cpu", "metal"], default="auto",
-                              help="Inference backend, default auto (Metal on Apple Silicon GPUs)")
+    serve_parser.add_argument("--backend", choices=["cpu", "metal"], default=None,
+                              help="Inference backend (default: auto)")
 
     code_parser = subparsers.add_parser("code", help="Run the Cactus coding agent (TUI / print mode)",
                                         parents=[_build_parent()])
@@ -338,8 +338,8 @@ def create_parser():
                              help="Confidence threshold below which completions hand off to cloud")
     code_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                              help="Maximum time to wait for cloud handoff before falling back locally")
-    code_parser.add_argument("--backend", choices=["auto", "cpu", "metal"], default="auto",
-                             help="Inference backend, default auto (Metal on Apple Silicon GPUs)")
+    code_parser.add_argument("--backend", choices=["cpu", "metal"], default=None,
+                             help="Inference backend (default: auto)")
     code_parser.add_argument("agent_args", nargs=argparse.REMAINDER,
                              help="Arguments passed through to the coding agent (prefix with -- )")
 

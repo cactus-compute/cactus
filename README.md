@@ -208,7 +208,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │                                                                                │
 │  cactus run [model|path]             run a model (downloads if needed)         │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --backend auto|cpu|metal          inference backend (default: auto)         │
+│    --backend cpu|metal               inference backend (default: auto)           │
 │    --image <path>                    image file for VLM inference              │
 │    --audio <path>                    audio file for audio chat                 │
 │    --system <prompt>                 system prompt                             │
@@ -242,7 +242,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │    --host <addr>                     bind address (default: 127.0.0.1)         │
 │    --port <port>                     port (default: 8080)                      │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --backend auto|cpu|metal          inference backend (default: auto)         │
+│    --backend cpu|metal               inference backend (default: auto)           │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │    --no-cloud-handoff                disable automatic cloud handoff           │
@@ -252,7 +252,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │  cactus code                         run the AI coding agent (TUI / print)     │
 │    --serve-model <id>                auto-start a server with this model       │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --backend auto|cpu|metal          inference backend (default: auto)         │
+│    --backend cpu|metal               inference backend (default: auto)           │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │    --host <addr>                     server address (default: 127.0.0.1)       │
@@ -276,7 +276,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │    --model <hf-id>                   default: google/gemma-4-E2B-it            │
 │    --transcription-model <hf-id>     default: nvidia/parakeet-tdt-0.6b-v3      │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --backend auto|cpu|metal          inference backend (default: auto)         │
+│    --backend cpu|metal               inference backend (default: auto)           │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild of test models        │
 │    --suite <name>                    run a single test suite by name           │
@@ -291,7 +291,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │    --model <hf-id>                   default: google/gemma-4-E2B-it            │
 │    --transcription-model <hf-id>     default: nvidia/parakeet-tdt-0.6b-v3      │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --backend auto|cpu|metal          inference backend (default: auto)         │
+│    --backend cpu|metal               inference backend (default: auto)           │
 │    --ios                             run on connected iPhone                   │
 │    --android                         run on connected Android                  │
 │                                                                                │

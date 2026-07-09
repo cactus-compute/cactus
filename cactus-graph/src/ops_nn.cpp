@@ -51,7 +51,7 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
         if (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
             cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
-        else if (cactus_backend_metal())
+        else if (node.params.backend == ComputeBackend::METAL && cactus_metal_available())
             cactus_metal_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
         else
             cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);

@@ -489,10 +489,11 @@ size_t similarity = fixture.graph().divide(dot_product, fixture.graph().multiply
 1. **Batch operations**: Process multiple samples together
 2. **Pre-transpose weights**: Use `pretransposed_rhs=true` for matmul when possible
 3. **Fused operations**: The framework automatically fuses compatible operations
-4. **Backend selection**: Use the Metal backend for supported operations:
+4. **Backend selection**: Every op accepts a backend (`ComputeBackend::CPU` or `ComputeBackend::METAL`). When omitted, it defaults to `cactus_default_backend()` — auto (best available), or the one forced with `cactus_set_backend("cpu"|"metal")`. Pin a single op:
    ```cpp
    size_t result = graph.matmul(a, b, false, ComputeBackend::METAL);
    ```
+   Python mirrors this: `g.matmul(a, b, backend=Graph.METAL)`, default `backend=None` follows the global backend.
 
 ### Graph Construction
 1. **Build once, execute many**: Construct the graph once, run with different inputs

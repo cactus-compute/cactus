@@ -860,8 +860,8 @@ int main(int argc, char** argv) {
             std::cout << "Backend: " << (backend == "metal" ? "Metal GPU" : "CPU") << "\n";
         else
             std::cout << "Metal not available; using CPU\n";
-    } else if (!backend.empty() && backend != "auto") {
-        std::cerr << "Error: unknown backend '" << backend << "' (expected 'cpu', 'metal', or 'auto')\n";
+    } else if (!backend.empty()) {
+        std::cerr << "Error: unknown backend '" << backend << "' (expected 'cpu' or 'metal')\n";
         return 1;
     }
 

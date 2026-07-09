@@ -771,7 +771,7 @@ bool Model::load_component_graph(Component& comp) {
 }
 
 void Model::unload_component_graph(Component& comp) {
-    if (cactus_backend_metal()) return;
+    if (cactus_default_backend() == ComputeBackend::METAL) return;
     if (comp.graph) {
         comp.graph->release_runtime_buffers();
         comp.graph->release_all_weight_pages();
@@ -863,14 +863,14 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/, b
     if (decode_route_ == DecodeRoute::DIRECT_DECODER_STEP) {
         write_int_input(*decoder_, "input_ids", static_cast<int64_t>(token_id));
         write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
-        if (!use_fused || !cactus_backend_metal()) cactus_graph_set_prefill_consistent(true);
+        if (!use_fused || cactus_default_backend() != ComputeBackend::METAL) cactus_graph_set_prefill_consistent(true);
         decoder_->graph->execute();
         cactus_graph_set_prefill_consistent(false);
         maybe_capture_handoff_probe_hidden(*decoder_);
         return;
     }
     if (!use_fused) cactus_graph_set_prefill_consistent(true);
-    if (use_fused && cactus_backend_metal()) {
+    if (use_fused && cactus_default_backend() == ComputeBackend::METAL) {
         if (ple_probe_state_ == 0)
             ple_probe_state_ = encoder_->graph->extract_ple_pathway(fused_embed_ctx_) ? 1 : 2;
         if (ple_probe_state_ == 1) {
@@ -985,7 +985,7 @@ std::vector<std::vector<uint32_t>> Model::generate_batch(const std::vector<std::
     }
 
     size_t exec_batch = batch;
-    if (batch > 1 || cactus_backend_metal()) {
+    if (batch > 1 || cactus_default_backend() == ComputeBackend::METAL) {
         exec_batch = std::max(batch, decoder_cache_num_slots());
     }
     reset_component_cache_states(*decoder_);
@@ -1585,7 +1585,7 @@ void Model::run_vision_encoder(const std::string& image_path) {
         media_feature_shapes_[name] = desc.shape;
         media_feature_precisions_[name] = desc.precision;
     }
-    if (!cactus_backend_metal()) {
+    if (cactus_default_backend() != ComputeBackend::METAL) {
         vision_encoder_->graph->release_runtime_buffers();
         vision_encoder_->graph->release_all_weight_pages();
     }
@@ -1791,7 +1791,7 @@ void Model::run_audio_encoder_messages(const std::vector<std::vector<float>>& au
         if (mel.empty()) continue;
         run_audio_encoder(mel);
     }
-    if (!cactus_backend_metal()) {
+    if (cactus_default_backend() != ComputeBackend::METAL) {
         audio_encoder_->graph->release_runtime_buffers();
         audio_encoder_->graph->release_all_weight_pages();
     }

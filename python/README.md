@@ -361,6 +361,12 @@ print(y.numpy())  # [9. 144. 729. 2304.]
 
 Supported ops: `+`, `-`, `*`, `/`, `abs`, `pow`, `view`, `flatten`, `concat`, `cat`, `relu`, `sigmoid`, `tanh`, `gelu`, `softmax`.
 
+Every op accepts a `backend=` kwarg (`Graph.CPU` or `Graph.METAL`) to pin that op; by default it follows the global backend — auto (best available), or the one forced with `cactus_set_backend("cpu"|"metal")`:
+
+```python
+m = g.matmul(a, b, backend=Graph.METAL)
+```
+
 ## Testing
 
 Run the full test suite:

@@ -145,8 +145,9 @@ def cmd_code(args) -> int:
             sys.executable, "-m", "cactus", "serve", serve_model,
             "--host", args.host, "--port", str(args.port), "--no-access-log",
             "--bits", str(getattr(args, "bits", 4)),
-            "--backend", getattr(args, "backend", "auto"),
         ]
+        if getattr(args, "backend", None):
+            serve_cmd += ["--backend", args.backend]
         if getattr(args, "token", None):
             serve_cmd += ["--token", args.token]
         if getattr(args, "reconvert", False):

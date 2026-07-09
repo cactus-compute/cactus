@@ -14,19 +14,24 @@
 #include <sstream>
 #include <system_error>
 
-static int g_backend_override = -1;
+static int g_selected_backend = -1;
+
+ComputeBackend cactus_default_backend() {
+    if (g_selected_backend >= 0) return static_cast<ComputeBackend>(g_selected_backend);
+    if (cactus_metal_available()) return ComputeBackend::METAL;
+    return ComputeBackend::CPU;
+}
+
 int cactus_backend_select(const char* backend) {
     if (!backend) return -1;
-    if (std::strcmp(backend, "auto") == 0) { g_backend_override = -1; return 0; }
-    if (std::strcmp(backend, "metal") == 0) {
-        if (!cactus_metal_available()) return -1;
-        g_backend_override = 1;
-        return 0;
-    }
-    if (std::strcmp(backend, "cpu") == 0) { g_backend_override = 0; return 0; }
-    return -1;
+    ComputeBackend selected;
+    if (std::strcmp(backend, "cpu") == 0) selected = ComputeBackend::CPU;
+    else if (std::strcmp(backend, "metal") == 0 && cactus_metal_available()) selected = ComputeBackend::METAL;
+    else return -1;
+    g_selected_backend = static_cast<int>(selected);
+    return 0;
 }
-bool cactus_backend_metal() { return g_backend_override != 0 && cactus_metal_available(); }
+
 
 using ComputeFn = void(*)(GraphNode&, const nodes_vector&, const node_index_map_t&);
 
@@ -482,6 +487,7 @@ static const __fp16* metal_conv_weight_f16(const BufferDesc& w, size_t rows, siz
 }
 
 static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const node_index_map_t& map) {
+    if (node.params.backend != ComputeBackend::METAL) return false;
     BufferDesc& out = node.output_buffer;
     auto fp16 = [](const BufferDesc& b){ return b.precision == Precision::FP16; };
     switch (node.op_type) {
@@ -1276,6 +1282,7 @@ void CactusGraph::build_metal_retype_plan() {
     for (size_t i = 0; i < n; ++i)
         for (size_t id : nodes_[i]->input_ids) { long j = idxof(id); if (j >= 0) cons[(size_t)j].push_back(i); }
     auto interior = [&](const GraphNode& nd) {
+        if (nd.params.backend != ComputeBackend::METAL) return false;
         if (nd.output_buffer.precision != Precision::FP32) return false;
         if (nd.output_buffer.shape.size() > 8) return false;
         switch (nd.op_type) {
@@ -1410,7 +1417,13 @@ void CactusGraph::execute(const std::string& profile_file) {
         return true;
     };
 
-    bool metal_mode = cactus_backend_metal();
+    bool metal_mode = false;
+    if (cactus_metal_available()) {
+        for (size_t i = 0; i < n; ++i) {
+            if (nodes_[i]->op_type == OpType::INPUT) continue;
+            if (nodes_[i]->params.backend == ComputeBackend::METAL) { metal_mode = true; break; }
+        }
+    }
     if (metal_mode && n < 100) {
         for (size_t i = 0; i < n; ++i) {
             OpType t = nodes_[i]->op_type;
@@ -1427,6 +1440,8 @@ void CactusGraph::execute(const std::string& profile_file) {
         sig ^= (uint64_t)n; sig *= 1099511628211ull;
         for (auto& np : nodes_) {
             sig ^= (uint64_t)np->op_type + 0x9e3779b97f4a7c15ull;
+            sig *= 1099511628211ull;
+            sig ^= (uint64_t)np->params.backend + 0x9e3779b97f4a7c15ull;
             sig *= 1099511628211ull;
             if (np->op_type != OpType::INPUT) continue;
             for (size_t d : np->output_buffer.shape) {
@@ -2234,9 +2249,10 @@ void CactusGraph::soft_reset_keep_pool() {
 }
 
 void CactusGraph::prewarm_metal_quant_weights() {
-    if (!cactus_backend_metal()) return;
+    if (!cactus_metal_available()) return;
     for (auto& np : nodes_) {
         GraphNode& node = *np;
+        if (node.params.backend != ComputeBackend::METAL) continue;
         if (node.op_type != OpType::MATMUL || node.input_ids.size() < 2) continue;
         auto it = node_index_map_.find(node.input_ids[1]);
         if (it == node_index_map_.end()) continue;

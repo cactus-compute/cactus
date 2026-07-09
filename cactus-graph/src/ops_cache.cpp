@@ -103,7 +103,7 @@ inline bool use_fp16_kv_cache() {
 constexpr size_t kInitialCacheEntries = 256;
 
 inline bool kv_cache_resident() {
-    return cactus_backend_metal();
+    return cactus_default_backend() == ComputeBackend::METAL;
 }
 
 inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
