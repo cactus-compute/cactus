@@ -111,8 +111,6 @@ def _patch_graph_runtime(cactus_module) -> None:
     orig_expand = Graph.expand
 
     def matmul(self, a, b, pretransposed_rhs=False, backend=None, output_dtype=None):
-        if backend is None:
-            backend = _lib.cactus_graph_default_backend()
         a = _ensure_fp16_activation(self, a)
         b = _ensure_fp16_activation(self, b)
         out = cactus_node_t()
@@ -121,12 +119,11 @@ def _patch_graph_runtime(cactus_module) -> None:
             cactus_node_t(a.id),
             cactus_node_t(b.id),
             ctypes.c_bool(bool(pretransposed_rhs)),
-            ctypes.c_int32(int(backend)),
             ctypes.byref(out),
         )
         if rc != 0:
             raise RuntimeError(_err("graph_matmul failed"))
-        result = self._tensor_from_node(out.value)
+        result = self._apply_backend(self._tensor_from_node(out.value), backend)
         if output_dtype is not None and int(output_dtype) != int(result.dtype):
             result = self.precision_cast(result, int(output_dtype))
         return result
@@ -356,7 +353,6 @@ if hasattr(_cactus_module, "_lib"):
             _cactus_module.cactus_node_t,
             _cactus_module.cactus_node_t,
             ctypes.c_bool,
-            ctypes.c_int32,
             ctypes.POINTER(_cactus_module.cactus_node_t),
         ]
         _lib_obj.cactus_graph_matmul.restype = ctypes.c_int

@@ -76,8 +76,6 @@ _lib.cactus_graph_destroy.argtypes = [cactus_graph_t]
 _lib.cactus_graph_destroy.restype = None
 _lib.cactus_graph_hard_reset.argtypes = [cactus_graph_t]
 _lib.cactus_graph_hard_reset.restype = ctypes.c_int
-_lib.cactus_graph_default_backend.argtypes = []
-_lib.cactus_graph_default_backend.restype = ctypes.c_int32
 _lib.cactus_graph_set_node_backend.argtypes = [cactus_graph_t, cactus_node_t, ctypes.c_int32]
 _lib.cactus_graph_set_node_backend.restype = ctypes.c_int
 
@@ -243,11 +241,11 @@ _bind_optional(
     ctypes.c_int,
 )
 _lib.cactus_graph_transpose.argtypes = [
-    cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_transpose.restype = ctypes.c_int
 _lib.cactus_graph_transpose_n.argtypes = [
-    cactus_graph_t, cactus_node_t, ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_transpose_n.restype = ctypes.c_int
 _lib.cactus_graph_slice.argtypes = [
@@ -270,7 +268,7 @@ _lib.cactus_graph_cat.argtypes = [
 ]
 _lib.cactus_graph_cat.restype = ctypes.c_int
 _lib.cactus_graph_matmul.argtypes = [
-    cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_bool, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+    cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_bool, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_matmul.restype = ctypes.c_int
 _lib.cactus_graph_gather.argtypes = [
@@ -394,11 +392,11 @@ _lib.cactus_graph_topk.argtypes = [
 ]
 _lib.cactus_graph_topk.restype = ctypes.c_int
 _lib.cactus_graph_rope.argtypes = [
-    cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.c_size_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+    cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_rope.restype = ctypes.c_int
 _lib.cactus_graph_rope_gptj.argtypes = [
-    cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
+    cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_rope_gptj.restype = ctypes.c_int
 _lib.cactus_graph_softmax.argtypes = [
@@ -407,7 +405,7 @@ _lib.cactus_graph_softmax.argtypes = [
 _lib.cactus_graph_softmax.restype = ctypes.c_int
 _lib.cactus_graph_attention.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, ctypes.c_float, ctypes.c_bool,
-    ctypes.c_size_t, ctypes.c_size_t, ctypes.c_int32, ctypes.c_bool, cactus_node_t, ctypes.c_bool,
+    ctypes.c_size_t, ctypes.c_size_t, ctypes.c_bool, cactus_node_t, ctypes.c_bool,
     ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_attention.restype = ctypes.c_int
@@ -1766,23 +1764,18 @@ class Graph:
         return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def transpose(self, x, backend=None):
-        if backend is None:
-            backend = _lib.cactus_graph_default_backend()
         x = self._ensure_tensor(x)
         out = cactus_node_t()
         rc = _lib.cactus_graph_transpose(
             self.h,
             cactus_node_t(x.id),
-            ctypes.c_int32(int(backend)),
             ctypes.byref(out),
         )
         if rc != 0:
             raise RuntimeError(_err("graph_transpose failed"))
-        return self._tensor_from_node(out.value)
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def permute(self, x, permutation, backend=None):
-        if backend is None:
-            backend = _lib.cactus_graph_default_backend()
         x = self._ensure_tensor(x)
         permutation = tuple(int(v) for v in permutation)
         arr = (ctypes.c_size_t * len(permutation))(*permutation)
@@ -1792,16 +1785,13 @@ class Graph:
             cactus_node_t(x.id),
             arr,
             len(permutation),
-            ctypes.c_int32(int(backend)),
             ctypes.byref(out),
         )
         if rc != 0:
             raise RuntimeError(_err("graph_transpose_n failed"))
-        return self._tensor_from_node(out.value)
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def matmul(self, a, b, pretransposed_rhs=False, backend=None, output_dtype=None):
-        if backend is None:
-            backend = _lib.cactus_graph_default_backend()
         a = self._ensure_tensor(a)
         b = self._ensure_tensor(b)
         out = cactus_node_t()
@@ -1810,12 +1800,11 @@ class Graph:
             cactus_node_t(a.id),
             cactus_node_t(b.id),
             ctypes.c_bool(bool(pretransposed_rhs)),
-            ctypes.c_int32(int(backend)),
             ctypes.byref(out),
         )
         if rc != 0:
             raise RuntimeError(_err("graph_matmul failed"))
-        result = self._tensor_from_node(out.value)
+        result = self._apply_backend(self._tensor_from_node(out.value), backend)
         if output_dtype is not None and int(output_dtype) != int(result.dtype):
             result = self.precision_cast(result, int(output_dtype))
         return result
@@ -2047,30 +2036,26 @@ class Graph:
         return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def rope(self, x, theta, position_offset=0, backend=None):
-        if backend is None:
-            backend = _lib.cactus_graph_default_backend()
         x = self._ensure_tensor(x)
         out = cactus_node_t()
         rc = _lib.cactus_graph_rope(
             self.h, cactus_node_t(x.id), ctypes.c_float(float(theta)), ctypes.c_size_t(int(position_offset)),
-            ctypes.c_int32(int(backend)), ctypes.byref(out)
+            ctypes.byref(out)
         )
         if rc != 0:
             raise RuntimeError(_err("graph_rope failed"))
-        return self._tensor_from_node(out.value)
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def rope_gptj(self, x, theta, position_offset=0, rot_dim=0, backend=None):
-        if backend is None:
-            backend = _lib.cactus_graph_default_backend()
         x = self._ensure_tensor(x)
         out = cactus_node_t()
         rc = _lib.cactus_graph_rope_gptj(
             self.h, cactus_node_t(x.id), ctypes.c_float(float(theta)), ctypes.c_size_t(int(position_offset)),
-            ctypes.c_size_t(int(rot_dim)), ctypes.c_int32(int(backend)), ctypes.byref(out)
+            ctypes.c_size_t(int(rot_dim)), ctypes.byref(out)
         )
         if rc != 0:
             raise RuntimeError(_err("graph_rope_gptj failed"))
-        return self._tensor_from_node(out.value)
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def _reduce(self, fn_name, x, axis, backend=None):
         x = self._ensure_tensor(x)
@@ -2113,8 +2098,6 @@ class Graph:
 
     def attention(self, query, key, value, scale, is_causal=True, position_offset=0, window_size=0,
                   backend=None, mask=None, additive_mask=False):
-        if backend is None:
-            backend = _lib.cactus_graph_default_backend()
         query = self._ensure_tensor(query)
         key = self._ensure_tensor(key)
         value = self._ensure_tensor(value)
@@ -2132,7 +2115,6 @@ class Graph:
             ctypes.c_bool(bool(is_causal)),
             ctypes.c_size_t(int(position_offset)),
             ctypes.c_size_t(int(window_size)),
-            ctypes.c_int32(int(backend)),
             ctypes.c_bool(use_mask),
             mask_node,
             ctypes.c_bool(bool(additive_mask)),
@@ -2140,7 +2122,7 @@ class Graph:
         )
         if rc != 0:
             raise RuntimeError(_err("graph_attention failed"))
-        return self._tensor_from_node(out.value)
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def kv_cache_state(self, max_seq_len, num_kv_heads, head_dim, window_size=0, sink_size=0, num_slots=1, backend=None):
         out = cactus_node_t()
