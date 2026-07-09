@@ -18,7 +18,7 @@
 #include <arm_neon.h>
 
 int cactus_backend_select(const char* backend);
-bool cactus_backend_metal();
+bool cactus_backend_gpu();
 
 namespace cactus {
 

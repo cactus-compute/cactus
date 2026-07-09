@@ -61,6 +61,8 @@ target_compile_options(cactus_kernels PRIVATE
     $<$<CXX_COMPILER_ID:GNU>:-Wno-pedantic>
 )
 
+target_sources(cactus_kernels PRIVATE src/vulkan_backend.cpp)
+
 if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     target_compile_definitions(cactus_kernels PUBLIC ACCELERATE_NEW_LAPACK)
@@ -70,7 +72,7 @@ if(APPLE)
     set(_msl_out ${CMAKE_CURRENT_BINARY_DIR}/generated/cactus_kernels_msl.h)
     add_custom_command(
         OUTPUT  ${_msl_out}
-        COMMAND ${CMAKE_COMMAND} -DIN=${_msl_in} -DOUT=${_msl_out} -DDELIM=CACTUS_MSL
+        COMMAND ${CMAKE_COMMAND} -DIN=${_msl_in} -DOUT=${_msl_out} -DSYM=kCactusMSL
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
         DEPENDS ${_msl_in} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
         VERBATIM)
@@ -80,6 +82,36 @@ if(APPLE)
     target_link_libraries(cactus_kernels PUBLIC "-framework Metal" "-framework Foundation" "-framework MetalPerformanceShaders")
 else()
     target_sources(cactus_kernels PRIVATE src/metal_backend_stub.cpp)
+    target_include_directories(cactus_kernels PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    target_link_libraries(cactus_kernels PUBLIC ${CMAKE_DL_LIBS})
+    if(ANDROID)
+        find_program(GLSLC glslc HINTS
+            ${CMAKE_ANDROID_NDK}/shader-tools/${ANDROID_HOST_TAG}
+            ${CMAKE_ANDROID_NDK}/shader-tools/darwin-x86_64
+            ${CMAKE_ANDROID_NDK}/shader-tools/linux-x86_64)
+        if(NOT GLSLC)
+            message(FATAL_ERROR "glslc not found in NDK shader-tools")
+        endif()
+        file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated)
+        set(_vk_comp ${CMAKE_CURRENT_SOURCE_DIR}/src/cactus_kernels.comp)
+        foreach(_k binary scalar unary swiglu rms_norm cq4_transform cq4_gemv argmax)
+            set(_spv ${CMAKE_CURRENT_BINARY_DIR}/generated/vk_${_k}.spv)
+            set(_hdr ${CMAKE_CURRENT_BINARY_DIR}/generated/vk_${_k}.h)
+            add_custom_command(
+                OUTPUT  ${_spv}
+                COMMAND ${GLSLC} -fshader-stage=compute --target-env=vulkan1.1 -O
+                        -DK_${_k} ${_vk_comp} -o ${_spv}
+                DEPENDS ${_vk_comp}
+                VERBATIM)
+            add_custom_command(
+                OUTPUT  ${_hdr}
+                COMMAND ${CMAKE_COMMAND} -DIN=${_spv} -DOUT=${_hdr} -DSYM=kSpv_${_k}
+                        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
+                DEPENDS ${_spv} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
+                VERBATIM)
+            target_sources(cactus_kernels PRIVATE ${_hdr})
+        endforeach()
+    endif()
 endif()
 
 if((BUILD_TESTING OR CACTUS_BUILD_TESTS) AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)

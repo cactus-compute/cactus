@@ -1,6 +1,6 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
-#include "metal_backend.h"
+#include "cactus_gpu.h"
 
 #include <cstring>
 #include <vector>
@@ -62,8 +62,8 @@ static bool g_plan_tail_biased = false;
 static const float* update_bias_dense(size_t vocab) {
     if (!g_samp.bias_dense || g_samp.bias_len == 0) return nullptr;
     if (!g_bias_dense || g_bias_dense_n < vocab) {
-        if (g_bias_dense) cactus_metal_free_shared(g_bias_dense);
-        g_bias_dense = (float*)cactus_metal_alloc_shared(vocab * sizeof(float));
+        if (g_bias_dense) cactus_gpu_free_shared(g_bias_dense);
+        g_bias_dense = (float*)cactus_gpu_alloc_shared(vocab * sizeof(float));
         if (!g_bias_dense) { g_bias_dense_n = 0; return nullptr; }
         g_bias_dense_n = vocab;
     }
@@ -78,17 +78,17 @@ bool cactus_graph_metal_tail(void* logits, size_t vocab) {
     bool adjusted = false;
     if (g_samp.active &&
         ((g_samp.rep_penalty != 1.0f && !g_samp.recent.empty()) || g_samp.suppressed >= 0)) {
-        adjusted = cactus_metal_encode_adjust_logits(logits, vocab,
+        adjusted = cactus_gpu_encode_adjust_logits(logits, vocab,
             g_samp.recent.data(), (uint32_t)g_samp.recent.size(),
             g_samp.suppressed, g_samp.rep_penalty);
         if (!adjusted) return false;
     }
     if (!g_plan_amax) {
-        g_plan_amax = cactus_metal_alloc_shared(3 * sizeof(float));
+        g_plan_amax = cactus_gpu_alloc_shared(3 * sizeof(float));
         if (!g_plan_amax) return false;
     }
     const float* bias = g_samp.active ? update_bias_dense(vocab) : nullptr;
-    if (!cactus_metal_encode_argmax(logits, (uint32_t)vocab, g_plan_amax, bias)) return false;
+    if (!cactus_gpu_encode_argmax(logits, (uint32_t)vocab, g_plan_amax, bias)) return false;
     g_plan_tail_pending = true;
     g_plan_tail_adjusted = adjusted;
     g_plan_tail_biased = (bias != nullptr);
@@ -131,30 +131,30 @@ bool cactus_graph_metal_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
     const size_t PK = g_fe.proj.N;
     const size_t EK = g_fe.ple.K;
     if (cap_pe < EK) {
-        if (pe) cactus_metal_free_shared(pe);
-        pe = cactus_metal_alloc_shared(EK * 2);
+        if (pe) cactus_gpu_free_shared(pe);
+        pe = cactus_gpu_alloc_shared(EK * 2);
         cap_pe = pe ? EK : 0;
     }
     if (cap < PK) {
-        if (pa) cactus_metal_free_shared(pa);
-        if (pj) cactus_metal_free_shared(pj);
-        if (pjs) cactus_metal_free_shared(pjs);
-        pa = cactus_metal_alloc_shared(PK * 2);
-        pj = cactus_metal_alloc_shared(PK * 2);
-        pjs = cactus_metal_alloc_shared(PK * 2);
+        if (pa) cactus_gpu_free_shared(pa);
+        if (pj) cactus_gpu_free_shared(pj);
+        if (pjs) cactus_gpu_free_shared(pjs);
+        pa = cactus_gpu_alloc_shared(PK * 2);
+        pj = cactus_gpu_alloc_shared(PK * 2);
+        pjs = cactus_gpu_alloc_shared(PK * 2);
         cap = (pa && pj && pjs) ? PK : 0;
     }
     if (!pe || !pa || !pj || !pjs) return false;
     uint32_t tok = (uint32_t)g_fe.token_id;
-    if (!cactus_metal_encode_embedding_ortho(h_buf, tok, lm_head, g_fe.emb_scale)) return false;
-    if (!cactus_metal_encode_embedding_hadamard(pe, tok, &g_fe.ple)) return false;
-    cactus_metal_encode_scalar(2, pa, pe, PK, g_fe.ple_scale);
-    if (!cactus_metal_encode_transform_gemv(pj, h_buf, &g_fe.proj, nullptr)
-        && !cactus_metal_encode_quant_matmul(pj, h_buf, &g_fe.proj)) return false;
-    cactus_metal_encode_scalar(2, pjs, pj, PK, g_fe.proj_scale);
-    if (!cactus_metal_encode_rms_norm_add_scale(ple_buf, pjs, g_fe.rms_weight, pa, nl, ple_dim, g_fe.rms_eps, g_fe.final_scale)) {
-        if (!cactus_metal_encode_rms_norm_add(pa, pjs, g_fe.rms_weight, pa, nl, ple_dim, g_fe.rms_eps)) return false;
-        cactus_metal_encode_scalar(2, ple_buf, pa, PK, g_fe.final_scale);
+    if (!cactus_gpu_encode_embedding_ortho(h_buf, tok, lm_head, g_fe.emb_scale)) return false;
+    if (!cactus_gpu_encode_embedding_hadamard(pe, tok, &g_fe.ple)) return false;
+    cactus_gpu_encode_scalar(2, pa, pe, PK, g_fe.ple_scale);
+    if (!cactus_gpu_encode_transform_gemv(pj, h_buf, &g_fe.proj, nullptr)
+        && !cactus_gpu_encode_quant_matmul(pj, h_buf, &g_fe.proj)) return false;
+    cactus_gpu_encode_scalar(2, pjs, pj, PK, g_fe.proj_scale);
+    if (!cactus_gpu_encode_rms_norm_add_scale(ple_buf, pjs, g_fe.rms_weight, pa, nl, ple_dim, g_fe.rms_eps, g_fe.final_scale)) {
+        if (!cactus_gpu_encode_rms_norm_add(pa, pjs, g_fe.rms_weight, pa, nl, ple_dim, g_fe.rms_eps)) return false;
+        cactus_gpu_encode_scalar(2, ple_buf, pa, PK, g_fe.final_scale);
     }
     if (pos_buf) *(float*)pos_buf = (float)g_fe.position;
     return true;
@@ -187,7 +187,7 @@ bool CactusGraph::extract_ple_pathway(FusedEmbedCtx& ctx) const {
 void cactus_graph_on_destroy(const void* graph) {
     (void)graph;
     g_samp = GSampling();
-    cactus_metal_invalidate_host_wraps();
+    cactus_gpu_invalidate_host_wraps();
 }
 
 CactusGraph::~CactusGraph() {

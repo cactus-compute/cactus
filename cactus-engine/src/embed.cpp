@@ -1,7 +1,7 @@
 #include "../cactus_engine.h"
 #include "utils.h"
 #include "cactus_kernels.h"
-#include "metal_backend.h"
+#include "cactus_gpu.h"
 #include "wav.h"
 #include <cstring>
 #include <algorithm>
@@ -39,7 +39,7 @@ int cactus_embed(
     bool normalize
 ) {
     struct MetalTrimGuard {
-        ~MetalTrimGuard() { cactus_metal_trim_prefill_cache(); }
+        ~MetalTrimGuard() { cactus_gpu_trim_prefill_cache(); }
     } metal_trim_guard;
     if (!model || !text || !embeddings_buffer || buffer_size == 0) {
         CACTUS_LOG_ERROR("embed", "Invalid parameters for text embedding");
@@ -95,7 +95,7 @@ int cactus_image_embed(
     size_t* embedding_dim
 ) {
     struct MetalTrimGuard {
-        ~MetalTrimGuard() { cactus_metal_trim_prefill_cache(); }
+        ~MetalTrimGuard() { cactus_gpu_trim_prefill_cache(); }
     } metal_trim_guard;
     if (!model || !image_path || !embeddings_buffer || buffer_size == 0) {
         CACTUS_LOG_ERROR("image_embed", "Invalid parameters for image embedding");
@@ -138,7 +138,7 @@ int cactus_audio_embed(
     size_t* embedding_dim
 ) {
     struct MetalTrimGuard {
-        ~MetalTrimGuard() { cactus_metal_trim_prefill_cache(); }
+        ~MetalTrimGuard() { cactus_gpu_trim_prefill_cache(); }
     } metal_trim_guard;
     if (!model || !audio_path || !embeddings_buffer || buffer_size == 0) {
         CACTUS_LOG_ERROR("audio_embed", "Invalid parameters for audio embedding");

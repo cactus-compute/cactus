@@ -1,7 +1,10 @@
 #include "test_utils.h"
-#include <sstream>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <numeric>
+#include <random>
+#include <sstream>
 
 namespace TestUtils {
 
@@ -12,7 +15,7 @@ void apply_backend() {
     const char* b = std::getenv("CACTUS_TEST_BACKEND");
     if (!b || !*b || std::strcmp(b, "auto") == 0) return;
     if (cactus_set_backend(b) == 0)
-        std::cout << "Backend: " << (std::strcmp(b, "metal") == 0 ? "Metal GPU" : "CPU") << "\n";
+        std::cout << "Backend: " << b << "\n";
     else
         std::cout << "Backend '" << b << "' unavailable; using default\n";
 }
@@ -225,6 +228,118 @@ std::string PrefillMetrics::line() const {
 
 void PrefillMetrics::print_line() const {
     std::cout << line();
+}
+
+static std::mt19937 g_rng(7);
+
+std::vector<__fp16> rand_halfs(size_t n, float lo, float hi) {
+    std::uniform_real_distribution<float> d(lo, hi);
+    std::vector<__fp16> v(n);
+    for (auto& x : v) x = (__fp16)d(g_rng);
+    return v;
+}
+
+bool close_all(const std::vector<__fp16>& got, const std::vector<float>& want,
+               float tol, const char* what) {
+    for (size_t i = 0; i < want.size(); ++i) {
+        if (std::fabs((float)got[i] - want[i]) > tol) {
+            std::cerr << "  [✗] " << what << " diverged at " << i << ": got "
+                      << (float)got[i] << " want " << want[i] << "\n";
+            return false;
+        }
+    }
+    return true;
+}
+
+float gelu_ref(float x) {
+    float c = 0.7978845608028654f * (x + 0.044715f * x * x * x);
+    return 0.5f * x * (1.0f + std::tanh(c));
+}
+
+CQ4Fixture::CQ4Fixture(bool interleaved, uint32_t K_, uint32_t N_, uint32_t gs_)
+    : K(K_), N(N_), gs(gs_), ng(K_ / gs_), pgb(gs_ / 2) {
+    std::uniform_int_distribution<int> nib(0, 15);
+    std::uniform_real_distribution<float> pos(0.5f, 1.5f);
+    std::uniform_int_distribution<int> coin(0, 1);
+
+    codebook.resize(16);
+    for (int i = 0; i < 16; ++i) codebook[i] = (__fp16)((i - 7.5f) / 7.5f);
+    recip.resize(K);
+    for (auto& v : recip) v = (__fp16)pos(g_rng);
+    ls.resize(gs); rs.resize(gs);
+    for (auto& s : ls) s = coin(g_rng) ? 1 : -1;
+    for (auto& s : rs) s = coin(g_rng) ? 1 : -1;
+    perm.resize(gs);
+    std::iota(perm.begin(), perm.end(), 0u);
+    std::shuffle(perm.begin(), perm.end(), g_rng);
+
+    idx.resize((size_t)N * K);
+    for (auto& v : idx) v = (uint8_t)nib(g_rng);
+    norms.resize((size_t)N * ng);
+    packed.assign((size_t)N * ng * pgb, 0);
+    for (uint32_t n = 0; n < N; ++n)
+        for (uint32_t g = 0; g < ng; ++g) {
+            float nv = pos(g_rng);
+            if (interleaved) norms[(((size_t)(n >> 2) * ng + g) << 2) + (n & 3u)] = (__fp16)nv;
+            else norms[(size_t)n * ng + g] = (__fp16)nv;
+            for (uint32_t e = 0; e < gs; ++e) {
+                uint8_t v = idx[(size_t)n * K + g * gs + e];
+                size_t byte;
+                uint32_t shift;
+                if (interleaved) {
+                    uint32_t blk = e >> 4, j = e & 15u, sub = j >> 2, b = j & 3u;
+                    byte = ((size_t)(n >> 2) * ng + g) * 4u * pgb
+                         + (2u * blk + (sub >> 1)) * 16u + (n & 3u) * 4u + b;
+                    shift = (sub & 1u) * 4u;
+                } else {
+                    byte = ((size_t)n * ng + g) * pgb + (e >> 1);
+                    shift = (e & 1u) * 4u;
+                }
+                packed[byte] |= (uint8_t)(v << shift);
+            }
+        }
+
+    W.bits = 4; W.K = K; W.N = N; W.group_size = gs; W.num_groups = ng;
+    W.flags = interleaved ? CACTUS_QUANT_FLAG_INTERLEAVED_4ROW : 0;
+    W.codebook = codebook.data();
+    W.input_scale_recip = recip.data();
+    W.norms = norms.data();
+    W.packed_indices = packed.data();
+    W.left_signs = ls.data();
+    W.right_signs = rs.data();
+    W.permutation = perm.data();
+}
+
+std::vector<float> CQ4Fixture::oracle(const std::vector<__fp16>& x) const {
+    std::vector<__fp16> code(K);
+    for (uint32_t g = 0; g < ng; ++g) {
+        std::vector<float> z(gs);
+        for (uint32_t k = 0; k < gs; ++k) {
+            uint32_t gk = g * gs + k;
+            z[k] = (float)x[gk] * (float)recip[gk] * (float)ls[k];
+        }
+        for (uint32_t h = 1; h < gs; h <<= 1)
+            for (uint32_t k = 0; k < gs; ++k)
+                if ((k & h) == 0) { float a = z[k], b = z[k + h]; z[k] = a + b; z[k + h] = a - b; }
+        float s = 1.0f / std::sqrt((float)gs);
+        for (uint32_t k = 0; k < gs; ++k) z[k] *= s * (float)rs[k];
+        for (uint32_t k = 0; k < gs; ++k) code[g * gs + k] = (__fp16)z[perm[k]];
+    }
+    const bool il = (W.flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0;
+    std::vector<float> y(N);
+    for (uint32_t n = 0; n < N; ++n) {
+        double acc = 0;
+        for (uint32_t g = 0; g < ng; ++g) {
+            float nm = il ? (float)norms[(((size_t)(n >> 2) * ng + g) << 2) + (n & 3u)]
+                          : (float)norms[(size_t)n * ng + g];
+            double p = 0;
+            for (uint32_t e = 0; e < gs; ++e)
+                p += (float)code[g * gs + e] * (float)codebook[idx[(size_t)n * K + g * gs + e]];
+            acc += nm * p;
+        }
+        y[n] = (float)acc;
+    }
+    return y;
 }
 
 }

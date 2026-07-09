@@ -1,4 +1,5 @@
 #include "test_utils.h"
+#include "vulkan_backend.h"
 #include <cstdlib>
 #include <iostream>
 #include <numeric>
@@ -282,11 +283,87 @@ static bool transcribe_benchmark() {
     return true;
 }
 
+static bool vulkan_gemv_benchmark() {
+    print_header("VULKAN CQ4 GEMV (2048x2048)");
+    std::cout << "├─ Device: " << cactus_vulkan_device_info() << "\n";
+
+    CQ4Fixture f(false, 2048, 2048, 128);
+    auto x = rand_halfs(f.K);
+    std::vector<__fp16> y(f.N);
+    const int runs = 20;
+    const double weight_mb = (double)(f.packed.size() + f.norms.size() * 2) / (1024.0 * 1024.0);
+
+    cactus_quant_4bit_gemv(&f.W, x.data(), y.data());
+    std::vector<double> cpu_ms;
+    for (int i = 0; i < runs; ++i) {
+        Timer t;
+        cactus_quant_4bit_gemv(&f.W, x.data(), y.data());
+        cpu_ms.push_back(t.elapsed_ms());
+    }
+
+    if (!cactus_vulkan_cq_gemv(y.data(), x.data(), &f.W)) {
+        std::cerr << "[✗] GPU GEMV failed\n";
+        return false;
+    }
+    std::vector<double> gpu_ms;
+    for (int i = 0; i < runs; ++i) {
+        Timer t;
+        if (!cactus_vulkan_cq_gemv(y.data(), x.data(), &f.W)) {
+            std::cerr << "[✗] GPU GEMV failed mid-run\n";
+            return false;
+        }
+        gpu_ms.push_back(t.elapsed_ms());
+    }
+
+    const int amort = 50;
+    double kernel_ms = 0.0;
+    if (!cactus_vulkan_cq_gemv(y.data(), x.data(), &f.W, amort)) {
+        std::cerr << "[✗] amortized GEMV failed\n";
+        return false;
+    }
+    std::vector<double> gpu_amort_ms, gpu_kernel_ms;
+    for (int i = 0; i < 3; ++i) {
+        Timer t;
+        if (!cactus_vulkan_cq_gemv(y.data(), x.data(), &f.W, amort, &kernel_ms)) {
+            std::cerr << "[✗] amortized GEMV failed mid-run\n";
+            return false;
+        }
+        gpu_amort_ms.push_back(t.elapsed_ms() / amort);
+        gpu_kernel_ms.push_back(kernel_ms / amort);
+    }
+
+    auto mean = [](const std::vector<double>& v) {
+        return std::accumulate(v.begin(), v.end(), 0.0) / v.size();
+    };
+    double cpu = mean(cpu_ms), gpu = mean(gpu_ms), gpu_amort = mean(gpu_amort_ms);
+    double gpu_kernel = mean(gpu_kernel_ms);
+    std::cout << "\n[Mean of " << runs << " runs, " << weight_mb << "MB weights/pass]\n";
+    print_mean("cpu_gemv",       "ms", cpu_ms);
+    print_mean("gpu_gemv",       "ms", gpu_ms);
+    print_mean("gpu_amortized",  "ms", gpu_amort_ms);
+    print_mean("gpu_kernel",     "ms", gpu_kernel_ms);
+    std::cout << "├─ cpu_bandwidth: " << std::fixed << std::setprecision(2)
+              << weight_mb / cpu << " GB/s\n"
+              << "├─ gpu_bandwidth: " << weight_mb / gpu << " GB/s\n"
+              << "├─ gpu_bandwidth_amortized: " << weight_mb / gpu_amort
+              << " GB/s (" << amort << " kernels/sync; dispatch+copy overhead "
+              << gpu - gpu_amort << " ms/call)\n";
+    if (gpu_kernel > 0.0)
+        std::cout << "├─ gpu_bandwidth_kernel: " << weight_mb / gpu_kernel
+                  << " GB/s (timestamp-measured GPU time)\n";
+    std::cout << "└─ Status: PASSED ✓\n";
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("Benchmark");
     runner.run_test("llm_benchmark",        llm_benchmark());
     runner.run_test("vlm_benchmark",        vlm_benchmark());
     runner.run_test("transcribe_benchmark", transcribe_benchmark());
+    if (cactus_vulkan_available())
+        runner.run_test("vulkan_gemv_benchmark", vulkan_gemv_benchmark());
+    else
+        runner.log_skip("vulkan_gemv_benchmark", "Vulkan GPU not available");
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

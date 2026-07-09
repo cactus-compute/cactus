@@ -1,6 +1,6 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
-#include "metal_backend.h"
+#include "cactus_gpu.h"
 #include <cstring>
 #include <algorithm>
 #include <limits>
@@ -103,7 +103,7 @@ inline bool use_fp16_kv_cache() {
 constexpr size_t kInitialCacheEntries = 256;
 
 inline bool kv_cache_resident() {
-    return cactus_backend_metal();
+    return cactus_backend_gpu();
 }
 
 inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
@@ -122,8 +122,8 @@ inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     const bool metal = kv_cache_resident();
     void* old_data = buf.get_data();
     if (metal) {
-        cactus_metal_session_sync();
-        void* p = cactus_metal_alloc_shared(resized.byte_size);
+        cactus_gpu_session_sync();
+        void* p = cactus_gpu_alloc_shared(resized.byte_size);
         if (p) resized.set_external(p); else resized.allocate();
     } else {
         resized.allocate();
@@ -143,7 +143,7 @@ inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     }
     get_meta(resized)->max_seq_len = new_max;
     buf = std::move(resized);
-    cactus_metal_free_shared(old_data);
+    cactus_gpu_free_shared(old_data);
     return true;
 }
 
@@ -187,7 +187,7 @@ void compute_kv_cache_state_node(
 
     node.output_buffer = BufferDesc({num_slots * per_slot}, fp16_cache ? Precision::FP16 : Precision::INT8);
     if (kv_cache_resident()) {
-        void* p = cactus_metal_alloc_shared(node.output_buffer.byte_size);
+        void* p = cactus_gpu_alloc_shared(node.output_buffer.byte_size);
         if (p) node.output_buffer.set_external(p); else node.output_buffer.allocate();
     } else {
         node.output_buffer.allocate();

@@ -1,0 +1,234 @@
+#version 450
+#extension GL_EXT_shader_16bit_storage : require
+
+layout(local_size_x = 64) in;
+
+float gelu_tanh(float x) {
+    float c = 0.7978845608028654 * (x + 0.044715*x*x*x);
+    return 0.5 * x * (1.0 + tanh(c));
+}
+
+float erf_approx(float x) {
+    float sgn = x < 0.0 ? -1.0 : 1.0;
+    float ax = abs(x);
+    float t = 1.0 / (1.0 + 0.3275911 * ax);
+    float poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741
+               + t * (-1.453152027 + t * 1.061405429))));
+    return sgn * (1.0 - poly * exp(-ax * ax));
+}
+
+float h16(float v) { return unpackHalf2x16(packHalf2x16(vec2(v, 0.0))).x; }
+
+#ifdef K_binary
+layout(std430, binding = 0) readonly buffer BA { float16_t a[]; };
+layout(std430, binding = 1) readonly buffer BB { float16_t b[]; };
+layout(std430, binding = 2) writeonly buffer BY { float16_t y[]; };
+layout(push_constant) uniform P { uint n; int op; };
+void main() {
+    uint stride = 64u * gl_NumWorkGroups.x;
+    for (uint i = gl_GlobalInvocationID.x; i < n; i += stride) {
+        float av = float(a[i]), bv = float(b[i]), r;
+        if (op == 2) r = av - bv;
+        else if (op == 3) r = av * bv;
+        else if (op == 4) r = av / bv;
+        else if (op == 5) r = (av != bv) ? 1.0 : 0.0;
+        else r = av + bv;
+        if (op == 1) r = clamp(r, -65500.0, 65500.0);
+        y[i] = float16_t(r);
+    }
+}
+#endif
+
+#ifdef K_scalar
+layout(std430, binding = 0) readonly buffer BI { float16_t xin[]; };
+layout(std430, binding = 1) writeonly buffer BY { float16_t y[]; };
+layout(push_constant) uniform P { uint n; int op; float p; };
+void main() {
+    uint stride = 64u * gl_NumWorkGroups.x;
+    for (uint i = gl_GlobalInvocationID.x; i < n; i += stride) {
+        float v = float(xin[i]), r;
+        if (op == 0) r = v + p;
+        else if (op == 1) r = v - p;
+        else if (op == 3) r = v / p;
+        else if (op == 4) r = exp(v);
+        else if (op == 5) r = sqrt(v);
+        else if (op == 6) r = cos(v);
+        else if (op == 7) r = sin(v);
+        else if (op == 8) r = log(v);
+        else if (op == 9) r = abs(v);
+        else if (op == 10) r = pow(v, p);
+        else if (op == 11) r = (v != p) ? 1.0 : 0.0;
+        else if (op == 12) r = (v > 0.0) ? v : v * p;
+        else r = v * p;
+        y[i] = float16_t(r);
+    }
+}
+#endif
+
+#ifdef K_unary
+layout(std430, binding = 0) readonly buffer BI { float16_t xin[]; };
+layout(std430, binding = 1) writeonly buffer BY { float16_t y[]; };
+layout(push_constant) uniform P { uint n; int op; };
+void main() {
+    uint stride = 64u * gl_NumWorkGroups.x;
+    for (uint i = gl_GlobalInvocationID.x; i < n; i += stride) {
+        float x = float(xin[i]), r;
+        if (op == 0) r = gelu_tanh(x);
+        else if (op == 1) r = tanh(x);
+        else if (op == 2) r = x / (1.0 + exp(-x));
+        else if (op == 4) r = 0.5*x*(1.0 + erf_approx(x*0.70710678));
+        else if (op == 5) r = 1.0 / (1.0 + exp(-x));
+        else r = max(x, 0.0);
+        y[i] = float16_t(r);
+    }
+}
+#endif
+
+#ifdef K_swiglu
+layout(std430, binding = 0) readonly buffer BG { float16_t gate[]; };
+layout(std430, binding = 1) readonly buffer BU { float16_t up[]; };
+layout(std430, binding = 2) writeonly buffer BY { float16_t y[]; };
+layout(push_constant) uniform P { uint n; float scale; };
+void main() {
+    uint stride = 64u * gl_NumWorkGroups.x;
+    for (uint i = gl_GlobalInvocationID.x; i < n; i += stride) {
+        float g1 = h16(gelu_tanh(float(gate[i])));
+        float g2 = h16(g1 * scale);
+        y[i] = float16_t(g2 * float(up[i]));
+    }
+}
+#endif
+
+#ifdef K_rms_norm
+layout(std430, binding = 0) readonly buffer BI { float16_t xin[]; };
+layout(std430, binding = 1) readonly buffer BW { float16_t w[]; };
+layout(std430, binding = 2) writeonly buffer BY { float16_t y[]; };
+layout(push_constant) uniform P { uint dim; float eps; };
+shared float red[64];
+void main() {
+    uint row = gl_WorkGroupID.x, t = gl_LocalInvocationID.x;
+    uint base = row * dim;
+    float partial = 0.0;
+    for (uint i = t; i < dim; i += 64u) { float v = float(xin[base + i]); partial += v * v; }
+    red[t] = partial;
+    barrier();
+    for (uint s = 32u; s > 0u; s >>= 1u) { if (t < s) red[t] += red[t + s]; barrier(); }
+    float inv = 1.0 / sqrt(red[0] / float(dim) + eps);
+    for (uint i = t; i < dim; i += 64u) y[base + i] = float16_t(float(xin[base + i]) * inv * float(w[i]));
+}
+#endif
+
+#ifdef K_cq4_transform
+layout(std430, binding = 0) readonly buffer BX { float16_t xin[]; };
+layout(std430, binding = 1) readonly buffer BR { float16_t recip[]; };
+layout(std430, binding = 2) readonly buffer BL { uint lsign[]; };
+layout(std430, binding = 3) readonly buffer BS { uint rsign[]; };
+layout(std430, binding = 4) readonly buffer BP { uint perm[]; };
+layout(std430, binding = 5) writeonly buffer BC { float16_t code[]; };
+layout(push_constant) uniform P { uint gs; };
+shared float z[512];
+float lsgn(uint k) { int b = int((lsign[k >> 2] >> ((k & 3u) * 8u)) & 0xFFu); return float((b << 24) >> 24); }
+float rsgn(uint k) { int b = int((rsign[k >> 2] >> ((k & 3u) * 8u)) & 0xFFu); return float((b << 24) >> 24); }
+void main() {
+    uint g = gl_WorkGroupID.x, t = gl_LocalInvocationID.x;
+    for (uint k = t; k < gs; k += 64u) { uint gk = g*gs + k; z[k] = float(xin[gk])*float(recip[gk])*lsgn(k); }
+    barrier();
+    for (uint h = 1u; h < gs; h <<= 1u) {
+        for (uint k = t; k < gs; k += 64u) if ((k & h) == 0u) { float a = z[k], b = z[k + h]; z[k] = a + b; z[k + h] = a - b; }
+        barrier();
+    }
+    float s = inversesqrt(float(gs));
+    for (uint k = t; k < gs; k += 64u) z[k] = z[k]*s*rsgn(k);
+    barrier();
+    for (uint k = t; k < gs; k += 64u) code[g*gs + k] = float16_t(z[perm[k]]);
+}
+#endif
+
+#ifdef K_cq4_gemv
+layout(std430, binding = 0) readonly buffer BC { uvec4 code_v[]; };
+layout(std430, binding = 1) readonly buffer BPK { uint packed_w[]; };
+layout(std430, binding = 2) readonly buffer BCB { float16_t codebook[]; };
+layout(std430, binding = 3) readonly buffer BN { float16_t norms[]; };
+layout(std430, binding = 4) writeonly buffer BY { float16_t y[]; };
+layout(push_constant) uniform P { uint gs; uint ng; uint pgb; uint N; uint il; };
+shared float cb[16];
+shared vec4 red[64];
+float dot8(uint w, vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
+    return c0.x*cb[w & 0xFu]         + c0.y*cb[(w >> 4) & 0xFu]
+         + c1.x*cb[(w >> 8) & 0xFu]  + c1.y*cb[(w >> 12) & 0xFu]
+         + c2.x*cb[(w >> 16) & 0xFu] + c2.y*cb[(w >> 20) & 0xFu]
+         + c3.x*cb[(w >> 24) & 0xFu] + c3.y*cb[w >> 28];
+}
+float dot8_il(uint w, vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
+    return c0.x*cb[w & 0xFu]         + c0.y*cb[(w >> 8) & 0xFu]
+         + c1.x*cb[(w >> 16) & 0xFu] + c1.y*cb[(w >> 24) & 0xFu]
+         + c2.x*cb[(w >> 4) & 0xFu]  + c2.y*cb[(w >> 12) & 0xFu]
+         + c3.x*cb[(w >> 20) & 0xFu] + c3.y*cb[(w >> 28) & 0xFu];
+}
+void main() {
+    uint n0 = gl_WorkGroupID.x * 4u, t = gl_LocalInvocationID.x;
+    if (t < 16u) cb[t] = float(codebook[t]);
+    barrier();
+    uint K = ng * gs;
+    vec4 acc = vec4(0.0);
+    for (uint base = t * 16u; base < K; base += 1024u) {
+        uint g = base / gs, e = base - g * gs;
+        uvec4 q0 = code_v[base >> 3];
+        uvec4 q1 = code_v[(base >> 3) + 1u];
+        vec2 c0 = unpackHalf2x16(q0.x), c1 = unpackHalf2x16(q0.y);
+        vec2 c2 = unpackHalf2x16(q0.z), c3 = unpackHalf2x16(q0.w);
+        vec2 c4 = unpackHalf2x16(q1.x), c5 = unpackHalf2x16(q1.y);
+        vec2 c6 = unpackHalf2x16(q1.z), c7 = unpackHalf2x16(q1.w);
+        if (il != 0u) {
+            uint pw = ((n0 >> 2) * ng + g) * pgb + (e >> 4) * 8u;
+            uint nb = ((n0 >> 2) * ng + g) << 2;
+            for (uint r = 0u; r < 4u; ++r) {
+                uint A = packed_w[pw + r];
+                uint B = packed_w[pw + 4u + r];
+                float p = dot8_il(A, c0, c1, c2, c3) + dot8_il(B, c4, c5, c6, c7);
+                acc[r] += float(norms[nb + r]) * p;
+            }
+        } else {
+            for (uint r = 0u; r < 4u; ++r) {
+                uint n = n0 + r;
+                if (n >= N) break;
+                uint bw = (n * ng + g) * (pgb >> 2) + (e >> 3);
+                uint A = packed_w[bw];
+                uint B = packed_w[bw + 1u];
+                float p = dot8(A, c0, c1, c2, c3) + dot8(B, c4, c5, c6, c7);
+                acc[r] += float(norms[n * ng + g]) * p;
+            }
+        }
+    }
+    red[t] = acc;
+    barrier();
+    for (uint s = 32u; s > 0u; s >>= 1u) { if (t < s) red[t] += red[t + s]; barrier(); }
+    if (t == 0u)
+        for (uint r = 0u; r < 4u; ++r)
+            if (n0 + r < N) y[n0 + r] = float16_t(red[0][r]);
+}
+#endif
+
+#ifdef K_argmax
+layout(std430, binding = 0) readonly buffer BL { float16_t logits[]; };
+layout(std430, binding = 1) writeonly buffer BO { float outp[]; };
+layout(push_constant) uniform P { uint n; };
+shared float vmax[64];
+shared uint vidx[64];
+void main() {
+    uint t = gl_LocalInvocationID.x, gid = gl_WorkGroupID.x, G = gl_NumWorkGroups.x;
+    float best = -3.4e38;
+    uint bi = 0u;
+    for (uint i = gid*64u + t; i < n; i += G*64u) {
+        float v = float(logits[i]);
+        if (v > best) { best = v; bi = i; }
+    }
+    vmax[t] = best; vidx[t] = bi;
+    barrier();
+    for (uint s = 32u; s > 0u; s >>= 1u) {
+        if (t < s && vmax[t + s] > vmax[t]) { vmax[t] = vmax[t + s]; vidx[t] = vidx[t + s]; }
+        barrier();
+    }
+    if (t == 0u) { outp[gid*2u] = vmax[0]; outp[gid*2u + 1u] = uintBitsToFloat(vidx[0]); }
+}
+#endif

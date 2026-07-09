@@ -4,7 +4,7 @@
 #include "chat_tools.h"
 #include "telemetry.h"
 #include "cactus_kernels.h"
-#include "metal_backend.h"
+#include "cactus_gpu.h"
 #include "wav.h"
 #include <algorithm>
 #include <chrono>
@@ -798,7 +798,7 @@ int cactus_complete(
     size_t pcm_buffer_size
 ) {
     struct MetalTrimGuard {
-        ~MetalTrimGuard() { cactus_metal_trim_prefill_cache(); }
+        ~MetalTrimGuard() { cactus_gpu_trim_prefill_cache(); }
     } metal_trim_guard;
 
     if (!model) {

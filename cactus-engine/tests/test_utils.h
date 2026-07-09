@@ -2,6 +2,7 @@
 #define TEST_UTILS_H
 
 #include "../cactus_engine.h"
+#include "cactus_kernels.h"
 #include <vector>
 #include <string>
 #include <chrono>
@@ -49,6 +50,23 @@ struct Timer {
     std::chrono::high_resolution_clock::time_point start;
     Timer();
     double elapsed_ms() const;
+};
+
+std::vector<__fp16> rand_halfs(size_t n, float lo = -1.0f, float hi = 1.0f);
+bool close_all(const std::vector<__fp16>& got, const std::vector<float>& want,
+               float tol, const char* what);
+float gelu_ref(float x);
+
+struct CQ4Fixture {
+    uint32_t K, N, gs, ng, pgb;
+    std::vector<uint8_t> packed;
+    std::vector<__fp16> codebook, norms, recip;
+    std::vector<int8_t> ls, rs;
+    std::vector<uint32_t> perm;
+    std::vector<uint8_t> idx;
+    CactusQuantMatrix W = {};
+    explicit CQ4Fixture(bool interleaved, uint32_t K_ = 512, uint32_t N_ = 64, uint32_t gs_ = 128);
+    std::vector<float> oracle(const std::vector<__fp16>& x) const;
 };
 
 double json_number(const std::string& json, const std::string& key, double def = 0.0);

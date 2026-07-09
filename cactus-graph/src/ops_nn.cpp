@@ -1,6 +1,6 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
-#include "metal_backend.h"
+#include "cactus_gpu.h"
 #include <cstring>
 #include <vector>
 #include <stdexcept>
@@ -57,8 +57,8 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
         if (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
             cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
-        else if (cactus_backend_metal())
-            cactus_metal_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
+        else if (cactus_backend_gpu())
+            cactus_gpu_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
         else
             cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
     } else {

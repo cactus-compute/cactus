@@ -1,6 +1,6 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
-#include "metal_backend.h"
+#include "cactus_gpu.h"
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -595,7 +595,7 @@ void compute_reshape_node(GraphNode& node, const std::vector<std::unique_ptr<Gra
                                 ") must match output elements (" + std::to_string(output_total_elements) + ")");
     }
 
-    if (cactus_metal_active_mode()) {
+    if (cactus_gpu_active_mode()) {
         node.output_buffer.set_external(const_cast<void*>(input_buffer.get_data()));
     } else {
         std::memcpy(node.output_buffer.get_data(), input_buffer.get_data(), input_buffer.byte_size);
@@ -606,7 +606,7 @@ void compute_precision_cast_node(GraphNode& node, const std::vector<std::unique_
     const auto& input_buf = get_input(node, 0, nodes, node_index_map);
 
     if (input_buf.precision == node.output_buffer.precision) {
-        if (cactus_metal_active_mode()) {
+        if (cactus_gpu_active_mode()) {
             node.output_buffer.set_external(const_cast<void*>(input_buf.get_data()));
         } else {
             std::memcpy(node.output_buffer.get_data(), input_buf.get_data(), input_buf.byte_size);

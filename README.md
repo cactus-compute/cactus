@@ -21,7 +21,7 @@ A hybrid edge-cloud AI engine for mobile devices & wearables.
 └─────────────────┘     
          │
 ┌─────────────────┐
-│ Cactus Kernels  │ ←── Fastest ARM SIMD kernels (Apple, Samsung, Pixel, etc)
+│ Cactus Kernels  │ ←── CPU/GPU kernels for (Apple, Samsung, Pixel, etc.)
 └─────────────────┘     
          │
 ┌─────────────────┐
@@ -133,9 +133,10 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 |--------|-----|-----|------------|---------------|
 | Mac M5 Max | 2964tps / 154tps | 0.09s / 168tps | 0.15s | 1348MB |
 | Mac M4 Pro | 1947tps / 97tps | 0.25s / 108tps | 0.28s | 1225MB |
-| iPad M5 | 1336tps / 71tps | 0.25s / 80tps | 0.27s | 703MB |
+| iPad/Vision Pro M5 | 1336tps / 71tps | 0.25s / 80tps | 0.27s | 703MB |
 | iPhone 17 Pro | 729tps / 37tps | 0.5s / 39tps | 0.51s | 644MB |
 | iPhone 15 Pro | 511tps / 25tps | 1.16s / 27tps | 1.40s | 635MB |
+| Pixel 10 Pro | - / - | - / - | - | - |
 
 ## Output Quality 
 
@@ -209,7 +210,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │  cactus run [model|path]             run a model (downloads if needed)         │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --weights general|apple           weights bundle variant (default: general) │
-│    --backend auto|cpu|metal          inference backend (default: auto)         │
+│    --backend auto|cpu|metal|vulkan   inference backend (default: auto)         │
 │    --image <path>                    image file for VLM inference              │
 │    --audio <path>                    audio file for audio chat                 │
 │    --system <prompt>                 system prompt                             │
@@ -247,7 +248,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │    --port <port>                     port (default: 8080)                      │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --weights general|apple           weights bundle variant (default: general) │
-│    --backend auto|cpu|metal          inference backend (default: auto)         │
+│    --backend auto|cpu|metal|vulkan   inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │    --no-cloud-handoff                disable automatic cloud handoff           │
@@ -258,7 +259,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │    --serve-model <id>                auto-start a server with this model       │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --weights general|apple           weights bundle variant (default: general) │
-│    --backend auto|cpu|metal          inference backend (default: auto)         │
+│    --backend auto|cpu|metal|vulkan   inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │    --host <addr>                     server address (default: 127.0.0.1)       │
@@ -283,7 +284,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │    --transcription-model <hf-id>     default: nvidia/parakeet-tdt-0.6b-v3      │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --weights general|apple           weights bundle variant (default: general) │
-│    --backend auto|cpu|metal          inference backend (default: auto)         │
+│    --backend auto|cpu|metal|vulkan   inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild of test models        │
 │    --suite <name>                    run a single test suite by name           │
@@ -299,7 +300,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │    --transcription-model <hf-id>     default: nvidia/parakeet-tdt-0.6b-v3      │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --weights general|apple           weights bundle variant (default: general) │
-│    --backend auto|cpu|metal          inference backend (default: auto)         │
+│    --backend auto|cpu|metal|vulkan   inference backend (default: auto)         │
 │    --ios                             run on connected iPhone                   │
 │    --android                         run on connected Android                  │
 │                                                                                │
