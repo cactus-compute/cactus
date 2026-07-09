@@ -477,7 +477,8 @@ public:
 
     void init(Config::ModelType model_type,
               const std::vector<ToolConstraintSpec>& tools,
-              Tokenizer* tokenizer);
+              Tokenizer* tokenizer,
+              bool force_call = true);
 
     const std::unordered_map<uint32_t, float>& get_bias() const { return current_bias_; }
     const std::vector<float>* get_dense_bias() const { return dense_ready_ ? &dense_bias_ : nullptr; }
@@ -496,6 +497,7 @@ private:
     };
 
     bool active_ = false;
+    bool force_call_ = true;
     State state_ = State::GEMMA_START;
     Config::ModelType model_type_ = Config::ModelType::GEMMA4;
     Tokenizer* tokenizer_ = nullptr;
@@ -505,9 +507,11 @@ private:
 
     std::string call_start_tag_;
     std::string call_end_tag_;
+    std::string declaration_start_tag_;
     std::string response_start_tag_;
     std::vector<uint32_t> call_start_sequence_;
     std::vector<uint32_t> call_end_sequence_;
+    std::vector<uint32_t> declaration_start_sequence_;
     size_t forced_tag_progress_ = 0;
 
     std::unordered_set<uint32_t> gemma_call_start_tokens_;
@@ -705,7 +709,7 @@ public:
     std::vector<size_t> compressible_layers() const;
     void apply_kv_compress_env_override();
 
-    void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools);
+    void set_tool_constraints(const std::vector<ToolConstraintSpec>& tools, bool force_call = true);
     void clear_tool_constraints();
     void update_tool_constraints(uint32_t token_id);
 
