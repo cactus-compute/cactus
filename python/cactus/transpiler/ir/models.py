@@ -1,12 +1,12 @@
 from dataclasses import dataclass
-from typing import Any
-from collections import deque
+from typing import Any, Optional
 import converter.models as CVModels
 import constants
 
 @dataclass(slots=True)
 class Node:
-    layer: CVModels.LayerRecord
+    layer: Optional[CVModels.LayerRecord]
+    underlying_op: str
     normalized_attrs: dict[str, Any]
     parents: list["Node"]
     children: list["Node"]
@@ -22,84 +22,46 @@ class Graph:
     def from_layer_map(cls, map:CVModels.LayerMap) -> "Graph":
         return generate_graph(map)
 
-	    
+@dataclass(slots = True)
+class NodeSpec:
+    underlying_op:str
+    required_attrs: dict[str, Any]
+
+@dataclass(slots = True)
+class Edge:
+    from_node:str
+    parent_index:int
+    to_node:str
+
 @dataclass(slots=True)
-class FusionPattern:
-    #Input requirements
+class FusionGraph:
     target:str
-    ops:tuple[str, ...]
-    path:tuple[int, ...]
-    required_attrs:dict[int, dict[str, Any]]
-    input_refs:tuple[tuple[int, int],...]
-    shared_input_refs:tuple[tuple[tuple[int, int], tuple[int, int]], ...]
-
-    #Output requirements
-    output_attrs: dict[str, Any]
-
+    root:str
+    edges:tuple[Edge]
     
-@dataclass(slots=True)
-class FusionResult:
-    fusion: FusionPattern
-    matched_nodes: list[Node]
-    external_input_nodes: list[Node]
-    node: Node
 
-    @property
-    def matched_node_ids(self) -> list[str]:
-        return [node.layer.name for node in self.matched_nodes]
-
-    @classmethod
-    def from_match(cls, fusion: FusionPattern, nodes: list[Node]) -> "FusionResult":
-        return generate_fusion(fusion, nodes)
-
-
-@dataclass(slots=True)
-class SimplifiedGraph:
-    raw_graph: Graph
-    name_map: dict[str, Node]
-    source_nodes: list[Node]
-    replacement_map: dict[str, str]
-    fused_results: list[FusionResult]
-
-    @classmethod
-    def from_graph(cls, graph: Graph) -> "SimplifiedGraph":
-        return cls(raw_graph=graph, name_map={}, source_nodes=[], replacement_map={}, fused_results=[])
-    
 
 """###################################### MODEL UTILS!!!!!!! ######################################"""
 
-def generate_fusion(fusion: FusionPattern, nodes: list[Node]) -> FusionResult:
-    external_input_nodes = [nodes[node_index].parents[parent_index] for node_index, parent_index in fusion.input_refs]
-
-    fused_name = f"{fusion.target}_{nodes[0].layer.name}".replace(".", "_")
-
-    fused_layer = CVModels.LayerRecord(
-        index=nodes[0].layer.index,
-        name=fused_name,
-        node_type="call_function",
-        target=fusion.target,
-        args=[{"node": node.layer.name} for node in external_input_nodes],
-        kwargs={},
-        users=nodes[0].layer.users,
-        tensor_output_meta=nodes[0].layer.tensor_output_meta,
-        module_stack=nodes[0].layer.module_stack,
-    )
-
-    fused_node = Node(
-        layer=fused_layer,
-        normalized_attrs= fusion.output_attrs,
-        parents=external_input_nodes, 
-        children=nodes[0].children
-    )
-
-
-    return FusionResult(
-        fusion=fusion,
-        matched_nodes=nodes,
-        external_input_nodes=external_input_nodes,
-        node=fused_node
-    )
+def extract_node_names(value: Any) -> list[str]:
     
+    if isinstance(value, dict):
+        refs = []
+        if "node" in value:
+            refs.append(value["node"])
+
+        for item in value.values():
+            refs.extend(extract_node_names(item))
+
+        return refs
+
+    if isinstance(value, list):
+        refs = []
+        for item in value:
+            refs.extend(extract_node_names(item))
+        return refs
+
+    return []
 
 def extract_attrs(layer_: CVModels.LayerRecord) -> dict[str, Any]:
     
@@ -133,7 +95,7 @@ def generate_graph(map: CVModels.LayerMap):
     temp_source = []
 
     for layer_ in map.nodes:
-        temp = Node(layer=layer_, normalized_attrs=extract_attrs(layer_), parents=[], children=[])
+        temp = Node(layer=layer_, normalized_attrs=extract_attrs(layer_), underlying_op= layer_.target, parents=[], children=[])
         temp_map[layer_.name] = temp
         temp_source.append(temp) if layer_.node_type == "output" else None
 
@@ -141,10 +103,18 @@ def generate_graph(map: CVModels.LayerMap):
         for name in layer_.users:
             temp_map[layer_.name].children.append(temp_map[name])
 
-        for item in layer_.args:
-            if isinstance(item, dict) and "node" in item:
-                temp_map[layer_.name].parents.append(temp_map[item["node"]])
+        for name in extract_node_names(layer_.args):
+            temp_map[layer_.name].parents.append(temp_map[name])
 
-    return Graph(name_map=temp_map, source_nodes=temp_source, consumed_ids={})
+    return Graph(name_map=temp_map, source_nodes=temp_source, consumed_ids=set())
+
+
+
+
+
+
+
+
+
 
 

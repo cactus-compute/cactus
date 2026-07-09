@@ -4,7 +4,7 @@ it into a valid computation DAG (consisting of both operation nodes and value no
 on the DAG to generate an in-order execution list.
 """
 
-import models, fusions_utils
+import models, fusions_utils, fusions
 import converter.models as CVModels
 
 
@@ -90,134 +90,7 @@ def rev_top_sort(graph:models.Graph) -> models.SimplifiedGraph:
     return simplified_graph
 
 
-def resolve_name(name: str, replacement_map: dict[str, str]) -> str:
-    seen = set()
-
-    while name in replacement_map and name not in seen:
-        seen.add(name)
-        name = replacement_map[name]
-
-    return name
-
-
-def rewrite_node_refs(value, replacement_map: dict[str, str]):
-    if isinstance(value, dict):
-        rewritten = {key: rewrite_node_refs(item, replacement_map) for key, item in value.items()}
-        if "node" in rewritten:
-            rewritten["node"] = resolve_name(rewritten["node"], replacement_map)
-        return rewritten
-
-    if isinstance(value, list):
-        return [rewrite_node_refs(item, replacement_map) for item in value]
-
-    return value
-
-
-def extract_node_refs(value) -> list[str]:
-    if isinstance(value, dict):
-        refs = []
-        if "node" in value:
-            refs.append(value["node"])
-
-        for item in value.values():
-            refs.extend(extract_node_refs(item))
-
-        return refs
-
-    if isinstance(value, list):
-        refs = []
-        for item in value:
-            refs.extend(extract_node_refs(item))
-        return refs
-
-    return []
-
-
-def topo_sort(graph: models.SimplifiedGraph, args_map: dict[str, object], kwargs_map: dict[str, object]) -> list[str]:
-    deps = {}
-    users = {node_id: set() for node_id in graph.name_map}
-
-    for node_id in graph.name_map:
-        node_refs = extract_node_refs(args_map[node_id]) + extract_node_refs(kwargs_map[node_id])
-        deps[node_id] = {
-            ref
-            for ref in node_refs
-            if ref in graph.name_map and ref != node_id
-        }
-
-        for dep in deps[node_id]:
-            users[dep].add(node_id)
-
-    ready = sorted(
-        [node_id for node_id, node_deps in deps.items() if not node_deps],
-        key=lambda node_id: graph.name_map[node_id].layer.index,
-    )
-    ordered = []
-
-    while ready:
-        node_id = ready.pop(0)
-        ordered.append(node_id)
-
-        for user_id in sorted(users[node_id], key=lambda item: graph.name_map[item].layer.index):
-            deps[user_id].remove(node_id)
-            if not deps[user_id]:
-                ready.append(user_id)
-
-        ready.sort(key=lambda item: graph.name_map[item].layer.index)
-
-    if len(ordered) != len(graph.name_map):
-        raise ValueError("Simplified graph contains a cycle or unresolved dependency")
-
-    return ordered
-
-
-def layer_map_from_simplified_graph(graph: models.SimplifiedGraph, original: CVModels.LayerMap) -> CVModels.LayerMap:
-    fused_node_ids = {result.node.layer.name for result in graph.fused_results}
-    args_map = {}
-    kwargs_map = {}
-
-    for node_id, node in graph.name_map.items():
-        args_map[node_id] = rewrite_node_refs(node.layer.args, graph.replacement_map)
-
-        if node_id in fused_node_ids:
-            kwargs_map[node_id] = rewrite_node_refs(node.normalized_attrs, graph.replacement_map)
-        else:
-            kwargs_map[node_id] = rewrite_node_refs(node.layer.kwargs, graph.replacement_map)
-
-    ordered_node_ids = topo_sort(graph, args_map, kwargs_map)
-    users_map = {node_id: [] for node_id in graph.name_map}
-
-    for node_id in ordered_node_ids:
-        node_refs = extract_node_refs(args_map[node_id]) + extract_node_refs(kwargs_map[node_id])
-        for ref in node_refs:
-            if ref in users_map and node_id not in users_map[ref]:
-                users_map[ref].append(node_id)
-
-    nodes = []
-    for index, node_id in enumerate(ordered_node_ids):
-        node = graph.name_map[node_id]
-        nodes.append(
-            CVModels.LayerRecord(
-                index=index,
-                name=node.layer.name,
-                node_type=node.layer.node_type,
-                target=node.layer.target,
-                args=args_map[node_id],
-                kwargs=kwargs_map[node_id],
-                users=users_map[node_id],
-                tensor_output_meta=node.layer.tensor_output_meta,
-                module_stack=node.layer.module_stack,
-            )
-        )
-
-
-    return CVModels.LayerMap(
-        model_name=original.model_name,
-        task=original.task,
-        graph_signature=original.graph_signature,
-        range_constants=original.range_constants,
-        nodes=nodes,
-    )
+# 
 
 
 def simplify(messy_ir:CVModels.LayerMap) -> CVModels.LayerMap:
@@ -226,6 +99,136 @@ def simplify(messy_ir:CVModels.LayerMap) -> CVModels.LayerMap:
     return layer_map_from_simplified_graph(simplified_graph, messy_ir)
 
 
+
+
+# def resolve_name(name: str, replacement_map: dict[str, str]) -> str:
+#     seen = set()
+
+#     while name in replacement_map and name not in seen:
+#         seen.add(name)
+#         name = replacement_map[name]
+
+#     return name
+
+
+# def rewrite_node_refs(value, replacement_map: dict[str, str]):
+#     if isinstance(value, dict):
+#         rewritten = {key: rewrite_node_refs(item, replacement_map) for key, item in value.items()}
+#         if "node" in rewritten:
+#             rewritten["node"] = resolve_name(rewritten["node"], replacement_map)
+#         return rewritten
+
+#     if isinstance(value, list):
+#         return [rewrite_node_refs(item, replacement_map) for item in value]
+
+#     return value
+
+
+# def extract_node_refs(value) -> list[str]:
+#     if isinstance(value, dict):
+#         refs = []
+#         if "node" in value:
+#             refs.append(value["node"])
+
+#         for item in value.values():
+#             refs.extend(extract_node_refs(item))
+
+#         return refs
+
+#     if isinstance(value, list):
+#         refs = []
+#         for item in value:
+#             refs.extend(extract_node_refs(item))
+#         return refs
+
+#     return []
+
+
+# def topo_sort(graph: models.SimplifiedGraph, args_map: dict[str, object], kwargs_map: dict[str, object]) -> list[str]:
+#     deps = {}
+#     users = {node_id: set() for node_id in graph.name_map}
+
+#     for node_id in graph.name_map:
+#         node_refs = extract_node_refs(args_map[node_id]) + extract_node_refs(kwargs_map[node_id])
+#         deps[node_id] = {
+#             ref
+#             for ref in node_refs
+#             if ref in graph.name_map and ref != node_id
+#         }
+
+#         for dep in deps[node_id]:
+#             users[dep].add(node_id)
+
+#     ready = sorted(
+#         [node_id for node_id, node_deps in deps.items() if not node_deps],
+#         key=lambda node_id: graph.name_map[node_id].layer.index,
+#     )
+#     ordered = []
+
+#     while ready:
+#         node_id = ready.pop(0)
+#         ordered.append(node_id)
+
+#         for user_id in sorted(users[node_id], key=lambda item: graph.name_map[item].layer.index):
+#             deps[user_id].remove(node_id)
+#             if not deps[user_id]:
+#                 ready.append(user_id)
+
+#         ready.sort(key=lambda item: graph.name_map[item].layer.index)
+
+#     if len(ordered) != len(graph.name_map):
+#         raise ValueError("Simplified graph contains a cycle or unresolved dependency")
+
+#     return ordered
+
+
+# def layer_map_from_simplified_graph(graph: models.SimplifiedGraph, original: CVModels.LayerMap) -> CVModels.LayerMap:
+#     fused_node_ids = {result.node.layer.name for result in graph.fused_results}
+#     args_map = {}
+#     kwargs_map = {}
+
+#     for node_id, node in graph.name_map.items():
+#         args_map[node_id] = rewrite_node_refs(node.layer.args, graph.replacement_map)
+
+#         if node_id in fused_node_ids:
+#             kwargs_map[node_id] = rewrite_node_refs(node.normalized_attrs, graph.replacement_map)
+#         else:
+#             kwargs_map[node_id] = rewrite_node_refs(node.layer.kwargs, graph.replacement_map)
+
+#     ordered_node_ids = topo_sort(graph, args_map, kwargs_map)
+#     users_map = {node_id: [] for node_id in graph.name_map}
+
+#     for node_id in ordered_node_ids:
+#         node_refs = extract_node_refs(args_map[node_id]) + extract_node_refs(kwargs_map[node_id])
+#         for ref in node_refs:
+#             if ref in users_map and node_id not in users_map[ref]:
+#                 users_map[ref].append(node_id)
+
+#     nodes = []
+#     for index, node_id in enumerate(ordered_node_ids):
+#         node = graph.name_map[node_id]
+#         nodes.append(
+#             CVModels.LayerRecord(
+#                 index=index,
+#                 name=node.layer.name,
+#                 node_type=node.layer.node_type,
+#                 target=node.layer.target,
+#                 args=args_map[node_id],
+#                 kwargs=kwargs_map[node_id],
+#                 users=users_map[node_id],
+#                 tensor_output_meta=node.layer.tensor_output_meta,
+#                 module_stack=node.layer.module_stack,
+#             )
+#         )
+
+
+#     return CVModels.LayerMap(
+#         model_name=original.model_name,
+#         task=original.task,
+#         graph_signature=original.graph_signature,
+#         range_constants=original.range_constants,
+#         nodes=nodes,
+#     )
 
     
 
