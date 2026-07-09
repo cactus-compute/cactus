@@ -1,4 +1,4 @@
-import constants
+from . import constants
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 def load_model(id:str) -> object:

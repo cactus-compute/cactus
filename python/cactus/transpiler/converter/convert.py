@@ -1,8 +1,7 @@
 import torch
-import json
-from models import LayerRecord, LayerMap
-from model_preprocessing import load_model, load_input
-import constants
+from .models import LayerRecord, LayerMap
+from .model_preprocessing import load_model, load_input
+from . import constants
 
 
 
@@ -23,12 +22,12 @@ def model_ops_to_json(id:str, output_path:str) -> LayerMap:
     
     json_ = LayerMap.from_data(x=exported_model, name=id, model_task = constants.MODEL_TASK, nodes_list=nodes).model_dump_json(indent=4)
     
-    with open(output_path+"output.json", "w", encoding="utf-8") as file:
+    with open(output_path+"output1.json", "w", encoding="utf-8") as file:
         file.write(json_)
 
 
 
 if __name__ == "__main__":
-    model_ops_to_json("google/gemma-4-E2B", "/Users/sandhup/Documents/personal/cactus/python/cactus/transpiler/converter/jsons/")
+    model_ops_to_json("LiquidAI/LFM2.5-8B-A1B", "/Users/sandhup/Documents/personal/cactus/python/cactus/transpiler/converter/jsons/")
     print("Done")
 
