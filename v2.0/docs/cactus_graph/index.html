@@ -3652,9 +3652,10 @@ serializing the parent graph with <code>save_graph</code> and reading it back wi
 <li><strong>Batch operations</strong>: Process multiple samples together</li>
 <li><strong>Pre-transpose weights</strong>: Use <code>pretransposed_rhs=true</code> for matmul when possible</li>
 <li><strong>Fused operations</strong>: The framework automatically fuses compatible operations</li>
-<li><strong>Backend selection</strong>: Use NPU backend for supported operations:
-   <div class="highlight"><pre><span></span><code><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a><span class="kt">size_t</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">graph</span><span class="p">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">,</span><span class="w"> </span><span class="nb">false</span><span class="p">,</span><span class="w"> </span><span class="n">ComputeBackend</span><span class="o">::</span><span class="n">NPU</span><span class="p">);</span>
-</code></pre></div></li>
+<li><strong>Backend selection</strong>: Every op accepts a backend (<code>ComputeBackend::CPU</code> or <code>ComputeBackend::METAL</code>). When omitted, it defaults to <code>cactus_default_backend()</code> — auto (best available), or the one forced with <code>cactus_set_backend("cpu"|"metal")</code>. Pin a single op:
+   <div class="highlight"><pre><span></span><code><a id="__codelineno-46-1" name="__codelineno-46-1" href="#__codelineno-46-1"></a><span class="kt">size_t</span><span class="w"> </span><span class="n">result</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">graph</span><span class="p">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">,</span><span class="w"> </span><span class="nb">false</span><span class="p">,</span><span class="w"> </span><span class="n">ComputeBackend</span><span class="o">::</span><span class="n">METAL</span><span class="p">);</span>
+</code></pre></div>
+   Python mirrors this: <code>g.matmul(a, b, backend=Graph.METAL)</code>, default <code>backend=None</code> follows the global backend.</li>
 </ol>
 <h3 id="graph-construction_1">Graph Construction<a class="headerlink" href="#graph-construction_1" title="Permanent link">&para;</a></h3>
 <ol>
@@ -3690,7 +3691,7 @@ Follow the pattern of existing builder methods, e.g. for a new "relu" op:
 <li>
 <p><strong>Implement the op in the execution engine</strong>
 Implement the kernel or graph op code in the relevant file, usually in <code>cactus-kernels/src/</code>
-Register the new op in the dispatch table in <code>cactus-graph/src/execute.cpp</code> for the supported backends (CPU, NPU)</p>
+Register the new op in the dispatch table in <code>cactus-graph/src/execute.cpp</code> for the supported backends (CPU, Metal)</p>
 </li>
 <li>
 <p><strong>Export op in FFI bindings</strong></p>

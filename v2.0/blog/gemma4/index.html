@@ -1886,7 +1886,7 @@
 <p>Most "multimodal" models bolt on vision or audio as an afterthought. Gemma 4 is different. The vision encoder, audio encoder, and language model were trained together from the start. The audio conformer isn't a whisper-style bolt-on. It's a 300M-parameter encoder that feeds directly into the transformer's residual stream. Same for vision. The model doesn't "transcribe then think." It reasons over the raw modality.</p>
 <p>This matters because latency compounds. A pipeline that transcribes audio, then feeds text to an LLM, then generates a response has three serialized steps. Gemma 4 collapses that into one forward pass. On a modern ARM device, that means 0.3 seconds from the end of a 30-second voice clip to the first token of a response. Not 0.3 seconds for the transcription step. 0.3 seconds total.</p>
 <h2 id="performance">Performance<a class="headerlink" href="#performance" title="Permanent link">&para;</a></h2>
-<p>Cactus targets ARM across platforms: Apple Silicon Macs, iPhones, iPads, Vision Pro, and Android devices with ARM64 chipsets (Snapdragon, Dimensity, Tensor). On Apple hardware we additionally leverage the Neural Engine for vision and audio encoders, while on Android and Linux the runtime uses NEON, i8mm, and dot-product intrinsics.</p>
+<p>Cactus targets ARM across platforms: Apple Silicon Macs, iPhones, iPads, Vision Pro, and Android devices with ARM64 chipsets (Snapdragon, Dimensity, Tensor). On Apple hardware we additionally leverage Metal GPU acceleration, while on Android and Linux the runtime uses NEON, i8mm, and dot-product intrinsics.</p>
 <table>
 <thead>
 <tr>
@@ -1908,7 +1908,7 @@
 <td>0.3s</td>
 </tr>
 <tr>
-<td>Image encode (ANE)</td>
+<td>Image encode</td>
 <td>0.7s</td>
 </tr>
 </tbody>
@@ -2140,7 +2140,7 @@
 <tr>
 <td>Swift (iOS/macOS)</td>
 <td><a href="../../swift/">cactus-swift</a></td>
-<td>XCFramework with NPU support</td>
+<td>XCFramework with Metal support</td>
 </tr>
 <tr>
 <td>Kotlin (Android)</td>

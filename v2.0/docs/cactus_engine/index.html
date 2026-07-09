@@ -2895,9 +2895,7 @@
 <p><code>cactus download</code> fetches a <strong>pre-built runtime bundle</strong> (CQ weights + serialized
 graph + manifest) from
 <a href="https://huggingface.co/Cactus-Compute">huggingface.co/Cactus-Compute</a> into
-<code>weights/&lt;model&gt;-cq&lt;bits&gt;[-&lt;variant&gt;]/</code>. Defaults to <code>--weights general</code> (the
-portable build, used on every platform); pass <code>--weights apple</code> for the
-Apple-specific (CoreML/NPU) variant. The result can be loaded directly via
+<code>weights/&lt;model&gt;-cq&lt;bits&gt;/</code>. The result can be loaded directly via
 <code>cactus_init()</code>.</p>
 <p>For models not on Cactus-Compute, build a bundle from source with
 <code>cactus convert &lt;model&gt;</code> (quantizes the weights and builds the runtime graph).</p>
