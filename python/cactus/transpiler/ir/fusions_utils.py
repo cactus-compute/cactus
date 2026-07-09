@@ -1,152 +1,147 @@
-import models, constants
-#TODO: Update with str paths and their respective fusion object
-OPS_MAP: dict[str, list[models.FusionPattern]] = {}
+import models, nodes, fusions
+
+
 
 
 
 """###################################### FUSION UTILS!!!!!!! ######################################"""
 
+def node_match(node:models.Node, synth_node:models.NodeSpec) -> bool:
+    if node.underlying_op != synth_node.underlying_op:
+        return False
+
+    for key, expected_value in synth_node.required_attrs.items():
+        if key not in node.normalized_attrs:
+            return False
+
+        if node.normalized_attrs[key] != expected_value:
+            return False
+
+    return True
+
+def get_bound_parent(bindings: dict[str, models.Node], node_name: str, parent_index: int) -> models.Node | None:
+    if node_name not in bindings:
+        return None
+
+    node = bindings[node_name]
+    if parent_index < 0 or parent_index >= len(node.parents):
+        return None
+
+    return node.parents[parent_index]
+
+def get_input_parent(bindings: dict[str, models.Node], input_spec: models.InputSpec) -> models.Node | None:
+    return get_bound_parent(bindings, input_spec.node, input_spec.parent_index)
+
+#Match edges
+def edges_match(node: models.Node, synth_graph: models.FusionGraph) -> dict[str, models.Node] | None:
+    bindings:dict[str,models.Node] = {}
+
+    if not node_match(node, nodes.NODE_MAP[synth_graph.root]):
+        return None
+
+    bindings[synth_graph.root] = node
+    
+    for edge in synth_graph.edges:
+        parent = get_bound_parent(bindings, edge.from_node, edge.parent_index)
+        if parent is None:
+            return None
+
+        if edge.to_node not in nodes.NODE_MAP:
+            return None
+
+        if not node_match(parent, nodes.NODE_MAP[edge.to_node]):
+            return None
+
+        if edge.to_node in bindings and bindings[edge.to_node] is not parent:
+            return None
+
+        bindings[edge.to_node] = parent
+
+    return bindings
 
 
-# def len_match(fusion: models.FusionPattern, nodes: list[models.Node]) -> bool:
-#     return len(fusion.ops) == len(nodes)
+def match_inputs_exist(bindings: dict[str, models.Node], synth_graph: models.FusionGraph) -> bool:
+    for input_spec in synth_graph.inputs:
+        if get_input_parent(bindings, input_spec) is None:
+            return False
 
-# def match_ops(fusion: models.FusionPattern, nodes: list[models.Node]) -> bool:
-#     for i in range(len(fusion.ops)):
-#         if(fusion.ops[i] != nodes[i].layer.target):
-#             return False
-#     return True
+    return True
 
+def match_external_inputs_dec(bindings: dict[str, models.Node], synth_graph: models.FusionGraph) -> bool:
+    internal_node_ids = {id(node) for node in bindings.values()}
+    declared_input_ids = set()
 
-# def match_path(fusion: models.FusionPattern, nodes: list[models.Node]) -> bool:
-#     if len(fusion.path) != len(nodes) - 1:
-#         return False
+    for input_spec in synth_graph.inputs:
+        parent = get_input_parent(bindings, input_spec)
+        if parent is None:
+            return False
 
-#     for i, parent_index in enumerate(fusion.path):
-#         if parent_index < 0 or parent_index >= len(nodes[i].parents):
-#             return False
+        declared_input_ids.add(id(parent))
 
-#         if nodes[i].parents[parent_index].layer.name != nodes[i + 1].layer.name:
-#             return False
+    for node in bindings.values():
+        for parent in node.parents:
+            if id(parent) not in internal_node_ids and id(parent) not in declared_input_ids:
+                return False
 
-#     return True
+    return True
 
-# def match_attrs(fusion: models.FusionPattern, nodes: list[models.Node]) -> bool:
-#     for node_index, required_attrs in fusion.required_attrs.items():
-#         if node_index < 0 or node_index >= len(nodes):
-#             return False
+def match_shared_inputs(bindings: dict[str, models.Node], synth_graph: models.FusionGraph) -> bool:
+    for left_input, right_input in synth_graph.shared_inputs:
+        left_parent = get_input_parent(bindings, left_input)
+        right_parent = get_input_parent(bindings, right_input)
+        if left_parent is None or right_parent is None:
+            return False
 
-#         node_attrs = nodes[node_index].normalized_attrs
-#         for attr_name, expected_value in required_attrs.items():
-#             if attr_name not in node_attrs:
-#                 return False
+        if left_parent is not right_parent:
+            return False
 
-#             if node_attrs[attr_name] != expected_value:
-#                 return False
+    return True
 
-#     return True
+def match_no_external_internal_children(bindings: dict[str, models.Node], synth_graph: models.FusionGraph) -> bool:
+    if synth_graph.root not in bindings:
+        return False
 
+    root_node = bindings[synth_graph.root]
+    internal_node_ids = {id(node) for node in bindings.values()}
 
-# def match_input_refs(fusion: models.FusionPattern, nodes: list[models.Node]) -> bool:
-#     for node_index, parent_index in fusion.input_refs:
-#         if node_index < 0 or node_index >= len(nodes):
-#             return False
+    for node in bindings.values():
+        if node is root_node:
+            continue
 
-#         if parent_index < 0 or parent_index >= len(nodes[node_index].parents):
-#             return False
+        for child in node.children:
+            if id(child) not in internal_node_ids:
+                return False
 
-#     return True
+    return True
 
+def match_output_attrs(bindings: dict[str, models.Node], synth_graph: models.FusionGraph) -> bool:
+    for attr_value in synth_graph.output_attrs.values():
+        if not isinstance(attr_value, models.AttrRef):
+            continue
 
-# def match_shared_input_refs(fusion: models.FusionPattern, nodes: list[models.Node]) -> bool:
-#     for left_ref, right_ref in fusion.shared_input_refs:
-#         left_node_index, left_parent_index = left_ref
-#         right_node_index, right_parent_index = right_ref
+        if attr_value.node not in bindings:
+            return False
 
-#         if left_node_index < 0 or left_node_index >= len(nodes):
-#             return False
+        node = bindings[attr_value.node]
+        if attr_value.attr not in node.normalized_attrs:
+            return False
 
-#         if right_node_index < 0 or right_node_index >= len(nodes):
-#             return False
-
-#         if left_parent_index < 0 or left_parent_index >= len(nodes[left_node_index].parents):
-#             return False
-
-#         if right_parent_index < 0 or right_parent_index >= len(nodes[right_node_index].parents):
-#             return False
-
-#         left_parent = nodes[left_node_index].parents[left_parent_index]
-#         right_parent = nodes[right_node_index].parents[right_parent_index]
-
-#         if left_parent.layer.name != right_parent.layer.name:
-#             return False
-
-#     return True
-
-
-# def match_no_external_internal_children(fusion: models.FusionPattern, nodes: list[models.Node]) -> bool:
-#     fused_node_names = {node.layer.name for node in nodes}
-
-#     for node in nodes[1:]:
-#         for child in node.children:
-#             if child.layer.name not in fused_node_names:
-#                 return False
-
-#     return True
-
-# def match_external_inputs(fusion: models.FusionPattern, nodes: list[models.Node]):
-#     proposed_fusion_node_names = {node.layer.name for node in nodes}
-
-#     declared_inputs = {nodes[node_index].parents[parent_index].layer.name for node_index, parent_index in fusion.input_refs}
-
-#     for node in nodes:
-#         for parent in node.parents:
-#             if parent.layer.name not in proposed_fusion_node_names and parent.layer.name not in declared_inputs:
-#                 return False
-            
-#     return True
-
+    return True
 
 
 #Update this with any additional matching functions if any are added
 MATCHERS = (
-    len_match,
-    match_attrs,
-    match_input_refs,
-    match_ops,
-    match_path,
-    match_shared_input_refs,
+    match_inputs_exist,
+    match_external_inputs_dec,
+    match_shared_inputs,
     match_no_external_internal_children,
-    match_external_inputs,
+    match_output_attrs,
 )
 
-def fusion_match(ops:str, nodes: list[models.Node]) -> models.FusionPattern | None:
-    if ops in OPS_MAP:
-        for fusion in OPS_MAP[ops]:
-            if all(matcher(fusion, nodes) for matcher in MATCHERS):
-                return fusion
-        
-        return None
-    
+def fusion_match(node: models.Node) -> models.FusionGraph | None:
 
-    
-"""###################################### FUSION GRAPH TRAVERSAL UTILS!!!!!!! ######################################"""
-def dfs_path_gen(path:list[models.Node], graph:models.Graph, max_depth: int = constants.DFS_DEPTH):
-    if len(path) >= max_depth or not path[-1].parents:
-        yield path
-        return
-    
-    added_to_path = False
-
-    for parent in path[-1].parents:
-        if parent.layer.name in graph.consumed_ids:
-            continue
-            
-        if any(existing.layer.name == parent.layer.name for existing in path):
-            continue
-
-        added_to_path = True
-        yield from dfs_path_gen([*path, parent], graph, max_depth)
-
-    if not added_to_path:
-        yield path
+    for fusion in fusions.ROOT_TARGET_MAP.get(node.underlying_op, ()):
+        bindings = edges_match(node, fusion)
+        if bindings != None and all(matcher(bindings, fusion) for matcher in MATCHERS):
+            #Will change this to return FusionResult object which will have a list of all nodes being fused
+            return fusion

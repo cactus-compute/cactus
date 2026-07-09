@@ -11,6 +11,19 @@ RMS_NORM = models.FusionGraph(
         models.Edge("variance_with_eps", 0, "variance"),
         models.Edge("variance", 0, "squared_x"),
     ),
+    inputs=(
+        models.InputSpec("normalized_x", 0),
+        models.InputSpec("weighted_output", 1),
+    ),
+    shared_inputs=(
+        (
+            models.InputSpec("normalized_x", 0),
+            models.InputSpec("squared_x", 0),
+        ),
+    ),
+    output_attrs={
+        "eps": models.AttrRef("variance_with_eps", "scalar"),
+    },
 )
 
 
@@ -24,3 +37,6 @@ ROOT_TARGET_MAP = {
         RMS_NORM,
     ),
 }
+
+#TODO: Update with str paths and their respective fusion object
+OPS_MAP: dict[str, list[models.FusionPattern]] = {}

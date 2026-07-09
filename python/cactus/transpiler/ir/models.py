@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 import converter.models as CVModels
 import constants
@@ -22,24 +22,43 @@ class Graph:
     def from_layer_map(cls, map:CVModels.LayerMap) -> "Graph":
         return generate_graph(map)
 
-@dataclass(slots = True)
+@dataclass(slots=True)
 class NodeSpec:
     underlying_op:str
-    required_attrs: dict[str, Any]
+    required_attrs: dict[str, Any] = field(default_factory=dict)
 
-@dataclass(slots = True)
+@dataclass(slots=True)
 class Edge:
     from_node:str
     parent_index:int
     to_node:str
 
+
+@dataclass(slots=True)
+class InputSpec:
+    node:str
+    parent_index:int
+
+
+@dataclass(slots=True)
+class AttrRef:
+    node:str
+    attr:str
+
+
 @dataclass(slots=True)
 class FusionGraph:
     target:str
     root:str
-    edges:tuple[Edge]
-    
+    edges:tuple[Edge, ...]
+    inputs:tuple[InputSpec, ...] = ()
+    shared_inputs:tuple[tuple[InputSpec, InputSpec], ...] = ()
+    output_attrs:dict[str, Any] = field(default_factory=dict)
 
+
+class FusionResult:
+    node:Node
+    edges_consumed:list[str] #Can be changed to 
 
 """###################################### MODEL UTILS!!!!!!! ######################################"""
 
@@ -107,14 +126,3 @@ def generate_graph(map: CVModels.LayerMap):
             temp_map[layer_.name].parents.append(temp_map[name])
 
     return Graph(name_map=temp_map, source_nodes=temp_source, consumed_ids=set())
-
-
-
-
-
-
-
-
-
-
-
