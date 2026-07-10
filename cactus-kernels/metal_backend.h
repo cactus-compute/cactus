@@ -94,6 +94,13 @@ bool cactus_metal_encode_moe_gated_cq4(void* out, const void* hidden, const void
                                        const void* topk, const CactusQuantMatrix* w1_0,
                                        uint32_t num_experts, uint32_t top_k, uint32_t tokens,
                                        uint32_t act, uint32_t normalize, float eps, float scaling);
+bool cactus_metal_moe_cq2_ready(const CactusQuantMatrix* w1_0);
+bool cactus_metal_moe_cq2_build(const CactusQuantMatrix* w1s, const CactusQuantMatrix* w3s,
+                                const CactusQuantMatrix* w2s, uint32_t num_experts);
+bool cactus_metal_encode_moe_gated_cq2(void* out, const void* hidden, const void* probs,
+                                       const void* topk, const CactusQuantMatrix* w1_0,
+                                       uint32_t num_experts, uint32_t top_k, uint32_t tokens,
+                                       uint32_t act, uint32_t normalize, float eps, float scaling);
 bool cactus_metal_encode_quant_matmul_ortho(void* out, const void* act, void* code,
                                             const CactusQuantMatrix* W);
 bool cactus_metal_encode_embedding_ortho(void* out, uint32_t row, const CactusQuantMatrix* W, float scale);
