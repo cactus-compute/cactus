@@ -1528,12 +1528,20 @@ void CactusGraph::execute(const std::string& profile_file) {
             for (size_t i = 0; i < transient_ptr.size(); ++i)
                 if (transient_ptr[i]) { cactus_metal_free_shared(transient_ptr[i]); transient_ptr[i] = nullptr; }
         };
-        struct CacheWordSnap { size_t idx; size_t word; uint64_t value; };
+        struct CacheWordSnap { size_t idx; size_t word; uint64_t value; bool wipe; };
         std::vector<CacheWordSnap> kv_snapshot;
         auto kv_restore = [&]() {
             for (const auto& s : kv_snapshot) {
-                uint64_t* km = reinterpret_cast<uint64_t*>(nodes_[s.idx]->output_buffer.get_data());
-                if (km) km[s.word] = s.value;
+                BufferDesc& buf = nodes_[s.idx]->output_buffer;
+                uint64_t* km = reinterpret_cast<uint64_t*>(buf.get_data());
+                if (!km) continue;
+                if (s.wipe) {
+                    uint64_t slots = (buf.byte_size >= 6 * sizeof(uint64_t) && km[5] > 0) ? km[5] : 1;
+                    size_t stride = slots ? buf.byte_size / (size_t)slots / sizeof(uint64_t) : 0;
+                    for (uint64_t sl = 0; sl < slots; ++sl) km[sl * stride] = 0;
+                } else {
+                    km[s.word] = s.value;
+                }
             }
         };
         auto metal_abort_cleanup = [&]() {
@@ -1582,12 +1590,17 @@ void CactusGraph::execute(const std::string& profile_file) {
             else nd.output_buffer.resize_from_pool(pool);
         };
         size_t since_flush = 0, since_recycle = 0;
+        const bool metal_dbg = std::getenv("CACTUS_METAL_DEBUG") != nullptr;
+        size_t dbg_cluster = 0, dbg_encoded = 0, dbg_cpu = 0, dbg_syncs = 0, dbg_recycle = 0;
+        std::unordered_map<int, size_t> dbg_cpu_ops;
+        auto dbg_t0 = std::chrono::steady_clock::now();
         if (fplan) cactus_metal_plan_fold(fplan, nodes_);
         std::vector<uint8_t> metal_live(n, 0);
         auto maybe_recycle = [&]() {
             if (!transient_acts || ++since_recycle < 256 || transient_dead.empty()) return;
             for (void* p : transient_dead) cactus_metal_free_shared(p);
             transient_dead.clear();
+            ++dbg_recycle;
             cactus_metal_session_sync();
             std::fill(metal_live.begin(), metal_live.end(), 0);
             since_flush = 0;
@@ -1600,10 +1613,17 @@ void CactusGraph::execute(const std::string& profile_file) {
             if ((!kv && !conv) || nd.input_ids.size() < 2) continue;
             auto ci = node_index_map_.find(nd.input_ids[1]);
             if (ci == node_index_map_.end()) continue;
-            const uint64_t* km = reinterpret_cast<const uint64_t*>(nodes_[ci->second]->output_buffer.get_data());
-            if (!km) continue;
-            kv_snapshot.push_back({ci->second, 0, km[0]});
-            if (conv) kv_snapshot.push_back({ci->second, 1, km[1]});
+            const BufferDesc& cbuf = nodes_[ci->second]->output_buffer;
+            const uint64_t* km = reinterpret_cast<const uint64_t*>(cbuf.get_data());
+            if (!km) {
+                kv_snapshot.push_back({ci->second, 0, 0, true});
+                continue;
+            }
+            uint64_t slots = (kv && cbuf.byte_size >= 6 * sizeof(uint64_t) && km[5] > 0) ? km[5] : 1;
+            size_t stride = slots ? cbuf.byte_size / (size_t)slots / sizeof(uint64_t) : 0;
+            for (uint64_t sl = 0; sl < slots; ++sl)
+                kv_snapshot.push_back({ci->second, (size_t)sl * stride, km[sl * stride], false});
+            if (conv) kv_snapshot.push_back({ci->second, 1, km[1], false});
         }
         auto input_metal_live = [&](const GraphNode& nd) -> bool {
             for (size_t id : nd.input_ids) {
@@ -1670,12 +1690,15 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
             if (fact >= 0) {
                 if (cactus_metal_plan_encode(fplan, fact, nodes_, node_index_map_)) {
+                    ++dbg_cluster;
                     metal_live[i] = 1;
                     for (size_t r : release_after[i]) metal_release(r);
                     if (++since_flush >= flush_cadence) { cactus_metal_session_flush(); since_flush = 0; }
                     maybe_recycle();
                     continue;
                 }
+                if (metal_dbg) std::cerr << "[metal] cluster encode FAILED, banning anchor "
+                                         << get_op_name(ot) << " idx=" << i << "\n";
                 metal_guard.armed = false;
                 metal_abort_cleanup();
                 metal_plan_banned_[metal_plan_sig_].insert(i);
@@ -1711,9 +1734,13 @@ void CactusGraph::execute(const std::string& profile_file) {
                 if (input_metal_live(*node)) {
                     cactus_metal_session_sync();
                     std::fill(metal_live.begin(), metal_live.end(), 0);
+                    ++dbg_syncs;
                 }
+                ++dbg_cpu;
+                if (metal_dbg) ++dbg_cpu_ops[static_cast<int>(ot)];
                 dispatch_node(*node, nodes_, node_index_map_);
             } else {
+                ++dbg_encoded;
                 metal_live[i] = 1;
             }
             if (ot == OpType::PERSISTENT) populated_node_ids_.insert(node->id);
@@ -1721,11 +1748,40 @@ void CactusGraph::execute(const std::string& profile_file) {
             if (encoded && ++since_flush >= flush_cadence) { cactus_metal_session_flush(); since_flush = 0; }
             if (encoded) maybe_recycle();
         }
+        double dbg_loop_ms = metal_dbg
+            ? std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dbg_t0).count() : 0.0;
         metal_guard.armed = false;
         release_transients();
         cactus_metal_set_active(false);
         cactus_metal_session_end();
         cactus_graph_metal_tail_commit();
+        if (metal_dbg) {
+            double dbg_total_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - dbg_t0).count();
+            std::string s = "[metal] clusters=" + std::to_string(dbg_cluster)
+                + " per-op=" + std::to_string(dbg_encoded)
+                + " cpu=" + std::to_string(dbg_cpu)
+                + " syncs=" + std::to_string(dbg_syncs) + " cpu_ops:";
+            for (const auto& kv : dbg_cpu_ops)
+                s += std::string(" ") + get_op_name(static_cast<OpType>(kv.first)) + "x" + std::to_string(kv.second);
+            struct DbgAgg { size_t execs = 0, recycles = 0; double loop = 0, tail = 0; };
+            static std::set<std::string> dbg_printed;
+            static std::mutex dbg_mu;
+            static std::unordered_map<size_t, DbgAgg> dbg_times;
+            std::lock_guard<std::mutex> lk(dbg_mu);
+            if (dbg_printed.insert(s).second) std::cerr << s << "\n";
+            auto& agg = dbg_times[n];
+            agg.execs += 1;
+            agg.recycles += dbg_recycle;
+            agg.loop += dbg_loop_ms;
+            agg.tail += dbg_total_ms - dbg_loop_ms;
+            if (agg.execs % 50 == 0) {
+                std::cerr << "[metal] n=" << n << " execs=" << agg.execs
+                          << " avg_loop_ms=" << (agg.loop / (double)agg.execs)
+                          << " avg_tail_ms=" << (agg.tail / (double)agg.execs)
+                          << " recycle_syncs=" << agg.recycles << "\n";
+                agg = DbgAgg{};
+            }
+        }
         return;
     }
 

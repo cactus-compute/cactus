@@ -42,7 +42,11 @@ bool cactus_metal_encode_cast(void*, int, const void*, int, size_t) { return fal
 bool cactus_metal_encode_quant_matmul(void*, const void*, const CactusQuantMatrix*) { return false; }
 bool cactus_metal_encode_quant_matmul_m(void*, const void*, const CactusQuantMatrix*, uint32_t) { return false; }
 bool cactus_metal_encode_transform_batch(const void*, const CactusQuantMatrix* const*, int, void* const*) { return false; }
+bool cactus_metal_encode_transform_batch_m(const void*, const CactusQuantMatrix* const*, int, void* const*, uint32_t) { return false; }
 bool cactus_metal_encode_gemv_precoded(void*, const void*, const CactusQuantMatrix*) { return false; }
+bool cactus_metal_encode_gemv_precoded_m(void*, const void*, const CactusQuantMatrix*, uint32_t) { return false; }
+bool cactus_metal_encode_swiglu_transform_m(void*, const void*, const void*,
+    const CactusQuantMatrix*, float, uint32_t) { return false; }
 bool cactus_metal_prewarm_quant(const CactusQuantMatrix*) { return false; }
 bool cactus_metal_encode_quant_matmul_ortho(void*, const void*, void*, const CactusQuantMatrix*) { return false; }
 bool cactus_metal_encode_embedding_ortho(void*, uint32_t, const CactusQuantMatrix*, float) { return false; }
@@ -57,6 +61,10 @@ bool cactus_metal_encode_attention_fused_i8(void*, const void*, const void*, con
     void*, void*, void*, void*, const void*, const void*, const void*, const void*, const void*,
     uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
     float, float, size_t, size_t, size_t, size_t) { return false; }
+bool cactus_metal_encode_attention_fused_i8_batch(void*, const void*, const void*, const void*,
+    void*, void*, void*, void*, const void*, const void*, const void*, const void*, const void*,
+    uint32_t, uint32_t, uint32_t, uint32_t, const uint32_t*, const uint32_t*, uint32_t,
+    float, float, size_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, size_t, size_t) { return false; }
 bool cactus_metal_encode_attention_i8_prefill(void*, const void*, const void*, const void*, const void*, const void*,
     const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
     uint32_t, uint32_t, float, size_t, size_t, size_t, size_t, uint32_t, uint32_t) { return false; }

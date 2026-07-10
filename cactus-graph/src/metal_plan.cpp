@@ -2,8 +2,11 @@
 #include "cactus_kernels.h"
 #include "metal_backend.h"
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <iostream>
+#include <map>
 
 bool cactus_kv_cache_grow(BufferDesc&, size_t, size_t);
 
@@ -15,8 +18,22 @@ bool is_alias_op(OpType op) {
 
 bool is_noop_transpose(const GraphNode& nd) {
     if (nd.op_type != OpType::TRANSPOSE) return false;
+    const auto& perm = nd.params.permutation;
+    const auto& sh = nd.output_buffer.shape;
+    static const bool old_noop = std::getenv("CACTUS_METAL_OLD_NOOP_T") != nullptr;
+    if (!old_noop && perm.size() == sh.size()) {
+        size_t last = 0;
+        bool first = true;
+        for (size_t d = 0; d < sh.size(); ++d) {
+            if (sh[d] == 1) continue;
+            if (!first && perm[d] < last) return false;
+            last = perm[d];
+            first = false;
+        }
+        return true;
+    }
     size_t real = 0;
-    for (size_t d : nd.output_buffer.shape) if (d != 1) ++real;
+    for (size_t d : sh) if (d != 1) ++real;
     return real <= 1;
 }
 
@@ -34,7 +51,7 @@ struct MetalCluster {
     size_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0, a5 = 0;
     size_t b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0;
     float f0 = 0.0f, f1 = 0.0f;
-    uint32_t u0 = 0, u1 = 0;
+    uint32_t u0 = 0, u1 = 0, u2 = 0;
     void* s0 = nullptr;
     void* s1 = nullptr;
     void* sc[3] = {nullptr, nullptr, nullptr};
@@ -250,7 +267,9 @@ MetalFusePlan* cactus_metal_plan_build(
             long qidx = idxof(nd.input_ids[0]);
             if (qidx < 0) continue;
             const BufferDesc& qb = nodes[(size_t)qidx]->output_buffer;
-            if (qb.shape.size() < 4 || qb.shape[0] != 1 || qb.shape[1] != 1) continue;
+            if (qb.shape.size() < 4 || qb.shape[0] < 1 || qb.shape[0] > 32 || qb.shape[1] != 1) continue;
+            static const bool no_batch_attn = std::getenv("CACTUS_METAL_NO_BATCH_ATTN") != nullptr;
+            if (no_batch_attn && qb.shape[0] > 1) continue;
             uint32_t nqh = (uint32_t)qb.shape[2], hd = (uint32_t)qb.shape[3];
             long qk = idxof(nd.input_ids[1]);
             long vk = idxof(nd.input_ids[2]);
@@ -316,6 +335,7 @@ MetalFusePlan* cactus_metal_plan_build(
             c.f0 = nodes[(size_t)qnorm]->params.epsilon;
             c.f1 = nd.params.scale != 0.0f ? nd.params.scale : 1.0f / std::sqrt((float)hd);
             c.u0 = nqh; c.u1 = hd;
+            c.u2 = (uint32_t)qb.shape[0];
             cand.cover = cover;
             collect_chain((size_t)idxof(nd.input_ids[0]), q_rope, cand.cover);
             if (has_new && !shared) {
@@ -343,7 +363,8 @@ MetalFusePlan* cactus_metal_plan_build(
             const BufferDesc* rb = r >= 0 ? &nodes[(size_t)r]->output_buffer : nullptr;
             size_t M = 1;
             for (size_t d = 0; d + 1 < nd.output_buffer.shape.size(); ++d) M *= nd.output_buffer.shape[d];
-            if (rb && M == 1 && PrecisionTraits::is_cq(rb->precision) && rb->group_size > 0
+            static const bool no_mrules4 = std::getenv("CACTUS_METAL_NO_MRULES") != nullptr;
+            if (rb && M >= 1 && (no_mrules4 ? M == 1 : M <= 32) && PrecisionTraits::is_cq(rb->precision) && rb->group_size > 0
                 && PrecisionTraits::cq_bits(rb->precision) == 4
                 && !(rb->cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)) {
                 long mul = up_in(i, 0);
@@ -364,7 +385,7 @@ MetalFusePlan* cactus_metal_plan_build(
                             && sole_use(gel, {sm >= 0 ? (size_t)sm : (size_t)mul})) {
                             long gate = up_in((size_t)gel, 0);
                             if (gate < 0) break;
-                            if (sc_val == 1.0f && nodes[(size_t)gate]->op_type == OpType::MATMUL
+                            if (M == 1 && sc_val == 1.0f && nodes[(size_t)gate]->op_type == OpType::MATMUL
                                 && nodes[(size_t)gate]->input_ids.size() >= 2
                                 && sole_use(gate, {(size_t)gel})) {
                                 long gr = idxof(nodes[(size_t)gate]->input_ids[1]);
@@ -743,10 +764,13 @@ MetalFusePlan* cactus_metal_plan_build(
                     return j >= 0 && nodes[(size_t)j]->output_buffer.precision == Precision::FP16;
                 };
                 if (w >= 0) w = deep_f16_source(w);
-                bool one_row = src >= 0 && !nodes[(size_t)src]->output_buffer.shape.empty()
-                    && nodes[(size_t)src]->output_buffer.total_size ==
-                       nodes[(size_t)src]->output_buffer.shape.back();
-                if (src >= 0 && w >= 0 && one_row && f16((long)i) && f16(src) && f16(res) && f16(w) && f16(norm)) {
+                static const bool no_mrules = std::getenv("CACTUS_METAL_NO_MRULES") != nullptr;
+                bool rows_ok = src >= 0 && !nodes[(size_t)src]->output_buffer.shape.empty()
+                    && nodes[(size_t)src]->output_buffer.total_size == nodes[i]->output_buffer.total_size
+                    && nodes[(size_t)res]->output_buffer.total_size == nodes[i]->output_buffer.total_size
+                    && (!no_mrules || nodes[i]->output_buffer.total_size ==
+                           (nodes[i]->output_buffer.shape.empty() ? 1 : nodes[i]->output_buffer.shape.back()));
+                if (src >= 0 && w >= 0 && rows_ok && f16((long)i) && f16(src) && f16(res) && f16(w) && f16(norm)) {
                     MetalCluster c;
                     c.rule = 3;
                     c.a0 = (size_t)src; c.a1 = (size_t)w; c.a2 = (size_t)res;
@@ -827,7 +851,8 @@ MetalFusePlan* cactus_metal_plan_build(
             const BufferDesc& rb = nodes[(size_t)r]->output_buffer;
             size_t M = 1;
             for (size_t d = 0; d + 1 < mn.output_buffer.shape.size(); ++d) M *= mn.output_buffer.shape[d];
-            if (M != 1 || !PrecisionTraits::is_cq(rb.precision) || rb.group_size != 128
+            static const bool no_mrules2 = std::getenv("CACTUS_METAL_NO_MRULES") != nullptr;
+            if (M < 1 || M > 32 || (no_mrules2 && M != 1) || !PrecisionTraits::is_cq(rb.precision) || rb.group_size != 128
                 || PrecisionTraits::cq_bits(rb.precision) != 4
                 || (rb.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)) continue;
             long src = up_in(i, 0);
@@ -857,8 +882,11 @@ MetalFusePlan* cactus_metal_plan_build(
                     CactusQuantMatrix W = rb.to_cq_matrix();
                     if (W.K > maxK) maxK = W.K;
                 }
+                size_t rowsM = 1;
+                for (size_t d = 0; d + 1 < nodes[mms[base]]->output_buffer.shape.size(); ++d)
+                    rowsM *= nodes[mms[base]]->output_buffer.shape[d];
                 for (uint32_t bi = 0; bi < c.u0; ++bi)
-                    if (!c.sc[bi]) c.sc[bi] = cactus_metal_alloc_shared(maxK * 2);
+                    if (!c.sc[bi]) c.sc[bi] = cactus_metal_alloc_shared(maxK * 2 * rowsM);
                 std::vector<size_t> cover;
                 if (add_cluster(c, anchor_i, cover))
                     for (size_t mi = 1; mi < cnt; ++mi) plan->action[mms[base + mi]] = -3;
@@ -1414,8 +1442,9 @@ MetalFusePlan* cactus_metal_plan_build(
             if (passthrough(nd) || is_noop_transpose(nd)) continue;
             if (nd.op_type == OpType::SLICE || nd.op_type == OpType::INDEX) continue;
             if (last_read[i] == 0) continue;
+            static const bool old_arena = std::getenv("CACTUS_METAL_OLD_ARENA") != nullptr;
             size_t need = (nd.output_buffer.byte_size + 255) & ~size_t(255);
-            if (need == 0 || need > (8u << 20)) continue;
+            if (need == 0 || need > (old_arena ? (8u << 20) : (64u << 20))) continue;
             bool placed = false;
             for (auto& r : live) {
                 if (r.free_at < i && r.size >= need) {
@@ -1432,9 +1461,21 @@ MetalFusePlan* cactus_metal_plan_build(
                 if (cursor > peak) peak = cursor;
             }
         }
-        if (peak > 0 && peak < (256u << 20))
+        if (peak > 0 && peak < (1024u << 20))
             plan->arena_base = (char*)cactus_metal_alloc_shared(peak);
         if (!plan->arena_base) plan->arena_off.assign(n, -1);
+    }
+
+    if (std::getenv("CACTUS_METAL_DEBUG")) {
+        size_t attn = 0;
+        for (const auto& np : nodes) if (np->op_type == OpType::ATTENTION_CACHED) ++attn;
+        std::map<int, int> by_rule;
+        for (const auto& cl : plan->clusters) ++by_rule[cl.rule];
+        std::string s = "[metal] plan built: nodes=" + std::to_string(n)
+            + " attn_nodes=" + std::to_string(attn) + " banned=" + std::to_string(banned ? banned->size() : 0);
+        for (const auto& kv : by_rule) s += " r" + std::to_string(kv.first) + "=" + std::to_string(kv.second);
+        for (const auto& cl : plan->clusters) if (cl.rule == 1) { s += " attnB=" + std::to_string(cl.u2); break; }
+        std::cerr << s << "\n";
     }
 
     return plan;
@@ -1518,6 +1559,64 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             size_t ng = (hd + 31) / 32;
             size_t win = anchor.params.window_size;
             bool sliding = win > 0;
+            if (c.u2 > 1) {
+                size_t B = c.u2;
+                if (kc.precision != Precision::INT8 || B > (km[5] ? km[5] : 1)) return false;
+                uint32_t Wn = sliding ? (uint32_t)(mx - sink - 1) : 0u;
+                uint32_t Sn = sliding ? (uint32_t)sink : 0u;
+                uint32_t Rn = (Wn > Sn) ? (Wn - Sn) : 1u;
+                size_t per_slot = 64 + mx * hd + mx * ng * sizeof(float);
+                char* kb = (char*)kc.get_data();
+                char* vb = (char*)vc.get_data();
+                char* qp = (char*)data(c.a0);
+                char* op = (char*)anchor.output_buffer.get_data();
+                char* kp = has_new ? (char*)data(c.a1) : nullptr;
+                char* vp = has_new ? (char*)data(c.a2) : nullptr;
+                char* csp = (char*)data(c.b0);
+                char* snp = (char*)data(c.b1);
+                if (!qp || !op || !csp || !snp || (has_new && (!kp || !vp))) return false;
+                size_t qs = nodes[c.a0]->output_buffer.byte_size / B;
+                size_t os = anchor.output_buffer.byte_size / B;
+                size_t kls = has_new ? nodes[c.a1]->output_buffer.byte_size / B : 0;
+                size_t vls = has_new ? nodes[c.a2]->output_buffer.byte_size / B : 0;
+                size_t rope_row = (size_t)hd * 2;
+                size_t cs_stride = nodes[c.b0]->output_buffer.byte_size >= B * rope_row ? rope_row : 0;
+                std::vector<uint32_t> slots(B), ends(B);
+                for (size_t i = 0; i < B; ++i) {
+                    const uint64_t* mi = reinterpret_cast<const uint64_t*>(kb + i * per_slot);
+                    size_t ci = mi[0];
+                    if (has_new) {
+                        if (!sliding && ci >= mx) return false;
+                        bool wrap = sliding && ci >= (size_t)Wn;
+                        slots[i] = (uint32_t)(wrap ? (size_t)(Sn + ((ci - Sn) % Rn)) : ci);
+                        ends[i] = (uint32_t)(wrap ? (size_t)Wn : ci + 1);
+                    } else {
+                        slots[i] = 0;
+                        ends[i] = (uint32_t)((sliding && ci > (size_t)Wn) ? (size_t)Wn : ci);
+                    }
+                    if (ends[i] == 0) return false;
+                }
+                if (!cactus_metal_encode_attention_fused_i8_batch(
+                        op, qp, kp, vp,
+                        kb + 64, vb + 64, kb + 64 + mx * hd, vb + 64 + mx * hd,
+                        data(c.a3), has_new ? data(c.a4) : nullptr, has_new ? data(c.a5) : nullptr,
+                        csp, snp,
+                        nqh, hd, hd,
+                        (uint32_t)B, slots.data(), ends.data(), has_new ? 1u : 0u,
+                        c.f0, c.f1, per_slot,
+                        (uint32_t)(qs / 2), (uint32_t)(kls / 2), (uint32_t)(vls / 2),
+                        (uint32_t)(os / 2), (uint32_t)(cs_stride / 2),
+                        mx * hd, mx * ng * sizeof(float))) return false;
+                if (has_new) {
+                    for (size_t i = 0; i < B; ++i) {
+                        uint64_t* ki = reinterpret_cast<uint64_t*>(kb + i * per_slot);
+                        uint64_t* vi = reinterpret_cast<uint64_t*>(vb + i * per_slot);
+                        ki[0] += 1;
+                        vi[0] += 1;
+                    }
+                }
+                return true;
+            }
             if (has_new && !sliding && clen >= mx) {
                 size_t ceiling = nodes[c.b2]->params.max_cache_seq_len;
                 if (!cactus_kv_cache_grow(kc, clen + 1, ceiling)
@@ -1571,6 +1670,17 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             const void* x = nodes[c.a0]->output_buffer.get_data();
             if (!x) return false;
             void* codes[3] = { c.sc[0], c.sc[1], c.sc[2] };
+            size_t rows2 = W[0].K ? nodes[c.a0]->output_buffer.total_size / W[0].K : 1;
+            if (rows2 > 1) {
+                if (cactus_metal_encode_transform_batch_m(x, Wp, (int)c.u0, codes, (uint32_t)rows2)) {
+                    for (uint32_t bi = 0; bi < c.u0; ++bi)
+                        if (!cactus_metal_encode_gemv_precoded_m(outs[bi], c.sc[bi], Wp[bi], (uint32_t)rows2)) return false;
+                    return true;
+                }
+                for (uint32_t bi = 0; bi < c.u0; ++bi)
+                    if (!cactus_metal_encode_quant_matmul_m(outs[bi], x, Wp[bi], (uint32_t)rows2)) return false;
+                return true;
+            }
             if (cactus_metal_encode_transform_batch(x, Wp, (int)c.u0, codes)) {
                 const void* ccodes[3] = { c.sc[0], c.sc[1], c.sc[2] };
                 if (!cactus_metal_encode_gemv_cat(outs, ccodes, Wp, (int)c.u0)) {
@@ -1610,6 +1720,13 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             const void* gate = nodes[c.a0]->output_buffer.get_data();
             const void* up = nodes[c.a1]->output_buffer.get_data();
             if (!out || !gate || !up) return false;
+            size_t rows4 = W.N ? anchor.output_buffer.total_size / W.N : 1;
+            if (rows4 > 1) {
+                if (cactus_metal_encode_swiglu_transform_m(c.s0, gate, up, &W, c.f0, (uint32_t)rows4)
+                    && cactus_metal_encode_gemv_precoded_m(out, c.s0, &W, (uint32_t)rows4)) return true;
+                if (!cactus_metal_encode_swiglu(c.s0, gate, up, nodes[c.a0]->output_buffer.total_size, c.f0)) return false;
+                return cactus_metal_encode_quant_matmul_m(out, c.s0, &W, (uint32_t)rows4);
+            }
             if (cactus_metal_encode_swiglu_transform(c.s0, gate, up, &W, c.f0)
                 && cactus_metal_encode_gemv_precoded(out, c.s0, &W)) return true;
             size_t M = W.K;
@@ -1628,7 +1745,7 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
                 if (!sp) return false;
                 out_scale = (float)*(const __fp16*)sp;
             }
-            if (c.u0 == 1u && rows == 1) {
+            if (c.u0 == 1u) {
                 GraphNode& nn = *nodes[c.a5];
                 if (!nn.output_buffer.get_data()) {
                     if (!c.s1) return false;
@@ -1639,7 +1756,7 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
                         src.get_data(), data(c.a1), data(c.a2), data(c.a4),
                         rows, dim, c.f0, out_scale)) return true;
             }
-            if (c.u1 == 1u && c.u0 != 1u && rows == 1) {
+            if (c.u1 == 1u && c.u0 != 1u) {
                 if (cactus_metal_encode_rms_norm_add_scale(
                         anchor.output_buffer.get_data(), src.get_data(), data(c.a1), data(c.a2),
                         rows, dim, c.f0, out_scale)) return true;

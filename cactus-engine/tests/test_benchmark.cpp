@@ -1,11 +1,14 @@
 #include "test_utils.h"
+#include "../src/utils.h"
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <numeric>
 #include <string>
 #include <vector>
 
 using namespace EngineTestUtils;
+using cactus::engine::ChatMessage;
 
 static const char* g_model_path         = std::getenv("CACTUS_TEST_MODEL");
 static const char* g_transcription_path = std::getenv("CACTUS_TEST_TRANSCRIPTION_MODEL");
@@ -282,11 +285,86 @@ static bool transcribe_benchmark() {
     return true;
 }
 
+static bool batched_llm_benchmark() {
+    print_header("BATCHED LLM BENCHMARK (100 decode)");
+
+    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize model\n";
+        return false;
+    }
+
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    if (!handle->model->supports_dynamic_batch()) {
+        std::cout << "├─ [WARN] bundle not dynamic-batch capable (reconvert with `cactus convert`); skipping\n";
+        cactus_destroy(model);
+        return true;
+    }
+
+    auto* tok = handle->model->get_tokenizer();
+    auto make_prompts = [&](size_t count) {
+        std::vector<std::vector<uint32_t>> prompts;
+        for (size_t i = 0; i < count; i++) {
+            ChatMessage msg;
+            msg.role = "user";
+            msg.content = "You are agent " + std::to_string(i) +
+                          ". In one sentence, propose a plan for task " + std::to_string(i) + ".";
+            prompts.push_back(tok->encode(tok->format_chat_prompt({msg}, true, "", false)));
+        }
+        return prompts;
+    };
+
+    handle->model->set_decode_slots(1);
+    if (handle->model->generate_batch(make_prompts(1), 8, false).empty()) {
+        std::cerr << "[✗] Warmup generate_batch failed\n";
+        cactus_destroy(model);
+        return false;
+    }
+
+    std::cout << "├─ " << std::left << std::setw(10) << "agents"
+              << std::right << std::setw(12) << "agg tok/s"
+              << std::setw(10) << "speedup" << "\n";
+
+    double single_tps = 0.0;
+    for (size_t agents : {1, 2, 4, 8, 16, 32}) {
+        auto prompts = make_prompts(agents);
+        handle->model->set_decode_slots(agents);
+        Timer t;
+        auto streams = handle->model->generate_batch(prompts, kDecodeTokens, false);
+        double elapsed = t.elapsed_ms();
+        size_t generated = 0, processed = 0;
+        for (size_t i = 0; i < streams.size(); ++i) {
+            generated += streams[i].size();
+            processed += prompts[i].size() + streams[i].size();
+        }
+        if (streams.size() != agents || generated == 0) {
+            std::cerr << "[✗] generate_batch returned " << streams.size()
+                      << " streams / " << generated << " tokens for " << agents << " agents\n";
+            cactus_destroy(model);
+            return false;
+        }
+        double tps = processed * 1000.0 / elapsed;
+        if (agents == 1) single_tps = tps;
+        std::cout << "├─ " << std::left << std::setw(10) << agents << std::right
+                  << std::fixed << std::setprecision(2)
+                  << std::setw(12) << tps
+                  << std::setw(9) << (single_tps > 0.0 ? tps / single_tps : 0.0) << "x\n";
+    }
+    cactus_destroy(model);
+    std::cout << "└─ Status: PASSED ✓\n";
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("Benchmark");
-    runner.run_test("llm_benchmark",        llm_benchmark());
-    runner.run_test("vlm_benchmark",        vlm_benchmark());
-    runner.run_test("transcribe_benchmark", transcribe_benchmark());
+    const char* batched = std::getenv("CACTUS_TEST_BATCHED");
+    if (batched && *batched && std::strcmp(batched, "0") != 0) {
+        runner.run_test("batched_llm_benchmark", batched_llm_benchmark());
+    } else {
+        runner.run_test("llm_benchmark",        llm_benchmark());
+        runner.run_test("vlm_benchmark",        vlm_benchmark());
+        runner.run_test("transcribe_benchmark", transcribe_benchmark());
+    }
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

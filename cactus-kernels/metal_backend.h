@@ -58,7 +58,11 @@ bool cactus_metal_encode_cast(void* out, int out_prec, const void* in, int in_pr
 bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQuantMatrix* W);
 bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const CactusQuantMatrix* W, uint32_t M);
 bool cactus_metal_encode_transform_batch(const void* x, const CactusQuantMatrix* const* Ws, int B, void* const* codes);
+bool cactus_metal_encode_transform_batch_m(const void* x, const CactusQuantMatrix* const* Ws, int B, void* const* codes, uint32_t M);
 bool cactus_metal_encode_gemv_precoded(void* out, const void* code, const CactusQuantMatrix* W);
+bool cactus_metal_encode_gemv_precoded_m(void* out, const void* code, const CactusQuantMatrix* W, uint32_t M);
+bool cactus_metal_encode_swiglu_transform_m(void* code, const void* gate, const void* up,
+                                            const CactusQuantMatrix* W, float scale, uint32_t M);
 bool cactus_metal_encode_transform_gemv(void* out, const void* x, const CactusQuantMatrix* W, const void* osw);
 bool cactus_metal_transform_gemv_fits(uint32_t K);
 bool cactus_metal_encode_gemv_cat(void* const* outs, const void* const* codes,
@@ -117,6 +121,16 @@ bool cactus_metal_encode_attention_fused_i8(
     uint32_t kv_start, uint32_t kv_end, uint32_t slot, uint32_t has_new,
     float eps, float scale,
     size_t kc_bytes, size_t vc_bytes, size_t ks_bytes, size_t vs_bytes);
+
+bool cactus_metal_encode_attention_fused_i8_batch(
+    void* out, const void* q, const void* kraw, const void* vraw,
+    void* kc, void* vc, void* ks, void* vs,
+    const void* qw, const void* kw, const void* vw, const void* cs, const void* sn,
+    uint32_t nqh, uint32_t hd, uint32_t vhd,
+    uint32_t B, const uint32_t* slots, const uint32_t* ends, uint32_t has_new,
+    float eps, float scale, size_t slot_stride,
+    uint32_t q_stride, uint32_t k_stride, uint32_t v_stride, uint32_t o_stride, uint32_t cs_stride,
+    size_t kc_bytes, size_t ks_bytes);
 
 bool cactus_metal_encode_attention_i8_prefill(
     void* out, const void* q, const void* knew, const void* vnew,

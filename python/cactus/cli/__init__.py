@@ -198,6 +198,7 @@ def create_parser():
     --bits 1|2|3|4                     CQ quantization (default: 4)
     --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
     --backend auto|cpu|metal           inference backend (default: auto)
+    --batched                          multi-agent decode throughput (1/8/32/64)
     --ios                              run on connected iPhone
     --android                          run on connected Android
 
@@ -374,8 +375,10 @@ def create_parser():
     test_parser.add_argument("--list", action="store_true",
                              help="List available components and engine tests, then exit")
 
-    subparsers.add_parser("benchmark", help="Run the engine benchmark suite",
-                          parents=[_build_parent(), _engine_test_parent()])
+    benchmark_parser = subparsers.add_parser("benchmark", help="Run the engine benchmark suite",
+                                             parents=[_build_parent(), _engine_test_parent()])
+    benchmark_parser.add_argument("--batched", action="store_true",
+                                  help="Benchmark multi-agent batched decode throughput (1/8/32/64 agents)")
 
     auth_parser = subparsers.add_parser("auth", help="Manage cloud API key")
     auth_parser.add_argument("--clear", action="store_true",

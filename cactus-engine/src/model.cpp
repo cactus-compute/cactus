@@ -1053,6 +1053,11 @@ std::vector<std::vector<uint32_t>> Model::generate_batch(const std::vector<std::
         }
         run_step_batch(tokens, positions);
         std::vector<uint32_t> sampled = argmax_component_logits_batch(*decoder_, batch);
+        static const bool trace = std::getenv("CACTUS_TRACE_BATCH") != nullptr;
+        if (trace && fed[0] < 40) {
+            fprintf(stderr, "[trace] step fed0=%zu pos0=%zu tok0=%u sampled0=%u\n",
+                    fed[0], positions[0], tokens[0], sampled[0]);
+        }
         for (size_t b = 0; b < batch; ++b) {
             ++fed[b];
             if (done[b]) continue;

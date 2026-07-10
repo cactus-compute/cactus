@@ -364,6 +364,7 @@ if [ "$device_type" = "simulator" ]; then
         "SIMCTL_CHILD_CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE:-1}"
         "SIMCTL_CHILD_CACTUS_TEST_ONLY=${CACTUS_TEST_SUITE:-}"
         "SIMCTL_CHILD_CACTUS_TEST_BACKEND=${CACTUS_TEST_BACKEND:-auto}"
+        "SIMCTL_CHILD_CACTUS_TEST_BATCHED=${CACTUS_TEST_BATCHED:-}"
     )
 
     env "${sim_env[@]}" xcrun simctl launch --console-pty --terminate-running-process "$device_uuid" "$bundle_id"

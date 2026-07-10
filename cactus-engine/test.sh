@@ -9,11 +9,13 @@ IOS_MODE=false
 ANDROID_MODE=false
 SUITE=""
 BACKEND="auto"
+BATCHED=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --ios)     IOS_MODE=true; shift ;;
         --android) ANDROID_MODE=true; shift ;;
+        --batched) BATCHED=true; shift ;;
         --suite)   SUITE="${2:?--suite needs an argument}"; shift 2 ;;
         --model)   CACTUS_TEST_MODEL="${2:?--model needs an argument}"; shift 2 ;;
         --transcription-model) CACTUS_TEST_TRANSCRIPTION_MODEL="${2:?--transcription-model needs an argument}"; shift 2 ;;
@@ -21,6 +23,10 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown arg: $1" >&2; exit 2 ;;
     esac
 done
+
+if [ "$BATCHED" = true ]; then
+    export CACTUS_TEST_BATCHED=1
+fi
 
 require_bundle() {
     local dir="$1" label="$2"

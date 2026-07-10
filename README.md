@@ -128,9 +128,9 @@ graph.hard_reset();
 - 1k-Context RAM: peak MB during the LLM benchmark
 - No speculative decode or MTP, pure decode. 
 
-Command: `cactus benchmark` [optional `--ios` or `--android`]
+Command: `cactus benchmark` [optional `--ios`|`--android`|`--batched`]
 
-| Device | LLM | VLM | Transcribe | RAM |
+| Device | LLM | VLM | Transcribe | 1k-Context RAM |
 |--------|-----|-----|------------|---------------|
 | Mac M5 Max | 2964tps / 154tps | 0.09s / 168tps | 0.15s | 1348MB |
 | Mac M4 Pro | 1947tps / 97tps | 0.25s / 108tps | 0.28s | 1225MB |
@@ -301,6 +301,7 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --weights general|apple           weights bundle variant (default: general) │
 │    --backend auto|cpu|metal          inference backend (default: auto)         │
+│    --batched                         multi-agent decode throughput             │
 │    --ios                             run on connected iPhone                   │
 │    --android                         run on connected Android                  │
 │                                                                                │

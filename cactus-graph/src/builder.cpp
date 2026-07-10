@@ -1,4 +1,5 @@
 #include "../cactus_graph.h"
+#include "metal_backend.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -1263,6 +1264,10 @@ size_t CactusGraph::get_node_cache_num_slots(size_t node_id) const {
 void CactusGraph::resize_cache_slots(size_t node_id, size_t num_slots) {
     GraphNode& node = *nodes_[node_index_map_.at(node_id)];
     node.params.cache_num_slots = num_slots;
+    if (node.output_buffer.external_data) {
+        cactus_metal_free_shared(node.output_buffer.external_data);
+        node.output_buffer.external_data = nullptr;
+    }
     node.output_buffer.data.reset();
 }
 
