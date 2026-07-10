@@ -1,19 +1,31 @@
 from pydantic import BaseModel
 from typing import Any, Optional
+from dataclasses import dataclass
 import torch
 
+model_presets: dict[str, str] = {
+    "PREFILL_NO_CACHE": "prefill_no_cache",
+    "PREFILL_WITH_CACHE": "prefill_with_cache",
+    "DECODING_WITH_CACHE": "decoding_with_cache",
+}
+
+@dataclass(slots=True)
+class ExportModel:
+    name: str
+    
+    input_modalities: list[str]
+    output_modalities: list[str]
 
 class InputtedModel(BaseModel):
     name: str
     input_modalities: list[str]
-#    output_modalities: list[str] -> Possible future need for this, but not yet
+    output_modalities: list[str]
 
 class LayerRecord(BaseModel):
     index: int
     name: str
     node_type: str
     target: str
-    #model_schema: str | None TODO: Need to add this field back and include model_schema during conversion
     args: Any
     kwargs: Any
     users: list[str]
@@ -107,10 +119,6 @@ def jsonable(x: Any) -> Any:
 
 
 def aten_name(target: Any) -> str:
-    """
-    Convert default naming to simpler name.
-    For non-ATen targets, falls back to str(target).
-    """
     schema = getattr(target, "_schema", None)
 
     if schema is not None:
