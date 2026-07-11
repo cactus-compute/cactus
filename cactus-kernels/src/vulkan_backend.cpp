@@ -72,6 +72,7 @@ namespace {
     X(vkCreateFence) X(vkResetFences) X(vkWaitForFences) \
     X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) \
     X(vkBindBufferMemory) X(vkAllocateMemory) X(vkFreeMemory) X(vkMapMemory) \
+    X(vkFlushMappedMemoryRanges) X(vkInvalidateMappedMemoryRanges) \
     X(vkCreateQueryPool) X(vkCmdResetQueryPool) X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults)
 
 enum { KB, KSC, KU, KSW, KR, KT, KG, KA, KCOUNT };
@@ -81,17 +82,18 @@ struct KDef {
     size_t len;
     uint32_t nbuf;
     uint32_t push;
+    uint32_t write_mask;
 };
 
 const KDef kdefs[KCOUNT] = {
-    {kSpv_binary,        sizeof(kSpv_binary) - 1,        3, 8},
-    {kSpv_scalar,        sizeof(kSpv_scalar) - 1,        2, 12},
-    {kSpv_unary,         sizeof(kSpv_unary) - 1,         2, 8},
-    {kSpv_swiglu,        sizeof(kSpv_swiglu) - 1,        3, 8},
-    {kSpv_rms_norm,      sizeof(kSpv_rms_norm) - 1,      3, 8},
-    {kSpv_cq4_transform, sizeof(kSpv_cq4_transform) - 1, 6, 4},
-    {kSpv_cq4_gemv,      sizeof(kSpv_cq4_gemv) - 1,      5, 20},
-    {kSpv_argmax,        sizeof(kSpv_argmax) - 1,        2, 4},
+    {kSpv_binary,        sizeof(kSpv_binary) - 1,        3, 8,  0x4},
+    {kSpv_scalar,        sizeof(kSpv_scalar) - 1,        2, 12, 0x2},
+    {kSpv_unary,         sizeof(kSpv_unary) - 1,         2, 8,  0x2},
+    {kSpv_swiglu,        sizeof(kSpv_swiglu) - 1,        3, 8,  0x4},
+    {kSpv_rms_norm,      sizeof(kSpv_rms_norm) - 1,      3, 8,  0x4},
+    {kSpv_cq4_transform, sizeof(kSpv_cq4_transform) - 1, 6, 4,  0x20},
+    {kSpv_cq4_gemv,      sizeof(kSpv_cq4_gemv) - 1,      5, 20, 0x10},
+    {kSpv_argmax,        sizeof(kSpv_argmax) - 1,        2, 4,  0x2},
 };
 
 struct Slot {
@@ -208,6 +210,10 @@ struct VK {
         vkGetPhysicalDeviceMemoryProperties(phys, &memprops);
         sb_align = props2.properties.limits.minStorageBufferOffsetAlignment;
         if (sb_align < 16) sb_align = 16;
+        if (props2.properties.limits.maxPushConstantsSize < 128) {
+            info = "Vulkan: push constant limit below 128";
+            return;
+        }
         if (props2.properties.limits.timestampComputeAndGraphics)
             ts_period = props2.properties.limits.timestampPeriod;
 
@@ -364,10 +370,12 @@ struct MemBlock {
     char* map = nullptr;
     size_t cap = 0;
     bool slab = false;
+    bool coherent = true;
     size_t used = 0;
     uint32_t live = 0;
 };
 
+bool g_noncoherent = false;
 std::map<uintptr_t, MemBlock*> g_blocks;
 std::unordered_map<size_t, std::vector<MemBlock*>> g_free_blocks;
 std::vector<MemBlock*> g_pending;
@@ -380,7 +388,7 @@ uint32_t mem_type(uint32_t bits, VkMemoryPropertyFlags want) {
     return UINT32_MAX;
 }
 
-bool create_block(size_t bytes, MemBlock& b) {
+bool create_block(size_t bytes, MemBlock& b, bool cached) {
     VkBufferCreateInfo bci = {};
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bci.size = bytes ? bytes : 4;
@@ -389,12 +397,50 @@ bool create_block(size_t bytes, MemBlock& b) {
     if (vk().vkCreateBuffer(vk().dev, &bci, nullptr, &b.buf) != VK_SUCCESS) return false;
     VkMemoryRequirements req = {};
     vk().vkGetBufferMemoryRequirements(vk().dev, b.buf, &req);
-    uint32_t type = mem_type(req.memoryTypeBits,
-        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    uint32_t type = UINT32_MAX;
+    if (cached) {
+        type = mem_type(req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        if (type == UINT32_MAX)
+            type = mem_type(req.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        static const bool force_cached = [] {
+            const char* v = getenv("CACTUS_VK_CACHED");
+            return v && std::strcmp(v, "force") == 0;
+        }();
+        if (type == UINT32_MAX && force_cached) {
+            type = mem_type(req.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+            if (type == UINT32_MAX)
+                type = mem_type(req.memoryTypeBits,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        }
+    }
+    if (type == UINT32_MAX)
+        type = mem_type(req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (type == UINT32_MAX)
         type = mem_type(req.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (type == UINT32_MAX) { vk().vkDestroyBuffer(vk().dev, b.buf, nullptr); b.buf = VK_NULL_HANDLE; return false; }
+    VkMemoryPropertyFlags mprops = vk().memprops.memoryTypes[type].propertyFlags;
+    b.coherent = (mprops & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    if (!b.coherent) g_noncoherent = true;
+    if (cached) {
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            char m[48];
+            std::snprintf(m, sizeof(m), " | actMem:%s%s%s",
+                          (mprops & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? "dl+" : "",
+                          (mprops & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? "cached" : "wc",
+                          b.coherent ? "+coh" : "");
+            vk().info += m;
+        }
+    }
     VkMemoryAllocateInfo mai = {};
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize = req.size;
@@ -423,7 +469,7 @@ void* alloc_shared_i(size_t bytes) {
         fl.pop_back();
     } else {
         b = new MemBlock();
-        if (!create_block(bk, *b)) { delete b; return nullptr; }
+        if (!create_block(bk, *b, true)) { delete b; return nullptr; }
         g_blocks[(uintptr_t)b->map] = b;
     }
     b->live = 1;
@@ -438,7 +484,7 @@ void* alloc_pooled_i(size_t bytes) {
             if (s != g_cur_slab && s->live == 0 && s->cap >= need) { s->used = 0; g_cur_slab = s; break; }
         if (!g_cur_slab || g_cur_slab->used + need > g_cur_slab->cap) {
             MemBlock* s = new MemBlock();
-            if (!create_block(SLAB_BYTES, *s)) { delete s; return alloc_shared_i(bytes); }
+            if (!create_block(SLAB_BYTES, *s, true)) { delete s; return alloc_shared_i(bytes); }
             s->slab = true;
             g_blocks[(uintptr_t)s->map] = s;
             g_slabs.push_back(s);
@@ -475,7 +521,24 @@ void free_shared_i(void* p) {
     g_pending.push_back(b);
 }
 
+void flush_noncoherent(bool invalidate) {
+    if (!g_noncoherent) return;
+    std::vector<VkMappedMemoryRange> rs;
+    for (auto& kv : g_blocks) {
+        if (kv.second->coherent) continue;
+        VkMappedMemoryRange r = {};
+        r.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        r.memory = kv.second->mem;
+        r.size = VK_WHOLE_SIZE;
+        rs.push_back(r);
+    }
+    if (rs.empty()) return;
+    if (invalidate) vk().vkInvalidateMappedMemoryRanges(vk().dev, (uint32_t)rs.size(), rs.data());
+    else vk().vkFlushMappedMemoryRanges(vk().dev, (uint32_t)rs.size(), rs.data());
+}
+
 bool submit_slot(Slot& s) {
+    flush_noncoherent(false);
     if (vk().vkEndCommandBuffer(s.cmd) != VK_SUCCESS) { vk().ok = false; return false; }
     if (vk().vkResetFences(vk().dev, 1, &s.fence) != VK_SUCCESS) { vk().ok = false; return false; }
     VkSubmitInfo si = {};
@@ -531,6 +594,7 @@ void recycle_pending() {
 void sync_i() {
     flush_i();
     for (Slot& s : vk().slots) wait_slot(s);
+    flush_noncoherent(true);
     recycle_pending();
 }
 
@@ -566,18 +630,52 @@ void mem_barrier() {
                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
 }
 
-void dispatch(int k, VkDescriptorSet set, const void* push, uint32_t groups) {
+struct AccessRange {
+    VkBuffer buf;
+    VkDeviceSize beg;
+    VkDeviceSize end;
+};
+std::vector<AccessRange> g_writes, g_reads;
+
+bool ranges_hit(const std::vector<AccessRange>& v, VkBuffer buf, VkDeviceSize beg, VkDeviceSize end) {
+    for (const AccessRange& r : v)
+        if (r.buf == buf && beg < r.end && r.beg < end) return true;
+    return false;
+}
+
+void dispatch(int k, VkDescriptorSet set, const void* push, uint32_t gx, uint32_t gy,
+              const VkDescriptorBufferInfo* infos, uint32_t count) {
+    static const bool barrier_all = [] {
+        const char* v = getenv("CACTUS_VK_BARRIER");
+        return v && std::strcmp(v, "all") == 0;
+    }();
+    const uint32_t wm = kdefs[k].write_mask;
+    bool hazard = barrier_all || g_writes.size() + g_reads.size() > 1024;
+    for (uint32_t i = 0; i < count && !hazard; ++i) {
+        VkDeviceSize beg = infos[i].offset, end = beg + infos[i].range;
+        hazard = ranges_hit(g_writes, infos[i].buffer, beg, end)
+              || (((wm >> i) & 1u) && ranges_hit(g_reads, infos[i].buffer, beg, end));
+    }
+    if (hazard) {
+        mem_barrier();
+        g_writes.clear();
+        g_reads.clear();
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        VkDeviceSize beg = infos[i].offset, end = beg + infos[i].range;
+        (((wm >> i) & 1u) ? g_writes : g_reads).push_back({infos[i].buffer, beg, end});
+    }
     vk().vkCmdBindPipeline(cur_cmd(), VK_PIPELINE_BIND_POINT_COMPUTE, vk().pipes[k].p);
     vk().vkCmdBindDescriptorSets(cur_cmd(), VK_PIPELINE_BIND_POINT_COMPUTE, vk().pipes[k].pl, 0, 1, &set, 0, nullptr);
     vk().vkCmdPushConstants(cur_cmd(), vk().pipes[k].pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, kdefs[k].push, push);
-    vk().vkCmdDispatch(cur_cmd(), groups, 1, 1);
-    mem_barrier();
+    vk().vkCmdDispatch(cur_cmd(), gx, gy, 1);
 }
 
 bool dinfo(const void* p, size_t bytes, VkDescriptorBufferInfo* out) {
     size_t off = 0;
     MemBlock* b = block_of(p, &off);
     if (!b) return false;
+    if (off % vk().sb_align != 0) return false;
     out->buffer = b->buf;
     out->offset = off;
     out->range = bytes ? bytes : 4;
@@ -601,7 +699,7 @@ bool enc_ew(int k, void* y, size_t out_bytes,
     if (!ensure_cmd()) return false;
     VkDescriptorSet set = make_set(k, infos, idx);
     if (!set) return false;
-    dispatch(k, set, push, groups);
+    dispatch(k, set, push, groups, 1, infos, idx);
     return true;
 }
 
@@ -653,7 +751,7 @@ ResW& resident(const CactusQuantMatrix* W) {
         r.off[i] = total;
         total += r.sz[i];
     }
-    if (create_block(total, r.b)) {
+    if (create_block(total, r.b, false)) {
         for (int i = 0; i < 8; ++i)
             if (srcs[i]) std::memcpy(r.b.map + r.off[i], srcs[i], r.sz[i]);
         r.ok = true;
@@ -690,8 +788,9 @@ bool enc_cq_gemv(void* y, const void* x, const CactusQuantMatrix* W) {
     const uint32_t il = (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) ? 1 : 0;
     struct { uint32_t gs; } tpush = {gs};
     struct { uint32_t gs, ng, pgb, N, il; } gpush = {gs, ng, pgb, N, il};
-    dispatch(KT, tset, &tpush, ng);
-    dispatch(KG, gset, &gpush, (N + 3) / 4);
+    const uint32_t rows4 = (N + 3) / 4;
+    dispatch(KT, tset, &tpush, ng, 1, tinfos, 6);
+    dispatch(KG, gset, &gpush, rows4 > 65535 ? 65535 : rows4, 1, ginfos, 5);
     return true;
 }
 
@@ -707,7 +806,15 @@ struct HostIn {
 }
 
 bool cactus_vulkan_available() { return vk().ok; }
-const char* cactus_vulkan_device_info() { return vk().info.c_str(); }
+
+const char* cactus_vulkan_device_info() {
+    if (vk().ok) {
+        std::lock_guard<std::recursive_mutex> lk(g_mu);
+        void* p = alloc_shared_i(1);
+        if (p) free_shared_i(p);
+    }
+    return vk().info.c_str();
+}
 
 bool cactus_vulkan_op_enabled(const char* name) {
     static const char* filter = getenv("CACTUS_VK_OPS");
@@ -912,7 +1019,7 @@ bool cactus_vulkan_argmax_f16(const __fp16* logits, uint32_t n, uint32_t* idx, f
     VkDescriptorSet set = make_set(KA, infos, 2);
     if (!set) return false;
     struct { uint32_t n; } push = {n};
-    dispatch(KA, set, &push, G);
+    dispatch(KA, set, &push, G, 1, infos, 2);
     sync_i();
     if (!vk().ok) return false;
     const float* parts = (const float*)ob.p;

@@ -308,6 +308,13 @@ echo "Using model path:               $device_model_dir/$model_dir"
 echo "Using transcription model path: $device_model_dir/$transcription_dir"
 echo "Using assets path:              $device_assets_dir/assets"
 
+vk_env=""
+for var in CACTUS_VK_OPS CACTUS_VK_VALIDATE CACTUS_VK_CACHED CACTUS_FLUSH_CADENCE CACTUS_GPU_RULES CACTUS_TEST_MAX_TOKENS; do
+    if [ -n "${!var:-}" ]; then
+        vk_env="$vk_env export $var=${!var} &&"
+    fi
+done
+
 FAILED=0
 for test_exe in "${test_executables[@]}"; do
     test_name=$(basename "$test_exe")
@@ -321,6 +328,7 @@ for test_exe in "${test_executables[@]}"; do
         export CACTUS_INDEX_PATH=$device_assets_dir/assets && \
         export CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE:-1} && \
         export CACTUS_TEST_BACKEND=${CACTUS_TEST_BACKEND:-auto} && \
+        $vk_env \
         ./$test_name"; then
         FAILED=1
     fi

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <random>
 #include <vector>
@@ -35,6 +36,19 @@ bool test_elementwise() {
     for (size_t i = 0; i < n; ++i) want[i] = (float)a[i] / (1.0f + std::exp(-(float)a[i]));
     if (!close_all(got, want, 5e-3f, "silu")) return false;
 
+    auto big = rand_halfs(n, -200.0f, 200.0f);
+    if (!cactus_vulkan_unary_f16(0, got.data(), big.data(), n)) return false;
+    for (size_t i = 0; i < n; ++i) want[i] = gelu_ref((float)big[i]);
+    if (!close_all(got, want, 2e-1f, "gelu large")) return false;
+
+    if (!cactus_vulkan_unary_f16(1, got.data(), big.data(), n)) return false;
+    for (size_t i = 0; i < n; ++i) want[i] = std::tanh((float)big[i]);
+    if (!close_all(got, want, 5e-3f, "tanh large")) return false;
+
+    if (!cactus_vulkan_unary_f16(2, got.data(), big.data(), n)) return false;
+    for (size_t i = 0; i < n; ++i) { float v = (float)big[i]; want[i] = v / (1.0f + std::exp(-v)); }
+    if (!close_all(got, want, 2e-1f, "silu large")) return false;
+
     return true;
 }
 
@@ -50,7 +64,16 @@ bool test_swiglu() {
         __fp16 g2 = (__fp16)((float)g1 * scale);
         want[i] = (float)g2 * (float)up[i];
     }
-    return close_all(got, want, 5e-3f, "swiglu");
+    if (!close_all(got, want, 5e-3f, "swiglu")) return false;
+
+    auto bg = rand_halfs(n, -200.0f, 200.0f);
+    if (!cactus_vulkan_swiglu_f16(got.data(), bg.data(), up.data(), n, scale)) return false;
+    for (size_t i = 0; i < n; ++i) {
+        __fp16 g1 = (__fp16)gelu_ref((float)bg[i]);
+        __fp16 g2 = (__fp16)((float)g1 * scale);
+        want[i] = (float)g2 * (float)up[i];
+    }
+    return close_all(got, want, 2e-1f, "swiglu large");
 }
 
 bool test_rms_norm() {
@@ -125,6 +148,145 @@ static bool gpu_matches_cpu(bool interleaved, const char* what) {
 bool test_cq4_gemv_vs_cpu() {
     return gpu_matches_cpu(false, "gpu vs cpu flat")
         && gpu_matches_cpu(true, "gpu vs cpu interleaved");
+}
+
+bool test_real_weights_gemv() {
+    const char* bundle = std::getenv("CACTUS_TEST_MODEL");
+    if (!bundle || !*bundle) {
+        std::cout << "  [-] CACTUS_TEST_MODEL not set, skipping\n";
+        return true;
+    }
+    const char* names[] = {"attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down"};
+    const int layers[] = {0, 1, 20, 34};
+    bool all = true;
+    size_t tested = 0;
+    for (int l : layers) {
+        for (const char* n : names) {
+            std::string path = std::string(bundle) + "/layer_" + std::to_string(l) + "_" + n + ".weights";
+            CactusGraph g;
+            size_t id;
+            try {
+                id = g.mmap_weights(path);
+            } catch (const std::exception&) {
+                continue;
+            }
+            const BufferDesc& b = g.get_output_buffer(id);
+            if (!PrecisionTraits::is_cq(b.precision) || b.group_size == 0) continue;
+            CactusQuantMatrix W = b.to_cq_matrix();
+            std::string base = path.substr(path.find_last_of('/') + 1);
+            if (W.flags & CACTUS_QUANT_FLAG_ORTHOGONAL) {
+                std::cout << "  [-] " << base << " orthogonal, skipped\n";
+                continue;
+            }
+            auto x = rand_halfs(W.K);
+            std::vector<__fp16> cpu(W.N), gpu(W.N);
+            cactus_quant_matmul(&W, x.data(), 1, cpu.data());
+            if (!cactus_vulkan_cq_gemv(gpu.data(), x.data(), &W)) {
+                std::cout << "  [-] " << base << " encode refused (bits=" << W.bits
+                          << " K=" << W.K << " N=" << W.N << " gs=" << W.group_size
+                          << " flags=" << W.flags << ")\n";
+                continue;
+            }
+            std::vector<float> want(W.N);
+            float maxy = 0;
+            for (uint32_t i = 0; i < W.N; ++i) {
+                want[i] = (float)cpu[i];
+                maxy = std::max(maxy, std::fabs(want[i]));
+            }
+            char what[160];
+            std::snprintf(what, sizeof(what), "%s K=%u N=%u gs=%u fl=%u",
+                          base.c_str(), W.K, W.N, W.group_size, W.flags);
+            if (!close_all(gpu, want, std::max(5e-2f, 0.02f * maxy), what)) all = false;
+            ++tested;
+        }
+    }
+    if (tested == 0) {
+        std::cerr << "  [✗] no CQ weight files found under " << bundle << "\n";
+        return false;
+    }
+    std::cout << "  [i] " << tested << " real matrices compared\n";
+    return all;
+}
+
+bool test_graph_ew_parity() {
+    const size_t dim = 2048;
+    auto x = rand_halfs(dim);
+    auto run = [&](const char* backend, std::vector<__fp16>& out) {
+        cactus_backend_select(backend);
+        CactusGraph g;
+        size_t in = g.input({1, dim}, Precision::FP16);
+        g.set_external_input(in, (void*)x.data(), Precision::FP16);
+        size_t h = in;
+        for (int i = 0; i < 60; ++i) {
+            size_t a = g.scalar_multiply(h, 1.007f);
+            size_t b = g.gelu(a);
+            size_t c = g.multiply(b, h);
+            h = g.add(h, c);
+        }
+        g.execute();
+        std::memcpy(out.data(), g.get_output(h), dim * 2);
+    };
+    std::vector<__fp16> cpu(dim), gpu(dim);
+    run("cpu", cpu);
+    run("vulkan", gpu);
+    cactus_backend_select("auto");
+    std::vector<float> want(dim);
+    float maxy = 0;
+    for (size_t i = 0; i < dim; ++i) {
+        want[i] = (float)cpu[i];
+        maxy = std::max(maxy, std::fabs(want[i]));
+    }
+    return close_all(gpu, want, std::max(8e-2f, 0.02f * maxy), "graph ew parity");
+}
+
+bool test_qkv_chain() {
+    CQ4Fixture fq(false), fk(false, 512, 96, 128), fv(true, 512, 64, 128);
+    auto x = rand_halfs(fq.K);
+    cactus_vulkan_session_begin();
+    auto* px = (__fp16*)cactus_vulkan_alloc_shared(fq.K * 2);
+    auto* pq = (__fp16*)cactus_vulkan_alloc_shared(fq.N * 2);
+    auto* pk = (__fp16*)cactus_vulkan_alloc_shared(fk.N * 2);
+    auto* pv = (__fp16*)cactus_vulkan_alloc_shared(fv.N * 2);
+    if (!px || !pq || !pk || !pv) return false;
+    std::memcpy(px, x.data(), fq.K * 2);
+    bool ok = cactus_vulkan_encode_cq_gemv(pq, px, &fq.W)
+           && cactus_vulkan_encode_cq_gemv(pk, px, &fk.W)
+           && cactus_vulkan_encode_cq_gemv(pv, px, &fv.W);
+    cactus_vulkan_session_sync();
+    std::vector<__fp16> gq(fq.N), gk(fk.N), gv(fv.N);
+    if (ok) {
+        std::memcpy(gq.data(), pq, fq.N * 2);
+        std::memcpy(gk.data(), pk, fk.N * 2);
+        std::memcpy(gv.data(), pv, fv.N * 2);
+    }
+    for (void* p : {(void*)px, (void*)pq, (void*)pk, (void*)pv})
+        cactus_vulkan_free_shared(p);
+    cactus_vulkan_session_end();
+    if (!ok) {
+        std::cerr << "  [✗] qkv chain encode failed\n";
+        return false;
+    }
+    auto check = [&](const std::vector<__fp16>& got, const CQ4Fixture& f, const char* what) {
+        auto want = f.oracle(x);
+        float maxy = 0;
+        for (float v : want) maxy = std::max(maxy, std::fabs(v));
+        return close_all(got, want, std::max(5e-2f, 0.02f * maxy), what);
+    };
+    return check(gq, fq, "qkv chain q") && check(gk, fk, "qkv chain k") && check(gv, fv, "qkv chain v");
+}
+
+bool test_gemv_large_n() {
+    CQ4Fixture f(false, 128, 262146, 128);
+    auto x = rand_halfs(f.K);
+    std::vector<__fp16> got(f.N);
+    if (!cactus_vulkan_cq_gemv(got.data(), x.data(), &f.W)) {
+        std::cerr << "  [✗] large-N gemv encode failed\n";
+        return false;
+    }
+    auto want = f.oracle(x);
+    float maxy = 0;
+    for (float v : want) maxy = std::max(maxy, std::fabs(v));
+    return close_all(got, want, std::max(5e-2f, 0.02f * maxy), "cq4_gemv N=262146");
 }
 
 bool test_session_chain() {
@@ -218,6 +380,10 @@ int main() {
     runner.run_test("cq4_gemv_iter_loop", test_cq4_gemv_iter_loop());
     runner.run_test("cq4_gemv_gs64", test_cq4_gemv_gs64());
     runner.run_test("cq4_gemv_vs_cpu", test_cq4_gemv_vs_cpu());
+    runner.run_test("real_weights_gemv", test_real_weights_gemv());
+    runner.run_test("graph_ew_parity", test_graph_ew_parity());
+    runner.run_test("qkv_chain", test_qkv_chain());
+    runner.run_test("gemv_large_n", test_gemv_large_n());
     runner.run_test("session_chain", test_session_chain());
     runner.run_test("argmax", test_argmax());
     runner.print_summary();

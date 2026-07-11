@@ -1,6 +1,7 @@
 #include "engine.h"
 #include "cactus_graph.h"
 #include "cactus_kernels.h"
+#include "cactus_gpu.h"
 
 #define PICOJSON_USE_INT64
 #include "picojson.h"
@@ -906,7 +907,7 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/, b
         return;
     }
     if (!use_fused) cactus_graph_set_prefill_consistent(true);
-    if (use_fused && cactus_backend_gpu()) {
+    if (use_fused && cactus_backend_gpu() && cactus_gpu_supports_plans()) {
         if (ple_probe_state_ == 0)
             ple_probe_state_ = encoder_->graph->extract_ple_pathway(fused_embed_ctx_) ? 1 : 2;
         if (ple_probe_state_ == 1) {

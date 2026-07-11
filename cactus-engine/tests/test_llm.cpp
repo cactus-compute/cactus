@@ -58,11 +58,17 @@ static cactus_model_t load_dynamic_batch_model_or_skip() {
     return model;
 }
 
-static const char* g_options = R"({
-        "max_tokens": 256,
-    "stop_sequences": ["<|im_end|>", "<end_of_turn>"],
-    "telemetry_enabled": false
-    })";
+static std::string build_options() {
+    const char* mt = std::getenv("CACTUS_TEST_MAX_TOKENS");
+    int n = mt ? std::atoi(mt) : 256;
+    if (n <= 0) n = 256;
+    char buf[192];
+    std::snprintf(buf, sizeof(buf),
+        "{\"max_tokens\": %d, \"stop_sequences\": [\"<|im_end|>\", \"<end_of_turn>\"], \"telemetry_enabled\": false}", n);
+    return std::string(buf);
+}
+static const std::string g_options_str = build_options();
+static const char* g_options = g_options_str.c_str();
 
 bool test_streaming() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"

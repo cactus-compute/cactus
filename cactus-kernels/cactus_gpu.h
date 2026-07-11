@@ -131,13 +131,16 @@ inline void cactus_gpu_quant_matmul(const CactusQuantMatrix* W, const __fp16* A,
 }
 
 inline bool cactus_gpu_encode_binary(int op, void* out, const void* a, const void* b, size_t n) {
-    return cactus_vulkan_op_enabled("ew") && cactus_vulkan_encode_binary_f16(op, out, a, b, n);
+    return (cactus_vulkan_op_enabled("ew") || cactus_vulkan_op_enabled("binary"))
+        && cactus_vulkan_encode_binary_f16(op, out, a, b, n);
 }
 inline bool cactus_gpu_encode_scalar(int op, void* out, const void* in, size_t n, float p) {
-    return cactus_vulkan_op_enabled("ew") && cactus_vulkan_encode_scalar_f16(op, out, in, n, p);
+    return (cactus_vulkan_op_enabled("ew") || cactus_vulkan_op_enabled("scalar"))
+        && cactus_vulkan_encode_scalar_f16(op, out, in, n, p);
 }
 inline bool cactus_gpu_encode_unary(int op, void* out, const void* in, size_t n) {
-    return cactus_vulkan_op_enabled("ew") && cactus_vulkan_encode_unary_f16(op, out, in, n);
+    return (cactus_vulkan_op_enabled("ew") || cactus_vulkan_op_enabled("unary"))
+        && cactus_vulkan_encode_unary_f16(op, out, in, n);
 }
 inline bool cactus_gpu_encode_swiglu(void* out, const void* gate, const void* up, size_t n, float scale) {
     return cactus_vulkan_op_enabled("swiglu") && cactus_vulkan_encode_swiglu_f16(out, gate, up, n, scale);

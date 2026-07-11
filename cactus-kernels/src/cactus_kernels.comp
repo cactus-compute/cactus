@@ -5,7 +5,7 @@ layout(local_size_x = 64) in;
 
 float gelu_tanh(float x) {
     float c = 0.7978845608028654 * (x + 0.044715*x*x*x);
-    return 0.5 * x * (1.0 + tanh(c));
+    return 0.5 * x * (1.0 + tanh(clamp(c, -30.0, 30.0)));
 }
 
 float erf_approx(float x) {
@@ -74,7 +74,7 @@ void main() {
     for (uint i = gl_GlobalInvocationID.x; i < n; i += stride) {
         float x = float(xin[i]), r;
         if (op == 0) r = gelu_tanh(x);
-        else if (op == 1) r = tanh(x);
+        else if (op == 1) r = tanh(clamp(x, -30.0, 30.0));
         else if (op == 2) r = x / (1.0 + exp(-x));
         else if (op == 4) r = 0.5*x*(1.0 + erf_approx(x*0.70710678));
         else if (op == 5) r = 1.0 / (1.0 + exp(-x));
@@ -166,46 +166,49 @@ float dot8_il(uint w, vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
          + c3.x*cb[(w >> 20) & 0xFu] + c3.y*cb[(w >> 28) & 0xFu];
 }
 void main() {
-    uint n0 = gl_WorkGroupID.x * 4u, t = gl_LocalInvocationID.x;
+    uint t = gl_LocalInvocationID.x;
     if (t < 16u) cb[t] = float(codebook[t]);
     barrier();
     uint K = ng * gs;
-    vec4 acc = vec4(0.0);
-    for (uint base = t * 16u; base < K; base += 1024u) {
-        uint g = base / gs, e = base - g * gs;
-        uvec4 q0 = code_v[base >> 3];
-        uvec4 q1 = code_v[(base >> 3) + 1u];
-        vec2 c0 = unpackHalf2x16(q0.x), c1 = unpackHalf2x16(q0.y);
-        vec2 c2 = unpackHalf2x16(q0.z), c3 = unpackHalf2x16(q0.w);
-        vec2 c4 = unpackHalf2x16(q1.x), c5 = unpackHalf2x16(q1.y);
-        vec2 c6 = unpackHalf2x16(q1.z), c7 = unpackHalf2x16(q1.w);
-        if (il != 0u) {
-            uint pw = ((n0 >> 2) * ng + g) * pgb + (e >> 4) * 8u;
-            uint nb = ((n0 >> 2) * ng + g) << 2;
-            for (uint r = 0u; r < 4u; ++r) {
-                uint A = packed_w[pw + r];
-                uint B = packed_w[pw + 4u + r];
-                float p = dot8_il(A, c0, c1, c2, c3) + dot8_il(B, c4, c5, c6, c7);
-                acc[r] += float(norms[nb + r]) * p;
-            }
-        } else {
-            for (uint r = 0u; r < 4u; ++r) {
-                uint n = n0 + r;
-                if (n >= N) break;
-                uint bw = (n * ng + g) * (pgb >> 2) + (e >> 3);
-                uint A = packed_w[bw];
-                uint B = packed_w[bw + 1u];
-                float p = dot8(A, c0, c1, c2, c3) + dot8(B, c4, c5, c6, c7);
-                acc[r] += float(norms[n * ng + g]) * p;
+    for (uint n0 = gl_WorkGroupID.x * 4u; n0 < N; n0 += gl_NumWorkGroups.x * 4u) {
+        vec4 acc = vec4(0.0);
+        for (uint base = t * 16u; base < K; base += 1024u) {
+            uint g = base / gs, e = base - g * gs;
+            uvec4 q0 = code_v[base >> 3];
+            uvec4 q1 = code_v[(base >> 3) + 1u];
+            vec2 c0 = unpackHalf2x16(q0.x), c1 = unpackHalf2x16(q0.y);
+            vec2 c2 = unpackHalf2x16(q0.z), c3 = unpackHalf2x16(q0.w);
+            vec2 c4 = unpackHalf2x16(q1.x), c5 = unpackHalf2x16(q1.y);
+            vec2 c6 = unpackHalf2x16(q1.z), c7 = unpackHalf2x16(q1.w);
+            if (il != 0u) {
+                uint pw = ((n0 >> 2) * ng + g) * pgb + (e >> 4) * 8u;
+                uint nb = ((n0 >> 2) * ng + g) << 2;
+                for (uint r = 0u; r < 4u; ++r) {
+                    uint A = packed_w[pw + r];
+                    uint B = packed_w[pw + 4u + r];
+                    float p = dot8_il(A, c0, c1, c2, c3) + dot8_il(B, c4, c5, c6, c7);
+                    acc[r] += float(norms[nb + r]) * p;
+                }
+            } else {
+                for (uint r = 0u; r < 4u; ++r) {
+                    uint n = n0 + r;
+                    if (n >= N) break;
+                    uint bw = (n * ng + g) * (pgb >> 2) + (e >> 3);
+                    uint A = packed_w[bw];
+                    uint B = packed_w[bw + 1u];
+                    float p = dot8(A, c0, c1, c2, c3) + dot8(B, c4, c5, c6, c7);
+                    acc[r] += float(norms[n * ng + g]) * p;
+                }
             }
         }
+        red[t] = acc;
+        barrier();
+        for (uint s = 32u; s > 0u; s >>= 1u) { if (t < s) red[t] += red[t + s]; barrier(); }
+        if (t == 0u)
+            for (uint r = 0u; r < 4u; ++r)
+                if (n0 + r < N) y[n0 + r] = float16_t(red[0][r]);
+        barrier();
     }
-    red[t] = acc;
-    barrier();
-    for (uint s = 32u; s > 0u; s >>= 1u) { if (t < s) red[t] += red[t + s]; barrier(); }
-    if (t == 0u)
-        for (uint r = 0u; r < 4u; ++r)
-            if (n0 + r < N) y[n0 + r] = float16_t(red[0][r]);
 }
 #endif
 
