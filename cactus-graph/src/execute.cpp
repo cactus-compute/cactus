@@ -1352,6 +1352,7 @@ void CactusGraph::execute(const std::string& profile_file) {
     };
 
     bool trace_execution = get_env_int("CACTUS_TRACE_EXECUTE", 0) != 0;
+    static const int vk_stats = get_env_int("CACTUS_VK_STATS", 0);
     static const size_t flush_cadence = (size_t)get_env_int("CACTUS_FLUSH_CADENCE", 48);
     bool trace_nan = get_env_int("CACTUS_TRACE_NAN", 0) != 0;
     bool need_debug = !profile_file.empty();
@@ -1587,6 +1588,8 @@ void CactusGraph::execute(const std::string& profile_file) {
             else nd.output_buffer.resize_from_pool(pool);
         };
         size_t since_flush = 0, since_recycle = 0;
+        size_t vk_enc_n = 0, vk_cpu_n = 0, vk_sync_n = 0;
+        std::unordered_map<int, int> vk_cpu_ops, vk_sync_ops;
         if (fplan) cactus_gpu_plan_fold(fplan, nodes_);
         std::vector<uint8_t> metal_live(n, 0);
         auto maybe_recycle = [&]() {
@@ -1716,15 +1719,43 @@ void CactusGraph::execute(const std::string& profile_file) {
                 if (input_metal_live(*node)) {
                     cactus_gpu_session_sync();
                     std::fill(metal_live.begin(), metal_live.end(), 0);
+                    if (vk_stats) { ++vk_sync_n; vk_sync_ops[(int)ot]++; }
                 }
                 dispatch_node(*node, nodes_, node_index_map_);
+                if (vk_stats) {
+                    ++vk_cpu_n;
+                    if (++vk_cpu_ops[(int)ot] <= 3 && vk_stats >= 2) {
+                        std::string d = "[vkfail] op=" + std::to_string((int)ot) + " out=";
+                        for (size_t sd : node->output_buffer.shape) d += std::to_string(sd) + ",";
+                        d += " p" + std::to_string((int)node->output_buffer.precision);
+                        for (size_t id : node->input_ids) {
+                            auto iit = node_index_map_.find(id);
+                            if (iit == node_index_map_.end()) continue;
+                            const BufferDesc& ib = nodes_[iit->second]->output_buffer;
+                            d += " | in p" + std::to_string((int)ib.precision) + " [";
+                            for (size_t sd : ib.shape) d += std::to_string(sd) + ",";
+                            d += "]";
+                            if (PrecisionTraits::is_cq(ib.precision))
+                                d += " cq gs" + std::to_string(ib.group_size) + " fl" + std::to_string(ib.cq_flags);
+                        }
+                        std::fprintf(stderr, "%s\n", d.c_str());
+                    }
+                }
             } else {
                 metal_live[i] = 1;
+                if (vk_stats) ++vk_enc_n;
             }
             if (ot == OpType::PERSISTENT) populated_node_ids_.insert(node->id);
             for (size_t r : release_after[i]) metal_release(r);
             if (encoded && ++since_flush >= flush_cadence) { cactus_gpu_session_flush(); since_flush = 0; }
             if (encoded) maybe_recycle();
+        }
+        if (vk_stats) {
+            std::string cs, ss;
+            for (auto& kv2 : vk_cpu_ops) cs += " " + std::to_string(kv2.first) + ":" + std::to_string(kv2.second);
+            for (auto& kv2 : vk_sync_ops) ss += " " + std::to_string(kv2.first) + ":" + std::to_string(kv2.second);
+            std::fprintf(stderr, "[vkstats] n=%zu enc=%zu cpu=%zu sync=%zu cpu_ops:%s sync_ops:%s\n",
+                         n, vk_enc_n, vk_cpu_n, vk_sync_n, cs.c_str(), ss.c_str());
         }
         metal_guard.armed = false;
         release_transients();

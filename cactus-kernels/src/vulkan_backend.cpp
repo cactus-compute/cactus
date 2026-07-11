@@ -20,6 +20,21 @@ bool cactus_vulkan_encode_unary_f16(int, void*, const void*, size_t) { return fa
 bool cactus_vulkan_encode_swiglu_f16(void*, const void*, const void*, size_t, float) { return false; }
 bool cactus_vulkan_encode_rms_norm_f16(void*, const void*, const void*, size_t, size_t, float) { return false; }
 bool cactus_vulkan_encode_cq_gemv(void*, const void*, const CactusQuantMatrix*) { return false; }
+bool cactus_vulkan_encode_copy(void*, const void*, size_t) { return false; }
+bool cactus_vulkan_encode_cast(void*, int, const void*, int, size_t) { return false; }
+bool cactus_vulkan_encode_strided_copy(void*, const void*, const uint32_t*, const uint32_t*, uint32_t, uint32_t, uint32_t, size_t, size_t) { return false; }
+bool cactus_vulkan_encode_strided_scatter(void*, const void*, const uint32_t*, const uint32_t*, uint32_t, uint32_t, uint32_t, size_t, size_t) { return false; }
+bool cactus_vulkan_encode_bcast_binary(int, void*, const void*, const void*, const uint32_t*, const uint32_t*, const uint32_t*, uint32_t, uint32_t, size_t, size_t, size_t) { return false; }
+bool cactus_vulkan_encode_concat2(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
+bool cactus_vulkan_encode_rms_norm_add(void*, const void*, const void*, const void*, size_t, size_t, float, float) { return false; }
+bool cactus_vulkan_encode_rms_norm_add_rms(void*, void*, const void*, const void*, const void*, const void*, size_t, size_t, float, float) { return false; }
+bool cactus_vulkan_encode_rms_norm_scale(void*, const void*, const void*, size_t, size_t, float, float) { return false; }
+bool cactus_vulkan_encode_rope_full(void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, int) { return false; }
+bool cactus_vulkan_encode_softcap(void*, const void*, size_t, float) { return false; }
+bool cactus_vulkan_encode_adjust_logits(void*, size_t, const uint32_t*, uint32_t, int64_t, float) { return false; }
+bool cactus_vulkan_encode_argmax(const void*, uint32_t, void*, const void*) { return false; }
+bool cactus_vulkan_encode_kv_append_i8(const void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, size_t, size_t, size_t) { return false; }
+bool cactus_vulkan_encode_attention_i8(void*, const void*, const void*, const void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, size_t, size_t, size_t, size_t) { return false; }
 bool cactus_vulkan_binary_f16(int, __fp16*, const __fp16*, const __fp16*, size_t) { return false; }
 bool cactus_vulkan_scalar_f16(int, __fp16*, const __fp16*, size_t, float) { return false; }
 bool cactus_vulkan_unary_f16(int, __fp16*, const __fp16*, size_t) { return false; }
@@ -41,6 +56,22 @@ bool cactus_vulkan_argmax_f16(const __fp16*, uint32_t, uint32_t*, float*) { retu
 #include "vk_cq4_transform.h"
 #include "vk_cq4_gemv.h"
 #include "vk_argmax.h"
+#include "vk_copy.h"
+#include "vk_cast.h"
+#include "vk_strided_copy.h"
+#include "vk_strided_scatter.h"
+#include "vk_bcast_binary.h"
+#include "vk_concat2.h"
+#include "vk_rms_norm_add.h"
+#include "vk_rms_norm_add_rms.h"
+#include "vk_rms_norm_scale.h"
+#include "vk_rope_full.h"
+#include "vk_softcap.h"
+#include "vk_adjust_logits.h"
+#include "vk_argmax3.h"
+#include "vk_kv_append_i8.h"
+#include "vk_attn_decode_i8.h"
+#include "vk_attn_combine.h"
 
 #include <dlfcn.h>
 #include <cstdio>
@@ -75,7 +106,9 @@ namespace {
     X(vkFlushMappedMemoryRanges) X(vkInvalidateMappedMemoryRanges) \
     X(vkCreateQueryPool) X(vkCmdResetQueryPool) X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults)
 
-enum { KB, KSC, KU, KSW, KR, KT, KG, KA, KCOUNT };
+enum { KB, KSC, KU, KSW, KR, KT, KG, KA,
+       KCP, KCA, KSTC, KSTS, KBB, KCT, KRA, KRR,
+       KRL, KRF, KSO, KAJ, KM3, KKV, KAT, KCB, KCOUNT };
 
 struct KDef {
     const char* spv;
@@ -94,6 +127,22 @@ const KDef kdefs[KCOUNT] = {
     {kSpv_cq4_transform, sizeof(kSpv_cq4_transform) - 1, 6, 4,  0x20},
     {kSpv_cq4_gemv,      sizeof(kSpv_cq4_gemv) - 1,      5, 20, 0x10},
     {kSpv_argmax,        sizeof(kSpv_argmax) - 1,        2, 4,  0x2},
+    {kSpv_copy,             sizeof(kSpv_copy) - 1,             2, 4,   0x2},
+    {kSpv_cast,             sizeof(kSpv_cast) - 1,             2, 8,   0x2},
+    {kSpv_strided_copy,     sizeof(kSpv_strided_copy) - 1,     2, 76,  0x2},
+    {kSpv_strided_scatter,  sizeof(kSpv_strided_scatter) - 1,  2, 76,  0x2},
+    {kSpv_bcast_binary,     sizeof(kSpv_bcast_binary) - 1,     3, 108, 0x4},
+    {kSpv_concat2,          sizeof(kSpv_concat2) - 1,          3, 16,  0x4},
+    {kSpv_rms_norm_add,     sizeof(kSpv_rms_norm_add) - 1,     4, 12,  0x8},
+    {kSpv_rms_norm_add_rms, sizeof(kSpv_rms_norm_add_rms) - 1, 6, 12,  0x28},
+    {kSpv_rms_norm_scale,   sizeof(kSpv_rms_norm_scale) - 1,   3, 12,  0x4},
+    {kSpv_rope_full,        sizeof(kSpv_rope_full) - 1,        2, 28,  0x2},
+    {kSpv_softcap,          sizeof(kSpv_softcap) - 1,          2, 8,   0x2},
+    {kSpv_adjust_logits,    sizeof(kSpv_adjust_logits) - 1,    2, 20,  0x1},
+    {kSpv_argmax3,          sizeof(kSpv_argmax3) - 1,          3, 8,   0x4},
+    {kSpv_kv_append_i8,     sizeof(kSpv_kv_append_i8) - 1,     3, 36,  0x6},
+    {kSpv_attn_decode_i8,   sizeof(kSpv_attn_decode_i8) - 1,   10, 52, 0x380},
+    {kSpv_attn_combine,     sizeof(kSpv_attn_combine) - 1,     3, 8,   0x4},
 };
 
 struct Slot {
@@ -126,6 +175,8 @@ struct VK {
     int cur = 0;
     VkQueryPool query = VK_NULL_HANDLE;
     float ts_period = 0.0f;
+    uint32_t sg_size = 0;
+    bool attn_ok = false;
     struct Pipe { VkDescriptorSetLayout dsl = VK_NULL_HANDLE; VkPipelineLayout pl = VK_NULL_HANDLE; VkPipeline p = VK_NULL_HANDLE; } pipes[KCOUNT];
     std::string info = "Vulkan: not initialized";
     bool ok = false;
@@ -214,6 +265,11 @@ struct VK {
             info = "Vulkan: push constant limit below 128";
             return;
         }
+        sg_size = subp.subgroupSize;
+        attn_ok = (subp.supportedOperations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)
+               && (subp.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT)
+               && sg_size >= 16
+               && props2.properties.limits.maxComputeSharedMemorySize >= 4112u * 4u;
         if (props2.properties.limits.timestampComputeAndGraphics)
             ts_period = props2.properties.limits.timestampPeriod;
 
@@ -308,6 +364,7 @@ struct VK {
         }
 
         for (int k = 0; k < KCOUNT; ++k) {
+            if (k == KAT && !attn_ok) continue;
             const KDef& kd = kdefs[k];
             if (kd.len % 4 != 0) { info += " | spv size misaligned"; return; }
             std::vector<VkDescriptorSetLayoutBinding> binds(kd.nbuf);
@@ -353,6 +410,7 @@ struct VK {
             if (pr != VK_SUCCESS) { info += " | pipeline creation failed"; return; }
         }
         ok = true;
+        info += attn_ok ? " | attn:ok" : " | attn:off";
         info += " | build:ok";
     }
 };
@@ -682,6 +740,81 @@ bool dinfo(const void* p, size_t bytes, VkDescriptorBufferInfo* out) {
     return true;
 }
 
+bool dinfo_off(const void* p, size_t bytes, VkDescriptorBufferInfo* out, uint32_t* delta4) {
+    size_t off = 0;
+    MemBlock* b = block_of(p, &off);
+    if (!b) return false;
+    size_t bind = off & ~(size_t)(vk().sb_align - 1);
+    size_t d = off - bind;
+    if (d & 3u) return false;
+    out->buffer = b->buf;
+    out->offset = bind;
+    out->range = (bytes ? bytes : 4) + d;
+    *delta4 = (uint32_t)(d >> 2);
+    return true;
+}
+
+MemBlock g_dummy, g_attn_po, g_attn_ml, g_recent;
+std::unordered_map<const void*, MemBlock*> g_wraps;
+
+bool winfo(const void* p, size_t bytes, VkDescriptorBufferInfo* out) {
+    if (dinfo(p, bytes, out)) return true;
+    if (!p || bytes == 0 || bytes > (1u << 20)) return false;
+    auto it = g_wraps.find(p);
+    if (it != g_wraps.end() && it->second->cap >= bytes) {
+        if (std::memcmp(it->second->map, p, bytes) != 0) {
+            sync_i();
+            std::memcpy(it->second->map, p, bytes);
+        }
+        out->buffer = it->second->buf;
+        out->offset = 0;
+        out->range = bytes;
+        return true;
+    }
+    MemBlock* b = new MemBlock();
+    if (!create_block(bytes, *b, false)) { delete b; return false; }
+    std::memcpy(b->map, p, bytes);
+    if (it != g_wraps.end()) {
+        sync_i();
+        vk().vkDestroyBuffer(vk().dev, it->second->buf, nullptr);
+        vk().vkFreeMemory(vk().dev, it->second->mem, nullptr);
+        delete it->second;
+        it->second = b;
+    } else {
+        g_wraps.emplace(p, b);
+    }
+    out->buffer = b->buf;
+    out->offset = 0;
+    out->range = bytes;
+    return true;
+}
+
+bool dummy_info(VkDescriptorBufferInfo* out) {
+    if (!g_dummy.buf && !create_block(BUCKET, g_dummy, true)) return false;
+    out->buffer = g_dummy.buf;
+    out->offset = 0;
+    out->range = BUCKET;
+    return true;
+}
+
+bool scratch_info(MemBlock& b, size_t bytes, VkDescriptorBufferInfo* out) {
+    if (b.cap < bytes) {
+        if (b.buf) {
+            sync_i();
+            vk().vkDestroyBuffer(vk().dev, b.buf, nullptr);
+            vk().vkFreeMemory(vk().dev, b.mem, nullptr);
+            b = MemBlock();
+        }
+        size_t cap = BUCKET;
+        while (cap < bytes) cap <<= 1;
+        if (!create_block(cap, b, true)) return false;
+    }
+    out->buffer = b.buf;
+    out->offset = 0;
+    out->range = bytes;
+    return true;
+}
+
 uint32_t ew_groups(size_t n) {
     size_t g = (n + 63) / 64;
     return (uint32_t)(g > 65535 ? 65535 : g);
@@ -849,6 +982,12 @@ void cactus_vulkan_invalidate_host_wraps() {
         if (kv.second.b.mem) vk().vkFreeMemory(vk().dev, kv.second.b.mem, nullptr);
     }
     g_resident.clear();
+    for (auto& kv : g_wraps) {
+        if (kv.second->buf) vk().vkDestroyBuffer(vk().dev, kv.second->buf, nullptr);
+        if (kv.second->mem) vk().vkFreeMemory(vk().dev, kv.second->mem, nullptr);
+        delete kv.second;
+    }
+    g_wraps.clear();
 }
 
 void cactus_vulkan_trim_prefill_cache() {}
@@ -901,10 +1040,18 @@ bool cactus_vulkan_encode_swiglu_f16(void* y, const void* gate, const void* up, 
 
 bool cactus_vulkan_encode_rms_norm_f16(void* y, const void* in, const void* w,
                                        size_t rows, size_t dim, float eps) {
-    if (rows == 0 || dim == 0 || rows > 65535) return false;
+    if (!vk().ok || rows == 0 || dim == 0 || rows > 65535) return false;
     std::lock_guard<std::recursive_mutex> lk(g_mu);
+    VkDescriptorBufferInfo infos[3];
+    if (!dinfo(in, rows * dim * 2, &infos[0])) return false;
+    if (!winfo(w, dim * 2, &infos[1])) return false;
+    if (!dinfo(y, rows * dim * 2, &infos[2])) return false;
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KR, infos, 3);
+    if (!set) return false;
     struct { uint32_t dim; float eps; } push = {(uint32_t)dim, eps};
-    return enc_ew(KR, y, rows * dim * 2, in, rows * dim * 2, w, dim * 2, &push, (uint32_t)rows);
+    dispatch(KR, set, &push, (uint32_t)rows, 1, infos, 3);
+    return true;
 }
 
 bool cactus_vulkan_encode_cq_gemv(void* y, const void* x, const CactusQuantMatrix* W) {
@@ -1003,6 +1150,270 @@ bool cactus_vulkan_cq_gemv(__fp16* y, const __fp16* x, const CactusQuantMatrix* 
             *kernel_ms = 0.0;
     } else if (kernel_ms) {
         *kernel_ms = 0.0;
+    }
+    return true;
+}
+
+bool cactus_vulkan_encode_copy(void* out, const void* in, size_t bytes) {
+    if (bytes == 0 || (bytes & 3u)) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    uint32_t n = (uint32_t)(bytes >> 2);
+    struct { uint32_t n; } push = {n};
+    return enc_ew(KCP, out, bytes, in, bytes, nullptr, 0, &push, ew_groups(n));
+}
+
+bool cactus_vulkan_encode_cast(void* out, int out_prec, const void* in, int in_prec, size_t n) {
+    if (n == 0 || (n & 1u)) return false;
+    int32_t mode;
+    size_t ib, ob;
+    if (in_prec == 1 && out_prec == 2) { mode = 0; ib = n * 2; ob = n * 4; }
+    else if (in_prec == 2 && out_prec == 1) { mode = 1; ib = n * 4; ob = n * 2; }
+    else return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    struct { uint32_t n; int32_t mode; } push = {(uint32_t)n, mode};
+    return enc_ew(KCA, out, ob, in, ib, nullptr, 0, &push, ew_groups(n / 2));
+}
+
+bool cactus_vulkan_encode_strided_copy(void* out, const void* in, const uint32_t* oshape,
+        const uint32_t* sstride, uint32_t ndim, uint32_t total, uint32_t base,
+        size_t in_bytes, size_t out_bytes) {
+    if (ndim == 0 || ndim > 8 || total == 0) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    struct { uint32_t ndim, total, base; uint32_t oshape[8]; uint32_t sstride[8]; } push = {};
+    push.ndim = ndim; push.total = total; push.base = base;
+    for (uint32_t d = 0; d < ndim; ++d) { push.oshape[d] = oshape[d]; push.sstride[d] = sstride[d]; }
+    return enc_ew(KSTC, out, out_bytes, in, in_bytes, nullptr, 0, &push, ew_groups(total));
+}
+
+bool cactus_vulkan_encode_strided_scatter(void* out, const void* in, const uint32_t* ishape,
+        const uint32_t* ostride, uint32_t ndim, uint32_t total, uint32_t base,
+        size_t in_bytes, size_t out_bytes) {
+    if (ndim == 0 || ndim > 8 || total == 0) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    struct { uint32_t ndim, total, base; uint32_t oshape[8]; uint32_t sstride[8]; } push = {};
+    push.ndim = ndim; push.total = total; push.base = base;
+    for (uint32_t d = 0; d < ndim; ++d) { push.oshape[d] = ishape[d]; push.sstride[d] = ostride[d]; }
+    return enc_ew(KSTS, out, out_bytes, in, in_bytes, nullptr, 0, &push, ew_groups(total));
+}
+
+bool cactus_vulkan_encode_bcast_binary(int op, void* out, const void* a, const void* b,
+        const uint32_t* oshape, const uint32_t* astride, const uint32_t* bstride, uint32_t ndim, uint32_t total,
+        size_t a_bytes, size_t b_bytes, size_t out_bytes) {
+    if (ndim == 0 || ndim > 8 || total == 0) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    struct { int32_t op; uint32_t ndim, total; uint32_t oshape[8]; uint32_t astr[8]; uint32_t bstr[8]; } push = {};
+    push.op = op; push.ndim = ndim; push.total = total;
+    for (uint32_t d = 0; d < ndim; ++d) { push.oshape[d] = oshape[d]; push.astr[d] = astride[d]; push.bstr[d] = bstride[d]; }
+    if (!vk().ok) return false;
+    VkDescriptorBufferInfo infos[3];
+    if (!winfo(a, a_bytes, &infos[0])) return false;
+    if (!winfo(b, b_bytes, &infos[1])) return false;
+    if (!dinfo(out, out_bytes, &infos[2])) return false;
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KBB, infos, 3);
+    if (!set) return false;
+    dispatch(KBB, set, &push, ew_groups(total), 1, infos, 3);
+    return true;
+}
+
+bool cactus_vulkan_encode_concat2(void* out, const void* a, const void* b,
+        uint32_t a_outer, uint32_t b_outer, uint32_t a_axis, uint32_t b_axis, uint32_t inner) {
+    if (a_outer == 0 || a_outer != b_outer || inner == 0 || a_axis + b_axis == 0) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    uint32_t total = a_outer * (a_axis + b_axis) * inner;
+    struct { uint32_t outer, a_axis, b_axis, inner; } push = {a_outer, a_axis, b_axis, inner};
+    return enc_ew(KCT, out, (size_t)total * 2, a, (size_t)a_outer * a_axis * inner * 2,
+                  b, (size_t)b_outer * b_axis * inner * 2, &push, ew_groups(total));
+}
+
+bool cactus_vulkan_encode_rms_norm_add(void* out, const void* in, const void* w, const void* res,
+        size_t rows, size_t dim, float eps, float out_scale) {
+    if (!vk().ok || rows == 0 || dim == 0 || rows > 65535) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    VkDescriptorBufferInfo infos[4];
+    if (!dinfo(in, rows * dim * 2, &infos[0])) return false;
+    if (!winfo(w, dim * 2, &infos[1])) return false;
+    if (!dinfo(res, rows * dim * 2, &infos[2])) return false;
+    if (!dinfo(out, rows * dim * 2, &infos[3])) return false;
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KRA, infos, 4);
+    if (!set) return false;
+    struct { uint32_t dim; float eps, out_scale; } push = {(uint32_t)dim, eps, out_scale};
+    dispatch(KRA, set, &push, (uint32_t)rows, 1, infos, 4);
+    return true;
+}
+
+bool cactus_vulkan_encode_rms_norm_add_rms(void* h_out, void* xn_out, const void* in, const void* w1,
+        const void* res, const void* w2, size_t rows, size_t dim, float eps, float out_scale) {
+    if (!vk().ok || rows == 0 || dim == 0 || rows > 65535) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    VkDescriptorBufferInfo infos[6];
+    if (!dinfo(in, rows * dim * 2, &infos[0])) return false;
+    if (!winfo(w1, dim * 2, &infos[1])) return false;
+    if (!dinfo(res, rows * dim * 2, &infos[2])) return false;
+    if (!dinfo(h_out, rows * dim * 2, &infos[3])) return false;
+    if (!winfo(w2, dim * 2, &infos[4])) return false;
+    if (!dinfo(xn_out, rows * dim * 2, &infos[5])) return false;
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KRR, infos, 6);
+    if (!set) return false;
+    struct { uint32_t dim; float eps, out_scale; } push = {(uint32_t)dim, eps, out_scale};
+    dispatch(KRR, set, &push, (uint32_t)rows, 1, infos, 6);
+    return true;
+}
+
+bool cactus_vulkan_encode_rms_norm_scale(void* out, const void* in, const void* w,
+        size_t rows, size_t dim, float eps, float oscale) {
+    if (!vk().ok || rows == 0 || dim == 0 || rows > 65535) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    VkDescriptorBufferInfo infos[3];
+    if (!dinfo(in, rows * dim * 2, &infos[0])) return false;
+    if (!winfo(w, dim * 2, &infos[1])) return false;
+    if (!dinfo(out, rows * dim * 2, &infos[2])) return false;
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KRL, infos, 3);
+    if (!set) return false;
+    struct { uint32_t dim; float eps, oscale; } push = {(uint32_t)dim, eps, oscale};
+    dispatch(KRL, set, &push, (uint32_t)rows, 1, infos, 3);
+    return true;
+}
+
+bool cactus_vulkan_encode_rope_full(void* out, const void* in, uint32_t tokens, uint32_t S,
+        uint32_t H, uint32_t D, uint32_t rot, uint32_t pos0, float theta, int gptj) {
+    if (!vk().ok || tokens == 0 || tokens > 65535 || D == 0 || rot < 2 || H == 0 || S == 0) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    VkDescriptorBufferInfo infos[2];
+    if (!dinfo(in, (size_t)tokens * D * 2, &infos[0])) return false;
+    if (!dinfo(out, (size_t)tokens * D * 2, &infos[1])) return false;
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KRF, infos, 2);
+    if (!set) return false;
+    struct { uint32_t S, H, D, rot, pos0, gptj; float theta; } push =
+        {S, H, D, rot, pos0, gptj ? 1u : 0u, theta};
+    uint32_t span = rot / 2 + (D - rot);
+    dispatch(KRF, set, &push, (span + 63) / 64, tokens, infos, 2);
+    return true;
+}
+
+bool cactus_vulkan_encode_softcap(void* out, const void* in, size_t n, float cap) {
+    if (n == 0 || cap == 0.0f) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    struct { uint32_t n; float cap; } push = {(uint32_t)n, cap};
+    return enc_ew(KSO, out, n * 2, in, n * 2, nullptr, 0, &push, ew_groups(n));
+}
+
+bool cactus_vulkan_encode_adjust_logits(void* logits, size_t vocab, const uint32_t* recent,
+        uint32_t n_recent, int64_t suppressed, float penalty) {
+    if (!vk().ok || vocab == 0) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    VkDescriptorBufferInfo infos[2];
+    if (!dinfo(logits, vocab * 2, &infos[0])) return false;
+    if (!scratch_info(g_recent, (size_t)(n_recent ? n_recent : 1) * 4, &infos[1])) return false;
+    if (recent && n_recent) std::memcpy(g_recent.map, recent, (size_t)n_recent * 4);
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KAJ, infos, 2);
+    if (!set) return false;
+    struct { uint32_t n_recent, sflag, sid, vocab; float penalty; } push =
+        {n_recent, suppressed >= 0 ? 1u : 0u, suppressed >= 0 ? (uint32_t)suppressed : 0u,
+         (uint32_t)vocab, penalty};
+    dispatch(KAJ, set, &push, 1, 1, infos, 2);
+    return true;
+}
+
+bool cactus_vulkan_encode_argmax(const void* logits, uint32_t vocab, void* out3, const void* bias) {
+    if (!vk().ok || vocab == 0) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    VkDescriptorBufferInfo infos[3];
+    if (!dinfo(logits, (size_t)vocab * 2, &infos[0])) return false;
+    uint32_t has_bias = 0;
+    if (bias) {
+        if (!dinfo(bias, (size_t)vocab * 4, &infos[1])) return false;
+        has_bias = 1;
+    } else if (!dummy_info(&infos[1])) {
+        return false;
+    }
+    if (!dinfo(out3, 12, &infos[2])) return false;
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KM3, infos, 3);
+    if (!set) return false;
+    struct { uint32_t V, has_bias; } push = {vocab, has_bias};
+    dispatch(KM3, set, &push, 1, 1, infos, 3);
+    return true;
+}
+
+bool cactus_vulkan_encode_kv_append_i8(const void* src, void* int8base, void* scalebase,
+        uint32_t kv_heads, uint32_t hdim, uint32_t current_len, uint32_t group_size, uint32_t M,
+        uint32_t sink, uint32_t W, size_t src_bytes, size_t int8_bytes, size_t scale_bytes) {
+    if (!vk().ok || M == 0 || kv_heads == 0 || group_size == 0 || (group_size & 3u)
+        || hdim == 0 || (hdim % group_size)) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    VkDescriptorBufferInfo infos[3];
+    uint32_t o_i8 = 0, o_sc = 0;
+    if (!dinfo(src, src_bytes, &infos[0])) return false;
+    if (!dinfo_off(int8base, int8_bytes, &infos[1], &o_i8)) return false;
+    if (!dinfo_off(scalebase, scale_bytes, &infos[2], &o_sc)) return false;
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KKV, infos, 3);
+    if (!set) return false;
+    struct { uint32_t kvh, hdim, cur, gs, M, sink, W, o_i8, o_sc; } push =
+        {kv_heads, hdim, current_len, group_size, M, sink, W, o_i8, o_sc};
+    uint32_t work = M * kv_heads * (hdim / group_size);
+    dispatch(KKV, set, &push, (work + 63) / 64, 1, infos, 3);
+    return true;
+}
+
+bool cactus_vulkan_encode_attention_i8(
+        void* out, const void* q, const void* knew, const void* vnew,
+        const void* kc, const void* vc, const void* ks, const void* vs,
+        uint32_t num_q_heads, uint32_t num_kv_heads, uint32_t head_dim, uint32_t v_hdim,
+        uint32_t history_len, uint32_t total_keys, uint32_t kv_start, uint32_t kv_end,
+        float scale, size_t kc_bytes, size_t vc_bytes, size_t ks_bytes, size_t vs_bytes) {
+    if (!vk().ok || !vk().attn_ok || !vk().pipes[KAT].p) return false;
+    if (kv_end <= kv_start || num_kv_heads == 0 || (num_q_heads % num_kv_heads) != 0) return false;
+    if (head_dim > 512u || v_hdim > 512u || (head_dim & 31u) || (v_hdim & 31u)) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    VkDescriptorBufferInfo infos[10];
+    uint32_t okc = 0, ovc = 0, oks = 0, ovs = 0;
+    if (!dinfo(q, (size_t)num_q_heads * head_dim * 2, &infos[0])) return false;
+    if (total_keys > history_len && knew && vnew) {
+        if (!dinfo(knew, (size_t)(total_keys - history_len) * num_kv_heads * head_dim * 2, &infos[1])) return false;
+        if (!dinfo(vnew, (size_t)(total_keys - history_len) * num_kv_heads * v_hdim * 2, &infos[2])) return false;
+    } else {
+        if (!dummy_info(&infos[1]) || !dummy_info(&infos[2])) return false;
+    }
+    if (!dinfo_off(kc, kc_bytes, &infos[3], &okc)) return false;
+    if (!dinfo_off(vc, vc_bytes, &infos[4], &ovc)) return false;
+    if (!dinfo_off(ks, ks_bytes, &infos[5], &oks)) return false;
+    if (!dinfo_off(vs, vs_bytes, &infos[6], &ovs)) return false;
+    if (!dinfo(out, (size_t)num_q_heads * v_hdim * 2, &infos[7])) return false;
+    static const int nwg_env = [] {
+        const char* v = getenv("CACTUS_VK_ATTN_NWG");
+        return v ? std::atoi(v) : 0;
+    }();
+    uint32_t R = kv_end - kv_start;
+    uint32_t nwg = nwg_env > 0 ? (uint32_t)nwg_env : R / 24u;
+    if (nwg < 1u) nwg = 1u;
+    if (nwg > 32u) nwg = 32u;
+    if (nwg > 1u) {
+        if (!scratch_info(g_attn_po, (size_t)num_q_heads * nwg * v_hdim * 4, &infos[8])) return false;
+        if (!scratch_info(g_attn_ml, (size_t)num_q_heads * nwg * 8, &infos[9])) return false;
+    } else {
+        if (!dummy_info(&infos[8]) || !dummy_info(&infos[9])) return false;
+    }
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KAT, infos, 10);
+    if (!set) return false;
+    struct { uint32_t nqh, nkvh, hd, vhd, hist, kv_start, kv_end, nwg; float scale;
+             uint32_t okc, ovc, oks, ovs; } push =
+        {num_q_heads, num_kv_heads, head_dim, v_hdim, history_len, kv_start, kv_end, nwg, scale,
+         okc, ovc, oks, ovs};
+    dispatch(KAT, set, &push, num_q_heads * nwg, 1, infos, 10);
+    if (nwg > 1u) {
+        VkDescriptorBufferInfo cinfos[3] = {infos[8], infos[9], infos[7]};
+        VkDescriptorSet cset = make_set(KCB, cinfos, 3);
+        if (!cset) return false;
+        struct { uint32_t vhd, nwg; } cpush = {v_hdim, nwg};
+        dispatch(KCB, cset, &cpush, num_q_heads, 1, cinfos, 3);
     }
     return true;
 }

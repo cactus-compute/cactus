@@ -1949,6 +1949,13 @@ void Model::run_audio_encoder(const std::vector<float>& audio_features) {
     }
 }
 
+static void try_gpu_tail(void* logits, size_t vocab) {
+    if (!cactus_backend_gpu() || cactus_gpu_supports_plans()) return;
+    if (!cactus_graph_metal_tail(logits, vocab)) return;
+    cactus_gpu_session_sync();
+    cactus_graph_metal_tail_commit();
+}
+
 static float uncertainty_from_margin(float best, float second) {
     float confidence = 1.0f;
     if (std::isfinite(best) && std::isfinite(second)) {
@@ -1967,10 +1974,13 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
     const std::vector<float>* tool_dense = tool_constrainer_.get_dense_bias();
     {
         uint32_t gidx; float gbest, gsecond;
-        if (!tool_dense && tool_bias.empty() && vocab_bias_.empty() && suppressed_token_id_ < 0 &&
-            cactus_graph_metal_argmax(&gidx, &gbest, &gsecond)) {
-            if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(gbest, gsecond);
-            return gidx;
+        if (!tool_dense && tool_bias.empty() && vocab_bias_.empty() && suppressed_token_id_ < 0) {
+            if (desc.precision == Precision::FP16)
+                try_gpu_tail(static_cast<__fp16*>(ptr) + row_off, vocab);
+            if (cactus_graph_metal_argmax(&gidx, &gbest, &gsecond)) {
+                if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(gbest, gsecond);
+                return gidx;
+            }
         }
     }
     auto score_with_bias = [&](size_t token_id, float value) {
@@ -2103,6 +2113,7 @@ uint32_t Model::sample_component_logits(Component& comp, float temperature, floa
     auto get = [&](size_t i) -> float { return fp16 ? (float)h[i] : f[i]; };
     auto put = [&](size_t i, float v) { if (fp16) h[i] = (__fp16)v; else f[i] = v; };
 
+    if (greedy && fp16) try_gpu_tail(h, vocab);
     if (samp_ctx_active_ && !cactus_graph_metal_adjusted()) {
         if (samp_penalty_ != 1.0f) {
             for (uint32_t id : samp_recent_) {

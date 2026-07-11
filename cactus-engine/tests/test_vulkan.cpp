@@ -345,6 +345,286 @@ bool test_session_chain() {
     return close_all(got, want, std::max(5e-2f, 0.03f * maxy), "session chain");
 }
 
+struct VkBuf {
+    void* p = nullptr;
+    VkBuf(size_t bytes, const void* src = nullptr) {
+        p = cactus_vulkan_alloc_shared(bytes);
+        if (p && src) std::memcpy(p, src, bytes);
+    }
+    ~VkBuf() { if (p) cactus_vulkan_free_shared(p); }
+};
+
+bool test_phase1_simple_ops() {
+    const size_t n = 4096;
+    auto x = rand_halfs(n, -4.0f, 4.0f);
+    VkBuf bx(n * 2, x.data()), by(n * 2), bf(n * 4), bh(n * 2);
+    if (!bx.p || !by.p || !bf.p || !bh.p) return false;
+
+    if (!cactus_vulkan_encode_copy(by.p, bx.p, n * 2)) return false;
+    cactus_vulkan_session_sync();
+    if (std::memcmp(by.p, bx.p, n * 2) != 0) { std::cerr << "  [✗] copy mismatch\n"; return false; }
+
+    if (!cactus_vulkan_encode_cast(bf.p, 2, bx.p, 1, n)) return false;
+    if (!cactus_vulkan_encode_cast(bh.p, 1, bf.p, 2, n)) return false;
+    cactus_vulkan_session_sync();
+    if (std::memcmp(bh.p, bx.p, n * 2) != 0) { std::cerr << "  [✗] cast roundtrip mismatch\n"; return false; }
+
+    if (!cactus_vulkan_encode_softcap(by.p, bx.p, n, 30.0f)) return false;
+    cactus_vulkan_session_sync();
+    std::vector<float> want(n);
+    for (size_t i = 0; i < n; ++i) {
+        float v1 = (float)(__fp16)((float)x[i] / 30.0f);
+        float v2 = (float)(__fp16)std::tanh(v1);
+        want[i] = v2 * 30.0f;
+    }
+    std::vector<__fp16> got(n);
+    std::memcpy(got.data(), by.p, n * 2);
+    if (!close_all(got, want, 5e-2f, "softcap")) return false;
+
+    const uint32_t R = 32, C = 128;
+    uint32_t oshape[2] = {C, R}, sstride[2] = {1, C};
+    if (!cactus_vulkan_encode_strided_copy(by.p, bx.p, oshape, sstride, 2, R * C, 0, R * C * 2, R * C * 2)) return false;
+    cactus_vulkan_session_sync();
+    std::memcpy(got.data(), by.p, R * C * 2);
+    bool tok = true;
+    for (uint32_t r = 0; r < R && tok; ++r)
+        for (uint32_t c = 0; c < C; ++c)
+            if ((float)got[c * R + r] != (float)x[r * C + c]) { tok = false; break; }
+    if (!tok) { std::cerr << "  [✗] strided_copy transpose mismatch\n"; return false; }
+
+    const uint32_t outer = 4, aa = 3, ba = 5, inner = 32;
+    auto a2 = rand_halfs(outer * aa * inner), b2 = rand_halfs(outer * ba * inner);
+    VkBuf ba2(a2.size() * 2, a2.data()), bb2(b2.size() * 2, b2.data()), bo2(outer * (aa + ba) * inner * 2);
+    if (!ba2.p || !bb2.p || !bo2.p) return false;
+    if (!cactus_vulkan_encode_concat2(bo2.p, ba2.p, bb2.p, outer, outer, aa, ba, inner)) return false;
+    cactus_vulkan_session_sync();
+    const __fp16* oc = (const __fp16*)bo2.p;
+    for (uint32_t u = 0; u < outer; ++u)
+        for (uint32_t ax = 0; ax < aa + ba; ++ax)
+            for (uint32_t e = 0; e < inner; ++e) {
+                float wv = ax < aa ? (float)a2[(u * aa + ax) * inner + e]
+                                   : (float)b2[(u * ba + (ax - aa)) * inner + e];
+                if ((float)oc[(u * (aa + ba) + ax) * inner + e] != wv) {
+                    std::cerr << "  [✗] concat2 mismatch\n";
+                    return false;
+                }
+            }
+    return true;
+}
+
+bool test_rms_fused() {
+    const size_t rows = 3, dim = 2048;
+    const float eps = 1e-6f;
+    auto x = rand_halfs(rows * dim), r = rand_halfs(rows * dim);
+    auto w1 = rand_halfs(dim, 0.5f, 1.5f), w2 = rand_halfs(dim, 0.5f, 1.5f);
+    VkBuf bx(rows * dim * 2, x.data()), br(rows * dim * 2, r.data());
+    VkBuf bw1(dim * 2, w1.data()), bw2(dim * 2, w2.data());
+    VkBuf bh(rows * dim * 2), bxn(rows * dim * 2);
+    if (!bx.p || !br.p || !bw1.p || !bw2.p || !bh.p || !bxn.p) return false;
+    const float oscale = 0.75f;
+    if (!cactus_vulkan_encode_rms_norm_add_rms(bh.p, bxn.p, bx.p, bw1.p, br.p, bw2.p, rows, dim, eps, oscale))
+        return false;
+    cactus_vulkan_session_sync();
+    std::vector<float> wanth(rows * dim), wantxn(rows * dim);
+    for (size_t row = 0; row < rows; ++row) {
+        double ss = 0;
+        for (size_t i = 0; i < dim; ++i) { double v = (float)x[row * dim + i]; ss += v * v; }
+        float inv = 1.0f / std::sqrt((float)(ss / dim) + eps);
+        double ss2 = 0;
+        for (size_t i = 0; i < dim; ++i) {
+            float rr = ((float)r[row * dim + i]
+                        + (float)(__fp16)((float)x[row * dim + i] * inv * (float)w1[i])) * oscale;
+            float hv = (float)(__fp16)std::max(-65500.0f, std::min(65500.0f, rr));
+            wanth[row * dim + i] = hv;
+            ss2 += hv * hv;
+        }
+        float inv2 = 1.0f / std::sqrt((float)(ss2 / dim) + eps);
+        for (size_t i = 0; i < dim; ++i)
+            wantxn[row * dim + i] = wanth[row * dim + i] * inv2 * (float)w2[i];
+    }
+    std::vector<__fp16> goth(rows * dim), gotxn(rows * dim);
+    std::memcpy(goth.data(), bh.p, rows * dim * 2);
+    std::memcpy(gotxn.data(), bxn.p, rows * dim * 2);
+    if (!close_all(goth, wanth, 3e-2f, "rms_norm_add_rms h")) return false;
+    if (!close_all(gotxn, wantxn, 3e-2f, "rms_norm_add_rms xn")) return false;
+
+    if (!cactus_vulkan_encode_rms_norm_add(bh.p, bx.p, bw1.p, br.p, rows, dim, eps, 1.0f)) return false;
+    cactus_vulkan_session_sync();
+    std::memcpy(goth.data(), bh.p, rows * dim * 2);
+    for (size_t row = 0; row < rows; ++row) {
+        double ss = 0;
+        for (size_t i = 0; i < dim; ++i) { double v = (float)x[row * dim + i]; ss += v * v; }
+        float inv = 1.0f / std::sqrt((float)(ss / dim) + eps);
+        for (size_t i = 0; i < dim; ++i)
+            wanth[row * dim + i] = (float)r[row * dim + i]
+                + (float)(__fp16)((float)x[row * dim + i] * inv * (float)w1[i]);
+    }
+    return close_all(goth, wanth, 3e-2f, "rms_norm_add");
+}
+
+bool test_rope_full_gpu() {
+    const uint32_t S = 4, H = 2, D = 64, tokens = S * H;
+    const float theta = 10000.0f;
+    const uint32_t pos0 = 37;
+    auto x = rand_halfs(tokens * D);
+    VkBuf bx(tokens * D * 2, x.data()), by(tokens * D * 2);
+    if (!bx.p || !by.p) return false;
+    if (!cactus_vulkan_encode_rope_full(by.p, bx.p, tokens, S, H, D, D, pos0, theta, 0)) return false;
+    cactus_vulkan_session_sync();
+    std::vector<__fp16> got(tokens * D);
+    std::memcpy(got.data(), by.p, tokens * D * 2);
+    std::vector<float> want(tokens * D);
+    for (uint32_t tok = 0; tok < tokens; ++tok) {
+        uint32_t seq = (tok / H) % S;
+        std::vector<float> row(D);
+        for (uint32_t d = 0; d < D; ++d) row[d] = (float)x[tok * D + d];
+        auto o = rope_reference(row, (double)(pos0 + seq), theta);
+        for (uint32_t d = 0; d < D; ++d) want[tok * D + d] = o[d];
+    }
+    return close_all(got, want, 3e-2f, "rope_full");
+}
+
+bool test_adjust_argmax_gpu() {
+    const uint32_t V = 50000;
+    auto logits = rand_halfs(V, -8.0f, 8.0f);
+    logits[31337] = (__fp16)19.0f;
+    logits[777] = (__fp16)18.0f;
+    uint32_t recent[3] = {31337, 5, 9};
+    VkBuf bl(V * 2, logits.data()), bo(12);
+    if (!bl.p || !bo.p) return false;
+    if (!cactus_vulkan_encode_adjust_logits(bl.p, V, recent, 3, 42, 1.3f)) return false;
+    if (!cactus_vulkan_encode_argmax(bl.p, V, bo.p, nullptr)) return false;
+    cactus_vulkan_session_sync();
+    std::vector<float> ref(V);
+    for (uint32_t i = 0; i < V; ++i) ref[i] = (float)logits[i];
+    for (uint32_t id : recent) ref[id] = ref[id] > 0 ? ref[id] / 1.3f : ref[id] * 1.3f;
+    ref[42] = -65504.0f;
+    float b = -1e30f, s = -1e30f;
+    uint32_t bi = 0;
+    for (uint32_t i = 0; i < V; ++i) {
+        float v = (float)(__fp16)ref[i];
+        if (v > b) { s = b; b = v; bi = i; }
+        else if (v > s) s = v;
+    }
+    const float* o3 = (const float*)bo.p;
+    if ((uint32_t)o3[2] != bi || std::fabs(o3[0] - b) > 1e-2f || std::fabs(o3[1] - s) > 1e-2f) {
+        std::cerr << "  [✗] adjust+argmax got idx " << (uint32_t)o3[2] << " best " << o3[0]
+                  << " second " << o3[1] << " want " << bi << "/" << b << "/" << s << "\n";
+        return false;
+    }
+    return true;
+}
+
+static bool run_attn_case(uint32_t T, const char* what) {
+    const uint32_t nqh = 8, nkvh = 2, hd = 64, vhd = 64, gs = 32;
+    const uint32_t ngK = hd / gs;
+    const float scale = 1.0f / std::sqrt((float)hd);
+    auto kdata = rand_halfs((size_t)T * nkvh * hd), vdata = rand_halfs((size_t)T * nkvh * vhd);
+    auto q = rand_halfs(nqh * hd);
+    auto knew = rand_halfs(nkvh * hd), vnew = rand_halfs(nkvh * vhd);
+    size_t i8b = (size_t)(T + 1) * nkvh * hd, scb = (size_t)(T + 1) * nkvh * ngK * 4;
+    VkBuf cache(64 + i8b + scb);
+    VkBuf bkn(nkvh * hd * 2, knew.data()), bvn(nkvh * vhd * 2, vnew.data());
+    VkBuf bq(nqh * hd * 2, q.data()), bo(nqh * vhd * 2);
+    VkBuf bksrc((size_t)T * nkvh * hd * 2, kdata.data());
+    VkBuf vcache(64 + i8b + scb);
+    VkBuf bvsrc((size_t)T * nkvh * vhd * 2, vdata.data());
+    if (!cache.p || !vcache.p || !bkn.p || !bvn.p || !bq.p || !bo.p || !bksrc.p || !bvsrc.p) return false;
+    char* kb = (char*)cache.p;
+    char* vb = (char*)vcache.p;
+    if (!cactus_vulkan_encode_kv_append_i8(bksrc.p, kb + 64, kb + 64 + i8b, nkvh, hd, 0, gs, T, 0, 0,
+            (size_t)T * nkvh * hd * 2, i8b, scb)) return false;
+    if (!cactus_vulkan_encode_kv_append_i8(bvsrc.p, vb + 64, vb + 64 + i8b, nkvh, vhd, 0, gs, T, 0, 0,
+            (size_t)T * nkvh * vhd * 2, i8b, scb)) return false;
+    if (!cactus_vulkan_encode_attention_i8(bo.p, bq.p, bkn.p, bvn.p,
+            kb + 64, vb + 64, kb + 64 + i8b, vb + 64 + i8b,
+            nqh, nkvh, hd, vhd, T, T + 1, 0, T + 1, scale, i8b, i8b, scb, scb)) return false;
+    cactus_vulkan_session_sync();
+
+    auto quant = [&](const std::vector<__fp16>& src, uint32_t width, std::vector<float>& deq) {
+        deq.resize((size_t)T * nkvh * width);
+        for (uint32_t t = 0; t < T; ++t)
+            for (uint32_t h = 0; h < nkvh; ++h)
+                for (uint32_t g = 0; g < width / gs; ++g) {
+                    float ma = 0;
+                    size_t base = ((size_t)t * nkvh + h) * width + g * gs;
+                    for (uint32_t k = 0; k < gs; ++k) ma = std::max(ma, std::fabs((float)src[base + k]));
+                    float sc = std::max(ma / 127.0f, 1e-10f);
+                    for (uint32_t k = 0; k < gs; ++k) {
+                        float qv = std::max(-128.0f, std::min(127.0f, std::round((float)src[base + k] / sc)));
+                        deq[base + k] = qv * sc;
+                    }
+                }
+    };
+    std::vector<float> kd, vd;
+    quant(kdata, hd, kd);
+    quant(vdata, vhd, vd);
+    std::vector<float> want(nqh * vhd);
+    for (uint32_t h = 0; h < nqh; ++h) {
+        uint32_t kvh = h / (nqh / nkvh);
+        std::vector<float> sc(T + 1);
+        float m = -1e30f;
+        for (uint32_t k = 0; k <= T; ++k) {
+            float dot = 0;
+            for (uint32_t d = 0; d < hd; ++d) {
+                float kvv = k < T ? kd[((size_t)k * nkvh + kvh) * hd + d]
+                                  : (float)knew[kvh * hd + d];
+                dot += (float)q[h * hd + d] * kvv;
+            }
+            sc[k] = dot * scale;
+            m = std::max(m, sc[k]);
+        }
+        float l = 0;
+        for (uint32_t k = 0; k <= T; ++k) { sc[k] = std::exp(sc[k] - m); l += sc[k]; }
+        for (uint32_t d = 0; d < vhd; ++d) {
+            float acc = 0;
+            for (uint32_t k = 0; k <= T; ++k) {
+                float vv = k < T ? vd[((size_t)k * nkvh + kvh) * vhd + d]
+                                 : (float)vnew[kvh * vhd + d];
+                acc += sc[k] * vv;
+            }
+            want[h * vhd + d] = acc / l;
+        }
+    }
+    std::vector<__fp16> got(nqh * vhd);
+    std::memcpy(got.data(), bo.p, nqh * vhd * 2);
+    float maxy = 0;
+    for (float v : want) maxy = std::max(maxy, std::fabs(v));
+    return close_all(got, want, std::max(3e-2f, 0.03f * maxy), what);
+}
+
+bool test_kv_attn_gpu() {
+    return run_attn_case(40, "attn decode T=40 nwg=1")
+        && run_attn_case(900, "attn decode T=900 combine");
+}
+
+bool test_kv_ring_slots() {
+    const uint32_t kvh = 1, hd = 32, gs = 32, sink = 4, W = 16;
+    const uint32_t cur = 20;
+    auto src = rand_halfs(kvh * hd, 0.5f, 1.0f);
+    size_t i8b = (size_t)(W + 8) * kvh * hd, scb = (size_t)(W + 8) * kvh * 4;
+    VkBuf cache(64 + i8b + scb);
+    VkBuf bsrc(kvh * hd * 2, src.data());
+    if (!cache.p || !bsrc.p) return false;
+    std::memset(cache.p, 0, 64 + i8b + scb);
+    char* kb = (char*)cache.p;
+    if (!cactus_vulkan_encode_kv_append_i8(bsrc.p, kb + 64, kb + 64 + i8b, kvh, hd, cur, gs, 1, sink, W,
+            kvh * hd * 2, i8b, scb)) return false;
+    cactus_vulkan_session_sync();
+    uint32_t R = W - sink;
+    uint32_t slot = sink + ((cur - sink) % R);
+    const float* scales = (const float*)(kb + 64 + i8b);
+    for (uint32_t s = 0; s < W + 8; ++s) {
+        bool wrote = scales[s] != 0.0f;
+        if (wrote != (s == slot)) {
+            std::cerr << "  [✗] ring slot " << s << (wrote ? " unexpectedly written" : " missing write")
+                      << " (want slot " << slot << ")\n";
+            return false;
+        }
+    }
+    return true;
+}
+
 bool test_argmax() {
     const uint32_t n = 50000;
     auto logits = rand_halfs(n, -8.0f, 8.0f);
@@ -386,6 +666,12 @@ int main() {
     runner.run_test("gemv_large_n", test_gemv_large_n());
     runner.run_test("session_chain", test_session_chain());
     runner.run_test("argmax", test_argmax());
+    runner.run_test("phase1_simple_ops", test_phase1_simple_ops());
+    runner.run_test("rms_fused", test_rms_fused());
+    runner.run_test("rope_full", test_rope_full_gpu());
+    runner.run_test("adjust_argmax", test_adjust_argmax_gpu());
+    runner.run_test("kv_attn", test_kv_attn_gpu());
+    runner.run_test("kv_ring_slots", test_kv_ring_slots());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
