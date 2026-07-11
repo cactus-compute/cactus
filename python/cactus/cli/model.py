@@ -13,6 +13,11 @@ from .common import GREEN, PROJECT_ROOT, RED, YELLOW, print_color
 
 def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=False):
     """Download from HuggingFace and run CQ conversion."""
+    if bits not in (1, 2, 3, 4):
+        raise SystemExit(
+            f"CQ{bits} is a mixed-precision variant, available only as a prebuilt "
+            f"download; local conversion supports uniform bits 1-4"
+        )
     from .common import convert_toolchain_error
     err = convert_toolchain_error()
     if err:

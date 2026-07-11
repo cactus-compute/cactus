@@ -36,12 +36,14 @@ def _cq_precision(weights_file):
 
 
 def _quant_label(model_dir, *, sample_cap=64, scan_cap=2000):
-    """Infer a model's CQ quantization level from its tensor headers.
+    """Infer a model's CQ variant from the `-cqN` dir suffix (the only way to
+    recover a mixed variant like CQ3.26), else the dominant CQ level in the
+    tensor headers. Returns "—" if no CQ-quantized tensors are present."""
+    from .utils import parse_cq_variant
 
-    Scans `.weights` files (top-level converted weights, then nested
-    bundle components) and returns the dominant CQ level, e.g. "CQ4".
-    Returns "—" if no CQ-quantized tensors are present.
-    """
+    variant = parse_cq_variant(model_dir.name)
+    if variant is not None:
+        return f"CQ{variant}"
     candidates = itertools.chain(
         model_dir.glob("*.weights"),
         (model_dir / "components").rglob("*.weights"),
@@ -94,7 +96,8 @@ def cmd_list(_args):
         return 0
     name_w = max(len(p.name) for p, _, _, _ in models)
     type_w = max(len("type"), max(len(t) for _, t, _, _ in models))
-    print(f"  {'name':<{name_w}}  {'type':<{type_w}}  {'quant':<5}  {'size':>10}  location")
+    quant_w = max(len("quant"), max(len(q) for _, _, q, _ in models))
+    print(f"  {'name':<{name_w}}  {'type':<{type_w}}  {'quant':<{quant_w}}  {'size':>10}  location")
     for p, model_type, quant, size in models:
-        print(f"  {p.name:<{name_w}}  {model_type:<{type_w}}  {quant:<5}  {_human_size(size):>10}  {p.parent}")
+        print(f"  {p.name:<{name_w}}  {model_type:<{type_w}}  {quant:<{quant_w}}  {_human_size(size):>10}  {p.parent}")
     return 0

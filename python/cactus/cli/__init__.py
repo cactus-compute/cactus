@@ -21,6 +21,9 @@ from .list import cmd_list
 from .auth import cmd_auth
 from .clean import cmd_clean
 from .code import cmd_code
+from .utils import bits_arg, ALLOWED_BITS
+
+_BITS_METAVAR = "{" + ",".join(str(b) for b in ALLOWED_BITS) + "}"
 
 
 def _telemetry_parent():
@@ -31,11 +34,16 @@ def _telemetry_parent():
     return p
 
 
-def _build_parent():
-    """Bundle-build flags shared by every command that prepares a model."""
+def _build_parent(mixed: bool = True):
+    """Bundle-build flags shared by model-preparing commands
+    (mixed=False limits --bits to uniform 1-4 for build-only commands)."""
     p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
-                   help="CQ quantization (default: 4)")
+    if mixed:
+        p.add_argument("--bits", type=bits_arg, default=4, metavar=_BITS_METAVAR,
+                       help="CQ quantization: uniform 1-4 or gemma-4 mixed 3.26/2.54 (default: 4)")
+    else:
+        p.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
+                       help="CQ quantization (default: 4)")
     p.add_argument("--token", help="HuggingFace token")
     p.add_argument("--reconvert", action="store_true",
                    help="Force local rebuild from source")
@@ -117,7 +125,7 @@ def create_parser():
     --clear                            remove saved key
 
   cactus run [model|path]              run a model (default: {DEFAULT_MODEL_ID})
-    --bits 1|2|3|4                     CQ quantization (default: 4)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --image <path>                     image file for VLM inference
     --audio <path>                     audio file for audio chat
     --system <prompt>                  system prompt
@@ -129,12 +137,12 @@ def create_parser():
   cactus transcribe [model]            live microphone transcription with a model
     --file <audio.wav>                 audio file to transcribe (WAV)
     --language <code>                  language code (default: en)
-    --bits 1|2|3|4                     CQ quantization (default: 4)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
 
   cactus download [model]              fetch a prebuilt bundle, else build locally (default: {DEFAULT_MODEL_ID})
-    --bits 1|2|3|4                     CQ quantization (default: 4)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
 
@@ -147,7 +155,7 @@ def create_parser():
   cactus serve [model]                 OpenAI-compatible local HTTP server
     --host <addr>                      bind address (default: 127.0.0.1)
     --port <port>                      port (default: 8080)
-    --bits 1|2|3|4                     CQ quantization (default: 4)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
     --no-cloud-handoff                 disable automatic cloud handoff
@@ -166,7 +174,7 @@ def create_parser():
                                        (default: all)
     --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
     --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
-    --bits 1|2|3|4                     CQ quantization (default: 4)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild of test models
     --suite <name>                     run a single test suite from any
@@ -179,7 +187,7 @@ def create_parser():
   cactus benchmark                     run the engine benchmark suite
     --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
     --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
-    --bits 1|2|3|4                     CQ quantization (default: 4)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --backend cpu|metal                inference backend (default: auto)
     --ios                              run on connected iPhone
     --android                          run on connected Android
@@ -443,7 +451,7 @@ def create_parser():
                                 help="KV cache context length for cached decode graphs (default: model config)")
 
     upload_parser = subparsers.add_parser("upload",
-                                          parents=[_build_parent()],
+                                          parents=[_build_parent(mixed=False)],
                                           help="Build a runnable bundle locally and upload it to Cactus-Compute on HuggingFace")
     upload_parser.add_argument("model_id", type=_hf_id_or_path,
                                help="HuggingFace model id (e.g. openai/whisper-base)")

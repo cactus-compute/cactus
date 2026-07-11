@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -15,18 +16,36 @@ from pathlib import Path
 from typing import Iterable
 
 
-CQ_VARIANT_RE = re.compile(r"-cq([1-4])$", re.IGNORECASE)
+CQ_VARIANT_RE = re.compile(r"-cq(\d+(?:\.\d+)?)$", re.IGNORECASE)
 ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz")
 
+ALLOWED_BITS = (1, 2, 3, 4, 2.54, 3.26)
 
-def variant_suffix(bits: int) -> str:
-    return f"cq{bits}"
+
+def normalize_bits(bits: str | int | float) -> int | float:
+    value = float(bits)
+    return int(value) if value == int(value) else value
+
+
+def variant_suffix(bits: int | float) -> str:
+    return f"cq{normalize_bits(bits)}"
+
+
+def bits_arg(value: str) -> int | float:
+    try:
+        bits = normalize_bits(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"invalid --bits value {value!r}")
+    if bits not in ALLOWED_BITS:
+        allowed = ", ".join(str(b) for b in ALLOWED_BITS)
+        raise argparse.ArgumentTypeError(f"unsupported --bits {value!r}; choose from: {allowed}")
+    return bits
 
 
 @dataclass(frozen=True)
 class CqArchive:
     filename: str
-    bits: int
+    bits: int | float
     size: int | None = None
     sha256: str | None = None
 
@@ -45,7 +64,7 @@ class CqResolution:
 
 def suggested_cq_repo(model_id: str) -> str:
     name = str(model_id).strip().replace("_", "-").split("/")[-1]
-    name = re.sub(r"-cq\d*$", "", name, flags=re.IGNORECASE)
+    name = re.sub(r"-cq\d*(?:\.\d+)?$", "", name, flags=re.IGNORECASE)
     return f"Cactus-Compute/{name}"
 
 
@@ -56,12 +75,12 @@ def archive_stem(filename: str) -> str:
     return filename
 
 
-def parse_cq_variant(filename: str) -> int | None:
+def parse_cq_variant(filename: str) -> int | float | None:
     stem = archive_stem(Path(filename).name)
     m = CQ_VARIANT_RE.search(stem)
     if not m:
         return None
-    return int(m.group(1))
+    return normalize_bits(m.group(1))
 
 
 def is_supported_archive(filename: str) -> bool:
@@ -82,7 +101,7 @@ def archives_from_repo_files(repo_files: Iterable[str], sizes: dict[str, int] | 
             continue
         archives.append(CqArchive(filename=filename, bits=bits,
                                   size=sizes.get(filename), sha256=sha256s.get(filename)))
-    return tuple(sorted(archives, key=lambda a: a.bits))
+    return tuple(sorted(archives, key=lambda a: (isinstance(a.bits, float), a.bits)))
 
 
 VERSION_TAG_RE = re.compile(r"^v?(\d+(?:\.\d+){0,2})$", re.IGNORECASE)
@@ -140,7 +159,7 @@ def resolve_weight_revision(repo_id: str, runtime_version: str | None = None,
 
 
 def resolve_archive(repo_id: str, local_name: str, archives: Iterable[CqArchive],
-                    bits: int) -> CqResolution:
+                    bits: int | float) -> CqResolution:
     available = tuple(archives)
     if not available:
         raise RuntimeError(f"No CQ archives found in {repo_id}")

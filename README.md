@@ -214,7 +214,7 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │    --clear                           remove saved key                          │
 │                                                                                │
 │  cactus run [model|path]             run a model (downloads if needed)         │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --backend cpu|metal               inference backend (default: auto)         │
 │    --image <path>                    image file for VLM inference              │
 │    --audio <path>                    audio file for audio chat                 │
@@ -227,12 +227,12 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │  cactus transcribe [model]           live microphone transcription with a model│
 │    --file <audio.wav>                audio file to transcribe (WAV)            │
 │    --language <code>                 language code (default: en)               │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │                                                                                │
 │  cactus download [model]             get a bundle (prebuilt, else build)       │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │                                                                                │
@@ -248,7 +248,7 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │  cactus serve [model]                OpenAI-compatible local HTTP server       │
 │    --host <addr>                     bind address (default: 127.0.0.1)         │
 │    --port <port>                     port (default: 8080)                      │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --backend cpu|metal               inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
@@ -258,7 +258,7 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │                                                                                │
 │  cactus code                         run the AI coding agent (TUI / print)     │
 │    --serve-model <id>                auto-start a server with this model       │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --backend cpu|metal               inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
@@ -282,7 +282,7 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │                                      (default: all)                            │
 │    --model <hf-id>                   default: google/gemma-4-E2B-it            │
 │    --transcription-model <hf-id>     default: nvidia/parakeet-tdt-0.6b-v3      │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --backend cpu|metal               inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild of test models        │
@@ -297,7 +297,7 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │  cactus benchmark                    run the engine benchmark suite            │
 │    --model <hf-id>                   default: google/gemma-4-E2B-it            │
 │    --transcription-model <hf-id>     default: nvidia/parakeet-tdt-0.6b-v3      │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --backend cpu|metal               inference backend (default: auto)         │
 │    --ios                             run on connected iPhone                   │
 │    --android                         run on connected Android                  │
