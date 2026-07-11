@@ -1231,7 +1231,7 @@ def cactus_rag_query(model, query, top_k=5):
     Returns:
         A dict with ranked results.
     """
-    buf = ctypes.create_string_buffer(65536)
+    buf = ctypes.create_string_buffer(1 << 20)
     rc = _lib.cactus_rag_query(model, _enc(query), buf, len(buf), top_k)
     if rc < 0:
         raise RuntimeError(_err("RAG query failed"))
@@ -1336,7 +1336,7 @@ def cactus_index_query(index, embedding, options=None):
     return {"results": [{"id": int(id_buffer[i]), "score": float(score_buffer[i])} for i in range(n)]}
 
 
-_INDEX_DOC_BUF_SIZE = 4096
+_INDEX_DOC_BUF_SIZE = 65536
 _INDEX_EMB_BUF_SIZE = 4096
 
 
