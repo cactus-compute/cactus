@@ -2138,7 +2138,7 @@ Example response from Gemma4-E2B
 <a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>│    --clear                           remove saved key                          │
 <a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>│                                                                                │
 <a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a>│  cactus run [model|path]             run a model (downloads if needed)         │
-<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+<a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a>│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 <a id="__codelineno-4-20" name="__codelineno-4-20" href="#__codelineno-4-20"></a>│    --backend cpu|metal               inference backend (default: auto)         │
 <a id="__codelineno-4-21" name="__codelineno-4-21" href="#__codelineno-4-21"></a>│    --image &lt;path&gt;                    image file for VLM inference              │
 <a id="__codelineno-4-22" name="__codelineno-4-22" href="#__codelineno-4-22"></a>│    --audio &lt;path&gt;                    audio file for audio chat                 │
@@ -2151,12 +2151,12 @@ Example response from Gemma4-E2B
 <a id="__codelineno-4-29" name="__codelineno-4-29" href="#__codelineno-4-29"></a>│  cactus transcribe [model]           live microphone transcription with a model│
 <a id="__codelineno-4-30" name="__codelineno-4-30" href="#__codelineno-4-30"></a>│    --file &lt;audio.wav&gt;                audio file to transcribe (WAV)            │
 <a id="__codelineno-4-31" name="__codelineno-4-31" href="#__codelineno-4-31"></a>│    --language &lt;code&gt;                 language code (default: en)               │
-<a id="__codelineno-4-32" name="__codelineno-4-32" href="#__codelineno-4-32"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+<a id="__codelineno-4-32" name="__codelineno-4-32" href="#__codelineno-4-32"></a>│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 <a id="__codelineno-4-33" name="__codelineno-4-33" href="#__codelineno-4-33"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
 <a id="__codelineno-4-34" name="__codelineno-4-34" href="#__codelineno-4-34"></a>│    --reconvert                       force local rebuild from source           │
 <a id="__codelineno-4-35" name="__codelineno-4-35" href="#__codelineno-4-35"></a>│                                                                                │
 <a id="__codelineno-4-36" name="__codelineno-4-36" href="#__codelineno-4-36"></a>│  cactus download [model]             get a bundle (prebuilt, else build)       │
-<a id="__codelineno-4-37" name="__codelineno-4-37" href="#__codelineno-4-37"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+<a id="__codelineno-4-37" name="__codelineno-4-37" href="#__codelineno-4-37"></a>│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 <a id="__codelineno-4-38" name="__codelineno-4-38" href="#__codelineno-4-38"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
 <a id="__codelineno-4-39" name="__codelineno-4-39" href="#__codelineno-4-39"></a>│    --reconvert                       force local rebuild from source           │
 <a id="__codelineno-4-40" name="__codelineno-4-40" href="#__codelineno-4-40"></a>│                                                                                │
@@ -2172,7 +2172,7 @@ Example response from Gemma4-E2B
 <a id="__codelineno-4-50" name="__codelineno-4-50" href="#__codelineno-4-50"></a>│  cactus serve [model]                OpenAI-compatible local HTTP server       │
 <a id="__codelineno-4-51" name="__codelineno-4-51" href="#__codelineno-4-51"></a>│    --host &lt;addr&gt;                     bind address (default: 127.0.0.1)         │
 <a id="__codelineno-4-52" name="__codelineno-4-52" href="#__codelineno-4-52"></a>│    --port &lt;port&gt;                     port (default: 8080)                      │
-<a id="__codelineno-4-53" name="__codelineno-4-53" href="#__codelineno-4-53"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+<a id="__codelineno-4-53" name="__codelineno-4-53" href="#__codelineno-4-53"></a>│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 <a id="__codelineno-4-54" name="__codelineno-4-54" href="#__codelineno-4-54"></a>│    --backend cpu|metal               inference backend (default: auto)         │
 <a id="__codelineno-4-55" name="__codelineno-4-55" href="#__codelineno-4-55"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
 <a id="__codelineno-4-56" name="__codelineno-4-56" href="#__codelineno-4-56"></a>│    --reconvert                       force local rebuild from source           │
@@ -2182,7 +2182,7 @@ Example response from Gemma4-E2B
 <a id="__codelineno-4-60" name="__codelineno-4-60" href="#__codelineno-4-60"></a>│                                                                                │
 <a id="__codelineno-4-61" name="__codelineno-4-61" href="#__codelineno-4-61"></a>│  cactus code                         run the AI coding agent (TUI / print)     │
 <a id="__codelineno-4-62" name="__codelineno-4-62" href="#__codelineno-4-62"></a>│    --serve-model &lt;id&gt;                auto-start a server with this model       │
-<a id="__codelineno-4-63" name="__codelineno-4-63" href="#__codelineno-4-63"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+<a id="__codelineno-4-63" name="__codelineno-4-63" href="#__codelineno-4-63"></a>│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 <a id="__codelineno-4-64" name="__codelineno-4-64" href="#__codelineno-4-64"></a>│    --backend cpu|metal               inference backend (default: auto)         │
 <a id="__codelineno-4-65" name="__codelineno-4-65" href="#__codelineno-4-65"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
 <a id="__codelineno-4-66" name="__codelineno-4-66" href="#__codelineno-4-66"></a>│    --reconvert                       force local rebuild from source           │
@@ -2206,7 +2206,7 @@ Example response from Gemma4-E2B
 <a id="__codelineno-4-84" name="__codelineno-4-84" href="#__codelineno-4-84"></a>│                                      (default: all)                            │
 <a id="__codelineno-4-85" name="__codelineno-4-85" href="#__codelineno-4-85"></a>│    --model &lt;hf-id&gt;                   default: google/gemma-4-E2B-it            │
 <a id="__codelineno-4-86" name="__codelineno-4-86" href="#__codelineno-4-86"></a>│    --transcription-model &lt;hf-id&gt;     default: nvidia/parakeet-tdt-0.6b-v3      │
-<a id="__codelineno-4-87" name="__codelineno-4-87" href="#__codelineno-4-87"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+<a id="__codelineno-4-87" name="__codelineno-4-87" href="#__codelineno-4-87"></a>│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 <a id="__codelineno-4-88" name="__codelineno-4-88" href="#__codelineno-4-88"></a>│    --backend cpu|metal               inference backend (default: auto)         │
 <a id="__codelineno-4-89" name="__codelineno-4-89" href="#__codelineno-4-89"></a>│    --token &lt;token&gt;                   HuggingFace token (gated models)          │
 <a id="__codelineno-4-90" name="__codelineno-4-90" href="#__codelineno-4-90"></a>│    --reconvert                       force local rebuild of test models        │
@@ -2221,7 +2221,7 @@ Example response from Gemma4-E2B
 <a id="__codelineno-4-99" name="__codelineno-4-99" href="#__codelineno-4-99"></a>│  cactus benchmark                    run the engine benchmark suite            │
 <a id="__codelineno-4-100" name="__codelineno-4-100" href="#__codelineno-4-100"></a>│    --model &lt;hf-id&gt;                   default: google/gemma-4-E2B-it            │
 <a id="__codelineno-4-101" name="__codelineno-4-101" href="#__codelineno-4-101"></a>│    --transcription-model &lt;hf-id&gt;     default: nvidia/parakeet-tdt-0.6b-v3      │
-<a id="__codelineno-4-102" name="__codelineno-4-102" href="#__codelineno-4-102"></a>│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+<a id="__codelineno-4-102" name="__codelineno-4-102" href="#__codelineno-4-102"></a>│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 <a id="__codelineno-4-103" name="__codelineno-4-103" href="#__codelineno-4-103"></a>│    --backend cpu|metal               inference backend (default: auto)         │
 <a id="__codelineno-4-104" name="__codelineno-4-104" href="#__codelineno-4-104"></a>│    --ios                             run on connected iPhone                   │
 <a id="__codelineno-4-105" name="__codelineno-4-105" href="#__codelineno-4-105"></a>│    --android                         run on connected Android                  │
