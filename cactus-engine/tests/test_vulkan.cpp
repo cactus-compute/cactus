@@ -160,9 +160,13 @@ bool test_real_weights_gemv() {
     const int layers[] = {0, 1, 20, 34};
     bool all = true;
     size_t tested = 0;
-    for (int l : layers) {
-        for (const char* n : names) {
-            std::string path = std::string(bundle) + "/layer_" + std::to_string(l) + "_" + n + ".weights";
+    std::vector<std::string> paths;
+    for (int l : layers)
+        for (const char* n : names)
+            paths.push_back(std::string(bundle) + "/layer_" + std::to_string(l) + "_" + n + ".weights");
+    paths.push_back(std::string(bundle) + "/token_embeddings.weights");
+    for (const std::string& path : paths) {
+        {
             CactusGraph g;
             size_t id;
             try {
@@ -174,10 +178,6 @@ bool test_real_weights_gemv() {
             if (!PrecisionTraits::is_cq(b.precision) || b.group_size == 0) continue;
             CactusQuantMatrix W = b.to_cq_matrix();
             std::string base = path.substr(path.find_last_of('/') + 1);
-            if (W.flags & CACTUS_QUANT_FLAG_ORTHOGONAL) {
-                std::cout << "  [-] " << base << " orthogonal, skipped\n";
-                continue;
-            }
             auto x = rand_halfs(W.K);
             std::vector<__fp16> cpu(W.N), gpu(W.N);
             cactus_quant_matmul(&W, x.data(), 1, cpu.data());
@@ -625,6 +625,51 @@ bool test_kv_ring_slots() {
     return true;
 }
 
+bool test_kv_sliding() {
+    const uint32_t kvh = 2, hd = 64, gs = 32, T = 8;
+    const uint32_t keep_sink = 2, remaining = 4, shift_src = 4;
+    auto tok = rand_halfs((size_t)T * kvh * hd, 0.25f, 1.0f);
+    auto newtok = rand_halfs(kvh * hd, 0.25f, 1.0f);
+    size_t i8s = (size_t)kvh * hd, scs = (size_t)kvh * (hd / gs);
+    size_t i8b = (size_t)(T + 2) * i8s, scb = (size_t)(T + 2) * scs * 4;
+    VkBuf cache(64 + i8b + scb), bsrc(tok.size() * 2, tok.data()), bnew(newtok.size() * 2, newtok.data());
+    if (!cache.p || !bsrc.p || !bnew.p) return false;
+    char* kb = (char*)cache.p;
+    if (!cactus_vulkan_encode_kv_append_i8(bsrc.p, kb + 64, kb + 64 + i8b, kvh, hd, 0, gs, T, 0, 0,
+            tok.size() * 2, i8b, scb)) return false;
+    cactus_vulkan_session_sync();
+    std::vector<char> before(i8b);
+    std::memcpy(before.data(), kb + 64, i8b);
+    std::vector<float> sbefore((T + 2) * scs);
+    std::memcpy(sbefore.data(), kb + 64 + i8b, (T + 2) * scs * 4);
+    if (!cactus_vulkan_encode_kv_append_sliding_i8(bnew.p, kb + 64, kb + 64 + i8b, kvh, hd,
+            keep_sink, remaining, shift_src, gs, 1, newtok.size() * 2, i8b, scb)) return false;
+    cactus_vulkan_session_sync();
+    const char* after = kb + 64;
+    const float* safter = (const float*)(kb + 64 + i8b);
+    for (uint32_t s = 0; s < keep_sink; ++s)
+        if (std::memcmp(after + s * i8s, before.data() + s * i8s, i8s) != 0) {
+            std::cerr << "  [✗] sliding sink slot " << s << " changed\n";
+            return false;
+        }
+    for (uint32_t s = 0; s < remaining; ++s) {
+        if (std::memcmp(after + (keep_sink + s) * i8s, before.data() + (shift_src + s) * i8s, i8s) != 0) {
+            std::cerr << "  [✗] sliding shift slot " << keep_sink + s << " mismatch\n";
+            return false;
+        }
+        for (uint32_t g = 0; g < scs; ++g)
+            if (safter[(keep_sink + s) * scs + g] != sbefore[(shift_src + s) * scs + g]) {
+                std::cerr << "  [✗] sliding scale slot " << keep_sink + s << " mismatch\n";
+                return false;
+            }
+    }
+    if (safter[(keep_sink + remaining) * scs] == 0.0f) {
+        std::cerr << "  [✗] sliding append slot missing\n";
+        return false;
+    }
+    return true;
+}
+
 bool test_argmax() {
     const uint32_t n = 50000;
     auto logits = rand_halfs(n, -8.0f, 8.0f);
@@ -672,6 +717,7 @@ int main() {
     runner.run_test("adjust_argmax", test_adjust_argmax_gpu());
     runner.run_test("kv_attn", test_kv_attn_gpu());
     runner.run_test("kv_ring_slots", test_kv_ring_slots());
+    runner.run_test("kv_sliding", test_kv_sliding());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

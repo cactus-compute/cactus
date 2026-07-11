@@ -34,6 +34,8 @@ bool cactus_vulkan_encode_softcap(void*, const void*, size_t, float) { return fa
 bool cactus_vulkan_encode_adjust_logits(void*, size_t, const uint32_t*, uint32_t, int64_t, float) { return false; }
 bool cactus_vulkan_encode_argmax(const void*, uint32_t, void*, const void*) { return false; }
 bool cactus_vulkan_encode_kv_append_i8(const void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, size_t, size_t, size_t) { return false; }
+bool cactus_vulkan_encode_kv_append_sliding_i8(const void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, size_t, size_t, size_t) { return false; }
+bool cactus_vulkan_prewarm_quant(const CactusQuantMatrix*) { return false; }
 bool cactus_vulkan_encode_attention_i8(void*, const void*, const void*, const void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, size_t, size_t, size_t, size_t) { return false; }
 bool cactus_vulkan_binary_f16(int, __fp16*, const __fp16*, const __fp16*, size_t) { return false; }
 bool cactus_vulkan_scalar_f16(int, __fp16*, const __fp16*, size_t, float) { return false; }
@@ -72,6 +74,7 @@ bool cactus_vulkan_argmax_f16(const __fp16*, uint32_t, uint32_t*, float*) { retu
 #include "vk_kv_append_i8.h"
 #include "vk_attn_decode_i8.h"
 #include "vk_attn_combine.h"
+#include "vk_ortho_rotate.h"
 
 #include <dlfcn.h>
 #include <cstdio>
@@ -108,7 +111,7 @@ namespace {
 
 enum { KB, KSC, KU, KSW, KR, KT, KG, KA,
        KCP, KCA, KSTC, KSTS, KBB, KCT, KRA, KRR,
-       KRL, KRF, KSO, KAJ, KM3, KKV, KAT, KCB, KCOUNT };
+       KRL, KRF, KSO, KAJ, KM3, KKV, KAT, KCB, KROT, KCOUNT };
 
 struct KDef {
     const char* spv;
@@ -127,7 +130,7 @@ const KDef kdefs[KCOUNT] = {
     {kSpv_cq4_transform, sizeof(kSpv_cq4_transform) - 1, 6, 4,  0x20},
     {kSpv_cq4_gemv,      sizeof(kSpv_cq4_gemv) - 1,      5, 20, 0x10},
     {kSpv_argmax,        sizeof(kSpv_argmax) - 1,        2, 4,  0x2},
-    {kSpv_copy,             sizeof(kSpv_copy) - 1,             2, 4,   0x2},
+    {kSpv_copy,             sizeof(kSpv_copy) - 1,             2, 12,  0x2},
     {kSpv_cast,             sizeof(kSpv_cast) - 1,             2, 8,   0x2},
     {kSpv_strided_copy,     sizeof(kSpv_strided_copy) - 1,     2, 76,  0x2},
     {kSpv_strided_scatter,  sizeof(kSpv_strided_scatter) - 1,  2, 76,  0x2},
@@ -143,6 +146,7 @@ const KDef kdefs[KCOUNT] = {
     {kSpv_kv_append_i8,     sizeof(kSpv_kv_append_i8) - 1,     3, 36,  0x6},
     {kSpv_attn_decode_i8,   sizeof(kSpv_attn_decode_i8) - 1,   10, 52, 0x380},
     {kSpv_attn_combine,     sizeof(kSpv_attn_combine) - 1,     3, 8,   0x4},
+    {kSpv_ortho_rotate,     sizeof(kSpv_ortho_rotate) - 1,     4, 8,   0x8},
 };
 
 struct Slot {
@@ -801,6 +805,7 @@ bool scratch_info(MemBlock& b, size_t bytes, VkDescriptorBufferInfo* out) {
     if (b.cap < bytes) {
         if (b.buf) {
             sync_i();
+            g_blocks.erase((uintptr_t)b.map);
             vk().vkDestroyBuffer(vk().dev, b.buf, nullptr);
             vk().vkFreeMemory(vk().dev, b.mem, nullptr);
             b = MemBlock();
@@ -808,6 +813,8 @@ bool scratch_info(MemBlock& b, size_t bytes, VkDescriptorBufferInfo* out) {
         size_t cap = BUCKET;
         while (cap < bytes) cap <<= 1;
         if (!create_block(cap, b, true)) return false;
+        b.live = 1;
+        g_blocks[(uintptr_t)b.map] = &b;
     }
     out->buffer = b.buf;
     out->offset = 0;
@@ -838,8 +845,8 @@ bool enc_ew(int k, void* y, size_t out_bytes,
 
 struct ResW {
     MemBlock b;
-    VkDeviceSize off[8] = {};
-    VkDeviceSize sz[8] = {};
+    VkDeviceSize off[9] = {};
+    VkDeviceSize sz[9] = {};
     bool ok = false;
 };
 std::unordered_map<uint64_t, ResW> g_resident;
@@ -857,7 +864,7 @@ uint64_t resident_key(const CactusQuantMatrix* W) {
     return h;
 }
 
-enum { W_PACKED, W_NORMS, W_CB, W_RECIP, W_LS, W_RS, W_PERM, W_CODE };
+enum { W_PACKED, W_NORMS, W_CB, W_RECIP, W_LS, W_RS, W_PERM, W_CODE, W_ROT, W_SECT };
 
 ResW& resident(const CactusQuantMatrix* W) {
     uint64_t key = resident_key(W);
@@ -866,10 +873,12 @@ ResW& resident(const CactusQuantMatrix* W) {
     const uint32_t gs = W->group_size, ng = W->num_groups, N = W->N, K = W->K;
     const uint32_t pgb = cactus_quant_packed_group_bytes(W->bits, gs);
     const bool il = (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) != 0;
+    const bool ortho = (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0;
     const size_t rows = il ? ((size_t)(N + 3) & ~(size_t)3) : N;
     ResW r;
-    const void* srcs[8] = {W->packed_indices, W->norms, W->codebook, W->input_scale_recip,
-                           W->left_signs, W->right_signs, W->permutation, nullptr};
+    const void* srcs[W_SECT] = {W->packed_indices, W->norms, W->codebook, W->input_scale_recip,
+                                W->left_signs, W->right_signs, W->permutation, nullptr,
+                                ortho ? W->rotation : nullptr};
     r.sz[W_PACKED] = rows * ng * pgb;
     r.sz[W_NORMS] = rows * ng * sizeof(__fp16);
     r.sz[W_CB] = 16 * sizeof(__fp16);
@@ -878,14 +887,15 @@ ResW& resident(const CactusQuantMatrix* W) {
     r.sz[W_RS] = gs;
     r.sz[W_PERM] = (size_t)gs * sizeof(uint32_t);
     r.sz[W_CODE] = (size_t)K * sizeof(__fp16);
+    r.sz[W_ROT] = ortho ? (size_t)K * K * sizeof(__fp16) : 0;
     VkDeviceSize total = 0;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < W_SECT; ++i) {
         total = (total + vk().sb_align - 1) & ~(vk().sb_align - 1);
         r.off[i] = total;
         total += r.sz[i];
     }
     if (create_block(total, r.b, false)) {
-        for (int i = 0; i < 8; ++i)
+        for (int i = 0; i < W_SECT; ++i)
             if (srcs[i]) std::memcpy(r.b.map + r.off[i], srcs[i], r.sz[i]);
         r.ok = true;
     }
@@ -893,11 +903,17 @@ ResW& resident(const CactusQuantMatrix* W) {
 }
 
 bool enc_cq_gemv(void* y, const void* x, const CactusQuantMatrix* W) {
-    if (!vk().ok || !W || W->bits != 4 || (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL)) return false;
-    if (!W->input_scale_recip || !W->left_signs || !W->right_signs || !W->permutation
-        || !W->codebook || !W->norms || !W->packed_indices) return false;
+    if (!vk().ok || !W || W->bits != 4) return false;
+    if (!W->codebook || !W->norms || !W->packed_indices) return false;
     const uint32_t gs = W->group_size, ng = W->num_groups, N = W->N, K = W->K;
-    if (gs < 16 || gs > 512 || (gs & (gs - 1)) != 0 || (size_t)ng * gs != K) return false;
+    if ((size_t)ng * gs != K) return false;
+    const bool ortho = (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0;
+    if (ortho) {
+        if (!W->rotation || ng != 1 || gs != K || (K & 31u) || K > 4096) return false;
+    } else {
+        if (!W->input_scale_recip || !W->left_signs || !W->right_signs || !W->permutation) return false;
+        if (gs < 16 || gs > 512 || (gs & (gs - 1)) != 0) return false;
+    }
     if ((W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) && (N & 3)) return false;
     ResW& r = resident(W);
     if (!r.ok) return false;
@@ -908,21 +924,30 @@ bool enc_cq_gemv(void* y, const void* x, const CactusQuantMatrix* W) {
         VkDescriptorBufferInfo d = {};
         d.buffer = r.b.buf;
         d.offset = r.off[i];
-        d.range = r.sz[i];
+        d.range = r.sz[i] ? r.sz[i] : 4;
         return d;
     };
     if (!ensure_cmd()) return false;
-    VkDescriptorBufferInfo tinfos[6] = {xb, ri(W_RECIP), ri(W_LS), ri(W_RS), ri(W_PERM), ri(W_CODE)};
+    if (ortho) {
+        VkDescriptorBufferInfo rinfos[4] = {xb, ri(W_RECIP), ri(W_ROT), ri(W_CODE)};
+        VkDescriptorSet rset = make_set(KROT, rinfos, 4);
+        if (!rset) return false;
+        struct { uint32_t K, has_recip; } rpush = {K, W->input_scale_recip ? 1u : 0u};
+        dispatch(KROT, rset, &rpush, (K + 63) / 64, 1, rinfos, 4);
+    } else {
+        VkDescriptorBufferInfo tinfos[6] = {xb, ri(W_RECIP), ri(W_LS), ri(W_RS), ri(W_PERM), ri(W_CODE)};
+        VkDescriptorSet tset = make_set(KT, tinfos, 6);
+        if (!tset) return false;
+        struct { uint32_t gs; } tpush = {gs};
+        dispatch(KT, tset, &tpush, ng, 1, tinfos, 6);
+    }
     VkDescriptorBufferInfo ginfos[5] = {ri(W_CODE), ri(W_PACKED), ri(W_CB), ri(W_NORMS), yb};
-    VkDescriptorSet tset = make_set(KT, tinfos, 6);
     VkDescriptorSet gset = make_set(KG, ginfos, 5);
-    if (!tset || !gset) return false;
+    if (!gset) return false;
     const uint32_t pgb = cactus_quant_packed_group_bytes(W->bits, gs);
     const uint32_t il = (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) ? 1 : 0;
-    struct { uint32_t gs; } tpush = {gs};
     struct { uint32_t gs, ng, pgb, N, il; } gpush = {gs, ng, pgb, N, il};
     const uint32_t rows4 = (N + 3) / 4;
-    dispatch(KT, tset, &tpush, ng, 1, tinfos, 6);
     dispatch(KG, gset, &gpush, rows4 > 65535 ? 65535 : rows4, 1, ginfos, 5);
     return true;
 }
@@ -977,11 +1002,6 @@ void cactus_vulkan_invalidate_host_wraps() {
     if (!vk().ok) return;
     std::lock_guard<std::recursive_mutex> lk(g_mu);
     sync_i();
-    for (auto& kv : g_resident) {
-        if (kv.second.b.buf) vk().vkDestroyBuffer(vk().dev, kv.second.b.buf, nullptr);
-        if (kv.second.b.mem) vk().vkFreeMemory(vk().dev, kv.second.b.mem, nullptr);
-    }
-    g_resident.clear();
     for (auto& kv : g_wraps) {
         if (kv.second->buf) vk().vkDestroyBuffer(vk().dev, kv.second->buf, nullptr);
         if (kv.second->mem) vk().vkFreeMemory(vk().dev, kv.second->mem, nullptr);
@@ -1158,8 +1178,54 @@ bool cactus_vulkan_encode_copy(void* out, const void* in, size_t bytes) {
     if (bytes == 0 || (bytes & 3u)) return false;
     std::lock_guard<std::recursive_mutex> lk(g_mu);
     uint32_t n = (uint32_t)(bytes >> 2);
-    struct { uint32_t n; } push = {n};
+    struct { uint32_t n, o_in, o_out; } push = {n, 0, 0};
     return enc_ew(KCP, out, bytes, in, bytes, nullptr, 0, &push, ew_groups(n));
+}
+
+bool enc_copy_off(void* out, size_t out_bytes, const void* in, size_t in_bytes, size_t bytes) {
+    if (bytes == 0 || (bytes & 3u)) return false;
+    VkDescriptorBufferInfo infos[2];
+    uint32_t o_in = 0, o_out = 0;
+    if (!dinfo_off(in, in_bytes, &infos[0], &o_in)) return false;
+    if (!dinfo_off(out, out_bytes, &infos[1], &o_out)) return false;
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KCP, infos, 2);
+    if (!set) return false;
+    uint32_t n = (uint32_t)(bytes >> 2);
+    struct { uint32_t n, o_in, o_out; } push = {n, o_in, o_out};
+    dispatch(KCP, set, &push, ew_groups(n), 1, infos, 2);
+    return true;
+}
+
+MemBlock g_slide;
+
+bool cactus_vulkan_encode_kv_append_sliding_i8(const void* src, void* int8base, void* scalebase,
+        uint32_t kv_heads, uint32_t hdim, uint32_t keep_sink, uint32_t remaining, uint32_t shift_src,
+        uint32_t group_size, uint32_t M, size_t src_bytes, size_t int8_bytes, size_t scale_bytes) {
+    if (!vk().ok || M == 0 || kv_heads == 0 || group_size == 0 || (group_size & 3u)
+        || hdim == 0 || (hdim % group_size)) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    const size_t i8s = (size_t)kv_heads * hdim;
+    const size_t scs = (size_t)kv_heads * (hdim / group_size) * 4;
+    if (remaining > 0) {
+        const size_t di8 = remaining * i8s, dsc = remaining * scs;
+        VkDescriptorBufferInfo sinfo;
+        if (!scratch_info(g_slide, di8 + dsc, &sinfo)) return false;
+        char* i8b = (char*)int8base;
+        char* scb = (char*)scalebase;
+        if (!enc_copy_off(g_slide.map, di8 + dsc, i8b + shift_src * i8s, int8_bytes - shift_src * i8s, di8)) return false;
+        if (!enc_copy_off(g_slide.map + di8, dsc, scb + shift_src * scs, scale_bytes - shift_src * scs, dsc)) return false;
+        if (!enc_copy_off(i8b + keep_sink * i8s, int8_bytes - keep_sink * i8s, g_slide.map, di8, di8)) return false;
+        if (!enc_copy_off(scb + keep_sink * scs, scale_bytes - keep_sink * scs, g_slide.map + di8, dsc, dsc)) return false;
+    }
+    return cactus_vulkan_encode_kv_append_i8(src, int8base, scalebase, kv_heads, hdim,
+        keep_sink + remaining, group_size, M, 0, 0, src_bytes, int8_bytes, scale_bytes);
+}
+
+bool cactus_vulkan_prewarm_quant(const CactusQuantMatrix* W) {
+    if (!vk().ok || !W || W->bits != 4 || !W->packed_indices) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    return resident(W).ok;
 }
 
 bool cactus_vulkan_encode_cast(void* out, int out_prec, const void* in, int in_prec, size_t n) {

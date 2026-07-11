@@ -194,7 +194,9 @@ inline bool cactus_gpu_encode_transform_gemv(void*, const void*, const CactusQua
 inline bool cactus_gpu_transform_gemv_fits(uint32_t) { return false; }
 inline bool cactus_gpu_encode_gemv_cat(void* const*, const void* const*, const CactusQuantMatrix* const*, int) { return false; }
 inline bool cactus_gpu_encode_swiglu_transform(void*, const void*, const void*, const CactusQuantMatrix*, float) { return false; }
-inline bool cactus_gpu_prewarm_quant(const CactusQuantMatrix*) { return false; }
+inline bool cactus_gpu_prewarm_quant(const CactusQuantMatrix* W) {
+    return cactus_vulkan_prewarm_quant(W);
+}
 inline bool cactus_gpu_encode_rope_pair(void*, const void*, const void*, const void*, uint32_t, uint32_t) { return false; }
 inline bool cactus_gpu_encode_rope_pair_rms(void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, float) { return false; }
 inline bool cactus_gpu_encode_deltanet_decode(void*, const void*, const void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float) { return false; }
@@ -289,8 +291,20 @@ inline bool cactus_gpu_encode_kv_append_i8(const void* src, void* i8b, void* scb
     return cactus_vulkan_op_enabled("kv")
         && cactus_vulkan_encode_kv_append_i8(src, i8b, scb, kvh, hdim, cur, gs, 1, 0, 0, sb, ib, scb_sz);
 }
-inline bool cactus_gpu_encode_kv_append_sliding_i8(const void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, size_t, size_t, size_t) { return false; }
-inline bool cactus_gpu_encode_kv_append_sliding_i8_m(const void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, size_t, size_t, size_t) { return false; }
+inline bool cactus_gpu_encode_kv_append_sliding_i8(const void* src, void* i8b, void* scb,
+        uint32_t kvh, uint32_t hdim, uint32_t keep_sink, uint32_t remaining, uint32_t shift_src,
+        uint32_t gs, size_t sb, size_t ib, size_t scb_sz) {
+    return cactus_vulkan_op_enabled("kv")
+        && cactus_vulkan_encode_kv_append_sliding_i8(src, i8b, scb, kvh, hdim, keep_sink, remaining,
+               shift_src, gs, 1, sb, ib, scb_sz);
+}
+inline bool cactus_gpu_encode_kv_append_sliding_i8_m(const void* src, void* i8b, void* scb,
+        uint32_t kvh, uint32_t hdim, uint32_t keep_sink, uint32_t remaining, uint32_t shift_src,
+        uint32_t gs, uint32_t M, size_t sb, size_t ib, size_t scb_sz) {
+    return cactus_vulkan_op_enabled("kv")
+        && cactus_vulkan_encode_kv_append_sliding_i8(src, i8b, scb, kvh, hdim, keep_sink, remaining,
+               shift_src, gs, M, sb, ib, scb_sz);
+}
 inline bool cactus_gpu_encode_kv_append_i8_m(const void* src, void* i8b, void* scb,
         uint32_t kvh, uint32_t hdim, uint32_t cur, uint32_t gs, uint32_t M, size_t sb, size_t ib, size_t scb_sz) {
     return cactus_vulkan_op_enabled("kv")

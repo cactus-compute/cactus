@@ -221,10 +221,33 @@ void main() {
 #ifdef K_copy
 layout(std430, binding = 0) readonly buffer BI { uint inw[]; };
 layout(std430, binding = 1) writeonly buffer BY { uint outw[]; };
-layout(push_constant) uniform P { uint n; };
+layout(push_constant) uniform P { uint n; uint o_in; uint o_out; };
 void main() {
     uint stride = 64u * gl_NumWorkGroups.x;
-    for (uint i = gl_GlobalInvocationID.x; i < n; i += stride) outw[i] = inw[i];
+    for (uint i = gl_GlobalInvocationID.x; i < n; i += stride) outw[o_out + i] = inw[o_in + i];
+}
+#endif
+
+#ifdef K_ortho_rotate
+layout(std430, binding = 0) readonly buffer BX { float16_t xin[]; };
+layout(std430, binding = 1) readonly buffer BR { float16_t recip[]; };
+layout(std430, binding = 2) readonly buffer BM { float16_t rot[]; };
+layout(std430, binding = 3) writeonly buffer BC { float16_t code[]; };
+layout(push_constant) uniform P { uint K; uint has_recip; };
+shared float xr[4096];
+void main() {
+    uint t = gl_LocalInvocationID.x;
+    for (uint k = t; k < K; k += 64u) {
+        float v = float(xin[k]);
+        if (has_recip != 0u) v *= float(recip[k]);
+        xr[k] = v;
+    }
+    barrier();
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= K) return;
+    float acc = 0.0;
+    for (uint k = 0u; k < K; ++k) acc += xr[k] * float(rot[k * K + i]);
+    code[i] = float16_t(acc);
 }
 #endif
 

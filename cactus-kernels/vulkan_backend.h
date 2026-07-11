@@ -53,6 +53,10 @@ bool cactus_vulkan_encode_argmax(const void* logits, uint32_t vocab, void* out3,
 bool cactus_vulkan_encode_kv_append_i8(const void* src, void* int8base, void* scalebase,
     uint32_t kv_heads, uint32_t hdim, uint32_t current_len, uint32_t group_size, uint32_t M,
     uint32_t sink, uint32_t W, size_t src_bytes, size_t int8_bytes, size_t scale_bytes);
+bool cactus_vulkan_encode_kv_append_sliding_i8(const void* src, void* int8base, void* scalebase,
+    uint32_t kv_heads, uint32_t hdim, uint32_t keep_sink, uint32_t remaining, uint32_t shift_src,
+    uint32_t group_size, uint32_t M, size_t src_bytes, size_t int8_bytes, size_t scale_bytes);
+bool cactus_vulkan_prewarm_quant(const CactusQuantMatrix* W);
 bool cactus_vulkan_encode_attention_i8(
     void* out, const void* q, const void* knew, const void* vnew,
     const void* kc, const void* vc, const void* ks, const void* vs,
