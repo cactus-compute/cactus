@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from .components import MULTIMODAL_COMPONENTS
+from .components import MULTIMODAL_COMPONENTS, SPEECH_SEQ2SEQ_COMPONENTS, SPEECH_TRANSCRIBER_COMPONENTS, VISION_LANGUAGE_COMPONENTS
 from .models import Cache, Files, ModelProfile
-from .routes import GEMMA4_INFERENCE_PATTERNS
+from .routes import (
+    GEMMA4_INFERENCE_PATTERNS,
+    LFM_VLM_INFERENCE_PATTERNS,
+    PARAKEET_INFERENCE_PATTERNS,
+    WHISPER_INFERENCE_PATTERNS,
+)
 
 
 GEMMA4_E2B_PROFILE = ModelProfile(
@@ -46,5 +51,111 @@ GEMMA4_E2B_PROFILE = ModelProfile(
     ),
 )
 
+WHISPER_PROFILE = ModelProfile(
+    model_profiles="whisper",
+    components=SPEECH_SEQ2SEQ_COMPONENTS,
+    inference_type=WHISPER_INFERENCE_PATTERNS,
+    cache_type=Cache(
+        types=("cross_attention_kv", "decoder_attention_kv"),
+    ),
+    files=Files(
+        required=("config.json",),
+        optional=(
+            "generation_config.json",
+            "preprocessor_config.json",
+            "tokenizer_config.json",
+        ),
+    ),
+    fusion_fields=(
+        "generic",
+        "audio",
+        "whisper_audio_encoder",
+        "whisper_attention",
+        "whisper_mlp",
+        "linear",
+    ),
+    features=(
+        "audio",
+        "speech_to_text",
+        "encoder_decoder",
+        "attention",
+        "cross_attention",
+        "conv",
+        "kv_cache",
+    ),
+)
 
-ALL_PROFILES = (GEMMA4_E2B_PROFILE,)
+PARAKEET_PROFILE = ModelProfile(
+    model_profiles="parakeet",
+    components=SPEECH_TRANSCRIBER_COMPONENTS,
+    inference_type=PARAKEET_INFERENCE_PATTERNS,
+    cache_type=Cache(
+        types=(),
+    ),
+    files=Files(
+        required=("config.json",),
+        optional=(
+            "preprocessor_config.json",
+            "tokenizer_config.json",
+        ),
+    ),
+    fusion_fields=(
+        "generic",
+        "audio",
+        "parakeet_fastconformer",
+        "parakeet_tdt",
+        "conv",
+        "linear",
+    ),
+    features=(
+        "audio",
+        "speech_to_text",
+        "conformer",
+        "tdt",
+        "conv",
+        "attention",
+    ),
+)
+
+LFM_VLM_PROFILE = ModelProfile(
+    model_profiles="lfm_vlm",
+    components=VISION_LANGUAGE_COMPONENTS,
+    inference_type=LFM_VLM_INFERENCE_PATTERNS,
+    cache_type=Cache(
+        types=("attention_kv",),
+    ),
+    files=Files(
+        required=("config.json",),
+        optional=(
+            "generation_config.json",
+            "processor_config.json",
+            "tokenizer_config.json",
+        ),
+    ),
+    fusion_fields=(
+        "generic",
+        "embedding",
+        "vision",
+        "lfm_vlm_token_merge",
+        "lfm_attention",
+        "lfm_mlp",
+        "linear",
+    ),
+    features=(
+        "text",
+        "vision",
+        "vision_language",
+        "attention",
+        "rope",
+        "rms_norm",
+        "kv_cache",
+        "multimodal_token_merge",
+    ),
+)
+
+ALL_PROFILES = (
+    GEMMA4_E2B_PROFILE,
+    WHISPER_PROFILE,
+    PARAKEET_PROFILE,
+    LFM_VLM_PROFILE,
+)
