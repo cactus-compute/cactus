@@ -223,7 +223,25 @@ MetalFusePlan* cactus_gpu_plan_build(
         if (c.s1) { cactus_gpu_free_shared(c.s1); c.s1 = nullptr; }
         for (auto& sp : c.sc) if (sp) { cactus_gpu_free_shared(sp); sp = nullptr; }
     };
+    static const char* rules_env = [] {
+        const char* v = std::getenv("CACTUS_GPU_RULES");
+        return (v && *v) ? v : cactus_gpu_default_rules();
+    }();
+    auto rule_enabled = [](int rule) {
+        if (!rules_env || !*rules_env) return true;
+        std::string tok = std::to_string(rule);
+        const char* p = rules_env;
+        while (*p) {
+            const char* e = std::strchr(p, ',');
+            size_t len = e ? (size_t)(e - p) : std::strlen(p);
+            if (len == tok.size() && std::strncmp(p, tok.c_str(), len) == 0) return true;
+            if (!e) break;
+            p = e + 1;
+        }
+        return false;
+    };
     auto add_cluster = [&](MetalCluster c, size_t anchor, const std::vector<size_t>& cover) -> bool {
+        if (!rule_enabled(c.rule)) { release_scratch(c); return false; }
         if (banned && banned->count(anchor)) { release_scratch(c); return false; }
         for (size_t v : cover) if (v != anchor && pinned[v]) { release_scratch(c); return false; }
         int32_t cid = (int32_t)plan->clusters.size();
@@ -866,6 +884,16 @@ MetalFusePlan* cactus_gpu_plan_build(
         }
     }
 
+    {
+        std::vector<AttnCand> kept;
+        kept.reserve(cands.size());
+        for (auto& cd : cands) {
+            if ((banned && banned->count(cd.anchor)) || !rule_enabled(cd.c.rule)) release_scratch(cd.c);
+            else kept.push_back(cd);
+        }
+        cands.swap(kept);
+    }
+
     if (!cands.empty()) {
         std::vector<uint8_t> mark(n, 0);
         for (auto& cd : cands) {
@@ -1475,6 +1503,10 @@ void cactus_gpu_plan_extend_last_use(const MetalFusePlan* p, std::vector<size_t>
 
 int32_t cactus_gpu_plan_action(const MetalFusePlan* p, size_t i) {
     return p && i < p->action.size() ? p->action[i] : -1;
+}
+
+int32_t cactus_gpu_plan_rule(const MetalFusePlan* p, int32_t cid) {
+    return p && cid >= 0 && (size_t)cid < p->clusters.size() ? p->clusters[(size_t)cid].rule : -1;
 }
 
 

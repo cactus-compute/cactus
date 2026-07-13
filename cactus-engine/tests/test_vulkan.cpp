@@ -625,6 +625,36 @@ bool test_kv_ring_slots() {
     return true;
 }
 
+static bool run_gemm_case(bool interleaved, uint32_t M, uint32_t K, const char* what) {
+    CQ4Fixture f(interleaved, K, 64, 128);
+    auto x = rand_halfs((size_t)M * f.K);
+    std::vector<__fp16> cpu((size_t)M * f.N);
+    cactus_quant_matmul(&f.W, x.data(), M, cpu.data());
+    VkBuf bx(x.size() * 2, x.data()), by(cpu.size() * 2);
+    if (!bx.p || !by.p) return false;
+    if (!cactus_vulkan_encode_quant_matmul_m(by.p, bx.p, &f.W, M)) {
+        std::cout << "  [-] " << what << " encode refused\n";
+        return true;
+    }
+    cactus_vulkan_session_sync();
+    std::vector<__fp16> gpu(cpu.size());
+    std::memcpy(gpu.data(), by.p, cpu.size() * 2);
+    std::vector<float> want(cpu.size());
+    float maxy = 0;
+    for (size_t i = 0; i < cpu.size(); ++i) {
+        want[i] = (float)cpu[i];
+        maxy = std::max(maxy, std::fabs(want[i]));
+    }
+    return close_all(gpu, want, std::max(5e-2f, 0.02f * maxy), what);
+}
+
+bool test_gemm_m() {
+    return run_gemm_case(false, 8, 512, "gemm M=8 flat")
+        && run_gemm_case(true, 8, 512, "gemm M=8 il")
+        && run_gemm_case(true, 5, 512, "gemm M=5 ragged")
+        && run_gemm_case(true, 12, 2048, "gemm M=12 K=2048 chunked");
+}
+
 bool test_kv_sliding() {
     const uint32_t kvh = 2, hd = 64, gs = 32, T = 8;
     const uint32_t keep_sink = 2, remaining = 4, shift_src = 4;
@@ -718,6 +748,7 @@ int main() {
     runner.run_test("kv_attn", test_kv_attn_gpu());
     runner.run_test("kv_ring_slots", test_kv_ring_slots());
     runner.run_test("kv_sliding", test_kv_sliding());
+    runner.run_test("gemm_m", test_gemm_m());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

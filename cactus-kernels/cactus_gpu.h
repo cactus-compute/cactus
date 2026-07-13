@@ -9,6 +9,8 @@
 #include "metal_backend.h"
 
 inline bool cactus_gpu_supports_plans() { return true; }
+inline bool cactus_gpu_fold_ready() { return true; }
+inline const char* cactus_gpu_default_rules() { return nullptr; }
 inline bool cactus_gpu_auto_available() { return cactus_metal_available(); }
 
 #define cactus_gpu_available cactus_metal_available
@@ -110,7 +112,15 @@ inline bool cactus_gpu_auto_available() { return cactus_metal_available(); }
 
 #include "vulkan_backend.h"
 
-inline bool cactus_gpu_supports_plans() { return false; }
+inline bool cactus_gpu_supports_plans() {
+    static const bool on = [] {
+        const char* v = getenv("CACTUS_VK_PLANS");
+        return !(v && v[0] == '0');
+    }();
+    return on && cactus_vulkan_available();
+}
+inline bool cactus_gpu_fold_ready() { return false; }
+inline const char* cactus_gpu_default_rules() { return "2,3,4,12,13,14,15,17"; }
 inline bool cactus_gpu_auto_available() { return false; }
 
 inline bool cactus_gpu_available() { return cactus_vulkan_available(); }
@@ -186,10 +196,14 @@ inline bool cactus_gpu_encode_cast(void* out, int out_prec, const void* in, int 
     return cactus_vulkan_op_enabled("cast") && cactus_vulkan_encode_cast(out, out_prec, in, in_prec, n);
 }
 inline bool cactus_gpu_encode_quant_matmul_m(void* out, const void* lhs, const CactusQuantMatrix* W, uint32_t M) {
-    return M == 1 && cactus_vulkan_op_enabled("matmul") && cactus_vulkan_encode_cq_gemv(out, lhs, W);
+    return cactus_vulkan_op_enabled("matmul") && cactus_vulkan_encode_quant_matmul_m(out, lhs, W, M);
 }
-inline bool cactus_gpu_encode_transform_batch(const void*, const CactusQuantMatrix* const*, int, void* const*) { return false; }
-inline bool cactus_gpu_encode_gemv_precoded(void*, const void*, const CactusQuantMatrix*) { return false; }
+inline bool cactus_gpu_encode_transform_batch(const void* x, const CactusQuantMatrix* const* Ws, int B, void* const* codes) {
+    return cactus_vulkan_op_enabled("matmul") && cactus_vulkan_encode_transform_batch(x, Ws, B, codes);
+}
+inline bool cactus_gpu_encode_gemv_precoded(void* out, const void* code, const CactusQuantMatrix* W) {
+    return cactus_vulkan_op_enabled("matmul") && cactus_vulkan_encode_gemv_precoded(out, code, W);
+}
 inline bool cactus_gpu_encode_transform_gemv(void*, const void*, const CactusQuantMatrix*, const void*) { return false; }
 inline bool cactus_gpu_transform_gemv_fits(uint32_t) { return false; }
 inline bool cactus_gpu_encode_gemv_cat(void* const*, const void* const*, const CactusQuantMatrix* const*, int) { return false; }
@@ -197,7 +211,10 @@ inline bool cactus_gpu_encode_swiglu_transform(void*, const void*, const void*, 
 inline bool cactus_gpu_prewarm_quant(const CactusQuantMatrix* W) {
     return cactus_vulkan_prewarm_quant(W);
 }
-inline bool cactus_gpu_encode_rope_pair(void*, const void*, const void*, const void*, uint32_t, uint32_t) { return false; }
+inline bool cactus_gpu_encode_rope_pair(void* out, const void* x, const void* c, const void* s,
+        uint32_t H, uint32_t D) {
+    return cactus_vulkan_op_enabled("rope") && cactus_vulkan_encode_rope_pair(out, x, c, s, H, D);
+}
 inline bool cactus_gpu_encode_rope_pair_rms(void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, float) { return false; }
 inline bool cactus_gpu_encode_deltanet_decode(void*, const void*, const void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float) { return false; }
 inline bool cactus_gpu_encode_deltanet_prefill(void*, const void*, const void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float) { return false; }

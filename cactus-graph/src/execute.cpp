@@ -15,6 +15,7 @@
 #include <system_error>
 
 static int g_backend_override = -1;
+static bool g_plans_dead = false;
 int cactus_backend_select(const char* backend) {
     if (!backend) return -1;
     if (std::strcmp(backend, "auto") == 0) { g_backend_override = -1; return 0; }
@@ -1265,6 +1266,7 @@ void* cactus_gpu_plan_arena_ptr(const MetalFusePlan* p, size_t i);
 bool cactus_gpu_plan_has_arena(const MetalFusePlan* p);
 void cactus_gpu_plan_extend_last_use(const MetalFusePlan* p, std::vector<size_t>& last_use);
 int32_t cactus_gpu_plan_action(const MetalFusePlan* p, size_t i);
+int32_t cactus_gpu_plan_rule(const MetalFusePlan* p, int32_t cid);
 bool cactus_gpu_plan_encode(MetalFusePlan* p, int32_t cid,
                               const std::vector<std::unique_ptr<GraphNode>>& nodes,
                               const std::unordered_map<size_t, size_t>& map);
@@ -1428,7 +1430,7 @@ void CactusGraph::execute(const std::string& profile_file) {
     }
     if (metal_mode && !need_debug && !metal_retype_built_) build_metal_retype_plan();
     MetalFusePlan* fplan = nullptr;
-    if (metal_mode && !need_debug && cactus_gpu_supports_plans()) {
+    if (metal_mode && !need_debug && cactus_gpu_supports_plans() && !g_plans_dead) {
         uint64_t sig = 1469598103934665603ull;
         sig ^= (uint64_t)n; sig *= 1099511628211ull;
         for (auto& np : nodes_) {
@@ -1686,7 +1688,11 @@ void CactusGraph::execute(const std::string& profile_file) {
                 }
                 metal_guard.armed = false;
                 metal_abort_cleanup();
-                metal_plan_banned_[metal_plan_sig_].insert(i);
+                if (!metal_plan_banned_[metal_plan_sig_].insert(i).second) g_plans_dead = true;
+                if (vk_stats)
+                    std::fprintf(stderr, "[vkban] rule=%d at node %zu op=%d banned, re-executing%s\n",
+                                 (int)cactus_gpu_plan_rule(fplan, fact), i, (int)nodes_[i]->op_type,
+                                 g_plans_dead ? " (plans disabled)" : "");
                 metal_plans_.erase(metal_plan_sig_);
                 cactus_gpu_plan_free(fplan);
                 execute(profile_file);

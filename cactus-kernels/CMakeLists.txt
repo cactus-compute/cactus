@@ -97,7 +97,8 @@ else()
         foreach(_k binary scalar unary swiglu rms_norm cq4_transform cq4_gemv argmax
                    copy cast strided_copy strided_scatter bcast_binary concat2
                    rms_norm_add rms_norm_add_rms rms_norm_scale rope_full softcap
-                   adjust_logits argmax3 kv_append_i8 attn_decode_i8 attn_combine ortho_rotate)
+                   adjust_logits argmax3 kv_append_i8 attn_decode_i8 attn_combine ortho_rotate rope_pair
+                   cq4_gemv2 cq4_transform_m cq4_gemm)
             set(_spv ${CMAKE_CURRENT_BINARY_DIR}/generated/vk_${_k}.spv)
             set(_hdr ${CMAKE_CURRENT_BINARY_DIR}/generated/vk_${_k}.h)
             add_custom_command(

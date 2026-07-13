@@ -907,7 +907,7 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/, b
         return;
     }
     if (!use_fused) cactus_graph_set_prefill_consistent(true);
-    if (use_fused && cactus_backend_gpu() && cactus_gpu_supports_plans()) {
+    if (use_fused && cactus_backend_gpu() && cactus_gpu_fold_ready()) {
         if (ple_probe_state_ == 0)
             ple_probe_state_ = encoder_->graph->extract_ple_pathway(fused_embed_ctx_) ? 1 : 2;
         if (ple_probe_state_ == 1) {
@@ -1950,7 +1950,7 @@ void Model::run_audio_encoder(const std::vector<float>& audio_features) {
 }
 
 static void try_gpu_tail(void* logits, size_t vocab) {
-    if (!cactus_backend_gpu() || cactus_gpu_supports_plans()) return;
+    if (!cactus_backend_gpu() || cactus_gpu_fold_ready()) return;
     if (!cactus_graph_metal_tail(logits, vocab)) return;
     cactus_gpu_session_sync();
     cactus_graph_metal_tail_commit();
