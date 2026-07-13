@@ -5,6 +5,7 @@ numpy==2.4.6
 pillow==11.3.0
 huggingface_hub==1.15.0
 scipy==1.17.1
+sentencepiece==0.2.2
 fastapi>=0.100.0
 uvicorn>=0.20.0
 python-multipart>=0.0.5

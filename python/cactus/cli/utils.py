@@ -259,9 +259,13 @@ def validate_extracted_bundle(output_dir: Path) -> None:
         tokenizer_config[key.strip()] = value.strip()
 
     tokenizer_type = tokenizer_config.get("tokenizer_type", "").lower()
-    optional_required = ["special_tokens.json", "tokenizer.json"]
-    if tokenizer_type == "bpe":
+    optional_required = ["special_tokens.json"]
+    if tokenizer_type == "sentencepiece":
         optional_required.append("merges.txt")
+    else:
+        optional_required.append("tokenizer.json")
+        if tokenizer_type == "bpe":
+            optional_required.append("merges.txt")
 
     missing_sidecars = [name for name in optional_required if not (output_dir / name).exists()]
     if missing_sidecars:

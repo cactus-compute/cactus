@@ -2791,6 +2791,9 @@ def _lower_preoptimized_ir(ir: IRGraph) -> TranspiledGraph:
 
 
 def main() -> int:
+    from cactus.models.needle import register_with_transformers
+
+    register_with_transformers()
     parser = argparse.ArgumentParser(
         description=(
             "Load a Hugging Face model, canonicalize it into a generic transpile task, "

@@ -223,12 +223,8 @@ PARAKEET_LAYER_WEIGHTS = [
 
 
 NEEDLE_GLOBAL_WEIGHTS = [
-    ('embedding.embedding',              'token_embeddings.weights',          False),
-    ('embedding.embedding',              'output_weight.weights',             False),
-    ('encoder.final_norm.scale',         'encoder_layer_norm_weight.weights', False),
-    ('decoder.ZCRMSNorm_0.scale',        'output_norm.weights',               False),
-    ('contrastive_proj.kernel',          'contrastive_proj.weights',          True),
-    ('log_temp',                         'log_temp.weights',                  False),
+    ('model.encoder.final_norm.weight', 'encoder_layer_norm_weight.weights'),
+    ('model.decoder.norm.weight', 'output_norm.weights'),
 ]
 
 NEEDLE_ENCODER_LAYER_WEIGHTS = [
