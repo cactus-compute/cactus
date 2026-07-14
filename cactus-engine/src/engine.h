@@ -17,46 +17,6 @@
 class CactusGraph;
 
 namespace cactus {
-namespace npu {
-
-struct NPUNamedInput {
-    std::string name;
-    enum class DataType { FP16, INT32 };
-    const void* data;
-    DataType data_type = DataType::FP16;
-    std::vector<int> shape;
-};
-
-class NPUEncoder {
-public:
-    virtual ~NPUEncoder() = default;
-    virtual bool load(const std::string& model_path, const std::string& compute_units = "") = 0;
-    virtual bool preallocate(
-        const std::vector<int>& input_shape,
-        const std::string& input_name = "x",
-        const std::string& output_name = "") = 0;
-    virtual size_t encode(
-        const __fp16* input, __fp16* output,
-        const std::vector<int>& shape,
-        const std::string& input_name = "x",
-        const std::string& output_name = "") = 0;
-    virtual bool is_available() const = 0;
-    virtual std::vector<int> get_input_shape() const = 0;
-    virtual std::vector<int> get_output_shape() const = 0;
-    virtual bool has_input(const std::string&) const { return false; }
-    virtual std::vector<int> get_input_shape_for(const std::string&) const { return {}; }
-    virtual __fp16* get_output_buffer() = 0;
-    virtual size_t get_output_buffer_size() const = 0;
-    virtual size_t encode_multimodal_input(
-        const std::vector<NPUNamedInput>& inputs,
-        __fp16* output,
-        const std::string& output_name = "") = 0;
-};
-
-std::unique_ptr<NPUEncoder> create_encoder();
-bool is_npu_available();
-
-} // namespace npu
 namespace engine {
 
 struct Config {
@@ -163,9 +123,6 @@ struct Config {
 
     enum class Activation {GELU = 0, SILU = 1};
     Activation activation = Activation::SILU;
-
-    enum class Backend {CPU = 0, NPU = 1};
-    Backend default_backend = Backend::CPU;
 
     enum class Precision {INT8 = 0, FP16 = 1, FP32 = 2};
     Precision precision = Precision::FP32;
@@ -740,14 +697,6 @@ public:
     size_t last_prefill_tail_chunk_tokens() const { return last_prefill_tail_chunk_tokens_; }
     size_t last_prefill_tail_padding_tokens() const { return last_prefill_tail_padding_tokens_; }
 
-    bool load_npu_audio_encoder(const std::string& model_path, const std::string& compute_units = "");
-    bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
-
-    bool load_npu_vision_encoder(const std::string& model_path);
-    bool has_npu_vision_encoder() const { return npu_vision_encoder_ != nullptr; }
-
-    bool load_npu_source_encoder(const std::string& model_path);
-
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
 
@@ -823,7 +772,6 @@ private:
                                 size_t feature_row_bytes, Precision feature_precision);
     void reset_encoder_cross_kv_route_state();
     bool finish_encoder_cross_kv_prepare();
-    bool finish_encoder_cross_kv_prepare_after_source();
     bool prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& tokens);
     bool prepare_encoder_cross_kv_from_audio(const std::vector<float>& audio_features);
     bool run_encoder_cross_kv_decoder_step(uint32_t token_id, size_t position);
@@ -869,9 +817,6 @@ private:
     void run_vision_encoder_lfm2_vl(const std::string& image_path);
     void encode_lfm2_vl_image_into_features(const std::string& image_path);
     bool load_lfm2_vl_position_grid();
-    bool lfm2_vl_use_npu_vision() const;
-    bool lfm2_vl_encode_tile_npu(const float* pixel_values, const int64_t* mask, const float* pos_embeds,
-                                 size_t max_patches, int dim, size_t patch_dim, std::vector<float>& enc_out);
     void run_audio_encoder(const std::vector<float>& audio_features);
     void run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message);
     bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
@@ -908,19 +853,6 @@ private:
     bool prefill_tail_pad_disabled_ = false;
 
     std::string family_;
-    std::string npu_audio_encoder_mlpackage_;
-    std::string npu_audio_compute_units_;
-    std::string npu_vision_encoder_mlpackage_;
-    std::string npu_source_encoder_mlpackage_;
-
-    std::unique_ptr<npu::NPUEncoder> npu_audio_encoder_;
-    std::unique_ptr<npu::NPUEncoder> npu_vision_encoder_;
-    std::unique_ptr<npu::NPUEncoder> npu_source_encoder_;
-
-    bool audio_encode_via_npu(const std::vector<float>& audio_features);
-    bool vision_encode_via_npu(const std::vector<float>& pixel_values,
-                               const std::vector<int64_t>* pixel_position_ids = nullptr);
-    bool source_encode_via_npu(const std::vector<uint32_t>& tokens);
 
     std::map<std::string, std::vector<uint8_t>> media_features_;
     std::map<std::string, std::vector<size_t>> media_feature_shapes_;

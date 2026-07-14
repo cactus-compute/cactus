@@ -13,7 +13,7 @@ void apply_backend() {
     if (applied) return;
     applied = true;
     const char* b = std::getenv("CACTUS_TEST_BACKEND");
-    if (!b || !*b || std::strcmp(b, "auto") == 0) return;
+    if (!b || !*b) return;
     if (cactus_set_backend(b) == 0)
         std::cout << "Backend: " << b << "\n";
     else

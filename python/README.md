@@ -20,9 +20,9 @@ cactus build --python
 <!-- --8<-- [end:install] -->
 
 ```bash
-# Download pre-built bundles (defaults to --weights general, the portable build)
+# Download pre-built bundles
 cactus download LiquidAI/LFM2-VL-450M
-cactus download openai/whisper-small --weights apple    # CoreML/NPU variant
+cactus download openai/whisper-small
 
 # Optional: set your Cactus Cloud API key for automatic cloud fallback
 cactus auth
@@ -61,8 +61,8 @@ from cactus import ensure_model, get_bundle_dir
 bundle = ensure_model("openai/whisper-tiny")
 
 # Or resolve the expected on-disk location explicitly
-bundle_dir = get_bundle_dir("openai/whisper-tiny", bits=4, platform=None)
-# -> Path("weights/whisper-tiny-cq4")  (or `-cq4-apple` with platform="apple")
+bundle_dir = get_bundle_dir("openai/whisper-tiny", bits=4)
+# -> Path("weights/whisper-tiny-cq4")
 ```
 
 ### Init / Lifecycle
@@ -360,6 +360,12 @@ print(y.numpy())  # [9. 144. 729. 2304.]
 ```
 
 Supported ops: `+`, `-`, `*`, `/`, `abs`, `pow`, `view`, `flatten`, `concat`, `cat`, `relu`, `sigmoid`, `tanh`, `gelu`, `softmax`.
+
+Every op accepts a `backend=` kwarg (`Graph.CPU` or `Graph.METAL`) to pin that op; by default it follows the global backend — auto (best available), or the one forced with `cactus_set_backend("cpu"|"metal")`:
+
+```python
+m = g.matmul(a, b, backend=Graph.METAL)
+```
 
 ## Testing
 

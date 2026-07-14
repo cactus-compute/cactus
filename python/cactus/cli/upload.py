@@ -4,7 +4,7 @@ import zipfile
 from pathlib import Path
 
 from .common import BLUE, GREEN, PROJECT_ROOT, print_color
-from .download import get_model_dir_name, resolve_weights_variant
+from .download import get_model_dir_name
 from .model import prepare_bundle
 from .utils import suggested_cq_repo, variant_suffix
 
@@ -15,9 +15,8 @@ def cmd_upload(args):
     if not token:
         raise SystemExit("missing HuggingFace token: pass --token or set HF_TOKEN")
 
-    platform = resolve_weights_variant(getattr(args, "weights", "general"))
     repo_id = suggested_cq_repo(args.model_id)
-    stem = f"{get_model_dir_name(args.model_id)}-{variant_suffix(args.bits, platform)}"
+    stem = f"{get_model_dir_name(args.model_id)}-{variant_suffix(args.bits)}"
     archive_name = f"{stem}.zip"
     tag = (PROJECT_ROOT / "CACTUS_VERSION").read_text(encoding="utf-8").strip()
 

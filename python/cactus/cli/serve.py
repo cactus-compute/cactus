@@ -54,8 +54,8 @@ def cmd_serve(args):
         print_color(RED, "Error: uvicorn not installed. Install the serve extra or run `pip install fastapi uvicorn python-multipart`.")
         return 1
 
-    backend = getattr(args, "backend", "auto")
-    if backend and backend != "auto":
+    backend = getattr(args, "backend", None)
+    if backend:
         from ..bindings.cactus import cactus_set_backend
         if cactus_set_backend(backend) != 0:
             print_color(YELLOW, f"Backend '{backend}' not available; using auto")

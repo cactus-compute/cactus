@@ -40,12 +40,6 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 
     bool pretransposed_rhs = node.params.pretransposed_rhs;
 
-    ComputeBackend backend = node.params.backend;
-
-    if (backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU matrix multiplication not yet implemented");
-    }
-
     if (PrecisionTraits::is_cq(rhs_buffer.precision) && rhs_buffer.group_size > 0) {
         if (lhs_buffer.precision != Precision::FP16) {
             throw std::runtime_error("TQ matmul requires FP16 activations");
@@ -57,7 +51,7 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
         if (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
             cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
-        else if (cactus_backend_gpu())
+        else if (node.params.backend == ComputeBackend::METAL && cactus_backend_gpu())
             cactus_gpu_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
         else
             cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
@@ -485,10 +479,6 @@ void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<Gr
 }
 
 void compute_rope_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    if (node.params.backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU RoPE operation not yet implemented");
-    }
-
     const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& shape = input_buffer.shape;
 
@@ -612,10 +602,6 @@ void compute_rel_pos_bias_node(GraphNode& node, const std::vector<std::unique_pt
 }
 
 void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    if (node.params.backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU attention operation not yet implemented");
-    }
-
     if (node.input_ids.size() < 3 || node.input_ids.size() > 4) {
         throw std::runtime_error("Attention operation requires 3 or 4 inputs (query, key, value[, mask]), got " +
                                 std::to_string(node.input_ids.size()) + " inputs");

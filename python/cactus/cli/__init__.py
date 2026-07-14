@@ -7,16 +7,8 @@ from .common import (
     DEFAULT_TRANSCRIPTION_MODEL_ID,
     DEFAULT_TEST_MODEL_ID,
     DEFAULT_TEST_TRANSCRIPTION_MODEL_ID,
-    SUPPORTED_WEIGHTS_VARIANTS,
 )
 from .download import cmd_download
-
-_WEIGHTS_CHOICES = ("general", *SUPPORTED_WEIGHTS_VARIANTS)
-_WEIGHTS_HELP = (
-    f"weights bundle variant: general = portable bundle for every platform (default); "
-    f"or a vendor variant: {', '.join(SUPPORTED_WEIGHTS_VARIANTS) if SUPPORTED_WEIGHTS_VARIANTS else '(none yet)'}"
-)
-_WEIGHTS_PIPE = "|".join(_WEIGHTS_CHOICES)
 from .compile import cmd_build
 from .serve import cmd_serve
 from .transcribe import cmd_transcribe
@@ -29,6 +21,9 @@ from .list import cmd_list
 from .auth import cmd_auth
 from .clean import cmd_clean
 from .code import cmd_code
+from .utils import bits_arg, ALLOWED_BITS
+
+_BITS_METAVAR = "{" + ",".join(str(b) for b in ALLOWED_BITS) + "}"
 
 
 def _telemetry_parent():
@@ -39,13 +34,16 @@ def _telemetry_parent():
     return p
 
 
-def _build_parent():
-    """Bundle-build flags shared by every command that prepares a model."""
+def _build_parent(mixed: bool = True):
+    """Bundle-build flags shared by model-preparing commands
+    (mixed=False limits --bits to uniform 1-4 for build-only commands)."""
     p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
-                   help="CQ quantization (default: 4)")
-    p.add_argument("--weights", choices=_WEIGHTS_CHOICES, default="general",
-                   help=_WEIGHTS_HELP)
+    if mixed:
+        p.add_argument("--bits", type=bits_arg, default=4, metavar=_BITS_METAVAR,
+                       help="CQ quantization: uniform 1-4 or gemma-4 mixed 3.26/2.54 (default: 4)")
+    else:
+        p.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
+                       help="CQ quantization (default: 4)")
     p.add_argument("--token", help="HuggingFace token")
     p.add_argument("--reconvert", action="store_true",
                    help="Force local rebuild from source")
@@ -55,8 +53,8 @@ def _build_parent():
 def _engine_test_parent():
     """Args shared by `test` and `benchmark`."""
     p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("--backend", choices=["auto", "cpu", "metal", "vulkan"], default="auto",
-                   help="Inference backend, default auto (Metal on Apple Silicon GPUs; vulkan is opt-in on Android)")
+    p.add_argument("--backend", choices=["cpu", "metal", "vulkan"], default=None,
+                   help="Inference backend (default: auto; vulkan is opt-in on Android)")
     p.add_argument("--model", dest="model_id", default=None,
                    type=_hf_id_or_path,
                    help=f"HF model ID under test (default: {DEFAULT_TEST_MODEL_ID})")
@@ -127,8 +125,7 @@ def create_parser():
     --clear                            remove saved key
 
   cactus run [model|path]              run a model (default: {DEFAULT_MODEL_ID})
-    --bits 1|2|3|4                     CQ quantization (default: 4)
-    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --image <path>                     image file for VLM inference
     --audio <path>                     audio file for audio chat
     --system <prompt>                  system prompt
@@ -140,20 +137,17 @@ def create_parser():
   cactus transcribe [model]            live microphone transcription with a model
     --file <audio.wav>                 audio file to transcribe (WAV)
     --language <code>                  language code (default: en)
-    --bits 1|2|3|4                     CQ quantization (default: 4)
-    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
 
   cactus download [model]              fetch a prebuilt bundle, else build locally (default: {DEFAULT_MODEL_ID})
-    --bits 1|2|3|4                     CQ quantization (default: 4)
-    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
 
   cactus convert <model> [dir]         build a runnable bundle locally (skips prebuilt fetch)
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
     --lora <path>                      merge a LoRA adapter before converting
@@ -161,8 +155,7 @@ def create_parser():
   cactus serve [model]                 OpenAI-compatible local HTTP server
     --host <addr>                      bind address (default: 127.0.0.1)
     --port <port>                      port (default: 8080)
-    --bits 1|2|3|4                     CQ quantization (default: 4)
-    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild from source
     --no-cloud-handoff                 disable automatic cloud handoff
@@ -181,8 +174,7 @@ def create_parser():
                                        (default: all)
     --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
     --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
-    --bits 1|2|3|4                     CQ quantization (default: 4)
-    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force local rebuild of test models
     --suite <name>                     run a single test suite from any
@@ -195,9 +187,8 @@ def create_parser():
   cactus benchmark                     run the engine benchmark suite
     --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
     --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
-    --bits 1|2|3|4                     CQ quantization (default: 4)
-    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
-    --backend auto|cpu|metal|vulkan           inference backend (default: auto)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
+    --backend cpu|metal|vulkan         inference backend (default: auto)
     --ios                              run on connected iPhone
     --android                          run on connected Android
 
@@ -209,13 +200,12 @@ def create_parser():
 
   Advanced / build pipeline — convert runs automatically inside run,
   serve, transcribe and download; reach for it only to control the
-  build (custom flags, LoRA, NPU, debugging):
+  build (custom flags, LoRA, debugging):
 
   cactus convert <model> [dir]         HuggingFace -> runnable cactus bundle
                                        (quantizes weights to CQ, then builds
                                        the runtime graph)
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --weights {_WEIGHTS_PIPE:<23}  weights bundle variant (default: general)
     --token <token>                    HuggingFace token (defaults to $HF_TOKEN)
     --reconvert                        force weight conversion from source
     --lora <path>                      merge a LoRA adapter before converting
@@ -246,10 +236,6 @@ def create_parser():
     --no-fuse-attention-block          disable attention-block fusion
     --no-fuse-add-clipped              disable add-clipped fusion
     --no-fuse-gated-deltanet           disable gated DeltaNet fusion
-    --npu                              also emit CoreML .mlpackage(s) for NPU
-    --npu-quantize 0|4|8               force both NPU encoders to this quant
-    --npu-audio-quantize 0|4|8         audio encoder quant (default int8)
-    --npu-vision-quantize 0|4|8        vision encoder quant (default fp16)
 
   -----------------------------------------------------------------
 """
@@ -295,6 +281,10 @@ def create_parser():
                             help="System prompt to prepend to all messages")
     run_parser.add_argument("--prompt",
                             help="Initial prompt to send immediately")
+    run_parser.add_argument("--tools", default=None,
+                            help="Tool definitions in the OpenAI function-calling format, as a JSON "
+                                 "array or a path to a JSON file (tool-call models like needle "
+                                 "default to a demo toolset)")
     run_parser.add_argument("--input-ids", default=None,
                             help="Comma-separated token ids for causal-LM bundles")
     run_parser.add_argument("--input-ids-file", default=None,
@@ -311,8 +301,8 @@ def create_parser():
                             help="Confidence threshold below which local completions may hand off to cloud")
     run_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                             help="Maximum time to wait for cloud handoff before falling back locally")
-    run_parser.add_argument("--backend", choices=["auto", "cpu", "metal", "vulkan"], default="auto",
-                            help="Inference backend, default auto (Metal on Apple Silicon GPUs; vulkan is opt-in on Android)")
+    run_parser.add_argument("--backend", choices=["cpu", "metal", "vulkan"], default=None,
+                            help="Inference backend (default: auto; vulkan is opt-in on Android)")
 
     transcribe_parser = subparsers.add_parser("transcribe", help="Transcribe audio with a model",
                                               parents=[_telemetry_parent(), _build_parent()])
@@ -341,8 +331,8 @@ def create_parser():
                               help="Maximum time to wait for cloud handoff before falling back locally")
     serve_parser.add_argument("--no-access-log", action="store_true",
                               help="Disable per-request HTTP access logging")
-    serve_parser.add_argument("--backend", choices=["auto", "cpu", "metal", "vulkan"], default="auto",
-                              help="Inference backend, default auto (Metal on Apple Silicon GPUs; vulkan is opt-in on Android)")
+    serve_parser.add_argument("--backend", choices=["cpu", "metal", "vulkan"], default=None,
+                              help="Inference backend (default: auto; vulkan is opt-in on Android)")
 
     code_parser = subparsers.add_parser("code", help="Run the Cactus coding agent (TUI / print mode)",
                                         parents=[_build_parent()])
@@ -360,8 +350,8 @@ def create_parser():
                              help="Confidence threshold below which completions hand off to cloud")
     code_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                              help="Maximum time to wait for cloud handoff before falling back locally")
-    code_parser.add_argument("--backend", choices=["auto", "cpu", "metal", "vulkan"], default="auto",
-                             help="Inference backend, default auto (Metal on Apple Silicon GPUs; vulkan is opt-in on Android)")
+    code_parser.add_argument("--backend", choices=["cpu", "metal", "vulkan"], default=None,
+                             help="Inference backend (default: auto; vulkan is opt-in on Android)")
     code_parser.add_argument("agent_args", nargs=argparse.REMAINDER,
                              help="Arguments passed through to the coding agent (prefix with -- )")
 
@@ -396,8 +386,6 @@ def create_parser():
                                 help="Output directory (default: weights/<model>)")
     convert_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
                                 help="CQ quantization bits (default: 4)")
-    convert_parser.add_argument("--weights", choices=_WEIGHTS_CHOICES, default="general",
-                                help=_WEIGHTS_HELP)
     convert_parser.add_argument("--token", help="HuggingFace token")
     convert_parser.add_argument("--lora",
                                 help="Path or HF id of a LoRA adapter to merge before converting (requires `peft`)")
@@ -463,16 +451,14 @@ def create_parser():
                                 help="Disable add-clipped fusion")
     convert_parser.add_argument("--no-fuse-gated-deltanet", action="store_true",
                                 help="Disable gated DeltaNet fusion")
-    convert_parser.add_argument("--npu", action="store_true",
-                                help="Also emit CoreML .mlpackage(s) for Apple NPU encoders")
-    convert_parser.add_argument("--npu-quantize", type=int, choices=[0, 4, 8], default=None,
-                                help="Legacy: force both NPU encoders to same quant (0=fp16, 4=int4, 8=int8)")
-    convert_parser.add_argument("--npu-audio-quantize", type=int, choices=[0, 4, 8], default=None,
-                                help="NPU audio encoder quant: 0=fp16, 4=int4, 8=int8 (default: 8)")
-    convert_parser.add_argument("--npu-vision-quantize", type=int, choices=[0, 4, 8], default=None,
-                                help="NPU vision encoder quant: 0=fp16, 4=int4, 8=int8 (default: 0; int4 degrades Gemma4 vision)")
     convert_parser.add_argument("--cache-context-length", default=None,
                                 help="KV cache context length for cached decode graphs (default: model config)")
+
+    upload_parser = subparsers.add_parser("upload",
+                                          parents=[_build_parent(mixed=False)],
+                                          help="Build a runnable bundle locally and upload it to Cactus-Compute on HuggingFace")
+    upload_parser.add_argument("model_id", type=_hf_id_or_path,
+                               help="HuggingFace model id (e.g. openai/whisper-base)")
 
     return parser
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import replace
 import json
-import os
 from pathlib import Path
 import re
 from typing import Any
@@ -416,17 +415,6 @@ def _relative_position_bias(query: torch.Tensor, relative_key: torch.Tensor, *, 
     return gathered * float(scale)
 
 
-def _relative_position_bias_static(query: torch.Tensor, relative_key: torch.Tensor, *, scale: float) -> torch.Tensor:
-    batch, heads, seq_len, _ = query.shape
-    pos_len = 2 * seq_len - 1
-    scores = torch.matmul(query, relative_key.transpose(-1, -2))
-    x = F.pad(scores, (1, 0))
-    x = x.reshape(batch, heads, pos_len + 1, seq_len)
-    x = x[:, :, 1:, :]
-    x = x.reshape(batch, heads, seq_len, pos_len)
-    return x[:, :, :, :seq_len] * float(scale)
-
-
 class ParakeetTDTFeedForward(nn.Module):
     def __init__(self, config: ParakeetTDTConfig, prefix: str, state_dict: dict[str, torch.Tensor]):
         super().__init__()
@@ -658,111 +646,6 @@ class ParakeetTDTEncoder(nn.Module):
         return x
 
 
-class ParakeetTDTANESelfAttention(nn.Module):
-    def __init__(self, attn: "ParakeetTDTSelfAttention", seq_len: int):
-        super().__init__()
-        self.linear_q = attn.linear_q
-        self.linear_k = attn.linear_k
-        self.linear_v = attn.linear_v
-        self.linear_out = attn.linear_out
-        self.linear_pos = attn.linear_pos
-        self.pos_bias_u = attn.pos_bias_u
-        self.pos_bias_v = attn.pos_bias_v
-        self.config = attn.config
-        weight = attn.linear_pos.weight
-        rel_pos = _relative_position_embeddings(
-            seq_len=int(seq_len),
-            hidden_dim=self.config.hidden_dim,
-            device=weight.device,
-            dtype=weight.dtype,
-        )
-        with torch.no_grad():
-            rel_k = attn.linear_pos(rel_pos).view(
-                1, 2 * int(seq_len) - 1, self.config.attention_heads, self.config.attention_head_dim
-            ).flip(1)
-        self.register_buffer("_rel_k", rel_k.detach(), persistent=False)
-
-    def forward(self, x: torch.Tensor, key_bias: torch.Tensor | None = None) -> torch.Tensor:
-        batch, seq_len, _ = x.shape
-        num_heads = self.config.attention_heads
-        head_dim = self.config.attention_head_dim
-
-        q = self.linear_q(x).view(batch, seq_len, num_heads, head_dim)
-        k = self.linear_k(x).view(batch, seq_len, num_heads, head_dim)
-        v = self.linear_v(x).view(batch, seq_len, num_heads, head_dim)
-
-        q_u = q + self.pos_bias_u.view(1, 1, num_heads, head_dim).to(dtype=x.dtype, device=x.device)
-        q_v = q + self.pos_bias_v.view(1, 1, num_heads, head_dim).to(dtype=x.dtype, device=x.device)
-
-        rel_k_heads = self._rel_k.to(dtype=x.dtype, device=x.device).permute(0, 2, 1, 3)
-        rel_bias = _relative_position_bias_static(
-            q_v.permute(0, 2, 1, 3),
-            rel_k_heads,
-            scale=self.config.attention_scale,
-        )
-        if key_bias is not None:
-            rel_bias = rel_bias + key_bias
-        attn = F.scaled_dot_product_attention(
-            q_u.permute(0, 2, 1, 3),
-            k.permute(0, 2, 1, 3),
-            v.permute(0, 2, 1, 3),
-            attn_mask=rel_bias,
-            dropout_p=0.0,
-            is_causal=False,
-        )
-        attn = attn.permute(0, 2, 1, 3).reshape(batch, seq_len, self.config.hidden_dim)
-        return self.linear_out(attn)
-
-
-class ParakeetTDTANEEncoderLayer(nn.Module):
-    def __init__(self, layer: "ParakeetTDTEncoderLayer", seq_len: int):
-        super().__init__()
-        self.feed_forward1 = layer.feed_forward1
-        self.feed_forward2 = layer.feed_forward2
-        self.self_attn = ParakeetTDTANESelfAttention(layer.self_attn, seq_len)
-        self.conv = layer.conv
-        self.norm_feed_forward1 = layer.norm_feed_forward1
-        self.norm_self_att = layer.norm_self_att
-        self.norm_conv = layer.norm_conv
-        self.norm_feed_forward2 = layer.norm_feed_forward2
-        self.norm_out = layer.norm_out
-        self.config = layer.config
-
-    def forward(self, x: torch.Tensor, conv_mask: torch.Tensor, key_bias: torch.Tensor) -> torch.Tensor:
-        x = x + 0.5 * self.feed_forward1(self.norm_feed_forward1(x), activation=self.config.encoder_hidden_act)
-        x = x + self.self_attn(self.norm_self_att(x), key_bias)
-        x = x + self.conv(self.norm_conv(x), conv_mask)
-        x = x + 0.5 * self.feed_forward2(self.norm_feed_forward2(x), activation=self.config.encoder_hidden_act)
-        return self.norm_out(x)
-
-
-class ParakeetTDTANEEncoder(nn.Module):
-    def __init__(self, encoder: "ParakeetTDTEncoder", seq_len: int):
-        super().__init__()
-        self.pre_encode = encoder.pre_encode
-        self.layers = nn.ModuleList(
-            [ParakeetTDTANEEncoderLayer(layer, seq_len) for layer in encoder.layers]
-        )
-        factor = max(1, int(encoder.layers[0].config.subsampling_factor))
-        self._subsample_stages = max(0, factor.bit_length() - 1)
-
-    def _frame_masks(self, input_features: torch.Tensor, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
-        valid = (input_features.abs().sum(-1) > 0).to(input_features.dtype).sum(-1, keepdim=True)
-        for _ in range(self._subsample_stages):
-            valid = torch.floor((valid - 1.0) / 2.0) + 1.0
-        positions = torch.arange(seq_len, device=input_features.device, dtype=input_features.dtype)
-        enc_valid = (positions.view(1, 1, seq_len) < valid.view(-1, 1, 1)).to(input_features.dtype)
-        key_bias = (1.0 - enc_valid).unsqueeze(1) * -1e4
-        return enc_valid, key_bias
-
-    def forward(self, input_features: torch.Tensor) -> torch.Tensor:
-        x = self.pre_encode(input_features)
-        conv_mask, key_bias = self._frame_masks(input_features, x.shape[1])
-        for layer in self.layers:
-            x = layer(x, conv_mask, key_bias)
-        return x
-
-
 class ParakeetTDTDecoderCell(nn.Module):
     def __init__(self, hidden_dim: int, prefix: str, state_dict: dict[str, torch.Tensor]):
         super().__init__()
@@ -988,21 +871,6 @@ def build_parakeet_tdt_component_specs(
         "adapter_family": "parakeet_tdt",
     }
 
-    factor = max(1, int(model.config.subsampling_factor))
-    npu_frames = int(os.environ.get("CACTUS_NPU_PARAKEET_FRAMES", "3000"))
-    if npu_frames <= 0 or npu_frames % factor != 0:
-        raise ValueError(f"CACTUS_NPU_PARAKEET_FRAMES must be a positive multiple of {factor}, got {npu_frames}")
-    npu_input_features = torch.zeros(
-        (int(input_features.shape[0]), npu_frames, int(input_features.shape[-1])),
-        device=input_features.device,
-        dtype=input_features.dtype,
-    )
-    valid_frames = min(int(input_features.shape[1]), npu_frames)
-    npu_input_features[:, :valid_frames, :] = input_features[:, :valid_frames, :]
-    with torch.no_grad():
-        ane_seq_len = int(model.encoder.pre_encode(npu_input_features).shape[1])
-    ane_encoder = ParakeetTDTANEEncoder(model.encoder, ane_seq_len)
-
     return [
         ComponentModuleSpec(
             component="audio_encoder",
@@ -1012,9 +880,6 @@ def build_parakeet_tdt_component_specs(
             output_keys=("encoder_hidden_states",),
             graph_meta={**common_graph_meta, "component": "audio_encoder"},
             metadata={"family": "parakeet_tdt", "task": "tdt_transcription"},
-            npu_module=ane_encoder,
-            npu_example_inputs=(npu_input_features,),
-            npu_runtime_input_count=1,
         ),
         ComponentModuleSpec(
             component="decoder",

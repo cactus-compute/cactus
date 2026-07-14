@@ -14,12 +14,14 @@ _PROJECT_ROOT = _PACKAGE_DIR.parent.parent
 
 
 def _find_agent_cli() -> Path | None:
-    bundled = _PACKAGE_DIR / "code" / "packages" / "coding-agent" / "dist" / "cli.js"
-    if bundled.exists():
-        return bundled
-    dev = _PROJECT_ROOT / "cactus-code" / "packages" / "coding-agent" / "dist" / "cli.js"
-    if dev.exists():
-        return dev
+    candidates = (
+        _PACKAGE_DIR / "code" / "node_modules" / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js",
+        _PACKAGE_DIR / "code" / "packages" / "coding-agent" / "dist" / "cli.js",
+        _PROJECT_ROOT / "cactus-code" / "packages" / "coding-agent" / "dist" / "cli.js",
+    )
+    for cli in candidates:
+        if cli.exists():
+            return cli
     return None
 
 
@@ -130,7 +132,6 @@ def cmd_code(args) -> int:
         model_flags_given = (
             getattr(args, "reconvert", False)
             or getattr(args, "bits", 4) != 4
-            or getattr(args, "weights", "general") != "general"
             or bool(getattr(args, "token", None))
         )
         if args.serve_model:
@@ -146,9 +147,9 @@ def cmd_code(args) -> int:
             sys.executable, "-m", "cactus", "serve", serve_model,
             "--host", args.host, "--port", str(args.port), "--no-access-log",
             "--bits", str(getattr(args, "bits", 4)),
-            "--weights", getattr(args, "weights", "general"),
-            "--backend", getattr(args, "backend", "auto"),
         ]
+        if getattr(args, "backend", None):
+            serve_cmd += ["--backend", args.backend]
         if getattr(args, "token", None):
             serve_cmd += ["--token", args.token]
         if getattr(args, "reconvert", False):
@@ -171,6 +172,7 @@ def cmd_code(args) -> int:
 
     env = dict(os.environ)
     env["CACTUS_BASE_URL"] = base_url
+    env["PI_PACKAGE_DIR"] = str(agent_cli.parent.parent)
     agent_args = [a for a in (args.agent_args or []) if a != "--"]
     interactive = not any(a in ("-p", "--print") for a in agent_args)
     if interactive and (started_server is not None or agent_was_built):

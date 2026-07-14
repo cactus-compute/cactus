@@ -4,26 +4,21 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <sstream>
 #include <string>
 
 static const char* g_model_path = std::getenv("CACTUS_TEST_MODEL");
 
 static bool model_is_needle(const std::string& bundle_path) {
-    std::ifstream f(bundle_path + "/config.json");
+    std::ifstream f(bundle_path + "/config.txt");
     if (!f) return false;
-    std::stringstream ss;
-    ss << f.rdbuf();
-    const std::string content = ss.str();
-    const size_t key = content.find("\"model_type\"");
-    if (key == std::string::npos) return false;
-    const size_t colon = content.find(':', key);
-    if (colon == std::string::npos) return false;
-    const size_t q1 = content.find('"', colon);
-    if (q1 == std::string::npos) return false;
-    const size_t q2 = content.find('"', q1 + 1);
-    if (q2 == std::string::npos) return false;
-    return content.substr(q1 + 1, q2 - q1 - 1) == "needle";
+    std::string line;
+    while (std::getline(f, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (line.rfind("model_type=", 0) == 0) {
+            return line.substr(11) == "needle";
+        }
+    }
+    return false;
 }
 
 bool test_needle_tool_call() {

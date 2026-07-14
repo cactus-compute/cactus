@@ -27,7 +27,7 @@ if(BUILD_SHARED_LIBS)
     )
 
     target_link_libraries(cactus_framework PUBLIC
-        "-framework Accelerate" "-framework CoreML" "-framework Foundation" "-framework Metal" "-framework MetalPerformanceShaders"
+        "-framework Accelerate" "-framework Foundation" "-framework Metal" "-framework MetalPerformanceShaders"
         "-framework Security" "-framework SystemConfiguration" "-framework CFNetwork"
     )
 

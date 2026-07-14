@@ -17,10 +17,8 @@ from cactus import (
     cactus_transcribe,
 )
 from cactus.cli.model import ensure_bundle
-from cactus.cli.download import resolve_weights_variant
 
 
-_PLATFORM = resolve_weights_variant("general")
 _ASSETS_DIR = PROJECT_ROOT / "cactus-engine" / "tests" / "assets"
 _TEST_IMAGE = _ASSETS_DIR / "test_monkey.png"
 _TEST_AUDIO = _ASSETS_DIR / "test.wav"
@@ -29,7 +27,7 @@ class TestVLMModel(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.weights_dir = ensure_bundle("LiquidAI/LFM2-VL-450M", platform=_PLATFORM)
+        cls.weights_dir = ensure_bundle("LiquidAI/LFM2-VL-450M")
         cls.model = cactus_init(str(cls.weights_dir), None, False)
 
     @classmethod
@@ -66,7 +64,7 @@ class TestWhisperModel(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.weights_dir = ensure_bundle("openai/whisper-small", platform=_PLATFORM)
+        cls.weights_dir = ensure_bundle("openai/whisper-small")
         cls.model = cactus_init(str(cls.weights_dir), None, False)
 
     @classmethod
@@ -107,7 +105,7 @@ class TestNomicEmbedding(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.weights_dir = ensure_bundle(cls.MODEL_ID, platform=_PLATFORM)
+        cls.weights_dir = ensure_bundle(cls.MODEL_ID)
         cls.model = cactus_init(str(cls.weights_dir), None, False)
 
     @classmethod

@@ -27,32 +27,43 @@ size_t CactusGraph::input(const std::vector<size_t>& shape, Precision precision)
     return add_node(OpType::INPUT, {}, shape, {.output_precision = precision});
 }
 
+void CactusGraph::set_node_backend(size_t node_id, ComputeBackend backend) {
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) throw std::runtime_error("set_node_backend: unknown node id");
+    nodes_[it->second]->params.backend = backend;
+}
+
+size_t CactusGraph::tag_backend(size_t node_id, ComputeBackend backend) {
+    nodes_[node_index_map_[node_id]]->params.backend = backend;
+    return node_id;
+}
+
 size_t CactusGraph::binary_broadcast_op(OpType op, size_t input1, size_t input2) {
     BroadcastInfo bi = BroadcastInfo::compute(
         get_output_buffer(input1).shape, get_output_buffer(input2).shape);
     return add_node(op, {input1, input2}, bi.output_shape, {.broadcast_info = bi});
 }
 
-size_t CactusGraph::add(size_t a, size_t b) { return binary_broadcast_op(OpType::ADD, a, b); }
-size_t CactusGraph::add_clipped(size_t a, size_t b) { return binary_broadcast_op(OpType::ADD_CLIPPED, a, b); }
-size_t CactusGraph::subtract(size_t a, size_t b) { return binary_broadcast_op(OpType::SUBTRACT, a, b); }
-size_t CactusGraph::multiply(size_t a, size_t b) { return binary_broadcast_op(OpType::MULTIPLY, a, b); }
-size_t CactusGraph::divide(size_t a, size_t b) { return binary_broadcast_op(OpType::DIVIDE, a, b); }
-size_t CactusGraph::not_equal(size_t a, size_t b) { return binary_broadcast_op(OpType::NOT_EQUAL, a, b); }
+size_t CactusGraph::add(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::ADD, a, b), backend); }
+size_t CactusGraph::add_clipped(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::ADD_CLIPPED, a, b), backend); }
+size_t CactusGraph::subtract(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::SUBTRACT, a, b), backend); }
+size_t CactusGraph::multiply(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::MULTIPLY, a, b), backend); }
+size_t CactusGraph::divide(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::DIVIDE, a, b), backend); }
+size_t CactusGraph::not_equal(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::NOT_EQUAL, a, b), backend); }
 
-size_t CactusGraph::abs(size_t input) {
+size_t CactusGraph::abs(size_t input, ComputeBackend backend) {
     const auto& input_buffer = get_output_buffer(input);
     OpParams params{.output_precision = input_buffer.precision};
-    return add_node(OpType::ABS, {input}, input_buffer.shape, params);
+    return tag_backend(add_node(OpType::ABS, {input}, input_buffer.shape, params), backend);
 }
 
-size_t CactusGraph::pow(size_t input, float exponent) {
+size_t CactusGraph::pow(size_t input, float exponent, ComputeBackend backend) {
     const auto& input_buffer = get_output_buffer(input);
     OpParams params{.scalar = exponent, .output_precision = input_buffer.precision};
-    return add_node(OpType::POW, {input}, input_buffer.shape, params);
+    return tag_backend(add_node(OpType::POW, {input}, input_buffer.shape, params), backend);
 }
 
-size_t CactusGraph::view(size_t input, const std::vector<size_t>& new_shape) {
+size_t CactusGraph::view(size_t input, const std::vector<size_t>& new_shape, ComputeBackend backend) {
     const auto& input_buffer = get_output_buffer(input);
 
     size_t input_elements = 1;
@@ -70,10 +81,10 @@ size_t CactusGraph::view(size_t input, const std::vector<size_t>& new_shape) {
     }
 
     OpParams params{.new_shape = new_shape};
-    return add_node(OpType::VIEW, {input}, new_shape, params);
+    return tag_backend(add_node(OpType::VIEW, {input}, new_shape, params), backend);
 }
 
-size_t CactusGraph::flatten(size_t input, int start_dim, int end_dim) {
+size_t CactusGraph::flatten(size_t input, int start_dim, int end_dim, ComputeBackend backend) {
     const auto& input_buffer = get_output_buffer(input);
     const auto& shape = input_buffer.shape;
     size_t rank = shape.size();
@@ -104,7 +115,7 @@ size_t CactusGraph::flatten(size_t input, int start_dim, int end_dim) {
     }
 
     OpParams params{.new_shape = output_shape};
-    return add_node(OpType::FLATTEN, {input}, output_shape, params);
+    return tag_backend(add_node(OpType::FLATTEN, {input}, output_shape, params), backend);
 }
 
 size_t CactusGraph::matmul(size_t input1, size_t input2, bool pretransposed_rhs, ComputeBackend backend) {
@@ -171,12 +182,12 @@ size_t CactusGraph::transposeN(size_t input, const std::vector<size_t>& permutat
     return add_node(OpType::TRANSPOSE, {input}, output_shape, params);
 }
 
-size_t CactusGraph::reshape(size_t input, const std::vector<size_t>& new_shape) {
+size_t CactusGraph::reshape(size_t input, const std::vector<size_t>& new_shape, ComputeBackend backend) {
     OpParams params{.new_shape = new_shape};
-    return add_node(OpType::RESHAPE, {input}, new_shape, params);
+    return tag_backend(add_node(OpType::RESHAPE, {input}, new_shape, params), backend);
 }
 
-size_t CactusGraph::index(size_t input, size_t index_value, int dim) {
+size_t CactusGraph::index(size_t input, size_t index_value, int dim, ComputeBackend backend) {
     const auto& input_buffer = get_output_buffer(input);
     const auto& shape = input_buffer.shape;
 
@@ -211,7 +222,7 @@ size_t CactusGraph::index(size_t input, size_t index_value, int dim) {
     }
 
     OpParams params{.axis = actual_dim, .output_precision = input_buffer.precision, .index_value = index_value};
-    return add_node(OpType::INDEX, {input}, output_shape, params);
+    return tag_backend(add_node(OpType::INDEX, {input}, output_shape, params), backend);
 }
 
 size_t CactusGraph::reduction_op(OpType op, size_t input, int axis) {
@@ -227,13 +238,13 @@ size_t CactusGraph::reduction_op(OpType op, size_t input, int axis) {
     return add_node(op, {input}, out, {.axis = axis, .output_precision = buf.precision});
 }
 
-size_t CactusGraph::sum(size_t input, int axis) { return reduction_op(OpType::SUM, input, axis); }
-size_t CactusGraph::mean(size_t input, int axis) { return reduction_op(OpType::MEAN, input, axis); }
-size_t CactusGraph::variance(size_t input, int axis) { return reduction_op(OpType::VARIANCE, input, axis); }
-size_t CactusGraph::min(size_t input, int axis) { return reduction_op(OpType::MIN, input, axis); }
-size_t CactusGraph::max(size_t input, int axis) { return reduction_op(OpType::MAX, input, axis); }
+size_t CactusGraph::sum(size_t input, int axis, ComputeBackend backend) { return tag_backend(reduction_op(OpType::SUM, input, axis), backend); }
+size_t CactusGraph::mean(size_t input, int axis, ComputeBackend backend) { return tag_backend(reduction_op(OpType::MEAN, input, axis), backend); }
+size_t CactusGraph::variance(size_t input, int axis, ComputeBackend backend) { return tag_backend(reduction_op(OpType::VARIANCE, input, axis), backend); }
+size_t CactusGraph::min(size_t input, int axis, ComputeBackend backend) { return tag_backend(reduction_op(OpType::MIN, input, axis), backend); }
+size_t CactusGraph::max(size_t input, int axis, ComputeBackend backend) { return tag_backend(reduction_op(OpType::MAX, input, axis), backend); }
 
-size_t CactusGraph::cumsum(size_t input, int axis) {
+size_t CactusGraph::cumsum(size_t input, int axis, ComputeBackend backend) {
     const auto& input_buffer = get_output_buffer(input);
     if (input_buffer.shape.empty()) {
         throw std::runtime_error("Cumsum requires at least one dimension");
@@ -247,12 +258,12 @@ size_t CactusGraph::cumsum(size_t input, int axis) {
         throw std::runtime_error("Invalid axis for cumsum operation");
     }
 
-    return add_node(OpType::CUMSUM, {input}, input_buffer.shape, {.axis = actual_axis, .output_precision = input_buffer.precision});
+    return tag_backend(add_node(OpType::CUMSUM, {input}, input_buffer.shape, {.axis = actual_axis, .output_precision = input_buffer.precision}), backend);
 }
 
-size_t CactusGraph::rms_norm(size_t input, size_t weight, float epsilon) {
+size_t CactusGraph::rms_norm(size_t input, size_t weight, float epsilon, ComputeBackend backend) {
     OpParams params{.epsilon = epsilon};
-    return add_node(OpType::RMS_NORM, {input, weight}, {}, params);
+    return tag_backend(add_node(OpType::RMS_NORM, {input, weight}, {}, params), backend);
 }
 
 size_t CactusGraph::rope(size_t input, float theta, size_t position_offset, ComputeBackend backend) {
@@ -260,12 +271,12 @@ size_t CactusGraph::rope(size_t input, float theta, size_t position_offset, Comp
     return add_node(OpType::ROPE, {input}, {}, params);
 }
 
-size_t CactusGraph::softmax(size_t input, int axis) {
+size_t CactusGraph::softmax(size_t input, int axis, ComputeBackend backend) {
     OpParams params{.axis = axis};
-    return add_node(OpType::SOFTMAX, {input}, {}, params);
+    return tag_backend(add_node(OpType::SOFTMAX, {input}, {}, params), backend);
 }
 
-size_t CactusGraph::topk(size_t input, size_t k) {
+size_t CactusGraph::topk(size_t input, size_t k, ComputeBackend backend) {
     const auto& input_buffer = get_output_buffer(input);
 
     if (input_buffer.shape.empty()) {
@@ -275,7 +286,7 @@ size_t CactusGraph::topk(size_t input, size_t k) {
     std::vector<size_t> output_shape = {2, input_buffer.shape[0], k};
     OpParams params{.output_precision = Precision::FP32, .top_k = k};
 
-    return add_node(OpType::TOPK, {input}, output_shape, params);
+    return tag_backend(add_node(OpType::TOPK, {input}, output_shape, params), backend);
 }
 
 size_t CactusGraph::moe_layer(size_t hidden,
@@ -290,7 +301,8 @@ size_t CactusGraph::moe_layer(size_t hidden,
                               float epsilon,
                               float routed_scaling_factor,
                               Activation activation,
-                              size_t per_expert_scale) {
+                              size_t per_expert_scale,
+                              ComputeBackend backend) {
     const auto& hidden_buffer = get_output_buffer(hidden);
     const auto& routing_buffer = get_output_buffer(routing_probs);
     const auto& topk_buffer = get_output_buffer(topk_indices);
@@ -328,10 +340,10 @@ size_t CactusGraph::moe_layer(size_t hidden,
     params.activation = activation;
     params.moe_gated = true;
 
-    return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
+    return tag_backend(add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params), backend);
 }
 
-size_t CactusGraph::dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale) {
+size_t CactusGraph::dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale, ComputeBackend backend) {
     const auto& hidden_buffer = get_output_buffer(hidden);
     const auto& down_buffer = get_output_buffer(down_weight);
     if (hidden_buffer.shape.empty()) {
@@ -347,9 +359,9 @@ size_t CactusGraph::dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t
     OpParams params;
     params.output_precision = Precision::FP16;
     params.scalar = product_scale;
-    return add_node(OpType::DENSE_MLP_TQ_FUSED,
-                    {hidden, gate_weight, up_weight, down_weight},
-                    output_shape, params);
+    return tag_backend(add_node(OpType::DENSE_MLP_TQ_FUSED,
+                                {hidden, gate_weight, up_weight, down_weight},
+                                output_shape, params), backend);
 }
 
 size_t CactusGraph::moe_layer(size_t hidden,
@@ -362,7 +374,8 @@ size_t CactusGraph::moe_layer(size_t hidden,
                               bool normalize_routing,
                               float epsilon,
                               float routed_scaling_factor,
-                              Activation activation) {
+                              Activation activation,
+                              ComputeBackend backend) {
     const auto& hidden_buffer = get_output_buffer(hidden);
     const auto& routing_buffer = get_output_buffer(routing_probs);
     const auto& topk_buffer = get_output_buffer(topk_indices);
@@ -398,25 +411,25 @@ size_t CactusGraph::moe_layer(size_t hidden,
     params.moe_gated = false;
     params.activation = activation;
 
-    return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
+    return tag_backend(add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params), backend);
 }
 
-size_t CactusGraph::layernorm(size_t input, size_t weight, size_t bias, float epsilon) {
+size_t CactusGraph::layernorm(size_t input, size_t weight, size_t bias, float epsilon, ComputeBackend backend) {
     OpParams params{.epsilon = epsilon};
-    return add_node(OpType::LAYERNORM, {input, weight, bias}, {}, params);
+    return tag_backend(add_node(OpType::LAYERNORM, {input, weight, bias}, {}, params), backend);
 }
 
-size_t CactusGraph::layernorm(size_t input, size_t weight, float epsilon) {
+size_t CactusGraph::layernorm(size_t input, size_t weight, float epsilon, ComputeBackend backend) {
     OpParams params{.epsilon = epsilon};
-    return add_node(OpType::LAYERNORM, {input, weight}, {}, params);
+    return tag_backend(add_node(OpType::LAYERNORM, {input, weight}, {}, params), backend);
 }
 
-size_t CactusGraph::groupnorm(size_t input, size_t weight, size_t bias, size_t num_groups, float epsilon) {
+size_t CactusGraph::groupnorm(size_t input, size_t weight, size_t bias, size_t num_groups, float epsilon, ComputeBackend backend) {
     OpParams params{.epsilon = epsilon, .num_groups = num_groups};
-    return add_node(OpType::GROUPNORM, {input, weight, bias}, {}, params);
+    return tag_backend(add_node(OpType::GROUPNORM, {input, weight, bias}, {}, params), backend);
 }
 
-size_t CactusGraph::batchnorm(size_t input, size_t weight, size_t bias, size_t running_mean, size_t running_var, int axis, float epsilon) {
+size_t CactusGraph::batchnorm(size_t input, size_t weight, size_t bias, size_t running_mean, size_t running_var, int axis, float epsilon, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);
     const auto& b = get_output_buffer(bias);
@@ -442,7 +455,7 @@ size_t CactusGraph::batchnorm(size_t input, size_t weight, size_t bias, size_t r
 
     OpParams params{.epsilon = epsilon, .axis = actual_axis};
     params.output_precision = xin.precision;
-    return add_node(OpType::BATCHNORM, {input, weight, bias, running_mean, running_var}, xin.shape, params);
+    return tag_backend(add_node(OpType::BATCHNORM, {input, weight, bias, running_mean, running_var}, xin.shape, params), backend);
 }
 
 size_t CactusGraph::attention(size_t query, size_t key, size_t value, float scale, bool is_causal, ComputeBackend backend) {
@@ -483,7 +496,7 @@ size_t CactusGraph::attention_masked(size_t query, size_t key, size_t value, siz
     return add_node(OpType::ATTENTION, {query, key, value, mask}, {qs[0], qs[1], qs[2], vs[3]}, params);
 }
 
-size_t CactusGraph::rel_pos_bias(size_t query, size_t relative_key, float scale) {
+size_t CactusGraph::rel_pos_bias(size_t query, size_t relative_key, float scale, ComputeBackend backend) {
     const auto& q = get_output_buffer(query);
     const auto& r = get_output_buffer(relative_key);
 
@@ -511,14 +524,14 @@ size_t CactusGraph::rel_pos_bias(size_t query, size_t relative_key, float scale)
     }
 
     OpParams params{.scale = scale, .output_precision = q.precision};
-    return add_node(OpType::REL_POS_BIAS, {query, relative_key}, {B, H, T, T}, params);
+    return tag_backend(add_node(OpType::REL_POS_BIAS, {query, relative_key}, {B, H, T, T}, params), backend);
 }
 
 size_t CactusGraph::attention_int8_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
                                           const int8_t* cached_keys, const int8_t* cached_values,
                                           const float* k_scales, const float* v_scales,
                                           size_t cache_len, size_t num_kv_heads, size_t head_dim,
-                                          size_t window_size, size_t v_head_dim) {
+                                          size_t window_size, size_t v_head_dim, ComputeBackend backend) {
     OpParams params;
     params.scale = scale;
     params.position_offset = position_offset;
@@ -536,15 +549,15 @@ size_t CactusGraph::attention_int8_hybrid(size_t query, size_t key_new, size_t v
         const auto& q_buf = get_output_buffer(query);
         out_shape = {q_buf.shape[0], q_buf.shape[1], q_buf.shape[2], v_head_dim};
     }
-    return add_node(OpType::ATTENTION_INT8_HYBRID, {query, key_new, value_new}, out_shape, params);
+    return tag_backend(add_node(OpType::ATTENTION_INT8_HYBRID, {query, key_new, value_new}, out_shape, params), backend);
 }
 
-size_t CactusGraph::conv1d_causal(size_t input, size_t weight, size_t, size_t dilation) {
+size_t CactusGraph::conv1d_causal(size_t input, size_t weight, size_t, size_t dilation, ComputeBackend backend) {
     OpParams params{.dilation = dilation};
-    return add_node(OpType::CONV1D_CAUSAL, {input, weight}, {}, params);
+    return tag_backend(add_node(OpType::CONV1D_CAUSAL, {input, weight}, {}, params), backend);
 }
 
-size_t CactusGraph::conv1d_k3(size_t input, size_t weight, size_t stride) {
+size_t CactusGraph::conv1d_k3(size_t input, size_t weight, size_t stride, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w   = get_output_buffer(weight);
 
@@ -566,10 +579,10 @@ size_t CactusGraph::conv1d_k3(size_t input, size_t weight, size_t stride) {
     params.output_precision = xin.precision;
 
     std::vector<size_t> out_shape{N, C_out, L_out};
-    return add_node(OpType::CONV1D_K3, {input, weight}, out_shape, params);
+    return tag_backend(add_node(OpType::CONV1D_K3, {input, weight}, out_shape, params), backend);
 }
 
-size_t CactusGraph::conv1d_k7s3(size_t input, size_t weight, size_t bias) {
+size_t CactusGraph::conv1d_k7s3(size_t input, size_t weight, size_t bias, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w   = get_output_buffer(weight);
     const auto& b   = get_output_buffer(bias);
@@ -594,20 +607,20 @@ size_t CactusGraph::conv1d_k7s3(size_t input, size_t weight, size_t bias) {
     params.output_precision = xin.precision;
 
     std::vector<size_t> out_shape{N, C_out, L_out};
-    return add_node(OpType::CONV1D_K7S3, {input, weight, bias}, out_shape, params);
+    return tag_backend(add_node(OpType::CONV1D_K7S3, {input, weight, bias}, out_shape, params), backend);
 }
 
-size_t CactusGraph::conv1d(size_t input, size_t weight, size_t stride) {
+size_t CactusGraph::conv1d(size_t input, size_t weight, size_t stride, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w   = get_output_buffer(weight);
     if (xin.shape.size() != 3) throw std::runtime_error("conv1d expects N,C,L");
     if (w.shape.size() != 3) throw std::runtime_error("conv1d weight expects [C_out, C_in, K]");
     size_t L_out = (xin.shape[2] - w.shape[2]) / stride + 1;
     OpParams params{.stride = stride};
-    return add_node(OpType::CONV1D, {input, weight}, {xin.shape[0], w.shape[0], L_out}, params);
+    return tag_backend(add_node(OpType::CONV1D, {input, weight}, {xin.shape[0], w.shape[0], L_out}, params), backend);
 }
 
-size_t CactusGraph::conv1d(size_t input, size_t weight, size_t bias, size_t stride) {
+size_t CactusGraph::conv1d(size_t input, size_t weight, size_t bias, size_t stride, ComputeBackend backend) {
     const auto& b = get_output_buffer(bias);
     const auto& w = get_output_buffer(weight);
     if (b.total_size != w.shape[0]) throw std::runtime_error("conv1d bias size mismatch");
@@ -617,10 +630,10 @@ size_t CactusGraph::conv1d(size_t input, size_t weight, size_t bias, size_t stri
     if (w.shape.size() != 3) throw std::runtime_error("conv1d weight expects [C_out, C_in, K]");
     size_t L_out = (xin.shape[2] - w.shape[2]) / stride + 1;
     OpParams params{.output_precision = xin.precision, .stride = stride};
-    return add_node(OpType::CONV1D, {input, weight, bias}, {xin.shape[0], w.shape[0], L_out}, params);
+    return tag_backend(add_node(OpType::CONV1D, {input, weight, bias}, {xin.shape[0], w.shape[0], L_out}, params), backend);
 }
 
-size_t CactusGraph::conv1d_same_depthwise_k9(size_t input, size_t weight) {
+size_t CactusGraph::conv1d_same_depthwise_k9(size_t input, size_t weight, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);
     if (xin.shape.size() != 3) throw std::runtime_error("conv1d_same_depthwise_k9 expects input [N, L, C]");
@@ -634,15 +647,15 @@ size_t CactusGraph::conv1d_same_depthwise_k9(size_t input, size_t weight) {
     }
     OpParams params{};
     params.output_precision = xin.precision;
-    return add_node(OpType::CONV1D_SAME_DEPTHWISE_K9, {input, weight}, {xin.shape[0], xin.shape[1], C}, params);
+    return tag_backend(add_node(OpType::CONV1D_SAME_DEPTHWISE_K9, {input, weight}, {xin.shape[0], xin.shape[1], C}, params), backend);
 }
 
-size_t CactusGraph::conv1d_same_depthwise_k9(size_t input, size_t weight, size_t bias) {
-    size_t node = conv1d_same_depthwise_k9(input, weight);
+size_t CactusGraph::conv1d_same_depthwise_k9(size_t input, size_t weight, size_t bias, ComputeBackend backend) {
+    size_t node = conv1d_same_depthwise_k9(input, weight, backend);
     return attach_conv_bias(node, bias, get_output_buffer(input).shape[2], "conv1d_same_depthwise_k9");
 }
 
-size_t CactusGraph::conv1d_pointwise(size_t input, size_t weight) {
+size_t CactusGraph::conv1d_pointwise(size_t input, size_t weight, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);
     if (xin.shape.size() != 3) throw std::runtime_error("conv1d_pointwise expects input [N, L, C_in]");
@@ -657,15 +670,15 @@ size_t CactusGraph::conv1d_pointwise(size_t input, size_t weight) {
     }
     OpParams params{};
     params.output_precision = xin.precision;
-    return add_node(OpType::CONV1D_POINTWISE, {input, weight}, {xin.shape[0], xin.shape[1], C_out}, params);
+    return tag_backend(add_node(OpType::CONV1D_POINTWISE, {input, weight}, {xin.shape[0], xin.shape[1], C_out}, params), backend);
 }
 
-size_t CactusGraph::conv1d_pointwise(size_t input, size_t weight, size_t bias) {
-    size_t node = conv1d_pointwise(input, weight);
+size_t CactusGraph::conv1d_pointwise(size_t input, size_t weight, size_t bias, ComputeBackend backend) {
+    size_t node = conv1d_pointwise(input, weight, backend);
     return attach_conv_bias(node, bias, get_output_buffer(node).shape[2], "conv1d_pointwise");
 }
 
-size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight) {
+size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);
 
@@ -694,15 +707,15 @@ size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight) {
 
     OpParams params{};
     params.output_precision = xin.precision;
-    return add_node(OpType::CONV2D_K3S2P1, {input, weight}, {N, C_out, H_out, W_out}, params);
+    return tag_backend(add_node(OpType::CONV2D_K3S2P1, {input, weight}, {N, C_out, H_out, W_out}, params), backend);
 }
 
-size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight, size_t bias) {
-    size_t node = conv2d_k3s2p1(input, weight);
+size_t CactusGraph::conv2d_k3s2p1(size_t input, size_t weight, size_t bias, ComputeBackend backend) {
+    size_t node = conv2d_k3s2p1(input, weight, backend);
     return attach_conv_bias(node, bias, get_output_buffer(node).shape[1], "conv2d_k3s2p1");
 }
 
-size_t CactusGraph::conv2d_depthwise_k3s2p1(size_t input, size_t weight) {
+size_t CactusGraph::conv2d_depthwise_k3s2p1(size_t input, size_t weight, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);
 
@@ -735,15 +748,15 @@ size_t CactusGraph::conv2d_depthwise_k3s2p1(size_t input, size_t weight) {
     const size_t W_out = (W - 1) / 2 + 1;
     OpParams params{};
     params.output_precision = xin.precision;
-    return add_node(OpType::CONV2D_DEPTHWISE_K3S2P1, {input, weight}, {N, C, H_out, W_out}, params);
+    return tag_backend(add_node(OpType::CONV2D_DEPTHWISE_K3S2P1, {input, weight}, {N, C, H_out, W_out}, params), backend);
 }
 
-size_t CactusGraph::conv2d_depthwise_k3s2p1(size_t input, size_t weight, size_t bias) {
-    size_t node = conv2d_depthwise_k3s2p1(input, weight);
+size_t CactusGraph::conv2d_depthwise_k3s2p1(size_t input, size_t weight, size_t bias, ComputeBackend backend) {
+    size_t node = conv2d_depthwise_k3s2p1(input, weight, backend);
     return attach_conv_bias(node, bias, get_output_buffer(node).shape[1], "conv2d_depthwise_k3s2p1");
 }
 
-size_t CactusGraph::conv2d_pointwise_1x1(size_t input, size_t weight) {
+size_t CactusGraph::conv2d_pointwise_1x1(size_t input, size_t weight, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);
 
@@ -777,22 +790,22 @@ size_t CactusGraph::conv2d_pointwise_1x1(size_t input, size_t weight) {
 
     OpParams params{};
     params.output_precision = xin.precision;
-    return add_node(OpType::CONV2D_POINTWISE_1X1, {input, weight}, {N, C_out, H, W}, params);
+    return tag_backend(add_node(OpType::CONV2D_POINTWISE_1X1, {input, weight}, {N, C_out, H, W}, params), backend);
 }
 
-size_t CactusGraph::conv2d_pointwise_1x1(size_t input, size_t weight, size_t bias) {
-    size_t node = conv2d_pointwise_1x1(input, weight);
+size_t CactusGraph::conv2d_pointwise_1x1(size_t input, size_t weight, size_t bias, ComputeBackend backend) {
+    size_t node = conv2d_pointwise_1x1(input, weight, backend);
     return attach_conv_bias(node, bias, get_output_buffer(node).shape[1], "conv2d_pointwise_1x1");
 }
 
-size_t CactusGraph::lstm_cell(size_t input, size_t h_prev, size_t c_prev, size_t weight_ih, size_t weight_hh, size_t bias_ih, size_t bias_hh) {
+size_t CactusGraph::lstm_cell(size_t input, size_t h_prev, size_t c_prev, size_t weight_ih, size_t weight_hh, size_t bias_ih, size_t bias_hh, ComputeBackend backend) {
     const auto& h_buffer = get_output_buffer(h_prev);
     std::vector<size_t> output_shape = {h_buffer.shape[0], h_buffer.shape[1], 2};
-    return add_node(OpType::LSTM_CELL, {input, h_prev, c_prev, weight_ih, weight_hh, bias_ih, bias_hh}, output_shape, {});
+    return tag_backend(add_node(OpType::LSTM_CELL, {input, h_prev, c_prev, weight_ih, weight_hh, bias_ih, bias_hh}, output_shape, {}), backend);
 }
 
 size_t CactusGraph::gated_deltanet_decode(size_t query, size_t key, size_t value, size_t gate_log, size_t beta,
-                                          size_t initial_state, float scale) {
+                                          size_t initial_state, float scale, ComputeBackend backend) {
     const auto& q = get_output_buffer(query);
     const auto& k = get_output_buffer(key);
     const auto& v = get_output_buffer(value);
@@ -837,14 +850,14 @@ size_t CactusGraph::gated_deltanet_decode(size_t query, size_t key, size_t value
     params.scale = op_scale;
     params.num_kv_heads = Hq;
     params.output_precision = Precision::FP16;
-    return add_node(OpType::GATED_DELTANET_DECODE,
-                    {query, key, value, gate_log, beta, initial_state},
-                    {B, static_cast<size_t>(1 + K), Hv, V},
-                    params);
+    return tag_backend(add_node(OpType::GATED_DELTANET_DECODE,
+                                {query, key, value, gate_log, beta, initial_state},
+                                {B, static_cast<size_t>(1 + K), Hv, V},
+                                params), backend);
 }
 
 size_t CactusGraph::gated_deltanet_prefill(size_t query, size_t key, size_t value, size_t gate_log, size_t beta,
-                                           size_t initial_state, size_t chunk_size, float scale) {
+                                           size_t initial_state, size_t chunk_size, float scale, ComputeBackend backend) {
     const auto& q = get_output_buffer(query);
     const auto& k = get_output_buffer(key);
     const auto& v = get_output_buffer(value);
@@ -891,13 +904,13 @@ size_t CactusGraph::gated_deltanet_prefill(size_t query, size_t key, size_t valu
     params.chunk_size = chunk_size;
     params.num_kv_heads = Hq;
     params.output_precision = Precision::FP16;
-    return add_node(OpType::GATED_DELTANET_PREFILL,
-                    {query, key, value, gate_log, beta, initial_state},
-                    {B, T + K, Hv, V},
-                    params);
+    return tag_backend(add_node(OpType::GATED_DELTANET_PREFILL,
+                                {query, key, value, gate_log, beta, initial_state},
+                                {B, T + K, Hv, V},
+                                params), backend);
 }
 
-size_t CactusGraph::stft(size_t input, size_t weight, size_t stride, size_t num_fft_bins) {
+size_t CactusGraph::stft(size_t input, size_t weight, size_t stride, size_t num_fft_bins, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);
 
@@ -913,10 +926,10 @@ size_t CactusGraph::stft(size_t input, size_t weight, size_t stride, size_t num_
     params.stride = stride;
     params.num_fft_bins = num_fft_bins;
 
-    return add_node(OpType::STFT, {input, weight}, {N, 2 * num_fft_bins, L_out}, params);
+    return tag_backend(add_node(OpType::STFT, {input, weight}, {N, 2 * num_fft_bins, L_out}, params), backend);
 }
 
-size_t CactusGraph::concat(size_t input1, size_t input2, int axis) {
+size_t CactusGraph::concat(size_t input1, size_t input2, int axis, ComputeBackend backend) {
     const auto& buffer1 = get_output_buffer(input1);
     const auto& buffer2 = get_output_buffer(input2);
 
@@ -942,10 +955,10 @@ size_t CactusGraph::concat(size_t input1, size_t input2, int axis) {
 
     OpParams params;
     params.axis = axis;
-    return add_node(OpType::CONCAT, {input1, input2}, output_shape, params);
+    return tag_backend(add_node(OpType::CONCAT, {input1, input2}, output_shape, params), backend);
 }
 
-size_t CactusGraph::cat(const std::vector<size_t>& inputs, int axis) {
+size_t CactusGraph::cat(const std::vector<size_t>& inputs, int axis, ComputeBackend backend) {
     if (inputs.empty()) {
         throw std::runtime_error("Cat requires at least one input");
     }
@@ -974,10 +987,10 @@ size_t CactusGraph::cat(const std::vector<size_t>& inputs, int axis) {
 
     OpParams params;
     params.axis = axis;
-    return add_node(OpType::CAT, inputs, output_shape, params);
+    return tag_backend(add_node(OpType::CAT, inputs, output_shape, params), backend);
 }
 
-size_t CactusGraph::scatter_topk(size_t indices, size_t values, size_t num_classes) {
+size_t CactusGraph::scatter_topk(size_t indices, size_t values, size_t num_classes, ComputeBackend backend) {
     const auto& indices_buffer = get_output_buffer(indices);
     const auto& values_buffer = get_output_buffer(values);
 
@@ -993,17 +1006,17 @@ size_t CactusGraph::scatter_topk(size_t indices, size_t values, size_t num_class
 
     std::vector<size_t> output_shape = {num_classes, indices_buffer.shape[0]};
     OpParams params{.output_precision = Precision::FP32, .num_classes = num_classes};
-    return add_node(OpType::SCATTER_TOPK, {indices, values}, output_shape, params);
+    return tag_backend(add_node(OpType::SCATTER_TOPK, {indices, values}, output_shape, params), backend);
 }
 
 size_t CactusGraph::sample(size_t logits, float temperature, float top_p, size_t top_k,
-                           const std::unordered_map<uint32_t, float>& logit_bias) {
-    return this->sample_with_options(logits, temperature, top_p, 0.15f, 1.1f, top_k, logit_bias);
+                           const std::unordered_map<uint32_t, float>& logit_bias, ComputeBackend backend) {
+    return this->sample_with_options(logits, temperature, top_p, 0.15f, 1.1f, top_k, logit_bias, backend);
 }
 
 size_t CactusGraph::sample_with_options(size_t logits, float temperature, float top_p,
                                         float min_p, float repetition_penalty, size_t top_k,
-                                        const std::unordered_map<uint32_t, float>& logit_bias) {
+                                        const std::unordered_map<uint32_t, float>& logit_bias, ComputeBackend backend) {
     const auto& logits_buffer = get_output_buffer(logits);
 
     if (logits_buffer.shape.empty()) {
@@ -1029,7 +1042,7 @@ size_t CactusGraph::sample_with_options(size_t logits, float temperature, float 
     }
 
     std::vector<size_t> output_shape = {1};
-    return add_node(OpType::SAMPLE, {logits}, output_shape, params);
+    return tag_backend(add_node(OpType::SAMPLE, {logits}, output_shape, params), backend);
 }
 
 static size_t scalar_val_op(CactusGraph& g, OpType op, size_t input, float value) {
@@ -1039,57 +1052,57 @@ static size_t scalar_val_op(CactusGraph& g, OpType op, size_t input, float value
     return g.add_node(op, {input}, {}, params);
 }
 
-size_t CactusGraph::scalar_add(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_ADD, input, value); }
-size_t CactusGraph::scalar_subtract(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_SUBTRACT, input, value); }
-size_t CactusGraph::scalar_multiply(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_MULTIPLY, input, value); }
-size_t CactusGraph::scalar_divide(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_DIVIDE, input, value); }
-size_t CactusGraph::scalar_not_equal(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_NOT_EQUAL, input, value); }
+size_t CactusGraph::scalar_add(size_t input, float value, ComputeBackend backend) { return tag_backend(scalar_val_op(*this, OpType::SCALAR_ADD, input, value), backend); }
+size_t CactusGraph::scalar_subtract(size_t input, float value, ComputeBackend backend) { return tag_backend(scalar_val_op(*this, OpType::SCALAR_SUBTRACT, input, value), backend); }
+size_t CactusGraph::scalar_multiply(size_t input, float value, ComputeBackend backend) { return tag_backend(scalar_val_op(*this, OpType::SCALAR_MULTIPLY, input, value), backend); }
+size_t CactusGraph::scalar_divide(size_t input, float value, ComputeBackend backend) { return tag_backend(scalar_val_op(*this, OpType::SCALAR_DIVIDE, input, value), backend); }
+size_t CactusGraph::scalar_not_equal(size_t input, float value, ComputeBackend backend) { return tag_backend(scalar_val_op(*this, OpType::SCALAR_NOT_EQUAL, input, value), backend); }
 
-size_t CactusGraph::scalar_exp(size_t input) {
-    return add_node(OpType::SCALAR_EXP, {input}, {});
+size_t CactusGraph::scalar_exp(size_t input, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::SCALAR_EXP, {input}, {}), backend);
 }
 
-size_t CactusGraph::scalar_sqrt(size_t input) {
-    return add_node(OpType::SCALAR_SQRT, {input}, {});
+size_t CactusGraph::scalar_sqrt(size_t input, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::SCALAR_SQRT, {input}, {}), backend);
 }
 
-size_t CactusGraph::scalar_cos(size_t input) {
-    return add_node(OpType::SCALAR_COS, {input}, {});
+size_t CactusGraph::scalar_cos(size_t input, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::SCALAR_COS, {input}, {}), backend);
 }
 
-size_t CactusGraph::scalar_sin(size_t input) {
-    return add_node(OpType::SCALAR_SIN, {input}, {});
+size_t CactusGraph::scalar_sin(size_t input, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::SCALAR_SIN, {input}, {}), backend);
 }
 
-size_t CactusGraph::scalar_log(size_t input) {
-    return add_node(OpType::SCALAR_LOG, {input}, {});
+size_t CactusGraph::scalar_log(size_t input, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::SCALAR_LOG, {input}, {}), backend);
 }
 
-size_t CactusGraph::relu(size_t input) {
-    return add_node(OpType::RELU, {input}, {});
+size_t CactusGraph::relu(size_t input, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::RELU, {input}, {}), backend);
 }
 
-size_t CactusGraph::silu(size_t input) {
-    return add_node(OpType::SILU, {input}, {});
+size_t CactusGraph::silu(size_t input, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::SILU, {input}, {}), backend);
 }
 
-size_t CactusGraph::gelu(size_t input) {
-    return add_node(OpType::GELU, {input}, {});
+size_t CactusGraph::gelu(size_t input, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::GELU, {input}, {}), backend);
 }
 
-size_t CactusGraph::gelu_erf(size_t input) {
-    return add_node(OpType::GELU_ERF, {input}, {});
+size_t CactusGraph::gelu_erf(size_t input, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::GELU_ERF, {input}, {}), backend);
 }
 
-size_t CactusGraph::sigmoid(size_t input) {
-    return add_node(OpType::SIGMOID, {input}, {});
+size_t CactusGraph::sigmoid(size_t input, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::SIGMOID, {input}, {}), backend);
 }
 
-size_t CactusGraph::tanh(size_t input) {
-    return add_node(OpType::TANH, {input}, {});
+size_t CactusGraph::tanh(size_t input, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::TANH, {input}, {}), backend);
 }
 
-size_t CactusGraph::glu(size_t input, int axis) {
+size_t CactusGraph::glu(size_t input, int axis, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     if (xin.shape.empty()) {
         throw std::runtime_error("glu expects non-scalar input");
@@ -1113,7 +1126,7 @@ size_t CactusGraph::glu(size_t input, int axis) {
     OpParams params{};
     params.axis = actual_axis;
     params.output_precision = xin.precision;
-    return add_node(OpType::GLU, {input}, out_shape, params);
+    return tag_backend(add_node(OpType::GLU, {input}, out_shape, params), backend);
 }
 
 size_t CactusGraph::rope_gptj(size_t input, float theta, size_t position_offset, size_t rot_dim, ComputeBackend backend) {
@@ -1125,7 +1138,7 @@ size_t CactusGraph::rope_gptj(size_t input, float theta, size_t position_offset,
     return add_node(OpType::ROPE_GPTJ, {input}, {}, params);
 }
 
-size_t CactusGraph::gather(size_t tensor, size_t indices) {
+size_t CactusGraph::gather(size_t tensor, size_t indices, ComputeBackend backend) {
     const auto& tensor_buffer = get_output_buffer(tensor);
     const auto& idx_shape = get_output_buffer(indices).shape;
 
@@ -1141,10 +1154,10 @@ size_t CactusGraph::gather(size_t tensor, size_t indices) {
     OpParams params;
     params.output_precision = tensor_buffer.precision;
 
-    return add_node(OpType::GATHER, {tensor, indices}, output_shape, params);
+    return tag_backend(add_node(OpType::GATHER, {tensor, indices}, output_shape, params), backend);
 }
 
-size_t CactusGraph::slice(size_t input, int axis, size_t start, size_t length) {
+size_t CactusGraph::slice(size_t input, int axis, size_t start, size_t length, ComputeBackend backend) {
     const auto& input_buffer = get_output_buffer(input);
     if (input_buffer.shape.empty()) {
         throw std::runtime_error("Cannot slice a scalar tensor");
@@ -1166,10 +1179,10 @@ size_t CactusGraph::slice(size_t input, int axis, size_t start, size_t length) {
     params.slice_length = length;
     params.output_precision = input_buffer.precision;
 
-    return add_node(OpType::SLICE, {input}, output_shape, params);
+    return tag_backend(add_node(OpType::SLICE, {input}, output_shape, params), backend);
 }
 
-size_t CactusGraph::embedding(size_t embedding_tensor, size_t indices) {
+size_t CactusGraph::embedding(size_t embedding_tensor, size_t indices, ComputeBackend backend) {
     const auto& emb_buffer = get_output_buffer(embedding_tensor);
     const auto& idx_shape = get_output_buffer(indices).shape;
 
@@ -1186,10 +1199,10 @@ size_t CactusGraph::embedding(size_t embedding_tensor, size_t indices) {
 
     OpParams params;
     params.output_precision = Precision::FP16;
-    return add_node(OpType::EMBEDDING, {embedding_tensor, indices}, output_shape, params);
+    return tag_backend(add_node(OpType::EMBEDDING, {embedding_tensor, indices}, output_shape, params), backend);
 }
 
-size_t CactusGraph::bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width, bool align_corners) {
+size_t CactusGraph::bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width, bool align_corners, ComputeBackend backend) {
     const auto& pos_embeds_buffer = get_output_buffer(pos_embeds);
     size_t embed_dim = pos_embeds_buffer.shape[1];
     std::vector<size_t> output_shape = {dst_height * dst_width, embed_dim};
@@ -1200,13 +1213,13 @@ size_t CactusGraph::bilinear_interpolation(size_t pos_embeds, size_t dst_height,
     params.align_corners = align_corners;
     params.output_precision = Precision::FP16;
 
-    return add_node(OpType::BILINEAR_INTERPOLATION, {pos_embeds}, output_shape, params);
+    return tag_backend(add_node(OpType::BILINEAR_INTERPOLATION, {pos_embeds}, output_shape, params), backend);
 }
 
-size_t CactusGraph::precision_cast(size_t input, Precision target_precision) {
+size_t CactusGraph::precision_cast(size_t input, Precision target_precision, ComputeBackend backend) {
     OpParams params{};
     params.output_precision = target_precision;
-    return add_node(OpType::PRECISION_CAST, {input}, {}, params);
+    return tag_backend(add_node(OpType::PRECISION_CAST, {input}, {}, params), backend);
 }
 
 size_t CactusGraph::add_node(OpType op_type, const std::vector<size_t>& inputs, const std::vector<size_t>& output_shape, const OpParams& params) {
@@ -1266,13 +1279,13 @@ void CactusGraph::resize_cache_slots(size_t node_id, size_t num_slots) {
     node.output_buffer.data.reset();
 }
 
-size_t CactusGraph::persistent(size_t source_node) {
+size_t CactusGraph::persistent(size_t source_node, ComputeBackend backend) {
     const auto& source_buffer = get_output_buffer(source_node);
     OpParams params;
     params.output_precision = source_buffer.precision;
     size_t node_id = add_node(OpType::PERSISTENT, {source_node}, source_buffer.shape, params);
     persistent_node_ids_.insert(node_id);
-    return node_id;
+    return tag_backend(node_id, backend);
 }
 
 bool CactusGraph::is_populated(size_t persistent_node_id) const {
@@ -1284,7 +1297,7 @@ void CactusGraph::invalidate_persistent(size_t persistent_node_id) {
     persistent_node_ids_.erase(persistent_node_id);
 }
 
-size_t CactusGraph::altup_predict(size_t coefs, const size_t* streams, size_t num_streams) {
+size_t CactusGraph::altup_predict(size_t coefs, const size_t* streams, size_t num_streams, ComputeBackend backend) {
     const auto& stream0_buf = get_output_buffer(streams[0]);
 
     size_t seq_len = stream0_buf.shape[0];
@@ -1296,10 +1309,10 @@ size_t CactusGraph::altup_predict(size_t coefs, const size_t* streams, size_t nu
 
     OpParams params;
     params.num_altup_inputs = num_streams;
-    return add_node(OpType::ALTUP_PREDICT, input_ids, {num_streams * seq_len, hidden_dim}, params);
+    return tag_backend(add_node(OpType::ALTUP_PREDICT, input_ids, {num_streams * seq_len, hidden_dim}, params), backend);
 }
 
-size_t CactusGraph::altup_correct(size_t coefs, size_t innovation, const size_t* predictions, size_t num_predictions) {
+size_t CactusGraph::altup_correct(size_t coefs, size_t innovation, const size_t* predictions, size_t num_predictions, ComputeBackend backend) {
     const auto& pred0_buf = get_output_buffer(predictions[0]);
 
     size_t seq_len = pred0_buf.shape[0];
@@ -1311,10 +1324,10 @@ size_t CactusGraph::altup_correct(size_t coefs, size_t innovation, const size_t*
 
     OpParams params;
     params.num_altup_inputs = num_predictions;
-    return add_node(OpType::ALTUP_CORRECT, input_ids, {num_predictions * seq_len, hidden_dim}, params);
+    return tag_backend(add_node(OpType::ALTUP_CORRECT, input_ids, {num_predictions * seq_len, hidden_dim}, params), backend);
 }
 
-size_t CactusGraph::gaussian_topk(size_t input, float ppf) {
+size_t CactusGraph::gaussian_topk(size_t input, float ppf, ComputeBackend backend) {
     const auto& in_buf = get_output_buffer(input);
     if (in_buf.precision != Precision::FP16) {
         throw std::runtime_error("gaussian_topk only supports FP16 input");
@@ -1322,37 +1335,38 @@ size_t CactusGraph::gaussian_topk(size_t input, float ppf) {
     OpParams params;
     params.scalar = ppf;
     params.output_precision = in_buf.precision;
-    return add_node(OpType::GAUSSIAN_TOPK, {input}, in_buf.shape, params);
+    return tag_backend(add_node(OpType::GAUSSIAN_TOPK, {input}, in_buf.shape, params), backend);
 }
 
-size_t CactusGraph::leaky_relu(size_t input, float negative_slope) {
+size_t CactusGraph::leaky_relu(size_t input, float negative_slope, ComputeBackend backend) {
     const auto& in_buf = get_output_buffer(input);
     OpParams params;
     params.scalar = negative_slope;
-    return add_node(OpType::LEAKY_RELU, {input}, in_buf.shape, params);
+    return tag_backend(add_node(OpType::LEAKY_RELU, {input}, in_buf.shape, params), backend);
 }
 
-size_t CactusGraph::clamp(size_t input, float lo, float hi) {
+size_t CactusGraph::clamp(size_t input, float lo, float hi, ComputeBackend backend) {
     const auto& in_buf = get_output_buffer(input);
     OpParams params;
     params.scalar = lo;
     params.scale = hi;
-    return add_node(OpType::CLAMP, {input}, in_buf.shape, params);
+    return tag_backend(add_node(OpType::CLAMP, {input}, in_buf.shape, params), backend);
 }
 
 size_t CactusGraph::bilstm_sequence(size_t input, size_t w_ih_fwd, size_t w_hh_fwd, size_t b_ih_fwd, size_t b_hh_fwd,
-                                    size_t w_ih_bwd, size_t w_hh_bwd, size_t b_ih_bwd, size_t b_hh_bwd) {
+                                    size_t w_ih_bwd, size_t w_hh_bwd, size_t b_ih_bwd, size_t b_hh_bwd,
+                                    ComputeBackend backend) {
     const auto& in_buf = get_output_buffer(input);
     const auto& w_ih = get_output_buffer(w_ih_fwd);
     size_t batch = in_buf.shape[0];
     size_t seq_len = in_buf.shape[1];
     size_t hidden_size = w_ih.shape[0] / 4;
-    return add_node(OpType::BILSTM_SEQUENCE,
-                    {input, w_ih_fwd, w_hh_fwd, b_ih_fwd, b_hh_fwd, w_ih_bwd, w_hh_bwd, b_ih_bwd, b_hh_bwd},
-                    {batch, seq_len, 2 * hidden_size}, {});
+    return tag_backend(add_node(OpType::BILSTM_SEQUENCE,
+                                {input, w_ih_fwd, w_hh_fwd, b_ih_fwd, b_hh_fwd, w_ih_bwd, w_hh_bwd, b_ih_bwd, b_hh_bwd},
+                                {batch, seq_len, 2 * hidden_size}, {}), backend);
 }
 
-size_t CactusGraph::maxpool1d(size_t input, size_t kernel_size, size_t stride) {
+size_t CactusGraph::maxpool1d(size_t input, size_t kernel_size, size_t stride, ComputeBackend backend) {
     const auto& in_buf = get_output_buffer(input);
     size_t batch = in_buf.shape[0];
     size_t channels = in_buf.shape[1];
@@ -1362,10 +1376,10 @@ size_t CactusGraph::maxpool1d(size_t input, size_t kernel_size, size_t stride) {
     OpParams params;
     params.kernel_size = kernel_size;
     params.stride = stride;
-    return add_node(OpType::MAXPOOL1D, {input}, {batch, channels, output_length}, params);
+    return tag_backend(add_node(OpType::MAXPOOL1D, {input}, {batch, channels, output_length}, params), backend);
 }
 
-size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight) {
+size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);
 
@@ -1391,32 +1405,32 @@ size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight) {
 
     OpParams params{};
     params.output_precision = xin.precision;
-    return add_node(OpType::CONV2D_K3S1P1, {input, weight}, {N, C_out, H, W}, params);
+    return tag_backend(add_node(OpType::CONV2D_K3S1P1, {input, weight}, {N, C_out, H, W}, params), backend);
 }
 
-size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight, size_t bias) {
-    size_t node = conv2d_k3s1p1(input, weight);
+size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight, size_t bias, ComputeBackend backend) {
+    size_t node = conv2d_k3s1p1(input, weight, backend);
     return attach_conv_bias(node, bias, get_output_buffer(node).shape[1], "conv2d_k3s1p1");
 }
 
-size_t CactusGraph::stats_pool(size_t input) {
+size_t CactusGraph::stats_pool(size_t input, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     size_t batch = xin.shape[0];
     size_t features = 1;
     for (size_t i = 1; i < xin.shape.size() - 1; ++i) features *= xin.shape[i];
-    return add_node(OpType::STATS_POOL, {input}, {batch, features * 2});
+    return tag_backend(add_node(OpType::STATS_POOL, {input}, {batch, features * 2}), backend);
 }
 
-size_t CactusGraph::weighted_stats_pool(size_t input, size_t weights) {
+size_t CactusGraph::weighted_stats_pool(size_t input, size_t weights, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     size_t batch = xin.shape[0];
     size_t features = 1;
     for (size_t i = 1; i < xin.shape.size() - 1; ++i) features *= xin.shape[i];
-    return add_node(OpType::WEIGHTED_STATS_POOL, {input, weights}, {batch, features * 2});
+    return tag_backend(add_node(OpType::WEIGHTED_STATS_POOL, {input, weights}, {batch, features * 2}), backend);
 }
 
 size_t CactusGraph::kv_cache_state(size_t max_seq_len, size_t num_kv_heads, size_t head_dim,
-                                    size_t window_size, size_t sink_size, size_t num_slots) {
+                                    size_t window_size, size_t sink_size, size_t num_slots, ComputeBackend backend) {
     if (num_slots == 0) num_slots = 1;
     bool fp16_cache = use_fp16_kv_cache_for_builder();
     size_t total_elements = 0;
@@ -1440,20 +1454,20 @@ size_t CactusGraph::kv_cache_state(size_t max_seq_len, size_t num_kv_heads, size
     params.output_precision = precision;
     size_t node_id = add_node(OpType::KV_CACHE_STATE, {}, {total_elements}, params);
     persistent_node_ids_.insert(node_id);
-    return node_id;
+    return tag_backend(node_id, backend);
 }
 
 size_t CactusGraph::kv_cache_append(size_t new_kv, size_t cache_state_node,
-                                     size_t window_size, size_t sink_size, size_t cache_slot) {
+                                     size_t window_size, size_t sink_size, size_t cache_slot, ComputeBackend backend) {
     OpParams params{};
     params.window_size = window_size;
     params.cache_sink_size = sink_size;
     params.cache_slot = cache_slot;
     params.output_precision = Precision::FP32;
-    return add_node(OpType::KV_CACHE_APPEND, {new_kv, cache_state_node}, {1}, params);
+    return tag_backend(add_node(OpType::KV_CACHE_APPEND, {new_kv, cache_state_node}, {1}, params), backend);
 }
 
-size_t CactusGraph::conv_cache_state(size_t ws, size_t hidden_dim) {
+size_t CactusGraph::conv_cache_state(size_t ws, size_t hidden_dim, ComputeBackend backend) {
     size_t total_bytes = sizeof(uint64_t) * 8 + ws * hidden_dim * sizeof(__fp16);
     OpParams params{};
     params.window_size = ws;
@@ -1461,10 +1475,10 @@ size_t CactusGraph::conv_cache_state(size_t ws, size_t hidden_dim) {
     params.output_precision = Precision::INT8;
     size_t node_id = add_node(OpType::CONV_CACHE_STATE, {}, {total_bytes}, params);
     persistent_node_ids_.insert(node_id);
-    return node_id;
+    return tag_backend(node_id, backend);
 }
 
-size_t CactusGraph::conv_cache_append(size_t new_data, size_t cache_state_node) {
+size_t CactusGraph::conv_cache_append(size_t new_data, size_t cache_state_node, ComputeBackend backend) {
     const auto& cache_buf = get_output_buffer(cache_state_node);
     auto* raw = static_cast<const uint8_t*>(cache_buf.get_data());
     size_t ws, hd;
@@ -1478,10 +1492,10 @@ size_t CactusGraph::conv_cache_append(size_t new_data, size_t cache_state_node) 
     }
     OpParams params{};
     params.output_precision = Precision::FP16;
-    return add_node(OpType::CONV_CACHE_APPEND, {new_data, cache_state_node}, {ws, hd}, params);
+    return tag_backend(add_node(OpType::CONV_CACHE_APPEND, {new_data, cache_state_node}, {ws, hd}, params), backend);
 }
 
-size_t CactusGraph::conv_cache_initialize(size_t rows, size_t cache_state_node) {
+size_t CactusGraph::conv_cache_initialize(size_t rows, size_t cache_state_node, ComputeBackend backend) {
     if (get_node_op_type(cache_state_node) != OpType::CONV_CACHE_STATE) {
         throw std::invalid_argument(
             "conv_cache_initialize target must be a CONV_CACHE_STATE node");
@@ -1506,18 +1520,18 @@ size_t CactusGraph::conv_cache_initialize(size_t rows, size_t cache_state_node) 
     }
     OpParams params{};
     params.output_precision = Precision::FP16;
-    return add_node(OpType::CONV_CACHE_INITIALIZE, {rows, cache_state_node}, {0}, params);
+    return tag_backend(add_node(OpType::CONV_CACHE_INITIALIZE, {rows, cache_state_node}, {0}, params), backend);
 }
 
-size_t CactusGraph::recurrent_cache_state(const std::vector<size_t>& shape, Precision precision) {
+size_t CactusGraph::recurrent_cache_state(const std::vector<size_t>& shape, Precision precision, ComputeBackend backend) {
     OpParams params{};
     params.output_precision = precision;
     size_t node_id = add_node(OpType::RECURRENT_CACHE_STATE, {}, shape, params);
     persistent_node_ids_.insert(node_id);
-    return node_id;
+    return tag_backend(node_id, backend);
 }
 
-size_t CactusGraph::recurrent_cache_write(size_t new_value, size_t cache_state) {
+size_t CactusGraph::recurrent_cache_write(size_t new_value, size_t cache_state, ComputeBackend backend) {
     const auto& src_buf = get_output_buffer(new_value);
     const auto& dst_buf = get_output_buffer(cache_state);
     if (get_node_op_type(cache_state) != OpType::RECURRENT_CACHE_STATE) {
@@ -1532,7 +1546,7 @@ size_t CactusGraph::recurrent_cache_write(size_t new_value, size_t cache_state) 
     }
     OpParams params{};
     params.output_precision = dst_buf.precision;
-    return add_node(OpType::RECURRENT_CACHE_WRITE, {new_value, cache_state}, {0}, params);
+    return tag_backend(add_node(OpType::RECURRENT_CACHE_WRITE, {new_value, cache_state}, {0}, params), backend);
 }
 
 size_t CactusGraph::image_preprocess(
@@ -1541,7 +1555,8 @@ size_t CactusGraph::image_preprocess(
     int target_width, int target_height,
     int patch_size, int channels,
     float rescale_factor,
-    const float* mean, const float* std_dev) {
+    const float* mean, const float* std_dev,
+    ComputeBackend backend) {
 
     int tw = target_width > 0 ? target_width : src_width;
     int th = target_height > 0 ? target_height : src_height;
@@ -1568,29 +1583,29 @@ size_t CactusGraph::image_preprocess(
     }
     params.output_precision = Precision::FP32;
 
-    return add_node(OpType::IMAGE_PREPROCESS, {pixel_input}, {num_patches, patch_dim}, params);
+    return tag_backend(add_node(OpType::IMAGE_PREPROCESS, {pixel_input}, {num_patches, patch_dim}, params), backend);
 }
 
-size_t CactusGraph::rfft(size_t input) {
+size_t CactusGraph::rfft(size_t input, ComputeBackend backend) {
     const auto& in_buf = get_output_buffer(input);
     size_t n = in_buf.total_size;
     size_t out_len = (n / 2 + 1) * 2;
     OpParams params{};
     params.output_precision = in_buf.precision;
-    return add_node(OpType::RFFT, {input}, {out_len}, params);
+    return tag_backend(add_node(OpType::RFFT, {input}, {out_len}, params), backend);
 }
 
-size_t CactusGraph::irfft(size_t input, size_t output_length) {
+size_t CactusGraph::irfft(size_t input, size_t output_length, ComputeBackend backend) {
     const auto& in_buf = get_output_buffer(input);
     OpParams params{};
     params.output_precision = in_buf.precision;
-    return add_node(OpType::IRFFT, {input}, {output_length}, params);
+    return tag_backend(add_node(OpType::IRFFT, {input}, {output_length}, params), backend);
 }
 
 size_t CactusGraph::mel_filter_bank(
     size_t num_frequency_bins, size_t num_mel_filters,
     float min_frequency, float max_frequency, size_t sampling_rate,
-    int norm_type, int scale_type) {
+    int norm_type, int scale_type, ComputeBackend backend) {
     OpParams params{};
     params.num_mel_filters = num_mel_filters;
     params.min_frequency = min_frequency;
@@ -1599,7 +1614,7 @@ size_t CactusGraph::mel_filter_bank(
     params.mel_norm_type = norm_type;
     params.mel_scale_type = scale_type;
     params.output_precision = Precision::FP32;
-    return add_node(OpType::MEL_FILTER_BANK, {}, {num_frequency_bins, num_mel_filters}, params);
+    return tag_backend(add_node(OpType::MEL_FILTER_BANK, {}, {num_frequency_bins, num_mel_filters}, params), backend);
 }
 
 size_t CactusGraph::spectrogram(
@@ -1608,7 +1623,7 @@ size_t CactusGraph::spectrogram(
     float power, bool center, int pad_mode,
     float mel_floor, int log_mel_mode,
     float dither_val, float preemphasis,
-    bool remove_dc_offset) {
+    bool remove_dc_offset, ComputeBackend backend) {
 
     const auto& wav_buf = get_output_buffer(waveform);
     const auto& mel_buf = get_output_buffer(mel_filters_node);
@@ -1634,13 +1649,14 @@ size_t CactusGraph::spectrogram(
     params.remove_dc_offset = remove_dc_offset;
     params.output_precision = Precision::FP32;
 
-    return add_node(OpType::SPECTROGRAM, {waveform, mel_filters_node}, {num_mel_bins, num_frames}, params);
+    return tag_backend(add_node(OpType::SPECTROGRAM, {waveform, mel_filters_node}, {num_mel_bins, num_frames}, params), backend);
 }
 
 size_t CactusGraph::attention_cached(size_t query, size_t key_new, size_t value_new,
                                       size_t k_cache_state, size_t v_cache_state,
                                       float scale, size_t position_offset,
-                                      size_t window_size, size_t v_head_dim, size_t cache_slot) {
+                                      size_t window_size, size_t v_head_dim, size_t cache_slot,
+                                      ComputeBackend backend) {
     const auto& q_shape = get_output_buffer(query).shape;
     size_t batch = q_shape[0];
     size_t seq_len = q_shape[1];
@@ -1655,7 +1671,7 @@ size_t CactusGraph::attention_cached(size_t query, size_t key_new, size_t value_
     params.v_head_dim = v_head_dim;
     params.cache_slot = cache_slot;
     params.output_precision = Precision::FP16;
-    return add_node(OpType::ATTENTION_CACHED,
-                    {query, key_new, value_new, k_cache_state, v_cache_state},
-                    {batch, seq_len, num_q_heads, out_v_dim}, params);
+    return tag_backend(add_node(OpType::ATTENTION_CACHED,
+                                {query, key_new, value_new, k_cache_state, v_cache_state},
+                                {batch, seq_len, num_q_heads, out_v_dim}, params), backend);
 }

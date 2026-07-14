@@ -37,7 +37,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -e "python/[dev,serve]"
+        run: pip install -e "python/[dev,convert]"
 
       - name: Run tests
         run: |

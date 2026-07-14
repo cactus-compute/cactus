@@ -437,6 +437,29 @@ int cactus_graph_pow(cactus_graph_t graph, cactus_node_t x, float exponent, cact
     }
 }
 
+static bool valid_backend(int32_t backend) {
+    switch (static_cast<ComputeBackend>(backend)) {
+        case ComputeBackend::CPU:
+        case ComputeBackend::METAL:
+            return true;
+    }
+    return false;
+}
+
+int cactus_graph_set_node_backend(cactus_graph_t graph, cactus_node_t node, int32_t backend) {
+    if (!graph || !valid_backend(backend)) {
+        last_error_message = "Invalid args to cactus_graph_set_node_backend";
+        return -1;
+    }
+    try {
+        as_graph(graph)->graph.set_node_backend(static_cast<size_t>(node), static_cast<ComputeBackend>(backend));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_view(cactus_graph_t graph, cactus_node_t x, const size_t* shape, size_t rank, cactus_node_t* out) {
     if (!graph || !shape || rank == 0 || !out) {
         last_error_message = "Invalid args to cactus_graph_view";
@@ -478,10 +501,10 @@ int cactus_graph_reshape(cactus_graph_t graph, cactus_node_t x, const size_t* sh
     }
 }
 
-int cactus_graph_transpose(cactus_graph_t graph, cactus_node_t x, int32_t backend, cactus_node_t* out) {
+int cactus_graph_transpose(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_transpose");
     try {
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.transpose(static_cast<size_t>(x), static_cast<ComputeBackend>(backend)));
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.transpose(static_cast<size_t>(x)));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();
@@ -489,11 +512,11 @@ int cactus_graph_transpose(cactus_graph_t graph, cactus_node_t x, int32_t backen
     }
 }
 
-int cactus_graph_transpose_n(cactus_graph_t graph, cactus_node_t x, const size_t* permutation, size_t rank, int32_t backend, cactus_node_t* out) {
+int cactus_graph_transpose_n(cactus_graph_t graph, cactus_node_t x, const size_t* permutation, size_t rank, cactus_node_t* out) {
     if (!graph || !permutation || rank == 0 || !out) return fail_invalid("Invalid args to cactus_graph_transpose_n");
     try {
         std::vector<size_t> p(permutation, permutation + rank);
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.transposeN(static_cast<size_t>(x), p, static_cast<ComputeBackend>(backend)));
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.transposeN(static_cast<size_t>(x), p));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();
@@ -622,10 +645,10 @@ int cactus_graph_cat(cactus_graph_t graph, const cactus_node_t* nodes, size_t co
     }
 }
 
-int cactus_graph_matmul(cactus_graph_t graph, cactus_node_t a, cactus_node_t b, bool pretransposed_rhs, int32_t backend, cactus_node_t* out) {
+int cactus_graph_matmul(cactus_graph_t graph, cactus_node_t a, cactus_node_t b, bool pretransposed_rhs, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_matmul");
     try {
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.matmul(static_cast<size_t>(a), static_cast<size_t>(b), pretransposed_rhs, static_cast<ComputeBackend>(backend)));
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.matmul(static_cast<size_t>(a), static_cast<size_t>(b), pretransposed_rhs));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();
@@ -881,10 +904,10 @@ int cactus_graph_rms_norm(cactus_graph_t graph, cactus_node_t input, cactus_node
     }
 }
 
-int cactus_graph_rope(cactus_graph_t graph, cactus_node_t input, float theta, size_t position_offset, int32_t backend, cactus_node_t* out) {
+int cactus_graph_rope(cactus_graph_t graph, cactus_node_t input, float theta, size_t position_offset, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_rope");
     try {
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.rope(static_cast<size_t>(input), theta, position_offset, static_cast<ComputeBackend>(backend)));
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.rope(static_cast<size_t>(input), theta, position_offset));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();
@@ -892,10 +915,10 @@ int cactus_graph_rope(cactus_graph_t graph, cactus_node_t input, float theta, si
     }
 }
 
-int cactus_graph_rope_gptj(cactus_graph_t graph, cactus_node_t input, float theta, size_t position_offset, size_t rot_dim, int32_t backend, cactus_node_t* out) {
+int cactus_graph_rope_gptj(cactus_graph_t graph, cactus_node_t input, float theta, size_t position_offset, size_t rot_dim, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_rope_gptj");
     try {
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.rope_gptj(static_cast<size_t>(input), theta, position_offset, rot_dim, static_cast<ComputeBackend>(backend)));
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.rope_gptj(static_cast<size_t>(input), theta, position_offset, rot_dim));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();
@@ -914,15 +937,15 @@ int cactus_graph_softmax(cactus_graph_t graph, cactus_node_t input, int32_t axis
     }
 }
 
-int cactus_graph_attention(cactus_graph_t graph, cactus_node_t query, cactus_node_t key, cactus_node_t value, float scale, bool is_causal, size_t position_offset, size_t window_size, int32_t backend, bool use_mask, cactus_node_t mask, bool additive_mask, cactus_node_t* out) {
+int cactus_graph_attention(cactus_graph_t graph, cactus_node_t query, cactus_node_t key, cactus_node_t value, float scale, bool is_causal, size_t position_offset, size_t window_size, bool use_mask, cactus_node_t mask, bool additive_mask, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_attention");
     try {
         if (use_mask) {
-            *out = static_cast<cactus_node_t>(as_graph(graph)->graph.attention_masked(static_cast<size_t>(query), static_cast<size_t>(key), static_cast<size_t>(value), static_cast<size_t>(mask), scale, is_causal, static_cast<ComputeBackend>(backend), additive_mask, position_offset, window_size));
+            *out = static_cast<cactus_node_t>(as_graph(graph)->graph.attention_masked(static_cast<size_t>(query), static_cast<size_t>(key), static_cast<size_t>(value), static_cast<size_t>(mask), scale, is_causal, cactus_default_backend(), additive_mask, position_offset, window_size));
         } else if (window_size > 0 || position_offset > 0) {
-            *out = static_cast<cactus_node_t>(as_graph(graph)->graph.attention(static_cast<size_t>(query), static_cast<size_t>(key), static_cast<size_t>(value), scale, position_offset, window_size, static_cast<ComputeBackend>(backend)));
+            *out = static_cast<cactus_node_t>(as_graph(graph)->graph.attention(static_cast<size_t>(query), static_cast<size_t>(key), static_cast<size_t>(value), scale, position_offset, window_size));
         } else {
-            *out = static_cast<cactus_node_t>(as_graph(graph)->graph.attention(static_cast<size_t>(query), static_cast<size_t>(key), static_cast<size_t>(value), scale, is_causal, static_cast<ComputeBackend>(backend)));
+            *out = static_cast<cactus_node_t>(as_graph(graph)->graph.attention(static_cast<size_t>(query), static_cast<size_t>(key), static_cast<size_t>(value), scale, is_causal));
         }
         return 0;
     } catch (const std::exception& e) {

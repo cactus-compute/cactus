@@ -76,8 +76,7 @@ struct ParityCase {
             for (size_t i = 0; i < result.size(); ++i) result[i] = p[i];
         }
         graph.hard_reset();
-        cactus_backend_select("auto");
-        return result;
+            return result;
     }
 
     bool check() {
@@ -98,29 +97,53 @@ struct ParityCase {
 
 bool metal_present() {
     bool ok = cactus_backend_select("metal") == 0;
-    cactus_backend_select("auto");
     return ok;
 }
 
-bool parity_unary(size_t (CactusGraph::*fn)(size_t), float lo = -1.0f, float hi = 1.0f) {
+bool parity_per_op_pins() {
+    auto run_pinned = [&](const char* global, ComputeBackend matmul_backend) {
+        ParityCase c;
+        size_t a = c.add_input({8, 32});
+        size_t b = c.add_input({32, 16});
+        c.build = [matmul_backend](CactusGraph& g, const std::vector<size_t>& in) {
+            size_t m = g.matmul(in[0], in[1], false, matmul_backend);
+            size_t s = g.silu(m);
+            return g.scalar_add(s, 1.0f);
+        };
+        return c.run(global);
+    };
+    std::vector<float> ref = run_pinned("cpu", ComputeBackend::CPU);
+    std::vector<float> cpu_pin_under_metal = run_pinned("metal", ComputeBackend::CPU);
+    std::vector<float> metal_pin_under_cpu = run_pinned("cpu", ComputeBackend::METAL);
+    if (ref.empty() || cpu_pin_under_metal.size() != ref.size() || metal_pin_under_cpu.size() != ref.size())
+        return false;
+    for (size_t i = 0; i < ref.size(); ++i) {
+        float scale = std::max(1.0f, std::fabs(ref[i]));
+        if (std::fabs(ref[i] - cpu_pin_under_metal[i]) > 5e-2f * scale) return false;
+        if (std::fabs(ref[i] - metal_pin_under_cpu[i]) > 5e-2f * scale) return false;
+    }
+    return true;
+}
+
+bool parity_unary(size_t (CactusGraph::*fn)(size_t, ComputeBackend), float lo = -1.0f, float hi = 1.0f) {
     ParityCase c;
     c.add_input({4, 33}, lo, hi);
-    c.build = [fn](CactusGraph& g, const std::vector<size_t>& in) { return (g.*fn)(in[0]); };
+    c.build = [fn](CactusGraph& g, const std::vector<size_t>& in) { return (g.*fn)(in[0], cactus_default_backend()); };
     return c.check();
 }
 
-bool parity_scalar(size_t (CactusGraph::*fn)(size_t, float), float p, float lo = -1.0f, float hi = 1.0f) {
+bool parity_scalar(size_t (CactusGraph::*fn)(size_t, float, ComputeBackend), float p, float lo = -1.0f, float hi = 1.0f) {
     ParityCase c;
     c.add_input({4, 33}, lo, hi);
-    c.build = [fn, p](CactusGraph& g, const std::vector<size_t>& in) { return (g.*fn)(in[0], p); };
+    c.build = [fn, p](CactusGraph& g, const std::vector<size_t>& in) { return (g.*fn)(in[0], p, cactus_default_backend()); };
     return c.check();
 }
 
-bool parity_reduce(size_t (CactusGraph::*fn)(size_t, int)) {
+bool parity_reduce(size_t (CactusGraph::*fn)(size_t, int, ComputeBackend)) {
     for (int axis = 0; axis < 3; ++axis) {
         ParityCase c;
         c.add_input({3, 5, 17});
-        c.build = [fn, axis](CactusGraph& g, const std::vector<size_t>& in) { return (g.*fn)(in[0], axis); };
+        c.build = [fn, axis](CactusGraph& g, const std::vector<size_t>& in) { return (g.*fn)(in[0], axis, cactus_default_backend()); };
         if (!c.check()) return false;
     }
     return true;
@@ -248,14 +271,14 @@ bool parity_conv1d_pointwise() {
     return c.check();
 }
 
-bool parity_conv2d(size_t (CactusGraph::*fn)(size_t, size_t, size_t), bool depthwise, bool pointwise) {
+bool parity_conv2d(size_t (CactusGraph::*fn)(size_t, size_t, size_t, ComputeBackend), bool depthwise, bool pointwise) {
     ParityCase c;
     c.add_input({1, 4, 11, 13});
     if (depthwise) c.add_input({4, 1, 3, 3});
     else if (pointwise) c.add_input({6, 4, 1, 1});
     else c.add_input({6, 4, 3, 3});
     c.add_input({pointwise || depthwise ? (depthwise ? 4u : 6u) : 6u});
-    c.build = [fn](CactusGraph& g, const std::vector<size_t>& in) { return (g.*fn)(in[0], in[1], in[2]); };
+    c.build = [fn](CactusGraph& g, const std::vector<size_t>& in) { return (g.*fn)(in[0], in[1], in[2], cactus_default_backend()); };
     return c.check();
 }
 
@@ -431,7 +454,6 @@ std::vector<float> run_cached_attention(const char* backend, size_t ceiling, siz
         g.soft_reset();
     }
     g.hard_reset();
-    cactus_backend_select("auto");
     return collected;
 }
 
@@ -543,6 +565,7 @@ int main() {
     runner.run_test("equality_exact", parity_equality_exact());
     runner.run_test("sliding_window_cache (ring wrap)", parity_sliding_window_cache());
     runner.run_test("cache_growth", parity_cache_growth());
+    runner.run_test("per_op_backend_pins", parity_per_op_pins());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

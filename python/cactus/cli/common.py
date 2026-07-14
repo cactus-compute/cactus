@@ -39,11 +39,6 @@ DEFAULT_TEST_MODEL_ID = DEFAULT_MODEL_ID
 DEFAULT_TEST_TRANSCRIPTION_MODEL_ID = DEFAULT_TRANSCRIPTION_MODEL_ID
 
 
-# Vendor-specific weight-bundle variants; add a new vendor by appending its
-# name here. "general" (the portable bundle) is always available and default.
-SUPPORTED_WEIGHTS_VARIANTS: tuple[str, ...] = ("apple",)
-
-
 RED = '\033[0;31m'
 GREEN = '\033[0;32m'
 YELLOW = '\033[1;33m'
@@ -67,6 +62,22 @@ def print_color(color, message):
 
 def mask_key(key):
     return key[:4] + "..." + key[-4:] if len(key) >= 8 else "***"
+
+
+def convert_toolchain_error():
+    """Message if the model-conversion toolchain (torch/transformers) is missing, else None."""
+    import importlib.util
+    missing = [m for m in ("torch", "transformers")
+               if importlib.util.find_spec(m) is None]
+    if not missing:
+        return None
+    return (
+        "the model-conversion toolchain is not installed (missing: "
+        + ", ".join(missing) + ").\n"
+        "  Converting a model from source needs it. Either:\n"
+        "    - use a prebuilt model:   cactus run <model>   or   cactus download <model>\n"
+        "    - install the toolchain:  pip install \"cactus-compute[convert]\""
+    )
 
 
 BIN_DIR = SCRIPT_DIR.parent / "bin"

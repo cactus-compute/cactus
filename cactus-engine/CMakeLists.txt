@@ -16,7 +16,6 @@ set(ENGINE_SOURCES
     src/constraints.cpp
     src/model.cpp
     src/kv_compress.cpp
-    src/model_npu.cpp
     src/engine_image.cpp
     src/index.cpp
     src/index_ffi.cpp
@@ -32,14 +31,6 @@ set(ENGINE_SOURCES
     src/stream.cpp
     src/tokenizer.cpp
 )
-if(APPLE)
-    enable_language(OBJCXX)
-    list(APPEND ENGINE_SOURCES src/npu_ane.mm)
-    set_source_files_properties(src/npu_ane.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-else()
-    list(APPEND ENGINE_SOURCES src/npu.cpp)
-endif()
-
 add_library(cactus_engine STATIC ${ENGINE_SOURCES})
 set_target_properties(cactus_engine PROPERTIES
     POSITION_INDEPENDENT_CODE ON
@@ -56,7 +47,7 @@ target_link_libraries(cactus_engine PUBLIC cactus_graph)
 
 if(APPLE)
     target_link_libraries(cactus_engine PUBLIC
-        "-framework CoreML" "-framework Foundation" "-framework Metal" "-framework MetalPerformanceShaders"
+        "-framework Foundation" "-framework Metal" "-framework MetalPerformanceShaders"
         "-framework Security" "-framework SystemConfiguration" "-framework CFNetwork"
     )
 
@@ -156,7 +147,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
             target_link_libraries(cactus_engine_shared PRIVATE "${_curl}")
         endif()
         target_link_libraries(cactus_engine_shared PRIVATE
-            "-framework Accelerate" "-framework CoreML" "-framework Foundation" "-framework Metal" "-framework MetalPerformanceShaders"
+            "-framework Accelerate" "-framework Foundation" "-framework Metal" "-framework MetalPerformanceShaders"
             "-framework Security" "-framework SystemConfiguration" "-framework CFNetwork"
         )
     else()

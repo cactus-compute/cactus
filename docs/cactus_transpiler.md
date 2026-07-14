@@ -227,21 +227,21 @@ cactus convert nvidia/parakeet-tdt-0.6b-v3 ./parakeet-weights --bits 4 \
 
 ## Running Saved Bundles
 
-Transpiled bundles are saved to `./weights/<model>/` by default (alongside their CQ
-weights). Run them later without re-transpiling:
+Transpiled bundles are saved to `./weights/<model>-cq<bits>/` by default (alongside
+their CQ weights). Run them later without re-transpiling:
 
 ```bash
 # Text
-cactus run ./weights/qwen3-0.6b --prompt "Write a haiku"
+cactus run ./weights/qwen3-0.6b-cq4 --prompt "Write a haiku"
 
 # Multimodal
-cactus run ./weights/gemma-4-e2b-it \
+cactus run ./weights/gemma-4-e2b-it-cq4 \
   --image photo.jpg \
   --audio speech.wav \
   --prompt "What do you see?"
 
 # Audio
-cactus run ./weights/parakeet-tdt-0.6b-v3 \
+cactus run ./weights/parakeet-tdt-0.6b-v3-cq4 \
   --audio meeting.wav
 ```
 
@@ -374,7 +374,7 @@ component. Use `loaded.reset()` between independent generations.
 A transpiled bundle looks like this:
 
 ```
-weights/<model>/
+weights/<model>-cq<bits>/
   raw_ir.json              # IR before optimization (debugging)
   optimized_ir.json        # IR after fusion passes (debugging)
   graph.cactus             # serialized runtime graph
@@ -438,10 +438,6 @@ slot, so single-stream decode stays lean while fixed-batch decode (`decode_batch
 | `--no-fuse-rope` | Disable RoPE fusion |
 | `--no-fuse-attention` | Disable attention fusion |
 
-NPU emission (CoreML `.mlpackage`s for Apple Silicon audio and vision encoders)
-is available through the `--npu`, `--npu-quantize`, `--npu-audio-quantize`, and
-`--npu-vision-quantize` flags on `cactus convert`.
-
 ### `cactus run`
 
 ```bash
@@ -453,8 +449,7 @@ huggingface.co/Cactus-Compute) or a local path to a bundle directory.
 
 | Option | Description |
 |--------|-------------|
-| `--bits 1\|2\|3\|4` | CQ quantization bits when downloading (default: 4) |
-| `--weights general\|apple` | Weights bundle variant (default: general — portable on every platform) |
+| `--bits 1\|2\|3\|4\|2.54\|3.26` | CQ quantization bits when downloading (default: 4) |
 | `--token <token>` | HuggingFace token (gated models) |
 | `--prompt <text>` | Input prompt |
 | `--input-ids <ids>` | Comma-separated token IDs |

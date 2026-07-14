@@ -33,7 +33,13 @@ def _prepend_python_path(env):
 
 def run_transpile(model_id, *, extra_args, execute_after_transpile=False,
                   allow_unconverted_weights=False):
+    from .common import convert_toolchain_error
     from .runtime import ensure_python_runtime_library
+
+    err = convert_toolchain_error()
+    if err:
+        print_color(RED, f"Error: {err}")
+        return 1
 
     extra_args = list(extra_args or [])
     command = [sys.executable, "-m", "cactus.transpile.hf_model", "--model-id", model_id]

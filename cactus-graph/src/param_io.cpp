@@ -254,7 +254,6 @@ void write_field(std::ostream& out, ParamField field, const OpParams& params) {
         case ParamField::Axis: write_i32(out, static_cast<int32_t>(params.axis)); break;
         case ParamField::NewShape: write_size_vector(out, params.new_shape); break;
         case ParamField::PretransposedRhs: write_u32(out, params.pretransposed_rhs ? 1u : 0u); break;
-        case ParamField::Backend: write_u32(out, static_cast<uint32_t>(params.backend)); break;
         case ParamField::SliceStart: write_u64(out, static_cast<uint64_t>(params.slice_start)); break;
         case ParamField::SliceLength: write_u64(out, static_cast<uint64_t>(params.slice_length)); break;
         case ParamField::Epsilon: write_f32(out, params.epsilon); break;
@@ -295,11 +294,12 @@ void write_field(std::ostream& out, ParamField field, const OpParams& params) {
         case ParamField::CacheSeqLen: write_u64(out, static_cast<uint64_t>(params.cache_seq_len)); break;
         case ParamField::HeadDim: write_u64(out, static_cast<uint64_t>(params.head_dim)); break;
         case ParamField::VHeadDim: write_u64(out, static_cast<uint64_t>(params.v_head_dim)); break;
+        case ParamField::Backend:
         case ParamField::CachedKeysInt8Ptr:
         case ParamField::CachedValuesInt8Ptr:
         case ParamField::CachedKScalesPtr:
         case ParamField::CachedVScalesPtr:
-            throw std::runtime_error("Attempted to serialize runtime-only pointer field");
+            throw std::runtime_error("Attempted to serialize runtime-only field");
         case ParamField::MaxCacheSeqLen: write_u64(out, static_cast<uint64_t>(params.max_cache_seq_len)); break;
         case ParamField::CacheSinkSize: write_u64(out, static_cast<uint64_t>(params.cache_sink_size)); break;
         case ParamField::CacheNumSlots: write_u64(out, static_cast<uint64_t>(params.cache_num_slots)); break;
@@ -312,14 +312,9 @@ void read_field(std::istream& in, ParamField field, OpParams& params) {
         case ParamField::Axis: params.axis = static_cast<int>(read_i32(in)); break;
         case ParamField::NewShape: params.new_shape = read_size_vector(in); break;
         case ParamField::PretransposedRhs: params.pretransposed_rhs = (read_u32(in) != 0); break;
-        case ParamField::Backend: {
-            uint32_t backend_val = read_u32(in);
-            if (backend_val > static_cast<uint32_t>(ComputeBackend::NPU)) {
-                throw std::runtime_error("Graph file corrupted: invalid backend");
-            }
-            params.backend = static_cast<ComputeBackend>(backend_val);
+        case ParamField::Backend:
+            read_u32(in);
             break;
-        }
         case ParamField::SliceStart: params.slice_start = static_cast<size_t>(read_u64(in)); break;
         case ParamField::SliceLength: params.slice_length = static_cast<size_t>(read_u64(in)); break;
         case ParamField::Epsilon: params.epsilon = read_f32(in); break;
@@ -380,7 +375,7 @@ void write_op_params(std::ostream& out, OpType op_type, const OpParams& params) 
     std::vector<ParamField> fields;
     fields.reserve(schema.size());
     for (const auto& spec : schema) {
-        if (spec.persistence == FieldPersistence::Persistent) {
+        if (spec.persistence == FieldPersistence::Persistent && spec.field != ParamField::Backend) {
             fields.push_back(spec.field);
         }
     }

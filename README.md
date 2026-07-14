@@ -124,9 +124,9 @@ graph.hard_reset();
 
 - LLM: Gemma-4-E2B-CQ4 (1k-context prefill / decode for 100 tokens)
 - VLM: Gemma-4-E2B-CQ4 (256px image encode time / decode)
-- Transcribe: Parakeet-TDT-0.6B-CQ4 (20s audio ens-to-end transcribe time)
+- Transcribe: Parakeet-TDT-0.6B-CQ4 (20s audio end-to-end transcribe time)
 - 1k-Context RAM: peak MB during the LLM benchmark
-- No speculative decode or MTP, pure decode. 
+- No speculative decode or MTP, pure decode 
 
 Command: `cactus benchmark` [optional `--ios` or `--android`]
 
@@ -134,10 +134,17 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 |--------|-----|-----|------------|---------------|
 | Mac M5 Max | 2964tps / 154tps | 0.09s / 168tps | 0.15s | 1348MB |
 | Mac M4 Pro | 1947tps / 97tps | 0.25s / 108tps | 0.28s | 1225MB |
+| Mac M3 Pro | 1294tps / 64tps | 0.40s / 72tps | 0.37s | 735MB |
 | iPad/Vision Pro M5 | 1336tps / 71tps | 0.25s / 80tps | 0.27s | 703MB |
 | iPhone 17 Pro | 729tps / 37tps | 0.5s / 39tps | 0.51s | 644MB |
 | iPhone 15 Pro | 511tps / 25tps | 1.16s / 27tps | 1.40s | 635MB |
 | Pixel 10 Pro | - / - | - / - | - | - |
+
+N/B: With 1k-context prefill and decode for 100 runs on M5 Max
+- `LFM2.5-VL-1.6B` = 289toks/sec
+- `Qwen3-1.7B` = 155toks/sec 
+- `LFM2.5-VL-450m` = 472toks/sec, image encodes in 43ms
+- `LFM22.5-VL-230m` = 555toks/sec
 
 ## Output Quality 
 
@@ -162,10 +169,18 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 
 ## Supported Models
 
-- Any HuggigFace model can be converted using `cactus convert [HF-Name]`, though experimental. 
+- Any HuggingFace model can be converted using `cactus convert [HF-Name]`, though experimental. 
 - Liquid, Gemma. whisper. parakeet and Qwen model families are especially tested. 
 - Some models have been pre-uploaded [here](https://huggingface.co/Cactus-Compute), just run `cactus download [HF-Name]`.
 - `cactus run [HF-Name]` albeit first downloads or convert the model if not found. 
+
+## Needle
+
+[Needle](https://github.com/cactus-compute/needle) is a 26m parameter model for on-device tool calling:
+
+```bash
+cactus run Cactus-Compute/needle [--tools my_tools.json]  # OpenAI function-calling format; demo toolset by default
+```
 
 ## Learn More
 
@@ -209,13 +224,13 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │    --clear                           remove saved key                          │
 │                                                                                │
 │  cactus run [model|path]             run a model (downloads if needed)         │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --weights general|apple           weights bundle variant (default: general) │
-│    --backend auto|cpu|metal|vulkan   inference backend (default: auto)         │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
+│    --backend cpu|metal|vulkan        inference backend (default: auto)         │
 │    --image <path>                    image file for VLM inference              │
 │    --audio <path>                    audio file for audio chat                 │
 │    --system <prompt>                 system prompt                             │
 │    --prompt <text>                   send prompt immediately                   │
+│    --tools <json|file>               tool definitions for tool calling         │
 │    --thinking                        enable thinking/reasoning mode            │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
@@ -223,21 +238,18 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │  cactus transcribe [model]           live microphone transcription with a model│
 │    --file <audio.wav>                audio file to transcribe (WAV)            │
 │    --language <code>                 language code (default: en)               │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --weights general|apple           weights bundle variant (default: general) │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │                                                                                │
 │  cactus download [model]             get a bundle (prebuilt, else build)       │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --weights general|apple           weights bundle variant (default: general) │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │                                                                                │
 │  cactus convert <model> [dir]        HuggingFace -> runnable cactus bundle     │
 │                                      (CQ weights + runtime graph)              │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --weights general|apple           weights bundle variant (default: general) │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │    --lora <path>                     merge a LoRA adapter before converting    │
@@ -247,9 +259,8 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │  cactus serve [model]                OpenAI-compatible local HTTP server       │
 │    --host <addr>                     bind address (default: 127.0.0.1)         │
 │    --port <port>                     port (default: 8080)                      │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --weights general|apple           weights bundle variant (default: general) │
-│    --backend auto|cpu|metal|vulkan   inference backend (default: auto)         │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
+│    --backend cpu|metal|vulkan        inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │    --no-cloud-handoff                disable automatic cloud handoff           │
@@ -258,9 +269,8 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │                                                                                │
 │  cactus code                         run the AI coding agent (TUI / print)     │
 │    --serve-model <id>                auto-start a server with this model       │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --weights general|apple           weights bundle variant (default: general) │
-│    --backend auto|cpu|metal|vulkan   inference backend (default: auto)         │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
+│    --backend cpu|metal|vulkan        inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │    --host <addr>                     server address (default: 127.0.0.1)       │
@@ -283,9 +293,8 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │                                      (default: all)                            │
 │    --model <hf-id>                   default: google/gemma-4-E2B-it            │
 │    --transcription-model <hf-id>     default: nvidia/parakeet-tdt-0.6b-v3      │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --weights general|apple           weights bundle variant (default: general) │
-│    --backend auto|cpu|metal|vulkan   inference backend (default: auto)         │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
+│    --backend cpu|metal|vulkan        inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild of test models        │
 │    --suite <name>                    run a single test suite by name           │
@@ -299,9 +308,8 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 │  cactus benchmark                    run the engine benchmark suite            │
 │    --model <hf-id>                   default: google/gemma-4-E2B-it            │
 │    --transcription-model <hf-id>     default: nvidia/parakeet-tdt-0.6b-v3      │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
-│    --weights general|apple           weights bundle variant (default: general) │
-│    --backend auto|cpu|metal|vulkan   inference backend (default: auto)         │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
+│    --backend cpu|metal|vulkan        inference backend (default: auto)         │
 │    --ios                             run on connected iPhone                   │
 │    --android                         run on connected Android                  │
 │                                                                                │

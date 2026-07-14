@@ -110,7 +110,7 @@ def _patch_graph_runtime(cactus_module) -> None:
     orig_pow = Graph.pow
     orig_expand = Graph.expand
 
-    def matmul(self, a, b, pretransposed_rhs=False, backend=Graph.CPU, output_dtype=None):
+    def matmul(self, a, b, pretransposed_rhs=False, backend=None, output_dtype=None):
         a = _ensure_fp16_activation(self, a)
         b = _ensure_fp16_activation(self, b)
         out = cactus_node_t()
@@ -119,17 +119,16 @@ def _patch_graph_runtime(cactus_module) -> None:
             cactus_node_t(a.id),
             cactus_node_t(b.id),
             ctypes.c_bool(bool(pretransposed_rhs)),
-            ctypes.c_int32(int(backend)),
             ctypes.byref(out),
         )
         if rc != 0:
             raise RuntimeError(_err("graph_matmul failed"))
-        result = self._tensor_from_node(out.value)
+        result = self._apply_backend(self._tensor_from_node(out.value), backend)
         if output_dtype is not None and int(output_dtype) != int(result.dtype):
             result = self.precision_cast(result, int(output_dtype))
         return result
 
-    def gather(self, tensor, indices, axis=0):
+    def gather(self, tensor, indices, axis=0, backend=None):
         tensor = self._ensure_tensor(tensor)
         indices = self._ensure_tensor(indices)
         if int(axis) != 0:
@@ -145,9 +144,9 @@ def _patch_graph_runtime(cactus_module) -> None:
         )
         if rc != 0:
             raise RuntimeError("graph_gather failed")
-        return self._tensor_from_node(out.value)
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
 
-    def conv2d(self, x, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
+    def conv2d(self, x, weight, bias=None, stride=1, padding=0, dilation=1, groups=1, backend=None):
         def _pair(value: Any) -> tuple[int, int]:
             if isinstance(value, (tuple, list)):
                 if len(value) != 2:
@@ -171,6 +170,7 @@ def _patch_graph_runtime(cactus_module) -> None:
                 padding=padding,
                 dilation=dilation,
                 groups=groups,
+                backend=backend,
             )
 
         if (
@@ -180,9 +180,9 @@ def _patch_graph_runtime(cactus_module) -> None:
             and dilation_hw == (1, 1)
         ):
             if groups_int == 1:
-                return self.conv2d_k3s2p1(x, weight, bias=bias)
+                return self.conv2d_k3s2p1(x, weight, bias=bias, backend=backend)
             if len(weight.shape) >= 1 and groups_int == int(weight.shape[0]):
-                return self.conv2d_depthwise_k3s2p1(x, weight, bias=bias)
+                return self.conv2d_depthwise_k3s2p1(x, weight, bias=bias, backend=backend)
 
         if (
             kernel_hw == (3, 3)
@@ -192,7 +192,7 @@ def _patch_graph_runtime(cactus_module) -> None:
             and groups_int == 1
             and _has_symbol("cactus_graph_conv2d_k3s1p1")
         ):
-            return self.conv2d_k3s1p1(x, weight, bias=bias)
+            return self.conv2d_k3s1p1(x, weight, bias=bias, backend=backend)
 
         if (
             kernel_hw == (1, 1)
@@ -201,7 +201,7 @@ def _patch_graph_runtime(cactus_module) -> None:
             and dilation_hw == (1, 1)
             and groups_int == 1
         ):
-            return self.conv2d_pointwise_1x1(x, weight, bias=bias)
+            return self.conv2d_pointwise_1x1(x, weight, bias=bias, backend=backend)
 
         raise NotImplementedError(
             "v2 runtime does not expose generic conv2d for this configuration: "
@@ -209,91 +209,91 @@ def _patch_graph_runtime(cactus_module) -> None:
             f"dilation={dilation_hw} groups={groups_int}"
         )
 
-    def scalar_not_equal(self, x, value):
+    def scalar_not_equal(self, x, value, backend=None):
         if _has_symbol("cactus_graph_scalar_not_equal"):
-            return orig_scalar_not_equal(self, x, value)
+            return orig_scalar_not_equal(self, x, value, backend=backend)
         x = _ensure_compare_tensor(self, x)
         delta = self.scalar_add(x, -float(value))
         return _approx_nonzero_mask(self, delta)
 
-    def not_equal(self, a, b):
+    def not_equal(self, a, b, backend=None):
         if _has_symbol("cactus_graph_not_equal"):
-            return orig_not_equal(self, a, b)
+            return orig_not_equal(self, a, b, backend=backend)
         a = _ensure_compare_tensor(self, a)
         b = _ensure_compare_tensor(self, b)
         delta = self.subtract(a, b)
         return _approx_nonzero_mask(self, delta)
 
-    def transpose(self, x, backend=Graph.CPU):
+    def transpose(self, x, backend=None):
         return orig_transpose(self, _ensure_scalar_tensor(self, x), backend=backend)
 
-    def permute(self, x, permutation, backend=Graph.CPU):
+    def permute(self, x, permutation, backend=None):
         return orig_permute(self, _ensure_scalar_tensor(self, x), permutation, backend=backend)
 
-    def scalar_add(self, x, value):
-        return orig_scalar_add(self, self._ensure_tensor(x), value)
+    def scalar_add(self, x, value, backend=None):
+        return orig_scalar_add(self, self._ensure_tensor(x), value, backend=backend)
 
-    def scalar_subtract(self, x, value):
-        return orig_scalar_subtract(self, self._ensure_tensor(x), value)
+    def scalar_subtract(self, x, value, backend=None):
+        return orig_scalar_subtract(self, self._ensure_tensor(x), value, backend=backend)
 
-    def scalar_multiply(self, x, value):
-        return orig_scalar_multiply(self, self._ensure_tensor(x), value)
+    def scalar_multiply(self, x, value, backend=None):
+        return orig_scalar_multiply(self, self._ensure_tensor(x), value, backend=backend)
 
-    def scalar_divide(self, x, value):
-        return orig_scalar_divide(self, self._ensure_tensor(x), value)
+    def scalar_divide(self, x, value, backend=None):
+        return orig_scalar_divide(self, self._ensure_tensor(x), value, backend=backend)
 
-    def scalar_exp(self, x):
-        return orig_scalar_exp(self, self._ensure_tensor(x))
+    def scalar_exp(self, x, backend=None):
+        return orig_scalar_exp(self, self._ensure_tensor(x), backend=backend)
 
-    def scalar_sqrt(self, x):
-        return orig_scalar_sqrt(self, self._ensure_tensor(x))
+    def scalar_sqrt(self, x, backend=None):
+        return orig_scalar_sqrt(self, self._ensure_tensor(x), backend=backend)
 
-    def scalar_cos(self, x):
-        return orig_scalar_cos(self, self._ensure_tensor(x))
+    def scalar_cos(self, x, backend=None):
+        return orig_scalar_cos(self, self._ensure_tensor(x), backend=backend)
 
-    def scalar_sin(self, x):
-        return orig_scalar_sin(self, self._ensure_tensor(x))
+    def scalar_sin(self, x, backend=None):
+        return orig_scalar_sin(self, self._ensure_tensor(x), backend=backend)
 
-    def scalar_log(self, x):
-        return orig_scalar_log(self, self._ensure_tensor(x))
+    def scalar_log(self, x, backend=None):
+        return orig_scalar_log(self, self._ensure_tensor(x), backend=backend)
 
-    def clamp(self, x, lo, hi):
+    def clamp(self, x, lo, hi, backend=None):
         if orig_clamp is None:
             raise RuntimeError("Cactus runtime is missing required symbol: cactus_graph_clamp")
-        return orig_clamp(self, _ensure_scalar_tensor(self, x), lo, hi)
+        return orig_clamp(self, _ensure_scalar_tensor(self, x), lo, hi, backend=backend)
 
-    def add(self, a, b):
-        return orig_add(self, _ensure_scalar_tensor(self, a), _ensure_scalar_tensor(self, b))
+    def add(self, a, b, backend=None):
+        return orig_add(self, _ensure_scalar_tensor(self, a), _ensure_scalar_tensor(self, b), backend=backend)
 
-    def subtract(self, a, b):
-        return orig_subtract(self, _ensure_scalar_tensor(self, a), _ensure_scalar_tensor(self, b))
+    def subtract(self, a, b, backend=None):
+        return orig_subtract(self, _ensure_scalar_tensor(self, a), _ensure_scalar_tensor(self, b), backend=backend)
 
-    def multiply(self, a, b):
-        return orig_multiply(self, _ensure_scalar_tensor(self, a), _ensure_scalar_tensor(self, b))
+    def multiply(self, a, b, backend=None):
+        return orig_multiply(self, _ensure_scalar_tensor(self, a), _ensure_scalar_tensor(self, b), backend=backend)
 
-    def divide(self, a, b):
-        return orig_divide(self, _ensure_scalar_tensor(self, a), _ensure_scalar_tensor(self, b))
+    def divide(self, a, b, backend=None):
+        return orig_divide(self, _ensure_scalar_tensor(self, a), _ensure_scalar_tensor(self, b), backend=backend)
 
-    def concat(self, a, b, axis=0):
-        return orig_concat(self, _ensure_scalar_tensor(self, a), _ensure_scalar_tensor(self, b), axis=axis)
+    def concat(self, a, b, axis=0, backend=None):
+        return orig_concat(self, _ensure_scalar_tensor(self, a), _ensure_scalar_tensor(self, b), axis=axis, backend=backend)
 
-    def cat(self, tensors, axis=0):
+    def cat(self, tensors, axis=0, backend=None):
         legalized = [_ensure_scalar_tensor(self, tensor) for tensor in tensors]
-        return orig_cat(self, legalized, axis=axis)
+        return orig_cat(self, legalized, axis=axis, backend=backend)
 
-    def abs(self, x):
-        return orig_abs(self, self._ensure_tensor(x))
+    def abs(self, x, backend=None):
+        return orig_abs(self, self._ensure_tensor(x), backend=backend)
 
-    def pow(self, x, exponent):
-        return orig_pow(self, self._ensure_tensor(x), exponent)
+    def pow(self, x, exponent, backend=None):
+        return orig_pow(self, self._ensure_tensor(x), exponent, backend=backend)
 
-    def expand(self, x, shape):
+    def expand(self, x, shape, backend=None):
         x = self._ensure_tensor(x)
         shape = tuple(int(v) for v in shape)
         if tuple(int(dim) for dim in x.shape) == shape:
             return x
         if _has_symbol("cactus_graph_expand"):
-            return orig_expand(self, x, shape)
+            return orig_expand(self, x, shape, backend=backend)
 
         # v2 builds do not always expose the generic expand symbol. For
         # broadcast-only expands, adding an embedded zero tensor with the target
@@ -312,7 +312,7 @@ def _patch_graph_runtime(cactus_module) -> None:
         zero = self.input(shape, dtype=x_dtype)
         self.set_input(zero, np.zeros(shape, dtype=dtype_map[x_dtype]), dtype=x_dtype)
         self.mark_embedded_input(zero)
-        return self.add(x, zero)
+        return self.add(x, zero, backend=backend)
 
     Graph.matmul = matmul
     Graph.gather = gather
@@ -353,7 +353,6 @@ if hasattr(_cactus_module, "_lib"):
             _cactus_module.cactus_node_t,
             _cactus_module.cactus_node_t,
             ctypes.c_bool,
-            ctypes.c_int32,
             ctypes.POINTER(_cactus_module.cactus_node_t),
         ]
         _lib_obj.cactus_graph_matmul.restype = ctypes.c_int

@@ -50,6 +50,9 @@ def _load_hf(model_id_or_path: str, device: str, *, skip_model_load: bool = Fals
     warnings.filterwarnings("ignore", message=".*You are using a model of type.*")
     for note in patch_transformers_import_compat():
         print(f"note={note}")
+    from ..models.needle import register_with_transformers
+
+    register_with_transformers()
     nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path, cache_dir=_hf_cache_dir())
     if nemo_export is not None:
         model_id_or_path = nemo_export
@@ -434,7 +437,11 @@ def convert(args: argparse.Namespace) -> None:
     }
     rows: list[dict[str, Any]] = []
     pending: list[tuple[str, Any, Any, Any]] = []
-    num_layers = int(model_config.get("num_layers", 0) or 0) or None
+    num_layers = max(
+        int(model_config.get("num_layers", 0) or 0),
+        int(cfg_get(cfg, "num_encoder_layers", 0) or 0),
+        int(cfg_get(cfg, "num_decoder_layers", 0) or 0),
+    ) or None
     target_modules: set[str] = set()
     for name, tensor in state_dict.items():
         match = adapter.name_tensor(name, tensor, num_layers)

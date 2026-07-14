@@ -110,6 +110,17 @@ CACTUS_FFI_EXPORT int cactus_transcribe(
     size_t pcm_buffer_size
 );
 
+CACTUS_FFI_EXPORT int cactus_preprocess_audio_features(
+    const char* audio_file_path,
+    const char* model_type,
+    size_t mel_bins,
+    float* features_buffer,
+    size_t buffer_size,
+    size_t* feature_count,
+    size_t* out_mel_bins,
+    size_t* out_frames
+);
+
 CACTUS_FFI_EXPORT cactus_stream_transcribe_t cactus_stream_transcribe_start(
     cactus_model_t model,
     const char* options_json

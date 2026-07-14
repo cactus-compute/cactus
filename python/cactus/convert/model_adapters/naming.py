@@ -328,6 +328,10 @@ def _global_match(name: str, family: str) -> str | None:
             found = _candidate_table_match(name, table)
             if found:
                 return found
+    elif family == "needle":
+        found = _candidate_table_match(name, wp.NEEDLE_GLOBAL_WEIGHTS)
+        if found:
+            return found
     if name in {"wte.weight", "word_embeddings.weight"}:
         return "token_embeddings.weights"
     if name in {"wpe.weight", "position_embeddings.weight"}:

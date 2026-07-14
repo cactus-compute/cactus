@@ -7,7 +7,8 @@ pub type CactusTokenCallback = Option<unsafe extern "C" fn(token: *const c_char,
 pub type CactusLogCallback = Option<unsafe extern "C" fn(level: c_int, component: *const c_char, message: *const c_char, user_data: *mut c_void)>;
 
 #[cfg_attr(target_os = "macos", link(name = "Accelerate", kind = "framework"))]
-#[cfg_attr(target_os = "macos", link(name = "CoreML", kind = "framework"))]
+#[cfg_attr(target_os = "macos", link(name = "Metal", kind = "framework"))]
+#[cfg_attr(target_os = "macos", link(name = "MetalPerformanceShaders", kind = "framework"))]
 #[cfg_attr(target_os = "macos", link(name = "Foundation", kind = "framework"))]
 #[cfg_attr(target_os = "macos", link(name = "Security", kind = "framework"))]
 #[cfg_attr(target_os = "macos", link(name = "SystemConfiguration", kind = "framework"))]

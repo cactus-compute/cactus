@@ -27,6 +27,9 @@ jobs:
 
       - uses: ./.github/actions/stamp-version
 
+      - name: Install SDL2 (live microphone transcription)
+        run: brew install sdl2
+
       - name: Build native library
         run: |
           pip install -e python/
@@ -48,9 +51,22 @@ jobs:
       - name: Build and repair wheel
         working-directory: python
         run: |
-          pip install build delocate
+          pip install build delocate wheel
           python -m build --wheel -C="--build-option=--plat-name=macosx_14_0_arm64"
-          delocate-wheel --require-archs arm64 -w wheelhouse -v dist/*.whl
+          env -u MACOSX_DEPLOYMENT_TARGET delocate-wheel --require-archs arm64 -w wheelhouse dist/*.whl
+          whl="$(ls "$PWD"/wheelhouse/*.whl)"
+          work="$(mktemp -d)"
+          python -m wheel unpack "$whl" -d "$work"
+          pkg="$(ls -d "$work"/*/)"
+          cp "$(brew --prefix sdl3)/lib/libSDL3.0.dylib" "${pkg}cactus/.dylibs/libSDL3.dylib"
+          chmod +w "${pkg}cactus/.dylibs/libSDL3.dylib"
+          for lib in "${pkg}cactus/.dylibs/libSDL2-2.0.0.dylib" "${pkg}cactus/.dylibs/libSDL3.dylib"; do
+            vtool -set-build-version macos 14.0 14.0 -replace -output "$lib" "$lib"
+            codesign -f -s - "$lib"
+          done
+          sed -i '' -E 's/macosx_[0-9]+_[0-9]+_arm64/macosx_14_0_arm64/' "$(ls -d "${pkg}"*.dist-info)/WHEEL"
+          rm "$whl"
+          python -m wheel pack "$pkg" -d "$PWD/wheelhouse"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -67,7 +83,8 @@ jobs:
 
       - name: Provision toolchain
         run: |
-          dnf install -y libcurl-devel openssl-devel
+          dnf install -y epel-release
+          dnf install -y libcurl-devel openssl-devel SDL2-devel pkgconfig
           echo "/opt/python/cp312-cp312/bin" >> "$GITHUB_PATH"
 
       - uses: ./.github/actions/stamp-version

@@ -626,7 +626,7 @@ void CactusGraph::release_all_weight_pages() {
     }
 }
 
-size_t CactusGraph::embedding(const std::string& filename, size_t indices) {
+size_t CactusGraph::embedding(const std::string& filename, size_t indices, ComputeBackend backend) {
     auto mapped_file = std::make_unique<GraphFile::MappedFile>(filename);
 
     const auto& shape = mapped_file->shape();
@@ -646,7 +646,7 @@ size_t CactusGraph::embedding(const std::string& filename, size_t indices) {
 
     OpParams params;
     params.output_precision = Precision::FP16;
-    return add_node(OpType::EMBEDDING, {embeddings_node, indices}, output_shape, params);
+    return tag_backend(add_node(OpType::EMBEDDING, {embeddings_node, indices}, output_shape, params), backend);
 }
 
 

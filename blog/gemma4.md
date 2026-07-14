@@ -19,14 +19,14 @@ This matters because latency compounds. A pipeline that transcribes audio, then 
 
 ## Performance
 
-Cactus targets ARM across platforms: Apple Silicon Macs, iPhones, iPads, Vision Pro, and Android devices with ARM64 chipsets (Snapdragon, Dimensity, Tensor). On Apple hardware we additionally leverage the Neural Engine for vision and audio encoders, while on Android and Linux the runtime uses NEON, i8mm, and dot-product intrinsics.
+Cactus targets ARM across platforms: Apple Silicon Macs, iPhones, iPads, Vision Pro, and Android devices with ARM64 chipsets (Snapdragon, Dimensity, Tensor). On Apple hardware we additionally leverage Metal GPU acceleration, while on Android and Linux the runtime uses NEON, i8mm, and dot-product intrinsics.
 
 | Metric (M5 Mac/iPad/Vision Pro) | E2B |
 |---|---|
 | 4096-token prefill | 660 tok/s |
 | 1024-token decode | 40 tok/s |
 | 30s audio end-to-end | 0.3s |
-| Image encode (ANE) | 0.7s |
+| Image encode | 0.7s |
 
 40 tok/s decode is faster than most people read. You're not waiting for the model. The model is waiting for you.
 
@@ -128,7 +128,7 @@ Cactus supports React Native, Flutter, Swift, Kotlin, Python, Rust, and C++. Pic
 |---|---|---|
 | React Native | [React Native bindings](/bindings/react-native/) | Native bridge over the C API |
 | Flutter | [cactus-flutter](/bindings/flutter/) | Dart FFI bindings |
-| Swift (iOS/macOS) | [cactus-swift](/bindings/swift/) | XCFramework with NPU support |
+| Swift (iOS/macOS) | [cactus-swift](/bindings/swift/) | XCFramework with Metal support |
 | Kotlin (Android) | [cactus-kotlin](/bindings/kotlin/) | JNI + Kotlin Multiplatform |
 | Python | [cactus-compute](/python/) | `pip install cactus-compute` |
 | Rust | [Rust bindings](/bindings/rust/) | Copy `cactus.rs`, link `libcactus_engine.a` |

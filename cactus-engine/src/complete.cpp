@@ -1160,7 +1160,8 @@ int cactus_complete(
                 : "kept local";
         }
 
-        if (prompt.options.force_tools && !prompt.tools.empty() && primary_function_calls.empty()) {
+        if (prompt.options.force_tools && !prompt.tools.empty() && primary_function_calls.empty() &&
+            !parsed_empty_needle_tool_call) {
             CACTUS_LOG_WARN("force_tools", "force_tools was set but no tool call was parsed from the constrained output");
         }
 

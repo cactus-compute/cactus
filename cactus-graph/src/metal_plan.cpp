@@ -70,6 +70,9 @@ MetalFusePlan* cactus_gpu_plan_build(
     std::vector<uint8_t> pinned(n, 0);
     for (size_t i = 0; i < n; ++i)
         if (pinned_ids.count(nodes[i]->id)) pinned[i] = 1;
+    std::vector<uint8_t> cpu_only(n, 0);
+    for (size_t i = 0; i < n; ++i)
+        if (nodes[i]->params.backend != ComputeBackend::METAL) { cpu_only[i] = 1; pinned[i] = 1; }
 
     auto idxof = [&](size_t id) -> long {
         auto it = map.find(id);
@@ -243,6 +246,7 @@ MetalFusePlan* cactus_gpu_plan_build(
     auto add_cluster = [&](MetalCluster c, size_t anchor, const std::vector<size_t>& cover) -> bool {
         if (!rule_enabled(c.rule)) { release_scratch(c); return false; }
         if (banned && banned->count(anchor)) { release_scratch(c); return false; }
+        if (cpu_only[anchor]) { release_scratch(c); return false; }
         for (size_t v : cover) if (v != anchor && pinned[v]) { release_scratch(c); return false; }
         int32_t cid = (int32_t)plan->clusters.size();
         plan->clusters.push_back(c);
@@ -888,11 +892,12 @@ MetalFusePlan* cactus_gpu_plan_build(
         std::vector<AttnCand> kept;
         kept.reserve(cands.size());
         for (auto& cd : cands) {
-            if ((banned && banned->count(cd.anchor)) || !rule_enabled(cd.c.rule)) release_scratch(cd.c);
+            if ((banned && banned->count(cd.anchor)) || cpu_only[cd.anchor] || !rule_enabled(cd.c.rule)) release_scratch(cd.c);
             else kept.push_back(cd);
         }
         cands.swap(kept);
     }
+
 
     if (!cands.empty()) {
         std::vector<uint8_t> mark(n, 0);
