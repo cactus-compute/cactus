@@ -37,5 +37,5 @@ class ModelProfile:
     inference_type: dict[str, InferencePattern]
     cache_type: Cache
     files: Files
-    fusion_fields: tuple[str, ...] #(gemma, generic)
-    features: tuple[str, ...] #String of what major ops (attention, RMSNorm, )
+    fusion_fields: tuple[str, ...] 
+    features: tuple[str, ...]
