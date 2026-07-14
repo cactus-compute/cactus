@@ -175,11 +175,10 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 
 ## Needle
 
-[Needle](https://github.com/cactus-compute/needle) is Cactus' tiny on-device tool-calling model — a query plus tool definitions in, structured function calls out:
+[Needle](https://github.com/cactus-compute/needle) is a 26m parameter model for on-device tool calling:
 
 ```bash
-cactus run Cactus-Compute/needle                        # demo toolset
-cactus run Cactus-Compute/needle --tools my_tools.json  # your own tools (JSON array, inline or file)
+cactus run Cactus-Compute/needle [--tools my_tools.json]  # OpenAI function-calling format; demo toolset by default
 ```
 
 ## Learn More
