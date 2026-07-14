@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from .components import MULTIMODAL_COMPONENTS, SPEECH_SEQ2SEQ_COMPONENTS, SPEECH_TRANSCRIBER_COMPONENTS, VISION_LANGUAGE_COMPONENTS
+from .components import (
+    MULTIMODAL_COMPONENTS,
+    SPEECH_SEQ2SEQ_COMPONENTS,
+    SPEECH_TRANSCRIBER_COMPONENTS,
+    TEXT_COMPONENTS,
+    VISION_LANGUAGE_COMPONENTS,
+)
 from .models import Cache, Files, ModelProfile
 from .routes import (
     GEMMA4_INFERENCE_PATTERNS,
     LFM_VLM_INFERENCE_PATTERNS,
     PARAKEET_INFERENCE_PATTERNS,
+    QWEN2_5_INFERENCE_PATTERNS,
     WHISPER_INFERENCE_PATTERNS,
 )
 
@@ -153,9 +160,47 @@ LFM_VLM_PROFILE = ModelProfile(
     ),
 )
 
+QWEN2_5_0_5B_PROFILE = ModelProfile(
+    model_profiles="qwen2_5_0_5b",
+    components=TEXT_COMPONENTS,
+    inference_type=QWEN2_5_INFERENCE_PATTERNS,
+    cache_type=Cache(
+        types=("attention_kv",),
+    ),
+    files=Files(
+        required=("config.json",),
+        optional=(
+            "generation_config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "vocab.json",
+            "merges.txt",
+        ),
+    ),
+    fusion_fields=(
+        "generic",
+        "embedding",
+        "qwen2_5_rmsnorm",
+        "qwen2_5_rope",
+        "qwen2_5_attention",
+        "qwen2_5_mlp",
+        "linear",
+    ),
+    features=(
+        "text",
+        "causal_lm",
+        "attention",
+        "rope",
+        "rms_norm",
+        "mlp",
+        "kv_cache",
+    ),
+)
+
 ALL_PROFILES = (
     GEMMA4_E2B_PROFILE,
     WHISPER_PROFILE,
     PARAKEET_PROFILE,
     LFM_VLM_PROFILE,
+    QWEN2_5_0_5B_PROFILE,
 )
