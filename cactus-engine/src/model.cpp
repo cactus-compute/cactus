@@ -2446,18 +2446,20 @@ bool Model::prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& toke
     }
     size_t ids_node = static_cast<size_t>(source_encoder_->runtime_input_node_ids[ids_idx]);
     const auto& ids_desc = source_encoder_->graph->get_output_buffer(ids_node);
-    if (tokens.size() > ids_desc.total_size) {
-        CACTUS_LOG_ERROR("model", "source token count exceeds source encoder capacity");
-        return false;
+    size_t count = tokens.size();
+    if (count > ids_desc.total_size) {
+        CACTUS_LOG_WARN("model", "source token count " << count
+            << " exceeds source encoder capacity " << ids_desc.total_size << "; truncating");
+        count = ids_desc.total_size;
     }
-    encoder_cross_kv_source_len_ = tokens.size();
-    for (size_t i = 0; i < tokens.size(); ++i) {
+    encoder_cross_kv_source_len_ = count;
+    for (size_t i = 0; i < count; ++i) {
         write_int_input_at(*source_encoder_, "input_ids", i, static_cast<int64_t>(tokens[i]));
     }
 
     int mask_idx = input_index(*source_encoder_, "attention_mask");
     if (mask_idx >= 0) {
-        for (size_t i = 0; i < tokens.size(); ++i) {
+        for (size_t i = 0; i < count; ++i) {
             write_int_input_at(*source_encoder_, "attention_mask", i, 1);
         }
     }

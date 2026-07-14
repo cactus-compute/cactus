@@ -687,6 +687,40 @@ std::string json_string_value(const std::string& json, const std::string& key) {
     return unescape_json(json.substr(start, end - start));
 }
 
+std::string json_array_value(const std::string& json, const std::string& key) {
+    std::string needle = "\"" + key + "\":[";
+    size_t start = json.find(needle);
+    if (start == std::string::npos) return {};
+    start += needle.size() - 1;
+    int depth = 0;
+    bool in_string = false;
+    for (size_t i = start; i < json.size(); ++i) {
+        char c = json[i];
+        if (in_string) {
+            if (c == '\\') ++i;
+            else if (c == '"') in_string = false;
+        } else if (c == '"') {
+            in_string = true;
+        } else if (c == '[') {
+            ++depth;
+        } else if (c == ']' && --depth == 0) {
+            return json.substr(start, i - start + 1);
+        }
+    }
+    return {};
+}
+
+std::vector<std::string> tool_names(const std::string& tools_json) {
+    std::vector<std::string> names;
+    size_t pos = tools_json.find("\"function\":");
+    while (pos != std::string::npos) {
+        std::string name = json_string_value(tools_json.substr(pos), "name");
+        if (!name.empty()) names.push_back(name);
+        pos = tools_json.find("\"function\":", pos + 1);
+    }
+    return names;
+}
+
 double json_number_value(const std::string& json, const std::string& key, double fallback = 0.0) {
     std::string needle = "\"" + key + "\":";
     size_t start = json.find(needle);
@@ -743,7 +777,7 @@ std::string build_messages(const std::string& system_prompt,
 void print_usage(const char* argv0) {
     std::cerr << "Usage: " << argv0
               << " <model_path> [--backend cpu|metal] [--system <prompt>] [--image <path>] [--audio <path>]"
-              << " [--prompt <text>] [--input-ids <ids>] [--input-ids-file <path>] [--max-new-tokens <n>]"
+              << " [--prompt <text>] [--tools <json>] [--input-ids <ids>] [--input-ids-file <path>] [--max-new-tokens <n>]"
               << " [--result-json <path>] [--thinking] [--no-cloud-handoff]"
               << " [--confidence-threshold <value>] [--cloud-timeout-ms <ms>] [-h|--help]\n";
 }
@@ -764,6 +798,7 @@ int main(int argc, char** argv) {
     std::string current_image;
     std::string current_audio;
     std::string initial_prompt;
+    std::string tools_json;
     std::string input_ids;
     std::string input_ids_file;
     std::string result_json;
@@ -800,6 +835,9 @@ int main(int argc, char** argv) {
         } else if (arg == "--prompt") {
             if (!need_value("--prompt")) return 1;
             initial_prompt = argv[++i];
+        } else if (arg == "--tools") {
+            if (!need_value("--tools")) return 1;
+            tools_json = argv[++i];
         } else if (arg == "--input-ids") {
             if (!need_value("--input-ids")) return 1;
             input_ids = argv[++i];
@@ -944,6 +982,18 @@ int main(int argc, char** argv) {
     print_command("exit", "quit");
     std::cout << std::right << "\n";
 
+    if (!tools_json.empty()) {
+        const bool tty = stdout_is_terminal();
+        const char* b = tty ? ansi::bold : "";
+        const char* c = tty ? ansi::cyan : "";
+        const char* r = tty ? ansi::reset : "";
+        std::cout << b << "Tools:" << r;
+        auto names = tool_names(tools_json);
+        if (names.empty()) std::cout << " (none)";
+        for (const auto& name : names) std::cout << " " << c << name << r;
+        std::cout << "\n\n";
+    }
+
     std::vector<ChatTurn> history;
     std::vector<uint8_t> current_pcm;
     TokenPrinter printer;
@@ -1046,6 +1096,7 @@ int main(int argc, char** argv) {
             + ",\"auto_handoff\":" + (auto_handoff ? "true" : "false")
             + ",\"confidence_threshold\":" + std::to_string(confidence_threshold)
             + ",\"cloud_timeout_ms\":" + std::to_string(cloud_timeout_ms)
+            + ",\"tool_rag_top_k\":0"
             + ",\"stop_sequences\":[\"<|im_end|>\",\"<end_of_turn>\",\"<turn|>\"]}";
 
         if (!current_image.empty()) std::cout << "[image: " << current_image << "]\n";
@@ -1063,7 +1114,7 @@ int main(int argc, char** argv) {
                                  response.data(),
                                  response.size(),
                                  options.c_str(),
-                                 nullptr,
+                                 tools_json.empty() ? nullptr : tools_json.c_str(),
                                  token_callback,
                                  nullptr,
                                  current_pcm.empty() ? nullptr : current_pcm.data(),
@@ -1073,6 +1124,18 @@ int main(int argc, char** argv) {
         std::string response_json(response.data());
         if (!result_json.empty() && !write_text_file(result_json, response_json)) {
             std::cerr << "Failed to write result JSON: " << result_json << "\n";
+        }
+        std::string tool_calls = json_array_value(response_json, "function_calls");
+        const bool tty = stdout_is_terminal();
+        if (tool_calls.size() > 2) {
+            const char* b = tty ? ansi::bold : "";
+            const char* y = tty ? ansi::yellow : "";
+            const char* r = tty ? ansi::reset : "";
+            std::cout << "\n" << b << y << "Tool calls:" << r << " " << y << tool_calls << r << "\n";
+        } else if (!tools_json.empty() && json_string_value(response_json, "response").empty()) {
+            const char* d = tty ? ansi::dim : "";
+            const char* r = tty ? ansi::reset : "";
+            std::cout << "\n" << d << "(no tool call)" << r << "\n";
         }
         bool cloud_handoff = json_bool_value(response_json, "cloud_handoff");
         double confidence = json_number_value(response_json, "confidence", -1.0);
@@ -1093,6 +1156,7 @@ int main(int argc, char** argv) {
 
         std::string assistant = json_string_value(response_json, "context_response");
         if (assistant.empty()) assistant = json_string_value(response_json, "response");
+        if (assistant.empty() && tool_calls.size() > 2) assistant = tool_calls;
         history.push_back({"assistant", assistant, "", ""});
         current_image.clear();
         current_audio.clear();

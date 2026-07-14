@@ -281,6 +281,10 @@ def create_parser():
                             help="System prompt to prepend to all messages")
     run_parser.add_argument("--prompt",
                             help="Initial prompt to send immediately")
+    run_parser.add_argument("--tools", default=None,
+                            help="Tool definitions in the OpenAI function-calling format, as a JSON "
+                                 "array or a path to a JSON file (tool-call models like needle "
+                                 "default to a demo toolset)")
     run_parser.add_argument("--input-ids", default=None,
                             help="Comma-separated token ids for causal-LM bundles")
     run_parser.add_argument("--input-ids-file", default=None,
