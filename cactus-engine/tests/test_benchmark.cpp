@@ -12,8 +12,15 @@ static const char* g_model_path         = std::getenv("CACTUS_TEST_MODEL");
 static const char* g_transcription_path = std::getenv("CACTUS_TEST_TRANSCRIPTION_MODEL");
 static const char* g_assets_path        = std::getenv("CACTUS_TEST_ASSETS");
 
-static constexpr size_t kPrefillTokens = 1000;
-static constexpr size_t kDecodeTokens  = 100;
+static size_t env_tokens(const char* name, size_t dflt) {
+    const char* v = std::getenv(name);
+    if (!v || !*v) return dflt;
+    long n = std::atol(v);
+    return n > 0 ? (size_t)n : dflt;
+}
+// CACTUS_BENCH_PP / CACTUS_BENCH_TG shrink the workload for fast iteration.
+static const size_t kPrefillTokens = env_tokens("CACTUS_BENCH_PP", 1000);
+static const size_t kDecodeTokens  = env_tokens("CACTUS_BENCH_TG", 100);
 static constexpr int    kMeasuredRuns  = 3;
 
 static void print_mean(const char* label, const char* unit, const std::vector<double>& samples) {

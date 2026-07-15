@@ -151,6 +151,8 @@ void main() {
 #endif
 
 #ifdef K_cq4_gemv
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
 layout(std430, binding = 0) readonly buffer BC { uvec4 code_v[]; };
 layout(std430, binding = 1) readonly buffer BPK { uint packed_w[]; };
 layout(std430, binding = 2) readonly buffer BCB { float16_t codebook[]; };
@@ -158,7 +160,6 @@ layout(std430, binding = 3) readonly buffer BN { float16_t norms[]; };
 layout(std430, binding = 4) writeonly buffer BY { float16_t y[]; };
 layout(push_constant) uniform P { uint gs; uint ng; uint pgb; uint N; uint il; };
 shared float cb[16];
-shared vec4 red[64];
 float dot8(uint w, vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
     return c0.x*cb[w & 0xFu]         + c0.y*cb[(w >> 4) & 0xFu]
          + c1.x*cb[(w >> 8) & 0xFu]  + c1.y*cb[(w >> 12) & 0xFu]
@@ -171,14 +172,19 @@ float dot8_il(uint w, vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
          + c2.x*cb[(w >> 4) & 0xFu]  + c2.y*cb[(w >> 12) & 0xFu]
          + c3.x*cb[(w >> 20) & 0xFu] + c3.y*cb[(w >> 28) & 0xFu];
 }
+// One row-quad per subgroup (llama.cpp mul_mat_vec structure): a single
+// subgroupAdd per quad and no barriers in the row loop.
 void main() {
-    uint t = gl_LocalInvocationID.x;
+    uint t = gl_LocalInvocationID.x, sg = gl_SubgroupID, nsg = gl_NumSubgroups;
+    uint lane = gl_SubgroupInvocationID, sgsz = gl_SubgroupSize;
     if (t < 16u) cb[t] = float(codebook[t]);
     barrier();
     uint K = ng * gs;
-    for (uint n0 = gl_WorkGroupID.x * 4u; n0 < N; n0 += gl_NumWorkGroups.x * 4u) {
+    uint quads = (N + 3u) / 4u;
+    for (uint qi = gl_WorkGroupID.x * nsg + sg; qi < quads; qi += gl_NumWorkGroups.x * nsg) {
+        uint n0 = qi * 4u;
         vec4 acc = vec4(0.0);
-        for (uint base = t * 16u; base < K; base += 1024u) {
+        for (uint base = lane * 16u; base < K; base += sgsz * 16u) {
             uint g = base / gs, e = base - g * gs;
             uvec4 q0 = code_v[base >> 3];
             uvec4 q1 = code_v[(base >> 3) + 1u];
@@ -207,13 +213,10 @@ void main() {
                 }
             }
         }
-        red[t] = acc;
-        barrier();
-        for (uint s = 32u; s > 0u; s >>= 1u) { if (t < s) red[t] += red[t + s]; barrier(); }
-        if (t == 0u)
+        acc = subgroupAdd(acc);
+        if (subgroupElect())
             for (uint r = 0u; r < 4u; ++r)
-                if (n0 + r < N) y[n0 + r] = float16_t(red[0][r]);
-        barrier();
+                if (n0 + r < N) y[n0 + r] = float16_t(acc[r]);
     }
 }
 #endif
@@ -677,6 +680,7 @@ void main() {
 #ifdef K_cq4_gemv2
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 layout(std430, binding = 0) readonly buffer BC { uvec4 code_v[]; };
 layout(std430, binding = 1) readonly buffer BPK { uint packed_w[]; };
 layout(std430, binding = 2) readonly buffer BCB { float16_t codebook[]; };
@@ -684,82 +688,74 @@ layout(std430, binding = 3) readonly buffer BN { float16_t norms[]; };
 layout(std430, binding = 4) writeonly buffer BY { float16_t y[]; };
 layout(std430, binding = 5) readonly buffer BPV { uvec4 packed_v[]; };
 layout(push_constant) uniform P { uint gs; uint ng; uint pgb; uint N; uint il; };
-shared float cb[16];
-shared uvec4 scode[1120];
-shared vec4 part[8];
-float dot8(uint w, vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
-    return c0.x*cb[w & 0xFu]         + c0.y*cb[(w >> 4) & 0xFu]
-         + c1.x*cb[(w >> 8) & 0xFu]  + c1.y*cb[(w >> 12) & 0xFu]
-         + c2.x*cb[(w >> 16) & 0xFu] + c2.y*cb[(w >> 20) & 0xFu]
-         + c3.x*cb[(w >> 24) & 0xFu] + c3.y*cb[w >> 28];
+shared float16_t cbh[16];
+#define CBL(i) cbh[i]
+float dot8(uint w, f16vec2 c0, f16vec2 c1, f16vec2 c2, f16vec2 c3) {
+    f16vec2 s01 = c0 * f16vec2(CBL(w & 0xFu),         CBL((w >> 4) & 0xFu))
+                + c1 * f16vec2(CBL((w >> 8) & 0xFu),  CBL((w >> 12) & 0xFu));
+    f16vec2 s23 = c2 * f16vec2(CBL((w >> 16) & 0xFu), CBL((w >> 20) & 0xFu))
+                + c3 * f16vec2(CBL((w >> 24) & 0xFu), CBL(w >> 28));
+    f16vec2 t = s01 + s23;
+    return float(t.x) + float(t.y);
 }
-float dot8_il(uint w, vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
-    return c0.x*cb[w & 0xFu]         + c0.y*cb[(w >> 8) & 0xFu]
-         + c1.x*cb[(w >> 16) & 0xFu] + c1.y*cb[(w >> 24) & 0xFu]
-         + c2.x*cb[(w >> 4) & 0xFu]  + c2.y*cb[(w >> 12) & 0xFu]
-         + c3.x*cb[(w >> 20) & 0xFu] + c3.y*cb[(w >> 28) & 0xFu];
+float dot8_il(uint w, f16vec2 c0, f16vec2 c1, f16vec2 c2, f16vec2 c3) {
+    f16vec2 s01 = c0 * f16vec2(CBL(w & 0xFu),         CBL((w >> 8) & 0xFu))
+                + c1 * f16vec2(CBL((w >> 16) & 0xFu), CBL((w >> 24) & 0xFu));
+    f16vec2 s23 = c2 * f16vec2(CBL((w >> 4) & 0xFu),  CBL((w >> 12) & 0xFu))
+                + c3 * f16vec2(CBL((w >> 20) & 0xFu), CBL((w >> 28) & 0xFu));
+    f16vec2 t = s01 + s23;
+    return float(t.x) + float(t.y);
 }
+// One row-quad per subgroup, one subgroupAdd per quad, no barriers in the
+// row loop (llama.cpp mul_mat_vec structure): each lane covers K in
+// 16-element strides across the subgroup, so per-quad reduction overhead is
+// amortized over K/(16*sgsz) iterations of real work instead of one.
 void main() {
     uint t = gl_LocalInvocationID.x, sg = gl_SubgroupID, nsg = gl_NumSubgroups;
+    uint lane = gl_SubgroupInvocationID, sgsz = gl_SubgroupSize;
     uint K = ng * gs;
-    if (t < 16u) cb[t] = float(codebook[t]);
-    for (uint i = t; i < (K + 7u) / 8u; i += 128u) scode[i] = code_v[i];
+    if (t < 16u) cbh[t] = codebook[t];
     barrier();
-    for (uint row0 = gl_WorkGroupID.x * 16u; row0 < N; row0 += gl_NumWorkGroups.x * 16u) {
-        for (uint q = 0u; q < 4u; ++q) {
-            uint n0 = row0 + q * 4u;
-            if (n0 >= N) break;
-            vec4 acc = vec4(0.0);
-            for (uint base = t * 16u; base < K; base += 2048u) {
-                uint g = base / gs, e = base - g * gs;
-                uvec4 q0 = scode[base >> 3];
-                uvec4 q1 = scode[(base >> 3) + 1u];
-                vec2 c0 = unpackHalf2x16(q0.x), c1 = unpackHalf2x16(q0.y);
-                vec2 c2 = unpackHalf2x16(q0.z), c3 = unpackHalf2x16(q0.w);
-                vec2 c4 = unpackHalf2x16(q1.x), c5 = unpackHalf2x16(q1.y);
-                vec2 c6 = unpackHalf2x16(q1.z), c7 = unpackHalf2x16(q1.w);
-                if (il != 0u) {
-                    uint pw = ((n0 >> 2) * ng + g) * pgb + (e >> 4) * 8u;
-                    uint nb = ((n0 >> 2) * ng + g) << 2;
-                    uvec4 A4 = packed_v[pw >> 2];
-                    uvec4 B4 = packed_v[(pw >> 2) + 1u];
-                    for (uint r = 0u; r < 4u; ++r) {
-                        float p = dot8_il(A4[r], c0, c1, c2, c3) + dot8_il(B4[r], c4, c5, c6, c7);
-                        acc[r] += float(norms[nb + r]) * p;
-                    }
-                } else {
-                    for (uint r = 0u; r < 4u; ++r) {
-                        uint n = n0 + r;
-                        if (n >= N) break;
-                        uint bw = (n * ng + g) * (pgb >> 2) + (e >> 3);
-                        uint A = packed_w[bw];
-                        uint B = packed_w[bw + 1u];
-                        float p = dot8(A, c0, c1, c2, c3) + dot8(B, c4, c5, c6, c7);
-                        acc[r] += float(norms[n * ng + g]) * p;
-                    }
+    uint quads = (N + 3u) / 4u;
+    for (uint qi = gl_WorkGroupID.x * nsg + sg; qi < quads; qi += gl_NumWorkGroups.x * nsg) {
+        uint n0 = qi * 4u;
+        vec4 acc = vec4(0.0);
+        for (uint base = lane * 16u; base < K; base += sgsz * 16u) {
+            uint g = base / gs, e = base - g * gs;
+            uvec4 q0 = code_v[base >> 3];
+            uvec4 q1 = code_v[(base >> 3) + 1u];
+            f16vec2 c0 = unpackFloat2x16(q0.x), c1 = unpackFloat2x16(q0.y);
+            f16vec2 c2 = unpackFloat2x16(q0.z), c3 = unpackFloat2x16(q0.w);
+            f16vec2 c4 = unpackFloat2x16(q1.x), c5 = unpackFloat2x16(q1.y);
+            f16vec2 c6 = unpackFloat2x16(q1.z), c7 = unpackFloat2x16(q1.w);
+            if (il != 0u) {
+                uint pw = ((n0 >> 2) * ng + g) * pgb + (e >> 4) * 8u;
+                uint nb = ((n0 >> 2) * ng + g) << 2;
+                uvec4 A4 = packed_v[pw >> 2];
+                uvec4 B4 = packed_v[(pw >> 2) + 1u];
+                for (uint r = 0u; r < 4u; ++r) {
+                    float p = dot8_il(A4[r], c0, c1, c2, c3) + dot8_il(B4[r], c4, c5, c6, c7);
+                    acc[r] += float(norms[nb + r]) * p;
                 }
-            }
-            acc = subgroupAdd(acc);
-            if (nsg == 1u) {
-                if (t == 0u)
-                    for (uint r = 0u; r < 4u; ++r)
-                        if (n0 + r < N) y[n0 + r] = float16_t(acc[r]);
             } else {
-                if (subgroupElect()) part[sg] = acc;
-                barrier();
-                if (t == 0u) {
-                    vec4 s = part[0];
-                    for (uint i = 1u; i < nsg; ++i) s += part[i];
-                    for (uint r = 0u; r < 4u; ++r)
-                        if (n0 + r < N) y[n0 + r] = float16_t(s[r]);
+                for (uint r = 0u; r < 4u; ++r) {
+                    uint n = n0 + r;
+                    if (n >= N) break;
+                    uint bw = (n * ng + g) * (pgb >> 2) + (e >> 3);
+                    uint A = packed_w[bw];
+                    uint B = packed_w[bw + 1u];
+                    float p = dot8(A, c0, c1, c2, c3) + dot8(B, c4, c5, c6, c7);
+                    acc[r] += float(norms[n * ng + g]) * p;
                 }
-                barrier();
             }
         }
+        acc = subgroupAdd(acc);
+        if (subgroupElect())
+            for (uint r = 0u; r < 4u; ++r)
+                if (n0 + r < N) y[n0 + r] = float16_t(acc[r]);
     }
 }
 #endif
-
 #ifdef K_cq4_transform_m
 layout(std430, binding = 0) readonly buffer BX { float16_t xin[]; };
 layout(std430, binding = 1) readonly buffer BR { float16_t recip[]; };

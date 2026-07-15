@@ -301,6 +301,9 @@ const KDef kdefs[KCOUNT] = {
 };
 
 struct Slot {
+    VkQueryPool prof = VK_NULL_HANDLE;
+    uint32_t prof_n = 0;
+    int prof_kid[2048];
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -330,6 +333,7 @@ struct VK {
     int cur = 0;
     VkQueryPool query = VK_NULL_HANDLE;
     float ts_period = 0.0f;
+    bool f16_arith = false;
     uint32_t sg_size = 0;
     uint32_t shmem = 0;
     bool attn_ok = false;
@@ -454,6 +458,7 @@ struct VK {
             shader_f16 = hf.shaderFloat16;
         }
 
+        f16_arith = shader_f16;
         char buf[256];
         std::snprintf(buf, sizeof(buf), "%s | Vulkan %u.%u | driver %u | 16bitStorage:yes shaderFloat16:%s subgroup:%u sharedMem:%u",
                       props2.properties.deviceName,
@@ -474,12 +479,19 @@ struct VK {
         VkPhysicalDevice16BitStorageFeatures en16 = {};
         en16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES;
         en16.storageBuffer16BitAccess = VK_TRUE;
+        VkPhysicalDeviceShaderFloat16Int8Features enf16 = {};
+        enf16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+        enf16.shaderFloat16 = VK_TRUE;
+        if (shader_f16) en16.pNext = &enf16;
         VkPhysicalDeviceFeatures2 enf2 = {};
         enf2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         enf2.pNext = &en16;
+        const char* dev_exts[1] = { "VK_KHR_shader_float16_int8" };
         VkDeviceCreateInfo dci = {};
         dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         dci.pNext = &enf2;
+        dci.enabledExtensionCount = shader_f16 ? 1u : 0u;
+        dci.ppEnabledExtensionNames = dev_exts;
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
         if (vkCreateDevice(phys, &dci, nullptr, &dev) != VK_SUCCESS || !dev) {
@@ -522,6 +534,13 @@ struct VK {
             qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
             qpci.queryCount = 2;
             if (vkCreateQueryPool(dev, &qpci, nullptr, &query) != VK_SUCCESS) { query = VK_NULL_HANDLE; ts_period = 0.0f; }
+            if (getenv("CACTUS_VK_PROF") && query != VK_NULL_HANDLE) {
+                for (Slot& sl : slots) {
+                    VkQueryPoolCreateInfo pp = qpci;
+                    pp.queryCount = 2048;
+                    if (vkCreateQueryPool(dev, &pp, nullptr, &sl.prof) != VK_SUCCESS) sl.prof = VK_NULL_HANDLE;
+                }
+            }
         }
 
         for (int k = 0; k < KCOUNT; ++k) {
@@ -794,6 +813,8 @@ bool wait_slot(Slot& s) {
     return true;
 }
 
+void prof_collect(Slot& s);
+
 bool ensure_cmd() {
     Slot& s = vk().slots[vk().cur];
     if (s.recording) return true;
@@ -808,6 +829,13 @@ bool ensure_cmd() {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vk().vkBeginCommandBuffer(s.cmd, &bi) != VK_SUCCESS) return false;
     s.recording = true;
+    if (s.prof) {
+        prof_collect(s);
+        vk().vkCmdResetQueryPool(s.cmd, s.prof, 0, 2048);
+        s.prof_kid[0] = -1;
+        vk().vkCmdWriteTimestamp(s.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s.prof, 0);
+        s.prof_n = 1;
+    }
     return true;
 }
 
@@ -872,6 +900,38 @@ VkDescriptorSet make_set(int k, const VkDescriptorBufferInfo* infos, uint32_t co
     return set;
 }
 
+double g_prof_ms[KCOUNT + 1] = {};
+uint64_t g_prof_calls[KCOUNT + 1] = {};
+
+void prof_dump() {
+    std::fprintf(stderr, "[vkprof] kernel GPU time totals:\n");
+    struct Row { int k; double ms; uint64_t n; };
+    std::vector<Row> rows;
+    for (int k = 0; k <= KCOUNT; ++k)
+        if (g_prof_calls[k]) rows.push_back({k, g_prof_ms[k], g_prof_calls[k]});
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.ms > b.ms; });
+    for (const Row& r : rows)
+        std::fprintf(stderr, "[vkprof]  k=%-3d %10.2f ms  %8llu calls  %8.1f us/call\n",
+                     r.k, r.ms, (unsigned long long)r.n, 1000.0 * r.ms / (double)r.n);
+}
+
+void prof_collect(Slot& s) {
+    if (!s.prof || s.prof_n == 0) return;
+    static std::vector<uint64_t> ts;
+    ts.assign(s.prof_n, 0);
+    if (vk().vkGetQueryPoolResults(vk().dev, s.prof, 0, s.prof_n, s.prof_n * 8, ts.data(), 8,
+                                   VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+        for (uint32_t i = 1; i < s.prof_n; ++i) {
+            int kid = s.prof_kid[i];
+            if (kid < 0) continue;
+            double ms = (double)(ts[i] - ts[i - 1]) * (double)vk().ts_period * 1e-6;
+            g_prof_ms[kid] += ms;
+            g_prof_calls[kid]++;
+        }
+    }
+    s.prof_n = 0;
+}
+
 void mem_barrier() {
     VkMemoryBarrier mb = {};
     mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -920,6 +980,12 @@ void dispatch(int k, VkDescriptorSet set, const void* push, uint32_t gx, uint32_
     vk().vkCmdBindDescriptorSets(cur_cmd(), VK_PIPELINE_BIND_POINT_COMPUTE, vk().pipes[k].pl, 0, 1, &set, 0, nullptr);
     vk().vkCmdPushConstants(cur_cmd(), vk().pipes[k].pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, kdefs[k].push, push);
     vk().vkCmdDispatch(cur_cmd(), gx, gy, gz);
+    Slot& psl = vk().slots[vk().cur];
+    if (psl.prof && psl.prof_n < 2048) {
+        psl.prof_kid[psl.prof_n] = k;
+        vk().vkCmdWriteTimestamp(cur_cmd(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, psl.prof, psl.prof_n);
+        psl.prof_n++;
+    }
 }
 
 OvEntry* ov_bind(const void* p, size_t bytes, size_t* delta_out) {
@@ -1159,6 +1225,14 @@ uint64_t resident_key(const CactusQuantMatrix* W) {
 enum { W_PACKED, W_NORMS, W_CB, W_RECIP, W_LS, W_RS, W_PERM, W_CODE, W_ROT, W_SECT };
 
 ResW& resident(const CactusQuantMatrix* W) {
+    static int cbdump = std::getenv("CACTUS_RMS_DBG") ? 3 : 0;
+    if (cbdump > 0 && W && W->codebook) {
+        --cbdump;
+        const __fp16* cbp = (const __fp16*)W->codebook;
+        std::string d = "[vkcb]";
+        for (int i = 0; i < 16; ++i) d += " " + std::to_string((float)cbp[i]);
+        std::fprintf(stderr, "%s\n", d.c_str());
+    }
     uint64_t key = resident_key(W);
     auto it = g_resident.find(key);
     if (it != g_resident.end()) return it->second;
@@ -1245,13 +1319,14 @@ bool enc_cq_gemv(void* y, const void* x, const CactusQuantMatrix* W) {
         dispatch(KLBG, gset, &gpush, rows4 > 65535 ? 65535 : rows4, 1, ginfos, 5);
         return true;
     }
-    const int gk = (vk().gemv2_ok && K <= 8960u) ? KG2 : KG;
+    const int gk = vk().gemv2_ok ? KG2 : KG;
     VkDescriptorBufferInfo ginfos[6] = {ri(W_CODE), ri(W_PACKED), ri(W_CB), ri(W_NORMS), yb, ri(W_PACKED)};
-    VkDescriptorSet gset = make_set(gk, ginfos, gk == KG2 ? 6 : 5);
+    const bool two = gk != KG;
+    VkDescriptorSet gset = make_set(gk, ginfos, two ? 6 : 5);
     if (!gset) return false;
     struct { uint32_t gs, ng, pgb, N, il; } gpush = {gs, ng, pgb, N, il};
-    const uint32_t rows = gk == KG2 ? (N + 15) / 16 : (N + 3) / 4;
-    dispatch(gk, gset, &gpush, rows > 65535 ? 65535 : rows, 1, ginfos, gk == KG2 ? 6 : 5);
+    const uint32_t rows = two ? (N + 31) / 32 : (N + 15) / 16;
+    dispatch(gk, gset, &gpush, rows > 65535 ? 65535 : rows, 1, ginfos, two ? 6 : 5);
     return true;
 }
 
@@ -1299,6 +1374,16 @@ void cactus_vulkan_session_sync() {
 
 void cactus_vulkan_session_end() {
     cactus_vulkan_session_sync();
+    static bool prof_exit = [] {
+        if (!getenv("CACTUS_VK_PROF")) return false;
+        std::atexit(prof_dump);
+        return true;
+    }();
+    (void)prof_exit;
+    if (getenv("CACTUS_VK_PROF")) {
+        std::lock_guard<std::recursive_mutex> lk(g_mu);
+        for (Slot& s : vk().slots) prof_collect(s);
+    }
 }
 
 void cactus_vulkan_fold_buffers(void* h, size_t hbytes, void* ple, size_t plebytes) {
@@ -1592,14 +1677,14 @@ bool cactus_vulkan_encode_gemv_precoded(void* out, const void* code, const Cactu
         return d;
     };
     if (!ensure_cmd()) return false;
-    const int gk = (vk().gemv2_ok && K <= 8960u) ? KG2 : KG;
+    const int gk = vk().gemv2_ok ? KG2 : KG;
     VkDescriptorBufferInfo ginfos[6] = {cb, ri(W_PACKED), ri(W_CB), ri(W_NORMS), yb, ri(W_PACKED)};
     VkDescriptorSet gset = make_set(gk, ginfos, gk == KG2 ? 6 : 5);
     if (!gset) return false;
     const uint32_t pgb = cactus_quant_packed_group_bytes(W->bits, gs);
     const uint32_t il = (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) ? 1 : 0;
     struct { uint32_t gs, ng, pgb, N, il; } gpush = {gs, ng, pgb, N, il};
-    const uint32_t rows = gk == KG2 ? (N + 15) / 16 : (N + 3) / 4;
+    const uint32_t rows = gk == KG2 ? (N + 31) / 32 : (N + 15) / 16;
     dispatch(gk, gset, &gpush, rows > 65535 ? 65535 : rows, 1, ginfos, gk == KG2 ? 6 : 5);
     return true;
 }
