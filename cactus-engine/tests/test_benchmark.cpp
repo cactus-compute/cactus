@@ -357,13 +357,19 @@ static bool vulkan_gemv_benchmark() {
 
 int main() {
     TestUtils::TestRunner runner("Benchmark");
-    runner.run_test("llm_benchmark",        llm_benchmark());
-    runner.run_test("vlm_benchmark",        vlm_benchmark());
-    runner.run_test("transcribe_benchmark", transcribe_benchmark());
-    if (cactus_vulkan_available())
-        runner.run_test("vulkan_gemv_benchmark", vulkan_gemv_benchmark());
-    else
-        runner.log_skip("vulkan_gemv_benchmark", "Vulkan GPU not available");
+    const char* only = std::getenv("CACTUS_BENCH_ONLY");
+    auto want = [&](const char* name) {
+        return !only || !*only || std::strstr(only, name) != nullptr;
+    };
+    if (want("llm")) runner.run_test("llm_benchmark", llm_benchmark());
+    if (want("vlm")) runner.run_test("vlm_benchmark", vlm_benchmark());
+    if (want("transcribe")) runner.run_test("transcribe_benchmark", transcribe_benchmark());
+    if (want("gemv")) {
+        if (cactus_vulkan_available())
+            runner.run_test("vulkan_gemv_benchmark", vulkan_gemv_benchmark());
+        else
+            runner.log_skip("vulkan_gemv_benchmark", "Vulkan GPU not available");
+    }
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

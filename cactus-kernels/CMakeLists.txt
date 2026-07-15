@@ -98,7 +98,13 @@ else()
                    copy cast strided_copy strided_scatter bcast_binary concat2
                    rms_norm_add rms_norm_add_rms rms_norm_scale rope_full softcap
                    adjust_logits argmax3 kv_append_i8 attn_decode_i8 attn_combine ortho_rotate rope_pair
-                   cq4_gemv2 cq4_transform_m cq4_gemm)
+                   cq4_gemv2 cq4_transform_m cq4_gemm
+                   rope_pair_rms rms2_add_clip gather softmax_topk topk_rows gemv_bias rms_norm_add_rows
+                   attn_prefill_i8 attn_prefill_ring_i8 attn_f16
+                   layer_norm softmax_rows glu conv1d_k3 conv1d_dw conv1d_gen conv1d_nlc_dw
+                   batchnorm bias_add_rows gemm_batch rel_pos_bias elemwise_chain conv_cache_append
+                   binary_f32 scalar_f32 unary_f32 clamp reduce_axis cumsum gather_f32idx
+                   maxpool1d bilinear groupnorm conv2d emb_hadamard_m emb_ortho_m attn_fused_i8 attn_fused_i8_512 cq_gemv_lowbit deltanet_decode deltanet_prefill moe_transform moe_up moe_down_acc)
             set(_spv ${CMAKE_CURRENT_BINARY_DIR}/generated/vk_${_k}.spv)
             set(_hdr ${CMAKE_CURRENT_BINARY_DIR}/generated/vk_${_k}.h)
             add_custom_command(

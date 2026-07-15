@@ -466,7 +466,12 @@ void compute_conv_cache_state_node(
     size_t total = sizeof(ConvCacheMetadata) + ws * hd * sizeof(__fp16);
 
     node.output_buffer = BufferDesc({total}, Precision::INT8);
-    node.output_buffer.allocate();
+    if (kv_cache_resident()) {
+        void* p = cactus_gpu_alloc_shared(total);
+        if (p) node.output_buffer.set_external(p); else node.output_buffer.allocate();
+    } else {
+        node.output_buffer.allocate();
+    }
     std::memset(node.output_buffer.get_data(), 0, total);
 
     auto* meta = get_conv_meta(node.output_buffer);

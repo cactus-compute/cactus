@@ -469,6 +469,7 @@ void cactus_graph_set_fused_embed(const FusedEmbedCtx* ctx);
 const FusedEmbedCtx* cactus_graph_fused_embed();
 bool cactus_graph_metal_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
                                       const CactusQuantMatrix* lm_head, size_t nl, size_t ple_dim);
+bool cactus_gpu_plan_fold_inputs(const struct MetalFusePlan* p, size_t* h, size_t* ple);
 bool cactus_graph_metal_tail(void* logits, size_t vocab);
 void cactus_graph_metal_tail_commit();
 

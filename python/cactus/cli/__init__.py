@@ -54,7 +54,7 @@ def _engine_test_parent():
     """Args shared by `test` and `benchmark`."""
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--backend", choices=["cpu", "metal", "vulkan"], default=None,
-                   help="Inference backend (default: auto; vulkan is opt-in on Android)")
+                   help="Inference backend (default: auto)")
     p.add_argument("--model", dest="model_id", default=None,
                    type=_hf_id_or_path,
                    help=f"HF model ID under test (default: {DEFAULT_TEST_MODEL_ID})")
@@ -302,7 +302,7 @@ def create_parser():
     run_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                             help="Maximum time to wait for cloud handoff before falling back locally")
     run_parser.add_argument("--backend", choices=["cpu", "metal", "vulkan"], default=None,
-                            help="Inference backend (default: auto; vulkan is opt-in on Android)")
+                            help="Inference backend (default: auto)")
 
     transcribe_parser = subparsers.add_parser("transcribe", help="Transcribe audio with a model",
                                               parents=[_telemetry_parent(), _build_parent()])
@@ -332,7 +332,7 @@ def create_parser():
     serve_parser.add_argument("--no-access-log", action="store_true",
                               help="Disable per-request HTTP access logging")
     serve_parser.add_argument("--backend", choices=["cpu", "metal", "vulkan"], default=None,
-                              help="Inference backend (default: auto; vulkan is opt-in on Android)")
+                              help="Inference backend (default: auto)")
 
     code_parser = subparsers.add_parser("code", help="Run the Cactus coding agent (TUI / print mode)",
                                         parents=[_build_parent()])
@@ -351,7 +351,7 @@ def create_parser():
     code_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                              help="Maximum time to wait for cloud handoff before falling back locally")
     code_parser.add_argument("--backend", choices=["cpu", "metal", "vulkan"], default=None,
-                             help="Inference backend (default: auto; vulkan is opt-in on Android)")
+                             help="Inference backend (default: auto)")
     code_parser.add_argument("agent_args", nargs=argparse.REMAINDER,
                              help="Arguments passed through to the coding agent (prefix with -- )")
 

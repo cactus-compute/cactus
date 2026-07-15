@@ -605,6 +605,14 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
 
     if (decoder_prefill_ && decoder_prefill_->graph) {
         try {
+            if (std::getenv("CACTUS_BIND_DBG")) {
+                for (Component* c : {prefill_encoder_, decoder_prefill_})
+                    if (c && c->graph)
+                        for (size_t i = 0; i < c->input_buffers.size(); ++i)
+                            std::fprintf(stderr, "[warmup] comp=%s i=%zu size=%zu data=%p\n",
+                                         c->name.c_str(), i, c->input_buffers[i].size(),
+                                         (void*)c->input_buffers[i].data());
+            }
             if (prefill_encoder_ && prefill_encoder_->graph) {
                 for (auto& b : prefill_encoder_->input_buffers) std::fill(b.begin(), b.end(), 0);
                 prefill_encoder_->graph->execute();
@@ -788,6 +796,12 @@ bool Model::bind_runtime_buffers(Component& comp) {
         const auto& desc = comp.graph->get_output_buffer(node_id);
         comp.input_buffers[i].assign(desc.byte_size, 0);
         comp.graph->set_external_input(node_id, comp.input_buffers[i].data(), desc.precision);
+        if (std::getenv("CACTUS_BIND_DBG"))
+            std::fprintf(stderr, "[bind] comp=%s i=%zu node=%zu name=%s bytes=%zu prec=%d data=%p\n",
+                         comp.name.c_str(), i, node_id,
+                         i < comp.logical_inputs.size() ? comp.logical_inputs[i].c_str() : "?",
+                         desc.byte_size, (int)desc.precision,
+                         (void*)comp.input_buffers[i].data());
     }
     return true;
 }

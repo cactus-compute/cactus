@@ -667,18 +667,25 @@ bool test_batch_distinct4_matches_single() {
 
 int main() {
     TestUtils::TestRunner runner("LLM Tests");
-    runner.run_test("streaming", test_streaming());
-    runner.run_test("prefill", test_prefill());
-    runner.run_test("prefill_invalidated_on_message_change", test_prefill_invalidated_on_message_change());
-    runner.run_test("chunked_prefill_padding", test_chunked_prefill_padding());
-    runner.run_test("tool_calls", test_tool_call());
-    runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
-    runner.run_test("tool_constraint_clear_releases_bias", test_tool_constraint_clear_releases_bias());
-    runner.run_test("partition_thinking_response", test_partition_thinking_response());
-    runner.run_test("prompt_retains_thinking", test_prompt_gemma4_retains_thinking());
-    runner.run_test("complete_thinking_api_clean", test_complete_gemma4_thinking_api_clean());
-    runner.run_test("multiturn_thinking_persist", test_multiturn_thinking_persist());
-    runner.run_test("batch_distinct4_matches_single", test_batch_distinct4_matches_single());
+    // CACTUS_TEST_FILTER=<substring> runs only matching tests.
+    auto want = [](const char* name) {
+        const char* f = std::getenv("CACTUS_TEST_FILTER");
+        return !f || !*f || std::strstr(name, f) != nullptr;
+    };
+#define RUN_LLM_TEST(name, expr) do { if (want(name)) runner.run_test(name, (expr)); } while (0)
+    RUN_LLM_TEST("streaming", test_streaming());
+    RUN_LLM_TEST("prefill", test_prefill());
+    RUN_LLM_TEST("prefill_invalidated_on_message_change", test_prefill_invalidated_on_message_change());
+    RUN_LLM_TEST("chunked_prefill_padding", test_chunked_prefill_padding());
+    RUN_LLM_TEST("tool_calls", test_tool_call());
+    RUN_LLM_TEST("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
+    RUN_LLM_TEST("tool_constraint_clear_releases_bias", test_tool_constraint_clear_releases_bias());
+    RUN_LLM_TEST("partition_thinking_response", test_partition_thinking_response());
+    RUN_LLM_TEST("prompt_retains_thinking", test_prompt_gemma4_retains_thinking());
+    RUN_LLM_TEST("complete_thinking_api_clean", test_complete_gemma4_thinking_api_clean());
+    RUN_LLM_TEST("multiturn_thinking_persist", test_multiturn_thinking_persist());
+    RUN_LLM_TEST("batch_distinct4_matches_single", test_batch_distinct4_matches_single());
+#undef RUN_LLM_TEST
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

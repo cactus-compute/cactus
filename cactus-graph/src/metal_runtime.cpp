@@ -145,6 +145,7 @@ bool cactus_graph_metal_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
         cap = (pa && pj && pjs) ? PK : 0;
     }
     if (!pe || !pa || !pj || !pjs) return false;
+    cactus_gpu_fold_buffers(h_buf, lm_head->K * 2, ple_buf, nl * ple_dim * 2);
     uint32_t tok = (uint32_t)g_fe.token_id;
     if (!cactus_gpu_encode_embedding_ortho(h_buf, tok, lm_head, g_fe.emb_scale)) return false;
     if (!cactus_gpu_encode_embedding_hadamard(pe, tok, &g_fe.ple)) return false;

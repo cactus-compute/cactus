@@ -16,6 +16,14 @@ echo "Running Cactus tests on Android..."
 echo "============================"
 
 if ! command -v adb &>/dev/null; then
+    for sdk_dir in "$ANDROID_HOME" "$ANDROID_SDK_ROOT" "$HOME/Library/Android/sdk" "$HOME/Android/Sdk"; do
+        if [ -n "$sdk_dir" ] && [ -x "$sdk_dir/platform-tools/adb" ]; then
+            export PATH="$sdk_dir/platform-tools:$PATH"
+            break
+        fi
+    done
+fi
+if ! command -v adb &>/dev/null; then
     echo "adb not found"
     echo "Install Android SDK Platform Tools and ensure it's in your PATH"
     echo "Installation:"

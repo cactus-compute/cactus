@@ -10,6 +10,7 @@
 
 inline bool cactus_gpu_supports_plans() { return true; }
 inline bool cactus_gpu_fold_ready() { return true; }
+inline void cactus_gpu_fold_buffers(void*, size_t, void*, size_t) {}
 inline const char* cactus_gpu_default_rules() { return nullptr; }
 inline bool cactus_gpu_auto_available() { return cactus_metal_available(); }
 
@@ -119,13 +120,18 @@ inline bool cactus_gpu_supports_plans() {
     }();
     return on && cactus_vulkan_available();
 }
+// Fused-embed fold: decode-side per-layer embeddings in the current gemma
+// graph read input_ids, which the fused run_step never writes (token flows
+// via FusedEmbedCtx). Until the fold covers those lookups, keep it off.
 inline bool cactus_gpu_fold_ready() { return false; }
-inline const char* cactus_gpu_default_rules() { return "2,3,4,12,13,14,15,17"; }
-inline bool cactus_gpu_auto_available() { return false; }
+inline void cactus_gpu_fold_buffers(void* h, size_t hb, void* p, size_t pb) { cactus_vulkan_fold_buffers(h, hb, p, pb); }
+inline const char* cactus_gpu_default_rules() { return "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18"; }
+inline bool cactus_gpu_auto_available() { return cactus_vulkan_available(); }
 
 inline bool cactus_gpu_available() { return cactus_vulkan_available(); }
-inline void cactus_gpu_set_active(bool) {}
-inline bool cactus_gpu_active_mode() { return cactus_vulkan_available(); }
+inline bool& cactus_gpu_active_flag_ref() { static bool f = false; return f; }
+inline void cactus_gpu_set_active(bool on) { cactus_gpu_active_flag_ref() = on; }
+inline bool cactus_gpu_active_mode() { return cactus_vulkan_available() && cactus_gpu_active_flag_ref(); }
 inline void cactus_gpu_session_begin() { cactus_vulkan_session_begin(); }
 inline void cactus_gpu_session_sync() { cactus_vulkan_session_sync(); }
 inline void cactus_gpu_session_flush() { cactus_vulkan_session_flush(); }
@@ -204,10 +210,16 @@ inline bool cactus_gpu_encode_transform_batch(const void* x, const CactusQuantMa
 inline bool cactus_gpu_encode_gemv_precoded(void* out, const void* code, const CactusQuantMatrix* W) {
     return cactus_vulkan_op_enabled("matmul") && cactus_vulkan_encode_gemv_precoded(out, code, W);
 }
-inline bool cactus_gpu_encode_transform_gemv(void*, const void*, const CactusQuantMatrix*, const void*) { return false; }
-inline bool cactus_gpu_transform_gemv_fits(uint32_t) { return false; }
+inline bool cactus_gpu_encode_transform_gemv(void* out, const void* x, const CactusQuantMatrix* W, const void* osw) {
+    return cactus_vulkan_op_enabled("matmul") && cactus_vulkan_encode_transform_gemv(out, x, W, osw);
+}
+inline bool cactus_gpu_transform_gemv_fits(uint32_t K) { return cactus_vulkan_transform_gemv_fits(K); }
 inline bool cactus_gpu_encode_gemv_cat(void* const*, const void* const*, const CactusQuantMatrix* const*, int) { return false; }
-inline bool cactus_gpu_encode_swiglu_transform(void*, const void*, const void*, const CactusQuantMatrix*, float) { return false; }
+inline bool cactus_gpu_encode_swiglu_transform(void* code, const void* gate, const void* up,
+        const CactusQuantMatrix* W, float scale) {
+    return cactus_vulkan_op_enabled("matmul")
+        && cactus_vulkan_encode_swiglu_transform(code, gate, up, W, scale);
+}
 inline bool cactus_gpu_prewarm_quant(const CactusQuantMatrix* W) {
     return cactus_vulkan_prewarm_quant(W);
 }
@@ -215,26 +227,78 @@ inline bool cactus_gpu_encode_rope_pair(void* out, const void* x, const void* c,
         uint32_t H, uint32_t D) {
     return cactus_vulkan_op_enabled("rope") && cactus_vulkan_encode_rope_pair(out, x, c, s, H, D);
 }
-inline bool cactus_gpu_encode_rope_pair_rms(void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, float) { return false; }
-inline bool cactus_gpu_encode_deltanet_decode(void*, const void*, const void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float) { return false; }
-inline bool cactus_gpu_encode_deltanet_prefill(void*, const void*, const void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float) { return false; }
-inline bool cactus_gpu_encode_rms2_add_clip(void*, const void*, const void*, const void*, const void*, size_t, float, float) { return false; }
+inline bool cactus_gpu_encode_rope_pair_rms(void* out, const void* x, const void* w, const void* c,
+        const void* s, uint32_t H, uint32_t D, float eps) {
+    return cactus_vulkan_op_enabled("rope")
+        && cactus_vulkan_encode_rope_pair_rms(out, x, w, c, s, H, D, eps);
+}
+inline bool cactus_gpu_encode_deltanet_decode(void* out, const void* q, const void* k, const void* v,
+        const void* g, const void* b, const void* s, uint32_t B, uint32_t Hq, uint32_t Hv,
+        uint32_t K, uint32_t V, float scale) {
+    return cactus_vulkan_op_enabled("deltanet")
+        && cactus_vulkan_encode_deltanet_decode(out, q, k, v, g, b, s, B, Hq, Hv, K, V, scale);
+}
+inline bool cactus_gpu_encode_deltanet_prefill(void* out, const void* q, const void* k, const void* v,
+        const void* g, const void* b, const void* s, uint32_t B, uint32_t T, uint32_t Hq, uint32_t Hv,
+        uint32_t K, uint32_t V, float scale) {
+    return cactus_vulkan_op_enabled("deltanet")
+        && cactus_vulkan_encode_deltanet_prefill(out, q, k, v, g, b, s, B, T, Hq, Hv, K, V, scale);
+}
+inline bool cactus_gpu_encode_rms2_add_clip(void* out, const void* a, const void* wa,
+        const void* b, const void* wb, size_t dim, float eps_a, float eps_b) {
+    return cactus_vulkan_op_enabled("rms")
+        && cactus_vulkan_encode_rms2_add_clip(out, a, wa, b, wb, dim, eps_a, eps_b);
+}
 inline bool cactus_gpu_encode_rms_norm_scale(void* out, const void* in, const void* w,
         size_t rows, size_t dim, float eps, float oscale) {
     return cactus_vulkan_op_enabled("rms")
         && cactus_vulkan_encode_rms_norm_scale(out, in, w, rows, dim, eps, oscale);
 }
-inline bool cactus_gpu_encode_softmax_topk(void*, void*, const void*, size_t, size_t, size_t, float) { return false; }
-inline bool cactus_gpu_encode_topk_rows(void*, const void*, size_t, size_t, size_t) { return false; }
-inline bool cactus_gpu_moe_cq4_ready(const CactusQuantMatrix*) { return false; }
-inline bool cactus_gpu_moe_cq4_build(const CactusQuantMatrix*, const CactusQuantMatrix*, const CactusQuantMatrix*, uint32_t) { return false; }
-inline bool cactus_gpu_encode_moe_gated_cq4(void*, const void*, const void*, const void*, const CactusQuantMatrix*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, float) { return false; }
-inline bool cactus_gpu_encode_quant_matmul_ortho(void*, const void*, void*, const CactusQuantMatrix*) { return false; }
-inline bool cactus_gpu_encode_embedding_ortho(void*, uint32_t, const CactusQuantMatrix*, float) { return false; }
-inline bool cactus_gpu_encode_embedding_hadamard(void*, uint32_t, const CactusQuantMatrix*) { return false; }
-inline bool cactus_gpu_encode_embedding_ortho_m(void*, const CactusQuantMatrix*, const uint32_t*, uint32_t) { return false; }
-inline bool cactus_gpu_encode_embedding_hadamard_m(void*, const CactusQuantMatrix*, const uint32_t*, uint32_t) { return false; }
-inline bool cactus_gpu_encode_gather_f16(void*, const void*, size_t, const uint32_t*, uint32_t, uint32_t) { return false; }
+inline bool cactus_gpu_encode_softmax_topk(void* probs, void* topk, const void* in,
+        size_t rows, size_t cols, size_t k, float scale) {
+    return cactus_vulkan_op_enabled("topk")
+        && cactus_vulkan_encode_softmax_topk(probs, topk, in, rows, cols, k, scale);
+}
+inline bool cactus_gpu_encode_topk_rows(void* out, const void* in, size_t rows, size_t cols, size_t k) {
+    return cactus_vulkan_op_enabled("topk")
+        && cactus_vulkan_encode_topk_rows(out, in, rows, cols, k);
+}
+inline bool cactus_gpu_moe_cq4_ready(const CactusQuantMatrix* w) {
+    return cactus_vulkan_moe_cq4_ready(w);
+}
+inline bool cactus_gpu_moe_cq4_build(const CactusQuantMatrix* w1s, const CactusQuantMatrix* w3s,
+        const CactusQuantMatrix* w2s, uint32_t E) {
+    return cactus_vulkan_moe_cq4_build(w1s, w3s, w2s, E);
+}
+inline bool cactus_gpu_encode_moe_gated_cq4(void* out, const void* hidden, const void* probs,
+        const void* topk, const CactusQuantMatrix* w1_0, uint32_t E, uint32_t top_k, uint32_t tokens,
+        uint32_t act, uint32_t normalize, float eps, float scaling) {
+    return cactus_vulkan_op_enabled("moe")
+        && cactus_vulkan_encode_moe_gated_cq4(out, hidden, probs, topk, w1_0, E, top_k, tokens,
+               act, normalize, eps, scaling);
+}
+inline bool cactus_gpu_encode_quant_matmul_ortho(void* out, const void* act, void* code,
+        const CactusQuantMatrix* W) {
+    (void)code;
+    return cactus_vulkan_op_enabled("matmul") && cactus_vulkan_encode_cq_gemv(out, act, W);
+}
+inline bool cactus_gpu_encode_embedding_ortho(void* out, uint32_t row, const CactusQuantMatrix* W, float scale) {
+    return cactus_vulkan_op_enabled("emb") && cactus_vulkan_encode_embedding_ortho(out, row, W, scale);
+}
+inline bool cactus_gpu_encode_embedding_hadamard(void* out, uint32_t row, const CactusQuantMatrix* W) {
+    return cactus_vulkan_op_enabled("emb") && cactus_vulkan_encode_embedding_hadamard(out, row, W);
+}
+inline bool cactus_gpu_encode_embedding_ortho_m(void* out, const CactusQuantMatrix* W, const uint32_t* rows, uint32_t M) {
+    return cactus_vulkan_op_enabled("emb") && cactus_vulkan_encode_embedding_ortho_m(out, W, rows, M);
+}
+inline bool cactus_gpu_encode_embedding_hadamard_m(void* out, const CactusQuantMatrix* W, const uint32_t* rows, uint32_t M) {
+    return cactus_vulkan_op_enabled("emb") && cactus_vulkan_encode_embedding_hadamard_m(out, W, rows, M);
+}
+inline bool cactus_gpu_encode_gather_f16(void* out, const void* table, size_t table_bytes,
+        const uint32_t* rows, uint32_t M, uint32_t D) {
+    return cactus_vulkan_op_enabled("gather")
+        && cactus_vulkan_encode_gather_f16(out, table, table_bytes, rows, M, D);
+}
 inline bool cactus_gpu_encode_attention_i8(void* out, const void* q, const void* knew, const void* vnew,
         const void* kc, const void* vc, const void* ks, const void* vs,
         uint32_t nqh, uint32_t nkvh, uint32_t hd, uint32_t vhd,
@@ -244,43 +308,151 @@ inline bool cactus_gpu_encode_attention_i8(void* out, const void* q, const void*
         && cactus_vulkan_encode_attention_i8(out, q, knew, vnew, kc, vc, ks, vs,
                nqh, nkvh, hd, vhd, hist, total_keys, kv_start, kv_end, scale, kcb, vcb, ksb, vsb);
 }
-inline bool cactus_gpu_encode_attention_fused_i8(void*, const void*, const void*, const void*, void*, void*, void*, void*, const void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, float, size_t, size_t, size_t, size_t) { return false; }
-inline bool cactus_gpu_encode_attention_i8_prefill(void*, const void*, const void*, const void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, size_t, size_t, size_t, size_t, uint32_t, uint32_t) { return false; }
-inline bool cactus_gpu_encode_binary_f32(int, void*, const void*, const void*, size_t) { return false; }
-inline bool cactus_gpu_encode_scalar_f32(int, void*, const void*, size_t, float) { return false; }
-inline bool cactus_gpu_encode_unary_f32(int, void*, const void*, size_t) { return false; }
-inline bool cactus_gpu_encode_clamp(void*, const void*, size_t, float, float, int) { return false; }
-inline bool cactus_gpu_encode_glu(void*, const void*, size_t, size_t, size_t) { return false; }
-inline bool cactus_gpu_encode_layer_norm(void*, const void*, const void*, const void*, size_t, size_t, float) { return false; }
-inline bool cactus_gpu_encode_softmax_rows(void*, const void*, size_t, size_t) { return false; }
-inline bool cactus_gpu_encode_conv1d_k3(void*, const void*, const void*, int, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
-inline bool cactus_gpu_encode_gemm_f16(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, int) { return false; }
-inline bool cactus_gpu_encode_attention_f16(void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, uint32_t, uint32_t, uint32_t, float, uint32_t) { return false; }
-inline bool cactus_gpu_encode_reduce_axis(int, void*, const void*, uint32_t, uint32_t, uint32_t, int) { return false; }
-inline bool cactus_gpu_encode_cumsum(void*, const void*, uint32_t, uint32_t, uint32_t, int) { return false; }
+inline bool cactus_gpu_encode_attention_fused_i8(void* out, const void* q, const void* kraw, const void* vraw,
+        void* kc, void* vc, void* ks, void* vs,
+        const void* qw, const void* kw, const void* vw, const void* cs, const void* sn,
+        uint32_t nqh, uint32_t hd, uint32_t vhd,
+        uint32_t kv_start, uint32_t kv_end, uint32_t slot, uint32_t has_new,
+        float eps, float scale, size_t kcb, size_t vcb, size_t ksb, size_t vsb) {
+    return cactus_vulkan_op_enabled("attn")
+        && cactus_vulkan_encode_attention_fused_i8(out, q, kraw, vraw, kc, vc, ks, vs,
+               qw, kw, vw, cs, sn, nqh, hd, vhd, kv_start, kv_end, slot, has_new,
+               eps, scale, kcb, vcb, ksb, vsb);
+}
+inline bool cactus_gpu_encode_attention_i8_prefill(void* out, const void* q, const void* knew, const void* vnew,
+        const void* kc, const void* vc, const void* ks, const void* vs,
+        uint32_t nqh, uint32_t nkvh, uint32_t hd, uint32_t vhd,
+        uint32_t hist, uint32_t new_len, uint32_t q_pos0, uint32_t window, uint32_t is_causal,
+        uint32_t M, float scale, size_t kcb, size_t vcb, size_t ksb, size_t vsb,
+        uint32_t sink, uint32_t ring) {
+    return cactus_vulkan_op_enabled("attn")
+        && cactus_vulkan_encode_attention_i8_prefill(out, q, knew, vnew, kc, vc, ks, vs,
+               nqh, nkvh, hd, vhd, hist, new_len, q_pos0, window, is_causal, M, scale,
+               kcb, vcb, ksb, vsb, sink, ring);
+}
+inline bool cactus_gpu_encode_binary_f32(int op, void* y, const void* a, const void* b, size_t n) {
+    return cactus_vulkan_op_enabled("ew") && cactus_vulkan_encode_binary_f32(op, y, a, b, n);
+}
+inline bool cactus_gpu_encode_scalar_f32(int op, void* y, const void* in, size_t n, float p) {
+    return cactus_vulkan_op_enabled("ew") && cactus_vulkan_encode_scalar_f32(op, y, in, n, p);
+}
+inline bool cactus_gpu_encode_unary_f32(int op, void* y, const void* in, size_t n) {
+    return cactus_vulkan_op_enabled("ew") && cactus_vulkan_encode_unary_f32(op, y, in, n);
+}
+inline bool cactus_gpu_encode_clamp(void* out, const void* in, size_t n, float lo, float hi, int f32) {
+    return cactus_vulkan_op_enabled("ew") && cactus_vulkan_encode_clamp(out, in, n, lo, hi, f32);
+}
+inline bool cactus_gpu_encode_glu(void* out, const void* in, size_t split, size_t inner, size_t n_out) {
+    return cactus_vulkan_op_enabled("glu") && cactus_vulkan_encode_glu(out, in, split, inner, n_out);
+}
+inline bool cactus_gpu_encode_layer_norm(void* out, const void* in, const void* w, const void* b,
+        size_t rows, size_t dim, float eps) {
+    return cactus_vulkan_op_enabled("norm") && cactus_vulkan_encode_layer_norm(out, in, w, b, rows, dim, eps);
+}
+inline bool cactus_gpu_encode_softmax_rows(void* out, const void* in, size_t rows, size_t cols) {
+    return cactus_vulkan_op_enabled("softmax") && cactus_vulkan_encode_softmax_rows(out, in, rows, cols);
+}
+inline bool cactus_gpu_encode_conv1d_k3(void* out, const void* x, const void* w, int w_int8,
+        const void* w_scales, uint32_t w_gs, uint32_t Cin, uint32_t L, uint32_t Cout, uint32_t Lout, uint32_t stride) {
+    return cactus_vulkan_op_enabled("conv")
+        && cactus_vulkan_encode_conv1d_k3(out, x, w, w_int8, w_scales, w_gs, Cin, L, Cout, Lout, stride);
+}
+inline bool cactus_gpu_encode_gemm_f16(void* out, const void* lhs, const void* rhs,
+        uint32_t M, uint32_t K, uint32_t N, int pretransposed) {
+    return cactus_vulkan_op_enabled("gemm")
+        && cactus_vulkan_encode_gemm_f16(out, lhs, rhs, M, K, N, pretransposed);
+}
+inline bool cactus_gpu_encode_attention_f16(void* out, const void* q, const void* k, const void* v,
+        const void* mask, uint32_t B, uint32_t T, uint32_t S, uint32_t HQ, uint32_t HKV,
+        uint32_t D, uint32_t DV, float scale, uint32_t causal, uint32_t pos_off,
+        uint32_t window, float logit_cap, uint32_t mask_mode) {
+    return cactus_vulkan_op_enabled("attn")
+        && cactus_vulkan_encode_attention_f16(out, q, k, v, mask, B, T, S, HQ, HKV, D, DV,
+               scale, causal, pos_off, window, logit_cap, mask_mode);
+}
+inline bool cactus_gpu_encode_reduce_axis(int op, void* out, const void* in, uint32_t outer,
+        uint32_t axis_size, uint32_t inner, int f32) {
+    return cactus_vulkan_op_enabled("reduce")
+        && cactus_vulkan_encode_reduce_axis(op, out, in, outer, axis_size, inner, f32);
+}
+inline bool cactus_gpu_encode_cumsum(void* out, const void* in, uint32_t outer,
+        uint32_t axis_size, uint32_t inner, int f32) {
+    return cactus_vulkan_op_enabled("reduce")
+        && cactus_vulkan_encode_cumsum(out, in, outer, axis_size, inner, f32);
+}
 inline bool cactus_gpu_encode_concat2(void* out, const void* a, const void* b,
         uint32_t a_outer, uint32_t b_outer, uint32_t a_axis, uint32_t b_axis, uint32_t inner) {
     return cactus_vulkan_op_enabled("concat")
         && cactus_vulkan_encode_concat2(out, a, b, a_outer, b_outer, a_axis, b_axis, inner);
 }
-inline bool cactus_gpu_encode_gather_f32idx(void*, const void*, const void*, uint32_t, uint32_t, size_t) { return false; }
+inline bool cactus_gpu_encode_gather_f32idx(void* out, const void* table, const void* idx,
+        uint32_t rows, uint32_t D, size_t table_bytes) {
+    return cactus_vulkan_op_enabled("gather")
+        && cactus_vulkan_encode_gather_f32idx(out, table, idx, rows, D, table_bytes);
+}
 inline bool cactus_gpu_encode_rope_full(void* out, const void* in, uint32_t tokens, uint32_t S,
         uint32_t H, uint32_t D, uint32_t rot, uint32_t pos0, float theta, int gptj) {
     return cactus_vulkan_op_enabled("rope")
         && cactus_vulkan_encode_rope_full(out, in, tokens, S, H, D, rot, pos0, theta, gptj);
 }
-inline bool cactus_gpu_encode_maxpool1d(void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
-inline bool cactus_gpu_encode_bilinear(void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, int) { return false; }
-inline bool cactus_gpu_encode_conv1d_gen(void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, int) { return false; }
-inline bool cactus_gpu_encode_conv1d_nlc_dw(void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
-inline bool cactus_gpu_encode_conv2d(void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, int) { return false; }
-inline bool cactus_gpu_encode_batchnorm(void*, const void*, const void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, float) { return false; }
-inline bool cactus_gpu_encode_groupnorm(void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, float) { return false; }
-inline bool cactus_gpu_encode_bias_add_rows(void*, const void*, uint32_t, uint32_t) { return false; }
-inline bool cactus_gpu_encode_elemwise_chain(void*, const void*, const float*, uint32_t, const void*, const void*, const void*, const size_t*, size_t, uint32_t, uint32_t) { return false; }
-inline bool cactus_gpu_encode_rms_norm_add_rows(void*, void*, const void*, const void*, const void*, uint32_t, uint32_t, float, int) { return false; }
-inline bool cactus_gpu_encode_gemm_batch(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, int, int) { return false; }
-inline bool cactus_gpu_encode_conv1d_dw(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
+inline bool cactus_gpu_encode_maxpool1d(void* out, const void* in, uint32_t NC, uint32_t L,
+        uint32_t Lout, uint32_t K, uint32_t stride) {
+    return cactus_vulkan_op_enabled("pool") && cactus_vulkan_encode_maxpool1d(out, in, NC, L, Lout, K, stride);
+}
+inline bool cactus_gpu_encode_bilinear(void* out, const void* in, uint32_t sh, uint32_t sw,
+        uint32_t dh, uint32_t dw, uint32_t E, int align) {
+    return cactus_vulkan_op_enabled("image") && cactus_vulkan_encode_bilinear(out, in, sh, sw, dh, dw, E, align);
+}
+inline bool cactus_gpu_encode_conv1d_gen(void* out, const void* x, const void* w, const void* bias,
+        uint32_t N, uint32_t Cin, uint32_t L, uint32_t Cout, uint32_t Lout, uint32_t K, uint32_t stride, int w_ck_co) {
+    return cactus_vulkan_op_enabled("conv")
+        && cactus_vulkan_encode_conv1d_gen(out, x, w, bias, N, Cin, L, Cout, Lout, K, stride, w_ck_co);
+}
+inline bool cactus_gpu_encode_conv1d_nlc_dw(void* out, const void* x, const void* w, const void* bias,
+        uint32_t N, uint32_t L, uint32_t C, uint32_t K, uint32_t dil, uint32_t pad) {
+    return cactus_vulkan_op_enabled("conv")
+        && cactus_vulkan_encode_conv1d_nlc_dw(out, x, w, bias, N, L, C, K, dil, pad);
+}
+inline bool cactus_gpu_encode_conv2d(void* out, const void* x, const void* w, const void* bias,
+        uint32_t N, uint32_t Cin, uint32_t H, uint32_t W, uint32_t Cout, uint32_t Ho, uint32_t Wo,
+        uint32_t K, uint32_t stride, uint32_t pad, int dw) {
+    return cactus_vulkan_op_enabled("conv")
+        && cactus_vulkan_encode_conv2d(out, x, w, bias, N, Cin, H, W, Cout, Ho, Wo, K, stride, pad, dw);
+}
+inline bool cactus_gpu_encode_batchnorm(void* out, const void* x, const void* w, const void* b,
+        const void* rm, const void* rv, uint32_t C, uint32_t inner, uint32_t total, float eps) {
+    return cactus_vulkan_op_enabled("norm")
+        && cactus_vulkan_encode_batchnorm(out, x, w, b, rm, rv, C, inner, total, eps);
+}
+inline bool cactus_gpu_encode_groupnorm(void* out, const void* x, const void* w, const void* b,
+        uint32_t N, uint32_t C, uint32_t S, uint32_t groups, float eps) {
+    return cactus_vulkan_op_enabled("norm")
+        && cactus_vulkan_encode_groupnorm(out, x, w, b, N, C, S, groups, eps);
+}
+inline bool cactus_gpu_encode_bias_add_rows(void* y, const void* bias, uint32_t C, uint32_t total) {
+    return cactus_vulkan_op_enabled("bias") && cactus_vulkan_encode_bias_add_rows(y, bias, C, total);
+}
+inline bool cactus_gpu_encode_elemwise_chain(void* out, const void* in, const float* steps,
+        uint32_t nsteps, const void* side0, const void* side1, const void* side2,
+        const size_t* side_elems, size_t n, uint32_t flags, uint32_t inner) {
+    return cactus_vulkan_op_enabled("chain")
+        && cactus_vulkan_encode_elemwise_chain(out, in, steps, nsteps, side0, side1, side2,
+               side_elems, n, flags, inner);
+}
+inline bool cactus_gpu_encode_rms_norm_add_rows(void* ysum, void* ynorm, const void* x, const void* res,
+        const void* w, uint32_t rows, uint32_t dim, float eps, int clipped) {
+    return cactus_vulkan_op_enabled("rms")
+        && cactus_vulkan_encode_rms_norm_add_rows(ysum, ynorm, x, res, w, rows, dim, eps, clipped);
+}
+inline bool cactus_gpu_encode_gemm_batch(void* out, const void* a, const void* b,
+        uint32_t M, uint32_t K, uint32_t N, uint32_t batch, int f32out, int f32a) {
+    return cactus_vulkan_op_enabled("gemm")
+        && cactus_vulkan_encode_gemm_batch(out, a, b, M, K, N, batch, f32out, f32a);
+}
+inline bool cactus_gpu_encode_conv1d_dw(void* out, const void* x, const void* w,
+        uint32_t C, uint32_t L, uint32_t Lout, uint32_t K, uint32_t stride) {
+    return cactus_vulkan_op_enabled("conv") && cactus_vulkan_encode_conv1d_dw(out, x, w, C, L, Lout, K, stride);
+}
 inline bool cactus_gpu_encode_transpose2d(void* out, const void* in, uint32_t batch, uint32_t R, uint32_t C) {
     uint32_t oshape[3] = {batch, C, R}, sstride[3] = {R * C, 1, C};
     return cactus_vulkan_op_enabled("strided")
@@ -333,9 +505,22 @@ inline bool cactus_gpu_encode_kv_append_ring_i8_m(const void* src, void* i8b, vo
     return cactus_vulkan_op_enabled("kv")
         && cactus_vulkan_encode_kv_append_i8(src, i8b, scb, kvh, hdim, cur, gs, M, sink, W, sb, ib, scb_sz);
 }
-inline bool cactus_gpu_encode_conv_cache_append(void*, const void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, int) { return false; }
-inline bool cactus_gpu_encode_rel_pos_bias(void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, int, float) { return false; }
-inline bool cactus_gpu_encode_gemv_bias(void*, const void*, const void*, const void*, uint32_t, uint32_t, int) { return false; }
+inline bool cactus_gpu_encode_conv_cache_append(void* out, const void* src, void* ring,
+        uint32_t hd, uint32_t ws, uint32_t nnew, uint32_t head0, uint32_t count_new,
+        uint32_t num_rows, int src_f32) {
+    return cactus_vulkan_op_enabled("conv")
+        && cactus_vulkan_encode_conv_cache_append(out, src, ring, hd, ws, nnew, head0, count_new, num_rows, src_f32);
+}
+inline bool cactus_gpu_encode_rel_pos_bias(void* y, const void* q, const void* r,
+        uint32_t B, uint32_t T, uint32_t H, uint32_t D, uint32_t R, int r_batched, float scale) {
+    return cactus_vulkan_op_enabled("attn")
+        && cactus_vulkan_encode_rel_pos_bias(y, q, r, B, T, H, D, R, r_batched, scale);
+}
+inline bool cactus_gpu_encode_gemv_bias(void* out, const void* x, const void* w, const void* bias,
+        uint32_t K, uint32_t N, int tr) {
+    return cactus_vulkan_op_enabled("matmul")
+        && cactus_vulkan_encode_gemv_bias(out, x, w, bias, K, N, tr);
+}
 
 #endif
 

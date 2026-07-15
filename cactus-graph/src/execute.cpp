@@ -1051,7 +1051,28 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             if (qb.shape.size() < 3) return false;
             size_t batch=qb.shape[0], seq=qb.shape[1], nqh=qb.shape[2];
             if (batch != 1) return false;
-            if (kcache.precision == Precision::FP16 || vcache.precision == Precision::FP16) return false;
+            if (kcache.precision == Precision::FP16 || vcache.precision == Precision::FP16) {
+                if (kcache.precision != Precision::FP16 || vcache.precision != Precision::FP16) return false;
+                const uint64_t* fkm = reinterpret_cast<const uint64_t*>(kcache.get_data());
+                const uint64_t* fvm = reinterpret_cast<const uint64_t*>(vcache.get_data());
+                if (!fkm || !fvm) return false;
+                size_t clen=fkm[0], fkvh=fkm[2], fhd=fkm[3], fvhd=fvm[3];
+                if (clen == 0 || fkvh == 0 || fhd == 0 || nqh % fkvh != 0) return false;
+                size_t fpo = node.params.position_offset, fpos;
+                if (fpo == std::numeric_limits<size_t>::max() - 1) fpos = (clen >= seq) ? clen - seq : 0;
+                else if (fpo == std::numeric_limits<size_t>::max()) fpos = clen >= seq ? clen - seq : 0;
+                else fpos = fpo;
+                size_t fnew = knew.total_size / (fkvh * fhd);
+                if (fnew != 0) return false;
+                float fscale = node.params.scale != 0.0f ? node.params.scale : 1.0f/std::sqrt((float)fhd);
+                return cactus_gpu_encode_attention_f16(out.get_data(), qb.get_data(),
+                    static_cast<const char*>(kcache.get_data()) + 64,
+                    static_cast<const char*>(vcache.get_data()) + 64,
+                    nullptr, 1u, (uint32_t)seq, (uint32_t)clen, (uint32_t)nqh, (uint32_t)fkvh,
+                    (uint32_t)fhd, (uint32_t)fvhd, fscale,
+                    node.params.is_causal ? 1u : 0u, (uint32_t)fpos,
+                    (uint32_t)node.params.window_size, 0.0f, 0u);
+            }
             const uint64_t* km = reinterpret_cast<const uint64_t*>(kcache.get_data());
             const uint64_t* vm = reinterpret_cast<const uint64_t*>(vcache.get_data());
             if (!km || !vm) return false;
@@ -1243,15 +1264,26 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             else { const int8_t* p = idxb.data_as<int8_t>(); for (size_t i=0;i<M;++i) rows[i]=(uint32_t)p[i]; }
             if (PrecisionTraits::is_cq(emb.precision) && emb.group_size > 0) {
                 CactusQuantMatrix W = emb.to_cq_matrix();
-                if (W.flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
-                    return cactus_gpu_encode_embedding_ortho_m(out.get_data(), &W, rows.data(), (uint32_t)M);
-                return cactus_gpu_encode_embedding_hadamard_m(out.get_data(), &W, rows.data(), (uint32_t)M);
+                bool r = (W.flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
+                    ? cactus_gpu_encode_embedding_ortho_m(out.get_data(), &W, rows.data(), (uint32_t)M)
+                    : cactus_gpu_encode_embedding_hadamard_m(out.get_data(), &W, rows.data(), (uint32_t)M);
+                if (!r && std::getenv("CACTUS_RMS_DBG"))
+                    std::fprintf(stderr, "[vkemb] cq refused M=%zu N=%u K=%u bits=%u fl=%u\n",
+                                 M, W.N, W.K, W.bits, W.flags);
+                return r;
             }
             if (emb.precision == Precision::FP16 && emb.shape.size() >= 2) {
                 uint32_t D = (uint32_t)emb.shape[1];
-                return cactus_gpu_encode_gather_f16(out.get_data(), emb.get_data(),
+                bool r = cactus_gpu_encode_gather_f16(out.get_data(), emb.get_data(),
                            emb.total_size * sizeof(__fp16), rows.data(), (uint32_t)M, D);
+                if (!r && std::getenv("CACTUS_RMS_DBG"))
+                    std::fprintf(stderr, "[vkemb] gather refused M=%zu D=%u bytes=%zu table=%p\n",
+                                 M, D, emb.total_size * sizeof(__fp16), emb.get_data());
+                return r;
             }
+            if (std::getenv("CACTUS_RMS_DBG"))
+                std::fprintf(stderr, "[vkemb] no path prec=%d shape_n=%zu\n",
+                             (int)emb.precision, emb.shape.size());
             return false;
         }
         default: return false;
@@ -1425,7 +1457,7 @@ void CactusGraph::execute(const std::string& profile_file) {
     };
 
     bool metal_mode = false;
-    if (cactus_backend_gpu()) {
+    if (cactus_backend_gpu() && cactus_gpu_auto_available()) {
         for (size_t i = 0; i < n; ++i) {
             if (nodes_[i]->op_type == OpType::INPUT) continue;
             if (nodes_[i]->params.backend == ComputeBackend::METAL) { metal_mode = true; break; }
@@ -1562,6 +1594,14 @@ void CactusGraph::execute(const std::string& profile_file) {
             cactus_gpu_session_sync();
             kv_restore();
             release_transients();
+            for (size_t i = 0; i < n; ++i) {
+                GraphNode& nd = *nodes_[i];
+                if (nd.op_type == OpType::INPUT || nd.op_type == OpType::PERSISTENT
+                    || nd.op_type == OpType::KV_CACHE_STATE
+                    || nd.op_type == OpType::CONV_CACHE_STATE
+                    || nd.op_type == OpType::RECURRENT_CACHE_STATE) continue;
+                if (nd.output_buffer.external_data) nd.output_buffer.set_external(nullptr);
+            }
             cactus_gpu_set_active(false);
             cactus_gpu_session_end();
         };
@@ -1608,6 +1648,13 @@ void CactusGraph::execute(const std::string& profile_file) {
         std::unordered_map<int, int> vk_cpu_ops, vk_sync_ops;
         if (fplan) cactus_gpu_plan_fold(fplan, nodes_);
         std::vector<uint8_t> metal_live(n, 0);
+        {
+            size_t fh = 0, fp = 0;
+            if (fplan && cactus_gpu_plan_fold_inputs(fplan, &fh, &fp) && fh < n && fp < n) {
+                metal_live[fh] = 1;
+                metal_live[fp] = 1;
+            }
+        }
         auto maybe_recycle = [&]() {
             if (!transient_acts || ++since_recycle < 256 || transient_dead.empty()) return;
             for (void* p : transient_dead) cactus_gpu_free_shared(p);
@@ -1649,6 +1696,17 @@ void CactusGraph::execute(const std::string& profile_file) {
             auto& node = nodes_[i];
             const OpType ot = node->op_type;
             if (ot == OpType::INPUT) continue;
+            if (!cactus_gpu_active_mode()) {
+                metal_guard.armed = false;
+                metal_abort_cleanup();
+                if (vk_stats)
+                    std::fprintf(stderr, "[vkabort] gpu unavailable mid-graph at node %zu, re-executing\n", i);
+                g_plans_dead = true;
+                metal_plans_.erase(metal_plan_sig_);
+                if (fplan) cactus_gpu_plan_free(fplan);
+                execute(profile_file);
+                return;
+            }
             if (ot == OpType::KV_CACHE_STATE || ot == OpType::CONV_CACHE_STATE
                 || ot == OpType::RECURRENT_CACHE_STATE) {
                 dispatch_node(*node, nodes_, node_index_map_);
@@ -1664,10 +1722,28 @@ void CactusGraph::execute(const std::string& profile_file) {
                 continue;
             }
             if (aliases_input(*node)) {
+                const auto& asrc = get_input(*node, 0, nodes_, node_index_map_);
+                if (vk_stats) {
+                    for (size_t k = 0; k < node->input_ids.size(); ++k) {
+                        auto sit = node_index_map_.find(node->input_ids[k]);
+                        size_t si = sit != node_index_map_.end() ? sit->second : (size_t)-1;
+                        const void* sd = si != (size_t)-1 ? nodes_[si]->output_buffer.get_data() : nullptr;
+                        if (sd) continue;
+                        std::fprintf(stderr, "[vknullalias] i=%zu op=%d in%zu src=%zu srcop=%d srcfact=%d rplan=%d out=%p\n",
+                                     i, (int)node->op_type, k, si,
+                                     si != (size_t)-1 ? (int)nodes_[si]->op_type : -1,
+                                     (fplan && si != (size_t)-1) ? (int)cactus_gpu_plan_action(fplan, si) : -99,
+                                     rplan ? (int)rplan[i] : -1,
+                                     node->output_buffer.get_data());
+                    }
+                }
                 if (rplan && rplan[i] == 1) {
-                    const auto& src = get_input(*node, 0, nodes_, node_index_map_);
-                    node->output_buffer.set_external(const_cast<void*>(static_cast<const void*>(src.get_data())));
+                    node->output_buffer.set_external(const_cast<void*>(static_cast<const void*>(asrc.get_data())));
                 } else {
+                    if (vk_stats >= 2)
+                        std::fprintf(stderr, "[vkalias] i=%zu op=%d in=%p out=%p act=%d\n",
+                                     i, (int)node->op_type, asrc.get_data(),
+                                     node->output_buffer.get_data(), (int)cactus_gpu_active_mode());
                     dispatch_node(*node, nodes_, node_index_map_);
                 }
                 metal_live[i] = input_metal_live(*node) ? 1 : 0;
@@ -1730,6 +1806,9 @@ void CactusGraph::execute(const std::string& profile_file) {
             for (auto& fp : flipped) fp.first->precision = fp.second;
             if (!encoded && rplan && rplan[i] == 2) {
                 metal_retype_disabled_ = true;
+                if (vk_stats)
+                    std::fprintf(stderr, "[vkretype] op=%d at node %zu failed under retype, re-executing\n",
+                                 (int)ot, i);
                 metal_guard.armed = false;
                 metal_abort_cleanup();
                 execute(profile_file);
