@@ -468,7 +468,7 @@ bool cactus_kv_cache_grow(BufferDesc&, size_t, size_t);
 std::vector<__fp16> dequantize_int8_weights_to_fp16(const BufferDesc& W, size_t rows, size_t cols,
                                                     const char* op_name);
 
-static const __fp16* metal_conv_weight_f16(const BufferDesc& w, size_t rows, size_t cols) {
+static const __fp16* gpu_conv_weight_f16(const BufferDesc& w, size_t rows, size_t cols) {
     if (w.precision == Precision::FP16) return w.data_as<__fp16>();
     if (w.precision != Precision::INT8) return nullptr;
     const int8_t* p = w.data_as<int8_t>();
@@ -485,13 +485,13 @@ static const __fp16* metal_conv_weight_f16(const BufferDesc& w, size_t rows, siz
     std::lock_guard<std::mutex> lk(mu);
     Entry& e = cache[p];
     if (e.data.size() != n || e.fp != h) {
-        e.data = dequantize_int8_weights_to_fp16(w, rows, cols, "conv_metal");
+        e.data = dequantize_int8_weights_to_fp16(w, rows, cols, "conv_gpu");
         e.fp = h;
     }
     return e.data.data();
 }
 
-static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const node_index_map_t& map) {
+static bool try_encode_gpu(GraphNode& node, const nodes_vector& nodes, const node_index_map_t& map) {
     if (node.params.backend != ComputeBackend::METAL) return false;
     BufferDesc& out = node.output_buffer;
     auto fp16 = [](const BufferDesc& b){ return b.precision == Precision::FP16; };
@@ -764,7 +764,7 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
                 K = w.shape.back();
                 if (w.total_size != C * K) return false;
             }
-            const __fp16* wptr = metal_conv_weight_f16(w, C, K);
+            const __fp16* wptr = gpu_conv_weight_f16(w, C, K);
             if (!wptr) return false;
             size_t dil = causal ? (node.params.dilation ? node.params.dilation : 1) : 1;
             size_t pad = causal ? (K - 1) * dil : K / 2;
@@ -801,7 +801,7 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             if (x.shape.size() != 3 || out.shape.size() != 3) return false;
             size_t Cin = x.shape[2], Cout = out.shape[2];
             if (w.total_size != Cin * Cout) return false;
-            const __fp16* wptr = metal_conv_weight_f16(w, Cout, Cin);
+            const __fp16* wptr = gpu_conv_weight_f16(w, Cout, Cin);
             if (!wptr) return false;
             size_t rows = x.shape[0] * x.shape[1];
             if (!cactus_gpu_encode_gemm_f16(out.get_data(), x.get_data(), wptr,
@@ -1058,10 +1058,9 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
                 if (!fkm || !fvm) return false;
                 size_t clen=fkm[0], fkvh=fkm[2], fhd=fkm[3], fvhd=fvm[3];
                 if (clen == 0 || fkvh == 0 || fhd == 0 || nqh % fkvh != 0) return false;
-                size_t fpo = node.params.position_offset, fpos;
-                if (fpo == std::numeric_limits<size_t>::max() - 1) fpos = (clen >= seq) ? clen - seq : 0;
-                else if (fpo == std::numeric_limits<size_t>::max()) fpos = clen >= seq ? clen - seq : 0;
-                else fpos = fpo;
+                size_t fpo = node.params.position_offset;
+                size_t fpos = fpo >= std::numeric_limits<size_t>::max() - 1
+                            ? (clen >= seq ? clen - seq : 0) : fpo;
                 size_t fnew = knew.total_size / (fkvh * fhd);
                 if (fnew != 0) return false;
                 float fscale = node.params.scale != 0.0f ? node.params.scale : 1.0f/std::sqrt((float)fhd);
@@ -1279,28 +1278,28 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
     }
 }
 
-struct MetalFusePlan;
-MetalFusePlan* cactus_gpu_plan_build(const std::vector<std::unique_ptr<GraphNode>>& nodes,
+struct GpuFusePlan;
+GpuFusePlan* cactus_gpu_plan_build(const std::vector<std::unique_ptr<GraphNode>>& nodes,
                                        const std::unordered_map<size_t, size_t>& map,
                                        const std::unordered_set<size_t>& pinned_ids,
                                        const std::vector<uint8_t>& retype,
                                        const std::unordered_set<size_t>* banned = nullptr);
-void cactus_gpu_plan_free(MetalFusePlan* p);
-bool cactus_gpu_plan_fold(MetalFusePlan* p, const std::vector<std::unique_ptr<GraphNode>>& nodes);
-const std::vector<uint32_t>* cactus_gpu_plan_exec_list(const MetalFusePlan* p);
-void* cactus_gpu_plan_arena_ptr(const MetalFusePlan* p, size_t i);
-bool cactus_gpu_plan_has_arena(const MetalFusePlan* p);
-void cactus_gpu_plan_extend_last_use(const MetalFusePlan* p, std::vector<size_t>& last_use);
-int32_t cactus_gpu_plan_action(const MetalFusePlan* p, size_t i);
-int32_t cactus_gpu_plan_rule(const MetalFusePlan* p, int32_t cid);
-bool cactus_gpu_plan_encode(MetalFusePlan* p, int32_t cid,
+void cactus_gpu_plan_free(GpuFusePlan* p);
+bool cactus_gpu_plan_fold(GpuFusePlan* p, const std::vector<std::unique_ptr<GraphNode>>& nodes);
+const std::vector<uint32_t>* cactus_gpu_plan_exec_list(const GpuFusePlan* p);
+void* cactus_gpu_plan_arena_ptr(const GpuFusePlan* p, size_t i);
+bool cactus_gpu_plan_has_arena(const GpuFusePlan* p);
+void cactus_gpu_plan_extend_last_use(const GpuFusePlan* p, std::vector<size_t>& last_use);
+int32_t cactus_gpu_plan_action(const GpuFusePlan* p, size_t i);
+int32_t cactus_gpu_plan_rule(const GpuFusePlan* p, int32_t cid);
+bool cactus_gpu_plan_encode(GpuFusePlan* p, int32_t cid,
                               const std::vector<std::unique_ptr<GraphNode>>& nodes,
                               const std::unordered_map<size_t, size_t>& map);
 
-void CactusGraph::build_metal_retype_plan() {
-    metal_retype_built_ = true;
+void CactusGraph::build_gpu_retype_plan() {
+    gpu_retype_built_ = true;
     const size_t n = nodes_.size();
-    metal_retype_plan_.assign(n, 0);
+    gpu_retype_plan_.assign(n, 0);
     auto idxof = [&](size_t id) -> long {
         auto it = node_index_map_.find(id);
         return it == node_index_map_.end() ? -1 : (long)it->second;
@@ -1358,14 +1357,14 @@ void CactusGraph::build_metal_retype_plan() {
     }
     for (size_t i = 0; i < n; ++i) {
         if (!ok[i]) continue;
-        metal_retype_plan_[i] = nodes_[i]->op_type == OpType::PRECISION_CAST ? 1 : 2;
+        gpu_retype_plan_[i] = nodes_[i]->op_type == OpType::PRECISION_CAST ? 1 : 2;
     }
     for (size_t i = 0; i < n; ++i) {
         const GraphNode& nd = *nodes_[i];
         if (nd.op_type != OpType::PRECISION_CAST || nd.output_buffer.precision != Precision::FP16
             || nd.input_ids.empty()) continue;
         long j = idxof(nd.input_ids[0]);
-        if (j >= 0 && metal_retype_plan_[(size_t)j] != 0) metal_retype_plan_[i] = 1;
+        if (j >= 0 && gpu_retype_plan_[(size_t)j] != 0) gpu_retype_plan_[i] = 1;
     }
 }
 
@@ -1444,25 +1443,25 @@ void CactusGraph::execute(const std::string& profile_file) {
         return true;
     };
 
-    bool metal_mode = false;
+    bool gpu_mode = false;
     if (cactus_backend_gpu() && cactus_gpu_auto_available()) {
         for (size_t i = 0; i < n; ++i) {
             if (nodes_[i]->op_type == OpType::INPUT) continue;
-            if (nodes_[i]->params.backend == ComputeBackend::METAL) { metal_mode = true; break; }
+            if (nodes_[i]->params.backend == ComputeBackend::METAL) { gpu_mode = true; break; }
         }
     }
-    if (metal_mode && n < 100) {
+    if (gpu_mode && n < 100) {
         for (size_t i = 0; i < n; ++i) {
             OpType t = nodes_[i]->op_type;
             if (t == OpType::LSTM_CELL || t == OpType::BILSTM_SEQUENCE) {
-                metal_mode = false;
+                gpu_mode = false;
                 break;
             }
         }
     }
-    if (metal_mode && !need_debug && !metal_retype_built_) build_metal_retype_plan();
-    MetalFusePlan* fplan = nullptr;
-    if (metal_mode && !need_debug && cactus_gpu_supports_plans() && !g_plans_dead) {
+    if (gpu_mode && !need_debug && !gpu_retype_built_) build_gpu_retype_plan();
+    GpuFusePlan* fplan = nullptr;
+    if (gpu_mode && !need_debug && cactus_gpu_supports_plans() && !g_plans_dead) {
         uint64_t sig = 1469598103934665603ull;
         sig ^= (uint64_t)n; sig *= 1099511628211ull;
         for (auto& np : nodes_) {
@@ -1476,23 +1475,23 @@ void CactusGraph::execute(const std::string& profile_file) {
                 sig *= 1099511628211ull;
             }
         }
-        auto it = metal_plans_.find(sig);
-        if (it == metal_plans_.end()) {
+        auto it = gpu_plans_.find(sig);
+        if (it == gpu_plans_.end()) {
             std::unordered_set<size_t> pinned(retained_output_node_ids_.begin(), retained_output_node_ids_.end());
             pinned.insert(persistent_node_ids_.begin(), persistent_node_ids_.end());
             static const std::vector<uint8_t> no_retype;
-            const std::vector<uint8_t>& rt = (!metal_retype_disabled_ && metal_retype_plan_.size() == n)
-                ? metal_retype_plan_ : no_retype;
-            auto bit = metal_plan_banned_.find(sig);
+            const std::vector<uint8_t>& rt = (!gpu_retype_disabled_ && gpu_retype_plan_.size() == n)
+                ? gpu_retype_plan_ : no_retype;
+            auto bit = gpu_plan_banned_.find(sig);
             const std::unordered_set<size_t>* banned =
-                bit == metal_plan_banned_.end() ? nullptr : &bit->second;
-            it = metal_plans_.emplace(sig, cactus_gpu_plan_build(nodes_, node_index_map_, pinned, rt, banned)).first;
+                bit == gpu_plan_banned_.end() ? nullptr : &bit->second;
+            it = gpu_plans_.emplace(sig, cactus_gpu_plan_build(nodes_, node_index_map_, pinned, rt, banned)).first;
         }
         fplan = it->second;
-        metal_plan_sig_ = sig;
+        gpu_plan_sig_ = sig;
     }
-    const uint8_t* rplan = (metal_mode && !need_debug && !metal_retype_disabled_
-                            && metal_retype_plan_.size() == n) ? metal_retype_plan_.data() : nullptr;
+    const uint8_t* rplan = (gpu_mode && !need_debug && !gpu_retype_disabled_
+                            && gpu_retype_plan_.size() == n) ? gpu_retype_plan_.data() : nullptr;
     auto plan_of = [&](const GraphNode& node) -> uint8_t {
         if (!rplan) return 0;
         auto it = node_index_map_.find(node.id);
@@ -1513,7 +1512,7 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
         }
         if (node.op_type == OpType::INDEX && node.params.axis == 0) return true;
-        if (!metal_mode) return false;
+        if (!gpu_mode) return false;
         if (node.op_type == OpType::VIEW || node.op_type == OpType::RESHAPE || node.op_type == OpType::FLATTEN)
             return true;
         if (node.op_type == OpType::PRECISION_CAST && !node.input_ids.empty()) {
@@ -1559,7 +1558,7 @@ void CactusGraph::execute(const std::string& profile_file) {
         release_after[last_use[i]].push_back(i);
     }
 
-    if (metal_mode && !need_debug) {
+    if (gpu_mode && !need_debug) {
         const bool transient_acts = n >= 1500 && !cactus_gpu_plan_has_arena(fplan);
         std::vector<void*> transient_ptr(transient_acts ? n : 0, nullptr);
         std::vector<void*> transient_dead;
@@ -1583,7 +1582,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                 if (km) km[s.word] = s.value;
             }
         };
-        auto metal_abort_cleanup = [&]() {
+        auto gpu_abort_cleanup = [&]() {
             cactus_gpu_session_sync();
             kv_restore();
             release_transients();
@@ -1598,11 +1597,11 @@ void CactusGraph::execute(const std::string& profile_file) {
             cactus_gpu_set_active(false);
             cactus_gpu_session_end();
         };
-        struct MetalExecGuard {
-            decltype(metal_abort_cleanup)& cleanup;
+        struct GpuExecGuard {
+            decltype(gpu_abort_cleanup)& cleanup;
             bool armed = true;
-            ~MetalExecGuard() { if (armed) cleanup(); }
-        } metal_guard{metal_abort_cleanup};
+            ~GpuExecGuard() { if (armed) cleanup(); }
+        } gpu_guard{gpu_abort_cleanup};
         cactus_gpu_session_begin();
         cactus_gpu_set_active(true);
         if (transient_acts) {
@@ -1614,7 +1613,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                     && nodes_[i]->output_buffer.byte_size >= (256u << 10);
             }
         }
-        auto metal_release = [&](size_t idx) {
+        auto gpu_release = [&](size_t idx) {
             GraphNode& nd = *nodes_[idx];
             if (aliases_input(nd)) nd.output_buffer.external_data = nullptr;
             if (transient_acts && transient_ptr[idx]) {
@@ -1624,26 +1623,26 @@ void CactusGraph::execute(const std::string& profile_file) {
         };
         auto assign_persistent_act = [&](GraphNode& nd) {
             size_t need = nd.output_buffer.byte_size;
-            auto pit = metal_persistent_acts_.find(nd.id);
+            auto pit = gpu_persistent_acts_.find(nd.id);
             void* p = nullptr;
-            if (pit != metal_persistent_acts_.end() && pit->second.second >= need) {
+            if (pit != gpu_persistent_acts_.end() && pit->second.second >= need) {
                 p = pit->second.first;
             } else {
-                if (pit != metal_persistent_acts_.end()) cactus_gpu_free_shared(pit->second.first);
+                if (pit != gpu_persistent_acts_.end()) cactus_gpu_free_shared(pit->second.first);
                 p = cactus_gpu_alloc_pooled(need);
-                if (p) metal_persistent_acts_[nd.id] = { p, need };
+                if (p) gpu_persistent_acts_[nd.id] = { p, need };
             }
             if (p) { nd.output_buffer.release_to_pool(pool); nd.output_buffer.set_external(p); }
             else nd.output_buffer.resize_from_pool(pool);
         };
         size_t since_flush = 0, since_recycle = 0;
         if (fplan) cactus_gpu_plan_fold(fplan, nodes_);
-        std::vector<uint8_t> metal_live(n, 0);
+        std::vector<uint8_t> gpu_live(n, 0);
         {
             size_t fh = 0, fp = 0;
             if (fplan && cactus_gpu_plan_fold_inputs(fplan, &fh, &fp) && fh < n && fp < n) {
-                metal_live[fh] = 1;
-                metal_live[fp] = 1;
+                gpu_live[fh] = 1;
+                gpu_live[fp] = 1;
             }
         }
         auto maybe_recycle = [&]() {
@@ -1651,7 +1650,7 @@ void CactusGraph::execute(const std::string& profile_file) {
             for (void* p : transient_dead) cactus_gpu_free_shared(p);
             transient_dead.clear();
             cactus_gpu_session_sync();
-            std::fill(metal_live.begin(), metal_live.end(), 0);
+            std::fill(gpu_live.begin(), gpu_live.end(), 0);
             since_flush = 0;
             since_recycle = 0;
         };
@@ -1675,10 +1674,10 @@ void CactusGraph::execute(const std::string& profile_file) {
             rec_snapshot.emplace_back(i, std::vector<uint8_t>(
                 (const uint8_t*)p, (const uint8_t*)p + nd.output_buffer.byte_size));
         }
-        auto input_metal_live = [&](const GraphNode& nd) -> bool {
+        auto input_gpu_live = [&](const GraphNode& nd) -> bool {
             for (size_t id : nd.input_ids) {
                 auto it = node_index_map_.find(id);
-                if (it != node_index_map_.end() && metal_live[it->second]) return true;
+                if (it != node_index_map_.end() && gpu_live[it->second]) return true;
             }
             return false;
         };
@@ -1696,10 +1695,10 @@ void CactusGraph::execute(const std::string& profile_file) {
             const OpType ot = node->op_type;
             if (ot == OpType::INPUT) continue;
             if (!cactus_gpu_active_mode()) {
-                metal_guard.armed = false;
-                metal_abort_cleanup();
+                gpu_guard.armed = false;
+                gpu_abort_cleanup();
                 g_plans_dead = true;
-                metal_plans_.erase(metal_plan_sig_);
+                gpu_plans_.erase(gpu_plan_sig_);
                 if (fplan) cactus_gpu_plan_free(fplan);
                 execute(profile_file);
                 return;
@@ -1708,14 +1707,14 @@ void CactusGraph::execute(const std::string& profile_file) {
                 || ot == OpType::RECURRENT_CACHE_STATE) {
                 dispatch_node(*node, nodes_, node_index_map_);
                 populated_node_ids_.insert(node->id);
-                for (size_t r : release_after[i]) metal_release(r);
+                for (size_t r : release_after[i]) gpu_release(r);
                 continue;
             }
             int32_t fact = fplan ? cactus_gpu_plan_action(fplan, i) : -1;
             if (fact == -3) {
                 assign_persistent_act(*node);
-                metal_live[i] = 1;
-                for (size_t r : release_after[i]) metal_release(r);
+                gpu_live[i] = 1;
+                for (size_t r : release_after[i]) gpu_release(r);
                 continue;
             }
             if (aliases_input(*node)) {
@@ -1725,8 +1724,8 @@ void CactusGraph::execute(const std::string& profile_file) {
                 } else {
                     dispatch_node(*node, nodes_, node_index_map_);
                 }
-                metal_live[i] = input_metal_live(*node) ? 1 : 0;
-                for (size_t r : release_after[i]) metal_release(r);
+                gpu_live[i] = input_gpu_live(*node) ? 1 : 0;
+                for (size_t r : release_after[i]) gpu_release(r);
                 continue;
             }
             if (preallocates_output(*node)) {
@@ -1749,16 +1748,16 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
             if (fact >= 0) {
                 if (cactus_gpu_plan_encode(fplan, fact, nodes_, node_index_map_)) {
-                    metal_live[i] = 1;
-                    for (size_t r : release_after[i]) metal_release(r);
+                    gpu_live[i] = 1;
+                    for (size_t r : release_after[i]) gpu_release(r);
                     if (++since_flush >= flush_cadence) { cactus_gpu_session_flush(); since_flush = 0; }
                     maybe_recycle();
                     continue;
                 }
-                metal_guard.armed = false;
-                metal_abort_cleanup();
-                if (!metal_plan_banned_[metal_plan_sig_].insert(i).second) g_plans_dead = true;
-                metal_plans_.erase(metal_plan_sig_);
+                gpu_guard.armed = false;
+                gpu_abort_cleanup();
+                if (!gpu_plan_banned_[gpu_plan_sig_].insert(i).second) g_plans_dead = true;
+                gpu_plans_.erase(gpu_plan_sig_);
                 cactus_gpu_plan_free(fplan);
                 execute(profile_file);
                 return;
@@ -1775,36 +1774,36 @@ void CactusGraph::execute(const std::string& profile_file) {
                 }
             }
             bool force_cpu = (ot == OpType::PRECISION_CAST
-                && node->output_buffer.total_size <= 8 && !input_metal_live(*node))
-                || (ot == OpType::EMBEDDING && input_metal_live(*node));
-            bool encoded = !force_cpu && try_encode_metal(*node, nodes_, node_index_map_);
+                && node->output_buffer.total_size <= 8 && !input_gpu_live(*node))
+                || (ot == OpType::EMBEDDING && input_gpu_live(*node));
+            bool encoded = !force_cpu && try_encode_gpu(*node, nodes_, node_index_map_);
             for (auto& fp : flipped) fp.first->precision = fp.second;
             if (!encoded && rplan && rplan[i] == 2) {
-                metal_retype_disabled_ = true;
-                metal_guard.armed = false;
-                metal_abort_cleanup();
+                gpu_retype_disabled_ = true;
+                gpu_guard.armed = false;
+                gpu_abort_cleanup();
                 execute(profile_file);
                 return;
             }
             if (!encoded) {
-                if (input_metal_live(*node)) {
+                if (input_gpu_live(*node)) {
                     cactus_gpu_session_sync();
-                    std::fill(metal_live.begin(), metal_live.end(), 0);
+                    std::fill(gpu_live.begin(), gpu_live.end(), 0);
                 }
                 dispatch_node(*node, nodes_, node_index_map_);
             } else {
-                metal_live[i] = 1;
+                gpu_live[i] = 1;
             }
             if (ot == OpType::PERSISTENT) populated_node_ids_.insert(node->id);
-            for (size_t r : release_after[i]) metal_release(r);
+            for (size_t r : release_after[i]) gpu_release(r);
             if (encoded && ++since_flush >= flush_cadence) { cactus_gpu_session_flush(); since_flush = 0; }
             if (encoded) maybe_recycle();
         }
-        metal_guard.armed = false;
+        gpu_guard.armed = false;
         release_transients();
         cactus_gpu_set_active(false);
         cactus_gpu_session_end();
-        cactus_graph_metal_tail_commit();
+        cactus_graph_gpu_tail_commit();
         return;
     }
 
@@ -2213,17 +2212,17 @@ void CactusGraph::execute(const std::string& profile_file) {
     }
 }
 
-void CactusGraph::invalidate_metal_state() {
-    for (auto& kv : metal_plans_) cactus_gpu_plan_free(kv.second);
-    metal_plans_.clear();
-    for (auto& kv : metal_persistent_acts_) cactus_gpu_free_shared(kv.second.first);
-    metal_persistent_acts_.clear();
-    metal_retype_plan_.clear();
-    metal_retype_built_ = false;
+void CactusGraph::invalidate_gpu_state() {
+    for (auto& kv : gpu_plans_) cactus_gpu_plan_free(kv.second);
+    gpu_plans_.clear();
+    for (auto& kv : gpu_persistent_acts_) cactus_gpu_free_shared(kv.second.first);
+    gpu_persistent_acts_.clear();
+    gpu_retype_plan_.clear();
+    gpu_retype_built_ = false;
 }
 
 void CactusGraph::hard_reset() {
-    invalidate_metal_state();
+    invalidate_gpu_state();
     nodes_.clear();
     node_index_map_.clear();
     mapped_files_.clear();
@@ -2234,7 +2233,7 @@ void CactusGraph::hard_reset() {
 }
 
 void CactusGraph::soft_reset() {
-    invalidate_metal_state();
+    invalidate_gpu_state();
     std::set<size_t> cached_node_ids;
     for (const auto& cache_entry : weight_cache_) {
         cached_node_ids.insert(cache_entry.second);
@@ -2276,7 +2275,7 @@ void CactusGraph::soft_reset() {
 }
 
 void CactusGraph::soft_reset_keep_pool() {
-    invalidate_metal_state();
+    invalidate_gpu_state();
     std::set<size_t> cached_node_ids;
     for (const auto& cache_entry : weight_cache_) {
         cached_node_ids.insert(cache_entry.second);
@@ -2312,7 +2311,7 @@ void CactusGraph::soft_reset_keep_pool() {
     debug_nodes_.clear();
 }
 
-void CactusGraph::prewarm_metal_quant_weights() {
+void CactusGraph::prewarm_gpu_quant_weights() {
     if (!cactus_backend_gpu()) return;
     for (auto& np : nodes_) {
         GraphNode& node = *np;

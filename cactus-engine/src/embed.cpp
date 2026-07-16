@@ -38,9 +38,9 @@ int cactus_embed(
     size_t* embedding_dim,
     bool normalize
 ) {
-    struct MetalTrimGuard {
-        ~MetalTrimGuard() { cactus_gpu_trim_prefill_cache(); }
-    } metal_trim_guard;
+    struct GpuTrimGuard {
+        ~GpuTrimGuard() { cactus_gpu_trim_prefill_cache(); }
+    } gpu_trim_guard;
     if (!model || !text || !embeddings_buffer || buffer_size == 0) {
         CACTUS_LOG_ERROR("embed", "Invalid parameters for text embedding");
         return -1;
@@ -94,9 +94,9 @@ int cactus_image_embed(
     size_t buffer_size,
     size_t* embedding_dim
 ) {
-    struct MetalTrimGuard {
-        ~MetalTrimGuard() { cactus_gpu_trim_prefill_cache(); }
-    } metal_trim_guard;
+    struct GpuTrimGuard {
+        ~GpuTrimGuard() { cactus_gpu_trim_prefill_cache(); }
+    } gpu_trim_guard;
     if (!model || !image_path || !embeddings_buffer || buffer_size == 0) {
         CACTUS_LOG_ERROR("image_embed", "Invalid parameters for image embedding");
         return -1;
@@ -137,9 +137,9 @@ int cactus_audio_embed(
     size_t buffer_size,
     size_t* embedding_dim
 ) {
-    struct MetalTrimGuard {
-        ~MetalTrimGuard() { cactus_gpu_trim_prefill_cache(); }
-    } metal_trim_guard;
+    struct GpuTrimGuard {
+        ~GpuTrimGuard() { cactus_gpu_trim_prefill_cache(); }
+    } gpu_trim_guard;
     if (!model || !audio_path || !embeddings_buffer || buffer_size == 0) {
         CACTUS_LOG_ERROR("audio_embed", "Invalid parameters for audio embedding");
         return -1;

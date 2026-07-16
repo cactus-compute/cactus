@@ -797,9 +797,9 @@ int cactus_complete(
     const uint8_t* pcm_buffer,
     size_t pcm_buffer_size
 ) {
-    struct MetalTrimGuard {
-        ~MetalTrimGuard() { cactus_gpu_trim_prefill_cache(); }
-    } metal_trim_guard;
+    struct GpuTrimGuard {
+        ~GpuTrimGuard() { cactus_gpu_trim_prefill_cache(); }
+    } gpu_trim_guard;
 
     if (!model) {
         std::string error_msg = last_error_message.empty() ?

@@ -29,7 +29,7 @@ bool is_same_cast(const GraphNode& nd, const std::vector<std::unique_ptr<GraphNo
 
 }
 
-struct MetalCluster {
+struct GpuCluster {
     int rule = 0;
     size_t a0 = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0, a5 = 0;
     size_t b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0;
@@ -40,9 +40,9 @@ struct MetalCluster {
     void* sc[3] = {nullptr, nullptr, nullptr};
 };
 
-struct MetalFusePlan {
+struct GpuFusePlan {
     std::vector<int32_t> action;
-    std::vector<MetalCluster> clusters;
+    std::vector<GpuCluster> clusters;
     long fold_h = -1, fold_ple = -1, fold_pos = -1, fold_w = -1;
     size_t fold_nl = 0, fold_pd = 0;
     std::vector<uint32_t> exec_list;
@@ -58,14 +58,14 @@ struct EwChainStep {
     float p1;
 };
 
-MetalFusePlan* cactus_gpu_plan_build(
+GpuFusePlan* cactus_gpu_plan_build(
     const std::vector<std::unique_ptr<GraphNode>>& nodes,
     const std::unordered_map<size_t, size_t>& map,
     const std::unordered_set<size_t>& pinned_ids,
     const std::vector<uint8_t>& retype,
     const std::unordered_set<size_t>* banned) {
     const size_t n = nodes.size();
-    auto plan = new MetalFusePlan();
+    auto plan = new GpuFusePlan();
     plan->action.assign(n, -1);
     std::vector<uint8_t> pinned(n, 0);
     for (size_t i = 0; i < n; ++i)
@@ -230,18 +230,16 @@ MetalFusePlan* cactus_gpu_plan_build(
         return i;
     };
 
-    auto release_scratch = [&](MetalCluster& c) {
+    auto release_scratch = [&](GpuCluster& c) {
         if (c.s0) { cactus_gpu_free_shared(c.s0); c.s0 = nullptr; }
         if (c.s1) { cactus_gpu_free_shared(c.s1); c.s1 = nullptr; }
         for (auto& sp : c.sc) if (sp) { cactus_gpu_free_shared(sp); sp = nullptr; }
     };
-    static const char* rules_env = [] {
-        return cactus_gpu_default_rules();
-    }();
+    static const char* enabled_rules = cactus_gpu_default_rules();
     auto rule_enabled = [](int rule) {
-        if (!rules_env || !*rules_env) return true;
+        if (!enabled_rules || !*enabled_rules) return true;
         std::string tok = std::to_string(rule);
-        const char* p = rules_env;
+        const char* p = enabled_rules;
         while (*p) {
             const char* e = std::strchr(p, ',');
             size_t len = e ? (size_t)(e - p) : std::strlen(p);
@@ -251,7 +249,7 @@ MetalFusePlan* cactus_gpu_plan_build(
         }
         return false;
     };
-    auto add_cluster = [&](MetalCluster c, size_t anchor, const std::vector<size_t>& cover) -> bool {
+    auto add_cluster = [&](GpuCluster c, size_t anchor, const std::vector<size_t>& cover) -> bool {
         if (!rule_enabled(c.rule)) { release_scratch(c); return false; }
         if (banned && banned->count(anchor)) { release_scratch(c); return false; }
         if (cpu_only[anchor]) { release_scratch(c); return false; }
@@ -264,7 +262,7 @@ MetalFusePlan* cactus_gpu_plan_build(
     };
 
     struct AttnCand {
-        MetalCluster c;
+        GpuCluster c;
         size_t anchor;
         std::vector<size_t> cover;
         size_t kcache;
@@ -337,7 +335,7 @@ MetalFusePlan* cactus_gpu_plan_build(
             cand.anchor = i;
             cand.kcache = (size_t)kcache;
             cand.kapp = kapp; cand.vapp = vapp;
-            MetalCluster& c = cand.c;
+            GpuCluster& c = cand.c;
             c.rule = 1;
             c.b0 = (size_t)qcos; c.b1 = (size_t)qsin;
             c.b2 = (size_t)kcache; c.b3 = (size_t)vcache;
@@ -409,7 +407,7 @@ MetalFusePlan* cactus_gpu_plan_build(
                                            grb->shape.size() >= 2 ? grb->shape[1] : grb->shape[0]))) {
                                     long gx = up_in((size_t)gate, 0);
                                     if (gx >= 0) {
-                                        MetalCluster c7;
+                                        GpuCluster c7;
                                         c7.rule = 7;
                                         c7.a0 = (size_t)gx;
                                         c7.a1 = (size_t)other;
@@ -439,7 +437,7 @@ MetalFusePlan* cactus_gpu_plan_build(
                                     }
                                 }
                             }
-                            MetalCluster c;
+                            GpuCluster c;
                             c.rule = 4;
                             c.a0 = (size_t)gate;
                             c.a1 = (size_t)other;
@@ -480,7 +478,7 @@ MetalFusePlan* cactus_gpu_plan_build(
                                 && (wb.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
                                 && sole_use(mm, {(size_t)dv}) && sole_use(dv, {(size_t)th})
                                 && sole_use(th, {i})) {
-                                MetalCluster c;
+                                GpuCluster c;
                                 c.rule = 5;
                                 c.a0 = (size_t)xn; c.a1 = (size_t)wnode; c.b4 = i;
                                 c.f0 = nd.params.scalar;
@@ -585,7 +583,7 @@ MetalFusePlan* cactus_gpu_plan_build(
                     for (size_t cnode : chain) cover.push_back(cnode);
                 }
                 if (ok) {
-                    MetalCluster c;
+                    GpuCluster c;
                     c.rule = 8;
                     c.a0 = (size_t)parentA; c.a1 = (size_t)parentB;
                     c.a2 = (size_t)offA0; c.a3 = (size_t)offB0;
@@ -660,7 +658,7 @@ MetalFusePlan* cactus_gpu_plan_build(
                     }
                 }
                 if (ok) {
-                    MetalCluster c;
+                    GpuCluster c;
                     c.rule = 10;
                     c.a0 = (size_t)parentP; c.a1 = (size_t)up_in(i, 0);
                     c.a2 = (size_t)offP0;
@@ -710,7 +708,7 @@ MetalFusePlan* cactus_gpu_plan_build(
                     cover.push_back((size_t)t);
                 }
                 if (ok) {
-                    MetalCluster c;
+                    GpuCluster c;
                     c.rule = 9;
                     c.a0 = (size_t)parentX; c.a1 = (size_t)parentW;
                     c.a2 = (size_t)offX0; c.a3 = (size_t)offW0;
@@ -752,7 +750,7 @@ MetalFusePlan* cactus_gpu_plan_build(
                 && nodes[(size_t)srcB]->output_buffer.total_size == D2
                 && nodes[(size_t)wA]->output_buffer.total_size == D2
                 && nodes[(size_t)wB]->output_buffer.total_size == D2) {
-                MetalCluster c;
+                GpuCluster c;
                 c.rule = 18;
                 c.a0 = (size_t)srcA; c.a1 = (size_t)wA;
                 c.a2 = (size_t)srcB; c.a3 = (size_t)wB;
@@ -779,7 +777,7 @@ MetalFusePlan* cactus_gpu_plan_build(
                     && nodes[(size_t)src]->output_buffer.total_size ==
                        nodes[(size_t)src]->output_buffer.shape.back();
                 if (src >= 0 && w >= 0 && one_row && f16((long)i) && f16(src) && f16(res) && f16(w) && f16(norm)) {
-                    MetalCluster c;
+                    GpuCluster c;
                     c.rule = 3;
                     c.a0 = (size_t)src; c.a1 = (size_t)w; c.a2 = (size_t)res;
                     c.b4 = i;
@@ -876,7 +874,7 @@ MetalFusePlan* cactus_gpu_plan_build(
                 size_t cnt = std::min<size_t>(3, mms.size() - base);
                 if (cnt < 2) break;
                 size_t anchor_i = mms[base];
-                MetalCluster c;
+                GpuCluster c;
                 c.rule = 2;
                 c.a0 = (size_t)src;
                 c.b0 = mms[base];
@@ -908,7 +906,6 @@ MetalFusePlan* cactus_gpu_plan_build(
         }
         cands.swap(kept);
     }
-
 
     if (!cands.empty()) {
         std::vector<uint8_t> mark(n, 0);
@@ -1038,7 +1035,7 @@ MetalFusePlan* cactus_gpu_plan_build(
             for (size_t cc : cons[(size_t)ai])
                 if (cc < i) { ordered = false; break; }
             if (!ordered) continue;
-            MetalCluster c;
+            GpuCluster c;
             c.rule = 12;
             c.a0 = (size_t)x0; c.a1 = (size_t)x1; c.a2 = (size_t)ai; c.a3 = (size_t)ww;
             c.u0 = (uint32_t)rows; c.u1 = (uint32_t)dim;
@@ -1081,7 +1078,7 @@ MetalFusePlan* cactus_gpu_plan_build(
             size_t rk = m.params.pretransposed_rhs ? rb.shape[1] : rb.shape[0];
             if (rk != K || N == 0 || m.output_buffer.total_size != N) continue;
             if (bb.total_size != N || nd0.output_buffer.total_size != N) continue;
-            MetalCluster c;
+            GpuCluster c;
             c.rule = 13;
             c.a0 = (size_t)li; c.a1 = (size_t)ri; c.a2 = (size_t)bs;
             c.u0 = (uint32_t)K; c.u1 = (uint32_t)N;
@@ -1162,7 +1159,7 @@ MetalFusePlan* cactus_gpu_plan_build(
             if (!sole_use(mulCos, {i}) || !sole_use(mulSin, {i})
                 || !sole_use(cat, {(size_t)mulSin}) || !sole_use(neg, {(size_t)cat})
                 || !sole_use(hi, {(size_t)neg}) || !sole_use(lo, {(size_t)cat})) continue;
-            MetalCluster c;
+            GpuCluster c;
             c.rule = 14;
             c.a0 = (size_t)xi; c.a1 = (size_t)ci; c.a2 = (size_t)si;
             c.u0 = (uint32_t)H; c.u1 = (uint32_t)D;
@@ -1216,7 +1213,7 @@ MetalFusePlan* cactus_gpu_plan_build(
                 || nodes[(size_t)src]->output_buffer.precision != Precision::FP16
                 || nodes[(size_t)w]->output_buffer.precision != Precision::FP16
                 || nodes[(size_t)w]->output_buffer.total_size != D) continue;
-            MetalCluster c;
+            GpuCluster c;
             c.rule = 15;
             c.a0 = (size_t)src; c.a1 = (size_t)w;
             c.u0 = (uint32_t)rows; c.u1 = (uint32_t)D;
@@ -1266,7 +1263,7 @@ MetalFusePlan* cactus_gpu_plan_build(
             long lg = up_in((size_t)sm, 0);
             if (lg < 0 || nodes[(size_t)lg]->output_buffer.precision != Precision::FP16
                 || nodes[(size_t)lg]->output_buffer.total_size != rows * E) continue;
-            MetalCluster c;
+            GpuCluster c;
             c.rule = 16;
             c.a0 = (size_t)lg; c.a1 = (size_t)sfm;
             c.u0 = (uint32_t)rows; c.u1 = (uint32_t)E;
@@ -1374,7 +1371,7 @@ MetalFusePlan* cactus_gpu_plan_build(
                            | (nodes[chain.back()]->output_buffer.precision == Precision::FP32 ? 2u : 0u);
             for (size_t si = 0; si < sides.size(); ++si)
                 if (side_f32[si]) flags |= (4u << si);
-            MetalCluster c;
+            GpuCluster c;
             c.rule = 11;
             c.a0 = (size_t)head_in;
             c.a1 = sides.size() > 0 ? sides[0] : (size_t)0;
@@ -1486,7 +1483,7 @@ MetalFusePlan* cactus_gpu_plan_build(
     return plan;
 }
 
-static void release_cluster_buffers(MetalFusePlan* p) {
+static void release_cluster_buffers(GpuFusePlan* p) {
     for (auto& c : p->clusters) {
         if (c.s0) { cactus_gpu_free_shared(c.s0); c.s0 = nullptr; }
         if (c.s1) { cactus_gpu_free_shared(c.s1); c.s1 = nullptr; }
@@ -1494,21 +1491,21 @@ static void release_cluster_buffers(MetalFusePlan* p) {
     }
 }
 
-void cactus_gpu_plan_free(MetalFusePlan* p) {
+void cactus_gpu_plan_free(GpuFusePlan* p) {
     if (!p) return;
     release_cluster_buffers(p);
     if (p->arena_base) { cactus_gpu_free_shared(p->arena_base); p->arena_base = nullptr; }
     delete p;
 }
 
-bool cactus_gpu_plan_has_arena(const MetalFusePlan* p) {
+bool cactus_gpu_plan_has_arena(const GpuFusePlan* p) {
     if (!p) return false;
     if (p->arena_base) return true;
     for (const auto& c : p->clusters) if (c.rule == 1) return true;
     return false;
 }
 
-void cactus_gpu_plan_extend_last_use(const MetalFusePlan* p, std::vector<size_t>& last_use) {
+void cactus_gpu_plan_extend_last_use(const GpuFusePlan* p, std::vector<size_t>& last_use) {
     if (!p) return;
     const size_t n = last_use.size();
     for (const auto& c : p->clusters) {
@@ -1519,32 +1516,31 @@ void cactus_gpu_plan_extend_last_use(const MetalFusePlan* p, std::vector<size_t>
     }
 }
 
-int32_t cactus_gpu_plan_action(const MetalFusePlan* p, size_t i) {
+int32_t cactus_gpu_plan_action(const GpuFusePlan* p, size_t i) {
     return p && i < p->action.size() ? p->action[i] : -1;
 }
 
-int32_t cactus_gpu_plan_rule(const MetalFusePlan* p, int32_t cid) {
+int32_t cactus_gpu_plan_rule(const GpuFusePlan* p, int32_t cid) {
     return p && cid >= 0 && (size_t)cid < p->clusters.size() ? p->clusters[(size_t)cid].rule : -1;
 }
 
-
-const std::vector<uint32_t>* cactus_gpu_plan_exec_list(const MetalFusePlan* p) {
+const std::vector<uint32_t>* cactus_gpu_plan_exec_list(const GpuFusePlan* p) {
     return p ? &p->exec_list : nullptr;
 }
 
-void* cactus_gpu_plan_arena_ptr(const MetalFusePlan* p, size_t i) {
+void* cactus_gpu_plan_arena_ptr(const GpuFusePlan* p, size_t i) {
     if (!p || !p->arena_base || i >= p->arena_off.size() || p->arena_off[i] < 0) return nullptr;
     return p->arena_base + p->arena_off[i];
 }
 
-bool cactus_gpu_plan_fold_inputs(const MetalFusePlan* p, size_t* h, size_t* ple) {
+bool cactus_gpu_plan_fold_inputs(const GpuFusePlan* p, size_t* h, size_t* ple) {
     if (!p || p->fold_h < 0 || p->fold_ple < 0 || !cactus_graph_fused_embed()) return false;
     *h = (size_t)p->fold_h;
     *ple = (size_t)p->fold_ple;
     return true;
 }
 
-bool cactus_gpu_plan_fold(MetalFusePlan* p,
+bool cactus_gpu_plan_fold(GpuFusePlan* p,
                             const std::vector<std::unique_ptr<GraphNode>>& nodes) {
     if (!p || p->fold_h < 0 || !cactus_graph_fused_embed()) return false;
     void* h = nodes[(size_t)p->fold_h]->output_buffer.get_data();
@@ -1552,13 +1548,13 @@ bool cactus_gpu_plan_fold(MetalFusePlan* p,
     void* pos = nodes[(size_t)p->fold_pos]->output_buffer.get_data();
     if (!h || !ple) return false;
     CactusQuantMatrix W = nodes[(size_t)p->fold_w]->output_buffer.to_cq_matrix();
-    return cactus_graph_metal_fold_prologue(h, ple, pos, &W, p->fold_nl, p->fold_pd);
+    return cactus_graph_gpu_fold_prologue(h, ple, pos, &W, p->fold_nl, p->fold_pd);
 }
 
-bool cactus_gpu_plan_encode(MetalFusePlan* p, int32_t cid,
+bool cactus_gpu_plan_encode(GpuFusePlan* p, int32_t cid,
                               const std::vector<std::unique_ptr<GraphNode>>& nodes,
                               const std::unordered_map<size_t, size_t>& map) {
-    MetalCluster& c = p->clusters[(size_t)cid];
+    GpuCluster& c = p->clusters[(size_t)cid];
     auto data = [&](size_t i) { return nodes[i]->output_buffer.get_data(); };
     switch (c.rule) {
         case 1: {
@@ -1731,7 +1727,7 @@ bool cactus_gpu_plan_encode(MetalFusePlan* p, int32_t cid,
                 cactus_gpu_encode_unary(1, lg, lg, V);
                 cactus_gpu_encode_scalar(2, lg, lg, V, c.f0);
             }
-            return cactus_graph_metal_tail(lg, V);
+            return cactus_graph_gpu_tail(lg, V);
         }
         case 8: {
             GraphNode& anchor = *nodes[c.b4];

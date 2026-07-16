@@ -467,13 +467,13 @@ struct FusedEmbedCtx {
 };
 void cactus_graph_set_fused_embed(const FusedEmbedCtx* ctx);
 const FusedEmbedCtx* cactus_graph_fused_embed();
-bool cactus_graph_metal_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
+bool cactus_graph_gpu_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
                                       const CactusQuantMatrix* lm_head, size_t nl, size_t ple_dim);
-bool cactus_gpu_plan_fold_inputs(const struct MetalFusePlan* p, size_t* h, size_t* ple);
-bool cactus_graph_metal_tail(void* logits, size_t vocab);
-void cactus_graph_metal_tail_commit();
+bool cactus_gpu_plan_fold_inputs(const struct GpuFusePlan* p, size_t* h, size_t* ple);
+bool cactus_graph_gpu_tail(void* logits, size_t vocab);
+void cactus_graph_gpu_tail_commit();
 
-bool cactus_graph_metal_argmax(uint32_t* idx, float* best, float* second);
+bool cactus_graph_gpu_argmax(uint32_t* idx, float* best, float* second);
 void cactus_graph_mark_unadjusted();
 void cactus_graph_set_prefill_consistent(bool on);
 bool cactus_graph_prefill_consistent();
@@ -482,8 +482,8 @@ void cactus_graph_set_sampling(const uint32_t* recent, int n_recent, float rep_p
                                const float* bias_dense, size_t bias_len,
                                long long suppressed);
 void cactus_graph_clear_sampling();
-bool cactus_graph_metal_adjusted();
-bool cactus_graph_metal_argmax_biased();
+bool cactus_graph_gpu_adjusted();
+bool cactus_graph_gpu_argmax_biased();
 
 class CactusGraph {
 public:
@@ -777,7 +777,7 @@ public:
                                       const std::vector<uint8_t>& backup);
     void allocate_buffers();
     size_t get_node_count() const;
-    void prewarm_metal_quant_weights();
+    void prewarm_gpu_quant_weights();
     void set_runtime_input_shape(size_t node_id, const std::vector<size_t>& shape);
     void set_input_dynamic_dims(size_t node_id, const std::vector<uint8_t>& dynamic_dims);
     bool has_dynamic_shapes() const { return has_dynamic_shapes_; }
@@ -805,15 +805,15 @@ private:
     std::unordered_set<size_t> populated_node_ids_;
     std::unordered_set<size_t> embedded_input_node_ids_;
     std::unordered_set<size_t> retained_output_node_ids_;
-    void build_metal_retype_plan();
-    void invalidate_metal_state();
-    std::unordered_map<uint64_t, struct MetalFusePlan*> metal_plans_;
-    std::unordered_map<uint64_t, std::unordered_set<size_t>> metal_plan_banned_;
-    uint64_t metal_plan_sig_ = 0;
-    std::vector<uint8_t> metal_retype_plan_;
-    bool metal_retype_built_ = false;
-    bool metal_retype_disabled_ = false;
-    std::unordered_map<size_t, std::pair<void*, size_t>> metal_persistent_acts_;
+    void build_gpu_retype_plan();
+    void invalidate_gpu_state();
+    std::unordered_map<uint64_t, struct GpuFusePlan*> gpu_plans_;
+    std::unordered_map<uint64_t, std::unordered_set<size_t>> gpu_plan_banned_;
+    uint64_t gpu_plan_sig_ = 0;
+    std::vector<uint8_t> gpu_retype_plan_;
+    bool gpu_retype_built_ = false;
+    bool gpu_retype_disabled_ = false;
+    std::unordered_map<size_t, std::pair<void*, size_t>> gpu_persistent_acts_;
 };
 
 namespace GraphFile {

@@ -474,7 +474,6 @@ void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<Gr
         throw std::runtime_error("RMS normalization only supports FP16 precision");
     }
 
-
     cactus_rms_norm_f16(input_buffer.data_as<__fp16>(), weight_buffer.data_as<__fp16>(),
        node.output_buffer.data_as<__fp16>(), batch_size, dims, node.params.epsilon);
 }
@@ -824,14 +823,6 @@ void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
     }
 }
 
-
-
-
-
-
-
-
-
 void compute_glu_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                       const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& X = get_input(node, 0, nodes, node_index_map);
@@ -879,10 +870,6 @@ void compute_glu_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNo
 
     throw std::runtime_error("GLU only supports FP16/FP32");
 }
-
-
-
-
 
 void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                             const std::unordered_map<size_t, size_t>& node_index_map) {

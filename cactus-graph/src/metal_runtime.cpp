@@ -8,8 +8,8 @@
 
 namespace {
 
-static bool g_metal_argmax_valid = false;
-static const float* g_metal_argmax_buf = nullptr;
+static bool g_gpu_argmax_valid = false;
+static const float* g_gpu_argmax_buf = nullptr;
 
 }
 
@@ -20,7 +20,7 @@ static bool g_prefill_consistent = false;
 void cactus_graph_mark_unadjusted() {
     g_last_step_adjusted = false;
     g_last_amax_biased = false;
-    g_metal_argmax_valid = false;
+    g_gpu_argmax_valid = false;
 }
 
 void cactus_graph_set_prefill_consistent(bool on) { g_prefill_consistent = on; }
@@ -50,8 +50,8 @@ void cactus_graph_set_sampling(const uint32_t* recent, int n_recent, float rep_p
     g_samp.suppressed = suppressed;
 }
 void cactus_graph_clear_sampling() { g_samp = GSampling(); }
-bool cactus_graph_metal_adjusted() { return g_last_step_adjusted; }
-bool cactus_graph_metal_argmax_biased() { return g_last_amax_biased; }
+bool cactus_graph_gpu_adjusted() { return g_last_step_adjusted; }
+bool cactus_graph_gpu_argmax_biased() { return g_last_amax_biased; }
 
 static void* g_plan_amax = nullptr;
 static bool g_plan_tail_pending = false;
@@ -73,7 +73,7 @@ static const float* update_bias_dense(size_t vocab) {
     return g_bias_dense;
 }
 
-bool cactus_graph_metal_tail(void* logits, size_t vocab) {
+bool cactus_graph_gpu_tail(void* logits, size_t vocab) {
     g_plan_tail_pending = false;
     bool adjusted = false;
     if (g_samp.active &&
@@ -95,21 +95,21 @@ bool cactus_graph_metal_tail(void* logits, size_t vocab) {
     return true;
 }
 
-void cactus_graph_metal_tail_commit() {
+void cactus_graph_gpu_tail_commit() {
     if (!g_plan_tail_pending) return;
     g_plan_tail_pending = false;
-    g_metal_argmax_buf = (const float*)g_plan_amax;
-    g_metal_argmax_valid = true;
+    g_gpu_argmax_buf = (const float*)g_plan_amax;
+    g_gpu_argmax_valid = true;
     g_last_step_adjusted = g_plan_tail_adjusted;
     g_last_amax_biased = g_plan_tail_biased;
 }
 
 
-bool cactus_graph_metal_argmax(uint32_t* idx, float* best, float* second) {
-    if (!g_metal_argmax_valid || !g_metal_argmax_buf) return false;
-    g_metal_argmax_valid = false;
-    *best = g_metal_argmax_buf[0]; *second = g_metal_argmax_buf[1];
-    *idx = (uint32_t)g_metal_argmax_buf[2];
+bool cactus_graph_gpu_argmax(uint32_t* idx, float* best, float* second) {
+    if (!g_gpu_argmax_valid || !g_gpu_argmax_buf) return false;
+    g_gpu_argmax_valid = false;
+    *best = g_gpu_argmax_buf[0]; *second = g_gpu_argmax_buf[1];
+    *idx = (uint32_t)g_gpu_argmax_buf[2];
     return true;
 }
 
@@ -119,7 +119,7 @@ void cactus_graph_set_fused_embed(const FusedEmbedCtx* ctx) {
 }
 const FusedEmbedCtx* cactus_graph_fused_embed() { return g_fe.ok ? &g_fe : nullptr; }
 
-bool cactus_graph_metal_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
+bool cactus_graph_gpu_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
                                       const CactusQuantMatrix* lm_head, size_t nl, size_t ple_dim) {
     if (!g_fe.ok || !lm_head) return false;
     static void* pe = nullptr;
@@ -145,7 +145,6 @@ bool cactus_graph_metal_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
         cap = (pa && pj && pjs) ? PK : 0;
     }
     if (!pe || !pa || !pj || !pjs) return false;
-    cactus_gpu_fold_buffers(h_buf, lm_head->K * 2, ple_buf, nl * ple_dim * 2);
     uint32_t tok = (uint32_t)g_fe.token_id;
     if (!cactus_gpu_encode_embedding_ortho(h_buf, tok, lm_head, g_fe.emb_scale)) return false;
     if (!cactus_gpu_encode_embedding_hadamard(pe, tok, &g_fe.ple)) return false;
@@ -193,5 +192,5 @@ void cactus_graph_on_destroy(const void* graph) {
 
 CactusGraph::~CactusGraph() {
     cactus_graph_on_destroy(this);
-    invalidate_metal_state();
+    invalidate_gpu_state();
 }

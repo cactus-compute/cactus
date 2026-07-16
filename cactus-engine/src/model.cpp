@@ -24,7 +24,6 @@
 #include <cstring>
 #include <utility>
 
-
 namespace cactus {
 namespace engine {
 void* engine_host_buf_alloc(size_t bytes) {
@@ -278,7 +277,6 @@ void ConvCache::reset() {
         state.count = 0;
     }
 }
-
 
 namespace fs = std::filesystem;
 
@@ -585,8 +583,8 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP && !components_.count("audio_encoder")) {
         CACTUS_LOG_WARN("model", "Bundle has no decoder_prefill_chunk component; prompts will prefill token-by-token (prefill speed ~= decode speed).");
     }
-    if (decoder_ && decoder_->graph) decoder_->graph->prewarm_metal_quant_weights();
-    if (decoder_prefill_ && decoder_prefill_->graph) decoder_prefill_->graph->prewarm_metal_quant_weights();
+    if (decoder_ && decoder_->graph) decoder_->graph->prewarm_gpu_quant_weights();
+    if (decoder_prefill_ && decoder_prefill_->graph) decoder_prefill_->graph->prewarm_gpu_quant_weights();
     if (components_.count("decoder_embed_chunk") && components_.at("decoder_embed_chunk").graph) {
         decoder_embed_ = &components_.at("decoder_embed_chunk");
     }
@@ -1921,9 +1919,9 @@ void Model::run_audio_encoder(const std::vector<float>& audio_features) {
 
 static void try_gpu_tail(void* logits, size_t vocab) {
     if (!cactus_backend_gpu() || cactus_gpu_fold_ready()) return;
-    if (!cactus_graph_metal_tail(logits, vocab)) return;
+    if (!cactus_graph_gpu_tail(logits, vocab)) return;
     cactus_gpu_session_sync();
-    cactus_graph_metal_tail_commit();
+    cactus_graph_gpu_tail_commit();
 }
 
 static float uncertainty_from_margin(float best, float second) {
@@ -1947,7 +1945,7 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
         if (!tool_dense && tool_bias.empty() && vocab_bias_.empty() && suppressed_token_id_ < 0) {
             if (desc.precision == Precision::FP16)
                 try_gpu_tail(static_cast<__fp16*>(ptr) + row_off, vocab);
-            if (cactus_graph_metal_argmax(&gidx, &gbest, &gsecond)) {
+            if (cactus_graph_gpu_argmax(&gidx, &gbest, &gsecond)) {
                 if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(gbest, gsecond);
                 return gidx;
             }
@@ -2084,7 +2082,7 @@ uint32_t Model::sample_component_logits(Component& comp, float temperature, floa
     auto put = [&](size_t i, float v) { if (fp16) h[i] = (__fp16)v; else f[i] = v; };
 
     if (greedy && fp16) try_gpu_tail(h, vocab);
-    if (samp_ctx_active_ && !cactus_graph_metal_adjusted()) {
+    if (samp_ctx_active_ && !cactus_graph_gpu_adjusted()) {
         if (samp_penalty_ != 1.0f) {
             for (uint32_t id : samp_recent_) {
                 if (id >= vocab) continue;
@@ -2097,8 +2095,8 @@ uint32_t Model::sample_component_logits(Component& comp, float temperature, floa
     }
     if (greedy) {
         uint32_t gidx; float gbest, gsecond;
-        if ((!samp_has_bias_ || cactus_graph_metal_argmax_biased()) &&
-            cactus_graph_metal_argmax(&gidx, &gbest, &gsecond)) {
+        if ((!samp_has_bias_ || cactus_graph_gpu_argmax_biased()) &&
+            cactus_graph_gpu_argmax(&gidx, &gbest, &gsecond)) {
             if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(gbest, gsecond);
             return gidx;
         }
@@ -2718,7 +2716,6 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
     lm_encoder_media_step_->graph->release_all_weight_pages();
     return true;
 }
-
 
 bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                    const std::vector<std::string>& image_paths,
@@ -4422,7 +4419,6 @@ const std::vector<Model::DebugNode>& Model::get_debug_nodes() const {
     debug_nodes_.clear();
     return debug_nodes_;
 }
-
 
 double Model::score_tokens_window_logprob(const std::vector<uint32_t>& /*tokens*/, size_t /*start*/,
                                             size_t /*end*/, size_t /*context*/, size_t* tokens_scored) {

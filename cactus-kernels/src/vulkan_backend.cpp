@@ -4,7 +4,6 @@
 
 bool cactus_vulkan_available() { return false; }
 const char* cactus_vulkan_device_info() { return "Vulkan: unavailable (non-Android build)"; }
-bool cactus_vulkan_op_enabled(const char*) { return false; }
 void cactus_vulkan_session_begin() {}
 void cactus_vulkan_session_flush() {}
 void cactus_vulkan_session_sync() {}
@@ -807,8 +806,6 @@ void recycle_pending() {
         if (s->live == 0) s->used = 0;
 }
 
-struct OvEntry { size_t size = 0; MemBlock* blk = nullptr; bool dirty = false; };
-std::map<const void*, OvEntry> g_ov;
 MemBlock g_stage;
 size_t g_stage_off = 0;
 
@@ -816,11 +813,6 @@ void sync_i() {
     flush_i();
     for (Slot& s : vk().slots) wait_slot(s);
     flush_noncoherent(true);
-    for (auto& kv : g_ov) {
-        if (!kv.second.dirty) continue;
-        std::memcpy(const_cast<void*>(kv.first), kv.second.blk->map, kv.second.size);
-        kv.second.dirty = false;
-    }
     g_stage_off = 0;
     recycle_pending();
 }
@@ -894,49 +886,10 @@ void dispatch(int k, VkDescriptorSet set, const void* push, uint32_t gx, uint32_
     vk().vkCmdDispatch(cur_cmd(), gx, gy, gz);
 }
 
-OvEntry* ov_bind(const void* p, size_t bytes, size_t* delta_out) {
-    if (!p || bytes == 0 || g_ov.empty()) return nullptr;
-    auto it = g_ov.upper_bound(p);
-    if (it == g_ov.begin()) return nullptr;
-    --it;
-    const char* base = (const char*)it->first;
-    if ((const char*)p < base || (const char*)p >= base + it->second.size) return nullptr;
-    size_t delta = (size_t)((const char*)p - base);
-    if (delta + bytes > it->second.size) return nullptr;
-    OvEntry* e = &it->second;
-    if (!e->dirty) std::memcpy((char*)e->blk->map + delta, p, bytes);
-    e->dirty = true;
-    if (delta_out) *delta_out = delta;
-    return e;
-}
-
-void ov_register(void* p, size_t bytes) {
-    if (!p || bytes == 0 || bytes > (1u << 22)) return;
-    auto it = g_ov.find(p);
-    if (it != g_ov.end() && it->second.size >= bytes) return;
-    if (it != g_ov.end()) {
-        if (it->second.dirty) sync_i();
-        if (it->second.blk) g_pending.push_back(it->second.blk);
-        g_ov.erase(it);
-    }
-    MemBlock* b = new MemBlock();
-    if (!create_block(bytes, *b, false)) { delete b; return; }
-    std::memcpy(b->map, p, bytes);
-    g_ov.emplace(p, OvEntry{bytes, b, false});
-}
-
 bool dinfo(const void* p, size_t bytes, VkDescriptorBufferInfo* out) {
     size_t off = 0;
     MemBlock* b = block_of(p, &off);
-    if (!b) {
-        size_t delta = 0;
-        OvEntry* e = ov_bind(p, bytes ? bytes : 4, &delta);
-        if (!e || delta % vk().sb_align != 0) return false;
-        out->buffer = e->blk->buf;
-        out->offset = delta;
-        out->range = bytes ? bytes : 4;
-        return true;
-    }
+    if (!b) return false;
     if (off % vk().sb_align != 0) return false;
     out->buffer = b->buf;
     out->offset = off;
@@ -947,19 +900,7 @@ bool dinfo(const void* p, size_t bytes, VkDescriptorBufferInfo* out) {
 bool dinfo_off(const void* p, size_t bytes, VkDescriptorBufferInfo* out, uint32_t* delta4) {
     size_t off = 0;
     MemBlock* b = block_of(p, &off);
-    if (!b) {
-        size_t delta = 0;
-        OvEntry* e = ov_bind(p, bytes ? bytes : 4, &delta);
-        if (!e) return false;
-        size_t obind = delta & ~(size_t)(vk().sb_align - 1);
-        size_t d = delta - obind;
-        if (d & 3u) return false;
-        out->buffer = e->blk->buf;
-        out->offset = obind;
-        out->range = (bytes ? bytes : 4) + d;
-        *delta4 = (uint32_t)(d >> 2);
-        return true;
-    }
+    if (!b) return false;
     size_t bind = off & ~(size_t)(vk().sb_align - 1);
     size_t d = off - bind;
     if (d & 3u) return false;
@@ -1042,8 +983,6 @@ const void* stage_upload(const void* src, size_t bytes) {
     if (dst) std::memcpy(dst, src, bytes);
     return dst;
 }
-
-bool dinfo(const void* p, size_t bytes, VkDescriptorBufferInfo* out);
 
 bool sinfo(const void* p, size_t bytes, VkDescriptorBufferInfo* out) {
     if (dinfo(p, bytes, out)) return true;
@@ -1257,8 +1196,6 @@ const char* cactus_vulkan_device_info() {
     return vk().info.c_str();
 }
 
-bool cactus_vulkan_op_enabled(const char*) { return true; }
-
 void cactus_vulkan_session_begin() {}
 
 void cactus_vulkan_session_flush() {
@@ -1336,22 +1273,10 @@ void cactus_vulkan_note_mmap_range(const void* base, size_t bytes) {
     g_mmap_ranges.emplace_back((uintptr_t)base, (uintptr_t)base + bytes);
 }
 
-void cactus_vulkan_fold_buffers(void* h, size_t hbytes, void* ple, size_t plebytes) {
-    if (!vk().ok) return;
-    std::lock_guard<std::recursive_mutex> lk(g_mu);
-    size_t off = 0;
-    if (h && !block_of(h, &off)) ov_register(h, hbytes);
-    if (ple && !block_of(ple, &off)) ov_register(ple, plebytes);
-}
-
 void cactus_vulkan_invalidate_host_wraps() {
     if (!vk().ok) return;
     std::lock_guard<std::recursive_mutex> lk(g_mu);
     sync_i();
-    for (auto& kv : g_ov) {
-        if (kv.second.blk) g_pending.push_back(kv.second.blk);
-    }
-    g_ov.clear();
     for (auto& kv : g_wraps) {
         if (kv.second->buf) vk().vkDestroyBuffer(vk().dev, kv.second->buf, nullptr);
         if (kv.second->mem) vk().vkFreeMemory(vk().dev, kv.second->mem, nullptr);
@@ -2104,8 +2029,6 @@ bool cactus_vulkan_encode_rel_pos_bias(void* y, const void* q, const void* r,
     return true;
 }
 
-MemBlock g_ewsteps;
-
 bool cactus_vulkan_encode_elemwise_chain(void* out, const void* in, const float* steps,
                                          uint32_t nsteps, const void* side0, const void* side1,
                                          const void* side2, const size_t* side_elems,
@@ -2383,8 +2306,6 @@ bool cactus_vulkan_encode_conv2d(void* out, const void* x, const void* w, const 
     dispatch(KC2D, set, &push, (Wo + 63) / 64, N * Cout * Ho, infos, 4);
     return true;
 }
-
-MemBlock g_emb_rows;
 
 static bool emb_hadamard_common(void* out, const CactusQuantMatrix* W, const uint32_t* rows, uint32_t M) {
     if (!vk().ok || !W || M == 0 || M > 65535) return false;

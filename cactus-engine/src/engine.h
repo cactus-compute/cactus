@@ -35,7 +35,6 @@ struct HostBufAllocator {
 };
 using HostBuf = std::vector<uint8_t, HostBufAllocator<uint8_t>>;
 
-
 struct Config {
     uint32_t vocab_size = 151936;
     uint32_t bos_token_id = 151643;
@@ -225,8 +224,6 @@ struct Config {
     bool parse_kv_compress_override(const char* trigger_env, const char* target_env);
 };
 
-
-
 struct MergeRule {
     std::string first;
     std::string second;
@@ -236,7 +233,6 @@ struct MergeRule {
     MergeRule(const std::string& f, const std::string& s, const std::string& m, uint32_t p)
         : first(f), second(s), merged(m), priority(p) {}
 };
-
 
 struct ToolCallInfo {
     std::string name;
@@ -341,7 +337,6 @@ protected:
     uint32_t image_token_id_ = 396;
     uint32_t fake_token_id_ = 49189;
     uint32_t global_img_token_id_ = 49152;
-
 
     uint32_t vision_patch_size_ = 16;
     uint32_t vision_pooling_kernel_size_ = 3;
@@ -477,8 +472,6 @@ private:
     std::vector<std::string> split_with_special_tokens(const std::string& text) const;
     void load_special_tokens(const std::string& config_file);
 };
-
-
 
 class ToolCallConstrainer {
 public:
@@ -1093,7 +1086,6 @@ struct Qwen3VlImagePreprocessed {
 };
 
 Qwen3VlImagePreprocessed preprocess_qwen3_vl_image(const std::string& image_path, const Config& config);
-
 
 struct SpectrogramConfig {
     size_t n_fft = 400;

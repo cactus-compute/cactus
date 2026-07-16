@@ -119,9 +119,9 @@ inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     size_t total = fp16_cache ? fp16_cache_elements(new_max, kv_heads, hdim)
                               : cache_buffer_size(new_max, kv_heads, hdim);
     BufferDesc resized({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
-    const bool metal = kv_cache_resident();
+    const bool gpu = kv_cache_resident();
     void* old_data = buf.get_data();
-    if (metal) {
+    if (gpu) {
         cactus_gpu_session_sync();
         void* p = cactus_gpu_alloc_shared(resized.byte_size);
         if (p) resized.set_external(p); else resized.allocate();

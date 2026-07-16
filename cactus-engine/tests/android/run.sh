@@ -317,7 +317,7 @@ echo "Using transcription model path: $device_model_dir/$transcription_dir"
 echo "Using assets path:              $device_assets_dir/assets"
 
 vk_env=""
-for var in CACTUS_VK_OPS CACTUS_VK_VALIDATE CACTUS_VK_CACHED CACTUS_FLUSH_CADENCE CACTUS_GPU_RULES CACTUS_TEST_MAX_TOKENS; do
+for var in CACTUS_TEST_MAX_TOKENS CACTUS_TEST_FILTER CACTUS_BENCH_PP CACTUS_BENCH_TG CACTUS_BENCH_ONLY; do
     if [ -n "${!var:-}" ]; then
         vk_env="$vk_env export $var=${!var} &&"
     fi
