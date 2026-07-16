@@ -73,8 +73,8 @@ if(APPLE)
     add_custom_command(
         OUTPUT  ${_msl_out}
         COMMAND ${CMAKE_COMMAND} -DIN=${_msl_in} -DOUT=${_msl_out} -DSYM=kCactusMSL
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
-        DEPENDS ${_msl_in} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_bytes.cmake
+        DEPENDS ${_msl_in} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_bytes.cmake
         VERBATIM)
     target_sources(cactus_kernels PRIVATE src/metal_backend.mm ${_msl_out})
     target_include_directories(cactus_kernels PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
@@ -116,8 +116,8 @@ else()
             add_custom_command(
                 OUTPUT  ${_hdr}
                 COMMAND ${CMAKE_COMMAND} -DIN=${_spv} -DOUT=${_hdr} -DSYM=kSpv_${_k}
-                        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
-                DEPENDS ${_spv} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
+                        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_bytes.cmake
+                DEPENDS ${_spv} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_bytes.cmake
                 VERBATIM)
             target_sources(cactus_kernels PRIVATE ${_hdr})
         endforeach()

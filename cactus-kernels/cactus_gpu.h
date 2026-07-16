@@ -12,7 +12,6 @@ inline bool cactus_gpu_supports_plans() { return true; }
 inline bool cactus_gpu_fold_ready() { return true; }
 inline bool cactus_gpu_owns(const void*) { return false; }
 inline void cactus_gpu_note_mmap_range(const void*, size_t) {}
-inline const char* cactus_gpu_default_rules() { return nullptr; }
 inline bool cactus_gpu_auto_available() { return cactus_metal_available(); }
 
 #define cactus_gpu_available cactus_metal_available
@@ -118,7 +117,6 @@ inline bool cactus_gpu_supports_plans() { return cactus_vulkan_available(); }
 inline bool cactus_gpu_fold_ready() { return cactus_vulkan_available(); }
 inline bool cactus_gpu_owns(const void* p) { return cactus_vulkan_owns(p); }
 inline void cactus_gpu_note_mmap_range(const void* b, size_t n) { cactus_vulkan_note_mmap_range(b, n); }
-inline const char* cactus_gpu_default_rules() { return "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18"; }
 inline bool cactus_gpu_auto_available() { return cactus_vulkan_available(); }
 
 inline bool cactus_gpu_available() { return cactus_vulkan_available(); }

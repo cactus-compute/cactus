@@ -235,22 +235,7 @@ GpuFusePlan* cactus_gpu_plan_build(
         if (c.s1) { cactus_gpu_free_shared(c.s1); c.s1 = nullptr; }
         for (auto& sp : c.sc) if (sp) { cactus_gpu_free_shared(sp); sp = nullptr; }
     };
-    static const char* enabled_rules = cactus_gpu_default_rules();
-    auto rule_enabled = [](int rule) {
-        if (!enabled_rules || !*enabled_rules) return true;
-        std::string tok = std::to_string(rule);
-        const char* p = enabled_rules;
-        while (*p) {
-            const char* e = std::strchr(p, ',');
-            size_t len = e ? (size_t)(e - p) : std::strlen(p);
-            if (len == tok.size() && std::strncmp(p, tok.c_str(), len) == 0) return true;
-            if (!e) break;
-            p = e + 1;
-        }
-        return false;
-    };
     auto add_cluster = [&](GpuCluster c, size_t anchor, const std::vector<size_t>& cover) -> bool {
-        if (!rule_enabled(c.rule)) { release_scratch(c); return false; }
         if (banned && banned->count(anchor)) { release_scratch(c); return false; }
         if (cpu_only[anchor]) { release_scratch(c); return false; }
         for (size_t v : cover) if (v != anchor && pinned[v]) { release_scratch(c); return false; }
@@ -901,7 +886,7 @@ GpuFusePlan* cactus_gpu_plan_build(
         std::vector<AttnCand> kept;
         kept.reserve(cands.size());
         for (auto& cd : cands) {
-            if ((banned && banned->count(cd.anchor)) || cpu_only[cd.anchor] || !rule_enabled(cd.c.rule)) release_scratch(cd.c);
+            if ((banned && banned->count(cd.anchor)) || cpu_only[cd.anchor]) release_scratch(cd.c);
             else kept.push_back(cd);
         }
         cands.swap(kept);
