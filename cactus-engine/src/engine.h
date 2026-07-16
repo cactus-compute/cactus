@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <new>
 #include <random>
 #include <string>
 #include <map>
@@ -18,6 +19,22 @@ class CactusGraph;
 
 namespace cactus {
 namespace engine {
+
+void* engine_host_buf_alloc(size_t bytes);
+void engine_host_buf_free(void* p) noexcept;
+
+template <class T>
+struct HostBufAllocator {
+    using value_type = T;
+    HostBufAllocator() = default;
+    template <class U> HostBufAllocator(const HostBufAllocator<U>&) {}
+    T* allocate(size_t n) { return static_cast<T*>(engine_host_buf_alloc(n * sizeof(T))); }
+    void deallocate(T* p, size_t) noexcept { engine_host_buf_free(p); }
+    bool operator==(const HostBufAllocator&) const { return true; }
+    bool operator!=(const HostBufAllocator&) const { return false; }
+};
+using HostBuf = std::vector<uint8_t, HostBufAllocator<uint8_t>>;
+
 
 struct Config {
     uint32_t vocab_size = 151936;
@@ -742,7 +759,7 @@ private:
         std::vector<CacheStateBinding> cache_states;
         std::map<std::string, std::string> metadata;
         std::unique_ptr<CactusGraph> graph;
-        std::vector<std::vector<uint8_t>> input_buffers;
+        std::vector<HostBuf> input_buffers;
     };
 
     void copy_cache_state(const Component& src, Component& dst);

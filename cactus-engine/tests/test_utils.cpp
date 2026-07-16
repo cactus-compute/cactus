@@ -6,87 +6,6 @@
 #include <random>
 #include <sstream>
 
-#ifndef _WIN32
-#include <csignal>
-#include <fcntl.h>
-#include <unistd.h>
-
-namespace {
-
-void crash_write(const char* s) { ssize_t r = write(2, s, std::strlen(s)); (void)r; }
-
-void crash_hex(uintptr_t v) {
-    char buf[19] = "0x";
-    static const char* hexd = "0123456789abcdef";
-    for (int i = 0; i < 16; ++i) buf[2 + i] = hexd[(v >> (60 - i * 4)) & 0xF];
-    buf[18] = '\0';
-    crash_write(buf);
-}
-
-void crash_handler(int sig, siginfo_t* si, void*) {
-    crash_write("\n[crashdbg] signal ");
-    crash_write(sig == SIGSEGV ? "SIGSEGV" : "SIGBUS");
-    crash_write(" fault_addr=");
-    crash_hex((uintptr_t)si->si_addr);
-    crash_write(" code=");
-    crash_hex((uintptr_t)si->si_code);
-    crash_write("\n[crashdbg] maps near fault:\n");
-    uintptr_t fault = (uintptr_t)si->si_addr & 0x00FFFFFFFFFFFFFFull;
-    int fd = open("/proc/self/maps", O_RDONLY);
-    if (fd >= 0) {
-        static char mbuf[1 << 20];
-        ssize_t n = 0, off = 0;
-        while (off < (ssize_t)sizeof(mbuf) - 1 && (n = read(fd, mbuf + off, sizeof(mbuf) - 1 - off)) > 0) off += n;
-        mbuf[off] = '\0';
-        close(fd);
-        char* line = mbuf;
-        char* prev1 = nullptr;
-        char* prev2 = nullptr;
-        int print_after = 0;
-        while (line && *line) {
-            char* nl = std::strchr(line, '\n');
-            if (nl) *nl = '\0';
-            uintptr_t lo = std::strtoull(line, nullptr, 16);
-            const char* dash = std::strchr(line, '-');
-            uintptr_t hi = dash ? std::strtoull(dash + 1, nullptr, 16) : 0;
-            bool hit = fault >= lo && fault < hi;
-            bool near = (fault >= lo && fault < hi + (16u << 20)) || (lo > fault && lo - fault < (16u << 20));
-            if (hit || (near && print_after == 0)) {
-                if (prev2) { crash_write("  "); crash_write(prev2); crash_write("\n"); prev2 = nullptr; }
-                if (prev1) { crash_write("  "); crash_write(prev1); crash_write("\n"); prev1 = nullptr; }
-                crash_write(hit ? "> " : "  ");
-                crash_write(line);
-                crash_write("\n");
-                if (hit) print_after = 3;
-            } else if (print_after > 0) {
-                crash_write("  ");
-                crash_write(line);
-                crash_write("\n");
-                --print_after;
-            } else {
-                prev2 = prev1;
-                prev1 = line;
-            }
-            line = nl ? nl + 1 : nullptr;
-        }
-    }
-    crash_write("[crashdbg] end\n");
-    _exit(139);
-}
-
-void install_crash_handler() {
-    if (!std::getenv("CACTUS_CRASH_DBG")) return;
-    struct sigaction sa = {};
-    sa.sa_sigaction = crash_handler;
-    sa.sa_flags = SA_SIGINFO;
-    sigaction(SIGSEGV, &sa, nullptr);
-    sigaction(SIGBUS, &sa, nullptr);
-}
-
-}
-#else
-namespace { void install_crash_handler() {} }
-#endif
 
 namespace TestUtils {
 
@@ -94,7 +13,6 @@ void apply_backend() {
     static bool applied = false;
     if (applied) return;
     applied = true;
-    install_crash_handler();
     const char* b = std::getenv("CACTUS_TEST_BACKEND");
     if (!b || !*b) return;
     if (cactus_set_backend(b) == 0)

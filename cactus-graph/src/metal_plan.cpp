@@ -123,9 +123,6 @@ MetalFusePlan* cactus_gpu_plan_build(
             i = nd.input_ids.empty() ? -1 : idxof(nd.input_ids[0]);
         }
     };
-    // After sole_use(X, allowed) passes, X may still have passthrough consumers
-    // (validated to feed only `allowed`). If X joins a cluster cover, those
-    // aliases would execute against X's never-materialized buffer — cover them too.
     auto cover_aliases = [&](long X, std::vector<size_t>& cover) {
         if (X < 0) return;
         for (size_t cc : cons[(size_t)X]) {
@@ -239,8 +236,7 @@ MetalFusePlan* cactus_gpu_plan_build(
         for (auto& sp : c.sc) if (sp) { cactus_gpu_free_shared(sp); sp = nullptr; }
     };
     static const char* rules_env = [] {
-        const char* v = std::getenv("CACTUS_GPU_RULES");
-        return (v && *v) ? v : cactus_gpu_default_rules();
+        return cactus_gpu_default_rules();
     }();
     auto rule_enabled = [](int rule) {
         if (!rules_env || !*rules_env) return true;
@@ -255,7 +251,6 @@ MetalFusePlan* cactus_gpu_plan_build(
         }
         return false;
     };
-    std::vector<int32_t> cover_by(n, -1);
     auto add_cluster = [&](MetalCluster c, size_t anchor, const std::vector<size_t>& cover) -> bool {
         if (!rule_enabled(c.rule)) { release_scratch(c); return false; }
         if (banned && banned->count(anchor)) { release_scratch(c); return false; }
@@ -263,7 +258,7 @@ MetalFusePlan* cactus_gpu_plan_build(
         for (size_t v : cover) if (v != anchor && pinned[v]) { release_scratch(c); return false; }
         int32_t cid = (int32_t)plan->clusters.size();
         plan->clusters.push_back(c);
-        for (size_t v : cover) if (v != anchor) { plan->action[v] = -2; cover_by[v] = cid; }
+        for (size_t v : cover) if (v != anchor) plan->action[v] = -2;
         plan->action[anchor] = cid;
         return true;
     };
@@ -972,13 +967,6 @@ MetalFusePlan* cactus_gpu_plan_build(
         }
         break;
     }
-    if (std::getenv("CACTUS_VK_STATS") && n > 500)
-        std::fprintf(stderr, "[vkfoldplan] n=%zu fold_h=%ld fold_w=%ld op0=%d op1=%d op2=%d rule5=%d\n",
-                     n, plan->fold_h, plan->fold_w,
-                     n > 2 ? (int)nodes[0]->op_type : -1,
-                     n > 2 ? (int)nodes[1]->op_type : -1,
-                     n > 2 ? (int)nodes[2]->op_type : -1,
-                     [&]{ for (auto& cl : plan->clusters) if (cl.rule == 5) return 1; return 0; }());
 
     {
         auto ew_kind = [&](const GraphNode& nd, int* kind, int* code, float* p0, float* p1) -> bool {
@@ -1398,43 +1386,11 @@ MetalFusePlan* cactus_gpu_plan_build(
             c.b1 = flags;
             c.b4 = chain.back();
             plan->blobs.push_back(std::move(blob));
-            if (std::getenv("CACTUS_VK_EWC_DUMP")) {
-                const std::vector<float>& bl = plan->blobs.back();
-                std::string d = "[vkewc] len=" + std::to_string(chain.size())
-                              + " sides=" + std::to_string(sides.size())
-                              + " flags=" + std::to_string(flags)
-                              + " total=" + std::to_string(total) + " steps:";
-                for (size_t bi = 0; bi + 3 < bl.size(); bi += 4) {
-                    EwChainStep st;
-                    std::memcpy(&st, &bl[bi], sizeof(st));
-                    d += " k" + std::to_string(st.kind) + "c" + std::to_string(st.code)
-                       + "p" + std::to_string(st.p0);
-                }
-                std::fprintf(stderr, "%s\n", d.c_str());
-            }
             std::vector<size_t> cover(chain.begin(), chain.end() - 1);
             add_cluster(c, chain.back(), cover);
         }
     }
 
-    if (std::getenv("CACTUS_VK_STATS")) {
-        int fin_budget = 24;
-        for (size_t v = 0; v < n && fin_budget > 0; ++v) {
-            if (plan->action[v] != -2) continue;
-            for (size_t u : cons[v]) {
-                if (plan->action[u] != -1 || nodes[u]->op_type == OpType::INPUT) continue;
-                int32_t cb = cover_by[v];
-                int rule = (cb >= 0 && cb < (int32_t)plan->clusters.size()) ? plan->clusters[cb].rule : -1;
-                size_t canchor = (cb >= 0 && cb < (int32_t)plan->clusters.size()) ? plan->clusters[cb].b4 : (size_t)0;
-                if (rule == 3 && cb >= 0 && plan->clusters[cb].a5 == v) continue;
-                --fin_budget;
-                std::fprintf(stderr, "[vkfinal] covered=%zu(op%d) cid=%d rule=%d anchor=%zu anchor_act=%d consumer=%zu(op%d)\n",
-                             v, (int)nodes[v]->op_type, cb, rule, canchor,
-                             canchor < n ? plan->action[canchor] : -99,
-                             u, (int)nodes[u]->op_type);
-            }
-        }
-    }
     plan->exec_list.reserve(n);
     for (size_t i = 0; i < n; ++i)
         if (plan->action[i] != -2 && nodes[i]->op_type != OpType::INPUT)
@@ -1590,12 +1546,7 @@ bool cactus_gpu_plan_fold_inputs(const MetalFusePlan* p, size_t* h, size_t* ple)
 
 bool cactus_gpu_plan_fold(MetalFusePlan* p,
                             const std::vector<std::unique_ptr<GraphNode>>& nodes) {
-    if (!p || p->fold_h < 0 || !cactus_graph_fused_embed()) {
-        static int dbg = std::getenv("CACTUS_VK_STATS") ? 4 : 0;
-        if (dbg > 0) { --dbg; std::fprintf(stderr, "[vkfoldenc] refused: p=%d fold_h=%ld fe=%d\n",
-                                           p ? 1 : 0, p ? p->fold_h : -99, cactus_graph_fused_embed() ? 1 : 0); }
-        return false;
-    }
+    if (!p || p->fold_h < 0 || !cactus_graph_fused_embed()) return false;
     void* h = nodes[(size_t)p->fold_h]->output_buffer.get_data();
     void* ple = nodes[(size_t)p->fold_ple]->output_buffer.get_data();
     void* pos = nodes[(size_t)p->fold_pos]->output_buffer.get_data();
@@ -1731,12 +1682,7 @@ bool cactus_gpu_plan_encode(MetalFusePlan* p, int32_t cid,
             float out_scale = 1.0f;
             if (c.u1 == 1u) {
                 const void* sp = nodes[c.b1]->output_buffer.get_data();
-                if (!sp) {
-                    if (std::getenv("CACTUS_VK_STATS"))
-                        std::fprintf(stderr, "[vkr3ref] scale input null b1=%zu op=%d\n",
-                                     c.b1, (int)nodes[c.b1]->op_type);
-                    return false;
-                }
+                if (!sp) return false;
                 out_scale = (float)*(const __fp16*)sp;
             }
             if (c.u0 == 1u && rows == 1) {
@@ -1751,18 +1697,11 @@ bool cactus_gpu_plan_encode(MetalFusePlan* p, int32_t cid,
                         rows, dim, c.f0, out_scale)) return true;
             }
             if (c.u1 == 1u && c.u0 != 1u) {
-                if (cactus_gpu_encode_rms_norm_add_scale(
-                        anchor.output_buffer.get_data(), src.get_data(), data(c.a1), data(c.a2),
-                        rows, dim, c.f0, out_scale)) return true;
-                if (std::getenv("CACTUS_VK_STATS"))
-                    std::fprintf(stderr, "[vkr3ref] add_scale refused rows=%zu dim=%zu\n", rows, dim);
-                return false;
+                return cactus_gpu_encode_rms_norm_add_scale(
+                    anchor.output_buffer.get_data(), src.get_data(), data(c.a1), data(c.a2),
+                    rows, dim, c.f0, out_scale);
             }
-            if (c.u1 == 1u) {
-                if (std::getenv("CACTUS_VK_STATS"))
-                    std::fprintf(stderr, "[vkr3ref] u1+u0 combo rows=%zu u0=%u\n", rows, c.u0);
-                return false;
-            }
+            if (c.u1 == 1u) return false;
             if (c.u0 == 1u) {
                 GraphNode& nn = *nodes[c.a5];
                 if (!nn.output_buffer.get_data()) {

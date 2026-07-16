@@ -1,4 +1,5 @@
 #include "../cactus_graph.h"
+#include "cactus_gpu.h"
 #include "param_io.h"
 #include <fstream>
 #include <stdexcept>
@@ -872,6 +873,7 @@ MappedFile::MappedFile(const std::string& filename)
     file_size_ = static_cast<size_t>(st.st_size);
 
     mapped_data_ = mmap(nullptr, file_size_, PROT_READ, MAP_SHARED, fd_, 0);
+    if (mapped_data_ != MAP_FAILED) cactus_gpu_note_mmap_range(mapped_data_, file_size_);
     if (mapped_data_ == MAP_FAILED) {
         close(fd_);
         throw std::runtime_error("Cannot map file: " + filename);

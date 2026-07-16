@@ -474,18 +474,6 @@ void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<Gr
         throw std::runtime_error("RMS normalization only supports FP16 precision");
     }
 
-    static int rms_dbg = std::getenv("CACTUS_RMS_DBG") ? 4000 : 0;
-    if (rms_dbg > 0) {
-        --rms_dbg;
-        std::fprintf(stderr, "[rmsdbg] node=%zu batch=%zu dims=%zu in_total=%zu in_bytes=%zu in_prec=%d in_ext=%d out_bytes=%zu in=%p out=%p w=%p\n",
-                     node.id, batch_size, dims, input_buffer.total_size,
-                     input_buffer.byte_size, (int)input_buffer.precision,
-                     (int)(input_buffer.external_data != nullptr),
-                     node.output_buffer.byte_size,
-                     (const void*)input_buffer.data_as<__fp16>(),
-                     (void*)node.output_buffer.data_as<__fp16>(),
-                     (const void*)weight_buffer.data_as<__fp16>());
-    }
 
     cactus_rms_norm_f16(input_buffer.data_as<__fp16>(), weight_buffer.data_as<__fp16>(),
        node.output_buffer.data_as<__fp16>(), batch_size, dims, node.params.epsilon);

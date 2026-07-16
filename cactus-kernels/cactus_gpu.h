@@ -11,6 +11,8 @@
 inline bool cactus_gpu_supports_plans() { return true; }
 inline bool cactus_gpu_fold_ready() { return true; }
 inline void cactus_gpu_fold_buffers(void*, size_t, void*, size_t) {}
+inline bool cactus_gpu_owns(const void*) { return false; }
+inline void cactus_gpu_note_mmap_range(const void*, size_t) {}
 inline const char* cactus_gpu_default_rules() { return nullptr; }
 inline bool cactus_gpu_auto_available() { return cactus_metal_available(); }
 
@@ -113,18 +115,11 @@ inline bool cactus_gpu_auto_available() { return cactus_metal_available(); }
 
 #include "vulkan_backend.h"
 
-inline bool cactus_gpu_supports_plans() {
-    static const bool on = [] {
-        const char* v = getenv("CACTUS_VK_PLANS");
-        return !(v && v[0] == '0');
-    }();
-    return on && cactus_vulkan_available();
-}
-// Fused-embed fold: decode-side per-layer embeddings in the current gemma
-// graph read input_ids, which the fused run_step never writes (token flows
-// via FusedEmbedCtx). Until the fold covers those lookups, keep it off.
-inline bool cactus_gpu_fold_ready() { return false; }
+inline bool cactus_gpu_supports_plans() { return cactus_vulkan_available(); }
+inline bool cactus_gpu_fold_ready() { return cactus_vulkan_available(); }
 inline void cactus_gpu_fold_buffers(void* h, size_t hb, void* p, size_t pb) { cactus_vulkan_fold_buffers(h, hb, p, pb); }
+inline bool cactus_gpu_owns(const void* p) { return cactus_vulkan_owns(p); }
+inline void cactus_gpu_note_mmap_range(const void* b, size_t n) { cactus_vulkan_note_mmap_range(b, n); }
 inline const char* cactus_gpu_default_rules() { return "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18"; }
 inline bool cactus_gpu_auto_available() { return cactus_vulkan_available(); }
 
@@ -214,7 +209,7 @@ inline bool cactus_gpu_encode_transform_gemv(void* out, const void* x, const Cac
     return cactus_vulkan_op_enabled("matmul") && cactus_vulkan_encode_transform_gemv(out, x, W, osw);
 }
 inline bool cactus_gpu_transform_gemv_fits(uint32_t K) { return cactus_vulkan_transform_gemv_fits(K); }
-inline bool cactus_gpu_encode_gemv_cat(void* const*, const void* const*, const CactusQuantMatrix* const*, int) { return false; }
+inline bool cactus_gpu_encode_gemv_cat(void* const* o, const void* const* c, const CactusQuantMatrix* const* w, int b) { return cactus_vulkan_encode_gemv_cat(o, c, w, b); }
 inline bool cactus_gpu_encode_swiglu_transform(void* code, const void* gate, const void* up,
         const CactusQuantMatrix* W, float scale) {
     return cactus_vulkan_op_enabled("matmul")

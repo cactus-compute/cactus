@@ -24,6 +24,28 @@
 #include <cstring>
 #include <utility>
 
+
+namespace cactus {
+namespace engine {
+void* engine_host_buf_alloc(size_t bytes) {
+    if (bytes == 0) bytes = 1;
+#ifdef __ANDROID__
+    if (cactus_backend_gpu()) {
+        void* p = cactus_gpu_alloc_shared(bytes);
+        if (p) return p;
+    }
+#endif
+    return ::operator new(bytes);
+}
+void engine_host_buf_free(void* p) noexcept {
+    if (!p) return;
+#ifdef __ANDROID__
+    if (cactus_gpu_owns(p)) { cactus_gpu_free_shared(p); return; }
+#endif
+    ::operator delete(p);
+}
+}
+}
 namespace cactus {
 namespace engine {
 
@@ -80,7 +102,7 @@ bool copy_component_tensor(CactusGraph& source_graph,
                            const BufferDesc& src_desc,
                            size_t src_node,
                            const BufferDesc& dst_desc,
-                           std::vector<uint8_t>& dst_buffer,
+                           HostBuf& dst_buffer,
                            size_t dst_element_offset,
                            size_t element_count,
                            const std::string& name) {
@@ -124,7 +146,7 @@ size_t cross_kv_cache_buffer_size(size_t max_seq, size_t kv_heads, size_t head_d
 bool write_cross_kv_cache_buffer(const BufferDesc& src_desc,
                                  const void* src_ptr,
                                  const BufferDesc& dst_desc,
-                                 std::vector<uint8_t>& dst_buffer,
+                                 HostBuf& dst_buffer,
                                  size_t source_len,
                                  const std::string& name) {
     if (src_desc.precision != Precision::FP16 || dst_desc.precision != Precision::INT8) return false;
@@ -605,14 +627,6 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
 
     if (decoder_prefill_ && decoder_prefill_->graph) {
         try {
-            if (std::getenv("CACTUS_BIND_DBG")) {
-                for (Component* c : {prefill_encoder_, decoder_prefill_})
-                    if (c && c->graph)
-                        for (size_t i = 0; i < c->input_buffers.size(); ++i)
-                            std::fprintf(stderr, "[warmup] comp=%s i=%zu size=%zu data=%p\n",
-                                         c->name.c_str(), i, c->input_buffers[i].size(),
-                                         (void*)c->input_buffers[i].data());
-            }
             if (prefill_encoder_ && prefill_encoder_->graph) {
                 for (auto& b : prefill_encoder_->input_buffers) std::fill(b.begin(), b.end(), 0);
                 prefill_encoder_->graph->execute();
@@ -796,12 +810,6 @@ bool Model::bind_runtime_buffers(Component& comp) {
         const auto& desc = comp.graph->get_output_buffer(node_id);
         comp.input_buffers[i].assign(desc.byte_size, 0);
         comp.graph->set_external_input(node_id, comp.input_buffers[i].data(), desc.precision);
-        if (std::getenv("CACTUS_BIND_DBG"))
-            std::fprintf(stderr, "[bind] comp=%s i=%zu node=%zu name=%s bytes=%zu prec=%d data=%p\n",
-                         comp.name.c_str(), i, node_id,
-                         i < comp.logical_inputs.size() ? comp.logical_inputs[i].c_str() : "?",
-                         desc.byte_size, (int)desc.precision,
-                         (void*)comp.input_buffers[i].data());
     }
     return true;
 }
@@ -892,6 +900,7 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/, b
             fused_embed_ctx_.token_id = static_cast<int>(token_id);
             fused_embed_ctx_.position = static_cast<int>(position);
             cactus_graph_set_fused_embed(&fused_embed_ctx_);
+            write_int_input(*decoder_, "input_ids", static_cast<int64_t>(token_id));
             write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
             decoder_->graph->execute();
             cactus_graph_set_fused_embed(nullptr);
@@ -1520,7 +1529,7 @@ void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t f
 }
 
 namespace {
-void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
+void write_typed_buffer(HostBuf& buf, Precision dst_prec,
                         const void* src_data, size_t src_bytes, Precision src_prec);
 }  // namespace
 
@@ -2292,7 +2301,7 @@ void Model::prefill_with_audio(const std::vector<uint32_t>& tokens,
 
 namespace {
 
-void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
+void write_typed_buffer(HostBuf& buf, Precision dst_prec,
                         const void* src_data, size_t src_bytes, Precision src_prec) {
     if (dst_prec == src_prec) {
         size_t to_copy = std::min(src_bytes, buf.size());
@@ -2335,26 +2344,26 @@ static inline void write_int_element(uint8_t* buf, Precision prec, size_t index,
     }
 }
 
-static inline size_t typed_buf_capacity(const std::vector<uint8_t>& buf, Precision prec) {
+static inline size_t typed_buf_capacity(const HostBuf& buf, Precision prec) {
     size_t elem = PrecisionTraits::size_of(prec);
     return elem ? buf.size() / elem : 0;
 }
 
-static inline void zero_fill_remainder(std::vector<uint8_t>& buf, Precision prec, size_t written, size_t cap) {
+static inline void zero_fill_remainder(HostBuf& buf, Precision prec, size_t written, size_t cap) {
     if (written < cap) {
         size_t elem = PrecisionTraits::size_of(prec);
         std::memset(buf.data() + written * elem, 0, (cap - written) * elem);
     }
 }
 
-void fill_int_buffer(std::vector<uint8_t>& buf, Precision prec, int64_t value, size_t count) {
+void fill_int_buffer(HostBuf& buf, Precision prec, int64_t value, size_t count) {
     const size_t cap = typed_buf_capacity(buf, prec);
     const size_t n = std::min(cap, count);
     for (size_t i = 0; i < n; ++i) write_int_element(buf.data(), prec, i, value);
     zero_fill_remainder(buf, prec, n, cap);
 }
 
-void write_tokens_buffer(std::vector<uint8_t>& buf, Precision prec,
+void write_tokens_buffer(HostBuf& buf, Precision prec,
                          const std::vector<uint32_t>& tokens, size_t offset) {
     const size_t cap = typed_buf_capacity(buf, prec);
     const size_t avail = (offset < tokens.size()) ? (tokens.size() - offset) : 0;
@@ -2363,7 +2372,7 @@ void write_tokens_buffer(std::vector<uint8_t>& buf, Precision prec,
     zero_fill_remainder(buf, prec, n, cap);
 }
 
-void write_int_vector_buffer(std::vector<uint8_t>& buf, Precision prec, const std::vector<int64_t>& values) {
+void write_int_vector_buffer(HostBuf& buf, Precision prec, const std::vector<int64_t>& values) {
     const size_t cap = typed_buf_capacity(buf, prec);
     const size_t n = std::min(cap, values.size());
     for (size_t i = 0; i < n; ++i) write_int_element(buf.data(), prec, i, values[i]);

@@ -95,12 +95,17 @@ bool cactus_vulkan_swiglu_f16(__fp16*, const __fp16*, const __fp16*, size_t, flo
 bool cactus_vulkan_rms_norm_f16(__fp16*, const __fp16*, const __fp16*, size_t, size_t, float) { return false; }
 bool cactus_vulkan_cq_gemv(__fp16*, const __fp16*, const CactusQuantMatrix*, int, double*) { return false; }
 bool cactus_vulkan_argmax_f16(const __fp16*, uint32_t, uint32_t*, float*) { return false; }
+bool cactus_vulkan_owns(const void*) { return false; }
+bool cactus_vulkan_encode_gemv_cat(void* const*, const void* const*, const CactusQuantMatrix* const*, int) { return false; }
+void cactus_vulkan_note_mmap_range(const void*, size_t) {}
 
 #else
 
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include <map>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "vk_binary.h"
 #include "vk_scalar.h"
@@ -169,6 +174,7 @@ bool cactus_vulkan_argmax_f16(const __fp16*, uint32_t, uint32_t*, float*) { retu
 #include "vk_emb_ortho_m.h"
 #include "vk_attn_fused_i8.h"
 #include "vk_attn_fused_i8_512.h"
+#include "vk_cq4_gemv_cat.h"
 #include "vk_cq_gemv_lowbit.h"
 #include "vk_deltanet_decode.h"
 #include "vk_deltanet_prefill.h"
@@ -214,7 +220,7 @@ enum { KB, KSC, KU, KSW, KR, KT, KG, KA,
        KRL, KRF, KSO, KAJ, KM3, KKV, KAT, KCB, KROT, KRP, KG2, KTM, KGM,
        KRPS, KR2C, KGH, KSTK, KTKR, KGB, KRAR, KAP, KAPR, KAF,
        KLN, KSMR, KGLU, KCK3, KCDW, KCGN, KCND, KBN2, KBAR, KGMB, KRPB, KEWC, KCCA,
-       KB32, KSC32, KU32, KCLMP, KRAX, KCSM, KGF32, KMXP, KBIL, KGN2, KC2D, KEHM, KEOM, KAFU, KLBG, KDND, KDNP, KMOT, KMOU, KMOD, KAF2, KCOUNT };
+       KB32, KSC32, KU32, KCLMP, KRAX, KCSM, KGF32, KMXP, KBIL, KGN2, KC2D, KEHM, KEOM, KAFU, KLBG, KDND, KDNP, KMOT, KMOU, KMOD, KAF2, KGC, KCOUNT };
 
 struct KDef {
     const char* spv;
@@ -261,9 +267,9 @@ const KDef kdefs[KCOUNT] = {
     {kSpv_topk_rows,         sizeof(kSpv_topk_rows) - 1,         2, 12, 0x2},
     {kSpv_gemv_bias,         sizeof(kSpv_gemv_bias) - 1,         4, 12, 0x8},
     {kSpv_rms_norm_add_rows, sizeof(kSpv_rms_norm_add_rows) - 1, 5, 16, 0x18},
-    {kSpv_attn_prefill_i8,      sizeof(kSpv_attn_prefill_i8) - 1,      8, 52, 0x80},
+    {kSpv_attn_prefill_i8,      sizeof(kSpv_attn_prefill_i8) - 1,      8, 56, 0x80},
     {kSpv_attn_prefill_ring_i8, sizeof(kSpv_attn_prefill_ring_i8) - 1, 8, 60, 0x80},
-    {kSpv_attn_f16,             sizeof(kSpv_attn_f16) - 1,             5, 48, 0x8},
+    {kSpv_attn_f16,             sizeof(kSpv_attn_f16) - 1,             5, 56, 0x8},
     {kSpv_layer_norm,     sizeof(kSpv_layer_norm) - 1,     4, 12, 0x8},
     {kSpv_softmax_rows,   sizeof(kSpv_softmax_rows) - 1,   2, 4,  0x2},
     {kSpv_glu,            sizeof(kSpv_glu) - 1,            2, 12, 0x2},
@@ -298,12 +304,10 @@ const KDef kdefs[KCOUNT] = {
     {kSpv_moe_up,        sizeof(kSpv_moe_up) - 1,        8, 48, 0x80},
     {kSpv_moe_down_acc,  sizeof(kSpv_moe_down_acc) - 1,  6, 44, 0x20},
     {kSpv_attn_fused_i8_512, sizeof(kSpv_attn_fused_i8_512) - 1, 15, 56, 0x60F8},
+    {kSpv_cq4_gemv_cat,     sizeof(kSpv_cq4_gemv_cat) - 1,     13, 28, 0xE00},
 };
 
 struct Slot {
-    VkQueryPool prof = VK_NULL_HANDLE;
-    uint32_t prof_n = 0;
-    int prof_kid[2048];
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -353,17 +357,6 @@ struct VK {
         VK_FNS_GLOBAL(R)
 #undef R
 
-        const char* layers[1] = {"VK_LAYER_KHRONOS_validation"};
-        uint32_t nlayers = 0;
-        if (getenv("CACTUS_VK_VALIDATE")) {
-            uint32_t avail = 0;
-            vkEnumerateInstanceLayerProperties(&avail, nullptr);
-            std::vector<VkLayerProperties> props(avail);
-            vkEnumerateInstanceLayerProperties(&avail, props.data());
-            for (const auto& lp : props)
-                if (std::strcmp(lp.layerName, layers[0]) == 0) nlayers = 1;
-        }
-
         VkApplicationInfo app = {};
         app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
         app.pApplicationName = "cactus";
@@ -371,8 +364,6 @@ struct VK {
         VkInstanceCreateInfo ici = {};
         ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         ici.pApplicationInfo = &app;
-        ici.enabledLayerCount = nlayers;
-        ici.ppEnabledLayerNames = layers;
         if (vkCreateInstance(&ici, nullptr, &inst) != VK_SUCCESS || !inst) {
             info = "Vulkan: instance creation failed";
             return;
@@ -433,8 +424,7 @@ struct VK {
                && sg_size >= 16
                && props2.properties.limits.maxComputeSharedMemorySize >= 4112u * 4u;
         gemv2_ok = attn_ok
-               && props2.properties.limits.maxComputeSharedMemorySize >= 1120u * 16u + 256u
-               && !getenv("CACTUS_VK_GEMV");
+               && props2.properties.limits.maxComputeSharedMemorySize >= 1120u * 16u + 256u;
         if (props2.properties.limits.timestampComputeAndGraphics)
             ts_period = props2.properties.limits.timestampPeriod;
 
@@ -534,13 +524,6 @@ struct VK {
             qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
             qpci.queryCount = 2;
             if (vkCreateQueryPool(dev, &qpci, nullptr, &query) != VK_SUCCESS) { query = VK_NULL_HANDLE; ts_period = 0.0f; }
-            if (getenv("CACTUS_VK_PROF") && query != VK_NULL_HANDLE) {
-                for (Slot& sl : slots) {
-                    VkQueryPoolCreateInfo pp = qpci;
-                    pp.queryCount = 2048;
-                    if (vkCreateQueryPool(dev, &pp, nullptr, &sl.prof) != VK_SUCCESS) sl.prof = VK_NULL_HANDLE;
-                }
-            }
         }
 
         for (int k = 0; k < KCOUNT; ++k) {
@@ -549,6 +532,7 @@ struct VK {
             if (k == KAPR && shmem < (7936u + 128u) * 4u) continue;
             if (k == KAFU && (!attn_ok || shmem < 22000u)) continue;
             if (k == KAF2 && (!attn_ok || shmem < 23200u || sg_size < 16u)) continue;
+            if (k == KGC && !gemv2_ok) continue;
             const KDef& kd = kdefs[k];
             if (kd.len % 4 != 0) { info += " | spv size misaligned"; return; }
             std::vector<VkDescriptorSetLayoutBinding> binds(kd.nbuf);
@@ -648,18 +632,6 @@ bool create_block(size_t bytes, MemBlock& b, bool cached) {
             type = mem_type(req.memoryTypeBits,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
                 | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-        static const bool force_cached = [] {
-            const char* v = getenv("CACTUS_VK_CACHED");
-            return v && std::strcmp(v, "force") == 0;
-        }();
-        if (type == UINT32_MAX && force_cached) {
-            type = mem_type(req.memoryTypeBits,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-                | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-            if (type == UINT32_MAX)
-                type = mem_type(req.memoryTypeBits,
-                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-        }
     }
     if (type == UINT32_MAX)
         type = mem_type(req.memoryTypeBits,
@@ -781,16 +753,13 @@ void flush_noncoherent(bool invalidate) {
 
 bool submit_slot(Slot& s) {
     flush_noncoherent(false);
-    VkResult r = vk().vkEndCommandBuffer(s.cmd);
-    if (r != VK_SUCCESS) { vk().ok = false; std::fprintf(stderr, "[vkdead] vkEndCommandBuffer r=%d\n", (int)r); return false; }
-    r = vk().vkResetFences(vk().dev, 1, &s.fence);
-    if (r != VK_SUCCESS) { vk().ok = false; std::fprintf(stderr, "[vkdead] vkResetFences r=%d\n", (int)r); return false; }
+    if (vk().vkEndCommandBuffer(s.cmd) != VK_SUCCESS) { vk().ok = false; return false; }
+    if (vk().vkResetFences(vk().dev, 1, &s.fence) != VK_SUCCESS) { vk().ok = false; return false; }
     VkSubmitInfo si = {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &s.cmd;
-    r = vk().vkQueueSubmit(vk().q, 1, &si, s.fence);
-    if (r != VK_SUCCESS) { vk().ok = false; std::fprintf(stderr, "[vkdead] vkQueueSubmit r=%d\n", (int)r); return false; }
+    if (vk().vkQueueSubmit(vk().q, 1, &si, s.fence) != VK_SUCCESS) { vk().ok = false; return false; }
     s.recording = false;
     s.in_flight = true;
     s.dirty = true;
@@ -799,21 +768,13 @@ bool submit_slot(Slot& s) {
 
 bool wait_slot(Slot& s) {
     if (!s.in_flight) return true;
-    // Metal parity: waitUntilCompleted blocks for as long as the work takes.
-    // Long submissions (e.g. warmup prefill on slow GPUs) legitimately exceed
-    // 5s, so VK_TIMEOUT retries; only a real error kills the device.
     VkResult r = VK_TIMEOUT;
-    for (int tries = 0; r == VK_TIMEOUT && tries < 60; ++tries) {
+    for (int tries = 0; r == VK_TIMEOUT && tries < 60; ++tries)
         r = vk().vkWaitForFences(vk().dev, 1, &s.fence, VK_TRUE, 5000000000ull);
-        if (r == VK_TIMEOUT && std::getenv("CACTUS_VK_STATS"))
-            std::fprintf(stderr, "[vkslow] fence wait %ds...\n", (tries + 1) * 5);
-    }
     s.in_flight = false;
-    if (r != VK_SUCCESS) { vk().ok = false; std::fprintf(stderr, "[vkdead] vkWaitForFences r=%d\n", (int)r); return false; }
+    if (r != VK_SUCCESS) { vk().ok = false; return false; }
     return true;
 }
-
-void prof_collect(Slot& s);
 
 bool ensure_cmd() {
     Slot& s = vk().slots[vk().cur];
@@ -829,13 +790,6 @@ bool ensure_cmd() {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vk().vkBeginCommandBuffer(s.cmd, &bi) != VK_SUCCESS) return false;
     s.recording = true;
-    if (s.prof) {
-        prof_collect(s);
-        vk().vkCmdResetQueryPool(s.cmd, s.prof, 0, 2048);
-        s.prof_kid[0] = -1;
-        vk().vkCmdWriteTimestamp(s.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s.prof, 0);
-        s.prof_n = 1;
-    }
     return true;
 }
 
@@ -853,12 +807,6 @@ void recycle_pending() {
         if (s->live == 0) s->used = 0;
 }
 
-// Host-buffer overrides for the fused-embed fold path. Metal wraps arbitrary
-// host memory zero-copy, so fold kernels write straight into the engine's
-// host input vectors; Vulkan cannot. Instead, binds of those host pointers
-// are redirected to a device shadow: created inside a fold scope, refreshed
-// from host when no GPU write is pending, written back to host at sync so
-// CPU consumers observe the kernel results.
 struct OvEntry { size_t size = 0; MemBlock* blk = nullptr; bool dirty = false; };
 std::map<const void*, OvEntry> g_ov;
 MemBlock g_stage;
@@ -900,38 +848,6 @@ VkDescriptorSet make_set(int k, const VkDescriptorBufferInfo* infos, uint32_t co
     return set;
 }
 
-double g_prof_ms[KCOUNT + 1] = {};
-uint64_t g_prof_calls[KCOUNT + 1] = {};
-
-void prof_dump() {
-    std::fprintf(stderr, "[vkprof] kernel GPU time totals:\n");
-    struct Row { int k; double ms; uint64_t n; };
-    std::vector<Row> rows;
-    for (int k = 0; k <= KCOUNT; ++k)
-        if (g_prof_calls[k]) rows.push_back({k, g_prof_ms[k], g_prof_calls[k]});
-    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.ms > b.ms; });
-    for (const Row& r : rows)
-        std::fprintf(stderr, "[vkprof]  k=%-3d %10.2f ms  %8llu calls  %8.1f us/call\n",
-                     r.k, r.ms, (unsigned long long)r.n, 1000.0 * r.ms / (double)r.n);
-}
-
-void prof_collect(Slot& s) {
-    if (!s.prof || s.prof_n == 0) return;
-    static std::vector<uint64_t> ts;
-    ts.assign(s.prof_n, 0);
-    if (vk().vkGetQueryPoolResults(vk().dev, s.prof, 0, s.prof_n, s.prof_n * 8, ts.data(), 8,
-                                   VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
-        for (uint32_t i = 1; i < s.prof_n; ++i) {
-            int kid = s.prof_kid[i];
-            if (kid < 0) continue;
-            double ms = (double)(ts[i] - ts[i - 1]) * (double)vk().ts_period * 1e-6;
-            g_prof_ms[kid] += ms;
-            g_prof_calls[kid]++;
-        }
-    }
-    s.prof_n = 0;
-}
-
 void mem_barrier() {
     VkMemoryBarrier mb = {};
     mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -956,12 +872,8 @@ bool ranges_hit(const std::vector<AccessRange>& v, VkBuffer buf, VkDeviceSize be
 
 void dispatch(int k, VkDescriptorSet set, const void* push, uint32_t gx, uint32_t gy,
               const VkDescriptorBufferInfo* infos, uint32_t count, uint32_t gz = 1) {
-    static const bool barrier_all = [] {
-        const char* v = getenv("CACTUS_VK_BARRIER");
-        return v && std::strcmp(v, "all") == 0;
-    }();
     const uint32_t wm = kdefs[k].write_mask;
-    bool hazard = barrier_all || g_writes.size() + g_reads.size() > 1024;
+    bool hazard = g_writes.size() + g_reads.size() > 1024;
     for (uint32_t i = 0; i < count && !hazard; ++i) {
         VkDeviceSize beg = infos[i].offset, end = beg + infos[i].range;
         hazard = ranges_hit(g_writes, infos[i].buffer, beg, end)
@@ -980,12 +892,6 @@ void dispatch(int k, VkDescriptorSet set, const void* push, uint32_t gx, uint32_
     vk().vkCmdBindDescriptorSets(cur_cmd(), VK_PIPELINE_BIND_POINT_COMPUTE, vk().pipes[k].pl, 0, 1, &set, 0, nullptr);
     vk().vkCmdPushConstants(cur_cmd(), vk().pipes[k].pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, kdefs[k].push, push);
     vk().vkCmdDispatch(cur_cmd(), gx, gy, gz);
-    Slot& psl = vk().slots[vk().cur];
-    if (psl.prof && psl.prof_n < 2048) {
-        psl.prof_kid[psl.prof_n] = k;
-        vk().vkCmdWriteTimestamp(cur_cmd(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, psl.prof, psl.prof_n);
-        psl.prof_n++;
-    }
 }
 
 OvEntry* ov_bind(const void* p, size_t bytes, size_t* delta_out) {
@@ -1107,18 +1013,10 @@ bool dummy_info(VkDescriptorBufferInfo* out) {
     return true;
 }
 
-// Per-encode upload staging. scratch_info() reuses one block, so consecutive
-// encodes that memcpy fresh host content before submission would overwrite
-// each other (deferred-execution race). The ring bump-allocates a distinct
-// 256-aligned slot per upload; sync_i resets the cursor once the GPU has
-// consumed everything.
 void* stage_alloc(size_t bytes) {
     if (bytes == 0) return nullptr;
     size_t need = (bytes + 255u) & ~(size_t)255u;
     if (g_stage_off + need > g_stage.cap) {
-        // Grow from the previous capacity, never back down: a wrap that
-        // recreated the ring at BUCKET would fill instantly and force a
-        // pipeline-drain sync every few encodes.
         size_t cap = g_stage.cap ? g_stage.cap * 2 : BUCKET;
         while (cap < need) cap <<= 1;
         if (g_stage.buf) {
@@ -1147,11 +1045,6 @@ const void* stage_upload(const void* src, size_t bytes) {
 
 bool dinfo(const void* p, size_t bytes, VkDescriptorBufferInfo* out);
 
-// Read-only operand bind: device memory directly, host memory via a staged
-// per-encode snapshot (stable for the duration of the graph execute — the
-// engine only rewrites inputs between executes). Metal reads host memory
-// zero-copy; this is the Vulkan equivalent for small operands. Never use for
-// outputs — writes would land in the snapshot.
 bool sinfo(const void* p, size_t bytes, VkDescriptorBufferInfo* out) {
     if (dinfo(p, bytes, out)) return true;
     if (!p || bytes == 0 || bytes > (4u << 20)) return false;
@@ -1209,6 +1102,14 @@ struct ResW {
 };
 std::unordered_map<uint64_t, ResW> g_resident;
 
+static std::vector<std::pair<uintptr_t, uintptr_t>> g_mmap_ranges;
+
+bool in_registered_mmap(uintptr_t beg, uintptr_t end) {
+    for (const auto& r : g_mmap_ranges)
+        if (beg >= r.first && end <= r.second) return true;
+    return false;
+}
+
 uint64_t resident_key(const CactusQuantMatrix* W) {
     uint64_t h = 1469598103934665603ull;
     auto mix = [&](uint64_t v) { h ^= v; h *= 1099511628211ull; };
@@ -1225,14 +1126,6 @@ uint64_t resident_key(const CactusQuantMatrix* W) {
 enum { W_PACKED, W_NORMS, W_CB, W_RECIP, W_LS, W_RS, W_PERM, W_CODE, W_ROT, W_SECT };
 
 ResW& resident(const CactusQuantMatrix* W) {
-    static int cbdump = std::getenv("CACTUS_RMS_DBG") ? 3 : 0;
-    if (cbdump > 0 && W && W->codebook) {
-        --cbdump;
-        const __fp16* cbp = (const __fp16*)W->codebook;
-        std::string d = "[vkcb]";
-        for (int i = 0; i < 16; ++i) d += " " + std::to_string((float)cbp[i]);
-        std::fprintf(stderr, "%s\n", d.c_str());
-    }
     uint64_t key = resident_key(W);
     auto it = g_resident.find(key);
     if (it != g_resident.end()) return it->second;
@@ -1264,6 +1157,18 @@ ResW& resident(const CactusQuantMatrix* W) {
         for (int i = 0; i < W_SECT; ++i)
             if (srcs[i]) std::memcpy(r.b.map + r.off[i], srcs[i], r.sz[i]);
         r.ok = true;
+        {
+            const long pg = sysconf(_SC_PAGESIZE);
+            for (int i = 0; i < W_SECT; ++i) {
+                if (!srcs[i] || r.sz[i] < (size_t)pg) continue;
+                uintptr_t beg = (uintptr_t)srcs[i];
+                uintptr_t end = beg + r.sz[i];
+                if (!in_registered_mmap(beg, end)) continue;
+                uintptr_t abeg = (beg + pg - 1) & ~(uintptr_t)(pg - 1);
+                uintptr_t aend = end & ~(uintptr_t)(pg - 1);
+                if (aend > abeg) madvise((void*)abeg, aend - abeg, MADV_DONTNEED);
+            }
+        }
     }
     return g_resident.emplace(key, r).first->second;
 }
@@ -1352,11 +1257,7 @@ const char* cactus_vulkan_device_info() {
     return vk().info.c_str();
 }
 
-bool cactus_vulkan_op_enabled(const char* name) {
-    static const char* filter = getenv("CACTUS_VK_OPS");
-    if (!filter || !*filter) return true;
-    return std::strstr(filter, name) != nullptr;
-}
+bool cactus_vulkan_op_enabled(const char*) { return true; }
 
 void cactus_vulkan_session_begin() {}
 
@@ -1374,23 +1275,73 @@ void cactus_vulkan_session_sync() {
 
 void cactus_vulkan_session_end() {
     cactus_vulkan_session_sync();
-    static bool prof_exit = [] {
-        if (!getenv("CACTUS_VK_PROF")) return false;
-        std::atexit(prof_dump);
-        return true;
-    }();
-    (void)prof_exit;
-    if (getenv("CACTUS_VK_PROF")) {
-        std::lock_guard<std::recursive_mutex> lk(g_mu);
-        for (Slot& s : vk().slots) prof_collect(s);
+}
+
+bool cactus_vulkan_encode_gemv_cat(void* const* outs, const void* const* codes,
+                                   const CactusQuantMatrix* const* Ws, int B) {
+    if (!vk().ok || !vk().pipes[KGC].p || B < 1 || B > 3) return false;
+    const uint32_t gs = Ws[0]->group_size, K = Ws[0]->K, ng = Ws[0]->num_groups;
+    const uint32_t il0 = (Ws[0]->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) ? 1u : 0u;
+    uint32_t Ns[3] = {0, 0, 0};
+    for (int i = 0; i < B; ++i) {
+        const CactusQuantMatrix* W = Ws[i];
+        if (!W || W->bits != 4 || (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL)) return false;
+        if (W->group_size != gs || W->K != K || W->num_groups != ng) return false;
+        if (((W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) ? 1u : 0u) != il0) return false;
+        if ((W->N % 16u) != 0u) return false;
+        Ns[i] = W->N;
     }
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    ResW* rw[3];
+    for (int i = 0; i < 3; ++i) rw[i] = &resident(Ws[i < B ? i : 0]);
+    for (int i = 0; i < B; ++i) if (!rw[i]->ok) return false;
+    VkDescriptorBufferInfo infos[13];
+    auto ri = [&](int m, int sect) {
+        VkDescriptorBufferInfo d = {};
+        d.buffer = rw[m]->b.buf;
+        d.offset = rw[m]->off[sect];
+        d.range = rw[m]->sz[sect] ? rw[m]->sz[sect] : 4;
+        return d;
+    };
+    for (int i = 0; i < 3; ++i) {
+        int j = i < B ? i : 0;
+        if (!dinfo(codes[j], (size_t)K * 2, &infos[i])) return false;
+        infos[3 + i] = ri(j, W_PACKED);
+        infos[6 + i] = ri(j, W_NORMS);
+        if (!dinfo(outs[j], (size_t)Ns[j] * 2, &infos[9 + i])) return false;
+    }
+    infos[12] = ri(0, W_CB);
+    if (!ensure_cmd()) return false;
+    VkDescriptorSet set = make_set(KGC, infos, 13);
+    if (!set) return false;
+    const uint32_t pgb = cactus_quant_packed_group_bytes(4, gs);
+    struct { uint32_t gs, ng, pgb, il, N0, N1, N2; } push =
+        {gs, ng, pgb, il0, Ns[0], Ns[1], Ns[2]};
+    const uint32_t quads = Ns[0] / 4 + Ns[1] / 4 + Ns[2] / 4;
+    const uint32_t wgs = (quads + 31) / 32;
+    dispatch(KGC, set, &push, wgs > 65535 ? 65535 : wgs, 1, infos, 13);
+    return true;
+}
+
+bool cactus_vulkan_owns(const void* p) {
+    if (!vk().ok || !p) return false;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    size_t off = 0;
+    return block_of(p, &off) != nullptr;
+}
+
+void cactus_vulkan_note_mmap_range(const void* base, size_t bytes) {
+    if (!base || !bytes) return;
+    std::lock_guard<std::recursive_mutex> lk(g_mu);
+    g_mmap_ranges.emplace_back((uintptr_t)base, (uintptr_t)base + bytes);
 }
 
 void cactus_vulkan_fold_buffers(void* h, size_t hbytes, void* ple, size_t plebytes) {
     if (!vk().ok) return;
     std::lock_guard<std::recursive_mutex> lk(g_mu);
-    ov_register(h, hbytes);
-    ov_register(ple, plebytes);
+    size_t off = 0;
+    if (h && !block_of(h, &off)) ov_register(h, hbytes);
+    if (ple && !block_of(ple, &off)) ov_register(ple, plebytes);
 }
 
 void cactus_vulkan_invalidate_host_wraps() {
@@ -1794,10 +1745,6 @@ bool cactus_vulkan_encode_gather_f16(void* out, const void* table, size_t table_
     uint32_t n = M * D;
     VkDescriptorBufferInfo infos[3];
     if (!dinfo(table, table_bytes, &infos[0])) {
-        // Host-resident table (mmap weight): gather the M rows on CPU into the
-        // upload ring — bytes moved are M*D*2, not the table — and encode a
-        // device copy. Metal reads the table zero-copy; this is the Vulkan
-        // equivalent without a giant residency allocation.
         char* g = (char*)stage_alloc((size_t)n * 2);
         if (!g) return false;
         const char* tb = (const char*)table;
@@ -1894,7 +1841,6 @@ bool cactus_vulkan_encode_attention_i8_prefill(
         uint32_t hist, uint32_t new_len, uint32_t q_pos0, uint32_t window, uint32_t is_causal,
         uint32_t M, float scale, size_t kc_bytes, size_t vc_bytes, size_t ks_bytes, size_t vs_bytes,
         uint32_t sink, uint32_t ring) {
-    (void)window;
     if (!vk().ok || M == 0 || nkvh == 0 || (nqh % nkvh) != 0) return false;
     uint32_t total_keys = hist + new_len;
     if (total_keys == 0) return false;
@@ -1935,8 +1881,8 @@ bool cactus_vulkan_encode_attention_i8_prefill(
         dispatch(kk, set, &push, M * nqh, 1, infos, 8);
     } else {
         struct { uint32_t nqh, nkvh, hd, vhd, hist; float scale;
-                 uint32_t q_pos0, new_len, is_causal, okc, ovc, oks, ovs; } push =
-            {nqh, nkvh, hd, vhd, hist, scale, q_pos0, new_len, is_causal, okc, ovc, oks, ovs};
+                 uint32_t q_pos0, new_len, is_causal, window, okc, ovc, oks, ovs; } push =
+            {nqh, nkvh, hd, vhd, hist, scale, q_pos0, new_len, is_causal, window, okc, ovc, oks, ovs};
         dispatch(kk, set, &push, M * nqh, 1, infos, 8);
     }
     return true;
@@ -2209,9 +2155,10 @@ bool cactus_vulkan_encode_attention_f16(void* out, const void* q, const void* k,
     if ((size_t)B * T * HQ > 65535u) return false;
     std::lock_guard<std::recursive_mutex> lk(g_mu);
     VkDescriptorBufferInfo infos[5];
+    uint32_t ok4 = 0, ov4 = 0;
     if (!dinfo(q, (size_t)B * T * HQ * D * 2, &infos[0])) return false;
-    if (!dinfo(k, (size_t)B * S * HKV * D * 2, &infos[1])) return false;
-    if (!dinfo(v, (size_t)B * S * HKV * DV * 2, &infos[2])) return false;
+    if (!dinfo_off(k, (size_t)B * S * HKV * D * 2, &infos[1], &ok4)) return false;
+    if (!dinfo_off(v, (size_t)B * S * HKV * DV * 2, &infos[2], &ov4)) return false;
     if (!dinfo(out, (size_t)B * T * HQ * DV * 2, &infos[3])) return false;
     if (mask_mode != 0u && mask) {
         size_t mb = (mask_mode >= 3u) ? (size_t)B * HQ * T * S * 2 : (size_t)B * T * S * 2;
@@ -2223,8 +2170,9 @@ bool cactus_vulkan_encode_attention_f16(void* out, const void* q, const void* k,
     VkDescriptorSet set = make_set(KAF, infos, 5);
     if (!set) return false;
     struct { uint32_t T, S, HQ, HKV, D, DV; float scale; uint32_t causal, pos_off, window;
-             float logit_cap; uint32_t mask_mode; } push =
-        {T, S, HQ, HKV, D, DV, scale, causal, pos_off, window, logit_cap, mask_mode};
+             float logit_cap; uint32_t mask_mode; uint32_t o_k, o_v; } push =
+        {T, S, HQ, HKV, D, DV, scale, causal, pos_off, window, logit_cap, mask_mode,
+         ok4 * 2u, ov4 * 2u};
     dispatch(KAF, set, &push, B * T * HQ, 1, infos, 5);
     return true;
 }
@@ -2525,31 +2473,27 @@ bool cactus_vulkan_encode_attention_fused_i8(
         uint32_t kv_start, uint32_t kv_end, uint32_t slot, uint32_t has_new,
         float eps, float scale,
         size_t kc_bytes, size_t vc_bytes, size_t ks_bytes, size_t vs_bytes) {
-    static int afdbg = std::getenv("CACTUS_VK_STATS") ? 8 : 0;
-    #define AF_REF(tag) do { if (afdbg > 0) { --afdbg; \
-        std::fprintf(stderr, "[vkafref] %s nqh=%u hd=%u vhd=%u kv=[%u,%u) slot=%u new=%u\n", \
-                     tag, nqh, hd, vhd, kv_start, kv_end, slot, has_new); } } while (0)
-    if (!vk().ok) { AF_REF("pipe"); return false; }
-    if (kv_end <= kv_start || nqh == 0 || hd == 0 || vhd == 0) { AF_REF("dims"); return false; }
-    if (hd > 512u || vhd > 512u || (hd & 31u) || (vhd & 31u)) { AF_REF("hd"); return false; }
+    if (!vk().ok) { return false; }
+    if (kv_end <= kv_start || nqh == 0 || hd == 0 || vhd == 0) { return false; }
+    if (hd > 512u || vhd > 512u || (hd & 31u) || (vhd & 31u)) { return false; }
     const int kaf = (hd > 256u || vhd > 256u) ? KAF2 : KAFU;
-    if (!vk().pipes[kaf].p) { AF_REF("pipe"); return false; }
+    if (!vk().pipes[kaf].p) { return false; }
     std::lock_guard<std::recursive_mutex> lk(g_mu);
     VkDescriptorBufferInfo infos[15];
     uint32_t okc = 0, ovc = 0, oks = 0, ovs = 0;
-    if (!dinfo(q, (size_t)nqh * hd * 2, &infos[0])) { AF_REF("q"); return false; }
+    if (!dinfo(q, (size_t)nqh * hd * 2, &infos[0])) { return false; }
     if (has_new && kraw && vraw) {
-        if (!dinfo(kraw, (size_t)hd * 2, &infos[1])) { AF_REF("kraw"); return false; }
-        if (!dinfo(vraw, (size_t)vhd * 2, &infos[2])) { AF_REF("vraw"); return false; }
+        if (!dinfo(kraw, (size_t)hd * 2, &infos[1])) { return false; }
+        if (!dinfo(vraw, (size_t)vhd * 2, &infos[2])) { return false; }
     } else {
-        if (!dummy_info(&infos[1]) || !dummy_info(&infos[2])) { AF_REF("dummy"); return false; }
+        if (!dummy_info(&infos[1]) || !dummy_info(&infos[2])) { return false; }
     }
-    if (!dinfo_off(kc, kc_bytes, &infos[3], &okc)) { AF_REF("kc"); return false; }
-    if (!dinfo_off(vc, vc_bytes, &infos[4], &ovc)) { AF_REF("vc"); return false; }
-    if (!dinfo_off(ks, ks_bytes, &infos[5], &oks)) { AF_REF("ks"); return false; }
-    if (!dinfo_off(vs, vs_bytes, &infos[6], &ovs)) { AF_REF("vs"); return false; }
-    if (!dinfo(out, (size_t)nqh * vhd * 2, &infos[7])) { AF_REF("out"); return false; }
-    if (!winfo(qw, (size_t)hd * 2, &infos[8])) { AF_REF("qw"); return false; }
+    if (!dinfo_off(kc, kc_bytes, &infos[3], &okc)) { return false; }
+    if (!dinfo_off(vc, vc_bytes, &infos[4], &ovc)) { return false; }
+    if (!dinfo_off(ks, ks_bytes, &infos[5], &oks)) { return false; }
+    if (!dinfo_off(vs, vs_bytes, &infos[6], &ovs)) { return false; }
+    if (!dinfo(out, (size_t)nqh * vhd * 2, &infos[7])) { return false; }
+    if (!winfo(qw, (size_t)hd * 2, &infos[8])) { return false; }
     if (has_new && kw) { if (!winfo(kw, (size_t)hd * 2, &infos[9])) return false; }
     else if (!dummy_info(&infos[9])) return false;
     if (has_new && vw) { if (!winfo(vw, (size_t)vhd * 2, &infos[10])) return false; }
@@ -2635,7 +2579,7 @@ bool cactus_vulkan_encode_deltanet_prefill(void* out, const void* q, const void*
 struct VkMoeSet {
     MemBlock arena;
     size_t slot = 0;
-    size_t offs[7] = {};   // pk, nm, cb, rc, ls, rs, pm (byte offsets within an expert slot)
+    size_t offs[7] = {};
     uint32_t K = 0, N = 0;
     bool ok = false;
 };
@@ -2797,33 +2741,15 @@ bool cactus_vulkan_transform_gemv_fits(uint32_t K) {
 
 bool cactus_vulkan_encode_transform_gemv(void* out, const void* x, const CactusQuantMatrix* W,
                                          const void* osw) {
-    static int dbg = getenv("CACTUS_VK_TGV_DBG") ? 8 : 0;
     if (!vk().ok || !W || (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL)) return false;
     std::lock_guard<std::recursive_mutex> lk(g_mu);
-    if (!enc_cq_gemv(out, x, W)) {
-        if (dbg > 0) { --dbg; std::fprintf(stderr, "[tgv] gemv refused K=%u N=%u gs=%u fl=%u bits=%u\n",
-                                           W->K, W->N, W->group_size, W->flags, W->bits); }
-        return false;
-    }
+    if (!enc_cq_gemv(out, x, W)) return false;
     if (!osw) return true;
     const uint32_t N = W->N;
-    if (!cactus_vulkan_encode_unary_f16(0, out, out, N)) {
-        if (dbg > 0) { --dbg; std::fprintf(stderr, "[tgv] unary refused N=%u\n", N); }
-        return false;
-    }
+    if (!cactus_vulkan_encode_unary_f16(0, out, out, N)) return false;
     if (cactus_vulkan_encode_binary_f16(3, out, out, osw, N)) return true;
-    // osw may live in host memory (CPU-computed PLE row) or at an unbindable
-    // offset; stage a per-encode snapshot through the upload ring.
-    const void* staged = nullptr;
-    {
-        std::lock_guard<std::recursive_mutex> lk2(g_mu);
-        staged = stage_upload(osw, (size_t)N * 2);
-    }
-    if (!staged || !cactus_vulkan_encode_binary_f16(3, out, out, staged, N)) {
-        if (dbg > 0) { --dbg; std::fprintf(stderr, "[tgv] binary refused after staging N=%u\n", N); }
-        return false;
-    }
-    return true;
+    const void* staged = stage_upload(osw, (size_t)N * 2);
+    return staged && cactus_vulkan_encode_binary_f16(3, out, out, staged, N);
 }
 
 void* g_swig_p = nullptr;
@@ -3075,12 +3001,8 @@ bool cactus_vulkan_encode_attention_i8(
     if (!dinfo_off(ks, ks_bytes, &infos[5], &oks)) return false;
     if (!dinfo_off(vs, vs_bytes, &infos[6], &ovs)) return false;
     if (!dinfo(out, (size_t)num_q_heads * v_hdim * 2, &infos[7])) return false;
-    static const int nwg_env = [] {
-        const char* v = getenv("CACTUS_VK_ATTN_NWG");
-        return v ? std::atoi(v) : 0;
-    }();
     uint32_t R = kv_end - kv_start;
-    uint32_t nwg = nwg_env > 0 ? (uint32_t)nwg_env : R / 24u;
+    uint32_t nwg = R / 24u;
     if (nwg < 1u) nwg = 1u;
     if (nwg > 32u) nwg = 32u;
     if (nwg > 1u) {

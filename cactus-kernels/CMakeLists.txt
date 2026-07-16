@@ -104,7 +104,7 @@ else()
                    layer_norm softmax_rows glu conv1d_k3 conv1d_dw conv1d_gen conv1d_nlc_dw
                    batchnorm bias_add_rows gemm_batch rel_pos_bias elemwise_chain conv_cache_append
                    binary_f32 scalar_f32 unary_f32 clamp reduce_axis cumsum gather_f32idx
-                   maxpool1d bilinear groupnorm conv2d emb_hadamard_m emb_ortho_m attn_fused_i8 attn_fused_i8_512 cq_gemv_lowbit deltanet_decode deltanet_prefill moe_transform moe_up moe_down_acc)
+                   maxpool1d bilinear groupnorm conv2d emb_hadamard_m emb_ortho_m attn_fused_i8 attn_fused_i8_512 cq4_gemv_cat cq_gemv_lowbit deltanet_decode deltanet_prefill moe_transform moe_up moe_down_acc)
             set(_spv ${CMAKE_CURRENT_BINARY_DIR}/generated/vk_${_k}.spv)
             set(_hdr ${CMAKE_CURRENT_BINARY_DIR}/generated/vk_${_k}.h)
             add_custom_command(

@@ -3,7 +3,7 @@
 
 #if defined(K_rms_norm_add) || defined(K_rms_norm_add_rms) || defined(K_rms_norm_scale) || defined(K_argmax3) || defined(K_rope_pair_rms) || defined(K_rms2_add_clip) || defined(K_layer_norm) || defined(K_softmax_rows) || defined(K_groupnorm) || defined(K_emb_hadamard_m) || defined(K_emb_ortho_m) || defined(K_attn_fused_i8)
 layout(local_size_x = 256) in;
-#elif defined(K_attn_fused_i8_512) || defined(K_attn_decode_i8) || defined(K_attn_combine) || defined(K_cq4_gemv2) || defined(K_cq4_gemm) || defined(K_softmax_topk) || defined(K_topk_rows) || defined(K_attn_prefill_i8) || defined(K_attn_prefill_ring_i8) || defined(K_attn_f16) || defined(K_deltanet_decode) || defined(K_deltanet_prefill) || defined(K_moe_up) || defined(K_moe_down_acc) || defined(K_moe_transform)
+#elif defined(K_attn_fused_i8_512) || defined(K_attn_decode_i8) || defined(K_attn_combine) || defined(K_cq4_gemv2) || defined(K_cq4_gemv_cat) || defined(K_cq4_gemm) || defined(K_softmax_topk) || defined(K_topk_rows) || defined(K_attn_prefill_i8) || defined(K_attn_prefill_ring_i8) || defined(K_attn_f16) || defined(K_deltanet_decode) || defined(K_deltanet_prefill) || defined(K_moe_up) || defined(K_moe_down_acc) || defined(K_moe_transform)
 layout(local_size_x = 128) in;
 #else
 layout(local_size_x = 64) in;
@@ -172,8 +172,6 @@ float dot8_il(uint w, vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
          + c2.x*cb[(w >> 4) & 0xFu]  + c2.y*cb[(w >> 12) & 0xFu]
          + c3.x*cb[(w >> 20) & 0xFu] + c3.y*cb[(w >> 28) & 0xFu];
 }
-// One row-quad per subgroup (llama.cpp mul_mat_vec structure): a single
-// subgroupAdd per quad and no barriers in the row loop.
 void main() {
     uint t = gl_LocalInvocationID.x, sg = gl_SubgroupID, nsg = gl_NumSubgroups;
     uint lane = gl_SubgroupInvocationID, sgsz = gl_SubgroupSize;
@@ -706,10 +704,6 @@ float dot8_il(uint w, f16vec2 c0, f16vec2 c1, f16vec2 c2, f16vec2 c3) {
     f16vec2 t = s01 + s23;
     return float(t.x) + float(t.y);
 }
-// One row-quad per subgroup, one subgroupAdd per quad, no barriers in the
-// row loop (llama.cpp mul_mat_vec structure): each lane covers K in
-// 16-element strides across the subgroup, so per-quad reduction overhead is
-// amortized over K/(16*sgsz) iterations of real work instead of one.
 void main() {
     uint t = gl_LocalInvocationID.x, sg = gl_SubgroupID, nsg = gl_NumSubgroups;
     uint lane = gl_SubgroupInvocationID, sgsz = gl_SubgroupSize;
@@ -756,6 +750,108 @@ void main() {
     }
 }
 #endif
+#ifdef K_cq4_gemv_cat
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(std430, binding = 0) readonly buffer BC0 { uvec4 code0[]; };
+layout(std430, binding = 1) readonly buffer BC1 { uvec4 code1[]; };
+layout(std430, binding = 2) readonly buffer BC2 { uvec4 code2[]; };
+layout(std430, binding = 3) readonly buffer BP0 { uvec4 packed0[]; };
+layout(std430, binding = 4) readonly buffer BP1 { uvec4 packed1[]; };
+layout(std430, binding = 5) readonly buffer BP2 { uvec4 packed2[]; };
+layout(std430, binding = 6) readonly buffer BN0 { float16_t norms0[]; };
+layout(std430, binding = 7) readonly buffer BN1 { float16_t norms1[]; };
+layout(std430, binding = 8) readonly buffer BN2 { float16_t norms2[]; };
+layout(std430, binding = 9) writeonly buffer BY0 { float16_t y0[]; };
+layout(std430, binding = 10) writeonly buffer BY1 { float16_t y1[]; };
+layout(std430, binding = 11) writeonly buffer BY2 { float16_t y2[]; };
+layout(std430, binding = 12) readonly buffer BCB { float16_t codebook[]; };
+layout(push_constant) uniform P { uint gs; uint ng; uint pgb; uint il; uint N0; uint N1; uint N2; };
+shared float16_t cbh[16];
+float dot8(uint w, f16vec2 c0, f16vec2 c1, f16vec2 c2, f16vec2 c3) {
+    f16vec2 s01 = c0 * f16vec2(cbh[w & 0xFu],         cbh[(w >> 4) & 0xFu])
+                + c1 * f16vec2(cbh[(w >> 8) & 0xFu],  cbh[(w >> 12) & 0xFu]);
+    f16vec2 s23 = c2 * f16vec2(cbh[(w >> 16) & 0xFu], cbh[(w >> 20) & 0xFu])
+                + c3 * f16vec2(cbh[(w >> 24) & 0xFu], cbh[w >> 28]);
+    f16vec2 t = s01 + s23;
+    return float(t.x) + float(t.y);
+}
+float dot8_il(uint w, f16vec2 c0, f16vec2 c1, f16vec2 c2, f16vec2 c3) {
+    f16vec2 s01 = c0 * f16vec2(cbh[w & 0xFu],         cbh[(w >> 8) & 0xFu])
+                + c1 * f16vec2(cbh[(w >> 16) & 0xFu], cbh[(w >> 24) & 0xFu]);
+    f16vec2 s23 = c2 * f16vec2(cbh[(w >> 4) & 0xFu],  cbh[(w >> 12) & 0xFu])
+                + c3 * f16vec2(cbh[(w >> 20) & 0xFu], cbh[(w >> 28) & 0xFu]);
+    f16vec2 t = s01 + s23;
+    return float(t.x) + float(t.y);
+}
+uvec4 codeld(uint mtx, uint i) {
+    return mtx == 0u ? code0[i] : (mtx == 1u ? code1[i] : code2[i]);
+}
+uvec4 packld(uint mtx, uint i) {
+    return mtx == 0u ? packed0[i] : (mtx == 1u ? packed1[i] : packed2[i]);
+}
+float normld(uint mtx, uint i) {
+    return mtx == 0u ? float(norms0[i]) : (mtx == 1u ? float(norms1[i]) : float(norms2[i]));
+}
+void store(uint mtx, uint i, float v) {
+    if (mtx == 0u) y0[i] = float16_t(v);
+    else if (mtx == 1u) y1[i] = float16_t(v);
+    else y2[i] = float16_t(v);
+}
+void main() {
+    uint t = gl_LocalInvocationID.x, sg = gl_SubgroupID, nsg = gl_NumSubgroups;
+    uint lane = gl_SubgroupInvocationID, sgsz = gl_SubgroupSize;
+    uint K = ng * gs;
+    if (t < 16u) cbh[t] = codebook[t];
+    barrier();
+    uint q0 = N0 / 4u, q1 = N1 / 4u, q2 = N2 / 4u;
+    uint quads = q0 + q1 + q2;
+    for (uint qi = gl_WorkGroupID.x * nsg + sg; qi < quads; qi += gl_NumWorkGroups.x * nsg) {
+        uint mtx, ql;
+        if (qi < q0) { mtx = 0u; ql = qi; }
+        else if (qi < q0 + q1) { mtx = 1u; ql = qi - q0; }
+        else { mtx = 2u; ql = qi - q0 - q1; }
+        uint n0 = ql * 4u;
+        vec4 acc = vec4(0.0);
+        for (uint base = lane * 16u; base < K; base += sgsz * 16u) {
+            uint g = base / gs, e = base - g * gs;
+            uvec4 c_0 = codeld(mtx, base >> 3);
+            uvec4 c_1 = codeld(mtx, (base >> 3) + 1u);
+            f16vec2 c0 = unpackFloat2x16(c_0.x), c1 = unpackFloat2x16(c_0.y);
+            f16vec2 c2 = unpackFloat2x16(c_0.z), c3 = unpackFloat2x16(c_0.w);
+            f16vec2 c4 = unpackFloat2x16(c_1.x), c5 = unpackFloat2x16(c_1.y);
+            f16vec2 c6 = unpackFloat2x16(c_1.z), c7 = unpackFloat2x16(c_1.w);
+            if (il != 0u) {
+                uint pw = ((n0 >> 2) * ng + g) * pgb + (e >> 4) * 8u;
+                uint nb = ((n0 >> 2) * ng + g) << 2;
+                uvec4 A4 = packld(mtx, pw >> 2);
+                uvec4 B4 = packld(mtx, (pw >> 2) + 1u);
+                for (uint r = 0u; r < 4u; ++r) {
+                    float p = dot8_il(A4[r], c0, c1, c2, c3) + dot8_il(B4[r], c4, c5, c6, c7);
+                    acc[r] += normld(mtx, nb + r) * p;
+                }
+            } else {
+                uint words = pgb >> 2;
+                for (uint r = 0u; r < 4u; ++r) {
+                    uint n = n0 + r;
+                    uint bw = (n * ng + g) * words + (e >> 3);
+                    uvec4 AB = packld(mtx, bw >> 2);
+                    uint A = AB[bw & 3u];
+                    uint B = ((bw + 1u) & 3u) == 0u ? packld(mtx, (bw + 1u) >> 2).x : AB[(bw + 1u) & 3u];
+                    float p = dot8(A, c0, c1, c2, c3) + dot8(B, c4, c5, c6, c7);
+                    acc[r] += normld(mtx, n * ng + g) * p;
+                }
+            }
+        }
+        acc = subgroupAdd(acc);
+        if (subgroupElect())
+            for (uint r = 0u; r < 4u; ++r)
+                store(mtx, n0 + r, acc[r]);
+    }
+}
+#endif
+
 #ifdef K_cq4_transform_m
 layout(std430, binding = 0) readonly buffer BX { float16_t xin[]; };
 layout(std430, binding = 1) readonly buffer BR { float16_t recip[]; };
@@ -786,6 +882,7 @@ void main() {
 #ifdef K_cq4_gemm
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 layout(std430, binding = 0) readonly buffer BC { uvec4 code_v[]; };
 layout(std430, binding = 1) readonly buffer BPK { uint packed_w[]; };
 layout(std430, binding = 2) readonly buffer BCB { float16_t codebook[]; };
@@ -793,27 +890,15 @@ layout(std430, binding = 3) readonly buffer BN { float16_t norms[]; };
 layout(std430, binding = 4) writeonly buffer BY { float16_t y[]; };
 layout(std430, binding = 5) readonly buffer BPV { uvec4 packed_v[]; };
 layout(push_constant) uniform P { uint gs; uint ng; uint pgb; uint N; uint il; uint M; };
-shared float cb[16];
+shared float16_t cbh[16];
 shared uvec4 scode[8][128];
 shared vec4 part[8][8];
-float dot8(uint w, vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
-    return c0.x*cb[w & 0xFu]         + c0.y*cb[(w >> 4) & 0xFu]
-         + c1.x*cb[(w >> 8) & 0xFu]  + c1.y*cb[(w >> 12) & 0xFu]
-         + c2.x*cb[(w >> 16) & 0xFu] + c2.y*cb[(w >> 20) & 0xFu]
-         + c3.x*cb[(w >> 24) & 0xFu] + c3.y*cb[w >> 28];
-}
-float dot8_il(uint w, vec2 c0, vec2 c1, vec2 c2, vec2 c3) {
-    return c0.x*cb[w & 0xFu]         + c0.y*cb[(w >> 8) & 0xFu]
-         + c1.x*cb[(w >> 16) & 0xFu] + c1.y*cb[(w >> 24) & 0xFu]
-         + c2.x*cb[(w >> 4) & 0xFu]  + c2.y*cb[(w >> 12) & 0xFu]
-         + c3.x*cb[(w >> 20) & 0xFu] + c3.y*cb[(w >> 28) & 0xFu];
-}
 void main() {
     uint t = gl_LocalInvocationID.x, sg = gl_SubgroupID, nsg = gl_NumSubgroups;
     uint K = ng * gs;
     uint m0 = gl_WorkGroupID.y * 8u;
     uint mt = min(8u, M - m0);
-    if (t < 16u) cb[t] = float(codebook[t]);
+    if (t < 16u) cbh[t] = codebook[t];
     for (uint row0 = gl_WorkGroupID.x * 4u; row0 < N; row0 += gl_NumWorkGroups.x * 4u) {
         uint n0 = row0;
         vec4 acc[8];
@@ -834,13 +919,24 @@ void main() {
                     uvec4 A4 = packed_v[pw >> 2];
                     uvec4 B4 = packed_v[(pw >> 2) + 1u];
                     for (uint r = 0u; r < 4u; ++r) {
+                        uint A = A4[r], B = B4[r];
+                        f16vec2 wa0 = f16vec2(cbh[A & 0xFu],         cbh[(A >> 8) & 0xFu]);
+                        f16vec2 wa1 = f16vec2(cbh[(A >> 16) & 0xFu], cbh[(A >> 24) & 0xFu]);
+                        f16vec2 wa2 = f16vec2(cbh[(A >> 4) & 0xFu],  cbh[(A >> 12) & 0xFu]);
+                        f16vec2 wa3 = f16vec2(cbh[(A >> 20) & 0xFu], cbh[(A >> 28) & 0xFu]);
+                        f16vec2 wb0 = f16vec2(cbh[B & 0xFu],         cbh[(B >> 8) & 0xFu]);
+                        f16vec2 wb1 = f16vec2(cbh[(B >> 16) & 0xFu], cbh[(B >> 24) & 0xFu]);
+                        f16vec2 wb2 = f16vec2(cbh[(B >> 4) & 0xFu],  cbh[(B >> 12) & 0xFu]);
+                        f16vec2 wb3 = f16vec2(cbh[(B >> 20) & 0xFu], cbh[(B >> 28) & 0xFu]);
                         float nrm = float(norms[nb + r]);
                         for (uint m = 0u; m < mt; ++m) {
                             uvec4 q0 = scode[m][off >> 3];
                             uvec4 q1 = scode[m][(off >> 3) + 1u];
-                            float p = dot8_il(A4[r], unpackHalf2x16(q0.x), unpackHalf2x16(q0.y), unpackHalf2x16(q0.z), unpackHalf2x16(q0.w))
-                                    + dot8_il(B4[r], unpackHalf2x16(q1.x), unpackHalf2x16(q1.y), unpackHalf2x16(q1.z), unpackHalf2x16(q1.w));
-                            acc[m][r] += nrm * p;
+                            f16vec2 sum = wa0 * unpackFloat2x16(q0.x) + wa1 * unpackFloat2x16(q0.y)
+                                        + wa2 * unpackFloat2x16(q0.z) + wa3 * unpackFloat2x16(q0.w)
+                                        + wb0 * unpackFloat2x16(q1.x) + wb1 * unpackFloat2x16(q1.y)
+                                        + wb2 * unpackFloat2x16(q1.z) + wb3 * unpackFloat2x16(q1.w);
+                            acc[m][r] += nrm * (float(sum.x) + float(sum.y));
                         }
                     }
                 } else {
@@ -850,13 +946,23 @@ void main() {
                         uint bw = (n * ng + g) * (pgb >> 2) + (e >> 3);
                         uint A = packed_w[bw];
                         uint B = packed_w[bw + 1u];
+                        f16vec2 wa0 = f16vec2(cbh[A & 0xFu],         cbh[(A >> 4) & 0xFu]);
+                        f16vec2 wa1 = f16vec2(cbh[(A >> 8) & 0xFu],  cbh[(A >> 12) & 0xFu]);
+                        f16vec2 wa2 = f16vec2(cbh[(A >> 16) & 0xFu], cbh[(A >> 20) & 0xFu]);
+                        f16vec2 wa3 = f16vec2(cbh[(A >> 24) & 0xFu], cbh[A >> 28]);
+                        f16vec2 wb0 = f16vec2(cbh[B & 0xFu],         cbh[(B >> 4) & 0xFu]);
+                        f16vec2 wb1 = f16vec2(cbh[(B >> 8) & 0xFu],  cbh[(B >> 12) & 0xFu]);
+                        f16vec2 wb2 = f16vec2(cbh[(B >> 16) & 0xFu], cbh[(B >> 20) & 0xFu]);
+                        f16vec2 wb3 = f16vec2(cbh[(B >> 24) & 0xFu], cbh[B >> 28]);
                         float nrm = float(norms[n * ng + g]);
                         for (uint m = 0u; m < mt; ++m) {
                             uvec4 q0 = scode[m][off >> 3];
                             uvec4 q1 = scode[m][(off >> 3) + 1u];
-                            float p = dot8(A, unpackHalf2x16(q0.x), unpackHalf2x16(q0.y), unpackHalf2x16(q0.z), unpackHalf2x16(q0.w))
-                                    + dot8(B, unpackHalf2x16(q1.x), unpackHalf2x16(q1.y), unpackHalf2x16(q1.z), unpackHalf2x16(q1.w));
-                            acc[m][r] += nrm * p;
+                            f16vec2 sum = wa0 * unpackFloat2x16(q0.x) + wa1 * unpackFloat2x16(q0.y)
+                                        + wa2 * unpackFloat2x16(q0.z) + wa3 * unpackFloat2x16(q0.w)
+                                        + wb0 * unpackFloat2x16(q1.x) + wb1 * unpackFloat2x16(q1.y)
+                                        + wb2 * unpackFloat2x16(q1.z) + wb3 * unpackFloat2x16(q1.w);
+                            acc[m][r] += nrm * (float(sum.x) + float(sum.y));
                         }
                     }
                 }
@@ -1137,7 +1243,7 @@ layout(std430, binding = 5) readonly buffer BKS { float ks[]; };
 layout(std430, binding = 6) readonly buffer BVS { float vs[]; };
 layout(std430, binding = 7) writeonly buffer BO { float16_t outb[]; };
 layout(push_constant) uniform P { uint nqh; uint nkvh; uint hd; uint vhd; uint hist;
-    float scale; uint q_pos0; uint new_len; uint is_causal;
+    float scale; uint q_pos0; uint new_len; uint is_causal; uint window;
     uint o_kc; uint o_vc; uint o_ks; uint o_vs; };
 shared float sc[256];
 shared float red[128];
@@ -1151,9 +1257,10 @@ void main() {
     uint total_keys = hist + new_len;
     uint pos_m = q_pos0 + m;
     uint kv_end = (is_causal != 0u) ? min(total_keys, pos_m + 1u) : total_keys;
+    uint kv_start = (window != 0u && pos_m + 1u > window) ? (pos_m + 1u - window) : 0u;
     uint qb = (m * nqh + h) * hd;
     uint ob = (m * nqh + h) * vhd;
-    if (kv_end == 0u) {
+    if (kv_end == 0u || kv_start >= kv_end) {
         for (uint d = t; d < vhd; d += T) outb[ob + d] = float16_t(0.0);
         return;
     }
@@ -1161,10 +1268,11 @@ void main() {
     float rmax = -1.0 / 0.0, rsum = 0.0;
     float acc[8];
     for (uint a = 0u; a < 8u; ++a) acc[a] = 0.0;
-    for (uint tile = 0u; tile < kv_end; tile += TILE) {
+    for (uint tile = (kv_start / TILE) * TILE; tile < kv_end; tile += TILE) {
         uint tcount = min(TILE, kv_end - tile);
         for (uint jj = t; jj < tcount; jj += T) {
             uint k = tile + jj;
+            if (k < kv_start) { sc[jj] = -1.0 / 0.0; continue; }
             float dt = 0.0;
             if (k < hist) {
                 uint krow = (k * nkvh + kvh) * hd;
@@ -1317,7 +1425,8 @@ layout(std430, binding = 2) readonly buffer BV { float16_t v[]; };
 layout(std430, binding = 3) writeonly buffer BO { float16_t o[]; };
 layout(std430, binding = 4) readonly buffer BM { float16_t mask_v[]; };
 layout(push_constant) uniform P { uint T; uint S; uint HQ; uint HKV; uint D; uint DV;
-    float scale; uint causal; uint pos_off; uint window; float logit_cap; uint mask_mode; };
+    float scale; uint causal; uint pos_off; uint window; float logit_cap; uint mask_mode;
+    uint o_k; uint o_v; };
 shared float qsh[1024];
 shared float sc[128];
 shared float red[128];
@@ -1329,8 +1438,8 @@ void main() {
     uint kvh = h / (HQ / HKV);
     uint qb = ((b * T + t) * HQ + h) * D;
     uint ob = ((b * T + t) * HQ + h) * DV;
-    uint kb = (b * S * HKV + kvh) * D;
-    uint vb = (b * S * HKV + kvh) * DV;
+    uint kb = o_k + (b * S * HKV + kvh) * D;
+    uint vb = o_v + (b * S * HKV + kvh) * DV;
     for (uint d = tl; d < D; d += TT) qsh[d] = float(q[qb + d]);
     barrier();
     uint aq = pos_off + t;
@@ -2560,7 +2669,6 @@ void main() {
             for (uint r = 0u; r < 4u; ++r) {
                 float p = 0.0;
                 uint A = AW[r], B = BW[r];
-                // cq4_dot64_ilw layout: c[0..3].xyzw vs nibbles of A, c[4..7] vs B
                 p += cc[0] * ((m==0)?c1s[A & 0xFu]:c3s[A & 0xFu]);
                 p += cc[1] * ((m==0)?c1s[(A >> 8) & 0xFu]:c3s[(A >> 8) & 0xFu]);
                 p += cc[2] * ((m==0)?c1s[(A >> 16) & 0xFu]:c3s[(A >> 16) & 0xFu]);

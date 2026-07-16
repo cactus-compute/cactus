@@ -15,6 +15,9 @@ void cactus_vulkan_session_sync();
 void cactus_vulkan_session_end();
 void cactus_vulkan_invalidate_host_wraps();
 void cactus_vulkan_fold_buffers(void* h, size_t hbytes, void* ple, size_t plebytes);
+bool cactus_vulkan_owns(const void* p);
+bool cactus_vulkan_encode_gemv_cat(void* const* outs, const void* const* codes, const CactusQuantMatrix* const* Ws, int B);
+void cactus_vulkan_note_mmap_range(const void* base, size_t bytes);
 void cactus_vulkan_trim_prefill_cache();
 
 void* cactus_vulkan_alloc_shared(size_t bytes);
