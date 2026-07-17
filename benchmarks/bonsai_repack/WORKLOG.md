@@ -59,9 +59,49 @@ Full plan: ~/.claude/plans/serialized-humming-sutton.md
   0.0151 ≥ CQ4 floor 0.0142. Metric is tie-chaos-bound on the decapitated model (as
   documented under GATE A); exactness burden carried by GATE B + GATE C tests.
   Integration quality proof deferred to GATE E full-27B battery by design.
-### GATE E — pending
-### GATE F — pending
-### GATE G — pending
+### GATE E — PASS (2026-07-16)
+- Full 27B repack (`weights/bonsai-27b-repack-cq1`, 4.9 GB, 606 CQ1 + 2 CQ4 embed/head):
+  **GSM8K slice 17/20 = 85%** (floor 70; Prism full-set reference 92.8) + factual 4/4
+  ("391", "Canberra", "1969", "12"), greedy, auto_handoff off. Mean decode 3.7 tok/s
+  (CQ1 linear layout; CQ4 interleaved gets 11.8 — pow2-cb_factor interleaved repack is
+  the known speed follow-up). Battery wall time ~35 min on the M4 Pro.
+- Prefill-chunk DESCOPED from this gate: not a capture bug — the qwen causal-lm builder
+  only emits decoder+decoder_step for the whole qwen family (model_adapters.py
+  `_build_qwen_causal_lm_component_specs`); chunked prefill for hybrid DeltaNet needs
+  chunk-wise recurrent-state I/O — family-wide feature, affects CQ4 identically.
+### GATE F — PASS (2026-07-16)
+- Binary embeddings + lm_head land: full 27B bundle `weights/bonsai-27b-repack-cq1-f`
+  = **3.88 GB, 608 CQ1 / 0 CQ4** — matches Prism's 3.9 GB deployed footprint with
+  bit-identical weights. **GSM8K slice 18/20 = 90%**, factual 4/4, greedy local.
+  Truncated Gate B re-passed (33/33 exact incl. embed/head); engine embedding-lookup +
+  lm_head verified through the no-rotation dequant.
+- CQ4 comparator battery (identical harness):
+
+| bundle | size | GSM8K-20 | factual | mean decode |
+|---|---|---|---|---|
+| rotated CQ1 (pre-repack) | 4.9 GB | word salad | — | — |
+| **repack CQ1, binary embeds** | **3.88 GB** | **90%** | 4/4 | 3.7 tok/s |
+| repack CQ1, CQ4 embeds | 4.9 GB | 85% | 4/4 | 3.7 tok/s |
+| CQ4 | 14 GB | 85% | 4/4 | 12.1 tok/s |
+
+Lossless 1-bit repack delivers CQ4-class quality at 3.6x smaller. Speed gap is the
+linear-layout CQ1 GEMV; follow-up = interleaved repack with power-of-two cb_factor.
+### GATE G — PASS, compile half (2026-07-16)
+- `cactus build --android` green: android/libcactus_engine.{so,a} built with the
+  no-rotation CQ1 path. On-device run deferred (no device available) — when a phone
+  with USB debugging appears: push `weights/bonsai-27b-repack-cq1-f` (3.88 GB) and run
+  `cactus test --android` / the gate_e battery. Device needs ~6 GB app-available RAM.
+
+## Follow-ups (ordered)
+1. Interleaved repack layout with power-of-two cb_factor → close the 3.7 vs 12.1 tok/s
+   gap while keeping bit-exactness.
+2. decoder_prefill_chunk for the qwen family (chunked DeltaNet state I/O) — token-by-token
+   prefill is the UX bottleneck for long prompts, affects CQ4 too.
+3. Android on-device validation (first 27B on Android moment).
+4. cactus_score_window is a stub — implement or remove from FFI (Karen).
+5. Vision tower under --low-memory-load (weight-dependent constants baked at adapter init).
+6. Ternary-Bonsai-27B: same repack at 2-bit (CQ2 codebook {-1,0,+1} — needs detection
+   variant for 3-value groups; quality-oriented 5.9 GB operating point).
 
 ## Compat note (for review)
 New file flag FLAG_NO_ROTATION=1<<3: an OLD engine loading a NEW no-rotation .weights
