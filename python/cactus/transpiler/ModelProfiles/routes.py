@@ -1,164 +1,27 @@
-from __future__ import annotations
+from . import combinations
+from .models import InferencePattern
 
-from .models import Combinations, InferencePattern, Route
 
-
-TEXT_PREFILL_ROUTE = Route(
-    route=(
-        Combinations(
-            input=("text_embed",),
-            output="text_decoder",
-        ),
-        Combinations(
-            input=("text_decoder",),
-            output="lm_head",
-        ),
-    )
+TEXT_PREFILL_ROUTE = (
+    combinations.TEXT_EMBED_TO_DECODER,
+    combinations.DECODER_TO_LM_HEAD,
 )
 
-TEXT_VISION_PREFILL_ROUTE = Route(
-    route=(
-        Combinations(
-            input=("text_embed", "vision_encoder"),
-            output="token_merge",
-        ),
-        Combinations(
-            input=("token_merge",),
-            output="text_decoder",
-        ),
-        Combinations(
-            input=("text_decoder",),
-            output="lm_head",
-        ),
-    )
-)
-
-TEXT_AUDIO_PREFILL_ROUTE = Route(
-    route=(
-        Combinations(
-            input=("text_embed", "audio_encoder"),
-            output="token_merge",
-        ),
-        Combinations(
-            input=("token_merge",),
-            output="text_decoder",
-        ),
-        Combinations(
-            input=("text_decoder",),
-            output="lm_head",
-        ),
-    )
-)
-
-TEXT_VISION_AUDIO_PREFILL_ROUTE = Route(
-    route=(
-        Combinations(
-            input=("text_embed", "vision_encoder", "audio_encoder"),
-            output="token_merge",
-        ),
-        Combinations(
-            input=("token_merge",),
-            output="text_decoder",
-        ),
-        Combinations(
-            input=("text_decoder",),
-            output="lm_head",
-        ),
-    )
-)
-
-TEXT_DECODE_ROUTE = Route(
-    route=(
-        Combinations(
-            input=("text_embed",),
-            output="text_decoder",
-        ),
-        Combinations(
-            input=("text_decoder",),
-            output="lm_head",
-        ),
-    )
-)
-
-SPEECH_SEQ2SEQ_PREFILL_ROUTE = Route(
-    route=(
-        Combinations(
-            input=("audio_encoder", "text_embed"),
-            output="text_decoder",
-        ),
-        Combinations(
-            input=("text_decoder",),
-            output="lm_head",
-        ),
-    )
-)
-
-SPEECH_SEQ2SEQ_DECODE_ROUTE = Route(
-    route=(
-        Combinations(
-            input=("audio_encoder", "text_embed"),
-            output="text_decoder",
-        ),
-        Combinations(
-            input=("text_decoder",),
-            output="lm_head",
-        ),
-    )
-)
-
-SPEECH_TRANSCRIBE_ROUTE = Route(
-    route=(
-        Combinations(
-            input=("audio_encoder",),
-            output="asr_decoder",
-        ),
-        Combinations(
-            input=("audio_encoder", "asr_decoder"),
-            output="asr_head",
-        ),
-    )
-)
-
-
-TEXT_PREFILL = InferencePattern(
-    name="text_prefill",
-    route=TEXT_PREFILL_ROUTE,
-)
-
-TEXT_VISION_PREFILL = InferencePattern(
-    name="text_vision_prefill",
-    route=TEXT_VISION_PREFILL_ROUTE,
-)
-
-TEXT_AUDIO_PREFILL = InferencePattern(
-    name="text_audio_prefill",
-    route=TEXT_AUDIO_PREFILL_ROUTE,
-)
-
-TEXT_VISION_AUDIO_PREFILL = InferencePattern(
-    name="text_vision_audio_prefill",
-    route=TEXT_VISION_AUDIO_PREFILL_ROUTE,
-)
-
-TEXT_DECODE = InferencePattern(
-    name="text_decode",
-    route=TEXT_DECODE_ROUTE,
-)
-
-SPEECH_SEQ2SEQ_PREFILL = InferencePattern(
-    name="speech_seq2seq_prefill",
-    route=SPEECH_SEQ2SEQ_PREFILL_ROUTE,
-)
-
-SPEECH_SEQ2SEQ_DECODE = InferencePattern(
-    name="speech_seq2seq_decode",
-    route=SPEECH_SEQ2SEQ_DECODE_ROUTE,
-)
-
-SPEECH_TRANSCRIBE = InferencePattern(
-    name="speech_transcribe",
-    route=SPEECH_TRANSCRIBE_ROUTE,
-)
+TEXT_VISION_PREFILL_ROUTE = (combinations.TEXT_VISION_TO_TOKEN_MERGE, combinations.TOKEN_MERGE_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
+TEXT_AUDIO_PREFILL_ROUTE = (combinations.TEXT_AUDIO_TO_TOKEN_MERGE, combinations.TOKEN_MERGE_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
+TEXT_VISION_AUDIO_PREFILL_ROUTE = (combinations.TEXT_VISION_AUDIO_TO_TOKEN_MERGE, combinations.TOKEN_MERGE_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
+TEXT_DECODE_ROUTE = (combinations.TEXT_EMBED_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
+SPEECH_SEQ2SEQ_PREFILL_ROUTE = (combinations.AUDIO_TEXT_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
+SPEECH_SEQ2SEQ_DECODE_ROUTE = (combinations.AUDIO_TEXT_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
+SPEECH_TRANSCRIBE_ROUTE = (combinations.AUDIO_ENCODER_TO_ASR_DECODER, combinations.AUDIO_ASR_DECODER_TO_ASR_HEAD)
+TEXT_PREFILL = InferencePattern(name="text_prefill", route=TEXT_PREFILL_ROUTE,)
+TEXT_VISION_PREFILL = InferencePattern(name="text_vision_prefill", route=TEXT_VISION_PREFILL_ROUTE)
+TEXT_AUDIO_PREFILL = InferencePattern(name="text_audio_prefill", route=TEXT_AUDIO_PREFILL_ROUTE)
+TEXT_VISION_AUDIO_PREFILL = InferencePattern(name="text_vision_audio_prefill", route=TEXT_VISION_AUDIO_PREFILL_ROUTE)
+TEXT_DECODE = InferencePattern(name="text_decode", route=TEXT_DECODE_ROUTE,)
+SPEECH_SEQ2SEQ_PREFILL = InferencePattern(name="speech_seq2seq_prefill", route=SPEECH_SEQ2SEQ_PREFILL_ROUTE,)
+SPEECH_SEQ2SEQ_DECODE = InferencePattern(name="speech_seq2seq_decode", route=SPEECH_SEQ2SEQ_DECODE_ROUTE)
+SPEECH_TRANSCRIBE = InferencePattern(name="speech_transcribe", route=SPEECH_TRANSCRIBE_ROUTE)
 
 
 GEMMA4_INFERENCE_PATTERNS = {

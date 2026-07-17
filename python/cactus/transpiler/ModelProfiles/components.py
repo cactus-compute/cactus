@@ -3,45 +3,14 @@ from __future__ import annotations
 from .models import Components
 
 
-TEXT_EMBED = Components(
-    name="text_embed",
-    patterns=("embed_tokens", "embedding"),
-)
-
-VISION_ENCODER = Components(
-    name="vision_encoder",
-    patterns=("vision", "image"),
-)
-
-AUDIO_ENCODER = Components(
-    name="audio_encoder",
-    patterns=("audio",),
-)
-
-ASR_DECODER = Components(
-    name="asr_decoder",
-    patterns=("decoder", "tdt_decoder", "rnnt_decoder", "prediction"),
-)
-
-ASR_HEAD = Components(
-    name="asr_head",
-    patterns=("joint", "tdt_head", "rnnt_head", "ctc", "log_probs"),
-)
-
-TOKEN_MERGE = Components(
-    name="token_merge",
-    patterns=("multi_modal", "multimodal", "projector", "merge"),
-)
-
-TEXT_DECODER = Components(
-    name="text_decoder",
-    patterns=("language_model", "text", "decoder", "model.layers"),
-)
-
-LM_HEAD = Components(
-    name="lm_head",
-    patterns=("lm_head", "logits"),
-)
+TEXT_EMBED = Components(name="text_embed", patterns=("embed_tokens", "embedding"))
+VISION_ENCODER = Components(name="vision_encoder", patterns=("vision", "image"))
+AUDIO_ENCODER = Components(name="audio_encoder", patterns=("audio",))
+ASR_DECODER = Components(name="asr_decoder", patterns=("decoder", "tdt_decoder", "rnnt_decoder", "prediction"))
+ASR_HEAD = Components(name="asr_head", patterns=("joint", "tdt_head", "rnnt_head", "ctc", "log_probs"))
+TOKEN_MERGE = Components(name="token_merge", patterns=("multi_modal", "multimodal", "projector", "merge"))
+TEXT_DECODER = Components(name="text_decoder", patterns=("language_model", "text", "decoder", "model.layers"))
+LM_HEAD = Components(name="lm_head", patterns=("lm_head", "logits"),)
 
 
 TEXT_COMPONENTS = {

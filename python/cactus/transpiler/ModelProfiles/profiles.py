@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from .components import (
     MULTIMODAL_COMPONENTS,
     SPEECH_SEQ2SEQ_COMPONENTS,
@@ -7,7 +5,7 @@ from .components import (
     TEXT_COMPONENTS,
     VISION_LANGUAGE_COMPONENTS,
 )
-from .models import Cache, Files, ModelProfile
+from .models import Files, ModelProfile
 from .routes import (
     GEMMA4_INFERENCE_PATTERNS,
     LFM_VLM_INFERENCE_PATTERNS,
@@ -21,9 +19,7 @@ GEMMA4_E2B_PROFILE = ModelProfile(
     model_profiles="gemma4_e2b",
     components=MULTIMODAL_COMPONENTS,
     inference_type=GEMMA4_INFERENCE_PATTERNS,
-    cache_type=Cache(
-        types=("attention_kv", "sliding_window_attention_kv"),
-    ),
+    cache_type=("attention_kv", "sliding_window_attention_kv"),
     files=Files(
         required=("config.json",),
         optional=(
@@ -62,9 +58,7 @@ WHISPER_PROFILE = ModelProfile(
     model_profiles="whisper",
     components=SPEECH_SEQ2SEQ_COMPONENTS,
     inference_type=WHISPER_INFERENCE_PATTERNS,
-    cache_type=Cache(
-        types=("cross_attention_kv", "decoder_attention_kv"),
-    ),
+    cache_type=("cross_attention_kv", "decoder_attention_kv"),
     files=Files(
         required=("config.json",),
         optional=(
@@ -96,9 +90,7 @@ PARAKEET_PROFILE = ModelProfile(
     model_profiles="parakeet",
     components=SPEECH_TRANSCRIBER_COMPONENTS,
     inference_type=PARAKEET_INFERENCE_PATTERNS,
-    cache_type=Cache(
-        types=(),
-    ),
+    cache_type=(),
     files=Files(
         required=("config.json",),
         optional=(
@@ -128,9 +120,7 @@ LFM_VLM_PROFILE = ModelProfile(
     model_profiles="lfm_vlm",
     components=VISION_LANGUAGE_COMPONENTS,
     inference_type=LFM_VLM_INFERENCE_PATTERNS,
-    cache_type=Cache(
-        types=("attention_kv",),
-    ),
+    cache_type=("attention_kv",),
     files=Files(
         required=("config.json",),
         optional=(
@@ -164,9 +154,7 @@ QWEN2_5_0_5B_PROFILE = ModelProfile(
     model_profiles="qwen2_5_0_5b",
     components=TEXT_COMPONENTS,
     inference_type=QWEN2_5_INFERENCE_PATTERNS,
-    cache_type=Cache(
-        types=("attention_kv",),
-    ),
+    cache_type=("attention_kv",),
     files=Files(
         required=("config.json",),
         optional=(

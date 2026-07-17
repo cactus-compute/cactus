@@ -13,17 +13,9 @@ class Combinations:
     output:str
 
 @dataclass(slots=True)
-class Route:
-    route:tuple[Combinations, ...]
-
-@dataclass(slots=True)
 class InferencePattern:
     name:str
-    route:Route
-
-@dataclass(slots=True)
-class Cache:
-    types:tuple[str, ...]
+    route:tuple[Combinations, ...]
 
 @dataclass(slots=True)
 class Files:
@@ -35,7 +27,7 @@ class ModelProfile:
     model_profiles:str
     components: dict[str, Components]
     inference_type: dict[str, InferencePattern]
-    cache_type: Cache
+    cache_type: tuple[str, ...]
     files: Files
     fusion_fields: tuple[str, ...] 
     features: tuple[str, ...]
