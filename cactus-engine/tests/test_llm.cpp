@@ -410,6 +410,65 @@ bool test_partition_thinking_response() {
                             "thought1\nthought2", "text1text2");
 }
 
+bool test_prompt_gemma4_agentic_turn_closure() {
+    cactus_model_t model = load_gemma4_or_skip();
+    if (!model) return true;
+
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    auto* tok = handle->model->get_tokenizer();
+    bool ok = true;
+
+    std::vector<ChatMessage> consecutive = {
+        {"user", "start", "", {}, {}, 0, {}},
+        {"assistant", "first", "", {}, {}, 0, {}},
+        {"assistant", "second", "", {}, {}, 0, {}}
+    };
+    std::string consecutive_prompt = tok->format_chat_prompt(consecutive, true, "", false);
+    std::string consecutive_expected = "<|turn>model\nfirstsecond<turn|>\n<|turn>model\n";
+    if (consecutive_prompt.find(consecutive_expected) == std::string::npos) {
+        std::cerr << "  consecutive assistant messages did not share a model turn\n";
+        ok = false;
+    }
+
+    std::vector<ChatMessage> tool_loop = {
+        {"user", "weather", "", {}, {}, 0, {}},
+        {"assistant", "", "", {}, {}, 0, {{"get_weather", R"({"city":"Paris"})"}}},
+        {"tool", "Sunny", "get_weather", {}, {}, 0, {}}
+    };
+    std::string terminal_plain = tok->format_chat_prompt(tool_loop, true, "", false);
+    std::string terminal_response =
+        "<|tool_response>response:get_weather{value:<|\"|>Sunny<|\"|>}<tool_response|>";
+    if (terminal_plain.size() < terminal_response.size()
+        || terminal_plain.compare(terminal_plain.size() - terminal_response.size(),
+                                  terminal_response.size(), terminal_response) != 0) {
+        std::cerr << "  terminal tool response was closed before generation\n";
+        ok = false;
+    }
+
+    std::string terminal_thinking = tok->format_chat_prompt(tool_loop, true, "", true);
+    std::string thought_primer = terminal_response + "<|channel>thought\n";
+    if (terminal_thinking.size() < thought_primer.size()
+        || terminal_thinking.compare(terminal_thinking.size() - thought_primer.size(),
+                                     thought_primer.size(), thought_primer) != 0) {
+        std::cerr << "  thinking primer missing after terminal tool response\n";
+        ok = false;
+    }
+
+    tool_loop.push_back({"assistant", "first", "", {}, {}, 0, {}});
+    tool_loop.push_back({"assistant", "second", "", {}, {}, 0, {}});
+    tool_loop.push_back({"user", "done", "", {}, {}, 0, {}});
+    std::string continued = tok->format_chat_prompt(tool_loop, true, "", false);
+    std::string continued_expected = terminal_response
+        + "firstsecond<turn|>\n<|turn>user\ndone<turn|>\n<|turn>model\n";
+    if (continued.find(continued_expected) == std::string::npos) {
+        std::cerr << "  tool response did not continue into the following assistant turn\n";
+        ok = false;
+    }
+
+    cactus_destroy(model);
+    return ok;
+}
+
 bool test_prompt_gemma4_retains_thinking() {
     cactus_model_t model = load_gemma4_or_skip();
     if (!model) return true;
@@ -669,6 +728,7 @@ int main() {
     runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
     runner.run_test("tool_constraint_clear_releases_bias", test_tool_constraint_clear_releases_bias());
     runner.run_test("partition_thinking_response", test_partition_thinking_response());
+    runner.run_test("prompt_gemma4_agentic_turn_closure", test_prompt_gemma4_agentic_turn_closure());
     runner.run_test("prompt_retains_thinking", test_prompt_gemma4_retains_thinking());
     runner.run_test("complete_thinking_api_clean", test_complete_gemma4_thinking_api_clean());
     runner.run_test("multiturn_thinking_persist", test_multiturn_thinking_persist());
