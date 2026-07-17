@@ -45,6 +45,7 @@ GEMMA4_E2B_PROFILE = ModelProfile(
         "kv_cache",
         "multimodal_token_merge",
     ),
+    supported_modalties=("audio", "vision", "text")
 )
 
 WHISPER_PROFILE = ModelProfile(
@@ -70,6 +71,7 @@ WHISPER_PROFILE = ModelProfile(
         "conv",
         "kv_cache",
     ),
+    supported_modalties=("audio", "text"),
 )
 
 PARAKEET_PROFILE = ModelProfile(
@@ -94,6 +96,7 @@ PARAKEET_PROFILE = ModelProfile(
         "conv",
         "attention",
     ),
+    supported_modalties=("audio",),
 )
 
 LFM_VLM_PROFILE = ModelProfile(
@@ -121,6 +124,7 @@ LFM_VLM_PROFILE = ModelProfile(
         "kv_cache",
         "multimodal_token_merge",
     ),
+    supported_modalties=("vision", "text"),
 )
 
 QWEN2_5_0_5B_PROFILE = ModelProfile(
@@ -147,6 +151,7 @@ QWEN2_5_0_5B_PROFILE = ModelProfile(
         "mlp",
         "kv_cache",
     ),
+    supported_modalties=("text",),
 )
 
 ALL_PROFILES = (
@@ -156,3 +161,5 @@ ALL_PROFILES = (
     LFM_VLM_PROFILE,
     QWEN2_5_0_5B_PROFILE,
 )
+
+MODEL_ID_MAP = {}

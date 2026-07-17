@@ -25,3 +25,4 @@ class ModelProfile:
     files: tuple[str, ...]
     fusion_fields: tuple[str, ...] 
     features: tuple[str, ...]
+    supported_modalties: tuple[str, ...]
