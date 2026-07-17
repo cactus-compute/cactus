@@ -5,7 +5,7 @@ from .components import (
     TEXT_COMPONENTS,
     VISION_LANGUAGE_COMPONENTS,
 )
-from .models import Files, ModelProfile
+from .models import ModelProfile
 from .routes import (
     GEMMA4_INFERENCE_PATTERNS,
     LFM_VLM_INFERENCE_PATTERNS,
@@ -20,14 +20,7 @@ GEMMA4_E2B_PROFILE = ModelProfile(
     components=MULTIMODAL_COMPONENTS,
     inference_type=GEMMA4_INFERENCE_PATTERNS,
     cache_type=("attention_kv", "sliding_window_attention_kv"),
-    files=Files(
-        required=("config.json",),
-        optional=(
-            "generation_config.json",
-            "processor_config.json",
-            "tokenizer_config.json",
-        ),
-    ),
+    files=("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json"),
     fusion_fields=(
         "generic",
         "embedding",
@@ -59,14 +52,7 @@ WHISPER_PROFILE = ModelProfile(
     components=SPEECH_SEQ2SEQ_COMPONENTS,
     inference_type=WHISPER_INFERENCE_PATTERNS,
     cache_type=("cross_attention_kv", "decoder_attention_kv"),
-    files=Files(
-        required=("config.json",),
-        optional=(
-            "generation_config.json",
-            "preprocessor_config.json",
-            "tokenizer_config.json",
-        ),
-    ),
+    files=("config.json", "generation_config.json", "preprocessor_config.json", "tokenizer_config.json"),
     fusion_fields=(
         "generic",
         "audio",
@@ -91,13 +77,7 @@ PARAKEET_PROFILE = ModelProfile(
     components=SPEECH_TRANSCRIBER_COMPONENTS,
     inference_type=PARAKEET_INFERENCE_PATTERNS,
     cache_type=(),
-    files=Files(
-        required=("config.json",),
-        optional=(
-            "preprocessor_config.json",
-            "tokenizer_config.json",
-        ),
-    ),
+    files=("config.json", "preprocessor_config.json", "tokenizer_config.json"),
     fusion_fields=(
         "generic",
         "audio",
@@ -121,14 +101,7 @@ LFM_VLM_PROFILE = ModelProfile(
     components=VISION_LANGUAGE_COMPONENTS,
     inference_type=LFM_VLM_INFERENCE_PATTERNS,
     cache_type=("attention_kv",),
-    files=Files(
-        required=("config.json",),
-        optional=(
-            "generation_config.json",
-            "processor_config.json",
-            "tokenizer_config.json",
-        ),
-    ),
+    files=("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json"),
     fusion_fields=(
         "generic",
         "embedding",
@@ -155,16 +128,7 @@ QWEN2_5_0_5B_PROFILE = ModelProfile(
     components=TEXT_COMPONENTS,
     inference_type=QWEN2_5_INFERENCE_PATTERNS,
     cache_type=("attention_kv",),
-    files=Files(
-        required=("config.json",),
-        optional=(
-            "generation_config.json",
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "vocab.json",
-            "merges.txt",
-        ),
-    ),
+    files=("config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt"),
     fusion_fields=(
         "generic",
         "embedding",

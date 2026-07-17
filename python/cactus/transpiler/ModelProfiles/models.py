@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass(slots=True)
@@ -18,16 +17,11 @@ class InferencePattern:
     route:tuple[Combinations, ...]
 
 @dataclass(slots=True)
-class Files:
-    required: tuple[str, ...]
-    optional: tuple[str, ...]
-
-@dataclass(slots=True)
 class ModelProfile:
     model_profiles:str
     components: dict[str, Components]
     inference_type: dict[str, InferencePattern]
     cache_type: tuple[str, ...]
-    files: Files
+    files: tuple[str, ...]
     fusion_fields: tuple[str, ...] 
     features: tuple[str, ...]
