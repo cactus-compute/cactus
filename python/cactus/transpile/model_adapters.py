@@ -4863,6 +4863,16 @@ def _build_gemma4_multimodal_component_specs(
     return specs
 
 
+def _qwen35_rotary_embeddings(backbone, hidden_states, position_ids):
+    # Under --low-memory-load the model lives on the meta device while inv_freq
+    # is materialized on cpu; run the rotary on the inv_freq device to avoid
+    # mixed-device bmm during capture, then rejoin the activation device.
+    rope_device = backbone.rotary_emb.inv_freq.device
+    rope_x = torch.empty(0, dtype=hidden_states.dtype, device=rope_device)
+    cos, sin = backbone.rotary_emb(rope_x, position_ids.to(rope_device))
+    return cos.to(hidden_states.device), sin.to(hidden_states.device)
+
+
 class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
         super().__init__()
@@ -4883,7 +4893,7 @@ class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
             if self.pad_token_id is not None
             else None
         )
-        base_position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).view(1, 1, -1)
+        base_position_ids = torch.arange(inputs_embeds.shape[1], device=input_ids.device).view(1, 1, -1)
         position_ids = torch.cat(
             (base_position_ids, base_position_ids, base_position_ids, base_position_ids),
             dim=0,
@@ -4902,7 +4912,7 @@ class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
 
         hidden_states = inputs_embeds
         checkpoints: list[torch.Tensor] = []
-        position_embeddings = self.backbone.rotary_emb(hidden_states, multimodal_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, multimodal_position_ids)
 
         for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
             hidden_states = decoder_layer(
@@ -4973,7 +4983,7 @@ class Qwen35CausalLMStepAdapter(torch.nn.Module):
         linear_attn_mask = None
 
         hidden_states = inputs_embeds
-        position_embeddings = self.backbone.rotary_emb(hidden_states, multimodal_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, multimodal_position_ids)
         for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
             hidden_states = decoder_layer(
                 hidden_states,
@@ -5186,7 +5196,7 @@ class Qwen35EmbedsCausalLMLogitsAdapter(torch.nn.Module):
             position_ids=text_position_ids,
         )
         hidden_states = inputs_embeds
-        position_embeddings = self.backbone.rotary_emb(hidden_states, multimodal_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, multimodal_position_ids)
         for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
             hidden_states = decoder_layer(
                 hidden_states,
@@ -5279,7 +5289,7 @@ class Qwen35EmbedsCausalLMStepAdapter(torch.nn.Module):
             position_ids=text_position_ids,
         )
         hidden_states = inputs_embeds
-        position_embeddings = self.backbone.rotary_emb(hidden_states, multimodal_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, multimodal_position_ids)
         for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
             hidden_states = decoder_layer(
                 hidden_states,
@@ -5356,7 +5366,7 @@ class Qwen3CausalLMLogitsAdapter(torch.nn.Module):
 
         hidden_states = inputs_embeds
         checkpoints: list[torch.Tensor] = []
-        position_embeddings = self.backbone.rotary_emb(hidden_states, position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, position_ids)
 
         for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
             hidden_states = decoder_layer(
@@ -5426,7 +5436,7 @@ class Qwen3CausalLMStepAdapter(torch.nn.Module):
 
         hidden_states = inputs_embeds
         text_position_ids = position_ids.to(dtype=torch.int64)
-        position_embeddings = self.backbone.rotary_emb(hidden_states, text_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, text_position_ids)
         for decoder_layer in self.backbone.layers[: self.backbone.config.num_hidden_layers]:
             hidden_states = decoder_layer(
                 hidden_states,
@@ -5521,7 +5531,7 @@ class Qwen3EmbedsCausalLMStepAdapter(torch.nn.Module):
 
         hidden_states = inputs_embeds
         text_position_ids = position_ids.to(dtype=torch.int64)
-        position_embeddings = self.backbone.rotary_emb(hidden_states, text_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, text_position_ids)
         for decoder_layer in self.backbone.layers[: self.backbone.config.num_hidden_layers]:
             hidden_states = decoder_layer(
                 hidden_states,
