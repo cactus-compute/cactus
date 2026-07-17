@@ -24,6 +24,7 @@ GROUP_SIZE = 128
 PRECISION_CQ = {1: 3, 2: 4, 3: 5, 4: 6}
 FLAG_ORTHOGONAL_ROTATION = 1 << 1
 FLAG_INTERLEAVED_4ROW = 1 << 2
+FLAG_NO_ROTATION = 1 << 5
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class CQTensor:
     seed: int = 1234
     gptq_used: bool = False
     interleaved_4row: bool = False
+    codebook: np.ndarray | None = None
 
 
 _CODEBOOK_CACHE: dict[tuple[int, int], np.ndarray] = {}
@@ -311,6 +313,44 @@ def quantize_orthogonal(weight, bits: int = 4, seed: int = 1234, input_scale: np
     return CQTensor(indices=indices, norms=norms.astype(np.float16).reshape(n, 1), input_scale=input_scale.astype(np.float16), bits=bits, group_size=k, rotation_family="orthogonal")
 
 
+def quantize_binary_repack(weight, group_size: int = GROUP_SIZE) -> CQTensor | None:
+    """Losslessly repack a QAT-binary tensor: every group holds exactly {-s, +s}.
+
+    Returns None when the tensor is not exactly binary per group (or scales are
+    not fp16-representable), so callers fall through to the rotated quantizers.
+    """
+    w = _as_numpy_fp32(weight)
+    if w.ndim != 2:
+        return None
+    n, k = w.shape
+    if k == 0 or k % group_size != 0:
+        return None
+    groups = k // group_size
+    indices = np.zeros((n, k), dtype=np.uint8)
+    norms = np.zeros((n, groups), dtype=np.float16)
+    for start in range(0, n, 4096):
+        stop = min(start + 4096, n)
+        block = w[start:stop].reshape(stop - start, groups, group_size)
+        mags = np.abs(block)
+        gmax = mags.max(axis=2)
+        if not np.all((gmax == mags.min(axis=2)) | (gmax == 0.0)):
+            return None
+        s16 = gmax.astype(np.float16)
+        if not np.array_equal(s16.astype(np.float32), gmax):
+            return None
+        norms[start:stop] = s16
+        indices[start:stop] = (block > 0).reshape(stop - start, k)
+    return CQTensor(
+        indices=indices,
+        norms=norms,
+        input_scale=np.ones(k, dtype=np.float16),
+        bits=1,
+        group_size=group_size,
+        rotation_family="none",
+        codebook=np.array([-1.0, 1.0], dtype=np.float16),
+    )
+
+
 _EMBEDDING_TENSOR_STEMS = frozenset({
     "token_embeddings",
     "embed_tokens",
@@ -327,6 +367,8 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
     is_embedding = out_path.stem in _EMBEDDING_TENSOR_STEMS
 
     if cq.interleaved_4row:
+        if cq.rotation_family == "none":
+            raise ValueError("INTERLEAVED_4ROW is not supported for rotation-free repack tensors")
         if cq.bits not in (1, 2, 3, 4):
             raise ValueError(f"INTERLEAVED_4ROW only supports CQ1..CQ4, got CQ{cq.bits}")
         if n % 4 != 0:
@@ -343,7 +385,7 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
         cq.interleaved_4row
         or (
             cq.bits in (1, 2, 3, 4)
-            and cq.rotation_family != "orthogonal"
+            and cq.rotation_family not in ("orthogonal", "none")
             and n % 4 == 0
             and group_size % 32 == 0
             and group_size <= 256
@@ -351,7 +393,12 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
         )
     )
 
-    codebook_f32 = make_codebook(group_size, cq.bits).astype(np.float32)
+    if cq.codebook is not None:
+        codebook_f32 = cq.codebook.astype(np.float32)
+        if codebook_f32.shape != (1 << cq.bits,):
+            raise ValueError(f"explicit codebook must have {1 << cq.bits} entries, got {codebook_f32.shape}")
+    else:
+        codebook_f32 = make_codebook(group_size, cq.bits).astype(np.float32)
     norms_f32 = cq.norms.astype(np.float32, copy=True)
     if interleaved and cq.rotation_family != "orthogonal":
         cb_max = float(np.max(np.abs(codebook_f32)))
@@ -377,6 +424,8 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
     if cq.rotation_family == "orthogonal":
         flags |= FLAG_ORTHOGONAL_ROTATION
         parts.append(make_orthogonal_rotation(group_size, cq.seed).astype(np.float16).tobytes())
+    elif cq.rotation_family == "none":
+        flags |= FLAG_NO_ROTATION
     else:
         left, right, perm = make_hadamard_components(group_size, cq.seed)
         parts.extend([left.tobytes(), right.tobytes(), perm.astype("<u4", copy=False).tobytes()])

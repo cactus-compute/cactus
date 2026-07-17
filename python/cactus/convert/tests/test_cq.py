@@ -155,3 +155,36 @@ def test_pointwise_conv1d_int8_preserves_rank3_shape(tmp_path):
     assert scales_bytes == 3 * 2 * 2
     assert group_size == GROUP_SIZE
     assert num_groups == 2
+
+
+def test_binary_repack_roundtrip_bit_exact(tmp_path):
+    from cactus.convert.export.qdq import FLAG_NO_ROTATION
+    from cactus.convert.quantization.cq import quantize_binary_repack
+
+    rng = np.random.default_rng(7)
+    n, k, gs = 8, 384, 128
+    scales = rng.uniform(0.001, 0.05, size=(n, k // gs)).astype(np.float16).astype(np.float32)
+    signs = rng.choice([-1.0, 1.0], size=(n, k)).astype(np.float32)
+    w = signs * np.repeat(scales, gs, axis=1)
+    w[3, 2 * gs : 3 * gs] = 0.0  # all-zero group must repack too
+
+    cq = quantize_binary_repack(w)
+    assert cq is not None and cq.bits == 1 and cq.rotation_family == "none"
+    out = tmp_path / "repack.weights"
+    write_cq_tensor(out, cq)
+
+    header = read_header(out)
+    assert header.flags & FLAG_NO_ROTATION
+    assert not header.flags & FLAG_ORTHOGONAL_ROTATION
+    assert not header.flags & FLAG_INTERLEAVED_4ROW
+    deq = dequantize_cq_file(out, header, torch.float32, row_batch_size=4).numpy()
+    assert np.array_equal(deq, w)
+
+
+def test_binary_repack_rejects_non_binary():
+    from cactus.convert.quantization.cq import quantize_binary_repack
+
+    rng = np.random.default_rng(8)
+    w = rng.standard_normal((4, 256), dtype=np.float32)
+    assert quantize_binary_repack(w) is None
+    assert quantize_binary_repack(np.zeros((4, 100), dtype=np.float32)) is None  # k % 128 != 0

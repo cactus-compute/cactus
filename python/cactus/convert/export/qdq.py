@@ -25,6 +25,7 @@ ALIGNMENT_DEFAULT = 32
 FLAG_ORTHOGONAL_ROTATION = 1 << 1
 FLAG_INTERLEAVED_4ROW = 1 << 2
 FLAG_INTERLEAVED = 1 << 3
+FLAG_NO_ROTATION = 1 << 5
 
 PRECISION_INT8 = 0
 PRECISION_FP16 = 1
@@ -306,6 +307,17 @@ def parse_normal_metadata(blob: bytes, header: CactusHeader):
     return torch.from_numpy(codebook), torch.from_numpy(input_scale), torch.from_numpy(norms), torch.from_numpy(left), torch.from_numpy(right), torch.from_numpy(perm)
 
 
+def parse_no_rotation_metadata(blob: bytes, header: CactusHeader):
+    n, k = header.shape
+    pos = 0
+    codebook = np.frombuffer(blob, dtype=np.float16, count=1 << header.bits, offset=pos).astype(np.float32)
+    pos += (1 << header.bits) * 2
+    input_scale = np.frombuffer(blob, dtype=np.float16, count=k, offset=pos).astype(np.float32)
+    pos += k * 4
+    norms = np.frombuffer(blob, dtype=np.float16, count=n * header.num_groups, offset=pos).astype(np.float32).reshape(n, header.num_groups)
+    return torch.from_numpy(codebook), torch.from_numpy(input_scale), torch.from_numpy(norms)
+
+
 def parse_orthogonal_metadata(blob: bytes, header: CactusHeader):
     n, k = header.shape
     pos = 0
@@ -351,15 +363,19 @@ def dequantize_cq_file(path: Path, header: CactusHeader, out_dtype: torch.dtype,
             out[start:end] = (recon / scale).to(out_dtype)
         return out
     packed_group_bytes = math.ceil(header.group_size * bits / 8)
-    codebook, input_scale, norms, left, right, perm = parse_normal_metadata(scales_blob, header)
-    signs = set(int(x) for x in left.tolist()) | set(int(x) for x in right.tolist())
-    if not signs.issubset({-1, 1}):
-        raise ValueError(f"{path}: signs must be +/-1, got {sorted(signs)}")
-    if sorted(int(x) for x in perm.tolist()) != list(range(header.group_size)):
-        raise ValueError(f"{path}: permutation is not bijective")
-    base_h = torch.from_numpy((hadamard(header.group_size, dtype=float) / math.sqrt(header.group_size)).astype(np.float32))
-    rotation = (left.float().unsqueeze(1) * base_h * right.float().unsqueeze(0))[:, perm.long()].contiguous()
-    rt = rotation.T.contiguous()
+    if header.flags & FLAG_NO_ROTATION:
+        codebook, input_scale, norms = parse_no_rotation_metadata(scales_blob, header)
+        rt = torch.eye(header.group_size, dtype=torch.float32)
+    else:
+        codebook, input_scale, norms, left, right, perm = parse_normal_metadata(scales_blob, header)
+        signs = set(int(x) for x in left.tolist()) | set(int(x) for x in right.tolist())
+        if not signs.issubset({-1, 1}):
+            raise ValueError(f"{path}: signs must be +/-1, got {sorted(signs)}")
+        if sorted(int(x) for x in perm.tolist()) != list(range(header.group_size)):
+            raise ValueError(f"{path}: permutation is not bijective")
+        base_h = torch.from_numpy((hadamard(header.group_size, dtype=float) / math.sqrt(header.group_size)).astype(np.float32))
+        rotation = (left.float().unsqueeze(1) * base_h * right.float().unsqueeze(0))[:, perm.long()].contiguous()
+        rt = rotation.T.contiguous()
     scale = input_scale.float().unsqueeze(0)
     codebook = codebook.float()
 
