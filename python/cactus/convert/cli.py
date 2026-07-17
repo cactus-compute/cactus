@@ -524,10 +524,12 @@ def convert(args: argparse.Namespace) -> None:
                             raise RuntimeError(f"{name}: {hessian_missing_reason} ({module_name})")
                     hessian = hessians_np.get(module_name)
                     cq = None
-                    if emit_policy.rotation != "orthogonal" and int(emit_policy.bits or requested_bits) == 1:
+                    if requested_bits == 1:
                         cq = quantize_binary_repack(emit_tensor)
                         if cq is not None:
                             print(f"  repack: {out_path.name} is QAT-binary -> lossless 1-bit repack (no rotation)")
+                            precision = "CQ1"
+                            emit_policy = replace(emit_policy, precision="CQ1", bits=1)
                     if cq is None:
                         input_scale = None
                         if emit_policy.rotation == "orthogonal" or name.endswith("embed_tokens_per_layer.weight"):
@@ -545,7 +547,7 @@ def convert(args: argparse.Namespace) -> None:
                                 input_scale=input_scale,
                             )
                     cq = _scale_cq_norms(cq, adapter.scale_factor(out_path.name))
-                    if getattr(emit_policy, "layout", "row_major") == "interleaved_4row":
+                    if getattr(emit_policy, "layout", "row_major") == "interleaved_4row" and cq.rotation_family != "none":
                         cq = replace(cq, interleaved_4row=True)
                     write_cq_tensor(out_path, cq)
                     gptq_used = cq.gptq_used
