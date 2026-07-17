@@ -73,7 +73,11 @@ def cmd_convert(args):
             return 0
         args.weights_dir = args.weights_dir or output_dir
         args.artifact_dir = args.artifact_dir or output_dir
-        return cmd_transpile(args)
+        rc = cmd_transpile(args)
+        if rc == 0:
+            from .model import package_handoff_probe
+            package_handoff_probe(args.artifact_dir, args.model_id)
+        return rc
     except RuntimeError as e:
         print_color(RED, f"Conversion error: {e}")
         return 1

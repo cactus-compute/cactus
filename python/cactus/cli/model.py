@@ -259,6 +259,17 @@ def prepare_bundle(args, *, model_id=None, transpile=None, prebuilt=True,
         return None
 
 
+def package_handoff_probe(output_dir, model_id):
+    """Bundle the cloud-handoff probe for models that ship one (gemma-4-e2b-it)."""
+    try:
+        from cactus.convert.handoff_probe import export_handoff_probe
+
+        if export_handoff_probe(output_dir, model_id):
+            print_color(GREEN, f"Cloud handoff probe packaged into {output_dir}")
+    except Exception as e:
+        print_color(YELLOW, f"Warning: failed to package cloud handoff probe: {e}")
+
+
 def ensure_bundle(model_id, *, bits=4, token=None,
                   reconvert=False, output_dir=None, transpile=None,
                   skip_model_load=False):
@@ -374,18 +385,7 @@ def ensure_bundle(model_id, *, bits=4, token=None,
     if rc != 0:
         raise RuntimeError(f"Build failed for {model_id}")
 
-    try:
-        from cactus.convert.handoff_probe import (
-            export_gemma4_handoff_probe,
-            export_parakeet_handoff_probe,
-        )
-
-        if export_gemma4_handoff_probe(output_dir, model_id=model_id):
-            print_color(GREEN, f"Gemma4 cloud handoff probe packaged into {output_dir}")
-        if export_parakeet_handoff_probe(output_dir, model_id=model_id):
-            print_color(GREEN, f"Parakeet cloud handoff probe packaged into {output_dir}")
-    except Exception as e:
-        print_color(YELLOW, f"Warning: failed to package cloud handoff probe: {e}")
+    package_handoff_probe(output_dir, model_id)
 
     print_color(GREEN, f"Model built at {output_dir}")
     return output_dir
