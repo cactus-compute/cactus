@@ -949,7 +949,11 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             const auto& w1_0 = get_input(node, 3, nodes, map);
             if (!PrecisionTraits::is_cq(w1_0.precision) || w1_0.group_size == 0) return false;
             CactusQuantMatrix key = w1_0.to_cq_matrix();
-            if (!cactus_metal_moe_cq4_ready(&key)) {
+            const bool cq2 = key.bits == 2u;
+            const bool cq4 = key.bits == 4u;
+            if (!cq2 && !cq4) return false;
+            const bool ready = cq2 ? cactus_metal_moe_cq2_ready(&key) : cactus_metal_moe_cq4_ready(&key);
+            if (!ready) {
                 std::vector<CactusQuantMatrix> w1s(num_experts), w3s(num_experts), w2s(num_experts);
                 for (size_t e = 0; e < num_experts; ++e) {
                     const auto& b1 = get_input(node, 3 + e, nodes, map);
@@ -962,12 +966,20 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
                     w3s[e] = b3.to_cq_matrix();
                     w2s[e] = b2.to_cq_matrix();
                 }
-                if (!cactus_metal_moe_cq4_build(w1s.data(), w3s.data(), w2s.data(), (uint32_t)num_experts))
+                const bool built = cq2
+                    ? cactus_metal_moe_cq2_build(w1s.data(), w3s.data(), w2s.data(), (uint32_t)num_experts)
+                    : cactus_metal_moe_cq4_build(w1s.data(), w3s.data(), w2s.data(), (uint32_t)num_experts);
+                if (!built)
                     return false;
             }
+            if (cq2) {
+                return cactus_metal_encode_moe_gated_cq2(out.get_data(), hidden.get_data(), probs.get_data(),
+                    topk.get_data(), &key, (uint32_t)num_experts, (uint32_t)top_k, (uint32_t)hidden.shape[0],
+                    act, node.params.normalize_routing ? 1u : 0u, node.params.epsilon, node.params.scalar);
+            }
             return cactus_metal_encode_moe_gated_cq4(out.get_data(), hidden.get_data(), probs.get_data(),
-                topk.get_data(), &key, (uint32_t)num_experts, (uint32_t)top_k, (uint32_t)hidden.shape[0],
-                act, node.params.normalize_routing ? 1u : 0u, node.params.epsilon, node.params.scalar);
+                    topk.get_data(), &key, (uint32_t)num_experts, (uint32_t)top_k, (uint32_t)hidden.shape[0],
+                    act, node.params.normalize_routing ? 1u : 0u, node.params.epsilon, node.params.scalar);
         }
         case OpType::LAYERNORM: {
             if (node.input_ids.size() < 2 || out.shape.empty()) return false;

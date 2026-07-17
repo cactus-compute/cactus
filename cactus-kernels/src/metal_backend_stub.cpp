@@ -133,4 +133,9 @@ bool cactus_metal_moe_cq4_build(const CactusQuantMatrix*, const CactusQuantMatri
     const CactusQuantMatrix*, uint32_t) { return false; }
 bool cactus_metal_encode_moe_gated_cq4(void*, const void*, const void*, const void*, const CactusQuantMatrix*,
     uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, float) { return false; }
+bool cactus_metal_moe_cq2_ready(const CactusQuantMatrix*) { return false; }
+bool cactus_metal_moe_cq2_build(const CactusQuantMatrix*, const CactusQuantMatrix*,
+    const CactusQuantMatrix*, uint32_t) { return false; }
+bool cactus_metal_encode_moe_gated_cq2(void*, const void*, const void*, const void*, const CactusQuantMatrix*,
+    uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, float) { return false; }
 #endif
