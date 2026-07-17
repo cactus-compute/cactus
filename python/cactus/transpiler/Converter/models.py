@@ -1,10 +1,16 @@
-from __future__ import annotations
-
 import json
+import os
 from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import Any
 from pydantic import BaseModel
 import torch
+from ..ModelProfiles import models as MP_Models
+
+modality_input_path = {
+    "vision": "/Users/sandhup/Documents/personal/cactus/python/cactus/assets/test_monkey.png",
+    "audio" : "/Users/sandhup/Documents/personal/cactus/python/cactus/assets/test.wav"
+}
 
 @dataclass(slots=True)
 class Input:
@@ -16,9 +22,15 @@ class Input:
 @dataclass(slots=True)
 class Model:
     name: str
+    model_profile: MP_Models.ModelProfile
     input: Input
 
-    def export(self, input: Input) -> LayerMap:
+    @classmethod
+    def from_profile(mp: MP_Models.ModelProfile, input_modalities: tuple[str,...], model_id: str) -> "Model":
+        return create_model(mp, input_modalities, model_id)
+
+
+    def export(self, input: Input) -> "LayerMap":
         export_(model=self, input=input)
 
 
@@ -161,6 +173,71 @@ def extract_module_stack(node: torch.fx.Node) -> Any | None:
             out.append({"key": str(key), "value": repr(value)})
 
     return out
+
+
+
+def load_files(mp: MP_Models.ModelProfile, model_id: str) -> dict[str, str]:
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
+    from ..ModelProfiles import profiles as MP_Profiles
+
+    default_model_ids = {
+        "gemma4_e2b": "google/gemma-4-E2B",
+        "whisper": "openai/whisper-tiny",
+        "parakeet": "nvidia/parakeet-tdt-0.6b-v3",
+        "lfm_vlm": "LiquidAI/LFM2-VL-3B",
+        "qwen2_5_0_5b": "Qwen/Qwen2.5-0.5B",
+    }
+
+    repo_id = (
+        model_id
+        or MP_Profiles.MODEL_ID_MAP.get(mp.model_profiles)
+        or default_model_ids.get(mp.model_profiles)
+        or mp.model_profiles
+    )
+    output_dir = Path(__file__).resolve().parent / "jsons" / mp.model_profiles
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    token = os.environ.get("HF_TOKEN")
+    downloaded_files: dict[str, str] = {}
+
+    for file in mp.files:
+        try:
+            downloaded_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=file,
+                local_dir=output_dir,
+                token=token,
+            )
+        except EntryNotFoundError:
+            if file == "config.json":
+                raise
+
+            print(f"Skipping missing optional file for {repo_id}: {file}")
+            continue
+        except RepositoryNotFoundError:
+            raise ValueError(f"Could not find HuggingFace repository: {repo_id}") from None
+
+        downloaded_files[file] = str(downloaded_path)
+
+    return downloaded_files
+
+
+def build_input(mp: MP_Models.ModelProfile, input_modalties: tuple[str, ...]) -> Input | None:
+    if not all(modality in mp.supported_modalties for modality in input_modalties):
+        print("Requesting unsupported modalities")
+        return None
+    
+
+    
+
+
+
+
+def create_model(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], model_id: str) -> Model:
+    name_ = model_id
+    b
+
 
 
 def export_(model: Model, input: Input) -> LayerMap:
