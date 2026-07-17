@@ -201,6 +201,7 @@ void cactus_matmul_f16(
 enum CactusQuantFlags : uint32_t {
     CACTUS_QUANT_FLAG_ORTHOGONAL = 1u << 2,
     CACTUS_QUANT_FLAG_INTERLEAVED_4ROW = 1u << 3,
+    CACTUS_QUANT_FLAG_NO_ROTATION = 1u << 4,
 };
 
 struct CactusQuantMatrix {
@@ -322,6 +323,7 @@ void cactus_quant_dequantize_hadamard_embedding_row(
     const int8_t* left_signs,
     const int8_t* right_signs,
     const uint32_t* permutation,
+    uint32_t flags,
     __fp16* out_row);
 
 void cactus_quant_dequantize_orthogonal_embedding_row(

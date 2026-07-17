@@ -196,6 +196,7 @@ void compute_embedding_node(GraphNode& node, const std::vector<std::unique_ptr<G
                     embeddings_buffer.cq_left_signs,
                     embeddings_buffer.cq_right_signs,
                     embeddings_buffer.cq_permutation,
+                    embeddings_buffer.cq_flags,
                     output + i * hidden_dim);
             }
             if (num_indices > 16) {

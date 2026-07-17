@@ -26,6 +26,7 @@ namespace {
     constexpr uint32_t FLAG_ORTHOGONAL_ROTATION = 1 << 1;
     constexpr uint32_t FLAG_INTERLEAVED_4ROW = 1 << 2;
     constexpr uint32_t FLAG_EXTENDED_SHAPE = 1 << 4;
+    constexpr uint32_t FLAG_NO_ROTATION = 1 << 5;
     constexpr size_t HEADER_SIZE = 84;
 
     inline size_t align_offset(size_t offset, size_t alignment) {
@@ -435,6 +436,8 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
         if (mapped_file->is_orthogonal_rotation()) {
             buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
             buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
+        } else if (mapped_file->is_no_rotation()) {
+            buffer.cq_flags = CACTUS_QUANT_FLAG_NO_ROTATION;
         } else {
             buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
             off += gs;
@@ -500,6 +503,8 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
         if (mapped_file->is_orthogonal_rotation()) {
             buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
             buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
+        } else if (mapped_file->is_no_rotation()) {
+            buffer.cq_flags = CACTUS_QUANT_FLAG_NO_ROTATION;
         } else {
             buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
             off += gs;
@@ -583,6 +588,8 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
         if (mapped_file->is_orthogonal_rotation()) {
             buffer.cq_rotation = reinterpret_cast<const __fp16*>(scales_base + off);
             buffer.cq_flags = CACTUS_QUANT_FLAG_ORTHOGONAL;
+        } else if (mapped_file->is_no_rotation()) {
+            buffer.cq_flags = CACTUS_QUANT_FLAG_NO_ROTATION;
         } else {
             buffer.cq_left_signs = reinterpret_cast<const int8_t*>(scales_base + off);
             off += gs;
@@ -905,12 +912,14 @@ MappedFile::MappedFile(MappedFile&& other) noexcept
       alignment_(other.alignment_),
       is_orthogonal_rotation_(other.is_orthogonal_rotation_),
       is_interleaved_4row_(other.is_interleaved_4row_),
+      is_no_rotation_(other.is_no_rotation_),
       original_N_(other.original_N_) {
     other.fd_ = -1;
     other.mapped_data_ = nullptr;
     other.file_size_ = 0;
     other.is_orthogonal_rotation_ = false;
     other.is_interleaved_4row_ = false;
+    other.is_no_rotation_ = false;
     other.original_N_ = 0;
 }
 
@@ -937,6 +946,7 @@ MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
         alignment_ = other.alignment_;
         is_orthogonal_rotation_ = other.is_orthogonal_rotation_;
         is_interleaved_4row_ = other.is_interleaved_4row_;
+        is_no_rotation_ = other.is_no_rotation_;
         original_N_ = other.original_N_;
         other.fd_ = -1;
         other.mapped_data_ = nullptr;
@@ -995,6 +1005,7 @@ void MappedFile::parse_header() {
     offset += sizeof(uint32_t);
     is_orthogonal_rotation_ = (flags & FLAG_ORTHOGONAL_ROTATION) != 0;
     is_interleaved_4row_ = (flags & FLAG_INTERLEAVED_4ROW) != 0;
+    is_no_rotation_ = (flags & FLAG_NO_ROTATION) != 0;
 
     alignment_ = *reinterpret_cast<const uint32_t*>(ptr + offset);
     offset += sizeof(uint32_t);

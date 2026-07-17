@@ -862,6 +862,7 @@ namespace GraphFile {
         const void* scales_data() const;
         bool is_orthogonal_rotation() const { return is_orthogonal_rotation_; }
         bool is_interleaved_4row() const { return is_interleaved_4row_; }
+        bool is_no_rotation() const { return is_no_rotation_; }
         size_t original_N() const { return original_N_; }
         void* data();
         const void* data() const;
@@ -883,6 +884,7 @@ namespace GraphFile {
         uint32_t alignment_ = 32;
         bool is_orthogonal_rotation_ = false;
         bool is_interleaved_4row_ = false;
+        bool is_no_rotation_ = false;
         size_t original_N_ = 0;
 
         void parse_header();

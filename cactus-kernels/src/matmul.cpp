@@ -241,6 +241,20 @@ static void cactus_quant_transform_hadamard_group(
     uint32_t group,
     __fp16* code_basis) {
     const uint32_t gs = W.group_size;
+    if (W.flags & CACTUS_QUANT_FLAG_NO_ROTATION) {
+        uint32_t j = 0;
+        for (; j + 8 <= gs; j += 8) {
+            const uint32_t offset = group * gs + j;
+            float16x8_t x_v = vld1q_f16(x_group + j);
+            vst1q_f16(code_basis + j, vmulq_f16(x_v, cactus_quant_input_scale_recip8(W, offset)));
+        }
+        for (; j < gs; ++j) {
+            const uint32_t offset = group * gs + j;
+            const float scale = static_cast<float>(cactus_quant_input_scale_recip1(W, offset));
+            code_basis[j] = static_cast<__fp16>(static_cast<float>(x_group[j]) * scale);
+        }
+        return;
+    }
     __fp16 tmp[256];
     __fp16* work = (W.permutation == nullptr) ? code_basis : tmp;
 
@@ -1902,6 +1916,7 @@ void cactus_quant_dequantize_hadamard_embedding_row(
     const int8_t* left_signs,
     const int8_t* right_signs,
     const uint32_t* permutation,
+    uint32_t flags,
     __fp16* out_row) {
     if (!packed_base || !codebook || !norms || !out_row || bits == 0 || bits > 4) return;
     if (hidden_dim == 0 || group_size == 0 || num_groups == 0) return;
@@ -1909,6 +1924,22 @@ void cactus_quant_dequantize_hadamard_embedding_row(
     if (group_size > 256) return;
 
     const uint32_t packed_group_bytes = cactus_quant_packed_group_bytes(bits, group_size);
+    if (flags & CACTUS_QUANT_FLAG_NO_ROTATION) {
+        for (uint32_t g = 0; g < num_groups; ++g) {
+            const uint8_t* packed = packed_base + (static_cast<size_t>(row) * num_groups + g) * packed_group_bytes;
+            const float norm = static_cast<float>(norms[static_cast<size_t>(row) * num_groups + g]);
+            for (uint32_t k = 0; k < group_size; ++k) {
+                uint8_t idx = static_cast<uint8_t>(tq_extract_idx(packed, k, bits));
+                uint32_t col = g * group_size + k;
+                float scale = input_scale_recip ? static_cast<float>(input_scale_recip[col]) : 1.0f;
+                out_row[col] = static_cast<__fp16>(static_cast<float>(codebook[idx]) * norm * scale);
+            }
+        }
+        for (uint32_t col = num_groups * group_size; col < hidden_dim; ++col) {
+            out_row[col] = static_cast<__fp16>(0);
+        }
+        return;
+    }
     std::vector<float> rotated(group_size);
     for (uint32_t g = 0; g < num_groups; ++g) {
         std::fill(rotated.begin(), rotated.end(), 0.0f);

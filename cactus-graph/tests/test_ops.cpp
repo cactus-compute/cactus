@@ -477,7 +477,7 @@ bool test_cq_embedding_operation() {
             bits, hidden_dim, group_size, num_groups, row,
             packed.data(), codebook.data(), norms.data(),
             input_scale_recip.data(), left_signs.data(), right_signs.data(),
-            permutation.data(), expected.data() + row * hidden_dim);
+            permutation.data(), 0u, expected.data() + row * hidden_dim);
     }
 
     CactusGraph graph;
