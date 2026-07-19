@@ -238,7 +238,7 @@ def load_files(mp: MP_Models.ModelProfile, model_id: str) -> dict[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     token = os.environ.get("HF_TOKEN")
     downloaded_files: dict[str, str] = {}
-    
+
     for file in mp.files:
         try:
             downloaded_path = hf_hub_download(repo_id=model_id, filename=file, local_dir=output_dir, token=token)
@@ -247,7 +247,6 @@ def load_files(mp: MP_Models.ModelProfile, model_id: str) -> dict[str, str]:
             continue
 
         downloaded_files[file] = str(downloaded_path)
-
     return downloaded_files
 
 def build_input(mp: MP_Models.ModelProfile, input_modalties: tuple[str, ...]) -> Input | None:
@@ -255,8 +254,9 @@ def build_input(mp: MP_Models.ModelProfile, input_modalties: tuple[str, ...]) ->
         print("Requesting unsupported modalities")
         return None
     
-
     
+
+    return Input(args=(), kwargs={})
 
 
 
