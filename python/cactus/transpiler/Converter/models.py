@@ -6,6 +6,16 @@ from typing import Any
 from pydantic import BaseModel
 import torch
 from ..ModelProfiles import models as MP_Models
+from ..ModelProfiles import profiles as MP_Profiles
+from huggingface_hub import hf_hub_download
+
+default_model_ids = {
+    "gemma4_e2b": "google/gemma-4-E2B",
+    "whisper": "openai/whisper-tiny",
+    "parakeet": "nvidia/parakeet-tdt-0.6b-v3",
+    "lfm_vlm": "LiquidAI/LFM2-VL-3B",
+    "qwen2_5_0_5b": "Qwen/Qwen2.5-0.5B",
+}
 
 modality_input_path = {
     "vision": "/Users/sandhup/Documents/personal/cactus/python/cactus/assets/test_monkey.png",
@@ -222,6 +232,23 @@ def load_files(mp: MP_Models.ModelProfile, model_id: str) -> dict[str, str]:
 
     return downloaded_files
 
+
+def load_files(mp: MP_Models.ModelProfile, model_id: str) -> dict[str, str]:
+    output_dir = Path(__file__).resolve().parent / "jsons" / mp.model_profiles
+    output_dir.mkdir(parents=True, exist_ok=True)
+    token = os.environ.get("HF_TOKEN")
+    downloaded_files: dict[str, str] = {}
+    
+    for file in mp.files:
+        try:
+            downloaded_path = hf_hub_download(repo_id=model_id, filename=file, local_dir=output_dir, token=token)
+        except Exception as e:
+            print(f"Error downloading {file} from {model_id}: {e}")
+            continue
+
+        downloaded_files[file] = str(downloaded_path)
+
+    return downloaded_files
 
 def build_input(mp: MP_Models.ModelProfile, input_modalties: tuple[str, ...]) -> Input | None:
     if not all(modality in mp.supported_modalties for modality in input_modalties):
