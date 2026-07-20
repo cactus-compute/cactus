@@ -1,3 +1,4 @@
+#include "metal_backend.h"
 #include "engine.h"
 #include "cactus_graph.h"
 #include "cactus_kernels.h"
@@ -258,6 +259,9 @@ void ConvCache::reset() {
 
 
 namespace fs = std::filesystem;
+extern "C" void cactus_graph_set_prefill_valid_len(uint32_t);
+static bool lazy_prefill_enabled();
+static bool is_deferred_prefill_component(const std::string& name);
 
 Model::Model() : config_() {}
 
@@ -556,18 +560,20 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (!decoder_name.empty()) decoder_ = &components_.at(decoder_name);
     if (!source_encoder_name.empty()) source_encoder_ = &components_.at(source_encoder_name);
     if (!decoder_cross_kv_name.empty()) decoder_cross_kv_ = &components_.at(decoder_cross_kv_name);
-    if (components_.count("decoder_prefill_chunk") && components_.at("decoder_prefill_chunk").graph) {
+    if (components_.count("decoder_prefill_chunk")
+        && (components_.at("decoder_prefill_chunk").graph || lazy_prefill_enabled())) {
         decoder_prefill_ = &components_.at("decoder_prefill_chunk");
         decoder_prefill_chunk_ = decoder_prefill_;
     } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP && !components_.count("audio_encoder")) {
         CACTUS_LOG_WARN("model", "Bundle has no decoder_prefill_chunk component; prompts will prefill token-by-token (prefill speed ~= decode speed).");
     }
     if (decoder_ && decoder_->graph) decoder_->graph->prewarm_metal_quant_weights();
-    if (decoder_prefill_ && decoder_prefill_->graph) decoder_prefill_->graph->prewarm_metal_quant_weights();
+    if (decoder_prefill_ && decoder_prefill_->graph && !lazy_prefill_enabled()) decoder_prefill_->graph->prewarm_metal_quant_weights();
     if (components_.count("decoder_embed_chunk") && components_.at("decoder_embed_chunk").graph) {
         decoder_embed_ = &components_.at("decoder_embed_chunk");
     }
-    if (components_.count("lm_encoder_text_chunk") && components_.at("lm_encoder_text_chunk").graph) {
+    if (components_.count("lm_encoder_text_chunk")
+        && (components_.at("lm_encoder_text_chunk").graph || lazy_prefill_enabled())) {
         prefill_encoder_ = &components_.at("lm_encoder_text_chunk");
     }
     if (const char* env = std::getenv("CACTUS_DISABLE_PREFILL_TAIL_PAD")) {
@@ -732,9 +738,19 @@ bool Model::setup_tokenizer() {
     return tokenizer_->load_vocabulary_with_config(vocab, merges, cfg);
 }
 
+static bool lazy_prefill_enabled() {
+    static int on = -1;
+    if (on < 0) { const char* v = std::getenv("CACTUS_LAZY_PREFILL"); on = (v && v[0] != '0') ? 1 : 0; }
+    return on == 1;
+}
+static bool is_deferred_prefill_component(const std::string& name) {
+    return name == "decoder_prefill_chunk" || name == "lm_encoder_text_chunk"
+        || name == "decoder_embed_chunk";
+}
 bool Model::load_components(const std::unordered_set<std::string>& required_components) {
     for (auto& [name, comp] : components_) {
         if (!required_components.empty() && !required_components.count(name)) continue;
+        if (lazy_prefill_enabled() && is_deferred_prefill_component(name)) continue;
         if (!load_component_graph(comp)) return false;
     }
     return true;
@@ -1317,7 +1333,11 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     const bool has_recurrent_state = any_cache_node([&](size_t id) {
         return decoder_prefill_->graph->get_node_op_type(id) == OpType::RECURRENT_CACHE_STATE;
     });
-    if (has_recurrent_state && whole_chunks_end > effective_chunk) {
+    static const bool multi_chunk_recurrent = []{
+        const char* v = std::getenv("CACTUS_PREFILL_MULTI_CHUNK");
+        return !v || v[0] != '0';
+    }();
+    if (has_recurrent_state && !multi_chunk_recurrent && whole_chunks_end > effective_chunk) {
         whole_chunks_end = effective_chunk;
     }
     const bool has_sliding_window_cache = any_cache_node([&](size_t id) {
@@ -1342,8 +1362,10 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     const bool use_padded_tail = !pad_tail && !prefill_tail_pad_disabled_
         && has_sliding_window_cache && !has_recurrent_state && !has_conv_state
         && tail_tokens > 8 && !padded_window_too_small;
+    const bool use_recurrent_tail = !pad_tail && !use_padded_tail && !prefill_tail_pad_disabled_
+        && (has_recurrent_state || has_conv_state) && tail_tokens > 8;
     const size_t executable_tokens = whole_chunks_end + (pad_tail ? effective_chunk : 0);
-    if (executable_tokens == 0 && !use_padded_tail) {
+    if (executable_tokens == 0 && !use_padded_tail && !use_recurrent_tail) {
         result.scalar_tail_tokens = tail_tokens;
         last_prefill_scalar_tail_tokens_ = tail_tokens;
         return result;
@@ -1366,7 +1388,16 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
 
     size_t tail_executed = 0;
     size_t tail_padding = 0;
-    if (use_padded_tail) {
+    if (use_recurrent_tail) {
+        const size_t chunk_real = tail_tokens - 1;
+        cactus_graph_set_prefill_valid_len(static_cast<uint32_t>(chunk_real));
+        execute_prefill_chunk(*decoder_prefill_, prefill_encoder_, encoder_chunk,
+                              effective_chunk, tokens, processed, start_position);
+        cactus_graph_set_prefill_valid_len(0);
+        processed += chunk_real;
+        tail_executed = chunk_real;
+        tail_padding = effective_chunk - chunk_real;
+    } else if (use_padded_tail) {
         const size_t pads = effective_chunk - tail_tokens;
         const size_t kept_real = tail_tokens - 1;
         std::vector<std::pair<size_t, std::vector<uint8_t>>> backups;
@@ -2204,12 +2235,14 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
             record_sampled_token(out_token);
             last_prefill_scalar_tail_tokens_ = 1;
             maybe_roll_compact();
+            trim_prefill_components();
             return true;
         }
         cache_total_seq_len_ += chunked.logical_tokens;
     }
+    const bool tail_fused = decode_route_ == DecodeRoute::DIRECT_DECODER_STEP;
     for (size_t i = chunked.logical_tokens; i < tokens.size(); ++i) {
-        run_step(tokens[i], cache_total_seq_len_, i + 1 == tokens.size(), /*use_fused=*/false);
+        run_step(tokens[i], cache_total_seq_len_, i + 1 == tokens.size(), /*use_fused=*/tail_fused);
         ++cache_total_seq_len_;
     }
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
@@ -2220,6 +2253,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     }
     record_sampled_token(out_token);
     maybe_roll_compact();
+    trim_prefill_components();
     return true;
 }
 
@@ -2239,8 +2273,9 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     }
     ChunkedPrefillResult chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), prepare_decode);
     cache_total_seq_len_ += chunked.logical_tokens;
+    const bool prefill_fused = decode_route_ == DecodeRoute::DIRECT_DECODER_STEP;
     for (size_t i = chunked.logical_tokens; i < tokens.size(); ++i) {
-        run_step(tokens[i], cache_total_seq_len_, /*read_logits=*/false, /*use_fused=*/false);
+        run_step(tokens[i], cache_total_seq_len_, /*read_logits=*/false, /*use_fused=*/prefill_fused);
         ++cache_total_seq_len_;
     }
     cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
@@ -2249,6 +2284,26 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     if (prepare_decode) {
         // After the prompt reaches full length here -- never mid-chunk -- bound it to target_len.
         maybe_roll_compact();
+    }
+    trim_prefill_components();
+}
+
+void Model::trim_prefill_components() {
+    bool did_unload = false;
+    for (Component* c : {decoder_prefill_, prefill_encoder_}) {
+        if (!c || !c->graph || c == decoder_ || c == encoder_) continue;
+        c->graph->invalidate_metal_state();
+        c->graph->release_runtime_buffers();
+        if (lazy_prefill_enabled()) {
+            c->graph->release_all_weight_pages();
+            c->input_buffers.clear();
+            c->graph.reset();
+            did_unload = true;
+        }
+    }
+    ::cactus_metal_trim_prefill_cache();
+    if (did_unload) {
+        ::cactus_metal_invalidate_host_wraps();
     }
 }
 

@@ -2307,19 +2307,23 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         )
         b_logits = g.reshape(b_logits, (batch_size, seq_len, int(b_weight.shape[0])))
 
-        if dt_bias is not None:
+        if dt_bias is not None and a_log is not None:
             dt_bias_2d = g.reshape(dt_bias, (1, int(dt_bias.shape[0])))
-            a_logits, dt_bias_2d = _legalize_elementwise_binary_inputs(g, a_logits, dt_bias_2d)
-            a_logits = g.add(a_logits, dt_bias_2d)
-        a_softplus = _lower_softplus(g, a_logits)
-
-        if a_log is not None:
             a_log_2d = g.reshape(a_log, (1, int(a_log.shape[0])))
-            neg_exp_a = g.scalar_multiply(g.scalar_exp(a_log_2d), -1.0)
-            neg_exp_a, a_softplus = _legalize_elementwise_binary_inputs(g, neg_exp_a, a_softplus)
-            gate_log = g.multiply(neg_exp_a, a_softplus)
+            gate_log = g.gated_deltanet_gate_log(a_logits, dt_bias_2d, a_log_2d)
         else:
-            gate_log = g.scalar_multiply(a_softplus, -1.0)
+            if dt_bias is not None:
+                dt_bias_2d = g.reshape(dt_bias, (1, int(dt_bias.shape[0])))
+                a_logits, dt_bias_2d = _legalize_elementwise_binary_inputs(g, a_logits, dt_bias_2d)
+                a_logits = g.add(a_logits, dt_bias_2d)
+            a_softplus = _lower_softplus(g, a_logits)
+            if a_log is not None:
+                a_log_2d = g.reshape(a_log, (1, int(a_log.shape[0])))
+                neg_exp_a = g.scalar_multiply(g.scalar_exp(a_log_2d), -1.0)
+                neg_exp_a, a_softplus = _legalize_elementwise_binary_inputs(g, neg_exp_a, a_softplus)
+                gate_log = g.multiply(neg_exp_a, a_softplus)
+            else:
+                gate_log = g.scalar_multiply(a_softplus, -1.0)
         beta = g.sigmoid(b_logits)
 
         cache_layer_key, initial_state = _lower_gated_deltanet_initial_state(

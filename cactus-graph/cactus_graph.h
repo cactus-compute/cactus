@@ -122,7 +122,8 @@ enum class OpType {
     SCALAR_NOT_EQUAL,
     RECURRENT_CACHE_STATE,
     RECURRENT_CACHE_WRITE,
-    CONV_CACHE_INITIALIZE
+    CONV_CACHE_INITIALIZE,
+    GATED_DELTANET_GATE_LOG
 };
 
 struct PrecisionTraits {
@@ -533,6 +534,8 @@ public:
     size_t leaky_relu(size_t input, float negative_slope = 0.01f, ComputeBackend backend = cactus_default_backend());
     size_t clamp(size_t input, float lo, float hi, ComputeBackend backend = cactus_default_backend());
     size_t silu(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t gated_deltanet_gate_log(size_t a_logits, size_t dt_bias, size_t a_log,
+                                   ComputeBackend backend = cactus_default_backend());
     size_t gelu(size_t input, ComputeBackend backend = cactus_default_backend());
     size_t gelu_erf(size_t input, ComputeBackend backend = cactus_default_backend());
     size_t sigmoid(size_t input, ComputeBackend backend = cactus_default_backend());
@@ -741,6 +744,7 @@ public:
     void prefetch_weight_pages(size_t node_id);
     void release_all_weight_pages();
     void release_runtime_buffers();
+    void invalidate_metal_state();
     void clear_buffer_pool();
     void retain_outputs(const std::vector<int>& node_ids);
 
@@ -801,10 +805,11 @@ private:
     bool runtime_shapes_dirty_ = false;
     std::unordered_set<size_t> persistent_node_ids_;
     std::unordered_set<size_t> populated_node_ids_;
+    std::vector<uint8_t> node_is_constant_;
+    bool constants_cached_ = false;
     std::unordered_set<size_t> embedded_input_node_ids_;
     std::unordered_set<size_t> retained_output_node_ids_;
     void build_metal_retype_plan();
-    void invalidate_metal_state();
     std::unordered_map<uint64_t, struct MetalFusePlan*> metal_plans_;
     std::unordered_map<uint64_t, std::unordered_set<size_t>> metal_plan_banned_;
     uint64_t metal_plan_sig_ = 0;
@@ -1027,6 +1032,7 @@ CACTUS_FFI_EXPORT int cactus_graph_release_all_weight_pages(cactus_graph_t graph
 
 CACTUS_FFI_EXPORT int cactus_graph_relu(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_silu(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_gated_deltanet_gate_log(cactus_graph_t graph, cactus_node_t a_logits, cactus_node_t dt_bias, cactus_node_t a_log, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_gelu(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_gelu_erf(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_sigmoid(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);

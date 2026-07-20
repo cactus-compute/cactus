@@ -113,8 +113,6 @@ static void write_test_cq_weights(
 }
 
 bool test_matmul_cq_no_rotation() {
-    // Rotation-free CQ1 (lossless binary repack): file flag 1<<5 must flow through
-    // the loader remap and skip the activation FWHT, matching the direct kernel call.
     const size_t M = 2, K = 256, N = 8;
     const size_t gs = 128;
     const size_t ng = K / gs;

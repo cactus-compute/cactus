@@ -166,7 +166,7 @@ def test_binary_repack_roundtrip_bit_exact(tmp_path):
     scales = rng.uniform(0.001, 0.05, size=(n, k // gs)).astype(np.float16).astype(np.float32)
     signs = rng.choice([-1.0, 1.0], size=(n, k)).astype(np.float32)
     w = signs * np.repeat(scales, gs, axis=1)
-    w[3, 2 * gs : 3 * gs] = 0.0  # all-zero group must repack too
+    w[3, 2 * gs : 3 * gs] = 0.0
 
     cq = quantize_binary_repack(w)
     assert cq is not None and cq.bits == 1 and cq.rotation_family == "none"
@@ -187,4 +187,4 @@ def test_binary_repack_rejects_non_binary():
     rng = np.random.default_rng(8)
     w = rng.standard_normal((4, 256), dtype=np.float32)
     assert quantize_binary_repack(w) is None
-    assert quantize_binary_repack(np.zeros((4, 100), dtype=np.float32)) is None  # k % 128 != 0
+    assert quantize_binary_repack(np.zeros((4, 100), dtype=np.float32)) is None

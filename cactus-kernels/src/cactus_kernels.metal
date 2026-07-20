@@ -471,7 +471,20 @@ kernel void cq_gemv_mr_lowbit(
         for (uint r=0;r<CQ4_NR;r++){
             uint n = n0+r;
             float w0,w1,w2,w3,w4,w5,w6,w7,w8,w9,wa,wb,wc,wd,we,wf;
-            if (bits == 2u) {
+            if (bits == 1u) {
+                uint w;
+                if (il != 0u) {
+                    device const uchar* pan = packed + ((size_t)(n>>2)*num_groups+g)*4u*(size_t)pgb + byte_off*4u;
+                    uint rr = n&3u;
+                    w = (uint)pan[rr] | ((uint)pan[4u+rr]<<8);
+                } else {
+                    w = *(device const ushort*)(packed + ((size_t)n*num_groups+g)*pgb + byte_off);
+                }
+                w0=cb[w&1u];        w1=cb[(w>>1)&1u];  w2=cb[(w>>2)&1u];  w3=cb[(w>>3)&1u];
+                w4=cb[(w>>4)&1u];   w5=cb[(w>>5)&1u];  w6=cb[(w>>6)&1u];  w7=cb[(w>>7)&1u];
+                w8=cb[(w>>8)&1u];   w9=cb[(w>>9)&1u];  wa=cb[(w>>10)&1u]; wb=cb[(w>>11)&1u];
+                wc=cb[(w>>12)&1u];  wd=cb[(w>>13)&1u]; we=cb[(w>>14)&1u]; wf=cb[(w>>15)&1u];
+            } else if (bits == 2u) {
                 uint w;
                 if (il != 0u) {
                     device const uchar* pan = packed + ((size_t)(n>>2)*num_groups+g)*4u*(size_t)pgb + byte_off*4u;
@@ -517,6 +530,156 @@ kernel void cq_gemv_mr_lowbit(
     for (uint r=0;r<CQ4_NR;r++){
         float a = simd_sum(acc[r]);
         if (lane==0) y[n0+r]=(half)a;
+    }
+}
+
+kernel void cq1_norot_gemv(
+    device const half*  x        [[buffer(0)]],
+    device const uchar* packed   [[buffer(1)]],
+    device const half*  codebook [[buffer(2)]],
+    device const half*  norms    [[buffer(3)]],
+    device       half*  y        [[buffer(4)]],
+    constant uint& gs            [[buffer(5)]],
+    constant uint& num_groups    [[buffer(6)]],
+    constant uint& pgb           [[buffer(7)]],
+    constant uint& N             [[buffer(8)]],
+    constant uint& il            [[buffer(9)]],
+    uint tg   [[threadgroup_position_in_grid]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]])
+{
+    (void)il;
+    const float cbscale = (float)codebook[1];
+    const uint K = num_groups*gs;
+    const uint out_row = tg*8u + sgid*4u;
+    if (out_row >= N) return;
+    const uint rows = min(4u, N - out_row);
+
+    float xv[32];
+    float result[4] = {0.f, 0.f, 0.f, 0.f};
+
+    device const uchar* ws = packed + (size_t)out_row*num_groups*pgb + lane*4u;
+    device const half*  xp = x + lane*32u;
+
+    for (uint k = lane*32u; k < K; k += 1024u) {
+        float sum = 0.f;
+        #pragma clang loop unroll(full)
+        for (uint i = 0; i < 32u; ++i) {
+            float v = (float)xp[i];
+            xv[i] = v;
+            sum += v;
+        }
+        const uint g = k / gs;
+        #pragma clang loop unroll(full)
+        for (uint row = 0; row < 4u; ++row) {
+            if (row >= rows) break;
+            device const uchar* wl = ws + (size_t)row*num_groups*pgb;
+            float accum = 0.f;
+            #pragma clang loop unroll(full)
+            for (uint i = 0; i < 4u; ++i) {
+                uint wb = wl[i];
+                accum += select(0.f, xv[8u*i    ], bool(wb & 0x01u));
+                accum += select(0.f, xv[8u*i + 1], bool(wb & 0x02u));
+                accum += select(0.f, xv[8u*i + 2], bool(wb & 0x04u));
+                accum += select(0.f, xv[8u*i + 3], bool(wb & 0x08u));
+                accum += select(0.f, xv[8u*i + 4], bool(wb & 0x10u));
+                accum += select(0.f, xv[8u*i + 5], bool(wb & 0x20u));
+                accum += select(0.f, xv[8u*i + 6], bool(wb & 0x40u));
+                accum += select(0.f, xv[8u*i + 7], bool(wb & 0x80u));
+            }
+            float nrm = (float)norms[(size_t)(out_row+row)*num_groups + g];
+            result[row] += nrm*(2.0f*accum - sum);
+        }
+        ws += 128u;
+        xp += 1024u;
+    }
+    #pragma clang loop unroll(full)
+    for (uint row = 0; row < 4u; ++row) {
+        float tot = simd_sum(result[row]);
+        if (lane == 0 && row < rows) y[out_row+row] = (half)(cbscale*tot);
+    }
+}
+
+kernel void cq1_norot_gemm_mma(
+    device const half*  x        [[buffer(0)]],
+    device const uchar* packed   [[buffer(1)]],
+    device const half*  norms    [[buffer(2)]],
+    device       half*  y        [[buffer(3)]],
+    constant uint& gs            [[buffer(4)]],
+    constant uint& num_groups    [[buffer(5)]],
+    constant uint& pgb           [[buffer(6)]],
+    constant uint& N             [[buffer(7)]],
+    constant uint& M             [[buffer(8)]],
+    constant float& cbscale      [[buffer(9)]],
+    uint2 tg  [[threadgroup_position_in_grid]],
+    uint  tl  [[thread_index_in_threadgroup]],
+    uint  sg  [[simdgroup_index_in_threadgroup]])
+{
+    threadgroup float pool[2048];
+    threadgroup half* sa = (threadgroup half*)pool;
+    threadgroup float* Cs = pool;
+    const uint NK=64u;
+    uint K = num_groups*gs;
+    uint r0 = tg.y*64u;
+    uint r1 = tg.x*32u;
+    uint lr0 = tl/2u, il0 = tl%2u;
+    uint nrow = r0+lr0;
+    uint ny = (lr0%8u), nyb = (lr0/8u);
+    simdgroup_matrix<half,8,8> ma[4], mb[2];
+    simdgroup_matrix<float,8,8> mc[8];
+    for (uint i=0;i<8u;i++) mc[i]=make_filled_simdgroup_matrix<float,8,8>(0.f);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint loop_k=0; loop_k<K; loop_k+=NK){
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        uint g=loop_k/gs, e0=loop_k-g*gs;
+        float nrm=(nrow<N)?(float)norms[(size_t)nrow*num_groups + g]:0.f;
+        if (nrow<N) {
+            device const ushort* wp = (device const ushort*)(packed
+                + ((size_t)nrow*num_groups+g)*pgb + ((e0+32u*il0)>>3));
+            #pragma clang loop unroll(full)
+            for (uint w=0; w<2u; w++) {
+                uint koff = 32u*il0 + 16u*w;
+                uint w16 = wp[w];
+                #pragma clang loop unroll(full)
+                for (uint i=0;i<16u;i++) {
+                    uint kk = koff + i;
+                    float v = (loop_k+kk<K) ? (nrm * ((w16 & (1u<<i)) ? 1.f : -1.f)) : 0.f;
+                    uint ib = 8u*(kk>>3) + nyb;
+                    sa[64u*ib + 8u*(kk&7u) + ny] = (half)v;
+                }
+            }
+        } else {
+            #pragma clang loop unroll(full)
+            for (uint kk=32u*il0; kk<32u*il0+32u; kk++) {
+                uint ib = 8u*(kk>>3) + nyb;
+                sa[64u*ib + 8u*(kk&7u) + ny] = (half)0;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        threadgroup const half* lsma = sa + 4u*64u*(sg%2u);
+        device const half* ax = x + (size_t)(r1 + 16u*(sg/2u))*K + loop_k;
+        #pragma clang loop unroll(full)
+        for (uint ik=0; ik<NK/8u; ik++){
+            simdgroup_barrier(mem_flags::mem_none);
+            #pragma clang loop unroll(full)
+            for (uint i=0;i<4u;i++) simdgroup_load(ma[i], lsma+64u*i, 8u);
+            simdgroup_barrier(mem_flags::mem_none);
+            simdgroup_load(mb[0], ax + ik*8u, K);
+            simdgroup_load(mb[1], ax + 8u*K + ik*8u, K);
+            simdgroup_barrier(mem_flags::mem_none);
+            #pragma clang loop unroll(full)
+            for (uint i=0;i<8u;i++) simdgroup_multiply_accumulate(mc[i], mb[i/4u], ma[i%4u], mc[i]);
+            lsma += 8u*64u;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint m_sg = 16u*(sg>>1u), n_sg = 32u*(sg&1u);
+    for (uint i=0;i<8u;i++)
+        simdgroup_store(mc[i], &Cs[(m_sg+8u*(i/4u))*64u + n_sg+8u*(i%4u)], 64u);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint idx=tl; idx<32u*64u; idx+=128u){
+        uint m=idx/64u, n=idx%64u;
+        if (r1+m<M && r0+n<N) y[(size_t)(r1+m)*N + r0+n] = (half)(cbscale*Cs[m*64u+n]);
     }
 }
 
@@ -1038,6 +1201,29 @@ kernel void rms_norm_f16(device const half* in [[buffer(0)]], device const half*
     for (uint s=nt/2; s>0; s>>=1){ if (t<s) red[t]+=red[t+s]; threadgroup_barrier(mem_flags::mem_threadgroup); }
     float inv = 1.0f/sqrt(red[0]/(float)dim + eps);
     for (uint i=t;i<dim;i+=nt) o[i]=(half)((float)x[i]*inv*(float)w[i]);
+}
+kernel void deltanet_gate_log_f16(device const half* a [[buffer(0)]], device const half* dt [[buffer(1)]],
+                                  device const half* al [[buffer(2)]], device half* y [[buffer(3)]],
+                                  constant uint& H [[buffer(4)]], constant uint& n [[buffer(5)]],
+                                  uint i [[thread_position_in_grid]]) {
+    if (i>=n) return;
+    uint h = i % H;
+    float x = (float)a[i] + (float)dt[h];
+    float sp = x > 20.0f ? x : (x < -20.0f ? exp(x) : log(1.0f + exp(x)));
+    y[i] = (half)(-exp((float)al[h]) * sp);
+}
+kernel void l2_norm_rows_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
+                             constant uint& dim [[buffer(2)]], constant float& eps [[buffer(3)]],
+                             uint row [[threadgroup_position_in_grid]], uint t [[thread_position_in_threadgroup]],
+                             uint nt [[threads_per_threadgroup]], threadgroup float* red [[threadgroup(0)]]) {
+    device const half* x = in + (size_t)row*dim;
+    device half* o = y + (size_t)row*dim;
+    float partial=0;
+    for (uint i=t;i<dim;i+=nt){ float v=(float)x[i]; partial += (float)(half)(v*v); }
+    red[t]=partial; threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s=nt/2; s>0; s>>=1){ if (t<s) red[t]+=red[t+s]; threadgroup_barrier(mem_flags::mem_threadgroup); }
+    float denom = sqrt((float)(half)red[0] + eps);
+    for (uint i=t;i<dim;i+=nt) o[i]=(half)((float)x[i]/denom);
 }
 kernel void rms_norm_add_f16(device const half* in [[buffer(0)]], device const half* w [[buffer(1)]],
                              device const half* res [[buffer(2)]], device half* y [[buffer(3)]],
@@ -3741,6 +3927,7 @@ kernel void gated_deltanet_prefill_f16(
     constant uint& K       [[buffer(11)]],
     constant uint& V       [[buffer(12)]],
     constant float& scale  [[buffer(13)]],
+    constant uint& valid_T [[buffer(14)]],
     uint3 tgp [[threadgroup_position_in_grid]],
     uint t    [[thread_index_in_threadgroup]],
     threadgroup half* kq   [[threadgroup(0)]])
@@ -3757,7 +3944,7 @@ kernel void gated_deltanet_prefill_f16(
         for (uint kd = 0; kd < K; ++kd) col[(size_t)kd * V] = (float)sp[kd * hv_stride];
     }
 
-    for (uint step = 0; step < T; ++step) {
+    for (uint step = 0; step < valid_T; ++step) {
         threadgroup_barrier(mem_flags::mem_threadgroup);
         const size_t qk_base = ((size_t)(batch * T + step) * Hq + qk_head) * K;
         for (uint i = t; i < K; i += V) {

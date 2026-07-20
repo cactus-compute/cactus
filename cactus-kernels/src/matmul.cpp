@@ -1061,6 +1061,89 @@ void cactus_quant_2bit_gemm(const CactusQuantMatrix* W, const __fp16* A, uint32_
 
 
 
+alignas(16) static const uint8_t tq1_bitsel[16] = {
+    1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
+alignas(16) static const uint8_t tq1_pair_shuf[8][16] = {
+    {0,0,0,0,0,0,0,0, 1,1,1,1,1,1,1,1},
+    {2,2,2,2,2,2,2,2, 3,3,3,3,3,3,3,3},
+    {4,4,4,4,4,4,4,4, 5,5,5,5,5,5,5,5},
+    {6,6,6,6,6,6,6,6, 7,7,7,7,7,7,7,7},
+    {8,8,8,8,8,8,8,8, 9,9,9,9,9,9,9,9},
+    {10,10,10,10,10,10,10,10, 11,11,11,11,11,11,11,11},
+    {12,12,12,12,12,12,12,12, 13,13,13,13,13,13,13,13},
+    {14,14,14,14,14,14,14,14, 15,15,15,15,15,15,15,15},
+};
+
+__attribute__((always_inline)) static inline int32_t tq1_masked_group_dot(
+    const uint8_t* rowbits, const int8_t* act, int32_t s_all) {
+    const uint8x16_t bitsel = vld1q_u8(tq1_bitsel);
+    const uint8x16_t rb = vld1q_u8(rowbits);
+    int16x8_t acc16 = vdupq_n_s16(0);
+    for (uint32_t v = 0; v < 8; ++v) {
+        uint8x16_t mask = vtstq_u8(vqtbl1q_u8(rb, vld1q_u8(tq1_pair_shuf[v])), bitsel);
+        int8x16_t sel = vandq_s8(vreinterpretq_s8_u8(mask), vld1q_s8(act + v * 16));
+        acc16 = vpadalq_s8(acc16, sel);
+    }
+    return 2 * static_cast<int32_t>(vaddlvq_s16(acc16)) - s_all;
+}
+
+static bool cactus_quant_masked_gemv_cq1(
+    const CactusQuantMatrix* W,
+    const __fp16* code_basis,
+    __fp16* y) {
+    if (W->group_size != 128) return false;
+    if (static_cast<float>(W->codebook[0]) != -1.0f ||
+        static_cast<float>(W->codebook[1]) != 1.0f) return false;
+
+    const uint32_t gs = W->group_size;
+    const uint32_t pgb = cactus_quant_packed_group_bytes(1, gs);
+    const uint32_t groups = W->num_groups;
+
+    thread_local std::vector<int8_t> act_i8_buf;
+    thread_local std::vector<float> act_scales_buf;
+    thread_local std::vector<int32_t> s_all_buf;
+    if (act_i8_buf.size() < W->K) act_i8_buf.resize(W->K);
+    if (act_scales_buf.size() < groups) act_scales_buf.resize(groups);
+    if (s_all_buf.size() < groups) s_all_buf.resize(groups);
+    for (uint32_t g = 0; g < groups; ++g) {
+        act_scales_buf[g] = tq_quantize_group_i8(
+            code_basis + static_cast<size_t>(g) * gs,
+            act_i8_buf.data() + static_cast<size_t>(g) * gs, gs);
+        const int8_t* ag = act_i8_buf.data() + static_cast<size_t>(g) * gs;
+        int16x8_t s16 = vdupq_n_s16(0);
+        for (uint32_t v = 0; v < 8; ++v) s16 = vpadalq_s8(s16, vld1q_s8(ag + v * 16));
+        s_all_buf[g] = vaddlvq_s16(s16);
+    }
+    const int8_t* act_i8 = act_i8_buf.data();
+    const float* act_scales = act_scales_buf.data();
+    const int32_t* s_all = s_all_buf.data();
+
+    const size_t n_blocks = (W->N + 3) / 4;
+    cactus_quant_parallel_ranges(n_blocks, 64, [&](size_t block_start, size_t block_end) {
+        for (size_t nb = block_start; nb < block_end; ++nb) {
+            const size_t n0 = nb * 4;
+            const size_t rows = std::min<size_t>(4, W->N - n0);
+            float acc[4] = {};
+            for (uint32_t g = 0; g < groups; ++g) {
+                const int8_t* ag = act_i8 + static_cast<size_t>(g) * gs;
+                const float scale = act_scales[g];
+                const int32_t sa = s_all[g];
+                for (size_t r = 0; r < rows; ++r) {
+                    const uint8_t* rowbits =
+                        W->packed_indices + ((n0 + r) * groups + g) * pgb;
+                    const float norm =
+                        static_cast<float>(W->norms[(n0 + r) * groups + g]);
+                    acc[r] += norm * scale *
+                              static_cast<float>(tq1_masked_group_dot(rowbits, ag, sa));
+                }
+            }
+            for (size_t r = 0; r < rows; ++r)
+                y[n0 + r] = static_cast<__fp16>(acc[r]);
+        }
+    });
+    return true;
+}
+
 struct CactusTQ1ScaledDecoder {
     uint8x8_t cb_bytes;
 
@@ -1111,6 +1194,10 @@ void cactus_quant_1bit_gemv(
         thread_local std::vector<__fp16> code_basis_buf;
         if (code_basis_buf.size() < W->K) code_basis_buf.resize(W->K);
         cactus_quant_transform_hadamard_activations(*W, x, 1, code_basis_buf.data());
+        if ((W->flags & CACTUS_QUANT_FLAG_NO_ROTATION) &&
+            cactus_quant_masked_gemv_cq1(W, code_basis_buf.data(), y)) {
+            return;
+        }
         cactus_quant_sdot_gemv_int8<1>(W, code_basis_buf.data(), y);
         return;
     }

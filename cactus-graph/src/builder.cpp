@@ -1086,6 +1086,11 @@ size_t CactusGraph::silu(size_t input, ComputeBackend backend) {
     return tag_backend(add_node(OpType::SILU, {input}, {}), backend);
 }
 
+size_t CactusGraph::gated_deltanet_gate_log(size_t a_logits, size_t dt_bias, size_t a_log,
+                                            ComputeBackend backend) {
+    return tag_backend(add_node(OpType::GATED_DELTANET_GATE_LOG, {a_logits, dt_bias, a_log}, {}), backend);
+}
+
 size_t CactusGraph::gelu(size_t input, ComputeBackend backend) {
     return tag_backend(add_node(OpType::GELU, {input}, {}), backend);
 }

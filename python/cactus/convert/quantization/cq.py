@@ -367,8 +367,6 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
     is_embedding = out_path.stem in _EMBEDDING_TENSOR_STEMS
 
     if cq.interleaved_4row:
-        if cq.rotation_family == "none":
-            raise ValueError("INTERLEAVED_4ROW is not supported for rotation-free repack tensors")
         if cq.bits not in (1, 2, 3, 4):
             raise ValueError(f"INTERLEAVED_4ROW only supports CQ1..CQ4, got CQ{cq.bits}")
         if n % 4 != 0:
@@ -400,7 +398,7 @@ def write_cq_tensor(out_path: Path, cq: CQTensor) -> None:
     else:
         codebook_f32 = make_codebook(group_size, cq.bits).astype(np.float32)
     norms_f32 = cq.norms.astype(np.float32, copy=True)
-    if interleaved and cq.rotation_family != "orthogonal":
+    if interleaved and cq.rotation_family not in ("orthogonal", "none"):
         cb_max = float(np.max(np.abs(codebook_f32)))
         cb_factor = cb_max / 127.0 if cb_max > 1e-12 else 1.0 / 127.0
         codebook_f32 = codebook_f32 / cb_factor

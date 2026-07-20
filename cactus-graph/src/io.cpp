@@ -242,7 +242,7 @@ namespace {
         GraphFile::NodeEntry node;
         node.index = read_u32(in);
         uint32_t op_type_val = read_u32(in);
-        if (op_type_val > static_cast<uint32_t>(OpType::CONV_CACHE_INITIALIZE)) {
+        if (op_type_val > static_cast<uint32_t>(OpType::GATED_DELTANET_GATE_LOG)) {
             throw std::runtime_error("Graph file corrupted: invalid op type");
         }
         node.op_type = static_cast<OpType>(op_type_val);

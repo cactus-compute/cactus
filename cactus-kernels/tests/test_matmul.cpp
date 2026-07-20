@@ -364,8 +364,6 @@ bool test_cq1_no_rotation_exactness() {
     cactus_quant_matmul(&mat, x_f16.data(), 1, y.data());
 
     double mse = compute_mse(ref.data(), y.data(), N);
-    // No weight-quantization error exists on this path; residual is activation
-    // int8/fp16 arithmetic only, so the bar is 100x tighter than the rotated tests.
     double threshold = 1e-3;
     if (mse > threshold) {
         std::cerr << "  cq1-no-rotation MSE=" << mse << " > " << threshold << "\n";
