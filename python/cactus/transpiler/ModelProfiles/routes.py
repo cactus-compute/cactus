@@ -2,11 +2,7 @@ from . import combinations
 from .models import InferencePattern
 
 
-TEXT_PREFILL_ROUTE = (
-    combinations.TEXT_EMBED_TO_DECODER,
-    combinations.DECODER_TO_LM_HEAD,
-)
-
+TEXT_PREFILL_ROUTE = (combinations.TEXT_EMBED_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
 TEXT_VISION_PREFILL_ROUTE = (combinations.TEXT_VISION_TO_TOKEN_MERGE, combinations.TOKEN_MERGE_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
 TEXT_AUDIO_PREFILL_ROUTE = (combinations.TEXT_AUDIO_TO_TOKEN_MERGE, combinations.TOKEN_MERGE_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
 TEXT_VISION_AUDIO_PREFILL_ROUTE = (combinations.TEXT_VISION_AUDIO_TO_TOKEN_MERGE, combinations.TOKEN_MERGE_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
