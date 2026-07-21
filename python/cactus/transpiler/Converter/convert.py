@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 
 from . import models
@@ -21,9 +19,9 @@ def _infer_profile(model_id: str) -> MP_Models.ModelProfile:
         if model_id_lower == mapped_model_id.lower() and profile_name in profiles_by_name:
             return profiles_by_name[profile_name]
 
-    for profile_name, mapped_model_id in models.default_model_ids.items():
-        if model_id_lower == mapped_model_id.lower() and profile_name in profiles_by_name:
-            return profiles_by_name[profile_name]
+    for mapped_model_id, profile in models.default_model_ids.items():
+        if model_id_lower == mapped_model_id.lower():
+            return profile
 
     if "gemma" in model_id_lower:
         return MP.GEMMA4_E2B_PROFILE

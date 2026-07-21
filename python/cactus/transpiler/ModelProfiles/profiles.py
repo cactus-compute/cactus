@@ -20,6 +20,7 @@ GEMMA4_E2B_PROFILE = ModelProfile(
     components=MULTIMODAL_COMPONENTS,
     inference_type=GEMMA4_INFERENCE_PATTERNS,
     cache_type=("attention_kv", "sliding_window_attention_kv"),
+    cache_policy=("dynamic_cache", "drop_multimodal_on_decode", "shared_kv_layers"),
     files=("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json"),
     fusion_fields=(
         "generic",
@@ -33,19 +34,10 @@ GEMMA4_E2B_PROFILE = ModelProfile(
         "gemma4_mlp",
         "linear",
     ),
-    features=(
-        "text",
-        "vision",
-        "audio",
-        "attention",
-        "sliding_window_attention",
-        "rope",
-        "rms_norm",
-        "conv",
-        "kv_cache",
-        "multimodal_token_merge",
-    ),
-    supported_modalties=("audio", "vision", "text")
+    supported_modalties=("audio", "vision", "text"),
+    input_strategy="manual_gemma4_processor",
+    export_patches=("gemma4_audio_mask",),
+    load_strategy="image_text_to_text",
 )
 
 WHISPER_PROFILE = ModelProfile(
@@ -53,6 +45,7 @@ WHISPER_PROFILE = ModelProfile(
     components=SPEECH_SEQ2SEQ_COMPONENTS,
     inference_type=WHISPER_INFERENCE_PATTERNS,
     cache_type=("cross_attention_kv", "decoder_attention_kv"),
+    cache_policy=("dynamic_cache", "encoder_decoder_cache"),
     files=("config.json", "generation_config.json", "preprocessor_config.json", "tokenizer_config.json"),
     fusion_fields=(
         "generic",
@@ -62,16 +55,10 @@ WHISPER_PROFILE = ModelProfile(
         "whisper_mlp",
         "linear",
     ),
-    features=(
-        "audio",
-        "speech_to_text",
-        "encoder_decoder",
-        "attention",
-        "cross_attention",
-        "conv",
-        "kv_cache",
-    ),
     supported_modalties=("audio", "text"),
+    input_strategy="processor",
+    export_patches=(),
+    load_strategy="speech_seq2seq",
 )
 
 PARAKEET_PROFILE = ModelProfile(
@@ -79,6 +66,7 @@ PARAKEET_PROFILE = ModelProfile(
     components=SPEECH_TRANSCRIBER_COMPONENTS,
     inference_type=PARAKEET_INFERENCE_PATTERNS,
     cache_type=(),
+    cache_policy=(),
     files=("config.json", "preprocessor_config.json", "tokenizer_config.json"),
     fusion_fields=(
         "generic",
@@ -88,15 +76,10 @@ PARAKEET_PROFILE = ModelProfile(
         "conv",
         "linear",
     ),
-    features=(
-        "audio",
-        "speech_to_text",
-        "conformer",
-        "tdt",
-        "conv",
-        "attention",
-    ),
     supported_modalties=("audio",),
+    input_strategy="processor",
+    export_patches=(),
+    load_strategy="ctc",
 )
 
 LFM_VLM_PROFILE = ModelProfile(
@@ -104,6 +87,7 @@ LFM_VLM_PROFILE = ModelProfile(
     components=VISION_LANGUAGE_COMPONENTS,
     inference_type=LFM_VLM_INFERENCE_PATTERNS,
     cache_type=("attention_kv",),
+    cache_policy=("dynamic_cache", "drop_multimodal_on_decode"),
     files=("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json"),
     fusion_fields=(
         "generic",
@@ -114,17 +98,10 @@ LFM_VLM_PROFILE = ModelProfile(
         "lfm_mlp",
         "linear",
     ),
-    features=(
-        "text",
-        "vision",
-        "vision_language",
-        "attention",
-        "rope",
-        "rms_norm",
-        "kv_cache",
-        "multimodal_token_merge",
-    ),
     supported_modalties=("vision", "text"),
+    input_strategy="processor",
+    export_patches=(),
+    load_strategy="image_text_to_text",
 )
 
 QWEN2_5_0_5B_PROFILE = ModelProfile(
@@ -132,6 +109,7 @@ QWEN2_5_0_5B_PROFILE = ModelProfile(
     components=TEXT_COMPONENTS,
     inference_type=QWEN2_5_INFERENCE_PATTERNS,
     cache_type=("attention_kv",),
+    cache_policy=("dynamic_cache",),
     files=("config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt"),
     fusion_fields=(
         "generic",
@@ -142,16 +120,10 @@ QWEN2_5_0_5B_PROFILE = ModelProfile(
         "qwen2_5_mlp",
         "linear",
     ),
-    features=(
-        "text",
-        "causal_lm",
-        "attention",
-        "rope",
-        "rms_norm",
-        "mlp",
-        "kv_cache",
-    ),
     supported_modalties=("text",),
+    input_strategy="synthetic",
+    export_patches=(),
+    load_strategy="causal_lm",
 )
 
 ALL_PROFILES = (

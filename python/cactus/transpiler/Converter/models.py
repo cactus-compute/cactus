@@ -11,16 +11,15 @@ from ..ModelProfiles import profiles as MP_Profiles
 
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoModelForCTC, AutoModelForImageTextToText, AutoModelForSeq2SeqLM, AutoModelForSpeechSeq2Seq
 
-default_model_ids = {
-    "gemma4_e2b": "google/gemma-4-E2B",
-    "whisper": "openai/whisper-tiny",
-    "parakeet": "nvidia/parakeet-tdt-0.6b-v3",
-    "lfm_vlm": "LiquidAI/LFM2-VL-3B",
-    "qwen2_5_0_5b": "Qwen/Qwen2.5-0.5B",
+default_model_ids: dict[str, MP_Models.ModelProfile] = {
+    "google/gemma-4-E2B": MP_Profiles.GEMMA4_E2B_PROFILE,
+    "openai/whisper-tiny": MP_Profiles.WHISPER_PROFILE,
+    "nvidia/parakeet-tdt-0.6b-v3": MP_Profiles.PARAKEET_PROFILE,
+    "LiquidAI/LFM2-VL-3B": MP_Profiles.LFM_VLM_PROFILE,
+    "Qwen/Qwen2.5-0.5B": MP_Profiles.QWEN2_5_0_5B_PROFILE,
 }
 
 
-#Stores the concrete args/kwargs and mode used for one export run.
 @dataclass(slots=True)
 class Input:
     args: tuple
@@ -28,7 +27,6 @@ class Input:
     modalities: tuple[str, ...]
     inference_mode: str
 
-#Bundles the loaded HF model with its profile and prepared export input.
 @dataclass(slots=True)
 class Model:
     name: str
@@ -36,42 +34,32 @@ class Model:
     input: Input
     model: Any
 
-    #Creates a loaded converter model from a model profile.
     @classmethod
     def from_profile(mp: MP_Models.ModelProfile, input_modalities: tuple[str,...], model_id: str) -> "Model":
         return create_model(mp, input_modalities, model_id)
 
-
-    #Exports this model using the provided prepared input.
     def export(self, input: Input) -> "LayerMap":
         return export_(model=self, input=input)
 
-
-#Stores tensor metadata in a JSON-safe shape/dtype form.
 @dataclass(slots=True)
 class TensorInstance:
     shape: list[Any]
     dtype: str
 
-    #Extracts JSON-safe metadata from real, fake, or symbolic tensors.
     @classmethod
     def from_tensor(cls, x: torch.Tensor) -> "TensorInstance":
         return cls(shape=[jsonable_shape_dim(dim) for dim in x.shape], dtype=str(x.dtype))
 
-#Stores Python slice metadata in a JSON-safe form.
 @dataclass(slots=True)
 class Slice:
     start: Any
     stop: Any
     step: Any
 
-    #Converts a Python slice into a JSON-safe metadata record.
     @classmethod
     def from_slice(cls, x: slice) -> "Slice":
         return cls(start=jsonable(x.start), stop=jsonable(x.stop), step=jsonable(x.step))
 
-
-#Describes one KV cache layer's tensor shapes and cache behavior.
 @dataclass(slots=True)
 class CacheLayerSpec:
     index: int
@@ -80,8 +68,6 @@ class CacheLayerSpec:
     value_shape: tuple[int, ...]
     sliding_window: int | None = None
 
-
-#Describes all flat KV tensors needed to rebuild an HF DynamicCache.
 @dataclass(slots=True)
 class CacheSpec:
     layers: tuple[CacheLayerSpec, ...]
@@ -274,7 +260,7 @@ class LayerMap(BaseModel):
 
 """#####################################Model Utils#####################################"""
 
-#Converts symbolic shape dims to JSON-safe values without forcing torch guards.
+#Converts symbolic shape dims to JSON-safe values without forcing torch guards. x
 def jsonable_shape_dim(x: Any) -> Any:
     if type(x) is int:
         return x
@@ -282,7 +268,7 @@ def jsonable_shape_dim(x: Any) -> Any:
     return str(x)
 
 
-#Recursively converts FX/export metadata into JSON-safe Python values.
+#Recursively converts FX/export metadata into JSON-safe Python values. x
 def jsonable(x: Any) -> Any:
     if isinstance(x, torch.fx.Node):
         return {"node": x.name}
@@ -648,20 +634,20 @@ def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None) -> torch
     AutoConfig.from_pretrained(model_id, **load_kwargs)
 
     candidate_classes: list[Any] = []
-    features = set(mp.features if mp is not None else ())
     modalities = set(mp.supported_modalties if mp is not None else ())
+    load_strategy = mp.load_strategy if mp is not None else ""
     is_gemma4_profile = mp is not None and mp.model_profiles == "gemma4_e2b"
 
-    if "vision" in modalities and "text" in modalities:
+    if load_strategy == "image_text_to_text" or ("vision" in modalities and "text" in modalities):
         candidate_classes.extend((AutoModelForImageTextToText, AutoModelForCausalLM))
         #Gemma-specific: avoid falling back to plain AutoModel, which loads Gemma4 weights with wrong prefixes.
         if not is_gemma4_profile:
             candidate_classes.append(AutoModel)
-    elif "audio" in modalities and "text" in modalities:
+    elif load_strategy == "speech_seq2seq" or ("audio" in modalities and "text" in modalities):
         candidate_classes.extend((AutoModelForSpeechSeq2Seq, AutoModelForSeq2SeqLM, AutoModel))
-    elif "audio" in modalities:
+    elif load_strategy == "ctc" or "audio" in modalities:
         candidate_classes.extend((AutoModelForCTC, AutoModel))
-    elif "text" in modalities or "causal_lm" in features:
+    elif load_strategy == "causal_lm" or "text" in modalities:
         candidate_classes.extend((AutoModelForCausalLM, AutoModel))
     else:
         candidate_classes.append(AutoModel)
