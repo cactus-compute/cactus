@@ -260,8 +260,6 @@ void ConvCache::reset() {
 
 namespace fs = std::filesystem;
 extern "C" void cactus_graph_set_prefill_valid_len(uint32_t);
-static bool lazy_prefill_enabled();
-static bool is_deferred_prefill_component(const std::string& name);
 
 Model::Model() : config_() {}
 
@@ -560,20 +558,18 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (!decoder_name.empty()) decoder_ = &components_.at(decoder_name);
     if (!source_encoder_name.empty()) source_encoder_ = &components_.at(source_encoder_name);
     if (!decoder_cross_kv_name.empty()) decoder_cross_kv_ = &components_.at(decoder_cross_kv_name);
-    if (components_.count("decoder_prefill_chunk")
-        && (components_.at("decoder_prefill_chunk").graph || lazy_prefill_enabled())) {
+    if (components_.count("decoder_prefill_chunk") && components_.at("decoder_prefill_chunk").graph) {
         decoder_prefill_ = &components_.at("decoder_prefill_chunk");
         decoder_prefill_chunk_ = decoder_prefill_;
     } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP && !components_.count("audio_encoder")) {
         CACTUS_LOG_WARN("model", "Bundle has no decoder_prefill_chunk component; prompts will prefill token-by-token (prefill speed ~= decode speed).");
     }
     if (decoder_ && decoder_->graph) decoder_->graph->prewarm_metal_quant_weights();
-    if (decoder_prefill_ && decoder_prefill_->graph && !lazy_prefill_enabled()) decoder_prefill_->graph->prewarm_metal_quant_weights();
+    if (decoder_prefill_ && decoder_prefill_->graph) decoder_prefill_->graph->prewarm_metal_quant_weights();
     if (components_.count("decoder_embed_chunk") && components_.at("decoder_embed_chunk").graph) {
         decoder_embed_ = &components_.at("decoder_embed_chunk");
     }
-    if (components_.count("lm_encoder_text_chunk")
-        && (components_.at("lm_encoder_text_chunk").graph || lazy_prefill_enabled())) {
+    if (components_.count("lm_encoder_text_chunk") && components_.at("lm_encoder_text_chunk").graph) {
         prefill_encoder_ = &components_.at("lm_encoder_text_chunk");
     }
     if (const char* env = std::getenv("CACTUS_DISABLE_PREFILL_TAIL_PAD")) {
@@ -738,19 +734,9 @@ bool Model::setup_tokenizer() {
     return tokenizer_->load_vocabulary_with_config(vocab, merges, cfg);
 }
 
-static bool lazy_prefill_enabled() {
-    static int on = -1;
-    if (on < 0) { const char* v = std::getenv("CACTUS_LAZY_PREFILL"); on = (v && v[0] != '0') ? 1 : 0; }
-    return on == 1;
-}
-static bool is_deferred_prefill_component(const std::string& name) {
-    return name == "decoder_prefill_chunk" || name == "lm_encoder_text_chunk"
-        || name == "decoder_embed_chunk";
-}
 bool Model::load_components(const std::unordered_set<std::string>& required_components) {
     for (auto& [name, comp] : components_) {
         if (!required_components.empty() && !required_components.count(name)) continue;
-        if (lazy_prefill_enabled() && is_deferred_prefill_component(name)) continue;
         if (!load_component_graph(comp)) return false;
     }
     return true;
@@ -2289,22 +2275,12 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
 }
 
 void Model::trim_prefill_components() {
-    bool did_unload = false;
     for (Component* c : {decoder_prefill_, prefill_encoder_}) {
         if (!c || !c->graph || c == decoder_ || c == encoder_) continue;
         c->graph->invalidate_metal_state();
         c->graph->release_runtime_buffers();
-        if (lazy_prefill_enabled()) {
-            c->graph->release_all_weight_pages();
-            c->input_buffers.clear();
-            c->graph.reset();
-            did_unload = true;
-        }
     }
     ::cactus_metal_trim_prefill_cache();
-    if (did_unload) {
-        ::cactus_metal_invalidate_host_wraps();
-    }
 }
 
 void Model::prefill_with_images(const std::vector<uint32_t>& tokens,

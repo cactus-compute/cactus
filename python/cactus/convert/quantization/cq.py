@@ -314,11 +314,6 @@ def quantize_orthogonal(weight, bits: int = 4, seed: int = 1234, input_scale: np
 
 
 def quantize_binary_repack(weight, group_size: int = GROUP_SIZE) -> CQTensor | None:
-    """Losslessly repack a QAT-binary tensor: every group holds exactly {-s, +s}.
-
-    Returns None when the tensor is not exactly binary per group (or scales are
-    not fp16-representable), so callers fall through to the rotated quantizers.
-    """
     w = _as_numpy_fp32(weight)
     if w.ndim != 2:
         return None
