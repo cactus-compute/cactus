@@ -1,65 +1,85 @@
-from ..ModelProfiles import models as MP_Models
-import torch
+import json
 import os
 from pathlib import Path
-from huggingface_hub import hf_hub_download
-import json
 from typing import Any
-import numpy as np
 
-#Locations to inputs for
-modality_input_path = {
-    "vision": "/Users/sandhup/Documents/personal/cactus/python/cactus/assets/test_monkey.png",
-    "audio" : "/Users/sandhup/Documents/personal/cactus/python/cactus/assets/test.wav"
+from huggingface_hub import hf_hub_download
+import numpy as np
+import torch
+
+from ..ModelProfiles import models as MP_Models
+
+
+DEFAULT_BATCH_SIZE = 1
+DEFAULT_SEQUENCE_LENGTH = 8
+DEFAULT_PAST_SEQUENCE_LENGTH = 8
+SYNTHETIC_INPUT_STRATEGY = "synthetic"
+PROCESSOR_INPUT_STRATEGY = "processor"
+PREFILL_WITH_CACHE_MODE = "prefill_with_cache"
+DECODE_WITH_CACHE_MODE = "decode_with_cache"
+CONVERTER_JSON_DIR = Path(__file__).resolve().parent / "jsons"
+ASSET_DIR = Path(__file__).resolve().parents[2] / "assets"
+
+CONFIG_SEARCH_SECTIONS = (
+    (),
+    ("text_config",),
+    ("vision_config",),
+    ("audio_config",),
+    ("encoder",),
+    ("decoder",),
+    ("model_config",),
+)
+
+MULTIMODAL_KEYS = (
+    "pixel_values",
+    "pixel_values_videos",
+    "input_features",
+    "input_features_mask",
+    "image_position_ids",
+    "video_position_ids",
+    "mm_token_type_ids",
+)
+
+#Locations to local sample inputs used by processor-backed multimodal exports.
+MODALITY_INPUT_PATH = {
+    "vision": ASSET_DIR / "test_monkey.png",
+    "audio": ASSET_DIR / "test.wav",
 }
 
 
-#Downloads profile-declared files from Hugging Face into the local converter jsons folder.
-def load_files(mp: MP_Models.ModelProfile, model_id: str) -> dict[str, str]:
-    output_dir = Path(__file__).resolve().parent / "jsons" / mp.model_profiles
+#Downloads profile-declared JSON files from Hugging Face and loads them.
+def load_configs(mp: MP_Models.ModelProfile, model_id: str | None) -> dict[str, dict[str, Any]]:
+    if model_id is None:
+        return {}
+
+    output_dir = CONVERTER_JSON_DIR / mp.model_profiles
     output_dir.mkdir(parents=True, exist_ok=True)
     token = os.environ.get("HF_TOKEN")
-    downloaded_files: dict[str, str] = {}
-
-    for file in mp.files:
-        try:
-            downloaded_path = hf_hub_download(repo_id=model_id, filename=file, local_dir=output_dir, token=token)
-        except Exception as e:
-            print(f"Error downloading {file} from {model_id}: {e}")
-            continue
-        
-        downloaded_files[file] = str(downloaded_path)
-    return downloaded_files
-
-
-#Loads downloaded JSON files into dictionaries keyed by filename.
-def _load_json_files(files: dict[str, str]) -> dict[str, dict[str, Any]]:
     configs: dict[str, dict[str, Any]] = {}
 
-    for file_name, file_path in files.items():
-        if not file_name.endswith(".json"):
+    for filename in mp.files:
+        if not filename.endswith(".json"):
             continue
 
-        with open(file_path, "r", encoding="utf-8") as f:
-            configs[file_name] = json.load(f)
+        local_path = output_dir / filename
+
+        if not local_path.exists():
+            try:
+                local_path = Path(hf_hub_download(repo_id=model_id, filename=filename, local_dir=output_dir, token=token))
+            except Exception as e:
+                print(f"Error downloading {filename} from {model_id}: {e}")
+                continue
+
+        with local_path.open("r", encoding="utf-8") as f:
+            configs[filename] = json.load(f)
 
     return configs
 
 
 #Searches through configs to find desired keys, and their values
 def _find_config_value(configs: dict[str, dict[str, Any]], keys: tuple[str, ...]) -> Any | None:
-    search_sections = (
-        (),
-        ("text_config",),
-        ("vision_config",),
-        ("audio_config",),
-        ("encoder",),
-        ("decoder",),
-        ("model_config",),
-    )
-
     for config in configs.values():
-        for section_path in search_sections:
+        for section_path in CONFIG_SEARCH_SECTIONS:
             section = config
 
             for section_name in section_path:
@@ -151,18 +171,72 @@ def _decoder_start_token_id(configs: dict[str, dict[str, Any]]) -> int:
     return _first_int(configs, ("decoder_start_token_id", "bos_token_id", "pad_token_id"), 1)
 
 
+#Builds config-shaped synthetic kwargs when a profile does not use a processor.
+def build_synthetic_kwargs(
+    modalities: tuple[str, ...],
+    configs: dict[str, dict[str, Any]],
+    inference_mode: str,
+    uses_dynamic_cache: bool,
+) -> dict[str, Any]:
+    batch_size = DEFAULT_BATCH_SIZE
+    sequence_length = DEFAULT_SEQUENCE_LENGTH
+    past_sequence_length = DEFAULT_PAST_SEQUENCE_LENGTH
+    kwargs: dict[str, Any] = {}
+
+    if "text" in modalities:
+        if inference_mode == DECODE_WITH_CACHE_MODE and not uses_dynamic_cache:
+            sequence_length = 1
+
+        kwargs["input_ids"] = _build_input_ids(batch_size, sequence_length)
+        kwargs["attention_mask"] = _build_attention_mask(batch_size, sequence_length)
+
+    if "vision" in modalities:
+        kwargs["pixel_values"] = _build_pixel_values(batch_size, configs)
+
+    if "audio" in modalities:
+        kwargs["input_features"] = _build_input_features(batch_size, configs)
+
+    if "audio" in modalities and "text" in modalities and "vision" not in modalities and "speech" in inference_mode:
+        kwargs.pop("input_ids", None)
+        kwargs.pop("attention_mask", None)
+        kwargs["decoder_input_ids"] = torch.full(
+            (batch_size, 1),
+            _decoder_start_token_id(configs),
+            dtype=torch.long,
+        )
+
+    if "audio" in modalities and "text" not in modalities:
+        input_features = kwargs["input_features"]
+        kwargs["attention_mask"] = _build_attention_mask(batch_size, input_features.shape[-1])
+
+    if inference_mode == DECODE_WITH_CACHE_MODE and not uses_dynamic_cache:
+        total_sequence_length = past_sequence_length + sequence_length
+        kwargs["attention_mask"] = _build_attention_mask(batch_size, total_sequence_length)
+        kwargs["past_key_values"] = _build_past_key_values(configs, batch_size, past_sequence_length)
+        kwargs["cache_position"] = torch.arange(
+            past_sequence_length,
+            past_sequence_length + sequence_length,
+            dtype=torch.long,
+        )
+        kwargs["use_cache"] = True
+    elif inference_mode == PREFILL_WITH_CACHE_MODE:
+        kwargs["use_cache"] = True
+
+    return kwargs
+
+
 #Loads the local image asset used for processor-backed multimodal exports.
 def _load_image_asset():
     from PIL import Image
 
-    return Image.open(modality_input_path["vision"]).convert("RGB")
+    return Image.open(MODALITY_INPUT_PATH["vision"]).convert("RGB")
 
 
 #Loads and normalizes the local audio asset used for processor-backed multimodal exports.
 def _load_audio_asset() -> np.ndarray:
     from scipy.io import wavfile
 
-    _sample_rate, audio = wavfile.read(modality_input_path["audio"])
+    _sample_rate, audio = wavfile.read(MODALITY_INPUT_PATH["audio"])
 
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
@@ -261,23 +335,52 @@ def _build_gemma4_processor(model_id: str, configs: dict[str, dict[str, Any]]):
     )
 
 
+#Loads AutoProcessor from local HF cache first, then falls back to normal HF loading.
+def _load_auto_processor(model_id: str, processor_kwargs: dict[str, Any]):
+    from transformers import AutoProcessor
+
+    last_error: Exception | None = None
+
+    for attempt_kwargs in hf_load_kwargs(processor_kwargs):
+        try:
+            return AutoProcessor.from_pretrained(model_id, **attempt_kwargs)
+        except Exception as e:
+            last_error = e
+
+    raise RuntimeError(f"Unable to load processor for {model_id}") from last_error
+
+
+#Returns local-cache-first HF loading kwargs plus a normal network-capable fallback.
+def hf_load_kwargs(load_kwargs: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    if load_kwargs.get("local_files_only") is True:
+        return (load_kwargs,)
+
+    return (
+        {**load_kwargs, "local_files_only": True},
+        load_kwargs,
+    )
+
+
 #Builds real processor-backed tensor kwargs for multimodal models.
 def build_processor_kwargs(
     model_id: str,
     input_modalities: tuple[str, ...],
     configs: dict[str, dict[str, Any]] | None = None,
+    input_strategy: str = PROCESSOR_INPUT_STRATEGY,
 ) -> dict[str, Any]:
-    from transformers import AutoProcessor
-
     configs = configs or {}
     token = os.environ.get("HF_TOKEN")
-    processor_kwargs: dict[str, Any] = {"trust_remote_code": True, "local_files_only": True}
+    processor_kwargs: dict[str, Any] = {"trust_remote_code": True}
     if token:
         processor_kwargs["token"] = token
 
-    processor = _build_gemma4_processor(model_id, configs)
-    if processor is None:
-        processor = AutoProcessor.from_pretrained(model_id, **processor_kwargs)
+    if input_strategy == PROCESSOR_INPUT_STRATEGY:
+        processor = _load_auto_processor(model_id, processor_kwargs)
+    elif input_strategy == "manual_gemma4_processor":
+        processor = _build_gemma4_processor(model_id, configs) or _load_auto_processor(model_id, processor_kwargs)
+    else:
+        raise ValueError(f"Unknown input strategy: {input_strategy}")
+
     prompt_parts = []
     call_kwargs: dict[str, Any] = {"return_tensors": "pt"}
 

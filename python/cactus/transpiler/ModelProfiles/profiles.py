@@ -37,7 +37,7 @@ GEMMA4_E2B_PROFILE = ModelProfile(
     supported_modalties=("audio", "vision", "text"),
     input_strategy="manual_gemma4_processor",
     export_patches=("gemma4_audio_mask",),
-    load_strategy="image_text_to_text",
+    load_strategy="image_text_to_text_strict",
 )
 
 WHISPER_PROFILE = ModelProfile(
@@ -126,12 +126,20 @@ QWEN2_5_0_5B_PROFILE = ModelProfile(
     load_strategy="causal_lm",
 )
 
-ALL_PROFILES = (
-    GEMMA4_E2B_PROFILE,
-    WHISPER_PROFILE,
-    PARAKEET_PROFILE,
-    LFM_VLM_PROFILE,
-    QWEN2_5_0_5B_PROFILE,
-)
+MODEL_ID_MAP = {
+    "google/gemma-4-E2B": GEMMA4_E2B_PROFILE,
+    "openai/whisper-tiny": WHISPER_PROFILE,
+    "nvidia/parakeet-tdt-0.6b-v3": PARAKEET_PROFILE,
+    "LiquidAI/LFM2-VL-3B": LFM_VLM_PROFILE,
+    "Qwen/Qwen2.5-0.5B": QWEN2_5_0_5B_PROFILE,
+}
 
-MODEL_ID_MAP = {}
+MODEL_ID_HINTS = (
+    (("gemma",), GEMMA4_E2B_PROFILE),
+    (("whisper",), WHISPER_PROFILE),
+    (("parakeet",), PARAKEET_PROFILE),
+    (("lfm", "vl"), LFM_VLM_PROFILE),
+    (("lfm", "vision"), LFM_VLM_PROFILE),
+    (("qwen2.5",), QWEN2_5_0_5B_PROFILE),
+    (("qwen2_5",), QWEN2_5_0_5B_PROFILE),
+)
