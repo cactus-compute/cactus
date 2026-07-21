@@ -1051,7 +1051,11 @@ std::vector<std::vector<uint32_t>> Model::decode_batch(const std::vector<uint32_
 bool Model::supports_dynamic_batch() {
     if (!decoder_) return false;
     if (!decoder_->graph && !load_component_graph(*decoder_)) return false;
-    return decoder_->graph->has_dynamic_shapes();
+    if (!decoder_->graph->has_dynamic_shapes()) return false;
+    for (const auto& np : decoder_->graph->nodes_) {
+        if (np->op_type == OpType::CONV_CACHE_STATE || np->op_type == OpType::RECURRENT_CACHE_STATE) return false;
+    }
+    return true;
 }
 
 void Model::set_decode_slots(size_t num_slots) {
@@ -1382,7 +1386,7 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
         cactus_graph_set_prefill_valid_len(0);
         processed += chunk_real;
         tail_executed = chunk_real;
-        tail_padding = effective_chunk - chunk_real;
+        tail_padding = effective_chunk - tail_tokens;
     } else if (use_padded_tail) {
         const size_t pads = effective_chunk - tail_tokens;
         const size_t kept_real = tail_tokens - 1;
