@@ -21,7 +21,7 @@ GEMMA4_E2B_PROFILE = ModelProfile(
     inference_type=GEMMA4_INFERENCE_PATTERNS,
     cache_type=("attention_kv", "sliding_window_attention_kv"),
     cache_policy=("dynamic_cache", "drop_multimodal_on_decode", "shared_kv_layers"),
-    files=("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json"),
+    files=("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json", "merges.txt"),
     fusion_fields=(
         "generic",
         "embedding",
