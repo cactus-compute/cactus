@@ -17,6 +17,7 @@ SYNTHETIC_INPUT_STRATEGY = "synthetic"
 PROCESSOR_INPUT_STRATEGY = "processor"
 PREFILL_WITH_CACHE_MODE = "prefill_with_cache"
 DECODE_WITH_CACHE_MODE = "decode_with_cache"
+DYNAMIC_CACHE_POLICY = "dynamic_cache"
 CONVERTER_JSON_DIR = Path(__file__).resolve().parent / "jsons"
 ASSET_DIR = Path(__file__).resolve().parents[2] / "assets"
 
@@ -223,6 +224,130 @@ def build_synthetic_kwargs(
         kwargs["use_cache"] = True
 
     return kwargs
+
+
+#Builds representative model inputs for the requested modalities and inference mode. X
+def build_input(
+    mp: MP_Models.ModelProfile,
+    input_modalities: tuple[str, ...],
+    input_cls: Any,
+    model_id: str | None = None,
+    inference_mode: str = "prefill_no_cache",
+) -> Any | None:
+    if not all(modality in mp.supported_modalties for modality in input_modalities):
+        print("Requesting unsupported modalities")
+        return None
+
+    configs = load_configs(mp, model_id)
+    modalities = tuple(input_modalities)
+    uses_dynamic_cache = DYNAMIC_CACHE_POLICY in mp.cache_policy
+
+    if model_id is not None and mp.input_strategy != SYNTHETIC_INPUT_STRATEGY:
+        try:
+            return input_cls(
+                args=(),
+                kwargs=build_processor_kwargs(
+                    model_id=model_id,
+                    input_modalities=modalities,
+                    configs=configs,
+                    input_strategy=mp.input_strategy,
+                ),
+                modalities=modalities,
+                inference_mode=inference_mode,
+            )
+        except Exception as e:
+            print(f"{mp.input_strategy} input build failed for {model_id}, falling back to synthetic inputs: {e}")
+
+    return input_cls(
+        args=(),
+        kwargs=build_synthetic_kwargs(
+            modalities=modalities,
+            configs=configs,
+            inference_mode=inference_mode,
+            uses_dynamic_cache=uses_dynamic_cache,
+        ),
+        modalities=modalities,
+        inference_mode=inference_mode,
+    )
+
+
+#Builds one-token decode inputs and flat KV tensors for cache-mode exports. X
+def build_decode_with_cache_input(
+    model: torch.nn.Module,
+    input_: Any,
+    input_cls: Any,
+    cache_spec_cls: Any,
+    model_dtype_fn: Any,
+    drop_multimodal: bool,
+) -> Any:
+    kwargs = dict(input_.kwargs)
+    token_key = "input_ids" if "input_ids" in kwargs else "decoder_input_ids"
+
+    if token_key not in kwargs:
+        raise ValueError(f"{DECODE_WITH_CACHE_MODE} requires input_ids or decoder_input_ids")
+
+    token_ids = kwargs[token_key]
+    batch_size = int(token_ids.shape[0])
+    past_sequence_length = int(token_ids.shape[1])
+    cache_spec = cache_spec_cls.from_model(
+        model=model,
+        batch_size=batch_size,
+        past_sequence_length=past_sequence_length,
+    )
+
+    kwargs[token_key] = token_ids[:, -1:].clone()
+    kwargs["attention_mask"] = torch.ones(
+        (batch_size, past_sequence_length + 1),
+        dtype=torch.long,
+        device=token_ids.device,
+    )
+    kwargs["cache_position"] = torch.arange(
+        past_sequence_length,
+        past_sequence_length + 1,
+        dtype=torch.long,
+        device=token_ids.device,
+    )
+    kwargs["past_key_values"] = cache_spec.empty_tensors(
+        dtype=model_dtype_fn(model),
+        device=token_ids.device,
+    )
+
+    if drop_multimodal:
+        for multimodal_key in MULTIMODAL_KEYS:
+            kwargs.pop(multimodal_key, None)
+
+    return input_cls(
+        args=input_.args,
+        kwargs=kwargs,
+        modalities=input_.modalities,
+        inference_mode=input_.inference_mode,
+    )
+
+
+#Infers batch size from the first tensor-shaped input. X
+def infer_batch_size(kwargs: dict[str, Any]) -> int:
+    for value in kwargs.values():
+        if isinstance(value, torch.Tensor) and value.ndim > 0:
+            return int(value.shape[0])
+
+    return 1
+
+
+#Infers the past/prompt sequence length represented by the export input. X
+def infer_past_sequence_length(input_: Any) -> int:
+    if input_.inference_mode == DECODE_WITH_CACHE_MODE and "cache_position" in input_.kwargs:
+        return int(input_.kwargs["cache_position"][0].item())
+
+    if "input_ids" in input_.kwargs:
+        return int(input_.kwargs["input_ids"].shape[1])
+
+    if "decoder_input_ids" in input_.kwargs:
+        return int(input_.kwargs["decoder_input_ids"].shape[1])
+
+    if "attention_mask" in input_.kwargs:
+        return int(input_.kwargs["attention_mask"].shape[1])
+
+    return 0
 
 
 #Loads the local image asset used for processor-backed multimodal exports.

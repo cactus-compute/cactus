@@ -1,26 +1,14 @@
-import json
 import os
 import inspect
 from dataclasses import dataclass
 from typing import Any
 from pydantic import BaseModel
 import torch
+from transformers import AutoModel
+
 from . import input_utils as IU
 from ..ModelProfiles import models as MP_Models
-
-from transformers import AutoModel, AutoModelForCausalLM, AutoModelForCTC, AutoModelForImageTextToText, AutoModelForSeq2SeqLM, AutoModelForSpeechSeq2Seq
-
-LOAD_STRATEGIES = {
-    "image_text_to_text": (AutoModelForImageTextToText, AutoModelForCausalLM, AutoModel),
-    "image_text_to_text_strict": (AutoModelForImageTextToText, AutoModelForCausalLM),
-    "speech_seq2seq": (AutoModelForSpeechSeq2Seq, AutoModelForSeq2SeqLM, AutoModel),
-    "ctc": (AutoModelForCTC, AutoModel),
-    "causal_lm": (AutoModelForCausalLM, AutoModel),
-}
-
-CACHE_INFERENCE_MODES = {IU.PREFILL_WITH_CACHE_MODE, IU.DECODE_WITH_CACHE_MODE}
-DYNAMIC_CACHE_POLICY = "dynamic_cache"
-DROP_MULTIMODAL_ON_DECODE_POLICY = "drop_multimodal_on_decode"
+from . import constants
 
 
 @dataclass(slots=True)
@@ -29,7 +17,6 @@ class Input:
     kwargs: dict
     modalities: tuple[str, ...]
     inference_mode: str
-
 
 @dataclass(slots=True)
 class Model:
@@ -40,26 +27,6 @@ class Model:
 
     def export(self, input: Input) -> "LayerMap":
         return export_(model=self, input=input)
-
-@dataclass(slots=True)
-class TensorInstance:
-    shape: list[Any]
-    dtype: str
-
-    @classmethod
-    def from_tensor(cls, x: torch.Tensor) -> "TensorInstance":
-        return cls(shape=[jsonable_shape_dim(dim) for dim in x.shape], dtype=str(x.dtype))
-
-
-@dataclass(slots=True)
-class Slice:
-    start: Any
-    stop: Any
-    step: Any
-
-    @classmethod
-    def from_slice(cls, x: slice) -> "Slice":
-        return cls(start=jsonable(x.start), stop=jsonable(x.stop), step=jsonable(x.step))
 
 
 @dataclass(slots=True)
@@ -77,100 +44,29 @@ class CacheSpec:
     config: Any
     past_sequence_length: int
 
-    #Infers cache tensor shapes from the loaded model config and attention modules.
+    #Delegates cache tensor shape inference to the utility helper below. X
     @classmethod
     def from_model(cls, model: torch.nn.Module, batch_size: int, past_sequence_length: int) -> "CacheSpec":
-        config = getattr(model, "config", None)
-        text_config = get_text_config(config)
-        num_key_value_heads = int(getattr(text_config, "num_key_value_heads", getattr(text_config, "num_attention_heads", 1)))
-        num_attention_heads = int(getattr(text_config, "num_attention_heads", num_key_value_heads))
-        hidden_size = int(getattr(text_config, "hidden_size", num_attention_heads))
-        head_dim = int(getattr(text_config, "head_dim", max(1, hidden_size // max(1, num_attention_heads))))
-        sliding_window = getattr(text_config, "sliding_window", None) or getattr(text_config, "attention_chunk_size", None)
-        decoder_layers = model_decoder_layers(model)
-        layers: list[CacheLayerSpec] = []
+        return cache_spec_from_model(cls, model, batch_size, past_sequence_length)
 
-        for index, layer_type in enumerate(cache_layer_types(text_config)):
-            cache_sequence_length = past_sequence_length
-            layer_sliding_window = None
-            layer_num_key_value_heads = num_key_value_heads
-            layer_head_dim = head_dim
-
-            if index < len(decoder_layers):
-                attention = attention_module(decoder_layers[index])
-                layer_head_dim = int(getattr(attention, "head_dim", layer_head_dim))
-                key_out_features = linear_out_features(getattr(attention, "k_proj", None))
-
-                if key_out_features is not None:
-                    layer_num_key_value_heads = max(1, key_out_features // max(1, layer_head_dim))
-
-            if layer_type in ("sliding_attention", "chunked_attention") and sliding_window is not None:
-                layer_sliding_window = int(sliding_window)
-                cache_sequence_length = min(past_sequence_length, max(1, layer_sliding_window - 1))
-
-            cache_shape = (batch_size, layer_num_key_value_heads, cache_sequence_length, layer_head_dim)
-            layers.append(
-                CacheLayerSpec(
-                    index=index,
-                    layer_type=str(layer_type),
-                    key_shape=cache_shape,
-                    value_shape=cache_shape,
-                    sliding_window=layer_sliding_window,
-                )
-            )
-
-        return cls(
-            layers=tuple(layers),
-            config=config,
-            past_sequence_length=past_sequence_length,
-        )
-
-    #Creates zero-filled flat KV tensors that match this cache spec.
+    #Delegates creation of zero-filled flat KV tensors to the utility helper below. X
     def empty_tensors(self, dtype: torch.dtype = torch.float32, device: torch.device | None = None) -> tuple[torch.Tensor, ...]:
-        tensors: list[torch.Tensor] = []
-        device = device or torch.device("cpu")
+        return cache_spec_empty_tensors(self, dtype=dtype, device=device)
 
-        for layer in self.layers:
-            tensors.append(torch.zeros(layer.key_shape, dtype=dtype, device=device))
-            tensors.append(torch.zeros(layer.value_shape, dtype=dtype, device=device))
-
-        return tuple(tensors)
-
-    #Rebuilds an HF DynamicCache from flat exported tensor inputs.
+    #Delegates rebuilding an HF DynamicCache from flat exported tensor inputs. X
     def to_dynamic_cache(self, flat_tensors: tuple[torch.Tensor, ...]):
-        from transformers.cache_utils import DynamicCache
-
-        if len(flat_tensors) != len(self.layers) * 2:
-            raise ValueError(f"Expected {len(self.layers) * 2} cache tensors, got {len(flat_tensors)}")
-
-        cache = DynamicCache(config=self.config)
-
-        for index, layer_spec in enumerate(self.layers):
-            flat_index = index * 2
-            layer = cache.layers[layer_spec.index]
-            key = flat_tensors[flat_index]
-            value = flat_tensors[flat_index + 1]
-            layer.keys = key
-            layer.values = value
-            layer.dtype = key.dtype
-            layer.device = key.device
-            layer.is_initialized = True
-
-            if hasattr(layer, "cumulative_length"):
-                layer.cumulative_length = self.past_sequence_length
-
-        return cache
+        return cache_spec_to_dynamic_cache(self, flat_tensors)
 
 
-#Wraps HF cache-mode forwards so torch.export only sees tensor inputs/outputs.
+#Wraps HF cache-mode forwards so torch.export only sees tensor inputs/outputs. X
 class CacheExportWrapper(torch.nn.Module):
-    #Stores the wrapped model and cache spec used to tensorize cache state.
+    #Stores the wrapped model and cache spec used to tensorize cache state. X
     def __init__(self, model: torch.nn.Module, cache_spec: CacheSpec):
         super().__init__()
         self.model = model
         self.cache_spec = cache_spec
 
-    #Runs the HF model with DynamicCache internally and returns logits plus flat cache tensors.
+    #Runs the HF model with DynamicCache internally and returns logits plus flat cache tensors. X
     def forward(
         self,
         input_ids=None,
@@ -242,22 +138,13 @@ class LayerMap(BaseModel):
 
 ###################################################### Model utility helpers!!!!! ########################################################################.
 
-#Converts symbolic shape dims to JSON-safe values without forcing torch guards. x
-def jsonable_shape_dim(x: Any) -> Any:
-    if isinstance(x, int):
-        return x
-
-    return str(x)
-
-
-#Recursively converts FX/export metadata into JSON-safe Python values. x
+#Recursively converts FX/export metadata into JSON-safe Python values.
 def jsonable(x: Any) -> Any:
     if isinstance(x, torch.fx.Node):
         return {"node": x.name}
 
     if isinstance(x, torch.Tensor):
-        tensor = TensorInstance.from_tensor(x)
-        return {"shape": tensor.shape, "dtype": tensor.dtype}
+        return {"shape": x if isinstance(x, int) else str(x), "dtype": x.dtype}
 
     if isinstance(x, torch.Size):
         return list(x)
@@ -269,8 +156,7 @@ def jsonable(x: Any) -> Any:
         return str(x)
 
     if isinstance(x, slice):
-        slice_ = Slice.from_slice(x)
-        return {"start": slice_.start, "stop": slice_.stop, "step": slice_.step}
+        return {"start":jsonable(x.start), "stop":jsonable(x.stop), "step":jsonable(x.step)}
 
     if isinstance(x, range):
         return list(x)
@@ -287,7 +173,7 @@ def jsonable(x: Any) -> Any:
     return repr(x)
 
 
-#Returns the text/decoder config for models that wrap language configs inside multimodal configs.
+#Returns the text/decoder config for models that wrap language configs inside multimodal configs. X
 def get_text_config(config: Any) -> Any:
     if config is not None and hasattr(config, "get_text_config"):
         try:
@@ -298,7 +184,7 @@ def get_text_config(config: Any) -> Any:
     return config
 
 
-#Finds the dtype of the loaded model parameters.
+#Finds the dtype of the loaded model parameters. X
 def model_dtype(model: torch.nn.Module) -> torch.dtype:
     try:
         param = next(model.parameters())
@@ -307,7 +193,7 @@ def model_dtype(model: torch.nn.Module) -> torch.dtype:
         return torch.float32
 
 
-#Finds decoder layer modules across common HF model wrapper layouts.
+#Finds decoder layer modules across common HF model wrapper layouts. X
 def model_decoder_layers(model: torch.nn.Module) -> tuple[Any, ...]:
     candidates = (
         ("model", "language_model", "layers"),
@@ -332,7 +218,7 @@ def model_decoder_layers(model: torch.nn.Module) -> tuple[Any, ...]:
     return ()
 
 
-#Finds the attention module inside one decoder layer across common naming conventions.
+#Finds the attention module inside one decoder layer across common naming conventions. X
 def attention_module(layer: Any) -> Any:
     for attr in ("self_attn", "attention", "attn"):
         value = getattr(layer, attr, None)
@@ -342,7 +228,7 @@ def attention_module(layer: Any) -> Any:
     return layer
 
 
-#Returns a linear-like module's output feature count when available.
+#Returns a linear-like module's output feature count when available. X
 def linear_out_features(module: Any) -> int | None:
     if module is None:
         return None
@@ -360,7 +246,7 @@ def linear_out_features(module: Any) -> int | None:
     return int(weight.shape[0])
 
 
-#Infers which decoder layers actually own KV cache entries.
+#Infers which decoder layers actually own KV cache entries. X
 def cache_layer_types(text_config: Any) -> tuple[str, ...]:
     num_hidden_layers = int(getattr(text_config, "num_hidden_layers", 1))
     layer_types = getattr(text_config, "layer_types", None)
@@ -379,7 +265,97 @@ def cache_layer_types(text_config: Any) -> tuple[str, ...]:
     return layer_types
 
 
-#Selects the main tensor output from a model output object.
+#Infers cache tensor shapes from the loaded model config and attention modules. X
+def cache_spec_from_model(cls: type[CacheSpec], model: torch.nn.Module, batch_size: int, past_sequence_length: int) -> CacheSpec:
+    config = getattr(model, "config", None)
+    text_config = get_text_config(config)
+    num_key_value_heads = int(getattr(text_config, "num_key_value_heads", getattr(text_config, "num_attention_heads", 1)))
+    num_attention_heads = int(getattr(text_config, "num_attention_heads", num_key_value_heads))
+    hidden_size = int(getattr(text_config, "hidden_size", num_attention_heads))
+    head_dim = int(getattr(text_config, "head_dim", max(1, hidden_size // max(1, num_attention_heads))))
+    sliding_window = getattr(text_config, "sliding_window", None) or getattr(text_config, "attention_chunk_size", None)
+    decoder_layers = model_decoder_layers(model)
+    layers: list[CacheLayerSpec] = []
+
+    for index, layer_type in enumerate(cache_layer_types(text_config)):
+        cache_sequence_length = past_sequence_length
+        layer_sliding_window = None
+        layer_num_key_value_heads = num_key_value_heads
+        layer_head_dim = head_dim
+
+        if index < len(decoder_layers):
+            attention = attention_module(decoder_layers[index])
+            layer_head_dim = int(getattr(attention, "head_dim", layer_head_dim))
+            key_out_features = linear_out_features(getattr(attention, "k_proj", None))
+
+            if key_out_features is not None:
+                layer_num_key_value_heads = max(1, key_out_features // max(1, layer_head_dim))
+
+        if layer_type in ("sliding_attention", "chunked_attention") and sliding_window is not None:
+            layer_sliding_window = int(sliding_window)
+            cache_sequence_length = min(past_sequence_length, max(1, layer_sliding_window - 1))
+
+        cache_shape = (batch_size, layer_num_key_value_heads, cache_sequence_length, layer_head_dim)
+        layers.append(
+            CacheLayerSpec(
+                index=index,
+                layer_type=str(layer_type),
+                key_shape=cache_shape,
+                value_shape=cache_shape,
+                sliding_window=layer_sliding_window,
+            )
+        )
+
+    return cls(
+        layers=tuple(layers),
+        config=config,
+        past_sequence_length=past_sequence_length,
+    )
+
+
+#Creates zero-filled flat KV tensors that match this cache spec. X
+def cache_spec_empty_tensors(
+    cache_spec: CacheSpec,
+    dtype: torch.dtype = torch.float32,
+    device: torch.device | None = None,
+) -> tuple[torch.Tensor, ...]:
+    tensors: list[torch.Tensor] = []
+    device = device or torch.device("cpu")
+
+    for layer in cache_spec.layers:
+        tensors.append(torch.zeros(layer.key_shape, dtype=dtype, device=device))
+        tensors.append(torch.zeros(layer.value_shape, dtype=dtype, device=device))
+
+    return tuple(tensors)
+
+
+#Rebuilds an HF DynamicCache from flat exported tensor inputs. X
+def cache_spec_to_dynamic_cache(cache_spec: CacheSpec, flat_tensors: tuple[torch.Tensor, ...]):
+    from transformers.cache_utils import DynamicCache
+
+    if len(flat_tensors) != len(cache_spec.layers) * 2:
+        raise ValueError(f"Expected {len(cache_spec.layers) * 2} cache tensors, got {len(flat_tensors)}")
+
+    cache = DynamicCache(config=cache_spec.config)
+
+    for index, layer_spec in enumerate(cache_spec.layers):
+        flat_index = index * 2
+        layer = cache.layers[layer_spec.index]
+        key = flat_tensors[flat_index]
+        value = flat_tensors[flat_index + 1]
+        layer.keys = key
+        layer.values = value
+        layer.dtype = key.dtype
+        layer.device = key.device
+        layer.is_initialized = True
+
+        if hasattr(layer, "cumulative_length"):
+            layer.cumulative_length = cache_spec.past_sequence_length
+
+    return cache
+
+
+#Selects the main tensor output from a model output object. X
 def primary_model_output(outputs: Any) -> torch.Tensor:
     if isinstance(outputs, dict):
         for key in ("logits", "last_hidden_state"):
@@ -399,7 +375,7 @@ def primary_model_output(outputs: Any) -> torch.Tensor:
     raise ValueError("Could not find a tensor output to export")
 
 
-#Flattens an HF DynamicCache into key/value tensor outputs.
+#Flattens an HF DynamicCache into key/value tensor outputs. X
 def flatten_dynamic_cache(cache: Any) -> tuple[torch.Tensor, ...]:
     if cache is None:
         return ()
@@ -431,7 +407,7 @@ def flatten_dynamic_cache(cache: Any) -> tuple[torch.Tensor, ...]:
     return tuple(flat)
 
 
-#Drops kwargs unsupported by a module's forward signature.
+#Drops kwargs unsupported by a module's forward signature. X
 def filter_forward_kwargs(model: torch.nn.Module, kwargs: dict[str, Any]) -> dict[str, Any]:
     try:
         signature = inspect.signature(model.forward)
@@ -444,7 +420,7 @@ def filter_forward_kwargs(model: torch.nn.Module, kwargs: dict[str, Any]) -> dic
     return {key: value for key, value in kwargs.items() if key in signature.parameters}
 
 
-#Extracts tensor metadata from an exported FX node.
+#Extracts tensor metadata from an exported FX node. X
 def extract_tensor_meta(node: torch.fx.Node) -> Any | None:
     if "val" not in node.meta:
         return None
@@ -452,7 +428,7 @@ def extract_tensor_meta(node: torch.fx.Node) -> Any | None:
     return jsonable(node.meta["val"])
 
 
-#Extracts module stack metadata from an exported FX node.
+#Extracts module stack metadata from an exported FX node. X
 def extract_module_stack(node: torch.fx.Node) -> Any | None:
     stack = node.meta.get("nn_module_stack", None)
     if stack is None:
@@ -477,101 +453,7 @@ def extract_module_stack(node: torch.fx.Node) -> Any | None:
     return out
 
 
-#Builds representative model inputs for the requested modalities and inference mode.
-def build_input(
-    mp: MP_Models.ModelProfile,
-    input_modalities: tuple[str, ...],
-    model_id: str | None = None,
-    inference_mode: str = "prefill_no_cache",
-) -> Input | None:
-    if not all(modality in mp.supported_modalties for modality in input_modalities):
-        print("Requesting unsupported modalities")
-        return None
-
-    configs = IU.load_configs(mp, model_id)
-    modalities = tuple(input_modalities)
-    uses_dynamic_cache = DYNAMIC_CACHE_POLICY in mp.cache_policy
-
-    if model_id is not None and mp.input_strategy != IU.SYNTHETIC_INPUT_STRATEGY:
-        try:
-            return Input(
-                args=(),
-                kwargs=IU.build_processor_kwargs(
-                    model_id=model_id,
-                    input_modalities=modalities,
-                    configs=configs,
-                    input_strategy=mp.input_strategy,
-                ),
-                modalities=modalities,
-                inference_mode=inference_mode,
-            )
-        except Exception as e:
-            print(f"{mp.input_strategy} input build failed for {model_id}, falling back to synthetic inputs: {e}")
-
-    return Input(
-        args=(),
-        kwargs=IU.build_synthetic_kwargs(
-            modalities=modalities,
-            configs=configs,
-            inference_mode=inference_mode,
-            uses_dynamic_cache=uses_dynamic_cache,
-        ),
-        modalities=modalities,
-        inference_mode=inference_mode,
-    )
-
-
-#Builds one-token decode inputs and flat KV tensors for cache-mode exports.
-def build_decode_with_cache_input(
-    model: torch.nn.Module,
-    input: Input,
-    drop_multimodal: bool,
-) -> Input:
-    kwargs = dict(input.kwargs)
-    token_key = "input_ids" if "input_ids" in kwargs else "decoder_input_ids"
-
-    if token_key not in kwargs:
-        raise ValueError(f"{IU.DECODE_WITH_CACHE_MODE} requires input_ids or decoder_input_ids")
-
-    token_ids = kwargs[token_key]
-    batch_size = int(token_ids.shape[0])
-    past_sequence_length = int(token_ids.shape[1])
-    cache_spec = CacheSpec.from_model(
-        model=model,
-        batch_size=batch_size,
-        past_sequence_length=past_sequence_length,
-    )
-
-    kwargs[token_key] = token_ids[:, -1:].clone()
-    kwargs["attention_mask"] = torch.ones(
-        (batch_size, past_sequence_length + 1),
-        dtype=torch.long,
-        device=token_ids.device,
-    )
-    kwargs["cache_position"] = torch.arange(
-        past_sequence_length,
-        past_sequence_length + 1,
-        dtype=torch.long,
-        device=token_ids.device,
-    )
-    kwargs["past_key_values"] = cache_spec.empty_tensors(
-        dtype=model_dtype(model),
-        device=token_ids.device,
-    )
-
-    if drop_multimodal:
-        for multimodal_key in IU.MULTIMODAL_KEYS:
-            kwargs.pop(multimodal_key, None)
-
-    return Input(
-        args=input.args,
-        kwargs=kwargs,
-        modalities=input.modalities,
-        inference_mode=input.inference_mode,
-    )
-
-
-#Loads the best HF model class for the requested model profile.
+#Loads the best HF model class for the requested model profile. X
 def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None) -> torch.nn.Module:
     token = os.environ.get("HF_TOKEN")
     load_kwargs: dict[str, Any] = {"trust_remote_code": True}
@@ -582,7 +464,7 @@ def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None) -> torch
         candidate_classes = (AutoModel,)
         export_patches = ()
     else:
-        candidate_classes = LOAD_STRATEGIES.get(mp.load_strategy, (AutoModel,))
+        candidate_classes = constants.LOAD_STRATEGIES.get(mp.load_strategy, (AutoModel,))
         export_patches = mp.export_patches
 
     last_error: Exception | None = None
@@ -611,7 +493,7 @@ def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None) -> torch
     raise RuntimeError(f"Unable to load model {model_id}") from last_error
 
 
-#Sets an attribute on a config object and common nested config objects.
+#Sets an attribute on a config object and common nested config objects. X
 def _set_config_attr_recursive(config: Any, attr: str, value: Any, seen: set[int] | None = None) -> None:
     if config is None:
         return
@@ -637,18 +519,18 @@ def _set_config_attr_recursive(config: Any, attr: str, value: Any, seen: set[int
         _set_config_attr_recursive(getattr(config, child_name, None), attr, value, seen)
 
 
-#Configures cache-related model settings before torch.export.
+#Configures cache-related model settings before torch.export. X
 def configure_model_for_export(model: torch.nn.Module, should_use_cache: bool) -> None:
     for config_name in ("config", "generation_config"):
         config = getattr(model, config_name, None)
         _set_config_attr_recursive(config, "use_cache", should_use_cache)
 
 
-#Gemma-specific: replaces Gemma4's audio bidirectional mask helper with an exportable tensor implementation.
+#Gemma-specific: replaces Gemma4's audio bidirectional mask helper with an exportable tensor implementation. X
 def patch_gemma4_audio_mask_for_export() -> None:
     import transformers.models.gemma4.modeling_gemma4 as gemma4_modeling
 
-    #Gemma-specific: computes Gemma4 audio tower local bidirectional attention masks without vmap/proxy issues.
+    #Gemma-specific: computes Gemma4 audio tower local bidirectional attention masks without vmap/proxy issues. X
     def exportable_bidirectional_mask(config, inputs_embeds, attention_mask=None, and_mask_function=None, **kwargs):
         batch_size, seq_len = inputs_embeds.shape[:2]
         device = inputs_embeds.device
@@ -675,68 +557,51 @@ EXPORT_PATCHES = {
 }
 
 
-#Builds a loaded model bundle from profile, modalities, model id, and inference mode.
+#Builds a loaded model bundle from profile, modalities, model id, and inference mode. X
 def create_model(
     mp: MP_Models.ModelProfile,
     input_modalities: tuple[str, ...],
     model_id: str,
     inference_mode: str = "prefill_no_cache",
 ) -> Model:
-    input_ = build_input(mp, input_modalities, model_id=model_id, inference_mode=inference_mode)
+    input_ = IU.build_input(
+        mp=mp,
+        input_modalities=input_modalities,
+        input_cls=Input,
+        model_id=model_id,
+        inference_mode=inference_mode,
+    )
 
     if input_ is None:
         raise ValueError(f"Could not build input for modalities {input_modalities}")
 
     loaded_model = load_model(model_id, mp)
-    if input_.inference_mode == IU.DECODE_WITH_CACHE_MODE and DYNAMIC_CACHE_POLICY in mp.cache_policy:
-        input_ = build_decode_with_cache_input(
+    if input_.inference_mode == IU.DECODE_WITH_CACHE_MODE and constants.DYNAMIC_CACHE_POLICY in mp.cache_policy:
+        input_ = IU.build_decode_with_cache_input(
             model=loaded_model,
-            input=input_,
-            drop_multimodal=DROP_MULTIMODAL_ON_DECODE_POLICY in mp.cache_policy,
+            input_=input_,
+            input_cls=Input,
+            cache_spec_cls=CacheSpec,
+            model_dtype_fn=model_dtype,
+            drop_multimodal=constants.DROP_MULTIMODAL_ON_DECODE_POLICY in mp.cache_policy,
         )
 
     return Model(name=model_id, model_profile=mp, input=input_, model=loaded_model)
 
 
-#Infers batch size from the first tensor-shaped input.
-def infer_batch_size(kwargs: dict[str, Any]) -> int:
-    for value in kwargs.values():
-        if isinstance(value, torch.Tensor) and value.ndim > 0:
-            return int(value.shape[0])
-
-    return 1
-
-
-#Infers the past/prompt sequence length represented by the export input.
-def infer_past_sequence_length(input: Input) -> int:
-    if input.inference_mode == IU.DECODE_WITH_CACHE_MODE and "cache_position" in input.kwargs:
-        return int(input.kwargs["cache_position"][0].item())
-
-    if "input_ids" in input.kwargs:
-        return int(input.kwargs["input_ids"].shape[1])
-
-    if "decoder_input_ids" in input.kwargs:
-        return int(input.kwargs["decoder_input_ids"].shape[1])
-
-    if "attention_mask" in input.kwargs:
-        return int(input.kwargs["attention_mask"].shape[1])
-
-    return 0
-
-
-#Exports the prepared model and serializes its FX graph into a LayerMap.
+#Exports the prepared model and serializes its FX graph into a LayerMap. X
 def export_(model: Model, input: Input) -> LayerMap:
-    should_use_cache = input.inference_mode in CACHE_INFERENCE_MODES
+    should_use_cache = input.inference_mode in constants.CACHE_INFERENCE_MODES
     configure_model_for_export(model.model, should_use_cache=should_use_cache)
     export_model = model.model
 
-    if should_use_cache and DYNAMIC_CACHE_POLICY in model.model_profile.cache_policy:
+    if should_use_cache and constants.DYNAMIC_CACHE_POLICY in model.model_profile.cache_policy:
         export_model = CacheExportWrapper(
             model=model.model,
             cache_spec=CacheSpec.from_model(
                 model=model.model,
-                batch_size=infer_batch_size(input.kwargs),
-                past_sequence_length=infer_past_sequence_length(input),
+                batch_size=IU.infer_batch_size(input.kwargs),
+                past_sequence_length=IU.infer_past_sequence_length(input),
             ),
         )
 
