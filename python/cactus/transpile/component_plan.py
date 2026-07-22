@@ -160,7 +160,7 @@ def infer_component_plan_from_config(
     model_type = _model_type(config, config_txt)
     lowered_id = model_id.lower()
     architectures = _lowered_architectures(config, config_txt)
-    profile = profile_for_model_type(model_type) or profile_for_model_id(model_id)
+    profile = profile_for_model_id(model_id) or profile_for_model_type(model_type)
     profile_plan = _plan_from_profile(profile, config) if profile is not None else None
     if profile_plan is not None:
         return profile_plan

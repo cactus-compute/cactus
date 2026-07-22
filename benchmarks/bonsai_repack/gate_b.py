@@ -30,20 +30,26 @@ def source_tensors(src_dir):
 def check_bundle(bundle_dir, src_dir):
     manifest = json.loads((Path(bundle_dir) / "conversion_manifest.json").read_text())
     src_map = source_tensors(src_dir)
-    checked = failed = 0
+    checked = failed = expected_rotated = 0
     for row in manifest:
         if row["precision"] != "CQ1" or row["status"] != "converted":
             continue
         path = Path(bundle_dir) / row["output_file"]
         header = read_header(path)
+        name = row["source_name"]
         if not header.flags & FLAG_NO_ROTATION:
-            print(f"NOT-REPACKED (rotated CQ1): {row['output_file']}")
-            failed += 1
+            with safe_open(src_map[name], framework="pt") as f:
+                w = f.get_tensor(name).float().numpy()
+            if quantize_binary_repack(w) is None:
+                print(f"EXPECTED-ROTATED (not repackable): {row['output_file']}")
+                expected_rotated += 1
+            else:
+                print(f"NOT-REPACKED but repackable: {row['output_file']}")
+                failed += 1
             continue
         if row.get("scale_factor", 1.0) != 1.0:
             print(f"SKIP scale_factor={row['scale_factor']}: {row['output_file']}")
             continue
-        name = row["source_name"]
         with safe_open(src_map[name], framework="pt") as f:
             w = f.get_tensor(name).float().numpy()
         deq = dequantize_cq_file(path, header, torch.float32, row_batch_size=1024).numpy()
@@ -52,6 +58,8 @@ def check_bundle(bundle_dir, src_dir):
             bad = np.abs(deq - w)
             print(f"MISMATCH {row['output_file']}: max abs err {bad.max()}, {np.count_nonzero(bad)} elems")
             failed += 1
+    if expected_rotated:
+        print(f"{expected_rotated} tensors kept rotated CQ1 (not losslessly repackable)")
     return checked, failed
 
 

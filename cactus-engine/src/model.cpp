@@ -356,6 +356,9 @@ void Model::maybe_capture_handoff_probe_hidden(const Component& comp, const std:
         static_cast<size_t>(desc.shape.back()) != static_cast<size_t>(handoff_probe_feat_dim_)) return;
     size_t rows = desc.total_size / handoff_probe_feat_dim_;
     if (rows == 0) return;
+    if (cactus_default_backend() == ComputeBackend::METAL && cactus_metal_available()) {
+        cactus_metal_session_sync();
+    }
     const auto* data = static_cast<const uint8_t*>(comp.graph->get_output(node));
     if (!data) return;
     for (size_t row = 0; row < rows; ++row) {
@@ -1352,8 +1355,9 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     const bool use_padded_tail = !pad_tail && !prefill_tail_pad_disabled_
         && has_sliding_window_cache && !has_recurrent_state && !has_conv_state
         && tail_tokens > 8 && !padded_window_too_small;
+    const bool metal_prefill = cactus_default_backend() == ComputeBackend::METAL && cactus_metal_available();
     const bool use_recurrent_tail = !pad_tail && !use_padded_tail && !prefill_tail_pad_disabled_
-        && (has_recurrent_state || has_conv_state) && tail_tokens > 8;
+        && (has_recurrent_state || has_conv_state) && tail_tokens > 8 && metal_prefill;
     const size_t executable_tokens = whole_chunks_end + (pad_tail ? effective_chunk : 0);
     if (executable_tokens == 0 && !use_padded_tail && !use_recurrent_tail) {
         result.scalar_tail_tokens = tail_tokens;

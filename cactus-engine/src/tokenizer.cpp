@@ -13,9 +13,11 @@ namespace engine {
 
 namespace {
 
-std::string format_needle_query_text(const std::vector<ChatMessage>& messages) {
+std::string format_needle_query_text(const std::vector<ChatMessage>& messages, bool add_generation_prompt) {
     std::string system_text;
     std::string user_query;
+    size_t user_count = 0;
+    bool has_non_legacy_turn = false;
 
     for (const auto& msg : messages) {
         if (msg.role == "system" || msg.role == "developer") {
@@ -23,13 +25,38 @@ std::string format_needle_query_text(const std::vector<ChatMessage>& messages) {
             system_text += msg.content;
         } else if (msg.role == "user") {
             user_query = msg.content;
+            user_count++;
+        } else {
+            has_non_legacy_turn = true;
         }
     }
 
-    if (user_query.empty() && !messages.empty()) user_query = messages.back().content;
-    if (system_text.empty()) return user_query;
-    if (user_query.empty()) return system_text;
-    return system_text + "\n\n" + user_query;
+    if (!has_non_legacy_turn && user_count <= 1) {
+        if (user_query.empty() && !messages.empty()) user_query = messages.back().content;
+        if (system_text.empty()) return user_query;
+        if (user_query.empty()) return system_text;
+        return system_text + "\n\n" + user_query;
+    }
+
+    std::string transcript = system_text;
+    for (const auto& msg : messages) {
+        if (msg.role == "system" || msg.role == "developer") continue;
+        if (!transcript.empty()) transcript += "\n\n";
+        if (msg.role == "assistant") {
+            transcript += "Assistant: " + msg.content;
+        } else if (msg.role == "tool") {
+            transcript += "Tool";
+            if (!msg.name.empty()) transcript += " " + msg.name;
+            transcript += ": " + msg.content;
+        } else {
+            transcript += "User: " + msg.content;
+        }
+    }
+    if (add_generation_prompt) {
+        if (!transcript.empty()) transcript += "\n\n";
+        transcript += "Assistant:";
+    }
+    return transcript;
 }
 
 std::string format_tool_call_for_prompt(const std::string& name, const std::string& arguments, bool gemma4) {
@@ -516,6 +543,12 @@ std::string lstrip_newlines(const std::string& s) {
     size_t a = s.find_first_not_of('\n');
     return a == std::string::npos ? "" : s.substr(a);
 }
+std::string trim_whitespace(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\n\r\f\v");
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\n\r\f\v");
+    return s.substr(a, b - a + 1);
+}
 }  // namespace
 
 std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
@@ -538,8 +571,18 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
     }
 
     long last_query_index = static_cast<long>(n) - 1;
-    for (long i = static_cast<long>(n) - 1; i >= 0; --i) {
-        if (messages[i].role == "user") { last_query_index = i; break; }
+    for (long q = static_cast<long>(n) - 1; q >= 0; --q) {
+        const auto& msg = messages[q];
+        if (msg.role == "system" || msg.role == "developer" || msg.role == "assistant" || msg.role == "tool") continue;
+        const std::string trimmed = trim_whitespace(msg.content);
+        const std::string open_tag = "<tool_response>";
+        const std::string close_tag = "</tool_response>";
+        const bool is_tool_response = trimmed.size() >= open_tag.size() + close_tag.size()
+            && trimmed.compare(0, open_tag.size(), open_tag) == 0
+            && trimmed.compare(trimmed.size() - close_tag.size(), close_tag.size(), close_tag) == 0;
+        if (is_tool_response) continue;
+        last_query_index = q;
+        break;
     }
 
     for (size_t i = first; i < n; i++) {
@@ -571,7 +614,7 @@ std::string Tokenizer::format_qwen_style(const std::vector<ChatMessage>& message
                 content = lstrip_newlines(content.substr(tpos + 8));
             }
             result += "<|im_start|>assistant\n";
-            if (template_has_thinking && static_cast<long>(i) > last_query_index && (i == n - 1 || !reasoning.empty())) {
+            if (template_has_thinking && static_cast<long>(i) > last_query_index) {
                 result += "<think>\n" + reasoning + "\n</think>\n\n" + lstrip_newlines(content);
             } else {
                 result += content;
@@ -670,10 +713,10 @@ std::string Tokenizer::format_lfm2_style(const std::vector<ChatMessage>& message
     return result;
 }
 
-std::string Tokenizer::format_needle_style(const std::vector<ChatMessage>& messages, bool /*add_generation_prompt*/,
+std::string Tokenizer::format_needle_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
                                            const std::string& tools_json) const {
     std::string serialized_tools = tools_json.empty() ? "[]" : tools_json;
-    return format_needle_query_text(messages) + "<tools>" + serialized_tools + "</s>";
+    return format_needle_query_text(messages, add_generation_prompt) + "<tools>" + serialized_tools + "</s>";
 }
 
 std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,

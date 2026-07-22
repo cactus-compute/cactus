@@ -36,6 +36,8 @@ class ModelProfile:
     force_component_pipeline: bool = False
     aliases: tuple[tuple[str, str], ...] = ()
     regex_aliases: tuple[tuple[str, str], ...] = ()
+    default_skip_model_load: bool = False
+    default_low_memory_load: bool = False
 
 
 GEMMA4_PROFILE = ModelProfile(
@@ -225,11 +227,33 @@ NEEDLE_PROFILE = ModelProfile(
 )
 
 
+BONSAI_PROFILE = ModelProfile(
+    family="bonsai",
+    model_id_markers=("bonsai",),
+    avoid_native_loader=True,
+    stop_tokens=("<|im_end|>",),
+    prompt_style="qwen_chat",
+    default_task="causal_lm_logits",
+    default_components=(
+        "decoder",
+        "decoder_step",
+        "decoder_media_step",
+        "decoder_prefill_chunk",
+        "lm_encoder_step",
+        "lm_encoder_text_chunk",
+    ),
+    force_component_pipeline=True,
+    default_skip_model_load=True,
+    default_low_memory_load=True,
+)
+
+
 PROFILES: tuple[ModelProfile, ...] = (
     GEMMA4_PROFILE,
     LFM2_PROFILE,
     PARAKEET_TDT_PROFILE,
     WHISPER_PROFILE,
+    BONSAI_PROFILE,
     QWEN_PROFILE,
     NEEDLE_PROFILE,
 )

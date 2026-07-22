@@ -5659,7 +5659,7 @@ def _build_qwen_causal_lm_component_specs(
         decoder_media_step = Qwen35EmbedsCausalLMStepAdapter(model).eval()
         decoder_prefill_chunk = Qwen35EmbedsCausalLMPrefillChunkAdapter(model).eval()
         max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
-        prefill_chunk_size = max(1, int(os.environ.get("CACTUS_QWEN_PREFILL_CHUNK", "128") or "128"))
+        prefill_chunk_size = max(1, int(os.environ.get("CACTUS_QWEN_PREFILL_CHUNK", "512") or "512"))
         chunk_input_ids = _tile_to_length(input_ids, prefill_chunk_size)
         chunk_position_ids = torch.arange(
             prefill_chunk_size,

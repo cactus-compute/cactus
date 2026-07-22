@@ -111,7 +111,7 @@ DECLARE_COMPUTE(compute_spectrogram_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::CONV_CACHE_INITIALIZE) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::GATED_DELTANET_GATE_LOG) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -2223,6 +2223,7 @@ void CactusGraph::invalidate_metal_state() {
     metal_persistent_acts_.clear();
     metal_retype_plan_.clear();
     metal_retype_built_ = false;
+    constants_cached_ = false;
 }
 
 void CactusGraph::hard_reset() {

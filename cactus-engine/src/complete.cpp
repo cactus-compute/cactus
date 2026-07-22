@@ -16,6 +16,7 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <cctype>
 #include <unordered_set>
 #include <vector>
 
@@ -504,11 +505,6 @@ bool prompt_context_matches(
     const PreparedPrompt& prompt
 ) {
     if (handle->processed_tokens.empty()) {
-        return false;
-    }
-    if (handle->model &&
-        handle->model->get_config().model_type == Config::ModelType::NEEDLE &&
-        prompt.tokens.size() != handle->processed_tokens.size() + 1) {
         return false;
     }
     if (prompt.context_token_count < handle->processed_tokens.size()) {

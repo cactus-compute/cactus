@@ -46,6 +46,14 @@ def cmd_convert(args):
     then build the runtime graph. Pass --weights-only to stop after the weight conversion.
     """
     from .model import ensure_weights
+    from cactus.transpile.model_profiles import profile_for_model_id
+
+    profile = profile_for_model_id(args.model_id)
+    if profile is not None:
+        if profile.default_skip_model_load:
+            args.skip_model_load = True
+        if profile.default_low_memory_load:
+            args.low_memory_load = True
 
     source_model_id = args.model_id
     merged_dir = None
