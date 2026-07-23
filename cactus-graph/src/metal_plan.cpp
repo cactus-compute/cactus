@@ -1313,6 +1313,8 @@ MetalFusePlan* cactus_metal_plan_build(
             std::vector<size_t> hop_cover;
             std::vector<long> links{-1};
             size_t cur = i;
+            const size_t head_inner = nodes[i]->output_buffer.shape.empty()
+                ? 1 : nodes[i]->output_buffer.shape.back();
             while (chain.size() < 12) {
                 if (cons[cur].size() != 1) break;
                 size_t nxt = cons[cur][0];
@@ -1321,6 +1323,8 @@ MetalFusePlan* cactus_metal_plan_build(
                 while (passthrough(*nodes[nxt]) && plan->action[nxt] == -1
                        && !retyped(nxt)
                        && nodes[nxt]->output_buffer.total_size == total
+                       && (nodes[nxt]->output_buffer.shape.empty()
+                           ? 1 : nodes[nxt]->output_buffer.shape.back()) == head_inner
                        && cons[nxt].size() == 1) {
                     hops.push_back(nxt);
                     link = nxt;

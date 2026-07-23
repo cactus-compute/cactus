@@ -259,7 +259,6 @@ void ConvCache::reset() {
 
 
 namespace fs = std::filesystem;
-extern "C" void cactus_graph_set_prefill_valid_len(uint32_t);
 
 Model::Model() : config_() {}
 
@@ -1263,7 +1262,7 @@ size_t Model::component_output_tokens(const Component& comp, const std::string& 
 
 void Model::execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, size_t encoder_chunk,
                                   size_t chunk_tokens, const std::vector<uint32_t>& tokens,
-                                  size_t processed, size_t start_position) {
+                                  size_t processed, size_t start_position, uint32_t prefill_valid_len) {
     for (size_t i = 0; i < chunk_comp.input_buffers.size(); ++i) {
         std::fill(chunk_comp.input_buffers[i].begin(), chunk_comp.input_buffers[i].end(), 0);
     }
@@ -1289,7 +1288,7 @@ void Model::execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, si
             copy_component_outputs_to_chunk_inputs(*encoder_, chunk_comp, i);
         }
     }
-    chunk_comp.graph->execute();
+    chunk_comp.graph->execute("", prefill_valid_len);
 }
 
 void Model::reset_prefill_stats() {
@@ -1384,10 +1383,9 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     size_t tail_padding = 0;
     if (use_recurrent_tail) {
         const size_t chunk_real = tail_tokens - 1;
-        cactus_graph_set_prefill_valid_len(static_cast<uint32_t>(chunk_real));
         execute_prefill_chunk(*decoder_prefill_, prefill_encoder_, encoder_chunk,
-                              effective_chunk, tokens, processed, start_position);
-        cactus_graph_set_prefill_valid_len(0);
+                              effective_chunk, tokens, processed, start_position,
+                              static_cast<uint32_t>(chunk_real));
         processed += chunk_real;
         tail_executed = chunk_real;
         tail_padding = effective_chunk - tail_tokens;

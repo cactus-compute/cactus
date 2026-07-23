@@ -2307,7 +2307,10 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         )
         b_logits = g.reshape(b_logits, (batch_size, seq_len, int(b_weight.shape[0])))
 
-        if dt_bias is not None and a_log is not None:
+        if (dt_bias is not None and a_log is not None
+                and a_logits.dtype == Graph.FP16
+                and dt_bias.dtype == Graph.FP16
+                and a_log.dtype == Graph.FP16):
             dt_bias_2d = g.reshape(dt_bias, (1, int(dt_bias.shape[0])))
             a_log_2d = g.reshape(a_log, (1, int(a_log.shape[0])))
             gate_log = g.gated_deltanet_gate_log(a_logits, dt_bias_2d, a_log_2d)

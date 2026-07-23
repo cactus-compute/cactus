@@ -185,6 +185,8 @@ def test_binary_repack_rejects_non_binary():
     from cactus.convert.quantization.cq import quantize_binary_repack
 
     rng = np.random.default_rng(8)
-    w = rng.standard_normal((4, 256), dtype=np.float32)
-    assert quantize_binary_repack(w) is None
+    assert quantize_binary_repack(rng.standard_normal((4, 256), dtype=np.float32)) is None
+    mixed = np.ones((4, 128), dtype=np.float32)
+    mixed[0, 0] = 0.5
+    assert quantize_binary_repack(mixed) is None
     assert quantize_binary_repack(np.zeros((4, 100), dtype=np.float32)) is None

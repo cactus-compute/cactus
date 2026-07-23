@@ -752,7 +752,7 @@ public:
     bool is_populated(size_t persistent_node_id) const;
     void invalidate_persistent(size_t persistent_node_id);
 
-    void execute(const std::string& profile_file = "");
+    void execute(const std::string& profile_file = "", uint32_t prefill_valid_len = 0);
     bool extract_ple_pathway(FusedEmbedCtx& ctx) const;
     void hard_reset();
     void soft_reset();

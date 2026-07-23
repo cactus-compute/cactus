@@ -16,9 +16,6 @@
 
 static int g_selected_backend = -1;
 
-thread_local uint32_t g_prefill_valid_len = 0;
-extern "C" void cactus_graph_set_prefill_valid_len(uint32_t v) { g_prefill_valid_len = v; }
-
 ComputeBackend cactus_default_backend() {
     if (g_selected_backend >= 0) return static_cast<ComputeBackend>(g_selected_backend);
     if (cactus_metal_available()) return ComputeBackend::METAL;
@@ -258,8 +255,11 @@ static const char* op_type_names[] = {
     "NOT_EQUAL", "SCALAR_NOT_EQUAL",
     "RECURRENT_CACHE_STATE",
     "RECURRENT_CACHE_WRITE",
-    "CONV_CACHE_INITIALIZE"
+    "CONV_CACHE_INITIALIZE",
+    "GATED_DELTANET_GATE_LOG"
 };
+static_assert(sizeof(op_type_names) / sizeof(op_type_names[0]) == OP_TYPE_COUNT,
+              "op_type_names must have exactly one entry per OpType");
 
 static const char* get_op_name(OpType op) {
     return op_type_names[static_cast<int>(op)];
@@ -493,7 +493,8 @@ static const __fp16* metal_conv_weight_f16(const BufferDesc& w, size_t rows, siz
     return e.data.data();
 }
 
-static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const node_index_map_t& map) {
+static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const node_index_map_t& map,
+                             uint32_t prefill_valid_len) {
     if (node.params.backend != ComputeBackend::METAL) return false;
     BufferDesc& out = node.output_buffer;
     auto fp16 = [](const BufferDesc& b){ return b.precision == Precision::FP16; };
@@ -508,8 +509,8 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
                 if (M == 1 && !cactus_graph_prefill_consistent())
                     return cactus_metal_encode_quant_matmul(out.get_data(), lhs.get_data(), &mat);
                 uint32_t Mq = (uint32_t)M;
-                if (g_prefill_valid_len && M > 1 && g_prefill_valid_len < M) {
-                    uint32_t mv = ((g_prefill_valid_len + 31u) / 32u) * 32u;
+                if (prefill_valid_len && M > 1 && prefill_valid_len < M) {
+                    uint32_t mv = ((prefill_valid_len + 31u) / 32u) * 32u;
                     if (mv < Mq) Mq = mv;
                 }
                 return cactus_metal_encode_quant_matmul_m(out.get_data(), lhs.get_data(), &mat, Mq);
@@ -936,7 +937,7 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             return cactus_metal_encode_deltanet_prefill(out.get_data(), q.get_data(), k.get_data(),
                 v.get_data(), g.get_data(), b.get_data(), st.get_data(),
                 (uint32_t)B, (uint32_t)T, (uint32_t)Hq, (uint32_t)Hv, (uint32_t)K, (uint32_t)V,
-                node.params.scale, g_prefill_valid_len);
+                node.params.scale, prefill_valid_len);
         }
         case OpType::RECURRENT_CACHE_WRITE: {
             if (node.input_ids.size() < 2) return false;
@@ -1139,7 +1140,7 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             size_t current_len=km[0], max_len=km[1], kv_heads=km[2], hdim=km[3], sink=km[4], num_slots=km[5];
             if (num_slots != 1 || kv_heads == 0 || hdim == 0) return false;
             size_t new_seq_len = new_kv.total_size / (kv_heads * hdim);
-            if (g_prefill_valid_len && g_prefill_valid_len < new_seq_len) new_seq_len = g_prefill_valid_len;
+            if (prefill_valid_len && prefill_valid_len < new_seq_len) new_seq_len = prefill_valid_len;
             size_t ceiling = cache_node.params.max_cache_seq_len, ws = node.params.window_size;
             bool sliding = ws > 0 && ws < ceiling;
             size_t new_total = current_len + new_seq_len;
@@ -1238,7 +1239,7 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             uint64_t head = cm[0], count = cm[1], ws = cm[2], hd = cm[3];
             if (ws == 0 || hd == 0 || head >= ws) return false;
             size_t num_rows = new_data.total_size / hd;
-            if (g_prefill_valid_len && g_prefill_valid_len < num_rows) num_rows = g_prefill_valid_len;
+            if (prefill_valid_len && prefill_valid_len < num_rows) num_rows = prefill_valid_len;
             if (num_rows == 0 || out.total_size != ws * hd) return false;
             uint32_t nnew = (uint32_t)std::min<uint64_t>(num_rows, ws);
             uint64_t count_new = std::min<uint64_t>(ws, count + num_rows);
@@ -1368,7 +1369,7 @@ void CactusGraph::build_metal_retype_plan() {
     }
 }
 
-void CactusGraph::execute(const std::string& profile_file) {
+void CactusGraph::execute(const std::string& profile_file, uint32_t prefill_valid_len) {
     cactus_graph_mark_unadjusted();
     BufferPool& pool = buffer_pool_;
     const size_t n = nodes_.size();
@@ -1709,7 +1710,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                 for (size_t r : release_after[i]) metal_release(r);
                 continue;
             }
-            if (constants_cached_ && node_is_constant_[i]) {
+            if (constants_cached_ && node_is_constant_[i] && !aliases_input(*node)) {
                 for (size_t r : release_after[i]) metal_release(r);
                 continue;
             }
@@ -1762,7 +1763,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                 metal_plan_banned_[metal_plan_sig_].insert(i);
                 metal_plans_.erase(metal_plan_sig_);
                 cactus_metal_plan_free(fplan);
-                execute(profile_file);
+                execute(profile_file, prefill_valid_len);
                 return;
             }
             std::vector<std::pair<BufferDesc*, Precision>> flipped;
@@ -1779,13 +1780,13 @@ void CactusGraph::execute(const std::string& profile_file) {
             bool force_cpu = (ot == OpType::PRECISION_CAST
                 && node->output_buffer.total_size <= 8 && !input_metal_live(*node))
                 || (ot == OpType::EMBEDDING && input_metal_live(*node));
-            bool encoded = !force_cpu && try_encode_metal(*node, nodes_, node_index_map_);
+            bool encoded = !force_cpu && try_encode_metal(*node, nodes_, node_index_map_, prefill_valid_len);
             for (auto& fp : flipped) fp.first->precision = fp.second;
             if (!encoded && rplan && rplan[i] == 2) {
                 metal_retype_disabled_ = true;
                 metal_guard.armed = false;
                 metal_abort_cleanup();
-                execute(profile_file);
+                execute(profile_file, prefill_valid_len);
                 return;
             }
             if (!encoded) {
