@@ -1254,13 +1254,6 @@ MetalFusePlan* cactus_metal_plan_build(
                 }
                 return j;
             };
-            auto expect1 = [&](long j, OpType t) -> long {
-                j = strip1(j);
-                if (j < 0 || nodes[(size_t)j]->op_type != t) return -1;
-                if (cons[(size_t)j].size() != 1 || plan->action[(size_t)j] != -1 || retyped((size_t)j)) return -1;
-                cov.push_back((size_t)j);
-                return nodes[(size_t)j]->input_ids.empty() ? -1 : idxof(nodes[(size_t)j]->input_ids[0]);
-            };
             long sq = strip1(idxof(dn.input_ids[1]));
             if (sq < 0 || nodes[(size_t)sq]->op_type != OpType::SCALAR_SQRT
                 || cons[(size_t)sq].size() != 1 || plan->action[(size_t)sq] != -1 || retyped((size_t)sq)) continue;
