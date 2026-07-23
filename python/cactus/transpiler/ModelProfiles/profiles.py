@@ -133,13 +133,3 @@ MODEL_ID_MAP = {
     "LiquidAI/LFM2-VL-3B": LFM_VLM_PROFILE,
     "Qwen/Qwen2.5-0.5B": QWEN2_5_0_5B_PROFILE,
 }
-
-MODEL_ID_HINTS = (
-    (("gemma",), GEMMA4_E2B_PROFILE),
-    (("whisper",), WHISPER_PROFILE),
-    (("parakeet",), PARAKEET_PROFILE),
-    (("lfm", "vl"), LFM_VLM_PROFILE),
-    (("lfm", "vision"), LFM_VLM_PROFILE),
-    (("qwen2.5",), QWEN2_5_0_5B_PROFILE),
-    (("qwen2_5",), QWEN2_5_0_5B_PROFILE),
-)
