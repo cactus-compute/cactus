@@ -20,7 +20,7 @@ class CacheSpec:
     past_sequence_length: int
 
     #How: delegates model/cache inspection to cache_spec_from_model.
-    #Why: used by models.export_ and input_utils.build_decode_with_cache_input to create cache shapes for export.
+    #Why: used by models.export_ and models.build_decode_with_cache_input to create cache shapes for export.
     @classmethod
     def from_model(cls, model: torch.nn.Module, batch_size: int, past_sequence_length: int) -> "CacheSpec":
         return cache_spec_from_model(cls, model, batch_size, past_sequence_length)
@@ -99,7 +99,7 @@ def get_text_config(config: Any) -> Any:
 
 
 #How: reads the dtype from the first model parameter and falls back to float32 for parameterless modules.
-#Why: input_utils.build_decode_with_cache_input uses this so synthetic cache tensors match the model dtype.
+#Why: models.build_decode_with_cache_input uses this so synthetic cache tensors match the model dtype.
 def model_dtype(model: torch.nn.Module) -> torch.dtype:
     try:
         param = next(model.parameters())
