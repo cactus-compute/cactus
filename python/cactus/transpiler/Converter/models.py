@@ -26,7 +26,7 @@ class Model:
     name: str
     model_profile: MP_Models.ModelProfile
     input: Input
-    model: Any
+    model: torch.nn.Module
 
     def export(self, input: Input) -> "LayerMap":
         return export_(model=self, input=input)
@@ -159,24 +159,23 @@ EXPORT_PATCHES = {
 }
 
 
-#Builds a loaded model bundle from profile, modalities, model id, and inference mode. X
+#Builds a loaded model bundle from profile, modalities, model id, and inference mode.
 def create_model(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], model_id: str, inference_mode: str = "prefill_no_cache") -> Model:
+    
     input_ = IU.build_input(mp, input_modalities, Input, model_id, inference_mode)
-
     if input_ is None:
         raise ValueError(f"Could not build input for modalities {input_modalities}")
 
     loaded_model = load_model(model_id, mp)
-    #Build a decode with cache input only if decoder/ctc head supports cache
+    
     if input_.inference_mode == IU.DECODE_WITH_CACHE_MODE and constants.DYNAMIC_CACHE_POLICY in mp.cache_policy:
-        input_ = IU.build_decode_with_cache_input(
-            model=loaded_model,
-            input_=input_,
-            input_cls=Input,
-            cache_spec_cls=CU.CacheSpec,
-            model_dtype_fn=CU.model_dtype,
-            drop_multimodal=constants.DROP_MULTIMODAL_ON_DECODE_POLICY in mp.cache_policy,
-        )
+        input_ = IU.build_decode_with_cache_input(model=loaded_model, input_=input_, input_cls=Input, cache_spec_cls=CU.CacheSpec, model_dtype_fn=CU.model_dtype, drop_multimodal=constants.DROP_MULTIMODAL_ON_DECODE_POLICY in mp.cache_policy)
+    
+    #TODO: Add for models that do support multimodal decoders
+    # elif input_.inference_mode == IU.DECODE_WITH_CACHE_MODE:
+    #     input_ = IU.build_decode_with_cache_input()
+
+
 
     return Model(name=model_id, model_profile=mp, input=input_, model=loaded_model)
 
@@ -190,11 +189,7 @@ def export_(model: Model, input: Input) -> LayerMap:
     if should_use_cache and constants.DYNAMIC_CACHE_POLICY in model.model_profile.cache_policy:
         export_model = CU.CacheExportWrapper(
             model=model.model,
-            cache_spec=CU.CacheSpec.from_model(
-                model=model.model,
-                batch_size=IU.infer_batch_size(input.kwargs),
-                past_sequence_length=IU.infer_past_sequence_length(input),
-            ),
+            cache_spec=CU.CacheSpec.from_model(model=model.model, batch_size=IU.infer_batch_size(input.kwargs), past_sequence_length=IU.infer_past_sequence_length(input)),
         )
 
     export_kwargs = dict(input.kwargs)

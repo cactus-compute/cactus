@@ -1,7 +1,6 @@
 import inspect
 from dataclasses import dataclass
 from typing import Any
-
 import torch
 
 
@@ -20,29 +19,34 @@ class CacheSpec:
     config: Any
     past_sequence_length: int
 
-    #Delegates cache tensor shape inference to the utility helper below. X
+    #How: delegates model/cache inspection to cache_spec_from_model.
+    #Why: used by models.export_ and input_utils.build_decode_with_cache_input to create cache shapes for export.
     @classmethod
     def from_model(cls, model: torch.nn.Module, batch_size: int, past_sequence_length: int) -> "CacheSpec":
         return cache_spec_from_model(cls, model, batch_size, past_sequence_length)
 
-    #Delegates creation of zero-filled flat KV tensors to the utility helper below. X
+    #How: delegates zero tensor creation to cache_spec_empty_tensors.
+    #Why: used when building decode inputs so torch.export receives real tensor placeholders for past_key_values.
     def empty_tensors(self, dtype: torch.dtype = torch.float32, device: torch.device | None = None) -> tuple[torch.Tensor, ...]:
         return cache_spec_empty_tensors(self, dtype=dtype, device=device)
 
-    #Delegates rebuilding an HF DynamicCache from flat exported tensor inputs. X
+    #How: delegates flat tensor to DynamicCache reconstruction to cache_spec_to_dynamic_cache.
+    #Why: used inside CacheExportWrapper.forward because HF models expect DynamicCache, not a flat tuple.
     def to_dynamic_cache(self, flat_tensors: tuple[torch.Tensor, ...]):
         return cache_spec_to_dynamic_cache(self, flat_tensors)
 
 
-#Wraps HF cache-mode forwards so torch.export only sees tensor inputs/outputs. X
+#Wraps HF cache-mode forwards so torch.export only sees tensor inputs/outputs.
 class CacheExportWrapper(torch.nn.Module):
-    #Stores the wrapped model and cache spec used to tensorize cache state. X
+    #How: stores the original HF model plus the CacheSpec that describes flattened cache tensors.
+    #Why: constructed by models.export_ whenever a cache-mode export needs tensor-only inputs and outputs.
     def __init__(self, model: torch.nn.Module, cache_spec: CacheSpec):
         super().__init__()
         self.model = model
         self.cache_spec = cache_spec
 
-    #Runs the HF model with DynamicCache internally and returns logits plus flat cache tensors. X
+    #How: rebuilds DynamicCache from flat tensors, calls the model, then flattens the returned cache.
+    #Why: torch.export cannot directly expose HF cache objects, so this is the bridge for decode/prefill cache graphs.
     def forward(
         self,
         input_ids=None,
@@ -82,7 +86,8 @@ class CacheExportWrapper(torch.nn.Module):
         return (primary_model_output(outputs), *flatten_dynamic_cache(getattr(outputs, "past_key_values", None)))
 
 
-#Returns the text/decoder config for models that wrap language configs inside multimodal configs. X
+#How: asks HF configs for their decoder/text sub-config when available, otherwise returns the original config.
+#Why: cache_spec_from_model needs decoder fields even when the top-level config is multimodal, like Gemma.
 def get_text_config(config: Any) -> Any:
     if config is not None and hasattr(config, "get_text_config"):
         try:
@@ -93,7 +98,8 @@ def get_text_config(config: Any) -> Any:
     return config
 
 
-#Finds the dtype of the loaded model parameters. X
+#How: reads the dtype from the first model parameter and falls back to float32 for parameterless modules.
+#Why: input_utils.build_decode_with_cache_input uses this so synthetic cache tensors match the model dtype.
 def model_dtype(model: torch.nn.Module) -> torch.dtype:
     try:
         param = next(model.parameters())
@@ -102,7 +108,8 @@ def model_dtype(model: torch.nn.Module) -> torch.dtype:
         return torch.float32
 
 
-#Finds decoder layer modules across common HF model wrapper layouts. X
+#How: tries common attribute paths until it finds a layers collection.
+#Why: cache_spec_from_model uses real layers to validate or refine cache head dimensions beyond config defaults.
 def model_decoder_layers(model: torch.nn.Module) -> tuple[Any, ...]:
     candidates = (
         ("model", "language_model", "layers"),
@@ -127,7 +134,8 @@ def model_decoder_layers(model: torch.nn.Module) -> tuple[Any, ...]:
     return ()
 
 
-#Finds the attention module inside one decoder layer across common naming conventions. X
+#How: checks common attention attribute names and falls back to the layer itself.
+#Why: cache_spec_from_model needs the attention module to inspect fields like head_dim and k_proj.
 def attention_module(layer: Any) -> Any:
     for attr in ("self_attn", "attention", "attn"):
         value = getattr(layer, attr, None)
@@ -137,7 +145,8 @@ def attention_module(layer: Any) -> Any:
     return layer
 
 
-#Returns a linear-like module's output feature count when available. X
+#How: reads out_features or the first dimension of a weight tensor from linear-like modules.
+#Why: cache_spec_from_model uses k_proj output size to infer per-layer KV head count.
 def linear_out_features(module: Any) -> int | None:
     if module is None:
         return None
@@ -155,7 +164,8 @@ def linear_out_features(module: Any) -> int | None:
     return int(weight.shape[0])
 
 
-#Infers which decoder layers actually own KV cache entries. X
+#How: reads layer_types from config, otherwise derives full/sliding attention from window settings.
+#Why: cache_spec_from_model uses this to know how many cache tensor pairs to create and which are sliding-window.
 def cache_layer_types(text_config: Any) -> tuple[str, ...]:
     num_hidden_layers = int(getattr(text_config, "num_hidden_layers", 1))
     layer_types = getattr(text_config, "layer_types", None)
@@ -174,7 +184,8 @@ def cache_layer_types(text_config: Any) -> tuple[str, ...]:
     return layer_types
 
 
-#Infers cache tensor shapes from the loaded model config and attention modules. X
+#How: combines config defaults with actual attention module inspection to create one CacheLayerSpec per cache layer.
+#Why: CacheSpec.from_model calls this before decode/cache export so past_key_values tensors have correct shapes.
 def cache_spec_from_model(cls: type[CacheSpec], model: torch.nn.Module, batch_size: int, past_sequence_length: int) -> CacheSpec:
     config = getattr(model, "config", None)
     text_config = get_text_config(config)
@@ -222,7 +233,8 @@ def cache_spec_from_model(cls: type[CacheSpec], model: torch.nn.Module, batch_si
     )
 
 
-#Creates zero-filled flat KV tensors that match this cache spec. X
+#How: allocates key and value zero tensors for every CacheLayerSpec, in flat key0/value0/key1/value1 order.
+#Why: CacheSpec.empty_tensors uses this to create placeholder cache inputs for torch.export decode traces.
 def cache_spec_empty_tensors(
     cache_spec: CacheSpec,
     dtype: torch.dtype = torch.float32,
@@ -238,7 +250,8 @@ def cache_spec_empty_tensors(
     return tuple(tensors)
 
 
-#Rebuilds an HF DynamicCache from flat exported tensor inputs. X
+#How: creates DynamicCache and assigns each flat key/value tensor into the matching cache layer.
+#Why: CacheSpec.to_dynamic_cache uses this so CacheExportWrapper.forward can call the original HF model normally.
 def cache_spec_to_dynamic_cache(cache_spec: CacheSpec, flat_tensors: tuple[torch.Tensor, ...]):
     from transformers.cache_utils import DynamicCache
 
@@ -264,7 +277,8 @@ def cache_spec_to_dynamic_cache(cache_spec: CacheSpec, flat_tensors: tuple[torch
     return cache
 
 
-#Selects the main tensor output from a model output object. X
+#How: checks common HF output containers for logits, last_hidden_state, or first tuple item.
+#Why: CacheExportWrapper.forward needs a stable first exported output before appending flat cache tensors.
 def primary_model_output(outputs: Any) -> torch.Tensor:
     if isinstance(outputs, dict):
         for key in ("logits", "last_hidden_state"):
@@ -284,7 +298,8 @@ def primary_model_output(outputs: Any) -> torch.Tensor:
     raise ValueError("Could not find a tensor output to export")
 
 
-#Flattens an HF DynamicCache into key/value tensor outputs. X
+#How: walks either legacy tuple caches or DynamicCache layers and emits key/value tensors in flat order.
+#Why: CacheExportWrapper.forward returns this flat tuple so the layermap contains explicit cache output tensors.
 def flatten_dynamic_cache(cache: Any) -> tuple[torch.Tensor, ...]:
     if cache is None:
         return ()
@@ -316,7 +331,8 @@ def flatten_dynamic_cache(cache: Any) -> tuple[torch.Tensor, ...]:
     return tuple(flat)
 
 
-#Drops kwargs unsupported by a module's forward signature. X
+#How: inspects forward(...) and drops kwargs unless the module accepts **kwargs.
+#Why: used by CacheExportWrapper.forward and models.export_ to avoid passing unsupported modality/cache args.
 def filter_forward_kwargs(model: torch.nn.Module, kwargs: dict[str, Any]) -> dict[str, Any]:
     try:
         signature = inspect.signature(model.forward)
@@ -329,7 +345,8 @@ def filter_forward_kwargs(model: torch.nn.Module, kwargs: dict[str, Any]) -> dic
     return {key: value for key, value in kwargs.items() if key in signature.parameters}
 
 
-#Sets an attribute on a config object and common nested config objects. X
+#How: recursively sets one config attr on top-level and nested text/vision/audio/encoder/decoder configs.
+#Why: configure_model_for_export uses it to consistently enable or disable use_cache before tracing.
 def _set_config_attr_recursive(config: Any, attr: str, value: Any, seen: set[int] | None = None) -> None:
     if config is None:
         return
@@ -355,7 +372,8 @@ def _set_config_attr_recursive(config: Any, attr: str, value: Any, seen: set[int
         _set_config_attr_recursive(getattr(config, child_name, None), attr, value, seen)
 
 
-#Configures cache-related model settings before torch.export. X
+#How: sets use_cache on model.config and model.generation_config, including nested configs.
+#Why: models.export_ calls this so prefill/decode cache exports include cache paths and no-cache exports do not.
 def configure_model_for_export(model: torch.nn.Module, should_use_cache: bool) -> None:
     for config_name in ("config", "generation_config"):
         config = getattr(model, config_name, None)
