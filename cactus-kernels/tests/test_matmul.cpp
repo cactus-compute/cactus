@@ -316,6 +316,118 @@ bool test_cq_correctness(uint32_t bits) {
     return true;
 }
 
+bool test_cq1_no_rotation_exactness() {
+    const uint32_t K = 1024, N = 64, gs = 128, ng = K / gs;
+    std::mt19937 gen(321);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+
+    std::vector<__fp16> codebook = {static_cast<__fp16>(-1.f), static_cast<__fp16>(1.f)};
+    std::vector<__fp16> input_scale(K, static_cast<__fp16>(1.f));
+    std::vector<__fp16> input_scale_recip(K, static_cast<__fp16>(1.f));
+    std::vector<__fp16> norms(size_t(N) * ng);
+    for (auto& v : norms) v = static_cast<__fp16>(0.01f + std::abs(dist(gen)) * 0.05f);
+    uint32_t pgb = cactus_quant_packed_group_bytes(1, gs);
+    std::vector<uint8_t> packed(size_t(N) * ng * pgb);
+    for (auto& v : packed) v = static_cast<uint8_t>(gen() & 0xFF);
+
+    CactusQuantMatrix mat = {};
+    mat.bits = 1;
+    mat.K = K;
+    mat.N = N;
+    mat.group_size = gs;
+    mat.num_groups = ng;
+    mat.flags = CACTUS_QUANT_FLAG_NO_ROTATION;
+    mat.codebook = codebook.data();
+    mat.input_scale = input_scale.data();
+    mat.input_scale_recip = input_scale_recip.data();
+    mat.norms = norms.data();
+    mat.packed_indices = packed.data();
+
+    std::vector<float> x_f32(K);
+    for (auto& v : x_f32) v = dist(gen);
+
+    std::vector<float> ref(N, 0.f);
+    for (uint32_t n = 0; n < N; ++n) {
+        for (uint32_t g = 0; g < ng; ++g) {
+            const uint8_t* pr = packed.data() + (size_t(n) * ng + g) * pgb;
+            float gsum = 0.f;
+            for (uint32_t k = 0; k < gs; ++k) {
+                uint8_t idx = unpack_index(pr, 1, k);
+                gsum += x_f32[g * gs + k] * (idx ? 1.f : -1.f);
+            }
+            ref[n] += static_cast<float>(norms[size_t(n) * ng + g]) * gsum;
+        }
+    }
+
+    std::vector<__fp16> x_f16(K), y(N, static_cast<__fp16>(0));
+    for (size_t i = 0; i < K; i++) x_f16[i] = static_cast<__fp16>(x_f32[i]);
+    cactus_quant_matmul(&mat, x_f16.data(), 1, y.data());
+
+    double mse = compute_mse(ref.data(), y.data(), N);
+    double threshold = 1e-3;
+    if (mse > threshold) {
+        std::cerr << "  cq1-no-rotation MSE=" << mse << " > " << threshold << "\n";
+        return false;
+    }
+    return true;
+}
+
+bool test_cq1_no_rotation_gemm() {
+    const uint32_t M = 33, K = 1024, N = 80, gs = 128, ng = K / gs;
+    std::mt19937 gen(3210);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+
+    std::vector<__fp16> codebook = {static_cast<__fp16>(-1.f), static_cast<__fp16>(1.f)};
+    std::vector<__fp16> input_scale(K, static_cast<__fp16>(1.f));
+    std::vector<__fp16> input_scale_recip(K, static_cast<__fp16>(1.f));
+    std::vector<__fp16> norms(size_t(N) * ng);
+    for (auto& v : norms) v = static_cast<__fp16>(0.01f + std::abs(dist(gen)) * 0.05f);
+    uint32_t pgb = cactus_quant_packed_group_bytes(1, gs);
+    std::vector<uint8_t> packed(size_t(N) * ng * pgb);
+    for (auto& v : packed) v = static_cast<uint8_t>(gen() & 0xFF);
+
+    CactusQuantMatrix mat = {};
+    mat.bits = 1;
+    mat.K = K;
+    mat.N = N;
+    mat.group_size = gs;
+    mat.num_groups = ng;
+    mat.flags = CACTUS_QUANT_FLAG_NO_ROTATION;
+    mat.codebook = codebook.data();
+    mat.input_scale = input_scale.data();
+    mat.input_scale_recip = input_scale_recip.data();
+    mat.norms = norms.data();
+    mat.packed_indices = packed.data();
+
+    std::vector<float> x_f32(size_t(M) * K);
+    for (auto& v : x_f32) v = dist(gen);
+
+    std::vector<float> ref(size_t(M) * N, 0.f);
+    for (uint32_t m = 0; m < M; ++m)
+        for (uint32_t n = 0; n < N; ++n)
+            for (uint32_t g = 0; g < ng; ++g) {
+                const uint8_t* pr = packed.data() + (size_t(n) * ng + g) * pgb;
+                float gsum = 0.f;
+                for (uint32_t k = 0; k < gs; ++k) {
+                    uint8_t idx = unpack_index(pr, 1, k);
+                    gsum += x_f32[size_t(m) * K + g * gs + k] * (idx ? 1.f : -1.f);
+                }
+                ref[size_t(m) * N + n] += static_cast<float>(norms[size_t(n) * ng + g]) * gsum;
+            }
+
+    std::vector<__fp16> x_f16(size_t(M) * K), y(size_t(M) * N, static_cast<__fp16>(0));
+    for (size_t i = 0; i < x_f16.size(); i++) x_f16[i] = static_cast<__fp16>(x_f32[i]);
+    cactus_quant_matmul(&mat, x_f16.data(), M, y.data());
+
+    double mse = compute_mse(ref.data(), y.data(), size_t(M) * N);
+    double threshold = 1e-3;
+    if (mse > threshold) {
+        std::cerr << "  cq1-no-rotation-gemm MSE=" << mse << " > " << threshold << "\n";
+        return false;
+    }
+    return true;
+}
+
 bool run_benchmarks() {
     auto bench = [](const char* label, size_t M, size_t K, size_t N, auto fn) {
         fn();
@@ -581,6 +693,8 @@ int main() {
     runner.run_test("matmul_cq2", test_cq_correctness(2));
     runner.run_test("matmul_cq3", test_cq_correctness(3));
     runner.run_test("matmul_cq4", test_cq_correctness(4));
+    runner.run_test("matmul_cq1_norot", test_cq1_no_rotation_exactness());
+    runner.run_test("matmul_cq1_norot_gemm", test_cq1_no_rotation_gemm());
     {
         double m1 = 0;
         runner.run_test("matmul_cq4_il", test_cq4_interleaved(m1));

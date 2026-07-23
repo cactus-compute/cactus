@@ -37,7 +37,7 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoTsimd = nil;
     id<MTLComputePipelineState> psoTbatch = nil;
     id<MTLComputePipelineState> psoMega = nil, psoSwiT = nil, psoCat = nil;
-    id<MTLComputePipelineState> psoG = nil, psoGmr = nil, psoGmrLow = nil;
+    id<MTLComputePipelineState> psoG = nil, psoGmr = nil, psoGmrLow = nil, psoG1N = nil, psoG1NM = nil, psoL2N = nil, psoGateLog = nil;
     id<MTLComputePipelineState> psoActQ = nil, psoG2i8 = nil;
     id<MTLComputePipelineState> psoTm = nil;
     id<MTLComputePipelineState> psoGmma = nil, psoGdense = nil;
@@ -91,6 +91,10 @@ struct MetalCtx {
         psoTm=pso("cq4_transform_m"); psoGmma=pso("cq4_gemm_mma");
         psoGdense=pso("cq4_gemm_dense_f16");
         psoGmrLow=pso("cq_gemv_mr_lowbit");
+        psoG1N=pso("cq1_norot_gemv");
+        psoG1NM=pso("cq1_norot_gemm_mma");
+        psoL2N=pso("l2_norm_rows_f16");
+        psoGateLog=pso("deltanet_gate_log_f16");
         psoActQ=pso("cq_act_quant_i8"); psoG2i8=pso("cq2_gemv_i8");
         psoRotW=pso("lmhead_rotate_wide"); psoEmbOW=pso("emb_ortho_wide"); psoRmsAddRms=pso("rms_norm_add_rms_f16");
         psoEmbH=pso("emb_hadamard");
@@ -190,6 +194,7 @@ static uint64_t resident_key(const CactusQuantMatrix* W) {
 }
 id<MTLBuffer> g_attn_scores = nil;
 std::unordered_map<const void*, ResW> g_resident_emb;
+std::unordered_map<const void*, std::pair<id<MTLBuffer>, id<MTLBuffer>>> g_deint_packed;
 std::mutex g_resident_mu;
 
 struct MoESet4 {
@@ -427,6 +432,7 @@ void cactus_metal_invalidate_host_wraps() {
     g_readonly.clear();
     g_resident.clear();
     g_resident_emb.clear();
+    g_deint_packed.clear();
     g_mps_mats.clear();
     g_moe_cat.clear();
 }
@@ -709,11 +715,58 @@ static inline bool quant_fast_eligible(const CactusQuantMatrix* W) {
 }
 
 static inline bool quant_lowbit_eligible(const CactusQuantMatrix* W) {
-    return (W->bits == 2 || W->bits == 3) && W->group_size == 128 && (W->N % 16) == 0 &&
+    return (W->bits == 1 || W->bits == 2 || W->bits == 3) && W->group_size == 128 && (W->N % 16) == 0 &&
            (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) &&
            !(W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) &&
            W->input_scale_recip && W->left_signs && W->right_signs && W->permutation &&
            W->codebook && W->norms && W->packed_indices;
+}
+
+static inline bool quant_cq1_norot_eligible(const CactusQuantMatrix* W) {
+    return W->bits == 1 && W->group_size == 128 && (W->N % 16) == 0 &&
+           (W->flags & CACTUS_QUANT_FLAG_NO_ROTATION) &&
+           !(W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) &&
+           W->codebook && W->norms && W->packed_indices &&
+           (float)W->codebook[0] == -1.0f && (float)W->codebook[1] == 1.0f;
+}
+
+static inline bool quant_cq1_interleaved_sym_eligible(const CactusQuantMatrix* W) {
+    return W->bits == 1 && W->group_size == 128 && (W->N % 16) == 0 && (W->N % 4) == 0 &&
+           (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) &&
+           !(W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) &&
+           W->codebook && W->norms && W->packed_indices &&
+           W->input_scale_recip && W->left_signs && W->right_signs && W->permutation &&
+           (float)W->codebook[0] == -(float)W->codebook[1] && (float)W->codebook[0] < 0.0f;
+}
+
+static bool deint_bufs(const CactusQuantMatrix* W, id<MTLBuffer>* out_packed, id<MTLBuffer>* out_norms) {
+    std::lock_guard<std::mutex> lk(g_resident_mu);
+    auto it = g_deint_packed.find(W->packed_indices);
+    if (it != g_deint_packed.end()) {
+        *out_packed = it->second.first; *out_norms = it->second.second;
+        return *out_packed != nil && *out_norms != nil;
+    }
+    const uint32_t N = W->N, ng = W->num_groups, nb = N / 4;
+    id<MTLBuffer> pb = owned_shared((size_t)N * ng * 16);
+    id<MTLBuffer> nb_buf = owned_shared((size_t)N * ng * sizeof(__fp16));
+    if (!pb || !nb_buf) return false;
+    uint8_t* pdst = (uint8_t*)[pb contents];
+    const uint8_t* psrc = (const uint8_t*)W->packed_indices;
+    __fp16* ndst = (__fp16*)[nb_buf contents];
+    const __fp16* nsrc = W->norms;
+    for (uint32_t b = 0; b < nb; ++b)
+        for (uint32_t g = 0; g < ng; ++g) {
+            for (uint32_t r = 0; r < 4; ++r)
+                ndst[((size_t)(b * 4 + r) * ng + g)] = nsrc[(size_t)(b * ng + g) * 4 + r];
+            for (uint32_t c = 0; c < 4; ++c)
+                for (uint32_t bc = 0; bc < 4; ++bc)
+                    for (uint32_t r = 0; r < 4; ++r)
+                        pdst[((size_t)(b * 4 + r) * ng + g) * 16 + c * 4 + bc] =
+                            psrc[(((size_t)(b * ng + g) * 4 + c) * 4 + bc) * 4 + r];
+        }
+    g_deint_packed.emplace(W->packed_indices, std::make_pair(pb, nb_buf));
+    *out_packed = pb; *out_norms = nb_buf;
+    return true;
 }
 
 void cactus_metal_trim_prefill_cache() {
@@ -736,6 +789,53 @@ bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQu
             ortho_code_k = K;
         }
         if (ortho_code) return cactus_metal_encode_quant_matmul_ortho(out, lhs, ortho_code, W);
+    }
+    if (ctx().psoG1N && quant_cq1_norot_eligible(W)) {
+        ResW& rw = resident(W);
+        if (!rw.ok) return false;
+        const uint32_t pgbw = (gs + 7u) / 8u;
+        ensureEncoder();
+        [g_enc setComputePipelineState:ctx().psoG1N];
+        setBufAt(lhs, (size_t)K*2, 0);
+        [g_enc setBuffer:rw.packed offset:rw.packed_off atIndex:1];
+        [g_enc setBuffer:rw.codebook offset:rw.cb_off atIndex:2];
+        [g_enc setBuffer:rw.norms offset:rw.norms_off atIndex:3];
+        setBufAt(out, (size_t)N*2, 4);
+        [g_enc setBytes:&gs length:4 atIndex:5]; [g_enc setBytes:&ng length:4 atIndex:6];
+        [g_enc setBytes:&pgbw length:4 atIndex:7]; [g_enc setBytes:&N length:4 atIndex:8];
+        [g_enc setBytes:&rw.il length:4 atIndex:9];
+        [g_enc dispatchThreadgroups:MTLSizeMake((N+7u)/8u,1,1)
+              threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        return true;
+    }
+    if (ctx().psoG1N && quant_cq1_interleaved_sym_eligible(W)) {
+        ResW& rw = resident(W);
+        id<MTLBuffer> pb = nil, nb = nil;
+        if (!rw.ok || !rw.recip || !rw.lsign || !rw.rsign || !rw.perm || !rw.codebook || !deint_bufs(W, &pb, &nb)) return false;
+        size_t code_bytes = (size_t)ng*gs*sizeof(__fp16);
+        if (!g_code_buf || (size_t)g_code_buf.length < code_bytes) g_code_buf = owned_shared(code_bytes);
+        if (!g_code_buf) return false;
+        ensureEncoder();
+        bool simdT = (gs==128u && ctx().psoTsimd);
+        [g_enc setComputePipelineState:(simdT?ctx().psoTsimd:ctx().psoT)];
+        setBufAt(lhs, (size_t)K*2, 0);                 [g_enc setBuffer:rw.recip offset:rw.rc_off atIndex:1];
+        [g_enc setBuffer:rw.lsign offset:rw.ls_off atIndex:2]; [g_enc setBuffer:rw.rsign offset:rw.rs_off atIndex:3];
+        [g_enc setBuffer:rw.perm offset:rw.pm_off atIndex:4];  [g_enc setBuffer:g_code_buf offset:0 atIndex:5];
+        [g_enc setBytes:&gs length:4 atIndex:6]; [g_enc setThreadgroupMemoryLength:gs*sizeof(float) atIndex:0];
+        [g_enc dispatchThreadgroups:MTLSizeMake(ng,1,1) threadsPerThreadgroup:MTLSizeMake(simdT?32u:(gs>1024u?1024u:gs),1,1)];
+        const uint32_t pgbw = (gs + 7u) / 8u, il0 = 0u;
+        [g_enc setComputePipelineState:ctx().psoG1N];
+        [g_enc setBuffer:g_code_buf offset:0 atIndex:0];
+        [g_enc setBuffer:pb offset:0 atIndex:1];
+        [g_enc setBuffer:rw.codebook offset:rw.cb_off atIndex:2];
+        [g_enc setBuffer:nb offset:0 atIndex:3];
+        setBufAt(out, (size_t)N*2, 4);
+        [g_enc setBytes:&gs length:4 atIndex:5]; [g_enc setBytes:&ng length:4 atIndex:6];
+        [g_enc setBytes:&pgbw length:4 atIndex:7]; [g_enc setBytes:&N length:4 atIndex:8];
+        [g_enc setBytes:&il0 length:4 atIndex:9];
+        [g_enc dispatchThreadgroups:MTLSizeMake((N+7u)/8u,1,1)
+              threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        return true;
     }
     const bool fast = quant_fast_eligible(W);
     const bool lowbit = !fast && ctx().psoGmrLow && quant_lowbit_eligible(W);
@@ -913,9 +1013,38 @@ bool cactus_metal_encode_gemv_cat(void* const* outs, const void* const* codes,
     return true;
 }
 
+bool cactus_metal_encode_deltanet_gate_log(void* out, const void* a, const void* dt,
+                                           const void* al, size_t rows, size_t H) {
+    if (!ctx().ok || !ctx().psoGateLog) return false;
+    ensureEncoder();
+    uint32_t h=(uint32_t)H, n=(uint32_t)(rows*H);
+    [g_enc setComputePipelineState:ctx().psoGateLog];
+    setBufAt(a, rows*H*2, 0); setBufAt(dt, H*2, 1); setBufAt(al, H*2, 2); setBufAt(out, rows*H*2, 3);
+    [g_enc setBytes:&h length:4 atIndex:4]; [g_enc setBytes:&n length:4 atIndex:5];
+    [g_enc dispatchThreads:MTLSizeMake(n,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    return true;
+}
+
+bool cactus_metal_encode_l2_norm(void* out, const void* in, size_t rows, size_t dim, float eps) {
+    if (!ctx().ok || !ctx().psoL2N) return false;
+    ensureEncoder();
+    uint32_t d=(uint32_t)dim; float e=eps;
+    [g_enc setComputePipelineState:ctx().psoL2N];
+    setBufAt(in, rows*dim*2, 0); setBufAt(out, rows*dim*2, 1);
+    [g_enc setBytes:&d length:4 atIndex:2]; [g_enc setBytes:&e length:4 atIndex:3];
+    [g_enc setThreadgroupMemoryLength:128*sizeof(float) atIndex:0];
+    [g_enc dispatchThreadgroups:MTLSizeMake(rows,1,1) threadsPerThreadgroup:MTLSizeMake(128,1,1)];
+    return true;
+}
+
 bool cactus_metal_prewarm_quant(const CactusQuantMatrix* W) {
     if (!ctx().ok) return false;
-    if (!quant_fast_eligible(W) && !quant_lowbit_eligible(W)) return false;
+    if (quant_cq1_interleaved_sym_eligible(W)) {
+        id<MTLBuffer> pb = nil, nb = nil;
+        return resident(W).ok && deint_bufs(W, &pb, &nb);
+    }
+    if (!quant_fast_eligible(W) && !quant_lowbit_eligible(W) &&
+        !quant_cq1_norot_eligible(W)) return false;
     return resident(W).ok;
 }
 
@@ -1156,9 +1285,10 @@ bool cactus_metal_encode_deltanet_decode(void* out, const void* q, const void* k
 bool cactus_metal_encode_deltanet_prefill(void* out, const void* q, const void* k, const void* v,
                                           const void* g, const void* b, const void* s,
                                           uint32_t B, uint32_t T, uint32_t Hq, uint32_t Hv,
-                                          uint32_t K, uint32_t V, float scale) {
+                                          uint32_t K, uint32_t V, float scale, uint32_t valid_T) {
     if (!ctx().ok || !ctx().psoDeltanetPre) return false;
     if (B == 0 || T == 0 || Hq == 0 || Hv == 0 || K == 0 || V == 0 || V > 1024 || (Hv % Hq) != 0) return false;
+    if (valid_T == 0 || valid_T > T) valid_T = T;
     ensureEncoder();
     id<MTLBuffer> scratch = recycled((size_t)B*Hv*K*V*sizeof(float));
     [g_enc setComputePipelineState:ctx().psoDeltanetPre];
@@ -1173,6 +1303,7 @@ bool cactus_metal_encode_deltanet_prefill(void* out, const void* q, const void* 
     [g_enc setBytes:&T length:4 atIndex:8]; [g_enc setBytes:&Hq length:4 atIndex:9];
     [g_enc setBytes:&Hv length:4 atIndex:10]; [g_enc setBytes:&K length:4 atIndex:11];
     [g_enc setBytes:&V length:4 atIndex:12]; [g_enc setBytes:&scale length:4 atIndex:13];
+    [g_enc setBytes:&valid_T length:4 atIndex:14];
     [g_enc setThreadgroupMemoryLength:(size_t)K*4 atIndex:0];
     [g_enc dispatchThreadgroups:MTLSizeMake(Hv, B, 1) threadsPerThreadgroup:MTLSizeMake(V, 1, 1)];
     return true;
@@ -1280,6 +1411,49 @@ bool cactus_metal_encode_quant_matmul_m(void* out, const void* lhs, const Cactus
     if (!ctx().ok || !W) return false;
     if (M == 1 && (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL))
         return cactus_metal_encode_quant_matmul(out, lhs, W);
+    const bool cq1_norot = quant_cq1_norot_eligible(W) &&
+                           !(W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW);
+    const bool cq1_sym = !cq1_norot && quant_cq1_interleaved_sym_eligible(W);
+    if (ctx().psoG1NM && (cq1_norot || cq1_sym)) {
+        if (M == 1) return cactus_metal_encode_quant_matmul(out, lhs, W);
+        if ((M % 32u) == 0u) {
+            const uint32_t gs1=W->group_size, K1=W->K, N1=W->N, ng1=W->num_groups;
+            const uint32_t pgb1=(gs1+7u)/8u;
+            ResW& rw = resident(W);
+            if (!rw.ok) return false;
+            id<MTLBuffer> packed = rw.packed, norms = rw.norms; size_t packed_off = rw.packed_off, norms_off = rw.norms_off;
+            float cbscale = 1.0f;
+            ensureEncoder();
+            if (cq1_sym) {
+                id<MTLBuffer> pb = nil, nb = nil;
+                if (!rw.recip || !rw.lsign || !rw.rsign || !rw.perm || !rw.codebook || !deint_bufs(W, &pb, &nb)) return false;
+                packed = pb; packed_off = 0; norms = nb; norms_off = 0;
+                cbscale = (float)W->codebook[1];
+                size_t cbytes = (size_t)M*ng1*gs1*sizeof(__fp16);
+                if (!g_code_buf_m || (size_t)g_code_buf_m.length < cbytes) g_code_buf_m = owned_shared(cbytes);
+                if (!g_code_buf_m) return false;
+                [g_enc setComputePipelineState:ctx().psoTm];
+                setBufAt(lhs, (size_t)M*K1*2, 0);                 [g_enc setBuffer:rw.recip offset:rw.rc_off atIndex:1];
+                [g_enc setBuffer:rw.lsign offset:rw.ls_off atIndex:2]; [g_enc setBuffer:rw.rsign offset:rw.rs_off atIndex:3];
+                [g_enc setBuffer:rw.perm offset:rw.pm_off atIndex:4];  [g_enc setBuffer:g_code_buf_m offset:0 atIndex:5];
+                [g_enc setBytes:&gs1 length:4 atIndex:6]; [g_enc setBytes:&K1 length:4 atIndex:7];
+                [g_enc setThreadgroupMemoryLength:gs1*sizeof(float) atIndex:0];
+                [g_enc dispatchThreadgroups:MTLSizeMake((size_t)ng1*M,1,1) threadsPerThreadgroup:MTLSizeMake(gs1>1024u?1024u:gs1,1,1)];
+            }
+            [g_enc setComputePipelineState:ctx().psoG1NM];
+            if (cq1_sym) [g_enc setBuffer:g_code_buf_m offset:0 atIndex:0];
+            else setBufAt(lhs, (size_t)M*K1*2, 0);
+            [g_enc setBuffer:packed offset:packed_off atIndex:1];
+            [g_enc setBuffer:norms offset:norms_off atIndex:2];
+            setBufAt(out, (size_t)M*N1*2, 3);
+            [g_enc setBytes:&gs1 length:4 atIndex:4]; [g_enc setBytes:&ng1 length:4 atIndex:5];
+            [g_enc setBytes:&pgb1 length:4 atIndex:6]; [g_enc setBytes:&N1 length:4 atIndex:7];
+            [g_enc setBytes:&M length:4 atIndex:8]; [g_enc setBytes:&cbscale length:4 atIndex:9];
+            [g_enc dispatchThreadgroups:MTLSizeMake(M/32u, (N1+63u)/64u, 1)
+                  threadsPerThreadgroup:MTLSizeMake(128,1,1)];
+            return true;
+        }
+    }
 
     const uint32_t gs=W->group_size, K=W->K, N=W->N, ng=W->num_groups;
     const uint32_t bits=W->bits, pgb=(gs*bits+7u)/8u;

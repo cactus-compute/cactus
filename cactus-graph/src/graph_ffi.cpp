@@ -779,6 +779,18 @@ int cactus_graph_relu(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out)
     }
 }
 
+int cactus_graph_gated_deltanet_gate_log(cactus_graph_t graph, cactus_node_t a_logits, cactus_node_t dt_bias, cactus_node_t a_log, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_gated_deltanet_gate_log");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.gated_deltanet_gate_log(
+            static_cast<size_t>(a_logits), static_cast<size_t>(dt_bias), static_cast<size_t>(a_log)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_silu(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_silu");
     try {

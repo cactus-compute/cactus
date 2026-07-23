@@ -762,6 +762,7 @@ private:
     void unload_component_graph(Component& comp);
     bool bind_runtime_buffers(Component& comp);
     void run_step(uint32_t token_id, size_t position, bool read_logits, bool use_fused = true);
+    void trim_prefill_components();
     void run_step_batch(const std::vector<uint32_t>& token_ids, const std::vector<size_t>& positions);
     void set_component_batch(Component& comp, size_t batch);
     size_t decoder_cache_num_slots();
@@ -796,7 +797,7 @@ private:
                                              size_t chunk_size, bool prepare_decode);
     void execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, size_t encoder_chunk,
                                size_t chunk_tokens, const std::vector<uint32_t>& tokens,
-                               size_t processed, size_t start_position);
+                               size_t processed, size_t start_position, uint32_t prefill_valid_len = 0);
     void run_full_context_text();
     void prepare_sampling_context(float repetition_penalty);
     uint32_t sample_component_logits(Component& comp, float temperature, float top_p, size_t top_k,

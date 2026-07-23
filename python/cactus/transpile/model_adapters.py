@@ -4863,6 +4863,13 @@ def _build_gemma4_multimodal_component_specs(
     return specs
 
 
+def _qwen35_rotary_embeddings(backbone, hidden_states, position_ids):
+    rope_device = backbone.rotary_emb.inv_freq.device
+    rope_x = torch.empty(0, dtype=hidden_states.dtype, device=rope_device)
+    cos, sin = backbone.rotary_emb(rope_x, position_ids.to(rope_device))
+    return cos.to(hidden_states.device), sin.to(hidden_states.device)
+
+
 class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, *, pad_token_id: int | None = None):
         super().__init__()
@@ -4883,7 +4890,7 @@ class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
             if self.pad_token_id is not None
             else None
         )
-        base_position_ids = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device).view(1, 1, -1)
+        base_position_ids = torch.arange(inputs_embeds.shape[1], device=input_ids.device).view(1, 1, -1)
         position_ids = torch.cat(
             (base_position_ids, base_position_ids, base_position_ids, base_position_ids),
             dim=0,
@@ -4902,7 +4909,7 @@ class Qwen35CausalLMLogitsAdapter(torch.nn.Module):
 
         hidden_states = inputs_embeds
         checkpoints: list[torch.Tensor] = []
-        position_embeddings = self.backbone.rotary_emb(hidden_states, multimodal_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, multimodal_position_ids)
 
         for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
             hidden_states = decoder_layer(
@@ -4973,7 +4980,7 @@ class Qwen35CausalLMStepAdapter(torch.nn.Module):
         linear_attn_mask = None
 
         hidden_states = inputs_embeds
-        position_embeddings = self.backbone.rotary_emb(hidden_states, multimodal_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, multimodal_position_ids)
         for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
             hidden_states = decoder_layer(
                 hidden_states,
@@ -5186,7 +5193,7 @@ class Qwen35EmbedsCausalLMLogitsAdapter(torch.nn.Module):
             position_ids=text_position_ids,
         )
         hidden_states = inputs_embeds
-        position_embeddings = self.backbone.rotary_emb(hidden_states, multimodal_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, multimodal_position_ids)
         for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
             hidden_states = decoder_layer(
                 hidden_states,
@@ -5279,7 +5286,7 @@ class Qwen35EmbedsCausalLMStepAdapter(torch.nn.Module):
             position_ids=text_position_ids,
         )
         hidden_states = inputs_embeds
-        position_embeddings = self.backbone.rotary_emb(hidden_states, multimodal_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, multimodal_position_ids)
         for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
             hidden_states = decoder_layer(
                 hidden_states,
@@ -5356,7 +5363,7 @@ class Qwen3CausalLMLogitsAdapter(torch.nn.Module):
 
         hidden_states = inputs_embeds
         checkpoints: list[torch.Tensor] = []
-        position_embeddings = self.backbone.rotary_emb(hidden_states, position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, position_ids)
 
         for i, decoder_layer in enumerate(self.backbone.layers[: self.backbone.config.num_hidden_layers]):
             hidden_states = decoder_layer(
@@ -5426,7 +5433,7 @@ class Qwen3CausalLMStepAdapter(torch.nn.Module):
 
         hidden_states = inputs_embeds
         text_position_ids = position_ids.to(dtype=torch.int64)
-        position_embeddings = self.backbone.rotary_emb(hidden_states, text_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, text_position_ids)
         for decoder_layer in self.backbone.layers[: self.backbone.config.num_hidden_layers]:
             hidden_states = decoder_layer(
                 hidden_states,
@@ -5521,7 +5528,7 @@ class Qwen3EmbedsCausalLMStepAdapter(torch.nn.Module):
 
         hidden_states = inputs_embeds
         text_position_ids = position_ids.to(dtype=torch.int64)
-        position_embeddings = self.backbone.rotary_emb(hidden_states, text_position_ids)
+        position_embeddings = _qwen35_rotary_embeddings(self.backbone, hidden_states, text_position_ids)
         for decoder_layer in self.backbone.layers[: self.backbone.config.num_hidden_layers]:
             hidden_states = decoder_layer(
                 hidden_states,
@@ -5604,10 +5611,12 @@ def _build_qwen_causal_lm_component_specs(
 
     chunk_components = {"lm_encoder_step", "lm_encoder_text_chunk", "decoder_media_step", "decoder_prefill_chunk", "decoder_embed_chunk"}
     wants_chunked = bool(chunk_components & requested_set)
-    if wants_chunked and family != "qwen3":
+    if wants_chunked and family not in {"qwen3", "qwen3_5"}:
         raise UnsupportedComponentsError(
-            f"text chunked-prefill components are only supported for the qwen3 family, got {family}"
+            f"text chunked-prefill components are only supported for the qwen3/qwen3_5 families, got {family}"
         )
+    if wants_chunked and family == "qwen3_5" and "decoder_embed_chunk" in requested_set:
+        raise UnsupportedComponentsError("decoder_embed_chunk is not supported for qwen3_5")
 
     specs: list[ComponentModuleSpec] = []
     if "decoder" in requested_set:
@@ -5643,6 +5652,84 @@ def _build_qwen_causal_lm_component_specs(
             metadata={"family": family, "task": "causal_lm_logits"},
             dynamic_batch_axis=0 if dynamic_batch else None,
         ))
+
+    if wants_chunked and family == "qwen3_5":
+        lm_encoder_step = Qwen35LMEncoderStepAdapter(model).eval()
+        lm_encoder_text_chunk = Qwen35LMEncoderTextChunkAdapter(model).eval()
+        decoder_media_step = Qwen35EmbedsCausalLMStepAdapter(model).eval()
+        decoder_prefill_chunk = Qwen35EmbedsCausalLMPrefillChunkAdapter(model).eval()
+        max_cache_seq_len = _max_cache_seq_len(model, input_ids, cache_context_length, fallback_extra_tokens=512)
+        prefill_chunk_size = max(1, int(os.environ.get("CACTUS_QWEN_PREFILL_CHUNK", "512") or "512"))
+        chunk_input_ids = _tile_to_length(input_ids, prefill_chunk_size)
+        chunk_position_ids = torch.arange(
+            prefill_chunk_size,
+            dtype=torch.long,
+            device=input_ids.device,
+        ).unsqueeze(0).expand(int(input_ids.shape[0]), -1).contiguous()
+        step_input_ids = input_ids[:, :1]
+        step_position_ids = torch.zeros_like(step_input_ids, dtype=torch.int64)
+        with torch.no_grad():
+            chunk_embeds, chunk_pos_out = lm_encoder_text_chunk(chunk_input_ids, chunk_position_ids)
+            step_embeds, step_pos_out = lm_encoder_step(step_input_ids, step_position_ids)
+        cache_meta = {
+            "use_internal_kv_cache": True,
+            "use_internal_conv_cache": True,
+            "use_internal_gated_deltanet_cache": True,
+            "max_cache_seq_len": max_cache_seq_len,
+            "cache_sink_size": 4,
+        }
+        if "lm_encoder_step" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="lm_encoder_step",
+                module=lm_encoder_step,
+                example_inputs=(step_input_ids, step_position_ids),
+                input_keys=("input_ids", "position_ids"),
+                output_keys=("inputs_embeds", "position_ids"),
+                graph_meta={**common_graph_meta, "component": "lm_encoder_step"},
+                metadata={"family": family, "task": "causal_lm_logits"},
+            ))
+        if "lm_encoder_text_chunk" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="lm_encoder_text_chunk",
+                module=lm_encoder_text_chunk,
+                example_inputs=(chunk_input_ids, chunk_position_ids),
+                input_keys=("input_ids", "position_ids"),
+                output_keys=("inputs_embeds", "position_ids"),
+                graph_meta={**common_graph_meta, "component": "lm_encoder_text_chunk"},
+                metadata={"family": family, "task": "causal_lm_logits"},
+            ))
+        if "decoder_prefill_chunk" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="decoder_prefill_chunk",
+                module=decoder_prefill_chunk,
+                example_inputs=(chunk_embeds, chunk_pos_out),
+                input_keys=("inputs_embeds", "position_ids"),
+                output_keys=("logits",),
+                graph_meta={
+                    **common_graph_meta,
+                    "component": "decoder_prefill_chunk",
+                    **cache_meta,
+                    "prefill_chunk_size": prefill_chunk_size,
+                },
+                metadata={"family": family, "task": "causal_lm_logits"},
+            ))
+        if "decoder_media_step" in requested_set:
+            specs.append(ComponentModuleSpec(
+                component="decoder_media_step",
+                module=decoder_media_step,
+                example_inputs=(step_embeds, step_pos_out),
+                input_keys=("inputs_embeds", "position_ids"),
+                output_keys=("logits",),
+                graph_meta={
+                    **common_graph_meta,
+                    "component": "decoder_media_step",
+                    **cache_meta,
+                    "cache_num_slots": (max_slots if dynamic_batch else 1),
+                },
+                metadata={"family": family, "task": "causal_lm_logits"},
+                dynamic_batch_axis=0 if dynamic_batch else None,
+            ))
+        return specs
 
     if wants_chunked:
         lm_encoder_step = Qwen3LMEncoderStepAdapter(model).eval()

@@ -350,6 +350,10 @@ _lib.cactus_graph_silu.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_silu.restype = ctypes.c_int
+_lib.cactus_graph_gated_deltanet_gate_log.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_gated_deltanet_gate_log.restype = ctypes.c_int
 _lib.cactus_graph_gelu.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
 ]
@@ -2310,6 +2314,18 @@ class Graph:
         rc = _lib.cactus_graph_relu(self.h, cactus_node_t(x.id), ctypes.byref(out))
         if rc != 0:
             raise RuntimeError(_err("graph_relu failed"))
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
+
+    def gated_deltanet_gate_log(self, a_logits, dt_bias, a_log, backend=None):
+        a_logits = self._ensure_tensor(a_logits)
+        dt_bias = self._ensure_tensor(dt_bias)
+        a_log = self._ensure_tensor(a_log)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_gated_deltanet_gate_log(
+            self.h, cactus_node_t(a_logits.id), cactus_node_t(dt_bias.id),
+            cactus_node_t(a_log.id), ctypes.byref(out))
+        if rc != 0:
+            raise RuntimeError(_err("graph_gated_deltanet_gate_log failed"))
         return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def silu(self, x, backend=None):

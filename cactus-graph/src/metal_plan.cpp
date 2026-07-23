@@ -1239,15 +1239,90 @@ MetalFusePlan* cactus_metal_plan_build(
         }
         for (size_t i = 0; i < n; ++i) {
             if (plan->action[i] != -1) continue;
+            GraphNode& dn = *nodes[i];
+            if (dn.op_type != OpType::DIVIDE || dn.input_ids.size() != 2) continue;
+            if (dn.output_buffer.precision != Precision::FP16 || retyped(i)) continue;
+            long xs = idxof(dn.input_ids[0]);
+            if (xs < 0 || nodes[(size_t)xs]->output_buffer.precision != Precision::FP16) continue;
+            std::vector<size_t> cov;
+            auto strip1 = [&](long j) -> long {
+                while (j >= 0 && passthrough(*nodes[(size_t)j])
+                       && !nodes[(size_t)j]->input_ids.empty()
+                       && cons[(size_t)j].size() == 1 && plan->action[(size_t)j] == -1) {
+                    cov.push_back((size_t)j);
+                    j = idxof(nodes[(size_t)j]->input_ids[0]);
+                }
+                return j;
+            };
+            long sq = strip1(idxof(dn.input_ids[1]));
+            if (sq < 0 || nodes[(size_t)sq]->op_type != OpType::SCALAR_SQRT
+                || cons[(size_t)sq].size() != 1 || plan->action[(size_t)sq] != -1 || retyped((size_t)sq)) continue;
+            float eps = 0.f;
+            long j = strip1(nodes[(size_t)sq]->input_ids.empty() ? -1 : idxof(nodes[(size_t)sq]->input_ids[0]));
+            if (j < 0 || nodes[(size_t)j]->op_type != OpType::SCALAR_ADD
+                || cons[(size_t)j].size() != 1 || plan->action[(size_t)j] != -1 || retyped((size_t)j)) continue;
+            eps = nodes[(size_t)j]->params.scalar;
+            cov.push_back((size_t)sq);
+            cov.push_back((size_t)j);
+            long sm = strip1(nodes[(size_t)j]->input_ids.empty() ? -1 : idxof(nodes[(size_t)j]->input_ids[0]));
+            if (sm < 0 || nodes[(size_t)sm]->op_type != OpType::SUM
+                || cons[(size_t)sm].size() != 1 || plan->action[(size_t)sm] != -1 || retyped((size_t)sm)) continue;
+            cov.push_back((size_t)sm);
+            long mu = strip1(nodes[(size_t)sm]->input_ids.empty() ? -1 : idxof(nodes[(size_t)sm]->input_ids[0]));
+            if (mu < 0 || nodes[(size_t)mu]->op_type != OpType::MULTIPLY
+                || cons[(size_t)mu].size() != 1 || plan->action[(size_t)mu] != -1 || retyped((size_t)mu)) continue;
+            GraphNode& mun = *nodes[(size_t)mu];
+            if (mun.input_ids.size() != 2) continue;
+            long m0 = idxof(mun.input_ids[0]), m1 = idxof(mun.input_ids[1]);
+            auto base_src = [&](long b) -> long {
+                while (b >= 0 && passthrough(*nodes[(size_t)b]) && !nodes[(size_t)b]->input_ids.empty())
+                    b = idxof(nodes[(size_t)b]->input_ids[0]);
+                return b;
+            };
+            long bx = base_src(xs);
+            if (base_src(m0) != bx || base_src(m1) != bx) continue;
+            cov.push_back((size_t)mu);
+            size_t dim = dn.output_buffer.shape.empty() ? 0 : dn.output_buffer.shape.back();
+            if (!dim || dn.output_buffer.total_size % dim) continue;
+            size_t drows = dn.output_buffer.total_size / dim;
+            if (nodes[(size_t)sq]->output_buffer.total_size != drows) continue;
+            MetalCluster c;
+            c.rule = 20;
+            c.a0 = (size_t)xs;
+            c.u0 = (uint32_t)drows;
+            c.u1 = (uint32_t)dim;
+            c.f0 = eps;
+            c.b4 = i;
+            add_cluster(c, i, cov);
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            if (plan->action[i] != -1) continue;
             int kind, code; float p0, p1;
             if (!ew_kind(*nodes[i], &kind, &code, &p0, &p1)) continue;
             if (!prec_ok(nodes[i]->output_buffer.precision) || retyped(i)) continue;
             size_t total = nodes[i]->output_buffer.total_size;
             std::vector<size_t> chain{i};
+            std::vector<size_t> hop_cover;
+            std::vector<long> links{-1};
             size_t cur = i;
+            const size_t head_inner = nodes[i]->output_buffer.shape.empty()
+                ? 1 : nodes[i]->output_buffer.shape.back();
             while (chain.size() < 12) {
                 if (cons[cur].size() != 1) break;
                 size_t nxt = cons[cur][0];
+                std::vector<size_t> hops;
+                size_t link = cur;
+                while (passthrough(*nodes[nxt]) && plan->action[nxt] == -1
+                       && !retyped(nxt)
+                       && nodes[nxt]->output_buffer.total_size == total
+                       && (nodes[nxt]->output_buffer.shape.empty()
+                           ? 1 : nodes[nxt]->output_buffer.shape.back()) == head_inner
+                       && cons[nxt].size() == 1) {
+                    hops.push_back(nxt);
+                    link = nxt;
+                    nxt = cons[nxt][0];
+                }
                 if (plan->action[nxt] != -1) break;
                 int k2, c2; float q0, q1;
                 if (!ew_kind(*nodes[nxt], &k2, &c2, &q0, &q1)) break;
@@ -1255,8 +1330,10 @@ MetalFusePlan* cactus_metal_plan_build(
                 if (nodes[nxt]->output_buffer.total_size != total) break;
                 bool feeds = false;
                 for (size_t a = 0; a < nodes[nxt]->input_ids.size() && a < 2; ++a)
-                    if (idxof(nodes[nxt]->input_ids[a]) == (long)cur) feeds = true;
+                    if (idxof(nodes[nxt]->input_ids[a]) == (long)link) feeds = true;
                 if (!feeds) break;
+                hop_cover.insert(hop_cover.end(), hops.begin(), hops.end());
+                links.push_back((long)link);
                 chain.push_back(nxt);
                 cur = nxt;
             }
@@ -1277,7 +1354,7 @@ MetalFusePlan* cactus_metal_plan_build(
                 const GraphNode& cn = *nodes[chain[ci]];
                 int k2, c2; float q0, q1;
                 ew_kind(cn, &k2, &c2, &q0, &q1);
-                long prev = ci == 0 ? -1 : (long)chain[ci - 1];
+                long prev = ci == 0 ? -1 : links[ci];
                 if (ci == 0) {
                     long hi2 = idxof(cn.input_ids[0]);
                     if (hi2 < 0 || !prec_ok(nodes[(size_t)hi2]->output_buffer.precision)
@@ -1347,6 +1424,7 @@ MetalFusePlan* cactus_metal_plan_build(
             c.b4 = chain.back();
             plan->blobs.push_back(std::move(blob));
             std::vector<size_t> cover(chain.begin(), chain.end() - 1);
+            cover.insert(cover.end(), hop_cover.begin(), hop_cover.end());
             add_cluster(c, chain.back(), cover);
         }
     }
@@ -1799,6 +1877,13 @@ bool cactus_metal_plan_encode(MetalFusePlan* p, int32_t cid,
             void* tk = anchor.output_buffer.get_data();
             if (!lg || !probs || !tk) return false;
             return cactus_metal_encode_softmax_topk(probs, tk, lg, c.u0, c.u1, c.b0, c.f0);
+        }
+        case 20: {
+            GraphNode& anchor = *nodes[c.b4];
+            const void* x = nodes[c.a0]->output_buffer.get_data();
+            void* out = anchor.output_buffer.get_data();
+            if (!x || !out) return false;
+            return cactus_metal_encode_l2_norm(out, x, c.u0, c.u1, c.f0);
         }
         case 18: {
             GraphNode& anchor = *nodes[c.b4];

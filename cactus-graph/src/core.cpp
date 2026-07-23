@@ -325,6 +325,7 @@ void CactusGraph::release_runtime_buffers() {
         if (persistent_node_ids_.count(node->id)) continue;
         node->output_buffer.release_memory(buffer_pool_);
     }
+    constants_cached_ = false;
     buffer_pool_.clear();
     shrink_thread_local_buffers();
 }

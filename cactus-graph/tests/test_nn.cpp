@@ -53,7 +53,8 @@ static void write_test_cq_weights(
     const std::vector<__fp16>& norms,
     const std::vector<int8_t>& left_signs,
     const std::vector<int8_t>& right_signs,
-    const std::vector<uint32_t>& permutation) {
+    const std::vector<uint32_t>& permutation,
+    uint32_t extra_flags = 0) {
     constexpr uint32_t CACTUS_MAGIC = 0x54434143;
     constexpr uint32_t FLAG_HAS_SCALES = 1 << 0;
     constexpr size_t HEADER_SIZE = 84;
@@ -80,7 +81,7 @@ static void write_test_cq_weights(
     };
 
     write_u32(CACTUS_MAGIC);
-    write_u32(FLAG_HAS_SCALES);
+    write_u32(FLAG_HAS_SCALES | extra_flags);
     write_u32(alignment);
     write_u32(2);
     write_u64(N);
@@ -109,6 +110,74 @@ static void write_test_cq_weights(
     write_padding(data_start - (aligned_header + scales_bytes));
     file.write(reinterpret_cast<const char*>(packed.data()), packed.size());
     if (!file) throw std::runtime_error("failed writing test CQ weights");
+}
+
+bool test_matmul_cq_no_rotation() {
+    const size_t M = 2, K = 256, N = 8;
+    const size_t gs = 128;
+    const size_t ng = K / gs;
+    constexpr uint32_t FLAG_NO_ROTATION_FILE = 1u << 5;
+
+    std::mt19937 gen(99);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+
+    std::vector<__fp16> A(M * K);
+    for (auto& v : A) v = static_cast<__fp16>(dist(gen));
+
+    uint32_t pgb = cactus_quant_packed_group_bytes(1, gs);
+    std::vector<uint8_t> packed(N * ng * pgb);
+    for (auto& v : packed) v = static_cast<uint8_t>(gen() & 0xFF);
+
+    std::vector<__fp16> codebook = {static_cast<__fp16>(-1.f), static_cast<__fp16>(1.f)};
+    std::vector<__fp16> input_scale(K, static_cast<__fp16>(1.f));
+    std::vector<__fp16> input_scale_recip(K, static_cast<__fp16>(1.f));
+    std::vector<__fp16> norms(N * ng);
+    for (auto& v : norms) v = static_cast<__fp16>(0.01f + std::abs(dist(gen)) * 0.05f);
+
+    CactusQuantMatrix mat{
+        .bits = 1, .K = static_cast<uint32_t>(K), .N = static_cast<uint32_t>(N),
+        .group_size = static_cast<uint32_t>(gs), .num_groups = static_cast<uint32_t>(ng),
+        .flags = CACTUS_QUANT_FLAG_NO_ROTATION,
+        .codebook = codebook.data(),
+        .input_scale = input_scale.data(),
+        .input_scale_recip = input_scale_recip.data(),
+        .norms = norms.data(),
+        .packed_indices = packed.data(),
+        .left_signs = nullptr,
+        .right_signs = nullptr,
+        .permutation = nullptr,
+        .rotation = nullptr,
+        .expanded = nullptr,
+        .norm_f32 = nullptr,
+    };
+
+    std::vector<__fp16> direct(M * N, static_cast<__fp16>(0));
+    cactus_quant_matmul(&mat, A.data(), static_cast<uint32_t>(M), direct.data());
+
+    auto path = std::filesystem::temp_directory_path() / "cactus_graph_cq1_norot_matmul.weights";
+    write_test_cq_weights(path, 1, K, N, gs, packed, codebook, input_scale,
+                          input_scale_recip, norms, {}, {}, {}, FLAG_NO_ROTATION_FILE);
+
+    CactusGraph g;
+    size_t ia = g.input({M, K}, Precision::FP16);
+    size_t iw = g.mmap_weights(path.string());
+    size_t out = g.matmul(ia, iw, true);
+    g.set_input(ia, A.data(), Precision::FP16);
+    g.execute();
+    __fp16* graph_out = static_cast<__fp16*>(g.get_output(out));
+
+    bool ok = true;
+    for (size_t i = 0; i < M * N; i++) {
+        float actual = static_cast<float>(graph_out[i]);
+        float expected = static_cast<float>(direct[i]);
+        if (!std::isfinite(actual) || std::abs(actual - expected) > 1e-3f) {
+            ok = false;
+            break;
+        }
+    }
+    g.hard_reset();
+    std::filesystem::remove(path);
+    return ok;
 }
 
 bool test_matmul_cq() {
@@ -710,6 +779,7 @@ int main() {
 
     runner.run_test("Matrix Multiplication", test_matrix_multiplication());
     runner.run_test("MatMul CQ", test_matmul_cq());
+    runner.run_test("MatMul CQ (no rotation)", test_matmul_cq_no_rotation());
     runner.run_test("Transpose", test_transpose());
     runner.run_test("RMS Norm", test_rms_norm());
     runner.run_test("Softmax", test_softmax());

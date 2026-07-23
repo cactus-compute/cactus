@@ -120,7 +120,7 @@ bool cactus_metal_encode_rope_pair_rms(void*, const void*, const void*, const vo
 bool cactus_metal_encode_deltanet_decode(void*, const void*, const void*, const void*,
     const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float) { return false; }
 bool cactus_metal_encode_deltanet_prefill(void*, const void*, const void*, const void*,
-    const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float) { return false; }
+    const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, uint32_t) { return false; }
 bool cactus_metal_encode_rms2_add_clip(void*, const void*, const void*,
     const void*, const void*, size_t, float, float) { return false; }
 bool cactus_metal_encode_rms_norm_scale(void*, const void*, const void*,
@@ -133,4 +133,6 @@ bool cactus_metal_moe_cq4_build(const CactusQuantMatrix*, const CactusQuantMatri
     const CactusQuantMatrix*, uint32_t) { return false; }
 bool cactus_metal_encode_moe_gated_cq4(void*, const void*, const void*, const void*, const CactusQuantMatrix*,
     uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, float) { return false; }
+bool cactus_metal_encode_deltanet_gate_log(void*, const void*, const void*, const void*, size_t, size_t) { return false; }
+bool cactus_metal_encode_l2_norm(void*, const void*, size_t, size_t, float) { return false; }
 #endif

@@ -42,6 +42,9 @@ bool cactus_metal_encode_unary(int op_type, void* out, const void* in, size_t n)
 bool cactus_metal_encode_swiglu(void* out, const void* gate, const void* up, size_t n, float scale);
 bool cactus_metal_encode_rms_norm(void* out, const void* in, const void* weight,
                                   size_t rows, size_t dim, float eps);
+bool cactus_metal_encode_deltanet_gate_log(void* out, const void* a, const void* dt,
+                                           const void* al, size_t rows, size_t H);
+bool cactus_metal_encode_l2_norm(void* out, const void* in, size_t rows, size_t dim, float eps);
 bool cactus_metal_encode_rms_norm_add(void* out, const void* in, const void* weight, const void* res,
                                       size_t rows, size_t dim, float eps);
 bool cactus_metal_encode_rms_norm_add_rms(void* h_out, void* xn_out, const void* in, const void* w1,
@@ -78,7 +81,7 @@ bool cactus_metal_encode_deltanet_decode(void* out, const void* q, const void* k
 bool cactus_metal_encode_deltanet_prefill(void* out, const void* q, const void* k, const void* v,
                                           const void* g, const void* b, const void* s,
                                           uint32_t B, uint32_t T, uint32_t Hq, uint32_t Hv,
-                                          uint32_t K, uint32_t V, float scale);
+                                          uint32_t K, uint32_t V, float scale, uint32_t valid_T = 0);
 bool cactus_metal_encode_rms2_add_clip(void* out, const void* a, const void* wa,
                                        const void* b, const void* wb, size_t dim,
                                        float eps_a, float eps_b);

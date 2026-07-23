@@ -67,6 +67,7 @@ DECLARE_COMPUTE(compute_groupnorm_node);
 DECLARE_COMPUTE(compute_rope_gptj_node);
 DECLARE_COMPUTE(compute_lstm_cell_node);
 DECLARE_COMPUTE(compute_gated_deltanet_decode_node);
+DECLARE_COMPUTE(compute_gated_deltanet_gate_log_node);
 DECLARE_COMPUTE(compute_gated_deltanet_prefill_node);
 DECLARE_COMPUTE(compute_stft_node);
 DECLARE_COMPUTE(compute_altup_predict_node);
@@ -107,7 +108,7 @@ DECLARE_COMPUTE(compute_spectrogram_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::CONV_CACHE_INITIALIZE) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::GATED_DELTANET_GATE_LOG) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -186,6 +187,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::PERSISTENT)] = compute_persistent_node;
     dispatch_flat[static_cast<int>(OpType::LSTM_CELL)] = compute_lstm_cell_node;
     dispatch_flat[static_cast<int>(OpType::GATED_DELTANET_DECODE)] = compute_gated_deltanet_decode_node;
+    dispatch_flat[static_cast<int>(OpType::GATED_DELTANET_GATE_LOG)] = compute_gated_deltanet_gate_log_node;
     dispatch_flat[static_cast<int>(OpType::GATED_DELTANET_PREFILL)] = compute_gated_deltanet_prefill_node;
     dispatch_flat[static_cast<int>(OpType::STFT)] = compute_stft_node;
     dispatch_flat[static_cast<int>(OpType::ALTUP_PREDICT)] = compute_altup_predict_node;
@@ -253,8 +255,11 @@ static const char* op_type_names[] = {
     "NOT_EQUAL", "SCALAR_NOT_EQUAL",
     "RECURRENT_CACHE_STATE",
     "RECURRENT_CACHE_WRITE",
-    "CONV_CACHE_INITIALIZE"
+    "CONV_CACHE_INITIALIZE",
+    "GATED_DELTANET_GATE_LOG"
 };
+static_assert(sizeof(op_type_names) / sizeof(op_type_names[0]) == OP_TYPE_COUNT,
+              "op_type_names must have exactly one entry per OpType");
 
 static const char* get_op_name(OpType op) {
     return op_type_names[static_cast<int>(op)];
@@ -381,6 +386,8 @@ std::vector<size_t> infer_output_shape(const GraphNode& node, const nodes_vector
             out[axis] = node.params.slice_length;
             return out;
         }
+        case OpType::GATED_DELTANET_GATE_LOG:
+            return in(0);
         default: {
             std::vector<size_t> out = node.output_buffer.shape;
             if (out.empty()) return in(0);
@@ -486,7 +493,8 @@ static const __fp16* metal_conv_weight_f16(const BufferDesc& w, size_t rows, siz
     return e.data.data();
 }
 
-static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const node_index_map_t& map) {
+static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const node_index_map_t& map,
+                             uint32_t prefill_valid_len) {
     if (node.params.backend != ComputeBackend::METAL) return false;
     BufferDesc& out = node.output_buffer;
     auto fp16 = [](const BufferDesc& b){ return b.precision == Precision::FP16; };
@@ -500,7 +508,12 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
                 CactusQuantMatrix mat = rhs.to_cq_matrix();
                 if (M == 1 && !cactus_graph_prefill_consistent())
                     return cactus_metal_encode_quant_matmul(out.get_data(), lhs.get_data(), &mat);
-                return cactus_metal_encode_quant_matmul_m(out.get_data(), lhs.get_data(), &mat, (uint32_t)M);
+                uint32_t Mq = (uint32_t)M;
+                if (prefill_valid_len && M > 1 && prefill_valid_len < M) {
+                    uint32_t mv = ((prefill_valid_len + 31u) / 32u) * 32u;
+                    if (mv < Mq) Mq = mv;
+                }
+                return cactus_metal_encode_quant_matmul_m(out.get_data(), lhs.get_data(), &mat, Mq);
             }
             if (!fp16(rhs) || !fp16(out) || rhs.shape.size() != 2) return false;
             size_t K = lhs.shape.back();
@@ -868,6 +881,17 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             for (size_t i = (size_t)axis + 1; i < in.shape.size(); ++i) inner *= in.shape[i];
             return cactus_metal_encode_glu(out.get_data(), in.get_data(), split, inner, out.total_size);
         }
+        case OpType::GATED_DELTANET_GATE_LOG: {
+            if (node.input_ids.size() != 3) return false;
+            const auto& a = get_input(node, 0, nodes, map);
+            const auto& dt = get_input(node, 1, nodes, map);
+            const auto& al = get_input(node, 2, nodes, map);
+            if (!fp16(a) || !fp16(dt) || !fp16(al) || !fp16(out) || out.shape.empty()) return false;
+            size_t H = out.shape.back();
+            if (H == 0) return false;
+            return cactus_metal_encode_deltanet_gate_log(out.get_data(), a.get_data(),
+                dt.get_data(), al.get_data(), out.total_size / H, H);
+        }
         case OpType::SOFTMAX: {
             const auto& in = get_input(node, 0, nodes, map);
             if (!fp16(in) || !fp16(out) || out.shape.empty()) return false;
@@ -912,7 +936,8 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             if (out.total_size != B * (T + K) * Hv * V) return false;
             return cactus_metal_encode_deltanet_prefill(out.get_data(), q.get_data(), k.get_data(),
                 v.get_data(), g.get_data(), b.get_data(), st.get_data(),
-                (uint32_t)B, (uint32_t)T, (uint32_t)Hq, (uint32_t)Hv, (uint32_t)K, (uint32_t)V, node.params.scale);
+                (uint32_t)B, (uint32_t)T, (uint32_t)Hq, (uint32_t)Hv, (uint32_t)K, (uint32_t)V,
+                node.params.scale, prefill_valid_len);
         }
         case OpType::RECURRENT_CACHE_WRITE: {
             if (node.input_ids.size() < 2) return false;
@@ -1115,6 +1140,7 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             size_t current_len=km[0], max_len=km[1], kv_heads=km[2], hdim=km[3], sink=km[4], num_slots=km[5];
             if (num_slots != 1 || kv_heads == 0 || hdim == 0) return false;
             size_t new_seq_len = new_kv.total_size / (kv_heads * hdim);
+            if (prefill_valid_len && prefill_valid_len < new_seq_len) new_seq_len = prefill_valid_len;
             size_t ceiling = cache_node.params.max_cache_seq_len, ws = node.params.window_size;
             bool sliding = ws > 0 && ws < ceiling;
             size_t new_total = current_len + new_seq_len;
@@ -1213,6 +1239,7 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             uint64_t head = cm[0], count = cm[1], ws = cm[2], hd = cm[3];
             if (ws == 0 || hd == 0 || head >= ws) return false;
             size_t num_rows = new_data.total_size / hd;
+            if (prefill_valid_len && prefill_valid_len < num_rows) num_rows = prefill_valid_len;
             if (num_rows == 0 || out.total_size != ws * hd) return false;
             uint32_t nnew = (uint32_t)std::min<uint64_t>(num_rows, ws);
             uint64_t count_new = std::min<uint64_t>(ws, count + num_rows);
@@ -1342,7 +1369,7 @@ void CactusGraph::build_metal_retype_plan() {
     }
 }
 
-void CactusGraph::execute(const std::string& profile_file) {
+void CactusGraph::execute(const std::string& profile_file, uint32_t prefill_valid_len) {
     cactus_graph_mark_unadjusted();
     BufferPool& pool = buffer_pool_;
     const size_t n = nodes_.size();
@@ -1434,6 +1461,38 @@ void CactusGraph::execute(const std::string& profile_file) {
         }
     }
     if (metal_mode && !need_debug && !metal_retype_built_) build_metal_retype_plan();
+    if (node_is_constant_.size() != n) {
+        node_is_constant_.assign(n, 0);
+        constants_cached_ = false;
+        auto runtime_source = [&](const GraphNode& nd) {
+            switch (nd.op_type) {
+                case OpType::INPUT:
+                case OpType::KV_CACHE_STATE:
+                case OpType::CONV_CACHE_STATE:
+                case OpType::RECURRENT_CACHE_STATE:
+                case OpType::KV_CACHE_APPEND:
+                case OpType::CONV_CACHE_APPEND:
+                case OpType::RECURRENT_CACHE_WRITE:
+                case OpType::SAMPLE:
+                    return true;
+                default:
+                    return false;
+            }
+        };
+        for (size_t i = 0; i < n; ++i) {
+            GraphNode& nd = *nodes_[i];
+            if (runtime_source(nd)) { node_is_constant_[i] = 0; continue; }
+            bool cst = true;
+            for (size_t id : nd.input_ids) {
+                auto it = node_index_map_.find(id);
+                if (it == node_index_map_.end() || !node_is_constant_[it->second]) { cst = false; break; }
+            }
+            if (nd.input_ids.empty())
+                cst = nd.op_type != OpType::INPUT && nd.output_buffer.get_data() != nullptr;
+            node_is_constant_[i] = cst ? 1 : 0;
+        }
+    }
+
     MetalFusePlan* fplan = nullptr;
     if (metal_mode && !need_debug) {
         uint64_t sig = 1469598103934665603ull;
@@ -1453,6 +1512,8 @@ void CactusGraph::execute(const std::string& profile_file) {
         if (it == metal_plans_.end()) {
             std::unordered_set<size_t> pinned(retained_output_node_ids_.begin(), retained_output_node_ids_.end());
             pinned.insert(persistent_node_ids_.begin(), persistent_node_ids_.end());
+            for (size_t ci = 0; ci < n; ++ci)
+                if (node_is_constant_[ci]) pinned.insert(nodes_[ci]->id);
             static const std::vector<uint8_t> no_retype;
             const std::vector<uint8_t>& rt = (!metal_retype_disabled_ && metal_retype_plan_.size() == n)
                 ? metal_retype_plan_ : no_retype;
@@ -1571,6 +1632,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                 transient_ok[i] = !retained_output_node_ids_.count(id)
                     && !persistent_node_ids_.count(id)
                     && !keep_until_graph_cleanup[i]
+                    && !node_is_constant_[i]
                     && nodes_[i]->output_buffer.byte_size >= (256u << 10);
             }
         }
@@ -1599,8 +1661,9 @@ void CactusGraph::execute(const std::string& profile_file) {
         size_t since_flush = 0, since_recycle = 0;
         if (fplan) cactus_metal_plan_fold(fplan, nodes_);
         std::vector<uint8_t> metal_live(n, 0);
+        static const size_t recycle_cadence = (size_t)get_env_int("CACTUS_METAL_RECYCLE", 256);
         auto maybe_recycle = [&]() {
-            if (!transient_acts || ++since_recycle < 256 || transient_dead.empty()) return;
+            if (!transient_acts || ++since_recycle < recycle_cadence || transient_dead.empty()) return;
             for (void* p : transient_dead) cactus_metal_free_shared(p);
             transient_dead.clear();
             cactus_metal_session_sync();
@@ -1644,6 +1707,10 @@ void CactusGraph::execute(const std::string& profile_file) {
                 || ot == OpType::RECURRENT_CACHE_STATE) {
                 dispatch_node(*node, nodes_, node_index_map_);
                 populated_node_ids_.insert(node->id);
+                for (size_t r : release_after[i]) metal_release(r);
+                continue;
+            }
+            if (constants_cached_ && node_is_constant_[i] && !aliases_input(*node)) {
                 for (size_t r : release_after[i]) metal_release(r);
                 continue;
             }
@@ -1696,7 +1763,7 @@ void CactusGraph::execute(const std::string& profile_file) {
                 metal_plan_banned_[metal_plan_sig_].insert(i);
                 metal_plans_.erase(metal_plan_sig_);
                 cactus_metal_plan_free(fplan);
-                execute(profile_file);
+                execute(profile_file, prefill_valid_len);
                 return;
             }
             std::vector<std::pair<BufferDesc*, Precision>> flipped;
@@ -1713,13 +1780,13 @@ void CactusGraph::execute(const std::string& profile_file) {
             bool force_cpu = (ot == OpType::PRECISION_CAST
                 && node->output_buffer.total_size <= 8 && !input_metal_live(*node))
                 || (ot == OpType::EMBEDDING && input_metal_live(*node));
-            bool encoded = !force_cpu && try_encode_metal(*node, nodes_, node_index_map_);
+            bool encoded = !force_cpu && try_encode_metal(*node, nodes_, node_index_map_, prefill_valid_len);
             for (auto& fp : flipped) fp.first->precision = fp.second;
             if (!encoded && rplan && rplan[i] == 2) {
                 metal_retype_disabled_ = true;
                 metal_guard.armed = false;
                 metal_abort_cleanup();
-                execute(profile_file);
+                execute(profile_file, prefill_valid_len);
                 return;
             }
             if (!encoded) {
@@ -1741,6 +1808,7 @@ void CactusGraph::execute(const std::string& profile_file) {
         cactus_metal_set_active(false);
         cactus_metal_session_end();
         cactus_graph_metal_tail_commit();
+        constants_cached_ = true;
         return;
     }
 
@@ -2156,10 +2224,13 @@ void CactusGraph::invalidate_metal_state() {
     metal_persistent_acts_.clear();
     metal_retype_plan_.clear();
     metal_retype_built_ = false;
+    constants_cached_ = false;
 }
 
 void CactusGraph::hard_reset() {
     invalidate_metal_state();
+    node_is_constant_.clear();
+    constants_cached_ = false;
     nodes_.clear();
     node_index_map_.clear();
     mapped_files_.clear();

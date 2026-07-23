@@ -32,7 +32,7 @@ from .export.validate import validate_qdq
 from .model_adapters.detection import SUPPORTED_FAMILIES, detect_family
 from .model_adapters.adapters import adapter_for_family
 from .model_adapters.nemo import ensure_parakeet_tdt_nemo_source
-from .quantization.cq import quantize_hadamard, quantize_orthogonal, write_cq_tensor
+from .quantization.cq import quantize_binary_repack, quantize_hadamard, quantize_orthogonal, write_cq_tensor
 from .compat import patch_transformers_import_compat
 
 ALPHA = 0.25
@@ -523,23 +523,31 @@ def convert(args: argparse.Namespace) -> None:
                         if args.strict:
                             raise RuntimeError(f"{name}: {hessian_missing_reason} ({module_name})")
                     hessian = hessians_np.get(module_name)
-                    input_scale = None
-                    if emit_policy.rotation == "orthogonal" or name.endswith("embed_tokens_per_layer.weight"):
-                        input_scale = _row_table_scale(emit_tensor, scale_token_ids)
-                    else:
-                        input_scale = _input_scale_from_diag(diag_np.get(module_name), emit_tensor)
-                    if emit_policy.rotation == "orthogonal":
-                        cq = quantize_orthogonal(emit_tensor, bits=int(emit_policy.bits or 4), input_scale=input_scale)
-                    else:
-                        cq = quantize_hadamard(
-                            emit_tensor,
-                            bits=int(emit_policy.bits or requested_bits),
-                            hessian=hessian,
-                            use_gptq=emit_policy.use_gptq,
-                            input_scale=input_scale,
-                        )
+                    cq = None
+                    if requested_bits == 1:
+                        cq = quantize_binary_repack(emit_tensor)
+                        if cq is not None:
+                            print(f"  repack: {out_path.name} is QAT-binary -> lossless 1-bit repack (no rotation)")
+                            precision = "CQ1"
+                            emit_policy = replace(emit_policy, precision="CQ1", bits=1)
+                    if cq is None:
+                        input_scale = None
+                        if emit_policy.rotation == "orthogonal" or name.endswith("embed_tokens_per_layer.weight"):
+                            input_scale = _row_table_scale(emit_tensor, scale_token_ids)
+                        else:
+                            input_scale = _input_scale_from_diag(diag_np.get(module_name), emit_tensor)
+                        if emit_policy.rotation == "orthogonal":
+                            cq = quantize_orthogonal(emit_tensor, bits=int(emit_policy.bits or 4), input_scale=input_scale)
+                        else:
+                            cq = quantize_hadamard(
+                                emit_tensor,
+                                bits=int(emit_policy.bits or requested_bits),
+                                hessian=hessian,
+                                use_gptq=emit_policy.use_gptq,
+                                input_scale=input_scale,
+                            )
                     cq = _scale_cq_norms(cq, adapter.scale_factor(out_path.name))
-                    if getattr(emit_policy, "layout", "row_major") == "interleaved_4row":
+                    if getattr(emit_policy, "layout", "row_major") == "interleaved_4row" and cq.rotation_family != "none":
                         cq = replace(cq, interleaved_4row=True)
                     write_cq_tensor(out_path, cq)
                     gptq_used = cq.gptq_used

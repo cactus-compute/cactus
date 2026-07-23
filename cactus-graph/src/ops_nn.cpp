@@ -831,6 +831,27 @@ void compute_layernorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
 
 
+void compute_gated_deltanet_gate_log_node(GraphNode& node,
+        const std::vector<std::unique_ptr<GraphNode>>& nodes,
+        const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& a  = get_input(node, 0, nodes, node_index_map);
+    const auto& dt = get_input(node, 1, nodes, node_index_map);
+    const auto& al = get_input(node, 2, nodes, node_index_map);
+    const __fp16* ap = a.data_as<__fp16>();
+    const __fp16* dp = dt.data_as<__fp16>();
+    const __fp16* lp = al.data_as<__fp16>();
+    __fp16* op = node.output_buffer.data_as<__fp16>();
+    size_t H = a.shape.empty() ? a.total_size : a.shape.back();
+    size_t rows = H ? a.total_size / H : 0;
+    for (size_t r = 0; r < rows; ++r) {
+        for (size_t h = 0; h < H; ++h) {
+            float x = (float)ap[r*H+h] + (float)dp[h];
+            float sp = x > 20.0f ? x : (x < -20.0f ? std::exp(x) : std::log1p(std::exp(x)));
+            op[r*H+h] = (__fp16)(-std::exp((float)lp[h]) * sp);
+        }
+    }
+}
+
 void compute_glu_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                       const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& X = get_input(node, 0, nodes, node_index_map);
