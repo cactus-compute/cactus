@@ -37,7 +37,7 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoTsimd = nil;
     id<MTLComputePipelineState> psoTbatch = nil;
     id<MTLComputePipelineState> psoMega = nil, psoSwiT = nil, psoCat = nil;
-    id<MTLComputePipelineState> psoG = nil, psoGmr = nil, psoGmrLow = nil;
+    id<MTLComputePipelineState> psoG = nil, psoGmr = nil, psoGmr4 = nil, psoGmrLow = nil, psoGmrLow4 = nil;
     id<MTLComputePipelineState> psoActQ = nil, psoG2i8 = nil;
     id<MTLComputePipelineState> psoTm = nil;
     id<MTLComputePipelineState> psoGmma = nil, psoGdense = nil;
@@ -47,6 +47,7 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoCopy=nil, psoBinary=nil, psoScalar=nil, psoUnary=nil, psoRms=nil, psoSwiglu=nil, psoRmsAdd=nil, psoRmsAddScale=nil;
     id<MTLComputePipelineState> psoCF16F32=nil, psoCF32F16=nil, psoCI8F16=nil, psoCF16I8=nil;
     id<MTLComputePipelineState> psoAttn=nil, psoAttnC=nil, psoAttnF=nil, psoStrided=nil, psoScatter=nil, psoBcast=nil, psoKvAppend=nil;
+    id<MTLComputePipelineState> psoAttnGqa[9][3] = {};
     id<MTLComputePipelineState> psoAttnPre=nil, psoAttnPreMma2=nil, psoAttnPreHd256=nil;
     id<MTLComputePipelineState> psoKvAppendM=nil, psoKvAppendRingM=nil;
     id<MTLComputePipelineState> psoSlideS=nil, psoSlideR=nil, psoSlideRM=nil;
@@ -86,11 +87,11 @@ struct MetalCtx {
             if (!p) fprintf(stderr,"[cactus-metal] pipeline '%s' failed: %s\n", name, e?[[e localizedDescription] UTF8String]:"function not found");
             return p;
         };
-        psoT=pso("cq4_transform"); psoTsimd=pso("cq4_transform_simd"); psoG=pso("cq4_gemv"); psoTbatch=pso("cq4_transform_batch"); psoGmr=pso("cq4_gemv_mr");
+        psoT=pso("cq4_transform"); psoTsimd=pso("cq4_transform_simd"); psoG=pso("cq4_gemv"); psoTbatch=pso("cq4_transform_batch"); psoGmr=pso("cq4_gemv_mr"); psoGmr4=pso("cq4_gemv_mr4");
         psoMega=pso("cq4_transform_gemv"); psoSwiT=pso("cq4_swiglu_transform"); psoCat=pso("cq4_gemv_cat");
         psoTm=pso("cq4_transform_m"); psoGmma=pso("cq4_gemm_mma");
         psoGdense=pso("cq4_gemm_dense_f16");
-        psoGmrLow=pso("cq_gemv_mr_lowbit");
+        psoGmrLow=pso("cq_gemv_mr_lowbit"); psoGmrLow4=pso("cq_gemv_mr_lowbit4");
         psoActQ=pso("cq_act_quant_i8"); psoG2i8=pso("cq2_gemv_i8");
         psoRotW=pso("lmhead_rotate_wide"); psoEmbOW=pso("emb_ortho_wide"); psoRmsAddRms=pso("rms_norm_add_rms_f16");
         psoEmbH=pso("emb_hadamard");
@@ -101,6 +102,8 @@ struct MetalCtx {
         psoCF16F32=pso("cast_f16_f32"); psoCF32F16=pso("cast_f32_f16");
         psoCI8F16=pso("cast_i8_f16"); psoCF16I8=pso("cast_f16_i8");
         psoAttn=pso("attn_decode_i8"); psoAttnC=pso("attn_decode_combine"); psoAttnF=pso("attn_decode_fused_i8");
+        for (uint32_t b=1; b<=8; ++b) for (uint32_t u=1; u<=2; ++u)
+            if (!(u==2 && b>4)) psoAttnGqa[b][u]=pso(("attn_decode_i8_gqa_"+std::to_string(b)+"_"+std::to_string(u)).c_str());
         psoStrided=pso("strided_copy_f16"); psoBcast=pso("bcast_binary_f16");
         psoAttnPre=pso("attn_prefill_i8"); psoAttnPreMma2=pso("attn_prefill_mma2"); psoAttnPreHd256=pso("attn_prefill_mma_hd256"); psoKvAppendM=pso("kv_append_i8_m");
         psoKvAppendRingM=pso("kv_append_ring_i8_m");
@@ -774,8 +777,10 @@ bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQu
         [g_enc dispatchThreadgroups:MTLSizeMake((N+7u)/8u,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
         return true;
     }
+    bool umr4    = !lowbit && ctx().psoGmr4 && rw.il != 0u && (N % (8u*4u) == 0u);
+    bool lowbit4 =  lowbit && ctx().psoGmrLow4 && (N % (8u*4u) == 0u);
     bool umr = ctx().psoGmr && (N % g_mr_rows == 0u);
-    [g_enc setComputePipelineState:(lowbit?ctx().psoGmrLow:(umr?ctx().psoGmr:ctx().psoG))];
+    [g_enc setComputePipelineState:(lowbit4?ctx().psoGmrLow4:(lowbit?ctx().psoGmrLow:(umr4?ctx().psoGmr4:(umr?ctx().psoGmr:ctx().psoG))))];
     [g_enc setBuffer:g_code_buf offset:0 atIndex:0]; [g_enc setBuffer:rw.packed offset:rw.packed_off atIndex:1];
     [g_enc setBuffer:rw.codebook offset:rw.cb_off atIndex:2]; [g_enc setBuffer:rw.norms offset:rw.norms_off atIndex:3];
     setBufAt(out, (size_t)N*2, 4);
@@ -784,7 +789,8 @@ bool cactus_metal_encode_quant_matmul(void* out, const void* lhs, const CactusQu
     if (lowbit) { [g_enc setBytes:&bits length:4 atIndex:9]; [g_enc setBytes:&rw.il length:4 atIndex:10]; }
     else [g_enc setBytes:&rw.il length:4 atIndex:9];
     uint32_t ROWS=8;
-    uint32_t grid = (lowbit || umr) ? (N+g_mr_rows-1u)/g_mr_rows : (N+ROWS-1u)/ROWS;
+    uint32_t grid = (umr4 || lowbit4) ? (N+8u*4u-1u)/(8u*4u)
+                  : ((lowbit || umr) ? (N+g_mr_rows-1u)/g_mr_rows : (N+ROWS-1u)/ROWS);
     [g_enc dispatchThreadgroups:MTLSizeMake(grid,1,1) threadsPerThreadgroup:MTLSizeMake(ROWS*32,1,1)];
     return true;
 }
@@ -1525,15 +1531,37 @@ bool cactus_metal_encode_attention_i8(
         setCacheAt(ks, ks_bytes, 5); setCacheAt(vs, vs_bytes, 6);
     };
 
-    const uint32_t T = 256, nsg = T / 32u;
     const uint32_t R = kv_end - kv_start;
-    uint32_t nwg = R / 24u; if (nwg < 1u) nwg = 1u; if (nwg > 32u) nwg = 32u;
+    const uint32_t gqa = num_q_heads / num_kv_heads;
+    const uint32_t uf = head_dim / 128u;
+    uint32_t bg = gqa, hg = 1u;
+    if      (gqa % 4u == 0u) { bg = 4u; hg = gqa / 4u; }
+    else if (gqa % 3u == 0u) { bg = 3u; hg = gqa / 3u; }
+    else if (gqa % 2u == 0u) { bg = 2u; hg = gqa / 2u; }
+    if (uf >= 2u && bg == 4u) { bg = 2u; hg = gqa / 2u; }
+    const bool use_gqa = gqa >= 1u && uf >= 1u && uf <= 2u
+                         && head_dim == v_hdim && head_dim == uf*128u
+                         && bg <= 8u && ctx().psoAttnGqa[bg][uf];
+
+    uint32_t T, nsg, nwg;
+    if (use_gqa) {
+        T = 32u; nsg = 1u;
+        uint32_t units = num_kv_heads * hg;
+        uint32_t max_by_keys = R / 32u; if (max_by_keys < 1u) max_by_keys = 1u;
+        nwg = (256u + units - 1u) / units;
+        if (nwg > max_by_keys) nwg = max_by_keys;
+        if (nwg > 256u) nwg = 256u; if (nwg < 1u) nwg = 1u;
+    } else {
+        T = 256u; nsg = T / 32u;
+        nwg = R / 24u; if (nwg < 1u) nwg = 1u; if (nwg > 32u) nwg = 32u;
+    }
+
     id<MTLBuffer> partO = ctx().dummy, partML = ctx().dummy;
     if (nwg > 1u) {
         partO  = recycled((size_t)num_q_heads*nwg*v_hdim*sizeof(float));
         partML = recycled((size_t)num_q_heads*nwg*2*sizeof(float));
     }
-    [g_enc setComputePipelineState:ctx().psoAttn];
+    [g_enc setComputePipelineState:(use_gqa ? ctx().psoAttnGqa[bg][uf] : ctx().psoAttn)];
     setInputs();
     setBufAt(out, (size_t)num_q_heads*v_hdim*2, 7);
     [g_enc setBytes:&num_q_heads length:4 atIndex:8]; [g_enc setBytes:&num_kv_heads length:4 atIndex:9];
@@ -1542,8 +1570,10 @@ bool cactus_metal_encode_attention_i8(
     [g_enc setBytes:&kv_start length:4 atIndex:14];   [g_enc setBytes:&kv_end length:4 atIndex:15];
     [g_enc setBuffer:partO offset:0 atIndex:16];      [g_enc setBuffer:partML offset:0 atIndex:17];
     [g_enc setBytes:&nwg length:4 atIndex:18];
-    [g_enc setThreadgroupMemoryLength:((size_t)nsg*v_hdim + 2*nsg)*sizeof(float) atIndex:0];
-    [g_enc dispatchThreadgroups:MTLSizeMake(num_q_heads*nwg,1,1) threadsPerThreadgroup:MTLSizeMake(T,1,1)];
+    if (use_gqa) [g_enc setBytes:&hg length:4 atIndex:19];
+    else [g_enc setThreadgroupMemoryLength:((size_t)nsg*v_hdim + 2*nsg)*sizeof(float) atIndex:0];
+    uint32_t base_tg = use_gqa ? (num_kv_heads*hg) : num_q_heads;
+    [g_enc dispatchThreadgroups:MTLSizeMake(base_tg*nwg,1,1) threadsPerThreadgroup:MTLSizeMake(T,1,1)];
     if (nwg > 1u) {
         [g_enc setComputePipelineState:ctx().psoAttnC];
         [g_enc setBuffer:partO offset:0 atIndex:0];  [g_enc setBuffer:partML offset:0 atIndex:1];
