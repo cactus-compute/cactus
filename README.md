@@ -133,11 +133,11 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 | Device | LLM | VLM | Transcribe | RAM |
 |--------|-----|-----|------------|---------------|
 | Mac M5 Max | 2964tps / 154tps | 0.09s / 168tps | 0.15s | 1348MB |
-| Mac M4 Pro | 1947tps / 97tps | 0.25s / 108tps | 0.28s | 1225MB |
+| Mac M4 Pro | 1963tps / 101tps | 0.25s / 112tps | 0.21s | 1225MB |
 | Mac M3 Pro | 1294tps / 64tps | 0.40s / 72tps | 0.37s | 735MB |
 | iPad/Vision Pro M5 | 1336tps / 71tps | 0.25s / 80tps | 0.27s | 703MB |
 | iPhone 17 Pro | 729tps / 37tps | 0.5s / 39tps | 0.51s | 644MB |
-| iPhone 15 Pro | 511tps / 25tps | 1.16s / 27tps | 1.40s | 635MB |
+| iPhone 15 Pro | 517tps / 26tps | 1.15s / 27tps | 0.82s | 633MB |
 
 N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 - `LFM2.5-VL-1.6B` = 289toks/sec
