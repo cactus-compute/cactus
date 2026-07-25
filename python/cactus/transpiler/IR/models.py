@@ -47,11 +47,59 @@ class Graph:
     outputs: tuple[Node, ...]
     nodes: tuple[Node, ...]
     nodes_map: dict[str, Node]
-    fusions: dict[str, Any] = field(default_factory=dict)
+    fusions: list["FusionResult"] = field(default_factory=list)
 
     @classmethod
     def from_map(cls, layer_map: CModels.LayerMap) -> "Graph":
         return generate_graph(cls, layer_map)
+
+
+@dataclass(slots=True)
+class FusionResult:
+    fusion: FModels.FusionDefinition
+    source: Node
+    matched_nodes: tuple[Node, ...] = field(default_factory=tuple)
+    bindings: dict[str, Node] = field(default_factory=dict)
+    external_inputs: tuple[Node, ...] = field(default_factory=tuple)
+    attrs: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_match(
+        cls,
+        fusion: FModels.FusionDefinition,
+        source: Node,
+        *,
+        matched_nodes: tuple[Node, ...] = (),
+        bindings: dict[str, Node] | None = None,
+        external_inputs: tuple[Node, ...] = (),
+        attrs: dict[str, Any] | None = None,
+    ) -> "FusionResult":
+        return cls(
+            fusion=fusion,
+            source=source,
+            matched_nodes=matched_nodes or (source,),
+            bindings=bindings or {},
+            external_inputs=external_inputs,
+            attrs=attrs or {},
+        )
+
+    @property
+    def fusion_name(self) -> str:
+        return self.fusion.name
+
+    @property
+    def target(self) -> str:
+        return self.fusion.target
+
+    @property
+    def cactus_op(self) -> str | None:
+        return self.fusion.cactus_op
+
+    @property
+    def consumed_node_names(self) -> frozenset[str]:
+        return frozenset(node.name for node in self.matched_nodes)
+
+
 
 
 ################################################# Model Utils!!!!!!! #################################################
