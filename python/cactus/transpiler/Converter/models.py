@@ -77,7 +77,13 @@ def jsonable(x: Any) -> Any:
         return {"node": x.name}
 
     if isinstance(x, torch.Tensor):
-        return {"shape": x if isinstance(x, int) else str(x), "dtype": x.dtype}
+        return {
+            "shape": [jsonable(dim) for dim in x.shape],
+            "dtype": str(x.dtype),
+            "device": str(x.device),
+            "requires_grad": bool(x.requires_grad),
+            "stride": [jsonable(dim) for dim in x.stride()],
+        }
 
     if isinstance(x, torch.Size):
         return list(x)
@@ -107,7 +113,7 @@ def jsonable(x: Any) -> Any:
 
 
 def extract_tensor_meta(node: torch.fx.Node) -> Any | None:
-    return jsonable(node.meta["val"]) if "val" not in node.meta else None
+    return jsonable(node.meta["val"]) if "val" in node.meta else None
 
 
 def extract_module_stack(node: torch.fx.Node) -> Any | None:
