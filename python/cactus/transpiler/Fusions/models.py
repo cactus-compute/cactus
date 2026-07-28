@@ -100,8 +100,8 @@ class AttrConstraint:
 
     name: str
     value: Any = None
-    source_node: str | None = None
-    source_attr: str | None = None
+    source_node: str | None = None #Which node to pull attr from
+    source_attr: str | None = None #Which attr from external node to pull
     comparator: str = "eq"
     required: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -145,16 +145,14 @@ class FusionNode:
     """
     Describes one synthetic node inside a fusion pattern graph.
 
-    It stores the allowed raw op targets, optional node-level attr/tensor
-    constraints, and structural hints such as optional, transparent, or repeated.
+    It stores the allowed raw op targets, node-level attr/tensor constraints,
+    and structural hints for repeated pattern regions.
     IR matchers bind these descriptions to real exported nodes during fusion.
     """
 
     name: str
     ops: tuple[str, ...] = ()
     attrs: tuple[AttrConstraint, ...] = ()
-    optional: bool = False
-    transparent: bool = False
     repeated: bool = False
     repeated_group: str | None = None
     allowed_value_kinds: tuple[str, ...] = ()
@@ -168,16 +166,14 @@ class FusionEdge:
     Describes one directed producer-to-consumer edge in a fusion pattern.
 
     source/dest identify synthetic nodes, dest_input_index preserves meaningful
-    input ordering from FX args, and optional/transparent/repeated flags let IR
-    match common graph variants without changing the core FusionGraph shape.
+    input ordering from FX args, and repeated flags let IR match repeated graph
+    regions such as MoE expert branches.
     """
 
     source: str
     dest: str
     dest_input_index: int | None = None
     source_output_index: int | None = None
-    optional: bool = False
-    transparent: bool = False
     repeated: bool = False
     repeated_group: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -308,9 +304,9 @@ class FusionGraph:
     Describes the complete synthetic DAG for one candidate fusion.
 
     It stores pattern nodes, required edges, exposed inputs/outputs, attrs to
-    capture, optional nodes, repeated subgraphs, cache boundaries, and extra
-    textual constraints that IR matchers must enforce before replacing the
-    matched real subgraph with a fused op.
+    capture, repeated subgraphs, cache boundaries, and extra textual constraints
+    that IR matchers must enforce before replacing the matched real subgraph
+    with a fused op.
     """
 
     name: str
@@ -321,7 +317,6 @@ class FusionGraph:
     shared_inputs: tuple[tuple[NodeRef, NodeRef], ...] = ()
     outputs: tuple[FusionOutput, ...] = ()
     attr_captures: tuple[AttrCapture, ...] = ()
-    optional_nodes: tuple[str, ...] = ()
     repeated_subgraphs: tuple[RepeatedSubgraph, ...] = ()
     cache_inputs: tuple[CacheInput, ...] = ()
     cache_outputs: tuple[CacheOutput, ...] = ()

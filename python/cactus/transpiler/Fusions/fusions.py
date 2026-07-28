@@ -107,7 +107,6 @@ def _graph(
     shared_inputs: tuple[tuple[M.NodeRef, M.NodeRef], ...] = (),
     outputs: tuple[M.FusionOutput, ...] | None = None,
     attr_captures: tuple[M.AttrCapture, ...] = (),
-    optional_nodes: tuple[str, ...] = (),
     repeated_subgraphs: tuple[M.RepeatedSubgraph, ...] = (),
     cache_inputs: tuple[M.CacheInput, ...] = (),
     cache_outputs: tuple[M.CacheOutput, ...] = (),
@@ -126,7 +125,6 @@ def _graph(
         shared_inputs=shared_inputs,
         outputs=outputs or (_output(root),),
         attr_captures=attr_captures,
-        optional_nodes=optional_nodes,
         repeated_subgraphs=repeated_subgraphs,
         cache_inputs=cache_inputs,
         cache_outputs=cache_outputs,
@@ -440,15 +438,34 @@ RMS_NORM_GRAPH = _graph(
     constraints=("Mean dimension must be the hidden dimension.", "Final multiply must consume the RMS-normalized activation and norm weight."),
 )
 
+LAYERNORM_NO_BIAS_GRAPH = _graph(
+    "layernorm_no_bias",
+    "ln_weight_mul",
+    ("ln_mean", "ln_center", "ln_square", "ln_var", "ln_eps_add", "ln_inv", "ln_norm", "ln_weight_mul"),
+    edge_names=(
+        "ln_mean_to_center",
+        "ln_center_to_square",
+        "ln_square_to_var",
+        "ln_var_to_eps_add",
+        "ln_eps_add_to_inv",
+        "ln_center_to_norm",
+        "ln_inv_to_norm",
+        "ln_norm_to_weight_mul",
+    ),
+    inputs=(_input("x", "ln_mean", 0), _input("weight", "ln_weight_mul", 1)),
+    shared_inputs=(_shared_input("ln_mean", 0, "ln_center", 0),),
+    attr_captures=(M.AttrCapture("epsilon", "ln_eps_add", "other", default=1e-5, required=False),),
+    constraints=("Mean/variance dimensions must match the normalized feature axis.",),
+)
+
 LAYERNORM_GRAPH = _graph(
     "layernorm",
     "ln_bias_add",
     ("ln_mean", "ln_center", "ln_square", "ln_var", "ln_eps_add", "ln_inv", "ln_norm", "ln_weight_mul", "ln_bias_add"),
     edge_names=E.EDGE_GROUPS["layernorm"],
-    inputs=(_input("x", "ln_mean", 0), _input("weight", "ln_weight_mul", 1), _input("bias", "ln_bias_add", 1, optional=True)),
+    inputs=(_input("x", "ln_mean", 0), _input("weight", "ln_weight_mul", 1), _input("bias", "ln_bias_add", 1)),
     shared_inputs=(_shared_input("ln_mean", 0, "ln_center", 0),),
     attr_captures=(M.AttrCapture("epsilon", "ln_eps_add", "other", default=1e-5, required=False),),
-    optional_nodes=("ln_bias_add",),
     constraints=("Mean/variance dimensions must match the normalized feature axis.",),
 )
 
@@ -720,6 +737,7 @@ GRAPH_BY_NAME: dict[str, M.FusionGraph] = {
     "linear": LINEAR_GRAPH,
     "linear_bias": LINEAR_BIAS_GRAPH,
     "rms_norm": RMS_NORM_GRAPH,
+    "layernorm_no_bias": LAYERNORM_NO_BIAS_GRAPH,
     "layernorm": LAYERNORM_GRAPH,
     "swiglu_mlp": SWIGLU_MLP_GRAPH,
     "gelu_mlp": GELU_MLP_GRAPH,
@@ -765,6 +783,7 @@ FUSIONS: dict[str, M.FusionDefinition] = {
     "linear": _definition("linear", "matmul", LINEAR_GRAPH, fusion_fields=("generic", "linear")),
     "linear_bias": _definition("linear_bias", "linear", LINEAR_BIAS_GRAPH, fusion_fields=("generic", "linear")),
     "rms_norm": _definition("rms_norm", "rms_norm", RMS_NORM_GRAPH, fusion_fields=("generic", "rmsnorm", "gemma4_rmsnorm", "qwen2_5_rmsnorm")),
+    "layernorm_no_bias": _definition("layernorm_no_bias", "layernorm", LAYERNORM_NO_BIAS_GRAPH, fusion_fields=("generic", "normalization")),
     "layernorm": _definition("layernorm", "layernorm", LAYERNORM_GRAPH, fusion_fields=("generic", "normalization")),
     "swiglu_mlp": _definition("swiglu_mlp", "dense_mlp_tq_fused", SWIGLU_MLP_GRAPH, fusion_fields=("generic", "mlp", "gemma4_mlp", "qwen2_5_mlp", "lfm_mlp")),
     "gelu_mlp": _definition("gelu_mlp", "matmul", GELU_MLP_GRAPH, fusion_fields=("generic", "mlp")),

@@ -3,10 +3,6 @@ from . import models, match_utils
 from ..Fusions import models as FModels
 
 
-
-
-
-
 def match_node_op(synth_node: FModels.FusionNode, node: models.Node) -> bool:
     if not synth_node.ops:
         return True
@@ -27,13 +23,7 @@ def match_value_kind(synth_node: FModels.FusionNode, node: models.Node) -> bool:
     if not synth_node.allowed_value_kinds:
         return True
 
-    if node.value_kind in synth_node.allowed_value_kinds:
-        return True
-
-    return (
-        FModels.ValueKind.CACHE_STATE in synth_node.allowed_value_kinds
-        and node.value_kind in {FModels.ValueKind.CACHE_INPUT, FModels.ValueKind.CACHE_OUTPUT}
-    )
+    return node.value_kind in synth_node.allowed_value_kinds
 
 
 def match_attr_constraints(synth_node: FModels.FusionNode, graph: models.Graph, node: models.Node, bindings: dict[str, models.Node]) -> bool:
@@ -45,12 +35,7 @@ def match_attr_constraints(synth_node: FModels.FusionNode, graph: models.Graph, 
 
 
 
-def match_tensor_constraints(
-    synth_node: FModels.FusionNode,
-    graph: models.Graph,
-    node: models.Node,
-    bindings: dict[str, models.Node],
-) -> bool:
+def match_tensor_constraints(synth_node: FModels.FusionNode, graph: models.Graph, node: models.Node, bindings: dict[str, models.Node]) -> bool:
     for constraint in synth_node.tensor_constraints:
         if not match_utils.match_tensor_constraint(constraint, graph, node, bindings):
             return False
@@ -71,5 +56,13 @@ def match_metadata_constraints(synth_node: FModels.FusionNode, node: models.Node
     return True
 
 
+NODE_MATCHERS = [
+    match_node_op,
+    match_value_kind,
+    match_attr_constraints,
+    match_tensor_constraints,
+    match_metadata_constraints
+]
 
-
+def match_nodes(node: models.node, synth_node: FModels.FusionNode) -> bool:
+    return all(MATCHER(synth_node, node) for MATCHER in NODE_MATCHERS)
