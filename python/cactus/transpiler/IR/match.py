@@ -1,6 +1,7 @@
 from . import models, match_utils
 from ..Fusions import models as FModels
 
+ANY = ()
 
 ####################################### Node Matching Logic!!!!! #######################################
 def match_node_op(node: models.Node, synth_node: FModels.FusionNode, bindings: dict[str, models.Node] | None = None) -> bool:
@@ -70,21 +71,18 @@ def match_subgraph(node: models.Node, graph: models.Graph, subgraph: FModels.Rep
     match_count = 0
 
     for candidate in graph.nodes:
+        if subgraph.max_count is not None and match_count > subgraph.max_count:
+            return False
         if match_fusion(candidate, graph, subgraph.graph):
             match_count += 1
 
-    if match_count < subgraph.min_count or (match_count is not None and match_count > subgraph.max_count):
+    if match_count < subgraph.min_count:
         return False
 
     return True
 
 
-def match_repeated_subgraphs(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
-    bindings = match_utils.bind_fusion_graph(node, fusion, match_nodes)
-
-    if bindings is None:
-        return False
-
+def match_repeated_subgraphs(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     for subgraph in fusion.repeated_subgraphs:
         if subgraph.anchor_node is not None and subgraph.anchor_node not in bindings:
             return False
@@ -95,16 +93,7 @@ def match_repeated_subgraphs(node: models.Node, graph: models.Graph, fusion: FMo
     return True
 
 
-def match_source_node(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
-    return match_utils.bind_fusion_graph(node, fusion, match_nodes) is not None
-
-
-def match_edges(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
-    bindings = match_utils.bind_fusion_graph(node, fusion, match_nodes)
-
-    if bindings is None:
-        return False
-
+def match_edges(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     for edge in fusion.edges:
         if not match_utils.edge_matches(edge, bindings):
             return False
@@ -112,12 +101,7 @@ def match_edges(node: models.Node, graph: models.Graph, fusion: FModels.FusionGr
     return True
 
 
-def match_inputs(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
-    bindings = match_utils.bind_fusion_graph(node, fusion, match_nodes)
-
-    if bindings is None:
-        return False
-
+def match_inputs(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     declared_inputs = set()
 
     for input_spec in fusion.inputs:
@@ -141,12 +125,7 @@ def match_inputs(node: models.Node, graph: models.Graph, fusion: FModels.FusionG
     return match_utils.all_external_parents_declared(bindings, declared_inputs)
 
 
-def match_shared_inputs(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
-    bindings = match_utils.bind_fusion_graph(node, fusion, match_nodes)
-
-    if bindings is None:
-        return False
-
+def match_shared_inputs(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     for left_ref, right_ref in fusion.shared_inputs:
         left_parent = match_utils.get_node_ref_parent(left_ref, bindings)
         right_parent = match_utils.get_node_ref_parent(right_ref, bindings)
@@ -160,16 +139,11 @@ def match_shared_inputs(node: models.Node, graph: models.Graph, fusion: FModels.
     return True
 
 
-def match_constrains(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
+def match_constrains(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     return True
 
 
-def match_cache_inputs(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
-    bindings = match_utils.bind_fusion_graph(node, fusion, match_nodes)
-
-    if bindings is None:
-        return False
-
+def match_cache_inputs(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     for cache_input in fusion.cache_inputs:
         cache_node = match_utils.get_node_ref_parent(cache_input.source, bindings)
 
@@ -179,13 +153,13 @@ def match_cache_inputs(node: models.Node, graph: models.Graph, fusion: FModels.F
 
             return False
 
-        if not match_utils.match_boundary_value(cache_node, (), cache_input.tensor_constraints):
+        if not match_utils.match_boundary_value(cache_node, ANY, cache_input.tensor_constraints):
             return False
 
     return True
 
 
-def match_cache_mutations(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
+def match_cache_mutations(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     input_roles = {cache_input.role for cache_input in fusion.cache_inputs}
     output_roles = {cache_output.role for cache_output in fusion.cache_outputs}
 
@@ -199,12 +173,7 @@ def match_cache_mutations(node: models.Node, graph: models.Graph, fusion: FModel
     return True
 
 
-def match_cache_outputs(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
-    bindings = match_utils.bind_fusion_graph(node, fusion, match_nodes)
-
-    if bindings is None:
-        return False
-
+def match_cache_outputs(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     for cache_output in fusion.cache_outputs:
         output_node = bindings.get(cache_output.node)
 
@@ -221,16 +190,11 @@ def match_cache_outputs(node: models.Node, graph: models.Graph, fusion: FModels.
     return True
 
 
-def match_metadata(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
+def match_metadata(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     return True
 
 
-def match_output(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
-    bindings = match_utils.bind_fusion_graph(node, fusion, match_nodes)
-
-    if bindings is None:
-        return False
-
+def match_output(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     for output in fusion.outputs:
         output_node = bindings.get(output.node)
 
@@ -245,7 +209,6 @@ def match_output(node: models.Node, graph: models.Graph, fusion: FModels.FusionG
 
 
 FUSION_MATCHERS = [
-    match_source_node,
     match_edges,
     match_inputs,
     match_shared_inputs,
@@ -260,7 +223,12 @@ FUSION_MATCHERS = [
 
 
 def match_fusion(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph) -> bool:
-    return all(matcher(source, graph, fusion) for matcher in FUSION_MATCHERS)
+    bindings = match_utils.bind_fusion_graph(source, fusion, match_nodes)
+
+    if bindings is None:
+        return False
+
+    return all(matcher(source, graph, fusion, bindings) for matcher in FUSION_MATCHERS)
 
 
 ####################################### Top. Sort + Graph updating!!!!! #######################################

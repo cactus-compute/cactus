@@ -139,11 +139,7 @@ def match_tensor_constraint(constraint: FModels.TensorConstraint, node: models.N
 
 ####################################### Other matching utils!!!!! #######################################
 
-def bind_fusion_graph(
-    source: models.Node,
-    fusion: FModels.FusionGraph,
-    node_matcher: Any,
-) -> dict[str, models.Node] | None:
+def bind_fusion_graph(source: models.Node, fusion: FModels.FusionGraph, node_matcher: Any) -> dict[str, models.Node] | None:
     if fusion.root not in fusion.nodes:
         return None
 
@@ -183,13 +179,7 @@ def bind_fusion_graph(
     return bindings
 
 
-def bind_node(
-    synth_node_name: str,
-    node: models.Node,
-    fusion: FModels.FusionGraph,
-    bindings: dict[str, models.Node],
-    node_matcher: Any,
-) -> bool:
+def bind_node(synth_node_name: str, node: models.Node, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], node_matcher: Any) -> bool:
     synth_node = fusion.nodes.get(synth_node_name)
 
     if synth_node is None:
@@ -237,7 +227,6 @@ def get_edge_parent(edge: FModels.FusionEdge, bindings: dict[str, models.Node]) 
 
 def get_node_ref_parent(ref: FModels.NodeRef, bindings: dict[str, models.Node]) -> models.Node | None:
     node = bindings.get(ref.node)
-
     if node is None or ref.parent_index is None:
         return None
 
@@ -277,11 +266,7 @@ def get_fusion_input_nodes(input_spec: FModels.FusionInput, bindings: dict[str, 
     return parents
 
 
-def match_boundary_value(
-    node: models.Node,
-    allowed_value_kinds: tuple[str, ...],
-    tensor_constraints: tuple[FModels.TensorConstraint, ...],
-) -> bool:
+def match_boundary_value(node: models.Node, allowed_value_kinds: tuple[str, ...], tensor_constraints: tuple[FModels.TensorConstraint, ...]) -> bool:
     if allowed_value_kinds and node.value_kind not in allowed_value_kinds:
         return False
 
