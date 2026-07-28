@@ -4,7 +4,9 @@ from . import models
 from ..Fusions import models as FModels
 
 
-# MISSING = object()
+MISSING = object()
+
+####################################### Node Matching Utils!!!!! #######################################
 
 def shape_matches(actual_shape: list[Any], expected_shape: tuple[Any, ...]) -> bool:
     if len(actual_shape) != len(expected_shape):
@@ -135,4 +137,184 @@ def match_tensor_constraint(constraint: FModels.TensorConstraint, node: models.N
     return True
 
 
+####################################### Other matching utils!!!!! #######################################
 
+def bind_fusion_graph(
+    source: models.Node,
+    fusion: FModels.FusionGraph,
+    node_matcher: Any,
+) -> dict[str, models.Node] | None:
+    if fusion.root not in fusion.nodes:
+        return None
+
+    bindings: dict[str, models.Node] = {}
+
+    if not bind_node(fusion.root, source, fusion, bindings, node_matcher):
+        return None
+
+    changed = True
+
+    while changed:
+        changed = False
+
+        for edge in fusion.edges:
+            if edge.dest not in bindings:
+                continue
+
+            parent = get_edge_parent(edge, bindings)
+
+            if parent is None:
+                return None
+
+            if edge.source not in bindings:
+                if not bind_node(edge.source, parent, fusion, bindings, node_matcher):
+                    return None
+
+                changed = True
+                continue
+
+            if bindings[edge.source] is not parent:
+                return None
+
+    for synth_node_name in fusion.nodes:
+        if synth_node_name not in bindings:
+            return None
+
+    return bindings
+
+
+def bind_node(
+    synth_node_name: str,
+    node: models.Node,
+    fusion: FModels.FusionGraph,
+    bindings: dict[str, models.Node],
+    node_matcher: Any,
+) -> bool:
+    synth_node = fusion.nodes.get(synth_node_name)
+
+    if synth_node is None:
+        return False
+
+    if synth_node_name in bindings:
+        return bindings[synth_node_name] is node
+
+    if any(bound_node is node for bound_node in bindings.values()):
+        return False
+
+    if not node_matcher(node, synth_node, bindings):
+        return False
+
+    bindings[synth_node_name] = node
+    return True
+
+
+def edge_matches(edge: FModels.FusionEdge, bindings: dict[str, models.Node]) -> bool:
+    source = bindings.get(edge.source)
+    dest = bindings.get(edge.dest)
+
+    if source is None or dest is None:
+        return False
+
+    parent = get_edge_parent(edge, bindings)
+    return parent is source
+
+
+def get_edge_parent(edge: FModels.FusionEdge, bindings: dict[str, models.Node]) -> models.Node | None:
+    dest = bindings.get(edge.dest)
+
+    if dest is None:
+        return None
+
+    if edge.dest_input_index is None:
+        if edge.source not in bindings:
+            return None
+
+        source = bindings[edge.source]
+        return source if any(parent is source for parent in dest.parents) else None
+
+    return get_parent(dest, edge.dest_input_index)
+
+
+def get_node_ref_parent(ref: FModels.NodeRef, bindings: dict[str, models.Node]) -> models.Node | None:
+    node = bindings.get(ref.node)
+
+    if node is None or ref.parent_index is None:
+        return None
+
+    return get_parent(node, ref.parent_index)
+
+
+def get_parent(node: models.Node, parent_index: int) -> models.Node | None:
+    if parent_index < 0 or parent_index >= len(node.parents):
+        return None
+
+    return node.parents[parent_index]
+
+
+def get_fusion_input_nodes(input_spec: FModels.FusionInput, bindings: dict[str, models.Node]) -> tuple[models.Node, ...]:
+    source_node = bindings.get(input_spec.source.node)
+
+    if source_node is None or input_spec.source.parent_index is None:
+        return ()
+
+    if not input_spec.variadic:
+        parent = get_parent(source_node, input_spec.source.parent_index)
+        return (parent,) if parent is not None else ()
+
+    end_parent_index = input_spec.end_parent_index
+
+    if end_parent_index is None:
+        end_parent_index = len(source_node.parents)
+
+    parents = source_node.parents[input_spec.source.parent_index:end_parent_index]
+
+    if len(parents) < input_spec.min_count:
+        return ()
+
+    if input_spec.max_count is not None and len(parents) > input_spec.max_count:
+        return ()
+
+    return parents
+
+
+def match_boundary_value(
+    node: models.Node,
+    allowed_value_kinds: tuple[str, ...],
+    tensor_constraints: tuple[FModels.TensorConstraint, ...],
+) -> bool:
+    if allowed_value_kinds and node.value_kind not in allowed_value_kinds:
+        return False
+
+    return all(match_tensor_constraint(constraint, node, {}) for constraint in tensor_constraints)
+
+
+def all_external_parents_declared(bindings: dict[str, models.Node], declared_input_ids: set[int]) -> bool:
+    internal_ids = {id(node) for node in bindings.values()}
+
+    for node in bindings.values():
+        for parent in node.parents:
+            if id(parent) in internal_ids:
+                continue
+
+            if id(parent) not in declared_input_ids:
+                return False
+
+    return True
+
+
+def external_children_are_valid(bindings: dict[str, models.Node], fusion: FModels.FusionGraph) -> bool:
+    internal_ids = {id(node) for node in bindings.values()}
+    exposed_output_names = {output.node for output in fusion.outputs}
+
+    if not fusion.allow_root_external_children:
+        exposed_output_names.discard(fusion.root)
+
+    for synth_node_name, node in bindings.items():
+        for child in node.children:
+            if id(child) in internal_ids:
+                continue
+
+            if synth_node_name not in exposed_output_names:
+                return False
+
+    return True
