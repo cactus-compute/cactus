@@ -5,6 +5,7 @@ from ..Fusions import models as FModels
 
 
 MISSING = object()
+METADATA_ONLY_TARGETS = {"aten._assert_tensor_metadata.default"}
 
 ####################################### Node Matching Utils!!!!! #######################################
 
@@ -95,7 +96,7 @@ def match_attr_constraint(constraint: FModels.AttrConstraint, node: models.Node,
 
 
 def match_tensor_constraint(constraint: FModels.TensorConstraint, node: models.Node, bindings: dict[str, models.Node]) -> bool:
-    if node.tensor_output_meta is None:
+    if not isinstance(node.tensor_output_meta, dict):
         return False
 
     shape = node.tensor_output_meta.get("shape", ())
@@ -296,6 +297,9 @@ def external_children_are_valid(bindings: dict[str, models.Node], fusion: FModel
 
     for synth_node_name, node in bindings.items():
         for child in node.children:
+            if child.target in METADATA_ONLY_TARGETS:
+                continue
+
             if id(child) in internal_ids:
                 continue
 
@@ -390,7 +394,7 @@ def get_first_input_by_role(fusion: FModels.FusionGraph, bindings: dict[str, mod
 
 
 def get_tensor_shape(node: models.Node | None) -> list[Any]:
-    if node is None or node.tensor_output_meta is None:
+    if node is None or not isinstance(node.tensor_output_meta, dict):
         return []
 
     return node.tensor_output_meta.get("shape", [])
