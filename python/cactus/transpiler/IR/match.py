@@ -66,15 +66,16 @@ def match_nodes(node: models.Node, synth_node: FModels.FusionNode, bindings: dic
     return all(matcher(node, synth_node, bindings or {}) for matcher in NODE_MATCHERS)
 
 
-####################################### Other Matching Logic!!!!! #######################################
+####################################### Graph Matching Logic!!!!! #######################################
 def match_subgraph(node: models.Node, graph: models.Graph, subgraph: FModels.RepeatedSubgraph) -> bool:
     match_count = 0
 
     for candidate in graph.nodes:
-        if subgraph.max_count is not None and match_count > subgraph.max_count:
-            return False
         if match_fusion(candidate, graph, subgraph.graph):
             match_count += 1
+
+            if subgraph.max_count is not None and match_count > subgraph.max_count:
+                return False
 
     if match_count < subgraph.min_count:
         return False
@@ -139,7 +140,7 @@ def match_shared_inputs(node: models.Node, graph: models.Graph, fusion: FModels.
     return True
 
 
-def match_constrains(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
+def match_constraints(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     return True
 
 
@@ -213,7 +214,7 @@ FUSION_MATCHERS = [
     match_inputs,
     match_shared_inputs,
     match_repeated_subgraphs,
-    match_constrains,
+    match_constraints,
     match_cache_inputs,
     match_cache_mutations,
     match_cache_outputs,
@@ -228,7 +229,57 @@ def match_fusion(source: models.Node, graph: models.Graph, fusion: FModels.Fusio
     if bindings is None:
         return False
 
+    return match_fusion_bindings(source, graph, fusion, bindings)
+
+
+def match_fusion_bindings(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
     return all(matcher(source, graph, fusion, bindings) for matcher in FUSION_MATCHERS)
 
 
-####################################### Top. Sort + Graph updating!!!!! #######################################
+####################################### Fusion Definition Matching Logic!!!!! #######################################
+
+def match_definition_graph(source: models.Node, graph: models.Graph, fusion: FModels.FusionDefinition, bindings: dict[str, models.Node], inference_mode: str | None = None, input_modalities: tuple[str, ...] = ANY, fusion_fields: tuple[str, ...] = ANY) -> bool:
+    return match_fusion_bindings(source, graph, fusion.graph, bindings)
+
+
+def match_definition_metadata(source: models.Node, graph: models.Graph, fusion: FModels.FusionDefinition, bindings: dict[str, models.Node], inference_mode: str | None = None, input_modalities: tuple[str, ...] = ANY, fusion_fields: tuple[str, ...] = ANY) -> bool:
+    return match_utils.match_definition_metadata(fusion, bindings)
+
+
+def match_definition_inference_mode(source: models.Node, graph: models.Graph, fusion: FModels.FusionDefinition, bindings: dict[str, models.Node], inference_mode: str | None = None, input_modalities: tuple[str, ...] = ANY, fusion_fields: tuple[str, ...] = ANY) -> bool:
+    if not fusion.supported_inference_modes or inference_mode is None:
+        return True
+
+    return inference_mode in fusion.supported_inference_modes
+
+
+def match_definition_modalities(source: models.Node, graph: models.Graph, fusion: FModels.FusionDefinition, bindings: dict[str, models.Node], inference_mode: str | None = None, input_modalities: tuple[str, ...] = ANY, fusion_fields: tuple[str, ...] = ANY) -> bool:
+    if not fusion.supported_modalities or not input_modalities:
+        return True
+
+    return set(fusion.supported_modalities).issubset(input_modalities)
+
+
+def match_definition_fusion_fields(source: models.Node, graph: models.Graph, fusion: FModels.FusionDefinition, bindings: dict[str, models.Node], inference_mode: str | None = None, input_modalities: tuple[str, ...] = ANY, fusion_fields: tuple[str, ...] = ANY) -> bool:
+    if not fusion.fusion_fields or not fusion_fields:
+        return True
+
+    return not set(fusion.fusion_fields).isdisjoint(fusion_fields)
+
+
+FUSION_DEFINITION_MATCHERS = [
+    match_definition_graph,
+    match_definition_metadata,
+    match_definition_inference_mode,
+    match_definition_modalities,
+    match_definition_fusion_fields,
+]
+
+
+def match_fusion_definition(source: models.Node, graph: models.Graph, fusion: FModels.FusionDefinition, inference_mode: str | None = None, input_modalities: tuple[str, ...] = ANY, fusion_fields: tuple[str, ...] = ANY) -> bool:
+    bindings = match_utils.bind_fusion_graph(source, fusion.graph, match_nodes)
+
+    if bindings is None:
+        return False
+
+    return all(matcher(source, graph, fusion, bindings, inference_mode, input_modalities, fusion_fields) for matcher in FUSION_DEFINITION_MATCHERS)

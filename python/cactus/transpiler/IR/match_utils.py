@@ -57,7 +57,7 @@ def get_metadata_constraint_value(node: models.Node, key: str) -> Any:
     if key == "approximation" and node.target == "aten.gelu.default":
         return normalize_gelu_approximation(node.attrs.get("approximate", "erf"))
 
-    return node.attrs.get(key, None)
+    return node.attrs.get(key, MISSING)
 
 
 def compare_values(actual: Any, expected: Any, comparator: str = "eq") -> bool:
@@ -74,8 +74,8 @@ def compare_values(actual: Any, expected: Any, comparator: str = "eq") -> bool:
 
 
 def match_attr_constraint(constraint: FModels.AttrConstraint, node: models.Node, bindings: dict[str, models.Node]) -> bool:
-    actual = node.attrs.get(constraint.name, None)
-    if actual is None:
+    actual = node.attrs.get(constraint.name, MISSING)
+    if actual is MISSING:
         return not constraint.required
 
     expected = constraint.value
@@ -86,9 +86,9 @@ def match_attr_constraint(constraint: FModels.AttrConstraint, node: models.Node,
         if source_node is None:
             return False
 
-        expected = source_node.attrs.get(constraint.source_attr, None)
+        expected = source_node.attrs.get(constraint.source_attr, MISSING)
 
-        if expected is None:
+        if expected is MISSING:
             return not constraint.required
 
     return compare_values(actual, expected, constraint.comparator)
@@ -131,7 +131,7 @@ def match_tensor_constraint(constraint: FModels.TensorConstraint, node: models.N
             return False
 
     for key, expected in constraint.metadata.items():
-        if not values_equal(node.tensor_output_meta.get(key, None), expected):
+        if not values_equal(node.tensor_output_meta.get(key, MISSING), expected):
             return False
 
     return True
@@ -303,3 +303,94 @@ def external_children_are_valid(bindings: dict[str, models.Node], fusion: FModel
                 return False
 
     return True
+
+
+####################################### Fusion Definition Matching utils!!!!! #######################################
+
+def match_definition_metadata(fusion: FModels.FusionDefinition, bindings: dict[str, models.Node]) -> bool:
+    required_attrs = fusion.metadata.get("required_attrs", {})
+
+    if not required_attrs:
+        return True
+
+    attrs = collect_definition_attrs(fusion.graph, bindings)
+
+    for name, expected in required_attrs.items():
+        actual = attrs.get(name, MISSING)
+
+        if actual is MISSING or not values_equal(actual, expected):
+            return False
+
+    return True
+
+
+def collect_definition_attrs(fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> dict[str, Any]:
+    attrs: dict[str, Any] = {}
+
+    for capture in fusion.attr_captures:
+        value = get_attr_capture_value(capture, bindings)
+
+        if value is not MISSING:
+            attrs[capture.name] = value
+
+    attrs.update(infer_definition_attrs(fusion, bindings))
+    return attrs
+
+
+def get_attr_capture_value(capture: FModels.AttrCapture, bindings: dict[str, models.Node]) -> Any:
+    if capture.source_node is None or capture.source_attr is None:
+        return capture.default
+
+    source_node = bindings.get(capture.source_node)
+
+    if source_node is None:
+        return MISSING if capture.required else capture.default
+
+    return source_node.attrs.get(capture.source_attr, MISSING if capture.required else capture.default)
+
+
+def infer_definition_attrs(fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> dict[str, Any]:
+    attrs: dict[str, Any] = {}
+
+    conv_node = bindings.get("conv")
+
+    if conv_node is not None:
+        attrs.update(infer_conv_attrs(fusion, bindings, conv_node))
+
+    return attrs
+
+
+def infer_conv_attrs(fusion: FModels.FusionGraph, bindings: dict[str, models.Node], conv_node: models.Node) -> dict[str, Any]:
+    attrs: dict[str, Any] = {}
+    weight_node = get_first_input_by_role(fusion, bindings, "weight")
+    weight_shape = get_tensor_shape(weight_node)
+    groups = conv_node.attrs.get("groups", 1)
+
+    if len(weight_shape) >= 3:
+        kernel_shape = weight_shape[2:]
+        attrs["kernel_size"] = kernel_shape[0] if all(values_equal(dim, kernel_shape[0]) for dim in kernel_shape) else kernel_shape
+
+    if len(weight_shape) >= 2:
+        attrs["depthwise"] = not values_equal(groups, 1) and values_equal(weight_shape[1], 1)
+
+    return attrs
+
+
+def get_first_input_by_role(fusion: FModels.FusionGraph, bindings: dict[str, models.Node], role: str) -> models.Node | None:
+    for input_spec in fusion.inputs:
+        if input_spec.role != role:
+            continue
+
+        input_nodes = get_fusion_input_nodes(input_spec, bindings)
+
+        if input_nodes:
+            return input_nodes[0]
+
+    return None
+
+
+def get_tensor_shape(node: models.Node | None) -> list[Any]:
+    if node is None or node.tensor_output_meta is None:
+        return []
+
+    return node.tensor_output_meta.get("shape", [])
