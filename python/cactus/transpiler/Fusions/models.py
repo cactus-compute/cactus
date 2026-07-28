@@ -2,6 +2,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+ConstraintSpec = dict[str, Any]
+ConstraintValue = ConstraintSpec | tuple[ConstraintSpec, ...] | list[ConstraintSpec]
+
+
 class ValueKind:
     """
     Names the semantic role of a real IR value.
@@ -304,9 +308,9 @@ class FusionGraph:
     Describes the complete synthetic DAG for one candidate fusion.
 
     It stores pattern nodes, required edges, exposed inputs/outputs, attrs to
-    capture, repeated subgraphs, cache boundaries, and extra textual constraints
-    that IR matchers must enforce before replacing the matched real subgraph
-    with a fused op.
+    capture, repeated subgraphs, cache boundaries, and extra structured
+    constraints that IR matchers must enforce before replacing the matched real
+    subgraph with a fused op.
     """
 
     name: str
@@ -321,7 +325,7 @@ class FusionGraph:
     cache_inputs: tuple[CacheInput, ...] = ()
     cache_outputs: tuple[CacheOutput, ...] = ()
     cache_mutations: tuple[CacheMutation, ...] = ()
-    constraints: tuple[str, ...] = ()
+    constraints: dict[str, ConstraintValue] = field(default_factory=dict)
     variants: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
     allow_root_external_children: bool = True

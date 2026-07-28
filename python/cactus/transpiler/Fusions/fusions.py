@@ -97,6 +97,10 @@ def _required_attrs(**attrs) -> dict:
     return {"required_attrs": attrs}
 
 
+def _note(*items: str) -> dict[str, M.ConstraintSpec]:
+    return {"note": {"items": items}}
+
+
 def _graph(
     name: str,
     root: str,
@@ -111,7 +115,7 @@ def _graph(
     cache_inputs: tuple[M.CacheInput, ...] = (),
     cache_outputs: tuple[M.CacheOutput, ...] = (),
     cache_mutations: tuple[M.CacheMutation, ...] = (),
-    constraints: tuple[str, ...] = (),
+    constraints: dict[str, M.ConstraintValue] | None = None,
     variants: tuple[str, ...] = (),
     metadata: dict | None = None,
     allow_root_external_children: bool = True,
@@ -129,7 +133,7 @@ def _graph(
         cache_inputs=cache_inputs,
         cache_outputs=cache_outputs,
         cache_mutations=cache_mutations,
-        constraints=constraints,
+        constraints=constraints or {},
         variants=variants,
         metadata=metadata or {},
         allow_root_external_children=allow_root_external_children,
@@ -414,7 +418,7 @@ LINEAR_GRAPH = _graph(
     ("linear_mm",),
     inputs=(_input("x", "linear_mm", 0), _input("weight", "linear_mm", 1)),
     attr_captures=(M.AttrCapture("pretransposed_rhs", default=False, required=False),),
-    constraints=("Weight layout/pretranspose must be verified against exported attrs or weight metadata.",),
+    constraints=_note("Weight layout/pretranspose must be verified against exported attrs or weight metadata."),
 )
 
 LINEAR_BIAS_GRAPH = _graph(
@@ -424,7 +428,9 @@ LINEAR_BIAS_GRAPH = _graph(
     edge_names=("linear_mm_to_bias_add",),
     inputs=(_input("x", "linear_mm", 0), _input("weight", "linear_mm", 1), _input("bias", "linear_bias_add", 1)),
     attr_captures=(M.AttrCapture("pretransposed_rhs", default=False, required=False),),
-    constraints=("Bias add must consume only the linear output plus a parameter/buffer bias.",),
+    constraints={
+        "input_value_kind": {"role": "bias", "allowed_value_kinds": (M.ValueKind.PARAMETER, M.ValueKind.BUFFER)},
+    },
 )
 
 RMS_NORM_GRAPH = _graph(
@@ -435,7 +441,9 @@ RMS_NORM_GRAPH = _graph(
     inputs=(_input("x", "rms_square", 0), _input("weight", "rms_weight_mul", 1)),
     shared_inputs=(_shared_input("rms_square", 0, "rms_scale", 0),),
     attr_captures=(M.AttrCapture("epsilon", "rms_eps_add", "other", default=1e-6, required=False),),
-    constraints=("Mean dimension must be the hidden dimension.", "Final multiply must consume the RMS-normalized activation and norm weight."),
+    constraints={
+        "node_attr_equals": {"node": "rms_mean", "attr": "dim", "value": -1},
+    },
 )
 
 LAYERNORM_NO_BIAS_GRAPH = _graph(
@@ -455,7 +463,9 @@ LAYERNORM_NO_BIAS_GRAPH = _graph(
     inputs=(_input("x", "ln_mean", 0), _input("weight", "ln_weight_mul", 1)),
     shared_inputs=(_shared_input("ln_mean", 0, "ln_center", 0),),
     attr_captures=(M.AttrCapture("epsilon", "ln_eps_add", "other", default=1e-5, required=False),),
-    constraints=("Mean/variance dimensions must match the normalized feature axis.",),
+    constraints={
+        "node_attrs_equal": {"left_node": "ln_mean", "left_attr": "dim", "right_node": "ln_var", "right_attr": "dim"},
+    },
 )
 
 LAYERNORM_GRAPH = _graph(
@@ -466,7 +476,10 @@ LAYERNORM_GRAPH = _graph(
     inputs=(_input("x", "ln_mean", 0), _input("weight", "ln_weight_mul", 1), _input("bias", "ln_bias_add", 1)),
     shared_inputs=(_shared_input("ln_mean", 0, "ln_center", 0),),
     attr_captures=(M.AttrCapture("epsilon", "ln_eps_add", "other", default=1e-5, required=False),),
-    constraints=("Mean/variance dimensions must match the normalized feature axis.",),
+    constraints={
+        "node_attrs_equal": {"left_node": "ln_mean", "left_attr": "dim", "right_node": "ln_var", "right_attr": "dim"},
+        "input_value_kind": {"role": "bias", "allowed_value_kinds": (M.ValueKind.PARAMETER, M.ValueKind.BUFFER)},
+    },
 )
 
 SWIGLU_MLP_GRAPH = _graph(
@@ -477,7 +490,6 @@ SWIGLU_MLP_GRAPH = _graph(
     inputs=(_input("hidden", "gate_proj", 0), _input("gate_weight", "gate_proj", 1), _input("up_weight", "up_proj", 1), _input("down_weight", "down_proj", 1)),
     shared_inputs=(_shared_input("gate_proj", 0, "up_proj", 0),),
     attr_captures=(M.AttrCapture("product_scale", default=1.0, required=False),),
-    constraints=("gate_proj and up_proj must consume the same hidden input.", "down_proj must consume silu(gate_proj(hidden)) * up_proj(hidden)."),
 )
 
 GELU_MLP_GRAPH = _graph(
@@ -486,7 +498,6 @@ GELU_MLP_GRAPH = _graph(
     ("up_proj", "gelu", "down_proj"),
     inputs=(_input("hidden", "up_proj", 0), _input("up_weight", "up_proj", 1), _input("down_weight", "down_proj", 1)),
     edge_names=E.EDGE_GROUPS["gelu_mlp"],
-    constraints=("This pattern uses gelu as the activation before the down projection; IR should bind the activation output to down_proj input 0.",),
 )
 
 ATTENTION_DIRECT_GRAPH = _graph(
@@ -504,7 +515,10 @@ ATTENTION_CORE_GRAPH = _graph(
     edge_names=("attn_qk_to_scale", "attn_scale_to_softmax", "attn_softmax_to_value"),
     inputs=(_input("query", "attn_qk", 0), _input("key", "attn_qk", 1), _input("value", "attn_value", 1)),
     attr_captures=(M.AttrCapture("scale", "attn_scale", "other", required=False), M.AttrCapture("is_causal", default=True, required=False), M.AttrCapture("window_size", default=0, required=False)),
-    constraints=("QK matmul must be over query/key head dimensions.", "Softmax axis must be the attention score axis.", "Value matmul must consume attention probabilities and value states."),
+    constraints={
+        "node_attr_equals": {"node": "attn_softmax", "attr": "dim", "value": -1},
+        "parent_tensor_dim_equal": {"left_node": "attn_qk", "left_parent_index": 0, "left_dim": -1, "right_node": "attn_qk", "right_parent_index": 1, "right_dim": -1, "allow_missing": True},
+    },
 )
 
 ATTENTION_MASKED_GRAPH = _graph(
@@ -514,7 +528,9 @@ ATTENTION_MASKED_GRAPH = _graph(
     edge_names=("attn_qk_to_scale", "attn_scale_to_mask_add", "attn_mask_add_to_softmax", "attn_softmax_to_value"),
     inputs=(_input("query", "attn_qk", 0), _input("key", "attn_qk", 1), _input("mask", "attn_mask_add", 1), _input("value", "attn_value", 1)),
     attr_captures=(M.AttrCapture("scale", "attn_scale", "other", required=False), M.AttrCapture("use_mask", default=True), M.AttrCapture("additive_mask", default=True, required=False)),
-    constraints=("Mask input must be broadcast-compatible with attention scores.",),
+    constraints={
+        "input_broadcastable_to_node": {"role": "mask", "node": "attn_qk", "allow_missing": True},
+    },
 )
 
 ROPE_GRAPH = _graph(
@@ -528,7 +544,7 @@ ROPE_GRAPH = _graph(
         _shared_input("rope_slice_even", 0, "rope_cos_mul", 0),
     ),
     attr_captures=(M.AttrCapture("theta", default=None, required=False), M.AttrCapture("position_offset", default=0, required=False)),
-    constraints=("RoPE cos/sin tables or generated constants must correspond to the same theta and position offset.",),
+    constraints=_note("RoPE cos/sin tables or generated constants must correspond to the same theta and position offset."),
 )
 
 CONV_GRAPH = _graph(
@@ -569,7 +585,9 @@ ATTENTION_CACHED_GRAPH = _graph(
         _cache_input("value_cache_state", "attn_value", 1, tensor_role=M.CacheTensorRole.VALUE, optional=True),
     ),
     attr_captures=(M.AttrCapture("scale", "attn_scale", "other", required=False), M.AttrCapture("position_offset", default=0, required=False), M.AttrCapture("window_size", default=0, required=False)),
-    constraints=("Cached attention must verify that key/value cache states belong to the same decoder layer.",),
+    constraints={
+        "same_layer": {"nodes": ("attn_qk", "attn_value"), "allow_missing": True},
+    },
 )
 
 EXPERT_BRANCH_GRAPH = _graph(
@@ -579,7 +597,7 @@ EXPERT_BRANCH_GRAPH = _graph(
     edge_names=("expert_gate_to_activation", "expert_activation_to_product", "expert_up_to_product", "expert_product_to_down", "expert_down_to_weighted"),
     inputs=(_input("hidden", "expert_gate", 0), _input("gate_weight", "expert_gate", 1), _input("up_weight", "expert_up", 1), _input("down_weight", "expert_down", 1), _input("routing_weight", "expert_weighted", 1)),
     shared_inputs=(_shared_input("expert_gate", 0, "expert_up", 0),),
-    constraints=("Each repeated expert branch must correspond to the same expert index selected by routing.",),
+    constraints=_note("Each repeated expert branch must correspond to the same expert index selected by routing."),
     allow_root_external_children=False,
 )
 
@@ -591,7 +609,7 @@ MOE_GATED_GRAPH = _graph(
     inputs=(_input("hidden", "router_logits", 0), _input("router_weight", "router_logits", 1)),
     repeated_subgraphs=(M.RepeatedSubgraph("experts", EXPERT_BRANCH_GRAPH, min_count=1, anchor_node="topk"),),
     attr_captures=(M.AttrCapture("num_experts", default=None, required=False), M.AttrCapture("num_experts_per_tok", "topk", "k", required=False), M.AttrCapture("normalize_routing", default=True, required=False), M.AttrCapture("epsilon", default=1e-6, required=False), M.AttrCapture("routed_scaling_factor", default=1.0, required=False)),
-    constraints=("Top-k indices must select the repeated expert branches.", "Routing probabilities must be the weights used for expert output combination."),
+    constraints=_note("Top-k indices must select the repeated expert branches.", "Routing probabilities must be the weights used for expert output combination."),
 )
 
 LSTM_CELL_GRAPH = _graph(
@@ -600,7 +618,7 @@ LSTM_CELL_GRAPH = _graph(
     ("lstm_gate_mm", "lstm_recurrent_mm", "lstm_gate_add", "lstm_sigmoid", "lstm_tanh"),
     edge_names=E.EDGE_GROUPS["lstm_cell"],
     inputs=(_input("input", "lstm_gate_mm", 0), _input("h_prev", "lstm_recurrent_mm", 0), _input("weight_ih", "lstm_gate_mm", 1), _input("weight_hh", "lstm_recurrent_mm", 1)),
-    constraints=("IR must verify the four LSTM gate splits and c_prev update path before using this fusion.",),
+    constraints=_note("IR must verify the four LSTM gate splits and c_prev update path before using this fusion."),
 )
 
 DELTANET_DECODE_GRAPH = _graph(

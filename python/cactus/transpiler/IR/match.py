@@ -1,4 +1,4 @@
-from . import models, match_utils
+from . import extra_matchers, models, match_utils
 from ..Fusions import models as FModels
 
 ANY = ()
@@ -141,7 +141,7 @@ def match_shared_inputs(node: models.Node, graph: models.Graph, fusion: FModels.
 
 
 def match_constraints(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
-    return True
+    return extra_matchers.match_extra_constraints(node, graph, fusion, bindings)
 
 
 def match_cache_inputs(node: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
