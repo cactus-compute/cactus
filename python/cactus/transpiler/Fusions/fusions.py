@@ -97,10 +97,6 @@ def _required_attrs(**attrs) -> dict:
     return {"required_attrs": attrs}
 
 
-def _note(*items: str) -> dict[str, M.ConstraintSpec]:
-    return {"note": {"items": items}}
-
-
 def _graph(
     name: str,
     root: str,
@@ -602,19 +598,102 @@ EXPERT_BRANCH_GRAPH = _graph(
     edge_names=("expert_gate_to_activation", "expert_activation_to_product", "expert_up_to_product", "expert_product_to_down", "expert_down_to_weighted"),
     inputs=(_input("hidden", "expert_gate", 0), _input("gate_weight", "expert_gate", 1), _input("up_weight", "expert_up", 1), _input("down_weight", "expert_down", 1), _input("routing_weight", "expert_weighted", 1)),
     shared_inputs=(_shared_input("expert_gate", 0, "expert_up", 0),),
-    constraints=_note("Each repeated expert branch must correspond to the same expert index selected by routing."),
-    allow_root_external_children=False,
 )
 
 MOE_GATED_GRAPH = _graph(
     "moe_layer_gated",
     "moe_combine",
-    ("router_logits", "routing_probs", "topk", "moe_combine"),
-    edge_names=("router_logits_to_probs", "routing_probs_to_topk"),
-    inputs=(_input("hidden", "router_logits", 0), _input("router_weight", "router_logits", 1)),
-    repeated_subgraphs=(M.RepeatedSubgraph("experts", EXPERT_BRANCH_GRAPH, min_count=1, anchor_node="topk"),),
+    ("moe_combine",),
+    inputs=(_variadic_input("expert_outputs", "moe_combine", 0),),
+    repeated_subgraphs=(M.RepeatedSubgraph("experts", EXPERT_BRANCH_GRAPH, min_count=1),),
     attr_captures=(M.AttrCapture("num_experts", default=None, required=False), M.AttrCapture("num_experts_per_tok", "topk", "k", required=False), M.AttrCapture("normalize_routing", default=True, required=False), M.AttrCapture("epsilon", default=1e-6, required=False), M.AttrCapture("routed_scaling_factor", default=1.0, required=False)),
-    constraints=_note("Top-k indices must select the repeated expert branches.", "Routing probabilities must be the weights used for expert output combination."),
+    constraints={
+        "moe_expert_branch_routing": {"repeated_subgraph": "experts", "combine_node": "moe_combine", "routing_weight_role": "routing_weight", "max_depth": 64},
+        "moe_routing_weights_combine": {"repeated_subgraph": "experts", "combine_node": "moe_combine", "weighted_node": "expert_weighted", "routing_weight_role": "routing_weight", "max_depth": 64},
+    },
+)
+
+LFM_GROUPED_MOE_GRAPH = _graph(
+    "lfm_grouped_moe",
+    "moe_grouped_combine",
+    (
+        "moe_hidden_view",
+        "moe_router_weight_transpose",
+        "moe_router_logits",
+        "moe_router_sigmoid",
+        "moe_router_bias",
+        "moe_topk",
+        "moe_topk_indices",
+        "moe_routing_gather",
+        "moe_routing_sum",
+        "moe_routing_eps",
+        "moe_routing_norm",
+        "moe_routing_scale",
+        "moe_token_arange",
+        "moe_token_unsqueeze",
+        "moe_token_expand",
+        "moe_token_clone",
+        "moe_token_flat",
+        "moe_routing_flat",
+        "moe_topk_flat",
+        "moe_sort",
+        "moe_sort_indices",
+        "moe_unsort_empty",
+        "moe_unsort_arange",
+        "moe_unsort_index_put",
+        "moe_sorted_expert_index",
+        "moe_sorted_expert_copy",
+        "moe_histc",
+        "moe_offsets",
+        "moe_sorted_routing_index",
+        "moe_token_positions_index",
+        "moe_sorted_hidden_index",
+        "moe_gate_up_weight_transpose",
+        "moe_grouped_gate_up",
+        "moe_gate_up_split",
+        "moe_gate_tensor",
+        "moe_up_tensor",
+        "moe_gate_copy",
+        "moe_gate_sigmoid",
+        "moe_gate_activation",
+        "moe_gate_activation_copy",
+        "moe_expert_product",
+        "moe_down_weight_transpose",
+        "moe_grouped_down",
+        "moe_routing_unsqueeze",
+        "moe_grouped_weighted",
+        "moe_unsort_index",
+        "moe_output_view",
+        "moe_grouped_combine",
+    ),
+    edge_names=E.EDGE_GROUPS["lfm_grouped_moe"],
+    inputs=(
+        _input("hidden", "moe_hidden_view", 0),
+        _input("router_weight", "moe_router_weight_transpose", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER)),
+        _input("router_bias", "moe_router_bias", 1, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER)),
+        _input("gate_up_weight", "moe_gate_up_weight_transpose", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER)),
+        _input("down_weight", "moe_down_weight_transpose", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER)),
+    ),
+    attr_captures=(
+        M.AttrCapture("num_experts", "moe_histc", "bins", required=False),
+        M.AttrCapture("num_experts_per_tok", "moe_topk", "k", required=True),
+        M.AttrCapture("epsilon", "moe_routing_eps", "other", default=1e-6, required=False),
+        M.AttrCapture("routed_scaling_factor", "moe_routing_scale", "other", default=1.0, required=False),
+    ),
+    constraints={
+        "grouped_moe_structure": {
+            "topk_node": "moe_topk",
+            "topk_indices_node": "moe_topk_indices",
+            "router_bias_role": "router_bias",
+            "gate_up_weight_role": "gate_up_weight",
+            "down_weight_role": "down_weight",
+            "gate_up_grouped_node": "moe_grouped_gate_up",
+            "down_grouped_node": "moe_grouped_down",
+            "split_node": "moe_gate_up_split",
+            "offsets_node": "moe_offsets",
+            "combine_node": "moe_grouped_combine",
+        },
+    },
 )
 
 LSTM_CELL_GRAPH = _graph(
@@ -775,6 +854,7 @@ GRAPH_BY_NAME: dict[str, M.FusionGraph] = {
     "kv_cache_append": KV_CACHE_APPEND_GRAPH,
     "attention_cached": ATTENTION_CACHED_GRAPH,
     "moe_layer_gated": MOE_GATED_GRAPH,
+    "lfm_grouped_moe": LFM_GROUPED_MOE_GRAPH,
     "lstm_cell": LSTM_CELL_GRAPH,
     "gated_deltanet_decode": DELTANET_DECODE_GRAPH,
     "gated_deltanet_prefill": DELTANET_PREFILL_GRAPH,
@@ -829,6 +909,7 @@ FUSIONS: dict[str, M.FusionDefinition] = {
     "kv_cache_append": _definition("kv_cache_append", "kv_cache_append", KV_CACHE_APPEND_GRAPH, fusion_fields=("generic", "cache"), supported_inference_modes=("prefill_with_cache", "decode_with_cache")),
     "attention_cached": _definition("attention_cached", "attention_cached", ATTENTION_CACHED_GRAPH, fusion_fields=("generic", "attention", "cache"), supported_inference_modes=("decode_with_cache",)),
     "moe_layer_gated": _definition("moe_layer_gated", "moe_layer_gated", MOE_GATED_GRAPH, fusion_fields=("generic", "moe")),
+    "lfm_grouped_moe": _definition("lfm_grouped_moe", "moe_layer_gated", LFM_GROUPED_MOE_GRAPH, fusion_fields=("generic", "moe", "lfm_moe")),
     "lstm_cell": _definition("lstm_cell", "lstm_cell", LSTM_CELL_GRAPH, fusion_fields=("generic", "recurrent", "audio")),
     "gated_deltanet_decode": _definition("gated_deltanet_decode", "gated_deltanet_decode", DELTANET_DECODE_GRAPH, fusion_fields=("generic", "recurrent", "cache")),
     "gated_deltanet_prefill": _definition("gated_deltanet_prefill", "gated_deltanet_prefill", DELTANET_PREFILL_GRAPH, fusion_fields=("generic", "recurrent", "cache")),
