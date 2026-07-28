@@ -126,10 +126,34 @@ QWEN2_5_0_5B_PROFILE = ModelProfile(
     load_strategy="causal_lm",
 )
 
+LFM_MOE_PROFILE = ModelProfile(
+    model_profiles="lfm_moe",
+    components=TEXT_COMPONENTS,
+    inference_type=QWEN2_5_INFERENCE_PATTERNS,
+    cache_type=("attention_kv", "conv_state"),
+    cache_policy=(),
+    files=("config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json"),
+    fusion_fields=(
+        "generic",
+        "embedding",
+        "lfm_attention",
+        "lfm_mlp",
+        "lfm_moe",
+        "moe",
+        "conv",
+        "linear",
+    ),
+    supported_modalties=("text",),
+    input_strategy="processor",
+    export_patches=("transformers_moe_grouped_mm_fallback",),
+    load_strategy="causal_lm",
+)
+
 MODEL_ID_MAP = {
     "google/gemma-4-E2B": GEMMA4_E2B_PROFILE,
     "openai/whisper-tiny": WHISPER_PROFILE,
     "nvidia/parakeet-tdt-0.6b-v3": PARAKEET_PROFILE,
     "LiquidAI/LFM2-VL-3B": LFM_VLM_PROFILE,
     "Qwen/Qwen2.5-0.5B": QWEN2_5_0_5B_PROFILE,
+    "LiquidAI/LFM2.5-8B-A1B": LFM_MOE_PROFILE,
 }
