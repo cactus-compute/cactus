@@ -9,8 +9,10 @@ import torch
 class CacheLayerSpec:
     index: int
     layer_type: str
-    key_shape: tuple[int, ...]
-    value_shape: tuple[int, ...]
+    key_shape: tuple[int, ...] | None = None
+    value_shape: tuple[int, ...] | None = None
+    conv_state_shape: tuple[int, ...] | None = None
+    recurrent_state_shape: tuple[int, ...] | None = None
     sliding_window: int | None = None
 
 
@@ -80,11 +82,12 @@ class CacheExportWrapper(torch.nn.Module):
             "mm_token_type_ids": mm_token_type_ids,
             "inputs_embeds": inputs_embeds,
             "use_cache": True,
+            "return_dict": True,
         }
         model_kwargs = {key: value for key, value in model_kwargs.items() if value is not None}
         outputs = self.model(**filter_forward_kwargs(self.model, model_kwargs))
 
-        return (primary_model_output(outputs), *flatten_dynamic_cache(getattr(outputs, "past_key_values", None)))
+        return (primary_model_output(outputs), *flatten_dynamic_cache(getattr(outputs, "past_key_values", None), self.cache_spec))
 
 
 #How: asks HF configs for their decoder/text sub-config when available, otherwise returns the original config.
@@ -216,6 +219,20 @@ def cache_spec_from_model(cls: type[CacheSpec], model: torch.nn.Module, batch_si
             layer_sliding_window = int(sliding_window)
             cache_sequence_length = min(past_sequence_length, max(1, layer_sliding_window - 1))
 
+        if layer_type == "conv":
+            layers.append(
+                CacheLayerSpec(
+                    index=index,
+                    layer_type=str(layer_type),
+                    conv_state_shape=(batch_size, hidden_size, int(getattr(text_config, "conv_L_cache", 1))),
+                )
+            )
+            continue
+
+        if layer_type in ("mamba", "linear_attention", "moe"):
+            layers.append(CacheLayerSpec(index=index, layer_type=str(layer_type)))
+            continue
+
         cache_shape = (batch_size, layer_num_key_value_heads, cache_sequence_length, layer_head_dim)
         layers.append(
             CacheLayerSpec(
@@ -245,8 +262,14 @@ def cache_spec_empty_tensors(
     device = device or torch.device("cpu")
 
     for layer in cache_spec.layers:
-        tensors.append(torch.zeros(layer.key_shape, dtype=dtype, device=device))
-        tensors.append(torch.zeros(layer.value_shape, dtype=dtype, device=device))
+        if layer.key_shape is not None:
+            tensors.append(torch.zeros(layer.key_shape, dtype=dtype, device=device))
+        if layer.value_shape is not None:
+            tensors.append(torch.zeros(layer.value_shape, dtype=dtype, device=device))
+        if layer.conv_state_shape is not None:
+            tensors.append(torch.zeros(layer.conv_state_shape, dtype=dtype, device=device))
+        if layer.recurrent_state_shape is not None:
+            tensors.append(torch.zeros(layer.recurrent_state_shape, dtype=dtype, device=device))
 
     return tuple(tensors)
 
@@ -256,26 +279,63 @@ def cache_spec_empty_tensors(
 def cache_spec_to_dynamic_cache(cache_spec: CacheSpec, flat_tensors: tuple[torch.Tensor, ...]):
     from transformers.cache_utils import DynamicCache
 
-    if len(flat_tensors) != len(cache_spec.layers) * 2:
-        raise ValueError(f"Expected {len(cache_spec.layers) * 2} cache tensors, got {len(flat_tensors)}")
+    expected_tensor_count = cache_spec_tensor_count(cache_spec)
+
+    if len(flat_tensors) != expected_tensor_count:
+        raise ValueError(f"Expected {expected_tensor_count} cache tensors, got {len(flat_tensors)}")
 
     cache = DynamicCache(config=cache_spec.config)
+    flat_index = 0
 
-    for index, layer_spec in enumerate(cache_spec.layers):
-        flat_index = index * 2
+    for layer_spec in cache_spec.layers:
         layer = cache.layers[layer_spec.index]
-        key = flat_tensors[flat_index]
-        value = flat_tensors[flat_index + 1]
-        layer.keys = key
-        layer.values = value
-        layer.dtype = key.dtype
-        layer.device = key.device
-        layer.is_initialized = True
 
-        if hasattr(layer, "cumulative_length"):
-            layer.cumulative_length = cache_spec.past_sequence_length
+        if layer_spec.key_shape is not None and layer_spec.value_shape is not None:
+            key = flat_tensors[flat_index]
+            value = flat_tensors[flat_index + 1]
+            flat_index += 2
+            layer.keys = key
+            layer.values = value
+            layer.dtype = key.dtype
+            layer.device = key.device
+            layer.is_initialized = True
+
+            if hasattr(layer, "cumulative_length"):
+                layer.cumulative_length = cache_spec.past_sequence_length
+
+        if layer_spec.conv_state_shape is not None:
+            conv_state = flat_tensors[flat_index].clone()
+            flat_index += 1
+            layer.conv_states = conv_state
+            layer.dtype = conv_state.dtype
+            layer.device = conv_state.device
+            layer.max_batch_size = conv_state.shape[0]
+            layer.conv_kernel_size = conv_state.shape[-1]
+            layer.is_conv_states_initialized = True
+            layer.has_previous_state = cache_spec.past_sequence_length > 0
+
+        if layer_spec.recurrent_state_shape is not None:
+            recurrent_state = flat_tensors[flat_index].clone()
+            flat_index += 1
+            layer.recurrent_states = recurrent_state
+            layer.dtype = recurrent_state.dtype
+            layer.device = recurrent_state.device
+            layer.is_recurrent_states_initialized = True
+            layer.has_previous_state = cache_spec.past_sequence_length > 0
 
     return cache
+
+
+def cache_spec_tensor_count(cache_spec: CacheSpec) -> int:
+    count = 0
+
+    for layer in cache_spec.layers:
+        count += int(layer.key_shape is not None)
+        count += int(layer.value_shape is not None)
+        count += int(layer.conv_state_shape is not None)
+        count += int(layer.recurrent_state_shape is not None)
+
+    return count
 
 
 #How: checks common HF output containers for logits, last_hidden_state, or first tuple item.
@@ -284,16 +344,16 @@ def primary_model_output(outputs: Any) -> torch.Tensor:
     if isinstance(outputs, dict):
         for key in ("logits", "last_hidden_state"):
             output = outputs.get(key)
-            if output is not None:
+            if isinstance(output, torch.Tensor):
                 return output
 
-    if hasattr(outputs, "logits") and outputs.logits is not None:
+    if hasattr(outputs, "logits") and isinstance(outputs.logits, torch.Tensor):
         return outputs.logits
 
-    if hasattr(outputs, "last_hidden_state") and outputs.last_hidden_state is not None:
+    if hasattr(outputs, "last_hidden_state") and isinstance(outputs.last_hidden_state, torch.Tensor):
         return outputs.last_hidden_state
 
-    if isinstance(outputs, (tuple, list)) and len(outputs) > 0:
+    if isinstance(outputs, (tuple, list)) and len(outputs) > 0 and isinstance(outputs[0], torch.Tensor):
         return outputs[0]
 
     raise ValueError("Could not find a tensor output to export")
@@ -301,7 +361,7 @@ def primary_model_output(outputs: Any) -> torch.Tensor:
 
 #How: walks either legacy tuple caches or DynamicCache layers and emits key/value tensors in flat order.
 #Why: CacheExportWrapper.forward returns this flat tuple so the layermap contains explicit cache output tensors.
-def flatten_dynamic_cache(cache: Any) -> tuple[torch.Tensor, ...]:
+def flatten_dynamic_cache(cache: Any, cache_spec: CacheSpec | None = None) -> tuple[torch.Tensor, ...]:
     if cache is None:
         return ()
 
@@ -319,11 +379,44 @@ def flatten_dynamic_cache(cache: Any) -> tuple[torch.Tensor, ...]:
     if layers is None:
         return ()
 
+    if cache_spec is not None:
+        for layer_spec in cache_spec.layers:
+            layer = layers[layer_spec.index]
+
+            if layer_spec.key_shape is not None:
+                key = getattr(layer, "keys", None)
+                if key is not None:
+                    flat.append(key)
+
+            if layer_spec.value_shape is not None:
+                value = getattr(layer, "values", None)
+                if value is not None:
+                    flat.append(value)
+
+            if layer_spec.conv_state_shape is not None:
+                conv_state = getattr(layer, "conv_states", None)
+                if conv_state is not None:
+                    flat.append(conv_state)
+
+            if layer_spec.recurrent_state_shape is not None:
+                recurrent_state = getattr(layer, "recurrent_states", None)
+                if recurrent_state is not None:
+                    flat.append(recurrent_state)
+
+        return tuple(flat)
+
     for layer in layers:
         key = getattr(layer, "keys", None)
         value = getattr(layer, "values", None)
 
         if key is None or value is None:
+            conv_state = getattr(layer, "conv_states", None)
+            recurrent_state = getattr(layer, "recurrent_states", None)
+
+            if conv_state is not None:
+                flat.append(conv_state)
+            if recurrent_state is not None:
+                flat.append(recurrent_state)
             continue
 
         flat.append(key)

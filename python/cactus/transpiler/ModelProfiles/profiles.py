@@ -131,7 +131,7 @@ LFM_MOE_PROFILE = ModelProfile(
     components=TEXT_COMPONENTS,
     inference_type=QWEN2_5_INFERENCE_PATTERNS,
     cache_type=("attention_kv", "conv_state"),
-    cache_policy=(),
+    cache_policy=("dynamic_cache",),
     files=("config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json"),
     fusion_fields=(
         "generic",

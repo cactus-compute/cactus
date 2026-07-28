@@ -311,6 +311,9 @@ def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None) -> torch
         base_kwargs["token"] = constants.token
 
     load_attempts = (
+        {**base_kwargs, "dtype": "auto", "low_cpu_mem_usage": True, "local_files_only": True},
+        {**base_kwargs, "torch_dtype": "auto", "low_cpu_mem_usage": True, "local_files_only": True},
+        {**base_kwargs, "local_files_only": True},
         {**base_kwargs, "dtype": "auto", "low_cpu_mem_usage": True},
         {**base_kwargs, "torch_dtype": "auto", "low_cpu_mem_usage": True},
         base_kwargs,

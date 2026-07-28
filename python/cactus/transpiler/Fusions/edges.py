@@ -124,6 +124,7 @@ EDGES: dict[str, M.FusionEdge] = {
     "moe_token_unsqueeze_to_expand": _edge("moe_token_unsqueeze", "moe_token_expand", 0),
     "moe_token_expand_to_clone": _edge("moe_token_expand", "moe_token_clone", 0),
     "moe_token_clone_to_flat": _edge("moe_token_clone", "moe_token_flat", 0),
+    "moe_token_expand_to_flat": _edge("moe_token_expand", "moe_token_flat", 0),
     "moe_scale_to_routing_flat": _edge("moe_routing_scale", "moe_routing_flat", 0),
     "moe_topk_indices_to_flat": _edge("moe_topk_indices", "moe_topk_flat", 0),
     "moe_topk_flat_to_sort": _edge("moe_topk_flat", "moe_sort", 0),
@@ -310,6 +311,12 @@ EDGE_GROUPS: dict[str, tuple[str, ...]] = {
         "moe_output_view_to_combine",
     ),
 }
+
+EDGE_GROUPS["lfm_grouped_moe_no_token_clone"] = tuple(
+    "moe_token_expand_to_flat" if edge_name == "moe_token_expand_to_clone" else edge_name
+    for edge_name in EDGE_GROUPS["lfm_grouped_moe"]
+    if edge_name != "moe_token_clone_to_flat"
+)
 
 
 EDGE_NAMES_BY_SOURCE: dict[str, tuple[str, ...]] = _index_edges_by_source(EDGES)

@@ -696,6 +696,16 @@ LFM_GROUPED_MOE_GRAPH = _graph(
     },
 )
 
+LFM_GROUPED_MOE_NO_TOKEN_CLONE_GRAPH = _graph(
+    "lfm_grouped_moe_no_token_clone",
+    "moe_grouped_combine",
+    tuple(node_name for node_name in LFM_GROUPED_MOE_GRAPH.nodes if node_name != "moe_token_clone"),
+    edge_names=E.EDGE_GROUPS["lfm_grouped_moe_no_token_clone"],
+    inputs=LFM_GROUPED_MOE_GRAPH.inputs,
+    attr_captures=LFM_GROUPED_MOE_GRAPH.attr_captures,
+    constraints=LFM_GROUPED_MOE_GRAPH.constraints,
+)
+
 LSTM_CELL_GRAPH = _graph(
     "lstm_cell",
     "lstm_tanh",
@@ -855,6 +865,7 @@ GRAPH_BY_NAME: dict[str, M.FusionGraph] = {
     "attention_cached": ATTENTION_CACHED_GRAPH,
     "moe_layer_gated": MOE_GATED_GRAPH,
     "lfm_grouped_moe": LFM_GROUPED_MOE_GRAPH,
+    "lfm_grouped_moe_no_token_clone": LFM_GROUPED_MOE_NO_TOKEN_CLONE_GRAPH,
     "lstm_cell": LSTM_CELL_GRAPH,
     "gated_deltanet_decode": DELTANET_DECODE_GRAPH,
     "gated_deltanet_prefill": DELTANET_PREFILL_GRAPH,
@@ -910,6 +921,7 @@ FUSIONS: dict[str, M.FusionDefinition] = {
     "attention_cached": _definition("attention_cached", "attention_cached", ATTENTION_CACHED_GRAPH, fusion_fields=("generic", "attention", "cache"), supported_inference_modes=("decode_with_cache",)),
     "moe_layer_gated": _definition("moe_layer_gated", "moe_layer_gated", MOE_GATED_GRAPH, fusion_fields=("generic", "moe")),
     "lfm_grouped_moe": _definition("lfm_grouped_moe", "moe_layer_gated", LFM_GROUPED_MOE_GRAPH, fusion_fields=("generic", "moe", "lfm_moe")),
+    "lfm_grouped_moe_no_token_clone": _definition("lfm_grouped_moe_no_token_clone", "moe_layer_gated", LFM_GROUPED_MOE_NO_TOKEN_CLONE_GRAPH, fusion_fields=("generic", "moe", "lfm_moe")),
     "lstm_cell": _definition("lstm_cell", "lstm_cell", LSTM_CELL_GRAPH, fusion_fields=("generic", "recurrent", "audio")),
     "gated_deltanet_decode": _definition("gated_deltanet_decode", "gated_deltanet_decode", DELTANET_DECODE_GRAPH, fusion_fields=("generic", "recurrent", "cache")),
     "gated_deltanet_prefill": _definition("gated_deltanet_prefill", "gated_deltanet_prefill", DELTANET_PREFILL_GRAPH, fusion_fields=("generic", "recurrent", "cache")),
