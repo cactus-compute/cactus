@@ -418,7 +418,9 @@ LINEAR_GRAPH = _graph(
     ("linear_mm",),
     inputs=(_input("x", "linear_mm", 0), _input("weight", "linear_mm", 1)),
     attr_captures=(M.AttrCapture("pretransposed_rhs", default=False, required=False),),
-    constraints=_note("Weight layout/pretranspose must be verified against exported attrs or weight metadata."),
+    constraints={
+        "linear_weight_layout": {"input_role": "x", "weight_role": "weight", "output_node": "linear_mm"},
+    },
 )
 
 LINEAR_BIAS_GRAPH = _graph(
@@ -429,6 +431,7 @@ LINEAR_BIAS_GRAPH = _graph(
     inputs=(_input("x", "linear_mm", 0), _input("weight", "linear_mm", 1), _input("bias", "linear_bias_add", 1)),
     attr_captures=(M.AttrCapture("pretransposed_rhs", default=False, required=False),),
     constraints={
+        "linear_weight_layout": {"input_role": "x", "weight_role": "weight", "output_node": "linear_mm"},
         "input_value_kind": {"role": "bias", "allowed_value_kinds": (M.ValueKind.PARAMETER, M.ValueKind.BUFFER)},
     },
 )
@@ -544,7 +547,9 @@ ROPE_GRAPH = _graph(
         _shared_input("rope_slice_even", 0, "rope_cos_mul", 0),
     ),
     attr_captures=(M.AttrCapture("theta", default=None, required=False), M.AttrCapture("position_offset", default=0, required=False)),
-    constraints=_note("RoPE cos/sin tables or generated constants must correspond to the same theta and position offset."),
+    constraints={
+        "rope_tables_compatible": {"x_role": "x", "cos_role": "cos", "sin_role": "sin"},
+    },
 )
 
 CONV_GRAPH = _graph(
@@ -618,7 +623,9 @@ LSTM_CELL_GRAPH = _graph(
     ("lstm_gate_mm", "lstm_recurrent_mm", "lstm_gate_add", "lstm_sigmoid", "lstm_tanh"),
     edge_names=E.EDGE_GROUPS["lstm_cell"],
     inputs=(_input("input", "lstm_gate_mm", 0), _input("h_prev", "lstm_recurrent_mm", 0), _input("weight_ih", "lstm_gate_mm", 1), _input("weight_hh", "lstm_recurrent_mm", 1)),
-    constraints=_note("IR must verify the four LSTM gate splits and c_prev update path before using this fusion."),
+    constraints={
+        "lstm_gate_structure": {"gate_node": "lstm_gate_add", "gate_count": 4, "require_explicit_gate_split": True},
+    },
 )
 
 DELTANET_DECODE_GRAPH = _graph(
