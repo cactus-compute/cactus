@@ -18,6 +18,7 @@ from . import constants
 token = constants.token
 EXPORT_PATCHES = {
     "gemma4_audio_mask": OV.patch_gemma4_audio_mask_for_export,
+    "transformers_moe_grouped_mm_fallback": OV.patch_transformers_moe_grouped_mm_for_export,
 }
 
 
@@ -303,25 +304,38 @@ def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None) -> torch
         export_patches = mp.export_patches
 
     seen_classes: set[Any] = set()
+    base_kwargs: dict[str, Any] = {"trust_remote_code": True}
+    last_error: Exception | None = None
+
+    if constants.token is not None:
+        base_kwargs["token"] = constants.token
+
+    load_attempts = (
+        {**base_kwargs, "dtype": "auto", "low_cpu_mem_usage": True},
+        {**base_kwargs, "torch_dtype": "auto", "low_cpu_mem_usage": True},
+        base_kwargs,
+    )
 
     for model_class in candidate_classes:
         if model_class in seen_classes:
             continue
 
         seen_classes.add(model_class)
-        try:
-            model = model_class.from_pretrained(model_id)
-            model.eval()
-        except:
-            pass
 
-        for patch in export_patches:
-            patch_fn = EXPORT_PATCHES[patch]
-            patch_fn()
+        for load_kwargs in load_attempts:
+            try:
+                model = model_class.from_pretrained(model_id, **load_kwargs)
+                model.eval()
 
-        return model
+                for patch in export_patches:
+                    patch_fn = EXPORT_PATCHES[patch]
+                    patch_fn()
 
-    raise RuntimeError(f"Unable to load model {model_id}")
+                return model
+            except Exception as e:
+                last_error = e
+
+    raise RuntimeError(f"Unable to load model {model_id}") from last_error
 
 
 #Builds a loaded model bundle from profile, modalities, model id, and inference mode.

@@ -75,10 +75,23 @@ def default_processor(model_id: str, configs: dict[str, dict[str, Any]], model_p
         raise RuntimeError(f"Unable to load processor for {model_id}")
 
 
+def text_tokenizer_processor(model_id: str, configs: dict[str, dict[str, Any]], model_profile: str):
+    from transformers import PreTrainedTokenizerFast
+
+    tokenizer_config = configs.get("tokenizer_config.json", {})
+    return PreTrainedTokenizerFast(
+        tokenizer_file=_local_tokenizer_path(model_id=model_id, model_profile=model_profile),
+        bos_token=tokenizer_config.get("bos_token"),
+        eos_token=tokenizer_config.get("eos_token"),
+        pad_token=tokenizer_config.get("pad_token"),
+    )
+
+
 PROCESSOR_MAP = {
     "google/gemma-4-E2B": gemma4_processor,
     "openai/whisper-tiny": default_processor,
     "nvidia/parakeet-tdt-0.6b-v3": default_processor,
     "LiquidAI/LFM2-VL-3B": default_processor,
     "Qwen/Qwen2.5-0.5B": default_processor,
+    "LiquidAI/LFM2.5-8B-A1B": text_tokenizer_processor,
 }

@@ -23,3 +23,9 @@ def patch_gemma4_audio_mask_for_export() -> None:
         return mask.expand(batch_size, 1, seq_len, seq_len)
 
     gemma4_modeling.create_bidirectional_mask = exportable_bidirectional_mask
+
+
+def patch_transformers_moe_grouped_mm_for_export() -> None:
+    import transformers.integrations.moe as moe
+
+    moe._can_use_grouped_mm = lambda input, weight, offs: False
