@@ -51,6 +51,8 @@ class Graph:
     task: str = ""
     graph_signature: str = ""
     range_constants: str = ""
+    input_specs: tuple[CModels.GraphSpecRecord, ...] = field(default_factory=tuple)
+    output_specs: tuple[CModels.GraphSpecRecord, ...] = field(default_factory=tuple)
     fusions: list["FusionResult"] = field(default_factory=list)
 
     @classmethod
@@ -242,6 +244,8 @@ def generate_graph(cls: type[Graph], layer_map: CModels.LayerMap) -> Graph:
         task=layer_map.task,
         graph_signature=layer_map.graph_signature,
         range_constants=layer_map.range_constants,
+        input_specs=tuple(layer_map.input_specs),
+        output_specs=tuple(layer_map.output_specs),
     )
 
 
@@ -417,6 +421,8 @@ def rebuild_graph(nodes: tuple[Node, ...], original_graph: Graph, fusion_results
         task=original_graph.task,
         graph_signature=original_graph.graph_signature,
         range_constants=original_graph.range_constants,
+        input_specs=original_graph.input_specs,
+        output_specs=original_graph.output_specs,
         fusions=list(fusion_results),
     )
 
@@ -442,6 +448,8 @@ def graph_to_layer_map(graph: Graph) -> CModels.LayerMap:
         task=graph.task,
         graph_signature=graph.graph_signature,
         range_constants=graph.range_constants,
+        input_specs=list(graph.input_specs),
+        output_specs=list(graph.output_specs),
         nodes=records,
     )
 

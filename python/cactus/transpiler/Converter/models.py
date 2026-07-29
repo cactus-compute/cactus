@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 from huggingface_hub import hf_hub_download
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import torch
 from transformers import AutoModel
 
@@ -57,18 +57,36 @@ class LayerRecord(BaseModel):
     def from_node(cls, num: int, x: torch.fx.Node) -> "LayerRecord":
         return cls(index=num, name=str(x.name), node_type=str(x.op), target=str(x.target), args=jsonable(x.args), kwargs=jsonable(x.kwargs), users=[user.name for user in x.users], tensor_output_meta=extract_tensor_meta(x), module_stack=extract_module_stack(x))
 
+
+class GraphSpecRecord(BaseModel):
+    kind: str
+    arg_name: str | None = None
+    target: str | None = None
+    persistent: bool | None = None
+
+
 #Serializable top-level export IR container.
 class LayerMap(BaseModel):
     model_name: str
     task: str
     graph_signature: str
     range_constants: str
+    input_specs: list[GraphSpecRecord] = Field(default_factory=list)
+    output_specs: list[GraphSpecRecord] = Field(default_factory=list)
     nodes: list[LayerRecord]
 
     #Builds a LayerMap from a torch.export ExportedProgram and serialized nodes.
     @classmethod
     def from_data(cls, x: torch.export.ExportedProgram, name: str, model_task: str, nodes_list: list[LayerRecord]) -> "LayerMap":
-        return cls(model_name=name, task=model_task, graph_signature=repr(x.graph_signature), range_constants=repr(x.range_constraints), nodes=nodes_list)
+        return cls(
+            model_name=name,
+            task=model_task,
+            graph_signature=repr(x.graph_signature),
+            range_constants=repr(x.range_constraints),
+            input_specs=extract_graph_signature_specs(x.graph_signature, "input_specs"),
+            output_specs=extract_graph_signature_specs(x.graph_signature, "output_specs"),
+            nodes=nodes_list,
+        )
 
 ###################################################### Model utility helpers!!!!! ########################################################################.
 
@@ -132,6 +150,55 @@ def extract_module_stack(node: torch.fx.Node) -> Any | None:
             out.append({"key": str(key), "value": repr(value)})
 
     return out
+
+
+def extract_graph_signature_specs(graph_signature: Any, field_name: str) -> list[GraphSpecRecord]:
+    specs = getattr(graph_signature, field_name, ()) or ()
+    return [graph_spec_record(spec) for spec in specs]
+
+
+def graph_spec_record(spec: Any) -> GraphSpecRecord:
+    return GraphSpecRecord(
+        kind=spec_kind(spec),
+        arg_name=spec_arg_name(spec),
+        target=none_or_str(getattr(spec, "target", None)),
+        persistent=getattr(spec, "persistent", None),
+    )
+
+
+def spec_kind(spec: Any) -> str:
+    kind = getattr(spec, "kind", None)
+
+    if kind is None:
+        return "unknown"
+
+    name = getattr(kind, "name", None)
+
+    if name is not None:
+        return str(name).lower()
+
+    return str(kind)
+
+
+def spec_arg_name(spec: Any) -> str | None:
+    arg = getattr(spec, "arg", None)
+
+    if arg is None:
+        return None
+
+    name = getattr(arg, "name", None)
+
+    if name is not None:
+        return str(name)
+
+    return None
+
+
+def none_or_str(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    return str(value)
 
 
 def load_configs(mp: MP_Models.ModelProfile, model_id: str | None) -> dict[str, dict[str, Any]]:
