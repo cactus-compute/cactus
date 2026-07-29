@@ -716,10 +716,20 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
         if (tw == 0) tw = side;
         return static_cast<size_t>((th / p / k) * (tw / p / k));
     };
+    enum class Gemma4MessageType { NONE, TOOL_CALL, TOOL_RESPONSE };
+
     bool in_model_turn = false;
+    Gemma4MessageType previous_message_type = Gemma4MessageType::NONE;
+    std::string previous_non_tool_role;
     std::vector<std::string> pending_call_names;
     auto close_model_turn = [&]() {
         if (in_model_turn) { result += "<turn|>\n"; in_model_turn = false; }
+    };
+    auto next_non_tool_role = [&](size_t index) -> std::string {
+        for (size_t j = index + 1; j < messages.size(); ++j) {
+            if (messages[j].role != "tool") return messages[j].role;
+        }
+        return "";
     };
 
     for (size_t i = first_msg; i < messages.size(); i++) {
@@ -728,13 +738,29 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
                                : (msg.role == "developer") ? "system" : msg.role;
 
         if (role == "model") {
-            if (!in_model_turn) { result += "<|turn>model\n"; in_model_turn = true; }
+            previous_message_type = Gemma4MessageType::NONE;
+            bool continue_same_model_turn = previous_non_tool_role == "assistant";
+            if (!continue_same_model_turn) {
+                result += "<|turn>model\n";
+                in_model_turn = true;
+            }
             result += msg.content;
             for (const auto& tc : msg.tool_calls) {
                 result += format_tool_call_for_prompt(tc.name, tc.arguments, true);
                 pending_call_names.push_back(tc.name);
             }
-            if (msg.tool_calls.empty()) close_model_turn();
+            std::string next_role = next_non_tool_role(i);
+            bool has_following_tool_response = i + 1 < messages.size()
+                                            && messages[i + 1].role == "tool";
+            bool continues_into_next = next_role == "assistant"
+                                    && (msg.tool_calls.empty() || has_following_tool_response);
+            if (!msg.tool_calls.empty()) {
+                previous_message_type = Gemma4MessageType::TOOL_CALL;
+                if (!has_following_tool_response) result += "<|tool_response>";
+            } else if (!continues_into_next) {
+                close_model_turn();
+            }
+            previous_non_tool_role = "assistant";
         } else if (role == "tool") {
             if (!in_model_turn) { result += "<|turn>model\n"; in_model_turn = true; }
             std::string fn = !msg.name.empty() ? msg.name
@@ -742,8 +768,23 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
                                                           : std::string("unknown"));
             if (!pending_call_names.empty()) pending_call_names.erase(pending_call_names.begin());
             result += format_tool_response_for_prompt(fn, msg.content, true);
+            previous_message_type = Gemma4MessageType::TOOL_RESPONSE;
+
+            bool more_tool_responses = i + 1 < messages.size()
+                                    && messages[i + 1].role == "tool";
+            std::string next_role = next_non_tool_role(i);
+            bool continues_into_assistant = previous_non_tool_role == "assistant"
+                                         && next_role == "assistant";
+            if (!more_tool_responses && !continues_into_assistant && !next_role.empty()) {
+                close_model_turn();
+            }
         } else {
-            close_model_turn();
+            if (previous_message_type == Gemma4MessageType::TOOL_CALL) {
+                in_model_turn = false;
+            } else {
+                close_model_turn();
+            }
+            previous_message_type = Gemma4MessageType::NONE;
             result += "<|turn>" + role + "\n";
             for (const auto& image_path : msg.images) {
                 size_t n = compute_soft_tokens(image_path);
@@ -762,13 +803,16 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
                 result += "<audio|>";
             }
             result += "<turn|>\n";
+            previous_non_tool_role = msg.role;
         }
     }
 
     if (add_generation_prompt) {
-        if (!in_model_turn) result += "<|turn>model\n";
-    } else {
-        close_model_turn();
+        if (previous_message_type == Gemma4MessageType::TOOL_RESPONSE) {
+            if (enable_thinking_if_supported) result += "<|channel>thought\n";
+        } else if (previous_message_type != Gemma4MessageType::TOOL_CALL && !in_model_turn) {
+            result += "<|turn>model\n";
+        }
     }
 
     return result;

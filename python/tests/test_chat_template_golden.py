@@ -95,6 +95,19 @@ THINKING_CHAT = [
     {"role": "user", "content": "Briefly explain entropy."},
 ]
 
+CONSECUTIVE_ASSISTANT = [
+    {"role": "user", "content": "Give the answer in two parts."},
+    {"role": "assistant", "content": "Part one."},
+    {"role": "assistant", "content": "Part two."},
+]
+
+TOOL_RESPONSE_CONTINUATION = [
+    *TOOL_CALL_RESPONSE,
+    {"role": "assistant", "content": "The weather is sunny."},
+    {"role": "assistant", "content": "No rain is expected."},
+    {"role": "user", "content": "Thanks."},
+]
+
 CASES = [
     ("system_chat", SYSTEM_CHAT, None, False),
     ("tools_user", TOOLS_USER, TOOLS, False),
@@ -136,6 +149,23 @@ def _to_hf_messages(messages: list[dict], model_type: str) -> list[dict]:
 _LOADED: dict[str, tuple] = {}
 
 
+def _cached_snapshot(hf_id: str) -> Path | None:
+    from huggingface_hub.constants import HF_HUB_CACHE
+
+    repo_dir = Path(HF_HUB_CACHE) / f"models--{hf_id.replace('/', '--')}"
+    main_ref = repo_dir / "refs" / "main"
+    if main_ref.is_file():
+        snapshot = repo_dir / "snapshots" / main_ref.read_text(encoding="utf-8").strip()
+        if snapshot.is_dir():
+            return snapshot
+    snapshots = sorted(
+        (path for path in (repo_dir / "snapshots").glob("*") if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return snapshots[0] if snapshots else None
+
+
 @pytest.fixture(scope="session")
 def load_family():
     from cactus import cactus_destroy, cactus_init
@@ -148,8 +178,11 @@ def load_family():
             )
             if not _valid_bundle(bundle):
                 pytest.skip(f"bundle not prepared: {bundle}")
+            snapshot = _cached_snapshot(hf_id)
+            if snapshot is None:
+                pytest.skip(f"HF tokenizer not cached for {hf_id}")
             try:
-                tokenizer = transformers.AutoTokenizer.from_pretrained(hf_id, local_files_only=True)
+                tokenizer = transformers.AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
             except OSError as exc:
                 pytest.skip(f"HF tokenizer not cached for {hf_id}: {exc}")
             _LOADED[bundle_name] = (cactus_init(str(bundle)), tokenizer, _read_model_type(bundle))
@@ -184,6 +217,35 @@ def test_render_matches_hf_template(load_family, bundle_name, hf_id, case_name, 
     model, tokenizer, model_type = load_family(bundle_name, hf_id)
     if case_name.startswith("thinking") and not any(t in model_type for t in THINKING_TYPES):
         pytest.skip(f"{model_type} has no thinking template support")
+    engine_render = cactus_render_prompt(
+        model, messages, options={"enable_thinking_if_supported": thinking}, tools=tools
+    )
+    hf_render = tokenizer.apply_chat_template(
+        _to_hf_messages(messages, model_type),
+        tools=tools,
+        add_generation_prompt=True,
+        tokenize=False,
+        enable_thinking=thinking,
+    )
+    _assert_render_matches(model, tokenizer, engine_render, hf_render,
+                           f"{bundle_name}/{case_name}")
+
+
+@pytest.mark.parametrize(
+    ("case_name", "messages", "tools", "thinking"),
+    [
+        ("consecutive_assistant", CONSECUTIVE_ASSISTANT, None, False),
+        ("terminal_tool_response_thinking", TOOL_CALL_RESPONSE, TOOLS, True),
+        ("tool_response_continuation", TOOL_RESPONSE_CONTINUATION, TOOLS, False),
+    ],
+)
+def test_gemma4_agentic_render_matches_updated_template(
+    load_family, case_name, messages, tools, thinking
+):
+    from cactus import cactus_render_prompt
+
+    bundle_name, hf_id = FAMILIES[0]
+    model, tokenizer, model_type = load_family(bundle_name, hf_id)
     engine_render = cactus_render_prompt(
         model, messages, options={"enable_thinking_if_supported": thinking}, tools=tools
     )
