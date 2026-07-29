@@ -197,6 +197,13 @@ namespace {
             case OpType::MULTIPLY:
             case OpType::DIVIDE:
             case OpType::NOT_EQUAL:
+            case OpType::EQUAL:
+            case OpType::LESS:
+            case OpType::LESS_EQUAL:
+            case OpType::GREATER:
+            case OpType::GREATER_EQUAL:
+            case OpType::BITWISE_AND:
+            case OpType::BITWISE_OR:
                 return true;
             default:
                 return false;
@@ -241,7 +248,7 @@ namespace {
         GraphFile::NodeEntry node;
         node.index = read_u32(in);
         uint32_t op_type_val = read_u32(in);
-        if (op_type_val > static_cast<uint32_t>(OpType::CONV_CACHE_INITIALIZE)) {
+        if (op_type_val > static_cast<uint32_t>(OpType::EXPAND)) {
             throw std::runtime_error("Graph file corrupted: invalid op type");
         }
         node.op_type = static_cast<OpType>(op_type_val);

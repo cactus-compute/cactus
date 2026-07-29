@@ -39,6 +39,25 @@ size_t CactusGraph::subtract(size_t a, size_t b) { return binary_broadcast_op(Op
 size_t CactusGraph::multiply(size_t a, size_t b) { return binary_broadcast_op(OpType::MULTIPLY, a, b); }
 size_t CactusGraph::divide(size_t a, size_t b) { return binary_broadcast_op(OpType::DIVIDE, a, b); }
 size_t CactusGraph::not_equal(size_t a, size_t b) { return binary_broadcast_op(OpType::NOT_EQUAL, a, b); }
+size_t CactusGraph::equal(size_t a, size_t b) { return binary_broadcast_op(OpType::EQUAL, a, b); }
+size_t CactusGraph::less(size_t a, size_t b) { return binary_broadcast_op(OpType::LESS, a, b); }
+size_t CactusGraph::less_equal(size_t a, size_t b) { return binary_broadcast_op(OpType::LESS_EQUAL, a, b); }
+size_t CactusGraph::greater(size_t a, size_t b) { return binary_broadcast_op(OpType::GREATER, a, b); }
+size_t CactusGraph::greater_equal(size_t a, size_t b) { return binary_broadcast_op(OpType::GREATER_EQUAL, a, b); }
+size_t CactusGraph::bitwise_and(size_t a, size_t b) { return binary_broadcast_op(OpType::BITWISE_AND, a, b); }
+size_t CactusGraph::bitwise_or(size_t a, size_t b) { return binary_broadcast_op(OpType::BITWISE_OR, a, b); }
+
+size_t CactusGraph::where(size_t condition, size_t true_value, size_t false_value) {
+    BroadcastInfo cond_true = BroadcastInfo::compute(
+        get_output_buffer(condition).shape,
+        get_output_buffer(true_value).shape);
+    BroadcastInfo all_inputs = BroadcastInfo::compute(
+        cond_true.output_shape,
+        get_output_buffer(false_value).shape);
+    OpParams params;
+    params.output_precision = get_output_buffer(true_value).precision;
+    return add_node(OpType::WHERE, {condition, true_value, false_value}, all_inputs.output_shape, params);
+}
 
 size_t CactusGraph::abs(size_t input) {
     const auto& input_buffer = get_output_buffer(input);
@@ -174,6 +193,29 @@ size_t CactusGraph::transposeN(size_t input, const std::vector<size_t>& permutat
 size_t CactusGraph::reshape(size_t input, const std::vector<size_t>& new_shape) {
     OpParams params{.new_shape = new_shape};
     return add_node(OpType::RESHAPE, {input}, new_shape, params);
+}
+
+size_t CactusGraph::expand(size_t input, const std::vector<size_t>& new_shape) {
+    const auto& input_buffer = get_output_buffer(input);
+    const auto& input_shape = input_buffer.shape;
+    if (new_shape.size() < input_shape.size()) {
+        throw std::runtime_error("expand target rank must be >= input rank");
+    }
+
+    const size_t offset = new_shape.size() - input_shape.size();
+    for (size_t i = 0; i < new_shape.size(); ++i) {
+        size_t input_dim = i < offset ? 1 : input_shape[i - offset];
+        size_t target_dim = new_shape[i];
+
+        if (input_dim != target_dim && input_dim != 1) {
+            throw std::runtime_error("expand target shape is not broadcast-compatible");
+        }
+    }
+
+    OpParams params;
+    params.new_shape = new_shape;
+    params.output_precision = input_buffer.precision;
+    return add_node(OpType::EXPAND, {input}, new_shape, params);
 }
 
 size_t CactusGraph::index(size_t input, size_t index_value, int dim) {
@@ -620,6 +662,32 @@ size_t CactusGraph::conv1d(size_t input, size_t weight, size_t bias, size_t stri
     return add_node(OpType::CONV1D, {input, weight, bias}, {xin.shape[0], w.shape[0], L_out}, params);
 }
 
+size_t CactusGraph::conv1d_depthwise(size_t input, size_t weight, size_t stride) {
+    const auto& xin = get_output_buffer(input);
+    const auto& w = get_output_buffer(weight);
+    if (xin.shape.size() != 3) throw std::runtime_error("conv1d_depthwise expects N,C,L");
+    if (w.shape.size() != 3 || w.shape[1] != 1) throw std::runtime_error("conv1d_depthwise weight expects [C,1,K]");
+    if (w.shape[0] != xin.shape[1]) throw std::runtime_error("conv1d_depthwise channel mismatch");
+    size_t L_out = (xin.shape[2] - w.shape[2]) / stride + 1;
+    OpParams params{.output_precision = xin.precision, .stride = stride};
+    params.num_groups = xin.shape[1];
+    return add_node(OpType::CONV1D, {input, weight}, {xin.shape[0], w.shape[0], L_out}, params);
+}
+
+size_t CactusGraph::conv1d_depthwise(size_t input, size_t weight, size_t bias, size_t stride) {
+    const auto& b = get_output_buffer(bias);
+    const auto& w = get_output_buffer(weight);
+    if (b.total_size != w.shape[0]) throw std::runtime_error("conv1d_depthwise bias size mismatch");
+    const auto& xin = get_output_buffer(input);
+    if (xin.shape.size() != 3) throw std::runtime_error("conv1d_depthwise expects N,C,L");
+    if (w.shape.size() != 3 || w.shape[1] != 1) throw std::runtime_error("conv1d_depthwise weight expects [C,1,K]");
+    if (w.shape[0] != xin.shape[1]) throw std::runtime_error("conv1d_depthwise channel mismatch");
+    size_t L_out = (xin.shape[2] - w.shape[2]) / stride + 1;
+    OpParams params{.output_precision = xin.precision, .stride = stride};
+    params.num_groups = xin.shape[1];
+    return add_node(OpType::CONV1D, {input, weight, bias}, {xin.shape[0], w.shape[0], L_out}, params);
+}
+
 size_t CactusGraph::conv1d_same_depthwise_k9(size_t input, size_t weight) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);
@@ -1043,7 +1111,25 @@ size_t CactusGraph::scalar_add(size_t input, float value) { return scalar_val_op
 size_t CactusGraph::scalar_subtract(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_SUBTRACT, input, value); }
 size_t CactusGraph::scalar_multiply(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_MULTIPLY, input, value); }
 size_t CactusGraph::scalar_divide(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_DIVIDE, input, value); }
+size_t CactusGraph::scalar_floor_divide(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_FLOOR_DIVIDE, input, value); }
 size_t CactusGraph::scalar_not_equal(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_NOT_EQUAL, input, value); }
+size_t CactusGraph::scalar_equal(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_EQUAL, input, value); }
+size_t CactusGraph::scalar_less(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_LESS, input, value); }
+size_t CactusGraph::scalar_less_equal(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_LESS_EQUAL, input, value); }
+size_t CactusGraph::scalar_greater(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_GREATER, input, value); }
+size_t CactusGraph::scalar_greater_equal(size_t input, float value) { return scalar_val_op(*this, OpType::SCALAR_GREATER_EQUAL, input, value); }
+
+size_t CactusGraph::logical_not(size_t input) {
+    const auto& input_buffer = get_output_buffer(input);
+    OpParams params{.output_precision = input_buffer.precision};
+    return add_node(OpType::LOGICAL_NOT, {input}, input_buffer.shape, params);
+}
+
+size_t CactusGraph::bitwise_not(size_t input) {
+    const auto& input_buffer = get_output_buffer(input);
+    OpParams params{.output_precision = input_buffer.precision};
+    return add_node(OpType::BITWISE_NOT, {input}, input_buffer.shape, params);
+}
 
 size_t CactusGraph::scalar_exp(size_t input) {
     return add_node(OpType::SCALAR_EXP, {input}, {});
@@ -1063,6 +1149,55 @@ size_t CactusGraph::scalar_sin(size_t input) {
 
 size_t CactusGraph::scalar_log(size_t input) {
     return add_node(OpType::SCALAR_LOG, {input}, {});
+}
+
+size_t CactusGraph::unfold(size_t input, int dimension, size_t size, size_t step) {
+    const auto& input_buffer = get_output_buffer(input);
+    const auto& shape = input_buffer.shape;
+    if (shape.empty()) throw std::runtime_error("unfold requires a ranked input tensor");
+    if (step == 0) throw std::runtime_error("unfold step must be greater than zero");
+
+    int actual_dim = dimension;
+    if (actual_dim < 0) actual_dim += static_cast<int>(shape.size());
+    if (actual_dim < 0 || static_cast<size_t>(actual_dim) >= shape.size()) {
+        throw std::runtime_error("unfold dimension out of range");
+    }
+
+    const size_t axis = static_cast<size_t>(actual_dim);
+    if (size == 0 || size > shape[axis]) {
+        throw std::runtime_error("unfold size must be in range for the selected dimension");
+    }
+
+    std::vector<size_t> output_shape = shape;
+    output_shape[axis] = ((shape[axis] - size) / step) + 1;
+    output_shape.push_back(size);
+
+    OpParams params;
+    params.axis = actual_dim;
+    params.kernel_size = size;
+    params.stride = step;
+    params.output_precision = input_buffer.precision;
+    return add_node(OpType::UNFOLD, {input}, output_shape, params);
+}
+
+size_t CactusGraph::pad(size_t input, const std::vector<size_t>& pads, float value) {
+    const auto& input_buffer = get_output_buffer(input);
+    const auto& shape = input_buffer.shape;
+    if (shape.empty()) throw std::runtime_error("pad requires a ranked input tensor");
+    if (pads.size() % 2 != 0) throw std::runtime_error("pad requires left/right pad pairs");
+    if ((pads.size() / 2) > shape.size()) throw std::runtime_error("pad rank exceeds input rank");
+
+    std::vector<size_t> output_shape = shape;
+    for (size_t pair = 0; pair < pads.size(); pair += 2) {
+        size_t axis = shape.size() - 1 - (pair / 2);
+        output_shape[axis] += pads[pair] + pads[pair + 1];
+    }
+
+    OpParams params;
+    params.new_shape = pads;
+    params.scalar = value;
+    params.output_precision = input_buffer.precision;
+    return add_node(OpType::PAD, {input}, output_shape, params);
 }
 
 size_t CactusGraph::relu(size_t input) {
@@ -1125,7 +1260,7 @@ size_t CactusGraph::rope_gptj(size_t input, float theta, size_t position_offset,
     return add_node(OpType::ROPE_GPTJ, {input}, {}, params);
 }
 
-size_t CactusGraph::gather(size_t tensor, size_t indices) {
+size_t CactusGraph::gather(size_t tensor, size_t indices, int axis) {
     const auto& tensor_buffer = get_output_buffer(tensor);
     const auto& idx_shape = get_output_buffer(indices).shape;
 
@@ -1133,12 +1268,25 @@ size_t CactusGraph::gather(size_t tensor, size_t indices) {
         throw std::runtime_error("Cannot gather from scalar tensor");
     }
 
-    std::vector<size_t> output_shape = idx_shape;
-    for (size_t i = 1; i < tensor_buffer.shape.size(); i++) {
-        output_shape.push_back(tensor_buffer.shape[i]);
+    int actual_axis = axis;
+    if (actual_axis < 0) actual_axis += static_cast<int>(tensor_buffer.shape.size());
+    if (actual_axis < 0 || static_cast<size_t>(actual_axis) >= tensor_buffer.shape.size()) {
+        throw std::runtime_error("gather axis out of range");
+    }
+
+    std::vector<size_t> output_shape;
+
+    if (idx_shape.size() == tensor_buffer.shape.size()) {
+        output_shape = idx_shape;
+    } else {
+        output_shape = idx_shape;
+        for (size_t i = 1; i < tensor_buffer.shape.size(); i++) {
+            output_shape.push_back(tensor_buffer.shape[i]);
+        }
     }
 
     OpParams params;
+    params.axis = actual_axis;
     params.output_precision = tensor_buffer.precision;
 
     return add_node(OpType::GATHER, {tensor, indices}, output_shape, params);
@@ -1167,6 +1315,45 @@ size_t CactusGraph::slice(size_t input, int axis, size_t start, size_t length) {
     params.output_precision = input_buffer.precision;
 
     return add_node(OpType::SLICE, {input}, output_shape, params);
+}
+
+size_t CactusGraph::strided_slice(size_t input, int axis, size_t start, size_t length, size_t step) {
+    const auto& input_buffer = get_output_buffer(input);
+    if (input_buffer.shape.empty()) {
+        throw std::runtime_error("Cannot strided_slice a scalar tensor");
+    }
+    if (step == 0) {
+        throw std::runtime_error("strided_slice step must be greater than zero");
+    }
+
+    int actual_axis = axis;
+    if (actual_axis < 0) actual_axis += static_cast<int>(input_buffer.shape.size());
+    if (actual_axis < 0 || static_cast<size_t>(actual_axis) >= input_buffer.shape.size()) {
+        throw std::runtime_error("strided_slice axis out of range");
+    }
+
+    size_t axis_index = static_cast<size_t>(actual_axis);
+    size_t axis_size = input_buffer.shape[axis_index];
+
+    if (length == 0) {
+        length = start >= axis_size ? 0 : ((axis_size - start + step - 1) / step);
+    }
+
+    if (length > 0 && start + (length - 1) * step >= axis_size) {
+        throw std::runtime_error("strided_slice range extends beyond axis size");
+    }
+
+    std::vector<size_t> output_shape = input_buffer.shape;
+    output_shape[axis_index] = length;
+
+    OpParams params;
+    params.axis = actual_axis;
+    params.slice_start = start;
+    params.slice_length = length;
+    params.stride = step;
+    params.output_precision = input_buffer.precision;
+
+    return add_node(OpType::STRIDED_SLICE, {input}, output_shape, params);
 }
 
 size_t CactusGraph::embedding(size_t embedding_tensor, size_t indices) {

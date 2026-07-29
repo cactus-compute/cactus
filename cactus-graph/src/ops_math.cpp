@@ -99,6 +99,33 @@ void dispatch_binary_op_f16(OpType op, const __fp16* lhs, const __fp16* rhs, __f
                     }
                 });
             break;
+        case OpType::EQUAL:
+        case OpType::LESS:
+        case OpType::LESS_EQUAL:
+        case OpType::GREATER:
+        case OpType::GREATER_EQUAL:
+        case OpType::BITWISE_AND:
+        case OpType::BITWISE_OR:
+            CactusThreading::parallel_for(count, CactusThreading::Thresholds::ELEMENT_WISE,
+                [&](size_t start_idx, size_t end_idx) {
+                    for (size_t i = start_idx; i < end_idx; ++i) {
+                        float a = static_cast<float>(lhs[i]);
+                        float b = static_cast<float>(rhs[i]);
+                        bool result = false;
+                        switch (op) {
+                            case OpType::EQUAL: result = (a == b); break;
+                            case OpType::LESS: result = (a < b); break;
+                            case OpType::LESS_EQUAL: result = (a <= b); break;
+                            case OpType::GREATER: result = (a > b); break;
+                            case OpType::GREATER_EQUAL: result = (a >= b); break;
+                            case OpType::BITWISE_AND: result = (a != 0.0f && b != 0.0f); break;
+                            case OpType::BITWISE_OR: result = (a != 0.0f || b != 0.0f); break;
+                            default: break;
+                        }
+                        output[i] = static_cast<__fp16>(result ? 1.0f : 0.0f);
+                    }
+                });
+            break;
         default:
             break;
     }
@@ -117,6 +144,20 @@ static float apply_binary_op_f32(OpType op, float lhs, float rhs) {
             return lhs / rhs;
         case OpType::NOT_EQUAL:
             return lhs != rhs ? 1.0f : 0.0f;
+        case OpType::EQUAL:
+            return lhs == rhs ? 1.0f : 0.0f;
+        case OpType::LESS:
+            return lhs < rhs ? 1.0f : 0.0f;
+        case OpType::LESS_EQUAL:
+            return lhs <= rhs ? 1.0f : 0.0f;
+        case OpType::GREATER:
+            return lhs > rhs ? 1.0f : 0.0f;
+        case OpType::GREATER_EQUAL:
+            return lhs >= rhs ? 1.0f : 0.0f;
+        case OpType::BITWISE_AND:
+            return (lhs != 0.0f && rhs != 0.0f) ? 1.0f : 0.0f;
+        case OpType::BITWISE_OR:
+            return (lhs != 0.0f || rhs != 0.0f) ? 1.0f : 0.0f;
         default:
             return lhs;
     }
@@ -132,6 +173,16 @@ void dispatch_binary_op_f32(OpType op, const float* lhs, const float* rhs, float
 }
 
 void dispatch_unary_op_f16(OpType op, const __fp16* input, __fp16* output, size_t count, float param) {
+    if (op == OpType::SCALAR_FLOOR_DIVIDE) {
+        CactusThreading::parallel_for(count, CactusThreading::Thresholds::ELEMENT_WISE,
+            [&](size_t start_idx, size_t end_idx) {
+                for (size_t i = start_idx; i < end_idx; ++i) {
+                    output[i] = static_cast<__fp16>(std::floor(static_cast<float>(input[i]) / param));
+                }
+            });
+        return;
+    }
+
     ScalarOpType scalar_op;
     switch (op) {
         case OpType::SCALAR_ADD: scalar_op = ScalarOpType::ADD; break;
@@ -157,6 +208,7 @@ static float apply_scalar_op_f32(OpType op, float value, float param) {
         case OpType::SCALAR_SUBTRACT: return value - param;
         case OpType::SCALAR_MULTIPLY: return value * param;
         case OpType::SCALAR_DIVIDE: return value / param;
+        case OpType::SCALAR_FLOOR_DIVIDE: return std::floor(value / param);
         case OpType::SCALAR_EXP: return std::exp(value);
         case OpType::SCALAR_SQRT: return std::sqrt(value);
         case OpType::SCALAR_COS: return std::cos(value);
@@ -270,6 +322,35 @@ void compute_binary_op_node(GraphNode& node, const std::vector<std::unique_ptr<G
                     });
                 break;
             }
+            case OpType::EQUAL:
+            case OpType::LESS:
+            case OpType::LESS_EQUAL:
+            case OpType::GREATER:
+            case OpType::GREATER_EQUAL:
+            case OpType::BITWISE_AND:
+            case OpType::BITWISE_OR: {
+                const __fp16* lhs_data = lhs.data_as<__fp16>();
+                const __fp16* rhs_data = rhs.data_as<__fp16>();
+                __fp16* out_data = node.output_buffer.data_as<__fp16>();
+                CactusThreading::parallel_for(total_elements, CactusThreading::Thresholds::ELEMENT_WISE,
+                    [&](size_t start_idx, size_t end_idx) {
+                        std::vector<size_t> coords(output_shape.size());
+                        size_t tmp = start_idx;
+                        for (int axis = static_cast<int>(output_shape.size()) - 1; axis >= 0; --axis) {
+                            coords[static_cast<size_t>(axis)] = tmp % output_shape[static_cast<size_t>(axis)];
+                            tmp /= output_shape[static_cast<size_t>(axis)];
+                        }
+                        for (size_t linear_idx = start_idx; linear_idx < end_idx; ++linear_idx) {
+                            size_t lhs_idx = broadcast_linear_index(coords, lhs_strides);
+                            size_t rhs_idx = broadcast_linear_index(coords, rhs_strides);
+                            float a = static_cast<float>(lhs_data[lhs_idx]);
+                            float b = static_cast<float>(rhs_data[rhs_idx]);
+                            out_data[linear_idx] = static_cast<__fp16>(apply_binary_op_f32(node.op_type, a, b));
+                            increment_broadcast_coords(coords, output_shape);
+                        }
+                    });
+                break;
+            }
             default: break;
         }
     } else {
@@ -292,7 +373,14 @@ void compute_unary_op_node(GraphNode& node, const std::vector<std::unique_ptr<Gr
         throw std::runtime_error("Scalar operations only support FP16/FP32 precision");
     }
 
-    if (node.op_type == OpType::SCALAR_NOT_EQUAL) {
+    if (node.op_type == OpType::SCALAR_NOT_EQUAL ||
+        node.op_type == OpType::SCALAR_EQUAL ||
+        node.op_type == OpType::SCALAR_LESS ||
+        node.op_type == OpType::SCALAR_LESS_EQUAL ||
+        node.op_type == OpType::SCALAR_GREATER ||
+        node.op_type == OpType::SCALAR_GREATER_EQUAL ||
+        node.op_type == OpType::LOGICAL_NOT ||
+        node.op_type == OpType::BITWISE_NOT) {
         const float scalar = node.params.scalar;
         if (input.precision == Precision::FP16) {
             const __fp16* input_data = input.data_as<__fp16>();
@@ -300,8 +388,22 @@ void compute_unary_op_node(GraphNode& node, const std::vector<std::unique_ptr<Gr
             CactusThreading::parallel_for(node.output_buffer.total_size, CactusThreading::Thresholds::ELEMENT_WISE,
                 [&](size_t start_idx, size_t end_idx) {
                     for (size_t i = start_idx; i < end_idx; ++i) {
-                        output_data[i] = static_cast<__fp16>(
-                            static_cast<float>(input_data[i]) != scalar ? 1.0f : 0.0f);
+                        float value = static_cast<float>(input_data[i]);
+                        bool result = false;
+                        switch (node.op_type) {
+                            case OpType::SCALAR_NOT_EQUAL: result = value != scalar; break;
+                            case OpType::SCALAR_EQUAL: result = value == scalar; break;
+                            case OpType::SCALAR_LESS: result = value < scalar; break;
+                            case OpType::SCALAR_LESS_EQUAL: result = value <= scalar; break;
+                            case OpType::SCALAR_GREATER: result = value > scalar; break;
+                            case OpType::SCALAR_GREATER_EQUAL: result = value >= scalar; break;
+                            case OpType::LOGICAL_NOT:
+                            case OpType::BITWISE_NOT:
+                                result = value == 0.0f;
+                                break;
+                            default: break;
+                        }
+                        output_data[i] = static_cast<__fp16>(result ? 1.0f : 0.0f);
                     }
                 });
         } else {
@@ -310,7 +412,22 @@ void compute_unary_op_node(GraphNode& node, const std::vector<std::unique_ptr<Gr
             CactusThreading::parallel_for(node.output_buffer.total_size, CactusThreading::Thresholds::ELEMENT_WISE,
                 [&](size_t start_idx, size_t end_idx) {
                     for (size_t i = start_idx; i < end_idx; ++i) {
-                        output_data[i] = input_data[i] != scalar ? 1.0f : 0.0f;
+                        float value = input_data[i];
+                        bool result = false;
+                        switch (node.op_type) {
+                            case OpType::SCALAR_NOT_EQUAL: result = value != scalar; break;
+                            case OpType::SCALAR_EQUAL: result = value == scalar; break;
+                            case OpType::SCALAR_LESS: result = value < scalar; break;
+                            case OpType::SCALAR_LESS_EQUAL: result = value <= scalar; break;
+                            case OpType::SCALAR_GREATER: result = value > scalar; break;
+                            case OpType::SCALAR_GREATER_EQUAL: result = value >= scalar; break;
+                            case OpType::LOGICAL_NOT:
+                            case OpType::BITWISE_NOT:
+                                result = value == 0.0f;
+                                break;
+                            default: break;
+                        }
+                        output_data[i] = result ? 1.0f : 0.0f;
                     }
                 });
         }
@@ -326,6 +443,65 @@ void compute_unary_op_node(GraphNode& node, const std::vector<std::unique_ptr<Gr
                               node.output_buffer.data_as<float>(),
                               node.output_buffer.total_size, node.params.scalar);
     }
+}
+
+static float read_value_as_float(const BufferDesc& buffer, size_t index) {
+    if (buffer.precision == Precision::FP32) return buffer.data_as<float>()[index];
+    if (buffer.precision == Precision::FP16) return static_cast<float>(buffer.data_as<__fp16>()[index]);
+    if (buffer.precision == Precision::INT8) return static_cast<float>(buffer.data_as<int8_t>()[index]);
+    throw std::runtime_error("where only supports FP32/FP16/INT8 condition data");
+}
+
+static void write_float_value(BufferDesc& buffer, size_t index, float value) {
+    if (buffer.precision == Precision::FP32) {
+        buffer.data_as<float>()[index] = value;
+        return;
+    }
+    if (buffer.precision == Precision::FP16) {
+        buffer.data_as<__fp16>()[index] = static_cast<__fp16>(value);
+        return;
+    }
+    if (buffer.precision == Precision::INT8) {
+        buffer.data_as<int8_t>()[index] = static_cast<int8_t>(value);
+        return;
+    }
+    throw std::runtime_error("where only supports FP32/FP16/INT8 output data");
+}
+
+void compute_where_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& condition = get_input(node, 0, nodes, node_index_map);
+    const auto& true_value = get_input(node, 1, nodes, node_index_map);
+    const auto& false_value = get_input(node, 2, nodes, node_index_map);
+
+    if (true_value.precision != false_value.precision) {
+        throw std::runtime_error("where true/false branches must have matching precision");
+    }
+
+    const auto& output_shape = node.output_buffer.shape;
+    size_t total_elements = node.output_buffer.total_size;
+    std::vector<size_t> condition_strides = compute_strides(condition.shape, output_shape);
+    std::vector<size_t> true_strides = compute_strides(true_value.shape, output_shape);
+    std::vector<size_t> false_strides = compute_strides(false_value.shape, output_shape);
+
+    CactusThreading::parallel_for(total_elements, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t start_idx, size_t end_idx) {
+            std::vector<size_t> coords(output_shape.size());
+            size_t tmp = start_idx;
+            for (int axis = static_cast<int>(output_shape.size()) - 1; axis >= 0; --axis) {
+                coords[static_cast<size_t>(axis)] = tmp % output_shape[static_cast<size_t>(axis)];
+                tmp /= output_shape[static_cast<size_t>(axis)];
+            }
+            for (size_t linear_idx = start_idx; linear_idx < end_idx; ++linear_idx) {
+                size_t cond_idx = broadcast_linear_index(coords, condition_strides);
+                size_t true_idx = broadcast_linear_index(coords, true_strides);
+                size_t false_idx = broadcast_linear_index(coords, false_strides);
+                float selected = read_value_as_float(condition, cond_idx) != 0.0f
+                    ? read_value_as_float(true_value, true_idx)
+                    : read_value_as_float(false_value, false_idx);
+                write_float_value(node.output_buffer, linear_idx, selected);
+                increment_broadcast_coords(coords, output_shape);
+            }
+        });
 }
 
 void compute_activation_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {

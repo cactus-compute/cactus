@@ -281,6 +281,97 @@ int cactus_graph_not_equal(cactus_graph_t graph, cactus_node_t a, cactus_node_t 
     }
 }
 
+CACTUS_FFI_EXPORT int cactus_graph_equal(cactus_graph_t graph, cactus_node_t a, cactus_node_t b, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_equal");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.equal(static_cast<size_t>(a), static_cast<size_t>(b)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_less(cactus_graph_t graph, cactus_node_t a, cactus_node_t b, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_less");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.less(static_cast<size_t>(a), static_cast<size_t>(b)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_less_equal(cactus_graph_t graph, cactus_node_t a, cactus_node_t b, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_less_equal");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.less_equal(static_cast<size_t>(a), static_cast<size_t>(b)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_greater(cactus_graph_t graph, cactus_node_t a, cactus_node_t b, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_greater");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.greater(static_cast<size_t>(a), static_cast<size_t>(b)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_greater_equal(cactus_graph_t graph, cactus_node_t a, cactus_node_t b, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_greater_equal");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.greater_equal(static_cast<size_t>(a), static_cast<size_t>(b)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_bitwise_and(cactus_graph_t graph, cactus_node_t a, cactus_node_t b, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_bitwise_and");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.bitwise_and(static_cast<size_t>(a), static_cast<size_t>(b)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_bitwise_or(cactus_graph_t graph, cactus_node_t a, cactus_node_t b, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_bitwise_or");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.bitwise_or(static_cast<size_t>(a), static_cast<size_t>(b)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_where(cactus_graph_t graph, cactus_node_t condition, cactus_node_t true_value, cactus_node_t false_value, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_where");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.where(
+            static_cast<size_t>(condition),
+            static_cast<size_t>(true_value),
+            static_cast<size_t>(false_value)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_scalar_add(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t *out) {
     if (!graph || !out) {
         last_error_message = "Invalid args to cactus_graph_scalar_add";
@@ -334,6 +425,17 @@ int cactus_graph_scalar_divide(cactus_graph_t graph, cactus_node_t x, float valu
     }
 }
 
+CACTUS_FFI_EXPORT int cactus_graph_scalar_floor_divide(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t *out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_scalar_floor_divide");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.scalar_floor_divide(static_cast<size_t>(x), value));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_scalar_not_equal(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t *out) {
     if (!graph || !out) {
         last_error_message = "Invalid args to cactus_graph_scalar_not_equal";
@@ -341,6 +443,83 @@ int cactus_graph_scalar_not_equal(cactus_graph_t graph, cactus_node_t x, float v
     }
     try {
         *out = static_cast<cactus_node_t>(as_graph(graph)->graph.scalar_not_equal(static_cast<size_t>(x), value));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_scalar_equal(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t *out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_scalar_equal");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.scalar_equal(static_cast<size_t>(x), value));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_scalar_less(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t *out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_scalar_less");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.scalar_less(static_cast<size_t>(x), value));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_scalar_less_equal(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t *out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_scalar_less_equal");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.scalar_less_equal(static_cast<size_t>(x), value));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_scalar_greater(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t *out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_scalar_greater");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.scalar_greater(static_cast<size_t>(x), value));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_scalar_greater_equal(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t *out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_scalar_greater_equal");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.scalar_greater_equal(static_cast<size_t>(x), value));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_logical_not(cactus_graph_t graph, cactus_node_t x, cactus_node_t *out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_logical_not");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.logical_not(static_cast<size_t>(x)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_bitwise_not(cactus_graph_t graph, cactus_node_t x, cactus_node_t *out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_bitwise_not");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.bitwise_not(static_cast<size_t>(x)));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();
@@ -478,6 +657,18 @@ int cactus_graph_reshape(cactus_graph_t graph, cactus_node_t x, const size_t* sh
     }
 }
 
+CACTUS_FFI_EXPORT int cactus_graph_expand(cactus_graph_t graph, cactus_node_t x, const size_t* shape, size_t rank, cactus_node_t* out) {
+    if (!graph || !shape || rank == 0 || !out) return fail_invalid("Invalid args to cactus_graph_expand");
+    try {
+        std::vector<size_t> s(shape, shape + rank);
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.expand(static_cast<size_t>(x), s));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_transpose(cactus_graph_t graph, cactus_node_t x, int32_t backend, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_transpose");
     try {
@@ -512,10 +703,44 @@ int cactus_graph_slice(cactus_graph_t graph, cactus_node_t x, int32_t axis, size
     }
 }
 
+CACTUS_FFI_EXPORT int cactus_graph_strided_slice(cactus_graph_t graph, cactus_node_t x, int32_t axis, size_t start, size_t length, size_t step, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_strided_slice");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.strided_slice(static_cast<size_t>(x), axis, start, length, step));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_index(cactus_graph_t graph, cactus_node_t x, size_t index_value, int32_t dim, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_index");
     try {
         *out = static_cast<cactus_node_t>(as_graph(graph)->graph.index(static_cast<size_t>(x), index_value, dim));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_unfold(cactus_graph_t graph, cactus_node_t x, int32_t dimension, size_t size, size_t step, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_unfold");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.unfold(static_cast<size_t>(x), dimension, size, step));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_pad(cactus_graph_t graph, cactus_node_t x, const size_t* pads, size_t pad_count, float value, cactus_node_t* out) {
+    if (!graph || !pads || !out) return fail_invalid("Invalid args to cactus_graph_pad");
+    try {
+        std::vector<size_t> pad_values(pads, pads + pad_count);
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.pad(static_cast<size_t>(x), pad_values, value));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();
@@ -637,6 +862,17 @@ int cactus_graph_gather(cactus_graph_t graph, cactus_node_t tensor, cactus_node_
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_gather");
     try {
         *out = static_cast<cactus_node_t>(as_graph(graph)->graph.gather(static_cast<size_t>(tensor), static_cast<size_t>(indices)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_gather_dim(cactus_graph_t graph, cactus_node_t tensor, cactus_node_t indices, int32_t axis, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_gather_dim");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.gather(static_cast<size_t>(tensor), static_cast<size_t>(indices), axis));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();
@@ -1164,6 +1400,21 @@ int cactus_graph_conv1d(cactus_graph_t graph, cactus_node_t input, cactus_node_t
             *out = static_cast<cactus_node_t>(as_graph(graph)->graph.conv1d(static_cast<size_t>(input), static_cast<size_t>(weight), static_cast<size_t>(bias), stride));
         } else {
             *out = static_cast<cactus_node_t>(as_graph(graph)->graph.conv1d(static_cast<size_t>(input), static_cast<size_t>(weight), stride));
+        }
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_conv1d_depthwise(cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, size_t stride, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_conv1d_depthwise");
+    try {
+        if (has_bias) {
+            *out = static_cast<cactus_node_t>(as_graph(graph)->graph.conv1d_depthwise(static_cast<size_t>(input), static_cast<size_t>(weight), static_cast<size_t>(bias), stride));
+        } else {
+            *out = static_cast<cactus_node_t>(as_graph(graph)->graph.conv1d_depthwise(static_cast<size_t>(input), static_cast<size_t>(weight), stride));
         }
         return 0;
     } catch (const std::exception& e) {

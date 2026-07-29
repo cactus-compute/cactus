@@ -118,7 +118,27 @@ enum class OpType {
     SCALAR_NOT_EQUAL,
     RECURRENT_CACHE_STATE,
     RECURRENT_CACHE_WRITE,
-    CONV_CACHE_INITIALIZE
+    CONV_CACHE_INITIALIZE,
+    EQUAL,
+    LESS,
+    LESS_EQUAL,
+    GREATER,
+    GREATER_EQUAL,
+    SCALAR_EQUAL,
+    SCALAR_LESS,
+    SCALAR_LESS_EQUAL,
+    SCALAR_GREATER,
+    SCALAR_GREATER_EQUAL,
+    LOGICAL_NOT,
+    BITWISE_AND,
+    BITWISE_OR,
+    BITWISE_NOT,
+    WHERE,
+    UNFOLD,
+    PAD,
+    SCALAR_FLOOR_DIVIDE,
+    STRIDED_SLICE,
+    EXPAND
 };
 
 struct PrecisionTraits {
@@ -481,18 +501,34 @@ public:
     size_t multiply(size_t input1, size_t input2);
     size_t divide(size_t input1, size_t input2);
     size_t not_equal(size_t input1, size_t input2);
+    size_t equal(size_t input1, size_t input2);
+    size_t less(size_t input1, size_t input2);
+    size_t less_equal(size_t input1, size_t input2);
+    size_t greater(size_t input1, size_t input2);
+    size_t greater_equal(size_t input1, size_t input2);
+    size_t bitwise_and(size_t input1, size_t input2);
+    size_t bitwise_or(size_t input1, size_t input2);
+    size_t where(size_t condition, size_t true_value, size_t false_value);
 
 
     size_t scalar_add(size_t input, float value);
     size_t scalar_subtract(size_t input, float value);
     size_t scalar_multiply(size_t input, float value);
     size_t scalar_divide(size_t input, float value);
+    size_t scalar_floor_divide(size_t input, float value);
     size_t scalar_not_equal(size_t input, float value);
+    size_t scalar_equal(size_t input, float value);
+    size_t scalar_less(size_t input, float value);
+    size_t scalar_less_equal(size_t input, float value);
+    size_t scalar_greater(size_t input, float value);
+    size_t scalar_greater_equal(size_t input, float value);
     size_t scalar_exp(size_t input);
     size_t scalar_sqrt(size_t input);
     size_t scalar_cos(size_t input);
     size_t scalar_sin(size_t input);
     size_t scalar_log(size_t input);
+    size_t logical_not(size_t input);
+    size_t bitwise_not(size_t input);
 
     size_t abs(size_t input);
     size_t pow(size_t input, float exponent);
@@ -520,11 +556,15 @@ public:
 
     size_t reshape(size_t input, const std::vector<size_t>& new_shape);
     size_t view(size_t input, const std::vector<size_t>& new_shape);
+    size_t expand(size_t input, const std::vector<size_t>& new_shape);
     size_t flatten(size_t input, int start_dim = 0, int end_dim = -1);
     size_t transpose(size_t input, ComputeBackend backend = ComputeBackend::CPU);
     size_t transposeN(size_t input, const std::vector<size_t>& permutation, ComputeBackend backend = ComputeBackend::CPU);
     size_t slice(size_t input, int axis, size_t start, size_t length);
+    size_t strided_slice(size_t input, int axis, size_t start, size_t length, size_t step);
     size_t index(size_t input, size_t index_value, int dim);
+    size_t unfold(size_t input, int dimension, size_t size, size_t step);
+    size_t pad(size_t input, const std::vector<size_t>& pads, float value = 0.0f);
     size_t concat(size_t input1, size_t input2, int axis = 0);
     size_t cat(const std::vector<size_t>& inputs, int axis);
 
@@ -603,6 +643,8 @@ public:
     size_t conv1d_k7s3(size_t input, size_t weight, size_t bias);
     size_t conv1d(size_t input, size_t weight, size_t stride);
     size_t conv1d(size_t input, size_t weight, size_t bias, size_t stride);
+    size_t conv1d_depthwise(size_t input, size_t weight, size_t stride = 1);
+    size_t conv1d_depthwise(size_t input, size_t weight, size_t bias, size_t stride);
     size_t conv1d_same_depthwise_k9(size_t input, size_t weight);
     size_t conv1d_same_depthwise_k9(size_t input, size_t weight, size_t bias);
     size_t conv1d_pointwise(size_t input, size_t weight);
@@ -685,7 +727,7 @@ public:
         size_t top_k, const std::unordered_map<uint32_t, float>& logit_bias = {});
     size_t scatter_topk(size_t indices, size_t values, size_t num_classes);
 
-    size_t gather(size_t embeddings, size_t indices);
+    size_t gather(size_t tensor, size_t indices, int axis = 0);
     size_t embedding(const std::string& filename, size_t indices);
     size_t embedding(size_t embedding_tensor, size_t indices);
     size_t mmap_embeddings(const std::string& filename);
@@ -895,17 +937,41 @@ CACTUS_FFI_EXPORT int cactus_graph_divide(cactus_graph_t graph, cactus_node_t
 a, cactus_node_t b, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_not_equal(cactus_graph_t graph, cactus_node_t
 a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_equal(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_less(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_less_equal(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_greater(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_greater_equal(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_bitwise_and(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_bitwise_or(cactus_graph_t graph, cactus_node_t
+a, cactus_node_t b, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_where(cactus_graph_t graph, cactus_node_t
+condition, cactus_node_t true_value, cactus_node_t false_value, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_scalar_add(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_subtract(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_multiply(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_divide(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_floor_divide(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_not_equal(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_equal(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_less(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_less_equal(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_greater(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_scalar_greater_equal(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_exp(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_sqrt(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_cos(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_sin(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_log(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_logical_not(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_bitwise_not(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_abs(cactus_graph_t graph, cactus_node_t x,
 cactus_node_t* out);
@@ -920,14 +986,22 @@ CACTUS_FFI_EXPORT int cactus_graph_flatten(
 cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_reshape(
     cactus_graph_t graph, cactus_node_t x, const size_t* shape, size_t rank, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_expand(
+    cactus_graph_t graph, cactus_node_t x, const size_t* shape, size_t rank, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_transpose(
     cactus_graph_t graph, cactus_node_t x, int32_t backend, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_transpose_n(
     cactus_graph_t graph, cactus_node_t x, const size_t* permutation, size_t rank, int32_t backend, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_slice(
     cactus_graph_t graph, cactus_node_t x, int32_t axis, size_t start, size_t length, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_strided_slice(
+    cactus_graph_t graph, cactus_node_t x, int32_t axis, size_t start, size_t length, size_t step, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_index(
     cactus_graph_t graph, cactus_node_t x, size_t index_value, int32_t dim, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_unfold(
+    cactus_graph_t graph, cactus_node_t x, int32_t dimension, size_t size, size_t step, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_pad(
+    cactus_graph_t graph, cactus_node_t x, const size_t* pads, size_t pad_count, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_sum(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_mean(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_variance(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
@@ -946,6 +1020,8 @@ CACTUS_FFI_EXPORT int cactus_graph_matmul(
     cactus_graph_t graph, cactus_node_t a, cactus_node_t b, bool pretransposed_rhs, int32_t backend, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_gather(
     cactus_graph_t graph, cactus_node_t tensor, cactus_node_t indices, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_gather_dim(
+    cactus_graph_t graph, cactus_node_t tensor, cactus_node_t indices, int32_t axis, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_embedding_from_tensor(
     cactus_graph_t graph, cactus_node_t embedding_tensor, cactus_node_t indices, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_embedding_from_file(
@@ -1042,6 +1118,8 @@ CACTUS_FFI_EXPORT int cactus_graph_conv1d_k3(
 CACTUS_FFI_EXPORT int cactus_graph_conv1d_k7s3(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, cactus_node_t bias, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_conv1d(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, size_t stride, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv1d_depthwise(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, size_t stride, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_conv1d_same_depthwise_k9(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);

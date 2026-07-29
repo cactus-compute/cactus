@@ -714,5 +714,72 @@ class TestGraphSaveLoad(unittest.TestCase):
             np.testing.assert_allclose(out, expected, atol=1e-2)
 
 
+class TestGraphConvCache(unittest.TestCase):
+
+    def test_conv1d_causal_matches_pytorch_depthwise_layout(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch is required for PyTorch numerical reference")
+
+        batch_size = 1
+        hidden_dim = 4
+        sequence_length = 5
+        kernel_size = 3
+
+        x_bhs = torch.arange(batch_size * hidden_dim * sequence_length, dtype=torch.float32).reshape(
+            batch_size,
+            hidden_dim,
+            sequence_length,
+        ) / 10.0
+        weight = torch.arange(hidden_dim * kernel_size, dtype=torch.float32).reshape(hidden_dim, 1, kernel_size) / 20.0
+        expected = torch.nn.functional.conv1d(
+            torch.nn.functional.pad(x_bhs, (kernel_size - 1, 0)),
+            weight,
+            groups=hidden_dim,
+        )
+
+        g = Graph()
+        x = g.input((batch_size, sequence_length, hidden_dim))
+        w = g.input((hidden_dim, 1, kernel_size))
+        y = g.conv1d_causal(x, w, kernel_size, 1)
+
+        g.set_input(x, x_bhs.permute(0, 2, 1).numpy().astype(np.float16))
+        g.set_input(w, weight.numpy().astype(np.float16))
+        g.execute()
+
+        np.testing.assert_allclose(
+            y.numpy(),
+            expected.permute(0, 2, 1).numpy().astype(np.float16),
+            atol=3e-2,
+        )
+
+    def test_conv_cache_initialize_then_append_matches_shifted_pytorch_window(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch is required for PyTorch numerical reference")
+
+        window_size = 3
+        hidden_dim = 4
+        rows = torch.arange(window_size * hidden_dim, dtype=torch.float32).reshape(window_size, hidden_dim)
+        new_row = torch.tensor([[100.0, 101.0, 102.0, 103.0]], dtype=torch.float32)
+        expected = torch.cat((rows[1:], new_row), dim=0)
+
+        g = Graph()
+        rows_input = g.input((window_size, hidden_dim))
+        new_input = g.input((1, hidden_dim))
+        cache_state = g.conv_cache_state(window_size, hidden_dim)
+        initialized = g.conv_cache_initialize(rows_input, cache_state)
+        window = g.conv_cache_append(new_input, cache_state)
+
+        g.set_input(rows_input, rows.numpy().astype(np.float16))
+        g.set_input(new_input, new_row.numpy().astype(np.float16))
+        g.execute()
+
+        self.assertEqual(initialized.numpy().shape, (0,))
+        np.testing.assert_allclose(window.numpy(), expected.numpy().astype(np.float16), atol=1e-2)
+
+
 if __name__ == "__main__":
     unittest.main()

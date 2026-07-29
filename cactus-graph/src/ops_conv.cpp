@@ -234,6 +234,29 @@ void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         throw std::runtime_error("Conv1d only supports FP16/INT8 weights");
     }
 
+    if (node.params.num_groups == C_in && C_out == C_in && W.shape[1] == 1) {
+        __fp16* output = Y.data_as<__fp16>();
+        const __fp16* input = X.data_as<__fp16>();
+        const size_t L_out = Y.shape[2];
+
+        for (size_t n = 0; n < N; ++n) {
+            for (size_t c = 0; c < C_in; ++c) {
+                for (size_t t = 0; t < L_out; ++t) {
+                    float acc = bias_ptr ? static_cast<float>(bias_ptr[c]) : 0.0f;
+
+                    for (size_t k = 0; k < K; ++k) {
+                        size_t input_idx = (n * C_in + c) * L + t * stride + k;
+                        size_t weight_idx = c * K + k;
+                        acc += static_cast<float>(input[input_idx]) * static_cast<float>(W_ptr[weight_idx]);
+                    }
+
+                    output[(n * C_out + c) * L_out + t] = static_cast<__fp16>(acc);
+                }
+            }
+        }
+        return;
+    }
+
     cactus_conv1d_f16(X.data_as<__fp16>(), W_ptr, bias_ptr,
                       Y.data_as<__fp16>(), N, L, C_in, C_out, K, stride);
 }

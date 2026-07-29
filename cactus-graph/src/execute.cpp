@@ -20,6 +20,7 @@ using ComputeFn = void(*)(GraphNode&, const nodes_vector&, const node_index_map_
 
 DECLARE_COMPUTE(compute_binary_op_node);
 DECLARE_COMPUTE(compute_unary_op_node);
+DECLARE_COMPUTE(compute_where_node);
 DECLARE_COMPUTE(compute_activation_node);
 DECLARE_COMPUTE(compute_reduce_node);
 DECLARE_COMPUTE(compute_reshape_node);
@@ -64,6 +65,7 @@ DECLARE_COMPUTE(compute_embedding_node);
 DECLARE_COMPUTE(compute_concat_node);
 DECLARE_COMPUTE(compute_cat_node);
 DECLARE_COMPUTE(compute_index_node);
+DECLARE_COMPUTE(compute_unfold_node);
 DECLARE_COMPUTE(compute_bilinear_interpolation_node);
 DECLARE_COMPUTE(compute_sample_node);
 DECLARE_COMPUTE(compute_topk_node);
@@ -84,10 +86,13 @@ DECLARE_COMPUTE(compute_rfft_node);
 DECLARE_COMPUTE(compute_irfft_node);
 DECLARE_COMPUTE(compute_mel_filter_bank_node);
 DECLARE_COMPUTE(compute_spectrogram_node);
+DECLARE_COMPUTE(compute_pad_node);
+DECLARE_COMPUTE(compute_strided_slice_node);
+DECLARE_COMPUTE(compute_expand_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::CONV_CACHE_INITIALIZE) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::EXPAND) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -98,11 +103,27 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::MULTIPLY)] = compute_binary_op_node;
     dispatch_flat[static_cast<int>(OpType::DIVIDE)] = compute_binary_op_node;
     dispatch_flat[static_cast<int>(OpType::NOT_EQUAL)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::EQUAL)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::LESS)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::LESS_EQUAL)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::GREATER)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::GREATER_EQUAL)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::BITWISE_AND)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::BITWISE_OR)] = compute_binary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_ADD)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_SUBTRACT)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_MULTIPLY)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_DIVIDE)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_FLOOR_DIVIDE)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_NOT_EQUAL)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_EQUAL)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_LESS)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_LESS_EQUAL)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_GREATER)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_GREATER_EQUAL)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::LOGICAL_NOT)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::BITWISE_NOT)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::WHERE)] = compute_where_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_EXP)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_SQRT)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_COS)] = compute_unary_op_node;
@@ -127,6 +148,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::FLATTEN)] = compute_reshape_node;
     dispatch_flat[static_cast<int>(OpType::VIEW)] = compute_reshape_node;
     dispatch_flat[static_cast<int>(OpType::RESHAPE)] = compute_reshape_node;
+    dispatch_flat[static_cast<int>(OpType::EXPAND)] = compute_expand_node;
     dispatch_flat[static_cast<int>(OpType::PRECISION_CAST)] = compute_precision_cast_node;
     dispatch_flat[static_cast<int>(OpType::MATMUL)] = compute_matmul_node;
     dispatch_flat[static_cast<int>(OpType::RMS_NORM)] = compute_rms_norm_node;
@@ -153,10 +175,13 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::TRANSPOSE)] = compute_transpose_node;
     dispatch_flat[static_cast<int>(OpType::GATHER)] = compute_gather_node;
     dispatch_flat[static_cast<int>(OpType::SLICE)] = compute_slice_node;
+    dispatch_flat[static_cast<int>(OpType::STRIDED_SLICE)] = compute_strided_slice_node;
     dispatch_flat[static_cast<int>(OpType::EMBEDDING)] = compute_embedding_node;
     dispatch_flat[static_cast<int>(OpType::CONCAT)] = compute_concat_node;
     dispatch_flat[static_cast<int>(OpType::CAT)] = compute_cat_node;
     dispatch_flat[static_cast<int>(OpType::INDEX)] = compute_index_node;
+    dispatch_flat[static_cast<int>(OpType::UNFOLD)] = compute_unfold_node;
+    dispatch_flat[static_cast<int>(OpType::PAD)] = compute_pad_node;
     dispatch_flat[static_cast<int>(OpType::BILINEAR_INTERPOLATION)] = compute_bilinear_interpolation_node;
     dispatch_flat[static_cast<int>(OpType::SAMPLE)] = compute_sample_node;
     dispatch_flat[static_cast<int>(OpType::TOPK)] = compute_topk_node;
@@ -233,7 +258,27 @@ static const char* op_type_names[] = {
     "NOT_EQUAL", "SCALAR_NOT_EQUAL",
     "RECURRENT_CACHE_STATE",
     "RECURRENT_CACHE_WRITE",
-    "CONV_CACHE_INITIALIZE"
+    "CONV_CACHE_INITIALIZE",
+    "EQUAL",
+    "LESS",
+    "LESS_EQUAL",
+    "GREATER",
+    "GREATER_EQUAL",
+    "SCALAR_EQUAL",
+    "SCALAR_LESS",
+    "SCALAR_LESS_EQUAL",
+    "SCALAR_GREATER",
+    "SCALAR_GREATER_EQUAL",
+    "LOGICAL_NOT",
+    "BITWISE_AND",
+    "BITWISE_OR",
+    "BITWISE_NOT",
+    "WHERE",
+    "UNFOLD",
+    "PAD",
+    "SCALAR_FLOOR_DIVIDE",
+    "STRIDED_SLICE",
+    "EXPAND"
 };
 
 static const char* get_op_name(OpType op) {
@@ -320,7 +365,40 @@ std::vector<size_t> infer_output_shape(const GraphNode& node, const nodes_vector
         }
         case OpType::ADD: case OpType::ADD_CLIPPED: case OpType::SUBTRACT:
         case OpType::MULTIPLY: case OpType::DIVIDE: case OpType::NOT_EQUAL:
+        case OpType::EQUAL: case OpType::LESS: case OpType::LESS_EQUAL:
+        case OpType::GREATER: case OpType::GREATER_EQUAL:
+        case OpType::BITWISE_AND: case OpType::BITWISE_OR:
             return BroadcastInfo::compute(in(0), in(1)).output_shape;
+        case OpType::WHERE: {
+            auto first = BroadcastInfo::compute(in(0), in(1)).output_shape;
+            return BroadcastInfo::compute(first, in(2)).output_shape;
+        }
+        case OpType::EXPAND:
+            return node.params.new_shape;
+        case OpType::UNFOLD: {
+            std::vector<size_t> out = in(0);
+            size_t axis = node.params.axis < 0 ? out.size() + static_cast<size_t>(node.params.axis)
+                                               : static_cast<size_t>(node.params.axis);
+            out[axis] = ((out[axis] - node.params.kernel_size) / node.params.stride) + 1;
+            out.push_back(node.params.kernel_size);
+            return out;
+        }
+        case OpType::STRIDED_SLICE: {
+            std::vector<size_t> out = in(0);
+            size_t axis = node.params.axis < 0 ? out.size() + static_cast<size_t>(node.params.axis)
+                                               : static_cast<size_t>(node.params.axis);
+            out[axis] = node.params.slice_length;
+            return out;
+        }
+        case OpType::PAD: {
+            std::vector<size_t> out = in(0);
+            const auto& pads = node.params.new_shape;
+            for (size_t pair = 0; pair + 1 < pads.size(); pair += 2) {
+                size_t axis = out.size() - 1 - (pair / 2);
+                out[axis] += pads[pair] + pads[pair + 1];
+            }
+            return out;
+        }
         case OpType::ATTENTION: case OpType::ATTENTION_CACHED: case OpType::ATTENTION_INT8_HYBRID: {
             std::vector<size_t> out = in(0);
             if (node.params.v_head_dim > 0) out.back() = node.params.v_head_dim;
@@ -417,6 +495,9 @@ void CactusGraph::infer_shapes() {
         switch (node.op_type) {
             case OpType::ADD: case OpType::ADD_CLIPPED: case OpType::SUBTRACT:
             case OpType::MULTIPLY: case OpType::DIVIDE: case OpType::NOT_EQUAL:
+            case OpType::EQUAL: case OpType::LESS: case OpType::LESS_EQUAL:
+            case OpType::GREATER: case OpType::GREATER_EQUAL:
+            case OpType::BITWISE_AND: case OpType::BITWISE_OR:
                 node.params.broadcast_info = BroadcastInfo::compute(
                     get_input(node, 0, nodes_, node_index_map_).shape,
                     get_input(node, 1, nodes_, node_index_map_).shape);

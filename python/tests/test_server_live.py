@@ -42,7 +42,7 @@ def _require_bundle(relative: Path, types: set[str]) -> Path:
     if not _valid_bundle(candidate):
         pytest.fail(
             f"Live-test model is not a prepared v2 bundle: {relative}\n"
-            "Expected config.txt and components/manifest.json.\n"
+            "Expected config.txt and either components/manifest.json or runtime_plan.json.\n"
             f"Prepare it with `cactus download google/gemma-4-E2B-it` from {PROJECT_ROOT}."
         )
     model_type = _read_model_type(candidate)

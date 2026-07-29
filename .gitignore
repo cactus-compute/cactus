@@ -4,6 +4,9 @@
 *.dylib
 *.bin
 *.cg
+*.json
+*.cactus
+*.weights
 
 !cactus-engine/libs/curl/**/*.a
 !android/mbedtls/**/*.a
@@ -28,3 +31,5 @@ python/cactus/bin/
 python/cactus/bindings/lib/
 site/
 site_docs/
+
+TODO.md
