@@ -609,6 +609,41 @@ CONV_GRAPH = _graph(
     attr_captures=(M.AttrCapture("stride", "conv", "stride", default=1, required=False), M.AttrCapture("padding", "conv", "padding", default=0, required=False), M.AttrCapture("dilation", "conv", "dilation", default=1, required=False), M.AttrCapture("groups", "conv", "groups", default=1, required=False)),
 )
 
+LFM_SHORT_CONV_PREFILL_GRAPH = _graph(
+    "lfm_short_conv_prefill",
+    "slice",
+    ("conv", "slice"),
+    edge_names=E.EDGE_GROUPS["short_conv_prefill"],
+    inputs=(_input("x", "conv", 0), _input("weight", "conv", 1), _input("bias", "conv", 2, optional=True)),
+    attr_captures=(
+        M.AttrCapture("kernel_size", default=3, required=False),
+        M.AttrCapture("dilation", "conv", "dilation", default=1, required=False),
+        M.AttrCapture("causal", default=True, required=False),
+        M.AttrCapture("layout", default="batch_hidden_sequence", required=False),
+    ),
+    constraints={
+        "short_conv_prefill_structure": {"conv_node": "conv", "slice_node": "slice", "x_role": "x", "weight_role": "weight"},
+    },
+)
+
+LFM_SHORT_CONV_DECODE_GRAPH = _graph(
+    "lfm_short_conv_decode",
+    "sum",
+    ("multiply", "sum"),
+    edge_names=E.EDGE_GROUPS["short_conv_decode"],
+    inputs=(
+        _input("cache_window", "multiply", 0, allowed_value_kinds=(M.ValueKind.CACHE_OUTPUT, M.ValueKind.CACHE_STATE, M.ValueKind.ACTIVATION)),
+        _input("weight", "multiply", 1, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.ACTIVATION)),
+    ),
+    attr_captures=(
+        M.AttrCapture("window_size", default=3, required=False),
+        M.AttrCapture("layout", default="batch_hidden_sequence", required=False),
+    ),
+    constraints={
+        "short_conv_decode_structure": {"cache_window_role": "cache_window", "multiply_node": "multiply", "sum_node": "sum", "weight_role": "weight"},
+    },
+)
+
 CONV_BIAS_GRAPH = _graph(
     "conv_bias",
     "conv_bias_add",
@@ -623,12 +658,31 @@ KV_CACHE_APPEND_GRAPH = _graph(
     "kv_cache_append",
     ("kv_cache_append",),
     inputs=(
-        _input("new_kv", "kv_cache_append", 0),
-        _input("cache_state", "kv_cache_append", 1, allowed_value_kinds=(M.ValueKind.CACHE_INPUT, M.ValueKind.CACHE_STATE, M.ValueKind.CACHE_OUTPUT)),
+        _input("new_kv", "kv_cache_append", 1),
+        _input("cache_state", "kv_cache_append", 0, allowed_value_kinds=(M.ValueKind.CACHE_INPUT, M.ValueKind.CACHE_STATE, M.ValueKind.CACHE_OUTPUT)),
     ),
-    cache_inputs=(_cache_input("cache_state", "kv_cache_append", 1, tensor_role=M.CacheTensorRole.STATE),),
-    cache_outputs=(_cache_output("updated_cache_state", "kv_cache_append", tensor_role=M.CacheTensorRole.STATE),),
+    cache_inputs=(_cache_input("cache_state", "kv_cache_append", 0),),
+    cache_outputs=(_cache_output("updated_cache_state", "kv_cache_append"),),
     cache_mutations=(_cache_mutation("append_kv", read_roles=("cache_state",), write_roles=("updated_cache_state",)),),
+    constraints={
+        "cache_output_consumers": {"node": "kv_cache_append", "allow_output_child": True},
+    },
+)
+
+KV_CACHE_INITIAL_APPEND_GRAPH = _graph(
+    "kv_cache_initial_append",
+    "kv_cache_append",
+    ("kv_cache_append",),
+    inputs=(
+        _input("new_kv", "kv_cache_append", 1),
+        _input("empty_cache", "kv_cache_append", 0, metadata={"drop_after_fusion": True}),
+    ),
+    cache_outputs=(_cache_output("initialized_cache_state", "kv_cache_append"),),
+    cache_mutations=(_cache_mutation("initialize_append_kv", write_roles=("initialized_cache_state",)),),
+    constraints={
+        "empty_cache_initializer": {"empty_role": "empty_cache", "new_value_role": "new_kv", "output_node": "kv_cache_append"},
+        "cache_output_consumers": {"node": "kv_cache_append", "allow_output_child": True},
+    },
 )
 
 ATTENTION_CACHED_GRAPH = _graph(
@@ -894,11 +948,14 @@ CONV_CACHE_INITIALIZE_GRAPH = _graph(
     "conv_cache_initialize",
     ("conv_cache_initialize",),
     inputs=(
-        _input("rows", "conv_cache_initialize", 0),
-        _input("cache_state", "conv_cache_initialize", 1, allowed_value_kinds=(M.ValueKind.CACHE_INPUT, M.ValueKind.CACHE_STATE, M.ValueKind.CACHE_OUTPUT)),
+        _input("rows", "conv_cache_initialize", 1),
+        _input("empty_cache", "conv_cache_initialize", 0, metadata={"drop_after_fusion": True}),
     ),
-    cache_inputs=(_cache_input("cache_state", "conv_cache_initialize", 1, cache_kind=M.CacheKind.CONV, tensor_role=M.CacheTensorRole.STATE),),
     cache_outputs=(_cache_output("initialized_cache_state", "conv_cache_initialize", cache_kind=M.CacheKind.CONV, tensor_role=M.CacheTensorRole.STATE),),
+    cache_mutations=(_cache_mutation("initialize_conv_state", cache_kind=M.CacheKind.CONV, write_roles=("initialized_cache_state",)),),
+    constraints={
+        "conv_cache_initialize_structure": {"rows_role": "rows", "empty_role": "empty_cache", "output_node": "conv_cache_initialize"},
+    },
 )
 
 RECURRENT_CACHE_STATE_GRAPH = _graph(
@@ -984,8 +1041,11 @@ GRAPH_BY_NAME: dict[str, M.FusionGraph] = {
     "lfm_bmm_masked_attention": LFM_BMM_MASKED_ATTENTION_GRAPH,
     "rope": ROPE_GRAPH,
     "conv": CONV_GRAPH,
+    "lfm_short_conv_prefill": LFM_SHORT_CONV_PREFILL_GRAPH,
+    "lfm_short_conv_decode": LFM_SHORT_CONV_DECODE_GRAPH,
     "conv_bias": CONV_BIAS_GRAPH,
     "kv_cache_append": KV_CACHE_APPEND_GRAPH,
+    "kv_cache_initial_append": KV_CACHE_INITIAL_APPEND_GRAPH,
     "attention_cached": ATTENTION_CACHED_GRAPH,
     "moe_layer_gated": MOE_GATED_GRAPH,
     "lfm_grouped_moe": LFM_GROUPED_MOE_GRAPH,
@@ -1035,6 +1095,8 @@ FUSIONS: dict[str, M.FusionDefinition] = {
     "rope": _definition("rope", "rope", ROPE_GRAPH, fusion_fields=("generic", "rope", "gemma4_rope", "qwen2_5_rope")),
     "conv": _definition("conv", "conv1d", CONV_GRAPH, fusion_fields=("generic", "conv", "audio", "vision"), metadata=_required_attrs(padding=0, dilation=1, groups=1)),
     "conv_bias": _definition("conv_bias", "conv1d", CONV_BIAS_GRAPH, fusion_fields=("generic", "conv", "audio", "vision")),
+    "lfm_short_conv_prefill": _definition("lfm_short_conv_prefill", "conv1d_causal", LFM_SHORT_CONV_PREFILL_GRAPH, fusion_fields=("generic", "conv", "cache", "lfm_moe"), supported_inference_modes=("prefill_with_cache",)),
+    "lfm_short_conv_decode": _definition("lfm_short_conv_decode", "lfm_short_conv_decode", LFM_SHORT_CONV_DECODE_GRAPH, fusion_fields=("generic", "conv", "cache", "lfm_moe"), supported_inference_modes=("decode_with_cache",)),
     "conv1d_k3": _definition("conv1d_k3", "conv1d_k3", CONV_GRAPH, fusion_fields=("generic", "conv", "audio"), metadata=_required_attrs(kernel_size=3, stride=1, padding=0, dilation=1, groups=1)),
     "conv1d_k7s3": _definition("conv1d_k7s3", "conv1d_k7s3", CONV_BIAS_GRAPH, fusion_fields=("generic", "conv", "audio"), metadata=_required_attrs(kernel_size=7, stride=3)),
     "conv1d_causal": _definition("conv1d_causal", "conv1d_causal", CONV_GRAPH, fusion_fields=("generic", "conv", "cache"), metadata=_required_attrs(causal=True)),
@@ -1044,6 +1106,7 @@ FUSIONS: dict[str, M.FusionDefinition] = {
     "conv2d_depthwise_k3s2p1": _definition("conv2d_depthwise_k3s2p1", "conv2d_depthwise_k3s2p1", CONV_GRAPH, fusion_fields=("generic", "conv", "vision"), metadata=_required_attrs(kernel_size=3, stride=2, padding=1, depthwise=True)),
     "conv2d_pointwise_1x1": _definition("conv2d_pointwise_1x1", "conv2d_pointwise_1x1", CONV_GRAPH, fusion_fields=("generic", "conv", "vision"), metadata=_required_attrs(kernel_size=1)),
     "kv_cache_append": _definition("kv_cache_append", "kv_cache_append", KV_CACHE_APPEND_GRAPH, fusion_fields=("generic", "cache"), supported_inference_modes=("prefill_with_cache", "decode_with_cache")),
+    "kv_cache_initial_append": _definition("kv_cache_initial_append", "kv_cache_append", KV_CACHE_INITIAL_APPEND_GRAPH, fusion_fields=("generic", "cache"), supported_inference_modes=("prefill_with_cache",)),
     "attention_cached": _definition("attention_cached", "attention_cached", ATTENTION_CACHED_GRAPH, fusion_fields=("generic", "attention", "cache"), supported_inference_modes=("decode_with_cache",)),
     "moe_layer_gated": _definition("moe_layer_gated", "moe_layer_gated", MOE_GATED_GRAPH, fusion_fields=("generic", "moe")),
     "lfm_grouped_moe": _definition("lfm_grouped_moe", "moe_layer_gated", LFM_GROUPED_MOE_GRAPH, fusion_fields=("generic", "moe", "lfm_moe")),

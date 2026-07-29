@@ -122,6 +122,9 @@ EDGES: dict[str, M.FusionEdge] = {
     "rope_sin_mul_to_add": _edge("rope_sin_mul", "rope_add", 1),
     "rope_rotate_cat_to_sin_mul": _edge("rope_rotate_cat", "rope_sin_mul", 0),
     "conv_to_bias_add": _edge("conv", "conv_bias_add", 0),
+    "conv_to_slice": _edge("conv", "slice", 0),
+    "conv_cache_append_to_multiply": _edge("conv_cache_append", "multiply", 0),
+    "multiply_to_sum": _edge("multiply", "sum", 0),
     "lstm_gate_mm_to_add": _edge("lstm_gate_mm", "lstm_gate_add", 0),
     "lstm_recurrent_mm_to_add": _edge("lstm_recurrent_mm", "lstm_gate_add", 1),
     "lstm_add_to_sigmoid": _edge("lstm_gate_add", "lstm_sigmoid", 0),
@@ -304,6 +307,8 @@ EDGE_GROUPS: dict[str, tuple[str, ...]] = {
         "rope_sin_mul_to_add",
     ),
     "conv_bias": ("conv_to_bias_add",),
+    "short_conv_prefill": ("conv_to_slice",),
+    "short_conv_decode": ("multiply_to_sum",),
     "lstm_cell": (
         "lstm_gate_mm_to_add",
         "lstm_recurrent_mm_to_add",
