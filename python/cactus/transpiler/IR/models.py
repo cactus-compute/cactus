@@ -8,6 +8,22 @@ from ..Fusions import models as FModels
 
 
 @dataclass(slots=True)
+class CacheAnnotation:
+    kind: str
+    role: str
+    tensor_index: int | None = None
+    layer_index: int | None = None
+    shape: tuple[Any, ...] = ()
+    layout: str | None = None
+    sequence_length: int | None = None
+    window_size: int | None = None
+    hidden_dim: int | None = None
+    num_kv_heads: int | None = None
+    head_dim: int | None = None
+    source: str = "inferred"
+
+
+@dataclass(slots=True)
 class Node:
     index: int
     name: str
@@ -20,6 +36,8 @@ class Node:
     module_stack: Any | None
     value_kind: str
     attrs: dict[str, Any] = field(default_factory=dict)
+    ir_metadata: dict[str, Any] = field(default_factory=dict)
+    cache: CacheAnnotation | None = None
     parents: tuple["Node", ...] = field(default_factory=tuple, repr=False)
     children: tuple["Node", ...] = field(default_factory=tuple, repr=False)
 
@@ -53,6 +71,7 @@ class Graph:
     range_constants: str = ""
     input_specs: tuple[CModels.GraphSpecRecord, ...] = field(default_factory=tuple)
     output_specs: tuple[CModels.GraphSpecRecord, ...] = field(default_factory=tuple)
+    cache_annotations: tuple[CacheAnnotation, ...] = field(default_factory=tuple)
     fusions: list["FusionResult"] = field(default_factory=list)
 
     @classmethod
@@ -201,6 +220,8 @@ def generate_node(record: CModels.LayerRecord) -> Node:
         module_stack=record.module_stack,
         value_kind=infer_value_kind(record),
         attrs=extract_attrs(record),
+        ir_metadata=dict(record.ir_metadata),
+        cache=cache_annotation_from_metadata(record.ir_metadata),
     )
 
 
@@ -228,6 +249,7 @@ def generate_graph(cls: type[Graph], layer_map: CModels.LayerMap) -> Graph:
         node.parents = tuple(parent_lists[node.name])
         node.children = tuple(child_lists[node.name])
 
+    annotate_cache_nodes(nodes)
     sources = tuple(node for node in nodes if not node.parents)
     outputs = tuple(node for node in nodes if node.is_output)
 
@@ -246,6 +268,7 @@ def generate_graph(cls: type[Graph], layer_map: CModels.LayerMap) -> Graph:
         range_constants=layer_map.range_constants,
         input_specs=tuple(layer_map.input_specs),
         output_specs=tuple(layer_map.output_specs),
+        cache_annotations=cache_annotations_from_nodes(nodes),
     )
 
 
@@ -310,6 +333,9 @@ def sanitize_node_name(name: str) -> str:
 
 
 def fused_node_from_result(result: FusionResult, fused_name: str) -> Node:
+    cache = cache_annotation_from_fusion_result(result)
+    ir_metadata = fusion_result_metadata(result, cache)
+
     return Node(
         index=result.source.index,
         name=fused_name,
@@ -320,8 +346,10 @@ def fused_node_from_result(result: FusionResult, fused_name: str) -> Node:
         users=(),
         tensor_output_meta=result.source.tensor_output_meta,
         module_stack=result.source.module_stack,
-        value_kind=FModels.ValueKind.ACTIVATION,
+        value_kind=FModels.ValueKind.CACHE_OUTPUT if cache is not None else FModels.ValueKind.ACTIVATION,
         attrs=dict(result.attrs),
+        ir_metadata=ir_metadata,
+        cache=cache,
     )
 
 
@@ -364,6 +392,8 @@ def clone_rewritten_node(node: Node, replacement_names: dict[str, str]) -> Node:
         module_stack=node.module_stack,
         value_kind=node.value_kind,
         attrs=dict(node.attrs),
+        ir_metadata=dict(node.ir_metadata),
+        cache=node.cache,
     )
 
 
@@ -424,6 +454,7 @@ def rebuild_graph(nodes: tuple[Node, ...], original_graph: Graph, fusion_results
         range_constants=original_graph.range_constants,
         input_specs=original_graph.input_specs,
         output_specs=original_graph.output_specs,
+        cache_annotations=cache_annotations_from_nodes(nodes),
         fusions=list(fusion_results),
     )
 
@@ -466,6 +497,7 @@ def graph_to_layer_map(graph: Graph) -> CModels.LayerMap:
             users=[child.name for child in node.children],
             tensor_output_meta=node.tensor_output_meta,
             module_stack=node.module_stack,
+            ir_metadata=node_ir_metadata(node),
         )
         for index, node in enumerate(topological_sort(graph))
     ]
@@ -501,3 +533,274 @@ def topological_sort(graph: Graph) -> tuple[Node, ...]:
         raise ValueError("Cannot topologically sort graph with cycles or missing edges")
 
     return tuple(ordered)
+
+
+def annotate_cache_nodes(nodes: tuple[Node, ...]) -> None:
+    kv_count = 0
+    conv_count = 0
+
+    for node in nodes:
+        if node.cache is not None:
+            continue
+
+        tensor_index = past_key_value_index(node)
+
+        if tensor_index is None:
+            if node.target == "cache_position":
+                node.cache = CacheAnnotation(kind="position", role=FModels.CacheTensorRole.POSITION, source="placeholder_name")
+                node.ir_metadata["cache"] = cache_annotation_to_dict(node.cache)
+
+            continue
+
+        shape = tensor_shape(node)
+
+        if len(shape) == 4:
+            role = FModels.CacheTensorRole.KEY if kv_count % 2 == 0 else FModels.CacheTensorRole.VALUE
+            node.cache = CacheAnnotation(
+                kind=FModels.CacheKind.KV,
+                role=role,
+                tensor_index=tensor_index,
+                layer_index=cache_layer_index_from_node(node, kv_count // 2),
+                shape=tuple(shape),
+                layout="batch_heads_sequence_head_dim",
+                num_kv_heads=known_int(shape[1]),
+                sequence_length=known_int(shape[2]),
+                head_dim=known_int(shape[3]),
+                source="past_key_values_placeholder",
+            )
+            kv_count += 1
+        elif len(shape) == 3:
+            node.cache = CacheAnnotation(
+                kind=FModels.CacheKind.CONV,
+                role=FModels.CacheTensorRole.STATE,
+                tensor_index=tensor_index,
+                layer_index=cache_layer_index_from_node(node, conv_count),
+                shape=tuple(shape),
+                layout="batch_hidden_window",
+                hidden_dim=known_int(shape[1]),
+                window_size=known_int(shape[2]),
+                source="past_key_values_placeholder",
+            )
+            conv_count += 1
+
+        if node.cache is not None:
+            node.ir_metadata["cache"] = cache_annotation_to_dict(node.cache)
+
+
+def cache_annotation_from_metadata(metadata: dict[str, Any]) -> CacheAnnotation | None:
+    raw_cache = metadata.get("cache")
+
+    if not isinstance(raw_cache, dict):
+        return None
+
+    return CacheAnnotation(
+        kind=str(raw_cache.get("kind")),
+        role=str(raw_cache.get("role")),
+        tensor_index=optional_int(raw_cache.get("tensor_index")),
+        layer_index=optional_int(raw_cache.get("layer_index")),
+        shape=tuple(raw_cache.get("shape") or ()),
+        layout=optional_str(raw_cache.get("layout")),
+        sequence_length=optional_int(raw_cache.get("sequence_length")),
+        window_size=optional_int(raw_cache.get("window_size")),
+        hidden_dim=optional_int(raw_cache.get("hidden_dim")),
+        num_kv_heads=optional_int(raw_cache.get("num_kv_heads")),
+        head_dim=optional_int(raw_cache.get("head_dim")),
+        source=str(raw_cache.get("source", "metadata")),
+    )
+
+
+def cache_annotation_to_dict(annotation: CacheAnnotation) -> dict[str, Any]:
+    return {
+        "kind": annotation.kind,
+        "role": annotation.role,
+        "tensor_index": annotation.tensor_index,
+        "layer_index": annotation.layer_index,
+        "shape": list(annotation.shape),
+        "layout": annotation.layout,
+        "sequence_length": annotation.sequence_length,
+        "window_size": annotation.window_size,
+        "hidden_dim": annotation.hidden_dim,
+        "num_kv_heads": annotation.num_kv_heads,
+        "head_dim": annotation.head_dim,
+        "source": annotation.source,
+    }
+
+
+def cache_annotation_from_fusion_result(result: FusionResult) -> CacheAnnotation | None:
+    if not result.fusion.graph.cache_outputs:
+        return None
+
+    cache_output = result.fusion.graph.cache_outputs[0]
+    base = first_cache_input_annotation(result)
+    shape = tensor_shape(result.source)
+    kind = cache_output.cache_kind or (base.kind if base is not None else FModels.CacheKind.KV)
+    role = cache_output.tensor_role or (base.role if base is not None else FModels.CacheTensorRole.STATE)
+
+    return CacheAnnotation(
+        kind=kind,
+        role=role,
+        tensor_index=base.tensor_index if base is not None else None,
+        layer_index=base.layer_index if base is not None else infer_layer_index(result),
+        shape=tuple(shape),
+        layout=base.layout if base is not None else inferred_cache_layout(kind, shape),
+        sequence_length=known_int(shape[2]) if len(shape) == 4 else None,
+        window_size=cache_window_size(result, shape, base),
+        hidden_dim=cache_hidden_dim(result, shape, base),
+        num_kv_heads=known_int(shape[1]) if len(shape) == 4 else None,
+        head_dim=known_int(shape[3]) if len(shape) == 4 else None,
+        source=f"fusion:{result.fusion_name}",
+    )
+
+
+def first_cache_input_annotation(result: FusionResult) -> CacheAnnotation | None:
+    for node in result.external_inputs:
+        if node.cache is not None:
+            return node.cache
+
+    return None
+
+
+def infer_layer_index(result: FusionResult) -> int | None:
+    for node in result.matched_nodes:
+        layer_index = layer_index_from_text(f"{node.name} {node.target} {node.module_stack!r}")
+
+        if layer_index is not None:
+            return layer_index
+
+    return None
+
+
+def cache_layer_index_from_node(node: Node, default: int | None = None) -> int | None:
+    for candidate in (node, *node.children, *node.parents):
+        layer_index = layer_index_from_text(f"{candidate.name} {candidate.target} {candidate.module_stack!r}")
+
+        if layer_index is not None:
+            return layer_index
+
+    return default
+
+
+def layer_index_from_text(value: str) -> int | None:
+    parts = value.replace("/", ".").replace("_", ".").split(".")
+
+    for index, part in enumerate(parts[:-1]):
+        if part in {"layers", "layer", "blocks", "block", "h"} and parts[index + 1].isdigit():
+            return int(parts[index + 1])
+
+    return None
+
+
+def cache_window_size(result: FusionResult, shape: tuple[Any, ...], base: CacheAnnotation | None) -> int | None:
+    if "window_size" in result.attrs and result.attrs["window_size"] is not None:
+        return int(result.attrs["window_size"])
+
+    if base is not None and base.window_size is not None:
+        return base.window_size
+
+    if len(shape) == 3:
+        return known_int(shape[2])
+
+    return None
+
+
+def cache_hidden_dim(result: FusionResult, shape: tuple[Any, ...], base: CacheAnnotation | None) -> int | None:
+    if "hidden_dim" in result.attrs and result.attrs["hidden_dim"] is not None:
+        return int(result.attrs["hidden_dim"])
+
+    if base is not None and base.hidden_dim is not None:
+        return base.hidden_dim
+
+    if len(shape) == 3:
+        return known_int(shape[1])
+
+    return None
+
+
+def inferred_cache_layout(kind: str, shape: tuple[Any, ...]) -> str | None:
+    if kind == FModels.CacheKind.KV and len(shape) == 4:
+        return "batch_heads_sequence_head_dim"
+
+    if kind == FModels.CacheKind.CONV and len(shape) == 3:
+        return "batch_hidden_window"
+
+    return None
+
+
+def fusion_result_metadata(result: FusionResult, cache: CacheAnnotation | None) -> dict[str, Any]:
+    metadata = {
+        "fusion": {
+            "name": result.fusion_name,
+            "cactus_op": result.cactus_op,
+            "matched_nodes": [node.name for node in result.matched_nodes],
+        }
+    }
+
+    if cache is not None:
+        metadata["cache"] = cache_annotation_to_dict(cache)
+
+    return metadata
+
+
+def cache_annotations_from_nodes(nodes: tuple[Node, ...]) -> tuple[CacheAnnotation, ...]:
+    return tuple(node.cache for node in nodes if node.cache is not None)
+
+
+def node_ir_metadata(node: Node) -> dict[str, Any]:
+    metadata = dict(node.ir_metadata)
+
+    if node.cache is not None:
+        metadata["cache"] = cache_annotation_to_dict(node.cache)
+
+    return metadata
+
+
+def past_key_value_index(node: Node) -> int | None:
+    for value in (node.target, node.name):
+        prefix = "past_key_values_"
+
+        if isinstance(value, str) and value.startswith(prefix):
+            suffix = value[len(prefix):]
+
+            if suffix.isdigit():
+                return int(suffix)
+
+    return None
+
+
+def tensor_shape(node: Node) -> tuple[Any, ...]:
+    if not isinstance(node.tensor_output_meta, dict):
+        return ()
+
+    shape = node.tensor_output_meta.get("shape")
+
+    if isinstance(shape, list):
+        return tuple(shape)
+
+    if isinstance(shape, tuple):
+        return shape
+
+    return ()
+
+
+def known_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+
+    return None
+
+
+def optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+
+    return known_int(value)
+
+
+def optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    return str(value)

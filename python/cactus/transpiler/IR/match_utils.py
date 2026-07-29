@@ -274,6 +274,25 @@ def match_boundary_value(node: models.Node, allowed_value_kinds: tuple[str, ...]
     return all(match_tensor_constraint(constraint, node, {}) for constraint in tensor_constraints)
 
 
+def match_cache_boundary_value(node: models.Node, cache_input: FModels.CacheInput) -> bool:
+    if not match_boundary_value(node, (), cache_input.tensor_constraints):
+        return False
+
+    if node.cache is None:
+        return cache_input.optional
+
+    if node.cache.kind != cache_input.cache_kind:
+        return False
+
+    if cache_input.tensor_role is not None and node.cache.role != cache_input.tensor_role:
+        return False
+
+    if cache_input.layer_index is not None and node.cache.layer_index != cache_input.layer_index:
+        return False
+
+    return True
+
+
 def all_external_parents_declared(bindings: dict[str, models.Node], declared_input_ids: set[int]) -> bool:
     internal_ids = {id(node) for node in bindings.values()}
 

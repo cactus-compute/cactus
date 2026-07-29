@@ -154,7 +154,7 @@ def match_cache_inputs(node: models.Node, graph: models.Graph, fusion: FModels.F
 
             return False
 
-        if not match_utils.match_boundary_value(cache_node, ANY, cache_input.tensor_constraints):
+        if not match_utils.match_cache_boundary_value(cache_node, cache_input):
             return False
 
     return True

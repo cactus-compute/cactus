@@ -15,16 +15,32 @@ def simplify(
     input_modalities: tuple[str, ...] = (),
     fusion_fields: tuple[str, ...] = (),
     max_fusions: int | None = None,
+    max_passes: int = 3,
 ) -> CModels.LayerMap:
     graph = models.Graph.from_map(layer_map)
-    simplified_graph = rev_top_sort(
-        graph,
-        inference_mode=layer_map.task,
-        input_modalities=input_modalities,
-        fusion_fields=fusion_fields,
-        max_fusions=max_fusions,
-    )
-    return simplified_graph.to_layer_map()
+    total_fusions = 0
+
+    for _ in range(max_passes):
+        remaining_fusions = None if max_fusions is None else max_fusions - total_fusions
+
+        if remaining_fusions is not None and remaining_fusions <= 0:
+            break
+
+        simplified_graph = rev_top_sort(
+            graph,
+            inference_mode=layer_map.task,
+            input_modalities=input_modalities,
+            fusion_fields=fusion_fields,
+            max_fusions=remaining_fusions,
+        )
+
+        if not simplified_graph.fusions:
+            break
+
+        total_fusions += len(simplified_graph.fusions)
+        graph = simplified_graph
+
+    return graph.to_layer_map()
 
 
 def write_simplified_json(
@@ -34,12 +50,14 @@ def write_simplified_json(
     input_modalities: tuple[str, ...] = (),
     fusion_fields: tuple[str, ...] = (),
     max_fusions: int | None = None,
+    max_passes: int = 3,
 ) -> CModels.LayerMap:
     simplified = simplify(
         layer_map,
         input_modalities=input_modalities,
         fusion_fields=fusion_fields,
         max_fusions=max_fusions,
+        max_passes=max_passes,
     )
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,12 +129,19 @@ def try_match_from_node(
 
         result = fusion_result_from_bindings(fusion, node, bindings)
 
+        if is_noop_fusion(node, result):
+            continue
+
         if result.consumed_node_names.intersection(consumed_names):
             continue
 
         return result
 
     return None
+
+
+def is_noop_fusion(node: models.Node, result: models.FusionResult) -> bool:
+    return node.target == result.target and len(result.matched_nodes) == 1
 
 
 def bind_matching_fusion(
