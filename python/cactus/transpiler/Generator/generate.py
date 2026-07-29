@@ -175,6 +175,7 @@ def build_lowering_rules(
     add_rules(rules, constants.TO_COPY_TARGETS, lower_to_copy)
     add_rules(rules, constants.PASS_THROUGH_TARGETS, lower_pass_through)
     add_rules(rules, constants.COPY_TARGETS, lower_copy)
+    add_rules(rules, constants.PAD_TARGETS, lower_constant_pad_nd)
     add_rules(rules, constants.CONSTANT_INPUT_TARGETS, lower_constant_input)
     add_rules(rules, constants.NEG_TARGETS, lower_neg)
     add_rules(rules, constants.SOFTMAX_TARGETS, lower_softmax)
@@ -335,7 +336,8 @@ def lower_binary(context: models.GenerationContext, node: IRModels.Node) -> Any:
     method = constants.BINARY_TARGETS[node.target]
 
     if len(inputs) == 2:
-        return getattr(context.graph, method)(inputs[0], inputs[1])
+        left, right = align_binary_inputs(context, node, inputs)
+        return getattr(context.graph, method)(left, right)
 
     scalar = scalar_attr(node, "other")
 
@@ -355,6 +357,25 @@ def lower_scalar(context: models.GenerationContext, node: IRModels.Node) -> Any:
         raise UnsupportedLoweringError(f"{node.name}: scalar lowering {node.target} missing attr {attr_name}")
 
     return getattr(context.graph, method)(inputs[0], value)
+
+
+def align_binary_inputs(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> tuple[Any, Any]:
+    target_shape = output_shape(node)
+    left = align_input_to_shape(context, inputs[0], node.parents[0], target_shape)
+    right = align_input_to_shape(context, inputs[1], node.parents[1], target_shape)
+    return left, right
+
+
+def align_input_to_shape(context: models.GenerationContext, value: Any, source_node: IRModels.Node, target_shape: tuple[Any, ...]) -> Any:
+    source_shape = meta_shape(source_node)
+
+    if shape_matches_tensor(source_node, target_shape):
+        return value
+
+    if element_count(source_shape) == element_count(target_shape):
+        return context.graph.reshape(value, target_shape)
+
+    return value
 
 
 def lower_unary(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -394,7 +415,21 @@ def lower_shape(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
 def lower_expand(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
-    return context.graph.expand(inputs[0], shape_attr(node))
+    target_shape = shape_attr(node)
+
+    if shape_matches_tensor(node.parents[0], target_shape):
+        return inputs[0]
+
+    if element_count(meta_shape(node.parents[0])) == element_count(target_shape):
+        return context.graph.reshape(inputs[0], target_shape)
+
+    try:
+        return context.graph.expand(inputs[0], target_shape)
+    except AttributeError as e:
+        raise UnsupportedLoweringError(
+            f"{node.name}: native Cactus expand is unavailable for broadcast shape "
+            f"{meta_shape(node.parents[0])} -> {target_shape}"
+        ) from e
 
 
 def lower_unsqueeze(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -432,7 +467,18 @@ def lower_transpose(context: models.GenerationContext, node: IRModels.Node) -> A
 
 def lower_slice(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
-    axis = int(node.attrs.get("axis", node.attrs.get("dim", 0)))
+    axis_value = node.attrs.get("axis")
+
+    if axis_value is None:
+        axis_value = node.attrs.get("dim")
+
+    if axis_value is None:
+        if shape_matches_tensor(node.parents[0], output_shape(node)):
+            return inputs[0]
+
+        raise UnsupportedLoweringError(f"{node.name}: slice lowering missing axis/dim attr")
+
+    axis = normalize_dim(int(axis_value), len(meta_shape(node.parents[0])))
 
     if node.target == "aten.select.int" or "index_value" in node.attrs:
         return context.graph.index(inputs[0], int(node.attrs.get("index_value", node.attrs.get("index", 0))), axis=axis)
@@ -468,11 +514,31 @@ def lower_cat(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
 def lower_matmul(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 2)
+
+    if node.target == "aten.bmm.default":
+        return lower_bmm(context, node, inputs)
+
     return context.graph.matmul(
         inputs[0],
         inputs[1],
         pretransposed_rhs=bool(node.attrs.get("pretransposed_rhs", False)),
     )
+
+
+def lower_bmm(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> Any:
+    left_shape = meta_shape(node.parents[0])
+    right_shape = meta_shape(node.parents[1])
+
+    if len(left_shape) != 3 or len(right_shape) != 3:
+        raise UnsupportedLoweringError(f"{node.name}: bmm lowering requires rank-3 inputs")
+
+    if left_shape[0] != 1 or right_shape[0] != 1:
+        raise UnsupportedLoweringError(f"{node.name}: bmm lowering currently supports only batch size 1")
+
+    left_2d = context.graph.reshape(inputs[0], (left_shape[1], left_shape[2]))
+    right_2d = context.graph.reshape(inputs[1], (right_shape[1], right_shape[2]))
+    product = context.graph.matmul(left_2d, right_2d)
+    return context.graph.reshape(product, output_shape(node))
 
 
 def lower_addmm(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -488,7 +554,7 @@ def lower_split(context: models.GenerationContext, node: IRModels.Node) -> Any:
     if not isinstance(split_sizes, list):
         raise UnsupportedLoweringError(f"{node.name}: split lowering requires split_sizes list")
 
-    axis = int(node.attrs.get("axis", node.attrs.get("dim", 0)))
+    axis = normalize_dim(int(node.attrs.get("axis", node.attrs.get("dim", 0))), len(meta_shape(node.parents[0])))
     offset = 0
     outputs = []
 
@@ -537,6 +603,49 @@ def lower_pass_through(context: models.GenerationContext, node: IRModels.Node) -
 def lower_copy(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_at_least_one_input(context, node)
     return inputs[-1]
+
+
+def lower_constant_pad_nd(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    inputs = require_input_count(context, node, 1)
+    pads = node.attrs.get("pad", node.attrs.get("arg_1"))
+
+    if not isinstance(pads, (list, tuple)) or len(pads) % 2 != 0:
+        raise UnsupportedLoweringError(f"{node.name}: constant_pad_nd lowering requires an even pad list")
+
+    if any(int(pad) > 0 for pad in pads):
+        raise UnsupportedLoweringError(f"{node.name}: positive constant_pad_nd requires a native pad op")
+
+    result = inputs[0]
+    parent_shape = meta_shape(node.parents[0])
+    rank = len(parent_shape)
+
+    for pair_index in range(0, len(pads), 2):
+        left_pad = int(pads[pair_index])
+        right_pad = int(pads[pair_index + 1])
+
+        if left_pad == 0 and right_pad == 0:
+            continue
+
+        axis = rank - 1 - (pair_index // 2)
+
+        if axis < 0:
+            raise UnsupportedLoweringError(f"{node.name}: pad rank exceeds input rank")
+
+        axis_size = parent_shape[axis]
+
+        if not isinstance(axis_size, int):
+            raise UnsupportedLoweringError(f"{node.name}: cannot crop symbolic pad dimension {axis_size}")
+
+        start = max(-left_pad, 0)
+        end_crop = max(-right_pad, 0)
+        length = axis_size - start - end_crop
+
+        if length < 0:
+            raise UnsupportedLoweringError(f"{node.name}: pad crop removes more than the full axis")
+
+        result = context.graph.slice(result, axis, start, length=length)
+
+    return result
 
 
 def lower_constant_input(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -626,7 +735,7 @@ def lower_conv(context: models.GenerationContext, node: IRModels.Node) -> Any:
     rank = output_rank(node)
 
     if target == "aten.conv1d.default" or rank == 3:
-        return context.graph.conv1d(inputs[0], inputs[1], bias=bias, stride=first_int(node.attrs.get("stride"), 1))
+        return lower_generic_conv1d(context, node, inputs, bias)
 
     if target == "aten.conv2d.default" or rank == 4:
         return context.graph.conv2d(
@@ -647,12 +756,13 @@ def lower_named_conv(context: models.GenerationContext, node: IRModels.Node, met
     bias = inputs[2] if len(inputs) > 2 else None
 
     if method == "conv1d":
-        return context.graph.conv1d(inputs[0], inputs[1], bias=bias, stride=first_int(node.attrs.get("stride"), 1))
+        return lower_generic_conv1d(context, node, inputs, bias)
 
     if method == "conv1d_causal":
         return context.graph.conv1d_causal(inputs[0], inputs[1], kernel_size=int(node.attrs.get("kernel_size", 0)), dilation=first_int(node.attrs.get("dilation"), 1))
 
     if method == "conv1d_k3":
+        require_plain_conv1d_attrs(node, method)
         return context.graph.conv1d_k3(inputs[0], inputs[1], stride=first_int(node.attrs.get("stride"), 1))
 
     if method == "conv1d_k7s3":
@@ -676,16 +786,33 @@ def lower_named_conv(context: models.GenerationContext, node: IRModels.Node, met
     raise UnsupportedLoweringError(f"{node.name}: unsupported Cactus conv method {method}")
 
 
+def lower_generic_conv1d(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...], bias: Any | None) -> Any:
+    require_plain_conv1d_attrs(node, "conv1d")
+    return context.graph.conv1d(inputs[0], inputs[1], bias=bias, stride=first_int(node.attrs.get("stride"), 1))
+
+
+def require_plain_conv1d_attrs(node: IRModels.Node, method: str) -> None:
+    padding = first_int(node.attrs.get("padding"), 0)
+    dilation = first_int(node.attrs.get("dilation"), 1)
+    groups = first_int(node.attrs.get("groups"), 1)
+
+    if padding != 0 or dilation != 1 or groups != 1:
+        raise UnsupportedLoweringError(
+            f"{node.name}: {method} lowering only supports padding=0, dilation=1, groups=1; "
+            f"got padding={padding}, dilation={dilation}, groups={groups}"
+        )
+
+
 def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = context.inputs_for(node)
 
     if node.target == "cactus.attention" or node.target == "aten.scaled_dot_product_attention.default":
         require_len(node, inputs, 3)
-        mask = inputs[3] if len(inputs) > 3 else None
-        return context.graph.attention(
-            inputs[0],
-            inputs[1],
-            inputs[2],
+        query, key, value, mask = attention_inputs_for_layout(context, node, inputs)
+        output = context.graph.attention(
+            query,
+            key,
+            value,
             scale=float(node.attrs.get("scale", 1.0)),
             is_causal=bool(node.attrs.get("is_causal", True)),
             position_offset=int(node.attrs.get("position_offset", 0)),
@@ -693,6 +820,7 @@ def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> A
             mask=mask,
             additive_mask=bool(node.attrs.get("additive_mask", False)),
         )
+        return attention_output_for_layout(context, node, output)
 
     if node.target == "cactus.attention_cached":
         require_len(node, inputs, 5)
@@ -711,16 +839,39 @@ def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> A
     raise UnsupportedLoweringError(f"{node.name}: unsupported attention target {node.target}")
 
 
+def attention_inputs_for_layout(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> tuple[Any, Any, Any, Any | None]:
+    mask = inputs[3] if len(inputs) > 3 else None
+
+    if node.attrs.get("input_layout") == "bhqd_bhds_bhsd":
+        return (
+            context.graph.permute(inputs[0], (0, 2, 1, 3)),
+            context.graph.permute(inputs[1], (0, 3, 1, 2)),
+            context.graph.permute(inputs[2], (0, 2, 1, 3)),
+            mask,
+        )
+
+    return inputs[0], inputs[1], inputs[2], mask
+
+
+def attention_output_for_layout(context: models.GenerationContext, node: IRModels.Node, output: Any) -> Any:
+    if node.attrs.get("output_layout") == "bhqd":
+        return context.graph.permute(output, (0, 2, 1, 3))
+
+    return output
+
+
 def lower_cache(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = context.inputs_for(node)
     target = node.target
 
     if target == "cactus.kv_cache_append":
         require_len(node, inputs, 2)
+        require_cache_state_parent(node, 1, "cactus.kv_cache_state")
         return context.graph.kv_cache_append(inputs[0], inputs[1], window_size=int(node.attrs.get("window_size", 0)), sink_size=int(node.attrs.get("sink_size", 0)))
 
     if target == "cactus.conv_cache_append":
         require_len(node, inputs, 2)
+        require_cache_state_parent(node, 1, "cactus.conv_cache_state")
         return context.graph.conv_cache_append(inputs[0], inputs[1])
 
     if target == "cactus.conv_cache_initialize":
@@ -748,6 +899,15 @@ def lower_cache(context: models.GenerationContext, node: IRModels.Node) -> Any:
         return context.graph.recurrent_cache_state(shape_attr(node), dtype=cactus_precision(context.graph, tensor_dtype(node)))
 
     raise UnsupportedLoweringError(f"{node.name}: unsupported cache target {target}")
+
+
+def require_cache_state_parent(node: IRModels.Node, parent_index: int, expected_target: str) -> None:
+    if parent_index >= len(node.parents) or node.parents[parent_index].target != expected_target:
+        actual = node.parents[parent_index].target if parent_index < len(node.parents) else "<missing>"
+        raise UnsupportedLoweringError(
+            f"{node.name}: {node.target} requires parent {parent_index} to be {expected_target}; got {actual}. "
+            "Raw HF cache tensors need a cache-state bridge before native cache append lowering."
+        )
 
 
 def lower_moe(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -828,7 +988,7 @@ def lower_special_cactus(context: models.GenerationContext, node: IRModels.Node)
 
     if target == "cactus.rel_pos_bias":
         require_len(node, inputs, 2)
-        return context.graph.rel_pos_bias(inputs[0], inputs[1], scale=float(node.attrs.get("scale", 1.0)))
+        return context.graph.rel_pos_bias(inputs[0], inputs[1], scale=float(node.attrs.get("scale") or 1.0))
 
     if target == "cactus.sample":
         require_len(node, inputs, 1)
@@ -875,6 +1035,9 @@ def lower_special_cactus(context: models.GenerationContext, node: IRModels.Node)
 
     if target == "cactus.image_preprocess":
         require_len(node, inputs, 1)
+        if not has_attrs(node, ("src_width", "src_height", "target_width", "target_height", "patch_size", "channels")):
+            return context.graph.reshape(inputs[0], output_shape(node))
+
         return context.graph.image_preprocess(
             inputs[0],
             src_width=required_int_attr(node, "src_width"),
@@ -985,6 +1148,26 @@ def output_shape(node: IRModels.Node) -> tuple[int, ...]:
     raise UnsupportedLoweringError(f"{node.name}: missing concrete output shape")
 
 
+def shape_matches_tensor(node: IRModels.Node, expected_shape: tuple[int, ...]) -> bool:
+    actual_shape = meta_shape(node)
+    return tuple(actual_shape) == tuple(expected_shape)
+
+
+def element_count(shape: tuple[Any, ...]) -> int | None:
+    if not shape:
+        return None
+
+    count = 1
+
+    for dim in shape:
+        if not isinstance(dim, int) or dim < 0:
+            return None
+
+        count *= dim
+
+    return count
+
+
 def shape_attr(node: IRModels.Node) -> tuple[int, ...]:
     raw_shape = node.attrs.get("shape")
 
@@ -1044,6 +1227,10 @@ def required_int_attr(node: IRModels.Node, name: str) -> int:
         raise UnsupportedLoweringError(f"{node.name}: missing required attr {name}")
 
     return int(value)
+
+
+def has_attrs(node: IRModels.Node, names: tuple[str, ...]) -> bool:
+    return all(node.attrs.get(name) is not None for name in names)
 
 
 def first_int(value: Any, default: int) -> int:
@@ -1106,14 +1293,35 @@ def slice_length(node: IRModels.Node, start: int) -> int:
     end = node.attrs.get("end")
 
     if end is None:
-        return 0
+        return open_slice_length(node, start)
 
     end = int(end)
 
     if end >= constants.OPEN_SLICE_END:
-        return 0
+        return open_slice_length(node, start)
 
     return max(end - start, 0)
+
+
+def open_slice_length(node: IRModels.Node, start: int) -> int:
+    if not node.parents:
+        return 0
+
+    axis = int(node.attrs.get("axis", node.attrs.get("dim", 0)))
+    parent_shape = meta_shape(node.parents[0])
+
+    if axis < 0:
+        axis += len(parent_shape)
+
+    if axis < 0 or axis >= len(parent_shape):
+        return 0
+
+    axis_size = parent_shape[axis]
+
+    if not isinstance(axis_size, int):
+        return 0
+
+    return max(axis_size - start, 0)
 
 
 def binary_method_to_scalar_method(method: str) -> str:

@@ -1108,6 +1108,87 @@ def match_grouped_moe_structure(source: models.Node, graph: models.Graph, fusion
     return True
 
 
+def match_cache_roll_append_structure(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
+    cache_node = match_utils.get_first_input_by_role(fusion, bindings, spec["cache_role"])
+    new_data_node = match_utils.get_first_input_by_role(fusion, bindings, spec["new_data_role"])
+
+    if cache_node is None or new_data_node is None:
+        return False
+
+    cache_shape = match_utils.get_tensor_shape(cache_node)
+    new_data_shape = match_utils.get_tensor_shape(new_data_node)
+    output_shape = match_utils.get_tensor_shape(source)
+
+    if not cache_shape or not new_data_shape or not output_shape:
+        return False
+
+    if not match_utils.values_equal(cache_shape, output_shape):
+        return False
+
+    if len(cache_shape) != len(new_data_shape):
+        return False
+
+    window_size = get_known_int(cache_shape[-1])
+
+    if window_size is None or window_size <= 0:
+        return False
+
+    if not cache_append_shapes_match(cache_shape, new_data_shape):
+        return False
+
+    arange_node = bindings.get(spec["arange_node"])
+    add_node = bindings.get(spec["add_node"])
+    mod_node = bindings.get(spec["mod_node"])
+
+    if arange_node is None or add_node is None or mod_node is None:
+        return False
+
+    if not match_utils.values_equal(get_attr(arange_node, "start", "arg_0"), 0):
+        return False
+
+    if not match_utils.values_equal(get_attr(arange_node, "end", "arg_1"), window_size):
+        return False
+
+    if not match_utils.values_equal(get_attr(add_node, "other", "value", "arg_1"), 1):
+        return False
+
+    if not match_utils.values_equal(get_attr(mod_node, "other", "value", "arg_1"), window_size):
+        return False
+
+    return (
+        slice_node_matches(bindings.get(spec["scatter_slice_dim0_node"]), axis=0, start=0)
+        and slice_node_matches(bindings.get(spec["scatter_slice_dim1_node"]), axis=1, start=0)
+        and slice_node_matches(bindings.get(spec["value_slice_dim0_node"]), axis=0, start=0)
+        and slice_node_matches(bindings.get(spec["value_slice_dim1_node"]), axis=1, start=0)
+        and slice_node_matches(bindings.get(spec["value_slice_last_node"]), axis=2, start=-1)
+        and scatter_node_matches(bindings.get(spec["scatter_dim2_node"]), axis=2, start=-1)
+        and scatter_node_matches(bindings.get(spec["scatter_dim1_node"]), axis=1, start=0)
+        and scatter_node_matches(bindings.get(spec["scatter_dim0_node"]), axis=0, start=0)
+    )
+
+
+def cache_append_shapes_match(cache_shape: list[Any], new_data_shape: list[Any]) -> bool:
+    for cache_dim, new_dim in zip(cache_shape[:-1], new_data_shape[:-1]):
+        if not match_utils.values_equal(cache_dim, new_dim):
+            return False
+
+    return match_utils.values_equal(new_data_shape[-1], 1)
+
+
+def slice_node_matches(node: models.Node | None, *, axis: int, start: int) -> bool:
+    if node is None:
+        return False
+
+    return match_utils.values_equal(get_attr(node, "axis", "dim", "arg_1"), axis) and match_utils.values_equal(get_attr(node, "start", "arg_2"), start)
+
+
+def scatter_node_matches(node: models.Node | None, *, axis: int, start: int) -> bool:
+    if node is None:
+        return False
+
+    return match_utils.values_equal(get_attr(node, "dim", "axis", "arg_2"), axis) and match_utils.values_equal(get_attr(node, "start", "arg_3"), start)
+
+
 def match_node_attr_equals(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
     """
     Checks that one matched node has a specific normalized attr value.
@@ -1254,6 +1335,7 @@ EXTRA_MATCHERS: dict[str, ExtraMatcher] = {
     "moe_expert_branch_routing": match_moe_expert_branch_routing,
     "moe_routing_weights_combine": match_moe_routing_weights_combine,
     "grouped_moe_structure": match_grouped_moe_structure,
+    "cache_roll_append_structure": match_cache_roll_append_structure,
     "node_attr_equals": match_node_attr_equals,
     "node_attrs_equal": match_node_attrs_equal,
     "input_value_kind": match_input_value_kind,

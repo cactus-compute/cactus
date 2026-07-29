@@ -168,6 +168,9 @@ def collect_external_inputs(
     external_inputs: list[models.Node] = []
 
     for input_spec in fusion.inputs:
+        if input_spec.metadata.get("drop_after_fusion"):
+            continue
+
         external_inputs.extend(match_utils.get_fusion_input_nodes(input_spec, bindings))
 
     for cache_input in fusion.cache_inputs:

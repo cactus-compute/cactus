@@ -259,7 +259,8 @@ def apply_fusions_to_graph(graph: Graph, fusion_results: tuple[FusionResult, ...
     consumed_names = expanded_consumed_names(graph, replacement_names)
     kept_nodes = tuple(clone_rewritten_node(node, replacement_names) for node in graph.nodes if node.name not in consumed_names)
     rewritten_fused_nodes = tuple(clone_rewritten_node(node, replacement_names) for node in fused_nodes)
-    return rebuild_graph((*kept_nodes, *rewritten_fused_nodes), graph, fusion_results)
+    rebuilt_graph = rebuild_graph((*kept_nodes, *rewritten_fused_nodes), graph, fusion_results)
+    return prune_dead_nodes(rebuilt_graph)
 
 
 def validate_non_overlapping_fusions(fusion_results: tuple[FusionResult, ...]) -> None:
@@ -425,6 +426,32 @@ def rebuild_graph(nodes: tuple[Node, ...], original_graph: Graph, fusion_results
         output_specs=original_graph.output_specs,
         fusions=list(fusion_results),
     )
+
+
+def prune_dead_nodes(graph: Graph) -> Graph:
+    live_names = output_ancestor_names(graph)
+
+    if len(live_names) == len(graph.nodes):
+        return graph
+
+    live_nodes = tuple(node for node in graph.nodes if node.name in live_names)
+    return rebuild_graph(live_nodes, graph, tuple(graph.fusions))
+
+
+def output_ancestor_names(graph: Graph) -> frozenset[str]:
+    live_names: set[str] = set()
+    stack = list(graph.outputs)
+
+    while stack:
+        node = stack.pop()
+
+        if node.name in live_names:
+            continue
+
+        live_names.add(node.name)
+        stack.extend(node.parents)
+
+    return frozenset(live_names)
 
 
 def graph_to_layer_map(graph: Graph) -> CModels.LayerMap:

@@ -350,7 +350,15 @@ def get_attr_capture_value(capture: FModels.AttrCapture, bindings: dict[str, mod
     if source_node is None:
         return MISSING if capture.required else capture.default
 
-    return source_node.attrs.get(capture.source_attr, MISSING if capture.required else capture.default)
+    value = source_node.attrs.get(capture.source_attr, MISSING)
+
+    if value is MISSING:
+        value = source_node.attrs.get(capture.name, MISSING)
+
+    if value is MISSING:
+        return MISSING if capture.required else capture.default
+
+    return value
 
 
 def infer_definition_attrs(fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> dict[str, Any]:

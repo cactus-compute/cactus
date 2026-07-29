@@ -42,6 +42,10 @@ COPY_TARGETS = {
     "aten.copy.default",
 }
 
+PAD_TARGETS = {
+    "aten.constant_pad_nd.default",
+}
+
 CONSTANT_INPUT_TARGETS = {
     "aten.arange.default",
     "aten.arange.start",
@@ -302,7 +306,6 @@ UNSUPPORTED_SEMANTIC_TARGETS = {
     "aten.any.dim",
     "aten.bitwise_and.Tensor",
     "aten.bitwise_or.Tensor",
-    "aten.constant_pad_nd.default",
     "aten.eq.Scalar",
     "aten.eq.Tensor",
     "aten.fmod.Scalar",
