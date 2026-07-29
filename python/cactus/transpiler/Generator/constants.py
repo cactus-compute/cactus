@@ -288,6 +288,7 @@ SPECIAL_CACTUS_TARGETS = {
     "cactus.lstm_cell",
     "cactus.gated_deltanet_decode",
     "cactus.gated_deltanet_prefill",
+    "cactus.lfm_short_conv_decode",
     "cactus.rel_pos_bias",
     "cactus.sample",
     "cactus.scatter_topk",

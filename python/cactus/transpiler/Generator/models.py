@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from ..IR import models as IRModels
+from ..RuntimePlan import models as RPModels
 
 
 GraphTensor = Any
@@ -54,8 +55,12 @@ class ComponentGraph:
     graph: CactusGraph | None = None
     weight_resolver: "WeightResolver | None" = None
     weight_bindings: list["WeightBinding"] = field(default_factory=list)
+    cache_state_bindings: list[RPModels.CacheStateBinding] = field(default_factory=list)
     runtime_input_ids: list[int] = field(default_factory=list)
+    logical_inputs: list[str] = field(default_factory=list)
     output_node_ids: list[int] = field(default_factory=list)
+    logical_outputs: list[str] = field(default_factory=list)
+    metadata: dict[str, str] = field(default_factory=dict)
     unsupported_nodes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -78,11 +83,14 @@ class ComponentGraph:
     def add_weight_binding(self, binding: "WeightBinding") -> None:
         add_component_weight_binding(self, binding)
 
-    def add_runtime_input(self, tensor: GraphTensor) -> None:
-        add_component_runtime_input(self, tensor)
+    def add_cache_state_binding(self, binding: RPModels.CacheStateBinding) -> None:
+        add_component_cache_state_binding(self, binding)
 
-    def add_output(self, tensor: GraphTensor) -> None:
-        add_component_output(self, tensor)
+    def add_runtime_input(self, tensor: GraphTensor, logical_name: str | None = None) -> None:
+        add_component_runtime_input(self, tensor, logical_name)
+
+    def add_output(self, tensor: GraphTensor, logical_name: str | None = None) -> None:
+        add_component_output(self, tensor, logical_name)
 
 
 @dataclass(slots=True)
@@ -175,8 +183,12 @@ class ComponentGraphManifest:
     component: str
     graph_path: str
     weight_bindings: tuple[WeightBinding, ...] = ()
+    cache_state_node_ids: tuple[RPModels.CacheStateBinding, ...] = ()
     runtime_input_node_ids: tuple[int, ...] = ()
+    logical_inputs: tuple[str, ...] = ()
     output_node_ids: tuple[int, ...] = ()
+    logical_outputs: tuple[str, ...] = ()
+    metadata: dict[str, str] | None = None
     unsupported_nodes: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
@@ -269,18 +281,42 @@ def add_component_weight_binding(component: ComponentGraph, binding: WeightBindi
         component.weight_bindings.append(binding)
 
 
-def add_component_runtime_input(component: ComponentGraph, tensor: GraphTensor) -> None:
+def add_component_cache_state_binding(component: ComponentGraph, binding: RPModels.CacheStateBinding) -> None:
+    RPModels.merge_cache_state_binding(component.cache_state_bindings, binding)
+
+
+def add_component_runtime_input(component: ComponentGraph, tensor: GraphTensor, logical_name: str | None = None) -> None:
     node_id = tensor_node_id(tensor)
 
-    if node_id is not None and node_id not in component.runtime_input_ids:
-        component.runtime_input_ids.append(node_id)
+    if node_id is None:
+        return
+
+    name = logical_name or f"input_{len(component.runtime_input_ids)}"
+
+    if node_id in component.runtime_input_ids:
+        index = component.runtime_input_ids.index(node_id)
+        component.logical_inputs[index] = name
+        return
+
+    component.runtime_input_ids.append(node_id)
+    component.logical_inputs.append(name)
 
 
-def add_component_output(component: ComponentGraph, tensor: GraphTensor) -> None:
+def add_component_output(component: ComponentGraph, tensor: GraphTensor, logical_name: str | None = None) -> None:
     node_id = tensor_node_id(tensor)
 
-    if node_id is not None and node_id not in component.output_node_ids:
-        component.output_node_ids.append(node_id)
+    if node_id is None:
+        return
+
+    name = logical_name or f"output_{len(component.output_node_ids)}"
+
+    if node_id in component.output_node_ids:
+        index = component.output_node_ids.index(node_id)
+        component.logical_outputs[index] = name
+        return
+
+    component.output_node_ids.append(node_id)
+    component.logical_outputs.append(name)
 
 
 def tensor_node_id(tensor: GraphTensor) -> int | None:
@@ -483,8 +519,12 @@ def component_manifest_from_component(cls: type[ComponentGraphManifest], compone
         component=component.name,
         graph_path=component.output_path.name,
         weight_bindings=tuple(component.weight_bindings),
+        cache_state_node_ids=tuple(component.cache_state_bindings),
         runtime_input_node_ids=tuple(component.runtime_input_ids),
+        logical_inputs=tuple(component.logical_inputs),
         output_node_ids=tuple(component.output_node_ids),
+        logical_outputs=tuple(component.logical_outputs),
+        metadata=dict(component.metadata),
         unsupported_nodes=tuple(component.unsupported_nodes),
         warnings=tuple(component.warnings),
     )
@@ -493,6 +533,7 @@ def component_manifest_from_component(cls: type[ComponentGraphManifest], compone
 def component_manifest_to_dict(manifest: ComponentGraphManifest) -> dict[str, Any]:
     return {
         "component": manifest.component,
+        "graph": manifest.graph_path,
         "graph_path": manifest.graph_path,
         "weight_bindings": [
             {
@@ -507,8 +548,22 @@ def component_manifest_to_dict(manifest: ComponentGraphManifest) -> dict[str, An
             }
             for binding in manifest.weight_bindings
         ],
+        "bound_constant_bindings": [
+            {
+                "node_id": binding.node_id,
+                "path": binding.path,
+            }
+            for binding in manifest.weight_bindings
+        ],
+        "cache_state_node_ids": [
+            RPModels.cache_state_binding_to_dict(binding)
+            for binding in manifest.cache_state_node_ids
+        ],
         "runtime_input_node_ids": list(manifest.runtime_input_node_ids),
+        "logical_inputs": list(manifest.logical_inputs),
         "output_node_ids": list(manifest.output_node_ids),
+        "logical_outputs": list(manifest.logical_outputs),
+        "metadata": dict(manifest.metadata or {}),
         "unsupported_nodes": list(manifest.unsupported_nodes),
         "warnings": list(manifest.warnings),
     }

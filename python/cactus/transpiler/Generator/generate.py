@@ -8,7 +8,9 @@ from typing import Any
 from . import constants
 from . import models
 from ..Converter import models as CModels
+from ..Fusions import models as FModels
 from ..IR import models as IRModels
+from ..RuntimePlan import models as RPModels
 
 
 class UnsupportedLoweringError(NotImplementedError):
@@ -258,23 +260,67 @@ def lower_node(context: models.GenerationContext, node: IRModels.Node) -> None:
 
 
 def lower_placeholder(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    if should_lower_cache_placeholder_as_state(node):
+        return lower_cache_placeholder(context, node)
+
     shape, dynamic_dims = graph_input_shape(node)
     dtype = cactus_precision(context.graph, tensor_dtype(node))
     tensor = context.graph.input(shape, dtype=dtype, dynamic_dims=dynamic_dims if any(dynamic_dims) else None)
+    logical_name = logical_input_name(context.component.ir_graph, node)
 
     if node.value_kind in constants.WEIGHT_VALUE_KINDS:
-        bind_weight_placeholder(context, node, tensor)
+        bind_weight_placeholder(context, node, tensor, logical_name)
         return tensor
 
-    context.component.add_runtime_input(tensor)
+    context.component.add_runtime_input(tensor, logical_name)
     return tensor
 
 
-def bind_weight_placeholder(context: models.GenerationContext, node: IRModels.Node, tensor: Any) -> None:
+def should_lower_cache_placeholder_as_state(node: IRModels.Node) -> bool:
+    if node.cache is None:
+        return False
+
+    if node.cache.kind == FModels.CacheKind.CONV:
+        return any(child.target in {"cactus.conv_cache_append", "cactus.conv_cache_initialize"} for child in node.children)
+
+    if node.cache.kind == FModels.CacheKind.KV:
+        return bool(node.children) and all(child.target in {"cactus.kv_cache_append", "cactus.attention_cached"} for child in node.children)
+
+    return False
+
+
+def lower_cache_placeholder(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    annotation = require_cache_annotation(node)
+
+    if annotation.kind == FModels.CacheKind.KV:
+        cache_state = context.graph.kv_cache_state(
+            kv_cache_capacity(context, annotation),
+            required_cache_int(annotation.num_kv_heads, node, "num_kv_heads"),
+            required_cache_int(annotation.head_dim, node, "head_dim"),
+            window_size=int(annotation.window_size or 0),
+            sink_size=0,
+            num_slots=1,
+        )
+        record_cache_state_binding(context, node, cache_state, annotation)
+        return cache_state
+
+    if annotation.kind == FModels.CacheKind.CONV:
+        cache_state = context.graph.conv_cache_state(
+            required_cache_int(annotation.window_size, node, "window_size"),
+            required_cache_int(annotation.hidden_dim, node, "hidden_dim"),
+        )
+        record_cache_state_binding(context, node, cache_state, annotation)
+        return cache_state
+
+    raise UnsupportedLoweringError(f"{node.name}: unsupported cache placeholder kind {annotation.kind}")
+
+
+def bind_weight_placeholder(context: models.GenerationContext, node: IRModels.Node, tensor: Any, logical_name: str | None = None) -> None:
     resolver = context.component.weight_resolver
 
     if resolver is None:
         context.component.warn(f"{node.name}: weight lowered as graph input because no weights_dir was provided")
+        context.component.add_runtime_input(tensor, logical_name)
         return
 
     source_target = resolver.source_target_for(node.name) or node.target
@@ -287,7 +333,7 @@ def bind_weight_placeholder(context: models.GenerationContext, node: IRModels.No
             raise UnsupportedLoweringError(message)
 
         context.component.warn(message)
-        context.component.add_runtime_input(tensor)
+        context.component.add_runtime_input(tensor, logical_name)
         return
 
     node_id = models.tensor_node_id(tensor)
@@ -317,18 +363,113 @@ def bind_weight_placeholder(context: models.GenerationContext, node: IRModels.No
 def lower_output(context: models.GenerationContext, node: IRModels.Node) -> Any:
     refs = IRModels.extract_node_refs((node.args, node.kwargs))
     values = tuple(context.require(ref) for ref in refs)
+    output_index = 0
 
-    for value in values:
+    for ref, value in zip(refs, values):
         if isinstance(value, (tuple, list)):
             for item in value:
-                context.component.add_output(item)
+                context.component.add_output(item, logical_output_name(context.component.ir_graph, output_index, ref))
+                output_index += 1
         else:
-            context.component.add_output(value)
+            context.component.add_output(value, logical_output_name(context.component.ir_graph, output_index, ref))
+            output_index += 1
 
     if len(values) == 1:
         return values[0]
 
     return values
+
+
+def logical_input_name(graph: IRModels.Graph, node: IRModels.Node) -> str:
+    metadata_name = logical_name_from_metadata(node.ir_metadata, ("logical_input", "logical_name", "runtime_input"))
+
+    if metadata_name:
+        return metadata_name
+
+    spec_name = logical_input_name_from_specs(graph, node.name)
+
+    if spec_name:
+        return spec_name
+
+    if node.cache is not None:
+        return cache_logical_name(node)
+
+    target_name = clean_logical_name(node.target)
+
+    if target_name is not None:
+        return target_name
+
+    return node.name
+
+
+def logical_output_name(graph: IRModels.Graph, output_index: int, source_ref: str | None = None) -> str:
+    source = graph.nodes_map.get(source_ref) if source_ref is not None else None
+
+    if source is not None:
+        metadata_name = logical_name_from_metadata(source.ir_metadata, ("logical_output", "logical_name", "runtime_output"))
+
+        if metadata_name:
+            return metadata_name
+
+        if source.cache is not None:
+            return cache_logical_name(source)
+
+        if "logits" in source.name or "lm_head" in source.target:
+            return "logits"
+
+    spec_name = logical_output_name_from_specs(graph, output_index)
+
+    if spec_name:
+        return spec_name
+
+    return f"output_{output_index}"
+
+
+def logical_input_name_from_specs(graph: IRModels.Graph, node_name: str) -> str | None:
+    for spec in graph.input_specs:
+        if spec.arg_name != node_name:
+            continue
+
+        return clean_logical_name(spec.target) or clean_logical_name(spec.arg_name)
+
+    return None
+
+
+def logical_output_name_from_specs(graph: IRModels.Graph, output_index: int) -> str | None:
+    if output_index < 0 or output_index >= len(graph.output_specs):
+        return None
+
+    spec = graph.output_specs[output_index]
+    return clean_logical_name(spec.target) or clean_logical_name(spec.arg_name)
+
+
+def logical_name_from_metadata(metadata: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = clean_logical_name(metadata.get(key))
+
+        if value is not None:
+            return value
+
+    return None
+
+
+def clean_logical_name(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    name = str(value)
+
+    if not name or name == "None":
+        return None
+
+    return name
+
+
+def cache_logical_name(node: IRModels.Node) -> str:
+    if node.cache is not None and node.cache.tensor_index is not None:
+        return f"past_key_values_{node.cache.tensor_index}"
+
+    return node.name
 
 
 def lower_binary(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -509,7 +650,13 @@ def lower_cat(context: models.GenerationContext, node: IRModels.Node) -> Any:
     if not inputs:
         raise unsupported_arity(node, 0, "at least one input")
 
-    return context.graph.cat(inputs, axis=int(node.attrs.get("axis", node.attrs.get("dim", 0))))
+    passthrough = empty_cat_passthrough(node, inputs)
+
+    if passthrough is not None:
+        return passthrough
+
+    axis = normalize_dim(int(node.attrs.get("axis", node.attrs.get("dim", 0))), cat_rank(node))
+    return context.graph.cat(inputs, axis=axis)
 
 
 def lower_matmul(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -523,6 +670,39 @@ def lower_matmul(context: models.GenerationContext, node: IRModels.Node) -> Any:
         inputs[1],
         pretransposed_rhs=bool(node.attrs.get("pretransposed_rhs", False)),
     )
+
+
+def empty_cat_passthrough(node: IRModels.Node, inputs: tuple[Any, ...]) -> Any | None:
+    target_shape = meta_shape(node)
+    non_empty_inputs = []
+
+    for input_value, parent in zip(inputs, node.parents):
+        parent_shape = meta_shape(parent)
+        parent_elements = element_count(parent_shape)
+
+        if parent_elements == 0:
+            continue
+
+        non_empty_inputs.append((input_value, parent_shape))
+
+    if len(non_empty_inputs) != 1:
+        return None
+
+    input_value, input_shape = non_empty_inputs[0]
+
+    if tuple(input_shape) == tuple(target_shape):
+        return input_value
+
+    return None
+
+
+def cat_rank(node: IRModels.Node) -> int:
+    target_shape = meta_shape(node)
+
+    if target_shape:
+        return len(target_shape)
+
+    return len(meta_shape(node.parents[0])) if node.parents else 0
 
 
 def lower_bmm(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> Any:
@@ -653,7 +833,7 @@ def lower_constant_input(context: models.GenerationContext, node: IRModels.Node)
     shape, dynamic_dims = graph_input_shape(node)
     dtype = cactus_precision(context.graph, tensor_dtype(node))
     tensor = context.graph.input(shape, dtype=dtype, dynamic_dims=dynamic_dims if any(dynamic_dims) else None)
-    context.component.add_runtime_input(tensor)
+    context.component.add_runtime_input(tensor, node.name)
     return tensor
 
 
@@ -664,7 +844,12 @@ def lower_neg(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
 def lower_softmax(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
-    return context.graph.softmax(inputs[0], axis=axis_attr(node, default=-1))
+    axis = axis_attr(node, default=-1)
+
+    if axis is None:
+        raise UnsupportedLoweringError(f"{node.name}: softmax lowering missing axis/dim attr")
+
+    return context.graph.softmax(inputs[0], axis=normalize_dim(axis, len(meta_shape(node.parents[0]))))
 
 
 def lower_topk(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -759,7 +944,17 @@ def lower_named_conv(context: models.GenerationContext, node: IRModels.Node, met
         return lower_generic_conv1d(context, node, inputs, bias)
 
     if method == "conv1d_causal":
-        return context.graph.conv1d_causal(inputs[0], inputs[1], kernel_size=int(node.attrs.get("kernel_size", 0)), dilation=first_int(node.attrs.get("dilation"), 1))
+        x = inputs[0]
+
+        if node.attrs.get("layout") == "batch_hidden_sequence":
+            x = context.graph.permute(x, (0, 2, 1))
+
+        output = context.graph.conv1d_causal(x, inputs[1], kernel_size=int(node.attrs.get("kernel_size", 0)), dilation=first_int(node.attrs.get("dilation"), 1))
+
+        if node.attrs.get("layout") == "batch_hidden_sequence":
+            return context.graph.permute(output, (0, 2, 1))
+
+        return output
 
     if method == "conv1d_k3":
         require_plain_conv1d_attrs(node, method)
@@ -865,18 +1060,33 @@ def lower_cache(context: models.GenerationContext, node: IRModels.Node) -> Any:
     target = node.target
 
     if target == "cactus.kv_cache_append":
+        if len(inputs) == 1:
+            cache_state = create_cache_state_for_cache_output(context, node)
+            context.graph.kv_cache_append(inputs[0], cache_state, window_size=int(node.attrs.get("window_size", 0)), sink_size=int(node.attrs.get("sink_size", 0)))
+            return cache_state
+
         require_len(node, inputs, 2)
         require_cache_state_parent(node, 1, "cactus.kv_cache_state")
-        return context.graph.kv_cache_append(inputs[0], inputs[1], window_size=int(node.attrs.get("window_size", 0)), sink_size=int(node.attrs.get("sink_size", 0)))
+        context.graph.kv_cache_append(inputs[0], inputs[1], window_size=int(node.attrs.get("window_size", 0)), sink_size=int(node.attrs.get("sink_size", 0)))
+        return inputs[1]
 
     if target == "cactus.conv_cache_append":
         require_len(node, inputs, 2)
         require_cache_state_parent(node, 1, "cactus.conv_cache_state")
-        return context.graph.conv_cache_append(inputs[0], inputs[1])
+        window = context.graph.conv_cache_append(inputs[0], inputs[1])
+        return conv_cache_window_to_ir_layout(context, node, window)
 
     if target == "cactus.conv_cache_initialize":
+        if len(inputs) == 1:
+            cache_state = create_cache_state_for_cache_output(context, node)
+            rows = conv_cache_rows_for_native(context, node, inputs[0])
+            context.graph.conv_cache_initialize(rows, cache_state)
+            return cache_state
+
         require_len(node, inputs, 2)
-        return context.graph.conv_cache_initialize(inputs[0], inputs[1])
+        rows = conv_cache_rows_for_native(context, node, inputs[0])
+        context.graph.conv_cache_initialize(rows, inputs[1])
+        return inputs[1]
 
     if target == "cactus.recurrent_cache_write":
         require_len(node, inputs, 2)
@@ -902,12 +1112,113 @@ def lower_cache(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
 
 def require_cache_state_parent(node: IRModels.Node, parent_index: int, expected_target: str) -> None:
-    if parent_index >= len(node.parents) or node.parents[parent_index].target != expected_target:
-        actual = node.parents[parent_index].target if parent_index < len(node.parents) else "<missing>"
-        raise UnsupportedLoweringError(
-            f"{node.name}: {node.target} requires parent {parent_index} to be {expected_target}; got {actual}. "
-            "Raw HF cache tensors need a cache-state bridge before native cache append lowering."
+    if parent_index >= len(node.parents):
+        raise UnsupportedLoweringError(f"{node.name}: {node.target} missing cache parent {parent_index}")
+
+    parent = node.parents[parent_index]
+
+    if parent.target == expected_target:
+        return
+
+    if expected_target == "cactus.conv_cache_state" and parent.cache is not None and parent.cache.kind == FModels.CacheKind.CONV:
+        return
+
+    if expected_target == "cactus.kv_cache_state" and parent.cache is not None and parent.cache.kind == FModels.CacheKind.KV:
+        return
+
+    raise UnsupportedLoweringError(
+        f"{node.name}: {node.target} requires parent {parent_index} to be {expected_target}; got {parent.target}. "
+        "Raw HF cache tensors need a cache-state bridge before native cache append lowering."
+    )
+
+
+def require_cache_annotation(node: IRModels.Node) -> IRModels.CacheAnnotation:
+    if node.cache is None:
+        raise UnsupportedLoweringError(f"{node.name}: cache lowering requires cache annotation metadata")
+
+    return node.cache
+
+
+def required_cache_int(value: int | None, node: IRModels.Node, name: str) -> int:
+    if value is None:
+        raise UnsupportedLoweringError(f"{node.name}: cache lowering missing {name}")
+
+    return int(value)
+
+
+def kv_cache_capacity(context: models.GenerationContext, annotation: IRModels.CacheAnnotation) -> int:
+    capacity = int(annotation.sequence_length or 1)
+
+    if context.component.ir_graph.task == "decode_with_cache":
+        capacity += 1
+
+    return max(capacity, 1)
+
+
+def create_cache_state_for_cache_output(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    annotation = require_cache_annotation(node)
+
+    if annotation.kind == FModels.CacheKind.KV:
+        cache_state = context.graph.kv_cache_state(
+            kv_cache_capacity(context, annotation),
+            required_cache_int(annotation.num_kv_heads, node, "num_kv_heads"),
+            required_cache_int(annotation.head_dim, node, "head_dim"),
+            window_size=int(annotation.window_size or 0),
+            sink_size=0,
+            num_slots=1,
         )
+        record_cache_state_binding(context, node, cache_state, annotation)
+        return cache_state
+
+    if annotation.kind == FModels.CacheKind.CONV:
+        cache_state = context.graph.conv_cache_state(
+            required_cache_int(annotation.window_size, node, "window_size"),
+            required_cache_int(annotation.hidden_dim, node, "hidden_dim"),
+        )
+        record_cache_state_binding(context, node, cache_state, annotation)
+        return cache_state
+
+    raise UnsupportedLoweringError(f"{node.name}: unsupported cache output kind {annotation.kind}")
+
+
+def record_cache_state_binding(context: models.GenerationContext, node: IRModels.Node, cache_state: Any, annotation: IRModels.CacheAnnotation) -> None:
+    node_id = models.tensor_node_id(cache_state)
+
+    if node_id is None:
+        raise UnsupportedLoweringError(f"{node.name}: cache state tensor does not expose a Cactus node id")
+
+    context.component.add_cache_state_binding(RPModels.cache_state_binding_from_annotation(annotation, node_id))
+
+
+def conv_cache_rows_for_native(context: models.GenerationContext, node: IRModels.Node, rows: Any) -> Any:
+    rows_shape = meta_shape(node.parents[0]) if node.parents else output_shape(node)
+
+    if len(rows_shape) == 3:
+        batch, hidden_dim, window_size = rows_shape
+
+        if batch != 1:
+            raise UnsupportedLoweringError(f"{node.name}: conv cache initialize currently supports batch size 1")
+
+        return context.graph.reshape(context.graph.permute(rows, (0, 2, 1)), (int(window_size), int(hidden_dim)))
+
+    if len(rows_shape) == 2:
+        return rows
+
+    raise UnsupportedLoweringError(f"{node.name}: conv cache initialize rows must be rank 2 or 3, got shape {rows_shape}")
+
+
+def conv_cache_window_to_ir_layout(context: models.GenerationContext, node: IRModels.Node, window: Any) -> Any:
+    target_shape = output_shape(node)
+
+    if len(target_shape) != 3:
+        return window
+
+    batch, hidden_dim, window_size = target_shape
+
+    if batch != 1:
+        raise UnsupportedLoweringError(f"{node.name}: conv cache append layout bridge currently supports batch size 1")
+
+    return context.graph.reshape(context.graph.transpose(window), (int(batch), int(hidden_dim), int(window_size)))
 
 
 def lower_moe(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -986,6 +1297,12 @@ def lower_special_cactus(context: models.GenerationContext, node: IRModels.Node)
         require_len(node, inputs, 6)
         return context.graph.gated_deltanet_prefill(*inputs[:6], chunk_size=int(node.attrs.get("chunk_size", 1)), scale=float(node.attrs.get("scale", 1.0)))
 
+    if target == "cactus.lfm_short_conv_decode":
+        require_len(node, inputs, 2)
+        weight = lfm_short_conv_decode_weight(context, node, inputs[1])
+        product = context.graph.multiply(inputs[0], weight)
+        return context.graph.sum(product, axis=normalize_dim(-1, len(meta_shape(node.parents[0]))))
+
     if target == "cactus.rel_pos_bias":
         require_len(node, inputs, 2)
         return context.graph.rel_pos_bias(inputs[0], inputs[1], scale=float(node.attrs.get("scale") or 1.0))
@@ -1056,6 +1373,35 @@ def lower_special_cactus(context: models.GenerationContext, node: IRModels.Node)
         return context.graph.bilinear_interpolation(inputs[0], required_int_attr(node, "dst_height"), required_int_attr(node, "dst_width"))
 
     raise UnsupportedLoweringError(f"{node.name}: unsupported special Cactus target {target}")
+
+
+def lfm_short_conv_decode_weight(context: models.GenerationContext, node: IRModels.Node, weight: Any) -> Any:
+    cache_window_shape = meta_shape(node.parents[0]) if node.parents else ()
+    weight_shape = meta_shape(node.parents[1]) if len(node.parents) > 1 else ()
+
+    if len(cache_window_shape) != 3:
+        return weight
+
+    batch_size, hidden_dim, window_size = cache_window_shape
+
+    if not all(isinstance(dim, int) for dim in cache_window_shape):
+        return weight
+
+    if tuple(weight_shape) == tuple(cache_window_shape):
+        return weight
+
+    if len(weight_shape) == 2 and tuple(weight_shape) == (hidden_dim, window_size):
+        return context.graph.reshape(weight, (batch_size, hidden_dim, window_size))
+
+    if len(weight_shape) == 3 and tuple(weight_shape) in {
+        (1, hidden_dim, window_size),
+        (hidden_dim, 1, window_size),
+    }:
+        return context.graph.reshape(weight, (batch_size, hidden_dim, window_size))
+
+    raise UnsupportedLoweringError(
+        f"{node.name}: lfm short conv decode weight shape {weight_shape} is incompatible with cache window {cache_window_shape}"
+    )
 
 
 def lower_unsupported_semantic(context: models.GenerationContext, node: IRModels.Node) -> Any:

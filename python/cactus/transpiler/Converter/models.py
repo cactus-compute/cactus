@@ -51,6 +51,7 @@ class LayerRecord(BaseModel):
     users: list[str]
     tensor_output_meta: Any | None
     module_stack: Any | None
+    ir_metadata: dict[str, Any] = Field(default_factory=dict)
 
     #Builds a LayerRecord from a torch.fx.Node.
     @classmethod
