@@ -3,6 +3,7 @@ from pathlib import Path
 from . import models
 from ..ModelProfiles import models as MP_Models
 from ..ModelProfiles import profiles as MP_Profiles
+from ..IR import simplify_ir
 
 
 def export_layer_map(
@@ -23,9 +24,20 @@ def convert(
     output_path: str,
     custom_profile: MP_Models.ModelProfile | None = None,
     inference_mode: str = "prefill_no_cache",
+    simplified_output_path: str | None = None,
 ) -> models.LayerMap:
-    layer_map = export_layer_map(model_id=model_id, input_modalities=input_modalities, custom_profile=custom_profile, inference_mode=inference_mode)
+    profile = custom_profile or MP_Profiles.MODEL_ID_MAP[model_id]
+    layer_map = export_layer_map(model_id=model_id, input_modalities=input_modalities, custom_profile=profile, inference_mode=inference_mode)
     Path(output_path).write_text(layer_map.model_dump_json(indent=4), encoding="utf-8")
+
+    if simplified_output_path is not None:
+        simplify_ir.write_simplified_json(
+            layer_map,
+            simplified_output_path,
+            input_modalities=input_modalities,
+            fusion_fields=profile.fusion_fields,
+        )
+
     return layer_map
 
 

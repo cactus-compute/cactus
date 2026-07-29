@@ -17,12 +17,14 @@ def main() -> None:
         model_id=model_id,
         input_modalities=input_modalities,
         output_path=str(output_dir / "output_prefill_with_cache.json"),
+        simplified_output_path=str(output_dir / "output_prefill_with_cache_simplified.json"),
         inference_mode=constants.PREFILL_WITH_CACHE_MODE,
     )
     convert(
         model_id=model_id,
         input_modalities=input_modalities,
         output_path=str(output_dir / "output_decode_with_cache.json"),
+        simplified_output_path=str(output_dir / "output_decode_with_cache_simplified.json"),
         inference_mode=constants.DECODE_WITH_CACHE_MODE,
     )
 
