@@ -85,15 +85,20 @@ std::vector<ToolConstraintSpec> build_tool_constraint_specs(const std::vector<To
     return specs;
 }
 
-void setup_tool_constraints(CactusModelHandle* handle, const std::vector<ToolFunction>& tools,
-                           bool force_tools, float& temperature) {
-    if (!force_tools || tools.empty()) return;
+bool setup_tool_constraints(CactusModelHandle* handle, const std::vector<ToolFunction>& tools,
+                            Config::ModelType model_type, bool force_tools, float& temperature) {
+    if (tools.empty()) return false;
 
-    handle->model->set_tool_constraints(build_tool_constraint_specs(tools));
+    const bool model_supported = model_type == Config::ModelType::NEEDLE ||
+        Config::is_gemma_family(model_type);
+    if (!model_supported) return false;
 
-    if (temperature == 0.0f) {
+    handle->model->set_tool_constraints(build_tool_constraint_specs(tools), force_tools);
+
+    if (force_tools && temperature == 0.0f) {
         temperature = 0.01f;
     }
+    return true;
 }
 
 size_t find_json_block_end(const std::string& json, size_t start) {
@@ -435,6 +440,7 @@ struct PreparedPrompt {
     std::vector<uint32_t> tokens;
     size_t context_token_count = 0;
     std::vector<std::vector<CactusModelHandle::ProcessedImage>> images;
+    bool tool_constraints_active = false;
 
     std::vector<std::vector<float>> audio_features;
     size_t audio_num_frames = 0;
@@ -625,10 +631,6 @@ PreparedPrompt prepare_prompt(
         formatted_tools = gemma::format_tools(prompt.tools, !Config::is_gemma3_family(prompt.model_type));
     }
 
-    if (apply_tool_constraints) {
-        setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools, prompt.options.temperature);
-    }
-
     prompt.rendered = tokenizer->format_chat_prompt(
         prompt.messages,
         add_generation_prompt,
@@ -641,6 +643,10 @@ PreparedPrompt prepare_prompt(
     prompt.tokens = tokenizer->encode(prompt.rendered);
     prompt.context_token_count = prompt.tokens.size();
     prompt.images = images_from_message(prompt.messages);
+    if (apply_tool_constraints) {
+        prompt.tool_constraints_active = setup_tool_constraints(
+            handle, prompt.tools, prompt.model_type, prompt.options.force_tools, prompt.options.temperature);
+    }
     return prompt;
 }
 
@@ -829,6 +835,16 @@ int cactus_complete(
         }
         auto* tokenizer = handle->model->get_tokenizer();
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true, pcm_buffer, pcm_buffer_size);
+        struct ToolConstraintGuard {
+            CactusModelHandle* handle = nullptr;
+            bool active = false;
+            ~ToolConstraintGuard() {
+                if (active && handle && handle->model) {
+                    handle->model->clear_tool_constraints();
+                }
+            }
+        } tool_constraint_guard{handle, prompt.tool_constraints_active};
+
         if (prompt.options.sample_seed != 0) {
             handle->model->set_sample_seed(prompt.options.sample_seed);
         }
@@ -994,7 +1010,7 @@ int cactus_complete(
         generated_tokens.push_back(next_token);
         handle->processed_tokens.push_back(next_token);
 
-        if (prompt.options.force_tools && !prompt.tools.empty()) {
+        if (prompt.tool_constraints_active) {
             handle->model->update_tool_constraints(next_token);
         }
 
@@ -1014,9 +1030,6 @@ int cactus_complete(
                 auto now = std::chrono::high_resolution_clock::now();
                 double elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count() / 1000.0;
                 if (cloud_result.ok && (!cloud_result.response.empty() || !cloud_result.function_calls.empty())) {
-                    if (prompt.options.force_tools && !prompt.tools.empty()) {
-                        handle->model->clear_tool_constraints();
-                    }
                     return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, confidence, prompt_tokens,
                                                    "low confidence");
                 }
@@ -1050,7 +1063,7 @@ int cactus_complete(
 
                 entropy.add(token_entropy);
 
-                if (prompt.options.force_tools && !prompt.tools.empty()) {
+                if (prompt.tool_constraints_active) {
                     handle->model->update_tool_constraints(next_token);
                 }
 
@@ -1078,10 +1091,6 @@ int cactus_complete(
                         << wrong_probability << " confidence=" << confidence);
                 }
             }
-        }
-
-        if (prompt.options.force_tools && !prompt.tools.empty()) {
-            handle->model->clear_tool_constraints();
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
@@ -1135,9 +1144,6 @@ int cactus_complete(
             auto now = std::chrono::high_resolution_clock::now();
             double elapsed_ms = std::chrono::duration_cast<std::chrono::microseconds>(now - start_time).count() / 1000.0;
             if (cloud_result.ok && (!cloud_result.response.empty() || !cloud_result.function_calls.empty())) {
-                if (prompt.options.force_tools && !prompt.tools.empty()) {
-                    handle->model->clear_tool_constraints();
-                }
                 return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, confidence, prompt_tokens,
                                                trigger_reason);
             }

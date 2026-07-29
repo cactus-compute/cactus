@@ -289,6 +289,69 @@ struct LengthTokenizer : public Tokenizer {
     bool load_vocabulary_with_config(const std::string&, const std::string&, const std::string&) override { return true; }
 };
 
+struct ToolSentinelTokenizer : public Tokenizer {
+    std::vector<uint32_t> encode(const std::string& text) const override {
+        if (text == "<|tool_call>") return {1};
+        if (text == "<tool_call|>") return {2};
+        if (text == "<|tool>") return {3};
+        if (text == "call:") return {4};
+        if (text == "{") return {5};
+        if (text == "}") return {6};
+        if (text == "<|\"|>") return {7};
+        return {8};
+    }
+    std::string decode(const std::vector<uint32_t>& tokens) const override {
+        if (tokens.empty()) return "";
+        switch (tokens.front()) {
+            case 1: return "<|tool_call>";
+            case 2: return "<tool_call|>";
+            case 3: return "<|tool>";
+            case 4: return "call:";
+            case 5: return "{";
+            case 6: return "}";
+            case 7: return "<|\"|>";
+            default: return "";
+        }
+    }
+    uint32_t get_vocab_size() const override { return 16; }
+    uint32_t get_unk_token() const override { return 0; }
+    uint32_t get_bos_token() const override { return 0; }
+    uint32_t get_eos_token() const override { return 0; }
+    bool load_vocabulary_with_config(const std::string&, const std::string&, const std::string&) override { return true; }
+};
+
+struct BranchingToolSentinelTokenizer : public Tokenizer {
+    std::vector<uint32_t> encode(const std::string& text) const override {
+        if (text == "<|tool_call>") return {1, 2};
+        if (text == "<|tool>") return {1, 3};
+        if (text == "<tool_call|>") return {4};
+        if (text == "call:") return {5};
+        if (text == "{") return {6};
+        if (text == "}") return {7};
+        if (text == "<|\"|>") return {8};
+        return {9};
+    }
+    std::string decode(const std::vector<uint32_t>& tokens) const override {
+        if (tokens.empty()) return "";
+        switch (tokens.front()) {
+            case 1: return "<|tool";
+            case 2: return "_call>";
+            case 3: return ">";
+            case 4: return "<tool_call|>";
+            case 5: return "call:";
+            case 6: return "{";
+            case 7: return "}";
+            case 8: return "<|\"|>";
+            default: return "";
+        }
+    }
+    uint32_t get_vocab_size() const override { return 16; }
+    uint32_t get_unk_token() const override { return 0; }
+    uint32_t get_bos_token() const override { return 0; }
+    uint32_t get_eos_token() const override { return 0; }
+    bool load_vocabulary_with_config(const std::string&, const std::string&, const std::string&) override { return true; }
+};
+
 bool test_tool_constraint_clear_releases_bias() {
     LengthTokenizer tok;
     ToolCallConstrainer constrainer;
@@ -304,6 +367,106 @@ bool test_tool_constraint_clear_releases_bias() {
         return false;
     }
     return true;
+}
+
+bool test_tool_constraint_blocks_declaration_echo() {
+    {
+        ToolSentinelTokenizer tok;
+        ToolCallConstrainer constrainer;
+        constrainer.init(Config::ModelType::GEMMA4, {{"get_weather", {"location"}, {}, {"location"}}}, &tok);
+
+        const auto& bias = constrainer.get_bias();
+        auto call_it = bias.find(1);
+        auto decl_it = bias.find(3);
+        if (call_it == bias.end() || call_it->second <= 0.0f) {
+            std::cerr << "  expected positive bias for single-token <|tool_call>\n";
+            return false;
+        }
+        if (decl_it == bias.end() || decl_it->second >= 0.0f) {
+            std::cerr << "  expected negative bias for single-token <|tool> declaration echo\n";
+            return false;
+        }
+    }
+
+    {
+        BranchingToolSentinelTokenizer tok;
+        ToolCallConstrainer constrainer;
+        constrainer.init(Config::ModelType::GEMMA4, {{"get_weather", {"location"}, {}, {"location"}}}, &tok);
+
+        const auto& start_bias = constrainer.get_bias();
+        auto start_call_it = start_bias.find(1);
+        if (start_call_it == start_bias.end() || start_call_it->second <= 0.0f) {
+            std::cerr << "  expected positive bias for shared <|tool prefix\n";
+            return false;
+        }
+
+        constrainer.update(1, tok.decode({1}));
+        const auto& branch_bias = constrainer.get_bias();
+        auto call_it = branch_bias.find(2);
+        auto decl_it = branch_bias.find(3);
+        if (call_it == branch_bias.end() || call_it->second <= 0.0f) {
+            std::cerr << "  expected positive bias for <|tool_call> branch\n";
+            return false;
+        }
+        if (decl_it == branch_bias.end() || decl_it->second >= 0.0f) {
+            std::cerr << "  expected negative bias for <|tool> branch\n";
+            return false;
+        }
+    }
+
+    {
+        ToolSentinelTokenizer tok;
+        ToolCallConstrainer constrainer;
+        constrainer.init(Config::ModelType::GEMMA4, {{"get_weather", {"location"}, {}, {"location"}}}, &tok,
+                         false);
+
+        const auto& bias = constrainer.get_bias();
+        if (bias.find(1) != bias.end() && bias.at(1) > 0.0f) {
+            std::cerr << "  optional mode should not force <|tool_call>\n";
+            return false;
+        }
+        auto decl_it = bias.find(3);
+        if (decl_it == bias.end() || decl_it->second >= 0.0f) {
+            std::cerr << "  optional mode should still block single-token <|tool>\n";
+            return false;
+        }
+    }
+
+    {
+        BranchingToolSentinelTokenizer tok;
+        ToolCallConstrainer constrainer;
+        constrainer.init(Config::ModelType::GEMMA4, {{"get_weather", {"location"}, {}, {"location"}}}, &tok,
+                         false);
+
+        const auto& start_bias = constrainer.get_bias();
+        if (start_bias.find(1) != start_bias.end() && start_bias.at(1) > 0.0f) {
+            std::cerr << "  optional mode should not force shared <|tool prefix\n";
+            return false;
+        }
+
+        constrainer.update(1, tok.decode({1}));
+        const auto& branch_bias = constrainer.get_bias();
+        auto call_it = branch_bias.find(2);
+        auto decl_it = branch_bias.find(3);
+        if (call_it == branch_bias.end() || call_it->second <= 0.0f) {
+            std::cerr << "  optional mode should complete a started <|tool_call> branch\n";
+            return false;
+        }
+        if (decl_it == branch_bias.end() || decl_it->second >= 0.0f) {
+            std::cerr << "  optional mode should block a started <|tool> branch\n";
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool has_parsed_function_calls(const Metrics& m) {
+    return m.function_calls != "[]" && m.function_calls.find("\"name\"") != std::string::npos;
+}
+
+static bool has_declaration_echo(const std::string& response) {
+    return response.find("<|tool>declaration:") != std::string::npos ||
+           response.find("<start_function_declaration>declaration:") != std::string::npos;
 }
 
 bool test_tool_call() {
@@ -335,12 +498,16 @@ bool test_tool_call() {
 
     return EngineTestUtils::run_test("TOOL CALL TEST", g_model_path, messages, options_with_force_tools,
         [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
-            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
-            bool has_tool = has_function && response.find("get_weather") != std::string::npos;
+            bool has_function = has_parsed_function_calls(m);
+            bool has_tool = has_function
+                && (m.function_calls.find("\"name\":\"get_weather\"") != std::string::npos
+                    || m.function_calls.find("\"name\": \"get_weather\"") != std::string::npos);
+            bool echoed_declaration = has_declaration_echo(response);
             std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
-                      << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n";
+                      << "├─ Correct tool: " << (has_tool ? "YES" : "NO") << "\n"
+                      << "├─ Declaration echo: " << (echoed_declaration ? "YES" : "NO") << "\n";
             m.print_json();
-            return result > 0 && has_function && has_tool;
+            return result > 0 && has_function && has_tool && !echoed_declaration;
         }, tools, -1, "What's the weather in San Francisco?");
 }
 
@@ -387,17 +554,19 @@ bool test_multiple_tool_call_invocations() {
 
     return EngineTestUtils::run_test("MULTIPLE TOOLS TEST", g_model_path, messages, options_with_force_tools,
         [](int result, const StreamingData&, const std::string& response, const Metrics& m) {
-            bool has_function = response.find("\"function_calls\":[") != std::string::npos;
+            bool has_function = has_parsed_function_calls(m);
             bool has_weather_tool = has_function
-                && (response.find("\"name\":\"get_weather\"") != std::string::npos
-                    || response.find("\"name\": \"get_weather\"") != std::string::npos);
+                && (m.function_calls.find("\"name\":\"get_weather\"") != std::string::npos
+                    || m.function_calls.find("\"name\": \"get_weather\"") != std::string::npos);
             bool has_message_tool = has_function
-                && (response.find("\"name\":\"send_message\"") != std::string::npos
-                    || response.find("\"name\": \"send_message\"") != std::string::npos);
+                && (m.function_calls.find("\"name\":\"send_message\"") != std::string::npos
+                    || m.function_calls.find("\"name\": \"send_message\"") != std::string::npos);
+            bool echoed_declaration = has_declaration_echo(response);
             std::cout << "├─ Function call: " << (has_function ? "YES" : "NO") << "\n"
-                      << "├─ Correct tool: " << (has_weather_tool && has_message_tool ? "YES" : "NO") << "\n";
+                      << "├─ Correct tool: " << (has_weather_tool && has_message_tool ? "YES" : "NO") << "\n"
+                      << "├─ Declaration echo: " << (echoed_declaration ? "YES" : "NO") << "\n";
             m.print_json();
-            return result > 0 && has_function && has_weather_tool && has_message_tool;
+            return result > 0 && has_function && has_weather_tool && has_message_tool && !echoed_declaration;
         }, tools, -1, "Send a message to Bob and get the weather for San Francisco.");
 }
 
@@ -668,6 +837,7 @@ int main() {
     runner.run_test("tool_calls", test_tool_call());
     runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
     runner.run_test("tool_constraint_clear_releases_bias", test_tool_constraint_clear_releases_bias());
+    runner.run_test("tool_constraint_blocks_declaration_echo", test_tool_constraint_blocks_declaration_echo());
     runner.run_test("partition_thinking_response", test_partition_thinking_response());
     runner.run_test("prompt_retains_thinking", test_prompt_gemma4_retains_thinking());
     runner.run_test("complete_thinking_api_clean", test_complete_gemma4_thinking_api_clean());

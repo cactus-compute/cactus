@@ -410,6 +410,7 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
 
     call_start_sequence_ = tokenizer_->encode(call_start_tag_);
     call_end_sequence_ = tokenizer_->encode(call_end_tag_);
+    declaration_start_sequence_ = tokenizer_->encode(declaration_start_tag_);
     std::vector<uint32_t> response_sequence = tokenizer_->encode(response_start_tag_);
     if (call_start_sequence_.size() == 1) gemma_call_start_tokens_.insert(call_start_sequence_[0]);
     if (call_end_sequence_.size() == 1) gemma_call_end_tokens_.insert(call_end_sequence_[0]);
@@ -426,10 +427,12 @@ void ToolCallConstrainer::tokenize_grammar_elements() {
 
 void ToolCallConstrainer::init(Config::ModelType model_type,
                                const std::vector<ToolConstraintSpec>& tools,
-                               Tokenizer* tokenizer) {
+                               Tokenizer* tokenizer,
+                               bool force_call) {
     model_type_ = model_type;
     tool_specs_ = tools;
     tokenizer_ = tokenizer;
+    force_call_ = force_call;
     generated_text_.clear();
     current_bias_.clear();
     dense_ready_ = false;
@@ -442,10 +445,12 @@ void ToolCallConstrainer::init(Config::ModelType model_type,
     if (Config::is_gemma3_family(model_type_)) {
         call_start_tag_ = "<start_function_call>";
         call_end_tag_ = "<end_function_call>";
+        declaration_start_tag_ = "<start_function_declaration>";
         response_start_tag_ = "<start_function_response>";
     } else {
         call_start_tag_ = "<|tool_call>";
         call_end_tag_ = "<tool_call|>";
+        declaration_start_tag_ = "<|tool>";
         response_start_tag_ = "<|tool_response>";
     }
 
@@ -525,7 +530,7 @@ void ToolCallConstrainer::compute_bias() {
 
     if (!active_) return;
 
-    if (!is_needle()) {
+    if (!is_needle() && (force_call_ || state_ != State::GEMMA_START)) {
         for (uint32_t t : backtick_tokens_) {
             current_bias_[t] = BLOCK_BIAS;
         }
@@ -553,14 +558,30 @@ void ToolCallConstrainer::compute_bias() {
 
     switch (state_) {
         case State::GEMMA_START:
-            if (forced_tag_progress_ < call_start_sequence_.size()) {
+            if ((force_call_ || forced_tag_progress_ > 0) &&
+                forced_tag_progress_ < call_start_sequence_.size()) {
                 current_bias_[call_start_sequence_[forced_tag_progress_]] = FORCE_BIAS;
             }
-            for (uint32_t t : open_brace_tokens_) {
-                current_bias_[t] = BLOCK_BIAS;
+            if (forced_tag_progress_ < declaration_start_sequence_.size()) {
+                bool shares_forced_prefix = forced_tag_progress_ <= call_start_sequence_.size();
+                for (size_t i = 0; shares_forced_prefix && i < forced_tag_progress_; ++i) {
+                    shares_forced_prefix = declaration_start_sequence_[i] == call_start_sequence_[i];
+                }
+                if (shares_forced_prefix) {
+                    uint32_t declaration_next = declaration_start_sequence_[forced_tag_progress_];
+                    if (forced_tag_progress_ >= call_start_sequence_.size() ||
+                        declaration_next != call_start_sequence_[forced_tag_progress_]) {
+                        current_bias_[declaration_next] = BLOCK_BIAS;
+                    }
+                }
             }
-            for (uint32_t t : close_brace_tokens_) {
-                current_bias_[t] = BLOCK_BIAS;
+            if (force_call_) {
+                for (uint32_t t : open_brace_tokens_) {
+                    current_bias_[t] = BLOCK_BIAS;
+                }
+                for (uint32_t t : close_brace_tokens_) {
+                    current_bias_[t] = BLOCK_BIAS;
+                }
             }
             break;
 
@@ -629,8 +650,8 @@ void ToolCallConstrainer::reset() {
 }
 
 
-void Model::set_tool_constraints(const std::vector<ToolConstraintSpec>& tools) {
-    tool_constrainer_.init(config_.model_type, tools, tokenizer_.get());
+void Model::set_tool_constraints(const std::vector<ToolConstraintSpec>& tools, bool force_call) {
+    tool_constrainer_.init(config_.model_type, tools, tokenizer_.get(), force_call);
 }
 
 void Model::clear_tool_constraints() {
