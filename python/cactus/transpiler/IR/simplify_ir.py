@@ -7,6 +7,8 @@ from ..Fusions import fusions as Fusions
 from ..Fusions import models as FModels
 
 
+#TODO: Clean up code
+
 def simplify(
     layer_map: CModels.LayerMap,
     *,
