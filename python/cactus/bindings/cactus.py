@@ -138,6 +138,25 @@ _bind_optional(
     [cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)],
     ctypes.c_int,
 )
+for _binary_name in (
+    "cactus_graph_equal",
+    "cactus_graph_less",
+    "cactus_graph_less_equal",
+    "cactus_graph_greater",
+    "cactus_graph_greater_equal",
+    "cactus_graph_bitwise_and",
+    "cactus_graph_bitwise_or",
+):
+    _bind_optional(
+        _binary_name,
+        [cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)],
+        ctypes.c_int,
+    )
+_bind_optional(
+    "cactus_graph_where",
+    [cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
 
 _lib.cactus_graph_precision_cast.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
@@ -175,6 +194,27 @@ _bind_optional(
     [cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)],
     ctypes.c_int,
 )
+for _scalar_name in (
+    "cactus_graph_scalar_equal",
+    "cactus_graph_scalar_less",
+    "cactus_graph_scalar_less_equal",
+    "cactus_graph_scalar_greater",
+    "cactus_graph_scalar_greater_equal",
+):
+    _bind_optional(
+        _scalar_name,
+        [cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)],
+        ctypes.c_int,
+    )
+for _unary_bool_name in (
+    "cactus_graph_logical_not",
+    "cactus_graph_bitwise_not",
+):
+    _bind_optional(
+        _unary_bool_name,
+        [cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)],
+        ctypes.c_int,
+    )
 _lib.cactus_graph_scalar_exp.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
 ]
@@ -247,10 +287,25 @@ _lib.cactus_graph_slice.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_slice.restype = ctypes.c_int
+_bind_optional(
+    "cactus_graph_strided_slice",
+    [cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
 _lib.cactus_graph_index.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.c_size_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_index.restype = ctypes.c_int
+_bind_optional(
+    "cactus_graph_unfold",
+    [cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
+_bind_optional(
+    "cactus_graph_pad",
+    [cactus_graph_t, cactus_node_t, ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
 
 _lib.cactus_graph_concat.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
@@ -270,6 +325,11 @@ _lib.cactus_graph_gather.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_gather.restype = ctypes.c_int
+_bind_optional(
+    "cactus_graph_gather_dim",
+    [cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
 _lib.cactus_graph_embedding_from_tensor.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
 ]
@@ -531,6 +591,11 @@ _lib.cactus_graph_conv1d.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_bool, cactus_node_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_conv1d.restype = ctypes.c_int
+_bind_optional(
+    "cactus_graph_conv1d_depthwise",
+    [cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_bool, cactus_node_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
 _lib.cactus_graph_conv1d_same_depthwise_k9.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_bool, cactus_node_t, ctypes.POINTER(cactus_node_t)
 ]
@@ -1627,6 +1692,43 @@ class Graph:
     def not_equal(self, a, b):
         return self._binary("cactus_graph_not_equal", a, b)
 
+    def equal(self, a, b):
+        return self._binary("cactus_graph_equal", a, b)
+
+    def less(self, a, b):
+        return self._binary("cactus_graph_less", a, b)
+
+    def less_equal(self, a, b):
+        return self._binary("cactus_graph_less_equal", a, b)
+
+    def greater(self, a, b):
+        return self._binary("cactus_graph_greater", a, b)
+
+    def greater_equal(self, a, b):
+        return self._binary("cactus_graph_greater_equal", a, b)
+
+    def bitwise_and(self, a, b):
+        return self._binary("cactus_graph_bitwise_and", a, b)
+
+    def bitwise_or(self, a, b):
+        return self._binary("cactus_graph_bitwise_or", a, b)
+
+    def where(self, condition, true_value, false_value):
+        condition = self._ensure_tensor(condition)
+        true_value = self._ensure_tensor(true_value)
+        false_value = self._ensure_tensor(false_value)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_where(
+            self.h,
+            cactus_node_t(condition.id),
+            cactus_node_t(true_value.id),
+            cactus_node_t(false_value.id),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_where failed"))
+        return self._tensor_from_node(out.value)
+
     def abs(self, x):
         x = self._ensure_tensor(x)
         out = cactus_node_t()
@@ -1688,6 +1790,27 @@ class Graph:
 
     def scalar_not_equal(self, x, value):
         return self._scalar("cactus_graph_scalar_not_equal", x, value)
+
+    def scalar_equal(self, x, value):
+        return self._scalar("cactus_graph_scalar_equal", x, value)
+
+    def scalar_less(self, x, value):
+        return self._scalar("cactus_graph_scalar_less", x, value)
+
+    def scalar_less_equal(self, x, value):
+        return self._scalar("cactus_graph_scalar_less_equal", x, value)
+
+    def scalar_greater(self, x, value):
+        return self._scalar("cactus_graph_scalar_greater", x, value)
+
+    def scalar_greater_equal(self, x, value):
+        return self._scalar("cactus_graph_scalar_greater_equal", x, value)
+
+    def logical_not(self, x):
+        return self._scalar("cactus_graph_logical_not", x)
+
+    def bitwise_not(self, x):
+        return self._scalar("cactus_graph_bitwise_not", x)
 
     def scalar_exp(self, x):
         return self._scalar("cactus_graph_scalar_exp", x)
@@ -1796,6 +1919,22 @@ class Graph:
             raise RuntimeError(_err("graph_slice failed"))
         return self._tensor_from_node(out.value)
 
+    def strided_slice(self, x, axis, start, length, step):
+        x = self._ensure_tensor(x)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_strided_slice(
+            self.h,
+            cactus_node_t(x.id),
+            ctypes.c_int32(int(axis)),
+            ctypes.c_size_t(int(start)),
+            ctypes.c_size_t(int(length)),
+            ctypes.c_size_t(int(step)),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_strided_slice failed"))
+        return self._tensor_from_node(out.value)
+
     def index(self, x, index_value, axis=0):
         x = self._ensure_tensor(x)
         out = cactus_node_t()
@@ -1808,6 +1947,38 @@ class Graph:
         )
         if rc != 0:
             raise RuntimeError(_err("graph_index failed"))
+        return self._tensor_from_node(out.value)
+
+    def unfold(self, x, dimension, size, step):
+        x = self._ensure_tensor(x)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_unfold(
+            self.h,
+            cactus_node_t(x.id),
+            ctypes.c_int32(int(dimension)),
+            ctypes.c_size_t(int(size)),
+            ctypes.c_size_t(int(step)),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_unfold failed"))
+        return self._tensor_from_node(out.value)
+
+    def pad(self, x, pads, value=0.0):
+        x = self._ensure_tensor(x)
+        pads = tuple(int(pad) for pad in pads)
+        arr = (ctypes.c_size_t * len(pads))(*pads)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_pad(
+            self.h,
+            cactus_node_t(x.id),
+            arr,
+            ctypes.c_size_t(len(pads)),
+            ctypes.c_float(float(value)),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_pad failed"))
         return self._tensor_from_node(out.value)
 
     def transpose(self, x, backend=CPU):
@@ -1856,16 +2027,25 @@ class Graph:
             raise RuntimeError(_err("graph_matmul failed"))
         return self._tensor_from_node(out.value)
 
-    def gather(self, tensor, indices):
+    def gather(self, tensor, indices, axis=0):
         tensor = self._ensure_tensor(tensor)
         indices = self._ensure_tensor(indices)
         out = cactus_node_t()
-        rc = _lib.cactus_graph_gather(
-            self.h,
-            cactus_node_t(tensor.id),
-            cactus_node_t(indices.id),
-            ctypes.byref(out),
-        )
+        if hasattr(_lib, "cactus_graph_gather_dim"):
+            rc = _lib.cactus_graph_gather_dim(
+                self.h,
+                cactus_node_t(tensor.id),
+                cactus_node_t(indices.id),
+                ctypes.c_int32(int(axis)),
+                ctypes.byref(out),
+            )
+        else:
+            rc = _lib.cactus_graph_gather(
+                self.h,
+                cactus_node_t(tensor.id),
+                cactus_node_t(indices.id),
+                ctypes.byref(out),
+            )
         if rc != 0:
             raise RuntimeError(_err("graph_gather failed"))
         return self._tensor_from_node(out.value)
@@ -2444,6 +2624,9 @@ class Graph:
 
     def conv1d(self, x, weight, bias=None, stride=1):
         return self._conv_with_optional_bias("cactus_graph_conv1d", x, weight, bias, ctypes.c_size_t(int(stride)))
+
+    def conv1d_depthwise(self, x, weight, bias=None, stride=1):
+        return self._conv_with_optional_bias("cactus_graph_conv1d_depthwise", x, weight, bias, ctypes.c_size_t(int(stride)))
 
     def conv1d_same_depthwise_k9(self, x, weight, bias=None):
         return self._conv_with_optional_bias("cactus_graph_conv1d_same_depthwise_k9", x, weight, bias)

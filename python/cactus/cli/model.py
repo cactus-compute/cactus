@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 from pathlib import Path
 
@@ -49,14 +50,59 @@ def ensure_weights(model_id, *, bits=4, platform=None, token=None, reconvert=Fal
 
 def _has_runnable_bundle(path):
     path = Path(path)
-    return (path / "components" / "manifest.json").exists()
+    return (path / "components" / "manifest.json").exists() or (path / "runtime_plan.json").exists()
 
 
 def resolve_bundle_dir(model_id):
     path = Path(model_id).expanduser()
+    if path.is_file() and path.name == "runtime_plan.json":
+        path = path.parent
+
     if path.is_dir() and _has_runnable_bundle(path):
+        materialize_engine_manifest_from_runtime_plan(path)
         return path
     return None
+
+
+def materialize_engine_manifest_from_runtime_plan(bundle_dir):
+    bundle_path = Path(bundle_dir)
+    runtime_plan_path = bundle_path / "runtime_plan.json"
+    engine_manifest_path = bundle_path / "components" / "manifest.json"
+
+    if not runtime_plan_path.exists():
+        return engine_manifest_path if engine_manifest_path.exists() else None
+
+    if engine_manifest_path.exists() and engine_manifest_path.stat().st_mtime >= runtime_plan_path.stat().st_mtime:
+        return engine_manifest_path
+
+    plan = json.loads(runtime_plan_path.read_text(encoding="utf-8"))
+    manifest = engine_manifest_from_runtime_plan(plan)
+    engine_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    engine_manifest_path.write_text(json.dumps(manifest, indent=4), encoding="utf-8")
+    return engine_manifest_path
+
+
+def engine_manifest_from_runtime_plan(plan):
+    components = plan.get("components")
+
+    if not isinstance(components, list):
+        raise ValueError("runtime_plan.json must contain a components list")
+
+    manifest = {"components": components}
+    family = plan.get("family")
+
+    if family:
+        manifest["family"] = str(family)
+
+    metadata = plan.get("metadata")
+
+    if isinstance(metadata, dict):
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            manifest[str(key)] = str(value)
+
+    return manifest
 
 
 def _local_build_unavailable(model_id) -> RuntimeError:

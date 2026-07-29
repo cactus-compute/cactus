@@ -84,9 +84,12 @@ def apply_runtime_env(args) -> None:
 
 
 def is_valid_bundle(path) -> bool:
-    """A runnable v2 bundle has both config.txt and the components manifest."""
+    """A runnable v2 bundle has config.txt plus an engine manifest or runtime plan."""
     path = Path(path)
-    return (path / "config.txt").exists() and (path / "components" / "manifest.json").exists()
+    return (path / "config.txt").exists() and (
+        (path / "components" / "manifest.json").exists()
+        or (path / "runtime_plan.json").exists()
+    )
 
 
 def launch_binary(name, *args) -> int:

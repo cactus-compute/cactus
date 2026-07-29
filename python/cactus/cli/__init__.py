@@ -1,5 +1,6 @@
 import sys
 import argparse
+from pathlib import Path
 
 from .. import __version__
 from .common import (
@@ -81,6 +82,9 @@ def _unit_float(value):
 
 def _hf_id_or_path(value):
     v = (value or "").strip()
+    if Path(v).expanduser().exists():
+        return v
+
     if "/" not in v:
         raise argparse.ArgumentTypeError(
             f"invalid model {value!r}. Use a HuggingFace id like 'openai/whisper-base' "

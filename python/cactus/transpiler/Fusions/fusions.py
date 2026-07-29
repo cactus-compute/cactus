@@ -376,12 +376,6 @@ DIRECT_GRAPHS: dict[str, M.FusionGraph] = {
             M.AttrCapture("hi", "clamp", "max", required=False),
         ),
     ),
-    "glu": _single_node_graph(
-        "glu",
-        "glu",
-        ("x",),
-        attr_captures=(M.AttrCapture("axis", "glu", "dim", default=-1, required=False),),
-    ),
     "groupnorm": _single_node_graph(
         "groupnorm",
         "groupnorm",
@@ -1091,6 +1085,7 @@ FUSIONS: dict[str, M.FusionDefinition] = {
     "scaled_dot_product_attention": _definition("scaled_dot_product_attention", "attention", ATTENTION_DIRECT_GRAPH, fusion_fields=("generic", "attention")),
     "attention_core": _definition("attention_core", "attention", ATTENTION_CORE_GRAPH, fusion_fields=("generic", "attention", "gemma4_attention", "qwen2_5_attention", "lfm_attention")),
     "attention_masked": _definition("attention_masked", "attention", ATTENTION_MASKED_GRAPH, fusion_fields=("generic", "attention", "gemma4_attention")),
+    "gemma4_bmm_masked_attention": _definition("gemma4_bmm_masked_attention", "attention", LFM_BMM_MASKED_ATTENTION_GRAPH, fusion_fields=("generic", "attention", "gemma4_attention")),
     "lfm_bmm_masked_attention": _definition("lfm_bmm_masked_attention", "attention", LFM_BMM_MASKED_ATTENTION_GRAPH, fusion_fields=("generic", "attention", "lfm_attention", "lfm_moe")),
     "rope": _definition("rope", "rope", ROPE_GRAPH, fusion_fields=("generic", "rope", "gemma4_rope", "qwen2_5_rope")),
     "conv": _definition("conv", "conv1d", CONV_GRAPH, fusion_fields=("generic", "conv", "audio", "vision"), metadata=_required_attrs(padding=0, dilation=1, groups=1)),

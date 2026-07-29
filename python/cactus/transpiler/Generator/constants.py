@@ -8,13 +8,13 @@ DTYPE_TO_PRECISION: dict[str, str] = {
     "torch.bfloat16": "FP16",
     "torch.float32": "FP32",
     "torch.float": "FP32",
-    "torch.int8": "INT8",
-    "torch.uint8": "INT8",
-    "torch.int16": "INT8",
-    "torch.int32": "INT8",
-    "torch.int64": "INT8",
-    "torch.long": "INT8",
-    "torch.bool": "INT8",
+    "torch.int8": "FP32",
+    "torch.uint8": "FP32",
+    "torch.int16": "FP32",
+    "torch.int32": "FP32",
+    "torch.int64": "FP32",
+    "torch.long": "FP32",
+    "torch.bool": "FP32",
 }
 
 WEIGHT_VALUE_KINDS = {
@@ -62,11 +62,25 @@ BINARY_TARGETS: dict[str, str] = {
     "cactus.multiply": "multiply",
     "cactus.divide": "divide",
     "cactus.not_equal": "not_equal",
+    "cactus.equal": "equal",
+    "cactus.less": "less",
+    "cactus.less_equal": "less_equal",
+    "cactus.greater": "greater",
+    "cactus.greater_equal": "greater_equal",
+    "cactus.bitwise_and": "bitwise_and",
+    "cactus.bitwise_or": "bitwise_or",
     "aten.add.Tensor": "add",
     "aten.sub.Tensor": "subtract",
     "aten.mul.Tensor": "multiply",
     "aten.div.Tensor": "divide",
     "aten.ne.Tensor": "not_equal",
+    "aten.eq.Tensor": "equal",
+    "aten.lt.Tensor": "less",
+    "aten.le.Tensor": "less_equal",
+    "aten.gt.Tensor": "greater",
+    "aten.ge.Tensor": "greater_equal",
+    "aten.bitwise_and.Tensor": "bitwise_and",
+    "aten.bitwise_or.Tensor": "bitwise_or",
 }
 
 SCALAR_TARGETS: dict[str, tuple[str, str]] = {
@@ -76,12 +90,22 @@ SCALAR_TARGETS: dict[str, tuple[str, str]] = {
     "cactus.scalar_divide": ("scalar_divide", "value"),
     "cactus.scalar_floor_divide": ("scalar_floor_divide", "value"),
     "cactus.scalar_not_equal": ("scalar_not_equal", "value"),
+    "cactus.scalar_equal": ("scalar_equal", "value"),
+    "cactus.scalar_less": ("scalar_less", "value"),
+    "cactus.scalar_less_equal": ("scalar_less_equal", "value"),
+    "cactus.scalar_greater": ("scalar_greater", "value"),
+    "cactus.scalar_greater_equal": ("scalar_greater_equal", "value"),
     "aten.add.Scalar": ("scalar_add", "other"),
     "aten.sub.Scalar": ("scalar_subtract", "other"),
     "aten.mul.Scalar": ("scalar_multiply", "other"),
     "aten.div.Scalar": ("scalar_divide", "other"),
     "aten.floor_divide.default": ("scalar_floor_divide", "other"),
     "aten.ne.Scalar": ("scalar_not_equal", "other"),
+    "aten.eq.Scalar": ("scalar_equal", "other"),
+    "aten.lt.Scalar": ("scalar_less", "other"),
+    "aten.le.Scalar": ("scalar_less_equal", "other"),
+    "aten.gt.Scalar": ("scalar_greater", "other"),
+    "aten.ge.Scalar": ("scalar_greater_equal", "other"),
 }
 
 UNARY_TARGETS: dict[str, str] = {
@@ -97,6 +121,8 @@ UNARY_TARGETS: dict[str, str] = {
     "cactus.gelu_erf": "gelu_erf",
     "cactus.sigmoid": "sigmoid",
     "cactus.tanh": "tanh",
+    "cactus.logical_not": "logical_not",
+    "cactus.bitwise_not": "bitwise_not",
     "aten.abs.default": "abs",
     "aten.exp.default": "scalar_exp",
     "aten.sqrt.default": "scalar_sqrt",
@@ -108,6 +134,12 @@ UNARY_TARGETS: dict[str, str] = {
     "aten.gelu.default": "gelu",
     "aten.sigmoid.default": "sigmoid",
     "aten.tanh.default": "tanh",
+    "aten.logical_not.default": "logical_not",
+    "aten.bitwise_not.default": "bitwise_not",
+}
+
+LOG1P_TARGETS = {
+    "aten.log1p.default",
 }
 
 POW_TARGETS = {
@@ -127,6 +159,7 @@ REDUCE_TARGETS: dict[str, str] = {
     "aten.var.correction": "variance",
     "aten.amax.default": "max",
     "aten.amin.default": "min",
+    "aten.any.dim": "max",
 }
 
 SHAPE_TARGETS: dict[str, str] = {
@@ -164,6 +197,15 @@ SLICE_TARGETS = {
 
 INDEX_TARGETS = {
     "cactus.index",
+    "aten.index.Tensor",
+}
+
+WHERE_TARGETS = {
+    "aten.where.self",
+}
+
+UNFOLD_TARGETS = {
+    "aten.unfold.default",
 }
 
 CAT_TARGETS = {
@@ -304,17 +346,8 @@ SPECIAL_CACTUS_TARGETS = {
 }
 
 UNSUPPORTED_SEMANTIC_TARGETS = {
-    "aten.any.dim",
-    "aten.bitwise_and.Tensor",
-    "aten.bitwise_or.Tensor",
-    "aten.eq.Scalar",
-    "aten.eq.Tensor",
     "aten.fmod.Scalar",
-    "aten.index.Tensor",
-    "aten.le.Tensor",
-    "aten.logical_not.default",
     "aten.slice_scatter.default",
-    "aten.where.self",
 }
 
 OPEN_SLICE_END = 9_223_372_036_854_775_807

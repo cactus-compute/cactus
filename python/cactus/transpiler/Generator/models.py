@@ -204,6 +204,8 @@ class ComponentGraphManifest:
 class GenerationResult:
     component_paths: dict[str, Path] = field(default_factory=dict)
     component_manifest_paths: dict[str, Path] = field(default_factory=dict)
+    engine_manifest_path: Path | None = None
+    runtime_plan_path: Path | None = None
     unsupported_nodes: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
@@ -507,6 +509,16 @@ def weight_name_variants(name: str) -> tuple[str, ...]:
     while current.startswith("model."):
         current = current[len("model."):]
         variants.append(current)
+
+    if name.endswith("lm_head.weight"):
+        variants.extend(
+            (
+                "model.language_model.embed_tokens.weight",
+                "language_model.embed_tokens.weight",
+                "model.embed_tokens.weight",
+                "embed_tokens.weight",
+            )
+        )
 
     if name.startswith("_orig_mod."):
         variants.append(name[len("_orig_mod."):])

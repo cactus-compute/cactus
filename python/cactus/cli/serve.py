@@ -31,7 +31,7 @@ def cmd_serve(args):
         model_path, model_name = built, built.name
     if model_path is not None and not is_valid_bundle(model_path):
         print_color(RED, f"Error: not a valid v2 Cactus bundle: {model_path}")
-        print("Expected config.txt and components/manifest.json.")
+        print("Expected config.txt and either components/manifest.json or runtime_plan.json.")
         return 1
 
     try:
