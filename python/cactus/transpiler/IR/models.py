@@ -81,6 +81,9 @@ class Graph:
     def apply_fusions(self, fusion_results: list["FusionResult"] | tuple["FusionResult", ...]) -> "Graph":
         return apply_fusions_to_graph(self, tuple(fusion_results))
 
+    def remove_noop_nodes(self) -> "Graph":
+        return remove_noop_nodes_from_graph(self)
+
     def to_layer_map(self) -> CModels.LayerMap:
         return graph_to_layer_map(self)
 
@@ -411,6 +414,88 @@ def rewrite_node_refs(value: Any, replacement_names: dict[str, str]) -> Any:
         return {key: rewrite_node_refs(item, replacement_names) for key, item in value.items()}
 
     return value
+
+
+def remove_noop_nodes_from_graph(graph: Graph) -> Graph:
+    replacement_names: dict[str, str] = {}
+
+    for node in graph.nodes:
+        replacement = noop_replacement_name(node)
+
+        if replacement is not None:
+            replacement_names[node.name] = replacement
+
+    if not replacement_names:
+        return graph
+
+    replacement_names = resolve_replacement_names(replacement_names)
+    kept_nodes = tuple(clone_rewritten_node(node, replacement_names) for node in graph.nodes if node.name not in replacement_names)
+    return prune_dead_nodes(rebuild_graph(kept_nodes, graph, tuple(graph.fusions)))
+
+
+def noop_replacement_name(node: Node) -> str | None:
+    if len(node.parents) != 1 or node.is_output:
+        return None
+
+    parent = node.parents[0]
+
+    if node.target == "aten._assert_tensor_metadata.default":
+        return parent.name
+
+    if node.target in {"aten.clone.default", "aten.contiguous.default", "aten.detach.default"}:
+        return parent.name
+
+    if node.target in {"aten._to_copy.default", "aten.view.default", "aten.reshape.default", "aten.expand.default", "cactus.view", "cactus.reshape"} and same_tensor_signature(node, parent):
+        return parent.name
+
+    return None
+
+
+def resolve_replacement_names(replacement_names: dict[str, str]) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+
+    for name in replacement_names:
+        current = replacement_names[name]
+        seen = {name}
+
+        while current in replacement_names and current not in seen:
+            seen.add(current)
+            current = replacement_names[current]
+
+        resolved[name] = current
+
+    return resolved
+
+
+def same_tensor_signature(left: Node, right: Node) -> bool:
+    return same_shape(left, right) and same_effective_dtype(left, right)
+
+
+def same_shape(left: Node, right: Node) -> bool:
+    return tensor_meta_value(left, "shape") == tensor_meta_value(right, "shape")
+
+
+def same_effective_dtype(left: Node, right: Node) -> bool:
+    return effective_dtype(tensor_meta_value(left, "dtype")) == effective_dtype(tensor_meta_value(right, "dtype"))
+
+
+def tensor_meta_value(node: Node, key: str) -> Any:
+    if not isinstance(node.tensor_output_meta, dict):
+        return None
+
+    return node.tensor_output_meta.get(key)
+
+
+def effective_dtype(dtype: Any) -> str | None:
+    if dtype is None:
+        return None
+
+    dtype_name = str(dtype)
+
+    if dtype_name in {"torch.float16", "torch.bfloat16"}:
+        return "torch.float16"
+
+    return dtype_name
 
 
 def rebuild_graph(nodes: tuple[Node, ...], original_graph: Graph, fusion_results: tuple[FusionResult, ...] = ()) -> Graph:

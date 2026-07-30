@@ -40,7 +40,7 @@ def simplify(
         total_fusions += len(simplified_graph.fusions)
         graph = simplified_graph
 
-    return graph.to_layer_map()
+    return graph.remove_noop_nodes().to_layer_map()
 
 
 def write_simplified_json(

@@ -239,7 +239,7 @@ def runtime_plan_from_generator_manifests(
     )
 
     return RuntimePlan(
-        family=str(getattr(model_profile, "model_profiles", "") or ""),
+        family=runtime_family_from_model_profile(model_profile),
         components=components,
         routes=runtime_routes_from_model_profile(model_profile),
         metadata=string_dict(metadata),
@@ -271,6 +271,19 @@ def runtime_routes_from_model_profile(model_profile: Any | None) -> tuple[Runtim
 
     routes = getattr(model_profile, "inference_type", {}) or {}
     return tuple(runtime_route_from_profile_route(route) for route in routes.values())
+
+
+def runtime_family_from_model_profile(model_profile: Any | None) -> str:
+    profile_name = str(getattr(model_profile, "model_profiles", "") or "")
+    normalized_name = profile_name.lower()
+
+    if "gemma4" in normalized_name or "gemma_4" in normalized_name:
+        return "gemma4"
+
+    if normalized_name in {"lfm_vlm", "lfm2_vl", "lfm-vlm"}:
+        return "lfm2_vl"
+
+    return profile_name
 
 
 def runtime_route_from_profile_route(route: Any) -> RuntimeRoute:

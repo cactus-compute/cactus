@@ -36,7 +36,10 @@ def main() -> None:
     model_id = "google/gemma-4-E2B"
     input_modalities = ("text", "vision", "audio")
     output_dir = constants.CONVERTER_JSON_DIR
-    bundle_dir = Path(__file__).resolve().parent / "Generator" / "graphs" / "gemma4_e2b_bundle"
+    repo_root = Path(__file__).resolve().parents[3]
+    weights_arg = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("CACTUS_TRANSPILER_WEIGHTS_DIR")
+    weights_dir = Path(weights_arg).expanduser() if weights_arg else repo_root / "weights" / "gemma4-e2b"
+    bundle_dir = weights_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
@@ -62,11 +65,8 @@ def main() -> None:
 
     prefill = LayerMap.model_validate_json(prefill_simplified_path.read_text(encoding="utf-8"))
     decode = LayerMap.model_validate_json(decode_simplified_path.read_text(encoding="utf-8"))
-    weights_arg = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("CACTUS_TRANSPILER_WEIGHTS_DIR")
-    weights_dir = Path(weights_arg).expanduser() if weights_arg else None
 
-    if weights_dir is not None:
-        materialize_runtime_bundle_files(weights_dir, bundle_dir)
+    materialize_runtime_bundle_files(weights_dir, bundle_dir)
 
     result = generate_bundle(
         {"prefill": prefill, "decode": decode},

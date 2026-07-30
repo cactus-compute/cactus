@@ -99,6 +99,10 @@ class GenerationContext:
     config: GeneratorConfig
     lowerings: dict[str, LoweringRule] = field(default_factory=dict)
     values: dict[str, GraphTensor] = field(default_factory=dict)
+    skip_node_names: frozenset[str] = frozenset()
+    cache_state_placeholder_names: frozenset[str] = frozenset()
+    prefill_cache_cat_annotations: dict[str, IRModels.CacheAnnotation] = field(default_factory=dict)
+    appended_cache_pairs: set[tuple[str, str]] = field(default_factory=set)
 
     @property
     def graph(self) -> CactusGraph:

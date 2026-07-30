@@ -33,6 +33,7 @@ GEMMA4_E2B_PROFILE = ModelProfile(
         "gemma4_attention",
         "gemma4_mlp",
         "linear",
+        "cache",
     ),
     supported_modalties=("audio", "vision", "text"),
     input_strategy="manual_gemma4_processor",

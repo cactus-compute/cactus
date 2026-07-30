@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import struct
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -21,6 +23,7 @@ class UnsupportedLoweringError(NotImplementedError):
 
 GraphInput = CModels.LayerMap | IRModels.Graph
 ComponentInput = GraphInput | Mapping[str, GraphInput]
+SIZE_T_MAX = (1 << 64) - 1
 
 
 def generate(
@@ -258,6 +261,112 @@ def add_rules(rules: dict[str, models.LoweringRule], targets: Any, lower: models
         rules[target] = models.LoweringRule(target, lower)
 
 
+def cache_attention_generation_plan(graph: IRModels.Graph) -> tuple[frozenset[str], frozenset[str], dict[str, IRModels.CacheAnnotation]]:
+    skip_names: set[str] = set()
+    cache_state_names: set[str] = set()
+    prefill_annotations = prefill_cache_cat_annotations(graph)
+
+    for node in graph.nodes:
+        if node.target != "cactus.attention" or len(node.parents) < 3:
+            continue
+
+        key_cat = find_cache_cat_ancestor(node.parents[1], FModels.CacheTensorRole.KEY)
+        value_cat = find_cache_cat_ancestor(node.parents[2], FModels.CacheTensorRole.VALUE)
+
+        if key_cat is None or value_cat is None:
+            continue
+
+        key_cache = key_cat.parents[0]
+        value_cache = value_cat.parents[0]
+
+        if key_cache.cache is None or value_cache.cache is None:
+            continue
+
+        if key_cache.cache.layer_index != value_cache.cache.layer_index:
+            continue
+
+        skip_names.update(cache_wrapper_path_names(node.parents[1], key_cat))
+        skip_names.update(cache_wrapper_path_names(node.parents[2], value_cat))
+        cache_state_names.update((key_cache.name, value_cache.name))
+
+    for cat_name in prefill_annotations:
+        cat_node = graph.nodes_map.get(cat_name)
+
+        if cat_node is not None and cat_node.parents:
+            skip_names.add(cat_node.parents[0].name)
+
+    return frozenset(skip_names), frozenset(cache_state_names), prefill_annotations
+
+
+def prefill_cache_cat_annotations(graph: IRModels.Graph) -> dict[str, IRModels.CacheAnnotation]:
+    annotations: dict[str, IRModels.CacheAnnotation] = {}
+    candidates = [node for node in graph.nodes if is_empty_cache_cat(node)]
+
+    for index, node in enumerate(candidates):
+        shape = concrete_shape(meta_shape(node))
+
+        if shape is None or len(shape) != 4:
+            continue
+
+        _, num_kv_heads, sequence_length, head_dim = shape
+        annotations[node.name] = IRModels.CacheAnnotation(
+            kind=FModels.CacheKind.KV,
+            role=FModels.CacheTensorRole.KEY if index % 2 == 0 else FModels.CacheTensorRole.VALUE,
+            tensor_index=index,
+            layer_index=index // 2,
+            shape=tuple(shape),
+            layout="batch_heads_sequence_head_dim",
+            sequence_length=int(sequence_length),
+            num_kv_heads=int(num_kv_heads),
+            head_dim=int(head_dim),
+            source="prefill_empty_cache_cat",
+        )
+
+    return annotations
+
+
+def is_empty_cache_cat(node: IRModels.Node) -> bool:
+    if node.target not in {"cactus.cat", "aten.cat.default"} or len(node.parents) < 2:
+        return False
+
+    first_parent = node.parents[0]
+    return first_parent.value_kind == FModels.ValueKind.LIFTED_CONSTANT and element_count(meta_shape(first_parent)) == 0
+
+
+def find_cache_cat_ancestor(node: IRModels.Node, role: str, max_depth: int = 16) -> IRModels.Node | None:
+    current = node
+
+    for _ in range(max_depth):
+        if current.target in {"cactus.cat", "aten.cat.default"} and len(current.parents) >= 2:
+            cache_parent = current.parents[0]
+
+            if cache_parent.cache is not None and cache_parent.cache.kind == FModels.CacheKind.KV and cache_parent.cache.role == role:
+                return current
+
+        if len(current.parents) != 1:
+            return None
+
+        current = current.parents[0]
+
+    return None
+
+
+def cache_wrapper_path_names(start: IRModels.Node, stop: IRModels.Node) -> set[str]:
+    names: set[str] = set()
+    current = start
+
+    while True:
+        names.add(current.name)
+
+        if current is stop:
+            return names
+
+        if len(current.parents) != 1:
+            return set()
+
+        current = current.parents[0]
+
+
 def lower_component(
     component: models.ComponentGraph,
     config: models.GeneratorConfig,
@@ -266,6 +375,11 @@ def lower_component(
     component.graph = create_cactus_graph()
     component.weight_resolver = component_weight_resolver(component, config)
     context = models.GenerationContext(component=component, config=config, lowerings=lowering_rules)
+    (
+        context.skip_node_names,
+        context.cache_state_placeholder_names,
+        context.prefill_cache_cat_annotations,
+    ) = cache_attention_generation_plan(component.ir_graph)
 
     for node in IRModels.topological_sort(component.ir_graph):
         try:
@@ -288,6 +402,9 @@ def lower_component(
 
 
 def lower_node(context: models.GenerationContext, node: IRModels.Node) -> None:
+    if node.name in context.skip_node_names:
+        return
+
     if node.is_placeholder:
         context.bind(node, lower_placeholder(context, node))
         return
@@ -308,7 +425,7 @@ def lower_node(context: models.GenerationContext, node: IRModels.Node) -> None:
 
 
 def lower_placeholder(context: models.GenerationContext, node: IRModels.Node) -> Any:
-    if should_lower_cache_placeholder_as_state(node):
+    if should_lower_cache_placeholder_as_state(context, node):
         return lower_cache_placeholder(context, node)
 
     shape, dynamic_dims = graph_input_shape(node)
@@ -333,9 +450,12 @@ def placeholder_precision(context: models.GenerationContext, node: IRModels.Node
     return cactus_precision(context.graph, tensor_dtype(node))
 
 
-def should_lower_cache_placeholder_as_state(node: IRModels.Node) -> bool:
+def should_lower_cache_placeholder_as_state(context: models.GenerationContext, node: IRModels.Node) -> bool:
     if node.cache is None:
         return False
+
+    if node.name in context.cache_state_placeholder_names:
+        return True
 
     if node.cache.kind == FModels.CacheKind.CONV:
         return any(child.target in {"cactus.conv_cache_append", "cactus.conv_cache_initialize"} for child in node.children)
@@ -535,6 +655,10 @@ def lower_binary(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     if len(inputs) == 2:
         left, right = align_binary_inputs(context, node, inputs)
+
+        if method == "add" and context.component.name in {"decoder_step", "decoder_prefill_chunk"} and looks_like_gemma_residual_add(node):
+            return context.graph.add_clipped(left, right)
+
         return getattr(context.graph, method)(left, right)
 
     scalar = scalar_attr(node, "other")
@@ -544,6 +668,41 @@ def lower_binary(context: models.GenerationContext, node: IRModels.Node) -> Any:
         return getattr(context.graph, scalar_method)(inputs[0], scalar)
 
     raise unsupported_arity(node, len(inputs), "two tensor inputs or one tensor plus scalar attr")
+
+
+def looks_like_gemma_residual_add(node: IRModels.Node) -> bool:
+    if len(node.parents) != 2:
+        return False
+
+    shape = meta_shape(node)
+
+    if not shape or len(shape) > 3:
+        return False
+
+    left, right = node.parents
+    return (
+        is_gemma_residual_branch(left, right)
+        or is_gemma_residual_branch(right, left)
+    )
+
+
+def is_gemma_residual_branch(residual: IRModels.Node, branch: IRModels.Node) -> bool:
+    branch_source = strip_precision_passthrough(branch)
+
+    if branch_source.target != "cactus.rms_norm" or not branch_source.parents:
+        return False
+
+    return strip_precision_passthrough(residual) is not strip_precision_passthrough(branch_source.parents[0])
+
+
+def strip_precision_passthrough(node: IRModels.Node) -> IRModels.Node:
+    current = node
+    passthrough_targets = constants.PASS_THROUGH_TARGETS | constants.TO_COPY_TARGETS
+
+    while current.target in passthrough_targets and len(current.parents) == 1:
+        current = current.parents[0]
+
+    return current
 
 
 def lower_scalar(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -888,6 +1047,12 @@ def lower_unfold(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
 
 def lower_cat(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    if node.name in context.prefill_cache_cat_annotations:
+        prefill_cache = lower_prefill_cache_cat(context, node)
+
+        if prefill_cache is not None:
+            return prefill_cache
+
     inputs = context.inputs_for(node)
 
     if not inputs:
@@ -900,6 +1065,29 @@ def lower_cat(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     axis = normalize_dim(int(node.attrs.get("axis", node.attrs.get("dim", 0))), cat_rank(node))
     return context.graph.cat(inputs, axis=axis)
+
+
+def lower_prefill_cache_cat(context: models.GenerationContext, node: IRModels.Node) -> Any | None:
+    annotation = context.prefill_cache_cat_annotations.get(node.name)
+
+    if annotation is None or len(node.parents) < 2:
+        return None
+
+    new_kv_node = node.parents[1]
+    original_new_kv = context.require(new_kv_node.name)
+    new_kv = cache_new_kv_for_native(context, new_kv_node, original_new_kv)
+    new_kv = cast_to_precision(context, new_kv, context.graph.FP16)
+    cache_state = context.graph.kv_cache_state(
+        kv_cache_capacity(context, annotation),
+        required_cache_int(annotation.num_kv_heads, node, "num_kv_heads"),
+        required_cache_int(annotation.head_dim, node, "head_dim"),
+        window_size=int(annotation.window_size or 0),
+        sink_size=0,
+        num_slots=1,
+    )
+    record_cache_state_binding(context, node, cache_state, annotation)
+    context.graph.kv_cache_append(new_kv, cache_state, window_size=int(annotation.window_size or 0), sink_size=0)
+    return original_new_kv
 
 
 def lower_matmul(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -1049,12 +1237,27 @@ def lower_to_copy(context: models.GenerationContext, node: IRModels.Node) -> Any
     if dtype is None or dtype == "torch.bool":
         return inputs[0]
 
+    if str(dtype) == "torch.float32" and can_skip_float32_copy(node):
+        return inputs[0]
+
     precision_name = constants.DTYPE_TO_PRECISION.get(str(dtype))
 
     if precision_name is None:
         return inputs[0]
 
     return context.graph.precision_cast(inputs[0], cactus_precision(context.graph, str(dtype)))
+
+
+def can_skip_float32_copy(node: IRModels.Node) -> bool:
+    if not node.children:
+        return False
+
+    safe_consumers = {
+        "aten.bmm.default",
+        "cactus.attention",
+        "cactus.rms_norm",
+    }
+    return all(child.target in safe_consumers for child in node.children)
 
 
 def lower_pass_through(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -1123,12 +1326,163 @@ def lower_constant_pad_nd(context: models.GenerationContext, node: IRModels.Node
 
 
 def lower_constant_input(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    constant = deterministic_constant_values(node)
+
+    if constant is not None:
+        values, shape = constant
+        dtype = cactus_precision(context.graph, tensor_dtype(node))
+        tensor = context.graph.input(shape, dtype=dtype)
+        path = write_constant_tensor(context, node, values, shape, dtype)
+        node_id = models.tensor_node_id(tensor)
+
+        if node_id is None:
+            raise UnsupportedLoweringError(f"{node.name}: generated constant does not expose a Cactus node id")
+
+        context.component.add_weight_binding(
+            models.WeightBinding(
+                placeholder=node.name,
+                source_target=node.target,
+                node_id=node_id,
+                path=path,
+                output_name=path,
+                precision=precision_name(context.graph, dtype),
+                component=context.component.name,
+                binding_kind="generated_constant",
+            )
+        )
+        return tensor
+
     context.component.warn(f"{node.name}: constant-producing op {node.target} lowered as graph input")
     shape, dynamic_dims = graph_input_shape(node)
     dtype = cactus_precision(context.graph, tensor_dtype(node))
     tensor = context.graph.input(shape, dtype=dtype, dynamic_dims=dynamic_dims if any(dynamic_dims) else None)
     context.component.add_runtime_input(tensor, node.name)
     return tensor
+
+
+def deterministic_constant_values(node: IRModels.Node) -> tuple[list[float], tuple[int, ...]] | None:
+    shape = concrete_shape(meta_shape(node))
+
+    if node.target.startswith("aten.arange"):
+        start = numeric_attr(node, "start", "arg_0", default=0)
+        end = numeric_attr(node, "end", "arg_1")
+        step = numeric_attr(node, "step", "arg_2", default=1)
+
+        if end is None or step in {None, 0}:
+            return None
+
+        values = arange_values(float(start), float(end), float(step))
+        return values, (len(values),)
+
+    if node.target == "aten.scalar_tensor.default":
+        value = numeric_attr(node, "value", "arg_0", default=0)
+        return [float(value or 0)], (1,)
+
+    if node.target in {"aten.full.default", "aten.full_like.default"}:
+        if shape is None:
+            raw_size = node.attrs.get("size", node.attrs.get("arg_0"))
+            shape = tuple(int(dim) for dim in raw_size) if isinstance(raw_size, (list, tuple)) else None
+
+        if shape is None:
+            return None
+
+        fill_value = numeric_attr(node, "fill_value", "arg_1", default=0)
+        count = math.prod(shape) if shape else 1
+        return [float(fill_value or 0)] * int(count), tuple(shape or (1,))
+
+    return None
+
+
+def arange_values(start: float, end: float, step: float) -> list[float]:
+    values: list[float] = []
+    current = start
+
+    if step > 0:
+        while current < end:
+            values.append(current)
+            current += step
+    else:
+        while current > end:
+            values.append(current)
+            current += step
+
+    return values
+
+
+def numeric_attr(node: IRModels.Node, *names: str, default: Any | None = None) -> Any | None:
+    for name in names:
+        value = node.attrs.get(name)
+
+        if value is not None:
+            return value
+
+    return default
+
+
+def write_constant_tensor(
+    context: models.GenerationContext,
+    node: IRModels.Node,
+    values: list[float],
+    shape: tuple[int, ...],
+    precision: int,
+) -> str:
+    constants_dir = context.component.output_path.parent / "constants"
+    constants_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{models.sanitize_component_name(context.component.name)}__{models.sanitize_component_name(node.name)}.weights"
+    path = constants_dir / filename
+    data = constant_data_bytes(values, precision)
+    write_cactus_tensor_file(path, shape, precision, data)
+    return constant_binding_path(context, path)
+
+
+def constant_data_bytes(values: list[float], precision: int) -> bytes:
+    if precision == 1:
+        return b"".join(struct.pack("<e", float(value)) for value in values)
+
+    if precision == 2:
+        return b"".join(struct.pack("<f", float(value)) for value in values)
+
+    return bytes(int(value) & 0xFF for value in values)
+
+
+def write_cactus_tensor_file(path: Path, shape: tuple[int, ...], precision: int, data: bytes) -> None:
+    alignment = 32
+    header_size = 84
+    ndim = len(shape)
+    original_n = shape[0] if shape else 0
+
+    with path.open("wb") as f:
+        f.write(struct.pack("<I", 0x54434143))
+        f.write(struct.pack("<I", 0))
+        f.write(struct.pack("<I", alignment))
+        f.write(struct.pack("<I", ndim))
+
+        for index in range(4):
+            f.write(struct.pack("<Q", int(shape[index]) if index < ndim else 0))
+
+        f.write(struct.pack("<I", int(precision)))
+        f.write(struct.pack("<Q", len(data)))
+        f.write(struct.pack("<Q", 0))
+        f.write(struct.pack("<I", 0))
+        f.write(struct.pack("<I", 0))
+        f.write(struct.pack("<Q", int(original_n)))
+        f.write(b"\0" * ((alignment - (header_size % alignment)) % alignment))
+        f.write(data)
+
+
+def constant_binding_path(context: models.GenerationContext, path: Path) -> str:
+    try:
+        return str(path.relative_to(context.config.output_dir.parent))
+    except ValueError:
+        return str(path)
+
+
+def precision_name(graph: Any, precision: int) -> str:
+    for name in ("INT8", "FP16", "FP32", "CQ1", "CQ2", "CQ3", "CQ4"):
+        if int(getattr(graph, name)) == int(precision):
+            return name
+
+    return str(precision)
 
 
 def lower_neg(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -1200,7 +1554,7 @@ def lower_norm(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     if target == "cactus.rms_norm":
         require_len(node, inputs, 2)
-        return context.graph.rms_norm(inputs[0], inputs[1], eps=epsilon_attr(node))
+        return lower_rms_norm(context, node, inputs[0], inputs[1])
 
     if target in {"cactus.layernorm", "cactus.layer_norm", "aten.native_layer_norm.default", "aten.layer_norm.default"}:
         require_len(node, inputs, 2)
@@ -1216,6 +1570,32 @@ def lower_norm(context: models.GenerationContext, node: IRModels.Node) -> Any:
         return context.graph.batchnorm(inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], axis=int(node.attrs.get("axis", 1)), eps=epsilon_attr(node))
 
     raise UnsupportedLoweringError(f"{node.name}: unsupported norm target {target}")
+
+
+def lower_rms_norm(context: models.GenerationContext, node: IRModels.Node, x: Any, weight: Any) -> Any:
+    x = cast_to_precision(context, x, context.graph.FP16)
+    weight = cast_to_precision(context, weight, context.graph.FP16)
+    input_shape = concrete_shape(meta_shape(node.parents[0])) if node.parents else concrete_shape(meta_shape(node))
+
+    if input_shape is None:
+        raise UnsupportedLoweringError(f"{node.name}: cactus.rms_norm requires concrete input shape")
+
+    if len(input_shape) == 2:
+        return context.graph.rms_norm(x, weight, eps=epsilon_attr(node))
+
+    if len(input_shape) == 1:
+        return context.graph.reshape(
+            context.graph.rms_norm(context.graph.reshape(x, (1, input_shape[0])), weight, eps=epsilon_attr(node)),
+            input_shape,
+        )
+
+    rows = element_count(input_shape[:-1])
+
+    if rows is None:
+        raise UnsupportedLoweringError(f"{node.name}: cactus.rms_norm requires concrete leading dimensions")
+
+    normalized = context.graph.rms_norm(context.graph.reshape(x, (rows, input_shape[-1])), weight, eps=epsilon_attr(node))
+    return context.graph.reshape(normalized, input_shape)
 
 
 def lower_conv(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -1365,9 +1745,13 @@ def require_plain_conv1d_attrs(node: IRModels.Node, method: str) -> None:
 
 
 def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> Any:
-    inputs = context.inputs_for(node)
-
     if node.target == "cactus.attention" or node.target == "aten.scaled_dot_product_attention.default":
+        cached = lower_cache_backed_attention(context, node)
+
+        if cached is not None:
+            return cached
+
+        inputs = context.inputs_for(node)
         require_len(node, inputs, 3)
         query, key, value, mask = attention_inputs_for_layout(context, node, inputs)
         query = cast_to_precision(context, query, context.graph.FP16)
@@ -1387,6 +1771,7 @@ def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> A
         return attention_output_for_layout(context, node, output)
 
     if node.target == "cactus.attention_cached":
+        inputs = context.inputs_for(node)
         require_len(node, inputs, 5)
         return context.graph.attention_cached(
             inputs[0],
@@ -1395,12 +1780,84 @@ def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> A
             inputs[3],
             inputs[4],
             scale=float(node.attrs.get("scale", 1.0)),
-            position_offset=int(node.attrs.get("position_offset", 0)),
+            position_offset=cached_attention_position_offset(context, node),
             window_size=int(node.attrs.get("window_size", 0)),
             v_head_dim=int(node.attrs.get("v_head_dim", 0)),
         )
 
     raise UnsupportedLoweringError(f"{node.name}: unsupported attention target {node.target}")
+
+
+def lower_cache_backed_attention(context: models.GenerationContext, node: IRModels.Node) -> Any | None:
+    if node.target != "cactus.attention" or len(node.parents) < 3:
+        return None
+
+    key_cat = find_cache_cat_ancestor(node.parents[1], FModels.CacheTensorRole.KEY)
+    value_cat = find_cache_cat_ancestor(node.parents[2], FModels.CacheTensorRole.VALUE)
+
+    if key_cat is None or value_cat is None:
+        return None
+
+    key_cache = key_cat.parents[0]
+    value_cache = value_cat.parents[0]
+    key_new_node = key_cat.parents[1]
+    value_new_node = value_cat.parents[1]
+
+    query = context.require(node.parents[0].name)
+    key_new = cache_new_kv_for_native(context, key_new_node, context.require(key_new_node.name))
+    value_new = cache_new_kv_for_native(context, value_new_node, context.require(value_new_node.name))
+    key_cache_state = context.require(key_cache.name)
+    value_cache_state = context.require(value_cache.name)
+
+    if node.attrs.get("input_layout") == "bhqd_bhds_bhsd":
+        query = context.graph.permute(query, (0, 2, 1, 3))
+
+    query = cast_to_precision(context, query, context.graph.FP16)
+    key_new = cast_to_precision(context, key_new, context.graph.FP16)
+    value_new = cast_to_precision(context, value_new, context.graph.FP16)
+
+    cache_pair = (key_cat.name, value_cat.name)
+
+    if cache_pair not in context.appended_cache_pairs:
+        context.graph.kv_cache_append(key_new, key_cache_state, window_size=int(node.attrs.get("window_size", 0)), sink_size=0)
+        context.graph.kv_cache_append(value_new, value_cache_state, window_size=int(node.attrs.get("window_size", 0)), sink_size=0)
+        context.appended_cache_pairs.add(cache_pair)
+
+    output = context.graph.attention_cached(
+        query,
+        key_new,
+        value_new,
+        key_cache_state,
+        value_cache_state,
+        scale=float(node.attrs.get("scale", 1.0)),
+        position_offset=cached_attention_position_offset(context, node),
+        window_size=int(node.attrs.get("window_size", 0)),
+        v_head_dim=last_dim(value_new_node),
+    )
+    return attention_output_for_layout(context, node, output)
+
+
+def cached_attention_position_offset(context: models.GenerationContext, node: IRModels.Node) -> int:
+    if context.component.name == "decoder_step":
+        return SIZE_T_MAX
+
+    return int(node.attrs.get("position_offset", 0))
+
+
+def cache_new_kv_for_native(context: models.GenerationContext, node: IRModels.Node, value: Any) -> Any:
+    if len(meta_shape(node)) == 4:
+        return context.graph.permute(value, (0, 2, 1, 3))
+
+    return value
+
+
+def last_dim(node: IRModels.Node) -> int:
+    shape = concrete_shape(meta_shape(node))
+
+    if not shape:
+        return 0
+
+    return int(shape[-1])
 
 
 def attention_inputs_for_layout(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> tuple[Any, Any, Any, Any | None]:
@@ -1595,7 +2052,14 @@ def lower_moe(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     if node.target == "cactus.dense_mlp_tq_fused":
         require_len(node, inputs, 4)
-        return context.graph.dense_mlp_tq_fused(inputs[0], inputs[1], inputs[2], inputs[3], product_scale=float(node.attrs.get("product_scale", 1.0)))
+        hidden = cast_to_precision(context, inputs[0], context.graph.FP16)
+        return context.graph.dense_mlp_tq_fused(
+            hidden,
+            inputs[1],
+            inputs[2],
+            inputs[3],
+            product_scale=float(node.attrs.get("product_scale", 1.0)),
+        )
 
     if node.target == "cactus.moe_layer_gated":
         if len(inputs) < 6:

@@ -413,6 +413,18 @@ LINEAR_GRAPH = _graph(
     },
 )
 
+LINEAR_TRANSPOSED_GRAPH = _graph(
+    "linear_transposed",
+    "linear_mm",
+    ("linear_weight_transpose", "linear_mm"),
+    edge_names=E.EDGE_GROUPS["linear_transposed"],
+    inputs=(
+        _input("x", "linear_mm", 0),
+        _input("weight", "linear_weight_transpose", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
+    ),
+    attr_captures=(M.AttrCapture("pretransposed_rhs", default=True, required=False),),
+)
+
 LINEAR_BIAS_GRAPH = _graph(
     "linear_bias",
     "linear_bias_add",
@@ -431,6 +443,19 @@ RMS_NORM_GRAPH = _graph(
     "rms_weight_mul",
     ("rms_square", "rms_mean", "rms_eps_add", "rms_inv", "rms_scale", "rms_weight_mul"),
     edge_names=E.EDGE_GROUPS["rms_norm"],
+    inputs=(_input("x", "rms_square", 0), _input("weight", "rms_weight_mul", 1)),
+    shared_inputs=(_shared_input("rms_square", 0, "rms_scale", 0),),
+    attr_captures=(M.AttrCapture("epsilon", "rms_eps_add", "other", default=1e-6, required=False),),
+    constraints={
+        "node_attr_equals": {"node": "rms_mean", "attr": "dim", "value": -1},
+    },
+)
+
+RMS_NORM_POW_GRAPH = _graph(
+    "rms_norm_pow",
+    "rms_weight_mul",
+    ("rms_square", "rms_mean", "rms_eps_add", "rms_inv_pow", "rms_scale", "rms_weight_mul"),
+    edge_names=E.EDGE_GROUPS["rms_norm_pow"],
     inputs=(_input("x", "rms_square", 0), _input("weight", "rms_weight_mul", 1)),
     shared_inputs=(_shared_input("rms_square", 0, "rms_scale", 0),),
     attr_captures=(M.AttrCapture("epsilon", "rms_eps_add", "other", default=1e-6, required=False),),
@@ -491,6 +516,39 @@ GELU_MLP_GRAPH = _graph(
     ("up_proj", "gelu", "down_proj"),
     inputs=(_input("hidden", "up_proj", 0), _input("up_weight", "up_proj", 1), _input("down_weight", "down_proj", 1)),
     edge_names=E.EDGE_GROUPS["gelu_mlp"],
+)
+
+GEMMA4_GEGLU_MLP_GRAPH = _graph(
+    "gemma4_geglu_mlp",
+    "down_proj_view",
+    (
+        "gate_input_view",
+        "gate_weight_transpose",
+        "gate_proj",
+        "gate_proj_view",
+        "gelu",
+        "up_input_view",
+        "up_weight_transpose",
+        "up_proj",
+        "up_proj_view",
+        "mlp_product",
+        "mlp_product_view",
+        "down_weight_transpose",
+        "down_proj",
+        "down_proj_view",
+    ),
+    edge_names=E.EDGE_GROUPS["gemma4_geglu_mlp"],
+    inputs=(
+        _input("hidden", "gate_input_view", 0),
+        _input("gate_weight", "gate_weight_transpose", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
+        _input("up_weight", "up_weight_transpose", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
+        _input("down_weight", "down_weight_transpose", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
+    ),
+    shared_inputs=(_shared_input("gate_input_view", 0, "up_input_view", 0),),
+    attr_captures=(M.AttrCapture("product_scale", default=1.0, required=False),),
+    constraints={
+        "node_attr_equals": {"node": "gelu", "attr": "approximate", "value": "tanh"},
+    },
 )
 
 ATTENTION_DIRECT_GRAPH = _graph(
@@ -1023,12 +1081,15 @@ GRAPH_BY_NAME: dict[str, M.FusionGraph] = {
     **DIRECT_GRAPHS,
     **DSP_GRAPHS,
     "linear": LINEAR_GRAPH,
+    "linear_transposed": LINEAR_TRANSPOSED_GRAPH,
     "linear_bias": LINEAR_BIAS_GRAPH,
     "rms_norm": RMS_NORM_GRAPH,
+    "rms_norm_pow": RMS_NORM_POW_GRAPH,
     "layernorm_no_bias": LAYERNORM_NO_BIAS_GRAPH,
     "layernorm": LAYERNORM_GRAPH,
     "swiglu_mlp": SWIGLU_MLP_GRAPH,
     "gelu_mlp": GELU_MLP_GRAPH,
+    "gemma4_geglu_mlp": GEMMA4_GEGLU_MLP_GRAPH,
     "scaled_dot_product_attention": ATTENTION_DIRECT_GRAPH,
     "attention_core": ATTENTION_CORE_GRAPH,
     "attention_masked": ATTENTION_MASKED_GRAPH,
@@ -1076,12 +1137,15 @@ DIRECT_DEFINITIONS: dict[str, M.FusionDefinition] = {
 FUSIONS: dict[str, M.FusionDefinition] = {
     **DIRECT_DEFINITIONS,
     "linear": _definition("linear", "matmul", LINEAR_GRAPH, fusion_fields=("generic", "linear")),
+    "linear_transposed": _definition("linear_transposed", "matmul", LINEAR_TRANSPOSED_GRAPH, fusion_fields=("generic", "linear")),
     "linear_bias": _definition("linear_bias", "linear", LINEAR_BIAS_GRAPH, fusion_fields=("generic", "linear")),
     "rms_norm": _definition("rms_norm", "rms_norm", RMS_NORM_GRAPH, fusion_fields=("generic", "rmsnorm", "gemma4_rmsnorm", "qwen2_5_rmsnorm")),
+    "rms_norm_pow": _definition("rms_norm_pow", "rms_norm", RMS_NORM_POW_GRAPH, fusion_fields=("generic", "rmsnorm", "gemma4_rmsnorm", "qwen2_5_rmsnorm")),
     "layernorm_no_bias": _definition("layernorm_no_bias", "layernorm", LAYERNORM_NO_BIAS_GRAPH, fusion_fields=("generic", "normalization")),
     "layernorm": _definition("layernorm", "layernorm", LAYERNORM_GRAPH, fusion_fields=("generic", "normalization")),
     "swiglu_mlp": _definition("swiglu_mlp", "dense_mlp_tq_fused", SWIGLU_MLP_GRAPH, fusion_fields=("generic", "mlp", "gemma4_mlp", "qwen2_5_mlp", "lfm_mlp")),
     "gelu_mlp": _definition("gelu_mlp", "matmul", GELU_MLP_GRAPH, fusion_fields=("generic", "mlp")),
+    "gemma4_geglu_mlp": _definition("gemma4_geglu_mlp", "dense_mlp_tq_fused", GEMMA4_GEGLU_MLP_GRAPH, fusion_fields=("gemma4_mlp",)),
     "scaled_dot_product_attention": _definition("scaled_dot_product_attention", "attention", ATTENTION_DIRECT_GRAPH, fusion_fields=("generic", "attention")),
     "attention_core": _definition("attention_core", "attention", ATTENTION_CORE_GRAPH, fusion_fields=("generic", "attention", "gemma4_attention", "qwen2_5_attention", "lfm_attention")),
     "attention_masked": _definition("attention_masked", "attention", ATTENTION_MASKED_GRAPH, fusion_fields=("generic", "attention", "gemma4_attention")),
