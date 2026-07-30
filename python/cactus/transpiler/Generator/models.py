@@ -159,8 +159,14 @@ class WeightBinding:
     node_id: int
     path: str
     output_name: str
+    source_name: str | None = None
+    value_id: str | None = None
     precision: str | None = None
     component: str | None = None
+    scale_factor: float = 1.0
+    adapter_family: str | None = None
+    transform: str = "none"
+    qdq_restore: str = "hf_key"
     binding_kind: str = "mmap_weight"
 
 
@@ -558,16 +564,29 @@ def component_manifest_to_dict(manifest: ComponentGraphManifest) -> dict[str, An
                 "node_id": binding.node_id,
                 "path": binding.path,
                 "output_name": binding.output_name,
+                "source_name": binding.source_name,
+                "value_id": binding.value_id,
                 "precision": binding.precision,
                 "component": binding.component,
+                "scale_factor": binding.scale_factor,
+                "adapter_family": binding.adapter_family,
+                "transform": binding.transform,
+                "qdq_restore": binding.qdq_restore,
                 "binding_kind": binding.binding_kind,
             }
             for binding in manifest.weight_bindings
         ],
         "bound_constant_bindings": [
             {
+                "kind": "weight",
                 "node_id": binding.node_id,
                 "path": binding.path,
+                "source_name": binding.source_name or binding.source_target,
+                "value_id": binding.value_id or binding.placeholder,
+                "scale_factor": binding.scale_factor,
+                "adapter_family": binding.adapter_family,
+                "transform": binding.transform,
+                "qdq_restore": binding.qdq_restore,
             }
             for binding in manifest.weight_bindings
         ],

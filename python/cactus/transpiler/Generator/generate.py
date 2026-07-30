@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import struct
 from collections.abc import Mapping
 from dataclasses import replace
@@ -50,6 +51,7 @@ def generate(
         strict=strict,
         allow_unsupported_ops=allow_unsupported_ops,
     )
+    prepare_generation_output_dir(generator_config.output_dir)
     components = component_graphs_from_input(ir_output, generator_config, component_name, model_profile)
     lowering_rules = build_lowering_rules(lowerings)
 
@@ -97,6 +99,8 @@ def generate_bundle(
 ) -> models.GenerationResult:
     bundle_path = Path(bundle_dir)
     components_dir = bundle_path / "components"
+    source_weights_dir = Path(weights_dir) if weights_dir is not None else None
+    materialize_runtime_bundle_files(bundle_path, source_weights_dir, model_profile)
     result = generate(
         ir_output,
         output_dir=components_dir,
@@ -118,6 +122,81 @@ def generate_bundle(
 
 
 ################################################# Generator Utils!!!!!!! #################################################
+
+
+def materialize_runtime_bundle_files(bundle_dir: Path, weights_dir: Path | None, model_profile: Any | None = None) -> None:
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    if weights_dir is not None and weights_dir.exists():
+        for source in weights_dir.iterdir():
+            if source.is_file():
+                materialize_bundle_file(source, bundle_dir / source.name)
+
+    for source in model_profile_metadata_files(model_profile):
+        materialize_bundle_file(source, bundle_dir / source.name, overwrite=False)
+
+
+def model_profile_metadata_files(model_profile: Any | None) -> tuple[Path, ...]:
+    if model_profile is None:
+        return ()
+
+    try:
+        from ..Converter import constants as converter_constants
+    except Exception:
+        return ()
+
+    profile_name = getattr(model_profile, "model_profiles", None)
+
+    if not profile_name:
+        return ()
+
+    metadata_dir = converter_constants.CONVERTER_JSON_DIR / str(profile_name)
+    filenames = runtime_metadata_filenames(model_profile)
+    return tuple(metadata_dir / filename for filename in filenames if (metadata_dir / filename).is_file())
+
+
+def runtime_metadata_filenames(model_profile: Any | None) -> tuple[str, ...]:
+    profile_files = tuple(str(filename) for filename in getattr(model_profile, "files", ()) or ())
+    standard_files = (
+        "config.json",
+        "generation_config.json",
+        "processor_config.json",
+        "preprocessor_config.json",
+        "tokenizer_config.json",
+        "tokenizer.json",
+        "special_tokens_map.json",
+    )
+    return tuple(models.unique_strings((*standard_files, *profile_files)))
+
+
+def materialize_bundle_file(source: Path, target: Path, *, overwrite: bool = True) -> None:
+    if not source.is_file():
+        return
+
+    if target.exists() or target.is_symlink():
+        try:
+            if target.samefile(source):
+                return
+        except OSError:
+            pass
+
+        if not overwrite:
+            return
+
+        target.unlink()
+
+    try:
+        target.symlink_to(source)
+    except OSError:
+        shutil.copy2(source, target)
+
+
+def prepare_generation_output_dir(output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    constants_dir = output_dir / "constants"
+
+    if constants_dir.exists():
+        shutil.rmtree(constants_dir)
 
 
 def read_layer_map(input_path: str | Path) -> CModels.LayerMap:
@@ -461,6 +540,9 @@ def should_lower_cache_placeholder_as_state(context: models.GenerationContext, n
         return any(child.target in {"cactus.conv_cache_append", "cactus.conv_cache_initialize"} for child in node.children)
 
     if node.cache.kind == FModels.CacheKind.KV:
+        if any(child.target in {"cactus.cat", "aten.cat.default"} for child in node.children):
+            return True
+
         return bool(node.children) and all(child.target in {"cactus.kv_cache_append", "cactus.attention_cached"} for child in node.children)
 
     return False
@@ -531,8 +613,14 @@ def bind_weight_placeholder(context: models.GenerationContext, node: IRModels.No
             node_id=node_id,
             path=record.output_name,
             output_name=record.output_name,
+            source_name=record.source_name or record.hf_name or source_target,
+            value_id=node.name,
             precision=record.precision,
             component=record.component,
+            scale_factor=record.scale_factor,
+            adapter_family=record.adapter_family,
+            transform=record.transform,
+            qdq_restore=record.qdq_restore,
         )
     )
 
@@ -1053,6 +1141,11 @@ def lower_cat(context: models.GenerationContext, node: IRModels.Node) -> Any:
         if prefill_cache is not None:
             return prefill_cache
 
+    decode_cache = lower_decode_cache_cat(context, node)
+
+    if decode_cache is not None:
+        return decode_cache
+
     inputs = context.inputs_for(node)
 
     if not inputs:
@@ -1065,6 +1158,18 @@ def lower_cat(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     axis = normalize_dim(int(node.attrs.get("axis", node.attrs.get("dim", 0))), cat_rank(node))
     return context.graph.cat(inputs, axis=axis)
+
+
+def lower_decode_cache_cat(context: models.GenerationContext, node: IRModels.Node) -> Any | None:
+    if len(node.parents) < 2:
+        return None
+
+    cache_parent = node.parents[0]
+
+    if cache_parent.cache is None or cache_parent.cache.kind != FModels.CacheKind.KV:
+        return None
+
+    return context.require(cache_parent.name)
 
 
 def lower_prefill_cache_cat(context: models.GenerationContext, node: IRModels.Node) -> Any | None:
@@ -1245,17 +1350,33 @@ def lower_to_copy(context: models.GenerationContext, node: IRModels.Node) -> Any
     if precision_name is None:
         return inputs[0]
 
-    return context.graph.precision_cast(inputs[0], cactus_precision(context.graph, str(dtype)))
+    return cast_to_precision(context, inputs[0], cactus_precision(context.graph, str(dtype)))
 
 
 def can_skip_float32_copy(node: IRModels.Node) -> bool:
-    if not node.children:
+    if not node.children or not node.parents:
+        return False
+
+    source_dtype = tensor_dtype(node.parents[0])
+
+    if constants.DTYPE_TO_PRECISION.get(str(source_dtype)) != "FP16":
         return False
 
     safe_consumers = {
         "aten.bmm.default",
         "cactus.attention",
+        "cactus.attention_cached",
+        "cactus.add",
+        "cactus.dense_mlp_tq_fused",
+        "cactus.multiply",
+        "cactus.pow",
+        "cactus.rope",
         "cactus.rms_norm",
+        "cactus.scalar_multiply",
+        "cactus.silu",
+        "cactus.slice",
+        "cactus.transpose",
+        "cactus.view",
     }
     return all(child.target in safe_consumers for child in node.children)
 
@@ -1326,6 +1447,9 @@ def lower_constant_pad_nd(context: models.GenerationContext, node: IRModels.Node
 
 
 def lower_constant_input(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    if node.target == "aten.full_like.default":
+        return lower_full_like(context, node)
+
     constant = deterministic_constant_values(node)
 
     if constant is not None:
@@ -1345,6 +1469,8 @@ def lower_constant_input(context: models.GenerationContext, node: IRModels.Node)
                 node_id=node_id,
                 path=path,
                 output_name=path,
+                source_name=node.target,
+                value_id=node.name,
                 precision=precision_name(context.graph, dtype),
                 component=context.component.name,
                 binding_kind="generated_constant",
@@ -1358,6 +1484,25 @@ def lower_constant_input(context: models.GenerationContext, node: IRModels.Node)
     tensor = context.graph.input(shape, dtype=dtype, dynamic_dims=dynamic_dims if any(dynamic_dims) else None)
     context.component.add_runtime_input(tensor, node.name)
     return tensor
+
+
+def lower_full_like(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    inputs = require_input_count(context, node, 1)
+    fill_value = scalar_attr(node, "fill_value")
+
+    if fill_value is None:
+        fill_value = scalar_attr(node, "arg_1")
+
+    if fill_value is None:
+        fill_value = 0.0
+
+    output = context.graph.scalar_multiply(inputs[0], 0.0)
+    fill_float = float(fill_value)
+
+    if fill_float != 0.0:
+        output = context.graph.scalar_add(output, fill_float)
+
+    return cast_to_precision(context, output, cactus_precision(context.graph, tensor_dtype(node)))
 
 
 def deterministic_constant_values(node: IRModels.Node) -> tuple[list[float], tuple[int, ...]] | None:

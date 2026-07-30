@@ -17,6 +17,13 @@ class RuntimeTensorBinding:
 class ConstantBinding:
     node_id: int
     path: str
+    kind: str = "weight"
+    source_name: str | None = None
+    value_id: str | None = None
+    scale_factor: float = 1.0
+    adapter_family: str | None = None
+    transform: str = "none"
+    qdq_restore: str = "hf_key"
 
 
 @dataclass(slots=True)
@@ -179,13 +186,27 @@ def constant_binding_from_dict(data: dict[str, Any]) -> ConstantBinding:
     return ConstantBinding(
         node_id=int(data["node_id"]),
         path=str(data["path"]),
+        kind=str(data.get("kind", "weight")),
+        source_name=none_or_str(data.get("source_name")),
+        value_id=none_or_str(data.get("value_id")),
+        scale_factor=float(data.get("scale_factor", 1.0) or 1.0),
+        adapter_family=none_or_str(data.get("adapter_family")),
+        transform=str(data.get("transform", "none") or "none"),
+        qdq_restore=str(data.get("qdq_restore", "hf_key") or "hf_key"),
     )
 
 
 def constant_binding_to_dict(binding: ConstantBinding) -> dict[str, Any]:
     return {
+        "kind": binding.kind,
         "node_id": binding.node_id,
         "path": binding.path,
+        "source_name": binding.source_name,
+        "value_id": binding.value_id,
+        "scale_factor": binding.scale_factor,
+        "adapter_family": binding.adapter_family,
+        "transform": binding.transform,
+        "qdq_restore": binding.qdq_restore,
     }
 
 
@@ -404,6 +425,13 @@ def constant_bindings_from_generator_manifest(data: dict[str, Any]) -> tuple[Con
         ConstantBinding(
             node_id=int(value["node_id"]),
             path=str(value["path"]),
+            kind=str(value.get("binding_kind", "weight")),
+            source_name=none_or_str(value.get("source_name") or value.get("source_target")),
+            value_id=none_or_str(value.get("value_id") or value.get("placeholder")),
+            scale_factor=float(value.get("scale_factor", 1.0) or 1.0),
+            adapter_family=none_or_str(value.get("adapter_family")),
+            transform=str(value.get("transform", "none") or "none"),
+            qdq_restore=str(value.get("qdq_restore", "hf_key") or "hf_key"),
         )
         for value in data.get("weight_bindings", ())
         if isinstance(value, dict) and "node_id" in value and "path" in value
@@ -419,6 +447,13 @@ def string_dict(data: Any) -> dict[str, str]:
         for key, value in data.items()
         if value is not None
     }
+
+
+def none_or_str(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    return str(value)
 
 
 def unique_ints(values: tuple[int, ...]) -> tuple[int, ...]:
