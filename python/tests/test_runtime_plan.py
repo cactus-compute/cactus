@@ -81,7 +81,7 @@ class TestRuntimePlan(unittest.TestCase):
             runtime_plan = json.loads(runtime_plan_path.read_text(encoding="utf-8"))
             component = engine_manifest["components"][0]
 
-            self.assertEqual(engine_manifest["family"], "gemma4_e2b")
+            self.assertEqual(engine_manifest["family"], "gemma4")
             self.assertEqual(component["component"], "decoder_step")
             self.assertEqual(component["graph"], "decoder_step.cactus")
             self.assertEqual(component["logical_inputs"], ["input_ids", "position_ids"])

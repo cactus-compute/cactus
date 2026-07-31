@@ -1,7 +1,7 @@
 from collections.abc import Iterable
 from pathlib import Path
 
-from . import match, match_utils, models
+from . import match, match_utils, models, special_fusions
 from ..Converter import models as CModels
 from ..Fusions import fusions as Fusions
 from ..Fusions import models as FModels
@@ -40,7 +40,6 @@ def simplify(
         total_fusions += len(simplified_graph.fusions)
         graph = simplified_graph
 
-    graph = fuse_gemma4_decode_attention(graph, layer_map.task, fusion_fields)
     return graph.remove_noop_nodes().to_layer_map()
 
 
@@ -116,19 +115,32 @@ def try_match_from_node(
         return None
 
     for fusion in candidate_fusions_for_node(node, fusion_fields):
-        bindings = bind_matching_fusion(
-            node,
-            graph,
-            fusion,
-            inference_mode=inference_mode,
-            input_modalities=input_modalities,
-            fusion_fields=fusion_fields,
-        )
+        if special_fusions.has_special_matcher(fusion):
+            result = special_fusions.match_special_fusion(
+                node,
+                graph,
+                fusion,
+                inference_mode=inference_mode,
+                input_modalities=input_modalities,
+                fusion_fields=fusion_fields,
+            )
 
-        if bindings is None:
-            continue
+            if result is None:
+                continue
+        else:
+            bindings = bind_matching_fusion(
+                node,
+                graph,
+                fusion,
+                inference_mode=inference_mode,
+                input_modalities=input_modalities,
+                fusion_fields=fusion_fields,
+            )
 
-        result = fusion_result_from_bindings(fusion, node, bindings)
+            if bindings is None:
+                continue
+
+            result = fusion_result_from_bindings(fusion, node, bindings)
 
         if is_noop_fusion(node, result):
             continue
@@ -245,10 +257,11 @@ def fusion_enabled_for_fields(fusion: FModels.FusionDefinition, fusion_fields: t
     return not fusion_specific_fields.isdisjoint(selected_fields - {"generic"})
 
 
-def fusion_priority(fusion: FModels.FusionDefinition) -> tuple[int, int, int, int, int]:
+def fusion_priority(fusion: FModels.FusionDefinition) -> tuple[int, int, int, int, int, int]:
     required_attrs = fusion.metadata.get("required_attrs", {})
 
     return (
+        int(special_fusions.has_special_matcher(fusion)),
         len(fusion.graph.nodes),
         len(fusion.graph.edges),
         len(fusion.graph.constraints),
@@ -271,133 +284,3 @@ def unique_nodes(nodes: Iterable[models.Node]) -> tuple[models.Node, ...]:
         unique.append(node)
 
     return tuple(unique)
-
-
-def fuse_gemma4_decode_attention(
-    graph: models.Graph,
-    inference_mode: str | None,
-    fusion_fields: tuple[str, ...] = (),
-) -> models.Graph:
-    if inference_mode != "decode_with_cache":
-        return graph
-
-    if fusion_fields and "gemma4_attention" not in fusion_fields and "attention" not in fusion_fields:
-        return graph
-
-    fusion = Fusions.FUSIONS["attention_masked"]
-    results: list[models.FusionResult] = []
-
-    for source in graph.nodes:
-        match_result = gemma4_decode_attention_match(graph, source, fusion)
-
-        if match_result is not None:
-            results.append(match_result)
-
-    if not results:
-        return graph
-
-    return graph.apply_fusions(results)
-
-
-def gemma4_decode_attention_match(
-    graph: models.Graph,
-    source: models.Node,
-    fusion: FModels.FusionDefinition,
-) -> models.FusionResult | None:
-    if source.target != "cactus.view" or len(source.parents) != 1:
-        return None
-
-    value_bmm = source.parents[0]
-
-    if value_bmm.target != "aten.bmm.default" or len(value_bmm.parents) < 2:
-        return None
-
-    value_cat = cache_cat_ancestor(value_bmm.parents[1], FModels.CacheTensorRole.VALUE)
-
-    if value_cat is None:
-        return None
-
-    qk_bmm = first_bmm_ancestor(value_bmm.parents[0], value_bmm)
-
-    if qk_bmm is None or len(qk_bmm.parents) < 2:
-        return None
-
-    key_cat = cache_cat_ancestor(qk_bmm.parents[1], FModels.CacheTensorRole.KEY)
-    query = first_rank4_single_parent_ancestor(qk_bmm.parents[0])
-
-    if key_cat is None or query is None:
-        return None
-
-    return models.FusionResult.from_match(
-        fusion=fusion,
-        source=source,
-        matched_nodes=(source,),
-        external_inputs=(query, key_cat, value_cat),
-        attrs={
-            "scale": 1.0,
-            "input_layout": "bhqd_bhds_bhsd",
-            "output_layout": "bhqd",
-            "window_size": 0,
-        },
-    )
-
-
-def cache_cat_ancestor(node: models.Node, role: str, max_depth: int = 18) -> models.Node | None:
-    current = node
-
-    for _ in range(max_depth):
-        if current.target in {"cactus.cat", "aten.cat.default"} and len(current.parents) >= 2:
-            cache_parent = current.parents[0]
-
-            if cache_parent.cache is not None and cache_parent.cache.kind == FModels.CacheKind.KV and cache_parent.cache.role == role:
-                return current
-
-        if len(current.parents) != 1:
-            return None
-
-        current = current.parents[0]
-
-    return None
-
-
-def first_bmm_ancestor(node: models.Node, excluded: models.Node) -> models.Node | None:
-    stack = [node]
-    seen: set[str] = set()
-
-    while stack:
-        current = stack.pop()
-
-        if current.name in seen:
-            continue
-
-        seen.add(current.name)
-
-        if current is not excluded and current.target == "aten.bmm.default":
-            return current
-
-        stack.extend(current.parents)
-
-    return None
-
-
-def first_rank4_single_parent_ancestor(node: models.Node, max_depth: int = 10) -> models.Node | None:
-    current = node
-
-    for _ in range(max_depth):
-        if node_rank(current) == 4:
-            return current
-
-        if len(current.parents) != 1:
-            return None
-
-        current = current.parents[0]
-
-    return None
-
-
-def node_rank(node: models.Node) -> int:
-    if not isinstance(node.tensor_output_meta, dict):
-        return 0
-
-    shape = node.tensor_output_meta.get("shape")
-    return len(shape) if isinstance(shape, list) else 0

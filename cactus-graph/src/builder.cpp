@@ -59,6 +59,28 @@ size_t CactusGraph::where(size_t condition, size_t true_value, size_t false_valu
     return add_node(OpType::WHERE, {condition, true_value, false_value}, all_inputs.output_shape, params);
 }
 
+size_t CactusGraph::masked_select_prefix(size_t input, size_t mask) {
+    const auto& input_buffer = get_output_buffer(input);
+    const auto& mask_buffer = get_output_buffer(mask);
+    if (input_buffer.shape.size() != 2 && input_buffer.shape.size() != 3) {
+        throw std::runtime_error("masked_select_prefix input must be [T,D] or [1,T,D]");
+    }
+    if (mask_buffer.shape.size() != 1 && mask_buffer.shape.size() != 2) {
+        throw std::runtime_error("masked_select_prefix mask must be [T] or [1,T]");
+    }
+
+    const size_t input_time = input_buffer.shape.size() == 3 ? input_buffer.shape[1] : input_buffer.shape[0];
+    const size_t hidden = input_buffer.shape.back();
+    const size_t mask_time = mask_buffer.shape.back();
+    if (input_time != mask_time) {
+        throw std::runtime_error("masked_select_prefix input/mask time dimension mismatch");
+    }
+
+    OpParams params;
+    params.output_precision = input_buffer.precision;
+    return add_node(OpType::MASKED_SELECT_PREFIX, {input, mask}, {input_time, hidden}, params);
+}
+
 size_t CactusGraph::abs(size_t input) {
     const auto& input_buffer = get_output_buffer(input);
     OpParams params{.output_precision = input_buffer.precision};
@@ -1428,6 +1450,10 @@ const BufferDesc& CactusGraph::get_output_buffer(size_t node_id) const {
 
 OpType CactusGraph::get_node_op_type(size_t node_id) const {
     return nodes_[node_index_map_.at(node_id)]->op_type;
+}
+
+const std::vector<size_t>& CactusGraph::get_node_inputs(size_t node_id) const {
+    return nodes_[node_index_map_.at(node_id)]->input_ids;
 }
 
 size_t CactusGraph::get_node_window_size(size_t node_id) const {

@@ -2,6 +2,7 @@ CACTUS_TARGET_PREFIX = "cactus."
 DEFAULT_COMPONENT_NAME = "model"
 DEFAULT_GRAPH_SUFFIX = ".cactus"
 DEFAULT_INPUT_PRECISION = "FP16"
+GEMMA4_MLP_PRODUCT_SCALE = 1.0 / 64.0
 
 DTYPE_TO_PRECISION: dict[str, str] = {
     "torch.float16": "FP16",
@@ -31,6 +32,23 @@ INPUT_VALUE_KINDS = {
     "cache_state",
 }
 
+FP16_RUNTIME_INPUTS = {
+    "input_features",
+    "inputs_embeds",
+    "pixel_values",
+}
+
+GEMMA_ADD_CLIPPED_COMPONENTS = {
+    "audio_encoder",
+    "vision_encoder",
+    "lm_encoder_step",
+    "lm_encoder_text_chunk",
+    "lm_encoder_media_step",
+    "lm_encoder_media_chunk",
+    "decoder_step",
+    "decoder_prefill_chunk",
+}
+
 PASS_THROUGH_TARGETS = {
     "aten._assert_tensor_metadata.default",
     "aten.clone.default",
@@ -43,6 +61,7 @@ COPY_TARGETS = {
 }
 
 PAD_TARGETS = {
+    "cactus.pad",
     "aten.constant_pad_nd.default",
 }
 
@@ -138,6 +157,15 @@ UNARY_TARGETS: dict[str, str] = {
     "aten.bitwise_not.default": "bitwise_not",
 }
 
+FP16_UNARY_METHODS = {
+    "relu",
+    "silu",
+    "gelu",
+    "gelu_erf",
+    "sigmoid",
+    "tanh",
+}
+
 LOG1P_TARGETS = {
     "aten.log1p.default",
 }
@@ -170,6 +198,7 @@ SHAPE_TARGETS: dict[str, str] = {
 }
 
 EXPAND_TARGETS = {
+    "cactus.expand",
     "aten.expand.default",
 }
 
@@ -201,10 +230,12 @@ INDEX_TARGETS = {
 }
 
 WHERE_TARGETS = {
+    "cactus.where",
     "aten.where.self",
 }
 
 UNFOLD_TARGETS = {
+    "cactus.unfold",
     "aten.unfold.default",
 }
 
@@ -234,11 +265,17 @@ GETITEM_TARGETS = {
 }
 
 TO_COPY_TARGETS = {
+    "cactus.precision_cast",
     "aten._to_copy.default",
 }
 
 NEG_TARGETS = {
     "aten.neg.default",
+}
+
+CUMSUM_TARGETS = {
+    "cactus.cumsum",
+    "aten.cumsum.default",
 }
 
 SOFTMAX_TARGETS = {

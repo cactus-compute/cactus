@@ -1537,6 +1537,107 @@ def match_same_layer(source: models.Node, graph: models.Graph, fusion: FModels.F
     return len(set(layer_keys)) == 1
 
 
+def match_slice_halves(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
+    """
+    Checks that two slice nodes split the same tensor into adjacent equal halves.
+
+    This protects decomposed GLU fusion. GLU is valid when the exported graph
+    computes `left * sigmoid(right)` where `left` and `right` are the first and
+    second halves of one source tensor along the same feature axis.
+    """
+    left = bindings.get(spec["left_node"])
+    right = bindings.get(spec["right_node"])
+
+    if left is None or right is None:
+        return False
+
+    left_source = match_utils.get_parent(left, 0)
+    right_source = match_utils.get_parent(right, 0)
+
+    if left_source is None or left_source is not right_source:
+        return False
+
+    source_shape = match_utils.get_tensor_shape(left_source)
+    left_shape = match_utils.get_tensor_shape(left)
+    right_shape = match_utils.get_tensor_shape(right)
+
+    if not source_shape or not left_shape or not right_shape:
+        return bool(spec.get("allow_missing", False))
+
+    left_axis = normalized_slice_axis(left, len(source_shape))
+    right_axis = normalized_slice_axis(right, len(source_shape))
+
+    if left_axis is match_utils.MISSING or right_axis is match_utils.MISSING or left_axis != right_axis:
+        return False
+
+    if not slice_step_is_one(left) or not slice_step_is_one(right):
+        return False
+
+    left_size = match_utils.get_dim(left_shape, left_axis)
+    right_size = match_utils.get_dim(right_shape, right_axis)
+    source_size = match_utils.get_dim(source_shape, left_axis)
+
+    if left_size is None or right_size is None:
+        return bool(spec.get("allow_missing", False))
+
+    if not match_utils.values_equal(left_size, right_size):
+        return False
+
+    if not attr_matches(left, "start", 0, default=0):
+        return False
+
+    if not attr_matches(right, "start", left_size):
+        return False
+
+    if not optional_attr_matches(left, "end", left_size):
+        return False
+
+    if not optional_attr_matches(right, "end", add_dims(left_size, right_size)):
+        return False
+
+    if source_size is not None and not match_utils.values_equal(source_size, add_dims(left_size, right_size)):
+        return False
+
+    return True
+
+
+def normalized_slice_axis(node: models.Node, rank: int) -> Any:
+    axis = node.attrs.get("axis", node.attrs.get("dim", match_utils.MISSING))
+
+    if axis is match_utils.MISSING:
+        return match_utils.MISSING
+
+    return normalize_dim(axis, rank)
+
+
+def slice_step_is_one(node: models.Node) -> bool:
+    step = node.attrs.get("step", 1)
+    return step is None or match_utils.values_equal(step, 1)
+
+
+def attr_matches(node: models.Node, attr: str, expected: Any, *, default: Any = match_utils.MISSING) -> bool:
+    actual = node.attrs.get(attr, default)
+
+    if actual is match_utils.MISSING:
+        return False
+
+    return match_utils.values_equal(actual, expected)
+
+
+def optional_attr_matches(node: models.Node, attr: str, expected: Any) -> bool:
+    actual = node.attrs.get(attr, match_utils.MISSING)
+
+    if actual is match_utils.MISSING or actual is None:
+        return True
+
+    return match_utils.values_equal(actual, expected)
+
+
+def add_dims(left: Any, right: Any) -> Any:
+    if isinstance(left, int) and isinstance(right, int):
+        return left + right
+
+    return left
 
 
 EXTRA_MATCHERS: dict[str, ExtraMatcher] = {
@@ -1558,4 +1659,5 @@ EXTRA_MATCHERS: dict[str, ExtraMatcher] = {
     "parent_tensor_dim_equal": match_parent_tensor_dim_equal,
     "input_broadcastable_to_node": match_input_broadcastable_to_node,
     "same_layer": match_same_layer,
+    "slice_halves": match_slice_halves,
 }

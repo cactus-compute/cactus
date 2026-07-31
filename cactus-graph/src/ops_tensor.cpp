@@ -158,6 +158,53 @@ void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     }
 }
 
+void compute_masked_select_prefix_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& mask_buffer = get_input(node, 1, nodes, node_index_map);
+
+    if (input_buffer.shape.size() != 2 && input_buffer.shape.size() != 3) {
+        throw std::runtime_error("masked_select_prefix input must be [T,D] or [1,T,D]");
+    }
+    if (mask_buffer.shape.size() != 1 && mask_buffer.shape.size() != 2) {
+        throw std::runtime_error("masked_select_prefix mask must be [T] or [1,T]");
+    }
+
+    const size_t time = input_buffer.shape.size() == 3 ? input_buffer.shape[1] : input_buffer.shape[0];
+    const size_t hidden = input_buffer.shape.back();
+    if (mask_buffer.shape.back() != time) {
+        throw std::runtime_error("masked_select_prefix input/mask time dimension mismatch");
+    }
+
+    const size_t row_bytes = PrecisionTraits::packed_size_of(input_buffer.precision, hidden);
+    const char* input = static_cast<const char*>(input_buffer.get_data());
+    char* output = static_cast<char*>(node.output_buffer.get_data());
+    std::memset(output, 0, node.output_buffer.byte_size);
+
+    auto mask_true = [&](size_t i) -> bool {
+        switch (mask_buffer.precision) {
+            case Precision::FP32:
+                return mask_buffer.data_as<float>()[i] != 0.0f;
+            case Precision::FP16:
+                return static_cast<float>(mask_buffer.data_as<__fp16>()[i]) != 0.0f;
+            case Precision::INT8:
+                return mask_buffer.data_as<int8_t>()[i] != 0;
+            default:
+                throw std::runtime_error("masked_select_prefix mask must be FP32/FP16/INT8");
+        }
+    };
+
+    size_t out_row = 0;
+    for (size_t i = 0; i < time; ++i) {
+        if (!mask_true(i)) continue;
+        if (out_row >= time) break;
+        std::memcpy(
+            output + PrecisionTraits::byte_offset_of(node.output_buffer.precision, out_row * hidden),
+            input + PrecisionTraits::byte_offset_of(input_buffer.precision, i * hidden),
+            row_bytes);
+        ++out_row;
+    }
+}
+
 void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     auto* input_node = nodes[node_index_map.at(node.input_ids[0])].get();
     auto& input_buffer = input_node->output_buffer;

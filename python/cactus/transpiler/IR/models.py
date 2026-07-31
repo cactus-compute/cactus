@@ -252,7 +252,7 @@ def generate_graph(cls: type[Graph], layer_map: CModels.LayerMap) -> Graph:
         node.parents = tuple(parent_lists[node.name])
         node.children = tuple(child_lists[node.name])
 
-    annotate_cache_nodes(nodes)
+    annotate_cache_nodes(nodes, layer_map.model_name)
     sources = tuple(node for node in nodes if not node.parents)
     outputs = tuple(node for node in nodes if node.is_output)
 
@@ -336,6 +336,7 @@ def sanitize_node_name(name: str) -> str:
 
 
 def fused_node_from_result(result: FusionResult, fused_name: str) -> Node:
+    attrs = normalized_fusion_attrs(result)
     cache = cache_annotation_from_fusion_result(result)
     ir_metadata = fusion_result_metadata(result, cache)
 
@@ -345,15 +346,42 @@ def fused_node_from_result(result: FusionResult, fused_name: str) -> Node:
         node_type="call_function",
         target=result.target,
         args=[{"node": node.name} for node in result.external_inputs],
-        kwargs=dict(result.attrs),
+        kwargs=attrs,
         users=(),
         tensor_output_meta=result.source.tensor_output_meta,
         module_stack=result.source.module_stack,
         value_kind=FModels.ValueKind.CACHE_OUTPUT if cache is not None else FModels.ValueKind.ACTIVATION,
-        attrs=dict(result.attrs),
+        attrs=attrs,
         ir_metadata=ir_metadata,
         cache=cache,
     )
+
+
+def normalized_fusion_attrs(result: FusionResult) -> dict[str, Any]:
+    attrs = dict(result.attrs)
+
+    if result.target in {"cactus.attention", "cactus.attention_cached"} and int(attrs.get("window_size", 0) or 0) == 0:
+        layer_index = gemma_language_layer_index(result)
+
+        if layer_index is not None:
+            attrs["window_size"] = 0 if layer_index % 5 == 4 else 512
+
+    return attrs
+
+
+def gemma_language_layer_index(result: FusionResult) -> int | None:
+    for node in (result.source, *result.matched_nodes, *result.external_inputs):
+        text = f"{node.name} {node.target} {node.module_stack!r}"
+
+        if "gemma" not in text.lower() or "language_model" not in text:
+            continue
+
+        layer_index = layer_index_from_text(text)
+
+        if layer_index is not None:
+            return layer_index
+
+    return None
 
 
 def expanded_consumed_names(graph: Graph, replacement_names: dict[str, str]) -> frozenset[str]:
@@ -620,7 +648,7 @@ def topological_sort(graph: Graph) -> tuple[Node, ...]:
     return tuple(ordered)
 
 
-def annotate_cache_nodes(nodes: tuple[Node, ...]) -> None:
+def annotate_cache_nodes(nodes: tuple[Node, ...], model_name: str = "") -> None:
     kv_count = 0
     conv_count = 0
 
@@ -650,6 +678,7 @@ def annotate_cache_nodes(nodes: tuple[Node, ...]) -> None:
                 layout="batch_heads_sequence_head_dim",
                 num_kv_heads=known_int(shape[1]),
                 sequence_length=known_int(shape[2]),
+                window_size=kv_cache_window_size_for_model(model_name, cache_layer_index_from_node(node, kv_count // 2)),
                 head_dim=known_int(shape[3]),
                 source="past_key_values_placeholder",
             )
@@ -670,6 +699,16 @@ def annotate_cache_nodes(nodes: tuple[Node, ...]) -> None:
 
         if node.cache is not None:
             node.ir_metadata["cache"] = cache_annotation_to_dict(node.cache)
+
+
+def kv_cache_window_size_for_model(model_name: str, layer_index: int | None) -> int | None:
+    if layer_index is None:
+        return None
+
+    if "gemma" not in model_name.lower():
+        return None
+
+    return 0 if layer_index % 5 == 4 else 512
 
 
 def cache_annotation_from_metadata(metadata: dict[str, Any]) -> CacheAnnotation | None:

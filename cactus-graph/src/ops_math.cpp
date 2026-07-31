@@ -507,7 +507,8 @@ void compute_where_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
 void compute_activation_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input = get_input(node, 0, nodes, node_index_map);
 
-    if (input.precision != Precision::FP16) {
+    if (input.precision != Precision::FP16
+        && !(node.op_type == OpType::CLAMP && input.precision == Precision::FP32)) {
         throw std::runtime_error("Activation operations only support FP16 precision");
     }
 
@@ -548,10 +549,23 @@ void compute_activation_node(GraphNode& node, const std::vector<std::unique_ptr<
                                   node.output_buffer.total_size, node.params.scalar);
             break;
         case OpType::CLAMP:
-            cactus_clamp_f16(input.data_as<__fp16>(),
-                             node.output_buffer.data_as<__fp16>(),
-                             node.output_buffer.total_size,
-                             node.params.scalar, node.params.scale);
+            if (input.precision == Precision::FP32) {
+                const float lo = node.params.scalar;
+                const float hi = node.params.scale;
+                const float* in = input.data_as<float>();
+                float* out = node.output_buffer.data_as<float>();
+                CactusThreading::parallel_for(node.output_buffer.total_size, CactusThreading::Thresholds::ELEMENT_WISE,
+                    [&](size_t start_idx, size_t end_idx) {
+                        for (size_t i = start_idx; i < end_idx; ++i) {
+                            out[i] = std::min(std::max(in[i], lo), hi);
+                        }
+                    });
+            } else {
+                cactus_clamp_f16(input.data_as<__fp16>(),
+                                 node.output_buffer.data_as<__fp16>(),
+                                 node.output_buffer.total_size,
+                                 node.params.scalar, node.params.scale);
+            }
             break;
         default:
             break;

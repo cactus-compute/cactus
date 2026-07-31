@@ -439,6 +439,11 @@ void kernel_softmax_f16_single(const __fp16* input, __fp16* output, size_t vocab
         max_val = std::max(max_val, static_cast<float>(input[i]));
     }
 
+    if (max_val == -std::numeric_limits<float>::infinity()) {
+        std::fill(output, output + vocab_size, static_cast<__fp16>(0.0f));
+        return;
+    }
+
     const float32x4_t max_broadcast = vdupq_n_f32(max_val);
 
     float32x4_t sum_vec[UNROLL_FACTOR * 2];

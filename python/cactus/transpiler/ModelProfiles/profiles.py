@@ -29,9 +29,7 @@ GEMMA4_E2B_PROFILE = ModelProfile(
         "audio",
         "gemma4_token_merge",
         "gemma4_rmsnorm",
-        "gemma4_rope",
         "gemma4_attention",
-        "gemma4_mlp",
         "linear",
         "cache",
     ),
@@ -68,7 +66,7 @@ PARAKEET_PROFILE = ModelProfile(
     inference_type=PARAKEET_INFERENCE_PATTERNS,
     cache_type=(),
     cache_policy=(),
-    files=("config.json", "preprocessor_config.json", "tokenizer_config.json"),
+    files=("config.json", "tokenizer_config.json"),
     fusion_fields=(
         "generic",
         "audio",

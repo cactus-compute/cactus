@@ -234,6 +234,10 @@ EDGES: dict[str, M.FusionEdge] = {
     "expert_down_to_weighted": _expert_edge("expert_down", "expert_weighted", 0),
     "expert_weighted_to_combine": _expert_edge("expert_weighted", "moe_combine", 0),
     "sample_topk_to_softmax": _edge("sample_topk", "sample_softmax", 0),
+    "silu_sigmoid_to_product": _edge("silu_sigmoid", "silu_product", 1),
+    "glu_left_slice_to_product": _edge("glu_left_slice", "glu_product", 0),
+    "glu_right_slice_to_sigmoid": _edge("glu_right_slice", "glu_sigmoid", 0),
+    "glu_sigmoid_to_product": _edge("glu_sigmoid", "glu_product", 1),
 }
 
 
@@ -253,6 +257,18 @@ EDGE_GROUPS: dict[str, tuple[str, ...]] = {
         "rms_eps_add_to_inv_pow",
         "rms_inv_pow_to_scale",
         "rms_scale_to_weight_mul",
+    ),
+    "rms_norm_no_weight": (
+        "rms_square_to_mean",
+        "rms_mean_to_eps_add",
+        "rms_eps_add_to_inv",
+        "rms_inv_to_scale",
+    ),
+    "rms_norm_pow_no_weight": (
+        "rms_square_to_mean",
+        "rms_mean_to_eps_add",
+        "rms_eps_add_to_inv_pow",
+        "rms_inv_pow_to_scale",
     ),
     "layernorm": (
         "ln_mean_to_center",
@@ -274,6 +290,14 @@ EDGE_GROUPS: dict[str, tuple[str, ...]] = {
     "gelu_mlp": (
         "up_proj_to_gelu",
         "gelu_to_down_proj",
+    ),
+    "silu_decomposed": (
+        "silu_sigmoid_to_product",
+    ),
+    "glu_decomposed": (
+        "glu_left_slice_to_product",
+        "glu_right_slice_to_sigmoid",
+        "glu_sigmoid_to_product",
     ),
     "gemma4_geglu_mlp": (
         "gate_input_view_to_gate_proj",

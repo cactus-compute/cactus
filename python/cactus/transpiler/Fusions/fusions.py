@@ -270,6 +270,42 @@ DIRECT_GRAPHS: dict[str, M.FusionGraph] = {
     "scalar_cos": _single_node_graph("scalar_cos", "scalar_cos", ("x",)),
     "scalar_sin": _single_node_graph("scalar_sin", "scalar_sin", ("x",)),
     "scalar_log": _single_node_graph("scalar_log", "scalar_log", ("x",)),
+    "scalar_not_equal": _single_node_graph(
+        "scalar_not_equal",
+        "scalar_not_equal",
+        ("x",),
+        attr_captures=(M.AttrCapture("value", "scalar_not_equal", "other", required=False),),
+    ),
+    "scalar_equal": _single_node_graph(
+        "scalar_equal",
+        "scalar_equal",
+        ("x",),
+        attr_captures=(M.AttrCapture("value", "scalar_equal", "other", required=False),),
+    ),
+    "scalar_less": _single_node_graph(
+        "scalar_less",
+        "scalar_less",
+        ("x",),
+        attr_captures=(M.AttrCapture("value", "scalar_less", "other", required=False),),
+    ),
+    "scalar_less_equal": _single_node_graph(
+        "scalar_less_equal",
+        "scalar_less_equal",
+        ("x",),
+        attr_captures=(M.AttrCapture("value", "scalar_less_equal", "other", required=False),),
+    ),
+    "scalar_greater": _single_node_graph(
+        "scalar_greater",
+        "scalar_greater",
+        ("x",),
+        attr_captures=(M.AttrCapture("value", "scalar_greater", "other", required=False),),
+    ),
+    "scalar_greater_equal": _single_node_graph(
+        "scalar_greater_equal",
+        "scalar_greater_equal",
+        ("x",),
+        attr_captures=(M.AttrCapture("value", "scalar_greater_equal", "other", required=False),),
+    ),
     "mean": _single_node_graph(
         "mean",
         "mean",
@@ -300,6 +336,12 @@ DIRECT_GRAPHS: dict[str, M.FusionGraph] = {
         ("x",),
         attr_captures=(M.AttrCapture("axis", "max", "dim", default=-1, required=False),),
     ),
+    "cumsum": _single_node_graph(
+        "cumsum",
+        "cumsum",
+        ("x",),
+        attr_captures=(M.AttrCapture("axis", "cumsum", "dim", default=-1, required=False),),
+    ),
     "softmax": _single_node_graph(
         "softmax",
         "softmax",
@@ -312,6 +354,17 @@ DIRECT_GRAPHS: dict[str, M.FusionGraph] = {
         ("x",),
         attr_captures=(M.AttrCapture("k", "topk_direct", "k", required=True),),
     ),
+    "where": _single_node_graph("where", "where", ("condition", "x", "y")),
+    "not_equal": _single_node_graph("not_equal", "not_equal", ("a", "b")),
+    "equal": _single_node_graph("equal", "equal", ("a", "b")),
+    "less": _single_node_graph("less", "less", ("a", "b")),
+    "less_equal": _single_node_graph("less_equal", "less_equal", ("a", "b")),
+    "greater": _single_node_graph("greater", "greater", ("a", "b")),
+    "greater_equal": _single_node_graph("greater_equal", "greater_equal", ("a", "b")),
+    "bitwise_and": _single_node_graph("bitwise_and", "bitwise_and", ("a", "b")),
+    "bitwise_or": _single_node_graph("bitwise_or", "bitwise_or", ("a", "b")),
+    "logical_not": _single_node_graph("logical_not", "logical_not", ("x",)),
+    "bitwise_not": _single_node_graph("bitwise_not", "bitwise_not", ("x",)),
     "view": _single_node_graph(
         "view",
         "view",
@@ -333,6 +386,12 @@ DIRECT_GRAPHS: dict[str, M.FusionGraph] = {
             M.AttrCapture("end_dim", "flatten", "end_dim", default=-1, required=False),
         ),
     ),
+    "expand": _single_node_graph(
+        "expand",
+        "expand",
+        ("x",),
+        attr_captures=(M.AttrCapture("shape", "expand", "shape", required=False),),
+    ),
     "transpose": _single_node_graph(
         "transpose",
         "transpose",
@@ -350,6 +409,16 @@ DIRECT_GRAPHS: dict[str, M.FusionGraph] = {
             M.AttrCapture("step", "slice", "step", required=False),
         ),
     ),
+    "unfold": _single_node_graph(
+        "unfold",
+        "unfold",
+        ("x",),
+        attr_captures=(
+            M.AttrCapture("dimension", "unfold", "dim", required=False),
+            M.AttrCapture("size", "unfold", "size", required=False),
+            M.AttrCapture("step", "unfold", "step", default=1, required=False),
+        ),
+    ),
     "index": _single_node_graph(
         "index",
         "index",
@@ -360,7 +429,27 @@ DIRECT_GRAPHS: dict[str, M.FusionGraph] = {
         ),
     ),
     "cat": _graph("cat", "cat", ("cat",), inputs=(_variadic_input("values", "cat", 0, min_count=2),), attr_captures=(M.AttrCapture("axis", "cat", "dim", default=0, required=False),)),
-    "gather": _single_node_graph("gather", "gather", ("tensor", "indices")),
+    "gather": _single_node_graph(
+        "gather",
+        "gather",
+        ("tensor", "indices"),
+        attr_captures=(M.AttrCapture("axis", "gather", "dim", default=0, required=False),),
+    ),
+    "precision_cast": _single_node_graph(
+        "precision_cast",
+        "precision_cast",
+        ("x",),
+        attr_captures=(M.AttrCapture("dtype", "precision_cast", "dtype", required=False),),
+    ),
+    "pad": _single_node_graph(
+        "pad",
+        "pad",
+        ("x",),
+        attr_captures=(
+            M.AttrCapture("pad", "pad", "pad", required=False),
+            M.AttrCapture("value", "pad", "value", default=0.0, required=False),
+        ),
+    ),
     "relu": _single_node_graph("relu", "relu", ("x",)),
     "silu": _single_node_graph("silu", "silu", ("x",)),
     "gelu": _single_node_graph("gelu", "gelu", ("x",)),
@@ -464,6 +553,26 @@ RMS_NORM_POW_GRAPH = _graph(
     },
 )
 
+RMS_NORM_NO_WEIGHT_GRAPH = _graph(
+    "rms_norm_no_weight",
+    "rms_scale",
+    ("rms_square", "rms_mean", "rms_eps_add", "rms_inv", "rms_scale"),
+    edge_names=E.EDGE_GROUPS["rms_norm_no_weight"],
+    inputs=(_input("x", "rms_square", 0),),
+    shared_inputs=(_shared_input("rms_square", 0, "rms_scale", 0),),
+    attr_captures=(M.AttrCapture("epsilon", "rms_eps_add", "other", default=1e-6, required=False),),
+)
+
+RMS_NORM_POW_NO_WEIGHT_GRAPH = _graph(
+    "rms_norm_pow_no_weight",
+    "rms_scale",
+    ("rms_square", "rms_mean", "rms_eps_add", "rms_inv_pow", "rms_scale"),
+    edge_names=E.EDGE_GROUPS["rms_norm_pow_no_weight"],
+    inputs=(_input("x", "rms_square", 0),),
+    shared_inputs=(_shared_input("rms_square", 0, "rms_scale", 0),),
+    attr_captures=(M.AttrCapture("epsilon", "rms_eps_add", "other", default=1e-6, required=False),),
+)
+
 LAYERNORM_NO_BIAS_GRAPH = _graph(
     "layernorm_no_bias",
     "ln_weight_mul",
@@ -497,6 +606,31 @@ LAYERNORM_GRAPH = _graph(
     constraints={
         "node_attrs_equal": {"left_node": "ln_mean", "left_attr": "dim", "right_node": "ln_var", "right_attr": "dim"},
         "input_value_kind": {"role": "bias", "allowed_value_kinds": (M.ValueKind.PARAMETER, M.ValueKind.BUFFER)},
+    },
+)
+
+SILU_DECOMPOSED_GRAPH = _graph(
+    "silu_decomposed",
+    "silu_product",
+    ("silu_sigmoid", "silu_product"),
+    edge_names=E.EDGE_GROUPS["silu_decomposed"],
+    inputs=(_input("x", "silu_product", 0),),
+    shared_inputs=(_shared_input("silu_product", 0, "silu_sigmoid", 0),),
+)
+
+GLU_DECOMPOSED_GRAPH = _graph(
+    "glu_decomposed",
+    "glu_product",
+    ("glu_left_slice", "glu_right_slice", "glu_sigmoid", "glu_product"),
+    edge_names=E.EDGE_GROUPS["glu_decomposed"],
+    inputs=(_input("x", "glu_left_slice", 0),),
+    shared_inputs=(_shared_input("glu_left_slice", 0, "glu_right_slice", 0),),
+    attr_captures=(M.AttrCapture("axis", "glu_left_slice", "axis", default=-1, required=False),),
+    constraints={
+        "slice_halves": {
+            "left_node": "glu_left_slice",
+            "right_node": "glu_right_slice",
+        },
     },
 )
 
@@ -582,6 +716,19 @@ ATTENTION_MASKED_GRAPH = _graph(
     constraints={
         "input_broadcastable_to_node": {"role": "mask", "node": "attn_qk", "allow_missing": True},
     },
+)
+
+GEMMA4_ATTENTION_LAYOUT_GRAPH = _single_node_graph(
+    "gemma4_attention_layout",
+    "view",
+    ("x",),
+    attr_captures=(
+        M.AttrCapture("scale", default=1.0, required=False),
+        M.AttrCapture("input_layout", default="bhqd_bhds_bhsd", required=False),
+        M.AttrCapture("output_layout", default="bhqd", required=False),
+        M.AttrCapture("window_size", default=0, required=False),
+    ),
+    metadata={"special_matcher": "gemma4_attention_layout"},
 )
 
 LFM_BMM_MASKED_ATTENTION_GRAPH = _graph(
@@ -1085,14 +1232,19 @@ GRAPH_BY_NAME: dict[str, M.FusionGraph] = {
     "linear_bias": LINEAR_BIAS_GRAPH,
     "rms_norm": RMS_NORM_GRAPH,
     "rms_norm_pow": RMS_NORM_POW_GRAPH,
+    "rms_norm_no_weight": RMS_NORM_NO_WEIGHT_GRAPH,
+    "rms_norm_pow_no_weight": RMS_NORM_POW_NO_WEIGHT_GRAPH,
     "layernorm_no_bias": LAYERNORM_NO_BIAS_GRAPH,
     "layernorm": LAYERNORM_GRAPH,
+    "silu_decomposed": SILU_DECOMPOSED_GRAPH,
+    "glu_decomposed": GLU_DECOMPOSED_GRAPH,
     "swiglu_mlp": SWIGLU_MLP_GRAPH,
     "gelu_mlp": GELU_MLP_GRAPH,
     "gemma4_geglu_mlp": GEMMA4_GEGLU_MLP_GRAPH,
     "scaled_dot_product_attention": ATTENTION_DIRECT_GRAPH,
     "attention_core": ATTENTION_CORE_GRAPH,
     "attention_masked": ATTENTION_MASKED_GRAPH,
+    "gemma4_attention_layout": GEMMA4_ATTENTION_LAYOUT_GRAPH,
     "lfm_bmm_masked_attention": LFM_BMM_MASKED_ATTENTION_GRAPH,
     "rope": ROPE_GRAPH,
     "conv": CONV_GRAPH,
@@ -1141,14 +1293,26 @@ FUSIONS: dict[str, M.FusionDefinition] = {
     "linear_bias": _definition("linear_bias", "linear", LINEAR_BIAS_GRAPH, fusion_fields=("generic", "linear")),
     "rms_norm": _definition("rms_norm", "rms_norm", RMS_NORM_GRAPH, fusion_fields=("generic", "rmsnorm", "gemma4_rmsnorm", "qwen2_5_rmsnorm")),
     "rms_norm_pow": _definition("rms_norm_pow", "rms_norm", RMS_NORM_POW_GRAPH, fusion_fields=("generic", "rmsnorm", "gemma4_rmsnorm", "qwen2_5_rmsnorm")),
+    "rms_norm_no_weight": _definition("rms_norm_no_weight", "rms_norm", RMS_NORM_NO_WEIGHT_GRAPH, fusion_fields=("generic", "rmsnorm", "gemma4_rmsnorm", "qwen2_5_rmsnorm")),
+    "rms_norm_pow_no_weight": _definition("rms_norm_pow_no_weight", "rms_norm", RMS_NORM_POW_NO_WEIGHT_GRAPH, fusion_fields=("generic", "rmsnorm", "gemma4_rmsnorm", "qwen2_5_rmsnorm")),
     "layernorm_no_bias": _definition("layernorm_no_bias", "layernorm", LAYERNORM_NO_BIAS_GRAPH, fusion_fields=("generic", "normalization")),
     "layernorm": _definition("layernorm", "layernorm", LAYERNORM_GRAPH, fusion_fields=("generic", "normalization")),
+    "silu_decomposed": _definition("silu_decomposed", "silu", SILU_DECOMPOSED_GRAPH, fusion_fields=("generic", "activation", "audio", "mlp")),
+    "glu_decomposed": _definition("glu_decomposed", "glu", GLU_DECOMPOSED_GRAPH, fusion_fields=("generic", "activation", "audio")),
     "swiglu_mlp": _definition("swiglu_mlp", "dense_mlp_tq_fused", SWIGLU_MLP_GRAPH, fusion_fields=("generic", "mlp", "gemma4_mlp", "qwen2_5_mlp", "lfm_mlp")),
     "gelu_mlp": _definition("gelu_mlp", "matmul", GELU_MLP_GRAPH, fusion_fields=("generic", "mlp")),
     "gemma4_geglu_mlp": _definition("gemma4_geglu_mlp", "dense_mlp_tq_fused", GEMMA4_GEGLU_MLP_GRAPH, fusion_fields=("gemma4_mlp",)),
     "scaled_dot_product_attention": _definition("scaled_dot_product_attention", "attention", ATTENTION_DIRECT_GRAPH, fusion_fields=("generic", "attention")),
     "attention_core": _definition("attention_core", "attention", ATTENTION_CORE_GRAPH, fusion_fields=("generic", "attention", "gemma4_attention", "qwen2_5_attention", "lfm_attention")),
     "attention_masked": _definition("attention_masked", "attention", ATTENTION_MASKED_GRAPH, fusion_fields=("generic", "attention", "gemma4_attention")),
+    "gemma4_attention_layout": _definition(
+        "gemma4_attention_layout",
+        "attention",
+        GEMMA4_ATTENTION_LAYOUT_GRAPH,
+        fusion_fields=("attention", "gemma4_attention"),
+        supported_inference_modes=("prefill_with_cache", "decode_with_cache"),
+        metadata={"special_matcher": "gemma4_attention_layout"},
+    ),
     "gemma4_bmm_masked_attention": _definition("gemma4_bmm_masked_attention", "attention", LFM_BMM_MASKED_ATTENTION_GRAPH, fusion_fields=("generic", "attention", "gemma4_attention")),
     "lfm_bmm_masked_attention": _definition("lfm_bmm_masked_attention", "attention", LFM_BMM_MASKED_ATTENTION_GRAPH, fusion_fields=("generic", "attention", "lfm_attention", "lfm_moe")),
     "rope": _definition("rope", "rope", ROPE_GRAPH, fusion_fields=("generic", "rope", "gemma4_rope", "qwen2_5_rope")),

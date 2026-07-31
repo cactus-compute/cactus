@@ -102,6 +102,7 @@ class GenerationContext:
     skip_node_names: frozenset[str] = frozenset()
     cache_state_placeholder_names: frozenset[str] = frozenset()
     prefill_cache_cat_annotations: dict[str, IRModels.CacheAnnotation] = field(default_factory=dict)
+    prefill_cache_cat_states: dict[str, GraphTensor] = field(default_factory=dict)
     appended_cache_pairs: set[tuple[str, str]] = field(default_factory=set)
 
     @property
@@ -258,7 +259,24 @@ def component_graph_from_ir(cls: type[ComponentGraph], name: str, ir_graph: IRMo
         ir_graph=ir_graph,
         output_path=config.component_path(name),
         manifest_path=generator_component_manifest_path(config, name),
+        metadata=component_metadata_from_ir(ir_graph),
     )
+
+
+def component_metadata_from_ir(ir_graph: IRModels.Graph) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+
+    for node in ir_graph.nodes:
+        chunk_tokens = node.ir_metadata.get("prefill_chunk_tokens")
+
+        if chunk_tokens is None:
+            continue
+
+        metadata["prefill_strategy"] = "chunked"
+        metadata["prefill_chunk_tokens"] = str(chunk_tokens)
+        break
+
+    return metadata
 
 
 def save_component_graph(component: ComponentGraph) -> Path:

@@ -372,6 +372,19 @@ CACTUS_FFI_EXPORT int cactus_graph_where(cactus_graph_t graph, cactus_node_t con
     }
 }
 
+CACTUS_FFI_EXPORT int cactus_graph_masked_select_prefix(cactus_graph_t graph, cactus_node_t x, cactus_node_t mask, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_masked_select_prefix");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.masked_select_prefix(
+            static_cast<size_t>(x),
+            static_cast<size_t>(mask)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_scalar_add(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t *out) {
     if (!graph || !out) {
         last_error_message = "Invalid args to cactus_graph_scalar_add";
@@ -1709,6 +1722,61 @@ int cactus_graph_execute(cactus_graph_t graph) {
     }
     try {
         as_graph(graph)->graph.execute();
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+int cactus_graph_retain_outputs(cactus_graph_t graph, const cactus_node_t* nodes, size_t count) {
+    if (!graph || (!nodes && count > 0)) {
+        last_error_message = "Invalid args to cactus_graph_retain_outputs";
+        return -1;
+    }
+    try {
+        std::vector<int> node_ids;
+        node_ids.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            node_ids.push_back(static_cast<int>(nodes[i]));
+        }
+        as_graph(graph)->graph.retain_outputs(node_ids);
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+int cactus_graph_get_node_op_type(cactus_graph_t graph, cactus_node_t node, int32_t* out_op_type) {
+    if (!graph || !out_op_type) {
+        last_error_message = "Invalid args to cactus_graph_get_node_op_type";
+        return -1;
+    }
+    try {
+        *out_op_type = static_cast<int32_t>(as_graph(graph)->graph.get_node_op_type(static_cast<size_t>(node)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+int cactus_graph_get_node_inputs(cactus_graph_t graph, cactus_node_t node, cactus_node_t* out_inputs, size_t* inout_count) {
+    if (!graph || !inout_count) {
+        last_error_message = "Invalid args to cactus_graph_get_node_inputs";
+        return -1;
+    }
+    try {
+        const auto& inputs = as_graph(graph)->graph.get_node_inputs(static_cast<size_t>(node));
+        if (!out_inputs || *inout_count < inputs.size()) {
+            *inout_count = inputs.size();
+            return out_inputs ? -2 : 0;
+        }
+        for (size_t i = 0; i < inputs.size(); ++i) {
+            out_inputs[i] = static_cast<cactus_node_t>(inputs[i]);
+        }
+        *inout_count = inputs.size();
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();

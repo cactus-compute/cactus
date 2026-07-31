@@ -622,6 +622,7 @@ public:
     ~Model();
 
     const Config& get_config() const { return config_; }
+    size_t audio_soft_token_count_for_frames(size_t frame_count);
     Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
     const std::vector<DebugNode>& get_debug_nodes() const;
 

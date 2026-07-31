@@ -543,6 +543,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
              "vision_encoder",
              "audio_encoder",
              "lm_encoder_media_step",
+             "lm_encoder_media_chunk",
              "decoder_prefill_chunk",
              "decoder_embed_chunk",
              "lm_encoder",
@@ -1182,6 +1183,40 @@ size_t Model::component_output_tokens(const Component& comp, const std::string& 
     return 0;
 }
 
+size_t Model::audio_soft_token_count_for_frames(size_t frame_count) {
+    if (!audio_encoder_) return 0;
+    if (!load_component_graph(*audio_encoder_)) return 0;
+
+    int feature_idx = -1;
+    for (const auto& name : {"input_features", "audio_features"}) {
+        int idx = input_index(*audio_encoder_, name);
+        if (idx >= 0) {
+            feature_idx = idx;
+            break;
+        }
+    }
+    if (feature_idx < 0 || audio_encoder_->output_node_ids.empty()) return 0;
+
+    const auto& input_desc = audio_encoder_->graph->get_output_buffer(
+        static_cast<size_t>(audio_encoder_->runtime_input_node_ids[feature_idx]));
+    const auto& output_desc = audio_encoder_->graph->get_output_buffer(
+        static_cast<size_t>(audio_encoder_->output_node_ids.front()));
+
+    const size_t frames_per_chunk = input_desc.shape.size() >= 2 ? input_desc.shape[1] : 0;
+    size_t rows_per_chunk = 0;
+    if (output_desc.shape.size() >= 2) {
+        rows_per_chunk = output_desc.shape[output_desc.shape.size() - 2];
+    } else if (!output_desc.shape.empty()) {
+        rows_per_chunk = output_desc.shape[0];
+    }
+    if (frames_per_chunk == 0 || rows_per_chunk == 0) return 0;
+
+    const size_t chunks = frame_count == 0
+        ? 1
+        : (frame_count + frames_per_chunk - 1) / frames_per_chunk;
+    return chunks * rows_per_chunk;
+}
+
 void Model::execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, size_t encoder_chunk,
                                   size_t chunk_tokens, const std::vector<uint32_t>& tokens,
                                   size_t processed, size_t start_position) {
@@ -1209,6 +1244,10 @@ void Model::execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, si
             run_encoder_step(token, start_position + processed + i);
             copy_component_outputs_to_chunk_inputs(*encoder_, chunk_comp, i);
         }
+    }
+    const size_t real_chunk_tokens = tokens.size() > processed ? std::min(chunk_tokens, tokens.size() - processed) : 0;
+    for (size_t i = 0; i < real_chunk_tokens; ++i) {
+        write_int_input_at(chunk_comp, "attention_mask", i, 1);
     }
     chunk_comp.graph->execute();
 }
@@ -1969,8 +2008,10 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     ChunkedPrefillResult chunked;
     if (decoder_prefill_) {
         chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), true);
-        if (chunked.logical_tokens == tokens.size() && chunked.padding_tokens > 0 && tokens.size() > 0) {
-            // Cache already moved into the step component; drop the padded last row and re-run it for logits.
+        if (chunked.logical_tokens == tokens.size()
+            && tokens.size() > 0
+            && (chunked.padding_tokens > 0 || family_ == "gemma4")) {
+            // Cache already moved into the step component; drop the last row and re-run it for step-decoder logits.
             set_cache_current_len(*decoder_, tokens.size() - 1);
             cache_total_seq_len_ = tokens.size() - 1;
             run_step(tokens.back(), cache_total_seq_len_, true);
@@ -2371,7 +2412,9 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
     struct OutputInfo {
         std::string name;
         int text_idx = -1;
+        int text_chunk_idx = -1;
         int media_idx = -1;
+        int media_chunk_idx = -1;
         size_t per_token_bytes = 0;
         Precision precision = Precision::FP16;
         std::vector<size_t> shape_template;
@@ -2406,6 +2449,181 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
             shape[0] = token_count;
         }
         store_shape[info.name] = std::move(shape);
+    }
+
+    if (lm_encoder_text_chunk_ && lm_encoder_media_chunk_
+        && load_component_graph(*lm_encoder_text_chunk_)
+        && load_component_graph(*lm_encoder_media_chunk_)) {
+        if (std::getenv("CACTUS_PROFILE_PREFILL")) {
+            size_t audio_token_count = 0;
+            size_t image_token_count = 0;
+            for (uint32_t token : tokens) {
+                if (audio_tok != 0 && token == audio_tok) ++audio_token_count;
+                if (image_tok != 0 && token == image_tok) ++image_token_count;
+            }
+            std::cerr << "[prefill-profile] gemma4 media tokens: image_tokens="
+                      << image_token_count << " image_rows=" << image_rows
+                      << " audio_tokens=" << audio_token_count << " audio_rows=" << audio_rows
+                      << std::endl;
+        }
+        const size_t text_chunk_tokens = component_chunk_tokens(*lm_encoder_text_chunk_, "input_ids");
+        const size_t media_chunk_tokens = component_chunk_tokens(*lm_encoder_media_chunk_, "input_ids");
+        const int media_embeds_idx = input_index(*lm_encoder_media_chunk_, "inputs_embeds");
+        bool can_chunk = text_chunk_tokens > 0
+            && text_chunk_tokens == media_chunk_tokens
+            && media_embeds_idx >= 0
+            && input_index(*lm_encoder_text_chunk_, "input_ids") >= 0
+            && input_index(*lm_encoder_text_chunk_, "position_ids") >= 0
+            && input_index(*lm_encoder_media_chunk_, "input_ids") >= 0
+            && input_index(*lm_encoder_media_chunk_, "position_ids") >= 0;
+
+        for (auto& info : outputs) {
+            info.text_chunk_idx = output_index(*lm_encoder_text_chunk_, info.name);
+            info.media_chunk_idx = output_index(*lm_encoder_media_chunk_, info.name);
+            if (info.text_chunk_idx < 0 || info.media_chunk_idx < 0) {
+                can_chunk = false;
+                break;
+            }
+            for (Component* chunk_comp : {lm_encoder_text_chunk_, lm_encoder_media_chunk_}) {
+                int output_idx = chunk_comp == lm_encoder_text_chunk_ ? info.text_chunk_idx : info.media_chunk_idx;
+                size_t node_id = static_cast<size_t>(chunk_comp->output_node_ids[output_idx]);
+                const auto& desc = chunk_comp->graph->get_output_buffer(node_id);
+                if (desc.precision != info.precision || desc.total_size % media_chunk_tokens != 0) {
+                    can_chunk = false;
+                    break;
+                }
+                size_t per_token_elements = desc.total_size / media_chunk_tokens;
+                size_t per_token_bytes = PrecisionTraits::packed_size_of(desc.precision, per_token_elements);
+                if (per_token_bytes != info.per_token_bytes) {
+                    can_chunk = false;
+                    break;
+                }
+            }
+            if (!can_chunk) break;
+        }
+
+        auto write_media_row_at = [&](size_t row, const uint8_t* feature_row,
+                                      size_t feature_row_bytes, Precision feature_precision) {
+            auto& embeds_buf = lm_encoder_media_chunk_->input_buffers[media_embeds_idx];
+            size_t node_id = static_cast<size_t>(lm_encoder_media_chunk_->runtime_input_node_ids[media_embeds_idx]);
+            const auto& desc = lm_encoder_media_chunk_->graph->get_output_buffer(node_id);
+            if (media_chunk_tokens == 0 || desc.total_size % media_chunk_tokens != 0) {
+                throw std::runtime_error("lm_encoder_media_chunk inputs_embeds is not token-aligned");
+            }
+            const size_t row_elements = desc.total_size / media_chunk_tokens;
+            const size_t dst_offset = PrecisionTraits::byte_offset_of(desc.precision, row * row_elements);
+            const size_t dst_bytes = PrecisionTraits::packed_size_of(desc.precision, row_elements);
+            if (dst_offset + dst_bytes > embeds_buf.size()) {
+                throw std::runtime_error("lm_encoder_media_chunk media row exceeds inputs_embeds buffer");
+            }
+            if (desc.precision == feature_precision) {
+                size_t to_copy = std::min(feature_row_bytes, dst_bytes);
+                std::memcpy(embeds_buf.data() + dst_offset, feature_row, to_copy);
+                if (to_copy < dst_bytes) {
+                    std::memset(embeds_buf.data() + dst_offset + to_copy, 0, dst_bytes - to_copy);
+                }
+                return;
+            }
+            std::vector<uint8_t> row_buf(dst_bytes, 0);
+            write_typed_buffer(row_buf, desc.precision, feature_row, feature_row_bytes, feature_precision);
+            std::memcpy(embeds_buf.data() + dst_offset, row_buf.data(), dst_bytes);
+        };
+
+        if (can_chunk) {
+            size_t audio_idx = 0;
+            size_t image_idx = 0;
+            for (size_t chunk_start = 0; chunk_start < token_count; chunk_start += media_chunk_tokens) {
+                const size_t real_tokens = std::min(media_chunk_tokens, token_count - chunk_start);
+                bool chunk_has_media = false;
+                bool chunk_has_text = false;
+                for (size_t i = 0; i < real_tokens; ++i) {
+                    uint32_t token = tokens[chunk_start + i];
+                    bool is_audio = audio_tok != 0 && token == audio_tok && have_audio_features;
+                    bool is_image = image_tok != 0 && token == image_tok && have_image_features;
+                    if (is_audio || is_image) {
+                        chunk_has_media = true;
+                    } else {
+                        chunk_has_text = true;
+                    }
+                }
+
+                for (auto& buf : lm_encoder_text_chunk_->input_buffers) {
+                    std::fill(buf.begin(), buf.end(), 0);
+                }
+                for (auto& buf : lm_encoder_media_chunk_->input_buffers) {
+                    std::fill(buf.begin(), buf.end(), 0);
+                }
+
+                if (chunk_has_text) {
+                    for (size_t i = 0; i < media_chunk_tokens; ++i) {
+                        size_t pos = chunk_start + i;
+                        uint32_t token = pos < token_count ? tokens[pos] : static_cast<uint32_t>(config_.pad_token_id);
+                        write_int_input_at(*lm_encoder_text_chunk_, "input_ids", i, static_cast<int64_t>(token));
+                        write_int_input_at(*lm_encoder_text_chunk_, "position_ids", i, static_cast<int64_t>(pos));
+                    }
+
+                    lm_encoder_text_chunk_->graph->execute();
+                }
+
+                if (chunk_has_media && chunk_has_text) {
+                    copy_component_outputs_to_inputs(*lm_encoder_text_chunk_, *lm_encoder_media_chunk_);
+                }
+
+                for (size_t i = 0; i < media_chunk_tokens; ++i) {
+                    size_t pos = chunk_start + i;
+                    uint32_t token = pos < token_count ? tokens[pos] : static_cast<uint32_t>(config_.pad_token_id);
+                    uint32_t media_token = token;
+
+                    if (pos < token_count && audio_tok != 0 && token == audio_tok && have_audio_features) {
+                        if (audio_idx >= audio_rows) {
+                            throw std::runtime_error("Gemma4 prompt contains more audio tokens than audio feature rows");
+                        }
+                        const uint8_t* row = audio_it->second.data() + audio_idx * audio_row_bytes;
+                        write_media_row_at(i, row, audio_row_bytes, audio_prec);
+                        media_token = 0;
+                        ++audio_idx;
+                    } else if (pos < token_count && image_tok != 0 && token == image_tok && have_image_features) {
+                        if (image_idx >= image_rows) {
+                            throw std::runtime_error("Gemma4 prompt contains more image tokens than image feature rows");
+                        }
+                        const uint8_t* row = image_it->second.data() + image_idx * image_row_bytes;
+                        write_media_row_at(i, row, image_row_bytes, image_prec);
+                        media_token = 0;
+                        ++image_idx;
+                    }
+
+                    write_int_input_at(*lm_encoder_media_chunk_, "input_ids", i, static_cast<int64_t>(media_token));
+                    write_int_input_at(*lm_encoder_media_chunk_, "position_ids", i, static_cast<int64_t>(pos));
+                }
+
+                Component* output_chunk = lm_encoder_text_chunk_;
+                if (chunk_has_media) {
+                    lm_encoder_media_chunk_->graph->execute();
+                    output_chunk = lm_encoder_media_chunk_;
+                }
+
+                for (const auto& info : outputs) {
+                    int output_idx = output_chunk == lm_encoder_text_chunk_ ? info.text_chunk_idx : info.media_chunk_idx;
+                    size_t node_id = static_cast<size_t>(output_chunk->output_node_ids[output_idx]);
+                    const auto& desc = output_chunk->graph->get_output_buffer(node_id);
+                    const auto* ptr = static_cast<const uint8_t*>(output_chunk->graph->get_output(node_id));
+                    size_t per_token_elements = desc.total_size / media_chunk_tokens;
+                    size_t per_token_bytes = PrecisionTraits::packed_size_of(desc.precision, per_token_elements);
+                    for (size_t i = 0; i < real_tokens; ++i) {
+                        size_t src_offset = PrecisionTraits::byte_offset_of(desc.precision, i * per_token_elements);
+                        std::memcpy(
+                            store_bytes[info.name].data() + (chunk_start + i) * info.per_token_bytes,
+                            ptr + src_offset,
+                            per_token_bytes);
+                    }
+                }
+                lm_encoder_text_chunk_->graph->release_runtime_buffers();
+                lm_encoder_media_chunk_->graph->release_runtime_buffers();
+            }
+            lm_encoder_text_chunk_->graph->release_all_weight_pages();
+            lm_encoder_media_chunk_->graph->release_all_weight_pages();
+            return true;
+        }
     }
 
     size_t audio_idx = 0;
@@ -2476,6 +2694,14 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                    const std::vector<std::string>& image_paths,
                                    const std::vector<std::vector<float>>& audio_features_per_message) {
     if (cache_total_seq_len_ > 0) return false;
+    const bool profile_prefill = std::getenv("CACTUS_PROFILE_PREFILL") != nullptr;
+    auto profile_start = std::chrono::steady_clock::now();
+    auto profile_mark = [&](const std::string& label) {
+        if (!profile_prefill) return;
+        auto now = std::chrono::steady_clock::now();
+        double ms = std::chrono::duration_cast<std::chrono::microseconds>(now - profile_start).count() / 1000.0;
+        std::cerr << "[prefill-profile] " << label << ": " << ms << " ms" << std::endl;
+    };
     const bool have_images = !image_paths.empty() && vision_encoder_ != nullptr;
     bool any_audio = false;
     for (const auto& mel : audio_features_per_message) { if (!mel.empty()) { any_audio = true; break; } }
@@ -2585,10 +2811,12 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         }
         unload_component_graph(*vision_encoder_);
     }
+    profile_mark("media vision encoded");
 
     if (have_audio) {
         run_audio_encoder_messages(audio_features_per_message);
     }
+    profile_mark("media audio encoded");
 
     std::map<std::string, std::vector<uint8_t>> store_bytes;
     std::map<std::string, Precision> store_prec;
@@ -2696,6 +2924,7 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         lm_encoder_->graph->release_all_weight_pages();
         unload_component_graph(*lm_encoder_);
     }
+    profile_mark("lm encoder outputs built");
 
     auto embeds_shape_it = store_shape.find("inputs_embeds");
     if (embeds_shape_it == store_shape.end()) {
@@ -2772,8 +3001,13 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             size_t src_slice_bytes = chunk_seq * src_per_pos;
             write_typed_buffer(dst_buf, desc.precision, src_ptr, src_slice_bytes, src_prec);
         }
+        const size_t real_chunk_tokens = std::min(chunk_seq, valid_seq - chunk_start);
+        for (size_t i = 0; i < real_chunk_tokens; ++i) {
+            write_int_input_at(*decoder_prefill_chunk_, "attention_mask", i, 1);
+        }
         decoder_prefill_chunk_->graph->execute();
     }
+    profile_mark("decoder chunk prefill executed");
     if (whole_chunks_end > 0 && decoder_ != nullptr) {
         move_cache_states(*decoder_prefill_chunk_, *decoder_);
         decoder_prefill_chunk_->graph->release_runtime_buffers();
@@ -2794,6 +3028,7 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         }
         decoder_->graph->execute();
     }
+    profile_mark("decoder scalar tail executed");
     cache_total_seq_len_ += valid_seq;
     return true;
 }
@@ -2818,8 +3053,12 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
         return;
     }
 
+    const bool can_chunk_lm_encoder =
+        lm_encoder_ != nullptr
+        || (family_ == "gemma4" && lm_encoder_text_chunk_ != nullptr && lm_encoder_media_chunk_ != nullptr);
     const bool can_chunk_prefill =
-        lm_encoder_ != nullptr && decoder_prefill_chunk_ != nullptr &&
+        std::getenv("CACTUS_DISABLE_MEDIA_CHUNK_PREFILL") == nullptr &&
+        can_chunk_lm_encoder && decoder_prefill_chunk_ != nullptr &&
         (vision_encoder_ != nullptr || audio_encoder_ != nullptr);
     if (can_chunk_prefill) {
         if (run_chunk_prefill_path(tokens, image_paths, audio_features_per_message)) {

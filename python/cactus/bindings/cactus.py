@@ -712,6 +712,24 @@ _lib.cactus_graph_invalidate_persistent.restype = ctypes.c_int
 _lib.cactus_graph_execute.argtypes = [cactus_graph_t]
 _lib.cactus_graph_execute.restype = ctypes.c_int
 
+_lib.cactus_graph_retain_outputs.argtypes = [
+    cactus_graph_t, ctypes.POINTER(cactus_node_t), ctypes.c_size_t
+]
+_lib.cactus_graph_retain_outputs.restype = ctypes.c_int
+
+_lib.cactus_graph_get_node_op_type.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(ctypes.c_int32)
+]
+_lib.cactus_graph_get_node_op_type.restype = ctypes.c_int
+
+_lib.cactus_graph_get_node_inputs.argtypes = [
+    cactus_graph_t,
+    cactus_node_t,
+    ctypes.POINTER(cactus_node_t),
+    ctypes.POINTER(ctypes.c_size_t),
+]
+_lib.cactus_graph_get_node_inputs.restype = ctypes.c_int
+
 _lib.cactus_graph_get_output_ptr.argtypes = [cactus_graph_t, cactus_node_t,
   ctypes.POINTER(ctypes.c_void_p)]
 _lib.cactus_graph_get_output_ptr.restype = ctypes.c_int
@@ -1673,6 +1691,31 @@ class Graph:
         rc = _lib.cactus_graph_execute(self.h)
         if rc != 0:
             raise RuntimeError(_err("graph_execute failed"))
+
+    def retain_outputs(self, node_ids):
+        node_ids = tuple(int(node_id) for node_id in node_ids)
+        arr = (cactus_node_t * len(node_ids))(*node_ids)
+        rc = _lib.cactus_graph_retain_outputs(self.h, arr, len(node_ids))
+        if rc != 0:
+            raise RuntimeError(_err("graph_retain_outputs failed"))
+
+    def node_op_type(self, node_id):
+        out = ctypes.c_int32()
+        rc = _lib.cactus_graph_get_node_op_type(self.h, cactus_node_t(int(node_id)), ctypes.byref(out))
+        if rc != 0:
+            raise RuntimeError(_err("graph_get_node_op_type failed"))
+        return int(out.value)
+
+    def node_inputs(self, node_id):
+        count = ctypes.c_size_t()
+        rc = _lib.cactus_graph_get_node_inputs(self.h, cactus_node_t(int(node_id)), None, ctypes.byref(count))
+        if rc != 0:
+            raise RuntimeError(_err("graph_get_node_inputs failed"))
+        arr = (cactus_node_t * int(count.value))()
+        rc = _lib.cactus_graph_get_node_inputs(self.h, cactus_node_t(int(node_id)), arr, ctypes.byref(count))
+        if rc != 0:
+            raise RuntimeError(_err("graph_get_node_inputs failed"))
+        return tuple(int(arr[i]) for i in range(int(count.value)))
 
     def add(self, a, b):
         return self._binary("cactus_graph_add", a, b)

@@ -527,6 +527,8 @@ PreparedPrompt prepare_prompt(
             auto samples_16k = resample_to_16k_fp32(waveform_fp32, 16000);
             if (!samples_16k.empty()) {
                 auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(samples_16k, handle->model->get_config());
+                size_t graph_soft_tokens = handle->model->audio_soft_token_count_for_frames(audio_prep.num_frames);
+                if (graph_soft_tokens > 0) audio_prep.num_soft_tokens = std::min(audio_prep.num_soft_tokens, graph_soft_tokens);
                 prompt.audio_features.push_back(std::move(audio_prep.features));
                 size_t u = user_indices.size() - 1;
                 prompt.messages[user_indices[u]].audio_soft_token_count = audio_prep.num_soft_tokens;
@@ -541,6 +543,8 @@ PreparedPrompt prepare_prompt(
                 auto samples_16k = resample_to_16k_fp32(wav.samples, wav.sample_rate);
                 if (samples_16k.empty()) continue;
                 auto audio_prep = cactus::audio::preprocess_audio_for_gemma4(samples_16k, handle->model->get_config());
+                size_t graph_soft_tokens = handle->model->audio_soft_token_count_for_frames(audio_prep.num_frames);
+                if (graph_soft_tokens > 0) audio_prep.num_soft_tokens = std::min(audio_prep.num_soft_tokens, graph_soft_tokens);
                 prompt.audio_features.push_back(std::move(audio_prep.features));
                 prompt.messages[user_indices[u]].audio_soft_token_count = audio_prep.num_soft_tokens;
                 counts[u] = audio_prep.num_soft_tokens;

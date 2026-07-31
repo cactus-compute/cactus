@@ -635,12 +635,12 @@ void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<G
             mask_per_head = false;
         } else if (mask_buffer->shape.size() == 4) {
             if (mask_buffer->shape[0] != batch_size ||
-                mask_buffer->shape[1] != num_q_heads ||
+                (mask_buffer->shape[1] != num_q_heads && mask_buffer->shape[1] != 1) ||
                 mask_buffer->shape[2] != seq_len ||
                 mask_buffer->shape[3] != kv_seq_len) {
-                throw std::runtime_error("Attention mask [B, H, T, S] shape mismatch");
+                throw std::runtime_error("Attention mask [B, H|1, T, S] shape mismatch");
             }
-            mask_per_head = true;
+            mask_per_head = mask_buffer->shape[1] != 1;
         } else {
             throw std::runtime_error("Attention mask must be rank 3 or 4");
         }
@@ -928,6 +928,5 @@ void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
         }
     }
 }
-
 
 

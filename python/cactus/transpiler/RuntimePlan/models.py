@@ -258,13 +258,36 @@ def runtime_plan_from_generator_manifests(
         )
         for name, manifest_path in component_manifest_paths.items()
     )
+    plan_metadata = runtime_plan_metadata_from_components(components)
+    plan_metadata.update(string_dict(metadata))
 
     return RuntimePlan(
         family=runtime_family_from_model_profile(model_profile),
         components=components,
         routes=runtime_routes_from_model_profile(model_profile),
-        metadata=string_dict(metadata),
+        metadata=plan_metadata,
     )
+
+
+def runtime_plan_metadata_from_components(components: tuple[RuntimeComponent, ...]) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    component_by_name = {component.component: component for component in components}
+    decoder_prefill = component_by_name.get("decoder_prefill_chunk")
+
+    if decoder_prefill is None:
+        return metadata
+
+    component_metadata = string_dict(decoder_prefill.metadata)
+    chunk_tokens = component_metadata.get("prefill_chunk_tokens")
+
+    if chunk_tokens is None:
+        return metadata
+
+    if "lm_encoder_text_chunk" in component_by_name:
+        metadata["prefill_strategy"] = "chunked"
+        metadata["prefill_chunk_tokens"] = chunk_tokens
+
+    return metadata
 
 
 def runtime_plan_from_generation_result(

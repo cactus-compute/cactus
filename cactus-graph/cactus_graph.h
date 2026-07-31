@@ -138,7 +138,8 @@ enum class OpType {
     PAD,
     SCALAR_FLOOR_DIVIDE,
     STRIDED_SLICE,
-    EXPAND
+    EXPAND,
+    MASKED_SELECT_PREFIX
 };
 
 struct PrecisionTraits {
@@ -509,6 +510,7 @@ public:
     size_t bitwise_and(size_t input1, size_t input2);
     size_t bitwise_or(size_t input1, size_t input2);
     size_t where(size_t condition, size_t true_value, size_t false_value);
+    size_t masked_select_prefix(size_t input, size_t mask);
 
 
     size_t scalar_add(size_t input, float value);
@@ -761,6 +763,7 @@ public:
                     const std::vector<size_t>& output_shape, const OpParams& params = {});
     const BufferDesc& get_output_buffer(size_t node_id) const;
     OpType get_node_op_type(size_t node_id) const;
+    const std::vector<size_t>& get_node_inputs(size_t node_id) const;
     size_t get_node_window_size(size_t node_id) const;
     size_t get_node_sink_size(size_t node_id) const;
     size_t get_node_cache_num_slots(size_t node_id) const;
@@ -953,6 +956,8 @@ CACTUS_FFI_EXPORT int cactus_graph_bitwise_or(cactus_graph_t graph, cactus_node_
 a, cactus_node_t b, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_where(cactus_graph_t graph, cactus_node_t
 condition, cactus_node_t true_value, cactus_node_t false_value, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_masked_select_prefix(cactus_graph_t graph, cactus_node_t
+x, cactus_node_t mask, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_scalar_add(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scalar_subtract(cactus_graph_t graph, cactus_node_t x, float value, cactus_node_t* out);
@@ -1169,6 +1174,12 @@ CACTUS_FFI_EXPORT int cactus_graph_invalidate_persistent(
     cactus_graph_t graph, cactus_node_t persistent_node);
 
 CACTUS_FFI_EXPORT int cactus_graph_execute(cactus_graph_t graph);
+CACTUS_FFI_EXPORT int cactus_graph_retain_outputs(cactus_graph_t graph,
+const cactus_node_t* nodes, size_t count);
+CACTUS_FFI_EXPORT int cactus_graph_get_node_op_type(cactus_graph_t graph,
+cactus_node_t node, int32_t* out_op_type);
+CACTUS_FFI_EXPORT int cactus_graph_get_node_inputs(cactus_graph_t graph,
+cactus_node_t node, cactus_node_t* out_inputs, size_t* inout_count);
 CACTUS_FFI_EXPORT int cactus_graph_get_output_ptr(cactus_graph_t graph,
 cactus_node_t node, void** out_ptr);
 CACTUS_FFI_EXPORT int cactus_graph_get_output_info(cactus_graph_t graph,

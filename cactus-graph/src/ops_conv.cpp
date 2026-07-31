@@ -197,8 +197,9 @@ void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     const size_t C_out = W.shape[0];
     const size_t K = W.shape[2];
     const size_t stride = node.params.stride;
+    const bool is_depthwise = node.params.num_groups == C_in && C_out == C_in && W.shape[1] == 1;
 
-    if (W.shape[1] != C_in) {
+    if (!is_depthwise && W.shape[1] != C_in) {
         throw std::runtime_error("conv1d weight C_in mismatch");
     }
 
@@ -228,13 +229,13 @@ void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     if (W.precision == Precision::FP16) {
         W_ptr = W.data_as<__fp16>();
     } else if (W.precision == Precision::INT8) {
-        W_fp16 = dequantize_int8_weights_to_fp16(W, C_out, C_in * K, "conv1d");
+        W_fp16 = dequantize_int8_weights_to_fp16(W, C_out, (is_depthwise ? 1 : C_in) * K, "conv1d");
         W_ptr = W_fp16.data();
     } else {
         throw std::runtime_error("Conv1d only supports FP16/INT8 weights");
     }
 
-    if (node.params.num_groups == C_in && C_out == C_in && W.shape[1] == 1) {
+    if (is_depthwise) {
         __fp16* output = Y.data_as<__fp16>();
         const __fp16* input = X.data_as<__fp16>();
         const size_t L_out = Y.shape[2];

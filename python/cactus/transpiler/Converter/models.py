@@ -353,13 +353,61 @@ def build_processor_kwargs(model_id: str, input_modalities: tuple[str, ...], con
         if audio_token is not None:
             prompt.append(audio_token)
         call_kwargs["audio"] = _load_audio_asset()
+        call_kwargs["sampling_rate"] = 16000
 
     if "text" in input_modalities:
         prompt.append("Describe this input.")
 
     call_kwargs["text"] = " ".join(prompt) if prompt else "Hello"
     processed = processor(**call_kwargs)
-    return {key: value for key, value in dict(processed).items() if isinstance(value, torch.Tensor)}
+    pad_audio_export_inputs(processed, configs)
+    kwargs = {key: value for key, value in dict(processed).items() if isinstance(value, torch.Tensor)}
+    normalize_processor_kwargs_for_export(kwargs, model_profile)
+    return kwargs
+
+
+def normalize_processor_kwargs_for_export(kwargs: dict[str, torch.Tensor], model_profile: str) -> None:
+    if model_profile == "whisper" and "labels" in kwargs and "decoder_input_ids" not in kwargs:
+        kwargs["decoder_input_ids"] = kwargs.pop("labels")
+
+
+def pad_audio_export_inputs(processed: Any, configs: dict[str, dict[str, Any]]) -> None:
+    target_frames = gemma4_audio_export_frame_count(configs)
+    if target_frames is None:
+        return
+
+    if "input_features" in processed:
+        processed["input_features"] = pad_tensor_dim(processed["input_features"], dim=1, target=target_frames, value=0)
+
+    if "input_features_mask" in processed:
+        processed["input_features_mask"] = pad_tensor_dim(processed["input_features_mask"], dim=1, target=target_frames, value=0)
+
+
+def gemma4_audio_export_frame_count(configs: dict[str, dict[str, Any]]) -> int | None:
+    processor_config = configs.get("processor_config.json", {})
+    config = configs.get("config.json", {})
+
+    if processor_config.get("processor_class") != "Gemma4Processor":
+        return None
+
+    audio_seq_length = processor_config.get("audio_seq_length")
+    audio_config = config.get("audio_config", {})
+    attention_chunk_size = audio_config.get("attention_chunk_size")
+
+    if audio_seq_length is None or attention_chunk_size is None:
+        return None
+
+    return int(audio_seq_length) * 4 + int(attention_chunk_size)
+
+
+def pad_tensor_dim(tensor: torch.Tensor, dim: int, target: int, value: int | float | bool = 0) -> torch.Tensor:
+    if dim >= tensor.ndim or tensor.shape[dim] >= target:
+        return tensor
+
+    shape = list(tensor.shape)
+    shape[dim] = target - int(tensor.shape[dim])
+    padding = torch.full(shape, value, dtype=tensor.dtype, device=tensor.device)
+    return torch.cat((tensor, padding), dim=dim)
 
 
 #Loads the best HF model class for the requested model profile.

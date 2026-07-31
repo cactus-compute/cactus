@@ -87,10 +87,30 @@ def text_tokenizer_processor(model_id: str, configs: dict[str, dict[str, Any]], 
     )
 
 
+class ParakeetAudioProcessor:
+    def __init__(self, configs: dict[str, dict[str, Any]]):
+        config = configs.get("config.json", {})
+        encoder_config = config.get("encoder_config", {}) if isinstance(config.get("encoder_config"), dict) else {}
+        self.feature_size = int(encoder_config.get("num_mel_bins", 128))
+        self.frame_count = int(encoder_config.get("subsampling_factor", 8)) * 32
+
+    def __call__(self, audio=None, return_tensors: str = "pt", sampling_rate: int = 16000, **_: Any):
+        import torch
+
+        return {
+            "input_features": torch.zeros((1, self.frame_count, self.feature_size), dtype=torch.float32),
+            "attention_mask": torch.ones((1, self.frame_count), dtype=torch.long),
+        }
+
+
+def parakeet_processor(model_id: str, configs: dict[str, dict[str, Any]], model_profile: str):
+    return ParakeetAudioProcessor(configs)
+
+
 PROCESSOR_MAP = {
     "google/gemma-4-E2B": gemma4_processor,
     "openai/whisper-tiny": default_processor,
-    "nvidia/parakeet-tdt-0.6b-v3": default_processor,
+    "nvidia/parakeet-tdt-0.6b-v3": parakeet_processor,
     "LiquidAI/LFM2-VL-3B": default_processor,
     "Qwen/Qwen2.5-0.5B": default_processor,
     "LiquidAI/LFM2.5-8B-A1B": text_tokenizer_processor,

@@ -60,6 +60,7 @@ DECLARE_COMPUTE(compute_stats_pool_node);
 DECLARE_COMPUTE(compute_weighted_stats_pool_node);
 DECLARE_COMPUTE(compute_transpose_node);
 DECLARE_COMPUTE(compute_gather_node);
+DECLARE_COMPUTE(compute_masked_select_prefix_node);
 DECLARE_COMPUTE(compute_slice_node);
 DECLARE_COMPUTE(compute_embedding_node);
 DECLARE_COMPUTE(compute_concat_node);
@@ -92,7 +93,7 @@ DECLARE_COMPUTE(compute_expand_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::EXPAND) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::MASKED_SELECT_PREFIX) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -174,6 +175,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::GLU)] = compute_glu_node;
     dispatch_flat[static_cast<int>(OpType::TRANSPOSE)] = compute_transpose_node;
     dispatch_flat[static_cast<int>(OpType::GATHER)] = compute_gather_node;
+    dispatch_flat[static_cast<int>(OpType::MASKED_SELECT_PREFIX)] = compute_masked_select_prefix_node;
     dispatch_flat[static_cast<int>(OpType::SLICE)] = compute_slice_node;
     dispatch_flat[static_cast<int>(OpType::STRIDED_SLICE)] = compute_strided_slice_node;
     dispatch_flat[static_cast<int>(OpType::EMBEDDING)] = compute_embedding_node;
@@ -278,7 +280,8 @@ static const char* op_type_names[] = {
     "PAD",
     "SCALAR_FLOOR_DIVIDE",
     "STRIDED_SLICE",
-    "EXPAND"
+    "EXPAND",
+    "MASKED_SELECT_PREFIX"
 };
 
 static const char* get_op_name(OpType op) {

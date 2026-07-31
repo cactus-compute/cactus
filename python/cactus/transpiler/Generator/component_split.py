@@ -10,6 +10,7 @@ from ..IR import models as IRModels
 
 PREFILL_WITH_CACHE_TASK = "prefill_with_cache"
 DECODE_WITH_CACHE_TASK = "decode_with_cache"
+GEMMA4_PREFILL_CHUNK_TOKENS = 128
 
 
 @dataclass(slots=True, frozen=True)
@@ -26,6 +27,7 @@ class PlaceholderSpec:
 class OutputSpec:
     node: str
     logical_name: str
+    row_limit: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -36,6 +38,7 @@ class ComponentSplitSpec:
     placeholders: tuple[PlaceholderSpec, ...] = ()
     ref_aliases: Mapping[str, str] = field(default_factory=dict)
     input_aliases: Mapping[str, str] = field(default_factory=dict)
+    chunk_tokens: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -83,7 +86,7 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
         ComponentSplitSpec(
             name="vision_encoder",
             graph=prefill,
-            outputs=(OutputSpec(boundaries.vision_features, "image_features"),),
+            outputs=(OutputSpec(boundaries.vision_features, "image_features", row_limit=256),),
             input_aliases={"image_position_ids": "pixel_position_ids"},
         ),
         ComponentSplitSpec(
@@ -115,6 +118,22 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
                 boundaries.merged_inputs_embeds: boundaries.prefill_text_inputs_embeds,
                 boundaries.prefill_token_ids: "input_ids",
             },
+            chunk_tokens=GEMMA4_PREFILL_CHUNK_TOKENS,
+        ),
+        ComponentSplitSpec(
+            name="lm_encoder_media_chunk",
+            graph=prefill,
+            outputs=(
+                OutputSpec(inputs_embeds_chunk.name, "inputs_embeds"),
+                OutputSpec(boundaries.prefill_per_layer_inputs, "per_layer_inputs"),
+                OutputSpec(position_chunk.name, "position_ids"),
+            ),
+            placeholders=(inputs_embeds_chunk, position_chunk),
+            ref_aliases={
+                boundaries.merged_inputs_embeds: inputs_embeds_chunk.name,
+                boundaries.prefill_token_ids: "input_ids",
+            },
+            chunk_tokens=GEMMA4_PREFILL_CHUNK_TOKENS,
         ),
         ComponentSplitSpec(
             name="lm_encoder_media_step",
@@ -132,6 +151,7 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
             graph=prefill,
             outputs=(OutputSpec(boundaries.prefill_logits, "logits"),),
             placeholders=(inputs_embeds_chunk, per_layer_chunk, position_chunk),
+            chunk_tokens=GEMMA4_PREFILL_CHUNK_TOKENS,
         ),
         ComponentSplitSpec(
             name="decoder_step",
@@ -284,6 +304,7 @@ def extract_component_graph(spec: ComponentSplitSpec) -> IRModels.Graph:
     output_logical_names = {
         ref_replacements.get(output.node, output.node): output.logical_name
         for output in spec.outputs
+        if output.row_limit is None
     }
     used_names: set[str] = set()
     nodes: list[IRModels.Node] = []
@@ -303,8 +324,168 @@ def extract_component_graph(spec: ComponentSplitSpec) -> IRModels.Graph:
 
         nodes.append(clone_component_node(spec, node, ref_replacements, output_logical_names, used_names))
 
-    nodes.append(create_output_node(spec.name, output_names, nodes))
-    return IRModels.rebuild_graph(tuple(nodes), spec.graph)
+    final_output_names = []
+
+    for output, output_name in zip(spec.outputs, output_names):
+        final_output_name = output_name
+
+        if output.row_limit is not None:
+            final_output_name = add_row_limited_output_node(nodes, output_name, output.logical_name, output.row_limit, used_names)
+
+        output_logical_names[final_output_name] = output.logical_name
+        final_output_names.append(final_output_name)
+
+    nodes.append(create_output_node(spec.name, tuple(final_output_names), nodes))
+    graph = IRModels.rebuild_graph(tuple(nodes), spec.graph)
+
+    if spec.chunk_tokens is not None:
+        graph = retarget_chunk_graph_sequence_length(graph, spec.chunk_tokens)
+
+    return graph
+
+
+def add_row_limited_output_node(
+    nodes: list[IRModels.Node],
+    source_name: str,
+    logical_name: str,
+    row_limit: int,
+    used_names: set[str],
+) -> str:
+    source = next((node for node in nodes if node.name == source_name), None)
+
+    if source is None:
+        raise ValueError(f"Component split cannot add row-limited output for missing node {source_name}")
+
+    source_shape = tensor_shape(source)
+
+    if not source_shape:
+        raise ValueError(f"{source_name}: row-limited output requires tensor shape metadata")
+
+    output_shape = list(source_shape)
+    output_shape[0] = min(row_limit, int(output_shape[0])) if isinstance(output_shape[0], int) else row_limit
+    name = unique_component_node_name(f"{source_name}_first_{row_limit}", used_names)
+
+    source_meta = source.tensor_output_meta if isinstance(source.tensor_output_meta, dict) else {}
+    nodes.append(
+        IRModels.Node(
+            index=max((node.index for node in nodes), default=-1) + 1,
+            name=name,
+            node_type="call_function",
+            target="cactus.slice",
+            args=[{"node": source_name}],
+            kwargs={},
+            users=(),
+            tensor_output_meta={**source_meta, "shape": output_shape},
+            module_stack=source.module_stack,
+            value_kind=FModels.ValueKind.ACTIVATION,
+            attrs={"axis": 0, "start": 0, "length": row_limit, "step": 1},
+            ir_metadata={"logical_output": logical_name},
+            cache=None,
+        )
+    )
+
+    return name
+
+
+def retarget_chunk_graph_sequence_length(graph: IRModels.Graph, chunk_tokens: int) -> IRModels.Graph:
+    source_lengths = chunk_source_lengths(graph)
+
+    if not source_lengths:
+        return graph
+
+    cache_capacity = max(source_lengths)
+    nodes = tuple(retarget_chunk_node(node, source_lengths, chunk_tokens, cache_capacity) for node in graph.nodes)
+    return IRModels.rebuild_graph(nodes, graph)
+
+
+def chunk_source_lengths(graph: IRModels.Graph) -> frozenset[int]:
+    lengths: set[int] = set()
+
+    for node in graph.nodes:
+        if not node.is_placeholder:
+            continue
+
+        logical_name = str(node.ir_metadata.get("logical_input") or node.target)
+
+        if logical_name not in {"input_ids", "position_ids", "inputs_embeds", "per_layer_inputs"}:
+            continue
+
+        shape = tensor_shape(node)
+
+        if len(shape) >= 2 and shape[0] == 1 and isinstance(shape[1], int) and shape[1] > 1:
+            lengths.add(shape[1])
+
+    return frozenset(lengths)
+
+
+def retarget_chunk_node(
+    node: IRModels.Node,
+    source_lengths: frozenset[int],
+    chunk_tokens: int,
+    cache_capacity: int,
+) -> IRModels.Node:
+    metadata = dict(node.ir_metadata)
+
+    if is_empty_cache_cat_node(node):
+        metadata.setdefault("prefill_cache_capacity", cache_capacity)
+
+    if node.is_placeholder and metadata.get("logical_input") in {"input_ids", "position_ids", "inputs_embeds", "per_layer_inputs"}:
+        metadata.setdefault("prefill_chunk_tokens", chunk_tokens)
+
+    return IRModels.Node(
+        index=node.index,
+        name=node.name,
+        node_type=node.node_type,
+        target=node.target,
+        args=retarget_sequence_value(node.args, source_lengths, chunk_tokens),
+        kwargs=retarget_sequence_value(node.kwargs, source_lengths, chunk_tokens),
+        users=node.users,
+        tensor_output_meta=retarget_sequence_value(node.tensor_output_meta, source_lengths, chunk_tokens),
+        module_stack=node.module_stack,
+        value_kind=node.value_kind,
+        attrs=retarget_sequence_value(dict(node.attrs), source_lengths, chunk_tokens),
+        ir_metadata=metadata,
+        cache=node.cache,
+    )
+
+
+def retarget_sequence_value(value: Any, source_lengths: frozenset[int], chunk_tokens: int) -> Any:
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, int):
+        return chunk_tokens if value in source_lengths else value
+
+    if isinstance(value, list):
+        return [retarget_sequence_value(item, source_lengths, chunk_tokens) for item in value]
+
+    if isinstance(value, tuple):
+        return tuple(retarget_sequence_value(item, source_lengths, chunk_tokens) for item in value)
+
+    if isinstance(value, dict):
+        return {key: retarget_sequence_value(item, source_lengths, chunk_tokens) for key, item in value.items()}
+
+    return value
+
+
+def is_empty_cache_cat_node(node: IRModels.Node) -> bool:
+    if node.target not in {"cactus.cat", "aten.cat.default"} or len(node.parents) < 2:
+        return False
+
+    first_parent = node.parents[0]
+    return first_parent.value_kind == FModels.ValueKind.LIFTED_CONSTANT and element_count(tensor_shape(first_parent)) == 0
+
+
+def element_count(shape: list[Any]) -> int | None:
+    product = 1
+
+    for dim in shape:
+        if not isinstance(dim, int):
+            return None
+
+        product *= dim
+
+    return product
 
 
 def collect_required_node_names(
