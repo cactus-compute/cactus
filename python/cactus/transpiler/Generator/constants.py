@@ -34,6 +34,7 @@ INPUT_VALUE_KINDS = {
 
 FP16_RUNTIME_INPUTS = {
     "input_features",
+    "encoder_hidden_states",
     "inputs_embeds",
     "pixel_values",
 }
@@ -208,6 +209,10 @@ UNSQUEEZE_TARGETS = {
 
 FLATTEN_TARGETS = {
     "aten.flatten.using_ints",
+}
+
+REPEAT_TARGETS = {
+    "aten.repeat.default",
 }
 
 TRANSPOSE_TARGETS = {

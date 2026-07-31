@@ -67,12 +67,18 @@ def gemma4_processor(model_id: str, configs: dict[str, dict[str, Any]], model_pr
 def default_processor(model_id: str, configs: dict[str, dict[str, Any]], model_profile: str):
     from transformers import AutoProcessor
 
-    processor_kwargs: dict[str, Any] = {"trust_remote_code": True, "token": constants.token}
+    processor_kwargs: dict[str, Any] = {"trust_remote_code": True}
+
+    if constants.token is not None:
+        processor_kwargs["token"] = constants.token
 
     try:
-        return AutoProcessor.from_pretrained(model_id, **processor_kwargs)
-    except Exception as e:
-        raise RuntimeError(f"Unable to load processor for {model_id}")
+        return AutoProcessor.from_pretrained(model_id, local_files_only=True, **processor_kwargs)
+    except Exception as local_error:
+        try:
+            return AutoProcessor.from_pretrained(model_id, **processor_kwargs)
+        except Exception as remote_error:
+            raise RuntimeError(f"Unable to load processor for {model_id}") from remote_error
 
 
 def text_tokenizer_processor(model_id: str, configs: dict[str, dict[str, Any]], model_profile: str):

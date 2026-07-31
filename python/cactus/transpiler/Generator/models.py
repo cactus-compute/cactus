@@ -171,6 +171,13 @@ class WeightBinding:
     binding_kind: str = "mmap_weight"
 
 
+@dataclass(slots=True, frozen=True)
+class LfmMoeWeightBundle:
+    w1_weights: tuple[GraphTensor, ...] = ()
+    w3_weights: tuple[GraphTensor, ...] = ()
+    w2_weights: tuple[GraphTensor, ...] = ()
+
+
 @dataclass(slots=True)
 class WeightResolver:
     weights_dir: Path
@@ -184,6 +191,9 @@ class WeightResolver:
 
     def resolve(self, placeholder_name: str) -> WeightRecord | None:
         return resolve_weight_record(self, placeholder_name)
+
+    def resolve_source_target(self, source_target: str) -> WeightRecord | None:
+        return resolve_source_weight_record(self, source_target)
 
     def source_target_for(self, placeholder_name: str) -> str | None:
         return self.placeholder_targets.get(placeholder_name)
@@ -264,7 +274,7 @@ def component_graph_from_ir(cls: type[ComponentGraph], name: str, ir_graph: IRMo
 
 
 def component_metadata_from_ir(ir_graph: IRModels.Graph) -> dict[str, str]:
-    metadata: dict[str, str] = {}
+    metadata: dict[str, str] = dict(ir_graph.metadata)
 
     for node in ir_graph.nodes:
         chunk_tokens = node.ir_metadata.get("prefill_chunk_tokens")
@@ -521,6 +531,10 @@ def resolve_weight_record(resolver: WeightResolver, placeholder_name: str) -> We
     if source_target is None:
         return None
 
+    return resolve_source_weight_record(resolver, source_target)
+
+
+def resolve_source_weight_record(resolver: WeightResolver, source_target: str) -> WeightRecord | None:
     for variant in weight_name_variants(source_target):
         record = resolver.records_by_name.get(variant)
 
@@ -543,6 +557,16 @@ def weight_name_variants(name: str) -> tuple[str, ...]:
             (
                 "model.language_model.embed_tokens.weight",
                 "language_model.embed_tokens.weight",
+                "model.embed_tokens.weight",
+                "embed_tokens.weight",
+            )
+        )
+
+    if name.endswith("proj_out.weight"):
+        variants.extend(
+            (
+                "model.decoder.embed_tokens.weight",
+                "decoder.embed_tokens.weight",
                 "model.embed_tokens.weight",
                 "embed_tokens.weight",
             )

@@ -1,6 +1,5 @@
 import sys
 import os
-import shutil
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -8,28 +7,8 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from transpiler.Converter import constants
 from transpiler.Converter.convert import convert
 from transpiler.Converter.models import LayerMap
-from transpiler.Generator.generate import generate_bundle
+from transpiler.Generator.generate import generate_bundle, materialize_runtime_bundle_files
 from transpiler.ModelProfiles.profiles import GEMMA4_E2B_PROFILE
-
-
-def materialize_runtime_bundle_files(source_dir: Path, bundle_dir: Path) -> None:
-    for source in source_dir.iterdir():
-        if not source.is_file():
-            continue
-
-        target = bundle_dir / source.name
-        if target.exists() or target.is_symlink():
-            try:
-                if target.samefile(source):
-                    continue
-            except OSError:
-                pass
-            target.unlink()
-
-        try:
-            os.symlink(source, target)
-        except OSError:
-            shutil.copy2(source, target)
 
 
 def main() -> None:

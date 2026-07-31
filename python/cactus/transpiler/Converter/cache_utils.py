@@ -3,14 +3,14 @@ from dataclasses import dataclass
 from typing import Any
 import torch
 
-#TODO: Clean out and simplify code
-
 @dataclass(slots=True)
 class CacheLayerSpec:
     index: int
     layer_type: str
     key_shape: tuple[int, ...] | None = None
     value_shape: tuple[int, ...] | None = None
+    cross_key_shape: tuple[int, ...] | None = None
+    cross_value_shape: tuple[int, ...] | None = None
     conv_state_shape: tuple[int, ...] | None = None
     recurrent_state_shape: tuple[int, ...] | None = None
     sliding_window: int | None = None
@@ -58,6 +58,10 @@ class CacheExportWrapper(torch.nn.Module):
         input_features=None,
         attention_mask=None,
         input_features_mask=None,
+        decoder_input_ids=None,
+        decoder_attention_mask=None,
+        decoder_inputs_embeds=None,
+        decoder_position_ids=None,
         position_ids=None,
         image_position_ids=None,
         video_position_ids=None,
@@ -74,6 +78,10 @@ class CacheExportWrapper(torch.nn.Module):
             "input_features": input_features,
             "attention_mask": attention_mask,
             "input_features_mask": input_features_mask,
+            "decoder_input_ids": decoder_input_ids,
+            "decoder_attention_mask": decoder_attention_mask,
+            "decoder_inputs_embeds": decoder_inputs_embeds,
+            "decoder_position_ids": decoder_position_ids,
             "position_ids": position_ids,
             "image_position_ids": image_position_ids,
             "video_position_ids": video_position_ids,
@@ -171,7 +179,7 @@ def linear_out_features(module: Any) -> int | None:
 #How: reads layer_types from config, otherwise derives full/sliding attention from window settings.
 #Why: cache_spec_from_model uses this to know how many cache tensor pairs to create and which are sliding-window.
 def cache_layer_types(text_config: Any) -> tuple[str, ...]:
-    num_hidden_layers = int(getattr(text_config, "num_hidden_layers", 1))
+    num_hidden_layers = cache_layer_count(text_config)
     layer_types = getattr(text_config, "layer_types", None)
 
     if layer_types is None:
@@ -188,21 +196,74 @@ def cache_layer_types(text_config: Any) -> tuple[str, ...]:
     return layer_types
 
 
+def cache_layer_count(text_config: Any) -> int:
+    for attr in ("num_hidden_layers", "decoder_layers", "num_layers", "n_layer"):
+        value = getattr(text_config, attr, None)
+
+        if value is not None:
+            return int(value)
+
+    return 1
+
+
+def cache_num_attention_heads(text_config: Any) -> int:
+    for attr in ("num_attention_heads", "decoder_attention_heads", "n_head"):
+        value = getattr(text_config, attr, None)
+
+        if value is not None:
+            return int(value)
+
+    return 1
+
+
+def cache_hidden_size(text_config: Any, num_attention_heads: int) -> int:
+    for attr in ("hidden_size", "d_model", "n_embd"):
+        value = getattr(text_config, attr, None)
+
+        if value is not None:
+            return int(value)
+
+    return num_attention_heads
+
+
+def encoder_decoder_source_length(text_config: Any) -> int | None:
+    for attr in ("max_source_positions", "encoder_seq_length", "max_encoder_position_embeddings"):
+        value = getattr(text_config, attr, None)
+
+        if value is not None:
+            return int(value)
+
+    return None
+
+
+def encoder_decoder_target_length(text_config: Any) -> int | None:
+    for attr in ("max_target_positions", "decoder_seq_length", "max_position_embeddings", "n_positions"):
+        value = getattr(text_config, attr, None)
+
+        if value is not None:
+            return int(value)
+
+    return None
+
+
 #How: combines config defaults with actual attention module inspection to create one CacheLayerSpec per cache layer.
 #Why: CacheSpec.from_model calls this before decode/cache export so past_key_values tensors have correct shapes.
 def cache_spec_from_model(cls: type[CacheSpec], model: torch.nn.Module, batch_size: int, past_sequence_length: int) -> CacheSpec:
     config = getattr(model, "config", None)
     text_config = get_text_config(config)
-    num_key_value_heads = int(getattr(text_config, "num_key_value_heads", getattr(text_config, "num_attention_heads", 1)))
-    num_attention_heads = int(getattr(text_config, "num_attention_heads", num_key_value_heads))
-    hidden_size = int(getattr(text_config, "hidden_size", num_attention_heads))
+    num_attention_heads = cache_num_attention_heads(text_config)
+    num_key_value_heads = int(getattr(text_config, "num_key_value_heads", num_attention_heads))
+    hidden_size = cache_hidden_size(text_config, num_attention_heads)
     head_dim = int(getattr(text_config, "head_dim", max(1, hidden_size // max(1, num_attention_heads))))
     sliding_window = getattr(text_config, "sliding_window", None) or getattr(text_config, "attention_chunk_size", None)
+    is_encoder_decoder = bool(getattr(config, "is_encoder_decoder", False) or getattr(text_config, "is_encoder_decoder", False))
+    cross_sequence_length = encoder_decoder_source_length(text_config) if is_encoder_decoder else None
+    target_sequence_length = encoder_decoder_target_length(text_config) if is_encoder_decoder else None
     decoder_layers = model_decoder_layers(model)
     layers: list[CacheLayerSpec] = []
 
     for index, layer_type in enumerate(cache_layer_types(text_config)):
-        cache_sequence_length = past_sequence_length
+        cache_sequence_length = int(target_sequence_length or past_sequence_length)
         layer_sliding_window = None
         layer_num_key_value_heads = num_key_value_heads
         layer_head_dim = head_dim
@@ -234,12 +295,19 @@ def cache_spec_from_model(cls: type[CacheSpec], model: torch.nn.Module, batch_si
             continue
 
         cache_shape = (batch_size, layer_num_key_value_heads, cache_sequence_length, layer_head_dim)
+        cross_cache_shape = (
+            (batch_size, layer_num_key_value_heads, int(cross_sequence_length), layer_head_dim)
+            if cross_sequence_length is not None
+            else None
+        )
         layers.append(
             CacheLayerSpec(
                 index=index,
                 layer_type=str(layer_type),
                 key_shape=cache_shape,
                 value_shape=cache_shape,
+                cross_key_shape=cross_cache_shape,
+                cross_value_shape=cross_cache_shape,
                 sliding_window=layer_sliding_window,
             )
         )
@@ -266,6 +334,10 @@ def cache_spec_empty_tensors(
             tensors.append(torch.zeros(layer.key_shape, dtype=dtype, device=device))
         if layer.value_shape is not None:
             tensors.append(torch.zeros(layer.value_shape, dtype=dtype, device=device))
+        if layer.cross_key_shape is not None:
+            tensors.append(torch.zeros(layer.cross_key_shape, dtype=dtype, device=device))
+        if layer.cross_value_shape is not None:
+            tensors.append(torch.zeros(layer.cross_value_shape, dtype=dtype, device=device))
         if layer.conv_state_shape is not None:
             tensors.append(torch.zeros(layer.conv_state_shape, dtype=dtype, device=device))
         if layer.recurrent_state_shape is not None:
@@ -277,18 +349,21 @@ def cache_spec_empty_tensors(
 #How: creates DynamicCache and assigns each flat key/value tensor into the matching cache layer.
 #Why: CacheSpec.to_dynamic_cache uses this so CacheExportWrapper.forward can call the original HF model normally.
 def cache_spec_to_dynamic_cache(cache_spec: CacheSpec, flat_tensors: tuple[torch.Tensor, ...]):
-    from transformers.cache_utils import DynamicCache
+    from transformers.cache_utils import DynamicCache, EncoderDecoderCache
 
     expected_tensor_count = cache_spec_tensor_count(cache_spec)
 
     if len(flat_tensors) != expected_tensor_count:
         raise ValueError(f"Expected {expected_tensor_count} cache tensors, got {len(flat_tensors)}")
 
-    cache = DynamicCache(config=cache_spec.config)
+    has_cross_cache = any(layer.cross_key_shape is not None or layer.cross_value_shape is not None for layer in cache_spec.layers)
+    cache = EncoderDecoderCache(DynamicCache(config=cache_spec.config), DynamicCache(config=cache_spec.config)) if has_cross_cache else DynamicCache(config=cache_spec.config)
+    self_cache = cache.self_attention_cache if has_cross_cache else cache
+    cross_cache = cache.cross_attention_cache if has_cross_cache else None
     flat_index = 0
 
     for layer_spec in cache_spec.layers:
-        layer = cache.layers[layer_spec.index]
+        layer = self_cache.layers[layer_spec.index]
 
         if layer_spec.key_shape is not None and layer_spec.value_shape is not None:
             key = flat_tensors[flat_index]
@@ -302,6 +377,18 @@ def cache_spec_to_dynamic_cache(cache_spec: CacheSpec, flat_tensors: tuple[torch
 
             if hasattr(layer, "cumulative_length"):
                 layer.cumulative_length = cache_spec.past_sequence_length
+
+        if cross_cache is not None and layer_spec.cross_key_shape is not None and layer_spec.cross_value_shape is not None:
+            cross_key = flat_tensors[flat_index]
+            cross_value = flat_tensors[flat_index + 1]
+            flat_index += 2
+            cross_layer = cross_cache.layers[layer_spec.index]
+            cross_layer.keys = cross_key
+            cross_layer.values = cross_value
+            cross_layer.dtype = cross_key.dtype
+            cross_layer.device = cross_key.device
+            cross_layer.is_initialized = True
+            cache.is_updated[layer_spec.index] = True
 
         if layer_spec.conv_state_shape is not None:
             conv_state = flat_tensors[flat_index].clone()
@@ -332,6 +419,8 @@ def cache_spec_tensor_count(cache_spec: CacheSpec) -> int:
     for layer in cache_spec.layers:
         count += int(layer.key_shape is not None)
         count += int(layer.value_shape is not None)
+        count += int(layer.cross_key_shape is not None)
+        count += int(layer.cross_value_shape is not None)
         count += int(layer.conv_state_shape is not None)
         count += int(layer.recurrent_state_shape is not None)
 
@@ -366,6 +455,36 @@ def flatten_dynamic_cache(cache: Any, cache_spec: CacheSpec | None = None) -> tu
         return ()
 
     flat: list[torch.Tensor] = []
+    self_cache = getattr(cache, "self_attention_cache", None)
+    cross_cache = getattr(cache, "cross_attention_cache", None)
+
+    if self_cache is not None and cross_cache is not None and cache_spec is not None:
+        for layer_spec in cache_spec.layers:
+            self_layer = self_cache.layers[layer_spec.index]
+            cross_layer = cross_cache.layers[layer_spec.index]
+
+            if layer_spec.key_shape is not None:
+                key = getattr(self_layer, "keys", None)
+                if key is not None:
+                    flat.append(key)
+
+            if layer_spec.value_shape is not None:
+                value = getattr(self_layer, "values", None)
+                if value is not None:
+                    flat.append(value)
+
+            if layer_spec.cross_key_shape is not None:
+                cross_key = getattr(cross_layer, "keys", None)
+                if cross_key is not None:
+                    flat.append(cross_key)
+
+            if layer_spec.cross_value_shape is not None:
+                cross_value = getattr(cross_layer, "values", None)
+                if cross_value is not None:
+                    flat.append(cross_value)
+
+        return tuple(flat)
+
     layers = getattr(cache, "layers", None)
 
     if layers is None and isinstance(cache, (tuple, list)):

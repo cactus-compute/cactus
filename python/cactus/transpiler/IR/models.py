@@ -72,6 +72,7 @@ class Graph:
     input_specs: tuple[CModels.GraphSpecRecord, ...] = field(default_factory=tuple)
     output_specs: tuple[CModels.GraphSpecRecord, ...] = field(default_factory=tuple)
     cache_annotations: tuple[CacheAnnotation, ...] = field(default_factory=tuple)
+    metadata: dict[str, str] = field(default_factory=dict)
     fusions: list["FusionResult"] = field(default_factory=list)
 
     @classmethod
@@ -272,6 +273,7 @@ def generate_graph(cls: type[Graph], layer_map: CModels.LayerMap) -> Graph:
         input_specs=tuple(layer_map.input_specs),
         output_specs=tuple(layer_map.output_specs),
         cache_annotations=cache_annotations_from_nodes(nodes),
+        metadata={},
     )
 
 
@@ -568,6 +570,7 @@ def rebuild_graph(nodes: tuple[Node, ...], original_graph: Graph, fusion_results
         input_specs=original_graph.input_specs,
         output_specs=original_graph.output_specs,
         cache_annotations=cache_annotations_from_nodes(nodes),
+        metadata=dict(original_graph.metadata),
         fusions=list(fusion_results),
     )
 

@@ -1,5 +1,4 @@
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -216,8 +215,7 @@ def load_configs(mp: MP_Models.ModelProfile, model_id: str | None) -> dict[str, 
         if not local_path.exists():
             try:
                 local_path = Path(hf_hub_download(repo_id=model_id, filename=filename, local_dir=output_dir, token=constants.token))
-            except Exception as e:
-                print(f"Error downloading {filename} from {model_id}: {e}")
+            except Exception:
                 continue
 
         with local_path.open("r", encoding="utf-8") as f:
@@ -228,7 +226,6 @@ def load_configs(mp: MP_Models.ModelProfile, model_id: str | None) -> dict[str, 
 
 def build_input(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], input_cls: Any, model_id: str | None = None, inference_mode: str = "prefill_no_cache") -> Any | None:
     if not all(modality in mp.supported_modalties for modality in input_modalities):
-        print("Requesting unsupported modalities")
         return None
 
     configs = load_configs(mp, model_id)
@@ -468,12 +465,6 @@ def create_model(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], 
     
     if input_.inference_mode == constants.DECODE_WITH_CACHE_MODE and constants.DYNAMIC_CACHE_POLICY in mp.cache_policy:
         input_ = build_decode_with_cache_input(model=loaded_model, input_=input_, input_cls=Input, cache_spec_cls=CU.CacheSpec, model_dtype_fn=CU.model_dtype, drop_multimodal=constants.DROP_MULTIMODAL_ON_DECODE_POLICY in mp.cache_policy)
-    
-    #TODO: Add for models that do support multimodal decoders
-    # elif input_.inference_mode == constants.DECODE_WITH_CACHE_MODE:
-    #     input_ = build_decode_with_cache_input()
-
-
 
     return Model(name=model_id, model_profile=mp, input=input_, model=loaded_model)
 
