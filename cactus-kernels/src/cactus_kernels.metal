@@ -1993,6 +1993,17 @@ kernel void maxpool1d_f16(device const half* x [[buffer(0)]], device half* y [[b
     y[(size_t)nc * Lout + lo] = (half)r;
 }
 
+kernel void upsample_nearest2d_f16(device const half* x [[buffer(0)]], device half* y [[buffer(1)]],
+                                   constant uint& H [[buffer(2)]], constant uint& W [[buffer(3)]],
+                                   constant uint& scale [[buffer(4)]],
+                                   uint2 gid [[thread_position_in_grid]]) {
+    uint pix = gid.x, nc = gid.y;
+    uint Wo = W * scale, Ho = H * scale;
+    if (pix >= Ho * Wo) return;
+    uint oy = pix / Wo, ox = pix % Wo;
+    y[(size_t)nc * Ho * Wo + pix] = x[(size_t)nc * H * W + (size_t)(oy / scale) * W + ox / scale];
+}
+
 kernel void bilinear_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
                          constant uint& sh [[buffer(2)]], constant uint& sw [[buffer(3)]],
                          constant uint& dh [[buffer(4)]], constant uint& dw [[buffer(5)]],

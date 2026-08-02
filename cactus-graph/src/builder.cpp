@@ -1481,6 +1481,26 @@ size_t CactusGraph::maxpool1d(size_t input, size_t kernel_size, size_t stride, C
     return tag_backend(add_node(OpType::MAXPOOL1D, {input}, {batch, channels, output_length}, params), backend);
 }
 
+size_t CactusGraph::upsample_nearest2d(size_t input, size_t scale_factor, ComputeBackend backend) {
+    const auto& in_buf = get_output_buffer(input);
+    if (in_buf.shape.size() != 4) {
+        throw std::runtime_error("upsample_nearest2d expects input [N, C, H, W]");
+    }
+    if (scale_factor == 0) {
+        throw std::runtime_error("upsample_nearest2d scale_factor must be > 0");
+    }
+
+    size_t batch = in_buf.shape[0];
+    size_t channels = in_buf.shape[1];
+    size_t height = in_buf.shape[2];
+    size_t width = in_buf.shape[3];
+
+    OpParams params;
+    params.stride = scale_factor;
+    return tag_backend(add_node(OpType::UPSAMPLE_NEAREST2D, {input},
+                                {batch, channels, height * scale_factor, width * scale_factor}, params), backend);
+}
+
 size_t CactusGraph::conv2d_k3s1p1(size_t input, size_t weight, ComputeBackend backend) {
     const auto& xin = get_output_buffer(input);
     const auto& w = get_output_buffer(weight);

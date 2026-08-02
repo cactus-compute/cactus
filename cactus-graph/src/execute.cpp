@@ -76,6 +76,7 @@ DECLARE_COMPUTE(compute_gaussian_topk_node);
 DECLARE_COMPUTE(compute_maxpool1d_node);
 DECLARE_COMPUTE(compute_bilstm_sequence_node);
 DECLARE_COMPUTE(compute_conv2d_k3s1p1_node);
+DECLARE_COMPUTE(compute_upsample_nearest2d_node);
 DECLARE_COMPUTE(compute_stats_pool_node);
 DECLARE_COMPUTE(compute_weighted_stats_pool_node);
 DECLARE_COMPUTE(compute_transpose_node);
@@ -117,7 +118,7 @@ DECLARE_COMPUTE(compute_conv1d_causal_channel_first_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::LOGITS_TQ_SOFTCAP) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::UPSAMPLE_NEAREST2D) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -227,6 +228,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::ALTUP_CORRECT)] = compute_altup_correct_node;
     dispatch_flat[static_cast<int>(OpType::GAUSSIAN_TOPK)] = compute_gaussian_topk_node;
     dispatch_flat[static_cast<int>(OpType::MAXPOOL1D)] = compute_maxpool1d_node;
+    dispatch_flat[static_cast<int>(OpType::UPSAMPLE_NEAREST2D)] = compute_upsample_nearest2d_node;
     dispatch_flat[static_cast<int>(OpType::BILSTM_SEQUENCE)] = compute_bilstm_sequence_node;
     dispatch_flat[static_cast<int>(OpType::STATS_POOL)] = compute_stats_pool_node;
     dispatch_flat[static_cast<int>(OpType::WEIGHTED_STATS_POOL)] = compute_weighted_stats_pool_node;
@@ -311,7 +313,8 @@ static const char* op_type_names[] = {
     "EXPAND",
     "MASKED_SELECT_PREFIX",
     "QKV_TQ_FUSED", "PROJECTION_PAIR_TQ_FUSED", "CONV1D_CAUSAL_CHANNEL_FIRST",
-    "LOGITS_TQ_SOFTCAP"
+    "LOGITS_TQ_SOFTCAP",
+    "UPSAMPLE_NEAREST2D"
 };
 
 static const char* get_op_name(OpType op) {
@@ -863,6 +866,13 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             return cactus_metal_encode_maxpool1d(out.get_data(), in.get_data(),
                 (uint32_t)(in.shape[0] * in.shape[1]), (uint32_t)in.shape[2],
                 (uint32_t)out.shape[2], (uint32_t)node.params.kernel_size, (uint32_t)node.params.stride);
+        }
+        case OpType::UPSAMPLE_NEAREST2D: {
+            const auto& in = get_input(node, 0, nodes, map);
+            if (!fp16(in) || !fp16(out) || in.shape.size() != 4 || out.shape.size() != 4) return false;
+            return cactus_metal_encode_upsample_nearest2d(out.get_data(), in.get_data(),
+                (uint32_t)(in.shape[0] * in.shape[1]), (uint32_t)in.shape[2],
+                (uint32_t)in.shape[3], (uint32_t)node.params.stride);
         }
         case OpType::BILINEAR_INTERPOLATION: {
             const auto& in = get_input(node, 0, nodes, map);

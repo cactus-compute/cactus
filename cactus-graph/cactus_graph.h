@@ -147,7 +147,8 @@ enum class OpType {
     QKV_TQ_FUSED,
     PROJECTION_PAIR_TQ_FUSED,
     CONV1D_CAUSAL_CHANNEL_FIRST,
-    LOGITS_TQ_SOFTCAP
+    LOGITS_TQ_SOFTCAP,
+    UPSAMPLE_NEAREST2D
 };
 
 struct PrecisionTraits {
@@ -746,6 +747,7 @@ public:
 
     size_t bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width, bool align_corners = true, ComputeBackend backend = cactus_default_backend());
     size_t maxpool1d(size_t input, size_t kernel_size, size_t stride, ComputeBackend backend = cactus_default_backend());
+    size_t upsample_nearest2d(size_t input, size_t scale_factor, ComputeBackend backend = cactus_default_backend());
 
     size_t lstm_cell(
         size_t input, size_t h_prev, size_t c_prev,
