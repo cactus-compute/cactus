@@ -60,7 +60,7 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoGemmBatch=nil, psoGemmBatchF32A=nil, psoConvDw=nil, psoStridedRows=nil, psoMaskFill=nil;
     id<MTLComputePipelineState> psoReduceF16=nil, psoReduceF32=nil, psoCumsumF16=nil, psoCumsumF32=nil;
     id<MTLComputePipelineState> psoConcat2=nil, psoGatherF32Idx=nil, psoRopeFull=nil, psoMaxpool1d=nil, psoUpsampleNearest2d=nil;
-    id<MTLComputePipelineState> psoBilinear=nil, psoConv1dGen=nil, psoConv1dNlcDw=nil, psoConv2d=nil;
+    id<MTLComputePipelineState> psoBilinear=nil, psoConv1dGen=nil, psoConv1dNlcDw=nil, psoConv2d=nil, psoConv2dK3S1P1Mma=nil;
     id<MTLComputePipelineState> psoBatchnorm=nil, psoGroupnorm=nil, psoBiasAddRows=nil, psoEwChain=nil;
     id<MTLComputePipelineState> psoAttnFlash=nil, psoRmsSimd=nil, psoScatterRows=nil;
     id<MTLComputePipelineState> psoTranspose2d=nil, psoBcastRows=nil, psoRmsAddSimd=nil;
@@ -125,6 +125,7 @@ struct MetalCtx {
         psoUpsampleNearest2d=pso("upsample_nearest2d_f16");
         psoBilinear=pso("bilinear_f16"); psoConv1dGen=pso("conv1d_gen_f16");
         psoConv1dNlcDw=pso("conv1d_nlc_dw_f16"); psoConv2d=pso("conv2d_f16");
+        psoConv2dK3S1P1Mma=pso("conv2d_k3s1p1_mma_f16");
         psoBatchnorm=pso("batchnorm_f16"); psoGroupnorm=pso("groupnorm_f16");
         psoBiasAddRows=pso("bias_add_rows_f16"); psoEwChain=pso("elemwise_chain_f16");
         psoAttnFlash=pso("attn_flash_f16"); psoRmsSimd=pso("rms_norm_simd_f16");
@@ -2134,6 +2135,18 @@ bool cactus_metal_encode_conv2d(void* out, const void* x, const void* w, const v
     ensureEncoder();
     uint32_t hb = bias ? 1u : 0u, dwf = dw ? 1u : 0u;
     size_t wbytes = dw ? (size_t)Cout*K*K*2 : (size_t)Cout*Cin*K*K*2;
+    if (K == 3 && stride == 1 && pad == 1 && !dw && ctx().psoConv2dK3S1P1Mma) {
+        [g_enc setComputePipelineState:ctx().psoConv2dK3S1P1Mma];
+        setBufAt(x, (size_t)N*Cin*H*W*2, 0); setBufAt(w, wbytes, 1);
+        if (bias) setBufAt(bias, (size_t)Cout*2, 2); else [g_enc setBuffer:ctx().dummy offset:0 atIndex:2];
+        setBufAt(out, (size_t)N*Cout*Ho*Wo*2, 3);
+        [g_enc setBytes:&Cin length:4 atIndex:4]; [g_enc setBytes:&H length:4 atIndex:5];
+        [g_enc setBytes:&W length:4 atIndex:6]; [g_enc setBytes:&Cout length:4 atIndex:7];
+        [g_enc setBytes:&hb length:4 atIndex:8];
+        [g_enc dispatchThreadgroups:MTLSizeMake((H*W + 63)/64, (Cout + 31)/32, N)
+              threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+        return true;
+    }
     [g_enc setComputePipelineState:ctx().psoConv2d];
     setBufAt(x, (size_t)N*Cin*H*W*2, 0); setBufAt(w, wbytes, 1);
     if (bias) setBufAt(bias, (size_t)Cout*2, 2); else [g_enc setBuffer:ctx().dummy offset:0 atIndex:2];
