@@ -11,6 +11,7 @@
 #include <vector>
 #include <mutex>
 #include <unordered_map>
+#include <limits>
 
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
@@ -327,6 +328,19 @@ static size_t cactus_quant_gemv_sb_per_thread() {
         const char* e = getenv("CACTUS_GEMV_SB_PER_THREAD");
         const int i = e ? atoi(e) : 8;
         return static_cast<size_t>(i > 0 ? i : 8);
+    }();
+    return v;
+}
+
+static size_t cactus_interleaved_gemv_thread_limit() {
+    static const size_t v = [] {
+        const char* e = getenv("CACTUS_INTERLEAVED_GEMV_THREADS");
+        if (!e) {
+            return std::numeric_limits<size_t>::max();
+        }
+
+        const int i = atoi(e);
+        return static_cast<size_t>(i > 0 ? i : 1);
     }();
     return v;
 }
@@ -2450,7 +2464,7 @@ void cactus_quant_4bit_gemv_interleaved(
     auto& pool = CactusThreading::get_thread_pool();
     const size_t sb_per_thread = cactus_quant_gemv_sb_per_thread();
     const size_t nt_budget = std::max<size_t>(1, (n_chunks + sb_per_thread - 1) / sb_per_thread);
-    const size_t nt = std::min(pool.num_workers(), std::min(nt_budget, n_chunks));
+    const size_t nt = std::min(cactus_interleaved_gemv_thread_limit(), std::min(pool.num_workers(), std::min(nt_budget, n_chunks)));
 
     static thread_local std::vector<int8_t> tl_il_act_i8;
     static thread_local std::vector<float> tl_il_act_scales;

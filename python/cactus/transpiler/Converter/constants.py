@@ -52,6 +52,8 @@ ASSET_DIR = Path(__file__).resolve().parents[2] / "assets"
 
 MULTIMODAL_KEYS = (
     "pixel_values",
+    "pixel_attention_mask",
+    "spatial_shapes",
     "pixel_values_videos",
     "input_features",
     "input_features_mask",
@@ -65,4 +67,3 @@ MODALITY_INPUT_PATH = {
     "vision": ASSET_DIR / "test_monkey.png",
     "audio": ASSET_DIR / "test.wav",
 }
-

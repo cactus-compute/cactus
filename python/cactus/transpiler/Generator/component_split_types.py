@@ -10,6 +10,8 @@ from ..IR import models as IRModels
 PREFILL_WITH_CACHE_TASK = "prefill_with_cache"
 DECODE_WITH_CACHE_TASK = "decode_with_cache"
 GEMMA4_PREFILL_CHUNK_TOKENS = 128
+LFM_VLM_PREFILL_CHUNK_TOKENS = 128
+LFM_MOE_PREFILL_CHUNK_TOKENS = 128
 GENERIC_CAUSAL_PREFILL_CHUNK_TOKENS = 4
 
 
@@ -29,6 +31,8 @@ class OutputSpec:
     node: str
     logical_name: str
     row_limit: int | None = None
+    permutation: tuple[int, ...] | None = None
+    publish: bool = True
 
 
 @dataclass(slots=True, frozen=True)
@@ -41,6 +45,7 @@ class ComponentSplitSpec:
     input_aliases: Mapping[str, str] = field(default_factory=dict)
     metadata: Mapping[str, str] = field(default_factory=dict)
     chunk_tokens: int | None = None
+    scalar_tail_layer_start: int | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -64,3 +69,15 @@ class WhisperBoundaries:
     encoder_hidden_states: str
     cross_key_values: tuple[tuple[str, str], ...]
     decode_logits: str
+
+
+@dataclass(slots=True, frozen=True)
+class LfmVlmBoundaries:
+    vision_position_embeddings: str
+    vision_encoder_features: str
+    vision_projector_input: str
+    image_features: str
+    prefill_text_inputs_embeds: str
+    merged_inputs_embeds: str
+    decode_text_inputs_embeds: str
+    decode_position_ids: str

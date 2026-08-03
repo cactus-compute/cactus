@@ -54,6 +54,8 @@ class CacheExportWrapper(torch.nn.Module):
         self,
         input_ids=None,
         pixel_values=None,
+        pixel_attention_mask=None,
+        spatial_shapes=None,
         pixel_values_videos=None,
         input_features=None,
         attention_mask=None,
@@ -74,6 +76,8 @@ class CacheExportWrapper(torch.nn.Module):
         model_kwargs = {
             "input_ids": input_ids,
             "pixel_values": pixel_values,
+            "pixel_attention_mask": pixel_attention_mask,
+            "spatial_shapes": spatial_shapes,
             "pixel_values_videos": pixel_values_videos,
             "input_features": input_features,
             "attention_mask": attention_mask,

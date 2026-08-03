@@ -18,6 +18,7 @@ token = constants.token
 EXPORT_PATCHES = {
     "gemma4_audio_mask": OV.patch_gemma4_audio_mask_for_export,
     "transformers_moe_grouped_mm_fallback": OV.patch_transformers_moe_grouped_mm_for_export,
+    "lfm2_vl_image_features": OV.patch_lfm2_vl_image_features_for_export,
 }
 
 
@@ -481,6 +482,7 @@ def export_(model: Model, input: Input) -> LayerMap:
         )
 
     export_kwargs = dict(input.kwargs)
+    OV.prepare_model_input_hints_for_export(model.model, export_kwargs)
     export_kwargs["use_cache"] = should_use_cache
     export_kwargs = CU.filter_forward_kwargs(export_model, export_kwargs)
 

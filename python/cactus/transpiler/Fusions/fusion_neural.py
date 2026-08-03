@@ -17,6 +17,19 @@ LINEAR_GRAPH = _graph(
 )
 
 
+LINEAR_NATIVE_GRAPH = _graph(
+    "linear_native",
+    "linear_native",
+    ("linear_native",),
+    inputs=(
+        _input("x", "linear_native", 0),
+        _input("weight", "linear_native", 1, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
+        _input("bias", "linear_native", 2, optional=True, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
+    ),
+    attr_captures=(M.AttrCapture("pretransposed_rhs", default=True, required=False),),
+)
+
+
 LINEAR_TRANSPOSED_GRAPH = _graph(
     "linear_transposed",
     "linear_mm",
@@ -25,6 +38,36 @@ LINEAR_TRANSPOSED_GRAPH = _graph(
     inputs=(
         _input("x", "linear_mm", 0),
         _input("weight", "linear_weight_transpose", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
+    ),
+    attr_captures=(M.AttrCapture("pretransposed_rhs", default=True, required=False),),
+)
+
+
+LINEAR_ADDMM_BIAS_GRAPH = _graph(
+    "linear_addmm_bias",
+    "linear_addmm",
+    ("linear_addmm",),
+    inputs=(
+        _input("x", "linear_addmm", 1),
+        _input("weight", "linear_addmm", 2),
+        _input("bias", "linear_addmm", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
+    ),
+    attr_captures=(M.AttrCapture("pretransposed_rhs", default=False, required=False),),
+    constraints={
+        "linear_weight_layout": {"input_role": "x", "weight_role": "weight", "output_node": "linear_addmm"},
+    },
+)
+
+
+LINEAR_ADDMM_TRANSPOSED_BIAS_GRAPH = _graph(
+    "linear_addmm_transposed_bias",
+    "linear_addmm",
+    ("linear_weight_transpose", "linear_addmm"),
+    edge_names=("linear_weight_transpose_to_addmm",),
+    inputs=(
+        _input("x", "linear_addmm", 1),
+        _input("weight", "linear_weight_transpose", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
+        _input("bias", "linear_addmm", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
     ),
     attr_captures=(M.AttrCapture("pretransposed_rhs", default=True, required=False),),
 )
@@ -44,12 +87,46 @@ LINEAR_BIAS_GRAPH = _graph(
 )
 
 
+LAYERNORM_DIRECT_GRAPH = _graph(
+    "layernorm_direct",
+    "layernorm_direct",
+    ("layernorm_direct",),
+    inputs=(
+        _input("x", "layernorm_direct", 0),
+        _input("weight", "layernorm_direct", 1, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
+        _input("bias", "layernorm_direct", 2, optional=True, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
+    ),
+    attr_captures=(M.AttrCapture("epsilon", "layernorm_direct", "eps", default=1e-5, required=False),),
+)
+
+
 RMS_NORM_GRAPH = _graph(
     "rms_norm",
     "rms_weight_mul",
     ("rms_square", "rms_mean", "rms_eps_add", "rms_inv", "rms_scale", "rms_weight_mul"),
     edge_names=E.EDGE_GROUPS["rms_norm"],
     inputs=(_input("x", "rms_square", 0), _input("weight", "rms_weight_mul", 1)),
+    shared_inputs=(_shared_input("rms_square", 0, "rms_scale", 0),),
+    attr_captures=(M.AttrCapture("epsilon", "rms_eps_add", "other", default=1e-6, required=False),),
+    constraints={
+        "node_attr_equals": {"node": "rms_mean", "attr": "dim", "value": -1},
+    },
+)
+
+
+RMS_NORM_CAST_WEIGHT_LEFT_GRAPH = _graph(
+    "rms_norm_cast_weight_left",
+    "rms_weight_mul",
+    ("rms_square", "rms_mean", "rms_eps_add", "rms_inv", "rms_scale", "precision_cast", "rms_weight_mul"),
+    edge_names=(
+        "rms_square_to_mean",
+        "rms_mean_to_eps_add",
+        "rms_eps_add_to_inv",
+        "rms_inv_to_scale",
+        "rms_scale_to_precision_cast",
+        "rms_precision_cast_to_weight_mul",
+    ),
+    inputs=(_input("x", "rms_square", 0), _input("weight", "rms_weight_mul", 0)),
     shared_inputs=(_shared_input("rms_square", 0, "rms_scale", 0),),
     attr_captures=(M.AttrCapture("epsilon", "rms_eps_add", "other", default=1e-6, required=False),),
     constraints={

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from . import constants
 from ..IR import models as IRModels
 from ..RuntimePlan import models as RPModels
 
@@ -103,6 +104,7 @@ class GenerationContext:
     cache_state_placeholder_names: frozenset[str] = frozenset()
     prefill_cache_cat_annotations: dict[str, IRModels.CacheAnnotation] = field(default_factory=dict)
     prefill_cache_cat_states: dict[str, GraphTensor] = field(default_factory=dict)
+    prefill_cache_cat_new_values: dict[str, GraphTensor] = field(default_factory=dict)
     appended_cache_pairs: set[tuple[str, str]] = field(default_factory=set)
 
     @property
@@ -322,6 +324,9 @@ def add_component_weight_binding(component: ComponentGraph, binding: WeightBindi
 
 
 def add_component_cache_state_binding(component: ComponentGraph, binding: RPModels.CacheStateBinding) -> None:
+    if component.name in constants.STATIC_CACHE_OUTPUT_COMPONENTS:
+        return
+
     RPModels.merge_cache_state_binding(component.cache_state_bindings, binding)
 
 

@@ -28,11 +28,12 @@ def convert(
 ) -> models.LayerMap:
     profile = custom_profile or MP_Profiles.MODEL_ID_MAP[model_id]
     layer_map = export_layer_map(model_id=model_id, input_modalities=input_modalities, custom_profile=profile, inference_mode=inference_mode)
-    Path(output_path).write_text(layer_map.model_dump_json(indent=4), encoding="utf-8")
+    raw_json = layer_map.model_dump_json(indent=4)
+    Path(output_path).write_text(raw_json, encoding="utf-8")
 
     if simplified_output_path is not None:
         simplify_ir.write_simplified_json(
-            layer_map,
+            models.LayerMap.model_validate_json(raw_json),
             simplified_output_path,
             input_modalities=input_modalities,
             fusion_fields=profile.fusion_fields,

@@ -12,7 +12,7 @@ from .lowering_constant_ops import *
 from .lowering_nn_ops import lower_conv, lower_norm
 from .lowering_special_ops import lower_moe, lower_special_cactus, lower_unsupported_semantic
 from .lowering_utils import *
-from .lowering_weights import bind_weight_placeholder, lower_lfm_grouped_moe_placeholder
+from .lowering_weights import bind_weight_placeholder, lower_lfm_grouped_moe_placeholder, should_dequantize_int8_weight_placeholder
 from ..IR import models as IRModels
 
 
@@ -64,9 +64,11 @@ def build_lowering_rules(
     add_rules(rules, constants.SLICE_TARGETS, lower_slice)
     add_rules(rules, constants.INDEX_TARGETS, lower_index)
     add_rules(rules, constants.WHERE_TARGETS, lower_where)
+    add_rules(rules, constants.MASKED_SCATTER_TARGETS, lower_masked_scatter)
     add_rules(rules, constants.UNFOLD_TARGETS, lower_unfold)
     add_rules(rules, constants.CAT_TARGETS, lower_cat)
     add_rules(rules, constants.MATMUL_TARGETS, lower_matmul)
+    add_rules(rules, constants.LINEAR_TARGETS, lower_linear)
     add_rules(rules, constants.ADDM_CONST_TARGETS, lower_addmm)
     add_rules(rules, constants.SPLIT_TARGETS, lower_split)
     add_rules(rules, constants.GETITEM_TARGETS, lower_getitem)
@@ -189,6 +191,8 @@ def lower_placeholder(context: models.GenerationContext, node: IRModels.Node) ->
 def placeholder_precision(context: models.GenerationContext, node: IRModels.Node) -> int:
     if node.value_kind in constants.WEIGHT_VALUE_KINDS and context.component.weight_resolver is not None:
         record = context.component.weight_resolver.resolve(node.name)
+        if should_dequantize_int8_weight_placeholder(record):
+            return int(context.graph.FP16)
         if record is not None and record.precision and hasattr(context.graph, record.precision):
             return int(getattr(context.graph, record.precision))
 

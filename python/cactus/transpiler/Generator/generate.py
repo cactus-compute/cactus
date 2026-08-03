@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
+import struct
 import tempfile
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 
 from . import component_split
@@ -129,10 +133,81 @@ def materialize_runtime_bundle_files(bundle_dir: Path, weights_dir: Path | None,
             if source.is_file():
                 materialize_bundle_file(source, bundle_dir / source.name)
 
+    materialize_lfm2_vl_position_grid(bundle_dir, model_profile)
+
     for source in model_profile_metadata_files(model_profile):
         materialize_bundle_file(source, bundle_dir / source.name, overwrite=False)
 
     ensure_tokenizer_sidecars(bundle_dir)
+
+
+def materialize_lfm2_vl_position_grid(bundle_dir: Path, model_profile: Any | None) -> None:
+    profile_name = str(getattr(model_profile, "model_profiles", "") or "").lower()
+
+    if profile_name not in {"lfm_vlm", "lfm2_vl", "lfm-vlm"} and "lfm_vlm" not in profile_name and "lfm2_vl" not in profile_name:
+        return
+
+    source = bundle_dir / "vision_position_embedding.weights"
+    target = bundle_dir / "lfm2_vl_position_embedding_grid.f32"
+
+    if target.is_file():
+        return
+
+    tensor = read_fp16_cactus_tensor(source)
+
+    if tensor is None or tensor.ndim != 2:
+        return
+
+    rows, hidden = tensor.shape
+    grid = int(math.isqrt(int(rows)))
+
+    if grid * grid != int(rows):
+        return
+
+    target.write_bytes(tensor.astype(np.float32, copy=False).reshape(grid, grid, hidden).tobytes())
+
+
+def read_fp16_cactus_tensor(path: Path) -> np.ndarray | None:
+    if not path.is_file():
+        return None
+
+    with path.open("rb") as file:
+        header = file.read(84)
+
+        if len(header) != 84 or header[:4] != b"CACT":
+            return None
+
+        _, alignment, ndim, d0, d1, d2, d3, precision, data_bytes, scales_bytes, _, _, _ = struct.unpack(
+            "<IIIQQQQIQQIIQ",
+            header[4:84],
+        )
+
+        if precision != 1:
+            return None
+
+        dims = [int(dim) for dim in (d0, d1, d2, d3)[:ndim]]
+        element_count = math.prod(dims) if dims else 1
+
+        if data_bytes < element_count * 2:
+            return None
+
+        scales_offset = aligned_offset(84, int(alignment))
+        data_offset = aligned_offset(scales_offset + int(scales_bytes), int(alignment))
+        file.seek(data_offset)
+        raw = file.read(element_count * 2)
+
+    if len(raw) != element_count * 2:
+        return None
+
+    return np.frombuffer(raw, dtype=np.float16).reshape(dims)
+
+
+def aligned_offset(offset: int, alignment: int) -> int:
+    if alignment <= 0:
+        alignment = 32
+
+    remainder = offset % alignment
+    return offset if remainder == 0 else offset + alignment - remainder
 
 
 def model_profile_metadata_files(model_profile: Any | None) -> tuple[Path, ...]:
@@ -185,12 +260,14 @@ def materialize_bundle_file(source: Path, target: Path, *, overwrite: bool = Tru
         target.unlink()
 
     try:
-        target.symlink_to(source)
+        target.symlink_to(source.resolve())
     except OSError:
         shutil.copy2(source, target)
 
 
 def ensure_tokenizer_sidecars(bundle_dir: Path) -> None:
+    ensure_tokenizer_runtime_model_type(bundle_dir)
+
     if (bundle_dir / "vocab.txt").is_file():
         return
 
@@ -232,8 +309,30 @@ def ensure_tokenizer_sidecars(bundle_dir: Path) -> None:
 
                 if source.is_file():
                     shutil.copy2(source, bundle_dir / filename)
+
+            ensure_tokenizer_runtime_model_type(bundle_dir)
     except Exception:
         return
+
+
+def ensure_tokenizer_runtime_model_type(bundle_dir: Path) -> None:
+    model_type = bundle_model_type(bundle_dir)
+
+    if not model_type:
+        return
+
+    config_path = bundle_dir / "tokenizer_config.txt"
+
+    if not config_path.is_file():
+        return
+
+    lines = config_path.read_text(encoding="utf-8").splitlines()
+
+    if any(line.split("=", 1)[0].strip() == "model_type" for line in lines if "=" in line):
+        return
+
+    lines.append(f"model_type={model_type}")
+    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def tokenizer_source_filenames() -> tuple[str, ...]:
@@ -244,6 +343,7 @@ def tokenizer_source_filenames() -> tuple[str, ...]:
         "special_tokens_map.json",
         "added_tokens.json",
         "chat_template.jinja",
+        "chat_template.jinja2",
     )
 
 

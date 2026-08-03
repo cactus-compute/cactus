@@ -25,6 +25,51 @@ TOKENIZER_FILES = [
 ]
 
 
+def runtime_sidecar_config(out_dir: Path) -> dict:
+    config_path = out_dir / "preprocessor_config.json"
+    if not config_path.exists():
+        config_path = out_dir / "image_processor_config.json"
+    if not config_path.exists():
+        return {}
+
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    result = {}
+    for key in (
+        "do_image_splitting",
+        "do_resize",
+        "do_rescale",
+        "do_normalize",
+        "do_convert_rgb",
+        "downsample_factor",
+        "encoder_patch_size",
+        "max_image_tokens",
+        "max_num_patches",
+        "max_pixels_tolerance",
+        "max_tiles",
+        "min_image_tokens",
+        "min_tiles",
+        "rescale_factor",
+        "tile_size",
+        "use_thumbnail",
+    ):
+        value = data.get(key)
+        if value is not None:
+            result[key] = value
+
+    for key in ("image_mean", "image_std"):
+        value = data.get(key)
+        if isinstance(value, list) and value:
+            result[key] = value[0]
+        elif value is not None:
+            result[key] = value
+
+    return result
+
+
 def copy_runtime_files(
     model_path: str | Path,
     out_dir: Path,

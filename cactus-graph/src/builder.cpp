@@ -13,6 +13,25 @@ bool use_fp16_kv_cache_for_builder() {
     return value != nullptr && std::strcmp(value, "1") == 0;
 }
 
+bool op_honors_explicit_output_precision(OpType op_type) {
+    switch (op_type) {
+        case OpType::PRECISION_CAST:
+        case OpType::EMBEDDING:
+        case OpType::TOPK:
+        case OpType::SCATTER_TOPK:
+        case OpType::SAMPLE:
+        case OpType::KV_CACHE_APPEND:
+        case OpType::CONV_CACHE_STATE:
+        case OpType::RECURRENT_CACHE_STATE:
+        case OpType::IMAGE_PREPROCESS:
+        case OpType::MEL_FILTER_BANK:
+        case OpType::SPECTROGRAM:
+            return true;
+        default:
+            return false;
+    }
+}
+
 } // namespace
 
 size_t CactusGraph::attach_conv_bias(size_t node, size_t bias, size_t expected_size, const char* op_name) {
@@ -1429,7 +1448,7 @@ size_t CactusGraph::add_node(OpType op_type, const std::vector<size_t>& inputs, 
     }
 
     Precision result_precision = params.output_precision;
-    if (op_type == OpType::PRECISION_CAST || op_type == OpType::EMBEDDING) {
+    if (op_honors_explicit_output_precision(op_type)) {
         result_precision = params.output_precision;
     } else if (!inputs.empty()) {
         result_precision = nodes_[node_index_map_[inputs[0]]]->output_buffer.precision;

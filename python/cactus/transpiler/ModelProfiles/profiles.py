@@ -32,6 +32,8 @@ GEMMA4_E2B_PROFILE = ModelProfile(
         "gemma4_token_merge",
         "gemma4_rmsnorm",
         "gemma4_attention",
+        "gemma4_rope",
+        "gemma4_mlp",
         "linear",
         "cache",
     ),
@@ -87,7 +89,7 @@ PARAKEET_PROFILE = ModelProfile(
     supported_modalties=("audio",),
     input_strategy="processor",
     export_patches=(),
-    load_strategy="ctc",
+    load_strategy="parakeet_tdt",
 )
 
 LFM_VLM_PROFILE = ModelProfile(
@@ -105,6 +107,7 @@ LFM_VLM_PROFILE = ModelProfile(
         "normalization",
         "mlp",
         "cache",
+        "lfm_rmsnorm",
         "lfm_vlm_token_merge",
         "lfm_attention",
         "lfm_mlp",
@@ -112,7 +115,7 @@ LFM_VLM_PROFILE = ModelProfile(
     ),
     supported_modalties=("vision", "text"),
     input_strategy="processor",
-    export_patches=(),
+    export_patches=("lfm2_vl_image_features",),
     load_strategy="image_text_to_text",
 )
 

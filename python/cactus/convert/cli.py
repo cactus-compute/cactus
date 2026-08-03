@@ -25,7 +25,7 @@ from .cactus_adapters.tensor_io import (
     save_pointwise_conv1d_int8_with_header,
     save_tensor_with_header,
 )
-from .export.files import copy_runtime_files, write_config_txt
+from .export.files import copy_runtime_files, runtime_sidecar_config, write_config_txt
 from .export.qdq import convert_qdq
 from .export.reports import print_summary, write_reports
 from .export.validate import validate_qdq
@@ -431,8 +431,8 @@ def convert(args: argparse.Namespace) -> None:
     state_dict = normalized_state.state_dict
     model_config = adapter.runtime_config(cfg)
     model_config["model_type"] = adapter.runtime_model_type()
-    write_config_txt({**_config_dict(cfg), **model_config}, out_dir)
     copy_runtime_files(runtime_source, out_dir, token=getattr(args, "token", None), cache_dir=_hf_cache_dir())
+    write_config_txt({**_config_dict(cfg), **model_config, **runtime_sidecar_config(out_dir)}, out_dir)
     try:
         from .cactus_adapters.tokenizer import convert_hf_tokenizer
 

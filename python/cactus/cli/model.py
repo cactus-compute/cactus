@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import json
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from .common import GREEN, RED, YELLOW, print_color
@@ -46,6 +47,12 @@ def ensure_weights(model_id, *, bits=4, platform=None, token=None, reconvert=Fal
         shutil.rmtree(weights_dir)
 
     return _convert_from_source(model_id, bits=bits, token=token, weights_dir=weights_dir)
+
+
+@dataclass(frozen=True)
+class TranspileOptions:
+    input_modalities: tuple[str, ...] | None = None
+    allow_unsupported_ops: bool = False
 
 
 def _has_runnable_bundle(path):
@@ -105,20 +112,13 @@ def engine_manifest_from_runtime_plan(plan):
     return manifest
 
 
-def _local_build_unavailable(model_id) -> RuntimeError:
-    return RuntimeError(
-        f"No runnable prebuilt bundle is available for {model_id!r}. "
-        "Local bundle builds are unavailable because the graph builder has been removed for rewrite."
-    )
-
-
 def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
-                           reconvert=False, prebuilt=True, output_dir=None):
+                           reconvert=False, prebuilt=True, output_dir=None,
+                           transpile: TranspileOptions | None = None):
     """Resolve a runnable bundle from a local path, cache, or prebuilt download.
 
-    The old local source-to-bundle fallback was removed. Until the replacement
-    compiler lands, commands that need runnable bundles can only use existing
-    local bundles or published Cactus-Compute bundles.
+    Resolution order is local bundle path, cached bundle, prebuilt download,
+    then local CQ conversion plus transpilation.
     """
     from .download import download_bundle, get_bundle_dir
 
@@ -134,20 +134,42 @@ def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
         print_color(YELLOW, "Removing cached bundle before refresh...")
         shutil.rmtree(cached)
     elif _has_runnable_bundle(cached):
+        materialize_engine_manifest_from_runtime_plan(cached)
         return cached
 
     if not prebuilt:
-        raise _local_build_unavailable(model_id)
+        return ensure_bundle(
+            model_id,
+            bits=bits,
+            platform=platform,
+            token=token,
+            reconvert=reconvert,
+            output_dir=cached,
+            transpile=transpile,
+        )
 
     try:
         return download_bundle(model_id, bits=bits, platform=platform,
                                token=token, output_dir=cached)
     except (RuntimeError, OSError) as exc:
-        raise _local_build_unavailable(model_id) from exc
+        print_color(YELLOW, f"No prebuilt bundle found for {model_id}; building locally...")
+        try:
+            return ensure_bundle(
+                model_id,
+                bits=bits,
+                platform=platform,
+                token=token,
+                reconvert=reconvert,
+                output_dir=cached,
+                transpile=transpile,
+            )
+        except Exception as build_exc:
+            raise RuntimeError(f"Could not prepare runnable bundle for {model_id!r}") from build_exc
 
 
 def prepare_bundle(args, *, model_id=None, prebuilt=True,
-                   output_dir=None, fail_prefix="Model setup failed"):
+                   output_dir=None, fail_prefix="Model setup failed",
+                   transpile: TranspileOptions | None = None):
     """Resolve the platform from args and return a runnable bundle, with uniform
     error handling shared by every model command. Returns the bundle Path, or
     None (after printing the error) on failure."""
@@ -161,6 +183,7 @@ def prepare_bundle(args, *, model_id=None, prebuilt=True,
             reconvert=getattr(args, "reconvert", False),
             prebuilt=prebuilt,
             output_dir=output_dir,
+            transpile=transpile,
         )
     except (RuntimeError, OSError, ValueError) as exc:
         print_color(RED, f"{fail_prefix}: {exc}")
@@ -168,12 +191,25 @@ def prepare_bundle(args, *, model_id=None, prebuilt=True,
 
 
 def ensure_bundle(model_id, *, bits=4, platform=None, token=None,
-                  reconvert=False, output_dir=None):
-    return ensure_runnable_bundle(
+                  reconvert=False, output_dir=None,
+                  transpile: TranspileOptions | None = None):
+    from .transpiler import build_transpiled_bundle
+
+    weights_dir = ensure_weights(
         model_id,
         bits=bits,
         platform=platform,
         token=token,
         reconvert=reconvert,
         output_dir=output_dir,
+    )
+
+    opts = transpile or TranspileOptions()
+    return build_transpiled_bundle(
+        model_id,
+        weights_dir=weights_dir,
+        output_dir=weights_dir,
+        token=token,
+        input_modalities=opts.input_modalities,
+        allow_unsupported_ops=opts.allow_unsupported_ops,
     )

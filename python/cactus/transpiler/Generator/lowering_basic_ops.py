@@ -17,6 +17,9 @@ def lower_binary(context: models.GenerationContext, node: IRModels.Node) -> Any:
     if len(inputs) == 2:
         left, right = align_binary_inputs(context, node, inputs)
 
+        if method == "add_clipped":
+            return context.graph.add_clipped(left, right)
+
         if method == "add" and context.component.name in constants.GEMMA_ADD_CLIPPED_COMPONENTS and looks_like_gemma_residual_add(node):
             return context.graph.add_clipped(left, right)
 
@@ -222,6 +225,10 @@ def resolve_declared_shape_from_actual(declared_shape: tuple[Any, ...], actual_s
 def lower_unary(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     method = constants.UNARY_TARGETS[node.target]
+
+    if method == "scalar_rsqrt":
+        return context.graph.pow(inputs[0], -0.5)
+
     value = fp16_tensor(context, inputs[0]) if method in constants.FP16_UNARY_METHODS else inputs[0]
     return getattr(context.graph, method)(value)
 
@@ -281,7 +288,12 @@ def lower_shape(context: models.GenerationContext, node: IRModels.Node) -> Any:
     method = constants.SHAPE_TARGETS[node.target]
     shape = decoder_prefill_logits_shape(context, node, shape_attr(node))
 
-    return getattr(context.graph, method)(inputs[0], shape)
+    try:
+        return getattr(context.graph, method)(inputs[0], shape)
+    except RuntimeError as e:
+        raise UnsupportedLoweringError(
+            f"{node.name}: {method} lowering failed for {tuple(getattr(inputs[0], 'shape', ())) or meta_shape(node.parents[0])} -> {shape}"
+        ) from e
 
 
 def lower_expand(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -336,7 +348,21 @@ def lower_transpose(context: models.GenerationContext, node: IRModels.Node) -> A
     permutation = node.attrs.get("permutation")
 
     if permutation is not None:
-        return context.graph.permute(inputs[0], tuple_ints(permutation))
+        permutation_tuple = tuple_ints(permutation)
+        input_rank = len(tuple(getattr(inputs[0], "shape", ()))) or len(meta_shape(node.parents[0]))
+
+        if len(permutation_tuple) != input_rank:
+            if shape_matches_tensor(node.parents[0], output_shape(node)):
+                return inputs[0]
+
+            raise UnsupportedLoweringError(
+                f"{node.name}: transpose permutation rank {len(permutation_tuple)} does not match lowered tensor rank {input_rank}"
+            )
+
+        if permutation_preserves_non_singleton_order(node, permutation_tuple):
+            return context.graph.reshape(inputs[0], output_shape(node))
+
+        return context.graph.permute(inputs[0], permutation_tuple)
 
     if node.target == "aten.t.default":
         return context.graph.transpose(inputs[0])
@@ -347,7 +373,31 @@ def lower_transpose(context: models.GenerationContext, node: IRModels.Node) -> A
     if dim0 is None or dim1 is None:
         raise UnsupportedLoweringError(f"{node.name}: transpose lowering missing permutation or dim attrs")
 
-    return context.graph.permute(inputs[0], swap_permutation(parent_rank(node), int(dim0), int(dim1)))
+    permutation_tuple = swap_permutation(parent_rank(node), int(dim0), int(dim1))
+
+    if permutation_preserves_non_singleton_order(node, permutation_tuple):
+        return context.graph.reshape(inputs[0], output_shape(node))
+
+    return context.graph.permute(inputs[0], permutation_tuple)
+
+
+def permutation_preserves_non_singleton_order(node: IRModels.Node, permutation: tuple[int, ...]) -> bool:
+    if not node.parents:
+        return False
+
+    input_shape = tuple(concrete_dim(dim) for dim in meta_shape(node.parents[0]))
+
+    if not input_shape or any(dim is None for dim in input_shape):
+        return False
+
+    if len(input_shape) != len(permutation):
+        return False
+
+    normalized_permutation = tuple(normalize_dim(dim, len(input_shape)) for dim in permutation)
+    non_singleton_axes = tuple(index for index, dim in enumerate(input_shape) if dim != 1)
+    permuted_non_singleton_axes = tuple(axis for axis in normalized_permutation if input_shape[axis] != 1)
+
+    return permuted_non_singleton_axes == non_singleton_axes
 
 
 def can_alias_quantized_weight_transpose(context: models.GenerationContext, node: IRModels.Node, value: Any) -> bool:
@@ -506,6 +556,12 @@ def lower_where(context: models.GenerationContext, node: IRModels.Node) -> Any:
     return context.graph.where(inputs[0], true_value, false_value)
 
 
+def lower_masked_scatter(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    inputs = require_input_count(context, node, 3)
+    source = cast_to_precision(context, inputs[2], cactus_precision(context.graph, tensor_dtype(node)))
+    return context.graph.masked_scatter(inputs[0], inputs[1], source)
+
+
 def lower_unfold(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     dimension = int(node.attrs.get("dimension", node.attrs.get("dim", node.attrs.get("arg_1", 0))))
@@ -572,6 +628,45 @@ def lower_matmul(context: models.GenerationContext, node: IRModels.Node) -> Any:
     )
 
 
+def lower_linear(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    inputs = require_input_count(context, node, 2)
+    x = inputs[0]
+    weight = inputs[1]
+    bias = inputs[2] if len(inputs) > 2 else None
+    input_shape = meta_shape(node.parents[0]) if node.parents else ()
+    if not input_shape:
+        input_shape = tuple(getattr(x, "shape", ()))
+    result_shape = output_shape(node)
+    reshape_back: tuple[int, ...] | None = None
+
+    if len(input_shape) > 2:
+        rows = element_count(input_shape[:-1])
+        hidden = concrete_dim(input_shape[-1])
+
+        if rows is None or hidden is None:
+            raise UnsupportedLoweringError(f"{node.name}: linear lowering requires concrete non-feature dimensions")
+
+        x = context.graph.reshape(x, (rows, hidden))
+        reshape_back = result_shape
+
+    x = slice_decoder_prefill_logits_lhs(context, node, x)
+    rhs = weight if is_cq_tensor(context, weight) else matmul_activation_operand(context, weight)
+    output = context.graph.matmul(
+        matmul_activation_operand(context, x),
+        rhs,
+        pretransposed_rhs=bool(node.attrs.get("pretransposed_rhs", node.target == "aten.linear.default")),
+    )
+
+    if bias is not None:
+        output, bias = align_binary_precision(context, output, bias)
+        output = context.graph.add(output, bias)
+
+    if reshape_back is not None:
+        output = context.graph.reshape(output, reshape_back)
+
+    return output
+
+
 def matmul_activation_operand(context: models.GenerationContext, value: Any) -> Any:
     if getattr(value, "dtype", None) == context.graph.FP32:
         return cast_to_precision(context, value, context.graph.FP16)
@@ -596,7 +691,7 @@ def is_decoder_prefill_logits_matmul(context: models.GenerationContext, node: IR
 
     return (
         context.component.name == "decoder_prefill_chunk"
-        and node.target in constants.MATMUL_TARGETS
+        and node.target in constants.MATMUL_TARGETS | constants.LINEAR_TARGETS
         and len(shape) == 2
         and len(node.parents) >= 2
         and isinstance(shape[0], int)
@@ -771,7 +866,11 @@ def can_skip_float32_copy(node: IRModels.Node) -> bool:
         "cactus.attention",
         "cactus.attention_cached",
         "cactus.add",
+        "cactus.add_clipped",
         "cactus.dense_mlp_tq_fused",
+        "cactus.layernorm",
+        "cactus.layer_norm",
+        "cactus.linear",
         "cactus.multiply",
         "cactus.pow",
         "cactus.rope",

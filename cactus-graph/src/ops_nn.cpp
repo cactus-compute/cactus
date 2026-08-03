@@ -88,6 +88,7 @@ namespace {
     thread_local std::vector<size_t> moe_expert_offsets_buf;
     thread_local std::vector<size_t> moe_expert_tokens_buf;
     thread_local std::vector<float> moe_routing_denom_buf;
+    constexpr float MOE_FP16_MAX = 65504.0f;
 
     void ensure_moe_buffers(size_t max_tokens, size_t hidden_dim, size_t intermediate_dim,
                             size_t num_experts, size_t top_k) {
@@ -125,6 +126,30 @@ namespace {
 
         throw std::runtime_error("moe_layer only supports FP16 or TQ expert weights");
     }
+
+    inline __fp16 moe_finite_f16(float value) {
+        if (!std::isfinite(value)) {
+            value = std::copysign(MOE_FP16_MAX, value);
+        }
+        value = std::clamp(value, -MOE_FP16_MAX, MOE_FP16_MAX);
+        return static_cast<__fp16>(value);
+    }
+
+    void sanitize_moe_fp16(__fp16* data, size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            float value = static_cast<float>(data[i]);
+            if (!std::isfinite(value) || std::abs(value) > MOE_FP16_MAX) {
+                data[i] = moe_finite_f16(value);
+            }
+        }
+    }
+
+    void multiply_moe_fp16_sanitized(__fp16* lhs, const __fp16* rhs, size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            float value = static_cast<float>(lhs[i]) * static_cast<float>(rhs[i]);
+            lhs[i] = moe_finite_f16(value);
+        }
+    }
 }
 
 void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -148,6 +173,9 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     if (hidden_buffer.precision != Precision::FP16 || node.output_buffer.precision != Precision::FP16) {
         throw std::runtime_error("moe_layer expects FP16 hidden/output");
     }
+    if (routing_buffer.precision != Precision::FP16 && routing_buffer.precision != Precision::FP32) {
+        throw std::runtime_error("moe_layer expects FP16 or FP32 routing probabilities");
+    }
     if (topk_idx_buffer.precision != Precision::FP32) {
         throw std::runtime_error("moe_layer expects FP32 topk indices");
     }
@@ -164,9 +192,18 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     const size_t token_count = hidden_buffer.shape[0];
     const size_t hidden_dim = hidden_buffer.shape[1];
     const size_t total_num_experts = routing_buffer.shape[1];
+    if (total_num_experts < num_experts) {
+        throw std::runtime_error("moe_layer routing_probs expert dimension is smaller than num_experts");
+    }
+    if (topk_idx_buffer.shape[1] != top_k) {
+        throw std::runtime_error("moe_layer topk_indices second dimension does not match top_k");
+    }
 
     const auto& w1_0_buffer = get_input(node, 3, nodes, node_index_map);
     const size_t expert_intermediate_dim = w1_0_buffer.shape[0];
+    if (w1_0_buffer.shape.size() != 2 || w1_0_buffer.shape[1] != hidden_dim) {
+        throw std::runtime_error("moe_layer first expert w1 shape does not match hidden dim");
+    }
 
     const auto* hidden = hidden_buffer.data_as<__fp16>();
     auto* output = node.output_buffer.data_as<__fp16>();
@@ -187,15 +224,23 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
     std::memset(expert_offsets, 0, (num_experts + 1) * sizeof(size_t));
     for (size_t tok = 0; tok < token_count; ++tok) {
+        thread_local std::vector<uint8_t> seen_experts;
+        if (seen_experts.size() < num_experts) seen_experts.resize(num_experts);
+        std::fill(seen_experts.begin(), seen_experts.begin() + num_experts, 0);
+
         for (size_t k = 0; k < top_k; ++k) {
             float raw_idx = topk_idx[tok * top_k + k];
-            if (!std::isfinite(raw_idx)) {
+            if (!std::isfinite(raw_idx) || raw_idx < 0.0f) {
                 throw std::runtime_error("moe_layer got non-finite expert index");
             }
             size_t idx = static_cast<size_t>(raw_idx + 0.5f);
             if (idx >= num_experts) {
                 throw std::runtime_error("moe_layer got expert index out of range");
             }
+            if (seen_experts[idx]) {
+                throw std::runtime_error("moe_layer got duplicate expert index for token");
+            }
+            seen_experts[idx] = 1;
             expert_offsets[idx + 1]++;
         }
     }
@@ -235,12 +280,21 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         if (start == end) continue;
 
         const size_t selected_count = end - start;
+        if (selected_count > token_count) {
+            throw std::runtime_error("moe_layer selected more rows for an expert than there are tokens");
+        }
         const size_t* selected_tokens = expert_tokens_flat + start;
 
         const auto& w1_buffer = get_input(node, 3 + expert_idx, nodes, node_index_map);
         const auto& w2_buffer = gated
             ? get_input(node, 3 + 2 * num_experts + expert_idx, nodes, node_index_map)
             : get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map);
+        if (w1_buffer.shape.size() != 2 || w1_buffer.shape[0] != expert_intermediate_dim || w1_buffer.shape[1] != hidden_dim) {
+            throw std::runtime_error("moe_layer w1 expert shape mismatch");
+        }
+        if (w2_buffer.shape.size() != 2 || w2_buffer.shape[0] != hidden_dim || w2_buffer.shape[1] != expert_intermediate_dim) {
+            throw std::runtime_error("moe_layer w2 expert shape mismatch");
+        }
 
         __fp16* compact_hidden = moe_compact_hidden_buf.data();
         for (size_t i = 0; i < selected_count; ++i) {
@@ -254,6 +308,7 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         __fp16* expert_out = moe_expert_out_buf.data();
 
         moe_matmul(compact_hidden, selected_count, hidden_dim, w1_buffer, gate, expert_intermediate_dim);
+        sanitize_moe_fp16(gate, selected_count * expert_intermediate_dim);
 
         switch (activation) {
             case Activation::GELU:
@@ -273,16 +328,24 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
         if (gated) {
             const auto& w3_buffer = get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map);
+            if (w3_buffer.shape.size() != 2 || w3_buffer.shape[0] != expert_intermediate_dim || w3_buffer.shape[1] != hidden_dim) {
+                throw std::runtime_error("moe_layer w3 expert shape mismatch");
+            }
             moe_matmul(compact_hidden, selected_count, hidden_dim, w3_buffer, up, expert_intermediate_dim);
-            cactus_multiply_f16(gate, up, gate, selected_count * expert_intermediate_dim);
+            sanitize_moe_fp16(up, selected_count * expert_intermediate_dim);
+            multiply_moe_fp16_sanitized(gate, up, selected_count * expert_intermediate_dim);
         }
 
         moe_matmul(gate, selected_count, expert_intermediate_dim, w2_buffer, expert_out, hidden_dim);
+        sanitize_moe_fp16(expert_out, selected_count * hidden_dim);
 
         for (size_t i = 0; i < selected_count; ++i) {
             const size_t tok = selected_tokens[i];
             float expert_prob = routing_prob(tok, expert_idx);
             if (expert_prob <= 0.0f) continue;
+            if (!std::isfinite(expert_prob)) {
+                throw std::runtime_error("moe_layer got non-finite routing probability");
+            }
 
             float route_weight = expert_prob;
             if (normalize_routing) {
@@ -295,7 +358,10 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
             auto* out_row = output + tok * hidden_dim;
             const auto* expert_row = expert_out + i * hidden_dim;
-            cactus_add_scaled_f16(out_row, expert_row, out_row, hidden_dim, route_weight);
+            for (size_t d = 0; d < hidden_dim; ++d) {
+                float value = static_cast<float>(out_row[d]) + static_cast<float>(expert_row[d]) * route_weight;
+                out_row[d] = moe_finite_f16(value);
+            }
         }
     }
 }
@@ -928,5 +994,3 @@ void compute_groupnorm_node(GraphNode& node, const std::vector<std::unique_ptr<G
         }
     }
 }
-
-

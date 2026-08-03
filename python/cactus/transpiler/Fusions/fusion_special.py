@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from . import edges as E
 from . import models as M
-from .fusion_builders import _cache_input, _graph, _input, _variadic_input
+from .fusion_builders import _cache_input, _graph, _input, _single_node_graph, _variadic_input
 
 
 LSTM_CELL_GRAPH = _graph(
@@ -46,6 +46,22 @@ REL_POS_BIAS_GRAPH = _graph(
         _input("relative_key", "rel_pos_bias", 1, tensor_constraints=(M.TensorConstraint(rank=4),)),
     ),
     attr_captures=(M.AttrCapture("scale", "rel_pos_bias", "scale", required=False),),
+)
+
+
+GEMMA4_ROPE_COS_TABLE_GRAPH = _single_node_graph(
+    "gemma4_rope_cos_table",
+    "scalar_cos",
+    ("position_ids",),
+    metadata={"special_matcher": "gemma4_rope_table_lookup", "table_kind": "cos"},
+)
+
+
+GEMMA4_ROPE_SIN_TABLE_GRAPH = _single_node_graph(
+    "gemma4_rope_sin_table",
+    "scalar_sin",
+    ("position_ids",),
+    metadata={"special_matcher": "gemma4_rope_table_lookup", "table_kind": "sin"},
 )
 
 

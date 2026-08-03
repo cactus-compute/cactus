@@ -27,6 +27,7 @@ PLAIN_DIRECT_SPECS = {
     "sqrt": ("x",),
     "scalar_exp": ("x",),
     "scalar_sqrt": ("x",),
+    "scalar_rsqrt": ("x",),
     "scalar_cos": ("x",),
     "scalar_sin": ("x",),
     "scalar_log": ("x",),

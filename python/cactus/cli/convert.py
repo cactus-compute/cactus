@@ -42,12 +42,9 @@ def _merge_lora_adapter(base_model_id, lora_path, token=None):
 
 
 def cmd_convert(args):
-    """Convert a HuggingFace model into Cactus CQ weights.
-
-    Runtime graph/bundle generation used to happen after this step, but that graph
-    builder has been removed for a rewrite.
-    """
+    """Convert a HuggingFace model into a runnable Cactus bundle."""
     from .model import ensure_weights
+    from .transpiler import build_transpiled_bundle, parse_modalities
 
     source_model_id = args.model_id
     merged_dir = None
@@ -61,12 +58,23 @@ def cmd_convert(args):
     output_dir = args.output_dir or str(get_weights_dir(args.model_id))
 
     try:
-        ensure_weights(
+        weights_dir = ensure_weights(
             source_model_id,
             bits=args.bits,
             token=args.token,
             reconvert=args.reconvert,
             output_dir=output_dir,
+        )
+        if getattr(args, "weights_only", False):
+            return 0
+
+        build_transpiled_bundle(
+            source_model_id,
+            weights_dir=weights_dir,
+            output_dir=weights_dir,
+            profile_model_id=args.model_id,
+            input_modalities=parse_modalities(getattr(args, "input_modalities", None)),
+            token=args.token,
         )
         return 0
     except RuntimeError as e:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from . import constants
@@ -66,6 +67,28 @@ def bind_weight_placeholder(context: models.GenerationContext, node: IRModels.No
         context.component.add_runtime_input(tensor, logical_name)
         return
 
+    if should_dequantize_int8_weight_placeholder(record):
+        path = write_dequantized_int8_weight_as_fp16(context, node, record)
+        context.component.add_weight_binding(
+            models.WeightBinding(
+                placeholder=node.name,
+                source_target=source_target,
+                node_id=node_id,
+                path=path,
+                output_name=path,
+                source_name=record.source_name or record.hf_name or source_target,
+                value_id=node.name,
+                precision="FP16",
+                component=record.component,
+                scale_factor=record.scale_factor,
+                adapter_family=record.adapter_family,
+                transform=record.transform,
+                qdq_restore=record.qdq_restore,
+                binding_kind="generated_dequant_fp16",
+            )
+        )
+        return
+
     context.component.add_weight_binding(
         models.WeightBinding(
             placeholder=node.name,
@@ -90,7 +113,7 @@ def generated_weight_placeholder_values(
     node: IRModels.Node,
     source_target: str,
 ) -> tuple[list[float], tuple[int, ...], int] | None:
-    if not source_target.endswith(".pos_emb.inv_freq"):
+    if not source_target.endswith((".pos_emb.inv_freq", ".rotary_emb.inv_freq", ".rotary_emb.original_inv_freq")):
         return None
 
     shape = concrete_shape(meta_shape(node))
@@ -127,7 +150,8 @@ def model_rope_theta(context: models.GenerationContext) -> float | None:
     except json.JSONDecodeError:
         return None
 
-    rope_parameters = config.get("rope_parameters")
+    text_config = config.get("text_config") if isinstance(config.get("text_config"), Mapping) else {}
+    rope_parameters = config.get("rope_parameters") or text_config.get("rope_parameters")
 
     if isinstance(rope_parameters, Mapping):
         value = rope_parameters.get("rope_theta") or rope_parameters.get("theta")
@@ -135,7 +159,7 @@ def model_rope_theta(context: models.GenerationContext) -> float | None:
         if value is not None:
             return float(value)
 
-    value = config.get("rope_theta") or config.get("rotary_emb_base")
+    value = config.get("rope_theta") or config.get("rotary_emb_base") or text_config.get("rope_theta") or text_config.get("rotary_emb_base")
     return float(value) if value is not None else None
 
 
@@ -258,6 +282,14 @@ def weight_record_precision(context: models.GenerationContext, record: models.We
         return int(getattr(context.graph, record.precision))
 
     return int(getattr(context.graph, constants.DEFAULT_INPUT_PRECISION))
+
+
+def should_dequantize_int8_weight_placeholder(record: models.WeightRecord | None) -> bool:
+    if record is None or record.precision != "INT8" or record.output_name is None:
+        return False
+
+    adapter_family = (record.adapter_family or "").lower()
+    return adapter_family.startswith("lfm") and "conv_depthwise.weights" in record.output_name
 
 
 def bind_weight_record(

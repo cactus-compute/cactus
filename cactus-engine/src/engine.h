@@ -115,6 +115,10 @@ struct Config {
     uint32_t tile_size = 512;
     float max_pixels_tolerance = 2.0f;
     bool do_image_splitting = true;
+    bool do_resize = true;
+    bool do_rescale = true;
+    bool do_normalize = true;
+    bool do_convert_rgb = true;
     bool encoder_act_gelu = false;
     bool decoder_act_gelu = false;
     uint32_t num_encoder_layers = 0;
@@ -331,6 +335,7 @@ public:
 
     virtual std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const;
     virtual std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "", bool enable_thinking_if_supported = false) const;
+    virtual bool uses_default_chat_style(const std::vector<ChatMessage>& messages, const std::string& tools_json = "", bool enable_thinking_if_supported = false) const;
 
     virtual uint32_t get_vocab_size() const = 0;
     virtual uint32_t get_unk_token() const = 0;
@@ -355,7 +360,7 @@ public:
     void set_lfm2_vision_config(const Config& cfg) { lfm2_vision_config_ = cfg; has_lfm2_vision_config_ = true; }
 
 protected:
-    enum class ModelType { UNKNOWN, GEMMA4, GEMMA, QWEN, LFM2, NEEDLE };
+    enum class ModelType { UNKNOWN, GEMMA4, GEMMA, QWEN, LFM2, NEEDLE, WHISPER, PARAKEET_TDT };
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -378,6 +383,7 @@ protected:
 
     void detect_model_type(const std::string& config_path);
     void load_chat_template(const std::string& template_file);
+    std::string format_default_chat_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt) const;
     std::string format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
@@ -811,6 +817,7 @@ private:
     void write_media_embeds_row(Component& comp, int embeds_idx, const uint8_t* feature_row,
                                 size_t feature_row_bytes, Precision feature_precision);
     void reset_encoder_cross_kv_route_state();
+    void release_encoder_cross_kv_prepare_graphs();
     bool finish_encoder_cross_kv_prepare();
     bool finish_encoder_cross_kv_prepare_after_source();
     bool prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& tokens);
@@ -840,15 +847,16 @@ private:
                                size_t processed, size_t start_position);
     void run_full_context_text();
     uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max(),
-                                     float* out_uncertainty = nullptr);
-    uint32_t argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty);
+                                     float* out_uncertainty = nullptr, float repetition_penalty = 1.0f);
+    uint32_t argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty,
+                              float repetition_penalty = 1.0f);
     std::vector<uint32_t> argmax_component_logits_batch(Component& comp, size_t batch);
     void write_int_input(Component& comp, const std::string& name, int64_t value);
     void write_int_input_at(Component& comp, const std::string& name, size_t index, int64_t value);
     void write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size);
     int input_index(const Component& comp, const std::string& name) const;
     int output_index(const Component& comp, const std::string& name) const;
-    uint32_t argmax_last_logits(float* out_uncertainty = nullptr);
+    uint32_t argmax_last_logits(float* out_uncertainty = nullptr, float repetition_penalty = 1.0f);
     bool load_handoff_probe();
     void maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name = "probe_hidden");
     void run_vision_encoder(const std::string& image_path);

@@ -28,6 +28,7 @@
 #include <chrono>
 #include <string>
 #include <cstdio>
+#include <cstdlib>
 
 constexpr size_t NEON_VECTOR_SIZE = 16;
 constexpr size_t STREAMING_STORE_THRESHOLD = 32768;
@@ -426,6 +427,13 @@ namespace CactusThreading {
     public:
         explicit ThreadPool(size_t num_threads = std::thread::hardware_concurrency())
             : stop(false), pending_tasks(0) {
+            if (const char* env_threads = std::getenv("CACTUS_NUM_THREADS")) {
+                char* end = nullptr;
+                unsigned long requested = std::strtoul(env_threads, &end, 10);
+                if (end != env_threads && requested > 0) {
+                    num_threads = static_cast<size_t>(requested);
+                }
+            }
             num_workers_ = std::min(num_threads, MAX_WORKERS);
             if (num_workers_ == 0) num_workers_ = 1;
 

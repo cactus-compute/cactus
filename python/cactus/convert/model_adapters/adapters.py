@@ -484,6 +484,15 @@ class Lfm2Adapter(FamilyAdapter):
         return Lfm2VlProcessor(image_processor=image_processor, tokenizer=tokenizer)
 
     def policy(self, match: NameMatch, shape: tuple[int, ...], requested_bits: int) -> TensorPolicy:
+        if (
+            match.source_name.startswith("model.vision_tower.")
+            or match.source_name.startswith("model.multi_modal_projector.")
+        ):
+            return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "lfm2-vl vision path accuracy")
+        if ".self_attn." in match.source_name and match.source_name.endswith(("_proj.weight",)):
+            return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "lfm2 attention projection precision-sensitive")
+        if match.source_name.endswith("feed_forward.gate.weight"):
+            return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "moe router precision-sensitive")
         policy = super().policy(match, shape, requested_bits)
         if match.source_name.endswith("vision_model.embeddings.patch_embedding.weight"):
             return replace(policy, use_gptq=False, fallback_reason=policy.fallback_reason or "vision patch embedding has no linear Hessian target")

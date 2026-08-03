@@ -50,6 +50,10 @@ GEMMA_ADD_CLIPPED_COMPONENTS = {
     "decoder_prefill_chunk",
 }
 
+STATIC_CACHE_OUTPUT_COMPONENTS = {
+    "decoder_cross_kv",
+}
+
 PASS_THROUGH_TARGETS = {
     "aten._assert_tensor_metadata.default",
     "aten.clone.default",
@@ -78,6 +82,7 @@ CONSTANT_INPUT_TARGETS = {
 
 BINARY_TARGETS: dict[str, str] = {
     "cactus.add": "add",
+    "cactus.add_clipped": "add_clipped",
     "cactus.subtract": "subtract",
     "cactus.multiply": "multiply",
     "cactus.divide": "divide",
@@ -132,6 +137,7 @@ UNARY_TARGETS: dict[str, str] = {
     "cactus.abs": "abs",
     "cactus.scalar_exp": "scalar_exp",
     "cactus.scalar_sqrt": "scalar_sqrt",
+    "cactus.scalar_rsqrt": "scalar_rsqrt",
     "cactus.scalar_cos": "scalar_cos",
     "cactus.scalar_sin": "scalar_sin",
     "cactus.scalar_log": "scalar_log",
@@ -146,6 +152,7 @@ UNARY_TARGETS: dict[str, str] = {
     "aten.abs.default": "abs",
     "aten.exp.default": "scalar_exp",
     "aten.sqrt.default": "scalar_sqrt",
+    "aten.rsqrt.default": "scalar_rsqrt",
     "aten.cos.default": "scalar_cos",
     "aten.sin.default": "scalar_sin",
     "aten.log.default": "scalar_log",
@@ -205,6 +212,7 @@ EXPAND_TARGETS = {
 
 UNSQUEEZE_TARGETS = {
     "aten.unsqueeze.default",
+    "aten.squeeze.dims",
 }
 
 FLATTEN_TARGETS = {
@@ -239,6 +247,11 @@ WHERE_TARGETS = {
     "aten.where.self",
 }
 
+MASKED_SCATTER_TARGETS = {
+    "cactus.masked_scatter",
+    "aten.masked_scatter.default",
+}
+
 UNFOLD_TARGETS = {
     "cactus.unfold",
     "aten.unfold.default",
@@ -254,6 +267,11 @@ MATMUL_TARGETS = {
     "aten.mm.default",
     "aten.matmul.default",
     "aten.bmm.default",
+}
+
+LINEAR_TARGETS = {
+    "cactus.linear",
+    "aten.linear.default",
 }
 
 ADDM_CONST_TARGETS = {
@@ -368,6 +386,7 @@ MOE_TARGETS = {
 SPECIAL_CACTUS_TARGETS = {
     "cactus.rope",
     "cactus.rope_gptj",
+    "cactus.gemma4_rope_table_lookup",
     "cactus.glu",
     "cactus.lstm_cell",
     "cactus.gated_deltanet_decode",

@@ -6,6 +6,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 
 namespace cactus {
@@ -361,7 +362,7 @@ void Tokenizer::load_chat_template(const std::string& template_file) {
 }
 
 void Tokenizer::detect_model_type(const std::string& config_path) {
-    model_type_ = ModelType::GEMMA4;
+    model_type_ = ModelType::UNKNOWN;
 
     std::ifstream file(config_path);
     if (!file.is_open()) return;
@@ -382,6 +383,11 @@ void Tokenizer::detect_model_type(const std::string& config_path) {
                 model_type_ = ModelType::GEMMA4;
             } else if (lower_line.find("gemma") != std::string::npos) {
                 model_type_ = ModelType::GEMMA;
+            } else if (lower_line.find("whisper") != std::string::npos) {
+                model_type_ = ModelType::WHISPER;
+            } else if (lower_line.find("parakeet_tdt") != std::string::npos ||
+                       lower_line.find("parakeet-tdt") != std::string::npos) {
+                model_type_ = ModelType::PARAKEET_TDT;
             }
         } else if (lower_line.find("model_variant") != std::string::npos) {
             if (lower_line.find("vlm") != std::string::npos) { model_variant_ = ModelVariant::VLM; }
@@ -416,15 +422,32 @@ std::string Tokenizer::get_default_stop_sequence() const {
     if (model_type_ == ModelType::GEMMA) {
         return "<end_of_turn>";
     }
-    return "<turn|>";
+    if (model_type_ == ModelType::GEMMA4) {
+        return "<turn|>";
+    }
+    return "";
 }
 
 std::vector<uint32_t> Tokenizer::apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt) const {
     return encode(format_chat_prompt(messages, add_generation_prompt));
 }
 
+bool Tokenizer::uses_default_chat_style(const std::vector<ChatMessage>& messages, const std::string& tools_json,
+                                        bool enable_thinking_if_supported) const {
+    return !has_chat_template_ && tools_json.empty() && !enable_thinking_if_supported &&
+           std::all_of(messages.begin(), messages.end(), [](const ChatMessage& msg) {
+               return msg.images.empty() && msg.audio.empty() && msg.tool_calls.empty() &&
+                      msg.audio_soft_token_count == 0 && msg.role != "tool";
+           }) &&
+           (model_type_ == ModelType::UNKNOWN || model_type_ == ModelType::GEMMA4);
+}
+
 std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
                                           const std::string& tools_json, bool enable_thinking_if_supported) const {
+    if (uses_default_chat_style(messages, tools_json, enable_thinking_if_supported)) {
+        return format_default_chat_style(messages, add_generation_prompt);
+    }
+
     if (model_type_ == ModelType::QWEN) {
         return format_qwen_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
     }
@@ -438,6 +461,30 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
         return format_gemma_style(messages, add_generation_prompt, tools_json);
     }
     return format_gemma4_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
+}
+
+std::string Tokenizer::format_default_chat_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt) const {
+    std::string result;
+    if (model_type_ == ModelType::GEMMA || model_type_ == ModelType::GEMMA4) {
+        result = "<bos>";
+    } else if (model_type_ == ModelType::LFM2) {
+        result = "<|startoftext|>";
+    }
+
+    for (const auto& msg : messages) {
+        if (msg.role == "system" || msg.role == "developer") {
+            result += "System: " + msg.content + "\n";
+        } else if (msg.role == "assistant" || msg.role == "model") {
+            result += "Assistant: " + msg.content + "\n";
+        } else {
+            result += "User: " + msg.content + "\n";
+        }
+    }
+
+    if (add_generation_prompt) {
+        result += "Assistant:";
+    }
+    return result;
 }
 
 std::string Tokenizer::format_gemma_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
@@ -716,6 +763,93 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
         if (tw == 0) tw = side;
         return static_cast<size_t>((th / p / k) * (tw / p / k));
     };
+
+    if (tools_json.empty() && !enable_thinking_if_supported) {
+        bool has_media = false;
+        for (const auto& msg : messages) {
+            if (!msg.images.empty() || msg.audio_soft_token_count > 0) {
+                has_media = true;
+                break;
+            }
+        }
+        if (has_media && std::getenv("CACTUS_GEMMA4_RAW_MEDIA_PROMPT") != nullptr) {
+            result = "<bos>";
+            for (size_t i = first_msg; i < messages.size(); i++) {
+                const auto& msg = messages[i];
+                bool needs_separator = false;
+                auto append_separator = [&]() {
+                    if (needs_separator) result += " ";
+                };
+                for (const auto& image_path : msg.images) {
+                    size_t n = compute_soft_tokens(image_path);
+                    if (n > 0) {
+                        append_separator();
+                        result += "<|image>";
+                        for (size_t j = 0; j < n; j++) result += "<|image|>";
+                        result += "<image|>";
+                        needs_separator = true;
+                    }
+                }
+                if (msg.audio_soft_token_count > 0) {
+                    append_separator();
+                    result += "<|audio>";
+                    for (size_t j = 0; j < msg.audio_soft_token_count; j++) result += "<|audio|>";
+                    result += "<audio|>";
+                    needs_separator = true;
+                }
+                if (!msg.content.empty()) {
+                    append_separator();
+                    result += msg.content;
+                }
+                if (i + 1 < messages.size()) result += "\n";
+            }
+            return result;
+        }
+
+        result = "<bos>";
+        for (size_t i = first_msg; i < messages.size(); i++) {
+            const auto& msg = messages[i];
+            if (msg.role == "system" || msg.role == "developer") {
+                result += "System: " + msg.content + "\n";
+                continue;
+            }
+            if (msg.role == "assistant" || msg.role == "model") {
+                result += "Assistant: " + msg.content + "\n";
+                continue;
+            }
+
+            result += "User: ";
+            bool needs_separator = false;
+            auto append_separator = [&]() {
+                if (needs_separator) result += " ";
+            };
+            for (const auto& image_path : msg.images) {
+                size_t n = compute_soft_tokens(image_path);
+                if (n > 0) {
+                    append_separator();
+                    result += "<|image>";
+                    for (size_t j = 0; j < n; j++) result += "<|image|>";
+                    result += "<image|>";
+                    needs_separator = true;
+                }
+            }
+            if (msg.audio_soft_token_count > 0) {
+                append_separator();
+                result += "<|audio>";
+                for (size_t j = 0; j < msg.audio_soft_token_count; j++) result += "<|audio|>";
+                result += "<audio|>";
+                needs_separator = true;
+            }
+            if (!msg.content.empty()) {
+                append_separator();
+                result += msg.content;
+            }
+            result += "\n";
+        }
+        if (add_generation_prompt) result += "Assistant:";
+        return result;
+    }
+
     bool in_model_turn = false;
     std::vector<std::string> pending_call_names;
     auto close_model_turn = [&]() {
@@ -754,13 +888,13 @@ std::string Tokenizer::format_gemma4_style(const std::vector<ChatMessage>& messa
                     result += "<image|>";
                 }
             }
-            result += msg.content;
             if (msg.audio_soft_token_count > 0) {
                 result += "<|audio>";
                 for (size_t j = 0; j < msg.audio_soft_token_count; j++)
                     result += "<|audio|>";
                 result += "<audio|>";
             }
+            result += msg.content;
             result += "<turn|>\n";
         }
     }

@@ -19,6 +19,9 @@ SpecialFusionMatcher = Callable[
 
 SPECIAL_MATCHER_KEY = "special_matcher"
 GEMMA4_ATTENTION_LAYOUT = "gemma4_attention_layout"
+WHISPER_ATTENTION_LAYOUT = "whisper_attention_layout"
+LFM_BMM_MASKED_ATTENTION = "lfm_bmm_masked_attention"
+GEMMA4_ROPE_TABLE_LOOKUP = "gemma4_rope_table_lookup"
 HISTORY_POSITION_OFFSET = (1 << 64) - 1
 
 
@@ -60,6 +63,9 @@ def match_gemma4_attention_layout(
     input_modalities: tuple[str, ...],
     fusion_fields: tuple[str, ...],
 ) -> models.FusionResult | None:
+    if "gemma" not in graph.model_name.lower():
+        return None
+
     if inference_mode not in {"prefill_with_cache", "decode_with_cache"}:
         return None
 
@@ -74,6 +80,430 @@ def match_gemma4_attention_layout(
         return gemma4_vision_attention_match(graph, source, fusion)
 
     return gemma4_decode_attention_match(graph, source, fusion)
+
+
+def match_whisper_attention_layout(
+    source: models.Node,
+    graph: models.Graph,
+    fusion: FModels.FusionDefinition,
+    inference_mode: str | None,
+    input_modalities: tuple[str, ...],
+    fusion_fields: tuple[str, ...],
+) -> models.FusionResult | None:
+    if "whisper_attention" not in fusion_fields and "whisper" not in graph.model_name.lower():
+        return None
+
+    return whisper_attention_match(graph, source, fusion)
+
+
+def match_lfm_bmm_masked_attention(
+    source: models.Node,
+    graph: models.Graph,
+    fusion: FModels.FusionDefinition,
+    inference_mode: str | None,
+    input_modalities: tuple[str, ...],
+    fusion_fields: tuple[str, ...],
+) -> models.FusionResult | None:
+    if "lfm" not in graph.model_name.lower():
+        return None
+
+    if inference_mode not in {"prefill_with_cache", "decode_with_cache"}:
+        return None
+
+    from . import match, match_utils
+
+    bindings = match_utils.bind_fusion_graph(source, fusion.graph, match.match_nodes)
+
+    if bindings is None or not match.match_fusion_bindings(source, graph, fusion.graph, bindings):
+        return None
+
+    query_expand = bindings.get("lfm_attn_query_expand")
+    key_expand = bindings.get("lfm_attn_key_expand")
+    value_expand = bindings.get("lfm_attn_value_expand")
+
+    if query_expand is None or key_expand is None or value_expand is None:
+        return None
+
+    if not query_expand.parents or not key_expand.parents or not value_expand.parents:
+        return None
+
+    query = lfm_attention_query_input(query_expand.parents[0])
+    key_cat = lfm_attention_cache_cat(key_expand.parents[0], FModels.CacheTensorRole.KEY)
+    value_cat = lfm_attention_cache_cat(value_expand.parents[0], FModels.CacheTensorRole.VALUE)
+
+    if key_cat is None or value_cat is None:
+        return None
+
+    external_inputs = (query, key_cat, value_cat)
+
+    return models.FusionResult.from_match(
+        fusion=fusion,
+        source=source,
+        matched_nodes=lfm_attention_matched_nodes(bindings, external_inputs),
+        bindings=dict(bindings),
+        external_inputs=external_inputs,
+        attrs={
+            "scale": None,
+            "is_causal": True,
+            "position_offset": 0,
+            "window_size": lfm_attention_window_size(key_cat),
+            "input_layout": "bhqd_bhsd_bhsd",
+            "output_layout": "bhqd",
+            "dropped_mask_builder": True,
+            "dropped_gqa_repeat": True,
+        },
+    )
+
+
+def lfm_attention_matched_nodes(
+    bindings: dict[str, models.Node],
+    external_inputs: tuple[models.Node, ...],
+) -> tuple[models.Node, ...]:
+    matched: dict[str, models.Node] = {
+        node.name: node
+        for node in bindings.values()
+        if node.is_operation
+    }
+    external_names = {node.name for node in external_inputs}
+
+    for node_name in ("lfm_attn_query_expand", "lfm_attn_key_expand", "lfm_attn_value_expand"):
+        node = bindings.get(node_name)
+
+        if node is None or not node.parents:
+            continue
+
+        current = node.parents[0]
+
+        for _ in range(32):
+            if current.name in external_names:
+                break
+
+            if current.is_operation:
+                matched[current.name] = current
+
+            if len(current.parents) != 1:
+                break
+
+            current = current.parents[0]
+
+    return tuple(sorted(matched.values(), key=lambda node: (node.index, node.name)))
+
+
+def match_gemma4_rope_table_lookup(
+    source: models.Node,
+    graph: models.Graph,
+    fusion: FModels.FusionDefinition,
+    inference_mode: str | None,
+    input_modalities: tuple[str, ...],
+    fusion_fields: tuple[str, ...],
+) -> models.FusionResult | None:
+    if inference_mode not in {"prefill_with_cache", "decode_with_cache"}:
+        return None
+
+    if fusion_fields and "gemma4_attention" not in fusion_fields and "gemma4_rope" not in fusion_fields:
+        return None
+
+    table_kind = str(fusion.metadata.get("table_kind") or fusion.graph.metadata.get("table_kind") or "")
+    expected_targets = {"cos": "aten.cos.default", "sin": "aten.sin.default"}
+
+    if source.target != expected_targets.get(table_kind):
+        return None
+
+    if not is_gemma4_language_rotary_node(source):
+        return None
+
+    shape = models.tensor_shape(source)
+
+    if len(shape) != 3 or shape[-1] not in {256, 512}:
+        return None
+
+    position_node = gemma4_rope_position_node(source)
+
+    if position_node is None:
+        return None
+
+    rotary_dim = int(shape[-1])
+    table_name = "full_attention" if rotary_dim == 512 else "sliding_attention"
+
+    return models.FusionResult.from_match(
+        fusion=fusion,
+        source=source,
+        matched_nodes=(source,),
+        external_inputs=(position_node,),
+        attrs={
+            "table_kind": table_kind,
+            "table_name": table_name,
+            "rotary_dim": rotary_dim,
+            "max_position_embeddings": 131072,
+            "position_source": position_node.name,
+        },
+    )
+
+
+def is_gemma4_language_rotary_node(node: models.Node) -> bool:
+    text = f"{node.name} {node.target} {node.module_stack!r}".lower()
+    return "gemma4" in text and "language_model" in text and "rotary_emb" in text
+
+
+def gemma4_rope_position_node(source: models.Node) -> models.Node | None:
+    if not source.parents:
+        return None
+
+    matmul = first_target_ancestor(
+        source.parents[0],
+        {"aten.bmm.default", "aten.matmul.default", "aten.mm.default", "cactus.matmul"},
+        max_depth=12,
+    )
+
+    if matmul is None or len(matmul.parents) < 2:
+        return None
+
+    for parent in matmul.parents:
+        if has_inv_freq_ancestor(parent):
+            continue
+
+        candidate = rank2_position_ancestor(parent)
+
+        if candidate is not None:
+            return candidate
+
+    return None
+
+
+def has_inv_freq_ancestor(node: models.Node, max_depth: int = 12) -> bool:
+    for candidate in ancestor_nodes(node, max_depth=max_depth):
+        text = f"{candidate.name} {candidate.target}".lower()
+
+        if "inv_freq" in text:
+            return True
+
+    return False
+
+
+def rank2_position_ancestor(node: models.Node, max_depth: int = 16) -> models.Node | None:
+    fallback: models.Node | None = None
+
+    for candidate in ancestor_nodes(node, max_depth=max_depth):
+        shape = models.tensor_shape(candidate)
+
+        if len(shape) == 2 and shape[0] == 1:
+            return candidate
+
+        if fallback is None and (
+            candidate.target.startswith("aten.arange")
+            or candidate.value_kind in {FModels.ValueKind.USER_INPUT, FModels.ValueKind.CACHE_INPUT}
+        ):
+            fallback = candidate
+
+    return fallback
+
+
+def whisper_attention_match(
+    graph: models.Graph,
+    source: models.Node,
+    fusion: FModels.FusionDefinition,
+) -> models.FusionResult | None:
+    if is_whisper_decoder_self_attention(source):
+        return None
+
+    value_bmm, output_layout_nodes = whisper_value_bmm_from_output(source)
+
+    if value_bmm is None or len(value_bmm.parents) < 2:
+        return None
+
+    softmax = first_target_ancestor(value_bmm.parents[0], {"cactus.softmax", "aten.softmax.int", "aten._softmax.default"})
+
+    if softmax is None or not softmax.parents:
+        return None
+
+    qk_bmm = first_bmm_ancestor(softmax.parents[0], value_bmm)
+
+    if qk_bmm is None or len(qk_bmm.parents) < 2:
+        return None
+
+    external_inputs, layout_attrs = whisper_attention_inputs(qk_bmm, value_bmm)
+
+    if external_inputs is None:
+        return None
+
+    matched_nodes = attention_internal_nodes(source, external_inputs)
+
+    if value_bmm.name not in {node.name for node in matched_nodes}:
+        matched_nodes = tuple(sorted((*matched_nodes, *output_layout_nodes, value_bmm), key=lambda node: (node.index, node.name)))
+
+    return models.FusionResult.from_match(
+        fusion=fusion,
+        source=source,
+        matched_nodes=matched_nodes,
+        external_inputs=external_inputs,
+        attrs={
+            "scale": 1.0,
+            "is_causal": whisper_attention_is_causal(source),
+            "output_layout": "bthd_flat",
+            "window_size": 0,
+            "dropped_softmax_nan_guard": True,
+            **layout_attrs,
+        },
+    )
+
+
+def whisper_value_bmm_from_output(source: models.Node, max_depth: int = 10) -> tuple[models.Node | None, tuple[models.Node, ...]]:
+    if source.target not in {
+        "cactus.view",
+        "aten.view.default",
+        "aten.reshape.default",
+        "cactus.transpose",
+        "aten.permute.default",
+        "aten.transpose.int",
+    }:
+        return None, ()
+
+    current = source
+    matched_nodes: list[models.Node] = [source]
+
+    for _ in range(max_depth):
+        if len(current.parents) != 1:
+            return None, ()
+
+        parent = current.parents[0]
+
+        if parent.target == "aten.bmm.default":
+            matched_nodes.append(parent)
+            return parent, tuple(matched_nodes)
+
+        if parent.target not in {
+            "cactus.view",
+            "aten.view.default",
+            "aten.reshape.default",
+            "cactus.transpose",
+            "aten.permute.default",
+            "aten.transpose.int",
+            "cactus.precision_cast",
+            "aten._to_copy.default",
+            "aten.clone.default",
+            "aten.contiguous.default",
+        }:
+            return None, ()
+
+        matched_nodes.append(parent)
+        current = parent
+
+    return None, ()
+
+
+def whisper_attention_inputs(
+    qk_bmm: models.Node,
+    value_bmm: models.Node,
+) -> tuple[tuple[models.Node, models.Node, models.Node] | None, dict[str, object]]:
+    query = whisper_bqhd_attention_input(qk_bmm.parents[0])
+    key = whisper_bqhd_attention_input(qk_bmm.parents[1])
+    value = whisper_bqhd_attention_input(value_bmm.parents[1])
+
+    if query is None or key is None or value is None:
+        return None, {}
+
+    layout = whisper_attention_input_layout(query, key, value)
+
+    if layout == "native":
+        return (query, key, value), {}
+
+    if layout is not None:
+        return (query, key, value), {"input_layout": layout}
+
+    return None, {}
+
+
+def whisper_bqhd_attention_input(node: models.Node, max_depth: int = 12) -> models.Node | None:
+    return whisper_layout_attention_input(
+        node,
+        lambda shape: len(shape) == 4,
+        max_depth=max_depth,
+    )
+
+
+def whisper_layout_attention_input(
+    node: models.Node,
+    shape_matches: Callable[[tuple[object, ...]], bool],
+    max_depth: int = 12,
+) -> models.Node | None:
+    current = node
+    best: models.Node | None = current if node_rank(current) == 4 and shape_matches(models.tensor_shape(current)) else None
+
+    for _ in range(max_depth):
+        if len(current.parents) != 1:
+            return best
+
+        if current.target in {
+            "cactus.view",
+            "aten.view.default",
+            "aten.reshape.default",
+            "cactus.expand",
+            "aten.expand.default",
+            "cactus.transpose",
+            "aten.permute.default",
+            "aten.transpose.int",
+            "cactus.precision_cast",
+            "aten._to_copy.default",
+            "aten.clone.default",
+            "aten.contiguous.default",
+        }:
+            current = current.parents[0]
+        elif current.target == "cactus.scalar_multiply" and safe_float(current.attrs.get("value")) == 1.0:
+            current = current.parents[0]
+        else:
+            return best
+
+        if node_rank(current) == 4 and shape_matches(models.tensor_shape(current)):
+            best = current
+
+    return best
+
+
+def whisper_attention_input_layout(
+    query: models.Node,
+    key: models.Node,
+    value: models.Node,
+) -> str | None:
+    query_shape = models.tensor_shape(query)
+    key_shape = models.tensor_shape(key)
+    value_shape = models.tensor_shape(value)
+
+    if len(query_shape) != 4 or len(key_shape) != 4 or len(value_shape) != 4:
+        return None
+
+    if key_shape != value_shape:
+        return None
+
+    if query_shape[0] != key_shape[0] or query_shape[3] != key_shape[3]:
+        return None
+
+    if query_shape[2] == key_shape[2]:
+        return "native"
+
+    if query_shape[2] == key_shape[1]:
+        return "bqhd_bhsd_bhsd"
+
+    if query_shape[1] == key_shape[1]:
+        return "bhqd_bhsd_bhsd"
+
+    return None
+
+
+def whisper_attention_is_causal(source: models.Node) -> bool:
+    text = f"{source.name} {source.target} {source.module_stack!r}".lower()
+    return "decoder" in text and "self_attn" in text
+
+
+def is_whisper_decoder_self_attention(source: models.Node) -> bool:
+    text = f"{source.name} {source.target} {source.module_stack!r}".lower()
+    return "decoder" in text and "self_attn" in text
+
+
+def safe_float(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def gemma4_prefill_attention_match(
@@ -106,6 +536,7 @@ def gemma4_prefill_attention_match(
     if not gemma4_prefill_attention_shapes_match(query, key_cat, value_cat, qk_bmm, value_bmm):
         return None
 
+    query, query_layout = gemma4_attention_query_input(query)
     external_inputs = (query, key_cat, value_cat)
 
     return models.FusionResult.from_match(
@@ -116,8 +547,8 @@ def gemma4_prefill_attention_match(
         attrs={
             "scale": 1.0,
             "is_causal": True,
-            "input_layout": "bhqd_bhds_bhsd",
-            "q_layout": "bhqd",
+            "input_layout": query_layout,
+            "q_layout": "bthd" if query_layout == "bqhd_bhds_bhsd" else "bhqd",
             "k_layout": "bhsd",
             "v_layout": "bhsd",
             "output_layout": gemma4_prefill_output_layout(source),
@@ -535,7 +966,7 @@ def existing_attention_layout_chain(source: models.Node, max_depth: int = 8) -> 
             current = parent
             continue
 
-        if parent.target == "aten._to_copy.default":
+        if parent.target in {"aten._to_copy.default", "cactus.precision_cast"}:
             matched_nodes.append(parent)
             current = parent
             continue
@@ -565,7 +996,7 @@ def post_attention_layout_chain(source: models.Node, max_depth: int = 8) -> tupl
             current = parent
             continue
 
-        if parent.target == "aten._to_copy.default":
+        if parent.target in {"aten._to_copy.default", "cactus.precision_cast"}:
             matched_nodes.append(parent)
             current = parent
             continue
@@ -675,16 +1106,29 @@ def gemma4_attention_query_input(node: models.Node) -> tuple[models.Node, str]:
         if len(current.parents) != 1:
             return current, layout
 
-        if current.target == "cactus.scalar_multiply" and float(current.attrs.get("value", 1.0)) == 1.0:
-            current = current.parents[0]
+        parent = current.parents[0]
+
+        if current.target in {"cactus.expand", "aten.expand.default", "cactus.view", "aten.view.default", "aten.reshape.default"}:
+            if models.tensor_shape(current) == models.tensor_shape(parent):
+                current = parent
+                continue
+
+            return current, layout
+
+        if current.target == "cactus.scalar_multiply" and safe_float(current.attrs.get("value")) == 1.0:
+            current = parent
             continue
 
-        if current.target == "aten._to_copy.default" and str(current.attrs.get("dtype")) == "torch.float32":
-            current = current.parents[0]
+        if current.target == "aten.mul.Scalar" and safe_float(current.attrs.get("other")) == 1.0:
+            current = parent
+            continue
+
+        if current.target in {"aten._to_copy.default", "cactus.precision_cast"} and str(current.attrs.get("dtype")) == "torch.float32":
+            current = parent
             continue
 
         if is_bqhd_to_bhqd_transpose(current):
-            current = current.parents[0]
+            current = parent
             layout = "bqhd_bhds_bhsd"
             continue
 
@@ -711,6 +1155,54 @@ def gemma4_attention_passthrough_input(node: models.Node) -> models.Node:
         return current
 
     return current
+
+
+def lfm_attention_query_input(node: models.Node) -> models.Node:
+    current = node
+
+    for _ in range(8):
+        if len(current.parents) != 1:
+            return current
+
+        parent = current.parents[0]
+
+        if current.target in {"aten.mul.Scalar", "cactus.scalar_multiply"} and lfm_attention_scale_value(current) is not None:
+            current = parent
+            continue
+
+        if current.target in {"aten._to_copy.default", "cactus.precision_cast"} and str(current.attrs.get("dtype")) == "torch.float32":
+            current = parent
+            continue
+
+        return current
+
+    return current
+
+
+def lfm_attention_scale_value(node: models.Node) -> float | None:
+    value = safe_float(node.attrs.get("value"))
+
+    if value is None:
+        value = safe_float(node.attrs.get("other"))
+
+    return value
+
+
+def lfm_attention_cache_cat(node: models.Node, role: str) -> models.Node | None:
+    cache_cat = cache_cat_ancestor(node, role, max_depth=32)
+
+    if cache_cat is not None:
+        return cache_cat
+
+    return prefill_cache_cat_ancestor(node, max_depth=32)
+
+
+def lfm_attention_window_size(key_cat: models.Node) -> int:
+    for node in ancestor_nodes(key_cat):
+        if node.cache is not None and node.cache.window_size is not None:
+            return int(node.cache.window_size)
+
+    return 0
 
 
 def is_bqhd_to_bhqd_transpose(node: models.Node) -> bool:
@@ -794,4 +1286,7 @@ def node_rank(node: models.Node) -> int:
 
 SPECIAL_MATCHERS: dict[str, SpecialFusionMatcher] = {
     GEMMA4_ATTENTION_LAYOUT: match_gemma4_attention_layout,
+    WHISPER_ATTENTION_LAYOUT: match_whisper_attention_layout,
+    LFM_BMM_MASKED_ATTENTION: match_lfm_bmm_masked_attention,
+    GEMMA4_ROPE_TABLE_LOOKUP: match_gemma4_rope_table_lookup,
 }

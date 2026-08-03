@@ -6,6 +6,9 @@ import struct
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
+from . import constants
 from . import models
 from .errors import UnsupportedLoweringError
 from ..IR import models as IRModels
@@ -63,6 +66,85 @@ def write_cactus_tensor_file(path: Path, shape: tuple[int, ...], precision: int,
         f.write(struct.pack("<Q", int(original_n)))
         f.write(b"\0" * ((alignment - (header_size % alignment)) % alignment))
         f.write(data)
+
+
+def write_dequantized_int8_weight_as_fp16(
+    context: models.GenerationContext,
+    node: IRModels.Node,
+    record: models.WeightRecord,
+) -> str:
+    if context.config.weights_dir is None or record.output_name is None:
+        raise UnsupportedLoweringError(f"{node.name}: missing converted weight path for FP16 dequant fallback")
+
+    source_path = context.config.weights_dir / record.output_name
+    shape, values = read_dequantized_int8_weight_fp16(source_path)
+    constants_dir = context.component.output_path.parent / "constants"
+    constants_dir.mkdir(parents=True, exist_ok=True)
+    filename = (
+        f"{models.sanitize_component_name(context.component.name)}__"
+        f"{models.sanitize_component_name(node.name)}__dequant_fp16.weights"
+    )
+    path = constants_dir / filename
+    write_cactus_tensor_file(path, shape, int(context.graph.FP16), values.tobytes())
+    return constant_binding_path(context, path)
+
+
+def read_dequantized_int8_weight_fp16(path: Path) -> tuple[tuple[int, ...], np.ndarray]:
+    with path.open("rb") as f:
+        header = f.read(84)
+
+        if len(header) != 84 or header[:4] != b"CACT":
+            raise UnsupportedLoweringError(f"{path}: invalid Cactus tensor header")
+
+        fields = struct.unpack("<IIIQQQQIQQIIQ", header[4:84])
+        _, alignment, ndim, d0, d1, d2, d3, precision, data_bytes, scales_bytes, group_size, _, original_n = fields
+
+        if int(precision) != 0:
+            raise UnsupportedLoweringError(f"{path}: expected INT8 tensor for FP16 dequant fallback")
+
+        shape = tuple(int(dim) for dim in (d0, d1, d2, d3)[: int(ndim)])
+        if not shape:
+            shape = (1,)
+
+        scales_offset = aligned_offset(84, int(alignment))
+        data_offset = aligned_offset(scales_offset + int(scales_bytes), int(alignment))
+        f.seek(scales_offset)
+        scales = np.frombuffer(f.read(int(scales_bytes)), dtype=np.float16).astype(np.float32)
+        f.seek(data_offset)
+        quantized = np.frombuffer(f.read(int(data_bytes)), dtype=np.int8).copy()
+
+    count = math.prod(shape)
+    if quantized.size < count:
+        raise UnsupportedLoweringError(f"{path}: INT8 payload is smaller than tensor shape")
+
+    quantized = quantized[:count].reshape(shape).astype(np.float32)
+
+    if int(scales_bytes) > 0 and int(group_size) > 0 and scales.size > 0:
+        if len(shape) == 1:
+            group_ids = np.arange(count) // int(group_size)
+            dequantized = (quantized.reshape(-1) * scales[group_ids]).reshape(shape)
+        else:
+            rows = int(shape[0])
+            inner = count // rows
+            if inner % int(group_size) != 0:
+                raise UnsupportedLoweringError(f"{path}: grouped INT8 inner size is not divisible by group size")
+
+            groups = inner // int(group_size)
+            if scales.size < rows * groups:
+                raise UnsupportedLoweringError(f"{path}: grouped INT8 scale metadata is too small")
+
+            q2 = quantized.reshape(rows, inner)
+            scales2 = scales[: rows * groups].reshape(rows, groups)
+            cols = np.arange(inner) // int(group_size)
+            dequantized = (q2 * scales2[:, cols]).reshape(shape)
+    else:
+        dequantized = quantized
+
+    if original_n and len(shape) > 0 and int(original_n) < shape[0]:
+        dequantized = dequantized[: int(original_n)]
+        shape = tuple(int(dim) for dim in dequantized.shape)
+
+    return shape, np.ascontiguousarray(dequantized.astype(np.float16))
 
 
 def constant_binding_path(context: models.GenerationContext, path: Path) -> str:

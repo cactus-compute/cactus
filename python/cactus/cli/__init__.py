@@ -136,11 +136,12 @@ def create_parser():
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        refresh cached bundle
 
-  cactus convert <model> [dir]         convert HuggingFace weights to Cactus CQ
+  cactus convert <model> [dir]         convert HuggingFace model to runnable Cactus bundle
     --bits 1|2|3|4                     CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        force weight conversion from source
     --lora <path>                      merge a LoRA adapter before converting
+    --weights-only                     stop after CQ weights, skipping transpilation
 
   cactus serve [model]                 OpenAI-compatible local HTTP server
     --host <addr>                      bind address (default: 127.0.0.1)
@@ -184,11 +185,12 @@ def create_parser():
 
   Advanced:
 
-  cactus convert <model> [dir]         HuggingFace -> Cactus CQ weights
+  cactus convert <model> [dir]         HuggingFace -> Cactus CQ weights + components
     --bits 1|2|3|4                     CQ quantization (default: 4)
     --token <token>                    HuggingFace token (defaults to $HF_TOKEN)
     --reconvert                        force weight conversion from source
     --lora <path>                      merge a LoRA adapter before converting
+    --weights-only                     stop after CQ weights, skipping transpilation
 
   -----------------------------------------------------------------
 """
@@ -320,6 +322,10 @@ def create_parser():
                                 help="Path or HF id of a LoRA adapter to merge before converting (requires `peft`)")
     convert_parser.add_argument("--reconvert", action="store_true",
                                 help="Force conversion from source")
+    convert_parser.add_argument("--weights-only", action="store_true",
+                                help="Only convert CQ weights; skip graph transpilation")
+    convert_parser.add_argument("--input-modalities", default=None,
+                                help="Comma-separated export modalities (default: model profile modalities)")
 
     return parser
 

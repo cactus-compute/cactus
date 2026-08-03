@@ -53,6 +53,36 @@ namespace {
         return filename;
     }
 
+    bool shape_matches_mmap_weight(const std::vector<size_t>& logical_shape,
+                                   const std::vector<size_t>& file_shape,
+                                   Precision precision,
+                                   const GraphFile::MappedFile& mapped_file) {
+        if (logical_shape == file_shape) {
+            return true;
+        }
+
+        if (!PrecisionTraits::is_cq(precision) || mapped_file.group_size() == 0 || logical_shape.size() != file_shape.size()) {
+            return false;
+        }
+
+        const size_t padded_k = mapped_file.group_size() * mapped_file.num_groups();
+        size_t padded_dims = 0;
+        for (size_t i = 0; i < logical_shape.size(); ++i) {
+            if (logical_shape[i] == file_shape[i]) {
+                continue;
+            }
+
+            if (file_shape[i] == padded_k && logical_shape[i] < file_shape[i]) {
+                ++padded_dims;
+                continue;
+            }
+
+            return false;
+        }
+
+        return padded_dims == 1;
+    }
+
     inline void write_u32(std::ostream& out, uint32_t v) {
       out.write(reinterpret_cast<const char*>(&v), sizeof(v));
     }
@@ -545,7 +575,7 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
     const auto& shape = mapped_file->shape();
     Precision precision = mapped_file->precision();
     auto& buffer = node.output_buffer;
-    if (buffer.shape != shape) {
+    if (!shape_matches_mmap_weight(buffer.shape, shape, precision, *mapped_file)) {
         throw std::runtime_error("mmap weight shape mismatch for node " + std::to_string(node_id));
     }
     if (buffer.precision != precision) {

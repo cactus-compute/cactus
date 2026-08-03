@@ -478,7 +478,26 @@ def noop_replacement_name(node: Node) -> str | None:
     if node.target in {"aten._to_copy.default", "aten.view.default", "aten.reshape.default", "aten.expand.default", "cactus.view", "cactus.reshape"} and same_tensor_signature(node, parent):
         return parent.name
 
+    if is_precision_cast_only_for_rms_norm(node, parent):
+        return parent.name
+
     return None
+
+
+def is_precision_cast_only_for_rms_norm(node: Node, parent: Node) -> bool:
+    if node.target not in {"aten._to_copy.default", "cactus.precision_cast"}:
+        return False
+
+    if tensor_meta_value(parent, "shape") != tensor_meta_value(node, "shape"):
+        return False
+
+    if effective_dtype(tensor_meta_value(parent, "dtype")) != "torch.float16":
+        return False
+
+    if str(tensor_meta_value(node, "dtype")) != "torch.float32":
+        return False
+
+    return bool(node.children) and all(child.target == "cactus.rms_norm" for child in node.children)
 
 
 def resolve_replacement_names(replacement_names: dict[str, str]) -> dict[str, str]:
@@ -656,10 +675,10 @@ def annotate_cache_nodes(nodes: tuple[Node, ...], model_name: str = "") -> None:
     conv_count = 0
 
     for node in nodes:
-        if node.cache is not None:
-            continue
-
         tensor_index = past_key_value_index(node)
+
+        if node.cache is not None and tensor_index is None:
+            continue
 
         if tensor_index is None:
             if node.target == "cache_position":
@@ -798,11 +817,24 @@ def infer_layer_index(result: FusionResult) -> int | None:
 
 
 def cache_layer_index_from_node(node: Node, default: int | None = None) -> int | None:
-    for candidate in (node, *node.children, *node.parents):
+    candidates: list[tuple[Node, int]] = [(node, 0)]
+    seen = {id(node)}
+
+    for candidate, depth in candidates:
         layer_index = layer_index_from_text(f"{candidate.name} {candidate.target} {candidate.module_stack!r}")
 
         if layer_index is not None:
             return layer_index
+
+        if depth >= 4:
+            continue
+
+        for neighbor in (*candidate.children, *candidate.parents):
+            if id(neighbor) in seen:
+                continue
+
+            seen.add(id(neighbor))
+            candidates.append((neighbor, depth + 1))
 
     return default
 

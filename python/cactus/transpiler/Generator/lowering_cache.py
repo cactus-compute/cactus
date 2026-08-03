@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from . import models
@@ -61,7 +62,7 @@ def prefill_cache_cat_annotations(graph: IRModels.Graph) -> dict[str, IRModels.C
         window_size = prefill_cache_window_size(graph, index // 2)
         requested_capacity = int(node.ir_metadata.get("prefill_cache_capacity", sequence_length))
         cache_capacity = prefill_cache_capacity(graph, requested_capacity, window_size)
-        layer_index = index // 2
+        layer_index = IRModels.cache_layer_index_from_node(node, index // 2)
         annotations[node.name] = IRModels.CacheAnnotation(
             kind=FModels.CacheKind.KV,
             role=FModels.CacheTensorRole.KEY if index % 2 == 0 else FModels.CacheTensorRole.VALUE,
@@ -221,6 +222,7 @@ def lower_prefill_cache_cat(context: models.GenerationContext, node: IRModels.No
     record_cache_state_binding(context, node, cache_state, annotation)
     context.graph.kv_cache_append(new_kv, cache_state, window_size=int(annotation.window_size or 0), sink_size=0)
     context.prefill_cache_cat_states[node.name] = cache_state
+    context.prefill_cache_cat_new_values[node.name] = new_kv
     return original_new_kv
 
 
@@ -242,7 +244,7 @@ def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> A
             query,
             key,
             value,
-            scale=float(node.attrs.get("scale", 1.0)),
+            scale=attention_scale(node),
             is_causal=bool(node.attrs.get("is_causal", True)),
             position_offset=int(node.attrs.get("position_offset", 0)),
             window_size=int(node.attrs.get("window_size", 0)),
@@ -260,7 +262,7 @@ def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> A
             inputs[2],
             inputs[3],
             inputs[4],
-            scale=float(node.attrs.get("scale", 1.0)),
+            scale=attention_scale(node),
             position_offset=cached_attention_position_offset(context, node),
             window_size=int(node.attrs.get("window_size", 0)),
             v_head_dim=int(node.attrs.get("v_head_dim", 0)),
@@ -286,8 +288,13 @@ def lower_cache_backed_attention(context: models.GenerationContext, node: IRMode
 
     query = context.require(node.parents[0].name)
     input_layout = str(node.attrs.get("input_layout", ""))
-    key_new = cache_new_kv_for_native(context, key_new_node, context.require(key_new_node.name), FModels.CacheTensorRole.KEY, input_layout)
-    value_new = cache_new_kv_for_native(context, value_new_node, context.require(value_new_node.name), FModels.CacheTensorRole.VALUE, input_layout)
+    key_new = context.prefill_cache_cat_new_values.get(key_cat.name)
+    if key_new is None:
+        key_new = cache_new_kv_for_native(context, key_new_node, context.require(key_new_node.name), FModels.CacheTensorRole.KEY, input_layout)
+
+    value_new = context.prefill_cache_cat_new_values.get(value_cat.name)
+    if value_new is None:
+        value_new = cache_new_kv_for_native(context, value_new_node, context.require(value_new_node.name), FModels.CacheTensorRole.VALUE, input_layout)
     key_cache_state = prefill_cache_state_for_cat(context, key_cat)
     value_cache_state = prefill_cache_state_for_cat(context, value_cat)
 
@@ -297,7 +304,7 @@ def lower_cache_backed_attention(context: models.GenerationContext, node: IRMode
     if value_cache_state is None:
         value_cache_state = context.require(value_cache.name)
 
-    if node.attrs.get("input_layout") == "bhqd_bhds_bhsd":
+    if node.attrs.get("input_layout") in {"bhqd_bhds_bhsd", "bhqd_bhsd_bhsd"}:
         query = context.graph.permute(query, (0, 2, 1, 3))
 
     query = cast_to_precision(context, query, context.graph.FP16)
@@ -321,7 +328,7 @@ def lower_cache_backed_attention(context: models.GenerationContext, node: IRMode
         value_new,
         key_cache_state,
         value_cache_state,
-        scale=float(node.attrs.get("scale", 1.0)),
+        scale=attention_scale(node),
         position_offset=cached_attention_position_offset(context, node),
         window_size=int(node.attrs.get("window_size", 0)),
         v_head_dim=last_dim(value_new_node),
@@ -380,6 +387,28 @@ def last_dim(node: IRModels.Node) -> int:
     return int(shape[-1])
 
 
+def attention_scale(node: IRModels.Node) -> float:
+    value = node.attrs.get("scale")
+
+    if value is not None:
+        return float(value)
+
+    if not node.parents:
+        return 1.0
+
+    shape = meta_shape(node.parents[0])
+
+    if not shape:
+        return 1.0
+
+    head_dim = concrete_dim(shape[-1])
+
+    if head_dim is None or head_dim <= 0:
+        return 1.0
+
+    return 1.0 / math.sqrt(float(head_dim))
+
+
 def attention_inputs_for_layout(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> tuple[Any, Any, Any, Any | None]:
     mask = inputs[3] if len(inputs) > 3 else None
 
@@ -395,6 +424,22 @@ def attention_inputs_for_layout(context: models.GenerationContext, node: IRModel
         return (
             inputs[0],
             context.graph.permute(inputs[1], (0, 3, 1, 2)),
+            context.graph.permute(inputs[2], (0, 2, 1, 3)),
+            mask,
+        )
+
+    if node.attrs.get("input_layout") == "bqhd_bhsd_bhsd":
+        return (
+            inputs[0],
+            context.graph.permute(inputs[1], (0, 2, 1, 3)),
+            context.graph.permute(inputs[2], (0, 2, 1, 3)),
+            mask,
+        )
+
+    if node.attrs.get("input_layout") == "bhqd_bhsd_bhsd":
+        return (
+            context.graph.permute(inputs[0], (0, 2, 1, 3)),
+            context.graph.permute(inputs[1], (0, 2, 1, 3)),
             context.graph.permute(inputs[2], (0, 2, 1, 3)),
             mask,
         )

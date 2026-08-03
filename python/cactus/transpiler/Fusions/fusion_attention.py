@@ -55,6 +55,20 @@ GEMMA4_ATTENTION_LAYOUT_GRAPH = _single_node_graph(
 )
 
 
+WHISPER_ATTENTION_LAYOUT_GRAPH = _single_node_graph(
+    "whisper_attention_layout",
+    "view",
+    ("x",),
+    attr_captures=(
+        M.AttrCapture("scale", default=1.0, required=False),
+        M.AttrCapture("is_causal", default=False, required=False),
+        M.AttrCapture("output_layout", default="bthd_flat", required=False),
+        M.AttrCapture("window_size", default=0, required=False),
+    ),
+    metadata={"special_matcher": "whisper_attention_layout"},
+)
+
+
 LFM_BMM_MASKED_ATTENTION_GRAPH = _graph(
     "lfm_bmm_masked_attention",
     "lfm_attn_output_view",
@@ -91,7 +105,7 @@ LFM_BMM_MASKED_ATTENTION_GRAPH = _graph(
         _input("mask_predicate", "lfm_attn_mask_where", 0, metadata={"drop_after_fusion": True}),
     ),
     attr_captures=(
-        M.AttrCapture("scale", default=1.0, required=False),
+        M.AttrCapture("scale", default=None, required=False),
         M.AttrCapture("is_causal", default=True, required=False),
         M.AttrCapture("position_offset", default=0, required=False),
         M.AttrCapture("window_size", default=0, required=False),

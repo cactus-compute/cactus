@@ -75,6 +75,40 @@ void write_scalar_value(Precision precision, uint8_t* data, size_t index, float 
     }
 }
 
+bool is_media_generation_token(const Config& config, uint32_t token_id) {
+    if (config.image_token_id != 0 && token_id == config.image_token_id) return true;
+    if (config.audio_token_id != 0 && token_id == config.audio_token_id) return true;
+
+    if (config.model_type == Config::ModelType::GEMMA4) {
+        switch (token_id) {
+            case 255999:  // <|image>
+            case 258880:  // <|image|>
+            case 258882:  // <image|>
+            case 256000:  // <|audio>
+            case 258881:  // <|audio|>
+            case 258883:  // <audio|>
+                return true;
+            default:
+                break;
+        }
+    }
+
+    if (config.model_type == Config::ModelType::LFM2 && config.use_image_tokens) {
+        switch (token_id) {
+            case 396:  // <image>
+            case 497:  // <|img_thumbnail|>
+            case 498:  // <|image_start|>
+            case 499:  // <|image_end|>
+            case 500:  // <|image_split|>
+                return true;
+            default:
+                break;
+        }
+    }
+
+    return false;
+}
+
 bool copy_component_tensor(CactusGraph& source_graph,
                            const BufferDesc& src_desc,
                            size_t src_node,
@@ -1076,25 +1110,28 @@ void Model::copy_component_outputs_to_chunk_inputs_range(const Component& source
 
 bool Model::cache_states_compatible(const Component& source, const Component& target) const {
     if (source.cache_states.empty() || source.cache_states.size() != target.cache_states.size()) return false;
+    if (!source.graph || !target.graph) return false;
     for (size_t i = 0; i < source.cache_states.size(); ++i) {
         const auto& src = source.cache_states[i];
         const auto& dst = target.cache_states[i];
         if (src.layer_key != dst.layer_key) return false;
         if (src.key_node_id < 0 || src.value_node_id < 0 || dst.key_node_id < 0 || dst.value_node_id < 0) return false;
+        for (auto [src_node, dst_node] : {std::pair<int, int>{src.key_node_id, dst.key_node_id}, std::pair<int, int>{src.value_node_id, dst.value_node_id}}) {
+            const size_t src_id = static_cast<size_t>(src_node);
+            const size_t dst_id = static_cast<size_t>(dst_node);
+            if (source.graph->get_node_op_type(src_id) != target.graph->get_node_op_type(dst_id)) return false;
+        }
     }
     return true;
 }
 
 void Model::move_cache_states(Component& source, Component& target, size_t logical_current) {
-    if (source.cache_states.empty() || source.cache_states.size() != target.cache_states.size()) {
+    if (!cache_states_compatible(source, target)) {
         throw std::runtime_error("prefill and step cache states are not compatible");
     }
     for (size_t i = 0; i < source.cache_states.size(); ++i) {
         const auto& src = source.cache_states[i];
         const auto& dst = target.cache_states[i];
-        if (src.layer_key != dst.layer_key) {
-            throw std::runtime_error("prefill and step cache layer mismatch: " + src.layer_key + " != " + dst.layer_key);
-        }
         int moved_src = -1, moved_dst = -1;
         for (auto [src_node, dst_node] : {std::pair<int, int>{src.key_node_id, dst.key_node_id}, std::pair<int, int>{src.value_node_id, dst.value_node_id}}) {
             if (src_node < 0 || dst_node < 0) continue;
@@ -1293,11 +1330,11 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
         return decoder_prefill_->graph->get_node_op_type(id) == OpType::KV_CACHE_STATE
             && decoder_prefill_->graph->get_node_window_size(id) > 0;
     });
-    const size_t tail_tokens = tokens.size() - whole_chunks_end;
-    const size_t padding_cutoff = std::max<size_t>(1, effective_chunk / 16);
     const bool has_conv_state = any_cache_node([&](size_t id) {
         return decoder_prefill_->graph->get_node_op_type(id) == OpType::CONV_CACHE_STATE;
     });
+    const size_t tail_tokens = tokens.size() - whole_chunks_end;
+    const size_t padding_cutoff = std::max<size_t>(1, effective_chunk / 16);
     const bool pad_tail = !has_conv_state
         && !has_recurrent_state
         && !has_sliding_window_cache
@@ -1862,22 +1899,36 @@ void Model::run_audio_encoder(const std::vector<float>& audio_features) {
             const size_t node_id = static_cast<size_t>(audio_encoder_->output_node_ids[i]);
             const auto& desc = audio_encoder_->graph->get_output_buffer(node_id);
             void* ptr = audio_encoder_->graph->get_output(node_id);
+            const size_t output_rows = desc.shape.size() >= 2
+                ? desc.shape[desc.shape.size() - 2]
+                : desc.shape.empty() ? 0 : desc.shape[0];
+            size_t rows_to_copy = output_rows;
+            if (family_ == "gemma4" && output_rows > 0) {
+                rows_to_copy = std::min(output_rows, (frames_in_chunk + 3) / 4);
+            }
+            if (rows_to_copy == 0) continue;
+            const size_t row_bytes = output_rows > 0 ? desc.byte_size / output_rows : desc.byte_size;
+            const size_t append_bytes = rows_to_copy * row_bytes;
             auto& slot = media_features_[name];
             const size_t prev_bytes = slot.size();
-            slot.resize(prev_bytes + desc.byte_size);
-            std::memcpy(slot.data() + prev_bytes, ptr, desc.byte_size);
+            slot.resize(prev_bytes + append_bytes);
+            std::memcpy(slot.data() + prev_bytes, ptr, append_bytes);
             auto shape_it = media_feature_shapes_.find(name);
             if (shape_it == media_feature_shapes_.end() || shape_it->second.empty()) {
                 media_feature_shapes_[name] = desc.shape;
+                auto& shape = media_feature_shapes_[name];
+                if (shape.size() >= 2) shape[shape.size() - 2] = rows_to_copy;
+                else if (!shape.empty()) shape[0] = rows_to_copy;
             } else if (desc.shape.size() >= 2 && shape_it->second.size() == desc.shape.size()) {
-                shape_it->second[shape_it->second.size() - 2] += desc.shape[desc.shape.size() - 2];
+                shape_it->second[shape_it->second.size() - 2] += rows_to_copy;
             }
             media_feature_precisions_[name] = desc.precision;
         }
     }
 }
 
-uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty) {
+uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty,
+                                 float repetition_penalty) {
     size_t vocab = desc.shape.empty() ? 0 : desc.shape.back();
     uint32_t best = 0;
     float best_v = -std::numeric_limits<float>::infinity();
@@ -1888,10 +1939,15 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
         if (tool_it != tool_bias.end()) value += tool_it->second;
         auto vocab_it = vocab_bias_.find(static_cast<uint32_t>(token_id));
         if (vocab_it != vocab_bias_.end()) value += vocab_it->second;
+        if (repetition_penalty > 1.0f
+            && std::find(token_history_.begin(), token_history_.end(), static_cast<uint32_t>(token_id)) != token_history_.end()) {
+            value = value >= 0.0f ? value / repetition_penalty : value * repetition_penalty;
+        }
         return value;
     };
     auto observe_logit = [&](size_t i, float v) {
         if (static_cast<int64_t>(i) == suppressed_token_id_) return;
+        if (is_media_generation_token(config_, static_cast<uint32_t>(i))) return;
         v = score_with_bias(i, v);
         if (v > best_v) {
             second_v = best_v;
@@ -1922,7 +1978,8 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
     return best;
 }
 
-uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float* out_uncertainty) {
+uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float* out_uncertainty,
+                                        float repetition_penalty) {
     size_t out_node = static_cast<size_t>(comp.output_node_ids.empty() ? 0 : comp.output_node_ids[0]);
     const auto& desc = comp.graph->get_output_buffer(out_node);
     void* ptr = comp.graph->get_output(out_node);
@@ -1934,7 +1991,7 @@ uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float
     } else if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         row = std::min(last_logit_position_, seq > 0 ? seq - 1 : 0);
     }
-    return argmax_logits_at(desc, ptr, row * vocab, out_uncertainty);
+    return argmax_logits_at(desc, ptr, row * vocab, out_uncertainty, repetition_penalty);
 }
 
 std::vector<uint32_t> Model::argmax_component_logits_batch(Component& comp, size_t batch) {
@@ -1954,8 +2011,8 @@ std::vector<uint32_t> Model::argmax_component_logits_batch(Component& comp, size
     return out;
 }
 
-uint32_t Model::argmax_last_logits(float* out_uncertainty) {
-    return argmax_component_logits(*decoder_, std::numeric_limits<size_t>::max(), out_uncertainty);
+uint32_t Model::argmax_last_logits(float* out_uncertainty, float repetition_penalty) {
+    return argmax_component_logits(*decoder_, std::numeric_limits<size_t>::max(), out_uncertainty, repetition_penalty);
 }
 
 bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token,
@@ -2008,9 +2065,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     ChunkedPrefillResult chunked;
     if (decoder_prefill_) {
         chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), true);
-        if (chunked.logical_tokens == tokens.size()
-            && tokens.size() > 0
-            && (chunked.padding_tokens > 0 || family_ == "gemma4")) {
+        if (chunked.logical_tokens == tokens.size() && chunked.padding_tokens > 0 && tokens.size() > 0) {
             // Cache already moved into the step component; drop the last row and re-run it for step-decoder logits.
             set_cache_current_len(*decoder_, tokens.size() - 1);
             cache_total_seq_len_ = tokens.size() - 1;
@@ -2233,6 +2288,21 @@ void Model::reset_encoder_cross_kv_route_state() {
     encoder_cross_kv_source_len_ = 0;
 }
 
+void Model::release_encoder_cross_kv_prepare_graphs() {
+    if (source_encoder_ && source_encoder_ != decoder_) {
+        if (source_encoder_->graph) {
+            source_encoder_->graph->release_runtime_buffers();
+            source_encoder_->graph->release_all_weight_pages();
+        }
+    }
+    if (decoder_cross_kv_ && decoder_cross_kv_ != decoder_) {
+        if (decoder_cross_kv_->graph) {
+            decoder_cross_kv_->graph->release_runtime_buffers();
+            decoder_cross_kv_->graph->release_all_weight_pages();
+        }
+    }
+}
+
 bool Model::finish_encoder_cross_kv_prepare() {
     if (!source_encoder_ || !decoder_cross_kv_ || !decoder_) return false;
     source_encoder_->graph->execute();
@@ -2243,6 +2313,7 @@ bool Model::finish_encoder_cross_kv_prepare() {
         copy_component_outputs_to_inputs(*decoder_cross_kv_, *decoder_);
     }
     encoder_cross_kv_ready_ = true;
+    release_encoder_cross_kv_prepare_graphs();
     return true;
 }
 
@@ -2253,12 +2324,14 @@ bool Model::finish_encoder_cross_kv_prepare_after_source() {
         copy_component_outputs_to_inputs(*decoder_cross_kv_, *decoder_);
     }
     encoder_cross_kv_ready_ = true;
+    release_encoder_cross_kv_prepare_graphs();
     return true;
 }
 
 bool Model::prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& tokens) {
     if (!source_encoder_ || !decoder_cross_kv_ || !decoder_ || tokens.empty()) return false;
     if (encoder_cross_kv_source_kind_ != "text_tokens") return false;
+    if (!load_component_graph(*source_encoder_) || !load_component_graph(*decoder_cross_kv_)) return false;
 
     reset_encoder_cross_kv_route_state();
     for (auto& buf : source_encoder_->input_buffers) {
@@ -2297,6 +2370,7 @@ bool Model::prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& toke
 
 bool Model::prepare_encoder_cross_kv_from_audio(const std::vector<float>& audio_features) {
     if (!source_encoder_ || !decoder_cross_kv_ || !decoder_) return false;
+    if (!load_component_graph(*source_encoder_) || !load_component_graph(*decoder_cross_kv_)) return false;
     int feature_idx = input_index(*source_encoder_, "input_features");
     if (feature_idx < 0) {
         feature_idx = input_index(*source_encoder_, "audio_features");
@@ -2893,7 +2967,8 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                 const auto& feat_shape = media_feature_shapes_["image_features"];
                 const size_t hidden = emb_shape.empty() ? 0 : emb_shape.back();
                 const size_t emb_seq = emb_shape.size() >= 2 ? emb_shape[emb_shape.size() - 2] : 0;
-                const size_t feat_rows = feat_shape.empty() ? 0 : feat_shape[0];
+                const size_t feat_rows = feat_shape.size() >= 2 ? feat_shape[feat_shape.size() - 2]
+                                       : feat_shape.empty() ? 0 : feat_shape[0];
                 const Precision emb_prec = store_prec["inputs_embeds"];
                 const Precision feat_prec = media_feature_precisions_["image_features"];
                 const size_t emb_elem = PrecisionTraits::size_of(emb_prec);
@@ -2986,7 +3061,10 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         if (count > 0) valid_seq = count;
     }
     valid_seq = std::min(valid_seq, full_seq);
-    const size_t whole_chunks_end = (valid_seq / chunk_seq) * chunk_seq;
+    size_t whole_chunks_end = (valid_seq / chunk_seq) * chunk_seq;
+    if (whole_chunks_end > 0 && decoder_ != nullptr && !cache_states_compatible(*decoder_prefill_chunk_, *decoder_)) {
+        whole_chunks_end = 0;
+    }
     for (size_t chunk_start = 0; chunk_start < whole_chunks_end; chunk_start += chunk_seq) {
         for (const auto& kv : store_bytes) {
             const std::string& name = kv.first;
@@ -3167,7 +3245,7 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
 
 uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*/, float /*top_p*/,
                         size_t /*top_k*/, const std::string& /*profile_file*/, float* out_entropy,
-                        float /*min_p*/, float /*repetition_penalty*/) {
+                        float /*min_p*/, float repetition_penalty) {
     if (tokens.empty()) return 0;
     if (decode_route_ == DecodeRoute::ENCODER_CROSS_KV_STEP) {
         if (!encoder_cross_kv_ready_ && encoder_cross_kv_source_kind_ == "text_tokens") {
@@ -3191,7 +3269,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
         }
         cache_total_seq_len_ += tokens.size();
         if (out_entropy) *out_entropy = 0.0f;
-        uint32_t result = argmax_last_logits();
+        uint32_t result = argmax_last_logits(nullptr, repetition_penalty);
         record_sampled_token(result);
         return result;
     }
@@ -3200,7 +3278,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
         run_full_context_text();
         cache_total_seq_len_ = context_tokens_.size();
         cache_token_ids_ = context_tokens_;
-        uint32_t result = argmax_last_logits(out_entropy);
+        uint32_t result = argmax_last_logits(out_entropy, repetition_penalty);
         record_sampled_token(result);
         return result;
     }
@@ -3211,7 +3289,7 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float /*temperature*
     cache_total_seq_len_ += tokens.size();
     cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
     maybe_roll_compact();
-    uint32_t result = argmax_last_logits(out_entropy);
+    uint32_t result = argmax_last_logits(out_entropy, repetition_penalty);
     record_sampled_token(result);
     return result;
 }
@@ -4203,6 +4281,10 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "tile_size") tile_size = static_cast<uint32_t>(std::stoul(value));
         else if (key == "max_pixels_tolerance") max_pixels_tolerance = std::stof(value);
         else if (key == "do_image_splitting") do_image_splitting = (value == "true" || value == "1");
+        else if (key == "do_resize") do_resize = (value == "true" || value == "1");
+        else if (key == "do_rescale") do_rescale = (value == "true" || value == "1");
+        else if (key == "do_normalize") do_normalize = (value == "true" || value == "1");
+        else if (key == "do_convert_rgb") do_convert_rgb = (value == "true" || value == "1");
         else if (key == "precision") {
             if (value == "INT8") precision = Precision::INT8;
             else if (value == "FP16") precision = Precision::FP16;

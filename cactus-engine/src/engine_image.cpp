@@ -912,11 +912,11 @@ static Siglip2Preprocessor::Config make_lfm2_vl_siglip_config(const Config& conf
     sp_cfg.rescale_factor = config.rescale_factor > 0.0f ? config.rescale_factor : (1.0f / 255.0f);
     sp_cfg.image_mean[0] = sp_cfg.image_mean[1] = sp_cfg.image_mean[2] = config.image_mean;
     sp_cfg.image_std[0]  = sp_cfg.image_std[1]  = sp_cfg.image_std[2]  = config.image_std;
-    sp_cfg.do_image_splitting = true;
-    sp_cfg.do_resize = true;
-    sp_cfg.do_rescale = true;
-    sp_cfg.do_normalize = true;
-    sp_cfg.do_convert_rgb = true;
+    sp_cfg.do_image_splitting = config.do_image_splitting;
+    sp_cfg.do_resize = config.do_resize;
+    sp_cfg.do_rescale = config.do_rescale;
+    sp_cfg.do_normalize = config.do_normalize;
+    sp_cfg.do_convert_rgb = config.do_convert_rgb;
     return sp_cfg;
 }
 

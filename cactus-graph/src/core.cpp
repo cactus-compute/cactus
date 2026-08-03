@@ -234,6 +234,7 @@ void BufferDesc::set_external(void* ptr) {
         delete[] pooled_data;
     }
     pooled_data = nullptr;
+    pooled_byte_size = 0;
 }
 
 GraphNode::GraphNode(size_t node_id, OpType type) : id(node_id), op_type(type) {}

@@ -111,6 +111,8 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
             f.write(f"vocab_size={vocab_size}\n")
             for key, value in special_token_ids.items():
                 f.write(f"{key}={value}\n")
+            if model_type:
+                f.write(f"model_type={model_type}\n")
             f.write(f"model_max_length={getattr(tokenizer, 'model_max_length', 131072)}\n")
             f.write("tokenizer_type=sentencepiece\n")
             f.write("has_chat_template=false\n")
@@ -475,6 +477,8 @@ def convert_hf_tokenizer(tokenizer, output_dir, token=None, model_id=None, label
         f.write(f"vocab_size={len(id_to_token)}\n")
         for key, value in special_token_ids.items():
             f.write(f"{key}={value}\n")
+        if model_type:
+            f.write(f"model_type={model_type}\n")
         f.write(f"model_max_length={getattr(tokenizer, 'model_max_length', 131072)}\n")
         f.write(f"tokenizer_type={tokenizer_type}\n")
         f.write(f"vocab_format={vocab_format}\n")
