@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
 import struct
 import tempfile
@@ -48,16 +49,20 @@ def generate(
         output_dir=Path(output_dir),
         weights_dir=Path(weights_dir) if weights_dir is not None else None,
         weights_manifest_path=Path(weights_manifest_path) if weights_manifest_path is not None else None,
+        model_profile=model_profile,
         graph_suffix=constants.DEFAULT_GRAPH_SUFFIX,
         strict=strict,
         allow_unsupported_ops=allow_unsupported_ops,
     )
+    if config is not None and model_profile is not None and getattr(generator_config, "model_profile", None) is None:
+        generator_config = replace(generator_config, model_profile=model_profile)
     prepare_generation_output_dir(generator_config.output_dir)
     components = component_graphs_from_input(ir_output, generator_config, component_name, model_profile)
     lowering_rules = lowering_engine.build_lowering_rules(lowerings)
+    fp16_cache_components = fp16_kv_cache_components(model_profile)
 
     for component in components:
-        lowering_engine.lower_component(component, generator_config, lowering_rules)
+        lower_component_with_cache_contract(component, generator_config, lowering_rules, fp16_cache_components)
 
     return models.GenerationResult.from_components(components)
 
@@ -125,12 +130,40 @@ def generate_bundle(
 ################################################# Generator Utils!!!!!!! #################################################
 
 
+def fp16_kv_cache_components(model_profile: Any | None) -> frozenset[str]:
+    cache_contract = getattr(model_profile, "cache_contract", None)
+    return frozenset(str(value) for value in getattr(cache_contract, "fp16_kv_cache_components", ()) or ())
+
+
+def lower_component_with_cache_contract(
+    component: models.ComponentGraph,
+    config: models.GeneratorConfig,
+    lowering_rules: dict[str, models.LoweringRule],
+    fp16_cache_components: frozenset[str],
+) -> None:
+    previous = os.environ.get("CACTUS_KV_CACHE_FP16")
+
+    if component.name in fp16_cache_components:
+        os.environ["CACTUS_KV_CACHE_FP16"] = "1"
+        component.metadata["kv_cache_precision"] = "fp16"
+    else:
+        os.environ.pop("CACTUS_KV_CACHE_FP16", None)
+
+    try:
+        lowering_engine.lower_component(component, config, lowering_rules)
+    finally:
+        if previous is None:
+            os.environ.pop("CACTUS_KV_CACHE_FP16", None)
+        else:
+            os.environ["CACTUS_KV_CACHE_FP16"] = previous
+
+
 def materialize_runtime_bundle_files(bundle_dir: Path, weights_dir: Path | None, model_profile: Any | None = None) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
     if weights_dir is not None and weights_dir.exists():
         for source in weights_dir.iterdir():
-            if source.is_file():
+            if source.is_file() and source.name not in constants.GENERATED_BUNDLE_METADATA_FILES:
                 materialize_bundle_file(source, bundle_dir / source.name)
 
     materialize_lfm2_vl_position_grid(bundle_dir, model_profile)

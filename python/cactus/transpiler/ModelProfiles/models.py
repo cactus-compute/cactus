@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
@@ -16,6 +16,91 @@ class InferencePattern:
     name:str
     route:tuple[Combinations, ...]
 
+@dataclass(slots=True, frozen=True)
+class PromptContract:
+    style: str = "auto"
+    template_source: str = "tokenizer_config"
+    text_style: str = ""
+    media_style: str = ""
+    turn_start_token: str = ""
+    turn_end_token: str = ""
+    suppress_generation_token_ids: tuple[int, ...] = ()
+    repetition_penalty_scope: str = "generated"
+
+@dataclass(slots=True, frozen=True)
+class MediaContract:
+    image_preprocess_strategy: str = ""
+    audio_preprocess_strategy: str = ""
+    injection_strategy: str = ""
+    media_order: tuple[str, ...] = ("image", "audio")
+    focus_policy: str = ""
+    image_focus_keywords: tuple[str, ...] = ()
+    audio_focus_keywords: tuple[str, ...] = ()
+    chunk_prefill_modalities: tuple[str, ...] = ()
+    prefill_fallback: str = "error"
+    min_new_tokens: int = 0
+    chunk_output_sources: tuple[tuple[str, str], ...] = ()
+    mask_polarity: str = ""
+    span_strategy: str = ""
+    placeholder_token_id: int = 0
+    image_token_id: int = 0
+    audio_token_id: int = 0
+    image_token: str = ""
+    audio_token: str = ""
+    image_begin_token: str = ""
+    image_end_token: str = ""
+    audio_begin_token: str = ""
+    audio_end_token: str = ""
+    image_prompt_position: str = "before_text"
+    audio_prompt_position: str = "before_text"
+    audio_rows_per_frames: str = ""
+    image_feature_names: tuple[str, ...] = ()
+    audio_feature_names: tuple[str, ...] = ()
+
+@dataclass(slots=True, frozen=True)
+class CacheContract:
+    prefill_decode_compatibility: str = ""
+    state_transfer: str = ""
+    decode_uses_media_components: bool = False
+    fp16_kv_cache_components: tuple[str, ...] = ()
+    max_cache_sequence_length: int = 0
+    full_retention_kv_layers: tuple[int, ...] = ()
+
+@dataclass(slots=True, frozen=True)
+class StateContract:
+    name: str
+    kind: str
+    producer: str = ""
+    consumers: tuple[str, ...] = ()
+    lifetime: str = "request"
+    transfer: str = "move"
+    persist_after_component_unload: bool = True
+    required: bool = True
+    metadata: tuple[tuple[str, str], ...] = ()
+
+@dataclass(slots=True, frozen=True)
+class AliasContract:
+    source_component: str
+    source_output: str
+    target_component: str
+    target_input: str
+    policy: str = "alias_if_compatible"
+    lifetime: str = "until_target_execute"
+    fallback: str = "copy"
+    required: bool = False
+    metadata: tuple[tuple[str, str], ...] = ()
+
+@dataclass(slots=True, frozen=True)
+class RuntimeContract:
+    plan_name: str = "generic"
+    execution_strategy: str = "component_graph"
+    state_owner: str = "session"
+    cache_persistence: str = "component_move"
+    output_alias_policy: str = "alias_if_compatible"
+    cache_transfer_policy: str = "move"
+    states: tuple[StateContract, ...] = ()
+    aliases: tuple[AliasContract, ...] = ()
+
 @dataclass(slots=True)
 class ModelProfile:
     model_profiles:str #Model family for which this profile is valid (Theoretically can be shared across model families that have similar architectures)
@@ -29,4 +114,10 @@ class ModelProfile:
     input_strategy: str #Specifies what functions/procedures to use when generating sample input for torch.export
     export_patches: tuple[str, ...] #Specifies what patches/masks to apply to sample inputs
     load_strategy: str #Specifies which Hugging Face AutoModel class/loading path to prefer
+    disabled_fusion_fields: tuple[str, ...] = () #Fusion groups to skip for this profile when a family is known unsafe
+    disabled_fusions: tuple[str, ...] = () #Individual fusion names or cactus ops to skip for this profile
+    prompt_contract: PromptContract = field(default_factory=PromptContract)
+    media_contract: MediaContract = field(default_factory=MediaContract)
+    cache_contract: CacheContract = field(default_factory=CacheContract)
+    runtime_contract: RuntimeContract = field(default_factory=RuntimeContract)
     

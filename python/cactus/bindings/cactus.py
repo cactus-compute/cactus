@@ -498,6 +498,23 @@ _lib.cactus_graph_attention_cached.argtypes = [
     ctypes.POINTER(cactus_node_t),
 ]
 _lib.cactus_graph_attention_cached.restype = ctypes.c_int
+_lib.cactus_graph_attention_cached_masked.argtypes = [
+    cactus_graph_t,
+    cactus_node_t,
+    cactus_node_t,
+    cactus_node_t,
+    cactus_node_t,
+    cactus_node_t,
+    ctypes.c_float,
+    ctypes.c_size_t,
+    ctypes.c_size_t,
+    ctypes.c_size_t,
+    ctypes.c_bool,
+    cactus_node_t,
+    ctypes.c_bool,
+    ctypes.POINTER(cactus_node_t),
+]
+_lib.cactus_graph_attention_cached_masked.restype = ctypes.c_int
 _lib.cactus_graph_conv_cache_state.argtypes = [
     cactus_graph_t,
     ctypes.c_size_t,
@@ -673,14 +690,14 @@ _lib.cactus_graph_gaussian_topk.restype = ctypes.c_int
 _lib.cactus_graph_moe_layer_gated.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t,
     ctypes.POINTER(cactus_node_t), ctypes.POINTER(cactus_node_t), ctypes.POINTER(cactus_node_t),
-    ctypes.c_size_t, ctypes.c_size_t, ctypes.c_bool, ctypes.c_float, ctypes.c_float, ctypes.POINTER(cactus_node_t)
+    ctypes.c_size_t, ctypes.c_size_t, ctypes.c_bool, ctypes.c_float, ctypes.c_float, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_moe_layer_gated.restype = ctypes.c_int
 _bind_optional(
     "cactus_graph_dense_mlp_tq_fused",
     [
         cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, cactus_node_t,
-        ctypes.c_float, ctypes.POINTER(cactus_node_t)
+        ctypes.c_float, ctypes.c_float, ctypes.POINTER(cactus_node_t)
     ],
     ctypes.c_int,
 )
@@ -2438,6 +2455,9 @@ class Graph:
         position_offset=0,
         window_size=0,
         v_head_dim=0,
+        is_causal=True,
+        mask=None,
+        additive_mask=False,
     ):
         query = self._ensure_tensor(query)
         key_new = self._ensure_tensor(key_new)
@@ -2445,19 +2465,41 @@ class Graph:
         k_cache_state = self._ensure_tensor(k_cache_state)
         v_cache_state = self._ensure_tensor(v_cache_state)
         out = cactus_node_t()
-        rc = _lib.cactus_graph_attention_cached(
-            self.h,
-            cactus_node_t(query.id),
-            cactus_node_t(key_new.id),
-            cactus_node_t(value_new.id),
-            cactus_node_t(k_cache_state.id),
-            cactus_node_t(v_cache_state.id),
-            ctypes.c_float(float(scale)),
-            ctypes.c_size_t(int(position_offset)),
-            ctypes.c_size_t(int(window_size)),
-            ctypes.c_size_t(int(v_head_dim)),
-            ctypes.byref(out),
-        )
+        if mask is not None:
+            mask_tensor = self._ensure_tensor(mask)
+            rc = _lib.cactus_graph_attention_cached_masked(
+                self.h,
+                cactus_node_t(query.id),
+                cactus_node_t(key_new.id),
+                cactus_node_t(value_new.id),
+                cactus_node_t(k_cache_state.id),
+                cactus_node_t(v_cache_state.id),
+                ctypes.c_float(float(scale)),
+                ctypes.c_size_t(int(position_offset)),
+                ctypes.c_size_t(int(window_size)),
+                ctypes.c_size_t(int(v_head_dim)),
+                ctypes.c_bool(bool(is_causal)),
+                cactus_node_t(mask_tensor.id),
+                ctypes.c_bool(bool(additive_mask)),
+                ctypes.byref(out),
+            )
+        else:
+            if not bool(is_causal) or bool(additive_mask):
+                raise RuntimeError("graph_attention_cached requires a mask for non-causal or additive-mask cached attention")
+
+            rc = _lib.cactus_graph_attention_cached(
+                self.h,
+                cactus_node_t(query.id),
+                cactus_node_t(key_new.id),
+                cactus_node_t(value_new.id),
+                cactus_node_t(k_cache_state.id),
+                cactus_node_t(v_cache_state.id),
+                ctypes.c_float(float(scale)),
+                ctypes.c_size_t(int(position_offset)),
+                ctypes.c_size_t(int(window_size)),
+                ctypes.c_size_t(int(v_head_dim)),
+                ctypes.byref(out),
+            )
         if rc != 0:
             raise RuntimeError(_err("graph_attention_cached failed"))
         return self._tensor_from_node(out.value)
@@ -2786,7 +2828,8 @@ class Graph:
         return self._tensor_from_node(out.value)
 
     def moe_layer_gated(self, hidden, routing_probs, topk_indices, w1_weights, w3_weights, w2_weights,
-                        num_experts, num_experts_per_tok, normalize_routing=True, epsilon=1e-6, routed_scaling_factor=1.0):
+                        num_experts, num_experts_per_tok, normalize_routing=True, epsilon=1e-6,
+                        routed_scaling_factor=1.0, activation=ACT_SILU):
         hidden = self._ensure_tensor(hidden)
         routing_probs = self._ensure_tensor(routing_probs)
         topk_indices = self._ensure_tensor(topk_indices)
@@ -2798,13 +2841,13 @@ class Graph:
             self.h, cactus_node_t(hidden.id), cactus_node_t(routing_probs.id), cactus_node_t(topk_indices.id),
             w1, w3, w2, ctypes.c_size_t(int(num_experts)), ctypes.c_size_t(int(num_experts_per_tok)),
             ctypes.c_bool(bool(normalize_routing)), ctypes.c_float(float(epsilon)),
-            ctypes.c_float(float(routed_scaling_factor)), ctypes.byref(out)
+            ctypes.c_float(float(routed_scaling_factor)), ctypes.c_int32(int(activation)), ctypes.byref(out)
         )
         if rc != 0:
             raise RuntimeError(_err("graph_moe_layer_gated failed"))
         return self._tensor_from_node(out.value)
 
-    def dense_mlp_tq_fused(self, hidden, gate_weight, up_weight, down_weight, product_scale=1.0):
+    def dense_mlp_tq_fused(self, hidden, gate_weight, up_weight, down_weight, product_scale=1.0, gate_input_scale=1.0):
         hidden = self._ensure_tensor(hidden)
         gate_weight = self._ensure_tensor(gate_weight)
         up_weight = self._ensure_tensor(up_weight)
@@ -2817,6 +2860,7 @@ class Graph:
             cactus_node_t(up_weight.id),
             cactus_node_t(down_weight.id),
             ctypes.c_float(float(product_scale)),
+            ctypes.c_float(float(gate_input_scale)),
             ctypes.byref(out),
         )
         if rc != 0:

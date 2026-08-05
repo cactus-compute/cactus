@@ -11,10 +11,10 @@ from ..IR import models as IRModels
 from ..RuntimePlan import models as RPModels
 
 
-def cache_attention_generation_plan(graph: IRModels.Graph) -> tuple[frozenset[str], frozenset[str], dict[str, IRModels.CacheAnnotation]]:
+def cache_attention_generation_plan(graph: IRModels.Graph, model_profile: Any | None = None) -> tuple[frozenset[str], frozenset[str], dict[str, IRModels.CacheAnnotation]]:
     skip_names: set[str] = set()
     cache_state_names: set[str] = set()
-    prefill_annotations = prefill_cache_cat_annotations(graph)
+    prefill_annotations = prefill_cache_cat_annotations(graph, model_profile)
 
     for node in graph.nodes:
         if node.target != "cactus.attention" or len(node.parents) < 3:
@@ -48,7 +48,7 @@ def cache_attention_generation_plan(graph: IRModels.Graph) -> tuple[frozenset[st
     return frozenset(skip_names), frozenset(cache_state_names), prefill_annotations
 
 
-def prefill_cache_cat_annotations(graph: IRModels.Graph) -> dict[str, IRModels.CacheAnnotation]:
+def prefill_cache_cat_annotations(graph: IRModels.Graph, model_profile: Any | None = None) -> dict[str, IRModels.CacheAnnotation]:
     annotations: dict[str, IRModels.CacheAnnotation] = {}
     candidates = [node for node in graph.nodes if is_empty_cache_cat(node)]
 
@@ -59,10 +59,10 @@ def prefill_cache_cat_annotations(graph: IRModels.Graph) -> dict[str, IRModels.C
             continue
 
         _, num_kv_heads, sequence_length, head_dim = shape
-        window_size = prefill_cache_window_size(graph, index // 2)
+        layer_index = IRModels.cache_layer_index_from_node(node, index // 2)
+        window_size = prefill_cache_window_size(graph, layer_index, sequence_length, model_profile)
         requested_capacity = int(node.ir_metadata.get("prefill_cache_capacity", sequence_length))
         cache_capacity = prefill_cache_capacity(graph, requested_capacity, window_size)
-        layer_index = IRModels.cache_layer_index_from_node(node, index // 2)
         annotations[node.name] = IRModels.CacheAnnotation(
             kind=FModels.CacheKind.KV,
             role=FModels.CacheTensorRole.KEY if index % 2 == 0 else FModels.CacheTensorRole.VALUE,
@@ -80,13 +80,28 @@ def prefill_cache_cat_annotations(graph: IRModels.Graph) -> dict[str, IRModels.C
     return annotations
 
 
-def prefill_cache_window_size(graph: IRModels.Graph, layer_index: int) -> int | None:
+def prefill_cache_window_size(graph: IRModels.Graph, layer_index: int | None, sequence_length: int, model_profile: Any | None = None) -> int | None:
     model_name = str(getattr(graph, "model_name", "")).lower()
 
     if "gemma" not in model_name:
         return None
 
+    if layer_index in full_retention_kv_layers(model_profile):
+        return 0
+
+    if IRModels.is_gemma4_model_name(model_name) and layer_index == 13:
+        return 0
+
+    if layer_index is None:
+        return None
+
     return 0 if layer_index % 5 == 4 else 512
+
+
+def full_retention_kv_layers(model_profile: Any | None) -> frozenset[int]:
+    cache_contract = getattr(model_profile, "cache_contract", None)
+    layers = getattr(cache_contract, "full_retention_kv_layers", ()) if cache_contract is not None else ()
+    return frozenset(int(layer_index) for layer_index in layers)
 
 
 def prefill_cache_capacity(graph: IRModels.Graph, sequence_length: int, window_size: int | None) -> int:
@@ -165,28 +180,7 @@ def should_lower_cache_placeholder_as_state(context: models.GenerationContext, n
 
 def lower_cache_placeholder(context: models.GenerationContext, node: IRModels.Node) -> Any:
     annotation = require_cache_annotation(node)
-
-    if annotation.kind == FModels.CacheKind.KV:
-        cache_state = context.graph.kv_cache_state(
-            kv_cache_capacity(context, annotation),
-            required_cache_int(annotation.num_kv_heads, node, "num_kv_heads"),
-            required_cache_int(annotation.head_dim, node, "head_dim"),
-            window_size=int(annotation.window_size or 0),
-            sink_size=0,
-            num_slots=1,
-        )
-        record_cache_state_binding(context, node, cache_state, annotation)
-        return cache_state
-
-    if annotation.kind == FModels.CacheKind.CONV:
-        cache_state = context.graph.conv_cache_state(
-            required_cache_int(annotation.window_size, node, "window_size"),
-            required_cache_int(annotation.hidden_dim, node, "hidden_dim"),
-        )
-        record_cache_state_binding(context, node, cache_state, annotation)
-        return cache_state
-
-    raise UnsupportedLoweringError(f"{node.name}: unsupported cache placeholder kind {annotation.kind}")
+    return create_bound_cache_state(context, node, annotation)
 
 
 def lower_decode_cache_cat(context: models.GenerationContext, node: IRModels.Node) -> Any | None:
@@ -246,7 +240,7 @@ def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> A
             value,
             scale=attention_scale(node),
             is_causal=bool(node.attrs.get("is_causal", True)),
-            position_offset=int(node.attrs.get("position_offset", 0)),
+            position_offset=attention_position_offset(node),
             window_size=int(node.attrs.get("window_size", 0)),
             mask=mask,
             additive_mask=bool(node.attrs.get("additive_mask", False)),
@@ -256,19 +250,36 @@ def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> A
     if node.target == "cactus.attention_cached":
         inputs = context.inputs_for(node)
         require_len(node, inputs, 5)
-        return context.graph.attention_cached(
-            inputs[0],
-            inputs[1],
-            inputs[2],
+        query, key_new, value_new = cached_attention_inputs_for_layout(context, node, inputs)
+        mask = cached_attention_mask(context, node, inputs)
+        output = context.graph.attention_cached(
+            query,
+            key_new,
+            value_new,
             inputs[3],
             inputs[4],
             scale=attention_scale(node),
             position_offset=cached_attention_position_offset(context, node),
             window_size=int(node.attrs.get("window_size", 0)),
             v_head_dim=int(node.attrs.get("v_head_dim", 0)),
+            is_causal=bool(node.attrs.get("is_causal", True)),
+            mask=mask,
+            additive_mask=bool(node.attrs.get("additive_mask", False)),
         )
+        return attention_output_for_layout(context, node, output)
 
     raise UnsupportedLoweringError(f"{node.name}: unsupported attention target {node.target}")
+
+
+def cached_attention_inputs_for_layout(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> tuple[Any, Any, Any]:
+    if node.attrs.get("input_layout") == "bhqd_bhsd_bhsd":
+        return (
+            context.graph.permute(inputs[0], (0, 2, 1, 3)),
+            context.graph.permute(inputs[1], (0, 2, 1, 3)),
+            context.graph.permute(inputs[2], (0, 2, 1, 3)),
+        )
+
+    return inputs[0], inputs[1], inputs[2]
 
 
 def lower_cache_backed_attention(context: models.GenerationContext, node: IRModels.Node) -> Any | None:
@@ -310,13 +321,14 @@ def lower_cache_backed_attention(context: models.GenerationContext, node: IRMode
     query = cast_to_precision(context, query, context.graph.FP16)
     key_new = cast_to_precision(context, key_new, context.graph.FP16)
     value_new = cast_to_precision(context, value_new, context.graph.FP16)
+    mask = cache_backed_attention_mask(context, node)
 
     cache_pair = (key_cat.name, value_cat.name)
     prefill_pair_already_appended = key_cat.name in context.prefill_cache_cat_states and value_cat.name in context.prefill_cache_cat_states
 
     if cache_pair not in context.appended_cache_pairs and not prefill_pair_already_appended:
-        context.graph.kv_cache_append(key_new, key_cache_state, window_size=int(node.attrs.get("window_size", 0)), sink_size=0)
-        context.graph.kv_cache_append(value_new, value_cache_state, window_size=int(node.attrs.get("window_size", 0)), sink_size=0)
+        context.graph.kv_cache_append(key_new, key_cache_state, window_size=cache_retention_window_size(node), sink_size=0)
+        context.graph.kv_cache_append(value_new, value_cache_state, window_size=cache_retention_window_size(node), sink_size=0)
         context.appended_cache_pairs.add(cache_pair)
 
     context.values.setdefault(key_cat.name, key_cache_state)
@@ -332,8 +344,25 @@ def lower_cache_backed_attention(context: models.GenerationContext, node: IRMode
         position_offset=cached_attention_position_offset(context, node),
         window_size=int(node.attrs.get("window_size", 0)),
         v_head_dim=last_dim(value_new_node),
+        is_causal=bool(node.attrs.get("is_causal", True)),
+        mask=mask,
+        additive_mask=bool(node.attrs.get("additive_mask", False)),
     )
     return attention_output_for_layout(context, node, output)
+
+
+def cached_attention_mask(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> Any | None:
+    if len(inputs) <= 5:
+        return None
+
+    return cast_to_precision(context, inputs[5], context.graph.FP16)
+
+
+def cache_backed_attention_mask(context: models.GenerationContext, node: IRModels.Node) -> Any | None:
+    if len(node.parents) <= 3:
+        return None
+
+    return cast_to_precision(context, context.require(node.parents[3].name), context.graph.FP16)
 
 
 def find_attention_cache_cat_ancestor(context: models.GenerationContext, node: IRModels.Node, role: str) -> IRModels.Node | None:
@@ -409,6 +438,14 @@ def attention_scale(node: IRModels.Node) -> float:
     return 1.0 / math.sqrt(float(head_dim))
 
 
+def attention_position_offset(node: IRModels.Node) -> int:
+    value = int(node.attrs.get("position_offset", 0) or 0)
+    if value >= (2**64 - 2):
+        return 0
+
+    return value
+
+
 def attention_inputs_for_layout(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> tuple[Any, Any, Any, Any | None]:
     mask = inputs[3] if len(inputs) > 3 else None
 
@@ -464,14 +501,16 @@ def lower_cache(context: models.GenerationContext, node: IRModels.Node) -> Any:
     target = node.target
 
     if target == "cactus.kv_cache_append":
+        new_kv = cache_append_value_for_native(context, node, inputs[0]) if inputs else None
+
         if len(inputs) == 1:
             cache_state = create_cache_state_for_cache_output(context, node)
-            context.graph.kv_cache_append(inputs[0], cache_state, window_size=int(node.attrs.get("window_size", 0)), sink_size=int(node.attrs.get("sink_size", 0)))
+            context.graph.kv_cache_append(new_kv, cache_state, window_size=cache_retention_window_size(node), sink_size=int(node.attrs.get("sink_size", 0)))
             return cache_state
 
         require_len(node, inputs, 2)
         require_cache_state_parent(node, 1, "cactus.kv_cache_state")
-        context.graph.kv_cache_append(inputs[0], inputs[1], window_size=int(node.attrs.get("window_size", 0)), sink_size=int(node.attrs.get("sink_size", 0)))
+        context.graph.kv_cache_append(new_kv, inputs[1], window_size=cache_retention_window_size(node), sink_size=int(node.attrs.get("sink_size", 0)))
         return inputs[1]
 
     if target == "cactus.conv_cache_append":
@@ -515,6 +554,25 @@ def lower_cache(context: models.GenerationContext, node: IRModels.Node) -> Any:
     raise UnsupportedLoweringError(f"{node.name}: unsupported cache target {target}")
 
 
+def cache_append_value_for_native(context: models.GenerationContext, node: IRModels.Node, value: Any) -> Any:
+    annotation = node.cache
+
+    if annotation is None and len(node.parents) > 1:
+        annotation = node.parents[1].cache
+
+    if annotation is None or annotation.layout != "batch_heads_sequence_head_dim":
+        return value
+
+    if not node.parents or len(meta_shape(node.parents[0])) != 4:
+        return value
+
+    return context.graph.permute(value, (0, 2, 1, 3))
+
+
+def cache_retention_window_size(node: IRModels.Node) -> int:
+    return int(node.attrs.get("cache_window_size", node.attrs.get("window_size", 0)) or 0)
+
+
 def require_cache_state_parent(node: IRModels.Node, parent_index: int, expected_target: str) -> None:
     if parent_index >= len(node.parents):
         raise UnsupportedLoweringError(f"{node.name}: {node.target} missing cache parent {parent_index}")
@@ -552,16 +610,35 @@ def required_cache_int(value: int | None, node: IRModels.Node, name: str) -> int
 
 def kv_cache_capacity(context: models.GenerationContext, annotation: IRModels.CacheAnnotation) -> int:
     capacity = int(annotation.sequence_length or 1)
+    profile_capacity = profile_cache_sequence_length(context)
+    decode_extra = 1 if context.component.ir_graph.task == "decode_with_cache" else 0
 
-    if context.component.ir_graph.task == "decode_with_cache":
-        capacity += 1
+    if profile_capacity > 0:
+        return max(profile_capacity, capacity + decode_extra, 1)
 
-    return max(capacity, 1)
+    return max(capacity + decode_extra, 1)
+
+
+def profile_cache_sequence_length(context: models.GenerationContext) -> int:
+    cache_contract = getattr(context.model_profile, "cache_contract", None)
+    value = getattr(cache_contract, "max_cache_sequence_length", 0) if cache_contract is not None else 0
+
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def create_cache_state_for_cache_output(context: models.GenerationContext, node: IRModels.Node) -> Any:
     annotation = require_cache_annotation(node)
+    return create_bound_cache_state(context, node, annotation)
 
+
+def create_bound_cache_state(
+    context: models.GenerationContext,
+    node: IRModels.Node,
+    annotation: IRModels.CacheAnnotation,
+) -> Any:
     if annotation.kind == FModels.CacheKind.KV:
         cache_state = context.graph.kv_cache_state(
             kv_cache_capacity(context, annotation),
@@ -582,7 +659,7 @@ def create_cache_state_for_cache_output(context: models.GenerationContext, node:
         record_cache_state_binding(context, node, cache_state, annotation)
         return cache_state
 
-    raise UnsupportedLoweringError(f"{node.name}: unsupported cache output kind {annotation.kind}")
+    raise UnsupportedLoweringError(f"{node.name}: unsupported cache kind {annotation.kind}")
 
 
 def record_cache_state_binding(context: models.GenerationContext, node: IRModels.Node, cache_state: Any, annotation: IRModels.CacheAnnotation) -> None:

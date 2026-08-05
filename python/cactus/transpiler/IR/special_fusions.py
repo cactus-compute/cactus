@@ -159,12 +159,12 @@ def lfm_attention_matched_nodes(
     bindings: dict[str, models.Node],
     external_inputs: tuple[models.Node, ...],
 ) -> tuple[models.Node, ...]:
+    external_names = {node.name for node in external_inputs}
     matched: dict[str, models.Node] = {
         node.name: node
-        for node in bindings.values()
-        if node.is_operation
+        for binding_name, node in bindings.items()
+        if node.is_operation and node.name not in external_names
     }
-    external_names = {node.name for node in external_inputs}
 
     for node_name in ("lfm_attn_query_expand", "lfm_attn_key_expand", "lfm_attn_value_expand"):
         node = bindings.get(node_name)
@@ -303,7 +303,15 @@ def whisper_attention_match(
     source: models.Node,
     fusion: FModels.FusionDefinition,
 ) -> models.FusionResult | None:
-    if is_whisper_decoder_self_attention(source):
+    is_decoder_self_attention = is_whisper_decoder_self_attention(source)
+
+    if is_decoder_self_attention:
+        if graph.task != "decode_with_cache" or fusion.target != "cactus.attention_cached":
+            return None
+
+        return whisper_self_attention_cached_match(graph, source, fusion)
+
+    if fusion.target == "cactus.attention_cached":
         return None
 
     value_bmm, output_layout_nodes = whisper_value_bmm_from_output(source)
@@ -343,6 +351,68 @@ def whisper_attention_match(
             "window_size": 0,
             "dropped_softmax_nan_guard": True,
             **layout_attrs,
+        },
+    )
+
+
+def whisper_self_attention_cached_match(
+    graph: models.Graph,
+    source: models.Node,
+    fusion: FModels.FusionDefinition,
+) -> models.FusionResult | None:
+    value_bmm, output_layout_nodes = whisper_value_bmm_from_output(source)
+
+    if value_bmm is None or len(value_bmm.parents) < 2:
+        return None
+
+    softmax = first_target_ancestor(value_bmm.parents[0], {"cactus.softmax", "aten.softmax.int", "aten._softmax.default"})
+
+    if softmax is None or not softmax.parents:
+        return None
+
+    qk_bmm = first_bmm_ancestor(softmax.parents[0], value_bmm)
+
+    if qk_bmm is None or len(qk_bmm.parents) < 2:
+        return None
+
+    query = whisper_bqhd_attention_input(qk_bmm.parents[0])
+    key_cat = cache_cat_ancestor(qk_bmm.parents[1], FModels.CacheTensorRole.KEY, max_depth=32)
+    value_cat = cache_cat_ancestor(value_bmm.parents[1], FModels.CacheTensorRole.VALUE, max_depth=32)
+
+    if query is None or key_cat is None or value_cat is None:
+        return None
+
+    if len(key_cat.parents) < 2 or len(value_cat.parents) < 2:
+        return None
+
+    key_cache, key_new = key_cat.parents[0], key_cat.parents[1]
+    value_cache, value_new = value_cat.parents[0], value_cat.parents[1]
+
+    if key_cache.cache is None or value_cache.cache is None:
+        return None
+
+    if key_cache.cache.layer_index != value_cache.cache.layer_index:
+        return None
+
+    external_inputs = (query, key_new, value_new, key_cache, value_cache)
+    boundary_nodes = (*external_inputs, key_cat, value_cat)
+    matched_nodes = attention_internal_nodes(source, boundary_nodes)
+
+    if value_bmm.name not in {node.name for node in matched_nodes}:
+        matched_nodes = tuple(sorted((*matched_nodes, *output_layout_nodes, value_bmm), key=lambda node: (node.index, node.name)))
+
+    return models.FusionResult.from_match(
+        fusion=fusion,
+        source=source,
+        matched_nodes=matched_nodes,
+        external_inputs=external_inputs,
+        attrs={
+            "scale": 1.0,
+            "is_causal": True,
+            "input_layout": "bhqd_bhsd_bhsd",
+            "output_layout": "bthd_flat",
+            "window_size": 0,
+            "v_head_dim": last_int_dim(value_new),
         },
     )
 
@@ -499,6 +569,15 @@ def is_whisper_decoder_self_attention(source: models.Node) -> bool:
     return "decoder" in text and "self_attn" in text
 
 
+def last_int_dim(node: models.Node) -> int:
+    shape = models.tensor_shape(node)
+
+    if shape and isinstance(shape[-1], int):
+        return int(shape[-1])
+
+    return 0
+
+
 def safe_float(value: object) -> float | None:
     try:
         return float(value)
@@ -554,6 +633,7 @@ def gemma4_prefill_attention_match(
             "output_layout": gemma4_prefill_output_layout(source),
             "position_offset": HISTORY_POSITION_OFFSET,
             "window_size": gemma4_layer_window_size(source),
+            "cache_window_size": gemma4_cache_window_size(source),
             "dropped_mask_builder": True,
         },
     )
@@ -672,6 +752,35 @@ def gemma4_layer_window_size(source: models.Node) -> int:
         return 0
 
     return 512
+
+
+def gemma4_cache_window_size(source: models.Node) -> int:
+    for node in ancestor_nodes(source):
+        if node.cache is not None and node.cache.window_size is not None:
+            return int(node.cache.window_size)
+
+        layer_index = node.cache.layer_index if node.cache is not None else None
+
+        if layer_index is None:
+            layer_index = models.layer_index_from_text(f"{node.name} {node.target} {node.module_stack!r}")
+
+        if layer_index is not None:
+            if gemma4_full_retention_cache_layer(layer_index):
+                return 0
+
+            return 0 if layer_index % 5 == 4 else 512
+
+        shape = models.tensor_shape(node)
+        sequence_length = shape[2] if len(shape) >= 3 else None
+
+        if sequence_length is not None and sequence_length > 511:
+            return 0
+
+    return 0
+
+
+def gemma4_full_retention_cache_layer(layer_index: int) -> bool:
+    return layer_index == 13 or layer_index % 5 == 4
 
 
 def gemma4_vision_attention_match(
@@ -836,7 +945,31 @@ def attention_internal_nodes(source: models.Node, external_inputs: tuple[models.
             if parent.name not in external_names:
                 stack.append(parent)
 
-    return tuple(sorted(matched.values(), key=lambda node: (node.index, node.name)))
+    matched_nodes = remove_external_fanout_nodes(tuple(matched.values()), source)
+    return tuple(sorted(matched_nodes, key=lambda node: (node.index, node.name)))
+
+
+def remove_external_fanout_nodes(nodes: tuple[models.Node, ...], source: models.Node) -> tuple[models.Node, ...]:
+    kept = {node.name for node in nodes}
+    node_by_name = {node.name: node for node in nodes}
+    changed = True
+
+    while changed:
+        changed = False
+
+        for name in tuple(kept):
+            node = node_by_name[name]
+
+            if node is source:
+                continue
+
+            if all(child.name in kept for child in node.children):
+                continue
+
+            kept.remove(name)
+            changed = True
+
+    return tuple(node for node in nodes if node.name in kept)
 
 
 def first_target_ancestor(node: models.Node, targets: set[str], max_depth: int = 12) -> models.Node | None:
@@ -899,6 +1032,7 @@ def gemma4_decode_attention_flat_output_match(
 
     if existing_attention is not None:
         attrs = dict(existing_attention.attrs)
+        attrs["scale"] = 1.0
         attrs["output_layout"] = "bthd_flat"
         external_inputs = tuple(existing_attention.parents)
 
@@ -911,6 +1045,7 @@ def gemma4_decode_attention_flat_output_match(
                 external_inputs = (query, key_cat, value_cat)
                 attrs["input_layout"] = query_layout
                 attrs["window_size"] = gemma4_attention_window_size(key_cat)
+                attrs["cache_window_size"] = gemma4_cache_window_size(key_cat)
             else:
                 query, query_layout = gemma4_attention_query_input(existing_attention.parents[0])
                 key = gemma4_attention_passthrough_input(existing_attention.parents[1])
@@ -937,8 +1072,10 @@ def gemma4_decode_attention_flat_output_match(
         return None
 
     attrs = dict(result.attrs)
+    attrs["scale"] = 1.0
     attrs["output_layout"] = "bthd_flat"
     attrs["window_size"] = gemma4_attention_window_size(result.external_inputs[1])
+    attrs["cache_window_size"] = gemma4_cache_window_size(result.external_inputs[1])
 
     return models.FusionResult.from_match(
         fusion=fusion,
@@ -1052,16 +1189,17 @@ def gemma4_decode_attention_core_output_match(
             "input_layout": query_layout,
             "output_layout": "bhqd",
             "window_size": gemma4_attention_window_size(key_cat),
+            "cache_window_size": gemma4_cache_window_size(key_cat),
         },
     )
 
 
 def gemma4_attention_window_size(key_cat: models.Node) -> int:
     for node in ancestor_nodes(key_cat):
-        if node.cache is not None and node.cache.window_size is not None:
-            return int(node.cache.window_size)
+        layer_index = node.cache.layer_index if node.cache is not None else None
 
-        layer_index = models.layer_index_from_text(f"{node.name} {node.target} {node.module_stack!r}")
+        if layer_index is None:
+            layer_index = models.layer_index_from_text(f"{node.name} {node.target} {node.module_stack!r}")
 
         if layer_index is not None:
             return 0 if layer_index % 5 == 4 else 512

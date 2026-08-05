@@ -521,6 +521,9 @@ def lower_index_tensor(context: models.GenerationContext, node: IRModels.Node) -
         return context.graph.embedding_from_tensor(source, inputs[1])
 
     if len(source_shape) == 3 and len(target_shape) == 2 and concrete_dim(source_shape[0]) == 1:
+        if len(node.parents) >= 2 and looks_like_time_mask(node.parents[1], source_shape):
+            return context.graph.masked_select_prefix(source, inputs[1])
+
         feature_count = concrete_dim(source_shape[1])
         feature_dim = concrete_dim(source_shape[2])
 
@@ -546,6 +549,20 @@ def lower_index_tensor(context: models.GenerationContext, node: IRModels.Node) -
         return context.graph.reshape(source, concrete_target_shape)
 
     raise UnsupportedLoweringError(f"{node.name}: unsupported aten.index.Tensor pattern")
+
+
+def looks_like_time_mask(mask_node: IRModels.Node, source_shape: tuple[Any, ...]) -> bool:
+    mask_shape = meta_shape(mask_node)
+
+    if len(mask_shape) not in {1, 2}:
+        return False
+
+    if tensor_dtype(mask_node) != "torch.bool":
+        return False
+
+    mask_time = concrete_dim(mask_shape[-1])
+    source_time = concrete_dim(source_shape[1])
+    return mask_time is not None and mask_time == source_time
 
 
 def lower_where(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -616,16 +633,18 @@ def lower_matmul(context: models.GenerationContext, node: IRModels.Node) -> Any:
         original_weight = context.lookup(original_weight_node.name)
 
         if original_weight is not None and is_cq_tensor(context, original_weight):
-            return context.graph.matmul(lhs, original_weight, pretransposed_rhs=True)
+            output = context.graph.matmul(lhs, original_weight, pretransposed_rhs=True)
+            return apply_inverse_weight_scale_for_parent(context, node, output, 1)
 
     if not is_cq_tensor(context, rhs):
         rhs = matmul_activation_operand(context, rhs)
 
-    return context.graph.matmul(
+    output = context.graph.matmul(
         lhs,
         rhs,
         pretransposed_rhs=bool(node.attrs.get("pretransposed_rhs", False)),
     )
+    return apply_inverse_weight_scale_for_parent(context, node, output, 1)
 
 
 def lower_linear(context: models.GenerationContext, node: IRModels.Node) -> Any:
@@ -656,8 +675,10 @@ def lower_linear(context: models.GenerationContext, node: IRModels.Node) -> Any:
         rhs,
         pretransposed_rhs=bool(node.attrs.get("pretransposed_rhs", node.target == "aten.linear.default")),
     )
+    output = apply_inverse_weight_scale_for_parent(context, node, output, 1)
 
     if bias is not None:
+        bias = apply_inverse_weight_scale_for_parent(context, node, bias, 2)
         output, bias = align_binary_precision(context, output, bias)
         output = context.graph.add(output, bias)
 
@@ -827,6 +848,13 @@ def lower_getitem(context: models.GenerationContext, node: IRModels.Node) -> Any
 
     if isinstance(source, (tuple, list)):
         return source[index]
+
+    if node.parents and node.parents[0].target in constants.TOPK_TARGETS:
+        if index not in (0, 1):
+            raise UnsupportedLoweringError(f"{node.name}: topk getitem index must be 0 or 1")
+
+        cactus_topk_row = 1 if index == 0 else 0
+        return context.graph.index(source, cactus_topk_row, axis=0)
 
     if index == 0:
         return source

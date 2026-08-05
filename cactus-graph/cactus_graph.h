@@ -631,7 +631,10 @@ public:
         size_t position_offset = 0,
         size_t window_size = 0,
         size_t v_head_dim = 0,
-        size_t cache_slot = 0);
+        size_t cache_slot = 0,
+        size_t mask = static_cast<size_t>(-1),
+        bool additive_mask = false,
+        bool is_causal = true);
 
     size_t conv_cache_state(size_t window_size, size_t hidden_dim);
     size_t conv_cache_append(size_t new_data, size_t cache_state_node);
@@ -717,7 +720,7 @@ public:
         size_t num_experts, size_t num_experts_per_tok,
         bool normalize_routing, float epsilon, float routed_scaling_factor,
         Activation activation);
-    size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale = 1.0f);
+    size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale = 1.0f, float gate_input_scale = 1.0f);
     size_t stats_pool(size_t input);
     size_t weighted_stats_pool(size_t input, size_t weights);
 
@@ -1082,6 +1085,11 @@ CACTUS_FFI_EXPORT int cactus_graph_attention_cached(
     cactus_graph_t graph, cactus_node_t query, cactus_node_t key_new, cactus_node_t value_new,
     cactus_node_t k_cache_state, cactus_node_t v_cache_state,
     float scale, size_t position_offset, size_t window_size, size_t v_head_dim, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_attention_cached_masked(
+    cactus_graph_t graph, cactus_node_t query, cactus_node_t key_new, cactus_node_t value_new,
+    cactus_node_t k_cache_state, cactus_node_t v_cache_state,
+    float scale, size_t position_offset, size_t window_size, size_t v_head_dim,
+    bool is_causal, cactus_node_t mask, bool additive_mask, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_conv_cache_state(
     cactus_graph_t graph, size_t window_size, size_t hidden_dim, cactus_node_t* out);
@@ -1156,7 +1164,8 @@ CACTUS_FFI_EXPORT int cactus_graph_gaussian_topk(
 CACTUS_FFI_EXPORT int cactus_graph_moe_layer_gated(
     cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
     const cactus_node_t* w1_weights, const cactus_node_t* w3_weights, const cactus_node_t* w2_weights,
-    size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, cactus_node_t* out);
+    size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon,
+    float routed_scaling_factor, int32_t activation, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_moe_layer_ungated(
     cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
     const cactus_node_t* w1_weights, const cactus_node_t* w2_weights,

@@ -981,6 +981,10 @@ int main(int argc, char** argv) {
         bool attach_media = !current_image.empty() || !current_audio.empty() || !current_pcm.empty();
         if (attach_media) {
             cactus_reset(model);
+            for (auto& turn : history) {
+                turn.image.clear();
+                turn.audio.clear();
+            }
         }
         history.push_back({"user", input, current_image, current_audio});
         std::string messages = build_messages(system_prompt, history);

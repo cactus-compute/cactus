@@ -4,6 +4,10 @@ DEFAULT_GRAPH_SUFFIX = ".cactus"
 DEFAULT_INPUT_PRECISION = "FP16"
 GEMMA4_MLP_PRODUCT_SCALE = 1.0 / 64.0
 
+GENERATED_BUNDLE_METADATA_FILES = {
+    "runtime_plan.json",
+}
+
 DTYPE_TO_PRECISION: dict[str, str] = {
     "torch.float16": "FP16",
     "torch.bfloat16": "FP16",

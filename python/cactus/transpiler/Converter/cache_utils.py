@@ -25,8 +25,14 @@ class CacheSpec:
     #How: delegates model/cache inspection to cache_spec_from_model.
     #Why: used by models.export_ and models.build_decode_with_cache_input to create cache shapes for export.
     @classmethod
-    def from_model(cls, model: torch.nn.Module, batch_size: int, past_sequence_length: int) -> "CacheSpec":
-        return cache_spec_from_model(cls, model, batch_size, past_sequence_length)
+    def from_model(
+        cls,
+        model: torch.nn.Module,
+        batch_size: int,
+        past_sequence_length: int,
+        full_retention_layers: tuple[int, ...] = (),
+    ) -> "CacheSpec":
+        return cache_spec_from_model(cls, model, batch_size, past_sequence_length, full_retention_layers)
 
     #How: delegates zero tensor creation to cache_spec_empty_tensors.
     #Why: used when building decode inputs so torch.export receives real tensor placeholders for past_key_values.
@@ -69,10 +75,14 @@ class CacheExportWrapper(torch.nn.Module):
         video_position_ids=None,
         cache_position=None,
         past_key_values=None,
+        token_type_ids=None,
         mm_token_type_ids=None,
         inputs_embeds=None,
     ):
         cache = self.cache_spec.to_dynamic_cache(past_key_values) if past_key_values is not None else None
+        if token_type_ids is None:
+            token_type_ids = mm_token_type_ids
+
         model_kwargs = {
             "input_ids": input_ids,
             "pixel_values": pixel_values,
@@ -91,6 +101,7 @@ class CacheExportWrapper(torch.nn.Module):
             "video_position_ids": video_position_ids,
             "cache_position": cache_position,
             "past_key_values": cache,
+            "token_type_ids": token_type_ids,
             "mm_token_type_ids": mm_token_type_ids,
             "inputs_embeds": inputs_embeds,
             "use_cache": True,
@@ -252,7 +263,13 @@ def encoder_decoder_target_length(text_config: Any) -> int | None:
 
 #How: combines config defaults with actual attention module inspection to create one CacheLayerSpec per cache layer.
 #Why: CacheSpec.from_model calls this before decode/cache export so past_key_values tensors have correct shapes.
-def cache_spec_from_model(cls: type[CacheSpec], model: torch.nn.Module, batch_size: int, past_sequence_length: int) -> CacheSpec:
+def cache_spec_from_model(
+    cls: type[CacheSpec],
+    model: torch.nn.Module,
+    batch_size: int,
+    past_sequence_length: int,
+    full_retention_layers: tuple[int, ...] = (),
+) -> CacheSpec:
     config = getattr(model, "config", None)
     text_config = get_text_config(config)
     num_attention_heads = cache_num_attention_heads(text_config)

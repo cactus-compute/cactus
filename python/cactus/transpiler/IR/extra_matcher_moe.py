@@ -412,7 +412,7 @@ def match_grouped_moe_structure(source: models.Node, graph: models.Graph, fusion
     if gate_up_offsets is not offsets_node or down_offsets is not offsets_node:
         return False
 
-    if not match_utils.values_equal(get_attr(offsets_node, "dim", "arg_1"), 0):
+    if not match_utils.values_equal(get_attr(offsets_node, "dim", "axis", "arg_1"), 0):
         return False
 
     if not split_sizes_are_valid(split_node, gate_up_grouped_node, down_weight, spec):
@@ -428,7 +428,7 @@ def match_grouped_moe_structure(source: models.Node, graph: models.Graph, fusion
     if not grouped_moe_rows_match_topk(hidden_node, gate_up_grouped_node, topk_node, spec):
         return False
 
-    if not match_utils.values_equal(get_attr(combine_node, "dim", "arg_1"), 1):
+    if not match_utils.values_equal(get_attr(combine_node, "dim", "axis", "arg_1"), 1):
         return False
 
     return True

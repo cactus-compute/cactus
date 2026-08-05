@@ -116,12 +116,12 @@ def lower_component(
 ) -> models.ComponentGraph:
     component.graph = create_cactus_graph()
     component.weight_resolver = component_weight_resolver(component, config)
-    context = models.GenerationContext(component=component, config=config, lowerings=lowering_rules)
+    context = models.GenerationContext(component=component, config=config, model_profile=config.model_profile, lowerings=lowering_rules)
     (
         context.skip_node_names,
         context.cache_state_placeholder_names,
         context.prefill_cache_cat_annotations,
-    ) = cache_attention_generation_plan(component.ir_graph)
+    ) = cache_attention_generation_plan(component.ir_graph, config.model_profile)
 
     for node in IRModels.topological_sort(component.ir_graph):
         try:

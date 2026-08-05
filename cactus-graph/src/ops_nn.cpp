@@ -414,7 +414,14 @@ void compute_dense_mlp_tq_fused_node(GraphNode& node, const std::vector<std::uni
     const bool use_safe_product_scale = node.params.scalar != 0.0f && node.params.scalar != 1.0f;
     const bool trace_dense_mlp = std::getenv("CACTUS_TRACE_DENSE_MLP") != nullptr;
 
+    const float gate_input_scale = node.params.scale == 0.0f ? 1.0f : node.params.scale;
     cactus_quant_matmul(&gate_mat, hidden, static_cast<uint32_t>(M), gate);
+    if (gate_input_scale != 1.0f) {
+        const float inv_gate_input_scale = 1.0f / gate_input_scale;
+        for (size_t i = 0; i < inter_size; ++i) {
+            gate[i] = static_cast<__fp16>(static_cast<float>(gate[i]) * inv_gate_input_scale);
+        }
+    }
     cactus_gelu_f16(gate, gate, inter_size);
     float max_gate_abs = 0.0f;
     size_t gate_nonfinite = 0;

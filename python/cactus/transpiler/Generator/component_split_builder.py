@@ -69,9 +69,6 @@ def extract_component_graph(spec: ComponentSplitSpec) -> IRModels.Graph:
     if spec.chunk_tokens is not None:
         graph = retarget_chunk_graph_sequence_length(graph, spec.chunk_tokens)
 
-    if spec.scalar_tail_layer_start is not None and spec.chunk_tokens is not None:
-        graph = scalarize_gemma4_decoder_tail_graph(graph, spec.scalar_tail_layer_start, spec.chunk_tokens)
-
     return graph
 
 
@@ -306,228 +303,11 @@ def retarget_attr_values(attrs: dict[str, Any], source_lengths: frozenset[int], 
     }
 
 
-def scalarize_gemma4_decoder_tail_graph(graph: IRModels.Graph, layer_start: int, chunk_tokens: int) -> IRModels.Graph:
-    tail_names = gemma4_decoder_tail_node_names(graph, layer_start)
-
-    if not tail_names:
-        return graph
-
-    replacement_names, slice_nodes = gemma4_decoder_tail_slice_nodes(graph, tail_names, chunk_tokens)
-
-    if not replacement_names and not any(node_needs_scalar_tail_retarget(node, chunk_tokens) for node in graph.nodes if node.name in tail_names):
-        return graph
-
-    rewritten_nodes: list[IRModels.Node] = []
-
-    for node in graph.nodes:
-        if node.name in tail_names:
-            rewritten_nodes.append(clone_scalar_tail_node(node, replacement_names, chunk_tokens))
-        else:
-            rewritten_nodes.append(clone_component_graph_node(node))
-
-    rewritten_nodes.extend(slice_nodes)
-    return IRModels.prune_dead_nodes(IRModels.rebuild_graph(tuple(rewritten_nodes), graph))
-
-
-def gemma4_decoder_tail_node_names(graph: IRModels.Graph, layer_start: int) -> frozenset[str]:
-    tail_names = {
-        node.name
-        for node in graph.nodes
-        if (layer_index := gemma4_language_layer_index(node)) is not None and layer_index >= layer_start
-    }
-
-    stack = list(tail_names)
-
-    while stack:
-        node = graph.nodes_map[stack.pop()]
-
-        for child in node.children:
-            if child.is_output or child.name in tail_names:
-                continue
-
-            tail_names.add(child.name)
-            stack.append(child.name)
-
-    return frozenset(tail_names)
-
-
-def gemma4_language_layer_index(node: IRModels.Node) -> int | None:
-    text = f"{node.name} {node.target} {node.module_stack!r}"
-    marker = "language_model.layers."
-    start = text.find(marker)
-
-    if start < 0:
-        return None
-
-    index_start = start + len(marker)
-    index_end = index_start
-
-    while index_end < len(text) and text[index_end].isdigit():
-        index_end += 1
-
-    if index_end == index_start:
-        return None
-
-    return int(text[index_start:index_end])
-
-
-def gemma4_decoder_tail_slice_nodes(
-    graph: IRModels.Graph,
-    tail_names: frozenset[str],
-    chunk_tokens: int,
-) -> tuple[dict[str, str], tuple[IRModels.Node, ...]]:
-    replacement_names: dict[str, str] = {}
-    slice_nodes: list[IRModels.Node] = []
-    used_names = set(graph.nodes_map)
-    next_index = max((node.index for node in graph.nodes), default=-1) + 1
-
-    for node in graph.nodes:
-        if node.name not in tail_names:
-            continue
-
-        for parent in node.parents:
-            if parent.name in tail_names or parent.name in replacement_names:
-                continue
-
-            axis_and_shape = token_stream_slice_axis_and_shape(parent, chunk_tokens)
-
-            if axis_and_shape is None:
-                continue
-
-            axis, shape = axis_and_shape
-            slice_name = unique_component_node_name(f"{parent.name}_last_token", used_names)
-            slice_nodes.append(create_scalar_tail_slice_node(parent, slice_name, next_index, axis, chunk_tokens, shape))
-            replacement_names[parent.name] = slice_name
-            next_index += 1
-
-    return replacement_names, tuple(slice_nodes)
-
-
-def token_stream_slice_axis_and_shape(node: IRModels.Node, chunk_tokens: int) -> tuple[int, list[Any]] | None:
-    shape = tensor_shape(node)
-
-    if len(shape) >= 2 and shape[0] == 1 and shape[1] == chunk_tokens:
-        output_shape = list(shape)
-        output_shape[1] = 1
-        return 1, output_shape
-
-    if len(shape) >= 1 and shape[0] == chunk_tokens:
-        output_shape = list(shape)
-        output_shape[0] = 1
-        return 0, output_shape
-
-    return None
-
-
-def create_scalar_tail_slice_node(
-    parent: IRModels.Node,
-    name: str,
-    index: int,
-    axis: int,
-    chunk_tokens: int,
-    shape: list[Any],
-) -> IRModels.Node:
-    return IRModels.Node(
-        index=index,
-        name=name,
-        node_type="call_function",
-        target="cactus.slice",
-        args=[{"node": parent.name}],
-        kwargs={"axis": axis, "start": chunk_tokens - 1, "end": None, "step": None},
-        users=(),
-        tensor_output_meta=tensor_meta_with_shape(parent.tensor_output_meta, shape),
-        module_stack=parent.module_stack,
-        value_kind=FModels.ValueKind.ACTIVATION,
-        attrs={"axis": axis, "start": chunk_tokens - 1, "end": None, "step": None},
-        ir_metadata={"inserted_by": "gemma4_decoder_prefill_tail_scalarization"},
-        cache=None,
-    )
-
-
 def tensor_meta_with_shape(meta: Any, shape: list[Any]) -> Any:
     if not isinstance(meta, dict):
         return {"shape": shape}
 
     return {**meta, "shape": shape}
-
-
-def clone_scalar_tail_node(
-    node: IRModels.Node,
-    replacement_names: Mapping[str, str],
-    chunk_tokens: int,
-) -> IRModels.Node:
-    return IRModels.Node(
-        index=node.index,
-        name=node.name,
-        node_type=node.node_type,
-        target=node.target,
-        args=scalarize_tail_value(IRModels.rewrite_node_refs(node.args, dict(replacement_names)), chunk_tokens),
-        kwargs=scalarize_tail_value(IRModels.rewrite_node_refs(node.kwargs, dict(replacement_names)), chunk_tokens),
-        users=(),
-        tensor_output_meta=scalarize_tail_value(node.tensor_output_meta, chunk_tokens),
-        module_stack=node.module_stack,
-        value_kind=node.value_kind,
-        attrs=scalarize_tail_value(dict(node.attrs), chunk_tokens),
-        ir_metadata=dict(node.ir_metadata),
-        cache=node.cache,
-    )
-
-
-def clone_component_graph_node(node: IRModels.Node) -> IRModels.Node:
-    return IRModels.Node(
-        index=node.index,
-        name=node.name,
-        node_type=node.node_type,
-        target=node.target,
-        args=node.args,
-        kwargs=node.kwargs,
-        users=(),
-        tensor_output_meta=node.tensor_output_meta,
-        module_stack=node.module_stack,
-        value_kind=node.value_kind,
-        attrs=dict(node.attrs),
-        ir_metadata=dict(node.ir_metadata),
-        cache=node.cache,
-    )
-
-
-def scalarize_tail_value(value: Any, chunk_tokens: int) -> Any:
-    if isinstance(value, bool):
-        return value
-
-    if isinstance(value, int):
-        return 1 if value == chunk_tokens else value
-
-    if isinstance(value, list):
-        return [scalarize_tail_value(item, chunk_tokens) for item in value]
-
-    if isinstance(value, tuple):
-        return tuple(scalarize_tail_value(item, chunk_tokens) for item in value)
-
-    if isinstance(value, dict):
-        return {key: scalarize_tail_value(item, chunk_tokens) for key, item in value.items()}
-
-    return value
-
-
-def node_needs_scalar_tail_retarget(node: IRModels.Node, chunk_tokens: int) -> bool:
-    return value_contains_int(node.args, chunk_tokens) or value_contains_int(node.kwargs, chunk_tokens) or value_contains_int(node.tensor_output_meta, chunk_tokens)
-
-
-def value_contains_int(value: Any, expected: int) -> bool:
-    if isinstance(value, bool):
-        return False
-
-    if isinstance(value, int):
-        return value == expected
-
-    if isinstance(value, (list, tuple)):
-        return any(value_contains_int(item, expected) for item in value)
-
-    if isinstance(value, dict):
-        return any(value_contains_int(item, expected) for item in value.values())
-
-    return False
 
 
 def is_dimension_index_attr(key: Any) -> bool:
@@ -574,6 +354,9 @@ def collect_required_node_names(
 
     for output in spec.outputs:
         collect_node_ancestors(output.node, spec.graph, required, placeholder_specs, ref_replacements)
+
+    for side_effect in spec.side_effects:
+        collect_node_ancestors(side_effect, spec.graph, required, placeholder_specs, ref_replacements)
 
     for placeholder in spec.placeholders:
         if placeholder.source_node is None:

@@ -358,6 +358,42 @@ public:
     size_t get_image_soft_token_count() const { return image_soft_token_count_; }
 
     void set_lfm2_vision_config(const Config& cfg) { lfm2_vision_config_ = cfg; has_lfm2_vision_config_ = true; }
+    void set_gemma4_raw_media_prompt(bool enabled) { gemma4_raw_media_prompt_ = enabled; }
+    void set_text_prompt_style(const std::string& style) { text_prompt_style_ = style; }
+    void set_media_prompt_style(const std::string& style) { media_prompt_style_ = style; }
+    void set_gemma4_turn_tokens(const std::string& turn_start_token,
+                                const std::string& turn_end_token) {
+        if (!turn_start_token.empty()) gemma4_turn_start_token_ = turn_start_token;
+        if (!turn_end_token.empty()) gemma4_turn_end_token_ = turn_end_token;
+    }
+    void set_media_prompt_positions(const std::string& image_position,
+                                    const std::string& audio_position) {
+        if (!image_position.empty()) media_image_prompt_position_ = image_position;
+        if (!audio_position.empty()) media_audio_prompt_position_ = audio_position;
+    }
+    void set_media_prompt_order(const std::vector<std::string>& order) {
+        if (!order.empty()) media_prompt_order_ = order;
+    }
+    void set_media_focus_policy(const std::string& policy,
+                                const std::vector<std::string>& image_keywords,
+                                const std::vector<std::string>& audio_keywords) {
+        media_focus_policy_ = policy;
+        if (!image_keywords.empty()) media_image_focus_keywords_ = image_keywords;
+        if (!audio_keywords.empty()) media_audio_focus_keywords_ = audio_keywords;
+    }
+    void set_media_tokens(const std::string& image_token,
+                          const std::string& image_begin_token,
+                          const std::string& image_end_token,
+                          const std::string& audio_token,
+                          const std::string& audio_begin_token,
+                          const std::string& audio_end_token) {
+        if (!image_token.empty()) media_image_token_ = image_token;
+        if (!image_begin_token.empty()) media_image_begin_token_ = image_begin_token;
+        if (!image_end_token.empty()) media_image_end_token_ = image_end_token;
+        if (!audio_token.empty()) media_audio_token_ = audio_token;
+        if (!audio_begin_token.empty()) media_audio_begin_token_ = audio_begin_token;
+        if (!audio_end_token.empty()) media_audio_end_token_ = audio_end_token;
+    }
 
 protected:
     enum class ModelType { UNKNOWN, GEMMA4, GEMMA, QWEN, LFM2, NEEDLE, WHISPER, PARAKEET_TDT };
@@ -377,6 +413,23 @@ protected:
     uint32_t vision_default_output_length_ = 280;
     uint32_t vision_image_size_ = 768;
     size_t image_soft_token_count_ = 0;
+    bool gemma4_raw_media_prompt_ = false;
+    std::string gemma4_turn_start_token_ = "<|turn>";
+    std::string gemma4_turn_end_token_ = "<turn|>";
+    std::string text_prompt_style_;
+    std::string media_prompt_style_;
+    std::string media_image_token_ = "<|image|>";
+    std::string media_image_begin_token_ = "<|image>";
+    std::string media_image_end_token_ = "<image|>";
+    std::string media_audio_token_ = "<|audio|>";
+    std::string media_audio_begin_token_ = "<|audio>";
+    std::string media_audio_end_token_ = "<audio|>";
+    std::string media_image_prompt_position_ = "before_text";
+    std::string media_audio_prompt_position_ = "before_text";
+    std::vector<std::string> media_prompt_order_ = {"image", "audio"};
+    std::string media_focus_policy_;
+    std::vector<std::string> media_image_focus_keywords_;
+    std::vector<std::string> media_audio_focus_keywords_;
     Config lfm2_vision_config_{};
     bool has_lfm2_vision_config_ = false;
     TokenizerRuntimeConfig runtime_config_;
@@ -617,20 +670,14 @@ private:
 
 class Model {
 public:
-    struct DebugNode {
-        uint32_t layer_idx;
-        std::string name;
-        size_t node_id;
-    };
-
     Model();
     explicit Model(const Config& config);
     ~Model();
 
     const Config& get_config() const { return config_; }
     size_t audio_soft_token_count_for_frames(size_t frame_count);
+    std::string audio_preprocess_strategy() const;
     Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
-    const std::vector<DebugNode>& get_debug_nodes() const;
 
     bool init(const std::string& bundle_dir, size_t context_size,
               const std::string& system_prompt = "", bool do_warmup = true);
@@ -719,7 +766,10 @@ public:
             token_history_.erase(token_history_.begin(), token_history_.begin() + (MAX_TOKEN_HISTORY / 2));
         }
         token_history_.push_back(token);
+        token_history_set_.insert(token);
     }
+    void seed_token_history_from_context(const std::vector<uint32_t>& tokens);
+    bool repetition_penalty_uses_context() const { return repetition_penalty_scope_ == "context"; }
 
     double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end,
                                         size_t context, size_t* tokens_scored);
@@ -777,6 +827,40 @@ private:
         int value_node_id = -1;
     };
 
+    struct RuntimeStateSpec {
+        std::string name;
+        std::string kind;
+        std::string producer;
+        std::vector<std::string> consumers;
+        std::string lifetime;
+        std::string transfer;
+        bool persist_after_component_unload = true;
+        bool required = true;
+        std::map<std::string, std::string> metadata;
+    };
+
+    struct RuntimeAliasSpec {
+        std::string source_component;
+        std::string source_output;
+        std::string target_component;
+        std::string target_input;
+        std::string policy;
+        std::string lifetime;
+        std::string fallback;
+        bool required = false;
+        std::map<std::string, std::string> metadata;
+    };
+
+    struct RuntimeStoredTensor {
+        std::vector<uint8_t> bytes;
+        std::vector<size_t> shape;
+        Precision precision = Precision::FP16;
+        std::string producer_component;
+        std::string producer_output;
+        std::string kind;
+        std::string lifetime;
+    };
+
     struct Component {
         std::string name;
         std::string graph_path;
@@ -790,8 +874,6 @@ private:
         std::unique_ptr<CactusGraph> graph;
         std::vector<std::vector<uint8_t>> input_buffers;
     };
-
-    void copy_cache_state(const Component& src, Component& dst);
 
     struct ChunkedPrefillResult {
         size_t logical_tokens = 0;
@@ -830,9 +912,16 @@ private:
         const std::atomic<bool>* should_stop);
     void copy_component_outputs_to_inputs(const Component& source, Component& target);
     bool copy_cross_kv_outputs_to_decoder_cache_inputs(const Component& source, Component& target, size_t source_len);
-    void copy_encoder_outputs_to_decoder(const Component& enc);
     void copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index);
-    void copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target, size_t token_offset);
+    void copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target,
+                                                      size_t token_offset, size_t source_tokens = 0);
+    void persist_component_outputs(const Component& source);
+    void bind_runtime_state_inputs(Component& target);
+    bool runtime_state_producer_matches(const RuntimeStateSpec& state, const Component& source) const;
+    bool runtime_state_consumer_matches(const RuntimeStateSpec& state, const Component& target) const;
+    bool output_should_persist_to_runtime_state(const Component& source, const std::string& output_name) const;
+    const RuntimeStoredTensor* find_runtime_state_for_input(const Component& target, const std::string& input_name) const;
+    void clear_runtime_states_with_lifetime(const std::string& lifetime);
     bool cache_states_compatible(const Component& source, const Component& target) const;
     void move_cache_states(Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
     void set_cache_current_len(Component& comp, size_t len);
@@ -850,9 +939,11 @@ private:
                                      float* out_uncertainty = nullptr, float repetition_penalty = 1.0f);
     uint32_t argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty,
                               float repetition_penalty = 1.0f);
+    bool is_generation_suppressed_token(uint32_t token_id) const;
     std::vector<uint32_t> argmax_component_logits_batch(Component& comp, size_t batch);
     void write_int_input(Component& comp, const std::string& name, int64_t value);
     void write_int_input_at(Component& comp, const std::string& name, size_t index, int64_t value);
+    void fill_int_input(Component& comp, const std::string& name, int64_t value, size_t count);
     void write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size);
     int input_index(const Component& comp, const std::string& name) const;
     int output_index(const Component& comp, const std::string& name) const;
@@ -871,7 +962,9 @@ private:
     bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                 const std::vector<std::string>& image_paths,
                                 const std::vector<std::vector<float>>& audio_features_per_message);
-    bool build_lm_encoder_outputs_dynamic_gemma4(
+    size_t media_rows_to_copy(size_t output_rows, size_t frames_in_chunk) const;
+    std::string image_preprocess_strategy() const;
+    bool build_lm_encoder_outputs_dynamic_media(
         const std::vector<uint32_t>& tokens,
         std::map<std::string, std::vector<uint8_t>>& store_bytes,
         std::map<std::string, Precision>& store_prec,
@@ -902,6 +995,45 @@ private:
     bool prefill_tail_pad_disabled_ = false;
 
     std::string family_;
+    std::string runtime_plan_name_;
+    std::string runtime_execution_strategy_;
+    std::string runtime_state_owner_;
+    std::string runtime_cache_persistence_;
+    std::string runtime_output_alias_policy_;
+    std::string runtime_cache_transfer_policy_;
+    std::vector<RuntimeStateSpec> runtime_states_;
+    std::vector<RuntimeAliasSpec> runtime_aliases_;
+    std::map<std::string, RuntimeStoredTensor> runtime_state_store_;
+    std::string image_preprocess_strategy_;
+    std::string audio_preprocess_strategy_;
+    std::string media_injection_strategy_;
+    std::string media_prefill_fallback_;
+    size_t media_min_new_tokens_ = 0;
+    size_t media_min_new_tokens_remaining_ = 0;
+    std::string prompt_text_style_;
+    std::string prompt_media_style_;
+    std::string media_image_token_;
+    std::string media_audio_token_;
+    std::string media_image_begin_token_;
+    std::string media_image_end_token_;
+    std::string media_audio_begin_token_;
+    std::string media_audio_end_token_;
+    std::string media_image_prompt_position_;
+    std::string media_audio_prompt_position_;
+    std::string prompt_turn_start_token_;
+    std::string prompt_turn_end_token_;
+    std::vector<std::string> media_prompt_order_;
+    std::string media_focus_policy_;
+    std::vector<std::string> media_image_focus_keywords_;
+    std::vector<std::string> media_audio_focus_keywords_;
+    uint32_t media_placeholder_token_id_ = 0;
+    size_t audio_rows_frame_divisor_ = 0;
+    std::unordered_set<uint32_t> generation_suppressed_token_ids_;
+    std::string repetition_penalty_scope_;
+    std::vector<std::string> media_chunk_prefill_modalities_;
+    std::map<std::string, std::string> media_chunk_output_sources_;
+    std::vector<std::string> image_feature_candidates_;
+    std::vector<std::string> audio_feature_candidates_;
     std::string npu_audio_encoder_mlpackage_;
     std::string npu_audio_compute_units_;
     std::string npu_vision_encoder_mlpackage_;
@@ -944,6 +1076,7 @@ private:
 
     static constexpr size_t MAX_TOKEN_HISTORY = 128;
     std::vector<uint32_t> token_history_;
+    std::unordered_set<uint32_t> token_history_set_;
 
     ToolCallConstrainer tool_constrainer_;
     std::unordered_map<uint32_t, float> vocab_bias_;
@@ -967,7 +1100,6 @@ private:
     std::vector<float> handoff_probe_head4_bias_;
     std::vector<float> handoff_probe_hidden_;
 
-    mutable std::vector<DebugNode> debug_nodes_;
 };
 
 class ConvCache {

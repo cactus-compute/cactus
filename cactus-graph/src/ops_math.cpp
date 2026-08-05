@@ -1,5 +1,6 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -507,9 +508,46 @@ void compute_where_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
 void compute_activation_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input = get_input(node, 0, nodes, node_index_map);
 
-    if (input.precision != Precision::FP16
-        && !(node.op_type == OpType::CLAMP && input.precision == Precision::FP32)) {
-        throw std::runtime_error("Activation operations only support FP16 precision");
+    if (input.precision != Precision::FP16 && input.precision != Precision::FP32) {
+        throw std::runtime_error("Activation operations only support FP16 or FP32 precision");
+    }
+
+    if (input.precision == Precision::FP32 && node.op_type != OpType::CLAMP) {
+        const float* in = input.data_as<float>();
+        float* out = node.output_buffer.data_as<float>();
+
+        CactusThreading::parallel_for(node.output_buffer.total_size, CactusThreading::Thresholds::ELEMENT_WISE,
+            [&](size_t start_idx, size_t end_idx) {
+                for (size_t i = start_idx; i < end_idx; ++i) {
+                    const float x = in[i];
+                    switch (node.op_type) {
+                        case OpType::RELU:
+                            out[i] = std::max(x, 0.0f);
+                            break;
+                        case OpType::SILU:
+                            out[i] = x / (1.0f + std::exp(-x));
+                            break;
+                        case OpType::GELU:
+                            out[i] = 0.5f * x * (1.0f + std::tanh(0.7978845608f * (x + 0.044715f * x * x * x)));
+                            break;
+                        case OpType::GELU_ERF:
+                            out[i] = 0.5f * x * (1.0f + std::erf(x * 0.7071067812f));
+                            break;
+                        case OpType::SIGMOID:
+                            out[i] = 1.0f / (1.0f + std::exp(-x));
+                            break;
+                        case OpType::TANH:
+                            out[i] = std::tanh(x);
+                            break;
+                        case OpType::LEAKY_RELU:
+                            out[i] = x >= 0.0f ? x : x * node.params.scalar;
+                            break;
+                        default:
+                            throw std::runtime_error("Unsupported FP32 activation");
+                    }
+                }
+            });
+        return;
     }
 
     switch (node.op_type) {

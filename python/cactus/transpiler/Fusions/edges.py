@@ -218,6 +218,8 @@ EDGES: dict[str, M.FusionEdge] = {
     "moe_gate_copy_to_activation": _edge("moe_gate_copy", "moe_gate_activation", 0),
     "moe_gate_sigmoid_to_activation": _edge("moe_gate_sigmoid", "moe_gate_activation", 1),
     "moe_gate_activation_to_copy": _edge("moe_gate_activation", "moe_gate_activation_copy", 0),
+    "moe_gate_copy_to_silu": _edge("moe_gate_copy", "moe_gate_silu", 0),
+    "moe_gate_silu_to_copy": _edge("moe_gate_silu", "moe_gate_activation_copy", 0),
     "moe_gate_activation_copy_to_product": _edge("moe_gate_activation_copy", "moe_expert_product", 0),
     "moe_up_to_product": _edge("moe_up_tensor", "moe_expert_product", 1),
     "moe_product_to_grouped_down": _edge("moe_expert_product", "moe_grouped_down", 0),
@@ -475,6 +477,47 @@ EDGE_GROUPS["lfm_grouped_moe_no_token_clone"] = tuple(
     "moe_token_expand_to_flat" if edge_name == "moe_token_expand_to_clone" else edge_name
     for edge_name in EDGE_GROUPS["lfm_grouped_moe"]
     if edge_name != "moe_token_clone_to_flat"
+)
+
+EDGE_GROUPS["lfm_grouped_moe_silu"] = tuple(
+    edge_name
+    for edge_name in EDGE_GROUPS["lfm_grouped_moe"]
+    if edge_name not in {
+        "moe_gate_copy_to_sigmoid",
+        "moe_gate_copy_to_activation",
+        "moe_gate_sigmoid_to_activation",
+        "moe_gate_activation_to_copy",
+    }
+) + ("moe_gate_copy_to_silu", "moe_gate_silu_to_copy")
+
+EDGE_GROUPS["lfm_grouped_moe_silu_no_token_clone"] = tuple(
+    "moe_token_expand_to_flat" if edge_name == "moe_token_expand_to_clone" else edge_name
+    for edge_name in EDGE_GROUPS["lfm_grouped_moe_silu"]
+    if edge_name != "moe_token_clone_to_flat"
+)
+
+EDGE_GROUPS["lfm_grouped_moe_direct_router"] = tuple(
+    edge_name
+    for edge_name in EDGE_GROUPS["lfm_grouped_moe"]
+    if edge_name != "moe_router_weight_to_router"
+)
+
+EDGE_GROUPS["lfm_grouped_moe_direct_router_no_token_clone"] = tuple(
+    edge_name
+    for edge_name in EDGE_GROUPS["lfm_grouped_moe_no_token_clone"]
+    if edge_name != "moe_router_weight_to_router"
+)
+
+EDGE_GROUPS["lfm_grouped_moe_silu_direct_router"] = tuple(
+    edge_name
+    for edge_name in EDGE_GROUPS["lfm_grouped_moe_silu"]
+    if edge_name != "moe_router_weight_to_router"
+)
+
+EDGE_GROUPS["lfm_grouped_moe_silu_direct_router_no_token_clone"] = tuple(
+    edge_name
+    for edge_name in EDGE_GROUPS["lfm_grouped_moe_silu_no_token_clone"]
+    if edge_name != "moe_router_weight_to_router"
 )
 
 

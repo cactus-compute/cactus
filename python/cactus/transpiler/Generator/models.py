@@ -39,6 +39,7 @@ class GeneratorConfig:
     output_dir: Path
     weights_dir: Path | None = None
     weights_manifest_path: Path | None = None
+    model_profile: Any | None = None
     graph_suffix: str = ".cactus"
     strict: bool = True
     allow_unsupported_ops: bool = False
@@ -98,6 +99,7 @@ class ComponentGraph:
 class GenerationContext:
     component: ComponentGraph
     config: GeneratorConfig
+    model_profile: Any | None = None
     lowerings: dict[str, LoweringRule] = field(default_factory=dict)
     values: dict[str, GraphTensor] = field(default_factory=dict)
     skip_node_names: frozenset[str] = frozenset()

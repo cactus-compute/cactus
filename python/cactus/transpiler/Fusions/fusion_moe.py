@@ -93,6 +93,10 @@ LFM_GROUPED_MOE_GRAPH = _graph(
     attr_captures=(
         M.AttrCapture("num_experts", "moe_histc", "bins", required=False),
         M.AttrCapture("num_experts_per_tok", "moe_topk", "k", required=True),
+        M.AttrCapture("router_activation", default="sigmoid", required=False),
+        M.AttrCapture("use_expert_bias", default=True, required=False),
+        M.AttrCapture("normalize_routing", default=True, required=False),
+        M.AttrCapture("activation", default="silu", required=False),
         M.AttrCapture("epsilon", "moe_routing_eps", "other", default=1e-6, required=False),
         M.AttrCapture("routed_scaling_factor", "moe_routing_scale", "other", default=1.0, required=False),
     ),
@@ -119,6 +123,85 @@ LFM_GROUPED_MOE_NO_TOKEN_CLONE_GRAPH = _graph(
     tuple(node_name for node_name in LFM_GROUPED_MOE_GRAPH.nodes if node_name != "moe_token_clone"),
     edge_names=E.EDGE_GROUPS["lfm_grouped_moe_no_token_clone"],
     inputs=LFM_GROUPED_MOE_GRAPH.inputs,
+    attr_captures=LFM_GROUPED_MOE_GRAPH.attr_captures,
+    constraints=LFM_GROUPED_MOE_GRAPH.constraints,
+)
+
+
+LFM_GROUPED_MOE_SILU_GRAPH = _graph(
+    "lfm_grouped_moe_silu",
+    "moe_grouped_combine",
+    tuple(
+        "moe_gate_silu" if node_name == "moe_gate_activation" else node_name
+        for node_name in LFM_GROUPED_MOE_GRAPH.nodes
+        if node_name != "moe_gate_sigmoid"
+    ),
+    edge_names=E.EDGE_GROUPS["lfm_grouped_moe_silu"],
+    inputs=LFM_GROUPED_MOE_GRAPH.inputs,
+    attr_captures=LFM_GROUPED_MOE_GRAPH.attr_captures,
+    constraints=LFM_GROUPED_MOE_GRAPH.constraints,
+)
+
+
+LFM_GROUPED_MOE_SILU_NO_TOKEN_CLONE_GRAPH = _graph(
+    "lfm_grouped_moe_silu_no_token_clone",
+    "moe_grouped_combine",
+    tuple(node_name for node_name in LFM_GROUPED_MOE_SILU_GRAPH.nodes if node_name != "moe_token_clone"),
+    edge_names=E.EDGE_GROUPS["lfm_grouped_moe_silu_no_token_clone"],
+    inputs=LFM_GROUPED_MOE_GRAPH.inputs,
+    attr_captures=LFM_GROUPED_MOE_GRAPH.attr_captures,
+    constraints=LFM_GROUPED_MOE_GRAPH.constraints,
+)
+
+
+LFM_GROUPED_MOE_DIRECT_ROUTER_INPUTS = tuple(
+    input_spec
+    for input_spec in LFM_GROUPED_MOE_GRAPH.inputs
+    if input_spec.role != "router_weight"
+) + (
+    _input("router_weight", "moe_router_logits", 1, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER)),
+)
+
+
+LFM_GROUPED_MOE_DIRECT_ROUTER_GRAPH = _graph(
+    "lfm_grouped_moe_direct_router",
+    "moe_grouped_combine",
+    tuple(node_name for node_name in LFM_GROUPED_MOE_GRAPH.nodes if node_name != "moe_router_weight_transpose"),
+    edge_names=E.EDGE_GROUPS["lfm_grouped_moe_direct_router"],
+    inputs=LFM_GROUPED_MOE_DIRECT_ROUTER_INPUTS,
+    attr_captures=LFM_GROUPED_MOE_GRAPH.attr_captures,
+    constraints=LFM_GROUPED_MOE_GRAPH.constraints,
+)
+
+
+LFM_GROUPED_MOE_DIRECT_ROUTER_NO_TOKEN_CLONE_GRAPH = _graph(
+    "lfm_grouped_moe_direct_router_no_token_clone",
+    "moe_grouped_combine",
+    tuple(node_name for node_name in LFM_GROUPED_MOE_DIRECT_ROUTER_GRAPH.nodes if node_name != "moe_token_clone"),
+    edge_names=E.EDGE_GROUPS["lfm_grouped_moe_direct_router_no_token_clone"],
+    inputs=LFM_GROUPED_MOE_DIRECT_ROUTER_INPUTS,
+    attr_captures=LFM_GROUPED_MOE_GRAPH.attr_captures,
+    constraints=LFM_GROUPED_MOE_GRAPH.constraints,
+)
+
+
+LFM_GROUPED_MOE_SILU_DIRECT_ROUTER_GRAPH = _graph(
+    "lfm_grouped_moe_silu_direct_router",
+    "moe_grouped_combine",
+    tuple(node_name for node_name in LFM_GROUPED_MOE_SILU_GRAPH.nodes if node_name != "moe_router_weight_transpose"),
+    edge_names=E.EDGE_GROUPS["lfm_grouped_moe_silu_direct_router"],
+    inputs=LFM_GROUPED_MOE_DIRECT_ROUTER_INPUTS,
+    attr_captures=LFM_GROUPED_MOE_GRAPH.attr_captures,
+    constraints=LFM_GROUPED_MOE_GRAPH.constraints,
+)
+
+
+LFM_GROUPED_MOE_SILU_DIRECT_ROUTER_NO_TOKEN_CLONE_GRAPH = _graph(
+    "lfm_grouped_moe_silu_direct_router_no_token_clone",
+    "moe_grouped_combine",
+    tuple(node_name for node_name in LFM_GROUPED_MOE_SILU_DIRECT_ROUTER_GRAPH.nodes if node_name != "moe_token_clone"),
+    edge_names=E.EDGE_GROUPS["lfm_grouped_moe_silu_direct_router_no_token_clone"],
+    inputs=LFM_GROUPED_MOE_DIRECT_ROUTER_INPUTS,
     attr_captures=LFM_GROUPED_MOE_GRAPH.attr_captures,
     constraints=LFM_GROUPED_MOE_GRAPH.constraints,
 )

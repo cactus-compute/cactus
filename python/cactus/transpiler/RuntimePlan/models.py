@@ -8,12 +8,6 @@ from typing import Any
 
 
 @dataclass(slots=True, frozen=True)
-class RuntimeTensorBinding:
-    node_id: int
-    logical_name: str
-
-
-@dataclass(slots=True, frozen=True)
 class ConstantBinding:
     node_id: int
     path: str
@@ -48,6 +42,32 @@ class RuntimeRoute:
 
 
 @dataclass(slots=True, frozen=True)
+class RuntimeState:
+    name: str
+    kind: str
+    producer: str = ""
+    consumers: tuple[str, ...] = ()
+    lifetime: str = "request"
+    transfer: str = "move"
+    persist_after_component_unload: bool = True
+    required: bool = True
+    metadata: dict[str, str] | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class RuntimeAlias:
+    source_component: str
+    source_output: str
+    target_component: str
+    target_input: str
+    policy: str = "alias_if_compatible"
+    lifetime: str = "until_target_execute"
+    fallback: str = "copy"
+    required: bool = False
+    metadata: dict[str, str] | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class RuntimeComponent:
     component: str
     graph: str
@@ -73,6 +93,8 @@ class RuntimePlan:
     family: str = ""
     components: tuple[RuntimeComponent, ...] = ()
     routes: tuple[RuntimeRoute, ...] = ()
+    states: tuple[RuntimeState, ...] = ()
+    aliases: tuple[RuntimeAlias, ...] = ()
     metadata: dict[str, str] | None = None
 
     def to_engine_manifest(self) -> dict[str, Any]:
@@ -129,20 +151,6 @@ def cache_layer_key(annotation: Any) -> str:
         return f"{cache_kind}:tensor:{int(tensor_index)}"
 
     return f"{cache_kind}:unknown"
-
-
-def add_runtime_tensor_binding(bindings: list[RuntimeTensorBinding], binding: RuntimeTensorBinding) -> None:
-    for index, existing in enumerate(bindings):
-        if existing.node_id != binding.node_id:
-            continue
-
-        if existing.logical_name == binding.logical_name:
-            return
-
-        bindings[index] = binding
-        return
-
-    bindings.append(binding)
 
 
 def merge_cache_state_binding(bindings: list[CacheStateBinding], binding: CacheStateBinding) -> None:
@@ -240,6 +248,30 @@ def runtime_component_from_generator_manifest(
     )
 
 
+def runtime_component_from_engine_dict(data: dict[str, Any]) -> RuntimeComponent:
+    return RuntimeComponent(
+        component=str(data.get("component", "")),
+        graph=str(data.get("graph", "")),
+        runtime_input_node_ids=tuple(int(value) for value in data.get("runtime_input_node_ids", ())),
+        logical_inputs=tuple(str(value) for value in data.get("logical_inputs", ())),
+        output_node_ids=tuple(int(value) for value in data.get("output_node_ids", ())),
+        logical_outputs=tuple(str(value) for value in data.get("logical_outputs", ())),
+        bound_constant_bindings=tuple(
+            constant_binding_from_dict(value)
+            for value in data.get("bound_constant_bindings", ())
+            if isinstance(value, dict)
+        ),
+        cache_state_node_ids=tuple(
+            cache_state_binding_from_dict(value)
+            for value in data.get("cache_state_node_ids", ())
+            if isinstance(value, dict)
+        ),
+        metadata=string_dict(data.get("metadata")),
+        unsupported_nodes=tuple(str(value) for value in data.get("unsupported_nodes", ())),
+        warnings=tuple(str(value) for value in data.get("warnings", ())),
+    )
+
+
 def runtime_plan_from_generator_manifests(
     component_manifest_paths: dict[str, str | Path],
     *,
@@ -258,13 +290,16 @@ def runtime_plan_from_generator_manifests(
         )
         for name, manifest_path in component_manifest_paths.items()
     )
-    plan_metadata = runtime_plan_metadata_from_components(components)
+    plan_metadata = runtime_plan_metadata_from_model_profile(model_profile)
+    plan_metadata.update(runtime_plan_metadata_from_components(components))
     plan_metadata.update(string_dict(metadata))
 
     return RuntimePlan(
         family=runtime_family_from_model_profile(model_profile),
         components=components,
         routes=runtime_routes_from_model_profile(model_profile),
+        states=runtime_states_from_model_profile(model_profile),
+        aliases=runtime_aliases_from_model_profile(model_profile),
         metadata=plan_metadata,
     )
 
@@ -283,9 +318,79 @@ def runtime_plan_metadata_from_components(components: tuple[RuntimeComponent, ..
     if chunk_tokens is None:
         return metadata
 
-    if "lm_encoder_text_chunk" in component_by_name:
-        metadata["prefill_strategy"] = "chunked"
-        metadata["prefill_chunk_tokens"] = chunk_tokens
+    metadata["prefill_strategy"] = "chunked"
+    metadata["prefill_chunk_tokens"] = chunk_tokens
+
+    return metadata
+
+
+def runtime_plan_metadata_from_model_profile(model_profile: Any | None) -> dict[str, str]:
+    if model_profile is None:
+        return {}
+
+    metadata: dict[str, str] = {}
+    prompt = getattr(model_profile, "prompt_contract", None)
+    media = getattr(model_profile, "media_contract", None)
+    cache = getattr(model_profile, "cache_contract", None)
+    runtime = getattr(model_profile, "runtime_contract", None)
+
+    put_csv(metadata, "disabled_fusion_fields", getattr(model_profile, "disabled_fusion_fields", ()))
+    put_csv(metadata, "disabled_fusions", getattr(model_profile, "disabled_fusions", ()))
+
+    if prompt is not None:
+        put_if_present(metadata, "prompt_style", getattr(prompt, "style", ""))
+        put_if_present(metadata, "prompt_template_source", getattr(prompt, "template_source", ""))
+        put_if_present(metadata, "prompt_text_style", getattr(prompt, "text_style", ""))
+        put_if_present(metadata, "prompt_media_style", getattr(prompt, "media_style", ""))
+        put_if_present(metadata, "prompt_turn_start_token", getattr(prompt, "turn_start_token", ""))
+        put_if_present(metadata, "prompt_turn_end_token", getattr(prompt, "turn_end_token", ""))
+        put_if_present(metadata, "repetition_penalty_scope", getattr(prompt, "repetition_penalty_scope", ""))
+        put_csv(metadata, "suppress_generation_token_ids", getattr(prompt, "suppress_generation_token_ids", ()))
+
+    if media is not None:
+        put_if_present(metadata, "media_image_preprocess_strategy", getattr(media, "image_preprocess_strategy", ""))
+        put_if_present(metadata, "media_audio_preprocess_strategy", getattr(media, "audio_preprocess_strategy", ""))
+        put_if_present(metadata, "media_injection_strategy", getattr(media, "injection_strategy", ""))
+        put_csv(metadata, "media_order", getattr(media, "media_order", ()))
+        put_if_present(metadata, "media_focus_policy", getattr(media, "focus_policy", ""))
+        put_csv(metadata, "media_image_focus_keywords", getattr(media, "image_focus_keywords", ()))
+        put_csv(metadata, "media_audio_focus_keywords", getattr(media, "audio_focus_keywords", ()))
+        put_csv(metadata, "media_chunk_prefill_modalities", getattr(media, "chunk_prefill_modalities", ()))
+        put_if_present(metadata, "media_prefill_fallback", getattr(media, "prefill_fallback", ""))
+        put_if_present(metadata, "media_min_new_tokens", getattr(media, "min_new_tokens", 0))
+        put_pair_csv(metadata, "media_chunk_output_sources", getattr(media, "chunk_output_sources", ()))
+        put_if_present(metadata, "media_mask_polarity", getattr(media, "mask_polarity", ""))
+        put_if_present(metadata, "media_span_strategy", getattr(media, "span_strategy", ""))
+        put_if_present(metadata, "media_audio_rows_per_frames", getattr(media, "audio_rows_per_frames", ""))
+        if getattr(media, "injection_strategy", ""):
+            metadata["media_placeholder_token_id"] = str(int(getattr(media, "placeholder_token_id", 0) or 0))
+        put_if_present(metadata, "media_image_token_id", getattr(media, "image_token_id", 0))
+        put_if_present(metadata, "media_audio_token_id", getattr(media, "audio_token_id", 0))
+        put_if_present(metadata, "media_image_token", getattr(media, "image_token", ""))
+        put_if_present(metadata, "media_audio_token", getattr(media, "audio_token", ""))
+        put_if_present(metadata, "media_image_begin_token", getattr(media, "image_begin_token", ""))
+        put_if_present(metadata, "media_image_end_token", getattr(media, "image_end_token", ""))
+        put_if_present(metadata, "media_audio_begin_token", getattr(media, "audio_begin_token", ""))
+        put_if_present(metadata, "media_audio_end_token", getattr(media, "audio_end_token", ""))
+        put_if_present(metadata, "media_image_prompt_position", getattr(media, "image_prompt_position", ""))
+        put_if_present(metadata, "media_audio_prompt_position", getattr(media, "audio_prompt_position", ""))
+        put_csv(metadata, "media_image_feature_names", getattr(media, "image_feature_names", ()))
+        put_csv(metadata, "media_audio_feature_names", getattr(media, "audio_feature_names", ()))
+
+    if cache is not None:
+        put_if_present(metadata, "cache_prefill_decode_compatibility", getattr(cache, "prefill_decode_compatibility", ""))
+        put_if_present(metadata, "cache_state_transfer", getattr(cache, "state_transfer", ""))
+        put_if_present(metadata, "cache_decode_uses_media_components", bool(getattr(cache, "decode_uses_media_components", False)))
+        put_if_present(metadata, "cache_max_sequence_length", getattr(cache, "max_cache_sequence_length", 0))
+        put_csv(metadata, "fp16_kv_cache_components", getattr(cache, "fp16_kv_cache_components", ()))
+
+    if runtime is not None:
+        put_if_present(metadata, "runtime_plan_name", getattr(runtime, "plan_name", ""))
+        put_if_present(metadata, "runtime_execution_strategy", getattr(runtime, "execution_strategy", ""))
+        put_if_present(metadata, "runtime_state_owner", getattr(runtime, "state_owner", ""))
+        put_if_present(metadata, "runtime_cache_persistence", getattr(runtime, "cache_persistence", ""))
+        put_if_present(metadata, "runtime_output_alias_policy", getattr(runtime, "output_alias_policy", ""))
+        put_if_present(metadata, "runtime_cache_transfer_policy", getattr(runtime, "cache_transfer_policy", ""))
 
     return metadata
 
@@ -317,6 +422,22 @@ def runtime_routes_from_model_profile(model_profile: Any | None) -> tuple[Runtim
     return tuple(runtime_route_from_profile_route(route) for route in routes.values())
 
 
+def runtime_states_from_model_profile(model_profile: Any | None) -> tuple[RuntimeState, ...]:
+    runtime = getattr(model_profile, "runtime_contract", None)
+    if runtime is None:
+        return ()
+
+    return tuple(runtime_state_from_contract(state) for state in getattr(runtime, "states", ()) or ())
+
+
+def runtime_aliases_from_model_profile(model_profile: Any | None) -> tuple[RuntimeAlias, ...]:
+    runtime = getattr(model_profile, "runtime_contract", None)
+    if runtime is None:
+        return ()
+
+    return tuple(runtime_alias_from_contract(alias) for alias in getattr(runtime, "aliases", ()) or ())
+
+
 def runtime_family_from_model_profile(model_profile: Any | None) -> str:
     profile_name = str(getattr(model_profile, "model_profiles", "") or "")
     normalized_name = profile_name.lower()
@@ -343,6 +464,34 @@ def runtime_route_from_profile_route(route: Any) -> RuntimeRoute:
     )
 
 
+def runtime_state_from_contract(state: Any) -> RuntimeState:
+    return RuntimeState(
+        name=str(getattr(state, "name", "")),
+        kind=str(getattr(state, "kind", "")),
+        producer=str(getattr(state, "producer", "")),
+        consumers=tuple(str(value) for value in getattr(state, "consumers", ()) or ()),
+        lifetime=str(getattr(state, "lifetime", "request")),
+        transfer=str(getattr(state, "transfer", "move")),
+        persist_after_component_unload=bool(getattr(state, "persist_after_component_unload", True)),
+        required=bool(getattr(state, "required", True)),
+        metadata=tuple_metadata_dict(getattr(state, "metadata", ())),
+    )
+
+
+def runtime_alias_from_contract(alias: Any) -> RuntimeAlias:
+    return RuntimeAlias(
+        source_component=str(getattr(alias, "source_component", "")),
+        source_output=str(getattr(alias, "source_output", "")),
+        target_component=str(getattr(alias, "target_component", "")),
+        target_input=str(getattr(alias, "target_input", "")),
+        policy=str(getattr(alias, "policy", "alias_if_compatible")),
+        lifetime=str(getattr(alias, "lifetime", "until_target_execute")),
+        fallback=str(getattr(alias, "fallback", "copy")),
+        required=bool(getattr(alias, "required", False)),
+        metadata=tuple_metadata_dict(getattr(alias, "metadata", ())),
+    )
+
+
 def runtime_plan_to_engine_manifest(plan: RuntimePlan) -> dict[str, Any]:
     manifest: dict[str, Any] = {
         "components": [component.to_engine_dict() for component in plan.components],
@@ -350,6 +499,12 @@ def runtime_plan_to_engine_manifest(plan: RuntimePlan) -> dict[str, Any]:
 
     if plan.family:
         manifest["family"] = plan.family
+
+    if plan.states:
+        manifest["states"] = [runtime_state_to_dict(state) for state in plan.states]
+
+    if plan.aliases:
+        manifest["aliases"] = [runtime_alias_to_dict(alias) for alias in plan.aliases]
 
     for key, value in string_dict(plan.metadata).items():
         manifest[key] = value
@@ -362,6 +517,8 @@ def runtime_plan_to_dict(plan: RuntimePlan) -> dict[str, Any]:
         "family": plan.family,
         "components": [component.to_plan_dict() for component in plan.components],
         "routes": [runtime_route_to_dict(route) for route in plan.routes],
+        "states": [runtime_state_to_dict(state) for state in plan.states],
+        "aliases": [runtime_alias_to_dict(alias) for alias in plan.aliases],
         "metadata": string_dict(plan.metadata),
     }
 
@@ -406,6 +563,34 @@ def runtime_route_to_dict(route: RuntimeRoute) -> dict[str, Any]:
     }
 
 
+def runtime_state_to_dict(state: RuntimeState) -> dict[str, Any]:
+    return {
+        "name": state.name,
+        "kind": state.kind,
+        "producer": state.producer,
+        "consumers": list(state.consumers),
+        "lifetime": state.lifetime,
+        "transfer": state.transfer,
+        "persist_after_component_unload": state.persist_after_component_unload,
+        "required": state.required,
+        "metadata": string_dict(state.metadata),
+    }
+
+
+def runtime_alias_to_dict(alias: RuntimeAlias) -> dict[str, Any]:
+    return {
+        "source_component": alias.source_component,
+        "source_output": alias.source_output,
+        "target_component": alias.target_component,
+        "target_input": alias.target_input,
+        "policy": alias.policy,
+        "lifetime": alias.lifetime,
+        "fallback": alias.fallback,
+        "required": alias.required,
+        "metadata": string_dict(alias.metadata),
+    }
+
+
 def write_runtime_plan(plan: RuntimePlan, bundle_dir: str | Path) -> tuple[Path, Path]:
     bundle_path = Path(bundle_dir)
     components_dir = bundle_path / "components"
@@ -421,6 +606,8 @@ def write_runtime_plan(plan: RuntimePlan, bundle_dir: str | Path) -> tuple[Path,
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        path.unlink()
     path.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
 
@@ -470,6 +657,58 @@ def string_dict(data: Any) -> dict[str, str]:
         for key, value in data.items()
         if value is not None
     }
+
+
+def put_if_present(metadata: dict[str, str], key: str, value: Any) -> None:
+    if isinstance(value, bool):
+        metadata[key] = str(value).lower()
+        return
+
+    if value is None or value == "" or value == 0:
+        return
+
+    metadata[key] = str(value)
+
+
+def put_csv(metadata: dict[str, str], key: str, values: Any) -> None:
+    if not values:
+        return
+
+    metadata[key] = ",".join(str(value) for value in values)
+
+
+def put_pair_csv(metadata: dict[str, str], key: str, values: Any) -> None:
+    if not values:
+        return
+
+    pairs: list[str] = []
+    for item in values:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+
+        left, right = item
+        pairs.append(f"{left}:{right}")
+
+    if pairs:
+        metadata[key] = ",".join(pairs)
+
+
+def tuple_metadata_dict(values: Any) -> dict[str, str]:
+    if isinstance(values, dict):
+        return string_dict(values)
+
+    metadata: dict[str, str] = {}
+    for item in values or ():
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+
+        key, value = item
+        if value is None:
+            continue
+
+        metadata[str(key)] = str(value)
+
+    return metadata
 
 
 def none_or_str(value: Any) -> str | None:

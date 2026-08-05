@@ -283,7 +283,7 @@ GEMMA4_GEGLU_MLP_GRAPH = _graph(
         _input("down_weight", "down_weight_transpose", 0, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER, M.ValueKind.LIFTED_CONSTANT)),
     ),
     shared_inputs=(_shared_input("gate_input_view", 0, "up_input_view", 0),),
-    attr_captures=(M.AttrCapture("product_scale", default=1.0 / 64.0, required=False),),
+    attr_captures=(M.AttrCapture("product_scale", default=1.0, required=False),),
     constraints={
         "node_attr_equals": {"node": "gelu", "attr": "approximate", "value": "tanh"},
     },

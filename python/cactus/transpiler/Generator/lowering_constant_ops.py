@@ -214,7 +214,8 @@ def lower_gather(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
 def lower_embedding(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 2)
-    return context.graph.embedding_from_tensor(inputs[0], inputs[1])
+    output = context.graph.embedding_from_tensor(inputs[0], inputs[1])
+    return apply_inverse_weight_scale_for_parent(context, node, output, 0)
 
 
 def lower_clamp(context: models.GenerationContext, node: IRModels.Node) -> Any:

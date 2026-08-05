@@ -58,13 +58,15 @@ def lower_rms_norm(context: models.GenerationContext, node: IRModels.Node, x: An
         weight = cast_to_precision(context, weight, context.graph.FP16)
 
     if len(input_shape) == 2:
-        return context.graph.rms_norm(x, weight, eps=epsilon_attr(node))
+        output = context.graph.rms_norm(x, weight, eps=epsilon_attr(node))
+        return apply_inverse_weight_scale_for_parent(context, node, output, 1)
 
     if len(input_shape) == 1:
-        return context.graph.reshape(
+        output = context.graph.reshape(
             context.graph.rms_norm(context.graph.reshape(x, (1, input_shape[0])), weight, eps=epsilon_attr(node)),
             input_shape,
         )
+        return apply_inverse_weight_scale_for_parent(context, node, output, 1)
 
     rows = element_count(input_shape[:-1])
 
@@ -72,7 +74,8 @@ def lower_rms_norm(context: models.GenerationContext, node: IRModels.Node, x: An
         raise UnsupportedLoweringError(f"{node.name}: cactus.rms_norm requires concrete leading dimensions")
 
     normalized = context.graph.rms_norm(context.graph.reshape(x, (rows, input_shape[-1])), weight, eps=epsilon_attr(node))
-    return context.graph.reshape(normalized, input_shape)
+    output = context.graph.reshape(normalized, input_shape)
+    return apply_inverse_weight_scale_for_parent(context, node, output, 1)
 
 
 def rms_norm_unit_weight(context: models.GenerationContext, hidden_dim: int) -> Any:

@@ -12,6 +12,8 @@ def simplify(
     *,
     input_modalities: tuple[str, ...] = (),
     fusion_fields: tuple[str, ...] = (),
+    disabled_fusion_fields: tuple[str, ...] = (),
+    disabled_fusions: tuple[str, ...] = (),
     max_fusions: int | None = None,
     max_passes: int = 3,
 ) -> CModels.LayerMap:
@@ -29,6 +31,8 @@ def simplify(
             inference_mode=layer_map.task,
             input_modalities=input_modalities,
             fusion_fields=fusion_fields,
+            disabled_fusion_fields=disabled_fusion_fields,
+            disabled_fusions=disabled_fusions,
             max_fusions=remaining_fusions,
         )
 
@@ -47,6 +51,8 @@ def write_simplified_json(
     *,
     input_modalities: tuple[str, ...] = (),
     fusion_fields: tuple[str, ...] = (),
+    disabled_fusion_fields: tuple[str, ...] = (),
+    disabled_fusions: tuple[str, ...] = (),
     max_fusions: int | None = None,
     max_passes: int = 3,
 ) -> CModels.LayerMap:
@@ -54,6 +60,8 @@ def write_simplified_json(
         layer_map,
         input_modalities=input_modalities,
         fusion_fields=fusion_fields,
+        disabled_fusion_fields=disabled_fusion_fields,
+        disabled_fusions=disabled_fusions,
         max_fusions=max_fusions,
         max_passes=max_passes,
     )
@@ -69,6 +77,8 @@ def rev_top_sort(
     inference_mode: str | None = None,
     input_modalities: tuple[str, ...] = (),
     fusion_fields: tuple[str, ...] = (),
+    disabled_fusion_fields: tuple[str, ...] = (),
+    disabled_fusions: tuple[str, ...] = (),
     max_fusions: int | None = None,
 ) -> models.Graph:
     consumed_names: set[str] = set()
@@ -85,6 +95,8 @@ def rev_top_sort(
             inference_mode=inference_mode,
             input_modalities=input_modalities,
             fusion_fields=fusion_fields,
+            disabled_fusion_fields=disabled_fusion_fields,
+            disabled_fusions=disabled_fusions,
         )
 
         if result is None:
@@ -108,11 +120,18 @@ def try_match_from_node(
     inference_mode: str | None = None,
     input_modalities: tuple[str, ...] = (),
     fusion_fields: tuple[str, ...] = (),
+    disabled_fusion_fields: tuple[str, ...] = (),
+    disabled_fusions: tuple[str, ...] = (),
 ) -> models.FusionResult | None:
     if not node.is_operation:
         return None
 
-    for fusion in candidate_fusions_for_node(node, fusion_fields):
+    for fusion in candidate_fusions_for_node(
+        node,
+        fusion_fields,
+        disabled_fusion_fields=disabled_fusion_fields,
+        disabled_fusions=disabled_fusions,
+    ):
         if special_fusions.has_special_matcher(fusion):
             result = special_fusions.match_special_fusion(
                 node,
@@ -221,6 +240,9 @@ def collect_external_inputs(
 def candidate_fusions_for_node(
     node: models.Node,
     fusion_fields: tuple[str, ...] = (),
+    *,
+    disabled_fusion_fields: tuple[str, ...] = (),
+    disabled_fusions: tuple[str, ...] = (),
 ) -> tuple[FModels.FusionDefinition, ...]:
     candidates: list[FModels.FusionDefinition] = []
     seen: set[int] = set()
@@ -231,6 +253,9 @@ def candidate_fusions_for_node(
                 continue
 
             if not fusion_enabled_for_fields(fusion, fusion_fields):
+                continue
+
+            if fusion_disabled(fusion, disabled_fusion_fields, disabled_fusions):
                 continue
 
             seen.add(id(fusion))
@@ -253,6 +278,22 @@ def fusion_enabled_for_fields(fusion: FModels.FusionDefinition, fusion_fields: t
         return "generic" in selected_fields or "direct" in selected_fields
 
     return not fusion_specific_fields.isdisjoint(selected_fields - {"generic"})
+
+
+def fusion_disabled(
+    fusion: FModels.FusionDefinition,
+    disabled_fusion_fields: tuple[str, ...] = (),
+    disabled_fusions: tuple[str, ...] = (),
+) -> bool:
+    disabled_names = set(disabled_fusions)
+
+    if fusion.name in disabled_names or fusion.cactus_op in disabled_names:
+        return True
+
+    if disabled_fusion_fields and not set(fusion.fusion_fields).isdisjoint(disabled_fusion_fields):
+        return True
+
+    return False
 
 
 def fusion_priority(fusion: FModels.FusionDefinition) -> tuple[int, int, int, int, int, int]:

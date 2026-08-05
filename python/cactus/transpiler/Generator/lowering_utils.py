@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import struct
 from pathlib import Path
@@ -405,6 +404,54 @@ def scalar_weight_bound_value(context: models.GenerationContext, node: IRModels.
     return float(value) * float(record.scale_factor)
 
 
+def apply_inverse_weight_scale_for_parent(
+    context: models.GenerationContext,
+    node: IRModels.Node,
+    value: Any,
+    parent_index: int,
+) -> Any:
+    scale_factor = weight_scale_factor_for_parent(context, node, parent_index)
+
+    if scale_factor is None or scale_factor == 1.0:
+        return value
+
+    return context.graph.scalar_multiply(value, 1.0 / scale_factor)
+
+
+def weight_scale_factor_for_parent(context: models.GenerationContext, node: IRModels.Node, parent_index: int) -> float | None:
+    if parent_index < 0 or parent_index >= len(node.parents):
+        return None
+
+    weight_node = source_weight_node(node.parents[parent_index])
+
+    if weight_node is None:
+        return None
+
+    resolver = context.component.weight_resolver
+
+    if resolver is None:
+        return None
+
+    record = resolver.resolve(weight_node.name)
+
+    if record is None:
+        return None
+
+    return float(record.scale_factor or 1.0)
+
+
+def source_weight_node(node: IRModels.Node) -> IRModels.Node | None:
+    current = node
+
+    while current.target in {"aten.t.default", "cactus.transpose"} and len(current.parents) == 1:
+        current = current.parents[0]
+
+    if current.value_kind not in constants.WEIGHT_VALUE_KINDS:
+        return None
+
+    return current
+
+
 def read_scalar_cactus_weight(path: Path) -> float | None:
     if not path.exists():
         return None
@@ -593,24 +640,3 @@ def ensure_tensor_sequence(value: Any) -> list[Any]:
         return list(value)
 
     return [value]
-
-
-def dump_result_manifest(result: models.GenerationResult, output_path: str | Path) -> Path:
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "component_paths": {name: str(path_) for name, path_ in result.component_paths.items()},
-                "component_manifest_paths": {name: str(path_) for name, path_ in result.component_manifest_paths.items()},
-                "engine_manifest_path": str(result.engine_manifest_path) if result.engine_manifest_path is not None else None,
-                "runtime_plan_path": str(result.runtime_plan_path) if result.runtime_plan_path is not None else None,
-                "unsupported_nodes": list(result.unsupported_nodes),
-                "warnings": list(result.warnings),
-                "ok": result.ok,
-            },
-            indent=4,
-        ),
-        encoding="utf-8",
-    )
-    return path

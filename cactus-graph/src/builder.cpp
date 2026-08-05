@@ -414,7 +414,7 @@ size_t CactusGraph::moe_layer(size_t hidden,
     return add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params);
 }
 
-size_t CactusGraph::dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale) {
+size_t CactusGraph::dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale, float gate_input_scale) {
     const auto& hidden_buffer = get_output_buffer(hidden);
     const auto& down_buffer = get_output_buffer(down_weight);
     if (hidden_buffer.shape.empty()) {
@@ -430,6 +430,7 @@ size_t CactusGraph::dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t
     OpParams params;
     params.output_precision = Precision::FP16;
     params.scalar = product_scale;
+    params.scale = gate_input_scale;
     return add_node(OpType::DENSE_MLP_TQ_FUSED,
                     {hidden, gate_weight, up_weight, down_weight},
                     output_shape, params);
@@ -1857,7 +1858,8 @@ size_t CactusGraph::spectrogram(
 size_t CactusGraph::attention_cached(size_t query, size_t key_new, size_t value_new,
                                       size_t k_cache_state, size_t v_cache_state,
                                       float scale, size_t position_offset,
-                                      size_t window_size, size_t v_head_dim, size_t cache_slot) {
+                                      size_t window_size, size_t v_head_dim, size_t cache_slot,
+                                      size_t mask, bool additive_mask, bool is_causal) {
     const auto& q_shape = get_output_buffer(query).shape;
     size_t batch = q_shape[0];
     size_t seq_len = q_shape[1];
@@ -1871,8 +1873,14 @@ size_t CactusGraph::attention_cached(size_t query, size_t key_new, size_t value_
     params.window_size = window_size;
     params.v_head_dim = v_head_dim;
     params.cache_slot = cache_slot;
+    params.is_causal = is_causal;
+    params.attention_mask_is_additive = additive_mask;
     params.output_precision = Precision::FP16;
+    std::vector<size_t> inputs = {query, key_new, value_new, k_cache_state, v_cache_state};
+    if (mask != static_cast<size_t>(-1)) {
+        inputs.push_back(mask);
+    }
     return add_node(OpType::ATTENTION_CACHED,
-                    {query, key_new, value_new, k_cache_state, v_cache_state},
+                    inputs,
                     {batch, seq_len, num_q_heads, out_v_dim}, params);
 }

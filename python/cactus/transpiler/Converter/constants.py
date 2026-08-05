@@ -14,6 +14,7 @@ LOAD_STRATEGIES = {
     "image_text_to_text_strict": (AutoModelForImageTextToText, AutoModelForCausalLM),
     "speech_seq2seq": (AutoModelForSpeechSeq2Seq, AutoModelForSeq2SeqLM, AutoModel),
     "ctc": (AutoModelForCTC, AutoModel),
+    "parakeet_tdt": (AutoModel, AutoModelForCTC),
     "causal_lm": (AutoModelForCausalLM, AutoModel),
 }
 
@@ -44,7 +45,6 @@ PROCESSOR_INPUT_STRATEGY = "processor"
 
 PREFILL_WITH_CACHE_MODE = "prefill_with_cache"
 DECODE_WITH_CACHE_MODE = "decode_with_cache"
-DYNAMIC_CACHE_POLICY = "dynamic_cache"
 
 CONVERTER_JSON_DIR = Path(__file__).resolve().parent / "jsons"
 ASSET_DIR = Path(__file__).resolve().parents[2] / "assets"
@@ -59,6 +59,7 @@ MULTIMODAL_KEYS = (
     "input_features_mask",
     "image_position_ids",
     "video_position_ids",
+    "token_type_ids",
     "mm_token_type_ids",
 )
 

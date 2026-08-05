@@ -2,11 +2,12 @@ import json
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cactus.transpiler.ModelProfiles.profiles import GEMMA4_E2B_PROFILE
+from cactus.transpiler.ModelProfiles.profiles import GEMMA4_E2B_PROFILE, profile_for_model_id
 from cactus.transpiler.Generator import models as GModels
 from cactus.transpiler.RuntimePlan import models as RPModels
 
@@ -90,6 +91,30 @@ class TestRuntimePlan(unittest.TestCase):
             self.assertEqual(component["cache_state_node_ids"][0]["layer_key"], "kv:0")
             self.assertTrue(runtime_plan["routes"])
             self.assertEqual(runtime_plan["routes"][0]["edges"][0]["inputs"], ["text_embed"])
+            self.assertEqual(engine_manifest["runtime_plan_name"], "gemma4_multimodal")
+            self.assertEqual(engine_manifest["prompt_media_style"], "gemma4_turns")
+            self.assertEqual(engine_manifest["media_order"], "image,audio")
+            self.assertEqual(engine_manifest.get("media_focus_policy", ""), "")
+            self.assertEqual(engine_manifest["media_chunk_prefill_modalities"], "vision,image,audio")
+            self.assertEqual(engine_manifest["media_prefill_fallback"], "error")
+            self.assertEqual(engine_manifest["media_chunk_output_sources"], "per_layer_inputs:text_chunk")
+            self.assertIn("pictured", engine_manifest["media_image_focus_keywords"])
+            self.assertIn("audio", engine_manifest["media_audio_focus_keywords"])
+            self.assertTrue(engine_manifest["states"])
+            self.assertTrue(engine_manifest["aliases"])
+
+    def test_profile_runtime_metadata_includes_fusion_safety_contracts(self):
+        profile = replace(GEMMA4_E2B_PROFILE, disabled_fusions=("experimental_fusion",))
+        metadata = RPModels.runtime_plan_metadata_from_model_profile(profile)
+
+        self.assertEqual(metadata["disabled_fusions"], "experimental_fusion")
+
+    def test_unknown_model_gets_generic_profile_contract(self):
+        profile = profile_for_model_id("example/unknown-causal-lm")
+
+        self.assertEqual(profile.model_profiles, "generic_text")
+        self.assertEqual(profile.runtime_contract.plan_name, "generic_text")
+        self.assertTrue(profile.runtime_contract.states)
 
 
 if __name__ == "__main__":

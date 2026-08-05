@@ -37,6 +37,8 @@ def convert(
             simplified_output_path,
             input_modalities=input_modalities,
             fusion_fields=profile.fusion_fields,
+            disabled_fusion_fields=profile.disabled_fusion_fields,
+            disabled_fusions=profile.disabled_fusions,
         )
 
     return layer_map

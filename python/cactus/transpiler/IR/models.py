@@ -368,6 +368,12 @@ def normalized_fusion_attrs(result: FusionResult) -> dict[str, Any]:
         if layer_index is not None:
             attrs["window_size"] = 0 if layer_index % 5 == 4 else 512
 
+    if result.target in {"cactus.attention", "cactus.attention_cached"} and "cache_window_size" not in attrs:
+        cache_input = first_cache_input_annotation(result)
+
+        if cache_input is not None and cache_input.window_size is not None:
+            attrs["cache_window_size"] = cache_input.window_size
+
     return attrs
 
 
@@ -690,17 +696,19 @@ def annotate_cache_nodes(nodes: tuple[Node, ...], model_name: str = "") -> None:
         shape = tensor_shape(node)
 
         if len(shape) == 4:
+            layer_index = cache_layer_index_from_node(node, kv_count // 2)
+            sequence_length = known_int(shape[2])
             role = FModels.CacheTensorRole.KEY if kv_count % 2 == 0 else FModels.CacheTensorRole.VALUE
             node.cache = CacheAnnotation(
                 kind=FModels.CacheKind.KV,
                 role=role,
                 tensor_index=tensor_index,
-                layer_index=cache_layer_index_from_node(node, kv_count // 2),
+                layer_index=layer_index,
                 shape=tuple(shape),
                 layout="batch_heads_sequence_head_dim",
                 num_kv_heads=known_int(shape[1]),
-                sequence_length=known_int(shape[2]),
-                window_size=kv_cache_window_size_for_model(model_name, cache_layer_index_from_node(node, kv_count // 2)),
+                sequence_length=sequence_length,
+                window_size=kv_cache_window_size_for_model(model_name, layer_index, sequence_length),
                 head_dim=known_int(shape[3]),
                 source="past_key_values_placeholder",
             )
@@ -723,14 +731,22 @@ def annotate_cache_nodes(nodes: tuple[Node, ...], model_name: str = "") -> None:
             node.ir_metadata["cache"] = cache_annotation_to_dict(node.cache)
 
 
-def kv_cache_window_size_for_model(model_name: str, layer_index: int | None) -> int | None:
+def kv_cache_window_size_for_model(model_name: str, layer_index: int | None, sequence_length: int | None = None) -> int | None:
     if layer_index is None:
         return None
 
     if "gemma" not in model_name.lower():
         return None
 
+    if is_gemma4_model_name(model_name) and layer_index == 13:
+        return 0
+
     return 0 if layer_index % 5 == 4 else 512
+
+
+def is_gemma4_model_name(model_name: str) -> bool:
+    normalized = model_name.lower().replace("_", "-")
+    return "gemma-4" in normalized or "gemma4" in normalized
 
 
 def cache_annotation_from_metadata(metadata: dict[str, Any]) -> CacheAnnotation | None:
@@ -850,6 +866,12 @@ def layer_index_from_text(value: str) -> int | None:
 
 
 def cache_window_size(result: FusionResult, shape: tuple[Any, ...], base: CacheAnnotation | None) -> int | None:
+    if "cache_window_size" in result.attrs and result.attrs["cache_window_size"] is not None:
+        return int(result.attrs["cache_window_size"])
+
+    if result.target in {"cactus.attention", "cactus.attention_cached"} and base is not None and base.window_size is not None:
+        return base.window_size
+
     if "window_size" in result.attrs and result.attrs["window_size"] is not None:
         return int(result.attrs["window_size"])
 

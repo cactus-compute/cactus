@@ -162,7 +162,9 @@ void compute_kv_cache_state_node(
     else max_seq = std::min(ceiling, kInitialCacheEntries);
     size_t kv_heads = node.params.num_kv_heads;
     size_t hdim = node.params.head_dim;
-    const bool fp16_cache = use_fp16_kv_cache();
+    const bool fp16_cache = node.params.output_precision == Precision::FP16 || (
+        node.params.output_precision != Precision::INT8 && use_fp16_kv_cache()
+    );
     size_t per_slot = fp16_cache
         ? fp16_cache_elements(max_seq, kv_heads, hdim)
         : cache_buffer_size(max_seq, kv_heads, hdim);
@@ -315,6 +317,7 @@ void compute_attention_cached_node(
     const auto& val_new_buf = get_input(node, 2, nodes, node_index_map);
     const auto& k_cache_buf = get_input(node, 3, nodes, node_index_map);
     const auto& v_cache_buf = get_input(node, 4, nodes, node_index_map);
+    const BufferDesc* mask_buf = node.input_ids.size() > 5 ? &get_input(node, 5, nodes, node_index_map) : nullptr;
 
     size_t slot = node.params.cache_slot;
     const auto* k_meta = get_meta(k_cache_buf, slot);
@@ -337,6 +340,39 @@ void compute_attention_cached_node(
     size_t batch_size = q_shape[0];
     size_t seq_len = q_shape[1];
     size_t num_q_heads = q_shape[2];
+    bool mask_per_head = false;
+    const __fp16* mask_ptr = nullptr;
+    size_t mask_batch_stride = 0;
+
+    if (mask_buf != nullptr) {
+        if (mask_buf->precision != Precision::FP16) {
+            throw std::runtime_error("Cached attention mask tensor must be FP16");
+        }
+
+        if (mask_buf->shape.size() == 3) {
+            if (mask_buf->shape[0] != batch_size ||
+                mask_buf->shape[1] != seq_len ||
+                mask_buf->shape[2] != cache_len) {
+                throw std::runtime_error("Cached attention mask [B, T, S] shape mismatch");
+            }
+
+            mask_batch_stride = seq_len * cache_len;
+        } else if (mask_buf->shape.size() == 4) {
+            if (mask_buf->shape[0] != batch_size ||
+                (mask_buf->shape[1] != num_q_heads && mask_buf->shape[1] != 1) ||
+                mask_buf->shape[2] != seq_len ||
+                mask_buf->shape[3] != cache_len) {
+                throw std::runtime_error("Cached attention mask [B, H|1, T, S] shape mismatch");
+            }
+
+            mask_per_head = mask_buf->shape[1] != 1;
+            mask_batch_stride = (mask_per_head ? num_q_heads : 1) * seq_len * cache_len;
+        } else {
+            throw std::runtime_error("Cached attention mask must be rank 3 or 4");
+        }
+
+        mask_ptr = mask_buf->data_as<__fp16>();
+    }
 
     size_t new_seq_len = key_new_buf.total_size / (kv_heads * hdim);
     size_t history_len = (cache_len >= new_seq_len) ? cache_len - new_seq_len : 0;
@@ -372,9 +408,17 @@ void compute_attention_cached_node(
                     out_all + i * out_stride,
                     1, seq_len, ci,
                     num_q_heads, kv_heads, hdim,
-                    node.params.scale, nullptr, hist_i, node.params.window_size,
-                    true, false, false, v_hdim);
+                    node.params.scale,
+                    mask_ptr ? mask_ptr + i * mask_batch_stride : nullptr,
+                    hist_i, node.params.window_size,
+                    node.params.is_causal,
+                    node.params.attention_mask_is_additive,
+                    mask_per_head, v_hdim);
             } else {
+                if (mask_ptr) {
+                    throw std::runtime_error("Cached attention masks require FP16 KV cache");
+                }
+
                 cactus_attention_hybrid_int8_fp16(
                     q_all + i * q_stride,
                     get_int8_data(k_cache_buf, i),
@@ -402,14 +446,18 @@ void compute_attention_cached_node(
             batch_size, seq_len, cache_len,
             num_q_heads, kv_heads, hdim,
             node.params.scale,
-            nullptr,
+            mask_ptr,
             position_offset,
             node.params.window_size,
-            true,
-            false,
-            false,
+            node.params.is_causal,
+            node.params.attention_mask_is_additive,
+            mask_per_head,
             v_hdim);
         return;
+    }
+
+    if (mask_ptr) {
+        throw std::runtime_error("Cached attention masks require FP16 KV cache");
     }
 
         cactus_attention_hybrid_int8_fp16(
@@ -686,4 +734,3 @@ void CactusGraph::shrink_cache_buffer(size_t node_id, size_t new_capacity) {
     if (target >= meta->max_seq_len) return;
     resize_cache_buffer(buf, target);
 }
-

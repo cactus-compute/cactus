@@ -86,14 +86,6 @@ def direct_whisper_cross_kv_source(node: IRModels.Node) -> IRModels.Node:
     return node
 
 
-def find_decoder_token_input(graph: IRModels.Graph) -> str:
-    for name in ("decoder_input_ids", "input_ids"):
-        if name in graph.nodes_map:
-            return name
-
-    raise ValueError("Whisper component split could not find decoder token input")
-
-
 def find_whisper_decode_position_index(graph: IRModels.Graph) -> str:
     for node in graph.nodes:
         if node.target == "aten.repeat.default" and tensor_shape(node) == [1, 1]:
@@ -334,7 +326,7 @@ def find_embedding_token_ids(graph: IRModels.Graph) -> str:
 
 
 def find_per_layer_inputs(graph: IRModels.Graph) -> str:
-    candidates = [
+    projected_candidates = [
         node
         for node in graph.nodes
         if node.target in {"aten.mul.Tensor", "aten.mul.Scalar", "cactus.multiply", "cactus.scalar_multiply"}
@@ -342,10 +334,22 @@ def find_per_layer_inputs(graph: IRModels.Graph) -> str:
         and len(node.children) >= 10
     ]
 
-    if not candidates:
-        raise ValueError("Gemma4 component split could not find per_layer_inputs")
+    if projected_candidates:
+        return max(projected_candidates, key=lambda node: len(node.children)).name
 
-    return max(candidates, key=lambda node: len(node.children)).name
+    raw_candidates = [
+        node
+        for node in graph.nodes
+        if node.target in {"aten.view.default", "aten.reshape.default", "cactus.view", "cactus.reshape"}
+        and tensor_shape(node)[-2:] == [35, 256]
+        and node.parents
+        and "embed_tokens_per_layer" in f"{node.parents[0].module_stack!r}"
+    ]
+
+    if raw_candidates:
+        return min(raw_candidates, key=lambda node: node.index).name
+
+    raise ValueError("Gemma4 component split could not find per_layer_inputs")
 
 
 def find_decode_position_ids(graph: IRModels.Graph) -> str:

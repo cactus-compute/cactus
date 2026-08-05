@@ -40,12 +40,12 @@ class ComponentSplitSpec:
     name: str
     graph: IRModels.Graph
     outputs: tuple[OutputSpec, ...]
+    side_effects: tuple[str, ...] = ()
     placeholders: tuple[PlaceholderSpec, ...] = ()
     ref_aliases: Mapping[str, str] = field(default_factory=dict)
     input_aliases: Mapping[str, str] = field(default_factory=dict)
     metadata: Mapping[str, str] = field(default_factory=dict)
     chunk_tokens: int | None = None
-    scalar_tail_layer_start: int | None = None
 
 
 @dataclass(slots=True, frozen=True)

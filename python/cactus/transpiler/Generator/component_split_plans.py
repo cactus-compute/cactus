@@ -113,15 +113,16 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
             name="decoder_prefill_chunk",
             graph=prefill,
             outputs=(OutputSpec(boundaries.prefill_logits, "logits"),),
+            side_effects=cache_side_effect_node_names(prefill),
             placeholders=(inputs_embeds_chunk, per_layer_chunk, position_chunk),
             ref_aliases=prefill_rope_position_aliases,
             chunk_tokens=GEMMA4_PREFILL_CHUNK_TOKENS,
-            scalar_tail_layer_start=15,
         ),
         ComponentSplitSpec(
             name="decoder_step",
             graph=decode,
             outputs=(OutputSpec(boundaries.decode_logits, "logits"),),
+            side_effects=cache_side_effect_node_names(decode),
             placeholders=(inputs_embeds_step, per_layer_step, position_step),
             ref_aliases=decode_rope_position_aliases,
         ),
@@ -171,7 +172,6 @@ def split_causal_lm_components(
 ) -> dict[str, IRModels.Graph]:
     step_position = PlaceholderSpec("position_ids", "position_ids", tensor_node="input_ids", force=True)
     chunk_position = PlaceholderSpec("position_ids", "position_ids", tensor_node="input_ids", force=True)
-    chunk_attention_mask = PlaceholderSpec("attention_mask", "attention_mask", tensor_node="input_ids", force=True)
     chunk_tokens = causal_lm_prefill_chunk_tokens(model_profile)
 
     specs = (
@@ -198,6 +198,7 @@ def split_causal_lm_components(
             name="decoder_step",
             graph=decode,
             outputs=graph_output_specs(decode, publish_only_logits=True),
+            side_effects=cache_side_effect_node_names(decode),
             placeholders=(step_position,),
             input_aliases={"input_ids": "inputs_embeds"},
         ),
@@ -205,7 +206,8 @@ def split_causal_lm_components(
             name="decoder_prefill_chunk",
             graph=prefill,
             outputs=graph_output_specs(prefill, publish_only_logits=True),
-            placeholders=(chunk_attention_mask, chunk_position),
+            side_effects=cache_side_effect_node_names(prefill),
+            placeholders=(chunk_position,),
             input_aliases={"input_ids": "inputs_embeds"},
             chunk_tokens=chunk_tokens,
         ),
@@ -278,6 +280,7 @@ def split_lfm_vlm_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
             name="decoder_prefill_chunk",
             graph=prefill,
             outputs=graph_output_specs(prefill, publish_only_logits=True),
+            side_effects=cache_side_effect_node_names(prefill),
             placeholders=(inputs_embeds_chunk, attention_mask_chunk, position_chunk),
             ref_aliases={boundaries.merged_inputs_embeds: inputs_embeds_chunk.name},
             input_aliases={"attention_mask": "attention_mask"},
@@ -287,6 +290,7 @@ def split_lfm_vlm_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
             name="decoder_step",
             graph=decode,
             outputs=graph_output_specs(decode, publish_only_logits=True),
+            side_effects=cache_side_effect_node_names(decode),
             placeholders=(inputs_embeds_step, position_step),
             ref_aliases={boundaries.decode_text_inputs_embeds: inputs_embeds_step.name},
         ),
@@ -340,6 +344,7 @@ def split_whisper_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
             name="decoder_step",
             graph=decode,
             outputs=(OutputSpec(boundaries.decode_logits, "logits"),),
+            side_effects=cache_side_effect_node_names(decode),
             placeholders=(position,),
             ref_aliases={position_index: "position_ids"},
             input_aliases=decoder_input_aliases,
@@ -356,3 +361,16 @@ def whisper_cross_kv_output_spec(graph: IRModels.Graph, node_name: str, logical_
     node = graph.nodes_map[node_name]
     permutation = (0, 2, 1, 3) if tensor_shape(node) == [1, 6, 1500, 64] else None
     return OutputSpec(node_name, logical_name, permutation=permutation)
+
+
+def cache_side_effect_node_names(graph: IRModels.Graph) -> tuple[str, ...]:
+    return tuple(
+        node.name
+        for node in graph.nodes
+        if node.target in {
+            "cactus.kv_cache_append",
+            "cactus.conv_cache_append",
+            "cactus.conv_cache_initialize",
+            "cactus.recurrent_cache_write",
+        }
+    )

@@ -1242,6 +1242,23 @@ int cactus_graph_attention_cached(cactus_graph_t graph, cactus_node_t query, cac
     }
 }
 
+int cactus_graph_attention_cached_masked(cactus_graph_t graph, cactus_node_t query, cactus_node_t key_new, cactus_node_t value_new,
+                                          cactus_node_t k_cache_state, cactus_node_t v_cache_state,
+                                          float scale, size_t position_offset, size_t window_size, size_t v_head_dim,
+                                          bool is_causal, cactus_node_t mask, bool additive_mask, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_attention_cached_masked");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.attention_cached(
+            static_cast<size_t>(query), static_cast<size_t>(key_new), static_cast<size_t>(value_new),
+            static_cast<size_t>(k_cache_state), static_cast<size_t>(v_cache_state),
+            scale, position_offset, window_size, v_head_dim, 0, static_cast<size_t>(mask), additive_mask, is_causal));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_conv_cache_state(cactus_graph_t graph, size_t window_size, size_t hidden_dim, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_conv_cache_state");
     try {
@@ -1605,7 +1622,8 @@ int cactus_graph_gaussian_topk(cactus_graph_t graph, cactus_node_t input, float 
 
 int cactus_graph_moe_layer_gated(cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
                                  const cactus_node_t* w1_weights, const cactus_node_t* w3_weights, const cactus_node_t* w2_weights,
-                                 size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, cactus_node_t* out) {
+                                 size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon,
+                                 float routed_scaling_factor, int32_t activation, cactus_node_t* out) {
     if (!graph || !w1_weights || !w3_weights || !w2_weights || !out) return fail_invalid("Invalid args to cactus_graph_moe_layer_gated");
     try {
         std::vector<size_t> w1(num_experts), w3(num_experts), w2(num_experts);
@@ -1614,7 +1632,7 @@ int cactus_graph_moe_layer_gated(cactus_graph_t graph, cactus_node_t hidden, cac
             w3[i] = static_cast<size_t>(w3_weights[i]);
             w2[i] = static_cast<size_t>(w2_weights[i]);
         }
-        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.moe_layer(static_cast<size_t>(hidden), static_cast<size_t>(routing_probs), static_cast<size_t>(topk_indices), w1, w3, w2, num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor));
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.moe_layer(static_cast<size_t>(hidden), static_cast<size_t>(routing_probs), static_cast<size_t>(topk_indices), w1, w3, w2, num_experts, num_experts_per_tok, normalize_routing, epsilon, routed_scaling_factor, static_cast<Activation>(activation)));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();
@@ -1622,7 +1640,7 @@ int cactus_graph_moe_layer_gated(cactus_graph_t graph, cactus_node_t hidden, cac
     }
 }
 
-CACTUS_FFI_EXPORT int cactus_graph_dense_mlp_tq_fused(cactus_graph_t graph, cactus_node_t hidden, cactus_node_t gate_weight, cactus_node_t up_weight, cactus_node_t down_weight, float product_scale, cactus_node_t* out) {
+CACTUS_FFI_EXPORT int cactus_graph_dense_mlp_tq_fused(cactus_graph_t graph, cactus_node_t hidden, cactus_node_t gate_weight, cactus_node_t up_weight, cactus_node_t down_weight, float product_scale, float gate_input_scale, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_dense_mlp_tq_fused");
     try {
         *out = static_cast<cactus_node_t>(
@@ -1631,7 +1649,8 @@ CACTUS_FFI_EXPORT int cactus_graph_dense_mlp_tq_fused(cactus_graph_t graph, cact
                 static_cast<size_t>(gate_weight),
                 static_cast<size_t>(up_weight),
                 static_cast<size_t>(down_weight),
-                product_scale
+                product_scale,
+                gate_input_scale
             )
         );
         return 0;

@@ -244,7 +244,15 @@ def build_input(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], i
 
 #How: slices full prompt tokens to one decode token, adds cache_position, attention_mask, and flat cache tensors.
 #Why: create_model uses this for decode_with_cache so the exported graph represents one-token generation.
-def build_decode_with_cache_input(model: torch.nn.Module, input_: Any, input_cls: Any, cache_spec_cls: Any, model_dtype_fn: Any, drop_multimodal: bool) -> Any:
+def build_decode_with_cache_input(
+    model: torch.nn.Module,
+    input_: Any,
+    input_cls: Any,
+    cache_spec_cls: Any,
+    model_dtype_fn: Any,
+    drop_multimodal: bool,
+    full_retention_layers: tuple[int, ...] = (),
+) -> Any:
     kwargs = dict(input_.kwargs)
     token_key = "input_ids" if "input_ids" in kwargs else "decoder_input_ids"
 
@@ -254,7 +262,12 @@ def build_decode_with_cache_input(model: torch.nn.Module, input_: Any, input_cls
     token_ids = kwargs[token_key]
     batch_size = int(token_ids.shape[0])
     past_sequence_length = int(token_ids.shape[1])
-    cache_spec = cache_spec_cls.from_model(model=model, batch_size=batch_size, past_sequence_length=past_sequence_length)
+    cache_spec = cache_spec_cls.from_model(
+        model=model,
+        batch_size=batch_size,
+        past_sequence_length=past_sequence_length,
+        full_retention_layers=full_retention_layers,
+    )
 
     kwargs[token_key] = token_ids[:, -1:].clone()
     kwargs["attention_mask"] = torch.ones(
@@ -292,6 +305,13 @@ def infer_batch_size(kwargs: dict[str, Any]) -> int:
             return int(value.shape[0])
 
     return 1
+
+
+#Reads profile-declared KV layers that retain full history even when their attention uses a local window.
+def full_retention_kv_layers(model_profile: MP_Models.ModelProfile) -> tuple[int, ...]:
+    cache_contract = getattr(model_profile, "cache_contract", None)
+    layers = getattr(cache_contract, "full_retention_kv_layers", ()) if cache_contract is not None else ()
+    return tuple(int(layer_index) for layer_index in layers)
 
 
 #How: prefers cache_position for decode, otherwise checks token or attention-mask sequence length.
@@ -360,6 +380,8 @@ def build_processor_kwargs(model_id: str, input_modalities: tuple[str, ...], con
     processed = processor(**call_kwargs)
     pad_audio_export_inputs(processed, configs)
     kwargs = {key: value for key, value in dict(processed).items() if isinstance(value, torch.Tensor)}
+    if "token_type_ids" not in kwargs and "mm_token_type_ids" in kwargs:
+        kwargs["token_type_ids"] = kwargs["mm_token_type_ids"]
     normalize_processor_kwargs_for_export(kwargs, model_profile)
     return kwargs
 
@@ -465,7 +487,15 @@ def create_model(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], 
     loaded_model = load_model(model_id, mp)
     
     if input_.inference_mode == constants.DECODE_WITH_CACHE_MODE and constants.DYNAMIC_CACHE_POLICY in mp.cache_policy:
-        input_ = build_decode_with_cache_input(model=loaded_model, input_=input_, input_cls=Input, cache_spec_cls=CU.CacheSpec, model_dtype_fn=CU.model_dtype, drop_multimodal=constants.DROP_MULTIMODAL_ON_DECODE_POLICY in mp.cache_policy)
+        input_ = build_decode_with_cache_input(
+            model=loaded_model,
+            input_=input_,
+            input_cls=Input,
+            cache_spec_cls=CU.CacheSpec,
+            model_dtype_fn=CU.model_dtype,
+            drop_multimodal=constants.DROP_MULTIMODAL_ON_DECODE_POLICY in mp.cache_policy,
+            full_retention_layers=full_retention_kv_layers(mp),
+        )
 
     return Model(name=model_id, model_profile=mp, input=input_, model=loaded_model)
 
@@ -478,7 +508,12 @@ def export_(model: Model, input: Input) -> LayerMap:
     if should_use_cache and constants.DYNAMIC_CACHE_POLICY in model.model_profile.cache_policy:
         export_model = CU.CacheExportWrapper(
             model=model.model,
-            cache_spec=CU.CacheSpec.from_model(model=model.model, batch_size=infer_batch_size(input.kwargs), past_sequence_length=infer_past_sequence_length(input)),
+            cache_spec=CU.CacheSpec.from_model(
+                model=model.model,
+                batch_size=infer_batch_size(input.kwargs),
+                past_sequence_length=infer_past_sequence_length(input),
+                full_retention_layers=full_retention_kv_layers(model.model_profile),
+            ),
         )
 
     export_kwargs = dict(input.kwargs)

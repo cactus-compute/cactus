@@ -16,12 +16,17 @@ def lower_moe(context: models.GenerationContext, node: IRModels.Node) -> Any:
     if node.target == "cactus.dense_mlp_tq_fused":
         require_len(node, inputs, 4)
         hidden = cast_to_precision(context, inputs[0], context.graph.FP16)
+        gate_scale = weight_scale_factor_for_parent(context, node, 1) or 1.0
+        up_scale = weight_scale_factor_for_parent(context, node, 2) or 1.0
+        down_scale = weight_scale_factor_for_parent(context, node, 3) or 1.0
+        product_scale = float(node.attrs.get("product_scale", 1.0)) / (up_scale * down_scale)
         return context.graph.dense_mlp_tq_fused(
             hidden,
             inputs[1],
             inputs[2],
             inputs[3],
-            product_scale=float(node.attrs.get("product_scale", 1.0)),
+            product_scale=product_scale,
+            gate_input_scale=gate_scale,
         )
 
     if node.target == "cactus.moe_layer_gated":
@@ -47,6 +52,7 @@ def lower_moe(context: models.GenerationContext, node: IRModels.Node) -> Any:
             normalize_routing=bool(node.attrs.get("normalize_routing", True)),
             epsilon=float(node.attrs.get("epsilon", 1e-6)),
             routed_scaling_factor=float(node.attrs.get("routed_scaling_factor", 1.0)),
+            activation=moe_activation(context, node),
         )
 
     if node.target == "cactus.moe_layer_ungated":
@@ -107,13 +113,14 @@ def lower_packed_lfm_moe_layer_gated(
     hidden_shape = concrete_shape(meta_shape(node.parents[0])) if node.parents else None
     hidden = moe_hidden_2d(context, node, inputs[0], hidden_dim)
     router_weight = inputs[1]
-    expert_bias = cast_to_precision(context, inputs[2], context.graph.FP16)
+    use_expert_bias = bool(node.attrs.get("use_expert_bias", True))
+    expert_bias = cast_to_precision(context, inputs[2], context.graph.FP16) if use_expert_bias else None
     gate_up_weight = inputs[3]
     down_weight = inputs[4]
 
     router_logits = context.graph.matmul(hidden, router_weight, pretransposed_rhs=True)
     routing_probs = context.graph.sigmoid(cast_to_precision(context, router_logits, context.graph.FP16))
-    topk_scores = context.graph.add(routing_probs, expert_bias)
+    topk_scores = context.graph.add(routing_probs, expert_bias) if expert_bias is not None else routing_probs
     topk_indices = context.graph.index(context.graph.topk(topk_scores, top_k), 0, axis=0)
     topk_indices = cast_to_precision(context, topk_indices, context.graph.FP32)
     bundled_weights = lfm_moe_weight_bundle_parts(gate_up_weight, down_weight, num_experts)
@@ -142,6 +149,7 @@ def lower_packed_lfm_moe_layer_gated(
         normalize_routing=bool(node.attrs.get("normalize_routing", True)),
         epsilon=float(node.attrs.get("epsilon", 1e-6)),
         routed_scaling_factor=float(node.attrs.get("routed_scaling_factor", 1.0)),
+        activation=moe_activation(context, node),
     )
 
     if hidden_shape is not None and len(hidden_shape) == 3 and hidden_shape[0] == 1 and hidden_shape[2] == hidden_dim:
@@ -163,6 +171,24 @@ def moe_hidden_2d(context: models.GenerationContext, node: IRModels.Node, hidden
         return cast_to_precision(context, context.graph.reshape(hidden, (hidden_shape[1], hidden_dim)), context.graph.FP16)
 
     raise UnsupportedLoweringError(f"{node.name}: packed MoE hidden input must be [tokens, hidden] or [1, tokens, hidden]")
+
+
+def moe_activation(context: models.GenerationContext, node: IRModels.Node) -> int:
+    activation = str(node.attrs.get("activation", "silu") or "silu").lower()
+    mapping = {
+        "silu": context.graph.ACT_SILU,
+        "swish": context.graph.ACT_SILU,
+        "gelu": context.graph.ACT_GELU,
+        "gelu_erf": context.graph.ACT_GELU_ERF,
+        "relu": context.graph.ACT_RELU,
+        "sigmoid": context.graph.ACT_SIGMOID,
+        "tanh": context.graph.ACT_TANH,
+    }
+
+    if activation not in mapping:
+        raise UnsupportedLoweringError(f"{node.name}: unsupported MoE activation {activation!r}")
+
+    return int(mapping[activation])
 
 
 def lfm_moe_weight_bundle_parts(
@@ -210,7 +236,7 @@ def split_lfm_packed_moe_weights(
             context.graph.slice(down_weight, 0, expert_index, length=1),
             (hidden_dim, intermediate_dim),
         )
-        w2_weights.append(context.graph.transpose(expert_down))
+        w2_weights.append(expert_down)
 
     return tuple(w1_weights), tuple(w3_weights), tuple(w2_weights)
 

@@ -522,7 +522,7 @@ PreparedPrompt prepare_prompt(
         }
     }
 
-    if (prompt.model_type == Config::ModelType::GEMMA4) {
+    if (handle->model->audio_preprocess_strategy() == "gemma4") {
         std::vector<size_t> user_indices;
         for (size_t i = 0; i < prompt.messages.size(); i++) {
             if (prompt.messages[i].role == "user") user_indices.push_back(i);
@@ -949,6 +949,9 @@ int cactus_complete(
         if (!first_token_from_prefill) {
             auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
             prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
+            if (handle->model->repetition_penalty_uses_context()) {
+                handle->model->seed_token_history_from_context(prompt.tokens);
+            }
             next_token = generate_first_token(handle, prefill_result, prompt, &first_token_entropy);
         }
 

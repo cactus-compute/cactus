@@ -56,23 +56,6 @@ class CacheTensorRole:
 
 
 @dataclass(slots=True)
-class TensorMeta:
-    """
-    Stores observed tensor metadata from the exported graph.
-
-    The IR graph can attach this to real nodes so fusion matchers can compare
-    shapes, dtypes, devices, grad flags, and strides against TensorConstraint
-    without rereading the original torch node metadata each time.
-    """
-
-    shape: list[Any] = field(default_factory=list)
-    dtype: str | None = None
-    device: str | None = None
-    requires_grad: bool | None = None
-    stride: list[Any] | None = None
-
-
-@dataclass(slots=True)
 class TensorConstraint:
     """
     Describes tensor properties a matched real value must satisfy.

@@ -1,12 +1,15 @@
 """CLI bridge for the replacement Python transpiler."""
 from __future__ import annotations
 
-import json
 import os
+import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 from .common import GREEN, YELLOW, print_color
+from .runtime import ensure_python_runtime_library
 
 
 DEFAULT_TRANSPILER_MODES = ("prefill_with_cache", "decode_with_cache")
@@ -51,19 +54,16 @@ def build_transpiled_bundle(
     ir_dir = bundle_path / "transpiler_ir"
     modalities = parse_modalities(input_modalities) or default_modalities(profile)
 
-    if is_parakeet_tdt_profile(profile):
-        materialize_parakeet_tdt_bundle(
-            bundle_path,
-            weights_path,
-            model_id=str(profile_model_id or model_id),
-            source_model_id=str(model_id),
-            modalities=modalities,
-        )
-        print_color(GREEN, f"Runnable Parakeet TDT bundle ready at {bundle_path}")
-        return bundle_path
-
     clean_runtime_outputs(bundle_path)
     ir_dir.mkdir(parents=True, exist_ok=True)
+
+    if getattr(profile, "model_profiles", "") == "parakeet":
+        return build_parakeet_tdt_bundle(
+            model_id,
+            weights_dir=weights_path,
+            output_dir=bundle_path,
+            token=token,
+        )
 
     print_color(YELLOW, f"Transpiling {model_id} with modalities: {', '.join(modalities)}")
     simplified_maps: dict[str, LayerMap] = {}
@@ -109,19 +109,7 @@ def build_transpiled_bundle(
 def profile_for_model_id(model_id: str):
     from cactus.transpiler.ModelProfiles import profiles
 
-    if model_id in profiles.MODEL_ID_MAP:
-        return profiles.MODEL_ID_MAP[model_id]
-
-    normalized = model_id.lower()
-    for candidate_id, profile in profiles.MODEL_ID_MAP.items():
-        if candidate_id.lower() == normalized:
-            return profile
-
-    supported = ", ".join(sorted(profiles.MODEL_ID_MAP))
-    raise RuntimeError(
-        f"No transpiler profile is registered for {model_id!r}. "
-        f"Supported profiles: {supported}"
-    )
+    return profiles.profile_for_model_id(model_id)
 
 
 def default_modalities(profile) -> tuple[str, ...]:
@@ -150,99 +138,76 @@ def clean_runtime_outputs(bundle_path: Path) -> None:
             path.unlink()
 
 
-def is_parakeet_tdt_profile(profile) -> bool:
-    profile_name = str(getattr(profile, "model_profiles", "") or "").lower()
-    load_strategy = str(getattr(profile, "load_strategy", "") or "").lower()
-    return "parakeet" in profile_name or "parakeet" in load_strategy
-
-
-def materialize_parakeet_tdt_bundle(
-    bundle_path: Path,
-    weights_path: Path,
-    *,
+def build_parakeet_tdt_bundle(
     model_id: str,
-    source_model_id: str,
-    modalities: tuple[str, ...],
-) -> None:
-    template_components = find_parakeet_tdt_template_components(weights_path, bundle_path)
-    target_components = bundle_path / "components"
-
-    if template_components.resolve() != target_components.resolve():
-        clean_runtime_outputs(bundle_path)
-        shutil.copytree(template_components, target_components, dirs_exist_ok=True)
-
-    rewrite_parakeet_tdt_manifest(
-        target_components / "manifest.json",
-        bundle_path=bundle_path,
-        weights_path=weights_path,
-        model_id=model_id,
-        source_model_id=source_model_id,
-        modalities=modalities,
-    )
-
-
-def find_parakeet_tdt_template_components(weights_path: Path, bundle_path: Path) -> Path:
-    repo_root = Path.cwd()
-    candidates = (
-        bundle_path / "components",
-        weights_path.parent / ".bench-current-parakeet-bridge" / "components",
-        repo_root / "weights" / ".bench-current-parakeet-bridge" / "components",
-        Path("/private/tmp/cactus-main-bench/weights/bench-main-parakeet/components"),
-    )
-
-    for candidate in candidates:
-        if (candidate / "manifest.json").is_file():
-            return candidate
-
-    raise RuntimeError(
-        "Parakeet TDT conversion needs a component template, but none was found locally. "
-        "Expected an existing Parakeet TDT components/manifest.json template."
-    )
-
-
-def rewrite_parakeet_tdt_manifest(
-    manifest_path: Path,
     *,
-    bundle_path: Path,
-    weights_path: Path,
-    model_id: str,
-    source_model_id: str,
-    modalities: tuple[str, ...],
-) -> None:
+    weights_dir: Path,
+    output_dir: Path,
+    token: str | None = None,
+) -> Path:
+    env = os.environ.copy()
+    env["CACTUS_LIB_PATH"] = str(ensure_python_runtime_library())
+
+    if token:
+        env["HF_TOKEN"] = token
+        env["HUGGING_FACE_HUB_TOKEN"] = token
+
+    from cactus.transpiler.Converter import constants as converter_constants
+
+    audio_path = converter_constants.MODALITY_INPUT_PATH["audio"]
+    print_color(YELLOW, "Transpiling Parakeet TDT with the custom component exporter...")
+    command = [
+        sys.executable,
+        "-m",
+        "cactus.transpile.hf_model",
+        "--model-id",
+        model_id,
+        "--task",
+        "tdt_transcription",
+        "--audio-file",
+        str(audio_path),
+        "--weights-dir",
+        str(weights_dir),
+        "--artifact-dir",
+        str(output_dir),
+        "--component-pipeline",
+        "on",
+        "--skip-execute",
+        "--skip-reference-compare",
+    ]
+
+    result = subprocess.run(command, env=env)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Parakeet TDT transpilation failed with exit code {result.returncode}")
+
+    write_runtime_plan_for_existing_manifest(output_dir, profile_for_model_id(model_id))
+    print_color(GREEN, f"Runnable Parakeet TDT bundle ready at {output_dir}")
+    return output_dir
+
+
+def write_runtime_plan_for_existing_manifest(bundle_dir: Path, model_profile) -> None:
+    from cactus.transpiler.RuntimePlan import models as RPModels
+
+    manifest_path = bundle_dir / "components" / "manifest.json"
+    if not manifest_path.exists():
+        return
+
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["family"] = "parakeet_tdt"
-    manifest["model_id"] = model_id
-    manifest["model_source"] = str(weights_path)
-    manifest["source_model_id"] = source_model_id
-    manifest["input_modalities"] = ",".join(modalities)
-
-    for component in manifest.get("components", ()):
-        rewrite_parakeet_component_paths(component, weights_path)
-
-    manifest_path.write_text(json.dumps(manifest, indent=4), encoding="utf-8")
-    write_parakeet_runtime_plan(bundle_path, manifest)
-
-
-def rewrite_parakeet_component_paths(component: dict, weights_path: Path) -> None:
-    for binding_key in ("bound_constant_bindings", "weight_bindings"):
-        for binding in component.get(binding_key, ()) or ():
-            if not isinstance(binding, dict) or "path" not in binding:
-                continue
-
-            filename = Path(str(binding["path"])).name
-            binding["path"] = filename if (weights_path / filename).is_file() else str(binding["path"])
-
-
-def write_parakeet_runtime_plan(bundle_path: Path, manifest: dict) -> None:
-    runtime_plan = {
-        "family": "parakeet_tdt",
-        "components": manifest.get("components", []),
-        "routes": [],
-        "metadata": {
-            "model_id": str(manifest.get("model_id", "")),
-            "source_model_id": str(manifest.get("source_model_id", "")),
-            "input_modalities": str(manifest.get("input_modalities", "")),
-            "task": "tdt_transcription",
-        },
-    }
-    (bundle_path / "runtime_plan.json").write_text(json.dumps(runtime_plan, indent=4), encoding="utf-8")
+    components = tuple(
+        RPModels.runtime_component_from_engine_dict(component)
+        for component in manifest.get("components", ())
+        if isinstance(component, dict)
+    )
+    metadata = RPModels.string_dict({k: v for k, v in manifest.items() if isinstance(v, str)})
+    metadata.update(RPModels.runtime_plan_metadata_from_model_profile(model_profile))
+    metadata.update(RPModels.runtime_plan_metadata_from_components(components))
+    plan = RPModels.RuntimePlan(
+        family=manifest.get("family") or RPModels.runtime_family_from_model_profile(model_profile),
+        components=components,
+        routes=RPModels.runtime_routes_from_model_profile(model_profile),
+        states=RPModels.runtime_states_from_model_profile(model_profile),
+        aliases=RPModels.runtime_aliases_from_model_profile(model_profile),
+        metadata=metadata,
+    )
+    plan.write(bundle_dir)
