@@ -80,6 +80,7 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
       total_size(other.total_size),
       byte_size(other.byte_size),
       data(std::move(other.data)),
+      shared_data(std::move(other.shared_data)),
       external_data(other.external_data),
       pooled_data(other.pooled_data),
       precision(other.precision),
@@ -129,6 +130,7 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
         total_size = other.total_size;
         byte_size = other.byte_size;
         data = std::move(other.data);
+        shared_data = std::move(other.shared_data);
         external_data = other.external_data;
         pooled_data = other.pooled_data;
         precision = other.precision;
@@ -174,23 +176,25 @@ BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
 void* BufferDesc::get_data() {
     if (external_data) return external_data;
     if (pooled_data) return pooled_data;
+    if (shared_data) return shared_data.get();
     return data.get();
 }
 
 const void* BufferDesc::get_data() const {
     if (external_data) return external_data;
     if (pooled_data) return pooled_data;
+    if (shared_data) return shared_data.get();
     return data.get();
 }
 
 void BufferDesc::allocate() {
-    if (!data && !external_data && !pooled_data) {
+    if (!data && !shared_data && !external_data && !pooled_data) {
         data = std::make_unique<char[]>(byte_size);
     }
 }
 
 void BufferDesc::allocate_from_pool(BufferPool& pool) {
-    if (!data && !external_data && !pooled_data && byte_size > 0) {
+    if (!data && !shared_data && !external_data && !pooled_data && byte_size > 0) {
         pooled_data = pool.acquire(byte_size);
         pooled_byte_size = byte_size;
     }
@@ -212,7 +216,7 @@ void BufferDesc::set_shape(const std::vector<size_t>& new_shape) {
 }
 
 void BufferDesc::resize_from_pool(BufferPool& pool) {
-    if (data || external_data) return;  
+    if (data || shared_data || external_data) return;
     if (pooled_data && byte_size == pooled_byte_size) return; 
     if (pooled_data) release_to_pool(pool); 
     if (byte_size > 0) {
@@ -224,12 +228,14 @@ void BufferDesc::resize_from_pool(BufferPool& pool) {
 void BufferDesc::release_memory(BufferPool& pool) {
     release_to_pool(pool);
     data.reset();
+    shared_data.reset();
     external_data = nullptr;
 }
 
 void BufferDesc::set_external(void* ptr) {
     external_data = ptr;
     data.reset();
+    shared_data.reset();
     if (pooled_data) {
         delete[] pooled_data;
     }

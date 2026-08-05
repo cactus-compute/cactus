@@ -82,6 +82,33 @@ bool test_graph_reset() {
             std::abs(static_cast<float>(output2[1]) - 25.0f) < 1e-2f);
 }
 
+bool test_exported_output_survives_producer_release() {
+    CactusGraph producer;
+    size_t input = producer.input({4}, Precision::FP16);
+    size_t output = producer.scalar_add(input, 2.0f);
+    producer.retain_outputs({static_cast<int>(output)});
+    std::vector<__fp16> values = {1, 2, 3, 4};
+    producer.set_input(input, values.data(), Precision::FP16);
+    producer.execute();
+
+    auto storage = producer.export_tensor_storage(output);
+    if (!storage || storage->get_data() != producer.get_output(output)) return false;
+
+    CactusGraph consumer;
+    size_t shared_input = consumer.input({4}, Precision::FP16);
+    size_t result = consumer.scalar_multiply(shared_input, 3.0f);
+    if (!consumer.bind_tensor_storage(shared_input, storage)) return false;
+    producer.release_runtime_buffers();
+    consumer.execute();
+
+    const __fp16* actual = static_cast<const __fp16*>(consumer.get_output(result));
+    const std::vector<float> expected = {9, 12, 15, 18};
+    for (size_t i = 0; i < expected.size(); ++i) {
+        if (std::abs(static_cast<float>(actual[i]) - expected[i]) > 1e-3f) return false;
+    }
+    return true;
+}
+
 bool run_benchmarks() {
     std::vector<__fp16> data(4, static_cast<__fp16>(1.0f));
 
@@ -131,6 +158,7 @@ int main() {
     runner.run_test("Complex Graph Structure", test_complex_graph_structure());
     runner.run_test("Multiple Outputs", test_multiple_outputs());
     runner.run_test("Graph Reset", test_graph_reset());
+    runner.run_test("Exported Output Survives Producer Release", test_exported_output_survives_producer_release());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

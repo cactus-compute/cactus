@@ -331,6 +331,66 @@ void CactusGraph::set_external_input(size_t node_id, void* data, Precision) {
     embedded_input_node_ids_.erase(node_id);
 }
 
+std::shared_ptr<TensorStorage> CactusGraph::export_tensor_storage(size_t node_id) {
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) {
+        throw std::out_of_range("Unknown node id: " + std::to_string(node_id));
+    }
+
+    auto& buffer = nodes_[it->second]->output_buffer;
+    if (!buffer.get_data() || buffer.byte_size == 0) return {};
+
+    // Retained outputs and cache states allocate stable owned buffers.  Keep a
+    // copy fallback for older/imported graphs whose selected output was pooled
+    // or externally backed.
+    if (!buffer.shared_data) {
+        if (buffer.data) {
+            buffer.shared_data = std::shared_ptr<char[]>(std::move(buffer.data));
+        } else {
+            auto owned = std::shared_ptr<char[]>(new char[buffer.byte_size], std::default_delete<char[]>());
+            std::memcpy(owned.get(), buffer.get_data(), buffer.byte_size);
+            buffer.shared_data = std::move(owned);
+            buffer.external_data = nullptr;
+            if (buffer.pooled_data) {
+                buffer.release_to_pool(buffer_pool_);
+            }
+        }
+    }
+
+    auto storage = std::make_shared<TensorStorage>();
+    storage->data = buffer.shared_data;
+    storage->shape = buffer.shape;
+    storage->total_size = buffer.total_size;
+    storage->byte_size = buffer.byte_size;
+    storage->precision = buffer.precision;
+    return storage;
+}
+
+bool CactusGraph::bind_tensor_storage(size_t node_id,
+                                      const std::shared_ptr<TensorStorage>& storage,
+                                      bool require_exact_shape) {
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end() || !storage || !storage->valid()) return false;
+
+    auto& node = *nodes_[it->second];
+    auto& buffer = node.output_buffer;
+    const bool is_state = node.op_type == OpType::KV_CACHE_STATE
+        || node.op_type == OpType::CONV_CACHE_STATE
+        || node.op_type == OpType::RECURRENT_CACHE_STATE;
+    if (buffer.precision != storage->precision && !is_state) return false;
+    if (require_exact_shape && buffer.shape != storage->shape && !is_state) return false;
+    if (!is_state && buffer.byte_size != storage->byte_size) return false;
+
+    buffer.release_memory(buffer_pool_);
+    buffer.shape = storage->shape;
+    buffer.total_size = storage->total_size;
+    buffer.byte_size = storage->byte_size;
+    buffer.precision = storage->precision;
+    buffer.shared_data = storage->data;
+    if (node.op_type == OpType::INPUT) embedded_input_node_ids_.erase(node_id);
+    return true;
+}
+
 void* CactusGraph::get_output(size_t node_id) {
     auto it = node_index_map_.find(node_id);
     if (it == node_index_map_.end()) {
@@ -643,7 +703,8 @@ void CactusGraph::execute(const std::string& profile_file) {
                 continue;
             }
             if (preallocates_output(*node)) {
-                node->output_buffer.resize_from_pool(pool);
+                if (retained_output_node_ids_.count(node->id)) node->output_buffer.allocate();
+                else node->output_buffer.resize_from_pool(pool);
             }
             dispatch_node(*node, nodes_, node_index_map_);
             trace_nonfinite(i, *node);

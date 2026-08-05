@@ -21,6 +21,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <cstring>
+#include <tuple>
 #include <utility>
 
 namespace cactus {
@@ -744,7 +745,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         && components_.count("decoder_prefill_chunk");
     if (has_metadata_encoder_cross_kv_route) {
         decode_route_ = DecodeRoute::ENCODER_CROSS_KV_STEP;
-        required_components = {source_encoder_name, decoder_cross_kv_name, decoder_name};
+        required_components = {decoder_name};
     } else if (has_chunked_prefill) {
         encoder_name = "lm_encoder_step";
         decoder_name = "decoder_media_step";
@@ -752,8 +753,6 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         required_components = {
             encoder_name,
             decoder_name,
-            "lm_encoder_text_chunk",
-            "decoder_prefill_chunk",
         };
     } else if (components_.count("decoder_step")
         && input_index(components_.at("decoder_step"), "input_ids") >= 0
@@ -766,12 +765,6 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         decoder_name = "decoder_step";
         decode_route_ = DecodeRoute::CACHED_STEP;
         required_components = {encoder_name, decoder_name};
-        if (components_.count("decoder_prefill_chunk")) {
-            required_components.insert("decoder_prefill_chunk");
-        }
-        if (components_.count("lm_encoder_text_chunk")) {
-            required_components.insert("lm_encoder_text_chunk");
-        }
     } else if (components_.count("text_lm_encoder") && components_.count("decoder")) {
         encoder_name = "text_lm_encoder";
         decoder_name = "decoder";
@@ -781,39 +774,26 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
                (components_.count("decoder") || components_.count("decoder_joint"))) {
         decoder_name = components_.count("decoder") ? "decoder" : "decoder_joint";
         decode_route_ = DecodeRoute::DIRECT_DECODER_STEP;
-        required_components = {"audio_encoder", decoder_name};
+        required_components = {decoder_name};
     } else {
         CACTUS_LOG_ERROR("model", "Bundle missing required components: need lm_encoder_step+decoder_step (LM), text_lm_encoder+decoder, audio_encoder+decoder (transcription), or source/audio_encoder+decoder_cross_kv+decoder_step");
         return false;
-    }
-    for (const auto& optional : {
-             "vision_encoder",
-             "audio_encoder",
-             "lm_encoder_media_step",
-             "lm_encoder_media_chunk",
-             "decoder_prefill_chunk",
-             "decoder_embed_chunk",
-             "lm_encoder",
-         }) {
-        if (components_.count(optional)) {
-            required_components.insert(optional);
-        }
     }
     if (!load_components(required_components)) return false;
     if (!encoder_name.empty()) encoder_ = &components_.at(encoder_name);
     if (!decoder_name.empty()) decoder_ = &components_.at(decoder_name);
     if (!source_encoder_name.empty()) source_encoder_ = &components_.at(source_encoder_name);
     if (!decoder_cross_kv_name.empty()) decoder_cross_kv_ = &components_.at(decoder_cross_kv_name);
-    if (components_.count("decoder_prefill_chunk") && components_.at("decoder_prefill_chunk").graph) {
+    if (components_.count("decoder_prefill_chunk")) {
         decoder_prefill_ = &components_.at("decoder_prefill_chunk");
         decoder_prefill_chunk_ = decoder_prefill_;
     } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP && !components_.count("audio_encoder")) {
         CACTUS_LOG_WARN("model", "Bundle has no decoder_prefill_chunk component; prompts will prefill token-by-token (prefill speed ~= decode speed).");
     }
-    if (components_.count("decoder_embed_chunk") && components_.at("decoder_embed_chunk").graph) {
+    if (components_.count("decoder_embed_chunk")) {
         decoder_embed_ = &components_.at("decoder_embed_chunk");
     }
-    if (components_.count("lm_encoder_text_chunk") && components_.at("lm_encoder_text_chunk").graph) {
+    if (components_.count("lm_encoder_text_chunk")) {
         prefill_encoder_ = &components_.at("lm_encoder_text_chunk");
     }
     if (const char* env = std::getenv("CACTUS_DISABLE_PREFILL_TAIL_PAD")) {
@@ -848,13 +828,15 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         bound.insert(comp);
     }
 
-    if (vision_encoder_ && tokenizer_ && !vision_encoder_->output_node_ids.empty()) {
+    if (vision_encoder_ && tokenizer_ && !vision_encoder_->output_node_ids.empty()
+        && load_component_graph(*vision_encoder_)) {
         size_t out_node = static_cast<size_t>(vision_encoder_->output_node_ids[0]);
         const auto& desc = vision_encoder_->graph->get_output_buffer(out_node);
         size_t n = 0;
         if (desc.shape.size() >= 3) n = desc.shape[desc.shape.size() - 2];
         else if (desc.shape.size() >= 2) n = desc.shape[0];
         if (n > 0) tokenizer_->set_image_soft_token_count(n);
+        unload_component_graph(*vision_encoder_);
     }
 
     if (image_preprocess_strategy() == "lfm2_vl" && tokenizer_) {
@@ -982,6 +964,11 @@ bool Model::load_manifest() {
             alias.lifetime = json_string_or_empty(alias_obj, "lifetime");
             alias.fallback = json_string_or_empty(alias_obj, "fallback");
             alias.required = json_bool_or(alias_obj, "required", false);
+            if (alias_obj.count("source_node_id") && alias_obj.at("source_node_id").is<double>())
+                alias.source_node_id = static_cast<int>(alias_obj.at("source_node_id").get<double>());
+            if (alias_obj.count("target_node_id") && alias_obj.at("target_node_id").is<double>())
+                alias.target_node_id = static_cast<int>(alias_obj.at("target_node_id").get<double>());
+            alias.storage_stable = json_bool_or(alias_obj, "storage_stable", false);
             alias.metadata = json_string_map(alias_obj, "metadata");
             if (!alias.source_component.empty() && !alias.source_output.empty()
                 && !alias.target_component.empty() && !alias.target_input.empty()) {
@@ -1101,7 +1088,11 @@ bool Model::load_components(const std::unordered_set<std::string>& required_comp
 }
 
 bool Model::load_component_graph(Component& comp) {
-    if (comp.graph) return true;
+    if (comp.graph) {
+        bind_component_cache_states(comp);
+        bind_runtime_state_inputs(comp);
+        return true;
+    }
     if (comp.graph_path.empty()) return true;
     fs::path full = fs::path(bundle_dir_) / comp.graph_path;
     try {
@@ -1128,6 +1119,7 @@ bool Model::load_component_graph(Component& comp) {
         }
     }
     if (!bind_runtime_buffers(comp)) return false;
+    bind_component_cache_states(comp);
     bind_runtime_state_inputs(comp);
     return true;
 }
@@ -1136,7 +1128,6 @@ void Model::unload_component_graph(Component& comp) {
     if (comp.graph) {
         persist_component_outputs(comp);
         comp.graph->release_runtime_buffers();
-        comp.graph->release_all_weight_pages();
     }
     comp.input_buffers.clear();
     comp.graph.reset();
@@ -1388,7 +1379,7 @@ bool Model::output_should_persist_to_runtime_state(const Component& source, cons
     return false;
 }
 
-void Model::persist_component_outputs(const Component& source) {
+void Model::persist_component_outputs(Component& source) {
     if (!source.graph) return;
     for (size_t i = 0; i < source.output_node_ids.size() && i < source.logical_outputs.size(); ++i) {
         const std::string& output_name = source.logical_outputs[i];
@@ -1399,7 +1390,10 @@ void Model::persist_component_outputs(const Component& source) {
         if (!ptr || desc.byte_size == 0) continue;
 
         RuntimeStoredTensor tensor;
-        tensor.bytes.assign(static_cast<const uint8_t*>(ptr), static_cast<const uint8_t*>(ptr) + desc.byte_size);
+        tensor.storage = source.graph->export_tensor_storage(node_id);
+        if (!tensor.storage) {
+            tensor.bytes.assign(static_cast<const uint8_t*>(ptr), static_cast<const uint8_t*>(ptr) + desc.byte_size);
+        }
         tensor.shape = desc.shape;
         tensor.precision = desc.precision;
         tensor.producer_component = source.name;
@@ -1439,11 +1433,48 @@ void Model::bind_runtime_state_inputs(Component& target) {
     if (!target.graph) return;
     for (size_t i = 0; i < target.runtime_input_node_ids.size() && i < target.logical_inputs.size(); ++i) {
         const RuntimeStoredTensor* tensor = find_runtime_state_for_input(target, target.logical_inputs[i]);
-        if (!tensor || tensor->bytes.empty()) continue;
+        if (!tensor || (!tensor->storage && tensor->bytes.empty())) continue;
         size_t node_id = static_cast<size_t>(target.runtime_input_node_ids[i]);
+        if (tensor->storage && target.graph->bind_tensor_storage(node_id, tensor->storage)) continue;
         const auto& desc = target.graph->get_output_buffer(node_id);
+        const void* source = tensor->storage ? tensor->storage->get_data() : tensor->bytes.data();
+        const size_t source_bytes = tensor->storage ? tensor->storage->byte_size : tensor->bytes.size();
         write_typed_buffer(target.input_buffers[i], desc.precision,
-                           tensor->bytes.data(), tensor->bytes.size(), tensor->precision);
+                           source, source_bytes, tensor->precision);
+        target.graph->set_external_input(node_id, target.input_buffers[i].data(), desc.precision);
+    }
+}
+
+std::string Model::cache_state_id(const CacheStateBinding& binding, bool key) {
+    return binding.layer_key + (key ? ":key" : ":value");
+}
+
+void Model::bind_component_cache_states(Component& target) {
+    if (std::getenv("CACTUS_DISABLE_SHARED_STATE") != nullptr) return;
+    if (!target.graph) return;
+    for (const auto& binding : target.cache_states) {
+        int previous = -1;
+        for (auto [node_id, key] : {std::pair<int, bool>{binding.key_node_id, true},
+                                   std::pair<int, bool>{binding.value_node_id, false}}) {
+            if (node_id < 0 || node_id == previous) continue;
+            previous = node_id;
+            auto storage = state_arena_.find(cache_state_id(binding, key));
+            if (storage) target.graph->bind_tensor_storage(static_cast<size_t>(node_id), storage);
+        }
+    }
+}
+
+void Model::publish_component_cache_states(Component& source) {
+    if (!source.graph || std::getenv("CACTUS_DISABLE_SHARED_STATE") != nullptr) return;
+    for (const auto& binding : source.cache_states) {
+        int previous = -1;
+        for (auto [node_id, key] : {std::pair<int, bool>{binding.key_node_id, true},
+                                   std::pair<int, bool>{binding.value_node_id, false}}) {
+            if (node_id < 0 || node_id == previous) continue;
+            previous = node_id;
+            auto storage = source.graph->export_tensor_storage(static_cast<size_t>(node_id));
+            if (storage) state_arena_.publish(cache_state_id(binding, key), std::move(storage));
+        }
     }
 }
 
@@ -1454,9 +1485,28 @@ void Model::clear_runtime_states_with_lifetime(const std::string& lifetime) {
     }
 }
 
-void Model::copy_component_outputs_to_inputs(const Component& source, Component& target) {
+void Model::copy_component_outputs_to_inputs(Component& source, Component& target) {
     persist_component_outputs(source);
     FOR_EACH_MATCHED_OUTPUT(source, target, {
+        bool alias_candidate = false;
+        for (const auto& alias : runtime_aliases_) {
+            if (alias.source_component != source.name || alias.source_output != out_name
+                || alias.target_component != target.name || alias.target_input != out_name) continue;
+            const bool nodes_match = (alias.source_node_id < 0 || alias.source_node_id == static_cast<int>(src_node))
+                && (alias.target_node_id < 0 || alias.target_node_id == static_cast<int>(dst_node));
+            const bool policy_allows = alias.policy.empty() || alias.policy == "alias_if_compatible"
+                || alias.policy == "alias" || alias.policy == "move";
+            if (nodes_match && policy_allows
+                && (alias.storage_stable || alias.source_node_id < 0)) alias_candidate = true;
+        }
+        alias_candidate = alias_candidate || out_name == "inputs_embeds"
+            || out_name == "encoder_hidden_states"
+            || out_name == "image_features"
+            || out_name == "vision_features";
+        if (alias_candidate && std::getenv("CACTUS_DISABLE_OUTPUT_ALIAS") == nullptr) {
+            auto storage = source.graph->export_tensor_storage(src_node);
+            if (storage && target.graph->bind_tensor_storage(dst_node, storage)) continue;
+        }
         std::fill(dst_buf.begin(), dst_buf.end(), 0);
         size_t elements = std::min(src_desc.total_size, dst_desc.total_size);
         if (!copy_component_tensor(*source.graph, src_desc, src_node, dst_desc, dst_buf, 0, elements, out_name))
@@ -1465,7 +1515,7 @@ void Model::copy_component_outputs_to_inputs(const Component& source, Component&
     bind_runtime_state_inputs(target);
 }
 
-bool Model::copy_cross_kv_outputs_to_decoder_cache_inputs(const Component& source, Component& target, size_t source_len) {
+bool Model::copy_cross_kv_outputs_to_decoder_cache_inputs(Component& source, Component& target, size_t source_len) {
     persist_component_outputs(source);
     bool copied_any = false;
     for (size_t i = 0; i < source.output_node_ids.size() && i < source.logical_outputs.size(); ++i) {
@@ -1489,12 +1539,12 @@ bool Model::copy_cross_kv_outputs_to_decoder_cache_inputs(const Component& sourc
     return copied_any;
 }
 
-void Model::copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index) {
+void Model::copy_component_outputs_to_chunk_inputs(Component& source, Component& target, size_t token_index) {
     copy_component_outputs_to_chunk_inputs_range(source, target, token_index, 1);
 }
 
 void Model::copy_component_outputs_to_chunk_inputs_range(
-    const Component& source,
+    Component& source,
     Component& target,
     size_t token_offset,
     size_t source_tokens_override) {
@@ -1509,6 +1559,12 @@ void Model::copy_component_outputs_to_chunk_inputs_range(
         size_t dst_elements_per_token = dst_desc.total_size / dst_tokens;
         if (src_elements_per_token != dst_elements_per_token)
             throw std::runtime_error("component output/input token shape mismatch for " + out_name);
+        if (out_name == "inputs_embeds"
+            && std::getenv("CACTUS_DISABLE_OUTPUT_ALIAS") == nullptr
+            && token_offset == 0 && src_tokens == dst_tokens) {
+            auto storage = source.graph->export_tensor_storage(src_node);
+            if (storage && target.graph->bind_tensor_storage(dst_node, storage)) continue;
+        }
         if (!copy_component_tensor(*source.graph, src_desc, src_node, dst_desc,
                 dst_buf, token_offset * dst_elements_per_token, src_desc.total_size, out_name))
             throw std::runtime_error("component output/input precision mismatch for " + out_name);
@@ -1542,13 +1598,25 @@ void Model::move_cache_states(Component& source, Component& target, size_t logic
         const auto& src = source.cache_states[i];
         const auto& dst = target.cache_states[i];
         int moved_src = -1, moved_dst = -1;
-        for (auto [src_node, dst_node] : {std::pair<int, int>{src.key_node_id, dst.key_node_id}, std::pair<int, int>{src.value_node_id, dst.value_node_id}}) {
+        for (auto [src_node, dst_node, key] : {
+                 std::tuple<int, int, bool>{src.key_node_id, dst.key_node_id, true},
+                 std::tuple<int, int, bool>{src.value_node_id, dst.value_node_id, false}}) {
             if (src_node < 0 || dst_node < 0) continue;
             // Conv/recurrent caches share one node for key and value; move it only once.
             if (src_node == moved_src && dst_node == moved_dst) continue;
             moved_src = src_node;
             moved_dst = dst_node;
-            target.graph->steal_cache_buffer(static_cast<size_t>(dst_node), *source.graph, static_cast<size_t>(src_node));
+            auto storage = std::getenv("CACTUS_DISABLE_SHARED_STATE") == nullptr
+                ? source.graph->export_tensor_storage(static_cast<size_t>(src_node))
+                : nullptr;
+            const bool attached = storage
+                && target.graph->bind_tensor_storage(static_cast<size_t>(dst_node), storage);
+            if (attached) {
+                state_arena_.publish(cache_state_id(src, key), storage);
+            } else {
+                target.graph->steal_cache_buffer(static_cast<size_t>(dst_node), *source.graph,
+                                                  static_cast<size_t>(src_node));
+            }
             if (target.graph->get_node_op_type(static_cast<size_t>(dst_node)) == OpType::KV_CACHE_STATE &&
                 logical_current != std::numeric_limits<size_t>::max()) {
                 auto* meta = static_cast<uint64_t*>(target.graph->get_output(static_cast<size_t>(dst_node)));
@@ -1747,7 +1815,10 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     ChunkedPrefillResult result;
     reset_prefill_stats();
     if (decode_route_ != DecodeRoute::CACHED_STEP || !encoder_ || !decoder_ || !decoder_prefill_) return result;
-    if (start_position != 0) return result;
+    if (start_position != 0) {
+        if (std::getenv("CACTUS_DISABLE_SHARED_STATE") != nullptr || !decoder_->graph) return result;
+        publish_component_cache_states(*decoder_);
+    }
     if (!load_component_graph(*decoder_prefill_)) return result;
     if (prefill_encoder_ && !load_component_graph(*prefill_encoder_)) return result;
     if (!cache_states_compatible(*decoder_prefill_, *decoder_)) return result;
@@ -2607,12 +2678,18 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
             run_step(tokens.back(), cache_total_seq_len_, true);
             ++cache_total_seq_len_;
             out_token = argmax_last_logits(out_uncertainty);
+            unload_component_graph(*decoder_prefill_);
+            if (prefill_encoder_) unload_component_graph(*prefill_encoder_);
             record_sampled_token(out_token);
             last_prefill_scalar_tail_tokens_ = 1;
             maybe_roll_compact();
             return true;
         }
         cache_total_seq_len_ += chunked.logical_tokens;
+    }
+    if (chunked.logical_tokens < tokens.size() && chunked.logical_tokens > 0) {
+        unload_component_graph(*decoder_prefill_);
+        if (prefill_encoder_) unload_component_graph(*prefill_encoder_);
     }
     for (size_t i = chunked.logical_tokens; i < tokens.size(); ++i) {
         run_step(tokens[i], cache_total_seq_len_, i + 1 == tokens.size());
@@ -2621,6 +2698,8 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
     if (chunked.logical_tokens == tokens.size() && chunked.logical_tokens > 0 && decoder_prefill_) {
         out_token = argmax_component_logits(*decoder_prefill_, chunked.last_logit_row, out_uncertainty);
+        unload_component_graph(*decoder_prefill_);
+        if (prefill_encoder_) unload_component_graph(*prefill_encoder_);
     } else {
         out_token = argmax_last_logits(out_uncertainty);
     }
@@ -2645,6 +2724,10 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     }
     ChunkedPrefillResult chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), prepare_decode);
     cache_total_seq_len_ += chunked.logical_tokens;
+    if (prepare_decode && chunked.logical_tokens > 0) {
+        unload_component_graph(*decoder_prefill_);
+        if (prefill_encoder_) unload_component_graph(*prefill_encoder_);
+    }
     for (size_t i = chunked.logical_tokens; i < tokens.size(); ++i) {
         run_step(tokens[i], cache_total_seq_len_, /*read_logits=*/false);
         ++cache_total_seq_len_;
@@ -3991,6 +4074,7 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         CACTUS_LOG_ERROR("model", "Parakeet TDT bundle missing audio_encoder or decoder component");
         return emitted;
     }
+    if (!load_component_graph(*audio_enc) || !load_component_graph(*dec)) return emitted;
     if (!bind_runtime_buffers(*audio_enc)) return emitted;
     if (!bind_runtime_buffers(*dec)) return emitted;
 
@@ -4457,6 +4541,7 @@ void Model::reset_cache() {
         if (!comp.graph) continue;
         reset_component_cache_states(comp);
     }
+    state_arena_.clear();
 }
 
 void Model::seed_token_history_from_context(const std::vector<uint32_t>& tokens) {

@@ -685,6 +685,43 @@ bool test_steal_cache_buffer_preserves_source_descriptor() {
     return true;
 }
 
+bool test_shared_cache_storage_survives_component_transition() {
+    const std::vector<size_t> shape{2, 4};
+    auto storage = std::shared_ptr<TensorStorage>();
+    {
+        CactusGraph prefill;
+        size_t state = prefill.recurrent_cache_state(shape, Precision::FP16);
+        size_t value = prefill.input(shape, Precision::FP16);
+        std::vector<__fp16> first(8);
+        for (size_t i = 0; i < first.size(); ++i) first[i] = static_cast<__fp16>(i + 1);
+        prefill.set_input(value, first.data(), Precision::FP16);
+        prefill.recurrent_cache_write(value, state);
+        prefill.execute();
+        storage = prefill.export_tensor_storage(state);
+        if (!storage || storage->get_data() != prefill.get_output(state)) return false;
+    }
+
+    CactusGraph decode;
+    size_t state = decode.recurrent_cache_state(shape, Precision::FP16);
+    if (!decode.bind_tensor_storage(state, storage)) return false;
+    const __fp16* carried = static_cast<const __fp16*>(decode.get_output(state));
+    for (size_t i = 0; i < 8; ++i) {
+        if (static_cast<float>(carried[i]) != static_cast<float>(i + 1)) return false;
+    }
+
+    size_t value = decode.input(shape, Precision::FP16);
+    std::vector<__fp16> second(8);
+    for (size_t i = 0; i < second.size(); ++i) second[i] = static_cast<__fp16>((i + 1) * 10);
+    decode.set_input(value, second.data(), Precision::FP16);
+    decode.recurrent_cache_write(value, state);
+    decode.execute();
+    const __fp16* shared = static_cast<const __fp16*>(storage->get_data());
+    for (size_t i = 0; i < 8; ++i) {
+        if (static_cast<float>(shared[i]) != static_cast<float>((i + 1) * 10)) return false;
+    }
+    return true;
+}
+
 bool test_recurrent_cache_write_rejects_non_state_input() {
     CactusGraph g;
     size_t plain_input = g.input({2, 4}, Precision::FP16);
@@ -1155,6 +1192,7 @@ int main() {
     runner.run_test("Conv Cache Initialize Output Zero Byte", test_conv_cache_initialize_output_is_zero_byte());
     runner.run_test("Recurrent Cache State Initializes to Zero", test_recurrent_cache_state_initializes_to_zero());
     runner.run_test("Steal Cache Buffer Preserves Source Descriptor", test_steal_cache_buffer_preserves_source_descriptor());
+    runner.run_test("Shared Cache Storage Survives Component Transition", test_shared_cache_storage_survives_component_transition());
     runner.run_test("Recurrent Cache Write Carries State", test_recurrent_cache_write_carries_state_across_executions());
     runner.run_test("Recurrent Cache Write Rejects Non-State Input", test_recurrent_cache_write_rejects_non_state_input());
     runner.run_test("Recurrent Cache Write Rejects Mismatch", test_recurrent_cache_write_rejects_shape_mismatch());

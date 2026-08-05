@@ -249,6 +249,7 @@ struct BufferDesc {
     size_t total_size;
     size_t byte_size;
     std::unique_ptr<char[]> data;
+    std::shared_ptr<char[]> shared_data;
     void* external_data;
     char* pooled_data;
     Precision precision;
@@ -332,6 +333,21 @@ struct BufferDesc {
     bool has_dynamic_dims() const { return !dynamic_dims.empty(); }
     void set_shape(const std::vector<size_t>& new_shape);
     void resize_from_pool(BufferPool& pool);
+};
+
+// Graph-independent ownership for tensors that must outlive the graph which
+// produced them.  A storage object is deliberately only an allocation plus a
+// physical layout: semantic identity and lifetime belong to the engine's
+// session state arena.
+struct TensorStorage {
+    std::shared_ptr<char[]> data;
+    std::vector<size_t> shape;
+    size_t total_size = 0;
+    size_t byte_size = 0;
+    Precision precision = Precision::FP16;
+
+    void* get_data() const { return data.get(); }
+    bool valid() const { return data != nullptr && byte_size > 0; }
 };
 
 struct OpParams {
@@ -494,6 +510,9 @@ public:
     size_t input(const std::vector<size_t>& shape, Precision precision = Precision::FP16);
     void set_input(size_t node_id, const void* data, Precision precision);
     void set_external_input(size_t node_id, void* data, Precision precision);
+    std::shared_ptr<TensorStorage> export_tensor_storage(size_t node_id);
+    bool bind_tensor_storage(size_t node_id, const std::shared_ptr<TensorStorage>& storage,
+                             bool require_exact_shape = true);
     void* get_output(size_t node_id);
 
     size_t add(size_t input1, size_t input2);

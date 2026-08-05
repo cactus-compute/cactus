@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +64,9 @@ class RuntimeAlias:
     lifetime: str = "until_target_execute"
     fallback: str = "copy"
     required: bool = False
+    source_node_id: int = -1
+    target_node_id: int = -1
+    storage_stable: bool = False
     metadata: dict[str, str] | None = None
 
 
@@ -299,7 +302,9 @@ def runtime_plan_from_generator_manifests(
         components=components,
         routes=runtime_routes_from_model_profile(model_profile),
         states=runtime_states_from_model_profile(model_profile),
-        aliases=runtime_aliases_from_model_profile(model_profile),
+        aliases=resolve_runtime_aliases(
+            runtime_aliases_from_model_profile(model_profile), components
+        ),
         metadata=plan_metadata,
     )
 
@@ -436,6 +441,47 @@ def runtime_aliases_from_model_profile(model_profile: Any | None) -> tuple[Runti
         return ()
 
     return tuple(runtime_alias_from_contract(alias) for alias in getattr(runtime, "aliases", ()) or ())
+
+
+def resolve_runtime_aliases(
+    aliases: tuple[RuntimeAlias, ...],
+    components: tuple[RuntimeComponent, ...],
+) -> tuple[RuntimeAlias, ...]:
+    """Resolve profile-level logical aliases to exact generated graph nodes.
+
+    An unresolved alias remains useful documentation and retains its copy fallback,
+    but only a fully resolved edge is marked safe for zero-copy storage binding.
+    """
+    component_by_name = {component.component: component for component in components}
+    resolved: list[RuntimeAlias] = []
+    for alias in aliases:
+        source = component_by_name.get(alias.source_component)
+        target = component_by_name.get(alias.target_component)
+        source_node_id = logical_node_id(
+            source.logical_outputs if source else (),
+            source.output_node_ids if source else (),
+            alias.source_output,
+        )
+        target_node_id = logical_node_id(
+            target.logical_inputs if target else (),
+            target.runtime_input_node_ids if target else (),
+            alias.target_input,
+        )
+        resolved.append(replace(
+            alias,
+            source_node_id=source_node_id,
+            target_node_id=target_node_id,
+            storage_stable=source_node_id >= 0 and target_node_id >= 0,
+        ))
+    return tuple(resolved)
+
+
+def logical_node_id(names: tuple[str, ...], node_ids: tuple[int, ...], name: str) -> int:
+    try:
+        index = names.index(name)
+    except ValueError:
+        return -1
+    return node_ids[index] if index < len(node_ids) else -1
 
 
 def runtime_family_from_model_profile(model_profile: Any | None) -> str:
@@ -587,6 +633,9 @@ def runtime_alias_to_dict(alias: RuntimeAlias) -> dict[str, Any]:
         "lifetime": alias.lifetime,
         "fallback": alias.fallback,
         "required": alias.required,
+        "source_node_id": alias.source_node_id,
+        "target_node_id": alias.target_node_id,
+        "storage_stable": alias.storage_stable,
         "metadata": string_dict(alias.metadata),
     }
 

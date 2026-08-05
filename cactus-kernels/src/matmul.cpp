@@ -2278,6 +2278,10 @@ static void cactus_quant_interleaved4_gemv_blocks(
             const uint8_t* p1 = packed_interleaved + ((nb + 1) * num_groups + g) * panel_bytes;
             const int8_t*  a_grp = act_i8 + static_cast<size_t>(g) * gs;
             const float    a_sc  = act_scales[g];
+            if (g + 3 < num_groups) {
+                __builtin_prefetch(p0 + 3 * panel_bytes, 0, 0);
+                __builtin_prefetch(p1 + 3 * panel_bytes, 0, 0);
+            }
 
             int32x4_t d0a = vdupq_n_s32(0), d0b = vdupq_n_s32(0);
             int32x4_t d1a = vdupq_n_s32(0), d1b = vdupq_n_s32(0);

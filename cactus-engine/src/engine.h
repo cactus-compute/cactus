@@ -848,17 +848,34 @@ private:
         std::string lifetime;
         std::string fallback;
         bool required = false;
+        int source_node_id = -1;
+        int target_node_id = -1;
+        bool storage_stable = false;
         std::map<std::string, std::string> metadata;
     };
 
     struct RuntimeStoredTensor {
         std::vector<uint8_t> bytes;
+        std::shared_ptr<TensorStorage> storage;
         std::vector<size_t> shape;
         Precision precision = Precision::FP16;
         std::string producer_component;
         std::string producer_output;
         std::string kind;
         std::string lifetime;
+    };
+
+    struct StateArena {
+        std::map<std::string, std::shared_ptr<TensorStorage>> tensors;
+
+        void publish(const std::string& id, std::shared_ptr<TensorStorage> storage) {
+            if (!id.empty() && storage && storage->valid()) tensors[id] = std::move(storage);
+        }
+        std::shared_ptr<TensorStorage> find(const std::string& id) const {
+            auto it = tensors.find(id);
+            return it == tensors.end() ? nullptr : it->second;
+        }
+        void clear() { tensors.clear(); }
     };
 
     struct Component {
@@ -910,13 +927,16 @@ private:
         size_t max_tokens,
         const std::vector<std::vector<uint32_t>>& stop_token_sequences,
         const std::atomic<bool>* should_stop);
-    void copy_component_outputs_to_inputs(const Component& source, Component& target);
-    bool copy_cross_kv_outputs_to_decoder_cache_inputs(const Component& source, Component& target, size_t source_len);
-    void copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index);
-    void copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target,
+    void copy_component_outputs_to_inputs(Component& source, Component& target);
+    bool copy_cross_kv_outputs_to_decoder_cache_inputs(Component& source, Component& target, size_t source_len);
+    void copy_component_outputs_to_chunk_inputs(Component& source, Component& target, size_t token_index);
+    void copy_component_outputs_to_chunk_inputs_range(Component& source, Component& target,
                                                       size_t token_offset, size_t source_tokens = 0);
-    void persist_component_outputs(const Component& source);
+    void persist_component_outputs(Component& source);
     void bind_runtime_state_inputs(Component& target);
+    void bind_component_cache_states(Component& target);
+    void publish_component_cache_states(Component& source);
+    static std::string cache_state_id(const CacheStateBinding& binding, bool key);
     bool runtime_state_producer_matches(const RuntimeStateSpec& state, const Component& source) const;
     bool runtime_state_consumer_matches(const RuntimeStateSpec& state, const Component& target) const;
     bool output_should_persist_to_runtime_state(const Component& source, const std::string& output_name) const;
@@ -1004,6 +1024,7 @@ private:
     std::vector<RuntimeStateSpec> runtime_states_;
     std::vector<RuntimeAliasSpec> runtime_aliases_;
     std::map<std::string, RuntimeStoredTensor> runtime_state_store_;
+    StateArena state_arena_;
     std::string image_preprocess_strategy_;
     std::string audio_preprocess_strategy_;
     std::string media_injection_strategy_;

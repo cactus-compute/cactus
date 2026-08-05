@@ -103,6 +103,40 @@ class TestRuntimePlan(unittest.TestCase):
             self.assertTrue(engine_manifest["states"])
             self.assertTrue(engine_manifest["aliases"])
 
+    def test_aliases_resolve_to_exact_graph_nodes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_dir = Path(tmpdir)
+            manifests = {}
+            for component, inputs, input_ids, outputs, output_ids in (
+                ("lm_encoder_text_chunk", ["input_ids"], [1], ["inputs_embeds"], [7]),
+                ("decoder_prefill_chunk", ["inputs_embeds"], [11], ["logits"], [12]),
+            ):
+                path = bundle_dir / f"{component}.graph_manifest.json"
+                path.write_text(json.dumps({
+                    "component": component,
+                    "graph_path": f"{component}.cactus",
+                    "runtime_input_node_ids": input_ids,
+                    "logical_inputs": inputs,
+                    "output_node_ids": output_ids,
+                    "logical_outputs": outputs,
+                }), encoding="utf-8")
+                manifests[component] = path
+
+            plan = RPModels.runtime_plan_from_generator_manifests(
+                manifests, bundle_dir=bundle_dir, model_profile=GEMMA4_E2B_PROFILE
+            )
+            alias = next(
+                value for value in plan.aliases
+                if value.source_component == "lm_encoder_text_chunk"
+            )
+
+            self.assertEqual(alias.source_node_id, 7)
+            self.assertEqual(alias.target_node_id, 11)
+            self.assertTrue(alias.storage_stable)
+            encoded = RPModels.runtime_alias_to_dict(alias)
+            self.assertEqual(encoded["source_node_id"], 7)
+            self.assertEqual(encoded["target_node_id"], 11)
+
     def test_profile_runtime_metadata_includes_fusion_safety_contracts(self):
         profile = replace(GEMMA4_E2B_PROFILE, disabled_fusions=("experimental_fusion",))
         metadata = RPModels.runtime_plan_metadata_from_model_profile(profile)
