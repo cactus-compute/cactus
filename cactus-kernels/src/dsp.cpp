@@ -130,23 +130,6 @@ static void idft_r_f32_1d_dft(
     }
 }
 
-static void dft_r_f32_1d(
-    const float* input, float* output, const size_t n, const float norm_factor) {
-    const size_t out_len = n / 2 + 1;
-    const double two_pi_over_n = (2.0 * M_PI) / static_cast<double>(n);
-    for (size_t k = 0; k < out_len; ++k) {
-        double re = 0.0;
-        double im = 0.0;
-        for (size_t t = 0; t < n; ++t) {
-            const double a = two_pi_over_n * static_cast<double>(k * t);
-            re += static_cast<double>(input[t]) * std::cos(a);
-            im -= static_cast<double>(input[t]) * std::sin(a);
-        }
-        output[k * 2] = static_cast<float>(re * norm_factor);
-        output[k * 2 + 1] = static_cast<float>(im * norm_factor);
-    }
-}
-
 void cactus_rfft_f32_1d(const float* input, float* output, size_t n, const char* norm) {
     const size_t out_len = n / 2 + 1;
     const FFTNorm norm_mode = parse_fft_norm(norm);
@@ -158,15 +141,14 @@ void cactus_rfft_f32_1d(const float* input, float* output, size_t n, const char*
         return;
     }
 
-    if (!is_power_of_two(n)) {
-        dft_r_f32_1d(input, output, n, norm_factor);
-        return;
-    }
-
 #ifdef __APPLE__
     {
-        const size_t log2n = log2_power_of_two(n);
-        const size_t padded_n = n;
+        size_t log2n = 0;
+        size_t padded_n = 1;
+        while (padded_n < n) {
+            padded_n <<= 1;
+            log2n++;
+        }
 
         FFTSetup fft_setup = vDSP_create_fftsetup(log2n, FFT_RADIX2);
         if (fft_setup) {
@@ -206,7 +188,7 @@ void cactus_rfft_f32_1d(const float* input, float* output, size_t n, const char*
     }
 #endif
 
-    const size_t padded_n = n;
+    const size_t padded_n = next_power_of_two(n);
     std::vector<float> re(padded_n, 0.0f), im(padded_n, 0.0f);
     std::copy(input, input + n, re.begin());
     fft_radix2(re.data(), im.data(), padded_n, false);

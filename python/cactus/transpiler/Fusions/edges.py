@@ -38,24 +38,6 @@ def _expert_edge(
     )
 
 
-def _index_edges_by_source(edges: dict[str, M.FusionEdge]) -> dict[str, tuple[str, ...]]:
-    index: dict[str, tuple[str, ...]] = {}
-
-    for edge_name, edge in edges.items():
-        index[edge.source] = (*index.get(edge.source, ()), edge_name)
-
-    return index
-
-
-def _index_edges_by_dest(edges: dict[str, M.FusionEdge]) -> dict[str, tuple[str, ...]]:
-    index: dict[str, tuple[str, ...]] = {}
-
-    for edge_name, edge in edges.items():
-        index[edge.dest] = (*index.get(edge.dest, ()), edge_name)
-
-    return index
-
-
 EDGES: dict[str, M.FusionEdge] = {
     "linear_mm_to_bias_add": _edge("linear_mm", "linear_bias_add", 0),
     "linear_weight_transpose_to_mm": _edge("linear_weight_transpose", "linear_mm", 1),
@@ -519,7 +501,3 @@ EDGE_GROUPS["lfm_grouped_moe_silu_direct_router_no_token_clone"] = tuple(
     for edge_name in EDGE_GROUPS["lfm_grouped_moe_silu_no_token_clone"]
     if edge_name != "moe_router_weight_to_router"
 )
-
-
-EDGE_NAMES_BY_SOURCE: dict[str, tuple[str, ...]] = _index_edges_by_source(EDGES)
-EDGE_NAMES_BY_DEST: dict[str, tuple[str, ...]] = _index_edges_by_dest(EDGES)

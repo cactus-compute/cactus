@@ -551,6 +551,50 @@ void compute_unfold_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         throw std::runtime_error("unfold input/output buffer is not available");
     }
 
+    // Unfold is a strided copy from [outer, axis, inner] to
+    // [outer, window, inner, kernel]. Avoid rebuilding coordinate vectors and
+    // dividing for every scalar; local media attention uses this path heavily.
+    if (input_buffer.precision == node.output_buffer.precision
+        && (input_buffer.precision == Precision::FP16
+            || input_buffer.precision == Precision::FP32
+            || input_buffer.precision == Precision::INT8)) {
+        const size_t input_axis_size = input_shape[axis];
+        const size_t output_windows = output_shape[axis];
+        const size_t inner_size = input_strides[axis];
+        const size_t outer_size = input_buffer.total_size / (input_axis_size * inner_size);
+        auto copy_typed = [&](auto* input, auto* output) {
+            CactusThreading::parallel_for(
+                outer_size * output_windows, CactusThreading::Thresholds::ELEMENT_WISE,
+                [=](size_t begin, size_t end) {
+                    for (size_t work = begin; work < end; ++work) {
+                        const size_t outer = work / output_windows;
+                        const size_t window = work % output_windows;
+                        const size_t input_base = (outer * input_axis_size + window * step) * inner_size;
+                        const size_t output_base = (outer * output_windows + window) * inner_size * window_size;
+                        for (size_t inner = 0; inner < inner_size; ++inner) {
+                            for (size_t kernel = 0; kernel < window_size; ++kernel) {
+                                output[output_base + inner * window_size + kernel] =
+                                    input[input_base + kernel * inner_size + inner];
+                            }
+                        }
+                    }
+                });
+        };
+        switch (input_buffer.precision) {
+            case Precision::FP16:
+                copy_typed(reinterpret_cast<const __fp16*>(input_data), reinterpret_cast<__fp16*>(output_data));
+                return;
+            case Precision::FP32:
+                copy_typed(reinterpret_cast<const float*>(input_data), reinterpret_cast<float*>(output_data));
+                return;
+            case Precision::INT8:
+                copy_typed(reinterpret_cast<const int8_t*>(input_data), reinterpret_cast<int8_t*>(output_data));
+                return;
+            default:
+                break;
+        }
+    }
+
     for (size_t out_linear = 0; out_linear < node.output_buffer.total_size; ++out_linear) {
         size_t tmp = out_linear;
         std::vector<size_t> coords(output_shape.size(), 0);

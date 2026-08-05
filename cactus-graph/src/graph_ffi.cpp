@@ -1660,6 +1660,31 @@ CACTUS_FFI_EXPORT int cactus_graph_dense_mlp_tq_fused(cactus_graph_t graph, cact
     }
 }
 
+CACTUS_FFI_EXPORT int cactus_graph_qkv_tq_fused(cactus_graph_t graph, cactus_node_t hidden, cactus_node_t query_weight, cactus_node_t key_weight, cactus_node_t value_weight, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_qkv_tq_fused");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.qkv_tq_fused(
+            static_cast<size_t>(hidden), static_cast<size_t>(query_weight),
+            static_cast<size_t>(key_weight), static_cast<size_t>(value_weight)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_projection_pair_tq_fused(cactus_graph_t graph, cactus_node_t hidden, cactus_node_t first_weight, cactus_node_t second_weight, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_projection_pair_tq_fused");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.projection_pair_tq_fused(
+            static_cast<size_t>(hidden), static_cast<size_t>(first_weight), static_cast<size_t>(second_weight)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_moe_layer_ungated(cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
                                    const cactus_node_t* w1_weights, const cactus_node_t* w2_weights,
                                    size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, int32_t activation, cactus_node_t* out) {

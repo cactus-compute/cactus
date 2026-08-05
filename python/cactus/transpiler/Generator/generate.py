@@ -18,6 +18,7 @@ from . import component_split
 from . import constants
 from . import models
 from . import lowerings as lowering_engine
+from .lowering_utils import aligned_offset
 from ..Converter import models as CModels
 from ..IR import models as IRModels
 from ..RuntimePlan import models as RPModels
@@ -233,14 +234,6 @@ def read_fp16_cactus_tensor(path: Path) -> np.ndarray | None:
         return None
 
     return np.frombuffer(raw, dtype=np.float16).reshape(dims)
-
-
-def aligned_offset(offset: int, alignment: int) -> int:
-    if alignment <= 0:
-        alignment = 32
-
-    remainder = offset % alignment
-    return offset if remainder == 0 else offset + alignment - remainder
 
 
 def model_profile_metadata_files(model_profile: Any | None) -> tuple[Path, ...]:

@@ -1,3 +1,5 @@
+import json
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -20,29 +22,266 @@ def simplify(
     graph = models.Graph.from_map(layer_map)
     total_fusions = 0
 
-    for _ in range(max_passes):
-        remaining_fusions = None if max_fusions is None else max_fusions - total_fusions
+    # First match the exported structure as-is: some model-specific patterns
+    # intentionally include clone/contiguous nodes. Then remove structural
+    # no-ops and run another convergence phase so cleanup-exposed patterns are
+    # fused in the same invocation. Cleaning before the first phase loses the
+    # exact LFM attention and short-convolution patterns.
+    for phase in range(2):
+        for _ in range(max_passes):
+            remaining_fusions = None if max_fusions is None else max_fusions - total_fusions
 
-        if remaining_fusions is not None and remaining_fusions <= 0:
-            break
+            if remaining_fusions is not None and remaining_fusions <= 0:
+                break
 
-        simplified_graph = rev_top_sort(
-            graph,
-            inference_mode=layer_map.task,
+            simplified_graph = rev_top_sort(
+                graph,
+                inference_mode=layer_map.task,
+                input_modalities=input_modalities,
+                fusion_fields=fusion_fields,
+                disabled_fusion_fields=disabled_fusion_fields,
+                disabled_fusions=disabled_fusions,
+                max_fusions=remaining_fusions,
+            )
+
+            if not simplified_graph.fusions:
+                break
+
+            total_fusions += len(simplified_graph.fusions)
+            graph = simplified_graph
+
+        if phase == 0:
+            graph = graph.remove_noop_nodes()
+
+    graph = graph.remove_noop_nodes()
+    if layer_map.task == "decode_with_cache" and "decode_qkv" in fusion_fields:
+        graph = fuse_decode_qkv_projections(graph)
+    if layer_map.task == "decode_with_cache" and "decode_projection_pair" in fusion_fields:
+        graph = fuse_decode_projection_pairs(graph)
+    return graph.remove_noop_nodes().to_layer_map()
+
+
+def fuse_decode_qkv_projections(graph: models.Graph) -> models.Graph:
+    """Combine sibling decode Q/K/V linears into a shared-transform CQ op."""
+    grouped: dict[str, dict[str, models.Node]] = {}
+    for node in graph.nodes:
+        if node.target != "cactus.linear" or len(node.parents) != 2:
+            continue
+        path = module_path_for_node(node)
+        role = next((name for name in ("q", "k", "v") if path.endswith(f".self_attn.{name}_proj")), None)
+        if role is None:
+            continue
+        grouped.setdefault(path.rsplit(".", 1)[0], {})[role] = node
+
+    replacements: dict[str, str] = {}
+    inserted_before: dict[str, tuple[models.Node, ...]] = {}
+    for layer_path, projections in grouped.items():
+        if set(projections) != {"q", "k", "v"}:
+            continue
+        q, k, v = (projections[role] for role in ("q", "k", "v"))
+        activation_views = (q.parents[0], k.parents[0], v.parents[0])
+        if any(len(view.parents) != 1 for view in activation_views):
+            continue
+        hidden = activation_views[0].parents[0]
+        if any(view.parents[0].name != hidden.name for view in activation_views[1:]):
+            continue
+        sizes = tuple(models.tensor_shape(projection)[-1] for projection in (q, k, v))
+        if any(not isinstance(size, int) or size <= 0 for size in sizes):
+            continue
+
+        stem = models.sanitize_node_name(f"{layer_path}_qkv")
+        fused_name = f"{stem}_fused"
+        suffix = 0
+        while fused_name in graph.nodes_map or fused_name in replacements.values():
+            suffix += 1
+            fused_name = f"{stem}_fused_{suffix}"
+        hidden_shape = list(models.tensor_shape(hidden))
+        if not hidden_shape:
+            continue
+        hidden_shape[-1] = sum(sizes)
+        fused_meta = dict(hidden.tensor_output_meta or {})
+        fused_meta["shape"] = hidden_shape
+        fused = models.Node(
+            index=q.index,
+            name=fused_name,
+            node_type="call_function",
+            target="cactus.qkv_tq_fused",
+            args=[{"node": hidden.name}, {"node": q.parents[1].name},
+                  {"node": k.parents[1].name}, {"node": v.parents[1].name}],
+            kwargs={}, users=(), tensor_output_meta=fused_meta,
+            module_stack=q.module_stack, value_kind=FModels.ValueKind.ACTIVATION,
+            attrs={}, ir_metadata={"fusion": {
+                "name": "decode_qkv", "target": "cactus.qkv_tq_fused",
+                "matched_nodes": [q.name, k.name, v.name],
+            }}, cache=None,
+        )
+        slices: list[models.Node] = []
+        offset = 0
+        for role, projection, size in zip(("q", "k", "v"), (q, k, v), sizes, strict=True):
+            slice_name = f"{fused_name}_{role}"
+            slice_shape = list(hidden_shape)
+            slice_shape[-1] = size
+            slice_meta = dict(projection.tensor_output_meta or {})
+            slice_meta["shape"] = slice_shape
+            attrs = {"axis": -1, "start": offset, "length": size, "step": 1}
+            slices.append(models.Node(
+                index=projection.index,
+                name=slice_name,
+                node_type="call_function",
+                target="cactus.slice",
+                args=[{"node": fused_name}], kwargs=dict(attrs), users=(),
+                tensor_output_meta=slice_meta, module_stack=projection.module_stack,
+                value_kind=FModels.ValueKind.ACTIVATION, attrs=attrs,
+                ir_metadata={}, cache=None,
+            ))
+            replacements[projection.name] = slice_name
+            offset += size
+        inserted_before[q.name] = (fused, *slices)
+
+    if not replacements:
+        return graph
+
+    rewritten: list[models.Node] = []
+    for node in graph.nodes:
+        rewritten.extend(inserted_before.get(node.name, ()))
+        if node.name in replacements:
+            continue
+        rewritten.append(models.clone_rewritten_node(node, replacements))
+    return models.prune_dead_nodes(models.rebuild_graph(tuple(rewritten), graph, tuple(graph.fusions)))
+
+
+def module_path_for_node(node: models.Node) -> str:
+    stack = node.module_stack
+    if not isinstance(stack, list):
+        return ""
+    paths = [str(item.get("module_path", "")) for item in stack if isinstance(item, dict)]
+    return paths[-1] if paths else ""
+
+
+def fuse_decode_projection_pairs(graph: models.Graph) -> models.Graph:
+    """Share the CQ input transform for sibling LFM feed-forward W1/W3 projections."""
+    grouped: dict[str, dict[str, models.Node]] = {}
+    for node in graph.nodes:
+        if node.target != "cactus.linear" or len(node.parents) != 2:
+            continue
+        path = module_path_for_node(node)
+        role = next((name for name in ("w1", "w3") if path.endswith(f".feed_forward.{name}")), None)
+        if role is None:
+            continue
+        grouped.setdefault(path.rsplit(".", 1)[0], {})[role] = node
+
+    replacements: dict[str, str] = {}
+    inserted_before: dict[str, tuple[models.Node, ...]] = {}
+    for layer_path, projections in grouped.items():
+        if set(projections) != {"w1", "w3"}:
+            continue
+        first, second = projections["w1"], projections["w3"]
+        activation_views = (first.parents[0], second.parents[0])
+        if any(len(view.parents) != 1 for view in activation_views):
+            continue
+        hidden = activation_views[0].parents[0]
+        if activation_views[1].parents[0].name != hidden.name:
+            continue
+        sizes = tuple(models.tensor_shape(projection)[-1] for projection in (first, second))
+        if any(not isinstance(size, int) or size <= 0 for size in sizes):
+            continue
+
+        stem = models.sanitize_node_name(f"{layer_path}_w1_w3")
+        fused_name = f"{stem}_fused"
+        suffix = 0
+        while fused_name in graph.nodes_map or fused_name in replacements.values():
+            suffix += 1
+            fused_name = f"{stem}_fused_{suffix}"
+        hidden_shape = list(models.tensor_shape(hidden))
+        if not hidden_shape:
+            continue
+        hidden_shape[-1] = sum(sizes)
+        fused_meta = dict(hidden.tensor_output_meta or {})
+        fused_meta["shape"] = hidden_shape
+        fused = models.Node(
+            index=first.index, name=fused_name, node_type="call_function",
+            target="cactus.projection_pair_tq_fused",
+            args=[{"node": hidden.name}, {"node": first.parents[1].name}, {"node": second.parents[1].name}],
+            kwargs={}, users=(), tensor_output_meta=fused_meta,
+            module_stack=first.module_stack, value_kind=FModels.ValueKind.ACTIVATION,
+            attrs={}, ir_metadata={"fusion": {
+                "name": "decode_projection_pair", "target": "cactus.projection_pair_tq_fused",
+                "matched_nodes": [first.name, second.name],
+            }}, cache=None,
+        )
+        slices: list[models.Node] = []
+        offset = 0
+        for role, projection, size in zip(("w1", "w3"), (first, second), sizes, strict=True):
+            slice_name = f"{fused_name}_{role}"
+            slice_shape = list(hidden_shape)
+            slice_shape[-1] = size
+            slice_meta = dict(projection.tensor_output_meta or {})
+            slice_meta["shape"] = slice_shape
+            attrs = {"axis": -1, "start": offset, "length": size, "step": 1}
+            slices.append(models.Node(
+                index=projection.index, name=slice_name, node_type="call_function",
+                target="cactus.slice", args=[{"node": fused_name}], kwargs=dict(attrs), users=(),
+                tensor_output_meta=slice_meta, module_stack=projection.module_stack,
+                value_kind=FModels.ValueKind.ACTIVATION, attrs=attrs, ir_metadata={}, cache=None,
+            ))
+            replacements[projection.name] = slice_name
+            offset += size
+        inserted_before[first.name] = (fused, *slices)
+
+    if not replacements:
+        return graph
+    rewritten: list[models.Node] = []
+    for node in graph.nodes:
+        rewritten.extend(inserted_before.get(node.name, ()))
+        if node.name in replacements:
+            continue
+        rewritten.append(models.clone_rewritten_node(node, replacements))
+    return models.prune_dead_nodes(models.rebuild_graph(tuple(rewritten), graph, tuple(graph.fusions)))
+
+
+def simplify_repeated(
+    layer_map: CModels.LayerMap,
+    *,
+    minimum_rounds: int = 2,
+    maximum_rounds: int = 8,
+    input_modalities: tuple[str, ...] = (),
+    fusion_fields: tuple[str, ...] = (),
+    disabled_fusion_fields: tuple[str, ...] = (),
+    disabled_fusions: tuple[str, ...] = (),
+    max_fusions: int | None = None,
+    max_passes: int = 3,
+) -> CModels.LayerMap:
+    """Run complete simplification rounds until the result is stable.
+
+    A full round can expose model-specific patterns that are only visible after
+    the preceding round has rewritten and cleaned the graph.  Always doing at
+    least two rounds also makes regeneration from raw IR independent of whether
+    a caller happened to feed it a previously simplified graph.
+    """
+    if minimum_rounds < 1:
+        raise ValueError("minimum_rounds must be at least 1")
+    if maximum_rounds < minimum_rounds:
+        raise ValueError("maximum_rounds must be >= minimum_rounds")
+
+    current = layer_map
+    current_json = current.model_dump_json()
+    for round_index in range(maximum_rounds):
+        simplified = simplify(
+            current,
             input_modalities=input_modalities,
             fusion_fields=fusion_fields,
             disabled_fusion_fields=disabled_fusion_fields,
             disabled_fusions=disabled_fusions,
-            max_fusions=remaining_fusions,
+            max_fusions=max_fusions,
+            max_passes=max_passes,
         )
-
-        if not simplified_graph.fusions:
+        simplified_json = simplified.model_dump_json()
+        changed = simplified_json != current_json
+        current = simplified
+        current_json = simplified_json
+        if round_index + 1 >= minimum_rounds and not changed:
             break
-
-        total_fusions += len(simplified_graph.fusions)
-        graph = simplified_graph
-
-    return graph.remove_noop_nodes().to_layer_map()
+    return current
 
 
 def write_simplified_json(
@@ -55,8 +294,9 @@ def write_simplified_json(
     disabled_fusions: tuple[str, ...] = (),
     max_fusions: int | None = None,
     max_passes: int = 3,
+    fusion_report_path: str | Path | None = None,
 ) -> CModels.LayerMap:
-    simplified = simplify(
+    simplified = simplify_repeated(
         layer_map,
         input_modalities=input_modalities,
         fusion_fields=fusion_fields,
@@ -68,7 +308,106 @@ def write_simplified_json(
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(simplified.model_dump_json(indent=4), encoding="utf-8")
+    report_path = Path(fusion_report_path) if fusion_report_path is not None else path.with_suffix(".fusion_report.json")
+    report_path.write_text(json.dumps(build_fusion_report(
+        layer_map,
+        simplified,
+        input_modalities=input_modalities,
+        fusion_fields=fusion_fields,
+        disabled_fusion_fields=disabled_fusion_fields,
+        disabled_fusions=disabled_fusions,
+    ), indent=4), encoding="utf-8")
     return simplified
+
+
+def build_fusion_report(
+    original: CModels.LayerMap,
+    simplified: CModels.LayerMap,
+    *,
+    input_modalities: tuple[str, ...] = (),
+    fusion_fields: tuple[str, ...] = (),
+    disabled_fusion_fields: tuple[str, ...] = (),
+    disabled_fusions: tuple[str, ...] = (),
+) -> dict[str, object]:
+    before = models.Graph.from_map(original)
+    after = models.Graph.from_map(simplified)
+
+    def op_counts(graph: models.Graph) -> dict[str, int]:
+        return dict(sorted(Counter(node.target for node in graph.nodes if node.is_operation).items()))
+
+    applied: list[dict[str, object]] = []
+    for node in after.nodes:
+        fusion = node.ir_metadata.get("fusion") if isinstance(node.ir_metadata, dict) else None
+        if not isinstance(fusion, dict):
+            continue
+        applied.append({
+            "node": node.name,
+            "name": str(fusion.get("name", "")),
+            "target": node.target,
+            "matched_nodes": list(fusion.get("matched_nodes", ())),
+        })
+
+    missed: list[dict[str, object]] = []
+    for node in after.nodes:
+        if not node.is_operation:
+            continue
+        candidates = candidate_fusions_for_node(
+            node,
+            fusion_fields,
+            disabled_fusion_fields=disabled_fusion_fields,
+            disabled_fusions=disabled_fusions,
+        )
+        candidate_misses: list[dict[str, str]] = []
+        for fusion in candidates:
+            reason = fusion_miss_reason(
+                node, after, fusion,
+                inference_mode=after.task,
+                input_modalities=input_modalities,
+                fusion_fields=fusion_fields,
+            )
+            if reason:
+                candidate_misses.append({"fusion": fusion.name, "reason": reason})
+        if candidate_misses:
+            missed.append({"node": node.name, "target": node.target, "candidates": candidate_misses})
+
+    return {
+        "model_name": before.model_name,
+        "task": before.task,
+        "before": {"nodes": len(before.nodes), "operations": op_counts(before)},
+        "after": {"nodes": len(after.nodes), "operations": op_counts(after)},
+        "applied_fusions": applied,
+        "applied_fusion_counts": dict(sorted(Counter(item["name"] for item in applied).items())),
+        "missed_candidates": missed,
+        "disabled_fusion_fields": list(disabled_fusion_fields),
+        "disabled_fusions": list(disabled_fusions),
+    }
+
+
+def fusion_miss_reason(
+    node: models.Node,
+    graph: models.Graph,
+    fusion: FModels.FusionDefinition,
+    *,
+    inference_mode: str | None,
+    input_modalities: tuple[str, ...],
+    fusion_fields: tuple[str, ...],
+) -> str:
+    if special_fusions.has_special_matcher(fusion):
+        result = special_fusions.match_special_fusion(
+            node, graph, fusion,
+            inference_mode=inference_mode,
+            input_modalities=input_modalities,
+            fusion_fields=fusion_fields,
+        )
+        return "" if result is not None else "special_matcher"
+
+    bindings = match_utils.bind_fusion_graph(node, fusion.graph, match.match_nodes)
+    if bindings is None:
+        return "structure"
+    for matcher in match.FUSION_DEFINITION_MATCHERS:
+        if not matcher(node, graph, fusion, bindings, inference_mode, input_modalities, fusion_fields):
+            return matcher.__name__
+    return "matched_but_not_selected"
 
 
 def rev_top_sort(

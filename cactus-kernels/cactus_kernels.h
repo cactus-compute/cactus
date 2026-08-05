@@ -275,6 +275,27 @@ void cactus_quant_matmul(
     uint32_t M,
     __fp16* C);
 
+// Evaluates two projections of the same activation. Compatible interleaved CQ4
+// matrices share the activation transform/quantization; all other layouts fall
+// back to two independent matmuls.
+void cactus_quant_matmul_pair(
+    const CactusQuantMatrix* W0,
+    const CactusQuantMatrix* W1,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C0,
+    __fp16* C1);
+
+void cactus_quant_matmul_triple(
+    const CactusQuantMatrix* W0,
+    const CactusQuantMatrix* W1,
+    const CactusQuantMatrix* W2,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C0,
+    __fp16* C1,
+    __fp16* C2);
+
 void cactus_quant_orthogonal_matmul(
     const CactusQuantMatrix* W,
     const __fp16* A,

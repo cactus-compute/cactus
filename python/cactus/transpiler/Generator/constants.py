@@ -385,6 +385,8 @@ MOE_TARGETS = {
     "cactus.moe_layer_gated",
     "cactus.moe_layer_ungated",
     "cactus.dense_mlp_tq_fused",
+    "cactus.qkv_tq_fused",
+    "cactus.projection_pair_tq_fused",
 }
 
 SPECIAL_CACTUS_TARGETS = {

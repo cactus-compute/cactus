@@ -436,6 +436,47 @@ size_t CactusGraph::dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t
                     output_shape, params);
 }
 
+size_t CactusGraph::qkv_tq_fused(size_t hidden, size_t query_weight, size_t key_weight, size_t value_weight) {
+    const auto& hidden_buffer = get_output_buffer(hidden);
+    const auto& query_buffer = get_output_buffer(query_weight);
+    const auto& key_buffer = get_output_buffer(key_weight);
+    const auto& value_buffer = get_output_buffer(value_weight);
+    if (hidden_buffer.shape.empty() || query_buffer.shape.size() != 2 ||
+        key_buffer.shape.size() != 2 || value_buffer.shape.size() != 2) {
+        throw std::runtime_error("qkv_tq_fused expects non-scalar hidden and rank-2 weights");
+    }
+    const size_t hidden_dim = hidden_buffer.shape.back();
+    if (query_buffer.shape[1] != hidden_dim || key_buffer.shape[1] != hidden_dim ||
+        value_buffer.shape[1] != hidden_dim) {
+        throw std::runtime_error("qkv_tq_fused weight dimensions do not match hidden");
+    }
+    std::vector<size_t> output_shape = hidden_buffer.shape;
+    output_shape.back() = query_buffer.shape[0] + key_buffer.shape[0] + value_buffer.shape[0];
+    OpParams params;
+    params.output_precision = Precision::FP16;
+    return add_node(OpType::QKV_TQ_FUSED,
+                    {hidden, query_weight, key_weight, value_weight}, output_shape, params);
+}
+
+size_t CactusGraph::projection_pair_tq_fused(size_t hidden, size_t first_weight, size_t second_weight) {
+    const auto& hidden_buffer = get_output_buffer(hidden);
+    const auto& first_buffer = get_output_buffer(first_weight);
+    const auto& second_buffer = get_output_buffer(second_weight);
+    if (hidden_buffer.shape.empty() || first_buffer.shape.size() != 2 || second_buffer.shape.size() != 2) {
+        throw std::runtime_error("projection_pair_tq_fused expects non-scalar hidden and rank-2 weights");
+    }
+    const size_t hidden_dim = hidden_buffer.shape.back();
+    if (first_buffer.shape[1] != hidden_dim || second_buffer.shape[1] != hidden_dim) {
+        throw std::runtime_error("projection_pair_tq_fused weight dimensions do not match hidden");
+    }
+    std::vector<size_t> output_shape = hidden_buffer.shape;
+    output_shape.back() = first_buffer.shape[0] + second_buffer.shape[0];
+    OpParams params;
+    params.output_precision = Precision::FP16;
+    return add_node(OpType::PROJECTION_PAIR_TQ_FUSED,
+                    {hidden, first_weight, second_weight}, output_shape, params);
+}
+
 size_t CactusGraph::moe_layer(size_t hidden,
                               size_t routing_probs,
                               size_t topk_indices,

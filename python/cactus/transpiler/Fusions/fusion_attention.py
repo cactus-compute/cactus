@@ -69,6 +69,22 @@ WHISPER_ATTENTION_LAYOUT_GRAPH = _single_node_graph(
 )
 
 
+GENERIC_CACHED_ATTENTION_GRAPH = _single_node_graph(
+    "generic_cached_attention",
+    "view",
+    ("x",),
+    attr_captures=(
+        M.AttrCapture("scale", default=None, required=False),
+        M.AttrCapture("is_causal", default=True, required=False),
+        M.AttrCapture("position_offset", default=0, required=False),
+        M.AttrCapture("window_size", default=0, required=False),
+        M.AttrCapture("input_layout", default="bhqd_bhsd_bhsd", required=False),
+        M.AttrCapture("output_layout", default="bhqd", required=False),
+    ),
+    metadata={"special_matcher": "generic_cached_attention"},
+)
+
+
 LFM_BMM_MASKED_ATTENTION_GRAPH = _graph(
     "lfm_bmm_masked_attention",
     "lfm_attn_output_view",

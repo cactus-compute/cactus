@@ -178,36 +178,6 @@ def _definition(
     )
 
 
-def _index_by_target(fusions: dict[str, M.FusionDefinition]) -> dict[str, M.FusionDefinition]:
-    return {fusion.target: fusion for fusion in fusions.values()}
-
-
-def _index_by_cactus_op(
-    fusions: dict[str, M.FusionDefinition],
-) -> dict[str, tuple[M.FusionDefinition, ...]]:
-    index: dict[str, tuple[M.FusionDefinition, ...]] = {}
-
-    for fusion in fusions.values():
-        if fusion.cactus_op is None:
-            continue
-
-        index[fusion.cactus_op] = (*index.get(fusion.cactus_op, ()), fusion)
-
-    return index
-
-
-def _index_by_field(
-    fusions: dict[str, M.FusionDefinition],
-) -> dict[str, tuple[M.FusionDefinition, ...]]:
-    index: dict[str, tuple[M.FusionDefinition, ...]] = {}
-
-    for fusion in fusions.values():
-        for field in fusion.fusion_fields:
-            index[field] = (*index.get(field, ()), fusion)
-
-    return index
-
-
 def _index_by_root_op(
     fusions: dict[str, M.FusionDefinition],
 ) -> dict[str, tuple[M.FusionDefinition, ...]]:

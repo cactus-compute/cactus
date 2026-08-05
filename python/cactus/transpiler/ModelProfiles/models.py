@@ -76,6 +76,7 @@ class StateContract:
     transfer: str = "move"
     persist_after_component_unload: bool = True
     required: bool = True
+    release_after_consumers: tuple[str, ...] = ()
     metadata: tuple[tuple[str, str], ...] = ()
 
 @dataclass(slots=True, frozen=True)

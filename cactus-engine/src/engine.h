@@ -151,7 +151,7 @@ struct Config {
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, NEEDLE = 18};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, NEEDLE = 18, GENERIC = 19};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
@@ -832,6 +832,7 @@ private:
         std::string kind;
         std::string producer;
         std::vector<std::string> consumers;
+        std::vector<std::string> release_after_consumers;
         std::string lifetime;
         std::string transfer;
         bool persist_after_component_unload = true;
@@ -875,7 +876,30 @@ private:
             auto it = tensors.find(id);
             return it == tensors.end() ? nullptr : it->second;
         }
+        size_t byte_size() const {
+            size_t total = 0;
+            std::unordered_set<const TensorStorage*> seen;
+            for (const auto& [_, storage] : tensors) {
+                if (storage && seen.insert(storage.get()).second) total += storage->byte_size;
+            }
+            return total;
+        }
+        void erase(const std::string& id) { tensors.erase(id); }
         void clear() { tensors.clear(); }
+    };
+
+    struct RuntimeProfileCounters {
+        uint64_t copied_bytes = 0;
+        uint64_t aliased_bytes = 0;
+        uint64_t media_copied_bytes = 0;
+        uint64_t media_aliased_bytes = 0;
+        uint64_t component_loads = 0;
+        uint64_t component_unloads = 0;
+        uint64_t resident_weight_bytes = 0;
+        uint64_t peak_resident_weight_bytes = 0;
+        uint64_t peak_state_bytes = 0;
+        uint64_t peak_runtime_store_bytes = 0;
+        uint64_t released_runtime_store_bytes = 0;
     };
 
     struct Component {
@@ -890,6 +914,7 @@ private:
         std::map<std::string, std::string> metadata;
         std::unique_ptr<CactusGraph> graph;
         std::vector<std::vector<uint8_t>> input_buffers;
+        size_t resident_weight_bytes = 0;
     };
 
     struct ChunkedPrefillResult {
@@ -905,6 +930,10 @@ private:
     bool load_components(const std::unordered_set<std::string>& required_components);
     bool load_component_graph(Component& comp);
     void unload_component_graph(Component& comp);
+    size_t component_weight_bytes(const Component& comp) const;
+    void observe_state_arena_bytes();
+    size_t runtime_state_store_byte_size() const;
+    void write_runtime_profile() const;
     bool bind_runtime_buffers(Component& comp);
     void run_step(uint32_t token_id, size_t position, bool read_logits);
     void run_step_batch(const std::vector<uint32_t>& token_ids, const std::vector<size_t>& positions);
@@ -942,6 +971,7 @@ private:
     bool output_should_persist_to_runtime_state(const Component& source, const std::string& output_name) const;
     const RuntimeStoredTensor* find_runtime_state_for_input(const Component& target, const std::string& input_name) const;
     void clear_runtime_states_with_lifetime(const std::string& lifetime);
+    void release_runtime_states_after_consumer(const Component& consumer);
     bool cache_states_compatible(const Component& source, const Component& target) const;
     void move_cache_states(Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
     void set_cache_current_len(Component& comp, size_t len);
@@ -1031,6 +1061,7 @@ private:
     std::string media_prefill_fallback_;
     size_t media_min_new_tokens_ = 0;
     size_t media_min_new_tokens_remaining_ = 0;
+    std::unordered_set<uint32_t> media_min_stop_token_ids_;
     std::string prompt_text_style_;
     std::string prompt_media_style_;
     std::string media_image_token_;
@@ -1070,8 +1101,20 @@ private:
     bool source_encode_via_npu(const std::vector<uint32_t>& tokens);
 
     std::map<std::string, std::vector<uint8_t>> media_features_;
+    std::map<std::string, std::shared_ptr<TensorStorage>> media_feature_storages_;
     std::map<std::string, std::vector<size_t>> media_feature_shapes_;
     std::map<std::string, Precision> media_feature_precisions_;
+    const uint8_t* media_feature_data(const std::string& name) const;
+    size_t media_feature_byte_size(const std::string& name) const;
+    void clear_media_feature(const std::string& name);
+    void publish_media_feature_storage(const std::string& name,
+                                       std::shared_ptr<TensorStorage> storage,
+                                       const std::vector<size_t>& shape,
+                                       Precision precision);
+    void append_media_feature(const std::string& name, const void* data, size_t byte_size,
+                              const std::vector<size_t>& shape, Precision precision,
+                              size_t rows_to_append = 0);
+    RuntimeProfileCounters runtime_profile_;
 
     std::vector<float> lfm2_pos_grid_;
     int lfm2_pos_grid_h_ = 0;

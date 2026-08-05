@@ -709,6 +709,22 @@ _bind_optional(
     ],
     ctypes.c_int,
 )
+_bind_optional(
+    "cactus_graph_qkv_tq_fused",
+    [
+        cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, cactus_node_t,
+        ctypes.POINTER(cactus_node_t),
+    ],
+    ctypes.c_int,
+)
+_bind_optional(
+    "cactus_graph_projection_pair_tq_fused",
+    [
+        cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t,
+        ctypes.POINTER(cactus_node_t),
+    ],
+    ctypes.c_int,
+)
 _lib.cactus_graph_moe_layer_ungated.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t,
     ctypes.POINTER(cactus_node_t), ctypes.POINTER(cactus_node_t),
@@ -2873,6 +2889,33 @@ class Graph:
         )
         if rc != 0:
             raise RuntimeError(_err("graph_dense_mlp_tq_fused failed"))
+        return self._tensor_from_node(out.value)
+
+    def qkv_tq_fused(self, hidden, query_weight, key_weight, value_weight):
+        hidden = self._ensure_tensor(hidden)
+        query_weight = self._ensure_tensor(query_weight)
+        key_weight = self._ensure_tensor(key_weight)
+        value_weight = self._ensure_tensor(value_weight)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_qkv_tq_fused(
+            self.h, cactus_node_t(hidden.id), cactus_node_t(query_weight.id),
+            cactus_node_t(key_weight.id), cactus_node_t(value_weight.id), ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_qkv_tq_fused failed"))
+        return self._tensor_from_node(out.value)
+
+    def projection_pair_tq_fused(self, hidden, first_weight, second_weight):
+        hidden = self._ensure_tensor(hidden)
+        first_weight = self._ensure_tensor(first_weight)
+        second_weight = self._ensure_tensor(second_weight)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_projection_pair_tq_fused(
+            self.h, cactus_node_t(hidden.id), cactus_node_t(first_weight.id),
+            cactus_node_t(second_weight.id), ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_projection_pair_tq_fused failed"))
         return self._tensor_from_node(out.value)
 
     def moe_layer_ungated(self, hidden, routing_probs, topk_indices, w1_weights, w2_weights,

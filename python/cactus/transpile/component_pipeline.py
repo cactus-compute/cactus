@@ -104,6 +104,10 @@ def capture_component_spec(
     optimized_ir_graph = copy.deepcopy(captured.ir_graph)
     canonicalize_exported_graph(optimized_ir_graph)
     optimize_graph(optimized_ir_graph, config=fusion_config, precompute_rope=False)
+    # Re-run the complete pipeline over its own output.  Individual passes are
+    # convergent, but a later cleanup/fusion family can expose a pattern owned
+    # by an earlier family in the next complete invocation.
+    optimize_graph(optimized_ir_graph, config=fusion_config, precompute_rope=False)
     # Bake rope tables only into the lowered graph.cactus; the saved optimized IR stays un-baked.
     lowered_ir = copy.deepcopy(optimized_ir_graph)
     if precompute_rope_tables(lowered_ir):

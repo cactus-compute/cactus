@@ -1763,25 +1763,22 @@ void cactus_quant_matmul(
 
     constexpr size_t TILE_M = 8;
 
-    static std::mutex s_expand_mutex;
-    static std::unordered_map<const void*, std::pair<std::vector<int8_t>, std::vector<float>>> s_expand_cache;
-    const int8_t* w_il;
-    const float* n_f32;
-    {
-        std::lock_guard<std::mutex> lock(s_expand_mutex);
-        auto& entry = s_expand_cache[W->packed_indices];
-        if (entry.first.empty()) {
-            int8_t cb_i8[16] = {};
-            const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, codebook_size);
-            const int8x16_t cb_lut = vld1q_s8(cb_i8);
-            entry.first.resize(expanded_size);
-            entry.second.resize(expanded_norms_size);
-            tq_preexpand_weights(W, bits, num_groups, gs, pgb, cb_lut, cb_scale,
-                                 N_blocks, entry.first.data(), entry.second.data());
-        }
-        w_il = entry.first.data();
-        n_f32 = entry.second.data();
-    }
+    // This is the compatibility path for older, non-interleaved CQ files.
+    // Do not cache expansions by packed_indices: mmap commonly reuses the same
+    // virtual address after a component/file is unloaded, which made a new
+    // matrix silently reuse the previous matrix's expanded weights. Production
+    // interleaved weights take the specialized path above and do not reach this
+    // fallback, so keeping the expansion call-local also avoids an unbounded
+    // process-wide RAM cache without affecting the optimized format.
+    std::vector<int8_t> expanded_weights(expanded_size);
+    std::vector<float> expanded_norms(expanded_norms_size);
+    int8_t cb_i8[16] = {};
+    const float cb_scale = tq_quantize_codebook_i8(W->codebook, cb_i8, codebook_size);
+    const int8x16_t cb_lut = vld1q_s8(cb_i8);
+    tq_preexpand_weights(W, bits, num_groups, gs, pgb, cb_lut, cb_scale,
+                         N_blocks, expanded_weights.data(), expanded_norms.data());
+    const int8_t* w_il = expanded_weights.data();
+    const float* n_f32 = expanded_norms.data();
 
     const size_t M_blocks = (M + TILE_M - 1) / TILE_M;
     const size_t total_tiles = M_blocks * N_blocks;
@@ -1977,14 +1974,30 @@ void cactus_quant_dequantize_orthogonal_embedding_row(
         dq[i] = static_cast<float>(codebook[idx]);
     }
 
-    for (uint32_t j = 0; j < K; ++j) {
-        float acc = 0.0f;
-        for (uint32_t i = 0; i < K; ++i) {
-            acc += dq[i] * static_cast<float>(rotation[static_cast<size_t>(j) * K + i]);
+    // Orthogonal tied embeddings require one dense inverse-rotation per token.
+    // Split output rows across the persistent worker pool and widen eight FP16
+    // rotation values at a time; the previous scalar single-thread loop made
+    // embedding lookup a material part of every LFM decode step.
+    static constexpr CactusThreading::ParallelConfig EMBEDDING_ROTATION{128, 256};
+    CactusThreading::parallel_for(K, EMBEDDING_ROTATION, [&](size_t begin, size_t end) {
+        for (size_t j = begin; j < end; ++j) {
+            const __fp16* rotation_row = rotation + j * K;
+            float32x4_t acc_low = vdupq_n_f32(0.0f);
+            float32x4_t acc_high = vdupq_n_f32(0.0f);
+            uint32_t i = 0;
+            for (; i + 8 <= K; i += 8) {
+                const float16x8_t r = vld1q_f16(rotation_row + i);
+                acc_low = vfmaq_f32(acc_low, vld1q_f32(dq.data() + i),
+                                    vcvt_f32_f16(vget_low_f16(r)));
+                acc_high = vfmaq_f32(acc_high, vld1q_f32(dq.data() + i + 4),
+                                     vcvt_f32_f16(vget_high_f16(r)));
+            }
+            float acc = vaddvq_f32(vaddq_f32(acc_low, acc_high));
+            for (; i < K; ++i) acc += dq[i] * static_cast<float>(rotation_row[i]);
+            const float scale = input_scale_recip ? static_cast<float>(input_scale_recip[j]) : 1.0f;
+            out_row[j] = static_cast<__fp16>(acc * norm * scale);
         }
-        float scale = input_scale_recip ? static_cast<float>(input_scale_recip[j]) : 1.0f;
-        out_row[j] = static_cast<__fp16>(acc * norm * scale);
-    }
+    });
 }
 
 static inline uint32_t tq_extract_interleaved_4row_4bit(
@@ -2278,11 +2291,6 @@ static void cactus_quant_interleaved4_gemv_blocks(
             const uint8_t* p1 = packed_interleaved + ((nb + 1) * num_groups + g) * panel_bytes;
             const int8_t*  a_grp = act_i8 + static_cast<size_t>(g) * gs;
             const float    a_sc  = act_scales[g];
-            if (g + 3 < num_groups) {
-                __builtin_prefetch(p0 + 3 * panel_bytes, 0, 0);
-                __builtin_prefetch(p1 + 3 * panel_bytes, 0, 0);
-            }
-
             int32x4_t d0a = vdupq_n_s32(0), d0b = vdupq_n_s32(0);
             int32x4_t d1a = vdupq_n_s32(0), d1b = vdupq_n_s32(0);
 
@@ -2503,6 +2511,235 @@ void cactus_quant_4bit_gemv_interleaved(
                                                   act_i8, act_scales, cb_lut, cb_scale,
                                                   b0, b1, y);
         });
+}
+
+static bool cactus_quant_same_activation_transform(
+    const CactusQuantMatrix* lhs,
+    const CactusQuantMatrix* rhs) {
+    if (lhs == nullptr || rhs == nullptr || lhs->K != rhs->K ||
+        lhs->group_size != rhs->group_size || lhs->num_groups != rhs->num_groups ||
+        lhs->input_scale_recip == nullptr || rhs->input_scale_recip == nullptr) {
+        return false;
+    }
+    if (std::memcmp(lhs->input_scale_recip, rhs->input_scale_recip,
+                    static_cast<size_t>(lhs->K) * sizeof(__fp16)) != 0) {
+        return false;
+    }
+    const size_t group_size = lhs->group_size;
+    if ((lhs->left_signs == nullptr) != (rhs->left_signs == nullptr) ||
+        (lhs->right_signs == nullptr) != (rhs->right_signs == nullptr) ||
+        (lhs->permutation == nullptr) != (rhs->permutation == nullptr)) {
+        return false;
+    }
+    if (lhs->left_signs && std::memcmp(lhs->left_signs, rhs->left_signs, group_size) != 0) return false;
+    if (lhs->right_signs && std::memcmp(lhs->right_signs, rhs->right_signs, group_size) != 0) return false;
+    if (lhs->permutation && std::memcmp(lhs->permutation, rhs->permutation,
+        group_size * sizeof(uint32_t)) != 0) return false;
+    return true;
+}
+
+static bool cactus_quant_4bit_gemv_interleaved_pair(
+    const CactusQuantMatrix* W0,
+    const CactusQuantMatrix* W1,
+    const __fp16* x,
+    __fp16* y0,
+    __fp16* y1) {
+    constexpr uint32_t required_flags = CACTUS_QUANT_FLAG_INTERLEAVED_4ROW;
+    if (!cactus_quant_valid_common(W0, x, y0) || !cactus_quant_valid_common(W1, x, y1) ||
+        W0->bits != 4 || W1->bits != 4 ||
+        (W0->flags & required_flags) == 0 || (W1->flags & required_flags) == 0 ||
+        (W0->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0 ||
+        (W1->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0 ||
+        W0->N % 4 != 0 || W1->N % 4 != 0 ||
+        W0->group_size % 32 != 0 || W0->group_size > 256 ||
+        !cactus_quant_same_activation_transform(W0, W1)) {
+        return false;
+    }
+
+    const uint32_t gs = W0->group_size;
+    const uint32_t num_groups = W0->num_groups;
+    const size_t blocks0 = W0->N / 4;
+    const size_t blocks1 = W1->N / 4;
+    const size_t chunks0 = (blocks0 + 15) / 16;
+    const size_t chunks1 = (blocks1 + 15) / 16;
+    const size_t total_chunks = chunks0 + chunks1;
+
+    static thread_local std::vector<int8_t> pair_act_i8;
+    static thread_local std::vector<float> pair_act_scales;
+    if (pair_act_i8.size() < W0->K) pair_act_i8.resize(W0->K);
+    if (pair_act_scales.size() < num_groups) pair_act_scales.resize(num_groups);
+
+    int8_t cb0_i8[16] = {};
+    int8_t cb1_i8[16] = {};
+    const float cb0_scale = tq_quantize_codebook_i8(W0->codebook, cb0_i8, 16);
+    const float cb1_scale = tq_quantize_codebook_i8(W1->codebook, cb1_i8, 16);
+    const int8x16_t cb0_lut = vld1q_s8(cb0_i8);
+    const int8x16_t cb1_lut = vld1q_s8(cb1_i8);
+    int8_t* act_i8 = pair_act_i8.data();
+    float* act_scales = pair_act_scales.data();
+
+    auto phase_a_group = [&](uint32_t g) {
+        __fp16 basis[256];
+        cactus_quant_transform_hadamard_group(
+            *W0, x + static_cast<size_t>(g) * gs, g, basis);
+        act_scales[g] = tq_quantize_group_i8(
+            basis, act_i8 + static_cast<size_t>(g) * gs, gs);
+    };
+    auto phase_b_chunks = [&](uint32_t first, uint32_t count) {
+        const size_t end = static_cast<size_t>(first) + count;
+        const size_t w0_begin = std::min(static_cast<size_t>(first), chunks0);
+        const size_t w0_end = std::min(end, chunks0);
+        if (w0_begin < w0_end) {
+            cactus_quant_interleaved4_gemv_blocks(
+                W0, W0->packed_indices, W0->norms, act_i8, act_scales, cb0_lut, cb0_scale,
+                w0_begin * 16, std::min(blocks0, w0_end * 16), y0);
+        }
+        const size_t w1_begin = static_cast<size_t>(first) > chunks0
+            ? static_cast<size_t>(first) - chunks0 : 0;
+        const size_t w1_end = end > chunks0 ? std::min(end - chunks0, chunks1) : 0;
+        if (w1_begin < w1_end) {
+            cactus_quant_interleaved4_gemv_blocks(
+                W1, W1->packed_indices, W1->norms, act_i8, act_scales, cb1_lut, cb1_scale,
+                w1_begin * 16, std::min(blocks1, w1_end * 16), y1);
+        }
+    };
+
+    auto& pool = CactusThreading::get_thread_pool();
+    const size_t sb_per_thread = cactus_quant_gemv_sb_per_thread();
+    const size_t nt_budget = std::max<size_t>(1, (total_chunks + sb_per_thread - 1) / sb_per_thread);
+    const size_t nt = std::min(cactus_interleaved_gemv_thread_limit(),
+        std::min(pool.num_workers(), std::min(nt_budget, total_chunks)));
+    if (nt <= 1) {
+        for (uint32_t g = 0; g < num_groups; ++g) phase_a_group(g);
+        phase_b_chunks(0, static_cast<uint32_t>(total_chunks));
+    } else {
+        cactus_quant_two_phase_run(
+            nt, num_groups, static_cast<uint32_t>(total_chunks), phase_a_group,
+            [&](size_t, uint32_t first, uint32_t count) { phase_b_chunks(first, count); });
+    }
+    return true;
+}
+
+void cactus_quant_matmul_pair(
+    const CactusQuantMatrix* W0,
+    const CactusQuantMatrix* W1,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C0,
+    __fp16* C1) {
+    if (M == 1 && cactus_quant_4bit_gemv_interleaved_pair(W0, W1, A, C0, C1)) {
+        return;
+    }
+    cactus_quant_matmul(W0, A, M, C0);
+    cactus_quant_matmul(W1, A, M, C1);
+}
+
+static bool cactus_quant_4bit_gemv_interleaved_triple(
+    const CactusQuantMatrix* W0,
+    const CactusQuantMatrix* W1,
+    const CactusQuantMatrix* W2,
+    const __fp16* x,
+    __fp16* y0,
+    __fp16* y1,
+    __fp16* y2) {
+    const CactusQuantMatrix* weights[3] = {W0, W1, W2};
+    __fp16* outputs[3] = {y0, y1, y2};
+    for (size_t i = 0; i < 3; ++i) {
+        const auto* W = weights[i];
+        if (!cactus_quant_valid_common(W, x, outputs[i]) || W->bits != 4 ||
+            (W->flags & CACTUS_QUANT_FLAG_INTERLEAVED_4ROW) == 0 ||
+            (W->flags & CACTUS_QUANT_FLAG_ORTHOGONAL) != 0 ||
+            W->N % 4 != 0 || W->group_size % 32 != 0 || W->group_size > 256) {
+            return false;
+        }
+    }
+    if (!cactus_quant_same_activation_transform(W0, W1) ||
+        !cactus_quant_same_activation_transform(W0, W2)) {
+        return false;
+    }
+
+    const uint32_t gs = W0->group_size;
+    const uint32_t num_groups = W0->num_groups;
+    size_t blocks[3] = {W0->N / 4, W1->N / 4, W2->N / 4};
+    size_t chunks[3] = {
+        (blocks[0] + 15) / 16,
+        (blocks[1] + 15) / 16,
+        (blocks[2] + 15) / 16,
+    };
+    const size_t total_chunks = chunks[0] + chunks[1] + chunks[2];
+
+    static thread_local std::vector<int8_t> triple_act_i8;
+    static thread_local std::vector<float> triple_act_scales;
+    if (triple_act_i8.size() < W0->K) triple_act_i8.resize(W0->K);
+    if (triple_act_scales.size() < num_groups) triple_act_scales.resize(num_groups);
+    int8_t* act_i8 = triple_act_i8.data();
+    float* act_scales = triple_act_scales.data();
+
+    int8_t cb_i8[3][16] = {};
+    float cb_scale[3];
+    int8x16_t cb_lut[3];
+    for (size_t i = 0; i < 3; ++i) {
+        cb_scale[i] = tq_quantize_codebook_i8(weights[i]->codebook, cb_i8[i], 16);
+        cb_lut[i] = vld1q_s8(cb_i8[i]);
+    }
+
+    auto phase_a_group = [&](uint32_t g) {
+        __fp16 basis[256];
+        cactus_quant_transform_hadamard_group(
+            *W0, x + static_cast<size_t>(g) * gs, g, basis);
+        act_scales[g] = tq_quantize_group_i8(
+            basis, act_i8 + static_cast<size_t>(g) * gs, gs);
+    };
+    auto phase_b_chunks = [&](uint32_t first, uint32_t count) {
+        const size_t global_begin = first;
+        const size_t global_end = global_begin + count;
+        size_t base = 0;
+        for (size_t i = 0; i < 3; ++i) {
+            const size_t local_begin = global_begin > base ? global_begin - base : 0;
+            const size_t local_end = global_end > base
+                ? std::min(global_end - base, chunks[i]) : 0;
+            if (local_begin < local_end) {
+                cactus_quant_interleaved4_gemv_blocks(
+                    weights[i], weights[i]->packed_indices, weights[i]->norms,
+                    act_i8, act_scales, cb_lut[i], cb_scale[i],
+                    local_begin * 16, std::min(blocks[i], local_end * 16), outputs[i]);
+            }
+            base += chunks[i];
+        }
+    };
+
+    auto& pool = CactusThreading::get_thread_pool();
+    const size_t sb_per_thread = cactus_quant_gemv_sb_per_thread();
+    const size_t nt_budget = std::max<size_t>(1, (total_chunks + sb_per_thread - 1) / sb_per_thread);
+    const size_t nt = std::min(cactus_interleaved_gemv_thread_limit(),
+        std::min(pool.num_workers(), std::min(nt_budget, total_chunks)));
+    if (nt <= 1) {
+        for (uint32_t g = 0; g < num_groups; ++g) phase_a_group(g);
+        phase_b_chunks(0, static_cast<uint32_t>(total_chunks));
+    } else {
+        cactus_quant_two_phase_run(
+            nt, num_groups, static_cast<uint32_t>(total_chunks), phase_a_group,
+            [&](size_t, uint32_t first, uint32_t count) { phase_b_chunks(first, count); });
+    }
+    return true;
+}
+
+void cactus_quant_matmul_triple(
+    const CactusQuantMatrix* W0,
+    const CactusQuantMatrix* W1,
+    const CactusQuantMatrix* W2,
+    const __fp16* A,
+    uint32_t M,
+    __fp16* C0,
+    __fp16* C1,
+    __fp16* C2) {
+    if (M == 1 && cactus_quant_4bit_gemv_interleaved_triple(
+        W0, W1, W2, A, C0, C1, C2)) {
+        return;
+    }
+    cactus_quant_matmul(W0, A, M, C0);
+    cactus_quant_matmul(W1, A, M, C1);
+    cactus_quant_matmul(W2, A, M, C2);
 }
 
 void cactus_quant_3bit_gemv_interleaved(

@@ -4,10 +4,7 @@ from . import models as M
 from .fusion_attention import *
 from .fusion_builders import (
     _definition,
-    _index_by_cactus_op,
-    _index_by_field,
     _index_by_root_op,
-    _index_by_target,
     _required_attrs,
 )
 from .fusion_cache_conv import *
@@ -15,73 +12,6 @@ from .fusion_direct import *
 from .fusion_moe import *
 from .fusion_neural import *
 from .fusion_special import *
-
-
-GRAPH_BY_NAME: dict[str, M.FusionGraph] = {
-    **DIRECT_GRAPHS,
-    **DSP_GRAPHS,
-    "linear": LINEAR_GRAPH,
-    "linear_native": LINEAR_NATIVE_GRAPH,
-    "linear_transposed": LINEAR_TRANSPOSED_GRAPH,
-    "linear_addmm_bias": LINEAR_ADDMM_BIAS_GRAPH,
-    "linear_addmm_transposed_bias": LINEAR_ADDMM_TRANSPOSED_BIAS_GRAPH,
-    "linear_bias": LINEAR_BIAS_GRAPH,
-    "rms_norm": RMS_NORM_GRAPH,
-    "rms_norm_cast_weight_left": RMS_NORM_CAST_WEIGHT_LEFT_GRAPH,
-    "rms_norm_pow": RMS_NORM_POW_GRAPH,
-    "rms_norm_no_weight": RMS_NORM_NO_WEIGHT_GRAPH,
-    "rms_norm_pow_no_weight": RMS_NORM_POW_NO_WEIGHT_GRAPH,
-    "layernorm_direct": LAYERNORM_DIRECT_GRAPH,
-    "layernorm_no_bias": LAYERNORM_NO_BIAS_GRAPH,
-    "layernorm": LAYERNORM_GRAPH,
-    "silu_decomposed": SILU_DECOMPOSED_GRAPH,
-    "glu_decomposed": GLU_DECOMPOSED_GRAPH,
-    "swiglu_mlp": SWIGLU_MLP_GRAPH,
-    "gelu_mlp": GELU_MLP_GRAPH,
-    "gemma4_geglu_mlp": GEMMA4_GEGLU_MLP_GRAPH,
-    "scaled_dot_product_attention": ATTENTION_DIRECT_GRAPH,
-    "attention_core": ATTENTION_CORE_GRAPH,
-    "attention_masked": ATTENTION_MASKED_GRAPH,
-    "gemma4_attention_layout": GEMMA4_ATTENTION_LAYOUT_GRAPH,
-    "whisper_attention_layout": WHISPER_ATTENTION_LAYOUT_GRAPH,
-    "whisper_self_attention_cached": WHISPER_ATTENTION_LAYOUT_GRAPH,
-    "lfm_bmm_masked_attention": LFM_BMM_MASKED_ATTENTION_GRAPH,
-    "rope": ROPE_GRAPH,
-    "conv": CONV_GRAPH,
-    "lfm_short_conv_prefill": LFM_SHORT_CONV_PREFILL_GRAPH,
-    "lfm_short_conv_decode": LFM_SHORT_CONV_DECODE_GRAPH,
-    "conv_bias": CONV_BIAS_GRAPH,
-    "kv_cache_append": KV_CACHE_APPEND_GRAPH,
-    "kv_cache_initial_append": KV_CACHE_INITIAL_APPEND_GRAPH,
-    "attention_cached": ATTENTION_CACHED_GRAPH,
-    "moe_layer_gated": MOE_GATED_GRAPH,
-    "lfm_grouped_moe": LFM_GROUPED_MOE_GRAPH,
-    "lfm_grouped_moe_no_token_clone": LFM_GROUPED_MOE_NO_TOKEN_CLONE_GRAPH,
-    "lfm_grouped_moe_silu": LFM_GROUPED_MOE_SILU_GRAPH,
-    "lfm_grouped_moe_silu_no_token_clone": LFM_GROUPED_MOE_SILU_NO_TOKEN_CLONE_GRAPH,
-    "lfm_grouped_moe_direct_router": LFM_GROUPED_MOE_DIRECT_ROUTER_GRAPH,
-    "lfm_grouped_moe_direct_router_no_token_clone": LFM_GROUPED_MOE_DIRECT_ROUTER_NO_TOKEN_CLONE_GRAPH,
-    "lfm_grouped_moe_silu_direct_router": LFM_GROUPED_MOE_SILU_DIRECT_ROUTER_GRAPH,
-    "lfm_grouped_moe_silu_direct_router_no_token_clone": LFM_GROUPED_MOE_SILU_DIRECT_ROUTER_NO_TOKEN_CLONE_GRAPH,
-    "lstm_cell": LSTM_CELL_GRAPH,
-    "gated_deltanet_decode": DELTANET_DECODE_GRAPH,
-    "gated_deltanet_prefill": DELTANET_PREFILL_GRAPH,
-    "rel_pos_bias": REL_POS_BIAS_GRAPH,
-    "gemma4_rope_cos_table": GEMMA4_ROPE_COS_TABLE_GRAPH,
-    "gemma4_rope_sin_table": GEMMA4_ROPE_SIN_TABLE_GRAPH,
-    "kv_cache_state": KV_CACHE_STATE_GRAPH,
-    "conv_cache_state": CONV_CACHE_STATE_GRAPH,
-    "conv_cache_append": CONV_CACHE_APPEND_GRAPH,
-    "lfm_conv_cache_roll_append": LFM_CONV_CACHE_ROLL_APPEND_GRAPH,
-    "conv_cache_initialize": CONV_CACHE_INITIALIZE_GRAPH,
-    "recurrent_cache_state": RECURRENT_CACHE_STATE_GRAPH,
-    "recurrent_cache_write": RECURRENT_CACHE_WRITE_GRAPH,
-    "sample": SAMPLE_GRAPH,
-    "scatter_topk": SCATTER_TOPK_GRAPH,
-    "gaussian_topk": GAUSSIAN_TOPK_GRAPH,
-    "altup_predict": ALTUP_PREDICT_GRAPH,
-    "altup_correct": ALTUP_CORRECT_GRAPH,
-}
 
 
 DIRECT_CACTUS_OPS: dict[str, str] = {
@@ -143,6 +73,14 @@ FUSIONS: dict[str, M.FusionDefinition] = {
         supported_modalities=("audio",),
         supported_inference_modes=("decode_with_cache",),
         metadata={"special_matcher": "whisper_attention_layout"},
+    ),
+    "generic_cached_attention": _definition(
+        "generic_cached_attention",
+        "attention_cached",
+        GENERIC_CACHED_ATTENTION_GRAPH,
+        fusion_fields=("generic", "attention", "cache"),
+        supported_inference_modes=("decode_with_cache",),
+        metadata={"special_matcher": "generic_cached_attention"},
     ),
     "gemma4_bmm_masked_attention": _definition(
         "gemma4_bmm_masked_attention",
@@ -220,18 +158,6 @@ FUSIONS: dict[str, M.FusionDefinition] = {
     "irfft": _definition("irfft", "irfft", DSP_GRAPHS["irfft"], fusion_fields=("generic", "audio", "dsp")),
     "spectrogram": _definition("spectrogram", "spectrogram", DSP_GRAPHS["spectrogram"], fusion_fields=("generic", "audio", "dsp")),
 }
-
-
-FUSION_CATALOG = M.FusionCatalog(fusions=tuple(FUSIONS.values()))
-
-
-FUSIONS_BY_TARGET: dict[str, M.FusionDefinition] = _index_by_target(FUSIONS)
-
-
-FUSIONS_BY_CACTUS_OP: dict[str, tuple[M.FusionDefinition, ...]] = _index_by_cactus_op(FUSIONS)
-
-
-FUSIONS_BY_FIELD: dict[str, tuple[M.FusionDefinition, ...]] = _index_by_field(FUSIONS)
 
 
 FUSIONS_BY_ROOT_OP: dict[str, tuple[M.FusionDefinition, ...]] = _index_by_root_op(FUSIONS)

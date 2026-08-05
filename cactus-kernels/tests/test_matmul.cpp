@@ -574,6 +574,33 @@ static bool test_cq4_interleaved(double& mse_out,
     return mse_out <= 0.1;
 }
 
+static bool test_cq4_shared_transform_multi_projection() {
+    constexpr uint32_t K = 256;
+    SyntheticCQ q(4, K, 128, 128, 901);
+    SyntheticCQ k(4, K, 64, 128, 902);
+    SyntheticCQ v(4, K, 64, 128, 903);
+    for (SyntheticCQ* matrix : {&k, &v}) {
+        matrix->input_scale = q.input_scale;
+        matrix->input_scale_recip = q.input_scale_recip;
+        matrix->left_signs = q.left_signs;
+        matrix->right_signs = q.right_signs;
+        matrix->permutation = q.permutation;
+    }
+    CactusQuantMatrix qm = q.matrix_interleaved();
+    CactusQuantMatrix km = k.matrix_interleaved();
+    CactusQuantMatrix vm = v.matrix_interleaved();
+    std::vector<__fp16> x(K);
+    for (size_t i = 0; i < K; ++i) x[i] = static_cast<__fp16>(std::sin(static_cast<float>(i) * 0.031f));
+    std::vector<__fp16> q_ref(q.N), k_ref(k.N), v_ref(v.N);
+    std::vector<__fp16> q_out(q.N), k_out(k.N), v_out(v.N);
+    cactus_quant_matmul(&qm, x.data(), 1, q_ref.data());
+    cactus_quant_matmul(&km, x.data(), 1, k_ref.data());
+    cactus_quant_matmul(&vm, x.data(), 1, v_ref.data());
+    cactus_quant_matmul_triple(
+        &qm, &km, &vm, x.data(), 1, q_out.data(), k_out.data(), v_out.data());
+    return q_ref == q_out && k_ref == k_out && v_ref == v_out;
+}
+
 int main() {
     TestRunner runner("Matrix Multiplication");
     runner.run_test("matmul_f16", test_matmul_f16());
@@ -587,6 +614,7 @@ int main() {
         // N=4164 -> 66 chunks incl. a 1-block tail: exercises the multi-thread fused driver.
         double m_mt = 0;
         runner.run_test("matmul_cq4_il_mt", test_cq4_interleaved(m_mt, 1024, 4164, 128));
+        runner.run_test("matmul_cq4_shared_transform", test_cq4_shared_transform_multi_projection());
     }
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());

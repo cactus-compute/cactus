@@ -23,6 +23,21 @@ class CacheAnnotation:
     source: str = "inferred"
 
 
+@dataclass(slots=True, frozen=True)
+class CacheConcatMatch:
+    """A structural boundary between opaque cache state and a new tensor.
+
+    Cache state is not an ordinary tensor even when an exported graph applies
+    layout-only operations around it.  Keeping this match in the IR model
+    layer gives fusions and lowering one model-independent cache contract.
+    """
+
+    concat: "Node"
+    state: "Node"
+    new_value: "Node"
+    state_wrappers: tuple["Node", ...] = ()
+
+
 @dataclass(slots=True)
 class Node:
     index: int
@@ -133,6 +148,65 @@ class FusionResult:
     @property
     def consumed_node_names(self) -> frozenset[str]:
         return frozenset(node.name for node in self.matched_nodes)
+
+
+CACHE_LAYOUT_TARGETS = frozenset({
+    "cactus.view", "aten.view.default", "aten.reshape.default",
+    "cactus.transpose", "aten.transpose.int", "aten.permute.default",
+    "cactus.precision_cast", "aten._to_copy.default",
+    "aten.clone.default", "aten.contiguous.default",
+})
+
+
+def find_cache_concat_ancestor(
+    node: Node,
+    role: str,
+    *,
+    max_depth: int = 18,
+    cache_wrapper_depth: int = 8,
+) -> CacheConcatMatch | None:
+    """Match a typed cache/new-value concatenation through layout wrappers.
+
+    Operand order and model naming are intentionally irrelevant.  The cache
+    annotation is the authority that distinguishes opaque state from data.
+    """
+    current = node
+    for _ in range(max_depth):
+        if current.target in {"cactus.cat", "aten.cat.default"} and len(current.parents) >= 2:
+            for parent_index, parent in enumerate(current.parents[:2]):
+                state, wrappers = find_cache_state_ancestor(
+                    parent, role, max_depth=cache_wrapper_depth,
+                )
+                if state is not None:
+                    return CacheConcatMatch(
+                        concat=current,
+                        state=state,
+                        new_value=current.parents[1 - parent_index],
+                        state_wrappers=wrappers,
+                    )
+        if len(current.parents) != 1:
+            return None
+        current = current.parents[0]
+    return None
+
+
+def find_cache_state_ancestor(
+    node: Node,
+    role: str,
+    *,
+    max_depth: int = 8,
+) -> tuple[Node | None, tuple[Node, ...]]:
+    current = node
+    wrappers: list[Node] = []
+    for _ in range(max_depth + 1):
+        annotation = current.cache
+        if annotation is not None and annotation.kind == FModels.CacheKind.KV and annotation.role == role:
+            return current, tuple(wrappers)
+        if current.target not in CACHE_LAYOUT_TARGETS or len(current.parents) != 1:
+            break
+        wrappers.append(current)
+        current = current.parents[0]
+    return None, ()
 
 
 

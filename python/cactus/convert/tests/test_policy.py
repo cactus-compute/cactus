@@ -126,13 +126,13 @@ def test_lfm_moe_router_stays_fp16():
     assert p.bits is None
 
 
-def test_lfm_attention_projections_stay_fp16():
+def test_lfm_attention_projections_use_requested_quantization():
     adapter = adapter_for_family("lfm2")
     for projection in ("q_proj", "k_proj", "v_proj", "out_proj"):
         match = cactus_name_for_tensor(f"model.layers.2.self_attn.{projection}.weight", "lfm2", 16)
         p = adapter.policy(match, (2048, 2048), 4)
-        assert p.precision == "FP16"
-        assert p.bits is None
+        assert p.precision == "CQ4"
+        assert p.bits == 4
 
 
 def test_lfm_vl_vision_path_stays_fp16():

@@ -29,6 +29,29 @@ def lower_moe(context: models.GenerationContext, node: IRModels.Node) -> Any:
             gate_input_scale=gate_scale,
         )
 
+    if node.target == "cactus.qkv_tq_fused":
+        require_len(node, inputs, 4)
+        scales = tuple(weight_scale_factor_for_parent(context, node, index) or 1.0 for index in range(1, 4))
+        if any(abs(scale - 1.0) > 1e-7 for scale in scales):
+            raise UnsupportedLoweringError(
+                f"{node.name}: qkv_tq_fused currently requires unit weight scale factors, got {scales}"
+            )
+        return context.graph.qkv_tq_fused(
+            cast_to_precision(context, inputs[0], context.graph.FP16),
+            inputs[1], inputs[2], inputs[3],
+        )
+
+    if node.target == "cactus.projection_pair_tq_fused":
+        require_len(node, inputs, 3)
+        scales = tuple(weight_scale_factor_for_parent(context, node, index) or 1.0 for index in range(1, 3))
+        if any(abs(scale - 1.0) > 1e-7 for scale in scales):
+            raise UnsupportedLoweringError(
+                f"{node.name}: projection_pair_tq_fused currently requires unit weight scale factors, got {scales}"
+            )
+        return context.graph.projection_pair_tq_fused(
+            cast_to_precision(context, inputs[0], context.graph.FP16), inputs[1], inputs[2]
+        )
+
     if node.target == "cactus.moe_layer_gated":
         packed = lower_packed_lfm_moe_layer_gated(context, node, inputs)
         if packed is not None:

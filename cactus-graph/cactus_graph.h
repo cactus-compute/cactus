@@ -139,7 +139,9 @@ enum class OpType {
     SCALAR_FLOOR_DIVIDE,
     STRIDED_SLICE,
     EXPAND,
-    MASKED_SELECT_PREFIX
+    MASKED_SELECT_PREFIX,
+    QKV_TQ_FUSED,
+    PROJECTION_PAIR_TQ_FUSED
 };
 
 struct PrecisionTraits {
@@ -740,6 +742,8 @@ public:
         bool normalize_routing, float epsilon, float routed_scaling_factor,
         Activation activation);
     size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale = 1.0f, float gate_input_scale = 1.0f);
+    size_t qkv_tq_fused(size_t hidden, size_t query_weight, size_t key_weight, size_t value_weight);
+    size_t projection_pair_tq_fused(size_t hidden, size_t first_weight, size_t second_weight);
     size_t stats_pool(size_t input);
     size_t weighted_stats_pool(size_t input, size_t weights);
 
@@ -771,6 +775,7 @@ public:
     void invalidate_persistent(size_t persistent_node_id);
 
     void execute(const std::string& profile_file = "");
+    void set_profile_label(std::string label) { profile_label_ = std::move(label); }
     void hard_reset();
     void soft_reset();
     void soft_reset_keep_pool();
@@ -821,6 +826,7 @@ private:
     std::unordered_set<size_t> populated_node_ids_;
     std::unordered_set<size_t> embedded_input_node_ids_;
     std::unordered_set<size_t> retained_output_node_ids_;
+    std::string profile_label_;
 };
 
 namespace GraphFile {

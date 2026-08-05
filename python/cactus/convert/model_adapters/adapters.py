@@ -489,8 +489,6 @@ class Lfm2Adapter(FamilyAdapter):
             or match.source_name.startswith("model.multi_modal_projector.")
         ):
             return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "lfm2-vl vision path accuracy")
-        if ".self_attn." in match.source_name and match.source_name.endswith(("_proj.weight",)):
-            return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "lfm2 attention projection precision-sensitive")
         if match.source_name.endswith("feed_forward.gate.weight"):
             return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "moe router precision-sensitive")
         policy = super().policy(match, shape, requested_bits)

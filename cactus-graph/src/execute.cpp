@@ -73,6 +73,8 @@ DECLARE_COMPUTE(compute_topk_node);
 DECLARE_COMPUTE(compute_scatter_topk_node);
 DECLARE_COMPUTE(compute_moe_layer_node);
 DECLARE_COMPUTE(compute_dense_mlp_tq_fused_node);
+DECLARE_COMPUTE(compute_qkv_tq_fused_node);
+DECLARE_COMPUTE(compute_projection_pair_tq_fused_node);
 DECLARE_COMPUTE(compute_persistent_node);
 DECLARE_COMPUTE(compute_kv_cache_state_node);
 DECLARE_COMPUTE(compute_kv_cache_append_node);
@@ -93,7 +95,7 @@ DECLARE_COMPUTE(compute_expand_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::MASKED_SELECT_PREFIX) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::PROJECTION_PAIR_TQ_FUSED) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -190,6 +192,8 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::SCATTER_TOPK)] = compute_scatter_topk_node;
     dispatch_flat[static_cast<int>(OpType::MOE_LAYER)] = compute_moe_layer_node;
     dispatch_flat[static_cast<int>(OpType::DENSE_MLP_TQ_FUSED)] = compute_dense_mlp_tq_fused_node;
+    dispatch_flat[static_cast<int>(OpType::QKV_TQ_FUSED)] = compute_qkv_tq_fused_node;
+    dispatch_flat[static_cast<int>(OpType::PROJECTION_PAIR_TQ_FUSED)] = compute_projection_pair_tq_fused_node;
     dispatch_flat[static_cast<int>(OpType::PERSISTENT)] = compute_persistent_node;
     dispatch_flat[static_cast<int>(OpType::LSTM_CELL)] = compute_lstm_cell_node;
     dispatch_flat[static_cast<int>(OpType::GATED_DELTANET_DECODE)] = compute_gated_deltanet_decode_node;
@@ -281,7 +285,8 @@ static const char* op_type_names[] = {
     "SCALAR_FLOOR_DIVIDE",
     "STRIDED_SLICE",
     "EXPAND",
-    "MASKED_SELECT_PREFIX"
+    "MASKED_SELECT_PREFIX",
+    "QKV_TQ_FUSED", "PROJECTION_PAIR_TQ_FUSED"
 };
 
 static const char* get_op_name(OpType op) {
@@ -762,11 +767,14 @@ void CactusGraph::execute(const std::string& profile_file) {
 
     if (enable_profiling) {
         *out << "=== Graph Execution Profile ===" << std::endl;
-        *out << std::left << std::setw(24) << "Operation"
+        if (!profile_label_.empty()) *out << "Component: " << profile_label_ << std::endl;
+        *out << std::left << std::setw(32) << "Operation"
+             << std::setw(10) << "Node"
              << std::setw(12) << "Time (ms)"
+             << std::setw(14) << "Bytes"
              << std::setw(20) << "Output Shape"
              << "Backend" << std::endl;
-        *out << std::string(72, '-') << std::endl;
+        *out << std::string(96, '-') << std::endl;
     }
 
     for (size_t node_idx = 0; node_idx < n; ++node_idx) {
@@ -822,8 +830,10 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
             shape_str += "]";
 
-            *out << std::left << std::setw(24) << get_op_name(node->op_type)
+            *out << std::left << std::setw(32) << get_op_name(node->op_type)
+                 << std::setw(10) << node->id
                  << std::setw(12) << std::fixed << std::setprecision(3) << ms
+                 << std::setw(14) << node->output_buffer.byte_size
                  << std::setw(20) << shape_str << std::endl;
         } else {
             dispatch_node(*node, nodes_, node_index_map_);
@@ -1083,7 +1093,7 @@ void CactusGraph::execute(const std::string& profile_file) {
         auto total_duration = std::chrono::duration_cast<std::chrono::microseconds>(total_end - total_start);
         double total_ms = total_duration.count() / 1000.0;
 
-        *out << std::string(72, '-') << std::endl;
+        *out << std::string(96, '-') << std::endl;
         *out << "Total execution time: " << std::fixed << std::setprecision(3) << total_ms << " ms" << std::endl;
         *out << "================================" << std::endl;
 

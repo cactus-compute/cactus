@@ -344,12 +344,16 @@ def shape_attr(node: IRModels.Node) -> tuple[int, ...]:
     dims: list[int] = []
 
     for index, dim in enumerate(raw_shape):
-        if isinstance(dim, int) and dim >= 0:
+        output_dim = resolved_output_shape[index] if index < len(resolved_output_shape) else None
+
+        if isinstance(dim, int) and dim == 0 and isinstance(output_dim, int) and output_dim > 0:
+            dims.append(output_dim)
+        elif isinstance(dim, int) and dim >= 0:
             dims.append(dim)
         elif isinstance(dim, str) and dim.isdigit():
             dims.append(int(dim))
-        elif index < len(resolved_output_shape):
-            dims.append(resolved_output_shape[index])
+        elif output_dim is not None:
+            dims.append(output_dim)
         else:
             raise UnsupportedLoweringError(f"{node.name}: cannot resolve shape dim {dim!r}")
 

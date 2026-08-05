@@ -2,10 +2,45 @@ import unittest
 
 from cactus.transpiler.Fusions import models as FModels
 from cactus.transpiler.Generator import component_split
+from cactus.transpiler.Generator import lowering_utils
 from cactus.transpiler.IR import models as IRModels
 
 
 class TestGeneratorComponentSplit(unittest.TestCase):
+    def test_shape_attr_recovers_inherited_dimension_after_chunk_retarget(self) -> None:
+        node = IRModels.Node(
+            index=0,
+            name="expand",
+            node_type="call_function",
+            target="cactus.expand",
+            args=[],
+            kwargs={"shape": [1, 0, 1]},
+            users=(),
+            tensor_output_meta={"shape": [1, 32, 1], "dtype": "torch.float32"},
+            module_stack=None,
+            value_kind=FModels.ValueKind.ACTIVATION,
+            attrs={"shape": [1, 0, 1]},
+        )
+
+        self.assertEqual(lowering_utils.shape_attr(node), (1, 32, 1))
+
+    def test_shape_attr_preserves_genuine_zero_sized_dimension(self) -> None:
+        node = IRModels.Node(
+            index=0,
+            name="empty_expand",
+            node_type="call_function",
+            target="cactus.expand",
+            args=[],
+            kwargs={"shape": [1, 0, 1]},
+            users=(),
+            tensor_output_meta={"shape": [1, 0, 1], "dtype": "torch.float32"},
+            module_stack=None,
+            value_kind=FModels.ValueKind.ACTIVATION,
+            attrs={"shape": [1, 0, 1]},
+        )
+
+        self.assertEqual(lowering_utils.shape_attr(node), (1, 0, 1))
+
     def test_component_extraction_rewrites_aliases_and_logical_outputs(self) -> None:
         input_ids = IRModels.Node(
             index=0,

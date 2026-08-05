@@ -74,7 +74,6 @@ class TensorConstraint:
     same_dim_as: tuple[tuple[int, str, int], ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class AttrConstraint:
     """
@@ -332,15 +331,3 @@ class FusionDefinition:
     supported_modalities: tuple[str, ...] = ()
     cactus_op: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class FusionCatalog:
-    """
-    Stores the registry of all fusion definitions.
-
-    This is the compact object IR can iterate over or index when running fusion
-    passes. The heavier lookup maps live in fusions.py, not in this data model.
-    """
-
-    fusions: tuple[FusionDefinition, ...] = ()

@@ -7,7 +7,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cactus.transpiler.ModelProfiles.profiles import GEMMA4_E2B_PROFILE, profile_for_model_id
+from cactus.transpiler.ModelProfiles.profiles import (
+    GEMMA4_E2B_PROFILE,
+    LFM_VLM_PROFILE,
+    PARAKEET_PROFILE,
+    WHISPER_PROFILE,
+    profile_for_model_id,
+)
 from cactus.transpiler.Generator import models as GModels
 from cactus.transpiler.RuntimePlan import models as RPModels
 
@@ -97,13 +103,19 @@ class TestRuntimePlan(unittest.TestCase):
             self.assertEqual(engine_manifest.get("media_focus_policy", ""), "")
             self.assertEqual(engine_manifest["media_chunk_prefill_modalities"], "vision,image,audio")
             self.assertEqual(engine_manifest["media_prefill_fallback"], "error")
-            self.assertEqual(engine_manifest["media_chunk_output_sources"], "per_layer_inputs:text_chunk")
+            self.assertNotIn("media_chunk_output_sources", engine_manifest)
             self.assertIn("pictured", engine_manifest["media_image_focus_keywords"])
             self.assertIn("audio", engine_manifest["media_audio_focus_keywords"])
             self.assertTrue(engine_manifest["states"])
+            media_state = next(state for state in engine_manifest["states"] if state["name"] == "media_features")
+            self.assertEqual(media_state["metadata"]["outputs"], "image_features,audio_features")
+            self.assertEqual(
+                media_state["release_after_consumers"],
+                ["lm_encoder_media_chunk", "lm_encoder_media_step"],
+            )
             self.assertTrue(engine_manifest["aliases"])
 
-    def test_aliases_resolve_to_exact_graph_nodes(self):
+    def test_aliases_require_explicit_storage_ownership_metadata(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             bundle_dir = Path(tmpdir)
             manifests = {}
@@ -130,18 +142,30 @@ class TestRuntimePlan(unittest.TestCase):
                 if value.source_component == "lm_encoder_text_chunk"
             )
 
-            self.assertEqual(alias.source_node_id, 7)
-            self.assertEqual(alias.target_node_id, 11)
-            self.assertTrue(alias.storage_stable)
+            self.assertEqual(alias.source_node_id, -1)
+            self.assertEqual(alias.target_node_id, -1)
+            self.assertFalse(alias.storage_stable)
             encoded = RPModels.runtime_alias_to_dict(alias)
-            self.assertEqual(encoded["source_node_id"], 7)
-            self.assertEqual(encoded["target_node_id"], 11)
+            self.assertNotIn("source_node_id", encoded)
+            self.assertNotIn("target_node_id", encoded)
 
     def test_profile_runtime_metadata_includes_fusion_safety_contracts(self):
         profile = replace(GEMMA4_E2B_PROFILE, disabled_fusions=("experimental_fusion",))
         metadata = RPModels.runtime_plan_metadata_from_model_profile(profile)
 
         self.assertEqual(metadata["disabled_fusions"], "experimental_fusion")
+
+    def test_terminal_activation_states_declare_last_consumers(self):
+        expected = (
+            (WHISPER_PROFILE, "encoder_hidden_states", ["decoder_cross_kv"]),
+            (PARAKEET_PROFILE, "encoder_hidden_states", ["asr_decoder"]),
+            (LFM_VLM_PROFILE, "vision_features", ["vision_projector"]),
+        )
+        for profile, state_name, consumers in expected:
+            with self.subTest(profile=profile.model_profiles):
+                state = next(value for value in profile.runtime_contract.states if value.name == state_name)
+                encoded = RPModels.runtime_state_to_dict(RPModels.runtime_state_from_contract(state))
+                self.assertEqual(encoded["release_after_consumers"], consumers)
 
     def test_unknown_model_gets_generic_profile_contract(self):
         profile = profile_for_model_id("example/unknown-causal-lm")

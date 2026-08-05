@@ -51,6 +51,7 @@ class RuntimeState:
     transfer: str = "move"
     persist_after_component_unload: bool = True
     required: bool = True
+    release_after_consumers: tuple[str, ...] = ()
     metadata: dict[str, str] | None = None
 
 
@@ -449,8 +450,9 @@ def resolve_runtime_aliases(
 ) -> tuple[RuntimeAlias, ...]:
     """Resolve profile-level logical aliases to exact generated graph nodes.
 
-    An unresolved alias remains useful documentation and retains its copy fallback,
-    but only a fully resolved edge is marked safe for zero-copy storage binding.
+    Resolving node IDs proves that the logical edge exists; it does not prove
+    that the source output owns durable storage. Zero-copy therefore remains
+    opt-in through alias metadata until generation can establish ownership.
     """
     component_by_name = {component.component: component for component in components}
     resolved: list[RuntimeAlias] = []
@@ -467,12 +469,19 @@ def resolve_runtime_aliases(
             target.runtime_input_node_ids if target else (),
             alias.target_input,
         )
-        resolved.append(replace(
-            alias,
-            source_node_id=source_node_id,
-            target_node_id=target_node_id,
-            storage_stable=source_node_id >= 0 and target_node_id >= 0,
-        ))
+        metadata = alias.metadata or {}
+        storage_stable_requested = str(metadata.get("storage_stable", "")).lower() in {
+            "1", "true", "yes", "on",
+        }
+        if storage_stable_requested and source_node_id >= 0 and target_node_id >= 0:
+            resolved.append(replace(
+                alias,
+                source_node_id=source_node_id,
+                target_node_id=target_node_id,
+                storage_stable=True,
+            ))
+        else:
+            resolved.append(alias)
     return tuple(resolved)
 
 
@@ -520,6 +529,9 @@ def runtime_state_from_contract(state: Any) -> RuntimeState:
         transfer=str(getattr(state, "transfer", "move")),
         persist_after_component_unload=bool(getattr(state, "persist_after_component_unload", True)),
         required=bool(getattr(state, "required", True)),
+        release_after_consumers=tuple(
+            str(value) for value in getattr(state, "release_after_consumers", ()) or ()
+        ),
         metadata=tuple_metadata_dict(getattr(state, "metadata", ())),
     )
 
@@ -615,6 +627,7 @@ def runtime_state_to_dict(state: RuntimeState) -> dict[str, Any]:
         "kind": state.kind,
         "producer": state.producer,
         "consumers": list(state.consumers),
+        "release_after_consumers": list(state.release_after_consumers),
         "lifetime": state.lifetime,
         "transfer": state.transfer,
         "persist_after_component_unload": state.persist_after_component_unload,
@@ -624,7 +637,7 @@ def runtime_state_to_dict(state: RuntimeState) -> dict[str, Any]:
 
 
 def runtime_alias_to_dict(alias: RuntimeAlias) -> dict[str, Any]:
-    return {
+    result = {
         "source_component": alias.source_component,
         "source_output": alias.source_output,
         "target_component": alias.target_component,
@@ -633,11 +646,15 @@ def runtime_alias_to_dict(alias: RuntimeAlias) -> dict[str, Any]:
         "lifetime": alias.lifetime,
         "fallback": alias.fallback,
         "required": alias.required,
-        "source_node_id": alias.source_node_id,
-        "target_node_id": alias.target_node_id,
-        "storage_stable": alias.storage_stable,
         "metadata": string_dict(alias.metadata),
     }
+    if alias.source_node_id >= 0:
+        result["source_node_id"] = alias.source_node_id
+    if alias.target_node_id >= 0:
+        result["target_node_id"] = alias.target_node_id
+    if alias.storage_stable:
+        result["storage_stable"] = True
+    return result
 
 
 def write_runtime_plan(plan: RuntimePlan, bundle_dir: str | Path) -> tuple[Path, Path]:

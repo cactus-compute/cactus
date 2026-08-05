@@ -69,6 +69,21 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
             ref_aliases={boundaries.decode_token_ids: "input_ids"},
         ),
         ComponentSplitSpec(
+            name="lm_encoder_text_prefill_chunk",
+            graph=prefill,
+            outputs=(
+                OutputSpec(boundaries.prefill_text_inputs_embeds, "inputs_embeds"),
+                OutputSpec(boundaries.prefill_per_layer_inputs, "per_layer_inputs"),
+                OutputSpec(position_chunk.name, "position_ids"),
+            ),
+            placeholders=(position_chunk,),
+            ref_aliases={
+                boundaries.merged_inputs_embeds: boundaries.prefill_text_inputs_embeds,
+                boundaries.prefill_token_ids: "input_ids",
+            },
+            chunk_tokens=GEMMA4_TEXT_PREFILL_CHUNK_TOKENS,
+        ),
+        ComponentSplitSpec(
             name="lm_encoder_text_chunk",
             graph=prefill,
             outputs=(
@@ -81,7 +96,7 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
                 boundaries.merged_inputs_embeds: boundaries.prefill_text_inputs_embeds,
                 boundaries.prefill_token_ids: "input_ids",
             },
-            chunk_tokens=GEMMA4_PREFILL_CHUNK_TOKENS,
+            chunk_tokens=GEMMA4_MEDIA_PREFILL_CHUNK_TOKENS,
         ),
         ComponentSplitSpec(
             name="lm_encoder_media_chunk",
@@ -96,7 +111,7 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
                 boundaries.merged_inputs_embeds: inputs_embeds_chunk.name,
                 boundaries.prefill_token_ids: "input_ids",
             },
-            chunk_tokens=GEMMA4_PREFILL_CHUNK_TOKENS,
+            chunk_tokens=GEMMA4_MEDIA_PREFILL_CHUNK_TOKENS,
         ),
         ComponentSplitSpec(
             name="lm_encoder_media_step",
@@ -110,13 +125,22 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
             ref_aliases={boundaries.decode_token_ids: "input_ids"},
         ),
         ComponentSplitSpec(
+            name="decoder_prefill_text_chunk",
+            graph=prefill,
+            outputs=(OutputSpec(boundaries.prefill_logits, "logits"),),
+            side_effects=cache_side_effect_node_names(prefill),
+            placeholders=(inputs_embeds_chunk, per_layer_chunk, position_chunk),
+            ref_aliases=prefill_rope_position_aliases,
+            chunk_tokens=GEMMA4_TEXT_PREFILL_CHUNK_TOKENS,
+        ),
+        ComponentSplitSpec(
             name="decoder_prefill_chunk",
             graph=prefill,
             outputs=(OutputSpec(boundaries.prefill_logits, "logits"),),
             side_effects=cache_side_effect_node_names(prefill),
             placeholders=(inputs_embeds_chunk, per_layer_chunk, position_chunk),
             ref_aliases=prefill_rope_position_aliases,
-            chunk_tokens=GEMMA4_PREFILL_CHUNK_TOKENS,
+            chunk_tokens=GEMMA4_MEDIA_PREFILL_CHUNK_TOKENS,
         ),
         ComponentSplitSpec(
             name="decoder_step",

@@ -20,14 +20,14 @@ def cache_attention_generation_plan(graph: IRModels.Graph, model_profile: Any | 
         if node.target != "cactus.attention" or len(node.parents) < 3:
             continue
 
-        key_cat = find_cache_cat_ancestor(node.parents[1], FModels.CacheTensorRole.KEY)
-        value_cat = find_cache_cat_ancestor(node.parents[2], FModels.CacheTensorRole.VALUE)
+        key_match = find_cache_concat_ancestor(node.parents[1], FModels.CacheTensorRole.KEY)
+        value_match = find_cache_concat_ancestor(node.parents[2], FModels.CacheTensorRole.VALUE)
 
-        if key_cat is None or value_cat is None:
+        if key_match is None or value_match is None:
             continue
 
-        key_cache = key_cat.parents[0]
-        value_cache = value_cat.parents[0]
+        key_cat, value_cat = key_match.concat, value_match.concat
+        key_cache, value_cache = key_match.state, value_match.state
 
         if key_cache.cache is None or value_cache.cache is None:
             continue
@@ -37,7 +37,20 @@ def cache_attention_generation_plan(graph: IRModels.Graph, model_profile: Any | 
 
         skip_names.update(cache_wrapper_path_names(node.parents[1], key_cat))
         skip_names.update(cache_wrapper_path_names(node.parents[2], value_cat))
+        skip_names.update(wrapper.name for wrapper in key_match.state_wrappers)
+        skip_names.update(wrapper.name for wrapper in value_match.state_wrappers)
         cache_state_names.update((key_cache.name, value_cache.name))
+
+    # Cache-side layout wrappers describe the exported tensor view, not native
+    # cache storage.  Never materialize them as graph ops, including when a
+    # structural attention fusion already bypassed the concatenation.
+    for node in graph.nodes:
+        for role in (FModels.CacheTensorRole.KEY, FModels.CacheTensorRole.VALUE):
+            match = IRModels.find_cache_concat_ancestor(node, role, max_depth=1)
+            if match is None or match.concat is not node:
+                continue
+            skip_names.update(wrapper.name for wrapper in match.state_wrappers)
+            cache_state_names.add(match.state.name)
 
     for cat_name in prefill_annotations:
         cat_node = graph.nodes_map.get(cat_name)
@@ -126,21 +139,12 @@ def is_empty_cache_cat(node: IRModels.Node) -> bool:
 
 
 def find_cache_cat_ancestor(node: IRModels.Node, role: str, max_depth: int = 16) -> IRModels.Node | None:
-    current = node
+    match = IRModels.find_cache_concat_ancestor(node, role, max_depth=max_depth)
+    return match.concat if match is not None else None
 
-    for _ in range(max_depth):
-        if current.target in {"cactus.cat", "aten.cat.default"} and len(current.parents) >= 2:
-            cache_parent = current.parents[0]
 
-            if cache_parent.cache is not None and cache_parent.cache.kind == FModels.CacheKind.KV and cache_parent.cache.role == role:
-                return current
-
-        if len(current.parents) != 1:
-            return None
-
-        current = current.parents[0]
-
-    return None
+def find_cache_concat_ancestor(node: IRModels.Node, role: str, max_depth: int = 16) -> IRModels.CacheConcatMatch | None:
+    return IRModels.find_cache_concat_ancestor(node, role, max_depth=max_depth)
 
 
 def cache_wrapper_path_names(start: IRModels.Node, stop: IRModels.Node) -> set[str]:
@@ -187,12 +191,11 @@ def lower_decode_cache_cat(context: models.GenerationContext, node: IRModels.Nod
     if len(node.parents) < 2:
         return None
 
-    cache_parent = node.parents[0]
-
-    if cache_parent.cache is None or cache_parent.cache.kind != FModels.CacheKind.KV:
-        return None
-
-    return context.require(cache_parent.name)
+    for role in (FModels.CacheTensorRole.KEY, FModels.CacheTensorRole.VALUE):
+        match = IRModels.find_cache_concat_ancestor(node, role, max_depth=1)
+        if match is not None and match.concat is node:
+            return context.require(match.state.name)
+    return None
 
 
 def lower_prefill_cache_cat(context: models.GenerationContext, node: IRModels.Node) -> Any | None:
@@ -286,16 +289,15 @@ def lower_cache_backed_attention(context: models.GenerationContext, node: IRMode
     if node.target != "cactus.attention" or len(node.parents) < 3:
         return None
 
-    key_cat = find_attention_cache_cat_ancestor(context, node.parents[1], FModels.CacheTensorRole.KEY)
-    value_cat = find_attention_cache_cat_ancestor(context, node.parents[2], FModels.CacheTensorRole.VALUE)
+    key_match = find_attention_cache_concat_ancestor(context, node.parents[1], FModels.CacheTensorRole.KEY)
+    value_match = find_attention_cache_concat_ancestor(context, node.parents[2], FModels.CacheTensorRole.VALUE)
 
-    if key_cat is None or value_cat is None:
+    if key_match is None or value_match is None:
         return None
 
-    key_cache = key_cat.parents[0]
-    value_cache = value_cat.parents[0]
-    key_new_node = key_cat.parents[1]
-    value_new_node = value_cat.parents[1]
+    key_cat, value_cat = key_match.concat, value_match.concat
+    key_cache, value_cache = key_match.state, value_match.state
+    key_new_node, value_new_node = key_match.new_value, value_match.new_value
 
     query = context.require(node.parents[0].name)
     input_layout = str(node.attrs.get("input_layout", ""))
@@ -366,12 +368,22 @@ def cache_backed_attention_mask(context: models.GenerationContext, node: IRModel
 
 
 def find_attention_cache_cat_ancestor(context: models.GenerationContext, node: IRModels.Node, role: str) -> IRModels.Node | None:
-    cache_cat = find_cache_cat_ancestor(node, role)
+    match = find_attention_cache_concat_ancestor(context, node, role)
+    return match.concat if match is not None else None
 
-    if cache_cat is not None:
-        return cache_cat
 
-    return find_prefill_cache_cat_ancestor(context, node)
+def find_attention_cache_concat_ancestor(context: models.GenerationContext, node: IRModels.Node, role: str) -> IRModels.CacheConcatMatch | None:
+    cache_match = find_cache_concat_ancestor(node, role)
+
+    if cache_match is not None:
+        return cache_match
+
+    cache_cat = find_prefill_cache_cat_ancestor(context, node)
+    if cache_cat is None or len(cache_cat.parents) < 2:
+        return None
+    # Empty prefill cache tensors are initializers rather than persistent
+    # states; retain the established placeholder here for shared lowering.
+    return IRModels.CacheConcatMatch(cache_cat, cache_cat.parents[0], cache_cat.parents[1])
 
 
 def find_prefill_cache_cat_ancestor(context: models.GenerationContext, node: IRModels.Node, max_depth: int = 16) -> IRModels.Node | None:
@@ -504,7 +516,7 @@ def lower_cache(context: models.GenerationContext, node: IRModels.Node) -> Any:
         new_kv = cache_append_value_for_native(context, node, inputs[0]) if inputs else None
 
         if len(inputs) == 1:
-            cache_state = create_cache_state_for_cache_output(context, node)
+            cache_state = create_bound_cache_state(context, node, require_cache_annotation(node))
             context.graph.kv_cache_append(new_kv, cache_state, window_size=cache_retention_window_size(node), sink_size=int(node.attrs.get("sink_size", 0)))
             return cache_state
 
@@ -521,7 +533,7 @@ def lower_cache(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     if target == "cactus.conv_cache_initialize":
         if len(inputs) == 1:
-            cache_state = create_cache_state_for_cache_output(context, node)
+            cache_state = create_bound_cache_state(context, node, require_cache_annotation(node))
             rows = conv_cache_rows_for_native(context, node, inputs[0])
             context.graph.conv_cache_initialize(rows, cache_state)
             return cache_state
@@ -627,11 +639,6 @@ def profile_cache_sequence_length(context: models.GenerationContext) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
-
-
-def create_cache_state_for_cache_output(context: models.GenerationContext, node: IRModels.Node) -> Any:
-    annotation = require_cache_annotation(node)
-    return create_bound_cache_state(context, node, annotation)
 
 
 def create_bound_cache_state(
