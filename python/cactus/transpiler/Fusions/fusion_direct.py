@@ -5,18 +5,14 @@ from typing import Any
 from . import models as M
 from .fusion_builders import _graph, _single_node_graph, _variadic_input
 
-
 def _capture(name: str, node: str, source_attr: str, *, default: Any = None, required: bool = False) -> M.AttrCapture:
     return M.AttrCapture(name, node, source_attr, default=default, required=required)
-
 
 def _same_name_graphs(specs: dict[str, tuple[str, ...]]) -> dict[str, M.FusionGraph]:
     return {name: _single_node_graph(name, name, inputs) for name, inputs in specs.items()}
 
-
 def _scalar_graph(name: str) -> M.FusionGraph:
     return _single_node_graph(name, name, ("x",), attr_captures=(_capture("value", name, "other"),))
-
 
 PLAIN_DIRECT_SPECS = {
     "add": ("a", "b"),

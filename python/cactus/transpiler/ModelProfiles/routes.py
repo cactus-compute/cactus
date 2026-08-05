@@ -1,7 +1,6 @@
 from . import combinations
 from .models import InferencePattern
 
-
 TEXT_PREFILL_ROUTE = (combinations.TEXT_EMBED_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
 TEXT_VISION_PREFILL_ROUTE = (combinations.TEXT_VISION_TO_TOKEN_MERGE, combinations.TOKEN_MERGE_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
 TEXT_AUDIO_PREFILL_ROUTE = (combinations.TEXT_AUDIO_TO_TOKEN_MERGE, combinations.TOKEN_MERGE_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
@@ -18,7 +17,6 @@ TEXT_DECODE = InferencePattern(name="text_decode", route=TEXT_DECODE_ROUTE,)
 SPEECH_SEQ2SEQ_PREFILL = InferencePattern(name="speech_seq2seq_prefill", route=SPEECH_SEQ2SEQ_PREFILL_ROUTE,)
 SPEECH_SEQ2SEQ_DECODE = InferencePattern(name="speech_seq2seq_decode", route=SPEECH_SEQ2SEQ_DECODE_ROUTE)
 SPEECH_TRANSCRIBE = InferencePattern(name="speech_transcribe", route=SPEECH_TRANSCRIBE_ROUTE)
-
 
 GEMMA4_INFERENCE_PATTERNS = {
     TEXT_PREFILL.name: TEXT_PREFILL,

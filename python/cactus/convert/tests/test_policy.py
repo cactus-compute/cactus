@@ -24,6 +24,14 @@ def test_policy_lm_head_interleaved_cq4():
     assert p.layout == "interleaved_4row"
 
 
+def test_policy_unaligned_hadamard_matrix_falls_back_to_fp16():
+    match = cactus_name_for_tensor("model.layers.0.self_attn.q_proj.weight", "generic", 1)
+    p = policy_for_tensor(match, (576, 576), 4, "generic")
+    assert p.action == "fallback"
+    assert p.precision == "FP16"
+    assert "group size 128" in (p.fallback_reason or "")
+
+
 def test_policy_lfm_qwen_tied_embeddings_interleaved_cq4():
     for family in ("lfm2", "qwen"):
         embed = cactus_name_for_tensor("model.language_model.embed_tokens.weight", family, 1)

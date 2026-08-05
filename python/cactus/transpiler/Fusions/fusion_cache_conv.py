@@ -4,7 +4,6 @@ from . import edges as E
 from . import models as M
 from .fusion_builders import _cache_input, _cache_mutation, _cache_output, _graph, _input
 
-
 CONV_GRAPH = _graph(
     "conv",
     "conv",
@@ -12,7 +11,6 @@ CONV_GRAPH = _graph(
     inputs=(_input("x", "conv", 0), _input("weight", "conv", 1), _input("bias", "conv", 2, optional=True)),
     attr_captures=(M.AttrCapture("stride", "conv", "stride", default=1, required=False), M.AttrCapture("padding", "conv", "padding", default=0, required=False), M.AttrCapture("dilation", "conv", "dilation", default=1, required=False), M.AttrCapture("groups", "conv", "groups", default=1, required=False)),
 )
-
 
 LFM_SHORT_CONV_PREFILL_GRAPH = _graph(
     "lfm_short_conv_prefill",
@@ -30,7 +28,6 @@ LFM_SHORT_CONV_PREFILL_GRAPH = _graph(
         "short_conv_prefill_structure": {"conv_node": "conv", "slice_node": "slice", "x_role": "x", "weight_role": "weight"},
     },
 )
-
 
 LFM_SHORT_CONV_DECODE_GRAPH = _graph(
     "lfm_short_conv_decode",
@@ -50,7 +47,6 @@ LFM_SHORT_CONV_DECODE_GRAPH = _graph(
     },
 )
 
-
 CONV_BIAS_GRAPH = _graph(
     "conv_bias",
     "conv_bias_add",
@@ -59,7 +55,6 @@ CONV_BIAS_GRAPH = _graph(
     inputs=(_input("x", "conv", 0), _input("weight", "conv", 1), _input("bias", "conv_bias_add", 1)),
     attr_captures=(M.AttrCapture("stride", "conv", "stride", default=1, required=False), M.AttrCapture("padding", "conv", "padding", default=0, required=False), M.AttrCapture("dilation", "conv", "dilation", default=1, required=False), M.AttrCapture("groups", "conv", "groups", default=1, required=False)),
 )
-
 
 KV_CACHE_APPEND_GRAPH = _graph(
     "kv_cache_append",
@@ -77,7 +72,6 @@ KV_CACHE_APPEND_GRAPH = _graph(
     },
 )
 
-
 KV_CACHE_INITIAL_APPEND_GRAPH = _graph(
     "kv_cache_initial_append",
     "kv_cache_append",
@@ -93,7 +87,6 @@ KV_CACHE_INITIAL_APPEND_GRAPH = _graph(
         "cache_output_consumers": {"node": "kv_cache_append", "allow_output_child": True},
     },
 )
-
 
 ATTENTION_CACHED_GRAPH = _graph(
     "attention_cached",
@@ -111,7 +104,6 @@ ATTENTION_CACHED_GRAPH = _graph(
     },
 )
 
-
 KV_CACHE_STATE_GRAPH = _graph(
     "kv_cache_state",
     "kv_cache_state",
@@ -120,7 +112,6 @@ KV_CACHE_STATE_GRAPH = _graph(
     attr_captures=(M.AttrCapture("max_seq_len", default=None, required=False), M.AttrCapture("num_kv_heads", default=None, required=False), M.AttrCapture("head_dim", default=None, required=False), M.AttrCapture("window_size", default=0, required=False), M.AttrCapture("sink_size", default=0, required=False), M.AttrCapture("num_slots", default=1, required=False)),
 )
 
-
 CONV_CACHE_STATE_GRAPH = _graph(
     "conv_cache_state",
     "conv_cache_state",
@@ -128,7 +119,6 @@ CONV_CACHE_STATE_GRAPH = _graph(
     outputs=(M.FusionOutput("cache_state", "conv_cache_state"),),
     attr_captures=(M.AttrCapture("window_size", default=None, required=False), M.AttrCapture("hidden_dim", default=None, required=False)),
 )
-
 
 CONV_CACHE_APPEND_GRAPH = _graph(
     "conv_cache_append",
@@ -142,7 +132,6 @@ CONV_CACHE_APPEND_GRAPH = _graph(
     cache_outputs=(_cache_output("updated_cache_state", "conv_cache_append", cache_kind=M.CacheKind.CONV, tensor_role=M.CacheTensorRole.STATE),),
     cache_mutations=(_cache_mutation("append_conv_state", cache_kind=M.CacheKind.CONV, read_roles=("cache_state",), write_roles=("updated_cache_state",)),),
 )
-
 
 LFM_CONV_CACHE_ROLL_APPEND_GRAPH = _graph(
     "lfm_conv_cache_roll_append",
@@ -202,7 +191,6 @@ LFM_CONV_CACHE_ROLL_APPEND_GRAPH = _graph(
     },
 )
 
-
 CONV_CACHE_INITIALIZE_GRAPH = _graph(
     "conv_cache_initialize",
     "conv_cache_initialize",
@@ -218,7 +206,6 @@ CONV_CACHE_INITIALIZE_GRAPH = _graph(
     },
 )
 
-
 RECURRENT_CACHE_STATE_GRAPH = _graph(
     "recurrent_cache_state",
     "recurrent_cache_state",
@@ -226,7 +213,6 @@ RECURRENT_CACHE_STATE_GRAPH = _graph(
     outputs=(M.FusionOutput("cache_state", "recurrent_cache_state"),),
     attr_captures=(M.AttrCapture("shape", default=None, required=False), M.AttrCapture("precision", default=None, required=False)),
 )
-
 
 RECURRENT_CACHE_WRITE_GRAPH = _graph(
     "recurrent_cache_write",

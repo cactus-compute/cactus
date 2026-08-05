@@ -167,12 +167,10 @@ class TestRuntimePlan(unittest.TestCase):
                 encoded = RPModels.runtime_state_to_dict(RPModels.runtime_state_from_contract(state))
                 self.assertEqual(encoded["release_after_consumers"], consumers)
 
-    def test_unknown_model_gets_generic_profile_contract(self):
+    def test_unknown_model_is_not_silently_mapped_to_generic_profile(self):
         profile = profile_for_model_id("example/unknown-causal-lm")
 
-        self.assertEqual(profile.model_profiles, "generic_text")
-        self.assertEqual(profile.runtime_contract.plan_name, "generic_text")
-        self.assertTrue(profile.runtime_contract.states)
+        self.assertIsNone(profile)
 
 
 if __name__ == "__main__":

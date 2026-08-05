@@ -444,6 +444,11 @@ std::string Tokenizer::get_default_stop_sequence() const {
     if (model_type_ == ModelType::GEMMA4) {
         return gemma4_turn_end_token_;
     }
+    if (model_type_ == ModelType::UNKNOWN && has_chat_template_
+        && chat_template_.find("<|im_start|>") != std::string::npos
+        && chat_template_.find("<|im_end|>") != std::string::npos) {
+        return "<|im_end|>";
+    }
     return "";
 }
 
@@ -471,6 +476,33 @@ std::string Tokenizer::format_chat_prompt(const std::vector<ChatMessage>& messag
 
     if (model_type_ == ModelType::QWEN) {
         return format_qwen_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
+    }
+    // A common generic Hugging Face template is plain ChatML.  We do not need
+    // to identify the model family to render it: the delimiters define the
+    // message contract.  Preserve a literal default system message embedded
+    // in the template when the caller did not provide one.
+    if (model_type_ == ModelType::UNKNOWN && has_chat_template_
+        && chat_template_.find("<|im_start|>") != std::string::npos
+        && chat_template_.find("<|im_end|>") != std::string::npos) {
+        std::vector<ChatMessage> templated_messages = messages;
+        const bool has_system = !messages.empty()
+            && (messages.front().role == "system" || messages.front().role == "developer");
+        if (!has_system) {
+            const std::string marker = "<|im_start|>system\n";
+            const size_t begin = chat_template_.find(marker);
+            const size_t end = begin == std::string::npos
+                ? std::string::npos
+                : chat_template_.find("<|im_end|>", begin + marker.size());
+            if (begin != std::string::npos && end != std::string::npos) {
+                ChatMessage system_message;
+                system_message.role = "system";
+                system_message.content = chat_template_.substr(
+                    begin + marker.size(), end - (begin + marker.size()));
+                templated_messages.insert(templated_messages.begin(), std::move(system_message));
+            }
+        }
+        return format_qwen_style(
+            templated_messages, add_generation_prompt, tools_json, enable_thinking_if_supported);
     }
     if (model_type_ == ModelType::LFM2) {
         return format_lfm2_style(messages, add_generation_prompt, tools_json, enable_thinking_if_supported);

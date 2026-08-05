@@ -3,18 +3,14 @@ from typing import Any
 from . import models
 from ..Fusions import models as FModels
 
-
 MISSING = object()
 METADATA_ONLY_TARGETS = {"aten._assert_tensor_metadata.default"}
-
-####################################### Node Matching Utils!!!!! #######################################
 
 def shape_matches(actual_shape: list[Any], expected_shape: tuple[Any, ...]) -> bool:
     if len(actual_shape) != len(expected_shape):
         return False
 
     return all(expected is None or values_equal(actual, expected) for actual, expected in zip(actual_shape, expected_shape))
-
 
 def get_dim(shape: list[Any], index: int) -> Any:
     if index < 0:
@@ -25,17 +21,14 @@ def get_dim(shape: list[Any], index: int) -> Any:
 
     return shape[index]
 
-
 def normalize_dtype(dtype: Any) -> str:
     return str(dtype).removeprefix("torch.")
-
 
 def normalize_gelu_approximation(value: Any) -> Any:
     if value == "none":
         return "erf"
 
     return value
-
 
 def values_equal(actual: Any, expected: Any) -> bool:
     if isinstance(actual, tuple):
@@ -52,14 +45,11 @@ def values_equal(actual: Any, expected: Any) -> bool:
 
     return actual == expected
 
-
-
 def get_metadata_constraint_value(node: models.Node, key: str) -> Any:
     if key == "approximation" and node.target == "aten.gelu.default":
         return normalize_gelu_approximation(node.attrs.get("approximate", "erf"))
 
     return node.attrs.get(key, MISSING)
-
 
 def compare_values(actual: Any, expected: Any, comparator: str = "eq") -> bool:
     if comparator == "eq":
@@ -72,7 +62,6 @@ def compare_values(actual: Any, expected: Any, comparator: str = "eq") -> bool:
         return any(values_equal(actual, candidate) for candidate in expected)
 
     raise ValueError(f"Unknown attr comparator: {comparator}")
-
 
 def match_attr_constraint(constraint: FModels.AttrConstraint, node: models.Node, bindings: dict[str, models.Node]) -> bool:
     actual = node.attrs.get(constraint.name, MISSING)
@@ -93,7 +82,6 @@ def match_attr_constraint(constraint: FModels.AttrConstraint, node: models.Node,
             return not constraint.required
 
     return compare_values(actual, expected, constraint.comparator)
-
 
 def match_tensor_constraint(constraint: FModels.TensorConstraint, node: models.Node, bindings: dict[str, models.Node]) -> bool:
     if not isinstance(node.tensor_output_meta, dict):
@@ -137,9 +125,6 @@ def match_tensor_constraint(constraint: FModels.TensorConstraint, node: models.N
 
     return True
 
-
-####################################### Other matching utils!!!!! #######################################
-
 def bind_fusion_graph(source: models.Node, fusion: FModels.FusionGraph, node_matcher: Any) -> dict[str, models.Node] | None:
     if fusion.root not in fusion.nodes:
         return None
@@ -179,7 +164,6 @@ def bind_fusion_graph(source: models.Node, fusion: FModels.FusionGraph, node_mat
 
     return bindings
 
-
 def bind_node(synth_node_name: str, node: models.Node, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], node_matcher: Any) -> bool:
     synth_node = fusion.nodes.get(synth_node_name)
 
@@ -198,7 +182,6 @@ def bind_node(synth_node_name: str, node: models.Node, fusion: FModels.FusionGra
     bindings[synth_node_name] = node
     return True
 
-
 def edge_matches(edge: FModels.FusionEdge, bindings: dict[str, models.Node]) -> bool:
     source = bindings.get(edge.source)
     dest = bindings.get(edge.dest)
@@ -208,7 +191,6 @@ def edge_matches(edge: FModels.FusionEdge, bindings: dict[str, models.Node]) -> 
 
     parent = get_edge_parent(edge, bindings)
     return parent is source
-
 
 def get_edge_parent(edge: FModels.FusionEdge, bindings: dict[str, models.Node]) -> models.Node | None:
     dest = bindings.get(edge.dest)
@@ -225,7 +207,6 @@ def get_edge_parent(edge: FModels.FusionEdge, bindings: dict[str, models.Node]) 
 
     return get_parent(dest, edge.dest_input_index)
 
-
 def get_node_ref_parent(ref: FModels.NodeRef, bindings: dict[str, models.Node]) -> models.Node | None:
     node = bindings.get(ref.node)
     if node is None or ref.parent_index is None:
@@ -233,13 +214,11 @@ def get_node_ref_parent(ref: FModels.NodeRef, bindings: dict[str, models.Node]) 
 
     return get_parent(node, ref.parent_index)
 
-
 def get_parent(node: models.Node, parent_index: int) -> models.Node | None:
     if parent_index < 0 or parent_index >= len(node.parents):
         return None
 
     return node.parents[parent_index]
-
 
 def get_fusion_input_nodes(input_spec: FModels.FusionInput, bindings: dict[str, models.Node]) -> tuple[models.Node, ...]:
     source_node = bindings.get(input_spec.source.node)
@@ -266,13 +245,11 @@ def get_fusion_input_nodes(input_spec: FModels.FusionInput, bindings: dict[str, 
 
     return parents
 
-
 def match_boundary_value(node: models.Node, allowed_value_kinds: tuple[str, ...], tensor_constraints: tuple[FModels.TensorConstraint, ...]) -> bool:
     if allowed_value_kinds and node.value_kind not in allowed_value_kinds:
         return False
 
     return all(match_tensor_constraint(constraint, node, {}) for constraint in tensor_constraints)
-
 
 def match_cache_boundary_value(node: models.Node, cache_input: FModels.CacheInput) -> bool:
     if not match_boundary_value(node, (), cache_input.tensor_constraints):
@@ -292,7 +269,6 @@ def match_cache_boundary_value(node: models.Node, cache_input: FModels.CacheInpu
 
     return True
 
-
 def all_external_parents_declared(bindings: dict[str, models.Node], declared_input_ids: set[int]) -> bool:
     internal_ids = {id(node) for node in bindings.values()}
 
@@ -305,7 +281,6 @@ def all_external_parents_declared(bindings: dict[str, models.Node], declared_inp
                 return False
 
     return True
-
 
 def external_children_are_valid(bindings: dict[str, models.Node], fusion: FModels.FusionGraph) -> bool:
     internal_ids = {id(node) for node in bindings.values()}
@@ -327,9 +302,6 @@ def external_children_are_valid(bindings: dict[str, models.Node], fusion: FModel
 
     return True
 
-
-####################################### Fusion Definition Matching utils!!!!! #######################################
-
 def match_definition_metadata(fusion: FModels.FusionDefinition, bindings: dict[str, models.Node]) -> bool:
     required_attrs = fusion.metadata.get("required_attrs", {})
 
@@ -346,7 +318,6 @@ def match_definition_metadata(fusion: FModels.FusionDefinition, bindings: dict[s
 
     return True
 
-
 def collect_definition_attrs(fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> dict[str, Any]:
     attrs: dict[str, Any] = {}
 
@@ -358,7 +329,6 @@ def collect_definition_attrs(fusion: FModels.FusionGraph, bindings: dict[str, mo
 
     attrs.update(infer_definition_attrs(fusion, bindings))
     return attrs
-
 
 def get_attr_capture_value(capture: FModels.AttrCapture, bindings: dict[str, models.Node]) -> Any:
     if capture.source_node is None or capture.source_attr is None:
@@ -379,7 +349,6 @@ def get_attr_capture_value(capture: FModels.AttrCapture, bindings: dict[str, mod
 
     return value
 
-
 def infer_definition_attrs(fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> dict[str, Any]:
     attrs: dict[str, Any] = {}
 
@@ -389,7 +358,6 @@ def infer_definition_attrs(fusion: FModels.FusionGraph, bindings: dict[str, mode
         attrs.update(infer_conv_attrs(fusion, bindings, conv_node))
 
     return attrs
-
 
 def infer_conv_attrs(fusion: FModels.FusionGraph, bindings: dict[str, models.Node], conv_node: models.Node) -> dict[str, Any]:
     attrs: dict[str, Any] = {}
@@ -406,7 +374,6 @@ def infer_conv_attrs(fusion: FModels.FusionGraph, bindings: dict[str, models.Nod
 
     return attrs
 
-
 def get_first_input_by_role(fusion: FModels.FusionGraph, bindings: dict[str, models.Node], role: str) -> models.Node | None:
     for input_spec in fusion.inputs:
         if input_spec.role != role:
@@ -418,7 +385,6 @@ def get_first_input_by_role(fusion: FModels.FusionGraph, bindings: dict[str, mod
             return input_nodes[0]
 
     return None
-
 
 def get_tensor_shape(node: models.Node | None) -> list[Any]:
     if node is None or not isinstance(node.tensor_output_meta, dict):

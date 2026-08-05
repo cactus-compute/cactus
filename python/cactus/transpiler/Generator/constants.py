@@ -27,15 +27,6 @@ WEIGHT_VALUE_KINDS = {
     "buffer",
 }
 
-INPUT_VALUE_KINDS = {
-    "unknown",
-    "user_input",
-    "lifted_constant",
-    "cache_input",
-    "cache_output",
-    "cache_state",
-}
-
 FP16_RUNTIME_INPUTS = {
     "input_features",
     "encoder_hidden_states",

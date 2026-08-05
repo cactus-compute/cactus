@@ -10,7 +10,6 @@ from .errors import UnsupportedLoweringError
 from .lowering_utils import *
 from ..IR import models as IRModels
 
-
 def lower_norm(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = context.inputs_for(node)
     target = node.target
@@ -36,7 +35,6 @@ def lower_norm(context: models.GenerationContext, node: IRModels.Node) -> Any:
         return context.graph.batchnorm(inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], axis=int(node.attrs.get("axis", 1)), eps=epsilon_attr(node))
 
     raise UnsupportedLoweringError(f"{node.name}: unsupported norm target {target}")
-
 
 def lower_rms_norm(context: models.GenerationContext, node: IRModels.Node, x: Any, weight: Any | None = None) -> Any:
     x = cast_to_precision(context, x, context.graph.FP16)
@@ -77,7 +75,6 @@ def lower_rms_norm(context: models.GenerationContext, node: IRModels.Node, x: An
     output = context.graph.reshape(normalized, input_shape)
     return apply_inverse_weight_scale_for_parent(context, node, output, 1)
 
-
 def rms_norm_unit_weight(context: models.GenerationContext, hidden_dim: int) -> Any:
     key = f"__embedded_rms_norm_unit_weight_{hidden_dim}"
     existing = context.lookup(key)
@@ -90,7 +87,6 @@ def rms_norm_unit_weight(context: models.GenerationContext, hidden_dim: int) -> 
     context.graph.mark_embedded_input(weight)
     context.values[key] = weight
     return weight
-
 
 def lower_conv(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = context.inputs_for(node)
@@ -124,7 +120,6 @@ def lower_conv(context: models.GenerationContext, node: IRModels.Node) -> Any:
         )
 
     raise UnsupportedLoweringError(f"{node.name}: cannot infer conv rank for {target}")
-
 
 def lower_named_conv(context: models.GenerationContext, node: IRModels.Node, method: str, inputs: tuple[Any, ...]) -> Any:
     require_len(node, inputs, 2)
@@ -175,7 +170,6 @@ def lower_named_conv(context: models.GenerationContext, node: IRModels.Node, met
 
     raise UnsupportedLoweringError(f"{node.name}: unsupported Cactus conv method {method}")
 
-
 def lower_generic_conv1d(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...], bias: Any | None) -> Any:
     stride = first_int(node.attrs.get("stride"), 1)
     padding = first_int(node.attrs.get("padding"), 0)
@@ -205,7 +199,6 @@ def lower_generic_conv1d(context: models.GenerationContext, node: IRModels.Node,
 
     return context.graph.conv1d(x, inputs[1], bias=bias, stride=stride)
 
-
 def lower_specialized_conv2d(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...], bias: Any | None) -> Any | None:
     weight_shape = meta_shape(node.parents[1]) if len(node.parents) > 1 else ()
     stride = tuple_int_values(node.attrs.get("stride"), 1)
@@ -231,7 +224,6 @@ def lower_specialized_conv2d(context: models.GenerationContext, node: IRModels.N
         return context.graph.conv2d_pointwise_1x1(inputs[0], inputs[1], bias=bias)
 
     return None
-
 
 def require_plain_conv1d_attrs(node: IRModels.Node, method: str) -> None:
     padding = first_int(node.attrs.get("padding"), 0)

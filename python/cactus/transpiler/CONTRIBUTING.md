@@ -9,6 +9,21 @@ The transpiler turns an exported PyTorch graph into a Cactus runtime bundle in f
 
 Keep model-specific behavior in `ModelProfiles/` or a narrowly scoped matcher. Shared lowering and graph code must remain independent of Hugging Face model names.
 
+## Registered and generic models
+
+`ModelProfiles/profiles.py::MODEL_ID_MAP` is the boundary between optimized and
+generic conversion. An exact, case-insensitive registered model ID always uses
+its complete profile: input strategy, modalities, export patches, cache
+contract, fusion fields, component split, and runtime plan. Generic CLI options
+must not override a registered profile.
+
+An unregistered model returns no profile from `profile_for_model_id`. The CLI
+then constructs a generic contract from `--task`, `--modalities`,
+`--cache-style`, and optional `--fusion-groups`. Never select a generic
+architecture from substrings in a repository name. To add an optimized model,
+create or reuse a profile and explicitly add every supported model ID to
+`MODEL_ID_MAP`.
+
 ## Adding or changing a fusion
 
 - Match structure and tensor semantics, not generated node names alone.

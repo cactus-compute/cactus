@@ -6,7 +6,6 @@ from . import models, match_utils
 from .extra_matcher_common import *
 from ..Fusions import models as FModels
 
-
 def match_cache_roll_append_structure(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
     cache_node = match_utils.get_first_input_by_role(fusion, bindings, spec["cache_role"])
     new_data_node = match_utils.get_first_input_by_role(fusion, bindings, spec["new_data_role"])
@@ -65,7 +64,6 @@ def match_cache_roll_append_structure(source: models.Node, graph: models.Graph, 
         and scatter_node_matches(bindings.get(spec["scatter_dim0_node"]), axis=0, start=0)
     )
 
-
 def match_empty_cache_initializer(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
     empty_node = match_utils.get_first_input_by_role(fusion, bindings, spec["empty_role"])
     new_value_node = match_utils.get_first_input_by_role(fusion, bindings, spec["new_value_role"])
@@ -85,7 +83,6 @@ def match_empty_cache_initializer(source: models.Node, graph: models.Graph, fusi
         return False
 
     return match_utils.values_equal(new_shape, output_shape)
-
 
 def match_conv_cache_initialize_structure(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
     rows_node = match_utils.get_first_input_by_role(fusion, bindings, spec["rows_role"])
@@ -115,7 +112,6 @@ def match_conv_cache_initialize_structure(source: models.Node, graph: models.Gra
         return False
 
     return get_known_int(rows_shape[1]) is not None and get_known_int(rows_shape[2]) is not None
-
 
 def match_short_conv_prefill_structure(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
     conv_node = bindings.get(spec["conv_node"])
@@ -168,7 +164,6 @@ def match_short_conv_prefill_structure(source: models.Node, graph: models.Graph,
 
     return match_utils.values_equal(output_shape, x_shape) and get_shape_dim(conv_node, 2) == input_length + kernel_size - 1
 
-
 def match_short_conv_decode_structure(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
     cache_window_node = match_utils.get_first_input_by_role(fusion, bindings, spec["cache_window_role"])
     multiply_node = bindings.get(spec["multiply_node"])
@@ -213,7 +208,6 @@ def match_short_conv_decode_structure(source: models.Node, graph: models.Graph, 
 
     keepdim = get_attr(sum_node, "keepdim")
     return keepdim is match_utils.MISSING or keepdim is False
-
 
 def match_cache_output_consumers(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
     node = bindings.get(spec["node"])

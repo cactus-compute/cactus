@@ -4,7 +4,6 @@ from . import edges as E
 from . import models as M
 from .fusion_builders import _cache_input, _graph, _input, _single_node_graph, _variadic_input
 
-
 LSTM_CELL_GRAPH = _graph(
     "lstm_cell",
     "lstm_tanh",
@@ -16,7 +15,6 @@ LSTM_CELL_GRAPH = _graph(
     },
 )
 
-
 DELTANET_DECODE_GRAPH = _graph(
     "gated_deltanet_decode",
     "delta_gate",
@@ -26,7 +24,6 @@ DELTANET_DECODE_GRAPH = _graph(
     cache_inputs=(_cache_input("initial_state", "delta_gate", 2, cache_kind=M.CacheKind.RECURRENT, tensor_role=M.CacheTensorRole.STATE),),
 )
 
-
 DELTANET_PREFILL_GRAPH = _graph(
     "gated_deltanet_prefill",
     "delta_prefill",
@@ -35,7 +32,6 @@ DELTANET_PREFILL_GRAPH = _graph(
     attr_captures=(M.AttrCapture("chunk_size", "delta_prefill", "chunk_size", required=False), M.AttrCapture("scale", default=None, required=False),),
     cache_inputs=(_cache_input("initial_state", "delta_prefill", 2, cache_kind=M.CacheKind.RECURRENT, tensor_role=M.CacheTensorRole.STATE),),
 )
-
 
 REL_POS_BIAS_GRAPH = _graph(
     "rel_pos_bias",
@@ -48,7 +44,6 @@ REL_POS_BIAS_GRAPH = _graph(
     attr_captures=(M.AttrCapture("scale", "rel_pos_bias", "scale", required=False),),
 )
 
-
 GEMMA4_ROPE_COS_TABLE_GRAPH = _single_node_graph(
     "gemma4_rope_cos_table",
     "scalar_cos",
@@ -56,14 +51,12 @@ GEMMA4_ROPE_COS_TABLE_GRAPH = _single_node_graph(
     metadata={"special_matcher": "gemma4_rope_table_lookup", "table_kind": "cos"},
 )
 
-
 GEMMA4_ROPE_SIN_TABLE_GRAPH = _single_node_graph(
     "gemma4_rope_sin_table",
     "scalar_sin",
     ("position_ids",),
     metadata={"special_matcher": "gemma4_rope_table_lookup", "table_kind": "sin"},
 )
-
 
 SAMPLE_GRAPH = _graph(
     "sample",
@@ -74,7 +67,6 @@ SAMPLE_GRAPH = _graph(
     attr_captures=(M.AttrCapture("temperature", default=0.6, required=False), M.AttrCapture("top_p", default=0.95, required=False), M.AttrCapture("top_k", "sample_topk", "k", default=20, required=False)),
 )
 
-
 SCATTER_TOPK_GRAPH = _graph(
     "scatter_topk",
     "scatter",
@@ -82,7 +74,6 @@ SCATTER_TOPK_GRAPH = _graph(
     inputs=(_input("indices", "scatter", 0), _input("values", "scatter", 1)),
     attr_captures=(M.AttrCapture("num_classes", "scatter", "num_classes", required=False),),
 )
-
 
 GAUSSIAN_TOPK_GRAPH = _graph(
     "gaussian_topk",
@@ -92,7 +83,6 @@ GAUSSIAN_TOPK_GRAPH = _graph(
     attr_captures=(M.AttrCapture("ppf", "gaussian_topk", "ppf", required=False),),
 )
 
-
 ALTUP_PREDICT_GRAPH = _graph(
     "altup_predict",
     "altup_predict",
@@ -100,14 +90,12 @@ ALTUP_PREDICT_GRAPH = _graph(
     inputs=(_input("coefs", "altup_predict", 0), _variadic_input("streams", "altup_predict", 1)),
 )
 
-
 ALTUP_CORRECT_GRAPH = _graph(
     "altup_correct",
     "altup_correct",
     ("altup_correct",),
     inputs=(_input("coefs", "altup_correct", 0), _input("innovation", "altup_correct", 1), _variadic_input("predictions", "altup_correct", 2)),
 )
-
 
 DSP_GRAPHS: dict[str, M.FusionGraph] = {
     "stft": _graph("stft", "stft", ("stft",), inputs=(_input("x", "stft", 0), _input("weight", "stft", 1)), attr_captures=(M.AttrCapture("stride", "stft", "stride", required=False), M.AttrCapture("num_fft_bins", "stft", "num_fft_bins", required=False))),

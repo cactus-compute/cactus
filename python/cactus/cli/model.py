@@ -52,6 +52,9 @@ def ensure_weights(model_id, *, bits=4, platform=None, token=None, reconvert=Fal
 @dataclass(frozen=True)
 class TranspileOptions:
     input_modalities: tuple[str, ...] | None = None
+    generic_task: str | None = None
+    cache_style: str | None = None
+    fusion_groups: tuple[str, ...] | None = None
     allow_unsupported_ops: bool = False
 
 
@@ -211,5 +214,8 @@ def ensure_bundle(model_id, *, bits=4, platform=None, token=None,
         output_dir=weights_dir,
         token=token,
         input_modalities=opts.input_modalities,
+        generic_task=opts.generic_task,
+        cache_style=opts.cache_style,
+        fusion_groups=opts.fusion_groups,
         allow_unsupported_ops=opts.allow_unsupported_ops,
     )

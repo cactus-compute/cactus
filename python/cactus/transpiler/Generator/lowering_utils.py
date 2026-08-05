@@ -12,9 +12,7 @@ from . import models
 from .errors import UnsupportedLoweringError
 from ..IR import models as IRModels
 
-
 SIZE_T_MAX = (1 << 64) - 1
-
 
 def write_constant_tensor(
     context: models.GenerationContext,
@@ -31,7 +29,6 @@ def write_constant_tensor(
     write_cactus_tensor_file(path, shape, precision, data)
     return constant_binding_path(context, path)
 
-
 def constant_data_bytes(values: list[float], precision: int) -> bytes:
     if precision == 1:
         return b"".join(struct.pack("<e", float(value)) for value in values)
@@ -40,7 +37,6 @@ def constant_data_bytes(values: list[float], precision: int) -> bytes:
         return b"".join(struct.pack("<f", float(value)) for value in values)
 
     return bytes(int(value) & 0xFF for value in values)
-
 
 def write_cactus_tensor_file(path: Path, shape: tuple[int, ...], precision: int, data: bytes) -> None:
     alignment = 32
@@ -66,7 +62,6 @@ def write_cactus_tensor_file(path: Path, shape: tuple[int, ...], precision: int,
         f.write(b"\0" * ((alignment - (header_size % alignment)) % alignment))
         f.write(data)
 
-
 def write_dequantized_int8_weight_as_fp16(
     context: models.GenerationContext,
     node: IRModels.Node,
@@ -86,7 +81,6 @@ def write_dequantized_int8_weight_as_fp16(
     path = constants_dir / filename
     write_cactus_tensor_file(path, shape, int(context.graph.FP16), values.tobytes())
     return constant_binding_path(context, path)
-
 
 def read_dequantized_int8_weight_fp16(path: Path) -> tuple[tuple[int, ...], np.ndarray]:
     with path.open("rb") as f:
@@ -145,13 +139,11 @@ def read_dequantized_int8_weight_fp16(path: Path) -> tuple[tuple[int, ...], np.n
 
     return shape, np.ascontiguousarray(dequantized.astype(np.float16))
 
-
 def constant_binding_path(context: models.GenerationContext, path: Path) -> str:
     try:
         return str(path.relative_to(context.config.output_dir.parent))
     except ValueError:
         return str(path)
-
 
 def precision_name(graph: Any, precision: int) -> str:
     for name in ("INT8", "FP16", "FP32", "CQ1", "CQ2", "CQ3", "CQ4"):
@@ -160,40 +152,38 @@ def precision_name(graph: Any, precision: int) -> str:
 
     return str(precision)
 
-
 def fp16_tensor(context: models.GenerationContext, value: Any) -> Any:
     fp16 = int(context.graph.FP16)
     return value if getattr(value, "dtype", None) == fp16 else context.graph.precision_cast(value, fp16)
-
 
 def numeric_attr(node: IRModels.Node, *names: str, default: Any | None = None) -> Any | None:
     for name in names:
         value = node.attrs.get(name)
 
         if value is not None:
-            return value
+            return decoded_numeric_value(value)
 
-    return default
+    return decoded_numeric_value(default)
 
+def decoded_numeric_value(value: Any) -> Any:
+    if isinstance(value, str) and value in {"Infinity", "+Infinity", "-Infinity", "NaN"}:
+        return float(value)
+    return value
 
 def require_input_count(context: models.GenerationContext, node: IRModels.Node, min_count: int) -> tuple[Any, ...]:
     inputs = context.inputs_for(node)
     require_len(node, inputs, min_count)
     return inputs
 
-
 def require_at_least_one_input(context: models.GenerationContext, node: IRModels.Node) -> tuple[Any, ...]:
     return require_input_count(context, node, 1)
-
 
 def require_len(node: IRModels.Node, inputs: tuple[Any, ...], min_count: int) -> None:
     if len(inputs) < min_count:
         raise unsupported_arity(node, len(inputs), f"at least {min_count} inputs")
 
-
 def unsupported_arity(node: IRModels.Node, actual: int, expected: str) -> UnsupportedLoweringError:
     return UnsupportedLoweringError(f"{node.name}: {node.target} got {actual} lowered inputs; expected {expected}")
-
 
 def tensor_dtype(node: IRModels.Node) -> str | None:
     if isinstance(node.tensor_output_meta, dict):
@@ -213,18 +203,15 @@ def tensor_dtype(node: IRModels.Node) -> str | None:
 
     return None
 
-
 def cactus_precision(graph: Any, dtype: str | None) -> int:
     precision_name = constants.DTYPE_TO_PRECISION.get(str(dtype), constants.DEFAULT_INPUT_PRECISION)
     return int(getattr(graph, precision_name))
-
 
 def cast_to_precision(context: models.GenerationContext, value: Any, precision: int) -> Any:
     if getattr(value, "dtype", precision) == precision:
         return value
 
     return context.graph.precision_cast(value, precision)
-
 
 def graph_input_shape(node: IRModels.Node) -> tuple[tuple[int, ...], tuple[bool, ...]]:
     shape = meta_shape(node)
@@ -255,7 +242,6 @@ def graph_input_shape(node: IRModels.Node) -> tuple[tuple[int, ...], tuple[bool,
 
     return tuple(dims), tuple(dynamic_dims)
 
-
 def meta_shape(node: IRModels.Node) -> tuple[Any, ...]:
     if isinstance(node.tensor_output_meta, dict):
         shape = node.tensor_output_meta.get("shape")
@@ -280,7 +266,6 @@ def meta_shape(node: IRModels.Node) -> tuple[Any, ...]:
 
     return ()
 
-
 def output_shape(node: IRModels.Node) -> tuple[int, ...]:
     shape, _ = graph_input_shape(node)
 
@@ -288,7 +273,6 @@ def output_shape(node: IRModels.Node) -> tuple[int, ...]:
         return shape
 
     raise UnsupportedLoweringError(f"{node.name}: missing concrete output shape")
-
 
 def concrete_dim(dim: Any) -> int | None:
     if isinstance(dim, int) and dim >= 0:
@@ -299,7 +283,6 @@ def concrete_dim(dim: Any) -> int | None:
 
     return None
 
-
 def concrete_shape(shape: tuple[Any, ...]) -> tuple[int, ...] | None:
     dims = tuple(concrete_dim(dim) for dim in shape)
 
@@ -308,16 +291,13 @@ def concrete_shape(shape: tuple[Any, ...]) -> tuple[int, ...] | None:
 
     return tuple(int(dim) for dim in dims)
 
-
 def reduction_dropped_shape(shape: tuple[Any, ...], axis: int) -> tuple[Any, ...]:
     dropped = tuple(dim for index, dim in enumerate(shape) if index != axis)
     return dropped or (1,)
 
-
 def shape_matches_tensor(node: IRModels.Node, expected_shape: tuple[int, ...]) -> bool:
     actual_shape = meta_shape(node)
     return tuple(actual_shape) == tuple(expected_shape)
-
 
 def element_count(shape: tuple[Any, ...]) -> int | None:
     if not shape:
@@ -332,7 +312,6 @@ def element_count(shape: tuple[Any, ...]) -> int | None:
         count *= dim
 
     return count
-
 
 def shape_attr(node: IRModels.Node) -> tuple[int, ...]:
     raw_shape = node.attrs.get("shape")
@@ -359,7 +338,6 @@ def shape_attr(node: IRModels.Node) -> tuple[int, ...]:
 
     return tuple(dims)
 
-
 def axis_attr(node: IRModels.Node, default: int | None = None) -> int | None:
     axis = node.attrs.get("axis", node.attrs.get("dim", node.attrs.get("arg_1", default)))
 
@@ -373,7 +351,6 @@ def axis_attr(node: IRModels.Node, default: int | None = None) -> int | None:
 
     return int(axis)
 
-
 def scalar_attr(node: IRModels.Node, name: str) -> Any | None:
     value = node.attrs.get(name)
 
@@ -381,10 +358,9 @@ def scalar_attr(node: IRModels.Node, name: str) -> Any | None:
         return None
 
     if isinstance(value, list) and len(value) == 1:
-        return value[0]
+        return decoded_numeric_value(value[0])
 
-    return value
-
+    return decoded_numeric_value(value)
 
 def scalar_weight_bound_value(context: models.GenerationContext, node: IRModels.Node) -> float | None:
     resolver = context.component.weight_resolver
@@ -407,7 +383,6 @@ def scalar_weight_bound_value(context: models.GenerationContext, node: IRModels.
 
     return float(value) * float(record.scale_factor)
 
-
 def apply_inverse_weight_scale_for_parent(
     context: models.GenerationContext,
     node: IRModels.Node,
@@ -420,7 +395,6 @@ def apply_inverse_weight_scale_for_parent(
         return value
 
     return context.graph.scalar_multiply(value, 1.0 / scale_factor)
-
 
 def weight_scale_factor_for_parent(context: models.GenerationContext, node: IRModels.Node, parent_index: int) -> float | None:
     if parent_index < 0 or parent_index >= len(node.parents):
@@ -443,7 +417,6 @@ def weight_scale_factor_for_parent(context: models.GenerationContext, node: IRMo
 
     return float(record.scale_factor or 1.0)
 
-
 def source_weight_node(node: IRModels.Node) -> IRModels.Node | None:
     current = node
 
@@ -454,7 +427,6 @@ def source_weight_node(node: IRModels.Node) -> IRModels.Node | None:
         return None
 
     return current
-
 
 def read_scalar_cactus_weight(path: Path) -> float | None:
     if not path.exists():
@@ -486,7 +458,6 @@ def read_scalar_cactus_weight(path: Path) -> float | None:
 
     return None
 
-
 def aligned_offset(offset: int, alignment: int) -> int:
     if alignment <= 0:
         alignment = 32
@@ -494,15 +465,12 @@ def aligned_offset(offset: int, alignment: int) -> int:
     remainder = offset % alignment
     return offset if remainder == 0 else offset + alignment - remainder
 
-
 def attr_value(node: IRModels.Node, name: str, default: Any) -> Any:
     value = node.attrs.get(name)
     return default if value is None else value
 
-
 def epsilon_attr(node: IRModels.Node) -> float:
     return float(node.attrs.get("epsilon", node.attrs.get("eps", 1e-5)))
-
 
 def required_int_attr(node: IRModels.Node, name: str) -> int:
     value = node.attrs.get(name)
@@ -512,10 +480,8 @@ def required_int_attr(node: IRModels.Node, name: str) -> int:
 
     return int(value)
 
-
 def has_attrs(node: IRModels.Node, names: tuple[str, ...]) -> bool:
     return all(node.attrs.get(name) is not None for name in names)
-
 
 def first_int(value: Any, default: int) -> int:
     if value is None:
@@ -527,7 +493,6 @@ def first_int(value: Any, default: int) -> int:
         return int(value[0])
 
     return int(value)
-
 
 def tuple_int_values(value: Any, default: int) -> tuple[int, int]:
     if value is None:
@@ -546,13 +511,11 @@ def tuple_int_values(value: Any, default: int) -> tuple[int, int]:
     item = int(value)
     return (item, item)
 
-
 def tuple_ints(value: Any) -> tuple[int, ...]:
     if not isinstance(value, (list, tuple)):
         raise TypeError(f"Expected list/tuple of ints, got {type(value).__name__}")
 
     return tuple(int(item) for item in value)
-
 
 def parent_rank(node: IRModels.Node) -> int:
     if not node.parents:
@@ -565,10 +528,8 @@ def parent_rank(node: IRModels.Node) -> int:
 
     return rank
 
-
 def output_rank(node: IRModels.Node) -> int:
     return len(meta_shape(node))
-
 
 def swap_permutation(rank: int, dim0: int, dim1: int) -> tuple[int, ...]:
     dim0 = normalize_dim(dim0, rank)
@@ -576,7 +537,6 @@ def swap_permutation(rank: int, dim0: int, dim1: int) -> tuple[int, ...]:
     permutation = list(range(rank))
     permutation[dim0], permutation[dim1] = permutation[dim1], permutation[dim0]
     return tuple(permutation)
-
 
 def normalize_dim(dim: int, rank: int) -> int:
     if dim < 0:
@@ -586,7 +546,6 @@ def normalize_dim(dim: int, rank: int) -> int:
         raise ValueError(f"Dimension {dim} is outside rank {rank}")
 
     return dim
-
 
 def slice_length(node: IRModels.Node, start: int) -> int:
     if "length" in node.attrs:
@@ -603,7 +562,6 @@ def slice_length(node: IRModels.Node, start: int) -> int:
         return open_slice_length(node, start)
 
     return max(end - start, 0)
-
 
 def open_slice_length(node: IRModels.Node, start: int) -> int:
     if not node.parents:
@@ -625,7 +583,6 @@ def open_slice_length(node: IRModels.Node, start: int) -> int:
 
     return max(axis_size - start, 0)
 
-
 def binary_method_to_scalar_method(method: str) -> str:
     return {
         "add": "scalar_add",
@@ -634,7 +591,6 @@ def binary_method_to_scalar_method(method: str) -> str:
         "divide": "scalar_divide",
         "not_equal": "scalar_not_equal",
     }[method]
-
 
 def ensure_tensor_sequence(value: Any) -> list[Any]:
     if isinstance(value, list):

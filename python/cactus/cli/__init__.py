@@ -324,8 +324,16 @@ def create_parser():
                                 help="Force conversion from source")
     convert_parser.add_argument("--weights-only", action="store_true",
                                 help="Only convert CQ weights; skip graph transpilation")
-    convert_parser.add_argument("--input-modalities", default=None,
-                                help="Comma-separated export modalities (default: model profile modalities)")
+    convert_parser.add_argument("--modalities", "--input-modalities", dest="input_modalities", default=None,
+                                help="Generic models only: comma-separated modalities (text, vision, audio)")
+    convert_parser.add_argument("--task", dest="generic_task", default=None,
+                                choices=("causal-lm", "speech-seq2seq"),
+                                help="Generic models only: execution task (default: causal-lm)")
+    convert_parser.add_argument("--cache-style", "--cache", dest="cache_style", default=None,
+                                choices=("dynamic-kv", "encoder-decoder-kv", "none"),
+                                help="Generic models only: exported cache contract")
+    convert_parser.add_argument("--fusion-groups", default=None,
+                                help="Generic models only: comma-separated fusion groups")
 
     return parser
 

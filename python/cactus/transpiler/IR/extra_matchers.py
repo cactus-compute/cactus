@@ -33,16 +33,8 @@ from .extra_matcher_moe import (
 )
 from ..Fusions import models as FModels
 
-
 def match_extra_constraints(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
-    """
-    Dispatches every structured FusionGraph constraint to its registered matcher.
-
-    `fusion.constraints` is a dict keyed by constraint name. This function looks
-    up each name in `EXTRA_MATCHERS`, normalizes each raw spec into one or more
-    spec dictionaries, and requires every matcher invocation to return True.
-    Unknown constraint names or malformed specs fail closed.
-    """
+    """Dispatches every structured FusionGraph constraint to its registered matcher."""
     for constraint_name, raw_spec in fusion.constraints.items():
         matcher = EXTRA_MATCHERS.get(constraint_name)
 
@@ -60,15 +52,8 @@ def match_extra_constraints(source: models.Node, graph: models.Graph, fusion: FM
 
     return True
 
-
 def normalize_constraint_specs(raw_spec: Any) -> tuple[dict[str, Any], ...] | None:
-    """
-    Normalizes one constraint value into a tuple of spec dictionaries.
-
-    A constraint key can map to a single dict or a list/tuple of dicts. The
-    latter lets one matcher type be applied multiple times without duplicating
-    registry keys. Non-dict specs return None so the caller can fail safely.
-    """
+    """Normalizes one constraint value into a tuple of spec dictionaries."""
     if isinstance(raw_spec, dict):
         return (raw_spec,)
 
@@ -76,7 +61,6 @@ def normalize_constraint_specs(raw_spec: Any) -> tuple[dict[str, Any], ...] | No
         return tuple(raw_spec)
 
     return None
-
 
 EXTRA_MATCHERS: dict[str, ExtraMatcher] = {
     "linear_weight_layout": match_linear_weight_layout,
@@ -99,4 +83,3 @@ EXTRA_MATCHERS: dict[str, ExtraMatcher] = {
     "same_layer": match_same_layer,
     "slice_halves": match_slice_halves,
 }
-

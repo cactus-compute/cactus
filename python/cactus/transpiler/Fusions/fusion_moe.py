@@ -4,7 +4,6 @@ from . import edges as E
 from . import models as M
 from .fusion_builders import _graph, _input, _shared_input, _variadic_input
 
-
 EXPERT_BRANCH_GRAPH = _graph(
     "moe_expert_branch",
     "expert_weighted",
@@ -13,7 +12,6 @@ EXPERT_BRANCH_GRAPH = _graph(
     inputs=(_input("hidden", "expert_gate", 0), _input("gate_weight", "expert_gate", 1), _input("up_weight", "expert_up", 1), _input("down_weight", "expert_down", 1), _input("routing_weight", "expert_weighted", 1)),
     shared_inputs=(_shared_input("expert_gate", 0, "expert_up", 0),),
 )
-
 
 MOE_GATED_GRAPH = _graph(
     "moe_layer_gated",
@@ -27,7 +25,6 @@ MOE_GATED_GRAPH = _graph(
         "moe_routing_weights_combine": {"repeated_subgraph": "experts", "combine_node": "moe_combine", "weighted_node": "expert_weighted", "routing_weight_role": "routing_weight", "max_depth": 64},
     },
 )
-
 
 LFM_GROUPED_MOE_GRAPH = _graph(
     "lfm_grouped_moe",
@@ -116,7 +113,6 @@ LFM_GROUPED_MOE_GRAPH = _graph(
     },
 )
 
-
 LFM_GROUPED_MOE_NO_TOKEN_CLONE_GRAPH = _graph(
     "lfm_grouped_moe_no_token_clone",
     "moe_grouped_combine",
@@ -126,7 +122,6 @@ LFM_GROUPED_MOE_NO_TOKEN_CLONE_GRAPH = _graph(
     attr_captures=LFM_GROUPED_MOE_GRAPH.attr_captures,
     constraints=LFM_GROUPED_MOE_GRAPH.constraints,
 )
-
 
 LFM_GROUPED_MOE_SILU_GRAPH = _graph(
     "lfm_grouped_moe_silu",
@@ -142,7 +137,6 @@ LFM_GROUPED_MOE_SILU_GRAPH = _graph(
     constraints=LFM_GROUPED_MOE_GRAPH.constraints,
 )
 
-
 LFM_GROUPED_MOE_SILU_NO_TOKEN_CLONE_GRAPH = _graph(
     "lfm_grouped_moe_silu_no_token_clone",
     "moe_grouped_combine",
@@ -153,7 +147,6 @@ LFM_GROUPED_MOE_SILU_NO_TOKEN_CLONE_GRAPH = _graph(
     constraints=LFM_GROUPED_MOE_GRAPH.constraints,
 )
 
-
 LFM_GROUPED_MOE_DIRECT_ROUTER_INPUTS = tuple(
     input_spec
     for input_spec in LFM_GROUPED_MOE_GRAPH.inputs
@@ -161,7 +154,6 @@ LFM_GROUPED_MOE_DIRECT_ROUTER_INPUTS = tuple(
 ) + (
     _input("router_weight", "moe_router_logits", 1, allowed_value_kinds=(M.ValueKind.PARAMETER, M.ValueKind.BUFFER)),
 )
-
 
 LFM_GROUPED_MOE_DIRECT_ROUTER_GRAPH = _graph(
     "lfm_grouped_moe_direct_router",
@@ -173,7 +165,6 @@ LFM_GROUPED_MOE_DIRECT_ROUTER_GRAPH = _graph(
     constraints=LFM_GROUPED_MOE_GRAPH.constraints,
 )
 
-
 LFM_GROUPED_MOE_DIRECT_ROUTER_NO_TOKEN_CLONE_GRAPH = _graph(
     "lfm_grouped_moe_direct_router_no_token_clone",
     "moe_grouped_combine",
@@ -184,7 +175,6 @@ LFM_GROUPED_MOE_DIRECT_ROUTER_NO_TOKEN_CLONE_GRAPH = _graph(
     constraints=LFM_GROUPED_MOE_GRAPH.constraints,
 )
 
-
 LFM_GROUPED_MOE_SILU_DIRECT_ROUTER_GRAPH = _graph(
     "lfm_grouped_moe_silu_direct_router",
     "moe_grouped_combine",
@@ -194,7 +184,6 @@ LFM_GROUPED_MOE_SILU_DIRECT_ROUTER_GRAPH = _graph(
     attr_captures=LFM_GROUPED_MOE_GRAPH.attr_captures,
     constraints=LFM_GROUPED_MOE_GRAPH.constraints,
 )
-
 
 LFM_GROUPED_MOE_SILU_DIRECT_ROUTER_NO_TOKEN_CLONE_GRAPH = _graph(
     "lfm_grouped_moe_silu_direct_router_no_token_clone",

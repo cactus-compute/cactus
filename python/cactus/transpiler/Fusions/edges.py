@@ -2,7 +2,6 @@ from . import models as M
 
 EXPERT_GROUP = "experts"
 
-
 def _edge(
     source: str,
     dest: str,
@@ -23,7 +22,6 @@ def _edge(
         metadata=metadata or {},
     )
 
-
 def _expert_edge(
     source: str,
     dest: str,
@@ -36,7 +34,6 @@ def _expert_edge(
         repeated=True,
         repeated_group=EXPERT_GROUP,
     )
-
 
 EDGES: dict[str, M.FusionEdge] = {
     "linear_mm_to_bias_add": _edge("linear_mm", "linear_bias_add", 0),
@@ -79,19 +76,11 @@ EDGES: dict[str, M.FusionEdge] = {
     "down_proj_to_down_proj_view": _edge("down_proj", "down_proj_view", 0),
     "up_proj_to_gelu": _edge("up_proj", "gelu", 0),
     "gelu_to_down_proj": _edge("gelu", "down_proj", 0),
-    "q_proj_to_q_view": _edge("q_proj", "q_view", 0),
-    "k_proj_to_k_view": _edge("k_proj", "k_view", 0),
-    "v_proj_to_v_view": _edge("v_proj", "v_view", 0),
-    "q_view_to_q_rope": _edge("q_view", "q_rope", 0),
-    "k_view_to_k_rope": _edge("k_view", "k_rope", 0),
-    "q_rope_to_qk": _edge("q_rope", "attn_qk", 0),
-    "k_rope_to_qk": _edge("k_rope", "attn_qk", 1),
     "attn_qk_to_scale": _edge("attn_qk", "attn_scale", 0),
     "attn_scale_to_mask_add": _edge("attn_scale", "attn_mask_add", 0),
     "attn_scale_to_softmax": _edge("attn_scale", "attn_softmax", 0),
     "attn_mask_add_to_softmax": _edge("attn_mask_add", "attn_softmax", 0),
     "attn_softmax_to_value": _edge("attn_softmax", "attn_value", 0),
-    "v_view_to_value": _edge("v_view", "attn_value", 1),
     "lfm_attn_query_expand_to_flat": _edge("lfm_attn_query_expand", "lfm_attn_query_flat", 0),
     "lfm_attn_key_expand_to_flat": _edge("lfm_attn_key_expand", "lfm_attn_key_flat", 0),
     "lfm_attn_value_expand_to_flat": _edge("lfm_attn_value_expand", "lfm_attn_value_flat", 0),
@@ -124,15 +113,11 @@ EDGES: dict[str, M.FusionEdge] = {
     "rope_rotate_cat_to_sin_mul": _edge("rope_rotate_cat", "rope_sin_mul", 0),
     "conv_to_bias_add": _edge("conv", "conv_bias_add", 0),
     "conv_to_slice": _edge("conv", "slice", 0),
-    "conv_cache_append_to_multiply": _edge("conv_cache_append", "multiply", 0),
     "multiply_to_sum": _edge("multiply", "sum", 0),
     "lstm_gate_mm_to_add": _edge("lstm_gate_mm", "lstm_gate_add", 0),
     "lstm_recurrent_mm_to_add": _edge("lstm_recurrent_mm", "lstm_gate_add", 1),
     "lstm_add_to_sigmoid": _edge("lstm_gate_add", "lstm_sigmoid", 0),
     "lstm_add_to_tanh": _edge("lstm_gate_add", "lstm_tanh", 0),
-    "delta_q_to_decode": _edge("delta_q", "delta_gate", 0),
-    "delta_k_to_decode": _edge("delta_k", "delta_gate", 1),
-    "delta_v_to_decode": _edge("delta_v", "delta_gate", 2),
     "lfm_conv_cache_clone_to_output_copy": _edge("lfm_conv_cache_clone", "lfm_conv_cache_output_copy", 0),
     "lfm_conv_cache_scatter_dim0_to_output_copy": _edge("lfm_conv_cache_scatter_dim0", "lfm_conv_cache_output_copy", 1),
     "lfm_conv_cache_clone_to_gather": _edge("lfm_conv_cache_clone", "lfm_conv_cache_gather", 0),
@@ -151,8 +136,6 @@ EDGES: dict[str, M.FusionEdge] = {
     "lfm_conv_cache_value_slice_dim0_to_value_slice_dim1": _edge("lfm_conv_cache_value_slice_dim0", "lfm_conv_cache_value_slice_dim1", 0),
     "lfm_conv_cache_value_slice_dim1_to_value_slice_last": _edge("lfm_conv_cache_value_slice_dim1", "lfm_conv_cache_value_slice_last", 0),
     "lfm_conv_cache_value_slice_last_to_value_copy": _edge("lfm_conv_cache_value_slice_last", "lfm_conv_cache_value_copy", 0),
-    "router_logits_to_probs": _edge("router_logits", "routing_probs", 0),
-    "routing_probs_to_topk": _edge("routing_probs", "topk", 0),
     "moe_hidden_to_router": _edge("moe_hidden_view", "moe_router_logits", 0),
     "moe_router_weight_to_router": _edge("moe_router_weight_transpose", "moe_router_logits", 1),
     "moe_router_logits_to_sigmoid": _edge("moe_router_logits", "moe_router_sigmoid", 0),
@@ -219,7 +202,6 @@ EDGES: dict[str, M.FusionEdge] = {
     "expert_up_to_product": _expert_edge("expert_up", "expert_product", 1),
     "expert_product_to_down": _expert_edge("expert_product", "expert_down", 0),
     "expert_down_to_weighted": _expert_edge("expert_down", "expert_weighted", 0),
-    "expert_weighted_to_combine": _expert_edge("expert_weighted", "moe_combine", 0),
     "sample_topk_to_softmax": _edge("sample_topk", "sample_softmax", 0),
     "silu_sigmoid_to_product": _edge("silu_sigmoid", "silu_product", 1),
     "glu_left_slice_to_product": _edge("glu_left_slice", "glu_product", 0),
@@ -227,277 +209,56 @@ EDGES: dict[str, M.FusionEdge] = {
     "glu_sigmoid_to_product": _edge("glu_sigmoid", "glu_product", 1),
 }
 
+def _edge_range(first: str, last: str, *, exclude: tuple[str, ...] = ()) -> tuple[str, ...]:
+    names = tuple(EDGES)
+    selected = names[names.index(first):names.index(last) + 1]
+    return tuple(name for name in selected if name not in exclude)
 
 EDGE_GROUPS: dict[str, tuple[str, ...]] = {
     "linear_bias": ("linear_mm_to_bias_add",),
     "linear_transposed": ("linear_weight_transpose_to_mm",),
-    "rms_norm": (
-        "rms_square_to_mean",
-        "rms_mean_to_eps_add",
-        "rms_eps_add_to_inv",
-        "rms_inv_to_scale",
-        "rms_scale_to_weight_mul",
-    ),
-    "rms_norm_pow": (
-        "rms_square_to_mean",
-        "rms_mean_to_eps_add",
-        "rms_eps_add_to_inv_pow",
-        "rms_inv_pow_to_scale",
-        "rms_scale_to_weight_mul",
-    ),
-    "rms_norm_no_weight": (
-        "rms_square_to_mean",
-        "rms_mean_to_eps_add",
-        "rms_eps_add_to_inv",
-        "rms_inv_to_scale",
-    ),
-    "rms_norm_pow_no_weight": (
-        "rms_square_to_mean",
-        "rms_mean_to_eps_add",
-        "rms_eps_add_to_inv_pow",
-        "rms_inv_pow_to_scale",
-    ),
-    "layernorm": (
-        "ln_mean_to_center",
-        "ln_center_to_square",
-        "ln_square_to_var",
-        "ln_var_to_eps_add",
-        "ln_eps_add_to_inv",
-        "ln_center_to_norm",
-        "ln_inv_to_norm",
-        "ln_norm_to_weight_mul",
-        "ln_weight_mul_to_bias_add",
-    ),
-    "swiglu_mlp": (
-        "gate_proj_to_activation",
-        "mlp_activation_to_product",
-        "up_proj_to_product",
-        "mlp_product_to_down_proj",
-    ),
-    "gelu_mlp": (
-        "up_proj_to_gelu",
-        "gelu_to_down_proj",
-    ),
-    "silu_decomposed": (
-        "silu_sigmoid_to_product",
-    ),
-    "glu_decomposed": (
-        "glu_left_slice_to_product",
-        "glu_right_slice_to_sigmoid",
-        "glu_sigmoid_to_product",
-    ),
-    "gemma4_geglu_mlp": (
-        "gate_input_view_to_gate_proj",
-        "gate_weight_transpose_to_gate_proj",
-        "gate_proj_to_gate_proj_view",
-        "gate_proj_view_to_gelu",
-        "gelu_to_product",
-        "up_input_view_to_up_proj",
-        "up_weight_transpose_to_up_proj",
-        "up_proj_to_up_proj_view",
-        "up_proj_view_to_product",
-        "mlp_product_to_product_view",
-        "product_view_to_down_proj",
-        "down_weight_transpose_to_down_proj",
-        "down_proj_to_down_proj_view",
-    ),
-    "attention_core": (
-        "attn_qk_to_scale",
-        "attn_scale_to_mask_add",
-        "attn_scale_to_softmax",
-        "attn_mask_add_to_softmax",
-        "attn_softmax_to_value",
-    ),
-    "projected_attention": (
-        "q_proj_to_q_view",
-        "k_proj_to_k_view",
-        "v_proj_to_v_view",
-        "q_view_to_q_rope",
-        "k_view_to_k_rope",
-        "q_rope_to_qk",
-        "k_rope_to_qk",
-        "attn_qk_to_scale",
-        "attn_scale_to_mask_add",
-        "attn_mask_add_to_softmax",
-        "attn_softmax_to_value",
-        "v_view_to_value",
-    ),
-    "lfm_bmm_masked_attention": (
-        "lfm_attn_query_expand_to_flat",
-        "lfm_attn_key_expand_to_flat",
-        "lfm_attn_value_expand_to_flat",
-        "lfm_attn_query_flat_to_qk",
-        "lfm_attn_key_flat_to_qk",
-        "lfm_attn_qk_to_logits_view",
-        "lfm_attn_logits_view_to_mask_add",
-        "lfm_attn_mask_where_to_add",
-        "lfm_attn_mask_zero_to_where",
-        "lfm_attn_mask_fill_to_where",
-        "lfm_attn_mask_add_to_softmax",
-        "lfm_attn_mask_add_to_null_eq",
-        "lfm_attn_null_eq_to_valid_not",
-        "lfm_attn_valid_not_to_any",
-        "lfm_attn_any_to_invalid_not",
-        "lfm_attn_invalid_not_to_probs_where",
-        "lfm_attn_softmax_to_zero_like",
-        "lfm_attn_zero_like_to_probs_where",
-        "lfm_attn_softmax_to_probs_where",
-        "lfm_attn_probs_where_to_expand",
-        "lfm_attn_probs_expand_to_flat",
-        "lfm_attn_probs_flat_to_output_bmm",
-        "lfm_attn_value_flat_to_output_bmm",
-        "lfm_attn_output_bmm_to_view",
-    ),
+    "rms_norm": ("rms_square_to_mean", "rms_mean_to_eps_add", "rms_eps_add_to_inv", "rms_inv_to_scale", "rms_scale_to_weight_mul"),
+    "rms_norm_pow": ("rms_square_to_mean", "rms_mean_to_eps_add", "rms_eps_add_to_inv_pow", "rms_inv_pow_to_scale", "rms_scale_to_weight_mul"),
+    "rms_norm_no_weight": ("rms_square_to_mean", "rms_mean_to_eps_add", "rms_eps_add_to_inv", "rms_inv_to_scale"),
+    "rms_norm_pow_no_weight": ("rms_square_to_mean", "rms_mean_to_eps_add", "rms_eps_add_to_inv_pow", "rms_inv_pow_to_scale"),
+    "layernorm": _edge_range("ln_mean_to_center", "ln_weight_mul_to_bias_add"),
+    "swiglu_mlp": _edge_range("gate_proj_to_activation", "mlp_product_to_down_proj"),
+    "gelu_mlp": ("up_proj_to_gelu", "gelu_to_down_proj"),
+    "silu_decomposed": ("silu_sigmoid_to_product",),
+    "glu_decomposed": _edge_range("glu_left_slice_to_product", "glu_sigmoid_to_product"),
+    "gemma4_geglu_mlp": _edge_range("gate_input_view_to_gate_proj", "down_proj_to_down_proj_view"),
+    "attention_core": ("attn_qk_to_scale", "attn_scale_to_mask_add", "attn_scale_to_softmax", "attn_mask_add_to_softmax", "attn_softmax_to_value"),
+    "lfm_bmm_masked_attention": _edge_range("lfm_attn_query_expand_to_flat", "lfm_attn_output_bmm_to_view"),
     "rope": (
-        "rope_slice_odd_to_neg",
-        "rope_neg_to_rotate_cat",
-        "rope_slice_even_to_rotate_cat",
-        "rope_rotate_cat_to_sin_mul",
-        "rope_cos_mul_to_add",
-        "rope_sin_mul_to_add",
+        "rope_slice_odd_to_neg", "rope_neg_to_rotate_cat", "rope_slice_even_to_rotate_cat",
+        "rope_rotate_cat_to_sin_mul", "rope_cos_mul_to_add", "rope_sin_mul_to_add",
     ),
     "conv_bias": ("conv_to_bias_add",),
     "short_conv_prefill": ("conv_to_slice",),
     "short_conv_decode": ("multiply_to_sum",),
-    "lstm_cell": (
-        "lstm_gate_mm_to_add",
-        "lstm_recurrent_mm_to_add",
-        "lstm_add_to_sigmoid",
-        "lstm_add_to_tanh",
-    ),
-    "moe_expert": (
-        "expert_gate_to_activation",
-        "expert_activation_to_product",
-        "expert_up_to_product",
-        "expert_product_to_down",
-        "expert_down_to_weighted",
-        "expert_weighted_to_combine",
-    ),
-    "lfm_conv_cache_roll_append": (
-        "lfm_conv_cache_clone_to_output_copy",
-        "lfm_conv_cache_scatter_dim0_to_output_copy",
-        "lfm_conv_cache_clone_to_gather",
-        "lfm_conv_cache_roll_mod_to_gather",
-        "lfm_conv_cache_roll_add_to_mod",
-        "lfm_conv_cache_roll_arange_to_add",
-        "lfm_conv_cache_gather_to_scatter_dim0",
-        "lfm_conv_cache_scatter_dim1_to_scatter_dim0",
-        "lfm_conv_cache_scatter_slice_dim0_to_scatter_dim1",
-        "lfm_conv_cache_scatter_dim2_to_scatter_dim1",
-        "lfm_conv_cache_scatter_slice_dim1_to_scatter_dim2",
-        "lfm_conv_cache_value_copy_to_scatter_dim2",
-        "lfm_conv_cache_gather_to_scatter_slice_dim0",
-        "lfm_conv_cache_scatter_slice_dim0_to_scatter_slice_dim1",
-        "lfm_conv_cache_gather_to_value_slice_dim0",
-        "lfm_conv_cache_value_slice_dim0_to_value_slice_dim1",
-        "lfm_conv_cache_value_slice_dim1_to_value_slice_last",
-        "lfm_conv_cache_value_slice_last_to_value_copy",
-    ),
-    "lfm_grouped_moe": (
-        "moe_hidden_to_router",
-        "moe_router_weight_to_router",
-        "moe_router_logits_to_sigmoid",
-        "moe_router_sigmoid_to_bias",
-        "moe_router_bias_to_topk",
-        "moe_topk_to_indices",
-        "moe_router_sigmoid_to_gather",
-        "moe_topk_indices_to_gather",
-        "moe_gather_to_routing_sum",
-        "moe_routing_sum_to_eps",
-        "moe_gather_to_norm",
-        "moe_eps_to_norm",
-        "moe_norm_to_scale",
-        "moe_token_arange_to_unsqueeze",
-        "moe_token_unsqueeze_to_expand",
-        "moe_token_expand_to_clone",
-        "moe_token_clone_to_flat",
-        "moe_scale_to_routing_flat",
-        "moe_topk_indices_to_flat",
-        "moe_topk_flat_to_sort",
-        "moe_sort_to_indices",
-        "moe_unsort_empty_to_index_put",
-        "moe_sort_indices_to_index_put",
-        "moe_unsort_arange_to_index_put",
-        "moe_topk_flat_to_sorted_expert_index",
-        "moe_sort_indices_to_sorted_expert_index",
-        "moe_sorted_expert_index_to_copy",
-        "moe_sorted_expert_copy_to_histc",
-        "moe_histc_to_offsets",
-        "moe_routing_flat_to_sorted_routing_index",
-        "moe_sort_indices_to_sorted_routing_index",
-        "moe_token_flat_to_positions_index",
-        "moe_sort_indices_to_positions_index",
-        "moe_hidden_to_sorted_hidden_index",
-        "moe_positions_to_sorted_hidden_index",
-        "moe_gate_up_weight_to_grouped",
-        "moe_sorted_hidden_to_grouped_gate_up",
-        "moe_offsets_to_grouped_gate_up",
-        "moe_grouped_gate_up_to_split",
-        "moe_split_to_gate",
-        "moe_split_to_up",
-        "moe_gate_to_copy",
-        "moe_gate_copy_to_sigmoid",
-        "moe_gate_copy_to_activation",
-        "moe_gate_sigmoid_to_activation",
-        "moe_gate_activation_to_copy",
-        "moe_gate_activation_copy_to_product",
-        "moe_up_to_product",
-        "moe_product_to_grouped_down",
-        "moe_down_weight_to_grouped",
-        "moe_offsets_to_grouped_down",
-        "moe_sorted_routing_to_unsqueeze",
-        "moe_grouped_down_to_weighted",
-        "moe_routing_unsqueeze_to_weighted",
-        "moe_weighted_to_unsort_index",
-        "moe_unsort_index_put_to_unsort_index",
-        "moe_unsort_index_to_output_view",
-        "moe_output_view_to_combine",
+    "lstm_cell": _edge_range("lstm_gate_mm_to_add", "lstm_add_to_tanh"),
+    "lfm_conv_cache_roll_append": _edge_range("lfm_conv_cache_clone_to_output_copy", "lfm_conv_cache_value_slice_last_to_value_copy"),
+    "lfm_grouped_moe": _edge_range(
+        "moe_hidden_to_router", "moe_output_view_to_combine",
+        exclude=("moe_token_expand_to_flat", "moe_gate_copy_to_silu", "moe_gate_silu_to_copy"),
     ),
 }
 
-EDGE_GROUPS["lfm_grouped_moe_no_token_clone"] = tuple(
-    "moe_token_expand_to_flat" if edge_name == "moe_token_expand_to_clone" else edge_name
-    for edge_name in EDGE_GROUPS["lfm_grouped_moe"]
-    if edge_name != "moe_token_clone_to_flat"
-)
+def _without_token_clone(group: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(
+        "moe_token_expand_to_flat" if name == "moe_token_expand_to_clone" else name
+        for name in group
+        if name != "moe_token_clone_to_flat"
+    )
 
+EDGE_GROUPS["lfm_grouped_moe_no_token_clone"] = _without_token_clone(EDGE_GROUPS["lfm_grouped_moe"])
 EDGE_GROUPS["lfm_grouped_moe_silu"] = tuple(
-    edge_name
-    for edge_name in EDGE_GROUPS["lfm_grouped_moe"]
-    if edge_name not in {
-        "moe_gate_copy_to_sigmoid",
-        "moe_gate_copy_to_activation",
-        "moe_gate_sigmoid_to_activation",
-        "moe_gate_activation_to_copy",
-    }
+    name for name in EDGE_GROUPS["lfm_grouped_moe"]
+    if name not in {"moe_gate_copy_to_sigmoid", "moe_gate_copy_to_activation", "moe_gate_sigmoid_to_activation", "moe_gate_activation_to_copy"}
 ) + ("moe_gate_copy_to_silu", "moe_gate_silu_to_copy")
-
-EDGE_GROUPS["lfm_grouped_moe_silu_no_token_clone"] = tuple(
-    "moe_token_expand_to_flat" if edge_name == "moe_token_expand_to_clone" else edge_name
-    for edge_name in EDGE_GROUPS["lfm_grouped_moe_silu"]
-    if edge_name != "moe_token_clone_to_flat"
-)
-
-EDGE_GROUPS["lfm_grouped_moe_direct_router"] = tuple(
-    edge_name
-    for edge_name in EDGE_GROUPS["lfm_grouped_moe"]
-    if edge_name != "moe_router_weight_to_router"
-)
-
-EDGE_GROUPS["lfm_grouped_moe_direct_router_no_token_clone"] = tuple(
-    edge_name
-    for edge_name in EDGE_GROUPS["lfm_grouped_moe_no_token_clone"]
-    if edge_name != "moe_router_weight_to_router"
-)
-
-EDGE_GROUPS["lfm_grouped_moe_silu_direct_router"] = tuple(
-    edge_name
-    for edge_name in EDGE_GROUPS["lfm_grouped_moe_silu"]
-    if edge_name != "moe_router_weight_to_router"
-)
-
-EDGE_GROUPS["lfm_grouped_moe_silu_direct_router_no_token_clone"] = tuple(
-    edge_name
-    for edge_name in EDGE_GROUPS["lfm_grouped_moe_silu_no_token_clone"]
-    if edge_name != "moe_router_weight_to_router"
-)
+EDGE_GROUPS["lfm_grouped_moe_silu_no_token_clone"] = _without_token_clone(EDGE_GROUPS["lfm_grouped_moe_silu"])
+for suffix in ("", "_no_token_clone", "_silu", "_silu_no_token_clone"):
+    EDGE_GROUPS[f"lfm_grouped_moe_{'silu_' if 'silu' in suffix else ''}direct_router{'_no_token_clone' if 'no_token_clone' in suffix else ''}"] = tuple(
+        name for name in EDGE_GROUPS[f"lfm_grouped_moe{suffix}"]
+        if name != "moe_router_weight_to_router"
+    )

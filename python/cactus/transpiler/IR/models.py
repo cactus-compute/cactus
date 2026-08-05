@@ -6,7 +6,6 @@ from . import constants
 from ..Converter import models as CModels
 from ..Fusions import models as FModels
 
-
 @dataclass(slots=True)
 class CacheAnnotation:
     kind: str
@@ -22,21 +21,14 @@ class CacheAnnotation:
     head_dim: int | None = None
     source: str = "inferred"
 
-
 @dataclass(slots=True, frozen=True)
 class CacheConcatMatch:
-    """A structural boundary between opaque cache state and a new tensor.
-
-    Cache state is not an ordinary tensor even when an exported graph applies
-    layout-only operations around it.  Keeping this match in the IR model
-    layer gives fusions and lowering one model-independent cache contract.
-    """
+    """A structural boundary between opaque cache state and a new tensor."""
 
     concat: "Node"
     state: "Node"
     new_value: "Node"
     state_wrappers: tuple["Node", ...] = ()
-
 
 @dataclass(slots=True)
 class Node:
@@ -72,7 +64,6 @@ class Node:
     def is_output(self) -> bool:
         return self.node_type == "output"
 
-
 @dataclass(slots=True)
 class Graph:
     source: Node | None
@@ -102,7 +93,6 @@ class Graph:
 
     def to_layer_map(self) -> CModels.LayerMap:
         return graph_to_layer_map(self)
-
 
 @dataclass(slots=True)
 class FusionResult:
@@ -149,14 +139,12 @@ class FusionResult:
     def consumed_node_names(self) -> frozenset[str]:
         return frozenset(node.name for node in self.matched_nodes)
 
-
 CACHE_LAYOUT_TARGETS = frozenset({
     "cactus.view", "aten.view.default", "aten.reshape.default",
     "cactus.transpose", "aten.transpose.int", "aten.permute.default",
     "cactus.precision_cast", "aten._to_copy.default",
     "aten.clone.default", "aten.contiguous.default",
 })
-
 
 def find_cache_concat_ancestor(
     node: Node,
@@ -165,11 +153,7 @@ def find_cache_concat_ancestor(
     max_depth: int = 18,
     cache_wrapper_depth: int = 8,
 ) -> CacheConcatMatch | None:
-    """Match a typed cache/new-value concatenation through layout wrappers.
-
-    Operand order and model naming are intentionally irrelevant.  The cache
-    annotation is the authority that distinguishes opaque state from data.
-    """
+    """Match a typed cache/new-value concatenation through layout wrappers."""
     current = node
     for _ in range(max_depth):
         if current.target in {"cactus.cat", "aten.cat.default"} and len(current.parents) >= 2:
@@ -189,7 +173,6 @@ def find_cache_concat_ancestor(
         current = current.parents[0]
     return None
 
-
 def find_cache_state_ancestor(
     node: Node,
     role: str,
@@ -207,12 +190,6 @@ def find_cache_state_ancestor(
         wrappers.append(current)
         current = current.parents[0]
     return None, ()
-
-
-
-
-################################################# Model Utils!!!!!!! #################################################
-
 
 def extract_node_refs(value: Any) -> tuple[str, ...]:
     if isinstance(value, dict) and set(value.keys()) == {"node"} and isinstance(value["node"], str):
@@ -236,7 +213,6 @@ def extract_node_refs(value: Any) -> tuple[str, ...]:
 
     return ()
 
-
 def infer_value_kind(record: CModels.LayerRecord) -> str:
     if record.node_type == "output":
         return FModels.ValueKind.OUTPUT
@@ -255,7 +231,6 @@ def infer_value_kind(record: CModels.LayerRecord) -> str:
         return FModels.ValueKind.CACHE_INPUT
 
     return FModels.ValueKind.USER_INPUT
-
 
 def extract_attrs(record: CModels.LayerRecord) -> dict[str, Any]:
     attrs: dict[str, Any] = {}
@@ -284,7 +259,6 @@ def extract_attrs(record: CModels.LayerRecord) -> dict[str, Any]:
 
     return attrs
 
-
 def generate_node(record: CModels.LayerRecord) -> Node:
     return Node(
         index=record.index,
@@ -301,7 +275,6 @@ def generate_node(record: CModels.LayerRecord) -> Node:
         ir_metadata=dict(record.ir_metadata),
         cache=cache_annotation_from_metadata(record.ir_metadata),
     )
-
 
 def generate_graph(cls: type[Graph], layer_map: CModels.LayerMap) -> Graph:
     nodes = tuple(Node.from_layer(record) for record in layer_map.nodes)
@@ -350,7 +323,6 @@ def generate_graph(cls: type[Graph], layer_map: CModels.LayerMap) -> Graph:
         metadata={},
     )
 
-
 def apply_fusions_to_graph(graph: Graph, fusion_results: tuple[FusionResult, ...]) -> Graph:
     if not fusion_results:
         return graph
@@ -364,7 +336,6 @@ def apply_fusions_to_graph(graph: Graph, fusion_results: tuple[FusionResult, ...
     rebuilt_graph = rebuild_graph((*kept_nodes, *rewritten_fused_nodes), graph, fusion_results)
     return prune_dead_nodes(rebuilt_graph)
 
-
 def validate_non_overlapping_fusions(fusion_results: tuple[FusionResult, ...]) -> None:
     consumed_names: set[str] = set()
 
@@ -376,7 +347,6 @@ def validate_non_overlapping_fusions(fusion_results: tuple[FusionResult, ...]) -
             raise ValueError(f"Fusion {result.fusion_name} overlaps an earlier fusion at: {overlap_list}")
 
         consumed_names.update(result.consumed_node_names)
-
 
 def build_fused_nodes(graph: Graph, fusion_results: tuple[FusionResult, ...]) -> tuple[tuple[Node, ...], dict[str, str]]:
     fused_nodes: list[Node] = []
@@ -394,7 +364,6 @@ def build_fused_nodes(graph: Graph, fusion_results: tuple[FusionResult, ...]) ->
 
     return tuple(fused_nodes), replacement_names
 
-
 def unique_fused_name(result: FusionResult, count: int, used_names: set[str]) -> str:
     base = sanitize_node_name(result.cactus_op or result.fusion_name)
     candidate = f"{base}_{count}"
@@ -406,10 +375,8 @@ def unique_fused_name(result: FusionResult, count: int, used_names: set[str]) ->
 
     return candidate
 
-
 def sanitize_node_name(name: str) -> str:
     return "".join(char if char.isalnum() or char == "_" else "_" for char in name).strip("_") or "fused"
-
 
 def fused_node_from_result(result: FusionResult, fused_name: str) -> Node:
     attrs = normalized_fusion_attrs(result)
@@ -432,7 +399,6 @@ def fused_node_from_result(result: FusionResult, fused_name: str) -> Node:
         cache=cache,
     )
 
-
 def normalized_fusion_attrs(result: FusionResult) -> dict[str, Any]:
     attrs = dict(result.attrs)
 
@@ -450,7 +416,6 @@ def normalized_fusion_attrs(result: FusionResult) -> dict[str, Any]:
 
     return attrs
 
-
 def gemma_language_layer_index(result: FusionResult) -> int | None:
     for node in (result.source, *result.matched_nodes, *result.external_inputs):
         text = f"{node.name} {node.target} {node.module_stack!r}"
@@ -464,7 +429,6 @@ def gemma_language_layer_index(result: FusionResult) -> int | None:
             return layer_index
 
     return None
-
 
 def expanded_consumed_names(graph: Graph, replacement_names: dict[str, str]) -> frozenset[str]:
     consumed_names = set(replacement_names)
@@ -491,7 +455,6 @@ def expanded_consumed_names(graph: Graph, replacement_names: dict[str, str]) -> 
 
     return frozenset(consumed_names)
 
-
 def clone_rewritten_node(node: Node, replacement_names: dict[str, str]) -> Node:
     return Node(
         index=node.index,
@@ -509,7 +472,6 @@ def clone_rewritten_node(node: Node, replacement_names: dict[str, str]) -> Node:
         cache=node.cache,
     )
 
-
 def rewrite_node_refs(value: Any, replacement_names: dict[str, str]) -> Any:
     if isinstance(value, dict) and set(value.keys()) == {"node"} and isinstance(value["node"], str):
         return {"node": replacement_names.get(value["node"], value["node"])}
@@ -524,7 +486,6 @@ def rewrite_node_refs(value: Any, replacement_names: dict[str, str]) -> Any:
         return {key: rewrite_node_refs(item, replacement_names) for key, item in value.items()}
 
     return value
-
 
 def remove_noop_nodes_from_graph(graph: Graph) -> Graph:
     replacement_names: dict[str, str] = {}
@@ -541,7 +502,6 @@ def remove_noop_nodes_from_graph(graph: Graph) -> Graph:
     replacement_names = resolve_replacement_names(replacement_names)
     kept_nodes = tuple(clone_rewritten_node(node, replacement_names) for node in graph.nodes if node.name not in replacement_names)
     return prune_dead_nodes(rebuild_graph(kept_nodes, graph, tuple(graph.fusions)))
-
 
 def noop_replacement_name(node: Node) -> str | None:
     if len(node.parents) != 1 or node.is_output:
@@ -563,7 +523,6 @@ def noop_replacement_name(node: Node) -> str | None:
 
     return None
 
-
 def is_precision_cast_only_for_rms_norm(node: Node, parent: Node) -> bool:
     if node.target not in {"aten._to_copy.default", "cactus.precision_cast"}:
         return False
@@ -578,7 +537,6 @@ def is_precision_cast_only_for_rms_norm(node: Node, parent: Node) -> bool:
         return False
 
     return bool(node.children) and all(child.target == "cactus.rms_norm" for child in node.children)
-
 
 def resolve_replacement_names(replacement_names: dict[str, str]) -> dict[str, str]:
     resolved: dict[str, str] = {}
@@ -595,25 +553,20 @@ def resolve_replacement_names(replacement_names: dict[str, str]) -> dict[str, st
 
     return resolved
 
-
 def same_tensor_signature(left: Node, right: Node) -> bool:
     return same_shape(left, right) and same_effective_dtype(left, right)
-
 
 def same_shape(left: Node, right: Node) -> bool:
     return tensor_meta_value(left, "shape") == tensor_meta_value(right, "shape")
 
-
 def same_effective_dtype(left: Node, right: Node) -> bool:
     return effective_dtype(tensor_meta_value(left, "dtype")) == effective_dtype(tensor_meta_value(right, "dtype"))
-
 
 def tensor_meta_value(node: Node, key: str) -> Any:
     if not isinstance(node.tensor_output_meta, dict):
         return None
 
     return node.tensor_output_meta.get(key)
-
 
 def effective_dtype(dtype: Any) -> str | None:
     if dtype is None:
@@ -625,7 +578,6 @@ def effective_dtype(dtype: Any) -> str | None:
         return "torch.float16"
 
     return dtype_name
-
 
 def rebuild_graph(nodes: tuple[Node, ...], original_graph: Graph, fusion_results: tuple[FusionResult, ...] = ()) -> Graph:
     nodes_map = {node.name: node for node in nodes}
@@ -673,7 +625,6 @@ def rebuild_graph(nodes: tuple[Node, ...], original_graph: Graph, fusion_results
         fusions=list(fusion_results),
     )
 
-
 def prune_dead_nodes(graph: Graph) -> Graph:
     live_names = output_ancestor_names(graph)
 
@@ -682,7 +633,6 @@ def prune_dead_nodes(graph: Graph) -> Graph:
 
     live_nodes = tuple(node for node in graph.nodes if node.name in live_names)
     return rebuild_graph(live_nodes, graph, tuple(graph.fusions))
-
 
 def output_ancestor_names(graph: Graph) -> frozenset[str]:
     live_names: set[str] = set()
@@ -698,7 +648,6 @@ def output_ancestor_names(graph: Graph) -> frozenset[str]:
         stack.extend(node.parents)
 
     return frozenset(live_names)
-
 
 def graph_to_layer_map(graph: Graph) -> CModels.LayerMap:
     records = [
@@ -727,7 +676,6 @@ def graph_to_layer_map(graph: Graph) -> CModels.LayerMap:
         nodes=records,
     )
 
-
 def topological_sort(graph: Graph) -> tuple[Node, ...]:
     indegree = {node.name: len({parent.name for parent in node.parents}) for node in graph.nodes}
     ready = sorted((node for node in graph.nodes if indegree[node.name] == 0), key=lambda node: (node.index, node.name))
@@ -748,7 +696,6 @@ def topological_sort(graph: Graph) -> tuple[Node, ...]:
         raise ValueError("Cannot topologically sort graph with cycles or missing edges")
 
     return tuple(ordered)
-
 
 def annotate_cache_nodes(nodes: tuple[Node, ...], model_name: str = "") -> None:
     kv_count = 0
@@ -804,7 +751,6 @@ def annotate_cache_nodes(nodes: tuple[Node, ...], model_name: str = "") -> None:
         if node.cache is not None:
             node.ir_metadata["cache"] = cache_annotation_to_dict(node.cache)
 
-
 def kv_cache_window_size_for_model(model_name: str, layer_index: int | None, sequence_length: int | None = None) -> int | None:
     if layer_index is None:
         return None
@@ -817,11 +763,9 @@ def kv_cache_window_size_for_model(model_name: str, layer_index: int | None, seq
 
     return 0 if layer_index % 5 == 4 else 512
 
-
 def is_gemma4_model_name(model_name: str) -> bool:
     normalized = model_name.lower().replace("_", "-")
     return "gemma-4" in normalized or "gemma4" in normalized
-
 
 def cache_annotation_from_metadata(metadata: dict[str, Any]) -> CacheAnnotation | None:
     raw_cache = metadata.get("cache")
@@ -844,7 +788,6 @@ def cache_annotation_from_metadata(metadata: dict[str, Any]) -> CacheAnnotation 
         source=str(raw_cache.get("source", "metadata")),
     )
 
-
 def cache_annotation_to_dict(annotation: CacheAnnotation) -> dict[str, Any]:
     return {
         "kind": annotation.kind,
@@ -860,7 +803,6 @@ def cache_annotation_to_dict(annotation: CacheAnnotation) -> dict[str, Any]:
         "head_dim": annotation.head_dim,
         "source": annotation.source,
     }
-
 
 def cache_annotation_from_fusion_result(result: FusionResult) -> CacheAnnotation | None:
     if not result.fusion.graph.cache_outputs:
@@ -887,14 +829,12 @@ def cache_annotation_from_fusion_result(result: FusionResult) -> CacheAnnotation
         source=f"fusion:{result.fusion_name}",
     )
 
-
 def first_cache_input_annotation(result: FusionResult) -> CacheAnnotation | None:
     for node in result.external_inputs:
         if node.cache is not None:
             return node.cache
 
     return None
-
 
 def infer_layer_index(result: FusionResult) -> int | None:
     for node in result.matched_nodes:
@@ -904,7 +844,6 @@ def infer_layer_index(result: FusionResult) -> int | None:
             return layer_index
 
     return None
-
 
 def cache_layer_index_from_node(node: Node, default: int | None = None) -> int | None:
     candidates: list[tuple[Node, int]] = [(node, 0)]
@@ -928,7 +867,6 @@ def cache_layer_index_from_node(node: Node, default: int | None = None) -> int |
 
     return default
 
-
 def layer_index_from_text(value: str) -> int | None:
     parts = value.replace("/", ".").replace("_", ".").split(".")
 
@@ -937,7 +875,6 @@ def layer_index_from_text(value: str) -> int | None:
             return int(parts[index + 1])
 
     return None
-
 
 def cache_window_size(result: FusionResult, shape: tuple[Any, ...], base: CacheAnnotation | None) -> int | None:
     if "cache_window_size" in result.attrs and result.attrs["cache_window_size"] is not None:
@@ -957,7 +894,6 @@ def cache_window_size(result: FusionResult, shape: tuple[Any, ...], base: CacheA
 
     return None
 
-
 def cache_hidden_dim(result: FusionResult, shape: tuple[Any, ...], base: CacheAnnotation | None) -> int | None:
     if "hidden_dim" in result.attrs and result.attrs["hidden_dim"] is not None:
         return int(result.attrs["hidden_dim"])
@@ -970,7 +906,6 @@ def cache_hidden_dim(result: FusionResult, shape: tuple[Any, ...], base: CacheAn
 
     return None
 
-
 def inferred_cache_layout(kind: str, shape: tuple[Any, ...]) -> str | None:
     if kind == FModels.CacheKind.KV and len(shape) == 4:
         return "batch_heads_sequence_head_dim"
@@ -979,7 +914,6 @@ def inferred_cache_layout(kind: str, shape: tuple[Any, ...]) -> str | None:
         return "batch_hidden_window"
 
     return None
-
 
 def fusion_result_metadata(result: FusionResult, cache: CacheAnnotation | None) -> dict[str, Any]:
     metadata = {
@@ -995,10 +929,8 @@ def fusion_result_metadata(result: FusionResult, cache: CacheAnnotation | None) 
 
     return metadata
 
-
 def cache_annotations_from_nodes(nodes: tuple[Node, ...]) -> tuple[CacheAnnotation, ...]:
     return tuple(node.cache for node in nodes if node.cache is not None)
-
 
 def node_ir_metadata(node: Node) -> dict[str, Any]:
     metadata = dict(node.ir_metadata)
@@ -1007,7 +939,6 @@ def node_ir_metadata(node: Node) -> dict[str, Any]:
         metadata["cache"] = cache_annotation_to_dict(node.cache)
 
     return metadata
-
 
 def past_key_value_index(node: Node) -> int | None:
     for value in (node.target, node.name):
@@ -1020,7 +951,6 @@ def past_key_value_index(node: Node) -> int | None:
                 return int(suffix)
 
     return None
-
 
 def tensor_shape(node: Node) -> tuple[Any, ...]:
     if not isinstance(node.tensor_output_meta, dict):
@@ -1036,7 +966,6 @@ def tensor_shape(node: Node) -> tuple[Any, ...]:
 
     return ()
 
-
 def known_int(value: Any) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool):
         return value
@@ -1046,13 +975,11 @@ def known_int(value: Any) -> int | None:
 
     return None
 
-
 def optional_int(value: Any) -> int | None:
     if value is None:
         return None
 
     return known_int(value)
-
 
 def optional_str(value: Any) -> str | None:
     if value is None:

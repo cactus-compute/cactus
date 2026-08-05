@@ -9,7 +9,6 @@ from .errors import UnsupportedLoweringError
 from .lowering_utils import *
 from ..IR import models as IRModels
 
-
 def lower_moe(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = context.inputs_for(node)
 
@@ -97,7 +96,6 @@ def lower_moe(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     raise UnsupportedLoweringError(f"{node.name}: unsupported MoE target {node.target}")
 
-
 def lower_packed_lfm_moe_layer_gated(
     context: models.GenerationContext,
     node: IRModels.Node,
@@ -180,7 +178,6 @@ def lower_packed_lfm_moe_layer_gated(
 
     return moe_output
 
-
 def moe_hidden_2d(context: models.GenerationContext, node: IRModels.Node, hidden: Any, hidden_dim: int) -> Any:
     hidden_shape = concrete_shape(meta_shape(node.parents[0])) if node.parents else None
 
@@ -194,7 +191,6 @@ def moe_hidden_2d(context: models.GenerationContext, node: IRModels.Node, hidden
         return cast_to_precision(context, context.graph.reshape(hidden, (hidden_shape[1], hidden_dim)), context.graph.FP16)
 
     raise UnsupportedLoweringError(f"{node.name}: packed MoE hidden input must be [tokens, hidden] or [1, tokens, hidden]")
-
 
 def moe_activation(context: models.GenerationContext, node: IRModels.Node) -> int:
     activation = str(node.attrs.get("activation", "silu") or "silu").lower()
@@ -212,7 +208,6 @@ def moe_activation(context: models.GenerationContext, node: IRModels.Node) -> in
         raise UnsupportedLoweringError(f"{node.name}: unsupported MoE activation {activation!r}")
 
     return int(mapping[activation])
-
 
 def lfm_moe_weight_bundle_parts(
     gate_up_weight: Any,
@@ -233,7 +228,6 @@ def lfm_moe_weight_bundle_parts(
         return None
 
     return gate_up_weight.w1_weights, gate_up_weight.w3_weights, down_weight.w2_weights
-
 
 def split_lfm_packed_moe_weights(
     context: models.GenerationContext,
@@ -262,7 +256,6 @@ def split_lfm_packed_moe_weights(
         w2_weights.append(expert_down)
 
     return tuple(w1_weights), tuple(w3_weights), tuple(w2_weights)
-
 
 def lower_special_cactus(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = context.inputs_for(node)
@@ -389,7 +382,6 @@ def lower_special_cactus(context: models.GenerationContext, node: IRModels.Node)
 
     raise UnsupportedLoweringError(f"{node.name}: unsupported special Cactus target {target}")
 
-
 def lower_table_rope(context: models.GenerationContext, node: IRModels.Node, x: Any, cos: Any, sin: Any) -> Any:
     shape = meta_shape(node.parents[0]) if node.parents else meta_shape(node)
 
@@ -413,7 +405,6 @@ def lower_table_rope(context: models.GenerationContext, node: IRModels.Node, x: 
     x2 = context.graph.slice(x, axis, half_dim, length=half_dim)
     rotated = context.graph.cat((context.graph.scalar_multiply(x2, -1.0), x1), axis=axis)
     return context.graph.add(context.graph.multiply(x, cos), context.graph.multiply(rotated, sin))
-
 
 def lfm_short_conv_decode_weight(context: models.GenerationContext, node: IRModels.Node, weight: Any) -> Any:
     cache_window_shape = meta_shape(node.parents[0]) if node.parents else ()
@@ -442,7 +433,6 @@ def lfm_short_conv_decode_weight(context: models.GenerationContext, node: IRMode
     raise UnsupportedLoweringError(
         f"{node.name}: lfm short conv decode weight shape {weight_shape} is incompatible with cache window {cache_window_shape}"
     )
-
 
 def gemma4_rope_table_tensor(context: models.GenerationContext, node: IRModels.Node) -> Any:
     table_kind = str(node.attrs.get("table_kind", ""))
@@ -483,7 +473,6 @@ def gemma4_rope_table_tensor(context: models.GenerationContext, node: IRModels.N
     )
     return tensor
 
-
 def gemma4_max_position_embeddings(context: models.GenerationContext, node: IRModels.Node) -> int:
     configured = int(node.attrs.get("max_position_embeddings", 0) or 0)
     config = gemma4_config(context)
@@ -491,7 +480,6 @@ def gemma4_max_position_embeddings(context: models.GenerationContext, node: IRMo
     config_value = text_config.get("max_position_embeddings") or config.get("max_position_embeddings")
     max_positions = int(config_value or configured or 131072)
     return max(max_positions, 1)
-
 
 def gemma4_rope_theta(context: models.GenerationContext, table_name: str) -> float:
     config = gemma4_config(context)
@@ -512,7 +500,6 @@ def gemma4_rope_theta(context: models.GenerationContext, table_name: str) -> flo
 
     return 10_000.0
 
-
 def gemma4_config(context: models.GenerationContext) -> dict[str, Any]:
     weights_dir = context.config.weights_dir
 
@@ -531,7 +518,6 @@ def gemma4_config(context: models.GenerationContext) -> dict[str, Any]:
             return {}
 
     return {}
-
 
 def write_gemma4_rope_table(path: Any, max_positions: int, rotary_dim: int, theta: float, table_kind: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -568,7 +554,6 @@ def write_gemma4_rope_table(path: Any, max_positions: int, rotary_dim: int, thet
 
             f.write(values.astype(np.float16).tobytes(order="C"))
 
-
 def write_cactus_tensor_header(file: Any, shape: tuple[int, ...], precision: int, data_size: int) -> None:
     alignment = 32
     header_size = 84
@@ -590,7 +575,6 @@ def write_cactus_tensor_header(file: Any, shape: tuple[int, ...], precision: int
     file.write(struct.pack("<I", 0))
     file.write(struct.pack("<Q", int(original_n)))
     file.write(b"\0" * ((alignment - (header_size % alignment)) % alignment))
-
 
 def lower_unsupported_semantic(context: models.GenerationContext, node: IRModels.Node) -> Any:
     raise UnsupportedLoweringError(f"{node.name}: {node.target} has no safe Cactus lowering yet")

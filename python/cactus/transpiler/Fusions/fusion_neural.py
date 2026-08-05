@@ -4,7 +4,6 @@ from . import edges as E
 from . import models as M
 from .fusion_builders import _graph, _input, _shared_input
 
-
 LINEAR_GRAPH = _graph(
     "linear",
     "linear_mm",
@@ -15,7 +14,6 @@ LINEAR_GRAPH = _graph(
         "linear_weight_layout": {"input_role": "x", "weight_role": "weight", "output_node": "linear_mm"},
     },
 )
-
 
 LINEAR_NATIVE_GRAPH = _graph(
     "linear_native",
@@ -29,7 +27,6 @@ LINEAR_NATIVE_GRAPH = _graph(
     attr_captures=(M.AttrCapture("pretransposed_rhs", default=True, required=False),),
 )
 
-
 LINEAR_TRANSPOSED_GRAPH = _graph(
     "linear_transposed",
     "linear_mm",
@@ -41,7 +38,6 @@ LINEAR_TRANSPOSED_GRAPH = _graph(
     ),
     attr_captures=(M.AttrCapture("pretransposed_rhs", default=True, required=False),),
 )
-
 
 LINEAR_ADDMM_BIAS_GRAPH = _graph(
     "linear_addmm_bias",
@@ -58,7 +54,6 @@ LINEAR_ADDMM_BIAS_GRAPH = _graph(
     },
 )
 
-
 LINEAR_ADDMM_TRANSPOSED_BIAS_GRAPH = _graph(
     "linear_addmm_transposed_bias",
     "linear_addmm",
@@ -71,7 +66,6 @@ LINEAR_ADDMM_TRANSPOSED_BIAS_GRAPH = _graph(
     ),
     attr_captures=(M.AttrCapture("pretransposed_rhs", default=True, required=False),),
 )
-
 
 LINEAR_BIAS_GRAPH = _graph(
     "linear_bias",
@@ -86,7 +80,6 @@ LINEAR_BIAS_GRAPH = _graph(
     },
 )
 
-
 LAYERNORM_DIRECT_GRAPH = _graph(
     "layernorm_direct",
     "layernorm_direct",
@@ -98,7 +91,6 @@ LAYERNORM_DIRECT_GRAPH = _graph(
     ),
     attr_captures=(M.AttrCapture("epsilon", "layernorm_direct", "eps", default=1e-5, required=False),),
 )
-
 
 RMS_NORM_GRAPH = _graph(
     "rms_norm",
@@ -112,7 +104,6 @@ RMS_NORM_GRAPH = _graph(
         "node_attr_equals": {"node": "rms_mean", "attr": "dim", "value": -1},
     },
 )
-
 
 RMS_NORM_CAST_WEIGHT_LEFT_GRAPH = _graph(
     "rms_norm_cast_weight_left",
@@ -134,7 +125,6 @@ RMS_NORM_CAST_WEIGHT_LEFT_GRAPH = _graph(
     },
 )
 
-
 RMS_NORM_POW_GRAPH = _graph(
     "rms_norm_pow",
     "rms_weight_mul",
@@ -148,7 +138,6 @@ RMS_NORM_POW_GRAPH = _graph(
     },
 )
 
-
 RMS_NORM_NO_WEIGHT_GRAPH = _graph(
     "rms_norm_no_weight",
     "rms_scale",
@@ -159,7 +148,6 @@ RMS_NORM_NO_WEIGHT_GRAPH = _graph(
     attr_captures=(M.AttrCapture("epsilon", "rms_eps_add", "other", default=1e-6, required=False),),
 )
 
-
 RMS_NORM_POW_NO_WEIGHT_GRAPH = _graph(
     "rms_norm_pow_no_weight",
     "rms_scale",
@@ -169,7 +157,6 @@ RMS_NORM_POW_NO_WEIGHT_GRAPH = _graph(
     shared_inputs=(_shared_input("rms_square", 0, "rms_scale", 0),),
     attr_captures=(M.AttrCapture("epsilon", "rms_eps_add", "other", default=1e-6, required=False),),
 )
-
 
 LAYERNORM_NO_BIAS_GRAPH = _graph(
     "layernorm_no_bias",
@@ -193,7 +180,6 @@ LAYERNORM_NO_BIAS_GRAPH = _graph(
     },
 )
 
-
 LAYERNORM_GRAPH = _graph(
     "layernorm",
     "ln_bias_add",
@@ -208,7 +194,6 @@ LAYERNORM_GRAPH = _graph(
     },
 )
 
-
 SILU_DECOMPOSED_GRAPH = _graph(
     "silu_decomposed",
     "silu_product",
@@ -217,7 +202,6 @@ SILU_DECOMPOSED_GRAPH = _graph(
     inputs=(_input("x", "silu_product", 0),),
     shared_inputs=(_shared_input("silu_product", 0, "silu_sigmoid", 0),),
 )
-
 
 GLU_DECOMPOSED_GRAPH = _graph(
     "glu_decomposed",
@@ -235,7 +219,6 @@ GLU_DECOMPOSED_GRAPH = _graph(
     },
 )
 
-
 SWIGLU_MLP_GRAPH = _graph(
     "swiglu_mlp",
     "down_proj",
@@ -246,7 +229,6 @@ SWIGLU_MLP_GRAPH = _graph(
     attr_captures=(M.AttrCapture("product_scale", default=1.0, required=False),),
 )
 
-
 GELU_MLP_GRAPH = _graph(
     "gelu_mlp",
     "down_proj",
@@ -254,7 +236,6 @@ GELU_MLP_GRAPH = _graph(
     inputs=(_input("hidden", "up_proj", 0), _input("up_weight", "up_proj", 1), _input("down_weight", "down_proj", 1)),
     edge_names=E.EDGE_GROUPS["gelu_mlp"],
 )
-
 
 GEMMA4_GEGLU_MLP_GRAPH = _graph(
     "gemma4_geglu_mlp",

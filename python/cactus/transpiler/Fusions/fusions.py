@@ -13,17 +13,14 @@ from .fusion_moe import *
 from .fusion_neural import *
 from .fusion_special import *
 
-
 DIRECT_CACTUS_OPS: dict[str, str] = {
     "sqrt": "scalar_sqrt",
 }
-
 
 DIRECT_DEFINITIONS: dict[str, M.FusionDefinition] = {
     name: _definition(name, cactus_op=DIRECT_CACTUS_OPS.get(name, name), graph=graph, fusion_fields=("generic", "direct"))
     for name, graph in DIRECT_GRAPHS.items()
 }
-
 
 FUSIONS: dict[str, M.FusionDefinition] = {
     **DIRECT_DEFINITIONS,
@@ -78,7 +75,7 @@ FUSIONS: dict[str, M.FusionDefinition] = {
         "generic_cached_attention",
         "attention_cached",
         GENERIC_CACHED_ATTENTION_GRAPH,
-        fusion_fields=("generic", "attention", "cache"),
+        fusion_fields=("generic_cached_attention",),
         supported_inference_modes=("decode_with_cache",),
         metadata={"special_matcher": "generic_cached_attention"},
     ),
@@ -158,6 +155,5 @@ FUSIONS: dict[str, M.FusionDefinition] = {
     "irfft": _definition("irfft", "irfft", DSP_GRAPHS["irfft"], fusion_fields=("generic", "audio", "dsp")),
     "spectrogram": _definition("spectrogram", "spectrogram", DSP_GRAPHS["spectrogram"], fusion_fields=("generic", "audio", "dsp")),
 }
-
 
 FUSIONS_BY_ROOT_OP: dict[str, tuple[M.FusionDefinition, ...]] = _index_by_root_op(FUSIONS)

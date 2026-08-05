@@ -11,9 +11,7 @@ from .errors import UnsupportedLoweringError
 from .lowering_utils import *
 from ..IR import models as IRModels
 
-
 LFM_GROUPED_MOE_TARGET_RE = re.compile(r"^layers\.(\d+)\.feed_forward\.experts\.(gate_up_proj|down_proj)$")
-
 
 def bind_weight_placeholder(context: models.GenerationContext, node: IRModels.Node, tensor: Any, logical_name: str | None = None) -> None:
     resolver = context.component.weight_resolver
@@ -107,7 +105,6 @@ def bind_weight_placeholder(context: models.GenerationContext, node: IRModels.No
         )
     )
 
-
 def generated_weight_placeholder_values(
     context: models.GenerationContext,
     node: IRModels.Node,
@@ -129,7 +126,6 @@ def generated_weight_placeholder_values(
     rotary_dim = int(shape[0]) * 2
     values = [1.0 / (float(rope_theta) ** (index / rotary_dim)) for index in range(0, rotary_dim, 2)]
     return values, tuple(shape), cactus_precision(context.graph, tensor_dtype(node))
-
 
 def model_rope_theta(context: models.GenerationContext) -> float | None:
     weights_dir = context.config.weights_dir
@@ -161,7 +157,6 @@ def model_rope_theta(context: models.GenerationContext) -> float | None:
 
     value = config.get("rope_theta") or config.get("rotary_emb_base") or text_config.get("rope_theta") or text_config.get("rotary_emb_base")
     return float(value) if value is not None else None
-
 
 def lower_lfm_grouped_moe_placeholder(context: models.GenerationContext, node: IRModels.Node) -> models.LfmMoeWeightBundle | None:
     resolver = context.component.weight_resolver
@@ -204,7 +199,6 @@ def lower_lfm_grouped_moe_placeholder(context: models.GenerationContext, node: I
         )
     )
 
-
 def parse_lfm_grouped_moe_target(source_target: str) -> tuple[int, str] | None:
     target = source_target
 
@@ -217,7 +211,6 @@ def parse_lfm_grouped_moe_target(source_target: str) -> tuple[int, str] | None:
         return None
 
     return int(match.group(1)), match.group(2)
-
 
 def count_lfm_moe_experts(resolver: models.WeightResolver, layer_index: int) -> int:
     prefix = f"model.layers.{layer_index}.feed_forward.experts."
@@ -235,7 +228,6 @@ def count_lfm_moe_experts(resolver: models.WeightResolver, layer_index: int) -> 
                 expert_indices.add(int(expert))
 
     return max(expert_indices) + 1 if expert_indices else 0
-
 
 def lfm_expert_weight_input(
     context: models.GenerationContext,
@@ -257,7 +249,6 @@ def lfm_expert_weight_input(
     )
     return tensor
 
-
 def resolve_required_source_weight(
     context: models.GenerationContext,
     node: IRModels.Node,
@@ -276,13 +267,11 @@ def resolve_required_source_weight(
 
     raise UnsupportedLoweringError(f"{node.name}: could not resolve converted weight for source target {source_target}")
 
-
 def weight_record_precision(context: models.GenerationContext, record: models.WeightRecord) -> int:
     if record.precision and hasattr(context.graph, record.precision):
         return int(getattr(context.graph, record.precision))
 
     return int(getattr(context.graph, constants.DEFAULT_INPUT_PRECISION))
-
 
 def should_dequantize_int8_weight_placeholder(record: models.WeightRecord | None) -> bool:
     if record is None or record.precision != "INT8" or record.output_name is None:
@@ -290,7 +279,6 @@ def should_dequantize_int8_weight_placeholder(record: models.WeightRecord | None
 
     adapter_family = (record.adapter_family or "").lower()
     return adapter_family.startswith("lfm") and "conv_depthwise.weights" in record.output_name
-
 
 def bind_weight_record(
     context: models.GenerationContext,

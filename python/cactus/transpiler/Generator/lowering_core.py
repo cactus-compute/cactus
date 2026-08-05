@@ -15,7 +15,6 @@ from .lowering_utils import *
 from .lowering_weights import bind_weight_placeholder, lower_lfm_grouped_moe_placeholder, should_dequantize_int8_weight_placeholder
 from ..IR import models as IRModels
 
-
 def create_cactus_graph() -> Any:
     try:
         from cactus import Graph
@@ -23,7 +22,6 @@ def create_cactus_graph() -> Any:
         from bindings.cactus import Graph
 
     return Graph()
-
 
 def component_weight_resolver(
     component: models.ComponentGraph,
@@ -42,7 +40,6 @@ def component_weight_resolver(
         component.warn(f"{component.name}: no converted weight records found in {config.weights_dir}")
 
     return resolver
-
 
 def build_lowering_rules(
     extra_lowerings: Mapping[str, models.LoweringRule | models.LoweringFn] | None = None,
@@ -101,13 +98,11 @@ def build_lowering_rules(
 
     return rules
 
-
 def add_rules(rules: dict[str, models.LoweringRule], targets: Any, lower: models.LoweringFn) -> None:
     target_names = targets.keys() if isinstance(targets, dict) else targets
 
     for target in target_names:
         rules[target] = models.LoweringRule(target, lower)
-
 
 def lower_component(
     component: models.ComponentGraph,
@@ -142,7 +137,6 @@ def lower_component(
     component.save()
     return component
 
-
 def lower_node(context: models.GenerationContext, node: IRModels.Node) -> None:
     if node.name in context.skip_node_names:
         return
@@ -165,7 +159,6 @@ def lower_node(context: models.GenerationContext, node: IRModels.Node) -> None:
     if result is not None:
         context.bind(node, result)
 
-
 def lower_placeholder(context: models.GenerationContext, node: IRModels.Node) -> Any:
     if should_lower_cache_placeholder_as_state(context, node):
         return lower_cache_placeholder(context, node)
@@ -187,7 +180,6 @@ def lower_placeholder(context: models.GenerationContext, node: IRModels.Node) ->
     context.component.add_runtime_input(tensor, logical_name)
     return tensor
 
-
 def placeholder_precision(context: models.GenerationContext, node: IRModels.Node) -> int:
     if node.value_kind in constants.WEIGHT_VALUE_KINDS and context.component.weight_resolver is not None:
         record = context.component.weight_resolver.resolve(node.name)
@@ -202,10 +194,8 @@ def placeholder_precision(context: models.GenerationContext, node: IRModels.Node
 
     return cactus_precision(context.graph, tensor_dtype(node))
 
-
 def is_fp16_runtime_input(logical_name: str) -> bool:
     return logical_name in constants.FP16_RUNTIME_INPUTS or logical_name.startswith(("cross_k_", "cross_v_"))
-
 
 def lower_output(context: models.GenerationContext, node: IRModels.Node) -> Any:
     refs = IRModels.extract_node_refs((node.args, node.kwargs))
@@ -225,7 +215,6 @@ def lower_output(context: models.GenerationContext, node: IRModels.Node) -> Any:
         return values[0]
 
     return values
-
 
 def logical_input_name(graph: IRModels.Graph, node: IRModels.Node) -> str:
     metadata_name = logical_name_from_metadata(node.ir_metadata, ("logical_input", "logical_name", "runtime_input"))
@@ -247,7 +236,6 @@ def logical_input_name(graph: IRModels.Graph, node: IRModels.Node) -> str:
         return target_name
 
     return node.name
-
 
 def logical_output_name(graph: IRModels.Graph, output_index: int, source_ref: str | None = None) -> str:
     source = graph.nodes_map.get(source_ref) if source_ref is not None else None
@@ -271,7 +259,6 @@ def logical_output_name(graph: IRModels.Graph, output_index: int, source_ref: st
 
     return f"output_{output_index}"
 
-
 def logical_input_name_from_specs(graph: IRModels.Graph, node_name: str) -> str | None:
     for spec in graph.input_specs:
         if spec.arg_name != node_name:
@@ -281,14 +268,12 @@ def logical_input_name_from_specs(graph: IRModels.Graph, node_name: str) -> str 
 
     return None
 
-
 def logical_output_name_from_specs(graph: IRModels.Graph, output_index: int) -> str | None:
     if output_index < 0 or output_index >= len(graph.output_specs):
         return None
 
     spec = graph.output_specs[output_index]
     return clean_logical_name(spec.target) or clean_logical_name(spec.arg_name)
-
 
 def logical_name_from_metadata(metadata: dict[str, Any], keys: tuple[str, ...]) -> str | None:
     for key in keys:
@@ -298,7 +283,6 @@ def logical_name_from_metadata(metadata: dict[str, Any], keys: tuple[str, ...]) 
             return value
 
     return None
-
 
 def clean_logical_name(value: Any) -> str | None:
     if value is None:
@@ -310,7 +294,6 @@ def clean_logical_name(value: Any) -> str | None:
         return None
 
     return name
-
 
 def cache_logical_name(node: IRModels.Node) -> str:
     if node.cache is not None and node.cache.tensor_index is not None:

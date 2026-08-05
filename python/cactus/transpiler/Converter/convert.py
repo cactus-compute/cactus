@@ -5,7 +5,6 @@ from ..ModelProfiles import models as MP_Models
 from ..ModelProfiles import profiles as MP_Profiles
 from ..IR import simplify_ir
 
-
 def export_layer_map(
     model_id: str,
     input_modalities: tuple[str, ...],
@@ -16,8 +15,6 @@ def export_layer_map(
     model = models.create_model(mp=profile, input_modalities=input_modalities, model_id=model_id, inference_mode=inference_mode)
     return model.export(model.input)
 
-
-#Runs the full converter pipeline and writes the exported LayerMap JSON.
 def convert(
     model_id: str,
     input_modalities: tuple[str, ...],
@@ -42,7 +39,6 @@ def convert(
         )
 
     return layer_map
-
 
 if __name__ == "__main__":
     convert(

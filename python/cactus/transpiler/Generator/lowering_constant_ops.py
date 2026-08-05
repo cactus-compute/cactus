@@ -7,7 +7,6 @@ from .errors import UnsupportedLoweringError
 from .lowering_utils import *
 from ..IR import models as IRModels
 
-
 def lower_constant_pad_nd(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     pads = node.attrs.get("pad", node.attrs.get("arg_1"))
@@ -62,7 +61,6 @@ def lower_constant_pad_nd(context: models.GenerationContext, node: IRModels.Node
 
     return result
 
-
 def lower_constant_input(context: models.GenerationContext, node: IRModels.Node) -> Any:
     if node.target == "aten.full_like.default":
         return lower_full_like(context, node)
@@ -102,7 +100,6 @@ def lower_constant_input(context: models.GenerationContext, node: IRModels.Node)
     context.component.add_runtime_input(tensor, node.name)
     return tensor
 
-
 def lower_full_like(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     fill_value = scalar_attr(node, "fill_value")
@@ -120,7 +117,6 @@ def lower_full_like(context: models.GenerationContext, node: IRModels.Node) -> A
         output = context.graph.scalar_add(output, fill_float)
 
     return cast_to_precision(context, output, cactus_precision(context.graph, tensor_dtype(node)))
-
 
 def deterministic_constant_values(node: IRModels.Node) -> tuple[list[float], tuple[int, ...]] | None:
     shape = concrete_shape(meta_shape(node))
@@ -154,7 +150,6 @@ def deterministic_constant_values(node: IRModels.Node) -> tuple[list[float], tup
 
     return None
 
-
 def arange_values(start: float, end: float, step: float) -> list[float]:
     values: list[float] = []
     current = start
@@ -170,11 +165,9 @@ def arange_values(start: float, end: float, step: float) -> list[float]:
 
     return values
 
-
 def lower_neg(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     return context.graph.scalar_multiply(inputs[0], -1.0)
-
 
 def lower_cumsum(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
@@ -185,7 +178,6 @@ def lower_cumsum(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     return context.graph.cumsum(inputs[0], normalize_dim(axis, len(meta_shape(node.parents[0]))))
 
-
 def lower_softmax(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     axis = axis_attr(node, default=-1)
@@ -194,7 +186,6 @@ def lower_softmax(context: models.GenerationContext, node: IRModels.Node) -> Any
         raise UnsupportedLoweringError(f"{node.name}: softmax lowering missing axis/dim attr")
 
     return context.graph.softmax(fp16_tensor(context, inputs[0]), axis=normalize_dim(axis, len(meta_shape(node.parents[0]))))
-
 
 def lower_topk(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
@@ -205,18 +196,15 @@ def lower_topk(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     return context.graph.topk(inputs[0], int(k))
 
-
 def lower_gather(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 2)
     axis = axis_attr(node, default=0)
     return context.graph.gather(inputs[0], inputs[1], axis=axis if axis is not None else 0)
 
-
 def lower_embedding(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 2)
     output = context.graph.embedding_from_tensor(inputs[0], inputs[1])
     return apply_inverse_weight_scale_for_parent(context, node, output, 0)
-
 
 def lower_clamp(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)

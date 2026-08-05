@@ -6,12 +6,10 @@ from dataclasses import dataclass, field
 from ..Fusions import models as FModels
 from ..IR import models as IRModels
 
-
 PREFILL_WITH_CACHE_TASK = "prefill_with_cache"
 DECODE_WITH_CACHE_TASK = "decode_with_cache"
 GEMMA4_TEXT_PREFILL_CHUNK_TOKENS = 32
 GEMMA4_MEDIA_PREFILL_CHUNK_TOKENS = 128
-GEMMA4_PREFILL_CHUNK_TOKENS = GEMMA4_MEDIA_PREFILL_CHUNK_TOKENS
 # LFM-VLM has convolutional cache state, so a partial fixed-size chunk cannot
 # be tail-padded and rolled back like a pure KV model.  A smaller chunk keeps
 # typical multimodal prompts on the batched prefill path instead of executing
@@ -19,7 +17,6 @@ GEMMA4_PREFILL_CHUNK_TOKENS = GEMMA4_MEDIA_PREFILL_CHUNK_TOKENS
 LFM_VLM_PREFILL_CHUNK_TOKENS = 16
 LFM_MOE_PREFILL_CHUNK_TOKENS = 128
 GENERIC_CAUSAL_PREFILL_CHUNK_TOKENS = 4
-
 
 @dataclass(slots=True, frozen=True)
 class PlaceholderSpec:
@@ -31,7 +28,6 @@ class PlaceholderSpec:
     value_kind: str = FModels.ValueKind.USER_INPUT
     force: bool = False
 
-
 @dataclass(slots=True, frozen=True)
 class OutputSpec:
     node: str
@@ -39,7 +35,6 @@ class OutputSpec:
     row_limit: int | None = None
     permutation: tuple[int, ...] | None = None
     publish: bool = True
-
 
 @dataclass(slots=True, frozen=True)
 class ComponentSplitSpec:
@@ -52,7 +47,6 @@ class ComponentSplitSpec:
     input_aliases: Mapping[str, str] = field(default_factory=dict)
     metadata: Mapping[str, str] = field(default_factory=dict)
     chunk_tokens: int | None = None
-
 
 @dataclass(slots=True, frozen=True)
 class Gemma4Boundaries:
@@ -69,13 +63,11 @@ class Gemma4Boundaries:
     prefill_logits: str
     decode_logits: str
 
-
 @dataclass(slots=True, frozen=True)
 class WhisperBoundaries:
     encoder_hidden_states: str
     cross_key_values: tuple[tuple[str, str], ...]
     decode_logits: str
-
 
 @dataclass(slots=True, frozen=True)
 class LfmVlmBoundaries:

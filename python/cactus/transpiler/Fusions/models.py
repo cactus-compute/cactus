@@ -1,19 +1,11 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-
 ConstraintSpec = dict[str, Any]
 ConstraintValue = ConstraintSpec | tuple[ConstraintSpec, ...] | list[ConstraintSpec]
 
-
 class ValueKind:
-    """
-    Names the semantic role of a real IR value.
-
-    IR matchers use this to tell the difference between parameters,
-    buffers, runtime inputs, activations, constants, outputs, and cache
-    tensors without depending on fragile node-name strings.
-    """
+    """Names the semantic role of a real IR value."""
 
     UNKNOWN = "unknown"
     PARAMETER = "parameter"
@@ -26,44 +18,24 @@ class ValueKind:
     CACHE_OUTPUT = "cache_output"
     CACHE_STATE = "cache_state"
 
-
 class CacheKind:
-    """
-    Names the broad family of cache/state a fusion consumes or produces.
-
-    KV is for transformer key/value cache, CONV is for rolling convolution
-    state, and RECURRENT is for state-space/RNN-style hidden state. Runtime
-    planning can use this to route cache tensors differently from weights.
-    """
+    """Names the broad family of cache/state a fusion consumes or produces."""
 
     KV = "kv"
     CONV = "conv"
     RECURRENT = "recurrent"
 
-
 class CacheTensorRole:
-    """
-    Names the role of one tensor inside a cache family.
-
-    This lets a cache-aware fusion say whether a tensor is a key cache,
-    value cache, generic recurrent/conv state, or cache position tensor.
-    """
+    """Names the role of one tensor inside a cache family."""
 
     KEY = "key"
     VALUE = "value"
     STATE = "state"
     POSITION = "position"
 
-
 @dataclass(slots=True)
 class TensorConstraint:
-    """
-    Describes tensor properties a matched real value must satisfy.
-
-    Fusion patterns use this for rank/dtype/shape checks, fixed dimension
-    checks, and cross-node dimension relationships such as "query head_dim
-    equals key head_dim". The actual comparison logic belongs in IR.
-    """
+    """Describes tensor properties a matched real value must satisfy."""
 
     rank: int | None = None
     min_rank: int | None = None
@@ -76,13 +48,7 @@ class TensorConstraint:
 
 @dataclass(slots=True)
 class AttrConstraint:
-    """
-    Describes one required attribute condition for a pattern node.
-
-    Examples are pow exponent equals 2, softmax dim equals -1, or conv stride
-    equals a target kernel variant. source_node/source_attr allow an IR matcher
-    to compare this attr to another matched node's attr when needed.
-    """
+    """Describes one required attribute condition for a pattern node."""
 
     name: str
     value: Any = None
@@ -92,16 +58,9 @@ class AttrConstraint:
     required: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class AttrCapture:
-    """
-    Describes which raw-node attribute becomes a fused-node attribute.
-
-    A match can use this to copy values like epsilon, axis, stride, padding,
-    scale, or top-k from the matched graph into the simplified Cactus-facing
-    fused node. default is used when the raw graph does not expose the attr.
-    """
+    """Describes which raw-node attribute becomes a fused-node attribute."""
 
     name: str
     source_node: str | None = None
@@ -110,31 +69,17 @@ class AttrCapture:
     required: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class NodeRef:
-    """
-    Points to a pattern node and optionally one of its input/output positions.
-
-    FusionInput, shared-input declarations, and cache declarations use this
-    small reference instead of embedding matcher behavior in the Fusion schema.
-    parent_index refers to the matched node's ordered parents in the IR DAG.
-    """
+    """Points to a pattern node and optionally one of its input/output positions."""
 
     node: str
     parent_index: int | None = None
     output_index: int | None = None
 
-
 @dataclass(slots=True)
 class FusionNode:
-    """
-    Describes one synthetic node inside a fusion pattern graph.
-
-    It stores the allowed raw op targets, node-level attr/tensor constraints,
-    and structural hints for repeated pattern regions.
-    IR matchers bind these descriptions to real exported nodes during fusion.
-    """
+    """Describes one synthetic node inside a fusion pattern graph."""
 
     name: str
     ops: tuple[str, ...] = ()
@@ -145,16 +90,9 @@ class FusionNode:
     tensor_constraints: tuple[TensorConstraint, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class FusionEdge:
-    """
-    Describes one directed producer-to-consumer edge in a fusion pattern.
-
-    source/dest identify synthetic nodes, dest_input_index preserves meaningful
-    input ordering from FX args, and repeated flags let IR match repeated graph
-    regions such as MoE expert branches.
-    """
+    """Describes one directed producer-to-consumer edge in a fusion pattern."""
 
     source: str
     dest: str
@@ -164,16 +102,9 @@ class FusionEdge:
     repeated_group: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class FusionInput:
-    """
-    Describes an external input that must remain visible after fusion.
-
-    The source points to the synthetic node input position where the external
-    real node appears. variadic/min_count/max_count support ops like cat or
-    AltUp that accept a variable number of parents.
-    """
+    """Describes an external input that must remain visible after fusion."""
 
     role: str
     source: NodeRef
@@ -187,16 +118,9 @@ class FusionInput:
     tensor_constraints: tuple[TensorConstraint, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class FusionOutput:
-    """
-    Describes an output produced by the fused op.
-
-    Most fusions expose the root node output, but multi-output/cache-aware
-    fusions can declare multiple outputs with roles so the simplified graph
-    and runtime plan know how to reconnect downstream consumers.
-    """
+    """Describes an output produced by the fused op."""
 
     role: str
     node: str
@@ -204,16 +128,9 @@ class FusionOutput:
     tensor_constraints: tuple[TensorConstraint, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class CacheInput:
-    """
-    Describes an old cache/state tensor consumed by a fused op.
-
-    This keeps cache semantics separate from ordinary data inputs, allowing IR
-    and runtime planning to bind KV/conv/recurrent state tensors correctly for
-    prefill-with-cache and decode-with-cache exports.
-    """
+    """Describes an old cache/state tensor consumed by a fused op."""
 
     role: str
     source: NodeRef
@@ -224,16 +141,9 @@ class CacheInput:
     tensor_constraints: tuple[TensorConstraint, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class CacheOutput:
-    """
-    Describes a new or updated cache/state tensor produced by a fused op.
-
-    IR can use this to reconnect tuple outputs or explicit cache writes after
-    fusion, while the generator can use cache_kind/tensor_role to emit the
-    right Cactus runtime cache plumbing.
-    """
+    """Describes a new or updated cache/state tensor produced by a fused op."""
 
     role: str
     node: str
@@ -245,16 +155,9 @@ class CacheOutput:
     tensor_constraints: tuple[TensorConstraint, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class CacheMutation:
-    """
-    Describes read/write semantics for a cache-aware fusion.
-
-    CacheInput/CacheOutput say which tensors cross the fusion boundary; this
-    object says how the operation conceptually mutates or advances that state,
-    such as appending KV rows or rolling a convolution window.
-    """
+    """Describes read/write semantics for a cache-aware fusion."""
 
     name: str
     cache_kind: str = CacheKind.KV
@@ -265,16 +168,9 @@ class CacheMutation:
     required: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class RepeatedSubgraph:
-    """
-    Describes a nested pattern that can repeat inside a larger fusion.
-
-    MoE is the main use case: one router/top-k structure fans into repeated
-    expert branches with the same shape. IR owns the logic for discovering and
-    binding each repeated branch.
-    """
+    """Describes a nested pattern that can repeat inside a larger fusion."""
 
     name: str
     graph: "FusionGraph"
@@ -283,17 +179,9 @@ class RepeatedSubgraph:
     anchor_node: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass(slots=True)
 class FusionGraph:
-    """
-    Describes the complete synthetic DAG for one candidate fusion.
-
-    It stores pattern nodes, required edges, exposed inputs/outputs, attrs to
-    capture, repeated subgraphs, cache boundaries, and extra structured
-    constraints that IR matchers must enforce before replacing the matched real
-    subgraph with a fused op.
-    """
+    """Describes the complete synthetic DAG for one candidate fusion."""
 
     name: str
     root: str
@@ -312,16 +200,9 @@ class FusionGraph:
     metadata: dict[str, Any] = field(default_factory=dict)
     allow_root_external_children: bool = True
 
-
 @dataclass(slots=True)
 class FusionDefinition:
-    """
-    Wraps a FusionGraph with Cactus-facing metadata.
-
-    target/cactus_op tell the generator what op this pattern lowers to, while
-    fusion_fields, inference modes, modalities, and metadata let model profiles
-    select stronger model-specific patterns before falling back to generic ones.
-    """
+    """Wraps a FusionGraph with Cactus-facing metadata."""
 
     name: str
     target: str

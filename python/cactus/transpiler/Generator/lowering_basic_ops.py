@@ -9,7 +9,6 @@ from .lowering_cache import lower_decode_cache_cat, lower_prefill_cache_cat
 from .lowering_utils import *
 from ..IR import models as IRModels
 
-
 def lower_binary(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = context.inputs_for(node)
     method = constants.BINARY_TARGETS[node.target]
@@ -39,7 +38,6 @@ def lower_binary(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     raise unsupported_arity(node, len(inputs), "two tensor inputs or one tensor plus scalar attr")
 
-
 def looks_like_gemma_residual_add(node: IRModels.Node) -> bool:
     if len(node.parents) != 2:
         return False
@@ -55,7 +53,6 @@ def looks_like_gemma_residual_add(node: IRModels.Node) -> bool:
         or is_gemma_residual_branch(right, left)
     )
 
-
 def is_gemma_residual_branch(residual: IRModels.Node, branch: IRModels.Node) -> bool:
     branch_source = strip_precision_passthrough(branch)
 
@@ -63,7 +60,6 @@ def is_gemma_residual_branch(residual: IRModels.Node, branch: IRModels.Node) -> 
         return False
 
     return strip_precision_passthrough(residual) is not strip_precision_passthrough(branch_source.parents[0])
-
 
 def looks_like_gemma4_mlp_product(node: IRModels.Node) -> bool:
     if len(node.parents) != 2:
@@ -81,7 +77,6 @@ def looks_like_gemma4_mlp_product(node: IRModels.Node) -> bool:
         is_gemma4_mlp_gate_activation(right) and has_ancestor_text(left, "mlp_up_proj")
     )
 
-
 def is_gemma4_mlp_gate_activation(node: IRModels.Node) -> bool:
     source = strip_precision_passthrough(node)
 
@@ -89,7 +84,6 @@ def is_gemma4_mlp_gate_activation(node: IRModels.Node) -> bool:
         return False
 
     return has_ancestor_text(source, "mlp_gate_proj")
-
 
 def has_ancestor_text(node: IRModels.Node, pattern: str, max_depth: int = 8) -> bool:
     pattern = pattern.lower()
@@ -115,10 +109,8 @@ def has_ancestor_text(node: IRModels.Node, pattern: str, max_depth: int = 8) -> 
 
     return False
 
-
 def node_context_text(node: IRModels.Node) -> str:
     return f"{node.name} {node.target} {node.module_stack!r}"
-
 
 def strip_precision_passthrough(node: IRModels.Node) -> IRModels.Node:
     current = node
@@ -128,7 +120,6 @@ def strip_precision_passthrough(node: IRModels.Node) -> IRModels.Node:
         current = current.parents[0]
 
     return current
-
 
 def lower_scalar(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
@@ -152,13 +143,11 @@ def lower_scalar(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     return getattr(context.graph, method)(inputs[0], value)
 
-
 def align_binary_inputs(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> tuple[Any, Any]:
     target_shape = output_shape(node)
     left = align_input_to_shape(context, inputs[0], node.parents[0], target_shape)
     right = align_input_to_shape(context, inputs[1], node.parents[1], target_shape)
     return align_binary_precision(context, left, right)
-
 
 def align_binary_precision(context: models.GenerationContext, left: Any, right: Any) -> tuple[Any, Any]:
     left_precision = getattr(left, "dtype", None)
@@ -168,7 +157,6 @@ def align_binary_precision(context: models.GenerationContext, left: Any, right: 
         return left, right
 
     return left, cast_to_precision(context, right, left_precision)
-
 
 def align_input_to_shape(context: models.GenerationContext, value: Any, source_node: IRModels.Node, target_shape: tuple[Any, ...]) -> Any:
     value = align_value_to_declared_shape(context, value, source_node)
@@ -181,7 +169,6 @@ def align_input_to_shape(context: models.GenerationContext, value: Any, source_n
         return context.graph.reshape(value, target_shape)
 
     return value
-
 
 def align_value_to_declared_shape(context: models.GenerationContext, value: Any, source_node: IRModels.Node) -> Any:
     actual_shape = tuple(getattr(value, "shape", ()))
@@ -196,7 +183,6 @@ def align_value_to_declared_shape(context: models.GenerationContext, value: Any,
         return value
 
     return context.graph.reshape(value, resolved_shape)
-
 
 def resolve_declared_shape_from_actual(declared_shape: tuple[Any, ...], actual_shape: tuple[int, ...]) -> tuple[int, ...] | None:
     actual_index = len(actual_shape) - 1
@@ -221,7 +207,6 @@ def resolve_declared_shape_from_actual(declared_shape: tuple[Any, ...], actual_s
 
     return tuple(resolved)
 
-
 def lower_unary(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     method = constants.UNARY_TARGETS[node.target]
@@ -232,7 +217,6 @@ def lower_unary(context: models.GenerationContext, node: IRModels.Node) -> Any:
     value = fp16_tensor(context, inputs[0]) if method in constants.FP16_UNARY_METHODS else inputs[0]
     return getattr(context.graph, method)(value)
 
-
 def lower_log1p(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
 
@@ -242,14 +226,12 @@ def lower_log1p(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     return context.graph.scalar_log(context.graph.scalar_add(inputs[0], 1.0))
 
-
 def lower_stable_softplus(context: models.GenerationContext, x: Any) -> Any:
     x = cast_to_precision(context, x, context.graph.FP16)
     neg_abs = context.graph.scalar_multiply(context.graph.abs(x), -1.0)
     log_term = context.graph.scalar_log(context.graph.scalar_add(context.graph.scalar_exp(neg_abs), 1.0))
     positive_term = context.graph.clamp(x, 0.0, math.inf)
     return context.graph.add(log_term, positive_term)
-
 
 def lower_pow(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
@@ -259,7 +241,6 @@ def lower_pow(context: models.GenerationContext, node: IRModels.Node) -> Any:
         raise UnsupportedLoweringError(f"{node.name}: pow lowering missing exponent attr")
 
     return context.graph.pow(inputs[0], exponent)
-
 
 def lower_reduce(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
@@ -282,7 +263,6 @@ def lower_reduce(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     return reduced
 
-
 def lower_shape(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     method = constants.SHAPE_TARGETS[node.target]
@@ -294,7 +274,6 @@ def lower_shape(context: models.GenerationContext, node: IRModels.Node) -> Any:
         raise UnsupportedLoweringError(
             f"{node.name}: {method} lowering failed for {tuple(getattr(inputs[0], 'shape', ())) or meta_shape(node.parents[0])} -> {shape}"
         ) from e
-
 
 def lower_expand(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
@@ -314,11 +293,9 @@ def lower_expand(context: models.GenerationContext, node: IRModels.Node) -> Any:
             f"{meta_shape(node.parents[0])} -> {target_shape}"
         ) from e
 
-
 def lower_unsqueeze(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     return context.graph.reshape(inputs[0], output_shape(node))
-
 
 def lower_flatten(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
@@ -328,7 +305,6 @@ def lower_flatten(context: models.GenerationContext, node: IRModels.Node) -> Any
         end_dim=int(node.attrs.get("end_dim", -1)),
     )
 
-
 def lower_repeat(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     repeats = node.attrs.get("repeats", node.attrs.get("arg_1"))
@@ -337,7 +313,6 @@ def lower_repeat(context: models.GenerationContext, node: IRModels.Node) -> Any:
         return inputs[0]
 
     raise UnsupportedLoweringError(f"{node.name}: repeat lowering only supports no-op repeat factors, got {repeats}")
-
 
 def lower_transpose(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
@@ -380,7 +355,6 @@ def lower_transpose(context: models.GenerationContext, node: IRModels.Node) -> A
 
     return context.graph.permute(inputs[0], permutation_tuple)
 
-
 def permutation_preserves_non_singleton_order(node: IRModels.Node, permutation: tuple[int, ...]) -> bool:
     if not node.parents:
         return False
@@ -399,7 +373,6 @@ def permutation_preserves_non_singleton_order(node: IRModels.Node, permutation: 
 
     return permuted_non_singleton_axes == non_singleton_axes
 
-
 def can_alias_quantized_weight_transpose(context: models.GenerationContext, node: IRModels.Node, value: Any) -> bool:
     return (
         is_weight_transpose_node(node)
@@ -407,7 +380,6 @@ def can_alias_quantized_weight_transpose(context: models.GenerationContext, node
         and bool(node.children)
         and all(child.target in constants.MATMUL_TARGETS or child.target in constants.ADDM_CONST_TARGETS for child in node.children)
     )
-
 
 def is_weight_transpose_node(node: IRModels.Node) -> bool:
     if not node.parents:
@@ -438,7 +410,6 @@ def is_weight_transpose_node(node: IRModels.Node) -> bool:
         normalize_dim(int(dim1), rank),
     } == {rank - 2, rank - 1}
 
-
 def is_cq_tensor(context: models.GenerationContext, value: Any) -> bool:
     return getattr(value, "dtype", None) in {
         context.graph.CQ1,
@@ -446,7 +417,6 @@ def is_cq_tensor(context: models.GenerationContext, value: Any) -> bool:
         context.graph.CQ3,
         context.graph.CQ4,
     }
-
 
 def lower_slice(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
@@ -480,7 +450,6 @@ def lower_slice(context: models.GenerationContext, node: IRModels.Node) -> Any:
     length = slice_length(node, start)
     return context.graph.slice(inputs[0], axis, start, length=length)
 
-
 def is_full_axis_slice(node: IRModels.Node, axis: int, start: int, step: Any) -> bool:
     if start != 0:
         return False
@@ -493,7 +462,6 @@ def is_full_axis_slice(node: IRModels.Node, axis: int, start: int, step: Any) ->
 
     return shape_matches_tensor(node.parents[0], output_shape(node))
 
-
 def lower_index(context: models.GenerationContext, node: IRModels.Node) -> Any:
     if node.target == "aten.index.Tensor":
         return lower_index_tensor(context, node)
@@ -505,7 +473,6 @@ def lower_index(context: models.GenerationContext, node: IRModels.Node) -> Any:
         raise UnsupportedLoweringError(f"{node.name}: index lowering missing index_value/index attr")
 
     return context.graph.index(inputs[0], int(index_value), axis=int(node.attrs.get("axis", node.attrs.get("dim", 0))))
-
 
 def lower_index_tensor(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = context.inputs_for(node)
@@ -550,7 +517,6 @@ def lower_index_tensor(context: models.GenerationContext, node: IRModels.Node) -
 
     raise UnsupportedLoweringError(f"{node.name}: unsupported aten.index.Tensor pattern")
 
-
 def looks_like_time_mask(mask_node: IRModels.Node, source_shape: tuple[Any, ...]) -> bool:
     mask_shape = meta_shape(mask_node)
 
@@ -564,7 +530,6 @@ def looks_like_time_mask(mask_node: IRModels.Node, source_shape: tuple[Any, ...]
     source_time = concrete_dim(source_shape[1])
     return mask_time is not None and mask_time == source_time
 
-
 def lower_where(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 3)
     output_precision = cactus_precision(context.graph, tensor_dtype(node))
@@ -572,12 +537,10 @@ def lower_where(context: models.GenerationContext, node: IRModels.Node) -> Any:
     false_value = cast_to_precision(context, inputs[2], output_precision)
     return context.graph.where(inputs[0], true_value, false_value)
 
-
 def lower_masked_scatter(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 3)
     source = cast_to_precision(context, inputs[2], cactus_precision(context.graph, tensor_dtype(node)))
     return context.graph.masked_scatter(inputs[0], inputs[1], source)
-
 
 def lower_unfold(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
@@ -585,7 +548,6 @@ def lower_unfold(context: models.GenerationContext, node: IRModels.Node) -> Any:
     size = int(node.attrs.get("size", node.attrs.get("arg_2", 1)))
     step = int(node.attrs.get("step", node.attrs.get("arg_3", 1)))
     return context.graph.unfold(inputs[0], dimension, size, step)
-
 
 def lower_cat(context: models.GenerationContext, node: IRModels.Node) -> Any:
     if node.name in context.prefill_cache_cat_annotations:
@@ -612,11 +574,9 @@ def lower_cat(context: models.GenerationContext, node: IRModels.Node) -> Any:
     axis = normalize_dim(int(node.attrs.get("axis", node.attrs.get("dim", 0))), cat_rank(node))
     return context.graph.cat(fp16_cat_inputs(context, inputs), axis=axis)
 
-
 def fp16_cat_inputs(context: models.GenerationContext, inputs: tuple[Any, ...]) -> tuple[Any, ...]:
     fp16 = int(context.graph.FP16)
     return tuple(value if getattr(value, "dtype", None) == fp16 else context.graph.precision_cast(value, fp16) for value in inputs)
-
 
 def lower_matmul(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 2)
@@ -645,7 +605,6 @@ def lower_matmul(context: models.GenerationContext, node: IRModels.Node) -> Any:
         pretransposed_rhs=bool(node.attrs.get("pretransposed_rhs", False)),
     )
     return apply_inverse_weight_scale_for_parent(context, node, output, 1)
-
 
 def lower_linear(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 2)
@@ -687,13 +646,11 @@ def lower_linear(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     return output
 
-
 def matmul_activation_operand(context: models.GenerationContext, value: Any) -> Any:
     if getattr(value, "dtype", None) == context.graph.FP32:
         return cast_to_precision(context, value, context.graph.FP16)
 
     return value
-
 
 def slice_decoder_prefill_logits_lhs(context: models.GenerationContext, node: IRModels.Node, lhs: Any) -> Any:
     if not is_decoder_prefill_logits_matmul(context, node):
@@ -705,7 +662,6 @@ def slice_decoder_prefill_logits_lhs(context: models.GenerationContext, node: IR
         return lhs
 
     return context.graph.slice(lhs, 0, int(lhs_shape[0]) - 1, length=1)
-
 
 def is_decoder_prefill_logits_matmul(context: models.GenerationContext, node: IRModels.Node) -> bool:
     shape = meta_shape(node)
@@ -721,7 +677,6 @@ def is_decoder_prefill_logits_matmul(context: models.GenerationContext, node: IR
         and shape[-1] >= 100000
     )
 
-
 def decoder_prefill_logits_shape(context: models.GenerationContext, node: IRModels.Node, shape: tuple[int, ...]) -> tuple[int, ...]:
     if (
         context.component.name == "decoder_prefill_chunk"
@@ -734,7 +689,6 @@ def decoder_prefill_logits_shape(context: models.GenerationContext, node: IRMode
         return (1, 1, shape[2])
 
     return shape
-
 
 def empty_cat_passthrough(node: IRModels.Node, inputs: tuple[Any, ...]) -> Any | None:
     target_shape = meta_shape(node)
@@ -759,7 +713,6 @@ def empty_cat_passthrough(node: IRModels.Node, inputs: tuple[Any, ...]) -> Any |
 
     return None
 
-
 def cat_rank(node: IRModels.Node) -> int:
     target_shape = meta_shape(node)
 
@@ -767,7 +720,6 @@ def cat_rank(node: IRModels.Node) -> int:
         return len(target_shape)
 
     return len(meta_shape(node.parents[0])) if node.parents else 0
-
 
 def lower_bmm(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> Any:
     left_shape = meta_shape(node.parents[0])
@@ -800,7 +752,6 @@ def lower_bmm(context: models.GenerationContext, node: IRModels.Node, inputs: tu
 
     return context.graph.cat(batch_outputs, axis=0)
 
-
 def lower_addmm(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 3)
     pretransposed_rhs = False
@@ -821,7 +772,6 @@ def lower_addmm(context: models.GenerationContext, node: IRModels.Node) -> Any:
     )
     return context.graph.add(inputs[0], product)
 
-
 def lower_split(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     split_sizes = node.attrs.get("split_sizes")
@@ -839,7 +789,6 @@ def lower_split(context: models.GenerationContext, node: IRModels.Node) -> Any:
         offset += size_int
 
     return tuple(outputs)
-
 
 def lower_getitem(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
@@ -861,7 +810,6 @@ def lower_getitem(context: models.GenerationContext, node: IRModels.Node) -> Any
 
     raise UnsupportedLoweringError(f"{node.name}: getitem index {index} requires tuple-producing parent")
 
-
 def lower_to_copy(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)
     dtype = node.attrs.get("dtype")
@@ -878,7 +826,6 @@ def lower_to_copy(context: models.GenerationContext, node: IRModels.Node) -> Any
         return inputs[0]
 
     return cast_to_precision(context, inputs[0], cactus_precision(context.graph, str(dtype)))
-
 
 def can_skip_float32_copy(node: IRModels.Node) -> bool:
     if not node.children or not node.parents:
@@ -900,7 +847,6 @@ def can_skip_float32_copy(node: IRModels.Node) -> bool:
         "cactus.layer_norm",
         "cactus.linear",
         "cactus.multiply",
-        "cactus.pow",
         "cactus.rope",
         "cactus.rms_norm",
         "cactus.scalar_multiply",
@@ -911,11 +857,9 @@ def can_skip_float32_copy(node: IRModels.Node) -> bool:
     }
     return all(child.target in safe_consumers for child in node.children)
 
-
 def lower_pass_through(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_at_least_one_input(context, node)
     return inputs[0]
-
 
 def lower_copy(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_at_least_one_input(context, node)

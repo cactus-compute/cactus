@@ -44,7 +44,7 @@ def _merge_lora_adapter(base_model_id, lora_path, token=None):
 def cmd_convert(args):
     """Convert a HuggingFace model into a runnable Cactus bundle."""
     from .model import ensure_weights
-    from .transpiler import build_transpiled_bundle, parse_modalities
+    from .transpiler import build_transpiled_bundle, parse_modalities, resolve_transpile_config
 
     source_model_id = args.model_id
     merged_dir = None
@@ -58,6 +58,14 @@ def cmd_convert(args):
     output_dir = args.output_dir or str(get_weights_dir(args.model_id))
 
     try:
+        if not getattr(args, "weights_only", False):
+            resolve_transpile_config(
+                args.model_id,
+                input_modalities=getattr(args, "input_modalities", None),
+                generic_task=getattr(args, "generic_task", None),
+                cache_style=getattr(args, "cache_style", None),
+                fusion_groups=getattr(args, "fusion_groups", None),
+            )
         weights_dir = ensure_weights(
             source_model_id,
             bits=args.bits,
@@ -74,10 +82,13 @@ def cmd_convert(args):
             output_dir=weights_dir,
             profile_model_id=args.model_id,
             input_modalities=parse_modalities(getattr(args, "input_modalities", None)),
+            generic_task=getattr(args, "generic_task", None),
+            cache_style=getattr(args, "cache_style", None),
+            fusion_groups=getattr(args, "fusion_groups", None),
             token=args.token,
         )
         return 0
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
         print_color(RED, f"Conversion error: {e}")
         return 1
     finally:

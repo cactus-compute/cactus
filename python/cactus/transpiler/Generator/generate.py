@@ -13,7 +13,6 @@ from typing import Any
 
 import numpy as np
 
-
 from . import component_split
 from . import constants
 from . import models
@@ -23,12 +22,8 @@ from ..Converter import models as CModels
 from ..IR import models as IRModels
 from ..RuntimePlan import models as RPModels
 
-
-
-
 GraphInput = CModels.LayerMap | IRModels.Graph
 ComponentInput = GraphInput | Mapping[str, GraphInput]
-
 
 def generate(
     ir_output: ComponentInput,
@@ -67,31 +62,6 @@ def generate(
 
     return models.GenerationResult.from_components(components)
 
-
-def generate_from_json(
-    input_path: str | Path,
-    output_dir: str | Path,
-    *,
-    model_profile: Any | None = None,
-    component_name: str | None = None,
-    weights_dir: str | Path | None = None,
-    weights_manifest_path: str | Path | None = None,
-    strict: bool = True,
-    allow_unsupported_ops: bool = False,
-) -> models.GenerationResult:
-    layer_map = read_layer_map(input_path)
-    return generate(
-        layer_map,
-        output_dir,
-        model_profile=model_profile,
-        component_name=component_name,
-        weights_dir=weights_dir,
-        weights_manifest_path=weights_manifest_path,
-        strict=strict,
-        allow_unsupported_ops=allow_unsupported_ops,
-    )
-
-
 def generate_bundle(
     ir_output: ComponentInput,
     bundle_dir: str | Path,
@@ -127,14 +97,9 @@ def generate_bundle(
     engine_manifest_path, runtime_plan_path = plan.write(bundle_path)
     return replace(result, engine_manifest_path=engine_manifest_path, runtime_plan_path=runtime_plan_path)
 
-
-################################################# Generator Utils!!!!!!! #################################################
-
-
 def fp16_kv_cache_components(model_profile: Any | None) -> frozenset[str]:
     cache_contract = getattr(model_profile, "cache_contract", None)
     return frozenset(str(value) for value in getattr(cache_contract, "fp16_kv_cache_components", ()) or ())
-
 
 def lower_component_with_cache_contract(
     component: models.ComponentGraph,
@@ -158,7 +123,6 @@ def lower_component_with_cache_contract(
         else:
             os.environ["CACTUS_KV_CACHE_FP16"] = previous
 
-
 def materialize_runtime_bundle_files(bundle_dir: Path, weights_dir: Path | None, model_profile: Any | None = None) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
@@ -173,7 +137,6 @@ def materialize_runtime_bundle_files(bundle_dir: Path, weights_dir: Path | None,
         materialize_bundle_file(source, bundle_dir / source.name, overwrite=False)
 
     ensure_tokenizer_sidecars(bundle_dir)
-
 
 def materialize_lfm2_vl_position_grid(bundle_dir: Path, model_profile: Any | None) -> None:
     profile_name = str(getattr(model_profile, "model_profiles", "") or "").lower()
@@ -199,7 +162,6 @@ def materialize_lfm2_vl_position_grid(bundle_dir: Path, model_profile: Any | Non
         return
 
     target.write_bytes(tensor.astype(np.float32, copy=False).reshape(grid, grid, hidden).tobytes())
-
 
 def read_fp16_cactus_tensor(path: Path) -> np.ndarray | None:
     if not path.is_file():
@@ -235,7 +197,6 @@ def read_fp16_cactus_tensor(path: Path) -> np.ndarray | None:
 
     return np.frombuffer(raw, dtype=np.float16).reshape(dims)
 
-
 def model_profile_metadata_files(model_profile: Any | None) -> tuple[Path, ...]:
     if model_profile is None:
         return ()
@@ -254,7 +215,6 @@ def model_profile_metadata_files(model_profile: Any | None) -> tuple[Path, ...]:
     filenames = runtime_metadata_filenames(model_profile)
     return tuple(metadata_dir / filename for filename in filenames if (metadata_dir / filename).is_file())
 
-
 def runtime_metadata_filenames(model_profile: Any | None) -> tuple[str, ...]:
     profile_files = tuple(str(filename) for filename in getattr(model_profile, "files", ()) or ())
     standard_files = (
@@ -267,7 +227,6 @@ def runtime_metadata_filenames(model_profile: Any | None) -> tuple[str, ...]:
         "special_tokens_map.json",
     )
     return tuple(models.unique_strings((*standard_files, *profile_files)))
-
 
 def materialize_bundle_file(source: Path, target: Path, *, overwrite: bool = True) -> None:
     if not source.is_file():
@@ -289,7 +248,6 @@ def materialize_bundle_file(source: Path, target: Path, *, overwrite: bool = Tru
         target.symlink_to(source.resolve())
     except OSError:
         shutil.copy2(source, target)
-
 
 def ensure_tokenizer_sidecars(bundle_dir: Path) -> None:
     ensure_tokenizer_runtime_model_type(bundle_dir)
@@ -340,7 +298,6 @@ def ensure_tokenizer_sidecars(bundle_dir: Path) -> None:
     except Exception:
         return
 
-
 def ensure_tokenizer_runtime_model_type(bundle_dir: Path) -> None:
     model_type = bundle_model_type(bundle_dir)
 
@@ -360,7 +317,6 @@ def ensure_tokenizer_runtime_model_type(bundle_dir: Path) -> None:
     lines.append(f"model_type={model_type}")
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-
 def tokenizer_source_filenames() -> tuple[str, ...]:
     return (
         "config.json",
@@ -372,7 +328,6 @@ def tokenizer_source_filenames() -> tuple[str, ...]:
         "chat_template.jinja2",
     )
 
-
 def tokenizer_sidecar_filenames() -> tuple[str, ...]:
     return (
         "vocab.txt",
@@ -381,7 +336,6 @@ def tokenizer_sidecar_filenames() -> tuple[str, ...]:
         "tokenizer_config.txt",
         "chat_template.jinja2",
     )
-
 
 def bundle_model_type(bundle_dir: Path) -> str | None:
     for filename in ("config.json", "hf_config.json"):
@@ -402,19 +356,12 @@ def bundle_model_type(bundle_dir: Path) -> str | None:
 
     return None
 
-
 def prepare_generation_output_dir(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     constants_dir = output_dir / "constants"
 
     if constants_dir.exists():
         shutil.rmtree(constants_dir)
-
-
-def read_layer_map(input_path: str | Path) -> CModels.LayerMap:
-    path = Path(input_path)
-    return CModels.LayerMap.model_validate_json(path.read_text(encoding="utf-8"))
-
 
 def component_graphs_from_input(
     ir_output: ComponentInput,
@@ -441,7 +388,6 @@ def component_graphs_from_input(
     name = component_name or default_component_name(graph, model_profile)
     return (models.ComponentGraph.from_ir(name, graph, config),)
 
-
 def graph_from_input(ir_output: GraphInput) -> IRModels.Graph:
     if isinstance(ir_output, IRModels.Graph):
         return ir_output
@@ -450,7 +396,6 @@ def graph_from_input(ir_output: GraphInput) -> IRModels.Graph:
         return IRModels.Graph.from_map(ir_output)
 
     raise TypeError(f"Unsupported generator input: {type(ir_output).__name__}")
-
 
 def default_component_name(graph: IRModels.Graph, model_profile: Any | None) -> str:
     profile_name = getattr(model_profile, "model_profiles", None)

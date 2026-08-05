@@ -25,12 +25,10 @@ def patch_gemma4_audio_mask_for_export() -> None:
 
     gemma4_modeling.create_bidirectional_mask = exportable_bidirectional_mask
 
-
 def patch_transformers_moe_grouped_mm_for_export() -> None:
     import transformers.integrations.moe as moe
 
     moe._can_use_grouped_mm = lambda input, weight, offs: False
-
 
 def patch_lfm2_vl_image_features_for_export() -> None:
     import transformers.models.lfm2_vl.modeling_lfm2_vl as lfm2_vl_modeling
@@ -126,7 +124,6 @@ def patch_lfm2_vl_image_features_for_export() -> None:
 
     lfm2_vl_modeling.Lfm2VlModel.get_image_features = exportable_get_image_features
     siglip2_modeling.Siglip2VisionEmbeddings.forward = exportable_embeddings_forward
-
 
 def prepare_model_input_hints_for_export(model: torch.nn.Module, kwargs: dict[str, Any]) -> None:
     spatial_shapes = kwargs.get("spatial_shapes")

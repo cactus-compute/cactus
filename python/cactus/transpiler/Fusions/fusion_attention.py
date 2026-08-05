@@ -4,7 +4,6 @@ from . import edges as E
 from . import models as M
 from .fusion_builders import _graph, _input, _shared_input, _single_node_graph
 
-
 ATTENTION_DIRECT_GRAPH = _graph(
     "scaled_dot_product_attention",
     "attn_sdp",
@@ -12,7 +11,6 @@ ATTENTION_DIRECT_GRAPH = _graph(
     inputs=(_input("query", "attn_sdp", 0), _input("key", "attn_sdp", 1), _input("value", "attn_sdp", 2), _input("mask", "attn_sdp", 3, optional=True)),
     attr_captures=(M.AttrCapture("scale", "attn_sdp", "scale", required=False), M.AttrCapture("is_causal", "attn_sdp", "is_causal", default=True, required=False)),
 )
-
 
 ATTENTION_CORE_GRAPH = _graph(
     "attention_core",
@@ -27,7 +25,6 @@ ATTENTION_CORE_GRAPH = _graph(
     },
 )
 
-
 ATTENTION_MASKED_GRAPH = _graph(
     "attention_masked",
     "attn_value",
@@ -39,7 +36,6 @@ ATTENTION_MASKED_GRAPH = _graph(
         "input_broadcastable_to_node": {"role": "mask", "node": "attn_qk", "allow_missing": True},
     },
 )
-
 
 GEMMA4_ATTENTION_LAYOUT_GRAPH = _single_node_graph(
     "gemma4_attention_layout",
@@ -54,7 +50,6 @@ GEMMA4_ATTENTION_LAYOUT_GRAPH = _single_node_graph(
     metadata={"special_matcher": "gemma4_attention_layout"},
 )
 
-
 WHISPER_ATTENTION_LAYOUT_GRAPH = _single_node_graph(
     "whisper_attention_layout",
     "view",
@@ -67,7 +62,6 @@ WHISPER_ATTENTION_LAYOUT_GRAPH = _single_node_graph(
     ),
     metadata={"special_matcher": "whisper_attention_layout"},
 )
-
 
 GENERIC_CACHED_ATTENTION_GRAPH = _single_node_graph(
     "generic_cached_attention",
@@ -83,7 +77,6 @@ GENERIC_CACHED_ATTENTION_GRAPH = _single_node_graph(
     ),
     metadata={"special_matcher": "generic_cached_attention"},
 )
-
 
 LFM_BMM_MASKED_ATTENTION_GRAPH = _graph(
     "lfm_bmm_masked_attention",
@@ -137,7 +130,6 @@ LFM_BMM_MASKED_ATTENTION_GRAPH = _graph(
         ),
     },
 )
-
 
 ROPE_GRAPH = _graph(
     "rope",

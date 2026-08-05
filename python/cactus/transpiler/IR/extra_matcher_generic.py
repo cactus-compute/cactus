@@ -6,16 +6,8 @@ from . import models, match_utils
 from .extra_matcher_common import *
 from ..Fusions import models as FModels
 
-
 def match_node_attr_equals(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
-    """
-    Checks that one matched node has a specific normalized attr value.
-
-    The spec names a synthetic node, an attr key, and the expected value. The
-    function resolves the real node from bindings, reads its normalized attrs,
-    and compares with `values_equal`. Missing attrs fail unless
-    `allow_missing=True` is present in the spec.
-    """
+    """Checks that one matched node has a specific normalized attr value."""
     node = bindings.get(spec["node"])
 
     if node is None:
@@ -28,16 +20,8 @@ def match_node_attr_equals(source: models.Node, graph: models.Graph, fusion: FMo
 
     return match_utils.values_equal(actual, spec["value"])
 
-
 def match_node_attrs_equal(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
-    """
-    Checks that attrs on two matched nodes are equal to each other.
-
-    This is useful for pattern checks like layernorm, where mean and variance
-    should reduce over the same dimension. The spec identifies left/right
-    synthetic nodes and attr names; both attrs must exist and compare equal
-    unless missing attrs are explicitly allowed.
-    """
+    """Checks that attrs on two matched nodes are equal to each other."""
     left_node = bindings.get(spec["left_node"])
     right_node = bindings.get(spec["right_node"])
 
@@ -52,16 +36,8 @@ def match_node_attrs_equal(source: models.Node, graph: models.Graph, fusion: FMo
 
     return match_utils.values_equal(left_value, right_value)
 
-
 def match_input_value_kind(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
-    """
-    Checks the semantic kind of an external input to a fusion.
-
-    The fusion graph declares inputs by role, such as `bias` or `weight`. This
-    matcher resolves the first real node for that role and verifies its
-    `value_kind` is in the allowed set, preventing activations from being
-    mistaken for parameters/buffers.
-    """
+    """Checks the semantic kind of an external input to a fusion."""
     input_node = match_utils.get_first_input_by_role(fusion, bindings, spec["role"])
 
     if input_node is None:
@@ -69,16 +45,8 @@ def match_input_value_kind(source: models.Node, graph: models.Graph, fusion: FMo
 
     return input_node.value_kind in spec["allowed_value_kinds"]
 
-
 def match_parent_tensor_dim_equal(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
-    """
-    Compares one dimension from two parent tensors of matched nodes.
-
-    The spec names the left/right synthetic nodes, which parent index to inspect
-    on each real node, and which shape dimension to compare. It is used for
-    checks such as attention query/key head-dim compatibility. Missing parents
-    or shapes follow the spec's `allow_missing` behavior.
-    """
+    """Compares one dimension from two parent tensors of matched nodes."""
     left_parent = get_bound_parent(bindings, spec["left_node"], spec["left_parent_index"])
     right_parent = get_bound_parent(bindings, spec["right_node"], spec["right_parent_index"])
 
@@ -93,15 +61,8 @@ def match_parent_tensor_dim_equal(source: models.Node, graph: models.Graph, fusi
 
     return match_utils.values_equal(left_dim, right_dim)
 
-
 def match_input_broadcastable_to_node(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
-    """
-    Checks that a declared fusion input can broadcast to a target node shape.
-
-    This is mainly for mask-like inputs. It resolves an input by role, resolves
-    the target synthetic node, reads both output shapes, and applies standard
-    broadcasting. Missing nodes or shapes are controlled by `allow_missing`.
-    """
+    """Checks that a declared fusion input can broadcast to a target node shape."""
     input_node = match_utils.get_first_input_by_role(fusion, bindings, spec["role"])
     target_node = bindings.get(spec["node"])
 
@@ -116,16 +77,8 @@ def match_input_broadcastable_to_node(source: models.Node, graph: models.Graph, 
 
     return shapes_are_broadcastable(input_shape, target_shape)
 
-
 def match_same_layer(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
-    """
-    Checks that multiple matched nodes appear to belong to the same layer.
-
-    The spec provides synthetic node names. For each bound real node, we derive
-    a layer key from module stack/name/target text. The check passes only when
-    every derived key is identical, which helps avoid mixing cache/key/value
-    nodes from different decoder layers.
-    """
+    """Checks that multiple matched nodes appear to belong to the same layer."""
     layer_keys = []
 
     for node_name in spec["nodes"]:
@@ -143,15 +96,8 @@ def match_same_layer(source: models.Node, graph: models.Graph, fusion: FModels.F
 
     return len(set(layer_keys)) == 1
 
-
 def match_slice_halves(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
-    """
-    Checks that two slice nodes split the same tensor into adjacent equal halves.
-
-    This protects decomposed GLU fusion. GLU is valid when the exported graph
-    computes `left * sigmoid(right)` where `left` and `right` are the first and
-    second halves of one source tensor along the same feature axis.
-    """
+    """Checks that two slice nodes split the same tensor into adjacent equal halves."""
     left = bindings.get(spec["left_node"])
     right = bindings.get(spec["right_node"])
 

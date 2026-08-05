@@ -15,6 +15,12 @@ from .models import (
     PromptContract,
     RuntimeContract,
     StateContract,
+    GenericTranspileContract,
+    GENERIC_CACHE_DYNAMIC_KV,
+    GENERIC_CACHE_ENCODER_DECODER_KV,
+    GENERIC_CACHE_NONE,
+    GENERIC_TASK_CAUSAL_LM,
+    GENERIC_TASK_SPEECH_SEQ2SEQ,
 )
 from .routes import (
     GEMMA4_INFERENCE_PATTERNS,
@@ -24,18 +30,16 @@ from .routes import (
     WHISPER_INFERENCE_PATTERNS,
 )
 
+def decoder_kv_state(producer: str = "decoder_prefill_chunk") -> StateContract:
+    return StateContract(
+        name="decoder_kv_cache", kind="kv", producer=producer,
+        consumers=("decoder_step",), lifetime="sequence", transfer="move",
+    )
 
 TEXT_RUNTIME_CONTRACT = RuntimeContract(
     plan_name="generic_text",
     states=(
-        StateContract(
-            name="decoder_kv_cache",
-            kind="kv",
-            producer="decoder_prefill_chunk",
-            consumers=("decoder_step",),
-            lifetime="sequence",
-            transfer="move",
-        ),
+        decoder_kv_state(),
     ),
     aliases=(
         AliasContract(
@@ -48,6 +52,14 @@ TEXT_RUNTIME_CONTRACT = RuntimeContract(
     ),
 )
 
+GENERIC_NO_CACHE_RUNTIME_CONTRACT = RuntimeContract(
+    plan_name="generic_text_no_cache",
+    execution_strategy="full_context_recompute",
+    state_owner="request",
+    cache_persistence="none",
+    cache_transfer_policy="none",
+)
+
 GEMMA4_RUNTIME_CONTRACT = RuntimeContract(
     plan_name="gemma4_multimodal",
     execution_strategy="component_graph_chunked_prefill",
@@ -56,14 +68,7 @@ GEMMA4_RUNTIME_CONTRACT = RuntimeContract(
     output_alias_policy="alias_if_compatible",
     cache_transfer_policy="move",
     states=(
-        StateContract(
-            name="decoder_kv_cache",
-            kind="kv",
-            producer="decoder_prefill_chunk,decoder_prefill_text_chunk",
-            consumers=("decoder_step",),
-            lifetime="sequence",
-            transfer="move",
-        ),
+        decoder_kv_state("decoder_prefill_chunk,decoder_prefill_text_chunk"),
         StateContract(
             name="media_features",
             kind="activation",
@@ -111,14 +116,7 @@ WHISPER_RUNTIME_CONTRACT = RuntimeContract(
             release_after_consumers=("decoder_cross_kv",),
             metadata=(("outputs", "encoder_hidden_states"),),
         ),
-        StateContract(
-            name="decoder_kv_cache",
-            kind="kv",
-            producer="decoder_prefill_chunk",
-            consumers=("decoder_step",),
-            lifetime="sequence",
-            transfer="move",
-        ),
+        decoder_kv_state(),
         StateContract(
             name="cross_attention_kv",
             kind="kv",
@@ -178,14 +176,7 @@ LFM_VLM_RUNTIME_CONTRACT = RuntimeContract(
             release_after_consumers=("vision_projector",),
             metadata=(("outputs", "vision_features"),),
         ),
-        StateContract(
-            name="decoder_kv_cache",
-            kind="kv",
-            producer="decoder_prefill_chunk",
-            consumers=("decoder_step",),
-            lifetime="sequence",
-            transfer="move",
-        ),
+        decoder_kv_state(),
     ),
 )
 
@@ -193,14 +184,7 @@ LFM_MOE_RUNTIME_CONTRACT = RuntimeContract(
     plan_name="lfm_moe",
     execution_strategy="component_graph_chunked_prefill",
     states=(
-        StateContract(
-            name="decoder_kv_cache",
-            kind="kv",
-            producer="decoder_prefill_chunk",
-            consumers=("decoder_step",),
-            lifetime="sequence",
-            transfer="move",
-        ),
+        decoder_kv_state(),
         StateContract(
             name="conv_state",
             kind="conv",
@@ -222,7 +206,6 @@ WHISPER_SUPPRESS_TOKEN_IDS = (
     36865, 42863, 47425, 49870, 50254, 50258, 50358, 50359, 50360, 50361,
     50362,
 )
-
 
 GEMMA4_E2B_PROFILE = ModelProfile(
     model_profiles="gemma4_e2b",
@@ -504,7 +487,7 @@ GENERIC_TEXT_PROFILE = ModelProfile(
     components=TEXT_COMPONENTS,
     inference_type=QWEN2_5_INFERENCE_PATTERNS,
     cache_type=("attention_kv",),
-    cache_policy=("dynamic_cache",),
+    cache_policy=("dynamic_cache", "scalar_prefill"),
     files=("config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json"),
     fusion_fields=("generic", "embedding", "attention", "normalization", "mlp", "cache", "linear"),
     supported_modalties=("text",),
@@ -516,6 +499,10 @@ GENERIC_TEXT_PROFILE = ModelProfile(
         prefill_decode_compatibility="dynamic_cache",
         state_transfer="prefill_to_decode",
         fp16_kv_cache_components=("decoder_prefill_chunk", "decoder_step"),
+        # Generic exports otherwise inherit the tiny example-cache length
+        # (currently five tokens) as their native runtime capacity.  Keep the
+        # fallback useful without assuming a model-family-sized 32K/128K cache.
+        max_cache_sequence_length=2048,
     ),
     runtime_contract=TEXT_RUNTIME_CONTRACT,
 )
@@ -573,14 +560,20 @@ MODEL_ID_MAP = {
     "google/gemma-4-E2B": GEMMA4_E2B_PROFILE,
     "google/gemma-4-E2B-it": GEMMA4_E2B_IT_PROFILE,
     "openai/whisper-tiny": WHISPER_PROFILE,
+    "openai/whisper-small": WHISPER_PROFILE,
     "nvidia/parakeet-tdt-0.6b-v3": PARAKEET_PROFILE,
+    "LiquidAI/LFM2-VL-450M": LFM_VLM_PROFILE,
     "LiquidAI/LFM2-VL-3B": LFM_VLM_PROFILE,
     "Qwen/Qwen2.5-0.5B": QWEN2_5_0_5B_PROFILE,
     "LiquidAI/LFM2.5-8B-A1B": LFM_MOE_PROFILE,
 }
 
+def profile_for_model_id(model_id: str) -> ModelProfile | None:
+    """Return only explicitly registered optimized profiles.
 
-def profile_for_model_id(model_id: str) -> ModelProfile:
+    Unknown models intentionally return None. Their contract must be built by
+    generic_profile_for_contract rather than inferred from repository names.
+    """
     if model_id in MODEL_ID_MAP:
         return MODEL_ID_MAP[model_id]
 
@@ -589,16 +582,60 @@ def profile_for_model_id(model_id: str) -> ModelProfile:
         if candidate_id.lower() == normalized:
             return profile
 
-    return generic_profile_for_model_id(model_id)
+    return None
 
+def generic_profile_for_contract(contract: GenericTranspileContract) -> ModelProfile:
+    modalities = tuple(dict.fromkeys(str(value).strip().lower() for value in contract.modalities if str(value).strip()))
+    unknown_modalities = set(modalities) - {"text", "vision", "audio"}
+    if not modalities:
+        raise ValueError("generic transpilation requires at least one modality")
+    if unknown_modalities:
+        raise ValueError(f"unsupported generic modalities: {', '.join(sorted(unknown_modalities))}")
 
-def generic_profile_for_model_id(model_id: str) -> ModelProfile:
-    normalized = model_id.lower()
+    task = str(contract.task).strip().lower()
+    cache_style = str(contract.cache_style).strip().lower()
 
-    if any(marker in normalized for marker in ("vl", "vision", "llava", "image")):
-        return GENERIC_VISION_LANGUAGE_PROFILE
+    if task == GENERIC_TASK_SPEECH_SEQ2SEQ:
+        if "audio" not in modalities or "vision" in modalities:
+            raise ValueError("speech-seq2seq generic models require audio and do not support vision")
+        if cache_style != GENERIC_CACHE_ENCODER_DECODER_KV:
+            raise ValueError("speech-seq2seq generic models require --cache-style encoder-decoder-kv")
+        base = GENERIC_SPEECH_SEQ2SEQ_PROFILE
+    elif task == GENERIC_TASK_CAUSAL_LM:
+        if "audio" in modalities:
+            raise ValueError("generic causal-lm audio models are not supported yet")
+        if cache_style not in {GENERIC_CACHE_DYNAMIC_KV, GENERIC_CACHE_NONE}:
+            raise ValueError("causal-lm generic models require --cache-style dynamic-kv or none")
+        if cache_style == GENERIC_CACHE_NONE and modalities != ("text",):
+            raise ValueError("generic no-cache generation currently supports text-only causal models")
+        base = GENERIC_VISION_LANGUAGE_PROFILE if "vision" in modalities else GENERIC_TEXT_PROFILE
+    else:
+        raise ValueError(f"unsupported generic task: {contract.task}")
 
-    if any(marker in normalized for marker in ("whisper", "speech", "audio", "asr")):
-        return GENERIC_SPEECH_SEQ2SEQ_PROFILE
+    supported = set(base.supported_modalties)
+    if not set(modalities).issubset(supported):
+        raise ValueError(
+            f"generic {task} does not support modalities: {', '.join(modalities)}"
+        )
 
-    return GENERIC_TEXT_PROFILE
+    if cache_style == GENERIC_CACHE_NONE:
+        base = replace(
+            base,
+            cache_type=(),
+            cache_policy=("no_cache_full_context",),
+            cache_contract=CacheContract(),
+            runtime_contract=GENERIC_NO_CACHE_RUNTIME_CONTRACT,
+        )
+
+    default_groups = tuple(base.fusion_fields)
+    fusion_groups = tuple(dict.fromkeys(contract.fusion_groups or default_groups))
+    if cache_style == GENERIC_CACHE_DYNAMIC_KV and "generic_cached_attention" not in fusion_groups:
+        fusion_groups = (*fusion_groups, "generic_cached_attention")
+    elif cache_style != GENERIC_CACHE_DYNAMIC_KV:
+        fusion_groups = tuple(group for group in fusion_groups if group != "generic_cached_attention")
+
+    return replace(
+        base,
+        fusion_fields=fusion_groups,
+        supported_modalties=modalities,
+    )

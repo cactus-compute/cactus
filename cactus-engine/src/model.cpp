@@ -785,6 +785,10 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         decoder_name = "decoder_step";
         decode_route_ = DecodeRoute::CACHED_STEP;
         required_components = {encoder_name, decoder_name};
+    } else if (components_.count("decoder_full_context")) {
+        decoder_name = "decoder_full_context";
+        decode_route_ = DecodeRoute::FULL_CONTEXT_TEXT;
+        required_components = {decoder_name};
     } else if (components_.count("text_lm_encoder") && components_.count("decoder")) {
         encoder_name = "text_lm_encoder";
         decoder_name = "decoder";
@@ -796,7 +800,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         decode_route_ = DecodeRoute::DIRECT_DECODER_STEP;
         required_components = {decoder_name};
     } else {
-        CACTUS_LOG_ERROR("model", "Bundle missing required components: need lm_encoder_step+decoder_step (LM), text_lm_encoder+decoder, audio_encoder+decoder (transcription), or source/audio_encoder+decoder_cross_kv+decoder_step");
+        CACTUS_LOG_ERROR("model", "Bundle missing required components: need lm_encoder_step+decoder_step (LM), decoder_full_context, text_lm_encoder+decoder, audio_encoder+decoder (transcription), or source/audio_encoder+decoder_cross_kv+decoder_step");
         return false;
     }
     if (!load_components(required_components)) return false;
@@ -809,7 +813,9 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         decoder_prefill_ = components_.count("decoder_prefill_text_chunk")
             ? &components_.at("decoder_prefill_text_chunk")
             : decoder_prefill_chunk_;
-    } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP && !components_.count("audio_encoder")) {
+    } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP
+            && decode_route_ != DecodeRoute::FULL_CONTEXT_TEXT
+            && !components_.count("audio_encoder")) {
         CACTUS_LOG_WARN("model", "Bundle has no decoder_prefill_chunk component; prompts will prefill token-by-token (prefill speed ~= decode speed).");
     }
     if (components_.count("decoder_embed_chunk")) {
@@ -1731,10 +1737,24 @@ void Model::copy_component_outputs_to_inputs(Component& source, Component& targe
             if (nodes_match && policy_allows
                 && (alias.storage_stable || alias.source_node_id < 0)) alias_candidate = true;
         }
-        alias_candidate = alias_candidate || out_name == "inputs_embeds"
+        // Generic component splits can use the historical "inputs_embeds"
+        // logical name for an integer token-id passthrough.  Such input-backed
+        // storage is rewritten on every scalar-prefill step and is not a
+        // stable embedding tensor to retain in the decoder.  Keep the implicit
+        // zero-copy fast path for actual floating-point feature tensors; an
+        // explicit runtime-plan alias may still opt another representation in.
+        const bool input_backed_output = std::find(
+            source.runtime_input_node_ids.begin(),
+            source.runtime_input_node_ids.end(),
+            static_cast<int>(src_node)) != source.runtime_input_node_ids.end();
+        const bool floating_feature = !input_backed_output && (
+            src_desc.precision == Precision::FP16
+            || src_desc.precision == Precision::FP32);
+        alias_candidate = alias_candidate || (floating_feature && (
+            out_name == "inputs_embeds"
             || out_name == "encoder_hidden_states"
             || out_name == "image_features"
-            || out_name == "vision_features";
+            || out_name == "vision_features"));
         if (alias_candidate && std::getenv("CACTUS_DISABLE_OUTPUT_ALIAS") == nullptr) {
             auto storage = source.graph->export_tensor_storage(src_node);
             if (storage && target.graph->bind_tensor_storage(dst_node, storage)) {
@@ -2178,35 +2198,44 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
 }
 
 void Model::run_full_context_text() {
-    if (!encoder_ || !decoder_ || context_tokens_.empty()) return;
-    int input_ids_idx = input_index(*encoder_, "input_ids");
-    int attention_mask_idx = input_index(*encoder_, "attention_mask");
+    if (!decoder_ || context_tokens_.empty()) return;
+    Component* input_component = encoder_ ? encoder_ : decoder_;
+    int input_ids_idx = input_index(*input_component, "input_ids");
+    if (input_ids_idx < 0) {
+        input_ids_idx = input_index(*input_component, "decoder_input_ids");
+    }
+    int attention_mask_idx = input_index(*input_component, "attention_mask");
     if (input_ids_idx < 0 || attention_mask_idx < 0) {
-        throw std::runtime_error("text_lm_encoder requires input_ids and attention_mask inputs");
+        throw std::runtime_error("full-context text component requires input_ids and attention_mask inputs");
     }
-    size_t input_node = static_cast<size_t>(encoder_->runtime_input_node_ids[input_ids_idx]);
-    const auto& input_desc = encoder_->graph->get_output_buffer(input_node);
+    size_t input_node = static_cast<size_t>(input_component->runtime_input_node_ids[input_ids_idx]);
+    const auto& input_desc = input_component->graph->get_output_buffer(input_node);
     if (context_tokens_.size() > input_desc.total_size) {
-        throw std::runtime_error("context exceeds graph-bundle text_lm_encoder capacity");
+        throw std::runtime_error("context exceeds graph-bundle full-context capacity");
     }
-    std::fill(encoder_->input_buffers[input_ids_idx].begin(), encoder_->input_buffers[input_ids_idx].end(), 0);
-    std::fill(encoder_->input_buffers[attention_mask_idx].begin(), encoder_->input_buffers[attention_mask_idx].end(), 0);
+    std::fill(input_component->input_buffers[input_ids_idx].begin(), input_component->input_buffers[input_ids_idx].end(), 0);
+    std::fill(input_component->input_buffers[attention_mask_idx].begin(), input_component->input_buffers[attention_mask_idx].end(), 0);
     for (size_t i = 0; i < context_tokens_.size(); ++i) {
-        write_int_input_at(*encoder_, "input_ids", i, static_cast<int64_t>(context_tokens_[i]));
-        write_int_input_at(*encoder_, "attention_mask", i, 1);
+        const char* token_input_name = input_index(*input_component, "input_ids") >= 0
+            ? "input_ids"
+            : "decoder_input_ids";
+        write_int_input_at(*input_component, token_input_name, i, static_cast<int64_t>(context_tokens_[i]));
+        write_int_input_at(*input_component, "attention_mask", i, 1);
     }
-    encoder_->graph->execute();
-    for (size_t i = 0; i < encoder_->output_node_ids.size() && i < encoder_->logical_outputs.size(); ++i) {
-        const std::string& out_name = encoder_->logical_outputs[i];
-        int dst_idx = input_index(*decoder_, out_name);
-        if (dst_idx < 0) continue;
-        size_t src_node = static_cast<size_t>(encoder_->output_node_ids[i]);
-        const auto& src_desc = encoder_->graph->get_output_buffer(src_node);
-        void* src_ptr = encoder_->graph->get_output(src_node);
-        std::memcpy(decoder_->input_buffers[dst_idx].data(), src_ptr, src_desc.byte_size);
+    input_component->graph->execute();
+    if (encoder_) {
+        for (size_t i = 0; i < encoder_->output_node_ids.size() && i < encoder_->logical_outputs.size(); ++i) {
+            const std::string& out_name = encoder_->logical_outputs[i];
+            int dst_idx = input_index(*decoder_, out_name);
+            if (dst_idx < 0) continue;
+            size_t src_node = static_cast<size_t>(encoder_->output_node_ids[i]);
+            const auto& src_desc = encoder_->graph->get_output_buffer(src_node);
+            void* src_ptr = encoder_->graph->get_output(src_node);
+            std::memcpy(decoder_->input_buffers[dst_idx].data(), src_ptr, src_desc.byte_size);
+        }
+        decoder_->graph->execute();
     }
     last_logit_position_ = context_tokens_.empty() ? 0 : context_tokens_.size() - 1;
-    decoder_->graph->execute();
 }
 
 void Model::write_media_embeds_row(Component& comp, int embeds_idx, const uint8_t* feature_row,

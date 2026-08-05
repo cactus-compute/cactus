@@ -3,12 +3,10 @@ from huggingface_hub import hf_hub_download
 from . import constants
 from pathlib import Path
 
-
 def _model_json_dir(model_profile: str) -> Path:
     output_dir = constants.CONVERTER_JSON_DIR / model_profile
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
-
 
 def _local_tokenizer_path(model_id: str, model_profile: str) -> str:
     output_dir = _model_json_dir(model_profile)
@@ -19,12 +17,8 @@ def _local_tokenizer_path(model_id: str, model_profile: str) -> str:
 
     return str(Path(hf_hub_download(repo_id=model_id, filename="tokenizer.json", local_dir=output_dir, token=constants.token)))
 
-
-#How: returns a config copy without the HF *_type key that component constructors do not expect.
-#Why: _build_gemma4_processor uses this when manually constructing Gemma processor pieces from processor_config.json.
 def _without_type_key(config: dict[str, Any], type_key: str) -> dict[str, Any]:
     return {key: value for key, value in config.items() if key != type_key}
-
 
 def gemma4_processor(model_id: str, configs: dict[str, dict[str, Any]], model_profile: str):
     
@@ -61,9 +55,6 @@ def gemma4_processor(model_id: str, configs: dict[str, dict[str, Any]], model_pr
         audio_ms_per_token=processor_config.get("audio_ms_per_token", 40),
     )
 
-
-#How: tries cached then remote AutoProcessor/AutoTokenizer loaders and returns the first one that loads.
-#Why: generic exports need model-ready sample tensors, including text-only models without a dedicated processor.
 def default_processor(model_id: str, configs: dict[str, dict[str, Any]], model_profile: str):
     from transformers import AutoProcessor, AutoTokenizer
 
@@ -86,7 +77,6 @@ def default_processor(model_id: str, configs: dict[str, dict[str, Any]], model_p
 
     raise RuntimeError(f"Unable to load processor or tokenizer for {model_id}") from errors[-1]
 
-
 def text_tokenizer_processor(model_id: str, configs: dict[str, dict[str, Any]], model_profile: str):
     from transformers import PreTrainedTokenizerFast
 
@@ -97,7 +87,6 @@ def text_tokenizer_processor(model_id: str, configs: dict[str, dict[str, Any]], 
         eos_token=tokenizer_config.get("eos_token"),
         pad_token=tokenizer_config.get("pad_token"),
     )
-
 
 class ParakeetAudioProcessor:
     def __init__(self, configs: dict[str, dict[str, Any]]):
@@ -114,10 +103,8 @@ class ParakeetAudioProcessor:
             "attention_mask": torch.ones((1, self.frame_count), dtype=torch.long),
         }
 
-
 def parakeet_processor(model_id: str, configs: dict[str, dict[str, Any]], model_profile: str):
     return ParakeetAudioProcessor(configs)
-
 
 PROCESSOR_MAP = {
     "google/gemma-4-E2B": gemma4_processor,

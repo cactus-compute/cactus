@@ -1,4 +1,5 @@
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,6 @@ EXPORT_PATCHES = {
     "lfm2_vl_image_features": OV.patch_lfm2_vl_image_features_for_export,
 }
 
-
 @dataclass(slots=True)
 class Input:
     args: tuple
@@ -39,8 +39,6 @@ class Model:
     def export(self, input: Input) -> "LayerMap":
         return export_(model=self, input=input)
 
-
-#Serializable record for one exported FX graph node.
 class LayerRecord(BaseModel):
     index: int
     name: str
@@ -53,11 +51,9 @@ class LayerRecord(BaseModel):
     module_stack: Any | None
     ir_metadata: dict[str, Any] = Field(default_factory=dict)
 
-    #Builds a LayerRecord from a torch.fx.Node.
     @classmethod
     def from_node(cls, num: int, x: torch.fx.Node) -> "LayerRecord":
         return cls(index=num, name=str(x.name), node_type=str(x.op), target=str(x.target), args=jsonable(x.args), kwargs=jsonable(x.kwargs), users=[user.name for user in x.users], tensor_output_meta=extract_tensor_meta(x), module_stack=extract_module_stack(x))
-
 
 class GraphSpecRecord(BaseModel):
     kind: str
@@ -65,8 +61,6 @@ class GraphSpecRecord(BaseModel):
     target: str | None = None
     persistent: bool | None = None
 
-
-#Serializable top-level export IR container.
 class LayerMap(BaseModel):
     model_name: str
     task: str
@@ -76,7 +70,6 @@ class LayerMap(BaseModel):
     output_specs: list[GraphSpecRecord] = Field(default_factory=list)
     nodes: list[LayerRecord]
 
-    #Builds a LayerMap from a torch.export ExportedProgram and serialized nodes.
     @classmethod
     def from_data(cls, x: torch.export.ExportedProgram, name: str, model_task: str, nodes_list: list[LayerRecord]) -> "LayerMap":
         return cls(
@@ -89,9 +82,6 @@ class LayerMap(BaseModel):
             nodes=nodes_list,
         )
 
-###################################################### Model utility helpers!!!!! ########################################################################.
-
-#Recursively converts FX/export metadata into JSON-safe Python values.
 def jsonable(x: Any) -> Any:
     if isinstance(x, torch.fx.Node):
         return {"node": x.name}
@@ -126,15 +116,23 @@ def jsonable(x: Any) -> Any:
     if isinstance(x, dict):
         return {str(k): jsonable(v) for k, v in x.items()}
 
+    # Pydantic serializes non-finite floats as JSON null by default.  That is
+    # lossy for attention masks: -inf would later be lowered as a zero scalar,
+    # allowing causal queries to attend to padded/future positions.  JSON
+    # strings survive every raw/simplified IR round trip and float() restores
+    # their IEEE values at lowering time.
+    if isinstance(x, float) and not math.isfinite(x):
+        if math.isnan(x):
+            return "NaN"
+        return "Infinity" if x > 0 else "-Infinity"
+
     if isinstance(x, (str, int, float, bool)) or x is None:
         return x
 
     return repr(x)
 
-
 def extract_tensor_meta(node: torch.fx.Node) -> Any | None:
     return jsonable(node.meta["val"]) if "val" in node.meta else None
-
 
 def extract_module_stack(node: torch.fx.Node) -> Any | None:
     stack = node.meta.get("nn_module_stack", None)
@@ -152,11 +150,9 @@ def extract_module_stack(node: torch.fx.Node) -> Any | None:
 
     return out
 
-
 def extract_graph_signature_specs(graph_signature: Any, field_name: str) -> list[GraphSpecRecord]:
     specs = getattr(graph_signature, field_name, ()) or ()
     return [graph_spec_record(spec) for spec in specs]
-
 
 def graph_spec_record(spec: Any) -> GraphSpecRecord:
     return GraphSpecRecord(
@@ -165,7 +161,6 @@ def graph_spec_record(spec: Any) -> GraphSpecRecord:
         target=none_or_str(getattr(spec, "target", None)),
         persistent=getattr(spec, "persistent", None),
     )
-
 
 def spec_kind(spec: Any) -> str:
     kind = getattr(spec, "kind", None)
@@ -180,7 +175,6 @@ def spec_kind(spec: Any) -> str:
 
     return str(kind)
 
-
 def spec_arg_name(spec: Any) -> str | None:
     arg = getattr(spec, "arg", None)
 
@@ -194,13 +188,11 @@ def spec_arg_name(spec: Any) -> str | None:
 
     return None
 
-
 def none_or_str(value: Any) -> str | None:
     if value is None:
         return None
 
     return str(value)
-
 
 def load_configs(mp: MP_Models.ModelProfile, model_id: str | None) -> dict[str, dict[str, Any]]:
     output_dir = constants.CONVERTER_JSON_DIR / mp.model_profiles
@@ -224,7 +216,6 @@ def load_configs(mp: MP_Models.ModelProfile, model_id: str | None) -> dict[str, 
 
     return configs
 
-
 def build_input(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], input_cls: Any, model_id: str | None = None, inference_mode: str = "prefill_no_cache") -> Any | None:
     if not all(modality in mp.supported_modalties for modality in input_modalities):
         return None
@@ -241,9 +232,6 @@ def build_input(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], i
         inference_mode=inference_mode,
     )
 
-
-#How: slices full prompt tokens to one decode token, adds cache_position, attention_mask, and flat cache tensors.
-#Why: create_model uses this for decode_with_cache so the exported graph represents one-token generation.
 def build_decode_with_cache_input(
     model: torch.nn.Module,
     input_: Any,
@@ -297,8 +285,6 @@ def build_decode_with_cache_input(
         inference_mode=input_.inference_mode,
     )
 
-
-
 def infer_batch_size(kwargs: dict[str, Any]) -> int:
     for value in kwargs.values():
         if isinstance(value, torch.Tensor) and value.ndim > 0:
@@ -306,16 +292,11 @@ def infer_batch_size(kwargs: dict[str, Any]) -> int:
 
     return 1
 
-
-#Reads profile-declared KV layers that retain full history even when their attention uses a local window.
 def full_retention_kv_layers(model_profile: MP_Models.ModelProfile) -> tuple[int, ...]:
     cache_contract = getattr(model_profile, "cache_contract", None)
     layers = getattr(cache_contract, "full_retention_kv_layers", ()) if cache_contract is not None else ()
     return tuple(int(layer_index) for layer_index in layers)
 
-
-#How: prefers cache_position for decode, otherwise checks token or attention-mask sequence length.
-#Why: export_ uses this to tell CacheSpec how much past context the exported cache represents.
 def infer_past_sequence_length(input_: Any) -> int:
     if input_.inference_mode == constants.DECODE_WITH_CACHE_MODE and "cache_position" in input_.kwargs:
         return int(input_.kwargs["cache_position"][0].item())
@@ -331,11 +312,9 @@ def infer_past_sequence_length(input_: Any) -> int:
 
     return 0
 
-
 def _load_image_asset():
     from PIL import Image
     return Image.open(constants.MODALITY_INPUT_PATH["vision"]).convert("RGB")
-
 
 def _load_audio_asset() -> np.ndarray:
     from scipy.io import wavfile
@@ -351,7 +330,6 @@ def _load_audio_asset() -> np.ndarray:
         audio = audio.astype(np.float32)
 
     return audio
-
 
 def build_processor_kwargs(model_id: str, input_modalities: tuple[str, ...], configs: dict[str, dict[str, Any]], model_profile: str) -> dict[str, Any]:
     processor_builder = IP.PROCESSOR_MAP.get(model_id, IP.default_processor)
@@ -385,11 +363,9 @@ def build_processor_kwargs(model_id: str, input_modalities: tuple[str, ...], con
     normalize_processor_kwargs_for_export(kwargs, model_profile)
     return kwargs
 
-
 def normalize_processor_kwargs_for_export(kwargs: dict[str, torch.Tensor], model_profile: str) -> None:
     if model_profile == "whisper" and "labels" in kwargs and "decoder_input_ids" not in kwargs:
         kwargs["decoder_input_ids"] = kwargs.pop("labels")
-
 
 def pad_audio_export_inputs(processed: Any, configs: dict[str, dict[str, Any]]) -> None:
     target_frames = gemma4_audio_export_frame_count(configs)
@@ -401,7 +377,6 @@ def pad_audio_export_inputs(processed: Any, configs: dict[str, dict[str, Any]]) 
 
     if "input_features_mask" in processed:
         processed["input_features_mask"] = pad_tensor_dim(processed["input_features_mask"], dim=1, target=target_frames, value=0)
-
 
 def gemma4_audio_export_frame_count(configs: dict[str, dict[str, Any]]) -> int | None:
     processor_config = configs.get("processor_config.json", {})
@@ -419,7 +394,6 @@ def gemma4_audio_export_frame_count(configs: dict[str, dict[str, Any]]) -> int |
 
     return int(audio_seq_length) * 4 + int(attention_chunk_size)
 
-
 def pad_tensor_dim(tensor: torch.Tensor, dim: int, target: int, value: int | float | bool = 0) -> torch.Tensor:
     if dim >= tensor.ndim or tensor.shape[dim] >= target:
         return tensor
@@ -429,8 +403,6 @@ def pad_tensor_dim(tensor: torch.Tensor, dim: int, target: int, value: int | flo
     padding = torch.full(shape, value, dtype=tensor.dtype, device=tensor.device)
     return torch.cat((tensor, padding), dim=dim)
 
-
-#Loads the best HF model class for the requested model profile.
 def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None) -> torch.nn.Module:
     if mp is None:
         candidate_classes = (AutoModel,)
@@ -476,13 +448,14 @@ def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None) -> torch
 
     raise RuntimeError(f"Unable to load model {model_id}") from last_error
 
-
-#Builds a loaded model bundle from profile, modalities, model id, and inference mode.
 def create_model(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], model_id: str, inference_mode: str = "prefill_no_cache") -> Model:
     
     input_ = build_input(mp, input_modalities, Input, model_id, inference_mode)
     if input_ is None:
         raise ValueError(f"Could not build input for modalities {input_modalities}")
+
+    if "no_cache_full_context" in mp.cache_policy:
+        input_ = pad_no_cache_full_context_input(input_, Input)
 
     loaded_model = load_model(model_id, mp)
     
@@ -499,6 +472,33 @@ def create_model(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], 
 
     return Model(name=model_id, model_profile=mp, input=input_, model=loaded_model)
 
+def pad_no_cache_full_context_input(input_: Input, input_cls: Any, capacity: int = 128) -> Input:
+    kwargs = dict(input_.kwargs)
+    token_key = "input_ids" if "input_ids" in kwargs else "decoder_input_ids"
+    tokens = kwargs.get(token_key)
+    if not isinstance(tokens, torch.Tensor) or tokens.ndim != 2:
+        raise ValueError("generic no-cache generation requires rank-2 input_ids")
+    if int(tokens.shape[1]) > capacity:
+        raise ValueError(f"generic no-cache sample input exceeds context capacity {capacity}")
+
+    padding = capacity - int(tokens.shape[1])
+    if padding > 0:
+        tokens = torch.nn.functional.pad(tokens, (0, padding), value=0)
+    kwargs[token_key] = tokens
+
+    mask = kwargs.get("attention_mask")
+    if not isinstance(mask, torch.Tensor) or mask.ndim != 2:
+        mask = torch.ones((tokens.shape[0], capacity - padding), dtype=torch.long, device=tokens.device)
+    if padding > 0:
+        mask = torch.nn.functional.pad(mask, (0, padding), value=0)
+    kwargs["attention_mask"] = mask
+
+    return input_cls(
+        args=input_.args,
+        kwargs=kwargs,
+        modalities=input_.modalities,
+        inference_mode=input_.inference_mode,
+    )
 
 def export_(model: Model, input: Input) -> LayerMap:
     should_use_cache = input.inference_mode in constants.CACHE_INFERENCE_MODES

@@ -4,18 +4,14 @@ from . import edges as E
 from . import models as M
 from . import nodes as N
 
-
 def _nodes(*names: str) -> dict[str, M.FusionNode]:
     return {name: N.NODES[name] for name in names}
-
 
 def _edges(*names: str) -> tuple[M.FusionEdge, ...]:
     return tuple(E.EDGES[name] for name in names)
 
-
 def _input(role: str, node: str, parent_index: int | None = None, **kwargs) -> M.FusionInput:
     return M.FusionInput(role=role, source=M.NodeRef(node=node, parent_index=parent_index), **kwargs)
-
 
 def _variadic_input(
     role: str,
@@ -35,7 +31,6 @@ def _variadic_input(
         end_parent_index=end_parent_index,
     )
 
-
 def _shared_input(
     left_node: str,
     left_parent_index: int,
@@ -47,10 +42,8 @@ def _shared_input(
         M.NodeRef(right_node, right_parent_index),
     )
 
-
 def _output(node: str, role: str = "out", output_index: int | None = None) -> M.FusionOutput:
     return M.FusionOutput(role=role, node=node, output_index=output_index)
-
 
 def _cache_input(
     role: str,
@@ -69,7 +62,6 @@ def _cache_input(
         optional=optional,
     )
 
-
 def _cache_output(
     role: str,
     node: str,
@@ -78,7 +70,6 @@ def _cache_output(
     tensor_role: str | None = None,
 ) -> M.CacheOutput:
     return M.CacheOutput(role, node, cache_kind=cache_kind, tensor_role=tensor_role)
-
 
 def _cache_mutation(
     name: str,
@@ -94,10 +85,8 @@ def _cache_mutation(
         write_roles=write_roles,
     )
 
-
 def _required_attrs(**attrs) -> dict:
     return {"required_attrs": attrs}
-
 
 def _graph(
     name: str,
@@ -137,7 +126,6 @@ def _graph(
         allow_root_external_children=allow_root_external_children,
     )
 
-
 def _single_node_graph(
     name: str,
     root: str,
@@ -154,7 +142,6 @@ def _single_node_graph(
         attr_captures=attr_captures,
         metadata=metadata,
     )
-
 
 def _definition(
     name: str,
@@ -176,7 +163,6 @@ def _definition(
         cactus_op=cactus_op,
         metadata=metadata or {},
     )
-
 
 def _index_by_root_op(
     fusions: dict[str, M.FusionDefinition],

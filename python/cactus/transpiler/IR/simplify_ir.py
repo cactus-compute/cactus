@@ -8,7 +8,6 @@ from ..Converter import models as CModels
 from ..Fusions import fusions as Fusions
 from ..Fusions import models as FModels
 
-
 def simplify(
     layer_map: CModels.LayerMap,
     *,
@@ -60,95 +59,12 @@ def simplify(
         graph = fuse_decode_projection_pairs(graph)
     return graph.remove_noop_nodes().to_layer_map()
 
-
 def fuse_decode_qkv_projections(graph: models.Graph) -> models.Graph:
     """Combine sibling decode Q/K/V linears into a shared-transform CQ op."""
-    grouped: dict[str, dict[str, models.Node]] = {}
-    for node in graph.nodes:
-        if node.target != "cactus.linear" or len(node.parents) != 2:
-            continue
-        path = module_path_for_node(node)
-        role = next((name for name in ("q", "k", "v") if path.endswith(f".self_attn.{name}_proj")), None)
-        if role is None:
-            continue
-        grouped.setdefault(path.rsplit(".", 1)[0], {})[role] = node
-
-    replacements: dict[str, str] = {}
-    inserted_before: dict[str, tuple[models.Node, ...]] = {}
-    for layer_path, projections in grouped.items():
-        if set(projections) != {"q", "k", "v"}:
-            continue
-        q, k, v = (projections[role] for role in ("q", "k", "v"))
-        activation_views = (q.parents[0], k.parents[0], v.parents[0])
-        if any(len(view.parents) != 1 for view in activation_views):
-            continue
-        hidden = activation_views[0].parents[0]
-        if any(view.parents[0].name != hidden.name for view in activation_views[1:]):
-            continue
-        sizes = tuple(models.tensor_shape(projection)[-1] for projection in (q, k, v))
-        if any(not isinstance(size, int) or size <= 0 for size in sizes):
-            continue
-
-        stem = models.sanitize_node_name(f"{layer_path}_qkv")
-        fused_name = f"{stem}_fused"
-        suffix = 0
-        while fused_name in graph.nodes_map or fused_name in replacements.values():
-            suffix += 1
-            fused_name = f"{stem}_fused_{suffix}"
-        hidden_shape = list(models.tensor_shape(hidden))
-        if not hidden_shape:
-            continue
-        hidden_shape[-1] = sum(sizes)
-        fused_meta = dict(hidden.tensor_output_meta or {})
-        fused_meta["shape"] = hidden_shape
-        fused = models.Node(
-            index=q.index,
-            name=fused_name,
-            node_type="call_function",
-            target="cactus.qkv_tq_fused",
-            args=[{"node": hidden.name}, {"node": q.parents[1].name},
-                  {"node": k.parents[1].name}, {"node": v.parents[1].name}],
-            kwargs={}, users=(), tensor_output_meta=fused_meta,
-            module_stack=q.module_stack, value_kind=FModels.ValueKind.ACTIVATION,
-            attrs={}, ir_metadata={"fusion": {
-                "name": "decode_qkv", "target": "cactus.qkv_tq_fused",
-                "matched_nodes": [q.name, k.name, v.name],
-            }}, cache=None,
-        )
-        slices: list[models.Node] = []
-        offset = 0
-        for role, projection, size in zip(("q", "k", "v"), (q, k, v), sizes, strict=True):
-            slice_name = f"{fused_name}_{role}"
-            slice_shape = list(hidden_shape)
-            slice_shape[-1] = size
-            slice_meta = dict(projection.tensor_output_meta or {})
-            slice_meta["shape"] = slice_shape
-            attrs = {"axis": -1, "start": offset, "length": size, "step": 1}
-            slices.append(models.Node(
-                index=projection.index,
-                name=slice_name,
-                node_type="call_function",
-                target="cactus.slice",
-                args=[{"node": fused_name}], kwargs=dict(attrs), users=(),
-                tensor_output_meta=slice_meta, module_stack=projection.module_stack,
-                value_kind=FModels.ValueKind.ACTIVATION, attrs=attrs,
-                ir_metadata={}, cache=None,
-            ))
-            replacements[projection.name] = slice_name
-            offset += size
-        inserted_before[q.name] = (fused, *slices)
-
-    if not replacements:
-        return graph
-
-    rewritten: list[models.Node] = []
-    for node in graph.nodes:
-        rewritten.extend(inserted_before.get(node.name, ()))
-        if node.name in replacements:
-            continue
-        rewritten.append(models.clone_rewritten_node(node, replacements))
-    return models.prune_dead_nodes(models.rebuild_graph(tuple(rewritten), graph, tuple(graph.fusions)))
-
+    return fuse_decode_projection_group(
+        graph, roles=("q", "k", "v"), path_template=".self_attn.{}_proj",
+        target="cactus.qkv_tq_fused", fusion_name="decode_qkv", stem_suffix="qkv",
+    )
 
 def module_path_for_node(node: models.Node) -> str:
     stack = node.module_stack
@@ -157,15 +73,29 @@ def module_path_for_node(node: models.Node) -> str:
     paths = [str(item.get("module_path", "")) for item in stack if isinstance(item, dict)]
     return paths[-1] if paths else ""
 
-
 def fuse_decode_projection_pairs(graph: models.Graph) -> models.Graph:
     """Share the CQ input transform for sibling LFM feed-forward W1/W3 projections."""
+    return fuse_decode_projection_group(
+        graph, roles=("w1", "w3"), path_template=".feed_forward.{}",
+        target="cactus.projection_pair_tq_fused",
+        fusion_name="decode_projection_pair", stem_suffix="w1_w3",
+    )
+
+def fuse_decode_projection_group(
+    graph: models.Graph,
+    *,
+    roles: tuple[str, ...],
+    path_template: str,
+    target: str,
+    fusion_name: str,
+    stem_suffix: str,
+) -> models.Graph:
     grouped: dict[str, dict[str, models.Node]] = {}
     for node in graph.nodes:
         if node.target != "cactus.linear" or len(node.parents) != 2:
             continue
         path = module_path_for_node(node)
-        role = next((name for name in ("w1", "w3") if path.endswith(f".feed_forward.{name}")), None)
+        role = next((role for role in roles if path.endswith(path_template.format(role))), None)
         if role is None:
             continue
         grouped.setdefault(path.rsplit(".", 1)[0], {})[role] = node
@@ -173,20 +103,20 @@ def fuse_decode_projection_pairs(graph: models.Graph) -> models.Graph:
     replacements: dict[str, str] = {}
     inserted_before: dict[str, tuple[models.Node, ...]] = {}
     for layer_path, projections in grouped.items():
-        if set(projections) != {"w1", "w3"}:
+        if set(projections) != set(roles):
             continue
-        first, second = projections["w1"], projections["w3"]
-        activation_views = (first.parents[0], second.parents[0])
+        ordered = tuple(projections[role] for role in roles)
+        activation_views = tuple(projection.parents[0] for projection in ordered)
         if any(len(view.parents) != 1 for view in activation_views):
             continue
         hidden = activation_views[0].parents[0]
-        if activation_views[1].parents[0].name != hidden.name:
+        if any(view.parents[0].name != hidden.name for view in activation_views[1:]):
             continue
-        sizes = tuple(models.tensor_shape(projection)[-1] for projection in (first, second))
+        sizes = tuple(models.tensor_shape(projection)[-1] for projection in ordered)
         if any(not isinstance(size, int) or size <= 0 for size in sizes):
             continue
 
-        stem = models.sanitize_node_name(f"{layer_path}_w1_w3")
+        stem = models.sanitize_node_name(f"{layer_path}_{stem_suffix}")
         fused_name = f"{stem}_fused"
         suffix = 0
         while fused_name in graph.nodes_map or fused_name in replacements.values():
@@ -198,20 +128,21 @@ def fuse_decode_projection_pairs(graph: models.Graph) -> models.Graph:
         hidden_shape[-1] = sum(sizes)
         fused_meta = dict(hidden.tensor_output_meta or {})
         fused_meta["shape"] = hidden_shape
+        first = ordered[0]
         fused = models.Node(
             index=first.index, name=fused_name, node_type="call_function",
-            target="cactus.projection_pair_tq_fused",
-            args=[{"node": hidden.name}, {"node": first.parents[1].name}, {"node": second.parents[1].name}],
+            target=target,
+            args=[{"node": hidden.name}, *({"node": projection.parents[1].name} for projection in ordered)],
             kwargs={}, users=(), tensor_output_meta=fused_meta,
             module_stack=first.module_stack, value_kind=FModels.ValueKind.ACTIVATION,
             attrs={}, ir_metadata={"fusion": {
-                "name": "decode_projection_pair", "target": "cactus.projection_pair_tq_fused",
-                "matched_nodes": [first.name, second.name],
+                "name": fusion_name, "target": target,
+                "matched_nodes": [projection.name for projection in ordered],
             }}, cache=None,
         )
         slices: list[models.Node] = []
         offset = 0
-        for role, projection, size in zip(("w1", "w3"), (first, second), sizes, strict=True):
+        for role, projection, size in zip(roles, ordered, sizes, strict=True):
             slice_name = f"{fused_name}_{role}"
             slice_shape = list(hidden_shape)
             slice_shape[-1] = size
@@ -230,6 +161,7 @@ def fuse_decode_projection_pairs(graph: models.Graph) -> models.Graph:
 
     if not replacements:
         return graph
+
     rewritten: list[models.Node] = []
     for node in graph.nodes:
         rewritten.extend(inserted_before.get(node.name, ()))
@@ -237,7 +169,6 @@ def fuse_decode_projection_pairs(graph: models.Graph) -> models.Graph:
             continue
         rewritten.append(models.clone_rewritten_node(node, replacements))
     return models.prune_dead_nodes(models.rebuild_graph(tuple(rewritten), graph, tuple(graph.fusions)))
-
 
 def simplify_repeated(
     layer_map: CModels.LayerMap,
@@ -251,13 +182,7 @@ def simplify_repeated(
     max_fusions: int | None = None,
     max_passes: int = 3,
 ) -> CModels.LayerMap:
-    """Run complete simplification rounds until the result is stable.
-
-    A full round can expose model-specific patterns that are only visible after
-    the preceding round has rewritten and cleaned the graph.  Always doing at
-    least two rounds also makes regeneration from raw IR independent of whether
-    a caller happened to feed it a previously simplified graph.
-    """
+    """Run complete simplification rounds until the result is stable."""
     if minimum_rounds < 1:
         raise ValueError("minimum_rounds must be at least 1")
     if maximum_rounds < minimum_rounds:
@@ -282,7 +207,6 @@ def simplify_repeated(
         if round_index + 1 >= minimum_rounds and not changed:
             break
     return current
-
 
 def write_simplified_json(
     layer_map: CModels.LayerMap,
@@ -318,7 +242,6 @@ def write_simplified_json(
         disabled_fusions=disabled_fusions,
     ), indent=4), encoding="utf-8")
     return simplified
-
 
 def build_fusion_report(
     original: CModels.LayerMap,
@@ -382,7 +305,6 @@ def build_fusion_report(
         "disabled_fusions": list(disabled_fusions),
     }
 
-
 def fusion_miss_reason(
     node: models.Node,
     graph: models.Graph,
@@ -408,7 +330,6 @@ def fusion_miss_reason(
         if not matcher(node, graph, fusion, bindings, inference_mode, input_modalities, fusion_fields):
             return matcher.__name__
     return "matched_but_not_selected"
-
 
 def rev_top_sort(
     graph: models.Graph,
@@ -449,7 +370,6 @@ def rev_top_sort(
 
     graph.fusions = fusion_results
     return graph.apply_fusions(fusion_results)
-
 
 def try_match_from_node(
     node: models.Node,
@@ -508,10 +428,8 @@ def try_match_from_node(
 
     return None
 
-
 def is_noop_fusion(node: models.Node, result: models.FusionResult) -> bool:
     return node.target == result.target and len(result.matched_nodes) == 1
-
 
 def bind_matching_fusion(
     node: models.Node,
@@ -535,7 +453,6 @@ def bind_matching_fusion(
 
     return bindings
 
-
 def fusion_result_from_bindings(
     fusion: FModels.FusionDefinition,
     source: models.Node,
@@ -553,7 +470,6 @@ def fusion_result_from_bindings(
         external_inputs=external_inputs,
         attrs=attrs,
     )
-
 
 def collect_external_inputs(
     fusion: FModels.FusionGraph,
@@ -574,7 +490,6 @@ def collect_external_inputs(
             external_inputs.append(cache_node)
 
     return tuple(external_inputs)
-
 
 def candidate_fusions_for_node(
     node: models.Node,
@@ -602,7 +517,6 @@ def candidate_fusions_for_node(
 
     return tuple(sorted(candidates, key=fusion_priority, reverse=True))
 
-
 def fusion_enabled_for_fields(fusion: FModels.FusionDefinition, fusion_fields: tuple[str, ...]) -> bool:
     if not fusion_fields or not fusion.fusion_fields:
         return True
@@ -617,7 +531,6 @@ def fusion_enabled_for_fields(fusion: FModels.FusionDefinition, fusion_fields: t
         return "generic" in selected_fields or "direct" in selected_fields
 
     return not fusion_specific_fields.isdisjoint(selected_fields - {"generic"})
-
 
 def fusion_disabled(
     fusion: FModels.FusionDefinition,
@@ -634,7 +547,6 @@ def fusion_disabled(
 
     return False
 
-
 def fusion_priority(fusion: FModels.FusionDefinition) -> tuple[int, int, int, int, int, int]:
     required_attrs = fusion.metadata.get("required_attrs", {})
 
@@ -647,10 +559,8 @@ def fusion_priority(fusion: FModels.FusionDefinition) -> tuple[int, int, int, in
         int("direct" not in fusion.fusion_fields),
     )
 
-
 def reverse_topological_nodes(graph: models.Graph) -> tuple[models.Node, ...]:
     return tuple(reversed(models.topological_sort(graph)))
-
 
 def unique_nodes(nodes: Iterable[models.Node]) -> tuple[models.Node, ...]:
     unique: list[models.Node] = []

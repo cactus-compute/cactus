@@ -10,11 +10,9 @@ from . import constants
 from ..IR import models as IRModels
 from ..RuntimePlan import models as RPModels
 
-
 GraphTensor = Any
 CactusGraph = Any
 LoweringFn = Callable[["GenerationContext", IRModels.Node], GraphTensor | tuple[GraphTensor, ...] | None]
-
 
 @dataclass(slots=True, frozen=True)
 class TensorSpec:
@@ -27,12 +25,10 @@ class TensorSpec:
     def from_node(cls, node: IRModels.Node, *, name: str | None = None) -> "TensorSpec":
         return tensor_spec_from_node(cls, node, name=name)
 
-
 @dataclass(slots=True, frozen=True)
 class LoweringRule:
     target: str
     lower: LoweringFn
-
 
 @dataclass(slots=True, frozen=True)
 class GeneratorConfig:
@@ -46,7 +42,6 @@ class GeneratorConfig:
 
     def component_path(self, component_name: str) -> Path:
         return generator_component_path(self, component_name)
-
 
 @dataclass(slots=True)
 class ComponentGraph:
@@ -94,7 +89,6 @@ class ComponentGraph:
     def add_output(self, tensor: GraphTensor, logical_name: str | None = None) -> None:
         add_component_output(self, tensor, logical_name)
 
-
 @dataclass(slots=True)
 class GenerationContext:
     component: ComponentGraph
@@ -131,7 +125,6 @@ class GenerationContext:
     def mark_unsupported(self, node: IRModels.Node) -> None:
         self.component.mark_unsupported(node)
 
-
 @dataclass(slots=True, frozen=True)
 class WeightRecord:
     source_name: str | None = None
@@ -156,7 +149,6 @@ class WeightRecord:
     def aliases(self) -> tuple[str, ...]:
         return weight_record_aliases(self)
 
-
 @dataclass(slots=True, frozen=True)
 class WeightBinding:
     placeholder: str
@@ -174,13 +166,11 @@ class WeightBinding:
     qdq_restore: str = "hf_key"
     binding_kind: str = "mmap_weight"
 
-
 @dataclass(slots=True, frozen=True)
 class LfmMoeWeightBundle:
     w1_weights: tuple[GraphTensor, ...] = ()
     w3_weights: tuple[GraphTensor, ...] = ()
     w2_weights: tuple[GraphTensor, ...] = ()
-
 
 @dataclass(slots=True)
 class WeightResolver:
@@ -201,7 +191,6 @@ class WeightResolver:
 
     def source_target_for(self, placeholder_name: str) -> str | None:
         return self.placeholder_targets.get(placeholder_name)
-
 
 @dataclass(slots=True, frozen=True)
 class ComponentGraphManifest:
@@ -224,7 +213,6 @@ class ComponentGraphManifest:
     def to_dict(self) -> dict[str, Any]:
         return component_manifest_to_dict(self)
 
-
 @dataclass(slots=True, frozen=True)
 class GenerationResult:
     component_paths: dict[str, Path] = field(default_factory=dict)
@@ -242,10 +230,6 @@ class GenerationResult:
     def ok(self) -> bool:
         return generation_result_ok(self)
 
-
-################################################# Model Utils!!!!!!! #################################################
-
-
 def tensor_spec_from_node(cls: type[TensorSpec], node: IRModels.Node, *, name: str | None = None) -> TensorSpec:
     meta = node.tensor_output_meta if isinstance(node.tensor_output_meta, dict) else {}
     shape = meta.get("shape", ())
@@ -256,16 +240,13 @@ def tensor_spec_from_node(cls: type[TensorSpec], node: IRModels.Node, *, name: s
         dtype=meta.get("dtype"),
     )
 
-
 def generator_component_path(config: GeneratorConfig, component_name: str) -> Path:
     safe_name = sanitize_component_name(component_name)
     return config.output_dir / f"{safe_name}{config.graph_suffix}"
 
-
 def generator_component_manifest_path(config: GeneratorConfig, component_name: str) -> Path:
     safe_name = sanitize_component_name(component_name)
     return config.output_dir / f"{safe_name}.graph_manifest.json"
-
 
 def component_graph_from_ir(cls: type[ComponentGraph], name: str, ir_graph: IRModels.Graph, config: GeneratorConfig) -> ComponentGraph:
     return cls(
@@ -275,7 +256,6 @@ def component_graph_from_ir(cls: type[ComponentGraph], name: str, ir_graph: IRMo
         manifest_path=generator_component_manifest_path(config, name),
         metadata=component_metadata_from_ir(ir_graph),
     )
-
 
 def component_metadata_from_ir(ir_graph: IRModels.Graph) -> dict[str, str]:
     metadata: dict[str, str] = dict(ir_graph.metadata)
@@ -292,7 +272,6 @@ def component_metadata_from_ir(ir_graph: IRModels.Graph) -> dict[str, str]:
 
     return metadata
 
-
 def save_component_graph(component: ComponentGraph) -> Path:
     if component.graph is None:
         raise ValueError(f"Component {component.name} has no Cactus graph to save")
@@ -302,35 +281,29 @@ def save_component_graph(component: ComponentGraph) -> Path:
     component.save_manifest()
     return component.output_path
 
-
 def save_component_manifest(component: ComponentGraph) -> Path:
     component.manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest = ComponentGraphManifest.from_component(component)
     component.manifest_path.write_text(json.dumps(manifest.to_dict(), indent=4), encoding="utf-8")
     return component.manifest_path
 
-
 def mark_component_node_unsupported(component: ComponentGraph, node: IRModels.Node) -> None:
     if node.name not in component.unsupported_nodes:
         component.unsupported_nodes.append(node.name)
-
 
 def add_component_warning(component: ComponentGraph, message: str) -> None:
     if message not in component.warnings:
         component.warnings.append(message)
 
-
 def add_component_weight_binding(component: ComponentGraph, binding: WeightBinding) -> None:
     if all(existing.node_id != binding.node_id for existing in component.weight_bindings):
         component.weight_bindings.append(binding)
-
 
 def add_component_cache_state_binding(component: ComponentGraph, binding: RPModels.CacheStateBinding) -> None:
     if component.name in constants.STATIC_CACHE_OUTPUT_COMPONENTS:
         return
 
     RPModels.merge_cache_state_binding(component.cache_state_bindings, binding)
-
 
 def add_component_runtime_input(component: ComponentGraph, tensor: GraphTensor, logical_name: str | None = None) -> None:
     node_id = tensor_node_id(tensor)
@@ -348,7 +321,6 @@ def add_component_runtime_input(component: ComponentGraph, tensor: GraphTensor, 
     component.runtime_input_ids.append(node_id)
     component.logical_inputs.append(name)
 
-
 def add_component_output(component: ComponentGraph, tensor: GraphTensor, logical_name: str | None = None) -> None:
     node_id = tensor_node_id(tensor)
 
@@ -365,7 +337,6 @@ def add_component_output(component: ComponentGraph, tensor: GraphTensor, logical
     component.output_node_ids.append(node_id)
     component.logical_outputs.append(name)
 
-
 def tensor_node_id(tensor: GraphTensor) -> int | None:
     node_id = getattr(tensor, "id", None)
 
@@ -374,22 +345,18 @@ def tensor_node_id(tensor: GraphTensor) -> int | None:
 
     return int(node_id)
 
-
 def active_cactus_graph(context: GenerationContext) -> CactusGraph:
     if context.component.graph is None:
         raise ValueError(f"Component {context.component.name} has no active Cactus graph")
 
     return context.component.graph
 
-
 def bind_context_value(context: GenerationContext, node: IRModels.Node, value: GraphTensor) -> GraphTensor:
     context.values[node.name] = value
     return value
 
-
 def lookup_context_value(context: GenerationContext, node_name: str) -> GraphTensor | None:
     return context.values.get(node_name)
-
 
 def require_context_value(context: GenerationContext, node_name: str) -> GraphTensor:
     value = context.lookup(node_name)
@@ -399,14 +366,11 @@ def require_context_value(context: GenerationContext, node_name: str) -> GraphTe
 
     return value
 
-
 def context_inputs_for_node(context: GenerationContext, node: IRModels.Node) -> tuple[GraphTensor, ...]:
     return tuple(context.require(parent.name) for parent in node.parents)
 
-
 def context_lowering_for_node(context: GenerationContext, node: IRModels.Node) -> LoweringRule | None:
     return context.lowerings.get(node.target)
-
 
 def generation_result_from_components(cls: type[GenerationResult], components: tuple[ComponentGraph, ...] | list[ComponentGraph]) -> GenerationResult:
     return cls(
@@ -424,15 +388,12 @@ def generation_result_from_components(cls: type[GenerationResult], components: t
         ),
     )
 
-
 def generation_result_ok(result: GenerationResult) -> bool:
     return not result.unsupported_nodes
-
 
 def sanitize_component_name(name: str) -> str:
     safe = "".join(char if char.isalnum() or char in {"_", "-"} else "_" for char in name)
     return safe.strip("_-") or "component"
-
 
 def weight_record_from_manifest_row(cls: type[WeightRecord], row: Mapping[str, Any]) -> WeightRecord:
     return cls(
@@ -451,7 +412,6 @@ def weight_record_from_manifest_row(cls: type[WeightRecord], row: Mapping[str, A
         qdq_restore=str(row.get("qdq_restore", "hf_key") or "hf_key"),
     )
 
-
 def weight_record_aliases(record: WeightRecord) -> tuple[str, ...]:
     aliases = (
         record.source_name,
@@ -460,7 +420,6 @@ def weight_record_aliases(record: WeightRecord) -> tuple[str, ...]:
         *record.source_names,
     )
     return tuple(alias for alias in unique_strings(aliases) if alias)
-
 
 def weight_resolver_from_graph(
     cls: type[WeightResolver],
@@ -479,7 +438,6 @@ def weight_resolver_from_graph(
         placeholder_targets=placeholder_targets,
     )
 
-
 def load_weight_records(manifest_path: Path) -> tuple[WeightRecord, ...]:
     if not manifest_path.exists():
         return ()
@@ -487,7 +445,6 @@ def load_weight_records(manifest_path: Path) -> tuple[WeightRecord, ...]:
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     rows = data if isinstance(data, list) else data.get("weights", ())
     return tuple(WeightRecord.from_manifest_row(row) for row in rows if isinstance(row, Mapping))
-
 
 def index_weight_records(records: tuple[WeightRecord, ...]) -> dict[str, WeightRecord]:
     index: dict[str, WeightRecord] = {}
@@ -501,7 +458,6 @@ def index_weight_records(records: tuple[WeightRecord, ...]) -> dict[str, WeightR
                 index.setdefault(normalized, record)
 
     return index
-
 
 def input_spec_placeholder_targets(graph: IRModels.Graph) -> dict[str, str]:
     targets: dict[str, str] = {}
@@ -518,7 +474,6 @@ def input_spec_placeholder_targets(graph: IRModels.Graph) -> dict[str, str]:
 
     return parse_graph_signature_placeholder_targets(graph.graph_signature)
 
-
 def parse_graph_signature_placeholder_targets(graph_signature: str) -> dict[str, str]:
     targets: dict[str, str] = {}
     pattern = re.compile(
@@ -531,7 +486,6 @@ def parse_graph_signature_placeholder_targets(graph_signature: str) -> dict[str,
 
     return targets
 
-
 def resolve_weight_record(resolver: WeightResolver, placeholder_name: str) -> WeightRecord | None:
     source_target = resolver.placeholder_targets.get(placeholder_name)
 
@@ -539,7 +493,6 @@ def resolve_weight_record(resolver: WeightResolver, placeholder_name: str) -> We
         return None
 
     return resolve_source_weight_record(resolver, source_target)
-
 
 def resolve_source_weight_record(resolver: WeightResolver, source_target: str) -> WeightRecord | None:
     for variant in weight_name_variants(source_target):
@@ -549,7 +502,6 @@ def resolve_source_weight_record(resolver: WeightResolver, source_target: str) -
             return record
 
     return None
-
 
 def weight_name_variants(name: str) -> tuple[str, ...]:
     variants = [name]
@@ -584,7 +536,6 @@ def weight_name_variants(name: str) -> tuple[str, ...]:
 
     return tuple(unique_strings(variants))
 
-
 def component_manifest_from_component(cls: type[ComponentGraphManifest], component: ComponentGraph) -> ComponentGraphManifest:
     return cls(
         component=component.name,
@@ -599,7 +550,6 @@ def component_manifest_from_component(cls: type[ComponentGraphManifest], compone
         unsupported_nodes=tuple(component.unsupported_nodes),
         warnings=tuple(component.warnings),
     )
-
 
 def component_manifest_to_dict(manifest: ComponentGraphManifest) -> dict[str, Any]:
     return {
@@ -652,13 +602,11 @@ def component_manifest_to_dict(manifest: ComponentGraphManifest) -> dict[str, An
         "warnings": list(manifest.warnings),
     }
 
-
 def none_or_str(value: Any) -> str | None:
     if value is None:
         return None
 
     return str(value)
-
 
 def unique_strings(values: tuple[str | None, ...] | list[str | None]) -> tuple[str, ...]:
     unique: list[str] = []

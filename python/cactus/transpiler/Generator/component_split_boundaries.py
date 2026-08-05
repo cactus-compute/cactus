@@ -7,7 +7,6 @@ from .component_split_utils import tensor_last_dim, tensor_rank, tensor_shape
 from ..Fusions import models as FModels
 from ..IR import models as IRModels
 
-
 def find_graph_by_task(graphs: Mapping[str, IRModels.Graph], task: str) -> IRModels.Graph | None:
     for graph in graphs.values():
         if graph.task == task:
@@ -19,14 +18,12 @@ def find_graph_by_task(graphs: Mapping[str, IRModels.Graph], task: str) -> IRMod
 
     return None
 
-
 def find_whisper_boundaries(prefill: IRModels.Graph, decode: IRModels.Graph) -> WhisperBoundaries:
     return WhisperBoundaries(
         encoder_hidden_states=find_whisper_encoder_hidden_states(prefill),
         cross_key_values=find_whisper_cross_key_values(prefill),
         decode_logits=find_logits_output(decode),
     )
-
 
 def find_whisper_encoder_hidden_states(graph: IRModels.Graph) -> str:
     candidates = [
@@ -41,7 +38,6 @@ def find_whisper_encoder_hidden_states(graph: IRModels.Graph) -> str:
         raise ValueError("Whisper component split could not find encoder_hidden_states")
 
     return max(candidates, key=lambda node: len(node.children)).name
-
 
 def find_whisper_cross_key_values(graph: IRModels.Graph) -> tuple[tuple[str, str], ...]:
     pairs: list[tuple[str, str]] = []
@@ -68,7 +64,6 @@ def find_whisper_cross_key_values(graph: IRModels.Graph) -> tuple[tuple[str, str
 
     return tuple(pairs)
 
-
 def direct_whisper_cross_kv_source(node: IRModels.Node) -> IRModels.Node:
     if node.target != "cactus.cat" or len(node.parents) != 2:
         return node
@@ -85,7 +80,6 @@ def direct_whisper_cross_kv_source(node: IRModels.Node) -> IRModels.Node:
 
     return node
 
-
 def find_whisper_decode_position_index(graph: IRModels.Graph) -> str:
     for node in graph.nodes:
         if node.target == "aten.repeat.default" and tensor_shape(node) == [1, 1]:
@@ -93,7 +87,6 @@ def find_whisper_decode_position_index(graph: IRModels.Graph) -> str:
                 return node.name
 
     raise ValueError("Whisper component split could not find decoder position index")
-
 
 def whisper_decoder_cross_input_aliases(graph: IRModels.Graph, layer_count: int) -> dict[str, str]:
     aliases: dict[str, str] = {}
@@ -117,7 +110,6 @@ def whisper_decoder_cross_input_aliases(graph: IRModels.Graph, layer_count: int)
 
     return aliases
 
-
 def find_lfm_vlm_boundaries(prefill: IRModels.Graph, decode: IRModels.Graph) -> LfmVlmBoundaries:
     merge = find_lfm_vlm_masked_scatter_merge(prefill)
     return LfmVlmBoundaries(
@@ -130,7 +122,6 @@ def find_lfm_vlm_boundaries(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
         decode_text_inputs_embeds=find_lfm_vlm_text_inputs_embeds(decode),
         decode_position_ids=find_lfm_vlm_decode_position_ids(decode),
     )
-
 
 def find_lfm_vlm_masked_scatter_merge(graph: IRModels.Graph) -> IRModels.Node:
     candidates = [
@@ -147,7 +138,6 @@ def find_lfm_vlm_masked_scatter_merge(graph: IRModels.Graph) -> IRModels.Node:
 
     return min(candidates, key=lambda node: node.index)
 
-
 def find_lfm_vlm_image_features(merge: IRModels.Node) -> str:
     if len(merge.parents) < 3:
         raise ValueError(f"{merge.name}: LFM-VL merge does not have an image feature parent")
@@ -158,7 +148,6 @@ def find_lfm_vlm_image_features(merge: IRModels.Node) -> str:
         return image_features.parents[0].name
 
     return image_features.name
-
 
 def find_lfm_vlm_text_inputs_embeds(graph: IRModels.Graph) -> str:
     for node in graph.nodes:
@@ -171,7 +160,6 @@ def find_lfm_vlm_text_inputs_embeds(graph: IRModels.Graph) -> str:
 
     raise ValueError("LFM-VL component split could not find text inputs_embeds")
 
-
 def find_lfm_vlm_decode_position_ids(graph: IRModels.Graph) -> str:
     for node in graph.nodes:
         if node.name == "cache_position":
@@ -182,7 +170,6 @@ def find_lfm_vlm_decode_position_ids(graph: IRModels.Graph) -> str:
             return node.name
 
     raise ValueError("LFM-VL component split could not find decode position_ids")
-
 
 def find_lfm_vlm_vision_position_embeddings(graph: IRModels.Graph) -> str:
     for node in graph.nodes:
@@ -197,7 +184,6 @@ def find_lfm_vlm_vision_position_embeddings(graph: IRModels.Graph) -> str:
             return node.name
 
     raise ValueError("LFM-VL component split could not find vision positional embeddings")
-
 
 def has_position_embedding_ancestor(node: IRModels.Node, max_depth: int = 24) -> bool:
     stack: list[tuple[IRModels.Node, int]] = [(node, 0)]
@@ -217,7 +203,6 @@ def has_position_embedding_ancestor(node: IRModels.Node, max_depth: int = 24) ->
         stack.extend((parent, depth + 1) for parent in current.parents)
 
     return False
-
 
 def find_lfm_vlm_vision_encoder_features(graph: IRModels.Graph) -> str:
     candidates = [
@@ -242,7 +227,6 @@ def find_lfm_vlm_vision_encoder_features(graph: IRModels.Graph) -> str:
 
     return max(candidates, key=lambda node: node.index).name
 
-
 def find_lfm_vlm_vision_projector_input(graph: IRModels.Graph) -> str:
     candidates = [
         node
@@ -256,7 +240,6 @@ def find_lfm_vlm_vision_projector_input(graph: IRModels.Graph) -> str:
         raise ValueError("LFM-VL component split could not find vision projector input")
 
     return min(candidates, key=lambda node: node.index).name
-
 
 def find_gemma4_boundaries(prefill: IRModels.Graph, decode: IRModels.Graph) -> Gemma4Boundaries:
     vision_merge, audio_merge = find_gemma4_masked_scatter_merges(prefill)
@@ -276,7 +259,6 @@ def find_gemma4_boundaries(prefill: IRModels.Graph, decode: IRModels.Graph) -> G
         decode_logits=find_logits_output(decode),
     )
 
-
 def find_gemma4_masked_scatter_merges(graph: IRModels.Graph) -> tuple[IRModels.Node, IRModels.Node]:
     merges = [
         node
@@ -292,13 +274,11 @@ def find_gemma4_masked_scatter_merges(graph: IRModels.Graph) -> tuple[IRModels.N
 
     return tuple(sorted(merges, key=lambda node: node.index)[:2])
 
-
 def feature_parent(merge: IRModels.Node, role: str) -> str:
     if len(merge.parents) < 3:
         raise ValueError(f"{merge.name}: Gemma4 {role} merge does not have a feature parent")
 
     return merge.parents[2].name
-
 
 def find_text_inputs_embeds(graph: IRModels.Graph) -> str:
     for node in graph.nodes:
@@ -309,7 +289,6 @@ def find_text_inputs_embeds(graph: IRModels.Graph) -> str:
             return node.name
 
     raise ValueError("Gemma4 component split could not find text inputs_embeds")
-
 
 def find_embedding_token_ids(graph: IRModels.Graph) -> str:
     text_inputs_embeds = graph.nodes_map[find_text_inputs_embeds(graph)]
@@ -323,7 +302,6 @@ def find_embedding_token_ids(graph: IRModels.Graph) -> str:
                 return embedding_parent.name
 
     raise ValueError("Gemma4 component split could not find embedding token-id input")
-
 
 def find_per_layer_inputs(graph: IRModels.Graph) -> str:
     projected_candidates = [
@@ -351,7 +329,6 @@ def find_per_layer_inputs(graph: IRModels.Graph) -> str:
 
     raise ValueError("Gemma4 component split could not find per_layer_inputs")
 
-
 def find_decode_position_ids(graph: IRModels.Graph) -> str:
     for node in graph.nodes:
         if node.target == "aten.unsqueeze.default" and tensor_shape(node) == [1, 1]:
@@ -362,7 +339,6 @@ def find_decode_position_ids(graph: IRModels.Graph) -> str:
             return node.name
 
     raise ValueError("Gemma4 component split could not find decode position_ids")
-
 
 def find_logits_output(graph: IRModels.Graph) -> str:
     output = graph.outputs[0] if graph.outputs else None
@@ -377,7 +353,6 @@ def find_logits_output(graph: IRModels.Graph) -> str:
 
     raise ValueError("Gemma4 component split could not find logits output")
 
-
 def graph_output_specs(graph: IRModels.Graph, publish_only_logits: bool = False) -> tuple[OutputSpec, ...]:
     refs = graph_output_refs(graph)
 
@@ -390,7 +365,6 @@ def graph_output_specs(graph: IRModels.Graph, publish_only_logits: bool = False)
         OutputSpec(ref, "logits" if ref == logits else ref, publish=not publish_only_logits or ref == logits)
         for ref in refs
     )
-
 
 def graph_output_refs(graph: IRModels.Graph) -> tuple[str, ...]:
     refs: list[str] = []

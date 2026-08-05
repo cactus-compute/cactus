@@ -1,5 +1,18 @@
 from dataclasses import dataclass, field
 
+GENERIC_TASK_CAUSAL_LM = "causal-lm"
+GENERIC_TASK_SPEECH_SEQ2SEQ = "speech-seq2seq"
+GENERIC_CACHE_DYNAMIC_KV = "dynamic-kv"
+GENERIC_CACHE_ENCODER_DECODER_KV = "encoder-decoder-kv"
+GENERIC_CACHE_NONE = "none"
+@dataclass(slots=True, frozen=True)
+class GenericTranspileContract:
+    """User-declared execution contract for an unregistered model."""
+
+    task: str = GENERIC_TASK_CAUSAL_LM
+    modalities: tuple[str, ...] = ("text",)
+    cache_style: str = GENERIC_CACHE_NONE
+    fusion_groups: tuple[str, ...] = ()
 
 @dataclass(slots=True)
 class Components:

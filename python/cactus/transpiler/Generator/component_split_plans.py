@@ -8,7 +8,6 @@ from .component_split_builder import extract_component_graph, retarget_whisper_d
 from .component_split_types import *
 from ..IR import models as IRModels
 
-
 def split_component_graphs(
     graphs: Mapping[str, IRModels.Graph],
     model_profile: Any | None = None,
@@ -33,7 +32,6 @@ def split_component_graphs(
 
     return None
 
-
 def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> dict[str, IRModels.Graph]:
     boundaries = find_gemma4_boundaries(prefill, decode)
     position_step = PlaceholderSpec("position_ids", "position_ids", source_node=boundaries.decode_position_ids)
@@ -45,7 +43,7 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
     prefill_rope_position_aliases = gemma4_rope_position_aliases(prefill, position_chunk.name)
     decode_rope_position_aliases = gemma4_rope_position_aliases(decode, position_step.name)
 
-    specs = (
+    step_specs = (
         ComponentSplitSpec(
             name="vision_encoder",
             graph=prefill,
@@ -152,8 +150,7 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
         ),
     )
 
-    return {spec.name: extract_component_graph(spec) for spec in specs}
-
+    return {spec.name: extract_component_graph(spec) for spec in step_specs}
 
 def gemma4_rope_position_aliases(graph: IRModels.Graph, placeholder_name: str) -> dict[str, str]:
     aliases: dict[str, str] = {}
@@ -169,25 +166,20 @@ def gemma4_rope_position_aliases(graph: IRModels.Graph, placeholder_name: str) -
 
     return aliases
 
-
 def is_gemma4_profile(model_profile: Any | None) -> bool:
     profile_name = str(getattr(model_profile, "model_profiles", "") or "").lower()
     return "gemma4" in profile_name or "gemma_4" in profile_name
-
 
 def is_whisper_profile(model_profile: Any | None) -> bool:
     profile_name = str(getattr(model_profile, "model_profiles", "") or "").lower()
     return "whisper" in profile_name
 
-
 def is_lfm_vlm_profile(model_profile: Any | None) -> bool:
     profile_name = str(getattr(model_profile, "model_profiles", "") or "").lower()
     return profile_name in {"lfm_vlm", "lfm2_vl", "lfm-vlm"} or "lfm_vlm" in profile_name or "lfm2_vl" in profile_name
 
-
 def is_causal_lm_profile(model_profile: Any | None) -> bool:
     return str(getattr(model_profile, "load_strategy", "") or "") == "causal_lm"
-
 
 def split_causal_lm_components(
     prefill: IRModels.Graph,
@@ -198,7 +190,7 @@ def split_causal_lm_components(
     chunk_position = PlaceholderSpec("position_ids", "position_ids", tensor_node="input_ids", force=True)
     chunk_tokens = causal_lm_prefill_chunk_tokens(model_profile)
 
-    specs = (
+    step_specs = (
         ComponentSplitSpec(
             name="lm_encoder_step",
             graph=decode,
@@ -209,6 +201,16 @@ def split_causal_lm_components(
             placeholders=(step_position,),
         ),
         ComponentSplitSpec(
+            name="decoder_step",
+            graph=decode,
+            outputs=graph_output_specs(decode, publish_only_logits=True),
+            side_effects=cache_side_effect_node_names(decode),
+            placeholders=(step_position,),
+            input_aliases={"input_ids": "inputs_embeds"},
+        ),
+    )
+    prefill_specs = (
+        ComponentSplitSpec(
             name="lm_encoder_text_chunk",
             graph=prefill,
             outputs=(
@@ -217,14 +219,6 @@ def split_causal_lm_components(
             ),
             placeholders=(chunk_position,),
             chunk_tokens=chunk_tokens,
-        ),
-        ComponentSplitSpec(
-            name="decoder_step",
-            graph=decode,
-            outputs=graph_output_specs(decode, publish_only_logits=True),
-            side_effects=cache_side_effect_node_names(decode),
-            placeholders=(step_position,),
-            input_aliases={"input_ids": "inputs_embeds"},
         ),
         ComponentSplitSpec(
             name="decoder_prefill_chunk",
@@ -237,8 +231,10 @@ def split_causal_lm_components(
         ),
     )
 
-    return {spec.name: extract_component_graph(spec) for spec in specs}
+    cache_policy = tuple(getattr(model_profile, "cache_policy", ()) or ())
+    specs = step_specs if "scalar_prefill" in cache_policy else (*step_specs, *prefill_specs)
 
+    return {spec.name: extract_component_graph(spec) for spec in specs}
 
 def causal_lm_prefill_chunk_tokens(model_profile: Any | None) -> int:
     profile_name = str(getattr(model_profile, "model_profiles", "") or "").lower()
@@ -247,7 +243,6 @@ def causal_lm_prefill_chunk_tokens(model_profile: Any | None) -> int:
         return LFM_MOE_PREFILL_CHUNK_TOKENS
 
     return GENERIC_CAUSAL_PREFILL_CHUNK_TOKENS
-
 
 def split_lfm_vlm_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> dict[str, IRModels.Graph]:
     boundaries = find_lfm_vlm_boundaries(prefill, decode)
@@ -322,7 +317,6 @@ def split_lfm_vlm_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
 
     return {spec.name: extract_component_graph(spec) for spec in specs}
 
-
 def split_whisper_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> dict[str, IRModels.Graph]:
     boundaries = find_whisper_boundaries(prefill, decode)
     position_index = find_whisper_decode_position_index(decode)
@@ -380,12 +374,10 @@ def split_whisper_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
     components["decoder_step"] = retarget_whisper_decoder_cross_kv_layout(components["decoder_step"])
     return components
 
-
 def whisper_cross_kv_output_spec(graph: IRModels.Graph, node_name: str, logical_name: str) -> OutputSpec:
     node = graph.nodes_map[node_name]
     permutation = (0, 2, 1, 3) if tensor_shape(node) == [1, 6, 1500, 64] else None
     return OutputSpec(node_name, logical_name, permutation=permutation)
-
 
 def cache_side_effect_node_names(graph: IRModels.Graph) -> tuple[str, ...]:
     return tuple(

@@ -9,7 +9,6 @@ from .component_split_utils import element_count, tensor_shape
 from ..Fusions import models as FModels
 from ..IR import models as IRModels
 
-
 def extract_component_graph(spec: ComponentSplitSpec) -> IRModels.Graph:
     placeholder_specs = {placeholder.name: placeholder for placeholder in spec.placeholders}
     ref_replacements = {
@@ -71,7 +70,6 @@ def extract_component_graph(spec: ComponentSplitSpec) -> IRModels.Graph:
 
     return graph
 
-
 def add_permuted_output_node(
     nodes: list[IRModels.Node],
     source_name: str,
@@ -111,7 +109,6 @@ def add_permuted_output_node(
     )
 
     return name
-
 
 def add_row_limited_output_node(
     nodes: list[IRModels.Node],
@@ -155,7 +152,6 @@ def add_row_limited_output_node(
 
     return name
 
-
 def retarget_chunk_graph_sequence_length(graph: IRModels.Graph, chunk_tokens: int) -> IRModels.Graph:
     source_lengths = chunk_source_lengths(graph)
 
@@ -166,11 +162,9 @@ def retarget_chunk_graph_sequence_length(graph: IRModels.Graph, chunk_tokens: in
     nodes = tuple(retarget_chunk_node(node, source_lengths, chunk_tokens, cache_capacity) for node in graph.nodes)
     return IRModels.rebuild_graph(nodes, graph)
 
-
 def retarget_whisper_decoder_cross_kv_layout(graph: IRModels.Graph) -> IRModels.Graph:
     nodes = tuple(retarget_whisper_decoder_cross_kv_node(node) for node in graph.nodes)
     return IRModels.rebuild_graph(nodes, graph)
-
 
 def retarget_whisper_decoder_cross_kv_node(node: IRModels.Node) -> IRModels.Node:
     attrs = dict(node.attrs)
@@ -210,11 +204,9 @@ def retarget_whisper_decoder_cross_kv_node(node: IRModels.Node) -> IRModels.Node
         cache=cache,
     )
 
-
 def is_whisper_cross_kv_input(node: IRModels.Node) -> bool:
     logical_name = str(node.ir_metadata.get("logical_input") or node.target)
     return logical_name.startswith("cross_k_") or logical_name.startswith("cross_v_")
-
 
 def chunk_source_lengths(graph: IRModels.Graph) -> frozenset[int]:
     lengths: set[int] = set()
@@ -234,7 +226,6 @@ def chunk_source_lengths(graph: IRModels.Graph) -> frozenset[int]:
             lengths.add(shape[1])
 
     return frozenset(lengths)
-
 
 def retarget_chunk_node(
     node: IRModels.Node,
@@ -266,7 +257,6 @@ def retarget_chunk_node(
         cache=node.cache,
     )
 
-
 def retarget_sequence_value(value: Any, source_lengths: frozenset[int], chunk_tokens: int) -> Any:
     if isinstance(value, bool):
         return value
@@ -295,20 +285,17 @@ def retarget_sequence_value(value: Any, source_lengths: frozenset[int], chunk_to
 
     return value
 
-
 def retarget_attr_values(attrs: dict[str, Any], source_lengths: frozenset[int], chunk_tokens: int) -> dict[str, Any]:
     return {
         key: retarget_sequence_value(value, source_lengths, chunk_tokens) if is_sequence_length_attr(key) else value
         for key, value in attrs.items()
     }
 
-
 def tensor_meta_with_shape(meta: Any, shape: list[Any]) -> Any:
     if not isinstance(meta, dict):
         return {"shape": shape}
 
     return {**meta, "shape": shape}
-
 
 def is_dimension_index_attr(key: Any) -> bool:
     return str(key) in {
@@ -321,7 +308,6 @@ def is_dimension_index_attr(key: Any) -> bool:
         "permutation",
         "start_dim",
     }
-
 
 def is_sequence_length_attr(key: Any) -> bool:
     return str(key) in {
@@ -336,14 +322,12 @@ def is_sequence_length_attr(key: Any) -> bool:
         "start",
     }
 
-
 def is_empty_cache_cat_node(node: IRModels.Node) -> bool:
     if node.target not in {"cactus.cat", "aten.cat.default"} or len(node.parents) < 2:
         return False
 
     first_parent = node.parents[0]
     return first_parent.value_kind == FModels.ValueKind.LIFTED_CONSTANT and element_count(tensor_shape(first_parent)) == 0
-
 
 def collect_required_node_names(
     spec: ComponentSplitSpec,
@@ -363,7 +347,6 @@ def collect_required_node_names(
             required.add(placeholder.name)
 
     return frozenset(required)
-
 
 def collect_node_ancestors(
     node_name: str,
@@ -392,7 +375,6 @@ def collect_node_ancestors(
             raise ValueError(f"Component split references missing node {effective_name}")
 
         stack.extend(parent.name for parent in node.parents)
-
 
 def create_placeholder_node(
     spec: ComponentSplitSpec,
@@ -424,14 +406,12 @@ def create_placeholder_node(
         cache=template.cache if template is not None else None,
     )
 
-
 def source_template_node(graph: IRModels.Graph, placeholder: PlaceholderSpec) -> IRModels.Node | None:
     for name in (placeholder.tensor_node, placeholder.source_node, placeholder.name):
         if name is not None and name in graph.nodes_map:
             return graph.nodes_map[name]
 
     return None
-
 
 def clone_component_node(
     spec: ComponentSplitSpec,
@@ -469,7 +449,6 @@ def clone_component_node(
         cache=node.cache,
     )
 
-
 def create_output_node(
     component_name: str,
     output_names: tuple[str, ...],
@@ -491,7 +470,6 @@ def create_output_node(
         attrs={},
         ir_metadata={},
     )
-
 
 def unique_component_node_name(name: str, used_names: set[str]) -> str:
     if name not in used_names:

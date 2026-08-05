@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .naming import NameMatch
+from ..quantization.cq import GROUP_SIZE
 
 
 @dataclass(frozen=True)
@@ -55,11 +56,16 @@ def policy_for_tensor(match: NameMatch, shape: tuple[int, ...], user_bits: int, 
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "non-2d tensor")
     if "position_embedding" in out.lower() or "pos_embed" in out.lower() or "embed_positions" in out.lower():
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "position embedding tensor")
+    output_head_or_tied_embedding = out in {"token_embeddings.weights", "decoder_token_embeddings.weights", "output_weight.weights"}
+    if component != "embedding" and not output_head_or_tied_embedding and int(shape[1]) % GROUP_SIZE != 0:
+        return TensorPolicy(
+            "fallback", "FP16", None, component, False, "none",
+            f"input width is not aligned to CQ group size {GROUP_SIZE}",
+        )
     if family == "gemma4" and name == "model.language_model.embed_tokens_per_layer.weight":
         return TensorPolicy("convert", f"CQ{user_bits}", user_bits, component, False, "hadamard")
     if family == "gemma4" and component in {"audio", "vision"}:
         return TensorPolicy("fallback", "FP16", None, component, False, "none", "gemma4 media tower accuracy")
-    output_head_or_tied_embedding = out in {"token_embeddings.weights", "decoder_token_embeddings.weights", "output_weight.weights"}
     if component == "embedding" or output_head_or_tied_embedding:
         use_interleaved = (
             output_head_or_tied_embedding

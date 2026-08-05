@@ -1,4 +1,5 @@
 import json
+import math
 import sys
 import tempfile
 import unittest
@@ -11,13 +12,177 @@ from cactus.transpiler.Converter import models as CModels
 from cactus.transpiler.Converter import input_processor
 from cactus.transpiler.IR import models as IRModels
 from cactus.transpiler.IR import simplify_ir, special_fusions
+from cactus.transpiler.Generator import lowering_utils
+from cactus.transpiler.Generator import lowering_basic_ops
 from cactus.transpiler.ModelProfiles.profiles import GENERIC_TEXT_PROFILE
+from cactus.cli import transpiler as cli_transpiler
+from cactus.cli import convert as cli_convert
+from cactus.cli import create_parser
 
 
 class TestTranspilerReporting(unittest.TestCase):
 
+    def test_nonfinite_attention_mask_constants_survive_ir_json_roundtrip(self):
+        record = CModels.LayerRecord(
+            index=0,
+            name="mask_value",
+            node_type="call_function",
+            target="aten.scalar_tensor.default",
+            args=CModels.jsonable((-math.inf,)),
+            kwargs={},
+            users=[],
+            tensor_output_meta={"shape": [], "dtype": "torch.float16"},
+            module_stack=None,
+        )
+        layer_map = CModels.LayerMap(
+            model_name="mask-test",
+            task="prefill_no_cache",
+            graph_signature="",
+            range_constants="",
+            nodes=[record],
+        )
+
+        restored = CModels.LayerMap.model_validate_json(layer_map.model_dump_json())
+        graph = IRModels.Graph.from_map(restored)
+
+        self.assertEqual(restored.nodes[0].args, ["-Infinity"])
+        value = lowering_utils.numeric_attr(graph.nodes[0], "arg_0")
+        self.assertTrue(math.isinf(value))
+        self.assertLess(value, 0)
+
+    def test_float32_cast_before_pow_is_not_elided(self):
+        source = mock.Mock(
+            tensor_output_meta={"shape": [1, 8], "dtype": "torch.float16"},
+        )
+        power = mock.Mock(target="cactus.pow")
+        cast = mock.Mock(parents=[source], children=[power])
+
+        self.assertFalse(lowering_basic_ops.can_skip_float32_copy(cast))
+
     def test_generic_text_profile_uses_processor_input(self):
         self.assertEqual(GENERIC_TEXT_PROFILE.input_strategy, "processor")
+
+    def test_registered_model_uses_exact_profile_without_generic_guessing(self):
+        resolved = cli_transpiler.resolve_transpile_config("google/gemma-4-E2B-it")
+
+        self.assertEqual(resolved.profile_source, "registered")
+        self.assertEqual(resolved.profile.model_profiles, "gemma4_e2b_it")
+        self.assertEqual(resolved.modalities, ("text", "vision", "audio"))
+
+    def test_optimized_model_variants_are_explicitly_registered(self):
+        expected = {
+            "openai/whisper-small": "whisper",
+            "LiquidAI/LFM2-VL-450M": "lfm_vlm",
+            "LiquidAI/LFM2-VL-3B": "lfm_vlm",
+        }
+        for model_id, profile_name in expected.items():
+            with self.subTest(model_id=model_id):
+                resolved = cli_transpiler.resolve_transpile_config(model_id)
+                self.assertEqual(resolved.profile_source, "registered")
+                self.assertEqual(resolved.profile.model_profiles, profile_name)
+
+    def test_registered_model_rejects_generic_only_flags(self):
+        with self.assertRaisesRegex(RuntimeError, "registered optimized profile"):
+            cli_transpiler.resolve_transpile_config(
+                "openai/whisper-tiny", input_modalities="audio,text",
+            )
+
+    def test_unknown_model_uses_only_explicit_generic_contract(self):
+        resolved = cli_transpiler.resolve_transpile_config(
+            "example/name-contains-whisper-vision-but-is-not-registered",
+            input_modalities="text,vision",
+            generic_task="causal-lm",
+            cache_style="dynamic-kv",
+            fusion_groups="generic,linear,attention",
+        )
+
+        self.assertEqual(resolved.profile_source, "generic")
+        self.assertEqual(resolved.modalities, ("text", "vision"))
+        self.assertEqual(resolved.profile.load_strategy, "image_text_to_text")
+        self.assertEqual(
+            resolved.profile.fusion_fields,
+            ("generic", "linear", "attention", "generic_cached_attention"),
+        )
+
+    def test_unknown_model_defaults_to_generic_text_no_cache(self):
+        resolved = cli_transpiler.resolve_transpile_config("example/completely-unknown")
+
+        self.assertEqual(resolved.profile_source, "generic")
+        self.assertEqual(resolved.generic_task, "causal-lm")
+        self.assertEqual(resolved.cache_style, "none")
+        self.assertEqual(resolved.modalities, ("text",))
+        self.assertEqual(resolved.profile.cache_contract.max_cache_sequence_length, 0)
+        self.assertEqual(resolved.inference_modes, ("prefill_no_cache",))
+        self.assertEqual(resolved.profile.cache_policy, ("no_cache_full_context",))
+
+    def test_unknown_text_model_can_select_full_context_no_cache_fallback(self):
+        resolved = cli_transpiler.resolve_transpile_config(
+            "example/completely-unknown",
+            input_modalities="text",
+            generic_task="causal-lm",
+            cache_style="none",
+        )
+
+        self.assertEqual(resolved.profile_source, "generic")
+        self.assertEqual(resolved.cache_style, "none")
+        self.assertEqual(resolved.inference_modes, ("prefill_no_cache",))
+        self.assertEqual(resolved.profile.cache_type, ())
+        self.assertEqual(resolved.profile.cache_contract.max_cache_sequence_length, 0)
+        self.assertEqual(resolved.profile.runtime_contract.states, ())
+        self.assertEqual(resolved.profile.runtime_contract.execution_strategy, "full_context_recompute")
+        self.assertNotIn("generic_cached_attention", resolved.profile.fusion_fields)
+
+    def test_full_context_no_cache_input_is_padded_with_inactive_mask(self):
+        input_ = CModels.Input(
+            args=(),
+            kwargs={
+                "input_ids": CModels.torch.tensor([[4, 5, 6]], dtype=CModels.torch.long),
+                "attention_mask": CModels.torch.ones((1, 3), dtype=CModels.torch.long),
+            },
+            modalities=("text",),
+            inference_mode="prefill_no_cache",
+        )
+
+        padded = CModels.pad_no_cache_full_context_input(input_, CModels.Input, capacity=8)
+
+        self.assertEqual(tuple(padded.kwargs["input_ids"].shape), (1, 8))
+        self.assertEqual(padded.kwargs["input_ids"].tolist(), [[4, 5, 6, 0, 0, 0, 0, 0]])
+        self.assertEqual(padded.kwargs["attention_mask"].tolist(), [[1, 1, 1, 0, 0, 0, 0, 0]])
+
+    def test_convert_reports_invalid_generic_contract_without_converting_weights(self):
+        args = mock.Mock(
+            model_id="example/unknown",
+            output_dir="/tmp/unused-cactus-test-output",
+            lora=None,
+            bits=4,
+            token=None,
+            reconvert=False,
+            weights_only=False,
+            input_modalities="text",
+            generic_task="speech-seq2seq",
+            cache_style="encoder-decoder-kv",
+            fusion_groups=None,
+        )
+        with mock.patch("cactus.cli.model.ensure_weights") as ensure_weights:
+            result = cli_convert.cmd_convert(args)
+
+        self.assertEqual(result, 1)
+        ensure_weights.assert_not_called()
+
+    def test_convert_cli_accepts_generic_contract_flags_and_legacy_modality_alias(self):
+        parser = create_parser()
+        args = parser.parse_args([
+            "convert", "example/unknown",
+            "--input-modalities", "audio,text",
+            "--task", "speech-seq2seq",
+            "--cache", "encoder-decoder-kv",
+            "--fusion-groups", "generic,attention",
+        ])
+
+        self.assertEqual(args.input_modalities, "audio,text")
+        self.assertEqual(args.generic_task, "speech-seq2seq")
+        self.assertEqual(args.cache_style, "encoder-decoder-kv")
+        self.assertEqual(args.fusion_groups, "generic,attention")
 
     def test_processor_inputs_only_load_requested_modality_assets(self):
         processor = mock.Mock(return_value={
@@ -212,13 +377,14 @@ class TestTranspilerReporting(unittest.TestCase):
                 record(5, "key_cat", "cactus.cat", [{"node": "past_key_values_0"}, {"node": "key_new"}], kv_all),
                 record(6, "value_cat", "cactus.cat", [{"node": "past_key_values_1"}, {"node": "value_new"}], kv_all),
                 record(7, "key_expand", "cactus.expand", [{"node": "key_cat"}], [1, 4, 6, 8]),
-                record(8, "qk", "aten.bmm.default", [{"node": "query"}, {"node": "key_expand"}], [4, 1, 6]),
-                record(9, "softmax", "cactus.softmax", [{"node": "qk"}], [1, 4, 1, 6], {"axis": -1}),
-                record(10, "value_expand", "cactus.expand", [{"node": "value_cat"}], [1, 4, 6, 8]),
-                record(11, "value_bmm", "aten.bmm.default", [{"node": "softmax"}, {"node": "value_expand"}], [4, 1, 8]),
-                record(12, "attention_out", "cactus.view", [{"node": "value_bmm"}], q),
+                record(8, "query_scaled", "cactus.scalar_multiply", [{"node": "query"}], q, {"value": 0.5}),
+                record(9, "qk", "aten.bmm.default", [{"node": "query_scaled"}, {"node": "key_expand"}], [4, 1, 6]),
+                record(10, "softmax", "cactus.softmax", [{"node": "qk"}], [1, 4, 1, 6], {"axis": -1}),
+                record(11, "value_expand", "cactus.expand", [{"node": "value_cat"}], [1, 4, 6, 8]),
+                record(12, "value_bmm", "aten.bmm.default", [{"node": "softmax"}, {"node": "value_expand"}], [4, 1, 8]),
+                record(13, "attention_out", "cactus.view", [{"node": "value_bmm"}], q),
                 CModels.LayerRecord(
-                    index=13, name="output", node_type="output", target="output",
+                    index=14, name="output", node_type="output", target="output",
                     args=[[{"node": "attention_out"}, {"node": "key_cat"}, {"node": "value_cat"}]],
                     kwargs={}, users=[], tensor_output_meta=None, module_stack=None,
                 ),
@@ -226,7 +392,8 @@ class TestTranspilerReporting(unittest.TestCase):
         )
 
         simplified = simplify_ir.simplify(
-            layer_map, fusion_fields=("generic", "attention", "cache"),
+            layer_map,
+            fusion_fields=("generic", "attention", "cache", "generic_cached_attention"),
         )
         cached = [node for node in simplified.nodes if node.target == "cactus.attention_cached"]
 
@@ -235,6 +402,7 @@ class TestTranspilerReporting(unittest.TestCase):
             [item["node"] for item in cached[0].args],
             ["query", "key_new", "value_new", "past_key_values_0", "past_key_values_1"],
         )
+        self.assertEqual(cached[0].kwargs["scale"], 0.5)
 
     def test_noop_cleanup_exposes_fusion_in_same_simplify_call(self):
         tensor_meta = {"shape": [1, 8], "dtype": "torch.float16"}
