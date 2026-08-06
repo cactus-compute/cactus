@@ -15,8 +15,8 @@ set(ENGINE_SOURCES
     src/sp.cpp
     src/constraints.cpp
     src/model.cpp
-    src/kv_compress.cpp
     src/model_npu.cpp
+    src/kv_compress.cpp
     src/engine_image.cpp
     src/index.cpp
     src/index_ffi.cpp
@@ -39,7 +39,6 @@ if(APPLE)
 else()
     list(APPEND ENGINE_SOURCES src/npu.cpp)
 endif()
-
 add_library(cactus_engine STATIC ${ENGINE_SOURCES})
 set_target_properties(cactus_engine PROPERTIES
     POSITION_INDEPENDENT_CODE ON
@@ -48,15 +47,15 @@ set_target_properties(cactus_engine PROPERTIES
 
 target_include_directories(cactus_engine
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+           ${CMAKE_CURRENT_SOURCE_DIR}/libs
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-            ${CMAKE_CURRENT_SOURCE_DIR}/libs
 )
 
 target_link_libraries(cactus_engine PUBLIC cactus_graph)
 
 if(APPLE)
     target_link_libraries(cactus_engine PUBLIC
-        "-framework CoreML" "-framework Foundation"
+        "-framework CoreML" "-framework Foundation" "-framework Metal" "-framework MetalPerformanceShaders"
         "-framework Security" "-framework SystemConfiguration" "-framework CFNetwork"
     )
 
@@ -157,7 +156,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
             target_link_libraries(cactus_engine_shared PRIVATE "${_curl}")
         endif()
         target_link_libraries(cactus_engine_shared PRIVATE
-            "-framework Accelerate" "-framework CoreML" "-framework Foundation"
+            "-framework Accelerate" "-framework CoreML" "-framework Foundation" "-framework Metal" "-framework MetalPerformanceShaders"
             "-framework Security" "-framework SystemConfiguration" "-framework CFNetwork"
         )
     else()

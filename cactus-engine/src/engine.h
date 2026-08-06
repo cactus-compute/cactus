@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <random>
 #include <string>
 #include <map>
 #include <unordered_map>
@@ -30,15 +31,13 @@ class NPUEncoder {
 public:
     virtual ~NPUEncoder() = default;
     virtual bool load(const std::string& model_path, const std::string& compute_units = "") = 0;
-    virtual bool preallocate(
-        const std::vector<int>& input_shape,
-        const std::string& input_name = "x",
-        const std::string& output_name = "") = 0;
-    virtual size_t encode(
-        const __fp16* input, __fp16* output,
-        const std::vector<int>& shape,
-        const std::string& input_name = "x",
-        const std::string& output_name = "") = 0;
+    virtual bool preallocate(const std::vector<int>& input_shape,
+                             const std::string& input_name = "x",
+                             const std::string& output_name = "") = 0;
+    virtual size_t encode(const __fp16* input, __fp16* output,
+                          const std::vector<int>& shape,
+                          const std::string& input_name = "x",
+                          const std::string& output_name = "") = 0;
     virtual bool is_available() const = 0;
     virtual std::vector<int> get_input_shape() const = 0;
     virtual std::vector<int> get_output_shape() const = 0;
@@ -46,10 +45,9 @@ public:
     virtual std::vector<int> get_input_shape_for(const std::string&) const { return {}; }
     virtual __fp16* get_output_buffer() = 0;
     virtual size_t get_output_buffer_size() const = 0;
-    virtual size_t encode_multimodal_input(
-        const std::vector<NPUNamedInput>& inputs,
-        __fp16* output,
-        const std::string& output_name = "") = 0;
+    virtual size_t encode_multimodal_input(const std::vector<NPUNamedInput>& inputs,
+                                            __fp16* output,
+                                            const std::string& output_name = "") = 0;
 };
 
 std::unique_ptr<NPUEncoder> create_encoder();
@@ -167,9 +165,6 @@ struct Config {
     enum class Activation {GELU = 0, SILU = 1};
     Activation activation = Activation::SILU;
 
-    enum class Backend {CPU = 0, NPU = 1};
-    Backend default_backend = Backend::CPU;
-
     enum class Precision {INT8 = 0, FP16 = 1, FP32 = 2};
     Precision precision = Precision::FP32;
 
@@ -285,6 +280,7 @@ struct ChatMessage {
 struct ToolConstraintSpec {
     std::string name;
     std::vector<std::string> parameter_names;
+    std::vector<std::vector<std::string>> parameter_enums;
     std::vector<std::string> required_parameter_names;
 };
 
@@ -569,9 +565,8 @@ public:
         DONE,
         GEMMA_START,
         GEMMA_EXPECT_CALL,
-        GEMMA_IN_FUNC_NAME,
-        GEMMA_EXPECT_BRACE,
-        GEMMA_IN_ARGUMENTS,
+        GEMMA_NAME,
+        GEMMA_ARGS,
         GEMMA_EXPECT_END,
         NEEDLE_START
     };
@@ -581,6 +576,7 @@ public:
               Tokenizer* tokenizer);
 
     const std::unordered_map<uint32_t, float>& get_bias() const { return current_bias_; }
+    const std::vector<float>* get_dense_bias() const { return dense_ready_ ? &dense_bias_ : nullptr; }
 
     void update(uint32_t token_id, const std::string& decoded_text);
 
@@ -589,16 +585,19 @@ public:
     bool is_active() const { return active_; }
 
 private:
+    enum class Region { FREE, IN_NAME, IN_ARG_KEY };
+    struct TrieNode {
+        std::unordered_map<char, std::unique_ptr<TrieNode>> children;
+        bool is_terminal = false;
+    };
+
     bool active_ = false;
     State state_ = State::GEMMA_START;
     Config::ModelType model_type_ = Config::ModelType::GEMMA4;
     Tokenizer* tokenizer_ = nullptr;
 
     std::vector<ToolConstraintSpec> tool_specs_;
-    std::vector<std::string> function_names_;
     std::string generated_text_;
-    int brace_depth_ = 0;
-    bool in_argument_string_ = false;
 
     std::string call_start_tag_;
     std::string call_end_tag_;
@@ -607,65 +606,67 @@ private:
     std::vector<uint32_t> call_end_sequence_;
     size_t forced_tag_progress_ = 0;
 
-    std::unordered_set<uint32_t> all_func_name_tokens_;
-    std::unordered_map<std::string, std::vector<uint32_t>> func_name_sequences_;
-
     std::unordered_set<uint32_t> gemma_call_start_tokens_;
     std::unordered_set<uint32_t> gemma_call_end_tokens_;
     std::unordered_set<uint32_t> gemma_response_start_tokens_;
     std::unordered_set<uint32_t> gemma_call_prefix_tokens_;
-    std::unordered_set<uint32_t> escape_tokens_;
 
     std::unordered_set<uint32_t> backtick_tokens_;
     std::unordered_set<uint32_t> open_brace_tokens_;
     std::unordered_set<uint32_t> close_brace_tokens_;
-    std::unordered_set<uint32_t> colon_tokens_;
-    std::unordered_set<uint32_t> comma_tokens_;
 
     std::unordered_map<uint32_t, float> current_bias_;
+    std::vector<float> dense_bias_;
+    bool dense_ready_ = false;
 
     void compute_bias();
     void tokenize_grammar_elements();
     void add_tokens_for_string(const std::string& str, std::unordered_set<uint32_t>& token_set);
-    void add_tokens_for_prefix_string(const std::string& prefix, std::unordered_set<uint32_t>& token_set);
     void advance_forced_tag(const std::vector<uint32_t>& sequence, uint32_t token_id);
-    void tokenize_function_names(bool quote_names);
     void init_common_tokens();
 
     bool is_needle() const { return model_type_ == Config::ModelType::NEEDLE; }
-    enum class NeedleJsonState {
-        FREE,
-        IN_NAME,
-        IN_ARG_KEY
-    };
-    struct NeedleTrieNode {
-        std::unordered_map<char, std::unique_ptr<NeedleTrieNode>> children;
-        bool is_terminal = false;
-    };
 
-    NeedleJsonState needle_json_state_ = NeedleJsonState::FREE;
-    std::string needle_buffer_;
-    std::string needle_constrained_buf_;
-    std::string needle_current_function_;
-    bool needle_in_arguments_ = false;
-    int needle_arguments_depth_ = 0;
-    int needle_nesting_depth_ = 0;
-    bool needle_in_string_value_ = false;
-    bool needle_prev_char_escape_ = false;
-    std::unique_ptr<NeedleTrieNode> needle_name_trie_;
-    std::unordered_map<std::string, std::unique_ptr<NeedleTrieNode>> needle_param_tries_;
-    std::vector<std::string> needle_token_strings_;
-    std::unordered_map<char, std::vector<uint32_t>> needle_token_index_;
+    Region region_ = Region::FREE;
+    std::string constraint_buffer_;
+    std::string constrained_buf_;
+    std::string current_function_;
+    bool in_arguments_ = false;
+    int arguments_depth_ = 0;
+    int nesting_depth_ = 0;
+    bool in_string_value_ = false;
+    bool prev_char_escape_ = false;
+    bool at_key_start_ = false;
+    bool await_enum_open_ = false;
+    const TrieNode* active_enum_trie_ = nullptr;
+    std::unordered_set<std::string> emitted_keys_;
+    std::unique_ptr<TrieNode> name_trie_;
+    std::unordered_map<std::string, std::unique_ptr<TrieNode>> param_tries_;
+    std::unordered_map<std::string, std::unordered_map<std::string, std::unique_ptr<TrieNode>>> enum_tries_;
+    std::unique_ptr<TrieNode> remaining_key_trie_;
+    std::vector<std::string> token_strings_;
+    std::unordered_map<char, std::vector<uint32_t>> token_index_;
+    uint32_t escape_tag_token_ = 0;
+    bool escape_tag_valid_ = false;
 
-    void init_needle_constraints();
-    void reset_needle_constraints();
+    void build_constraint_tables();
+    void reset_constraint_state();
+    void trie_insert(TrieNode* root, const std::string& word);
+    const TrieNode* trie_seek(const TrieNode* root, const std::string& prefix) const;
+    bool trie_token_valid(const std::string& token_text, const TrieNode* node, char terminator) const;
+    void mark_trie_bias(const TrieNode* node, char terminator, const std::vector<char>& extra_allowed,
+                        int32_t terminal_token = -1, bool exact_terminator = false);
+    const TrieNode* current_param_trie() const;
+    void rebuild_remaining_keys();
+    bool required_satisfied() const;
+
     void feed_needle_text(const std::string& text);
     void feed_needle_char(char ch);
     bool needle_at_arg_key_start() const;
     bool needle_is_value_string_start() const;
-    void needle_insert_word(NeedleTrieNode* root, const std::string& word);
-    const NeedleTrieNode* needle_get_trie_node(const NeedleTrieNode* root, const std::string& prefix) const;
-    bool needle_check_token_valid(const std::string& token_text, const NeedleTrieNode* trie_node) const;
+
+    void feed_gemma_text(const std::string& text);
+    void feed_gemma_char(char ch);
 };
 
 class Model {
@@ -685,13 +686,18 @@ public:
     uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
                     size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                     float min_p = 0.15f, float repetition_penalty = 1.1f);
+    void set_sample_seed(uint64_t seed) { sample_rng_.seed(static_cast<std::mt19937::result_type>(seed)); }
     bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token,
                                         float* out_uncertainty = nullptr);
 
     std::vector<std::vector<uint32_t>> decode_batch(const std::vector<uint32_t>& seed_tokens,
                                                     size_t max_new_tokens);
     std::vector<std::vector<uint32_t>> generate_batch(const std::vector<std::vector<uint32_t>>& prompts,
-                                                      size_t max_new_tokens);
+                                                      size_t max_new_tokens, bool stop_on_eos = false);
+
+    bool supports_dynamic_batch();
+    void set_decode_slots(size_t num_slots);
+    std::vector<uint32_t> batch_stop_token_ids() const;
 
     void prefill(const std::vector<uint32_t>& tokens, size_t chunk_size = 128, const std::string& profile_file = "",
                  bool prepare_decode = true);
@@ -787,10 +793,8 @@ public:
 
     bool load_npu_audio_encoder(const std::string& model_path, const std::string& compute_units = "");
     bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
-
     bool load_npu_vision_encoder(const std::string& model_path);
     bool has_npu_vision_encoder() const { return npu_vision_encoder_ != nullptr; }
-
     bool load_npu_source_encoder(const std::string& model_path);
 
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
@@ -937,7 +941,7 @@ private:
     size_t runtime_state_store_byte_size() const;
     void write_runtime_profile() const;
     bool bind_runtime_buffers(Component& comp);
-    void run_step(uint32_t token_id, size_t position, bool read_logits);
+    void run_step(uint32_t token_id, size_t position, bool read_logits, bool use_fused = true);
     void run_step_batch(const std::vector<uint32_t>& token_ids, const std::vector<size_t>& positions);
     void set_component_batch(Component& comp, size_t batch);
     size_t decoder_cache_num_slots();
@@ -987,6 +991,9 @@ private:
                                size_t chunk_tokens, const std::vector<uint32_t>& tokens,
                                size_t processed, size_t start_position);
     void run_full_context_text();
+    void prepare_sampling_context(float repetition_penalty);
+    uint32_t sample_component_logits(Component& comp, float temperature, float top_p, size_t top_k,
+                                     float min_p, bool greedy, float* out_uncertainty);
     uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max(),
                                      float* out_uncertainty = nullptr, float repetition_penalty = 1.0f);
     uint32_t argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty,
@@ -1007,8 +1014,9 @@ private:
     void encode_lfm2_vl_image_into_features(const std::string& image_path);
     bool load_lfm2_vl_position_grid();
     bool lfm2_vl_use_npu_vision() const;
-    bool lfm2_vl_encode_tile_npu(const float* pixel_values, const int64_t* mask, const float* pos_embeds,
-                                 size_t max_patches, int dim, size_t patch_dim, std::vector<float>& enc_out);
+    bool lfm2_vl_encode_tile_npu(const float* pixel_values, const int64_t* mask,
+                                 const float* pos_embeds, size_t max_patches, int dim,
+                                 size_t patch_dim, std::vector<float>& enc_out);
     void run_audio_encoder(const std::vector<float>& audio_features);
     void run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message);
     bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
@@ -1143,6 +1151,14 @@ private:
     static constexpr size_t MAX_TOKEN_HISTORY = 128;
     std::vector<uint32_t> token_history_;
     std::unordered_set<uint32_t> token_history_set_;
+    std::vector<uint32_t> samp_recent_;
+    std::vector<float> samp_bias_dense_;
+    bool samp_has_bias_ = false;
+    float samp_penalty_ = 1.0f;
+    bool samp_ctx_active_ = false;
+    std::mt19937 sample_rng_{std::random_device{}()};
+    FusedEmbedCtx fused_embed_ctx_;
+    int ple_probe_state_ = 0;
 
     ToolCallConstrainer tool_constrainer_;
     std::unordered_map<uint32_t, float> vocab_bias_;

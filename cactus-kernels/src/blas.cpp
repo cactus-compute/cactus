@@ -331,6 +331,15 @@ void cactus_concat_f16(const __fp16* input1, const __fp16* input2, __fp16* outpu
     size_t axis_size1 = shape1[axis];
     size_t axis_size2 = shape2[axis];
 
+    size_t outer_size1 = 1;
+    size_t outer_size2 = 1;
+    for (size_t i = 0; i < static_cast<size_t>(axis); ++i) {
+        outer_size1 *= shape1[i];
+        outer_size2 *= shape2[i];
+    }
+    if (outer_size1 == 0) outer_size1 = 1;
+    if (outer_size2 == 0) outer_size2 = 1;
+
     size_t input1_stride = axis_size1 * inner_size;
     size_t input2_stride = axis_size2 * inner_size;
     size_t output_stride = (axis_size1 + axis_size2) * inner_size;
@@ -338,8 +347,8 @@ void cactus_concat_f16(const __fp16* input1, const __fp16* input2, __fp16* outpu
     CactusThreading::parallel_for(outer_size, CactusThreading::Thresholds::ELEMENT_WISE,
         [&](size_t start, size_t end) {
             for (size_t outer = start; outer < end; ++outer) {
-                const __fp16* in1_ptr = input1 + outer * input1_stride;
-                const __fp16* in2_ptr = input2 + outer * input2_stride;
+                const __fp16* in1_ptr = input1 + (outer % outer_size1) * input1_stride;
+                const __fp16* in2_ptr = input2 + (outer % outer_size2) * input2_stride;
                 __fp16* out_ptr = output + outer * output_stride;
 
                 size_t copy_size1 = axis_size1 * inner_size;
@@ -365,6 +374,14 @@ void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_
         inner_size *= output_shape[i];
     }
 
+    std::vector<size_t> input_outer(num_inputs, 1);
+    for (size_t input_idx = 0; input_idx < num_inputs; ++input_idx) {
+        for (size_t i = 0; i < static_cast<size_t>(axis); ++i) {
+            input_outer[input_idx] *= input_shapes[input_idx][i];
+        }
+        if (input_outer[input_idx] == 0) input_outer[input_idx] = 1;
+    }
+
     CactusThreading::parallel_for(outer_size, CactusThreading::Thresholds::ELEMENT_WISE,
         [&](size_t start, size_t end) {
             for (size_t outer = start; outer < end; ++outer) {
@@ -372,7 +389,8 @@ void cactus_cat_f16(const __fp16** inputs, __fp16* output, const size_t** input_
                 size_t offset = 0;
 
                 for (size_t input_idx = 0; input_idx < num_inputs; ++input_idx) {
-                    const __fp16* in_ptr = inputs[input_idx] + outer * inner_size * input_shapes[input_idx][axis];
+                    size_t src_outer = outer % input_outer[input_idx];
+                    const __fp16* in_ptr = inputs[input_idx] + src_outer * inner_size * input_shapes[input_idx][axis];
                     size_t copy_size = input_shapes[input_idx][axis] * inner_size;
                     std::memcpy(out_ptr + offset, in_ptr, copy_size * sizeof(__fp16));
                     offset += copy_size;

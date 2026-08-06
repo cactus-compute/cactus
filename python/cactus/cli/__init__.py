@@ -8,27 +8,23 @@ from .common import (
     DEFAULT_TRANSCRIPTION_MODEL_ID,
     DEFAULT_TEST_MODEL_ID,
     DEFAULT_TEST_TRANSCRIPTION_MODEL_ID,
-    SUPPORTED_PLATFORMS,
 )
 from .download import cmd_download
-
-_PLATFORM_CHOICES = ("auto", "cpu", *SUPPORTED_PLATFORMS)
-_PLATFORM_HELP = (
-    f"target platform: auto = best for this host, e.g. apple on macOS (default); "
-    f"cpu = generic ARM; "
-    f"or one of: {', '.join(SUPPORTED_PLATFORMS) if SUPPORTED_PLATFORMS else '(none yet)'}"
-)
-_PLATFORM_PIPE = "|".join(_PLATFORM_CHOICES)
 from .compile import cmd_build
 from .serve import cmd_serve
 from .transcribe import cmd_transcribe
-from .test import cmd_test, COMPONENTS
+from .test import cmd_test, cmd_benchmark, COMPONENTS
 from .convert import cmd_convert
+from .upload import cmd_upload
 from .run import cmd_run
 from .list import cmd_list
 
 from .auth import cmd_auth
 from .clean import cmd_clean
+from .code import cmd_code
+from .utils import bits_arg, ALLOWED_BITS
+
+_BITS_METAVAR = "{" + ",".join(str(b) for b in ALLOWED_BITS) + "}"
 
 
 def _telemetry_parent():
@@ -39,16 +35,36 @@ def _telemetry_parent():
     return p
 
 
-def _build_parent():
+def _build_parent(mixed: bool = True):
     """Bundle-fetch flags shared by every command that prepares a model."""
     p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
-                   help="CQ quantization (default: 4)")
-    p.add_argument("--platform", choices=_PLATFORM_CHOICES, default="auto",
-                   help=_PLATFORM_HELP)
+    if mixed:
+        p.add_argument("--bits", type=bits_arg, default=4, metavar=_BITS_METAVAR,
+                       help="CQ quantization: uniform 1-4 or gemma-4 mixed 3.26/2.54 (default: 4)")
+    else:
+        p.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
+                       help="CQ quantization (default: 4)")
     p.add_argument("--token", help="HuggingFace token")
     p.add_argument("--reconvert", action="store_true",
                    help="Refresh the cached bundle or weights")
+    return p
+
+
+def _engine_test_parent():
+    """Args shared by `test` and `benchmark`."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--backend", choices=["cpu", "metal"], default=None,
+                   help="Inference backend (default: auto)")
+    p.add_argument("--model", dest="model_id", default=None,
+                   type=_hf_id_or_path,
+                   help=f"HF model ID under test (default: {DEFAULT_TEST_MODEL_ID})")
+    p.add_argument("--transcription-model", dest="transcription_model_id", default=None,
+                   type=_hf_id_or_path,
+                   help=f"HF transcription model ID under test (default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID})")
+    p.add_argument("--android", action="store_true", help="Run tests on Android")
+    p.add_argument("--ios", action="store_true", help="Run tests on iOS")
+    p.add_argument("--enable-telemetry", action="store_true",
+                   help="Enable cloud telemetry (disabled by default in tests)")
     return p
 
 
@@ -57,6 +73,12 @@ def _positive_int(value):
     if n <= 0:
         raise argparse.ArgumentTypeError(f"must be > 0, got {n}")
     return n
+
+
+class _ConvertTaskAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "generic_task", values if values in {"causal-lm", "speech-seq2seq"} else None)
 
 
 def _non_negative_int(value):
@@ -112,8 +134,7 @@ def create_parser():
     --clear                            remove saved key
 
   cactus run [model|path]              run a model (default: {DEFAULT_MODEL_ID})
-    --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --image <path>                     image file for VLM inference
     --audio <path>                     audio file for audio chat
     --system <prompt>                  system prompt
@@ -125,14 +146,12 @@ def create_parser():
   cactus transcribe [model]            live microphone transcription with a model
     --file <audio.wav>                 audio file to transcribe (WAV)
     --language <code>                  language code (default: en)
-    --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        refresh cached bundle
 
   cactus download [model]              fetch a prebuilt bundle (default: {DEFAULT_MODEL_ID})
     --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        refresh cached bundle
 
@@ -146,8 +165,7 @@ def create_parser():
   cactus serve [model]                 OpenAI-compatible local HTTP server
     --host <addr>                      bind address (default: 127.0.0.1)
     --port <port>                      port (default: 8080)
-    --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        refresh cached bundle
     --no-cloud-handoff                 disable automatic cloud handoff
@@ -166,8 +184,7 @@ def create_parser():
                                        (default: all)
     --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
     --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
-    --bits 1|2|3|4                     CQ quantization (default: 4)
-    --platform {_PLATFORM_PIPE:<22}  target platform (default: auto)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        refresh cached test bundles
     --suite <name>                     run a single test suite from any
@@ -176,6 +193,14 @@ def create_parser():
     --ios                              run on connected iPhone
     --android                          run on connected Android
     --enable-telemetry                 send cloud telemetry (off by default)
+
+  cactus benchmark                     run the engine benchmark suite
+    --model <hf-id>                    default: {DEFAULT_TEST_MODEL_ID}
+    --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
+    --backend cpu|metal                inference backend (default: auto)
+    --ios                              run on connected iPhone
+    --android                          run on connected Android
 
   cactus clean                         delete build artifacts, weights, venv
 
@@ -236,6 +261,10 @@ def create_parser():
                             help="System prompt to prepend to all messages")
     run_parser.add_argument("--prompt",
                             help="Initial prompt to send immediately")
+    run_parser.add_argument("--tools", default=None,
+                            help="Tool definitions in the OpenAI function-calling format, as a JSON "
+                                 "array or a path to a JSON file (tool-call models like needle "
+                                 "default to a demo toolset)")
     run_parser.add_argument("--input-ids", default=None,
                             help="Comma-separated token ids for causal-LM bundles")
     run_parser.add_argument("--input-ids-file", default=None,
@@ -252,6 +281,8 @@ def create_parser():
                             help="Confidence threshold below which local completions may hand off to cloud")
     run_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                             help="Maximum time to wait for cloud handoff before falling back locally")
+    run_parser.add_argument("--backend", choices=["cpu", "metal"], default=None,
+                            help="Inference backend (default: auto)")
 
     transcribe_parser = subparsers.add_parser("transcribe", help="Transcribe audio with a model",
                                               parents=[_telemetry_parent(), _build_parent()])
@@ -278,25 +309,43 @@ def create_parser():
                               help="Confidence threshold below which completions hand off to cloud (1.0 forces cloud handoff)")
     serve_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
                               help="Maximum time to wait for cloud handoff before falling back locally")
+    serve_parser.add_argument("--no-access-log", action="store_true",
+                              help="Disable per-request HTTP access logging")
+    serve_parser.add_argument("--backend", choices=["cpu", "metal"], default=None,
+                              help="Inference backend (default: auto)")
+
+    code_parser = subparsers.add_parser("code", help="Run the Cactus coding agent (TUI / print mode)",
+                                        parents=[_build_parent()])
+    code_parser.add_argument("--serve-model", default=None,
+                             help="If no server is running, start `cactus serve` with this model")
+    code_parser.add_argument("--host", default="127.0.0.1",
+                             help="Server bind address to use/start (default: 127.0.0.1)")
+    code_parser.add_argument("--port", type=_port_int, default=8080,
+                             help="Server port to use/start (default: 8080)")
+    code_parser.add_argument("--no-serve", action="store_true",
+                             help="Do not auto-start a server; require one to already be running")
+    code_parser.add_argument("--no-cloud-handoff", action="store_true",
+                             help="Disable automatic cloud handoff on the auto-started server")
+    code_parser.add_argument("--confidence-threshold", type=_unit_float, default=None,
+                             help="Confidence threshold below which completions hand off to cloud")
+    code_parser.add_argument("--cloud-timeout-ms", type=_non_negative_int, default=None,
+                             help="Maximum time to wait for cloud handoff before falling back locally")
+    code_parser.add_argument("--backend", choices=["cpu", "metal"], default=None,
+                             help="Inference backend (default: auto)")
+    code_parser.add_argument("agent_args", nargs=argparse.REMAINDER,
+                             help="Arguments passed through to the coding agent (prefix with -- )")
 
     test_parser = subparsers.add_parser("test", help="Run the test suite",
-                                        parents=[_build_parent()])
+                                        parents=[_build_parent(), _engine_test_parent()])
     test_parser.add_argument("--component", choices=COMPONENTS, default="all",
                              help="Component to test (default: all)")
-    test_parser.add_argument("--model", dest="model_id", default=None,
-                             type=_hf_id_or_path,
-                             help=f"HF model ID under test (default: {DEFAULT_TEST_MODEL_ID})")
-    test_parser.add_argument("--transcription-model", dest="transcription_model_id", default=None,
-                             type=_hf_id_or_path,
-                             help=f"HF transcription model ID under test (default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID})")
     test_parser.add_argument("--suite", default=None,
                              help="Run a single test suite by name; resolved across all components (e.g. llm → engine)")
     test_parser.add_argument("--list", action="store_true",
                              help="List available components and engine tests, then exit")
-    test_parser.add_argument("--android", action="store_true", help="Run tests on Android")
-    test_parser.add_argument("--ios", action="store_true", help="Run tests on iOS")
-    test_parser.add_argument("--enable-telemetry", action="store_true",
-                             help="Enable cloud telemetry (disabled by default in tests)")
+
+    subparsers.add_parser("benchmark", help="Run the engine benchmark suite",
+                          parents=[_build_parent(), _engine_test_parent()])
 
     auth_parser = subparsers.add_parser("auth", help="Manage cloud API key")
     auth_parser.add_argument("--clear", action="store_true",
@@ -322,18 +371,58 @@ def create_parser():
                                 help="Path or HF id of a LoRA adapter to merge before converting (requires `peft`)")
     convert_parser.add_argument("--reconvert", action="store_true",
                                 help="Force conversion from source")
+    convert_parser.add_argument("--skip-model-load", action="store_true",
+                                help="Convert directly from checkpoint tensors without loading the full HF model object")
+    convert_parser.add_argument("--low-memory-load", action="store_true",
+                                help="Avoid loading checkpoint tensors during graph capture")
     convert_parser.add_argument("--weights-only", action="store_true",
                                 help="Only convert CQ weights; skip graph transpilation")
+    convert_parser.add_argument("--weights-dir",
+                                help="Legacy graph builder: CQ weights directory")
+    convert_parser.add_argument("--artifact-dir",
+                                help="Legacy graph builder: graph bundle output directory")
     convert_parser.add_argument("--modalities", "--input-modalities", dest="input_modalities", default=None,
                                 help="Generic models only: comma-separated modalities (text, vision, audio)")
-    convert_parser.add_argument("--task", dest="generic_task", default=None,
-                                choices=("causal-lm", "speech-seq2seq"),
-                                help="Generic models only: execution task (default: causal-lm)")
+    convert_parser.set_defaults(generic_task=None)
+    convert_parser.add_argument("--task", default=None, action=_ConvertTaskAction,
+                                choices=("causal-lm", "speech-seq2seq", "auto", "causal_lm_logits",
+                                         "multimodal_causal_lm_logits", "ctc_logits", "encoder_hidden_states",
+                                         "seq2seq_transcription", "tdt_transcription"),
+                                help="Generic task, or an explicit legacy graph-capture task")
     convert_parser.add_argument("--cache-style", "--cache", dest="cache_style", default=None,
                                 choices=("dynamic-kv", "encoder-decoder-kv", "none"),
                                 help="Generic models only: exported cache contract")
     convert_parser.add_argument("--fusion-groups", default=None,
                                 help="Generic models only: comma-separated fusion groups")
+    convert_parser.add_argument("--prompt", help="Legacy graph builder: shape-capture prompt")
+    convert_parser.add_argument("--system-prompt", default=None)
+    convert_parser.add_argument("--enable-thinking", action="store_true")
+    convert_parser.add_argument("--input-ids", default=None)
+    convert_parser.add_argument("--image-file", action="append", default=[])
+    convert_parser.add_argument("--audio-file")
+    convert_parser.add_argument("--max-new-tokens", type=_positive_int, default=None)
+    convert_parser.add_argument("--component-pipeline", default="auto", choices=["auto", "on", "off"])
+    convert_parser.add_argument("--components")
+    convert_parser.add_argument("--torch-dtype", choices=["float16", "float32", "bfloat16"])
+    convert_parser.add_argument("--trust-remote-code", action="store_true")
+    convert_parser.add_argument("--local-files-only", action="store_true")
+    convert_parser.add_argument("--allow-unconverted-weights", action="store_true")
+    convert_parser.add_argument("--execute-after-transpile", action="store_true")
+    convert_parser.add_argument("--graph-filename")
+    convert_parser.add_argument("--skip-reference-compare", action="store_true")
+    convert_parser.add_argument("--no-fuse-rms-norm", action="store_true")
+    convert_parser.add_argument("--no-fuse-rope", action="store_true")
+    convert_parser.add_argument("--no-fuse-attention", action="store_true")
+    convert_parser.add_argument("--no-fuse-attention-block", action="store_true")
+    convert_parser.add_argument("--no-fuse-add-clipped", action="store_true")
+    convert_parser.add_argument("--no-fuse-gated-deltanet", action="store_true")
+    convert_parser.add_argument("--cache-context-length", default=None)
+
+    upload_parser = subparsers.add_parser("upload",
+                                          parents=[_build_parent(mixed=False)],
+                                          help="Build a runnable bundle locally and upload it to Cactus-Compute on HuggingFace")
+    upload_parser.add_argument("model_id", type=_hf_id_or_path,
+                               help="HuggingFace model id (e.g. openai/whisper-base)")
 
     return parser
 
@@ -346,15 +435,18 @@ _COMMANDS = {
     "serve":      cmd_serve,
     "transcribe": cmd_transcribe,
     "test":       cmd_test,
+    "benchmark":  cmd_benchmark,
     "list":       cmd_list,
 
     "auth":           cmd_auth,
     "clean":          cmd_clean,
+    "code":           cmd_code,
     "convert":        cmd_convert,
+    "upload":         cmd_upload,
 }
 
 
-_REPO_ONLY = {"build", "test", "clean"}
+_REPO_ONLY = {"build", "test", "benchmark", "clean"}
 
 
 def main():

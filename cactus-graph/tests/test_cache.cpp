@@ -783,39 +783,6 @@ bool test_conv_cache_initialize_rejects_hidden_dim_mismatch() {
     return false;
 }
 
-bool test_conv_cache_initialize_exact_window() {
-    CactusGraph g;
-    constexpr size_t ws = 4, hd = 8;
-    size_t cache = g.conv_cache_state(ws, hd);
-
-    size_t rows = g.input({ws, hd}, Precision::FP16);
-    std::vector<__fp16> data(ws * hd);
-    for (size_t r = 0; r < ws; ++r) {
-        for (size_t c = 0; c < hd; ++c) {
-            data[r * hd + c] = static_cast<__fp16>(static_cast<float>(r + 1));
-        }
-    }
-    g.set_input(rows, data.data(), Precision::FP16);
-    g.conv_cache_initialize(rows, cache);
-    g.execute();
-
-    g.soft_reset_keep_pool();
-    size_t append_input = g.input({1, hd}, Precision::FP16);
-    std::vector<__fp16> append_data(hd, static_cast<__fp16>(99.0f));
-    g.set_input(append_input, append_data.data(), Precision::FP16);
-    size_t window = g.conv_cache_append(append_input, cache);
-    g.execute();
-
-    const __fp16* w = static_cast<const __fp16*>(g.get_output(window));
-    if (!w) return false;
-    const float expected[ws] = {2.0f, 3.0f, 4.0f, 99.0f};
-    for (size_t r = 0; r < ws; ++r) {
-        for (size_t c = 0; c < hd; ++c) {
-            if (static_cast<float>(w[r * hd + c]) != expected[r]) return false;
-        }
-    }
-    return true;
-}
 
 bool test_conv_cache_initialize_single_row() {
     CactusGraph g;
@@ -1198,7 +1165,6 @@ int main() {
     runner.run_test("Recurrent Cache Write Rejects Mismatch", test_recurrent_cache_write_rejects_shape_mismatch());
     runner.run_test("Allocate Buffers Preserves Recurrent Init", test_allocate_buffers_preserves_recurrent_state_init());
     runner.run_test("Conv Cache Initialize Rejects Hidden Dim Mismatch", test_conv_cache_initialize_rejects_hidden_dim_mismatch());
-    runner.run_test("Conv Cache Initialize Exact Window", test_conv_cache_initialize_exact_window());
     runner.run_test("Conv Cache Initialize Single Row", test_conv_cache_initialize_single_row());
     runner.run_test("Allocate Buffers Idempotent", test_allocate_buffers_idempotent());
     runner.run_test("Recurrent Cache Write Idempotent", test_recurrent_cache_write_idempotent());

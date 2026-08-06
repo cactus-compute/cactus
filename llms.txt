@@ -4,7 +4,7 @@
 
 Cactus has three layers: Cactus Kernels (ARM SIMD kernels for Apple, Snapdragon, Google Tensor, Exynos, MediaTek, Raspberry Pi), Cactus Graph (zero-copy computation graph, like PyTorch for mobile), and Cactus Engine (high-level inference API with OpenAI-compatible chat completion, tool calling, auto-RAG, vision, audio, transcription, embeddings, and cloud handoff).
 
-Supported models include Gemma 4 (E2B, E4B with vision + audio), Gemma 3/3n, Qwen 3/3.5, LiquidAI LFM2/LFM2.5 (incl. VL and MoE), Whisper, Moonshine, Parakeet (CTC/TDT), and Nomic Embed. Models run at INT4/INT8 precision with Apple NPU acceleration on supported hardware. Pre-converted weights at https://huggingface.co/Cactus-Compute.
+Supported models include Gemma 4 (E2B, E4B with vision + audio), Gemma 3/3n, Qwen 3/3.5, LiquidAI LFM2/LFM2.5 (incl. VL and MoE), Whisper, Moonshine, Parakeet (CTC/TDT), and Nomic Embed. Models run at INT4/INT8 precision with Metal GPU acceleration on supported hardware. Pre-converted weights at https://huggingface.co/Cactus-Compute.
 
 ## Docs
 
@@ -44,7 +44,7 @@ Supported models include Gemma 4 (E2B, E4B with vision + audio), Gemma 3/3n, Qwe
 - **Thinking**: Models that support chain-of-thought (Gemma 4) return a `thinking` field when `enable_thinking_if_supported` is set
 - **TurboQuant-H**: Hadamard rotation + Lloyd-Max codebook quantization for 2-bit per-layer embeddings, reducing embedding-dominated models by 40%
 - **INT4 Quantization**: Lossy weight quantization for ~50% memory reduction with minimal quality loss
-- **NPU Acceleration**: Apple Neural Engine support for vision, audio, and transcription model encoders
+- **Metal Acceleration**: Apple GPU support for faster inference on Apple silicon
 
 ## Links
 

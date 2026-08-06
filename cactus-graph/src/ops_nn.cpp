@@ -1,5 +1,6 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
+#include "metal_backend.h"
 #include <cstring>
 #include <vector>
 #include <stdexcept>
@@ -39,12 +40,6 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 
     bool pretransposed_rhs = node.params.pretransposed_rhs;
 
-    ComputeBackend backend = node.params.backend;
-
-    if (backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU matrix multiplication not yet implemented");
-    }
-
     if (PrecisionTraits::is_cq(rhs_buffer.precision) && rhs_buffer.group_size > 0) {
         if (lhs_buffer.precision != Precision::FP16) {
             throw std::runtime_error("TQ matmul requires FP16 activations");
@@ -56,6 +51,8 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
         CactusQuantMatrix mat = rhs_buffer.to_cq_matrix();
         if (rhs_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL)
             cactus_quant_orthogonal_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
+        else if (node.params.backend == ComputeBackend::METAL && cactus_metal_available())
+            cactus_metal_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
         else
             cactus_quant_matmul(&mat, lhs, static_cast<uint32_t>(M), output);
     } else {
@@ -83,6 +80,7 @@ void compute_matmul_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
 namespace {
     thread_local std::vector<__fp16> moe_compact_hidden_buf;
     thread_local std::vector<__fp16> moe_gate_buf;
+    thread_local std::vector<__fp16> moe_gate_pad_buf;
     thread_local std::vector<__fp16> moe_up_buf;
     thread_local std::vector<__fp16> moe_expert_out_buf;
     thread_local std::vector<size_t> moe_expert_offsets_buf;
@@ -222,6 +220,17 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     size_t* expert_offsets = moe_expert_offsets_buf.data(); 
     size_t* expert_tokens_flat = moe_expert_tokens_buf.data();  
 
+    auto expert_index = [&](float raw_idx) -> size_t {
+        if (!std::isfinite(raw_idx) || raw_idx < 0.0f) {
+            throw std::runtime_error("moe_layer got invalid expert index");
+        }
+        size_t idx = static_cast<size_t>(raw_idx + 0.5f);
+        if (idx >= num_experts) {
+            throw std::runtime_error("moe_layer got expert index out of range");
+        }
+        return idx;
+    };
+
     std::memset(expert_offsets, 0, (num_experts + 1) * sizeof(size_t));
     for (size_t tok = 0; tok < token_count; ++tok) {
         thread_local std::vector<uint8_t> seen_experts;
@@ -229,19 +238,7 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         std::fill(seen_experts.begin(), seen_experts.begin() + num_experts, 0);
 
         for (size_t k = 0; k < top_k; ++k) {
-            float raw_idx = topk_idx[tok * top_k + k];
-            if (!std::isfinite(raw_idx) || raw_idx < 0.0f) {
-                throw std::runtime_error("moe_layer got non-finite expert index");
-            }
-            size_t idx = static_cast<size_t>(raw_idx + 0.5f);
-            if (idx >= num_experts) {
-                throw std::runtime_error("moe_layer got expert index out of range");
-            }
-            if (seen_experts[idx]) {
-                throw std::runtime_error("moe_layer got duplicate expert index for token");
-            }
-            seen_experts[idx] = 1;
-            expert_offsets[idx + 1]++;
+            expert_offsets[expert_index(topk_idx[tok * top_k + k]) + 1]++;
         }
     }
     
@@ -255,7 +252,7 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
     for (size_t tok = 0; tok < token_count; ++tok) {
         for (size_t k = 0; k < top_k; ++k) {
-            size_t idx = static_cast<size_t>(topk_idx[tok * top_k + k] + 0.5f);
+            size_t idx = expert_index(topk_idx[tok * top_k + k]);
             expert_tokens_flat[moe_write_cursors[idx]++] = tok;
         }
     }
@@ -265,7 +262,7 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         for (size_t tok = 0; tok < token_count; ++tok) {
             float sum_probs = 0.0f;
             for (size_t k = 0; k < top_k; ++k) {
-                size_t idx = static_cast<size_t>(topk_idx[tok * top_k + k] + 0.5f);
+                size_t idx = expert_index(topk_idx[tok * top_k + k]);
                 sum_probs += routing_prob(tok, idx);
             }
             routing_denom[tok] = sum_probs + eps;
@@ -344,6 +341,12 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
             case Activation::RELU:
                 cactus_relu_f16(gate, gate, selected_count * expert_intermediate_dim);
                 break;
+            case Activation::SIGMOID:
+                cactus_sigmoid_f16(gate, gate, selected_count * expert_intermediate_dim);
+                break;
+            case Activation::TANH:
+                cactus_tanh_f16(gate, gate, selected_count * expert_intermediate_dim);
+                break;
             case Activation::SILU:
             default:
                 cactus_silu_f16(gate, gate, selected_count * expert_intermediate_dim);
@@ -354,8 +357,23 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
             multiply_moe_fp16_sanitized(gate, up, selected_count * expert_intermediate_dim);
         }
 
-        moe_matmul(gate, selected_count, expert_intermediate_dim, w2_buffer, expert_out, hidden_dim);
-        sanitize_moe_fp16(expert_out, selected_count * hidden_dim);
+        const size_t w2_k = w2_buffer.shape.size() == 2 ? w2_buffer.shape[1] : 0;
+        if (w2_k < expert_intermediate_dim) {
+            throw std::runtime_error("moe_layer down-proj weight K smaller than expert intermediate dim");
+        }
+        const __fp16* w2_input = gate;
+        if (w2_k != expert_intermediate_dim) {
+            if (moe_gate_pad_buf.size() < selected_count * w2_k) moe_gate_pad_buf.resize(selected_count * w2_k);
+            std::memset(moe_gate_pad_buf.data(), 0, selected_count * w2_k * sizeof(__fp16));
+            for (size_t i = 0; i < selected_count; ++i) {
+                std::memcpy(moe_gate_pad_buf.data() + i * w2_k,
+                            gate + i * expert_intermediate_dim,
+                            expert_intermediate_dim * sizeof(__fp16));
+            }
+            w2_input = moe_gate_pad_buf.data();
+        }
+
+        moe_matmul(w2_input, selected_count, w2_k, w2_buffer, expert_out, hidden_dim);
 
         for (size_t i = 0; i < selected_count; ++i) {
             const size_t tok = selected_tokens[i];
@@ -696,10 +714,6 @@ void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<Gr
 }
 
 void compute_rope_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    if (node.params.backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU RoPE operation not yet implemented");
-    }
-
     const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& shape = input_buffer.shape;
 
@@ -823,10 +837,6 @@ void compute_rel_pos_bias_node(GraphNode& node, const std::vector<std::unique_pt
 }
 
 void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
-    if (node.params.backend == ComputeBackend::NPU) {
-        throw std::runtime_error("NPU attention operation not yet implemented");
-    }
-
     if (node.input_ids.size() < 3 || node.input_ids.size() > 4) {
         throw std::runtime_error("Attention operation requires 3 or 4 inputs (query, key, value[, mask]), got " +
                                 std::to_string(node.input_ids.size()) + " inputs");

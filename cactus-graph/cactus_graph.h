@@ -17,6 +17,8 @@
 #include <iostream>
 #include <arm_neon.h>
 
+int cactus_backend_select(const char* backend);
+
 namespace cactus {
 
 enum class LogLevel { 
@@ -81,7 +83,9 @@ private:
 #define CACTUS_LOG_WARN(component, msg)  CACTUS_LOG(cactus::LogLevel::WARN, component, msg)
 #define CACTUS_LOG_ERROR(component, msg) CACTUS_LOG(cactus::LogLevel::ERROR, component, msg)
 
-enum class ComputeBackend { CPU, NPU };
+enum class ComputeBackend { CPU = 0, METAL = 1 };
+
+ComputeBackend cactus_default_backend();
 
 enum class Activation { SILU, GELU, GELU_ERF, RELU, SIGMOID, TANH };
 
@@ -372,7 +376,7 @@ struct OpParams {
     std::vector<size_t> permutation;
     Precision output_precision = Precision::FP16;
     BroadcastInfo broadcast_info;
-    ComputeBackend backend = ComputeBackend::CPU;
+    ComputeBackend backend = cactus_default_backend();
 
     size_t dilation = 1;
     size_t stride = 1;
@@ -493,10 +497,37 @@ namespace GraphFile {
     struct SerializedGraph;
 }
 
+struct FusedEmbedCtx {
+    int token_id = -1, position = 0;
+    CactusQuantMatrix ple{};
+    CactusQuantMatrix proj{};
+    const void* rms_weight = nullptr;
+    float emb_scale = 0.0f, ple_scale = 0.0f, proj_scale = 0.0f, final_scale = 0.0f, rms_eps = 1e-6f;
+    bool ok = false;
+};
+void cactus_graph_set_fused_embed(const FusedEmbedCtx* ctx);
+const FusedEmbedCtx* cactus_graph_fused_embed();
+bool cactus_graph_metal_fold_prologue(void* h_buf, void* ple_buf, void* pos_buf,
+                                      const CactusQuantMatrix* lm_head, size_t nl, size_t ple_dim);
+bool cactus_graph_metal_tail(void* logits, size_t vocab);
+void cactus_graph_metal_tail_commit();
+
+bool cactus_graph_metal_argmax(uint32_t* idx, float* best, float* second);
+void cactus_graph_mark_unadjusted();
+void cactus_graph_set_prefill_consistent(bool on);
+bool cactus_graph_prefill_consistent();
+void cactus_graph_on_destroy(const void* graph);
+void cactus_graph_set_sampling(const uint32_t* recent, int n_recent, float rep_penalty,
+                               const float* bias_dense, size_t bias_len,
+                               long long suppressed);
+void cactus_graph_clear_sampling();
+bool cactus_graph_metal_adjusted();
+bool cactus_graph_metal_argmax_biased();
+
 class CactusGraph {
 public:
     CactusGraph();
-    ~CactusGraph() = default;
+    ~CactusGraph();
     CactusGraph(const CactusGraph&) = delete;
     CactusGraph& operator=(const CactusGraph&) = delete;
     CactusGraph(CactusGraph&&) noexcept = default;
@@ -519,115 +550,117 @@ public:
                              bool require_exact_shape = true);
     void* get_output(size_t node_id);
 
-    size_t add(size_t input1, size_t input2);
-    size_t add_clipped(size_t input1, size_t input2);
-    size_t subtract(size_t input1, size_t input2);
-    size_t multiply(size_t input1, size_t input2);
-    size_t divide(size_t input1, size_t input2);
-    size_t not_equal(size_t input1, size_t input2);
-    size_t equal(size_t input1, size_t input2);
-    size_t less(size_t input1, size_t input2);
-    size_t less_equal(size_t input1, size_t input2);
-    size_t greater(size_t input1, size_t input2);
-    size_t greater_equal(size_t input1, size_t input2);
-    size_t bitwise_and(size_t input1, size_t input2);
-    size_t bitwise_or(size_t input1, size_t input2);
-    size_t where(size_t condition, size_t true_value, size_t false_value);
-    size_t masked_select_prefix(size_t input, size_t mask);
+    size_t add(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t add_clipped(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t subtract(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t multiply(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t divide(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t not_equal(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t equal(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t less(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t less_equal(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t greater(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t greater_equal(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t bitwise_and(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t bitwise_or(size_t input1, size_t input2, ComputeBackend backend = cactus_default_backend());
+    size_t where(size_t condition, size_t true_value, size_t false_value, ComputeBackend backend = cactus_default_backend());
+    size_t masked_select_prefix(size_t input, size_t mask, ComputeBackend backend = cactus_default_backend());
 
 
-    size_t scalar_add(size_t input, float value);
-    size_t scalar_subtract(size_t input, float value);
-    size_t scalar_multiply(size_t input, float value);
-    size_t scalar_divide(size_t input, float value);
-    size_t scalar_floor_divide(size_t input, float value);
-    size_t scalar_not_equal(size_t input, float value);
-    size_t scalar_equal(size_t input, float value);
-    size_t scalar_less(size_t input, float value);
-    size_t scalar_less_equal(size_t input, float value);
-    size_t scalar_greater(size_t input, float value);
-    size_t scalar_greater_equal(size_t input, float value);
-    size_t scalar_exp(size_t input);
-    size_t scalar_sqrt(size_t input);
-    size_t scalar_cos(size_t input);
-    size_t scalar_sin(size_t input);
-    size_t scalar_log(size_t input);
-    size_t logical_not(size_t input);
-    size_t bitwise_not(size_t input);
+    size_t scalar_add(size_t input, float value, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_subtract(size_t input, float value, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_multiply(size_t input, float value, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_divide(size_t input, float value, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_floor_divide(size_t input, float value, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_not_equal(size_t input, float value, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_equal(size_t input, float value, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_less(size_t input, float value, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_less_equal(size_t input, float value, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_greater(size_t input, float value, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_greater_equal(size_t input, float value, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_exp(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_sqrt(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_cos(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_sin(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t scalar_log(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t logical_not(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t bitwise_not(size_t input, ComputeBackend backend = cactus_default_backend());
 
-    size_t abs(size_t input);
-    size_t pow(size_t input, float exponent);
-    size_t precision_cast(size_t input, Precision target_precision);
+    size_t abs(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t pow(size_t input, float exponent, ComputeBackend backend = cactus_default_backend());
+    size_t precision_cast(size_t input, Precision target_precision, ComputeBackend backend = cactus_default_backend());
 
-    size_t relu(size_t input);
-    size_t leaky_relu(size_t input, float negative_slope = 0.01f);
-    size_t clamp(size_t input, float lo, float hi);
-    size_t silu(size_t input);
-    size_t gelu(size_t input);
-    size_t gelu_erf(size_t input);
-    size_t sigmoid(size_t input);
-    size_t tanh(size_t input);
-    size_t glu(size_t input, int axis = -1);
+    size_t relu(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t leaky_relu(size_t input, float negative_slope = 0.01f, ComputeBackend backend = cactus_default_backend());
+    size_t clamp(size_t input, float lo, float hi, ComputeBackend backend = cactus_default_backend());
+    size_t silu(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t gelu(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t gelu_erf(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t sigmoid(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t tanh(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t glu(size_t input, int axis = -1, ComputeBackend backend = cactus_default_backend());
 
 
-    size_t sum(size_t input, int axis);
-    size_t mean(size_t input, int axis);
-    size_t variance(size_t input, int axis);
-    size_t min(size_t input, int axis);
-    size_t max(size_t input, int axis);
-    size_t cumsum(size_t input, int axis);
-    size_t softmax(size_t input, int axis = -1);
-    size_t topk(size_t input, size_t k);
+    void set_node_backend(size_t node_id, ComputeBackend backend);
 
-    size_t reshape(size_t input, const std::vector<size_t>& new_shape);
-    size_t view(size_t input, const std::vector<size_t>& new_shape);
-    size_t expand(size_t input, const std::vector<size_t>& new_shape);
-    size_t flatten(size_t input, int start_dim = 0, int end_dim = -1);
-    size_t transpose(size_t input, ComputeBackend backend = ComputeBackend::CPU);
-    size_t transposeN(size_t input, const std::vector<size_t>& permutation, ComputeBackend backend = ComputeBackend::CPU);
-    size_t slice(size_t input, int axis, size_t start, size_t length);
-    size_t strided_slice(size_t input, int axis, size_t start, size_t length, size_t step);
-    size_t index(size_t input, size_t index_value, int dim);
-    size_t unfold(size_t input, int dimension, size_t size, size_t step);
-    size_t pad(size_t input, const std::vector<size_t>& pads, float value = 0.0f);
-    size_t concat(size_t input1, size_t input2, int axis = 0);
-    size_t cat(const std::vector<size_t>& inputs, int axis);
+    size_t sum(size_t input, int axis, ComputeBackend backend = cactus_default_backend());
+    size_t mean(size_t input, int axis, ComputeBackend backend = cactus_default_backend());
+    size_t variance(size_t input, int axis, ComputeBackend backend = cactus_default_backend());
+    size_t min(size_t input, int axis, ComputeBackend backend = cactus_default_backend());
+    size_t max(size_t input, int axis, ComputeBackend backend = cactus_default_backend());
+    size_t cumsum(size_t input, int axis, ComputeBackend backend = cactus_default_backend());
+    size_t softmax(size_t input, int axis = -1, ComputeBackend backend = cactus_default_backend());
+    size_t topk(size_t input, size_t k, ComputeBackend backend = cactus_default_backend());
+
+    size_t reshape(size_t input, const std::vector<size_t>& new_shape, ComputeBackend backend = cactus_default_backend());
+    size_t view(size_t input, const std::vector<size_t>& new_shape, ComputeBackend backend = cactus_default_backend());
+    size_t expand(size_t input, const std::vector<size_t>& new_shape, ComputeBackend backend = cactus_default_backend());
+    size_t flatten(size_t input, int start_dim = 0, int end_dim = -1, ComputeBackend backend = cactus_default_backend());
+    size_t transpose(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t transposeN(size_t input, const std::vector<size_t>& permutation, ComputeBackend backend = cactus_default_backend());
+    size_t slice(size_t input, int axis, size_t start, size_t length, ComputeBackend backend = cactus_default_backend());
+    size_t strided_slice(size_t input, int axis, size_t start, size_t length, size_t step, ComputeBackend backend = cactus_default_backend());
+    size_t index(size_t input, size_t index_value, int dim, ComputeBackend backend = cactus_default_backend());
+    size_t unfold(size_t input, int dimension, size_t size, size_t step, ComputeBackend backend = cactus_default_backend());
+    size_t pad(size_t input, const std::vector<size_t>& pads, float value = 0.0f, ComputeBackend backend = cactus_default_backend());
+    size_t concat(size_t input1, size_t input2, int axis = 0, ComputeBackend backend = cactus_default_backend());
+    size_t cat(const std::vector<size_t>& inputs, int axis, ComputeBackend backend = cactus_default_backend());
 
     size_t matmul(
         size_t input1,
         size_t input2,
         bool pretransposed_rhs = false,
-        ComputeBackend backend = ComputeBackend::CPU);
+        ComputeBackend backend = cactus_default_backend());
 
-    size_t rms_norm(size_t input, size_t weight, float epsilon = 1e-5f);
-    size_t layernorm(size_t input, size_t weight, size_t bias, float epsilon = 1e-5f);
-    size_t layernorm(size_t input, size_t weight, float epsilon = 1e-5f);
-    size_t groupnorm(size_t input, size_t weight, size_t bias, size_t num_groups = 32, float epsilon = 1e-5f);
-    size_t batchnorm(size_t input, size_t weight, size_t bias, size_t running_mean, size_t running_var, int axis = 1, float epsilon = 1e-5f);
+    size_t rms_norm(size_t input, size_t weight, float epsilon = 1e-5f, ComputeBackend backend = cactus_default_backend());
+    size_t layernorm(size_t input, size_t weight, size_t bias, float epsilon = 1e-5f, ComputeBackend backend = cactus_default_backend());
+    size_t layernorm(size_t input, size_t weight, float epsilon = 1e-5f, ComputeBackend backend = cactus_default_backend());
+    size_t groupnorm(size_t input, size_t weight, size_t bias, size_t num_groups = 32, float epsilon = 1e-5f, ComputeBackend backend = cactus_default_backend());
+    size_t batchnorm(size_t input, size_t weight, size_t bias, size_t running_mean, size_t running_var, int axis = 1, float epsilon = 1e-5f, ComputeBackend backend = cactus_default_backend());
 
 
-    size_t rope(size_t input, float theta, size_t position_offset = 0, ComputeBackend backend = ComputeBackend::CPU);
-    size_t rope_gptj(size_t input, float theta, size_t position_offset = 0, size_t rot_dim = 0, ComputeBackend backend = ComputeBackend::CPU);
+    size_t rope(size_t input, float theta, size_t position_offset = 0, ComputeBackend backend = cactus_default_backend());
+    size_t rope_gptj(size_t input, float theta, size_t position_offset = 0, size_t rot_dim = 0, ComputeBackend backend = cactus_default_backend());
 
 
     size_t attention(size_t query, size_t key, size_t value, float scale,
-                     bool is_causal = true, ComputeBackend backend = ComputeBackend::CPU);
+                     bool is_causal = true, ComputeBackend backend = cactus_default_backend());
     size_t attention(size_t query, size_t key, size_t value, float scale,
-                     size_t position_offset, ComputeBackend backend = ComputeBackend::CPU);
+                     size_t position_offset, ComputeBackend backend = cactus_default_backend());
     size_t attention(size_t query, size_t key, size_t value, float scale,
-                     size_t position_offset, size_t window_size, ComputeBackend backend = ComputeBackend::CPU);
+                     size_t position_offset, size_t window_size, ComputeBackend backend = cactus_default_backend());
     size_t attention_masked(
         size_t query, size_t key, size_t value, size_t mask, float scale,
-        bool is_causal = true, ComputeBackend backend = ComputeBackend::CPU,
+        bool is_causal = true, ComputeBackend backend = cactus_default_backend(),
         bool additive_mask = false, size_t position_offset = 0, size_t window_size = 0,
         float logit_cap = 0.0f);
-    size_t rel_pos_bias(size_t query, size_t relative_key, float scale);
+    size_t rel_pos_bias(size_t query, size_t relative_key, float scale, ComputeBackend backend = cactus_default_backend());
     size_t attention_int8_hybrid(
         size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
         const int8_t* cached_keys, const int8_t* cached_values,
         const float* k_scales, const float* v_scales,
         size_t cache_len, size_t num_kv_heads, size_t head_dim,
-        size_t window_size = 0, size_t v_head_dim = 0);
+        size_t window_size = 0, size_t v_head_dim = 0, ComputeBackend backend = cactus_default_backend());
 
     size_t kv_cache_state(
         size_t max_seq_len,
@@ -635,14 +668,16 @@ public:
         size_t head_dim,
         size_t window_size = 0,
         size_t sink_size = 4,
-        size_t num_slots = 1);
+        size_t num_slots = 1,
+        ComputeBackend backend = cactus_default_backend());
 
     size_t kv_cache_append(
         size_t new_kv,
         size_t cache_state_node,
         size_t window_size = 0,
         size_t sink_size = 4,
-        size_t cache_slot = 0);
+        size_t cache_slot = 0,
+        ComputeBackend backend = cactus_default_backend());
 
     size_t attention_cached(
         size_t query,
@@ -657,50 +692,51 @@ public:
         size_t cache_slot = 0,
         size_t mask = static_cast<size_t>(-1),
         bool additive_mask = false,
-        bool is_causal = true);
+        bool is_causal = true,
+        ComputeBackend backend = cactus_default_backend());
 
-    size_t conv_cache_state(size_t window_size, size_t hidden_dim);
-    size_t conv_cache_append(size_t new_data, size_t cache_state_node);
-    size_t conv_cache_initialize(size_t rows, size_t cache_state_node);
+    size_t conv_cache_state(size_t window_size, size_t hidden_dim, ComputeBackend backend = cactus_default_backend());
+    size_t conv_cache_append(size_t new_data, size_t cache_state_node, ComputeBackend backend = cactus_default_backend());
+    size_t conv_cache_initialize(size_t rows, size_t cache_state_node, ComputeBackend backend = cactus_default_backend());
 
-    size_t recurrent_cache_state(const std::vector<size_t>& shape, Precision precision);
-    size_t recurrent_cache_write(size_t new_value, size_t cache_state);
+    size_t recurrent_cache_state(const std::vector<size_t>& shape, Precision precision, ComputeBackend backend = cactus_default_backend());
+    size_t recurrent_cache_write(size_t new_value, size_t cache_state, ComputeBackend backend = cactus_default_backend());
 
-    size_t conv1d_causal(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1);
-    size_t conv1d_causal_channel_first(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1);
-    size_t conv1d_k3(size_t input, size_t weight, size_t stride);
-    size_t conv1d_k7s3(size_t input, size_t weight, size_t bias);
-    size_t conv1d(size_t input, size_t weight, size_t stride);
-    size_t conv1d(size_t input, size_t weight, size_t bias, size_t stride);
-    size_t conv1d_depthwise(size_t input, size_t weight, size_t stride = 1);
-    size_t conv1d_depthwise(size_t input, size_t weight, size_t bias, size_t stride);
-    size_t conv1d_same_depthwise_k9(size_t input, size_t weight);
-    size_t conv1d_same_depthwise_k9(size_t input, size_t weight, size_t bias);
-    size_t conv1d_pointwise(size_t input, size_t weight);
-    size_t conv1d_pointwise(size_t input, size_t weight, size_t bias);
-    size_t conv2d_k3s2p1(size_t input, size_t weight);
-    size_t conv2d_k3s2p1(size_t input, size_t weight, size_t bias);
-    size_t conv2d_depthwise_k3s2p1(size_t input, size_t weight);
-    size_t conv2d_depthwise_k3s2p1(size_t input, size_t weight, size_t bias);
-    size_t conv2d_pointwise_1x1(size_t input, size_t weight);
-    size_t conv2d_pointwise_1x1(size_t input, size_t weight, size_t bias);
-    size_t conv2d_k3s1p1(size_t input, size_t weight);
-    size_t conv2d_k3s1p1(size_t input, size_t weight, size_t bias);
-    size_t stft(size_t input, size_t weight, size_t stride, size_t num_fft_bins);
+    size_t conv1d_causal(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1, ComputeBackend backend = cactus_default_backend());
+    size_t conv1d_causal_channel_first(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1, ComputeBackend backend = cactus_default_backend());
+    size_t conv1d_k3(size_t input, size_t weight, size_t stride, ComputeBackend backend = cactus_default_backend());
+    size_t conv1d_k7s3(size_t input, size_t weight, size_t bias, ComputeBackend backend = cactus_default_backend());
+    size_t conv1d(size_t input, size_t weight, size_t stride, ComputeBackend backend = cactus_default_backend());
+    size_t conv1d(size_t input, size_t weight, size_t bias, size_t stride, ComputeBackend backend = cactus_default_backend());
+    size_t conv1d_depthwise(size_t input, size_t weight, size_t stride = 1, ComputeBackend backend = cactus_default_backend());
+    size_t conv1d_depthwise(size_t input, size_t weight, size_t bias, size_t stride, ComputeBackend backend = cactus_default_backend());
+    size_t conv1d_same_depthwise_k9(size_t input, size_t weight, ComputeBackend backend = cactus_default_backend());
+    size_t conv1d_same_depthwise_k9(size_t input, size_t weight, size_t bias, ComputeBackend backend = cactus_default_backend());
+    size_t conv1d_pointwise(size_t input, size_t weight, ComputeBackend backend = cactus_default_backend());
+    size_t conv1d_pointwise(size_t input, size_t weight, size_t bias, ComputeBackend backend = cactus_default_backend());
+    size_t conv2d_k3s2p1(size_t input, size_t weight, ComputeBackend backend = cactus_default_backend());
+    size_t conv2d_k3s2p1(size_t input, size_t weight, size_t bias, ComputeBackend backend = cactus_default_backend());
+    size_t conv2d_depthwise_k3s2p1(size_t input, size_t weight, ComputeBackend backend = cactus_default_backend());
+    size_t conv2d_depthwise_k3s2p1(size_t input, size_t weight, size_t bias, ComputeBackend backend = cactus_default_backend());
+    size_t conv2d_pointwise_1x1(size_t input, size_t weight, ComputeBackend backend = cactus_default_backend());
+    size_t conv2d_pointwise_1x1(size_t input, size_t weight, size_t bias, ComputeBackend backend = cactus_default_backend());
+    size_t conv2d_k3s1p1(size_t input, size_t weight, ComputeBackend backend = cactus_default_backend());
+    size_t conv2d_k3s1p1(size_t input, size_t weight, size_t bias, ComputeBackend backend = cactus_default_backend());
+    size_t stft(size_t input, size_t weight, size_t stride, size_t num_fft_bins, ComputeBackend backend = cactus_default_backend());
 
-    size_t rfft(size_t input);
-    size_t irfft(size_t input, size_t output_length);
+    size_t rfft(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t irfft(size_t input, size_t output_length, ComputeBackend backend = cactus_default_backend());
     size_t mel_filter_bank(
         size_t num_frequency_bins, size_t num_mel_filters,
         float min_frequency, float max_frequency, size_t sampling_rate,
-        int norm_type = 1, int scale_type = 2);
+        int norm_type = 1, int scale_type = 2, ComputeBackend backend = cactus_default_backend());
     size_t spectrogram(
         size_t waveform, size_t mel_filters_node,
         size_t frame_length, size_t hop_length, size_t fft_length,
         float power = 2.0f, bool center = true, int pad_mode = 0,
         float mel_floor = 1e-10f, int log_mel_mode = 0,
         float dither = 0.0f, float preemphasis = 0.0f,
-        bool remove_dc_offset = false);
+        bool remove_dc_offset = false, ComputeBackend backend = cactus_default_backend());
 
     size_t image_preprocess(
         size_t pixel_input,
@@ -708,60 +744,68 @@ public:
         int target_width, int target_height,
         int patch_size, int channels = 3,
         float rescale_factor = 1.0f / 255.0f,
-        const float* mean = nullptr, const float* std_dev = nullptr);
+        const float* mean = nullptr, const float* std_dev = nullptr,
+        ComputeBackend backend = cactus_default_backend());
 
-    size_t bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width, bool align_corners = true);
-    size_t maxpool1d(size_t input, size_t kernel_size, size_t stride);
+    size_t bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width, bool align_corners = true, ComputeBackend backend = cactus_default_backend());
+    size_t maxpool1d(size_t input, size_t kernel_size, size_t stride, ComputeBackend backend = cactus_default_backend());
 
     size_t lstm_cell(
         size_t input, size_t h_prev, size_t c_prev,
-        size_t weight_ih, size_t weight_hh, size_t bias_ih, size_t bias_hh);
+        size_t weight_ih, size_t weight_hh, size_t bias_ih, size_t bias_hh,
+        ComputeBackend backend = cactus_default_backend());
     size_t bilstm_sequence(
         size_t input,
         size_t w_ih_fwd, size_t w_hh_fwd, size_t b_ih_fwd, size_t b_hh_fwd,
-        size_t w_ih_bwd, size_t w_hh_bwd, size_t b_ih_bwd, size_t b_hh_bwd);
+        size_t w_ih_bwd, size_t w_hh_bwd, size_t b_ih_bwd, size_t b_hh_bwd,
+        ComputeBackend backend = cactus_default_backend());
     size_t gated_deltanet_decode(
         size_t query, size_t key, size_t value,
-        size_t gate_log, size_t beta, size_t initial_state, float scale = 0.0f);
+        size_t gate_log, size_t beta, size_t initial_state, float scale = 0.0f,
+        ComputeBackend backend = cactus_default_backend());
     size_t gated_deltanet_prefill(
         size_t query, size_t key, size_t value,
         size_t gate_log, size_t beta, size_t initial_state,
-        size_t chunk_size = 64, float scale = 0.0f);
+        size_t chunk_size = 64, float scale = 0.0f,
+        ComputeBackend backend = cactus_default_backend());
 
-    size_t altup_predict(size_t coefs, const size_t* streams, size_t num_streams);
-    size_t altup_correct(size_t coefs, size_t innovation, const size_t* predictions, size_t num_predictions);
-    size_t gaussian_topk(size_t input, float ppf);
+    size_t altup_predict(size_t coefs, const size_t* streams, size_t num_streams, ComputeBackend backend = cactus_default_backend());
+    size_t altup_correct(size_t coefs, size_t innovation, const size_t* predictions, size_t num_predictions, ComputeBackend backend = cactus_default_backend());
+    size_t gaussian_topk(size_t input, float ppf, ComputeBackend backend = cactus_default_backend());
     size_t moe_layer(
         size_t hidden, size_t routing_probs, size_t topk_indices,
         const std::vector<size_t>& w1_weights, const std::vector<size_t>& w3_weights,
         const std::vector<size_t>& w2_weights,
         size_t num_experts, size_t num_experts_per_tok,
         bool normalize_routing, float epsilon, float routed_scaling_factor,
-        Activation activation = Activation::SILU, size_t per_expert_scale = 0);
+        Activation activation = Activation::SILU, size_t per_expert_scale = 0,
+        ComputeBackend backend = cactus_default_backend());
     size_t moe_layer(
         size_t hidden, size_t routing_probs, size_t topk_indices,
         const std::vector<size_t>& w1_weights, const std::vector<size_t>& w2_weights,
         size_t num_experts, size_t num_experts_per_tok,
         bool normalize_routing, float epsilon, float routed_scaling_factor,
-        Activation activation);
-    size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale = 1.0f, float gate_input_scale = 1.0f);
-    size_t qkv_tq_fused(size_t hidden, size_t query_weight, size_t key_weight, size_t value_weight);
-    size_t projection_pair_tq_fused(size_t hidden, size_t first_weight, size_t second_weight);
-    size_t logits_tq_softcap(size_t hidden, size_t weight, float cap, float projection_scale = 1.0f);
-    size_t stats_pool(size_t input);
-    size_t weighted_stats_pool(size_t input, size_t weights);
+        Activation activation, ComputeBackend backend = cactus_default_backend());
+    size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale = 1.0f, float gate_input_scale = 1.0f, ComputeBackend backend = cactus_default_backend());
+    size_t qkv_tq_fused(size_t hidden, size_t query_weight, size_t key_weight, size_t value_weight, ComputeBackend backend = cactus_default_backend());
+    size_t projection_pair_tq_fused(size_t hidden, size_t first_weight, size_t second_weight, ComputeBackend backend = cactus_default_backend());
+    size_t logits_tq_softcap(size_t hidden, size_t weight, float cap, float projection_scale = 1.0f, ComputeBackend backend = cactus_default_backend());
+    size_t stats_pool(size_t input, ComputeBackend backend = cactus_default_backend());
+    size_t weighted_stats_pool(size_t input, size_t weights, ComputeBackend backend = cactus_default_backend());
 
     size_t sample(
         size_t logits, float temperature = 0.6f, float top_p = 0.95f, size_t top_k = 20,
-        const std::unordered_map<uint32_t, float>& logit_bias = {});
+        const std::unordered_map<uint32_t, float>& logit_bias = {},
+        ComputeBackend backend = cactus_default_backend());
     size_t sample_with_options(
         size_t logits, float temperature, float top_p, float min_p, float repetition_penalty,
-        size_t top_k, const std::unordered_map<uint32_t, float>& logit_bias = {});
-    size_t scatter_topk(size_t indices, size_t values, size_t num_classes);
+        size_t top_k, const std::unordered_map<uint32_t, float>& logit_bias = {},
+        ComputeBackend backend = cactus_default_backend());
+    size_t scatter_topk(size_t indices, size_t values, size_t num_classes, ComputeBackend backend = cactus_default_backend());
 
-    size_t gather(size_t tensor, size_t indices, int axis = 0);
-    size_t embedding(const std::string& filename, size_t indices);
-    size_t embedding(size_t embedding_tensor, size_t indices);
+    size_t gather(size_t tensor, size_t indices, int axis = 0, ComputeBackend backend = cactus_default_backend());
+    size_t embedding(const std::string& filename, size_t indices, ComputeBackend backend = cactus_default_backend());
+    size_t embedding(size_t embedding_tensor, size_t indices, ComputeBackend backend = cactus_default_backend());
     size_t mmap_embeddings(const std::string& filename);
     size_t mmap_weights(const std::string& filename);
     void bind_mmap_weights(size_t node_id, const std::string& filename);
@@ -774,12 +818,13 @@ public:
     void clear_buffer_pool();
     void retain_outputs(const std::vector<int>& node_ids);
 
-    size_t persistent(size_t source_node);
+    size_t persistent(size_t source_node, ComputeBackend backend = cactus_default_backend());
     bool is_populated(size_t persistent_node_id) const;
     void invalidate_persistent(size_t persistent_node_id);
 
     void execute(const std::string& profile_file = "");
     void set_profile_label(std::string label) { profile_label_ = std::move(label); }
+    bool extract_ple_pathway(FusedEmbedCtx& ctx) const;
     void hard_reset();
     void soft_reset();
     void soft_reset_keep_pool();
@@ -798,6 +843,7 @@ public:
     size_t get_node_window_size(size_t node_id) const;
     size_t get_node_sink_size(size_t node_id) const;
     size_t get_node_cache_num_slots(size_t node_id) const;
+    void resize_cache_slots(size_t node_id, size_t num_slots);
     void steal_cache_buffer(size_t dst_node, CactusGraph& src, size_t src_node);
     void shrink_cache_buffer(size_t node_id, size_t new_capacity);
     std::vector<uint8_t> snapshot_cache_padded_append(size_t node_id, size_t real_tokens, size_t pad_tokens) const;
@@ -805,14 +851,17 @@ public:
                                       const std::vector<uint8_t>& backup);
     void allocate_buffers();
     size_t get_node_count() const;
+    void prewarm_metal_quant_weights();
     void set_runtime_input_shape(size_t node_id, const std::vector<size_t>& shape);
     void set_input_dynamic_dims(size_t node_id, const std::vector<uint8_t>& dynamic_dims);
+    bool has_dynamic_shapes() const { return has_dynamic_shapes_; }
 
     std::vector<std::unique_ptr<GraphNode>> nodes_;
     std::unordered_map<size_t, size_t> node_index_map_;
 
 private:
     size_t binary_broadcast_op(OpType op, size_t input1, size_t input2);
+    size_t tag_backend(size_t node_id, ComputeBackend backend);
     void infer_shapes();
     size_t reduction_op(OpType op, size_t input, int axis);
     size_t attach_conv_bias(size_t node, size_t bias, size_t expected_size, const char* op_name);
@@ -831,6 +880,15 @@ private:
     std::unordered_set<size_t> embedded_input_node_ids_;
     std::unordered_set<size_t> retained_output_node_ids_;
     std::string profile_label_;
+    void build_metal_retype_plan();
+    void invalidate_metal_state();
+    std::unordered_map<uint64_t, struct MetalFusePlan*> metal_plans_;
+    std::unordered_map<uint64_t, std::unordered_set<size_t>> metal_plan_banned_;
+    uint64_t metal_plan_sig_ = 0;
+    std::vector<uint8_t> metal_retype_plan_;
+    bool metal_retype_built_ = false;
+    bool metal_retype_disabled_ = false;
+    std::unordered_map<size_t, std::pair<void*, size_t>> metal_persistent_acts_;
 };
 
 namespace GraphFile {
@@ -938,6 +996,9 @@ CACTUS_FFI_EXPORT cactus_graph_t cactus_graph_create(void);
 CACTUS_FFI_EXPORT void cactus_graph_destroy(cactus_graph_t graph);
 CACTUS_FFI_EXPORT int cactus_graph_hard_reset(cactus_graph_t graph);
 
+CACTUS_FFI_EXPORT int cactus_graph_set_node_backend(
+    cactus_graph_t graph, cactus_node_t node, int32_t backend);
+
 CACTUS_FFI_EXPORT int cactus_graph_save(cactus_graph_t graph, const char* filename);
 CACTUS_FFI_EXPORT cactus_graph_t cactus_graph_load(const char* filename);
 
@@ -1026,9 +1087,9 @@ CACTUS_FFI_EXPORT int cactus_graph_reshape(
 CACTUS_FFI_EXPORT int cactus_graph_expand(
     cactus_graph_t graph, cactus_node_t x, const size_t* shape, size_t rank, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_transpose(
-    cactus_graph_t graph, cactus_node_t x, int32_t backend, cactus_node_t* out);
+    cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_transpose_n(
-    cactus_graph_t graph, cactus_node_t x, const size_t* permutation, size_t rank, int32_t backend, cactus_node_t* out);
+    cactus_graph_t graph, cactus_node_t x, const size_t* permutation, size_t rank, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_slice(
     cactus_graph_t graph, cactus_node_t x, int32_t axis, size_t start, size_t length, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_strided_slice(
@@ -1054,7 +1115,7 @@ CACTUS_FFI_EXPORT int cactus_graph_cat(
     cactus_graph_t graph, const cactus_node_t* nodes, size_t count, int32_t
 axis, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_matmul(
-    cactus_graph_t graph, cactus_node_t a, cactus_node_t b, bool pretransposed_rhs, int32_t backend, cactus_node_t* out);
+    cactus_graph_t graph, cactus_node_t a, cactus_node_t b, bool pretransposed_rhs, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_gather(
     cactus_graph_t graph, cactus_node_t tensor, cactus_node_t indices, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_gather_dim(
@@ -1082,6 +1143,10 @@ CACTUS_FFI_EXPORT int cactus_graph_gelu_erf(cactus_graph_t graph, cactus_node_t 
 CACTUS_FFI_EXPORT int cactus_graph_sigmoid(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_tanh(cactus_graph_t graph, cactus_node_t x, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_glu(cactus_graph_t graph, cactus_node_t x, int32_t axis, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_clamp(cactus_graph_t graph, cactus_node_t input, float lo, float hi, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_dense_mlp_tq_fused(
+    cactus_graph_t graph, cactus_node_t hidden, cactus_node_t gate_weight, cactus_node_t up_weight,
+    cactus_node_t down_weight, float product_scale, float gate_input_scale, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_layernorm(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, cactus_node_t bias, float epsilon, bool has_bias, cactus_node_t* out);
@@ -1093,12 +1158,12 @@ CACTUS_FFI_EXPORT int cactus_graph_topk(cactus_graph_t graph, cactus_node_t inpu
 CACTUS_FFI_EXPORT int cactus_graph_rms_norm(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, float epsilon, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_rope(
-    cactus_graph_t graph, cactus_node_t input, float theta, size_t position_offset, int32_t backend, cactus_node_t* out);
+    cactus_graph_t graph, cactus_node_t input, float theta, size_t position_offset, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_rope_gptj(
-    cactus_graph_t graph, cactus_node_t input, float theta, size_t position_offset, size_t rot_dim, int32_t backend, cactus_node_t* out);
+    cactus_graph_t graph, cactus_node_t input, float theta, size_t position_offset, size_t rot_dim, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_softmax(cactus_graph_t graph, cactus_node_t input, int32_t axis, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_attention(
-    cactus_graph_t graph, cactus_node_t query, cactus_node_t key, cactus_node_t value, float scale, bool is_causal, size_t position_offset, size_t window_size, int32_t backend, bool use_mask, cactus_node_t mask, bool additive_mask, cactus_node_t* out);
+    cactus_graph_t graph, cactus_node_t query, cactus_node_t key, cactus_node_t value, float scale, bool is_causal, size_t position_offset, size_t window_size, bool use_mask, cactus_node_t mask, bool additive_mask, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_rel_pos_bias(
     cactus_graph_t graph, cactus_node_t query, cactus_node_t relative_key, float scale, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_attention_int8_hybrid(
@@ -1195,8 +1260,7 @@ CACTUS_FFI_EXPORT int cactus_graph_gaussian_topk(
 CACTUS_FFI_EXPORT int cactus_graph_moe_layer_gated(
     cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
     const cactus_node_t* w1_weights, const cactus_node_t* w3_weights, const cactus_node_t* w2_weights,
-    size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon,
-    float routed_scaling_factor, int32_t activation, cactus_node_t* out);
+    size_t num_experts, size_t num_experts_per_tok, bool normalize_routing, float epsilon, float routed_scaling_factor, int32_t activation, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_moe_layer_ungated(
     cactus_graph_t graph, cactus_node_t hidden, cactus_node_t routing_probs, cactus_node_t topk_indices,
     const cactus_node_t* w1_weights, const cactus_node_t* w2_weights,

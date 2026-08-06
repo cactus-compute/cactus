@@ -109,7 +109,7 @@ bool test_sum_axis() {
     return true;
 }
 
-bool test_neon_sum_axis_inner1_correctness() {
+bool test_neon_axis_inner1_correctness() {
     const size_t outer_size = 2;
     const size_t axis_size = 9;
     const size_t inner_size = 1;
@@ -119,26 +119,24 @@ bool test_neon_sum_axis_inner1_correctness() {
         2.0f, 4.0f, 6.0f, 8.0f, 10.0f, 12.0f, 14.0f, 16.0f, 18.0f
     };
     std::vector<__fp16> output(outer_size * inner_size);
-    std::vector<__fp16> expected = {45.0f, 90.0f};
 
     cactus_sum_axis_f16(input.data(), output.data(), outer_size, axis_size, inner_size);
-    return TestUtils::compare_arrays(output.data(), expected.data(), expected.size(), 1e-2f);
-}
-
-bool test_neon_mean_axis_inner1_correctness() {
-    const size_t outer_size = 2;
-    const size_t axis_size = 9;
-    const size_t inner_size = 1;
-
-    std::vector<__fp16> input = {
-        1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f,
-        2.0f, 4.0f, 6.0f, 8.0f, 10.0f, 12.0f, 14.0f, 16.0f, 18.0f
-    };
-    std::vector<__fp16> output(outer_size * inner_size);
-    std::vector<__fp16> expected = {5.0f, 10.0f};
+    std::vector<__fp16> exp_sum = {45.0f, 90.0f};
+    if (!TestUtils::compare_arrays(output.data(), exp_sum.data(), exp_sum.size(), 1e-2f)) return false;
 
     cactus_mean_axis_f16(input.data(), output.data(), outer_size, axis_size, inner_size);
-    return TestUtils::compare_arrays(output.data(), expected.data(), expected.size(), 1e-2f);
+    std::vector<__fp16> exp_mean = {5.0f, 10.0f};
+    if (!TestUtils::compare_arrays(output.data(), exp_mean.data(), exp_mean.size(), 1e-2f)) return false;
+
+    cactus_min_axis_f16(input.data(), output.data(), outer_size, axis_size, inner_size);
+    std::vector<__fp16> exp_min = {1.0f, 2.0f};
+    if (!TestUtils::compare_arrays(output.data(), exp_min.data(), exp_min.size(), 1e-2f)) return false;
+
+    cactus_max_axis_f16(input.data(), output.data(), outer_size, axis_size, inner_size);
+    std::vector<__fp16> exp_max = {9.0f, 18.0f};
+    if (!TestUtils::compare_arrays(output.data(), exp_max.data(), exp_max.size(), 1e-2f)) return false;
+
+    return true;
 }
 
 bool test_neon_variance_axis_inner1_correctness() {
@@ -185,38 +183,6 @@ bool test_neon_variance_axis_non_inner1_correctness() {
 
     cactus_variance_axis_f16(input.data(), output.data(), outer_size, axis_size, inner_size);
     return TestUtils::compare_arrays(output.data(), expected.data(), expected.size(), 0.05f);
-}
-
-bool test_neon_min_axis_inner1_correctness() {
-    const size_t outer_size = 2;
-    const size_t axis_size = 9;
-    const size_t inner_size = 1;
-
-    std::vector<__fp16> input = {
-        1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f,
-        2.0f, 4.0f, 6.0f, 8.0f, 10.0f, 12.0f, 14.0f, 16.0f, 18.0f
-    };
-    std::vector<__fp16> output(outer_size * inner_size);
-    std::vector<__fp16> expected = {1.0f, 2.0f};
-
-    cactus_min_axis_f16(input.data(), output.data(), outer_size, axis_size, inner_size);
-    return TestUtils::compare_arrays(output.data(), expected.data(), expected.size(), 1e-2f);
-}
-
-bool test_neon_max_axis_inner1_correctness() {
-    const size_t outer_size = 2;
-    const size_t axis_size = 9;
-    const size_t inner_size = 1;
-
-    std::vector<__fp16> input = {
-        1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f,
-        2.0f, 4.0f, 6.0f, 8.0f, 10.0f, 12.0f, 14.0f, 16.0f, 18.0f
-    };
-    std::vector<__fp16> output(outer_size * inner_size);
-    std::vector<__fp16> expected = {9.0f, 18.0f};
-
-    cactus_max_axis_f16(input.data(), output.data(), outer_size, axis_size, inner_size);
-    return TestUtils::compare_arrays(output.data(), expected.data(), expected.size(), 1e-2f);
 }
 
 bool run_benchmarks(TestRunner& runner) {
@@ -294,12 +260,9 @@ int main() {
     runner.run_test("variance_all", test_variance_all());
     runner.run_test("min_max_all", test_min_max_all());
     runner.run_test("sum_axis", test_sum_axis());
-    runner.run_test("Kernel Sum Axis Inner1 FP16 Correctness", test_neon_sum_axis_inner1_correctness());
-    runner.run_test("Kernel Mean Axis Inner1 FP16 Correctness", test_neon_mean_axis_inner1_correctness());
+    runner.run_test("Kernel Sum/Mean/Min/Max Axis Inner1 FP16 Correctness", test_neon_axis_inner1_correctness());
     runner.run_test("Kernel Variance Axis Inner1 FP16 Correctness", test_neon_variance_axis_inner1_correctness());
     runner.run_test("Kernel Variance Axis Non-Inner1 FP16 Correctness", test_neon_variance_axis_non_inner1_correctness());
-    runner.run_test("Kernel Min Axis Inner1 FP16 Correctness", test_neon_min_axis_inner1_correctness());
-    runner.run_test("Kernel Max Axis Inner1 FP16 Correctness", test_neon_max_axis_inner1_correctness());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks(runner));
     runner.print_summary();

@@ -2,19 +2,25 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import math
+import os
 import re
+import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel
+from PIL import Image
+from pydantic import BaseModel, Field
 
 from .bindings.cactus import (
     cactus_complete,
@@ -112,7 +118,7 @@ class ModelRegistry:
 
     def _resolve(self, model_id: str) -> ModelInfo | None:
         """Match an exact bundle id, or fall back to the HuggingFace id / bare
-        stem (e.g. 'google/gemma-4-E2B-it' -> 'gemma-4-e2b-it-cq4-apple') when it
+        stem (e.g. 'google/gemma-4-E2B-it' -> 'gemma-4-e2b-it-cq4') when it
         is unambiguous."""
         info = self.models.get(model_id)
         if info is not None:
@@ -273,7 +279,7 @@ class ToolChoiceObject(Permissive):
 
 class ChatRequest(Permissive):
     model: str
-    messages: list[ChatMessage]
+    messages: list[ChatMessage] = Field(min_length=1)
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
@@ -281,6 +287,7 @@ class ChatRequest(Permissive):
     max_completion_tokens: int | None = None
     stop: str | list[str] | None = None
     stream: bool = False
+    reasoning_effort: str | None = None
     tools: list[Tool] | None = None
     tool_choice: str | ToolChoiceObject | None = None
 
@@ -290,16 +297,68 @@ class EmbeddingRequest(Permissive):
     input: str | list[str]
 
 
+_DATA_URI_RE = re.compile(r"^data:(?P<mime>[^;,]+)?(?P<b64>;base64)?,(?P<data>.*)$", re.DOTALL)
+
+_ENGINE_IMAGE_FORMATS = {"PNG", "JPEG", "GIF"}
+
+
+def _decodable_image(source: Any) -> bool:
+    try:
+        with Image.open(source) as im:
+            if im.format not in _ENGINE_IMAGE_FORMATS or im.width <= 0 or im.height <= 0:
+                return False
+            im.load()
+        return True
+    except Exception:
+        return False
+
+
+def _materialize_image(url: str) -> str | None:
+    if not isinstance(url, str) or not url:
+        return None
+    if url.startswith("data:"):
+        match = _DATA_URI_RE.match(url)
+        if not match:
+            return None
+        mime = (match.group("mime") or "image/png").lower()
+        ext = "." + mime.split("/")[-1].split("+")[0] if "/" in mime else ".png"
+        payload = match.group("data")
+        try:
+            raw = base64.b64decode(payload) if match.group("b64") else payload.encode("utf-8")
+        except ValueError:
+            return None
+        if not _decodable_image(BytesIO(raw)):
+            return None
+        fd, path = tempfile.mkstemp(suffix=ext, prefix="cactus_img_")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(raw)
+        return path
+    if url.startswith("file://"):
+        url = url[len("file://"):]
+    if Path(url).exists():
+        return url if _decodable_image(url) else None
+    return None
+
+
 def _flatten_message(msg: ChatMessage) -> dict[str, Any]:
     out: dict[str, Any] = {"role": msg.role}
     if isinstance(msg.content, list):
         parts = []
+        images: list[str] = []
         for part in msg.content:
             if isinstance(part, dict) and part.get("type") == "text":
                 parts.append(str(part.get("text", "")))
+            elif isinstance(part, dict) and part.get("type") == "image_url":
+                raw = part.get("image_url")
+                url = raw.get("url") if isinstance(raw, dict) else (raw if isinstance(raw, str) else part.get("url"))
+                resolved = _materialize_image(url) if isinstance(url, str) else None
+                if resolved:
+                    images.append(resolved)
             elif isinstance(part, str):
                 parts.append(part)
         out["content"] = "\n".join(parts)
+        if images:
+            out["images"] = images
     elif msg.content is not None:
         out["content"] = msg.content
     if msg.tool_call_id is not None:
@@ -342,18 +401,155 @@ def _make_tool_calls(function_calls: list[Any], *, with_index: bool = False) -> 
     return out
 
 
+def _clamp_finite(value: Any, lo: float, hi: float) -> float | None:
+    """Clamp a sampling param to a finite, sane range so extreme/non-finite
+    values (e.g. 1e308, inf, nan) can't overflow the native sampler."""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    return max(lo, min(hi, v))
+
+
 def _chat_options(req: ChatRequest) -> dict[str, Any]:
     options: dict[str, Any] = {}
-    for key in ("temperature", "top_p", "top_k"):
-        value = getattr(req, key)
-        if value is not None:
-            options[key] = value
+    temperature = _clamp_finite(req.temperature, 0.0, 2.0)
+    options["temperature"] = temperature if temperature is not None else 0.7
+    top_p = _clamp_finite(req.top_p, 0.0, 1.0)
+    if top_p is not None:
+        options["top_p"] = top_p
+    if req.top_k is not None:
+        options["top_k"] = max(0, min(int(req.top_k), 1 << 20))
     max_tokens = req.max_tokens if req.max_tokens is not None else req.max_completion_tokens
-    if max_tokens is not None:
-        options["max_tokens"] = max_tokens
+    options["max_tokens"] = max_tokens if max_tokens is not None else 4096
     if req.stop:
         options["stop_sequences"] = [req.stop] if isinstance(req.stop, str) else req.stop
+    if req.reasoning_effort and req.reasoning_effort.lower() not in ("none", "off"):
+        options["enable_thinking_if_supported"] = True
     return options
+
+
+_HARMONY_MARKER = "<|channel"
+_HARMONY_THOUGHT_CHANNELS = {"thought", "thinking", "analysis", "reflection"}
+_HARMONY_CHANNEL_RE = re.compile(r"<\|channel\|?>\s*([a-zA-Z_]+)\s*\n?")
+_HARMONY_CONTROL_RE = re.compile(r"<\|[^>]*>")
+
+
+def _split_harmony_channels(text: str) -> tuple[str, str | None]:
+    if not text or _HARMONY_MARKER not in text:
+        return text, None
+    segments = _HARMONY_CHANNEL_RE.split(text)
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    if segments[0].strip():
+        content_parts.append(segments[0])
+    for i in range(1, len(segments) - 1, 2):
+        body = segments[i + 1]
+        target = reasoning_parts if segments[i].lower() in _HARMONY_THOUGHT_CHANNELS else content_parts
+        target.append(body)
+    content = _HARMONY_CONTROL_RE.sub("", "".join(content_parts)).strip()
+    reasoning = _HARMONY_CONTROL_RE.sub("", "\n".join(reasoning_parts)).strip() or None
+    if not content and reasoning:
+        return reasoning, None
+    return content, reasoning
+
+
+class _HarmonyStreamSplitter:
+    def __init__(self) -> None:
+        self._buf = ""
+        self._channel = "final"
+
+    def _kind(self) -> str:
+        return "reasoning" if self._channel in _HARMONY_THOUGHT_CHANNELS else "content"
+
+    def _hold_partial(self, s: str) -> str:
+        for k in range(min(len(s), len(_HARMONY_MARKER) - 1), 0, -1):
+            if _HARMONY_MARKER.startswith(s[-k:]):
+                return s[:-k]
+        return s
+
+    def feed(self, text: str) -> list[tuple[str, str]]:
+        self._buf += text
+        out: list[tuple[str, str]] = []
+        while True:
+            idx = self._buf.find(_HARMONY_MARKER)
+            if idx == -1:
+                safe = self._hold_partial(self._buf)
+                if safe:
+                    out.append((self._kind(), _HARMONY_CONTROL_RE.sub("", safe)))
+                    self._buf = self._buf[len(safe):]
+                break
+            before = self._buf[:idx]
+            if before:
+                out.append((self._kind(), _HARMONY_CONTROL_RE.sub("", before)))
+            rest = self._buf[idx + len(_HARMONY_MARKER):]
+            m = re.match(r"\|?>\s*([a-zA-Z_]+)(?:[ \t]*\n|(?=<))", rest)
+            if not m:
+                self._buf = self._buf[idx:]
+                break
+            self._channel = m.group(1).lower()
+            self._buf = rest[m.end():]
+        return out
+
+    def flush(self) -> list[tuple[str, str]]:
+        if not self._buf:
+            return []
+        out = [(self._kind(), _HARMONY_CONTROL_RE.sub("", self._buf))]
+        self._buf = ""
+        return out
+
+_TOOLCALL_PAIRS = (
+    ("<|tool_call>", "<tool_call|>"),
+    ("<start_function_call>", "<end_function_call>"),
+    ("<tool_call>", "</tool_call>"),
+    ("<|tool_call_start|>", "<|tool_call_end|>"),
+)
+_TOOLCALL_OPENERS = tuple(o for o, _ in _TOOLCALL_PAIRS)
+
+
+def _strip_tool_call_markers(text: str) -> str:
+    if not text or ("call:" not in text and "tool_call" not in text
+                    and "function_call" not in text and '<|"|>' not in text):
+        return text
+    s = text
+    for open_m, close_m in _TOOLCALL_PAIRS:
+        while True:
+            ci = s.find(close_m)
+            if ci == -1:
+                break
+            oi = s.rfind(open_m, 0, ci)
+            if oi == -1:
+                oi = s.rfind("call:", 0, ci)
+            if oi == -1:
+                s = s[:ci] + s[ci + len(close_m):]
+            else:
+                s = s[:oi] + s[ci + len(close_m):]
+    cut = None
+    for open_m in _TOOLCALL_OPENERS:
+        oi = s.find(open_m)
+        if oi != -1:
+            cut = oi if cut is None else min(cut, oi)
+    if cut is not None:
+        s = s[:cut]
+    ci = s.find("call:")
+    while ci != -1:
+        j = ci + 5
+        k = j
+        while k < len(s) and (s[k].isalnum() or s[k] in "_-."):
+            k += 1
+        m = k
+        while m < len(s) and s[m] == " ":
+            m += 1
+        if k > j and m < len(s) and s[m] == "{":
+            s = s[:ci]
+            break
+        ci = s.find("call:", ci + 5)
+    s = s.replace('<|"|>', '"')
+    return s.strip() if s != text else text
 
 
 def _build_chat_response(result: dict[str, Any], model_id: str, request_id: str) -> dict[str, Any]:
@@ -362,7 +558,11 @@ def _build_chat_response(result: dict[str, Any], model_id: str, request_id: str)
     has_tool_calls = bool(tool_calls)
     prefill = int(result.get("prefill_tokens") or 0)
     decode = int(result.get("decode_tokens") or 0)
-    message: dict[str, Any] = {"role": "assistant", "content": None if has_tool_calls else result.get("response", "")}
+    content, reasoning = _split_harmony_channels(result.get("response", "") or "")
+    content = _strip_tool_call_markers(content)
+    message: dict[str, Any] = {"role": "assistant", "content": None if has_tool_calls else content}
+    if reasoning:
+        message["reasoning_content"] = reasoning
     if has_tool_calls:
         message["tool_calls"] = tool_calls
     return {
@@ -381,6 +581,7 @@ def _build_chat_response(result: dict[str, Any], model_id: str, request_id: str)
             "completion_tokens": decode,
             "total_tokens": prefill + decode,
         },
+        "cloud_handoff": bool(result.get("cloud_handoff", False)),
     }
 
 
@@ -424,19 +625,41 @@ async def _stream_completion(manager: ModelManager, req: ChatRequest, request_id
 
     result = None
     error = None
+    splitter = _HarmonyStreamSplitter()
+
+    def _delta_chunk(piece_kind: str, text: str) -> str:
+        field = "reasoning_content" if piece_kind == "reasoning" else "content"
+        return _event({
+            "id": request_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": req.model,
+            "choices": [{"index": 0, "delta": {field: text}, "logprobs": None, "finish_reason": None}],
+        })
+
+    tools_present = bool(tools)
+
+    def _consume(pieces: list[tuple[str, str]]) -> list[str]:
+        out: list[str] = []
+        for piece_kind, piece_text in pieces:
+            if not piece_text:
+                continue
+            if tools_present and piece_kind != "reasoning":
+                continue
+            out.append(_delta_chunk(piece_kind, piece_text))
+        return out
+
     while True:
         kind, value = await queue.get()
         if kind == "token":
-            yield _event({
-                "id": request_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": req.model,
-                "choices": [{"index": 0, "delta": {"content": value}, "logprobs": None, "finish_reason": None}],
-            })
+            for event in _consume(splitter.feed(value)):
+                yield event
         elif kind == "done":
             result, error = value
             break
+
+    for event in _consume(splitter.flush()):
+        yield event
 
     await task
     if error is not None:
@@ -458,6 +681,11 @@ async def _stream_completion(manager: ModelManager, req: ChatRequest, request_id
     function_calls = (result or {}).get("function_calls") or []
     tool_calls = _make_tool_calls(function_calls, with_index=True)
     finish_reason = "tool_calls" if tool_calls else "stop"
+    if tools_present and not tool_calls:
+        clean_content, _ = _split_harmony_channels((result or {}).get("response", "") or "")
+        clean_content = _strip_tool_call_markers(clean_content)
+        if clean_content:
+            yield _delta_chunk("content", clean_content)
     if tool_calls:
         yield _event({
             "id": request_id,
@@ -477,6 +705,7 @@ async def _stream_completion(manager: ModelManager, req: ChatRequest, request_id
             "completion_tokens": int((result or {}).get("decode_tokens") or 0),
             "total_tokens": int((result or {}).get("total_tokens") or 0),
         },
+        "cloud_handoff": bool((result or {}).get("cloud_handoff", False)),
     }
     yield _event(final)
     yield "data: [DONE]\n\n"
@@ -550,6 +779,8 @@ def create_app(
         messages = [_flatten_message(m) for m in req.messages]
         tools, force_tools = _translate_tools(req.tools, req.tool_choice)
         options = _chat_options(req)
+        if "max_tokens" not in options:
+            options["max_tokens"] = info.context_length if info.context_length > 0 else 8192
         state = request.app.state
         if not state.auto_handoff:
             options["auto_handoff"] = False
@@ -658,7 +889,7 @@ def create_app(
         if not info.supports_embedding:
             raise HTTPException(status_code=400, detail=f"Model '{req.model}' is not an embedding model")
         inputs = [req.input] if isinstance(req.input, str) else list(req.input)
-        if not inputs:
+        if not inputs or any(not text for text in inputs):
             raise HTTPException(status_code=400, detail="'input' must not be empty")
         mgr: ModelManager = request.app.state.manager
 

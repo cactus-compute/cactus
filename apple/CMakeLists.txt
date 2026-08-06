@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(CactusApple LANGUAGES CXX)
 
-set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "")
-set(CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "13.0" CACHE STRING "")
+set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "")
+set(CMAKE_XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.4" CACHE STRING "")
 set(CMAKE_BUILD_TYPE Release CACHE STRING "")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
@@ -27,7 +27,7 @@ if(BUILD_SHARED_LIBS)
     )
 
     target_link_libraries(cactus_framework PUBLIC
-        "-framework Accelerate" "-framework CoreML" "-framework Foundation"
+        "-framework Accelerate" "-framework CoreML" "-framework Foundation" "-framework Metal" "-framework MetalPerformanceShaders"
         "-framework Security" "-framework SystemConfiguration" "-framework CFNetwork"
     )
 

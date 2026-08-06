@@ -44,12 +44,15 @@ def _hf_cache_dir() -> str | None:
     return os.environ.get("HF_HUB_CACHE") or os.environ.get("HF_HOME") or None
 
 
-def _load_hf(model_id_or_path: str, device: str):
+def _load_hf(model_id_or_path: str, device: str, *, skip_model_load: bool = False):
     import logging, warnings
     logging.getLogger("transformers").setLevel(logging.ERROR)
     warnings.filterwarnings("ignore", message=".*You are using a model of type.*")
     for note in patch_transformers_import_compat():
         print(f"note={note}")
+    from ..models.needle import register_with_transformers
+
+    register_with_transformers()
     nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path, cache_dir=_hf_cache_dir())
     if nemo_export is not None:
         model_id_or_path = nemo_export
@@ -72,6 +75,8 @@ def _load_hf(model_id_or_path: str, device: str):
     family = detect_family(cfg, "auto")
     adapter = adapter_for_family(family)
     processor = adapter.load_processor(model_id_or_path)
+    if skip_model_load:
+        return cfg, processor, None
     model_cls = adapter.model_class(cfg)
     model_type = str(cfg_get(cfg, "model_type", "") or "").lower()
     if isinstance(cfg, dict) and model_type == "parakeet_tdt":
@@ -417,7 +422,7 @@ def convert(args: argparse.Namespace) -> None:
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cfg, processor, model = _load_hf(args.model, args.device)
+    cfg, processor, model = _load_hf(args.model, args.device, skip_model_load=bool(args.skip_model_load))
     runtime_source = ensure_parakeet_tdt_nemo_source(args.model, cache_dir=_hf_cache_dir()) or args.model
     family = detect_family(cfg, args.model_family)
     adapter = adapter_for_family(family)
@@ -453,7 +458,11 @@ def convert(args: argparse.Namespace) -> None:
     }
     rows: list[dict[str, Any]] = []
     pending: list[tuple[str, Any, Any, Any]] = []
-    num_layers = int(model_config.get("num_layers", 0) or 0) or None
+    num_layers = max(
+        int(model_config.get("num_layers", 0) or 0),
+        int(cfg_get(cfg, "num_encoder_layers", 0) or 0),
+        int(cfg_get(cfg, "num_decoder_layers", 0) or 0),
+    ) or None
     target_modules: set[str] = set()
     for name, tensor in state_dict.items():
         match = adapter.name_tensor(name, tensor, num_layers)
@@ -618,6 +627,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model-family", default="auto", choices=sorted(SUPPORTED_FAMILIES))
     p.add_argument("--strict", action="store_true")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--skip-model-load", action="store_true")
     p.add_argument("--max-language-examples", type=int)
     p.add_argument("--max-vision-examples", type=int)
     p.add_argument("--max-audio-examples", type=int)

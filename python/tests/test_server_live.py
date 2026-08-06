@@ -25,10 +25,11 @@ STT_TYPES = {"whisper", "parakeet_tdt", "parakeet-tdt"}
 
 def _default_llm_bundle() -> Path:
     """Locate the canonical gemma-4-e2b-it LLM bundle under whichever convention
-    it was built with (bare `gemma-4-e2b-it` or suffixed `...-cq4[-apple]`)."""
-    for candidate in _iter_bundle_candidates("gemma-4-e2b-it"):
-        if _valid_bundle(candidate) and _read_model_type(candidate) in LLM_TYPES:
-            return candidate
+    it was built with (bare `gemma-4-e2b-it` or suffixed `...-cq4`)."""
+    for stem in ("gemma-4-e2b-it", "gemma4-e2b-it"):
+        for candidate in _iter_bundle_candidates(stem):
+            if _valid_bundle(candidate) and _read_model_type(candidate) in LLM_TYPES:
+                return candidate
     return WEIGHTS / "gemma-4-e2b-it"  # fall through so _require_bundle reports it
 
 

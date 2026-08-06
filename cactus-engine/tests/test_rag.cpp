@@ -41,16 +41,11 @@ bool test_rag() {
     std::cout << "├─ Corpus dir: " << corpus_dir << "\n";
     std::cout << "├─ Initializing model with RAG...\n";
 
-    Timer init_timer;
     cactus_model_t model = cactus_init(g_model_path, corpus_dir.c_str(), false);
-    double init_time_ms = init_timer.elapsed_ms();
-
     if (!model) {
         std::cerr << "[✗] Failed to initialize model with corpus dir\n";
         return false;
     }
-
-    std::cout << "├─ Init time: " << std::fixed << std::setprecision(2) << init_time_ms << " ms\n";
 
     auto print_chunks = [](cactus_model_t m, const char* query) -> bool {
         char chunks_buf[16384];

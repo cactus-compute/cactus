@@ -36,12 +36,14 @@ def _cq_precision(weights_file):
 
 
 def _quant_label(model_dir, *, sample_cap=64, scan_cap=2000):
-    """Infer a model's CQ quantization level from its tensor headers.
+    """Infer a model's CQ variant from the `-cqN` dir suffix (the only way to
+    recover a mixed variant like CQ3.26), else the dominant CQ level in the
+    tensor headers. Returns "—" if no CQ-quantized tensors are present."""
+    from .utils import parse_cq_variant
 
-    Scans `.weights` files (top-level converted weights, then nested
-    bundle components) and returns the dominant CQ level, e.g. "CQ4".
-    Returns "—" if no CQ-quantized tensors are present.
-    """
+    variant = parse_cq_variant(model_dir.name)
+    if variant is not None:
+        return f"CQ{variant}"
     candidates = itertools.chain(
         model_dir.glob("*.weights"),
         (model_dir / "components").rglob("*.weights"),

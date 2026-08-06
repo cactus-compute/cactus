@@ -112,6 +112,33 @@ class TestGraphComposed(unittest.TestCase):
 
 class TestGraphTensorOps(unittest.TestCase):
 
+    def test_topk_from_fp16_outputs_fp32_indices_after_roundtrip(self):
+        g = Graph()
+        a = g.input((1, 5))
+        topk = g.topk(a, 3)
+        indices = g.index(topk, 0, axis=0)
+
+        data = np.array([[0.1, 4.0, 2.0, 5.0, 3.0]], dtype=np.float16)
+        g.set_input(a, data)
+        g.execute()
+
+        self.assertEqual(g.output_info(topk)["precision"], Graph.FP32)
+        self.assertEqual(g.output_info(indices)["precision"], Graph.FP32)
+        np.testing.assert_allclose(indices.numpy(), np.array([[3.0, 1.0, 4.0]], dtype=np.float32))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "topk_graph.cg"
+            g.save(path)
+
+            loaded = Graph.load(path)
+            loaded_a = Tensor(loaded, a.id, a.shape, a.dtype)
+            loaded_indices = Tensor(loaded, indices.id, indices.shape, indices.dtype)
+            loaded.set_input(loaded_a, data)
+            loaded.execute()
+
+            self.assertEqual(loaded.output_info(loaded_indices)["precision"], Graph.FP32)
+            np.testing.assert_allclose(loaded_indices.numpy(), np.array([[3.0, 1.0, 4.0]], dtype=np.float32))
+
     def test_view(self):
         g = Graph()
         a = g.input((2, 3))

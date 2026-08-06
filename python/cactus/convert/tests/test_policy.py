@@ -5,19 +5,13 @@ from cactus.convert.model_adapters.detection import detect_family
 from cactus.convert.cactus_adapters.config_utils import extract_parakeet_tdt_config, extract_whisper_config
 from cactus.convert.cli import _augment_state_dict_for_family
 from cactus.convert.model_adapters.adapters import adapter_for_family
+import pytest
 import torch
 
 
-def test_policy_embedding_cq4():
-    match = cactus_name_for_tensor("model.embed_tokens.weight", "generic", 1)
-    p = policy_for_tensor(match, (100, 64), 2, "generic")
-    assert p.precision == "CQ4"
-    assert p.rotation == "orthogonal"
-    assert p.layout == "interleaved_4row"
-
-
-def test_policy_lm_head_interleaved_cq4():
-    match = cactus_name_for_tensor("lm_head.weight", "generic", 1)
+@pytest.mark.parametrize("source_name", ["model.embed_tokens.weight", "lm_head.weight"])
+def test_policy_embedding_lm_head_interleaved_cq4(source_name):
+    match = cactus_name_for_tensor(source_name, "generic", 1)
     p = policy_for_tensor(match, (100, 64), 2, "generic")
     assert p.precision == "CQ4"
     assert p.rotation == "orthogonal"

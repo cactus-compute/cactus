@@ -1,4 +1,6 @@
 #!/bin/bash
+IOS_MIN_VERSION=16.4
+MACOS_MIN_VERSION=13.3
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,7 +61,7 @@ function build_static_library() {
 
     cmake -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=$IOS_MIN_VERSION \
           -DCMAKE_OSX_SYSROOT="$IOS_SDK_PATH" \
           -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
           -DBUILD_SHARED_LIBS=OFF \
@@ -86,7 +88,7 @@ function build_static_library() {
 
     cmake -DCMAKE_SYSTEM_NAME=iOS \
           -DCMAKE_OSX_ARCHITECTURES=arm64 \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=$IOS_MIN_VERSION \
           -DCMAKE_OSX_SYSROOT="$IOS_SIM_SDK_PATH" \
           -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
           -DBUILD_SHARED_LIBS=OFF \
@@ -110,7 +112,7 @@ function build_framework() {
         -DCMAKE_SYSTEM_NAME=$1 \
         -DCMAKE_OSX_ARCHITECTURES="$2" \
         -DCMAKE_OSX_SYSROOT=$3 \
-        -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=$([ "$1" = "iOS" ] && echo "$IOS_MIN_VERSION" || echo "$MACOS_MIN_VERSION") \
         -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
         -DBUILD_SHARED_LIBS=ON \
         -DCACTUS_CURL_ROOT="$CACTUS_CURL_ROOT" \

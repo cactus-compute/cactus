@@ -633,23 +633,17 @@ def _run_component_pipeline_transpile(
     if weights_dir:
         print(f"weights_dir={weights_dir}")
 
-    npu_enabled = bool(getattr(args, "npu", False))
-    npu_quantize = getattr(args, "npu_quantize", None)
-    npu_audio_quantize  = getattr(args, "npu_audio_quantize",  None)
-    npu_vision_quantize = getattr(args, "npu_vision_quantize", None)
     npu_encoder_mlpackages: dict[str, str] = {}
-    if npu_enabled and artifact_dir is not None:
+    if bool(getattr(args, "npu", False)) and artifact_dir is not None:
         from .npu import run_encoder_pipeline
         npu_encoder_mlpackages = run_encoder_pipeline(
             component_specs,
             artifact_dir,
             enabled=True,
-            quantize_bits=npu_quantize,
-            audio_quantize_bits=npu_audio_quantize,
-            vision_quantize_bits=npu_vision_quantize,
+            quantize_bits=getattr(args, "npu_quantize", None),
+            audio_quantize_bits=getattr(args, "npu_audio_quantize", None),
+            vision_quantize_bits=getattr(args, "npu_vision_quantize", None),
         )
-        import gc as _gc
-        _gc.collect()
 
     print("capture_begin=true", flush=True)
     captured_components = {}
@@ -2816,6 +2810,9 @@ def _lower_preoptimized_ir(ir: IRGraph) -> TranspiledGraph:
 
 
 def main() -> int:
+    from cactus.models.needle import register_with_transformers
+
+    register_with_transformers()
     parser = argparse.ArgumentParser(
         description=(
             "Load a Hugging Face model, canonicalize it into a generic transpile task, "
@@ -2914,7 +2911,7 @@ def main() -> int:
         help=(
             "Instantiate the HF model on the meta device for graph capture instead of "
             "loading checkpoint tensors into RAM. Requires converted CQ weights and "
-            "only supports bundle generation, not execution or NPU emission."
+            "only supports bundle generation, not execution."
         ),
     )
     parser.add_argument(
@@ -2951,49 +2948,10 @@ def main() -> int:
             "(for example: vision_encoder,audio_encoder,lm_encoder,decoder)."
         ),
     )
-    parser.add_argument(
-        "--dynamic-batch",
-        action="store_true",
-        help=(
-            "Mark the Gemma4 decoder_step batch axis dynamic so the emitted graph runs any "
-            "batch at runtime (for batched/continuous decode). Default off."
-        ),
-    )
-    parser.add_argument(
-        "--max-slots",
-        type=int,
-        default=1,
-        help=(
-            "KV-cache slot-pool capacity (max concurrent sequences) for batched decode. "
-            "Only used with --dynamic-batch; the decoder_step caches are sized for this many slots."
-        ),
-    )
-    parser.add_argument(
-        "--npu",
-        action="store_true",
-        help="Also emit CoreML .mlpackage(s) for Apple Neural Engine audio + vision encoders.",
-    )
-    parser.add_argument(
-        "--npu-quantize",
-        type=int,
-        default=None,
-        choices=[0, 4, 8],
-        help="Legacy override that forces BOTH audio and vision encoders to the same weight quant (0=fp16, 4=int4, 8=int8). When unset, per-component defaults apply: audio=int8, vision=fp16.",
-    )
-    parser.add_argument(
-        "--npu-audio-quantize",
-        type=int,
-        default=None,
-        choices=[0, 4, 8],
-        help="Quantization for the audio encoder .mlpackage (0=fp16, 4=int4, 8=int8). Default int8: Conformer-style encoders absorb int8 quant noise well.",
-    )
-    parser.add_argument(
-        "--npu-vision-quantize",
-        type=int,
-        default=None,
-        choices=[0, 4, 8],
-        help="Quantization for the vision encoder .mlpackage (0=fp16, 4=int4, 8=int8). Default fp16: ViT-style towers are small enough that fp16 is the safer correctness default — int4 visibly degrades on Gemma 4 vision.",
-    )
+    parser.add_argument("--npu", action="store_true", help="Also emit CoreML packages for supported encoders.")
+    parser.add_argument("--npu-quantize", type=int, choices=(0, 4, 8), default=None)
+    parser.add_argument("--npu-audio-quantize", type=int, choices=(0, 4, 8), default=None)
+    parser.add_argument("--npu-vision-quantize", type=int, choices=(0, 4, 8), default=None)
     parser.add_argument("--no-fuse-gated-deltanet", action="store_true")
     parser.add_argument("--no-fuse-rms-norm", action="store_true")
     parser.add_argument("--no-fuse-rope", action="store_true")
@@ -3026,7 +2984,7 @@ def main() -> int:
         if validated_weights_dir is None:
             raise RuntimeError("--low-memory-load requires --weights-dir with converted Cactus CQ weights")
         if args.npu:
-            raise RuntimeError("--low-memory-load cannot emit NPU .mlpackage files because CoreML export needs real weights")
+            raise RuntimeError("--low-memory-load cannot emit NPU packages because CoreML export needs real weights")
         if not args.skip_execute:
             print("note=low_memory_load_forces_skip_execute=true")
             args.skip_execute = True
@@ -3234,8 +3192,6 @@ def main() -> int:
         weights_dir=weights_dir,
         inputs_metadata=prepared.metadata,
         cache_context_length=args.cache_context_length,
-        dynamic_batch=getattr(args, "dynamic_batch", False),
-        max_slots=getattr(args, "max_slots", 1),
     )
     try:
         component_specs = build_component_module_specs(

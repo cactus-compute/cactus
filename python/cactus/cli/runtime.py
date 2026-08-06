@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import subprocess
@@ -75,8 +76,9 @@ def _link_python_runtime_library(*, static_lib, library_path):
             "-Wl,-install_name,@rpath/libcactus_engine.dylib",
             "-lcurl",
             "-framework", "Accelerate",
-            "-framework", "CoreML",
             "-framework", "Foundation",
+            "-framework", "Metal",
+            "-framework", "MetalPerformanceShaders",
             "-framework", "Security",
             "-framework", "SystemConfiguration",
             "-framework", "CFNetwork",
@@ -96,6 +98,11 @@ def _link_python_runtime_library(*, static_lib, library_path):
 
 
 def ensure_python_runtime_library():
+    override = os.environ.get("CACTUS_LIB_PATH")
+    if override:
+        override_path = Path(override).expanduser()
+        if override_path.is_file():
+            return override_path.resolve()
     library_path = _python_runtime_library_path()
     static_lib = _static_library_path()
 

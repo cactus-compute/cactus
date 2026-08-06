@@ -320,6 +320,7 @@ for test_exe in "${test_executables[@]}"; do
         export CACTUS_TEST_ASSETS=$device_assets_dir/assets && \
         export CACTUS_INDEX_PATH=$device_assets_dir/assets && \
         export CACTUS_NO_CLOUD_TELE=${CACTUS_NO_CLOUD_TELE:-1} && \
+        export CACTUS_TEST_BACKEND=${CACTUS_TEST_BACKEND:-auto} && \
         ./$test_name"; then
         FAILED=1
     fi

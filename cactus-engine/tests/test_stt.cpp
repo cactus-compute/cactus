@@ -2,12 +2,13 @@
 #include <cstdlib>
 #include <iostream>
 #include <vector>
-#include <cmath>
 
 using namespace EngineTestUtils;
 
 static const char* g_transcription_model_path = std::getenv("CACTUS_TEST_TRANSCRIPTION_MODEL");
 static const char* g_assets_path = std::getenv("CACTUS_TEST_ASSETS");
+
+static const char* g_options = R"({"max_tokens": 200, "telemetry_enabled": false, "auto_handoff": false})";
 
 bool test_transcription() {
     std::cout << "\n╔══════════════════════════════════════════╗\n"
@@ -23,56 +24,20 @@ bool test_transcription() {
     std::string audio_path = std::string(g_assets_path) + "/test.wav";
     char response[1 << 15] = {0};
 
-    Timer timer;
     int rc = cactus_transcribe(model, audio_path.c_str(), nullptr,
-                               response, sizeof(response),
-                               R"({"max_tokens": 200, "telemetry_enabled": false, "auto_handoff": false})",
+                               response, sizeof(response), g_options,
                                nullptr, nullptr, nullptr, 0);
-    double elapsed = timer.elapsed_ms();
+    std::string file_transcript = json_string(std::string(response), "response");
+    std::cout << "├─ File transcript: " << file_transcript << "\n";
+    bool file_ok = rc > 0 && file_transcript.length() > 5;
+    if (!file_ok) std::cerr << "[✗] File transcription failed: " << response << "\n";
 
-    if (rc <= 0) {
-        std::cerr << "[✗] Transcription failed: " << response << "\n";
-        cactus_destroy(model);
-        return false;
-    }
-
-    std::string response_str(response);
-    std::string transcript = json_string(response_str, "response");
-
-    std::cout << "├─ Transcript: " << transcript << "\n"
-              << "├─ Time: " << std::fixed << std::setprecision(2) << elapsed << "ms\n";
-
-    Metrics m;
-    m.parse(response);
-    m.print_json();
-
-    cactus_destroy(model);
-
-    bool passed = rc > 0 && !transcript.empty() && transcript.length() > 5;
-    std::cout << "└─ Status: " << (passed ? "PASSED ✓" : "FAILED ✗") << "\n";
-    return passed;
-}
-
-bool test_transcription_pcm() {
-    std::cout << "\n╔══════════════════════════════════════════╗\n"
-              << "║      TRANSCRIPTION PCM TEST               ║\n"
-              << "╚══════════════════════════════════════════╝\n";
-
-    cactus_model_t model = cactus_init(g_transcription_model_path, nullptr, false);
-    if (!model) {
-        std::cerr << "[✗] Failed to initialize model\n";
-        return false;
-    }
-
-    std::string audio_path = std::string(g_assets_path) + "/test.wav";
     FILE* wav_file = fopen(audio_path.c_str(), "rb");
     if (!wav_file) {
         std::cerr << "[✗] Failed to open audio file\n";
         cactus_destroy(model);
         return false;
     }
-
-    // Skip 44-byte WAV header
     fseek(wav_file, 44, SEEK_SET);
     std::vector<uint8_t> pcm_data;
     uint8_t buf[4096];
@@ -82,32 +47,19 @@ bool test_transcription_pcm() {
     }
     fclose(wav_file);
 
-    char response[1 << 15] = {0};
-
-    Timer timer;
-    int rc = cactus_transcribe(model, nullptr, nullptr,
-                               response, sizeof(response),
-                               R"({"max_tokens": 200, "telemetry_enabled": false, "auto_handoff": false})",
-                               nullptr, nullptr,
-                               pcm_data.data(), pcm_data.size());
-    double elapsed = timer.elapsed_ms();
-
-    if (rc <= 0) {
-        std::cerr << "[✗] PCM transcription failed: " << response << "\n";
-        cactus_destroy(model);
-        return false;
-    }
-
-    std::string response_str(response);
-    std::string transcript = json_string(response_str, "response");
-
-    std::cout << "├─ Transcript: " << transcript << "\n"
-              << "├─ PCM size: " << pcm_data.size() << " bytes\n"
-              << "├─ Time: " << std::fixed << std::setprecision(2) << elapsed << "ms\n";
+    char pcm_response[1 << 15] = {0};
+    int pcm_rc = cactus_transcribe(model, nullptr, nullptr,
+                                   pcm_response, sizeof(pcm_response), g_options,
+                                   nullptr, nullptr,
+                                   pcm_data.data(), pcm_data.size());
+    std::string pcm_transcript = json_string(std::string(pcm_response), "response");
+    std::cout << "├─ PCM transcript:  " << pcm_transcript << "\n";
+    bool pcm_ok = pcm_rc > 0 && pcm_transcript.length() > 5;
+    if (!pcm_ok) std::cerr << "[✗] PCM transcription failed: " << pcm_response << "\n";
 
     cactus_destroy(model);
 
-    bool passed = rc > 0 && !transcript.empty() && transcript.length() > 5;
+    bool passed = file_ok && pcm_ok;
     std::cout << "└─ Status: " << (passed ? "PASSED ✓" : "FAILED ✗") << "\n";
     return passed;
 }
@@ -115,7 +67,6 @@ bool test_transcription_pcm() {
 int main() {
     TestUtils::TestRunner runner("STT Tests");
     runner.run_test("transcription", test_transcription());
-    runner.run_test("transcription_pcm", test_transcription_pcm());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

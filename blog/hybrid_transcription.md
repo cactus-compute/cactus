@@ -53,7 +53,7 @@ cactus transcribe --file path/to/audio.wav
 ## Built for the Edge, from the Ground Up
 Achieving this required relying on our industry-leading on-device engine. We built Cactus from the ground up exactly for this.
 
-Because the engine sits directly on the metal, it is optimized for edge constraints. It targets ARM-based CPUs and NPUs natively, resulting in super low RAM usage (e.g. Moonshine transcription for example, runs with sub-10MB RAM utilization). This is a critical factor for mobile and wearable devices where memory is strictly rationed by the OS.
+Because the engine sits directly on the metal, it is optimized for edge constraints. It targets ARM-based CPUs natively, resulting in super low RAM usage (e.g. Moonshine transcription for example, runs with sub-10MB RAM utilization). This is a critical factor for mobile and wearable devices where memory is strictly rationed by the OS.
 
 By keeping the footprint minimal, the engine operates silently in the background without draining battery or causing OS-level memory warnings, making it viable for continuous, ambient listening.
 

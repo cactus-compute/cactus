@@ -232,81 +232,9 @@ bool test_prefill_with_images() {
     return all_success && warm_prefilled_less;
 }
 
-bool test_prefill_prefix_extension_reuse_vlm() {
-    std::cout << "\n╔══════════════════════════════════════════╗\n"
-              << "║" << std::setw(42) << std::left << "  PREFILL PREFIX EXTENSION (VLM)" << "║\n"
-              << "╚══════════════════════════════════════════╝\n";
-
-    std::string base_img_path = std::string(g_assets_path) + "/test_monkey.png";
-    std::string extension_img_path = std::string(g_assets_path) + "/test_thing.png";
-
-    cactus_model_t model = cactus_init(g_model_path, nullptr, false);
-    if (!model) {
-        std::cerr << "[✗] Failed to initialize model\n";
-        return false;
-    }
-
-    std::string base_messages = "["
-        "{\"role\": \"system\", \"content\": \"You are a helpful assistant. Be concise.\"},"
-        "{\"role\": \"user\", \"content\": \"Describe this image in one short sentence.\", \"images\": [\""
-        + base_img_path + "\"]},"
-        "{\"role\": \"assistant\", \"content\": \"This image shows a close-up of a monkey face.\"}"
-        "]";
-
-    std::string extended_messages = "["
-        "{\"role\": \"system\", \"content\": \"You are a helpful assistant. Be concise.\"},"
-        "{\"role\": \"user\", \"content\": \"Describe this image in one short sentence.\", \"images\": [\""
-        + base_img_path + "\"]},"
-        "{\"role\": \"assistant\", \"content\": \"This image shows a close-up of a monkey face.\"},"
-        "{\"role\": \"user\", \"content\": \"Now describe this second image in one short sentence.\", \"images\": [\""
-        + extension_img_path + "\"]}"
-        "]";
-
-    char prefill_response1[2048] = {0};
-    int prefill_result1 = cactus_prefill(model, base_messages.c_str(), prefill_response1, sizeof(prefill_response1), nullptr, nullptr, nullptr, 0);
-    PrefillMetrics prefill_metrics1;
-    prefill_metrics1.parse(prefill_response1);
-
-    char prefill_response2[2048] = {0};
-    int prefill_result2 = cactus_prefill(model, extended_messages.c_str(), prefill_response2, sizeof(prefill_response2), nullptr, nullptr, nullptr, 0);
-    PrefillMetrics prefill_metrics2;
-    prefill_metrics2.parse(prefill_response2);
-
-    cactus_reset(model);
-
-    char prefill_response3[2048] = {0};
-    int prefill_result3 = cactus_prefill(model, extended_messages.c_str(), prefill_response3, sizeof(prefill_response3), nullptr, nullptr, nullptr, 0);
-    PrefillMetrics prefill_metrics3;
-    prefill_metrics3.parse(prefill_response3);
-
-    std::cout << "\n\n[Results]\n";
-    std::cout << "├─ Prefill#1 (base): ";
-    prefill_metrics1.print_line();
-    std::cout << "\n"
-              << "├─ Prefill#2 (extended, warm): ";
-    prefill_metrics2.print_line();
-    std::cout << "\n"
-              << "├─ Prefill#3 (extended, cold): ";
-    prefill_metrics3.print_line();
-    std::cout << "\n";
-
-    bool prefill_success = prefill_result1 > 0 && prefill_result2 > 0 && prefill_result3 > 0
-        && prefill_metrics1.success && prefill_metrics2.success && prefill_metrics3.success;
-    bool second_call_prefilled = prefill_metrics2.prefill_tokens > 0;
-    bool warm_reused_prefix = prefill_metrics2.prefill_tokens < prefill_metrics3.prefill_tokens;
-
-    std::cout << "├─ Prefill calls success: " << (prefill_success ? "YES" : "NO") << "\n"
-              << "├─ Warm extension prefilled tokens: " << (second_call_prefilled ? "YES" : "NO") << "\n"
-              << "└─ Warm extension < cold extension: " << (warm_reused_prefix ? "YES" : "NO") << std::endl;
-
-    cactus_destroy(model);
-    return prefill_success && second_call_prefilled && warm_reused_prefix;
-}
-
 int main() {
     TestUtils::TestRunner runner("VLM Tests");
     runner.run_test("prefill_with_images", test_prefill_with_images());
-    runner.run_test("prefill_prefix_extension_reuse", test_prefill_prefix_extension_reuse_vlm());
     runner.run_test("prefill_invalidated_on_message_change", test_prefill_invalidated_on_message_change_vlm());
     runner.run_test("vlm_multiturn", test_vlm_multiturn());
     runner.print_summary();

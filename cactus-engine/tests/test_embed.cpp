@@ -20,13 +20,8 @@ bool test_embeddings() {
     std::vector<float> emb1(2048), emb2(2048);
     size_t dim1 = 0, dim2 = 0;
 
-    Timer t1;
     int rc1 = cactus_embed(model, texts[0], emb1.data(), emb1.size() * sizeof(float), &dim1, true);
-    double time1 = t1.elapsed_ms();
-
-    Timer t2;
     int rc2 = cactus_embed(model, texts[1], emb2.data(), emb2.size() * sizeof(float), &dim2, true);
-    double time2 = t2.elapsed_ms();
 
     if (rc1 < 0 || rc2 < 0 || dim1 == 0 || dim1 != dim2 || dim1 > emb1.size()) {
         cactus_destroy(model);
@@ -40,12 +35,10 @@ bool test_embeddings() {
 
     std::cout << "\n[Results]\n"
               << "├─ Embedding dim: " << dim1 << "\n"
-              << "├─ Time (text1): " << std::fixed << std::setprecision(2) << time1 << "ms\n"
-              << "├─ Time (text2): " << time2 << "ms\n"
-              << "└─ Similarity: " << std::setprecision(4) << similarity << std::endl;
+              << "└─ Similarity: " << std::fixed << std::setprecision(4) << similarity << std::endl;
 
     cactus_destroy(model);
-    return true;
+    return similarity > 0.5f;
 }
 
 static bool test_image_embeddings() {
@@ -61,14 +54,11 @@ static bool test_image_embeddings() {
     cactus_model_t model = cactus_init(g_model_path, nullptr, false);
     if (!model) return false;
 
-    Timer t;
     int result = cactus_image_embed(model, image_path.c_str(), embeddings.data(), buffer_size, &embedding_dim);
-    double elapsed = t.elapsed_ms();
 
     cactus_destroy(model);
 
-    std::cout << "├─ Embedding dim: " << embedding_dim << "\n"
-              << "└─ Time: " << std::fixed << std::setprecision(2) << elapsed << "ms" << std::endl;
+    std::cout << "└─ Embedding dim: " << embedding_dim << std::endl;
 
     return result > 0 && embedding_dim > 0;
 }
@@ -86,14 +76,11 @@ static bool test_audio_embeddings() {
     if (!model) return false;
 
     std::string audio_path = std::string(g_assets_path) + "/test.wav";
-    Timer t;
     int result = cactus_audio_embed(model, audio_path.c_str(), embeddings.data(), buffer_size, &embedding_dim);
-    double elapsed = t.elapsed_ms();
 
     cactus_destroy(model);
 
-    std::cout << "├─ Embedding dim: " << embedding_dim << "\n"
-              << "└─ Time: " << std::fixed << std::setprecision(2) << elapsed << "ms" << std::endl;
+    std::cout << "└─ Embedding dim: " << embedding_dim << std::endl;
 
     return result > 0 && embedding_dim > 0;
 }

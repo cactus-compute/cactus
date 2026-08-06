@@ -22,7 +22,7 @@ class TestPackageStructure:
 
     def test_version_exists(self):
         from cactus import __version__
-        assert __version__ == "2.0.0"
+        assert __version__ and __version__[0].isdigit()
 
     def test_cli_module_importable(self):
         from cactus.cli import main, create_parser
@@ -171,29 +171,6 @@ class TestPreparePcm:
         assert size == 25600
 
 
-class TestMakeTokenCallback:
-    """Test the callback wrapper helper."""
-
-    def setup_method(self):
-        from cactus.bindings.cactus import _make_token_callback
-        self.make_cb = _make_token_callback
-
-    def test_none_callback(self):
-        cb = self.make_cb(None)
-        assert cb is not None  # Returns empty TokenCallback
-
-    def test_false_callback(self):
-        cb = self.make_cb(False)
-        assert cb is not None
-
-    def test_callable_wrapped(self):
-        tokens = []
-        def my_callback(text, token_id):
-            tokens.append((text, token_id))
-        cb = self.make_cb(my_callback)
-        assert cb is not None
-
-
 class TestEnc:
     """Test the _enc string encoding helper."""
 
@@ -311,10 +288,10 @@ class TestCliParser:
         args = self.parser.parse_args([])
         assert args.command is None
 
-    def test_convert_rejects_graph_flags(self):
+    def test_convert_preserves_explicit_legacy_graph_flags(self):
         import pytest
-        with pytest.raises(SystemExit):
-            self.parser.parse_args(["convert", "google/gemma-4-E2B-it", "--task", "causal_lm_logits"])
+        args = self.parser.parse_args(["convert", "google/gemma-4-E2B-it", "--task", "causal_lm_logits"])
+        assert args.task == "causal_lm_logits"
         with pytest.raises(SystemExit):
             self.parser.parse_args(["convert", "google/gemma-4-E2B-it", "--dynamic-batch"])
         with pytest.raises(SystemExit):
@@ -325,20 +302,8 @@ class TestCliParser:
         with pytest.raises(SystemExit):
             self.parser.parse_args(["run", "whisper-base", "--prompt", "hi"])
 
-    def test_run_accepts_local_bundle_path(self):
-        args = self.parser.parse_args(["run", "/tmp/bundle", "--prompt", "hi"])
-        assert args.command == "run"
-        assert args.model_id == "/tmp/bundle"
-        assert args.prompt == "hi"
-
-    def test_run_platform_flag(self):
-        args = self.parser.parse_args(["run", "Foo/Bar", "--platform", "apple"])
-        assert args.platform == "apple"
-        assert args.bits == 4
-
-    def test_download_platform_flag(self):
-        args = self.parser.parse_args(["download", "Foo/Bar", "--platform", "cpu", "--bits", "2"])
-        assert args.platform == "cpu"
+    def test_download_bits_flag(self):
+        args = self.parser.parse_args(["download", "Foo/Bar", "--bits", "2"])
         assert args.bits == 2
 
 

@@ -2,6 +2,7 @@
 #include "utils.h"
 #include "cloud.h"
 #include "cactus_kernels.h"
+#include "metal_backend.h"
 #include "wav.h"
 #include <algorithm>
 #include <chrono>
@@ -163,6 +164,9 @@ int cactus_transcribe(
     const uint8_t* pcm_buffer,
     size_t pcm_buffer_size
 ) {
+    struct MetalTrimGuard {
+        ~MetalTrimGuard() { cactus_metal_trim_prefill_cache(); }
+    } metal_trim_guard;
     if (validate_audio_params("transcribe", model, response_buffer, buffer_size,
                               audio_file_path, pcm_buffer, pcm_buffer_size) != 0) {
         return -1;

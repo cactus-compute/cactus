@@ -65,6 +65,21 @@ if(APPLE)
     set(CMAKE_OSX_ARCHITECTURES "arm64")
     target_compile_definitions(cactus_kernels PUBLIC ACCELERATE_NEW_LAPACK)
     target_link_libraries(cactus_kernels PUBLIC "-framework Accelerate")
+    enable_language(OBJCXX)
+    set(_msl_in  ${CMAKE_CURRENT_SOURCE_DIR}/src/cactus_kernels.metal)
+    set(_msl_out ${CMAKE_CURRENT_BINARY_DIR}/generated/cactus_kernels_msl.h)
+    add_custom_command(
+        OUTPUT  ${_msl_out}
+        COMMAND ${CMAKE_COMMAND} -DIN=${_msl_in} -DOUT=${_msl_out} -DDELIM=CACTUS_MSL
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
+        DEPENDS ${_msl_in} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_msl.cmake
+        VERBATIM)
+    target_sources(cactus_kernels PRIVATE src/metal_backend.mm ${_msl_out})
+    target_include_directories(cactus_kernels PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    set_source_files_properties(src/metal_backend.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    target_link_libraries(cactus_kernels PUBLIC "-framework Metal" "-framework Foundation" "-framework MetalPerformanceShaders")
+else()
+    target_sources(cactus_kernels PRIVATE src/metal_backend_stub.cpp)
 endif()
 
 if((BUILD_TESTING OR CACTUS_BUILD_TESTS) AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)

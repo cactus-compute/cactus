@@ -69,10 +69,9 @@ BufferDesc::BufferDesc(const std::vector<size_t>& s, Precision prec)
 }
 
 BufferDesc::~BufferDesc() {
-    if (pooled_data) {
         delete[] pooled_data;
-        pooled_data = nullptr;
-    }
+
+
 }
 
 BufferDesc::BufferDesc(BufferDesc&& other) noexcept
@@ -122,9 +121,7 @@ BufferDesc::BufferDesc(BufferDesc&& other) noexcept
 
 BufferDesc& BufferDesc::operator=(BufferDesc&& other) noexcept {
     if (this != &other) {
-        if (pooled_data) {
             delete[] pooled_data;
-        }
 
         shape = std::move(other.shape);
         total_size = other.total_size;

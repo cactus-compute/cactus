@@ -7,11 +7,46 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from .common import GREEN, RED, YELLOW, print_color
+from .common import GREEN, PROJECT_ROOT, RED, YELLOW, print_color
 
 
-def _convert_from_source(model_id, *, bits, token, weights_dir):
+def _default_multimodal_assets():
+    """Return bundled representative media used for multimodal graph capture."""
+    candidates = (
+        Path(__file__).resolve().parent.parent / "assets",
+        PROJECT_ROOT / "cactus-engine" / "tests" / "assets",
+    )
+
+    def find(name):
+        return next((directory / name for directory in candidates if (directory / name).exists()), None)
+
+    image = find("test_monkey.png")
+    audio = find("test.wav")
+    return ([str(image)] if image else []), (str(audio) if audio else None)
+
+
+def package_handoff_probe(output_dir, model_id):
+    """Bundle the cloud-handoff probe for models that provide one."""
+    try:
+        from cactus.convert.handoff_probe import export_handoff_probe
+
+        if export_handoff_probe(output_dir, model_id):
+            print_color(GREEN, f"Cloud handoff probe packaged into {output_dir}")
+    except Exception as exc:
+        print_color(YELLOW, f"Warning: failed to package cloud handoff probe: {exc}")
+
+
+def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=False):
     """Download from HuggingFace and run CQ conversion."""
+    if bits not in (1, 2, 3, 4):
+        raise SystemExit(
+            f"CQ{bits} is a mixed-precision variant, available only as a prebuilt "
+            f"download; local conversion supports uniform bits 1-4"
+        )
+    from .common import convert_toolchain_error
+    err = convert_toolchain_error()
+    if err:
+        raise RuntimeError(err)
     print_color(YELLOW, f"Converting {model_id} from HuggingFace source...")
     from ..convert.cli import main as cq_main
 
@@ -20,6 +55,8 @@ def _convert_from_source(model_id, *, bits, token, weights_dir):
         "--out", str(weights_dir),
         "--bits", str(bits),
     ]
+    if skip_model_load:
+        cq_args.append("--skip-model-load")
     if token:
         os.environ["HF_TOKEN"] = token
         os.environ["HUGGING_FACE_HUB_TOKEN"] = token
@@ -29,10 +66,10 @@ def _convert_from_source(model_id, *, bits, token, weights_dir):
     return weights_dir
 
 
-def ensure_weights(model_id, *, bits=4, platform=None, token=None, reconvert=False, output_dir=None):
+def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=None, skip_model_load=False):
     from .download import get_bundle_dir
 
-    weights_dir = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits, platform=platform)
+    weights_dir = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits)
 
     if reconvert and weights_dir.exists():
         print_color(YELLOW, "Removing cached weights for reconversion...")
@@ -46,7 +83,13 @@ def ensure_weights(model_id, *, bits=4, platform=None, token=None, reconvert=Fal
         print_color(YELLOW, "Removing incomplete weights from a previous run...")
         shutil.rmtree(weights_dir)
 
-    return _convert_from_source(model_id, bits=bits, token=token, weights_dir=weights_dir)
+    return _convert_from_source(
+        model_id,
+        bits=bits,
+        token=token,
+        weights_dir=weights_dir,
+        skip_model_load=skip_model_load,
+    )
 
 
 @dataclass(frozen=True)
@@ -115,7 +158,7 @@ def engine_manifest_from_runtime_plan(plan):
     return manifest
 
 
-def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
+def ensure_runnable_bundle(model_id, *, bits=4, token=None,
                            reconvert=False, prebuilt=True, output_dir=None,
                            transpile: TranspileOptions | None = None):
     """Resolve a runnable bundle from a local path, cache, or prebuilt download.
@@ -132,7 +175,7 @@ def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
     if str(model_id).startswith(("/", "./", "../", "~")) and not Path(model_id).expanduser().exists():
         raise RuntimeError(f"path not found: {model_id}")
 
-    cached = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits, platform=platform)
+    cached = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits)
     if reconvert and cached.exists():
         print_color(YELLOW, "Removing cached bundle before refresh...")
         shutil.rmtree(cached)
@@ -144,7 +187,6 @@ def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
         return ensure_bundle(
             model_id,
             bits=bits,
-            platform=platform,
             token=token,
             reconvert=reconvert,
             output_dir=cached,
@@ -152,15 +194,13 @@ def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
         )
 
     try:
-        return download_bundle(model_id, bits=bits, platform=platform,
-                               token=token, output_dir=cached)
+        return download_bundle(model_id, bits=bits, token=token, output_dir=cached)
     except (RuntimeError, OSError) as exc:
         print_color(YELLOW, f"No prebuilt bundle found for {model_id}; building locally...")
         try:
             return ensure_bundle(
                 model_id,
                 bits=bits,
-                platform=platform,
                 token=token,
                 reconvert=reconvert,
                 output_dir=cached,
@@ -173,15 +213,13 @@ def ensure_runnable_bundle(model_id, *, bits=4, platform=None, token=None,
 def prepare_bundle(args, *, model_id=None, prebuilt=True,
                    output_dir=None, fail_prefix="Model setup failed",
                    transpile: TranspileOptions | None = None):
-    """Resolve the platform from args and return a runnable bundle, with uniform
+    """Resolve and return a runnable bundle, with uniform
     error handling shared by every model command. Returns the bundle Path, or
     None (after printing the error) on failure."""
-    from .download import resolve_platform
     try:
         return ensure_runnable_bundle(
             args.model_id if model_id is None else model_id,
             bits=getattr(args, "bits", 4),
-            platform=resolve_platform(getattr(args, "platform", "auto")),
             token=getattr(args, "token", None),
             reconvert=getattr(args, "reconvert", False),
             prebuilt=prebuilt,
@@ -193,7 +231,7 @@ def prepare_bundle(args, *, model_id=None, prebuilt=True,
         return None
 
 
-def ensure_bundle(model_id, *, bits=4, platform=None, token=None,
+def ensure_bundle(model_id, *, bits=4, token=None,
                   reconvert=False, output_dir=None,
                   transpile: TranspileOptions | None = None):
     from .transpiler import build_transpiled_bundle
@@ -201,11 +239,27 @@ def ensure_bundle(model_id, *, bits=4, platform=None, token=None,
     weights_dir = ensure_weights(
         model_id,
         bits=bits,
-        platform=platform,
         token=token,
         reconvert=reconvert,
         output_dir=output_dir,
     )
+
+    # Embedding models currently use main's mature graph-capture adapter.  The
+    # replacement transpiler intentionally handles generation/transcription
+    # contracts; treating an embedding encoder as a generic causal LM is wrong.
+    from cactus.transpile.component_plan import infer_component_plan_from_output
+    plan = infer_component_plan_from_output(str(weights_dir), model_id=model_id)
+    if plan is not None and plan.task == "text_embedding":
+        from .transpile import run_transpile
+
+        rc = run_transpile(model_id, extra_args=[
+            "--weights-dir", str(weights_dir),
+            "--artifact-dir", str(weights_dir),
+        ])
+        if rc != 0:
+            raise RuntimeError(f"Build failed for {model_id}")
+        package_handoff_probe(weights_dir, model_id)
+        return weights_dir
 
     opts = transpile or TranspileOptions()
     return build_transpiled_bundle(

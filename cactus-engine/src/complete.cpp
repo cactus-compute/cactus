@@ -4,6 +4,7 @@
 #include "chat_tools.h"
 #include "telemetry.h"
 #include "cactus_kernels.h"
+#include "metal_backend.h"
 #include "wav.h"
 #include <algorithm>
 #include <chrono>
@@ -25,6 +26,8 @@ namespace {
 
 std::vector<std::pair<std::string, std::string>> extract_schema_property_types(const std::string& schema);
 std::vector<std::string> extract_schema_required(const std::string& schema);
+std::vector<std::string> extract_string_array(const std::string& json, const std::string& key);
+std::string extract_json_object_field(const std::string& json, const std::string& key);
 
 std::string extract_last_user_query(const std::vector<ChatMessage>& messages) {
     for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
@@ -65,9 +68,13 @@ std::vector<ToolConstraintSpec> build_tool_constraint_specs(const std::vector<To
         auto schema_it = tool.parameters.find("schema");
         if (schema_it != tool.parameters.end()) {
             auto properties = extract_schema_property_types(schema_it->second);
+            std::string properties_object = extract_json_object_field(schema_it->second, "properties");
             spec.parameter_names.reserve(properties.size());
+            spec.parameter_enums.reserve(properties.size());
             for (const auto& [name, _] : properties) {
                 spec.parameter_names.push_back(name);
+                spec.parameter_enums.push_back(
+                    extract_string_array(extract_json_object_field(properties_object, name), "enum"));
             }
             spec.required_parameter_names = extract_schema_required(schema_it->second);
         }
@@ -194,25 +201,79 @@ std::vector<std::pair<std::string, std::string>> extract_schema_property_types(c
     return properties;
 }
 
-std::vector<std::string> extract_schema_required(const std::string& schema) {
-    std::vector<std::string> required;
-    std::string key = "\"required\"";
-    size_t key_pos = schema.find(key);
-    if (key_pos == std::string::npos) return required;
-    size_t arr_start = schema.find('[', key_pos + key.size());
-    if (arr_start == std::string::npos) return required;
-    size_t arr_end = schema.find(']', arr_start);
-    if (arr_end == std::string::npos) return required;
+std::vector<std::string> extract_string_array(const std::string& json, const std::string& key) {
+    std::vector<std::string> values;
+    if (json.empty()) return values;
+    std::string pattern = "\"" + key + "\"";
+    size_t key_pos = json.find(pattern);
+    if (key_pos == std::string::npos) return values;
+    size_t arr_start = json.find('[', key_pos + pattern.size());
+    if (arr_start == std::string::npos) return values;
+    size_t arr_end = json.find(']', arr_start);
+    if (arr_end == std::string::npos) return values;
     size_t pos = arr_start + 1;
     while (pos < arr_end) {
-        size_t qs = schema.find('"', pos);
+        size_t qs = json.find('"', pos);
         if (qs == std::string::npos || qs >= arr_end) break;
-        size_t qe = schema.find('"', qs + 1);
+        size_t qe = json.find('"', qs + 1);
         if (qe == std::string::npos || qe > arr_end) break;
-        required.push_back(schema.substr(qs + 1, qe - qs - 1));
+        values.push_back(json.substr(qs + 1, qe - qs - 1));
         pos = qe + 1;
     }
-    return required;
+    return values;
+}
+
+std::vector<std::string> extract_schema_required(const std::string& schema) {
+    return extract_string_array(schema, "required");
+}
+
+static bool json_object_has_key(const std::string& obj, const std::string& key) {
+    const std::string target = "\"" + key + "\"";
+    int depth = 0;
+    bool in_str = false, esc = false;
+    for (size_t i = 0; i < obj.size(); ++i) {
+        char c = obj[i];
+        if (in_str) {
+            if (esc) esc = false;
+            else if (c == '\\') esc = true;
+            else if (c == '"') in_str = false;
+            continue;
+        }
+        if (c == '"') {
+            if (depth == 1 && obj.compare(i, target.size(), target) == 0) {
+                size_t j = i + target.size();
+                while (j < obj.size() && std::isspace(static_cast<unsigned char>(obj[j]))) ++j;
+                if (j < obj.size() && obj[j] == ':') return true;
+            }
+            in_str = true;
+            continue;
+        }
+        if (c == '{' || c == '[') ++depth;
+        else if (c == '}' || c == ']') --depth;
+    }
+    return false;
+}
+
+static bool function_calls_missing_required(const std::vector<std::string>& calls,
+                                            const std::vector<ToolFunction>& tools) {
+    if (calls.empty() || tools.empty()) return false;
+    for (const auto& call : calls) {
+        std::string name = json_string_field(call, "name");
+        const ToolFunction* tool = nullptr;
+        for (const auto& t : tools) {
+            if (t.name == name) { tool = &t; break; }
+        }
+        if (!tool) continue;
+        auto schema_it = tool->parameters.find("schema");
+        if (schema_it == tool->parameters.end()) continue;
+        std::vector<std::string> required = extract_schema_required(schema_it->second);
+        if (required.empty()) continue;
+        std::string args = extract_json_object_field(call, "arguments");
+        for (const auto& req : required) {
+            if (!json_object_has_key(args, req)) return true;
+        }
+    }
+    return false;
 }
 
 std::string serialize_needle_tools(const std::vector<ToolFunction>& tools) {
@@ -761,6 +822,10 @@ int cactus_complete(
     const uint8_t* pcm_buffer,
     size_t pcm_buffer_size
 ) {
+    struct MetalTrimGuard {
+        ~MetalTrimGuard() { cactus_metal_trim_prefill_cache(); }
+    } metal_trim_guard;
+
     if (!model) {
         std::string error_msg = last_error_message.empty() ?
             "Model not initialized. Check model path and files." : last_error_message;
@@ -798,6 +863,9 @@ int cactus_complete(
         }
         auto* tokenizer = handle->model->get_tokenizer();
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true, pcm_buffer, pcm_buffer_size);
+        if (prompt.options.sample_seed != 0) {
+            handle->model->set_sample_seed(prompt.options.sample_seed);
+        }
 
         CACTUS_LOG_DEBUG("complete", "Prompt tokens: " << prompt.tokens.size()
             << ", max_tokens: " << prompt.options.max_tokens);
@@ -895,7 +963,7 @@ int cactus_complete(
 
         if (cloud_eligible && prompt.options.confidence_threshold >= 1.0f) {
             pre_generation_cloud_attempted = true;
-            CACTUS_LOG_WARN("cloud_handoff", "Cloud handoff triggered before local generation; waiting up to "
+            CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered before local generation; waiting up to "
                 << prompt.options.cloud_timeout_ms << " ms before falling back");
             auto cloud_result = cloud_complete_request(
                 make_cloud_request("", {}),
@@ -979,7 +1047,7 @@ int cactus_complete(
                 && !defer_local_stream_until_probe
                 && !pre_generation_cloud_attempted
                 && confidence < prompt.options.confidence_threshold) {
-                CACTUS_LOG_WARN("cloud_handoff", "Cloud handoff triggered before local streaming; waiting up to "
+                CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered before local streaming; waiting up to "
                     << prompt.options.cloud_timeout_ms << " ms before falling back");
                 CloudCompletionResult cloud_result = cloud_complete_request(
                     make_cloud_request("", {}),
@@ -1069,7 +1137,7 @@ int cactus_complete(
 
         std::string regular_response;
         std::vector<std::string> function_calls;
-        parse_function_calls_from_response(response_text, regular_response, function_calls);
+        parse_function_calls_from_response(response_text, regular_response, function_calls, prompt.tools);
 
         std::string thinking_text;
         if (prompt.model_type == Config::ModelType::GEMMA4 || prompt.options.enable_thinking_if_supported) {
@@ -1092,10 +1160,15 @@ int cactus_complete(
         std::vector<std::string> primary_function_calls = function_calls;
 
         bool handoff_succeeded = false;
-        if (defer_local_stream_until_probe && !pre_generation_cloud_attempted
-            && confidence < prompt.options.confidence_threshold) {
-            CACTUS_LOG_WARN("cloud_handoff", "Cloud handoff triggered by Gemma4 probe: p_wrong="
-                << (1.0f - confidence) << " confidence=" << confidence
+        const bool low_confidence = defer_local_stream_until_probe
+            && confidence < prompt.options.confidence_threshold;
+        const bool invalid_local_tool_call = cloud_eligible && defer_local_stream_until_probe
+            && function_calls_missing_required(function_calls, prompt.tools);
+        if (!pre_generation_cloud_attempted && (low_confidence || invalid_local_tool_call)) {
+            const char* trigger_reason = invalid_local_tool_call && !low_confidence
+                ? "local tool call missing required args" : "low confidence (probe)";
+            CACTUS_LOG_INFO("cloud_handoff", "Cloud handoff triggered (" << trigger_reason
+                << "): p_wrong=" << (1.0f - confidence) << " confidence=" << confidence
                 << "; waiting up to " << prompt.options.cloud_timeout_ms << " ms");
             CloudCompletionResult cloud_result = cloud_complete_request(
                 make_cloud_request(local_completion, function_calls),
@@ -1107,7 +1180,7 @@ int cactus_complete(
                     handle->model->clear_tool_constraints();
                 }
                 return return_cloud_completion(cloud_result, elapsed_ms, elapsed_ms, confidence, prompt_tokens,
-                                               "low confidence (probe)");
+                                               trigger_reason);
             }
             cloud_error = cloud_result.error.empty() ? "cloud completion failed" : cloud_result.error;
             CACTUS_LOG_WARN("cloud_handoff", "Cloud completion failed after probe handoff, falling back to local output: "
@@ -1126,6 +1199,11 @@ int cactus_complete(
             handoff_reason = (confidence >= prompt.options.confidence_threshold)
                 ? "above threshold"
                 : "kept local";
+        }
+
+        if (prompt.options.force_tools && !prompt.tools.empty() && primary_function_calls.empty() &&
+            !parsed_empty_needle_tool_call) {
+            CACTUS_LOG_WARN("force_tools", "force_tools was set but no tool call was parsed from the constrained output");
         }
 
         std::string result = construct_response_json(primary_response, primary_function_calls, time_to_first_token,

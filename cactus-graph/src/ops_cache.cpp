@@ -1,5 +1,6 @@
 #include "../cactus_graph.h"
 #include "cactus_kernels.h"
+#include "metal_backend.h"
 #include <cstring>
 #include <algorithm>
 #include <limits>
@@ -101,6 +102,10 @@ inline bool use_fp16_kv_cache() {
 
 constexpr size_t kInitialCacheEntries = 256;
 
+inline bool kv_cache_resident() {
+    return cactus_default_backend() == ComputeBackend::METAL;
+}
+
 inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     auto* meta = get_meta(buf);
     size_t cur = meta->max_seq_len;
@@ -114,7 +119,15 @@ inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     size_t total = fp16_cache ? fp16_cache_elements(new_max, kv_heads, hdim)
                               : cache_buffer_size(new_max, kv_heads, hdim);
     BufferDesc resized({total}, fp16_cache ? Precision::FP16 : Precision::INT8);
-    resized.allocate();
+    const bool metal = kv_cache_resident();
+    void* old_data = buf.get_data();
+    if (metal) {
+        cactus_metal_session_sync();
+        void* p = cactus_metal_alloc_shared(resized.byte_size);
+        if (p) resized.set_external(p); else resized.allocate();
+    } else {
+        resized.allocate();
+    }
     std::memset(resized.get_data(), 0, resized.byte_size);
 
     std::memcpy(resized.get_data(), buf.get_data(), sizeof(CacheMetadata));
@@ -130,6 +143,7 @@ inline bool resize_cache_buffer(BufferDesc& buf, size_t new_max) {
     }
     get_meta(resized)->max_seq_len = new_max;
     buf = std::move(resized);
+    cactus_metal_free_shared(old_data);
     return true;
 }
 
@@ -145,6 +159,10 @@ inline bool grow_cache_buffer(BufferDesc& buf, size_t needed, size_t ceiling) {
 
 } // namespace
 
+bool cactus_kv_cache_grow(BufferDesc& buf, size_t needed, size_t ceiling) {
+    return grow_cache_buffer(buf, needed, ceiling);
+}
+
 void compute_kv_cache_state_node(
     GraphNode& node,
     const nodes_vector&,
@@ -158,7 +176,7 @@ void compute_kv_cache_state_node(
     bool sliding = window > 0 && window < ceiling;
     size_t max_seq;
     if (sliding) max_seq = std::min(ceiling, window + node.params.cache_sink_size + 1);
-    else if (num_slots > 1) max_seq = ceiling;
+    else if (num_slots > 1 || window > 0) max_seq = ceiling;
     else max_seq = std::min(ceiling, kInitialCacheEntries);
     size_t kv_heads = node.params.num_kv_heads;
     size_t hdim = node.params.head_dim;
@@ -170,7 +188,12 @@ void compute_kv_cache_state_node(
         : cache_buffer_size(max_seq, kv_heads, hdim);
 
     node.output_buffer = BufferDesc({num_slots * per_slot}, fp16_cache ? Precision::FP16 : Precision::INT8);
-    node.output_buffer.allocate();
+    if (kv_cache_resident()) {
+        void* p = cactus_metal_alloc_shared(node.output_buffer.byte_size);
+        if (p) node.output_buffer.set_external(p); else node.output_buffer.allocate();
+    } else {
+        node.output_buffer.allocate();
+    }
     std::memset(node.output_buffer.get_data(), 0, node.output_buffer.byte_size);
 
     auto* meta0 = get_meta(node.output_buffer, 0);
@@ -640,7 +663,14 @@ struct PaddedAppendBackup {
     uint64_t overshoot;
     uint64_t keep_sink;
     uint64_t kept_padded;
+    uint64_t ring_rows;
 };
+
+size_t ring_row_for_pos(size_t pos, size_t sink, size_t ring_capacity) {
+    if (pos < ring_capacity) return pos;
+    size_t recent = ring_capacity > sink ? ring_capacity - sink : 1;
+    return sink + (pos - sink) % recent;
+}
 
 struct CacheRowRegion {
     size_t offset;
@@ -673,6 +703,27 @@ std::vector<uint8_t> CactusGraph::snapshot_cache_padded_append(size_t node_id, s
     const auto* meta = get_meta(buf);
     const size_t len0 = meta->current_seq_len;
     const size_t appended = real_tokens + pad_tokens;
+    if (kv_cache_resident()) {
+        const size_t ring_window = meta->max_seq_len - meta->sink_size - 1;
+        if (ring_window <= meta->sink_size || appended >= ring_window - meta->sink_size) {
+            throw std::runtime_error("padded cache append larger than the attention window is not supported");
+        }
+        std::vector<uint8_t> backup(sizeof(PaddedAppendBackup));
+        auto* header = reinterpret_cast<PaddedAppendBackup*>(backup.data());
+        header->overshoot = 0;
+        header->keep_sink = meta->sink_size;
+        header->kept_padded = ring_window;
+        header->ring_rows = pad_tokens;
+        const auto* base = static_cast<const uint8_t*>(buf.get_data());
+        for (const auto& region : cache_row_regions(buf, meta)) {
+            for (size_t t = 0; t < pad_tokens; ++t) {
+                size_t row = ring_row_for_pos(len0 + real_tokens + t, meta->sink_size, ring_window);
+                const uint8_t* src = base + region.offset + row * region.row_bytes;
+                backup.insert(backup.end(), src, src + region.row_bytes);
+            }
+        }
+        return backup;
+    }
     if (len0 == 0 || len0 + appended <= window) return {};
     const size_t keep_sink = std::min({static_cast<size_t>(meta->sink_size), len0, window});
     const size_t tail_capacity = window - keep_sink;
@@ -710,6 +761,23 @@ void CactusGraph::rollback_cache_padded_append(size_t node_id, size_t real_token
         return;
     }
     const auto* header = reinterpret_cast<const PaddedAppendBackup*>(backup.data());
+    if (header->ring_rows > 0) {
+        const size_t ring_window = header->kept_padded;
+        const size_t sink = header->keep_sink;
+        const size_t len_after = meta->current_seq_len;
+        const size_t len0 = len_after >= real_tokens + pad_tokens ? len_after - real_tokens - pad_tokens : 0;
+        auto* base = static_cast<uint8_t*>(buf.get_data());
+        const uint8_t* saved = backup.data() + sizeof(PaddedAppendBackup);
+        for (const auto& region : cache_row_regions(buf, meta)) {
+            for (size_t t = 0; t < header->ring_rows; ++t) {
+                size_t row = ring_row_for_pos(len0 + real_tokens + t, sink, ring_window);
+                std::memcpy(base + region.offset + row * region.row_bytes, saved, region.row_bytes);
+                saved += region.row_bytes;
+            }
+        }
+        meta->current_seq_len = len0 + real_tokens;
+        return;
+    }
     const size_t overshoot = header->overshoot;
     const size_t keep_sink = header->keep_sink;
     const size_t kept_padded = header->kept_padded;

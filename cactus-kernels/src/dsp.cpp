@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <mutex>
+#include <unordered_map>
 #include <stdexcept>
 #include <limits>
 #include <random>
@@ -150,7 +152,19 @@ void cactus_rfft_f32_1d(const float* input, float* output, size_t n, const char*
             log2n++;
         }
 
-        FFTSetup fft_setup = vDSP_create_fftsetup(log2n, FFT_RADIX2);
+        static std::mutex fft_mu;
+        static std::unordered_map<size_t, FFTSetup> fft_cache;
+        FFTSetup fft_setup;
+        {
+            std::lock_guard<std::mutex> lk(fft_mu);
+            auto it = fft_cache.find(log2n);
+            if (it == fft_cache.end()) {
+                FFTSetup created = vDSP_create_fftsetup(log2n, FFT_RADIX2);
+                if (created) it = fft_cache.emplace(log2n, created).first;
+                else it = fft_cache.end();
+            }
+            fft_setup = it != fft_cache.end() ? it->second : nullptr;
+        }
         if (fft_setup) {
             std::vector<float> buffer(padded_n, 0.0f);
             std::copy(input, input + n, buffer.begin());
@@ -182,7 +196,6 @@ void cactus_rfft_f32_1d(const float* input, float* output, size_t n, const char*
                 output[i * 2 + 1] = split.imagp[i] * scale;
             }
 
-            vDSP_destroy_fftsetup(fft_setup);
             return;
         }
     }

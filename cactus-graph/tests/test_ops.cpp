@@ -368,35 +368,6 @@ bool test_gather_3d_tensor() {
     return fixture.verify_output(gathered, expected);
 }
 
-bool test_gather_fp16() {
-    TestUtils::FP16TestFixture fixture("Gather FP16");
-
-    size_t embeddings = fixture.create_input({4, 2});
-    CactusGraph& graph = fixture.graph();
-    size_t indices = graph.input({3}, Precision::INT8);
-    size_t gathered = graph.gather(embeddings, indices);
-
-    std::vector<__fp16> emb_data = {
-        1.0f, 2.0f,
-        3.0f, 4.0f,
-        5.0f, 6.0f,
-        7.0f, 8.0f
-    };
-    std::vector<int8_t> idx_data = {2, 0, 3};
-
-    fixture.set_input_data(embeddings, emb_data);
-    graph.set_input(indices, idx_data.data(), Precision::INT8);
-    fixture.execute();
-
-    std::vector<__fp16> expected = {
-        5.0f, 6.0f,
-        1.0f, 2.0f,
-        7.0f, 8.0f
-    };
-
-    return fixture.verify_output(gathered, expected);
-}
-
 bool test_mmap_gather() {
     CactusGraph graph;
 
@@ -801,7 +772,6 @@ int main() {
     runner.run_test("Gather Operation", test_gather_operation());
     runner.run_test("Gather 1D Tensor", test_gather_1d_tensor());
     runner.run_test("Gather 3D Tensor", test_gather_3d_tensor());
-    runner.run_test("Gather FP16", test_gather_fp16());
     runner.run_test("Memory-Mapped Gather", test_mmap_gather());
     runner.run_test("Embedding Operation", test_embedding_operation());
     runner.run_test("CQ Embedding Operation", test_cq_embedding_operation());

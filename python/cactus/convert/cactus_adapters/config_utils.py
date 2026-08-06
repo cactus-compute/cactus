@@ -490,6 +490,12 @@ def extract_complex_gemma_config(cfg, root_config):
         cfg_get(root_config, 'num_global_key_value_heads', None))
     expert_intermediate_size = cfg_get(cfg, 'expert_intermediate_size',
         cfg_get(root_config, 'expert_intermediate_size', None))
+    if expert_intermediate_size is None:
+        expert_intermediate_size = cfg_get(cfg, 'moe_intermediate_size',
+            cfg_get(root_config, 'moe_intermediate_size', None))
+    top_k_experts = cfg_get(cfg, 'top_k_experts', cfg_get(root_config, 'top_k_experts', None))
+    if top_k_experts is None:
+        top_k_experts = cfg_get(cfg, 'num_experts_per_tok', cfg_get(root_config, 'num_experts_per_tok', None))
     attention_k_eq_v = bool(cfg_get(cfg, 'attention_k_eq_v',
         cfg_get(root_config, 'attention_k_eq_v', False)))
     vocab_size_per_layer_input = cfg_get(cfg, 'vocab_size_per_layer_input',
@@ -513,6 +519,9 @@ def extract_complex_gemma_config(cfg, root_config):
         'attention_k_eq_v': attention_k_eq_v,
         'enable_moe_block': enable_moe_block,
     }
+    if top_k_experts is not None:
+        result['num_top_experts'] = int(top_k_experts)
+        result['num_experts_per_tok'] = int(top_k_experts)
     if global_head_dim is not None:
         result['global_head_dim'] = int(global_head_dim)
     if num_global_kv_heads is not None:

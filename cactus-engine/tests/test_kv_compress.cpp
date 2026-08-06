@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -344,12 +345,14 @@ bool test_config_parse_rolling_fields() {
     if (!def.kv_compress) return false;
     if (def.kv_compress_trigger_len != 4096 || def.kv_compress_target_len != 2048) return false;
 
-    char tmpl[] = "/tmp/cactus_kvcfg_XXXXXX";
-    int fd = mkstemp(tmpl);
+    std::string tmpl_str = (std::filesystem::temp_directory_path() / "cactus_kvcfg_XXXXXX").string();
+    std::vector<char> tmpl(tmpl_str.begin(), tmpl_str.end());
+    tmpl.push_back('\0');
+    int fd = mkstemp(tmpl.data());
     if (fd < 0) return false;
     ::close(fd);
     {
-        std::ofstream f(tmpl);
+        std::ofstream f(tmpl.data());
         // model_type=qwen avoids the Gemma4-only required-field validation.
         f << "model_type=qwen\n"
           << "kv_compress=true\n"
@@ -357,8 +360,8 @@ bool test_config_parse_rolling_fields() {
           << "kv_compress_target_len=2048\n";
     }
     cactus::engine::Config cfg;
-    bool parsed = cfg.from_json(tmpl);
-    std::remove(tmpl);
+    bool parsed = cfg.from_json(tmpl.data());
+    std::remove(tmpl.data());
     if (!parsed) return false;
     return cfg.kv_compress && cfg.kv_compress_trigger_len == 4096 && cfg.kv_compress_target_len == 2048;
 }

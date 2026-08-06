@@ -5,8 +5,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <random>
-#include <chrono>
-#include <iomanip>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -267,83 +265,6 @@ bool test_constructor() {
     return true;
 }
 
-void run_benchmarks(TestUtils::TestRunner& runner, uint32_t num_docs) {
-    IndexFixture f("bench", DIM);
-    f.init();
-
-    std::vector<int> ids(num_docs);
-    std::vector<std::string> docs(num_docs);
-    std::vector<const char*> doc_ptrs(num_docs), meta_ptrs(num_docs);
-    std::vector<std::vector<float>> embs(num_docs);
-    std::vector<const float*> emb_ptrs(num_docs);
-
-    for (uint32_t i = 0; i < num_docs; ++i) {
-        ids[i] = i;
-        docs[i] = "doc" + std::to_string(i);
-        doc_ptrs[i] = docs[i].c_str();
-        meta_ptrs[i] = "meta";
-        embs[i] = random_embedding();
-        emb_ptrs[i] = embs[i].data();
-    }
-
-    auto t0 = std::chrono::high_resolution_clock::now();
-    for (size_t i = 0; i < num_docs; i += 1000) {
-        size_t n = std::min(size_t(1000), num_docs - i);
-        cactus_index_add(f.get_idx(), ids.data() + i, doc_ptrs.data() + i, meta_ptrs.data() + i,
-                        emb_ptrs.data() + i, n, DIM);
-    }
-    auto t1 = std::chrono::high_resolution_clock::now();
-    auto add_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
-
-    t0 = std::chrono::high_resolution_clock::now();
-    f.reopen();
-    t1 = std::chrono::high_resolution_clock::now();
-    auto load_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
-
-    t0 = std::chrono::high_resolution_clock::now();
-    f.query(random_embedding(), 10);
-    t1 = std::chrono::high_resolution_clock::now();
-    auto query_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
-
-    t0 = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < 1000; ++i) f.get(i * (num_docs / 1000));
-    t1 = std::chrono::high_resolution_clock::now();
-    auto get_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
-
-    std::vector<int> del_ids(1000);
-    for (int i = 0; i < 1000; ++i) del_ids[i] = i;
-    t0 = std::chrono::high_resolution_clock::now();
-    f.del(del_ids);
-    t1 = std::chrono::high_resolution_clock::now();
-    auto del_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
-
-    t0 = std::chrono::high_resolution_clock::now();
-    f.compact();
-    t1 = std::chrono::high_resolution_clock::now();
-    auto compact_ms = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() / 1000.0;
-
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(2);
-
-    ss.str(""); ss << add_ms << "ms";
-    runner.log_performance("Add 100k docs", ss.str());
-
-    ss.str(""); ss << load_ms << "ms";
-    runner.log_performance("Load 100k docs", ss.str());
-
-    ss.str(""); ss << query_ms << "ms";
-    runner.log_performance("Query top-10", ss.str());
-
-    ss.str(""); ss << get_ms << "ms";
-    runner.log_performance("Get 1k docs", ss.str());
-
-    ss.str(""); ss << del_ms << "ms";
-    runner.log_performance("Delete 1k docs", ss.str());
-
-    ss.str(""); ss << compact_ms << "ms";
-    runner.log_performance("Compact", ss.str());
-}
-
 int main() {
     TestUtils::TestRunner runner("Index Tests");
 
@@ -355,8 +276,6 @@ int main() {
     runner.run_test("errors", test_errors());
     runner.run_test("unicode", test_unicode());
     runner.run_test("constructor", test_constructor());
-
-    run_benchmarks(runner, 100000);
 
     runner.print_summary();
 

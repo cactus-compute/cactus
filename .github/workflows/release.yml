@@ -47,16 +47,18 @@ jobs:
             sleep 30
           done
           [ -n "$json" ] || { echo "PyPI metadata not available for ${PACKAGE} ${VERSION}"; exit 1; }
-          url=$(echo "$json" | jq -er '.urls[] | select(.packagetype == "sdist") | .url')
-          sha=$(echo "$json" | jq -er '.urls[] | select(.packagetype == "sdist") | .digests.sha256')
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          pick() { echo "$json" | jq -er '.urls[] | select(.packagetype=="sdist") | .'"$1"; }
+          {
+            echo "sdist_url=$(pick url)"
+            echo "sdist_sha=$(pick digests.sha256)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Update tap formula
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          URL: ${{ steps.pypi.outputs.url }}
-          SHA: ${{ steps.pypi.outputs.sha }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          SDIST_URL: ${{ steps.pypi.outputs.sdist_url }}
+          SDIST_SHA: ${{ steps.pypi.outputs.sdist_sha }}
         run: |
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP}.git" tap
           mkdir -p tap/Formula
@@ -64,8 +66,9 @@ jobs:
           class Cactus < Formula
             desc "On-device AI inference"
             homepage "https://cactuscompute.com"
-            url "${URL}"
-            sha256 "${SHA}"
+            url "${SDIST_URL}"
+            sha256 "${SDIST_SHA}"
+            version "${VERSION}"
             license "Cactus Compute License"
             include Language::Python::Virtualenv
             depends_on "python@3.12"
@@ -78,13 +81,24 @@ jobs:
             end
 
             def install
-              venv = virtualenv_create(libexec, "python3.12")
-              venv.pip_install "${PACKAGE}==#{version}"
+              virtualenv_create(libexec, "python3.12")
+              system Formula["python@3.12"].opt_bin/"python3.12", "-m", "pip",
+                     "--python=#{libexec}/bin/python", "install", "${PACKAGE}==#{version}"
               bin.install_symlink libexec/"bin/cactus"
+            end
+
+            def caveats
+              <<~EOS
+                cactus code needs Node.js >= 22 on PATH.
+                cactus convert (torch) is opt-in, same as pip's [convert] extra:
+                #{Formula["python@3.12"].opt_bin}/python3.12 -m pip --python=#{libexec}/bin/python install "${PACKAGE}[convert]==#{version}"
+              EOS
             end
 
             test do
               assert_equal "cactus #{version}\n", shell_output("#{bin}/cactus --version")
+              assert_match "libcactus_engine",
+                Dir[libexec/"lib/python*/site-packages/cactus/bindings/lib/*"].join
             end
           end
           EOF
