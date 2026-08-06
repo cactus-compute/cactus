@@ -75,6 +75,7 @@ DECLARE_COMPUTE(compute_moe_layer_node);
 DECLARE_COMPUTE(compute_dense_mlp_tq_fused_node);
 DECLARE_COMPUTE(compute_qkv_tq_fused_node);
 DECLARE_COMPUTE(compute_projection_pair_tq_fused_node);
+DECLARE_COMPUTE(compute_logits_tq_softcap_node);
 DECLARE_COMPUTE(compute_persistent_node);
 DECLARE_COMPUTE(compute_kv_cache_state_node);
 DECLARE_COMPUTE(compute_kv_cache_append_node);
@@ -92,10 +93,11 @@ DECLARE_COMPUTE(compute_spectrogram_node);
 DECLARE_COMPUTE(compute_pad_node);
 DECLARE_COMPUTE(compute_strided_slice_node);
 DECLARE_COMPUTE(compute_expand_node);
+DECLARE_COMPUTE(compute_conv1d_causal_channel_first_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::PROJECTION_PAIR_TQ_FUSED) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::LOGITS_TQ_SOFTCAP) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -165,6 +167,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::ATTENTION_INT8_HYBRID)] = compute_attention_int8_hybrid_node;
     dispatch_flat[static_cast<int>(OpType::REL_POS_BIAS)] = compute_rel_pos_bias_node;
     dispatch_flat[static_cast<int>(OpType::CONV1D_CAUSAL)] = compute_conv1d_causal_node;
+    dispatch_flat[static_cast<int>(OpType::CONV1D_CAUSAL_CHANNEL_FIRST)] = compute_conv1d_causal_channel_first_node;
     dispatch_flat[static_cast<int>(OpType::CONV1D_K3)] = compute_conv1d_k3_node;
     dispatch_flat[static_cast<int>(OpType::CONV1D_K7S3)] = compute_conv1d_k7s3_node;
     dispatch_flat[static_cast<int>(OpType::CONV1D)] = compute_conv1d_node;
@@ -194,6 +197,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::DENSE_MLP_TQ_FUSED)] = compute_dense_mlp_tq_fused_node;
     dispatch_flat[static_cast<int>(OpType::QKV_TQ_FUSED)] = compute_qkv_tq_fused_node;
     dispatch_flat[static_cast<int>(OpType::PROJECTION_PAIR_TQ_FUSED)] = compute_projection_pair_tq_fused_node;
+    dispatch_flat[static_cast<int>(OpType::LOGITS_TQ_SOFTCAP)] = compute_logits_tq_softcap_node;
     dispatch_flat[static_cast<int>(OpType::PERSISTENT)] = compute_persistent_node;
     dispatch_flat[static_cast<int>(OpType::LSTM_CELL)] = compute_lstm_cell_node;
     dispatch_flat[static_cast<int>(OpType::GATED_DELTANET_DECODE)] = compute_gated_deltanet_decode_node;
@@ -286,7 +290,8 @@ static const char* op_type_names[] = {
     "STRIDED_SLICE",
     "EXPAND",
     "MASKED_SELECT_PREFIX",
-    "QKV_TQ_FUSED", "PROJECTION_PAIR_TQ_FUSED"
+    "QKV_TQ_FUSED", "PROJECTION_PAIR_TQ_FUSED", "CONV1D_CAUSAL_CHANNEL_FIRST",
+    "LOGITS_TQ_SOFTCAP"
 };
 
 static const char* get_op_name(OpType op) {

@@ -176,7 +176,15 @@ LFM_VLM_RUNTIME_CONTRACT = RuntimeContract(
             release_after_consumers=("vision_projector",),
             metadata=(("outputs", "vision_features"),),
         ),
-        decoder_kv_state(),
+        decoder_kv_state("decoder_prefill_chunk,decoder_prefill_text_chunk"),
+    ),
+    aliases=(
+        AliasContract(
+            source_component="lm_encoder_text_prefill_chunk",
+            source_output="inputs_embeds",
+            target_component="decoder_prefill_text_chunk",
+            target_input="inputs_embeds",
+        ),
     ),
 )
 
@@ -404,7 +412,7 @@ LFM_VLM_PROFILE = ModelProfile(
     cache_contract=CacheContract(
         prefill_decode_compatibility="dynamic_cache",
         state_transfer="prefill_to_decode",
-        fp16_kv_cache_components=("decoder_prefill_chunk", "decoder_step"),
+        fp16_kv_cache_components=("decoder_prefill_chunk", "decoder_prefill_text_chunk", "decoder_step"),
         decode_uses_media_components=False,
         max_cache_sequence_length=128000,
     ),

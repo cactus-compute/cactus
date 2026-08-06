@@ -68,7 +68,10 @@ def extract_component_graph(spec: ComponentSplitSpec) -> IRModels.Graph:
     if spec.chunk_tokens is not None:
         graph = retarget_chunk_graph_sequence_length(graph, spec.chunk_tokens)
 
-    return graph
+    # Component boundaries can expose layout-only chains that were shared or
+    # obscured in the full exported graph. Keep this cleanup here as well so
+    # existing saved IR benefits without requiring PyTorch re-export.
+    return graph.fuse_logits_softcap().collapse_transpose_chains()
 
 def add_permuted_output_node(
     nodes: list[IRModels.Node],

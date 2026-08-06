@@ -646,6 +646,30 @@ def lower_linear(context: models.GenerationContext, node: IRModels.Node) -> Any:
 
     return output
 
+def lower_logits_tq_softcap(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    hidden, weight = require_input_count(context, node, 2)
+    cap = float(node.attrs.get("cap", 0.0))
+    if cap <= 0.0:
+        raise UnsupportedLoweringError(f"{node.name}: logits softcap requires a positive cap")
+    hidden_shape = meta_shape(node.parents[0]) if node.parents else ()
+    if (is_decoder_prefill_component(context) and len(hidden_shape) == 2
+            and isinstance(hidden_shape[0], int) and hidden_shape[0] > 1):
+        hidden = context.graph.slice(hidden, 0, hidden_shape[0] - 1, length=1)
+    hidden = matmul_activation_operand(context, hidden)
+    if is_cq_tensor(context, weight):
+        weight_scale = weight_scale_factor_for_parent(context, node, 1) or 1.0
+        output = context.graph.logits_tq_softcap(hidden, weight, cap, 1.0 / weight_scale)
+    else:
+        rhs = matmul_activation_operand(context, weight)
+        output = context.graph.matmul(
+            hidden, rhs, pretransposed_rhs=bool(node.attrs.get("pretransposed_rhs", True)))
+        output = apply_inverse_weight_scale_for_parent(context, node, output, 1)
+        output = context.graph.scalar_multiply(context.graph.tanh(context.graph.scalar_divide(output, cap)), cap)
+    target_shape = decoder_prefill_logits_shape(context, node, output_shape(node))
+    if tuple(getattr(output, "shape", ())) != target_shape:
+        output = context.graph.reshape(output, target_shape)
+    return output
+
 def matmul_activation_operand(context: models.GenerationContext, value: Any) -> Any:
     if getattr(value, "dtype", None) == context.graph.FP32:
         return cast_to_precision(context, value, context.graph.FP16)
@@ -667,28 +691,38 @@ def is_decoder_prefill_logits_matmul(context: models.GenerationContext, node: IR
     shape = meta_shape(node)
 
     return (
-        context.component.name == "decoder_prefill_chunk"
+        is_decoder_prefill_component(context)
         and node.target in constants.MATMUL_TARGETS | constants.LINEAR_TARGETS
         and len(shape) == 2
         and len(node.parents) >= 2
         and isinstance(shape[0], int)
         and shape[0] > 1
         and isinstance(shape[-1], int)
-        and shape[-1] >= 100000
+        and is_logits_projection(node, shape[-1])
     )
 
 def decoder_prefill_logits_shape(context: models.GenerationContext, node: IRModels.Node, shape: tuple[int, ...]) -> tuple[int, ...]:
     if (
-        context.component.name == "decoder_prefill_chunk"
+        is_decoder_prefill_component(context)
         and len(shape) == 3
         and shape[0] == 1
         and isinstance(shape[1], int)
         and shape[1] > 1
-        and shape[2] >= 100000
+        and isinstance(shape[2], int)
+        and is_logits_projection(node, shape[2])
     ):
         return (1, 1, shape[2])
 
     return shape
+
+def is_decoder_prefill_component(context: models.GenerationContext) -> bool:
+    return context.component.name.startswith("decoder_prefill")
+
+def is_logits_projection(node: IRModels.Node, output_width: int) -> bool:
+    # Module metadata is the reliable signal for ordinary vocabulary sizes
+    # such as LFM's 65,536 entries. Keep the large-width fallback for generic
+    # exports whose module stack was stripped during capture.
+    return output_width >= 100000 or has_ancestor_text(node, "lm_head", max_depth=4)
 
 def empty_cat_passthrough(node: IRModels.Node, inputs: tuple[Any, ...]) -> Any | None:
     target_shape = meta_shape(node)

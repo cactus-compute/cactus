@@ -252,6 +252,8 @@ const Schema& op_schema(OpType op_type) {
         {OpType::ALTUP_CORRECT, {{ParamField::NumAltupInputs, FieldPersistence::Persistent}}},
         {OpType::MAXPOOL1D, {{ParamField::KernelSize, FieldPersistence::Persistent}, {ParamField::Stride, FieldPersistence::Persistent}}},
         {OpType::CONV1D_CAUSAL, {{ParamField::Dilation, FieldPersistence::Persistent}}},
+        {OpType::CONV1D_CAUSAL_CHANNEL_FIRST, {{ParamField::Dilation, FieldPersistence::Persistent}}},
+        {OpType::LOGITS_TQ_SOFTCAP, {{ParamField::Scalar, FieldPersistence::Persistent}, {ParamField::Scale, FieldPersistence::Persistent}}},
         {OpType::CONV1D_K3, {{ParamField::Stride, FieldPersistence::Persistent}}},
         {OpType::CONV1D_K7S3, {{ParamField::Stride, FieldPersistence::Persistent}}},
         {OpType::CONV1D, {{ParamField::Stride, FieldPersistence::Persistent}, {ParamField::NumGroups, FieldPersistence::Persistent}}},

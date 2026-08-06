@@ -455,6 +455,13 @@ void compute_dense_mlp_tq_fused_node(GraphNode& node, const std::vector<std::uni
         quant_matmul(gate_buffer, gate_mat, hidden, gate);
         quant_matmul(up_buffer, up_mat, hidden, up);
     }
+    if (!use_safe_product_scale && !trace_dense_mlp) {
+        cactus_gelu_scaled_multiply_f16(
+            gate, up, gate, inter_size,
+            1.0f / gate_input_scale, apply_product_scale ? node.params.scalar : 1.0f);
+        quant_matmul(down_buffer, down_mat, gate, output);
+        return;
+    }
     if (gate_input_scale != 1.0f) {
         cactus_scalar_op_f16(
             gate, gate, inter_size, 1.0f / gate_input_scale, ScalarOpType::MULTIPLY);
@@ -570,6 +577,28 @@ void compute_dense_mlp_tq_fused_node(GraphNode& node, const std::vector<std::uni
                   << " max_output=" << max_output_abs
                   << std::endl;
     }
+}
+
+void compute_logits_tq_softcap_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& hidden_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& weight_buffer = get_input(node, 1, nodes, node_index_map);
+    if (hidden_buffer.precision != Precision::FP16 || node.output_buffer.precision != Precision::FP16 ||
+        !PrecisionTraits::is_cq(weight_buffer.precision) || weight_buffer.shape.size() != 2 ||
+        weight_buffer.group_size == 0 || !(node.params.scalar > 0.0f)) {
+        throw std::runtime_error("logits_tq_softcap received incompatible buffers or cap");
+    }
+    size_t rows = 1;
+    for (size_t i = 0; i + 1 < hidden_buffer.shape.size(); ++i) rows *= hidden_buffer.shape[i];
+    CactusQuantMatrix matrix = weight_buffer.to_cq_matrix();
+    auto* output = node.output_buffer.data_as<__fp16>();
+    if (weight_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) {
+        cactus_quant_orthogonal_matmul(
+            &matrix, hidden_buffer.data_as<__fp16>(), static_cast<uint32_t>(rows), output);
+    } else {
+        cactus_quant_matmul(
+            &matrix, hidden_buffer.data_as<__fp16>(), static_cast<uint32_t>(rows), output);
+    }
+    cactus_softcap_f16(output, output, node.output_buffer.total_size, node.params.scalar, node.params.scale);
 }
 
 void compute_qkv_tq_fused_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {

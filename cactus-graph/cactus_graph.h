@@ -141,7 +141,9 @@ enum class OpType {
     EXPAND,
     MASKED_SELECT_PREFIX,
     QKV_TQ_FUSED,
-    PROJECTION_PAIR_TQ_FUSED
+    PROJECTION_PAIR_TQ_FUSED,
+    CONV1D_CAUSAL_CHANNEL_FIRST,
+    LOGITS_TQ_SOFTCAP
 };
 
 struct PrecisionTraits {
@@ -665,6 +667,7 @@ public:
     size_t recurrent_cache_write(size_t new_value, size_t cache_state);
 
     size_t conv1d_causal(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1);
+    size_t conv1d_causal_channel_first(size_t input, size_t weight, size_t kernel_size, size_t dilation = 1);
     size_t conv1d_k3(size_t input, size_t weight, size_t stride);
     size_t conv1d_k7s3(size_t input, size_t weight, size_t bias);
     size_t conv1d(size_t input, size_t weight, size_t stride);
@@ -744,6 +747,7 @@ public:
     size_t dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale = 1.0f, float gate_input_scale = 1.0f);
     size_t qkv_tq_fused(size_t hidden, size_t query_weight, size_t key_weight, size_t value_weight);
     size_t projection_pair_tq_fused(size_t hidden, size_t first_weight, size_t second_weight);
+    size_t logits_tq_softcap(size_t hidden, size_t weight, float cap, float projection_scale = 1.0f);
     size_t stats_pool(size_t input);
     size_t weighted_stats_pool(size_t input, size_t weights);
 
@@ -1151,6 +1155,8 @@ CACTUS_FFI_EXPORT int cactus_graph_image_preprocess(
 
 CACTUS_FFI_EXPORT int cactus_graph_conv1d_causal(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, size_t kernel_size, size_t dilation, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv1d_causal_channel_first(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, size_t kernel_size, size_t dilation, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_conv1d_k3(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, size_t stride, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_conv1d_k7s3(
@@ -1198,6 +1204,9 @@ CACTUS_FFI_EXPORT int cactus_graph_moe_layer_ungated(
 
 CACTUS_FFI_EXPORT int cactus_graph_sample(
     cactus_graph_t graph, cactus_node_t logits, float temperature, float top_p, size_t top_k, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_logits_tq_softcap(
+    cactus_graph_t graph, cactus_node_t hidden, cactus_node_t weight,
+    float cap, float projection_scale, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_scatter_topk(
     cactus_graph_t graph, cactus_node_t indices, cactus_node_t values, size_t num_classes, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_persistent(

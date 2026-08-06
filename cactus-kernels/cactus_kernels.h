@@ -275,6 +275,24 @@ void cactus_quant_matmul(
     uint32_t M,
     __fp16* C);
 
+// Applies cap * tanh(x / cap) in one parallel pass. Input and output may alias.
+void cactus_softcap_f16(
+    const __fp16* input,
+    __fp16* output,
+    size_t num_elements,
+    float cap,
+    float input_scale);
+
+// Exact fused equivalent of scale -> GELU -> scale -> Hadamard product.
+// Gate input and output may alias.
+void cactus_gelu_scaled_multiply_f16(
+    const __fp16* gate,
+    const __fp16* up,
+    __fp16* output,
+    size_t num_elements,
+    float gate_scale,
+    float product_scale);
+
 // Evaluates two projections of the same activation. Compatible interleaved CQ4
 // matrices share the activation transform/quantization; all other layouts fall
 // back to two independent matmuls.
@@ -503,6 +521,16 @@ void cactus_conv1d_causal_depthwise_f16(
     size_t N,
     size_t L,
     size_t C,
+    size_t K,
+    size_t dilation);
+
+void cactus_conv1d_causal_depthwise_channel_first_f16(
+    const __fp16* input,
+    const __fp16* weight,
+    __fp16* output,
+    size_t N,
+    size_t C,
+    size_t L,
     size_t K,
     size_t dilation);
 

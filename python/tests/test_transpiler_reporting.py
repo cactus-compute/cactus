@@ -59,6 +59,38 @@ class TestTranspilerReporting(unittest.TestCase):
 
         self.assertFalse(lowering_basic_ops.can_skip_float32_copy(cast))
 
+    def test_lfm_text_prefill_slices_lm_head_before_projection(self):
+        activation = mock.Mock(
+            name="hidden", target="cactus.view", parents=[],
+            tensor_output_meta={"shape": [128, 2048]}, module_stack=None,
+        )
+        weight = mock.Mock(name="lm_head_weight", target="lm_head_weight", parents=[])
+        projection = mock.Mock(
+            name="lm_head", target="cactus.linear", parents=[activation, weight],
+            tensor_output_meta={"shape": [128, 65536]},
+            module_stack=[{"module_path": "model.lm_head"}],
+        )
+        context = mock.Mock(component=mock.Mock(name="decoder_prefill_text_chunk"))
+
+        self.assertTrue(lowering_basic_ops.is_decoder_prefill_logits_matmul(context, projection))
+
+    def test_non_prefill_or_non_lm_head_projection_is_not_sliced(self):
+        activation = mock.Mock(
+            name="hidden", target="cactus.view", parents=[],
+            tensor_output_meta={"shape": [128, 2048]}, module_stack=None,
+        )
+        weight = mock.Mock(name="weight", target="weight", parents=[])
+        projection = mock.Mock(
+            name="wide_mlp", target="cactus.linear", parents=[activation, weight],
+            tensor_output_meta={"shape": [128, 65536]},
+            module_stack=[{"module_path": "model.layers.0.mlp.up_proj"}],
+        )
+
+        decode = mock.Mock(component=mock.Mock(name="decoder_step"))
+        prefill = mock.Mock(component=mock.Mock(name="decoder_prefill_text_chunk"))
+        self.assertFalse(lowering_basic_ops.is_decoder_prefill_logits_matmul(decode, projection))
+        self.assertFalse(lowering_basic_ops.is_decoder_prefill_logits_matmul(prefill, projection))
+
     def test_generic_text_profile_uses_processor_input(self):
         self.assertEqual(GENERIC_TEXT_PROFILE.input_strategy, "processor")
 
@@ -444,6 +476,77 @@ class TestTranspilerReporting(unittest.TestCase):
 
         operations = [node for node in simplified.nodes if node.node_type == "call_function"]
         self.assertEqual([node.target for node in operations], ["cactus.silu"])
+
+    def test_simplify_composes_consecutive_transposes(self):
+        def record(index, name, target, parent, shape, permutation=None):
+            kwargs = {} if permutation is None else {"permutation": list(permutation)}
+            return CModels.LayerRecord(
+                index=index, name=name,
+                node_type="placeholder" if parent is None else "call_function",
+                target=target, args=[] if parent is None else [{"node": parent}],
+                kwargs=kwargs, users=[],
+                tensor_output_meta={"shape": list(shape), "dtype": "torch.float16"},
+                module_stack=None,
+            )
+
+        nodes = [
+            record(0, "x", "x", None, (1, 2, 3, 4)),
+            record(1, "t0", "cactus.transpose", "x", (3, 1, 2, 4), (2, 0, 1, 3)),
+            record(2, "t1", "cactus.transpose", "t0", (1, 2, 3, 4), (1, 2, 0, 3)),
+            record(3, "t2", "cactus.transpose", "t1", (1, 3, 2, 4), (0, 2, 1, 3)),
+            CModels.LayerRecord(
+                index=4, name="output", node_type="output", target="output",
+                args=[[{"node": "t2"}]], kwargs={}, users=[],
+                tensor_output_meta={"shape": [1, 3, 2, 4], "dtype": "torch.float16"},
+                module_stack=None,
+            ),
+        ]
+        layer_map = CModels.LayerMap(
+            model_name="transpose-chain", task="prefill_with_cache",
+            graph_signature="", range_constants="", nodes=nodes,
+        )
+
+        simplified = simplify_ir.simplify(layer_map, fusion_fields=())
+        transposes = [node for node in simplified.nodes if node.target == "cactus.transpose"]
+
+        self.assertEqual(len(transposes), 1)
+        self.assertEqual(transposes[0].args, [{"node": "x"}])
+        self.assertEqual(transposes[0].kwargs["permutation"], [0, 2, 1, 3])
+
+    def test_simplify_fuses_lm_head_softcap_chain(self):
+        def operation(index, name, target, parents, shape, kwargs=None, module_stack=None):
+            return CModels.LayerRecord(
+                index=index, name=name, node_type="call_function", target=target,
+                args=[{"node": parent} for parent in parents], kwargs=kwargs or {}, users=[],
+                tensor_output_meta={"shape": list(shape), "dtype": "torch.float16"},
+                module_stack=module_stack,
+            )
+
+        tensor_meta = {"shape": [1, 4], "dtype": "torch.float16"}
+        nodes = [
+            CModels.LayerRecord(index=0, name="hidden", node_type="placeholder", target="hidden",
+                                args=[], kwargs={}, users=[], tensor_output_meta=tensor_meta, module_stack=None),
+            CModels.LayerRecord(index=1, name="lm_head_weight", node_type="placeholder", target="lm_head_weight",
+                                args=[], kwargs={}, users=[], tensor_output_meta={"shape": [8, 4], "dtype": "torch.float16"}, module_stack=None),
+            operation(2, "linear", "cactus.linear", ("hidden", "lm_head_weight"), (1, 8),
+                      {"pretransposed_rhs": True}, [{"module_path": "model.lm_head"}]),
+            operation(3, "view", "cactus.view", ("linear",), (1, 1, 8), {"shape": [1, 1, 8]}),
+            operation(4, "divide", "cactus.scalar_divide", ("view",), (1, 1, 8), {"value": 30.0}),
+            operation(5, "tanh", "cactus.tanh", ("divide",), (1, 1, 8)),
+            operation(6, "softcap", "cactus.scalar_multiply", ("tanh",), (1, 1, 8), {"value": 30.0}),
+            CModels.LayerRecord(index=7, name="output", node_type="output", target="output",
+                                args=[[{"node": "softcap"}]], kwargs={}, users=[],
+                                tensor_output_meta={"shape": [1, 1, 8], "dtype": "torch.float16"}, module_stack=None),
+        ]
+        layer_map = CModels.LayerMap(model_name="softcap", task="decode_with_cache",
+                                     graph_signature="", range_constants="", nodes=nodes)
+
+        simplified = simplify_ir.simplify(layer_map, fusion_fields=())
+        operations = [node for node in simplified.nodes if node.node_type == "call_function"]
+
+        self.assertEqual([node.target for node in operations], ["cactus.logits_tq_softcap"])
+        self.assertEqual(operations[0].args, [{"node": "hidden"}, {"node": "lm_head_weight"}])
+        self.assertEqual(operations[0].kwargs["cap"], 30.0)
 
     def test_direct_view_fusion_is_idempotent(self):
         input_meta = {"shape": [1, 8], "dtype": "torch.float16"}

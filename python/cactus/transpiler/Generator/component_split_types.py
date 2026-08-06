@@ -11,10 +11,10 @@ DECODE_WITH_CACHE_TASK = "decode_with_cache"
 GEMMA4_TEXT_PREFILL_CHUNK_TOKENS = 32
 GEMMA4_MEDIA_PREFILL_CHUNK_TOKENS = 128
 # LFM-VLM has convolutional cache state, so a partial fixed-size chunk cannot
-# be tail-padded and rolled back like a pure KV model.  A smaller chunk keeps
-# typical multimodal prompts on the batched prefill path instead of executing
-# nearly the entire prompt through decoder_step.
-LFM_VLM_PREFILL_CHUNK_TOKENS = 16
+# be tail-padded and rolled back like a pure KV model. Keep a small media graph
+# for typical image prompts, alongside a wide graph for long text prefill.
+LFM_VLM_MEDIA_PREFILL_CHUNK_TOKENS = 16
+LFM_VLM_TEXT_PREFILL_CHUNK_TOKENS = 128
 LFM_MOE_PREFILL_CHUNK_TOKENS = 128
 GENERIC_CAUSAL_PREFILL_CHUNK_TOKENS = 4
 

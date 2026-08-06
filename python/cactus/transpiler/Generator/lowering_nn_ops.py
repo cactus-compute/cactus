@@ -132,13 +132,14 @@ def lower_named_conv(context: models.GenerationContext, node: IRModels.Node, met
         x = inputs[0]
 
         if node.attrs.get("layout") == "batch_hidden_sequence":
-            x = context.graph.permute(x, (0, 2, 1))
+            return context.graph.conv1d_causal_channel_first(
+                x,
+                inputs[1],
+                kernel_size=int(node.attrs.get("kernel_size", 0)),
+                dilation=first_int(node.attrs.get("dilation"), 1),
+            )
 
         output = context.graph.conv1d_causal(x, inputs[1], kernel_size=int(node.attrs.get("kernel_size", 0)), dilation=first_int(node.attrs.get("dilation"), 1))
-
-        if node.attrs.get("layout") == "batch_hidden_sequence":
-            return context.graph.permute(output, (0, 2, 1))
-
         return output
 
     if method == "conv1d_k3":

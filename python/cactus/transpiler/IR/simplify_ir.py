@@ -57,7 +57,7 @@ def simplify(
         graph = fuse_decode_qkv_projections(graph)
     if layer_map.task == "decode_with_cache" and "decode_projection_pair" in fusion_fields:
         graph = fuse_decode_projection_pairs(graph)
-    return graph.remove_noop_nodes().to_layer_map()
+    return graph.remove_noop_nodes().fuse_logits_softcap().collapse_transpose_chains().to_layer_map()
 
 def fuse_decode_qkv_projections(graph: models.Graph) -> models.Graph:
     """Combine sibling decode Q/K/V linears into a shared-transform CQ op."""

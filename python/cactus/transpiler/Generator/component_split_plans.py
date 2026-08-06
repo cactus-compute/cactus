@@ -211,7 +211,7 @@ def split_causal_lm_components(
     )
     prefill_specs = (
         ComponentSplitSpec(
-            name="lm_encoder_text_chunk",
+            name="lm_encoder_text_prefill_chunk",
             graph=prefill,
             outputs=(
                 OutputSpec("input_ids", "inputs_embeds"),
@@ -284,7 +284,17 @@ def split_lfm_vlm_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
             graph=prefill,
             outputs=(OutputSpec(boundaries.prefill_text_inputs_embeds, "inputs_embeds"),),
             placeholders=(position_chunk,),
-            chunk_tokens=LFM_VLM_PREFILL_CHUNK_TOKENS,
+            chunk_tokens=LFM_VLM_MEDIA_PREFILL_CHUNK_TOKENS,
+        ),
+        ComponentSplitSpec(
+            name="lm_encoder_text_prefill_chunk",
+            graph=prefill,
+            outputs=(
+                OutputSpec(boundaries.prefill_text_inputs_embeds, "inputs_embeds"),
+                OutputSpec(position_chunk.name, "position_ids"),
+            ),
+            placeholders=(position_chunk,),
+            chunk_tokens=LFM_VLM_TEXT_PREFILL_CHUNK_TOKENS,
         ),
         ComponentSplitSpec(
             name="lm_encoder_step",
@@ -303,7 +313,17 @@ def split_lfm_vlm_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
             placeholders=(inputs_embeds_chunk, attention_mask_chunk, position_chunk),
             ref_aliases={boundaries.merged_inputs_embeds: inputs_embeds_chunk.name},
             input_aliases={"attention_mask": "attention_mask"},
-            chunk_tokens=LFM_VLM_PREFILL_CHUNK_TOKENS,
+            chunk_tokens=LFM_VLM_MEDIA_PREFILL_CHUNK_TOKENS,
+        ),
+        ComponentSplitSpec(
+            name="decoder_prefill_text_chunk",
+            graph=prefill,
+            outputs=graph_output_specs(prefill, publish_only_logits=True),
+            side_effects=cache_side_effect_node_names(prefill),
+            placeholders=(inputs_embeds_chunk, attention_mask_chunk, position_chunk),
+            ref_aliases={boundaries.merged_inputs_embeds: inputs_embeds_chunk.name},
+            input_aliases={"attention_mask": "attention_mask"},
+            chunk_tokens=LFM_VLM_TEXT_PREFILL_CHUNK_TOKENS,
         ),
         ComponentSplitSpec(
             name="decoder_step",

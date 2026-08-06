@@ -754,6 +754,33 @@ class TestGraphConvCache(unittest.TestCase):
             atol=3e-2,
         )
 
+    def test_conv1d_causal_channel_first_matches_pytorch(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch is required for PyTorch numerical reference")
+
+        batch_size, hidden_dim, sequence_length, kernel_size = 1, 4, 5, 3
+        x = torch.arange(batch_size * hidden_dim * sequence_length, dtype=torch.float32).reshape(
+            batch_size, hidden_dim, sequence_length,
+        ) / 10.0
+        weight = torch.arange(hidden_dim * kernel_size, dtype=torch.float32).reshape(
+            hidden_dim, 1, kernel_size,
+        ) / 20.0
+        expected = torch.nn.functional.conv1d(
+            torch.nn.functional.pad(x, (kernel_size - 1, 0)), weight, groups=hidden_dim,
+        )
+
+        graph = Graph()
+        graph_x = graph.input(tuple(x.shape))
+        graph_weight = graph.input(tuple(weight.shape))
+        output = graph.conv1d_causal_channel_first(graph_x, graph_weight, kernel_size, 1)
+        graph.set_input(graph_x, x.numpy().astype(np.float16))
+        graph.set_input(graph_weight, weight.numpy().astype(np.float16))
+        graph.execute()
+
+        np.testing.assert_allclose(output.numpy(), expected.numpy().astype(np.float16), atol=3e-2)
+
     def test_conv_cache_initialize_then_append_matches_shifted_pytorch_window(self):
         try:
             import torch

@@ -477,6 +477,25 @@ size_t CactusGraph::projection_pair_tq_fused(size_t hidden, size_t first_weight,
                     {hidden, first_weight, second_weight}, output_shape, params);
 }
 
+size_t CactusGraph::logits_tq_softcap(size_t hidden, size_t weight, float cap, float projection_scale) {
+    const auto& hidden_buffer = get_output_buffer(hidden);
+    const auto& weight_buffer = get_output_buffer(weight);
+    if (hidden_buffer.shape.empty() || weight_buffer.shape.size() != 2 ||
+        !PrecisionTraits::is_cq(weight_buffer.precision) || !(cap > 0.0f)) {
+        throw std::runtime_error("logits_tq_softcap expects hidden, rank-2 CQ weight, and positive cap");
+    }
+    if (weight_buffer.shape[1] != hidden_buffer.shape.back()) {
+        throw std::runtime_error("logits_tq_softcap weight dimensions do not match hidden");
+    }
+    std::vector<size_t> output_shape = hidden_buffer.shape;
+    output_shape.back() = weight_buffer.shape[0];
+    OpParams params;
+    params.output_precision = Precision::FP16;
+    params.scalar = cap;
+    params.scale = projection_scale;
+    return add_node(OpType::LOGITS_TQ_SOFTCAP, {hidden, weight}, output_shape, params);
+}
+
 size_t CactusGraph::moe_layer(size_t hidden,
                               size_t routing_probs,
                               size_t topk_indices,
@@ -667,6 +686,11 @@ size_t CactusGraph::attention_int8_hybrid(size_t query, size_t key_new, size_t v
 size_t CactusGraph::conv1d_causal(size_t input, size_t weight, size_t, size_t dilation) {
     OpParams params{.dilation = dilation};
     return add_node(OpType::CONV1D_CAUSAL, {input, weight}, {}, params);
+}
+
+size_t CactusGraph::conv1d_causal_channel_first(size_t input, size_t weight, size_t, size_t dilation) {
+    OpParams params{.dilation = dilation};
+    return add_node(OpType::CONV1D_CAUSAL_CHANNEL_FIRST, {input, weight}, {}, params);
 }
 
 size_t CactusGraph::conv1d_k3(size_t input, size_t weight, size_t stride) {

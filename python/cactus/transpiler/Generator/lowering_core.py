@@ -66,6 +66,7 @@ def build_lowering_rules(
     add_rules(rules, constants.CAT_TARGETS, lower_cat)
     add_rules(rules, constants.MATMUL_TARGETS, lower_matmul)
     add_rules(rules, constants.LINEAR_TARGETS, lower_linear)
+    add_rules(rules, {"cactus.logits_tq_softcap"}, lower_logits_tq_softcap)
     add_rules(rules, constants.ADDM_CONST_TARGETS, lower_addmm)
     add_rules(rules, constants.SPLIT_TARGETS, lower_split)
     add_rules(rules, constants.GETITEM_TARGETS, lower_getitem)

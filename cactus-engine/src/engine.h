@@ -918,6 +918,8 @@ private:
     };
 
     struct ChunkedPrefillResult {
+        Component* component = nullptr;
+        Component* encoder_component = nullptr;
         size_t logical_tokens = 0;
         size_t executed_tokens = 0;
         size_t padding_tokens = 0;

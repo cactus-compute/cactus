@@ -821,7 +821,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (components_.count("decoder_embed_chunk")) {
         decoder_embed_ = &components_.at("decoder_embed_chunk");
     }
-    if (components_.count("lm_encoder_text_chunk")) {
+    if (components_.count("lm_encoder_text_chunk") || components_.count("lm_encoder_text_prefill_chunk")) {
         prefill_encoder_ = components_.count("lm_encoder_text_prefill_chunk")
             ? &components_.at("lm_encoder_text_prefill_chunk")
             : &components_.at("lm_encoder_text_chunk");
@@ -2077,21 +2077,53 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     ChunkedPrefillResult result;
     reset_prefill_stats();
     if (decode_route_ != DecodeRoute::CACHED_STEP || !encoder_ || !decoder_ || !decoder_prefill_) return result;
+    Component* prefill_component = decoder_prefill_;
+    Component* encoder_component = prefill_encoder_;
+    auto declared_prefill_tokens = [](const Component* component) -> size_t {
+        if (!component) return 0;
+        auto it = component->metadata.find("prefill_chunk_tokens");
+        if (it == component->metadata.end()) return 0;
+        try {
+            return static_cast<size_t>(std::stoull(it->second));
+        } catch (...) {
+            return 0;
+        }
+    };
+    const size_t selected_tokens = declared_prefill_tokens(prefill_component);
+    const size_t shared_tokens = declared_prefill_tokens(decoder_prefill_chunk_);
+    const bool selected_fits = selected_tokens > 1 && selected_tokens <= tokens.size();
+    const bool shared_fits = shared_tokens > 1 && shared_tokens <= tokens.size();
+    const bool use_shared_component = decoder_prefill_chunk_
+        && decoder_prefill_chunk_ != prefill_component
+        && ((shared_fits && (!selected_fits || shared_tokens > selected_tokens))
+            || (!selected_fits && !shared_fits && shared_tokens > 1
+                && (selected_tokens <= 1 || shared_tokens < selected_tokens)));
+    if (use_shared_component) {
+        prefill_component = decoder_prefill_chunk_;
+        for (Component* candidate : {lm_encoder_text_chunk_, lm_encoder_, prefill_encoder_}) {
+            if (candidate && declared_prefill_tokens(candidate) == shared_tokens) {
+                encoder_component = candidate;
+                break;
+            }
+        }
+    }
+    result.component = prefill_component;
+    result.encoder_component = encoder_component;
     if (start_position != 0) {
         if (std::getenv("CACTUS_DISABLE_SHARED_STATE") != nullptr || !decoder_->graph) return result;
         publish_component_cache_states(*decoder_);
     }
-    if (!load_component_graph(*decoder_prefill_)) return result;
-    if (prefill_encoder_ && !load_component_graph(*prefill_encoder_)) return result;
-    if (!cache_states_compatible(*decoder_prefill_, *decoder_)) return result;
-    size_t component_tokens = component_chunk_tokens(*decoder_prefill_, "inputs_embeds");
+    if (!load_component_graph(*prefill_component)) return result;
+    if (encoder_component && !load_component_graph(*encoder_component)) return result;
+    if (!cache_states_compatible(*prefill_component, *decoder_)) return result;
+    size_t component_tokens = component_chunk_tokens(*prefill_component, "inputs_embeds");
     if (component_tokens <= 1) return result;
     size_t effective_chunk = chunk_size > 0 ? std::min(chunk_size, component_tokens) : component_tokens;
     if (effective_chunk != component_tokens) effective_chunk = component_tokens;
     size_t whole_chunks_end = (tokens.size() / effective_chunk) * effective_chunk;
     auto any_cache_node = [&](auto predicate) {
-        if (!decoder_prefill_->graph) return false;
-        for (const auto& state : decoder_prefill_->cache_states) {
+        if (!prefill_component->graph) return false;
+        for (const auto& state : prefill_component->cache_states) {
             for (int node_id : {state.key_node_id, state.value_node_id}) {
                 if (node_id < 0) continue;
                 if (predicate(static_cast<size_t>(node_id))) return true;
@@ -2100,17 +2132,17 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
         return false;
     };
     const bool has_recurrent_state = any_cache_node([&](size_t id) {
-        return decoder_prefill_->graph->get_node_op_type(id) == OpType::RECURRENT_CACHE_STATE;
+        return prefill_component->graph->get_node_op_type(id) == OpType::RECURRENT_CACHE_STATE;
     });
     if (has_recurrent_state && whole_chunks_end > effective_chunk) {
         whole_chunks_end = effective_chunk;
     }
     const bool has_sliding_window_cache = any_cache_node([&](size_t id) {
-        return decoder_prefill_->graph->get_node_op_type(id) == OpType::KV_CACHE_STATE
-            && decoder_prefill_->graph->get_node_window_size(id) > 0;
+        return prefill_component->graph->get_node_op_type(id) == OpType::KV_CACHE_STATE
+            && prefill_component->graph->get_node_window_size(id) > 0;
     });
     const bool has_conv_state = any_cache_node([&](size_t id) {
-        return decoder_prefill_->graph->get_node_op_type(id) == OpType::CONV_CACHE_STATE;
+        return prefill_component->graph->get_node_op_type(id) == OpType::CONV_CACHE_STATE;
     });
     const size_t tail_tokens = tokens.size() - whole_chunks_end;
     const size_t padding_cutoff = std::max<size_t>(1, effective_chunk / 16);
@@ -2119,9 +2151,9 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
         && !has_sliding_window_cache
         && tail_tokens >= padding_cutoff;
     const bool padded_window_too_small = any_cache_node([&](size_t id) {
-        if (decoder_prefill_->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) return false;
-        size_t window = decoder_prefill_->graph->get_node_window_size(id);
-        size_t sink = decoder_prefill_->graph->get_node_sink_size(id);
+        if (prefill_component->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) return false;
+        size_t window = prefill_component->graph->get_node_window_size(id);
+        size_t sink = prefill_component->graph->get_node_sink_size(id);
         return window > 0 && (window < effective_chunk * 4 || window <= effective_chunk + sink);
     });
     const bool use_padded_tail = !pad_tail && !prefill_tail_pad_disabled_
@@ -2135,8 +2167,8 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     }
 
     size_t encoder_chunk = 0;
-    if (prefill_encoder_ && input_index(*prefill_encoder_, "input_ids") >= 0 && input_index(*prefill_encoder_, "position_ids") >= 0) {
-        encoder_chunk = component_chunk_tokens(*prefill_encoder_, "input_ids");
+    if (encoder_component && input_index(*encoder_component, "input_ids") >= 0 && input_index(*encoder_component, "position_ids") >= 0) {
+        encoder_chunk = component_chunk_tokens(*encoder_component, "input_ids");
         if (encoder_chunk == 0 || effective_chunk % encoder_chunk != 0) {
             encoder_chunk = 0;
         }
@@ -2144,7 +2176,7 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
 
     size_t processed = 0;
     while (processed + effective_chunk <= executable_tokens) {
-        execute_prefill_chunk(*decoder_prefill_, prefill_encoder_, encoder_chunk,
+        execute_prefill_chunk(*prefill_component, encoder_component, encoder_chunk,
                               effective_chunk, tokens, processed, start_position);
         processed += effective_chunk;
     }
@@ -2155,18 +2187,18 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
         const size_t pads = effective_chunk - tail_tokens;
         const size_t kept_real = tail_tokens - 1;
         std::vector<std::pair<size_t, std::vector<uint8_t>>> backups;
-        for (const auto& state : decoder_prefill_->cache_states) {
+        for (const auto& state : prefill_component->cache_states) {
             for (int node_id : {state.key_node_id, state.value_node_id}) {
                 if (node_id < 0) continue;
                 size_t id = static_cast<size_t>(node_id);
-                if (decoder_prefill_->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) continue;
-                backups.emplace_back(id, decoder_prefill_->graph->snapshot_cache_padded_append(id, kept_real, pads + 1));
+                if (prefill_component->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) continue;
+                backups.emplace_back(id, prefill_component->graph->snapshot_cache_padded_append(id, kept_real, pads + 1));
             }
         }
-        execute_prefill_chunk(*decoder_prefill_, prefill_encoder_, encoder_chunk,
+        execute_prefill_chunk(*prefill_component, encoder_component, encoder_chunk,
                               effective_chunk, tokens, processed, start_position);
         for (auto& [id, backup] : backups) {
-            decoder_prefill_->graph->rollback_cache_padded_append(id, kept_real, pads + 1, backup);
+            prefill_component->graph->rollback_cache_padded_append(id, kept_real, pads + 1, backup);
         }
         processed += kept_real;
         tail_executed = kept_real;
@@ -2190,7 +2222,7 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
             std::fill(decoder_->input_buffers[i].begin(), decoder_->input_buffers[i].end(), 0);
         }
         auto copy_start = std::chrono::high_resolution_clock::now();
-        move_cache_states(*decoder_prefill_, *decoder_, start_position + result.logical_tokens);
+        move_cache_states(*prefill_component, *decoder_, start_position + result.logical_tokens);
         auto copy_end = std::chrono::high_resolution_clock::now();
         last_prefill_cache_copy_ms_ = std::chrono::duration_cast<std::chrono::microseconds>(copy_end - copy_start).count() / 1000.0;
     }
@@ -2931,8 +2963,8 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
             run_step(tokens.back(), cache_total_seq_len_, true);
             ++cache_total_seq_len_;
             out_token = argmax_last_logits(out_uncertainty);
-            unload_component_graph(*decoder_prefill_);
-            if (prefill_encoder_) unload_component_graph(*prefill_encoder_);
+            if (chunked.component) unload_component_graph(*chunked.component);
+            if (chunked.encoder_component) unload_component_graph(*chunked.encoder_component);
             record_sampled_token(out_token);
             last_prefill_scalar_tail_tokens_ = 1;
             maybe_roll_compact();
@@ -2941,18 +2973,18 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
         cache_total_seq_len_ += chunked.logical_tokens;
     }
     if (chunked.logical_tokens < tokens.size() && chunked.logical_tokens > 0) {
-        unload_component_graph(*decoder_prefill_);
-        if (prefill_encoder_) unload_component_graph(*prefill_encoder_);
+        if (chunked.component) unload_component_graph(*chunked.component);
+        if (chunked.encoder_component) unload_component_graph(*chunked.encoder_component);
     }
     for (size_t i = chunked.logical_tokens; i < tokens.size(); ++i) {
         run_step(tokens[i], cache_total_seq_len_, i + 1 == tokens.size());
         ++cache_total_seq_len_;
     }
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
-    if (chunked.logical_tokens == tokens.size() && chunked.logical_tokens > 0 && decoder_prefill_) {
-        out_token = argmax_component_logits(*decoder_prefill_, chunked.last_logit_row, out_uncertainty);
-        unload_component_graph(*decoder_prefill_);
-        if (prefill_encoder_) unload_component_graph(*prefill_encoder_);
+    if (chunked.logical_tokens == tokens.size() && chunked.logical_tokens > 0 && chunked.component) {
+        out_token = argmax_component_logits(*chunked.component, chunked.last_logit_row, out_uncertainty);
+        unload_component_graph(*chunked.component);
+        if (chunked.encoder_component) unload_component_graph(*chunked.encoder_component);
     } else {
         out_token = argmax_last_logits(out_uncertainty);
     }
@@ -2978,8 +3010,8 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     ChunkedPrefillResult chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), prepare_decode);
     cache_total_seq_len_ += chunked.logical_tokens;
     if (prepare_decode && chunked.logical_tokens > 0) {
-        unload_component_graph(*decoder_prefill_);
-        if (prefill_encoder_) unload_component_graph(*prefill_encoder_);
+        if (chunked.component) unload_component_graph(*chunked.component);
+        if (chunked.encoder_component) unload_component_graph(*chunked.encoder_component);
     }
     for (size_t i = chunked.logical_tokens; i < tokens.size(); ++i) {
         run_step(tokens[i], cache_total_seq_len_, /*read_logits=*/false);
@@ -3657,7 +3689,7 @@ bool Model::build_lm_encoder_outputs_dynamic_media(
 bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                    const std::vector<std::string>& image_paths,
                                    const std::vector<std::vector<float>>& audio_features_per_message) {
-    if (cache_total_seq_len_ > 0) return false;
+    const size_t start_position = cache_total_seq_len_;
     const bool have_images = !image_paths.empty() && vision_encoder_ != nullptr;
     bool any_audio = false;
     for (const auto& mel : audio_features_per_message) { if (!mel.empty()) { any_audio = true; break; } }
@@ -3880,7 +3912,7 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                     write_int_vector_buffer(pos_buf, pos_desc.precision, positions);
                 } else {
                     for (size_t i = 0; i < encoder_tokens; ++i) {
-                        write_int_input_at(*lm_encoder_, "position_ids", i, static_cast<int64_t>(chunk_start + i));
+                    write_int_input_at(*lm_encoder_, "position_ids", i, static_cast<int64_t>(start_position + chunk_start + i));
                     }
                 }
             }
@@ -4021,7 +4053,10 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         if (count > 0) valid_seq = count;
     }
     valid_seq = std::min(valid_seq, full_seq);
-    size_t whole_chunks_end = (valid_seq / chunk_seq) * chunk_seq;
+    // Media prefill graphs initialize convolution state, so they are only
+    // valid at the beginning of a sequence. Prefix extensions keep the
+    // decoder-owned cache and execute the delta through decoder_step below.
+    size_t whole_chunks_end = start_position == 0 ? (valid_seq / chunk_seq) * chunk_seq : 0;
     if (whole_chunks_end > 0 && decoder_ != nullptr && !cache_states_compatible(*decoder_prefill_chunk_, *decoder_)) {
         whole_chunks_end = 0;
     }
@@ -4056,6 +4091,9 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         decoder_prefill_chunk_->graph->release_runtime_buffers();
         unload_component_graph(*decoder_prefill_chunk_);
     }
+    if (whole_chunks_end < valid_seq && (decoder_ == nullptr || !load_component_graph(*decoder_))) {
+        return false;
+    }
     for (size_t pos = whole_chunks_end; pos < valid_seq; ++pos) {
         for (const auto& kv : store_bytes) {
             const std::string& name = kv.first;
@@ -4068,6 +4106,9 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             size_t src_per_pos = per_pos_bytes[name];
             const uint8_t* src_ptr = kv.second.data() + pos * src_per_pos;
             write_typed_buffer(dst_buf, desc.precision, src_ptr, src_per_pos, src_prec);
+        }
+        if (input_index(*decoder_, "position_ids") >= 0) {
+            write_int_input(*decoder_, "position_ids", static_cast<int64_t>(start_position + pos));
         }
         decoder_->graph->execute();
     }

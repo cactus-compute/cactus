@@ -91,6 +91,12 @@ class Graph:
     def remove_noop_nodes(self) -> "Graph":
         return remove_noop_nodes_from_graph(self)
 
+    def collapse_transpose_chains(self) -> "Graph":
+        return collapse_transpose_chains_from_graph(self)
+
+    def fuse_logits_softcap(self) -> "Graph":
+        return fuse_logits_softcap_from_graph(self)
+
     def to_layer_map(self) -> CModels.LayerMap:
         return graph_to_layer_map(self)
 
@@ -502,6 +508,180 @@ def remove_noop_nodes_from_graph(graph: Graph) -> Graph:
     replacement_names = resolve_replacement_names(replacement_names)
     kept_nodes = tuple(clone_rewritten_node(node, replacement_names) for node in graph.nodes if node.name not in replacement_names)
     return prune_dead_nodes(rebuild_graph(kept_nodes, graph, tuple(graph.fusions)))
+
+def collapse_transpose_chains_from_graph(graph: Graph) -> Graph:
+    """Compose adjacent full-rank permutations and discard dead intermediates."""
+    replacements: dict[str, str] = {}
+    rewritten: dict[str, Node] = {}
+
+    for node in graph.nodes:
+        permutation = transpose_permutation(node)
+
+        if permutation is None or len(node.parents) != 1:
+            continue
+
+        source = node.parents[0]
+        combined = permutation
+        collapsed = False
+
+        while len(source.parents) == 1:
+            parent_permutation = transpose_permutation(source)
+
+            if parent_permutation is None or len(parent_permutation) != len(combined):
+                break
+
+            combined = tuple(parent_permutation[index] for index in combined)
+            source = source.parents[0]
+            collapsed = True
+
+        if not collapsed:
+            continue
+
+        if combined == tuple(range(len(combined))):
+            replacements[node.name] = source.name
+            continue
+
+        rewritten[node.name] = clone_composed_transpose(node, source.name, combined)
+
+    if not replacements and not rewritten:
+        return graph
+
+    replacements = resolve_replacement_names(replacements)
+    nodes = tuple(
+        clone_rewritten_node(rewritten.get(node.name, node), replacements)
+        for node in graph.nodes
+        if node.name not in replacements
+    )
+    return prune_dead_nodes(rebuild_graph(nodes, graph, tuple(graph.fusions)))
+
+def fuse_logits_softcap_from_graph(graph: Graph) -> Graph:
+    """Fuse a CQ logits projection followed by cap*tanh(logits/cap)."""
+    consumed: set[str] = set()
+    replacements: dict[str, Node] = {}
+    layout_targets = {"cactus.view", "cactus.reshape", "aten.view.default", "aten.reshape.default"}
+
+    for node in graph.nodes:
+        if node.target not in {"cactus.scalar_multiply", "aten.mul.Scalar"} or len(node.parents) != 1:
+            continue
+        cap = scalar_node_value(node)
+        tanh = node.parents[0]
+
+        if cap is None or cap <= 0.0 or tanh.target not in {"cactus.tanh", "aten.tanh.default"} or len(tanh.parents) != 1:
+            continue
+
+        divide = tanh.parents[0]
+        if divide.target not in {"cactus.scalar_divide", "aten.div.Scalar"} or len(divide.parents) != 1:
+            continue
+        divisor = scalar_node_value(divide)
+        if divisor is None or abs(divisor - cap) > max(1e-6, abs(cap) * 1e-6):
+            continue
+
+        source = divide.parents[0]
+        layouts: list[Node] = []
+        while source.target in layout_targets and len(source.parents) == 1:
+            layouts.append(source)
+            source = source.parents[0]
+
+        if source.target not in {"cactus.linear", "aten.linear.default", "cactus.matmul", "aten.matmul.default"}:
+            continue
+        if len(source.parents) < 2 or not has_ancestor_name(source, "lm_head"):
+            continue
+
+        chain = [source, *reversed(layouts), divide, tanh, node]
+        if any(tuple(child.name for child in current.children) != (next_node.name,)
+               for current, next_node in zip(chain, chain[1:])):
+            continue
+
+        attrs = {
+            "cap": cap,
+            "pretransposed_rhs": bool(source.attrs.get("pretransposed_rhs", source.target == "aten.linear.default")),
+        }
+        replacements[node.name] = Node(
+            index=node.index, name=node.name, node_type="call_function",
+            target="cactus.logits_tq_softcap",
+            args=[{"node": source.parents[0].name}, {"node": source.parents[1].name}],
+            kwargs=dict(attrs), users=(), tensor_output_meta=node.tensor_output_meta,
+            module_stack=source.module_stack, value_kind=node.value_kind, attrs=attrs,
+            ir_metadata=dict(node.ir_metadata), cache=node.cache,
+        )
+        consumed.update(current.name for current in chain[:-1])
+
+    if not replacements:
+        return graph
+
+    nodes = tuple(
+        replacements.get(node.name, clone_rewritten_node(node, {}))
+        for node in graph.nodes
+        if node.name not in consumed
+    )
+    return prune_dead_nodes(rebuild_graph(nodes, graph, tuple(graph.fusions)))
+
+def scalar_node_value(node: Node) -> float | None:
+    for key in ("value", "other", "arg_1"):
+        value = node.attrs.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+def has_ancestor_name(node: Node, pattern: str, max_depth: int = 4) -> bool:
+    pattern = pattern.lower()
+    worklist = [(node, 0)]
+    seen: set[str] = set()
+    while worklist:
+        current, depth = worklist.pop()
+        if current.name in seen:
+            continue
+        seen.add(current.name)
+        if pattern in f"{current.name} {current.target} {current.module_stack!r}".lower():
+            return True
+        if depth < max_depth:
+            worklist.extend((parent, depth + 1) for parent in current.parents)
+    return False
+
+def transpose_permutation(node: Node) -> tuple[int, ...] | None:
+    if node.target not in {"cactus.transpose", "aten.permute.default"}:
+        return None
+
+    value = node.attrs.get("permutation")
+
+    if not isinstance(value, (list, tuple)):
+        return None
+
+    permutation = tuple(value)
+
+    if any(not isinstance(index, int) for index in permutation):
+        return None
+    if tuple(sorted(permutation)) != tuple(range(len(permutation))):
+        return None
+
+    return permutation
+
+def clone_composed_transpose(node: Node, source_name: str, permutation: tuple[int, ...]) -> Node:
+    args = rewrite_node_refs(node.args, {node.parents[0].name: source_name})
+    kwargs = rewrite_node_refs(node.kwargs, {node.parents[0].name: source_name})
+
+    if isinstance(kwargs, dict) and "permutation" in kwargs:
+        kwargs["permutation"] = list(permutation)
+    if node.target == "aten.permute.default" and isinstance(args, list) and len(args) > 1:
+        args[1] = list(permutation)
+
+    attrs = dict(node.attrs)
+    attrs["permutation"] = list(permutation)
+    return Node(
+        index=node.index,
+        name=node.name,
+        node_type=node.node_type,
+        target=node.target,
+        args=args,
+        kwargs=kwargs,
+        users=(),
+        tensor_output_meta=node.tensor_output_meta,
+        module_stack=node.module_stack,
+        value_kind=node.value_kind,
+        attrs=attrs,
+        ir_metadata=dict(node.ir_metadata),
+        cache=node.cache,
+    )
 
 def noop_replacement_name(node: Node) -> str | None:
     if len(node.parents) != 1 or node.is_output:

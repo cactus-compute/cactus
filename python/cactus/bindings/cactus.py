@@ -604,6 +604,10 @@ _lib.cactus_graph_conv1d_causal.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_conv1d_causal.restype = ctypes.c_int
+_lib.cactus_graph_conv1d_causal_channel_first.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_conv1d_causal_channel_first.restype = ctypes.c_int
 _lib.cactus_graph_conv1d_k3.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
@@ -723,6 +727,11 @@ _bind_optional(
         cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t,
         ctypes.POINTER(cactus_node_t),
     ],
+    ctypes.c_int,
+)
+_bind_optional(
+    "cactus_graph_logits_tq_softcap",
+    [cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_float, ctypes.c_float, ctypes.POINTER(cactus_node_t)],
     ctypes.c_int,
 )
 _lib.cactus_graph_moe_layer_ungated.argtypes = [
@@ -2708,6 +2717,18 @@ class Graph:
             raise RuntimeError("graph_conv1d_causal failed")
         return self._tensor_from_node(out.value)
 
+    def conv1d_causal_channel_first(self, x, weight, kernel_size, dilation):
+        x = self._ensure_tensor(x)
+        weight = self._ensure_tensor(weight)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_conv1d_causal_channel_first(
+            self.h, cactus_node_t(x.id), cactus_node_t(weight.id),
+            ctypes.c_size_t(int(kernel_size)), ctypes.c_size_t(int(dilation)), ctypes.byref(out)
+        )
+        if rc != 0:
+            raise RuntimeError("graph_conv1d_causal_channel_first failed")
+        return self._tensor_from_node(out.value)
+
     def conv1d_k3(self, x, weight, stride=1):
         x = self._ensure_tensor(x)
         weight = self._ensure_tensor(weight)
@@ -2916,6 +2937,18 @@ class Graph:
         )
         if rc != 0:
             raise RuntimeError(_err("graph_projection_pair_tq_fused failed"))
+        return self._tensor_from_node(out.value)
+
+    def logits_tq_softcap(self, hidden, weight, cap, projection_scale=1.0):
+        hidden = self._ensure_tensor(hidden)
+        weight = self._ensure_tensor(weight)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_logits_tq_softcap(
+            self.h, cactus_node_t(hidden.id), cactus_node_t(weight.id),
+            ctypes.c_float(float(cap)), ctypes.c_float(float(projection_scale)), ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_logits_tq_softcap failed"))
         return self._tensor_from_node(out.value)
 
     def moe_layer_ungated(self, hidden, routing_probs, topk_indices, w1_weights, w2_weights,

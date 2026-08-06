@@ -1401,6 +1401,18 @@ int cactus_graph_conv1d_causal(cactus_graph_t graph, cactus_node_t input, cactus
     }
 }
 
+int cactus_graph_conv1d_causal_channel_first(cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, size_t kernel_size, size_t dilation, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_conv1d_causal_channel_first");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.conv1d_causal_channel_first(
+            static_cast<size_t>(input), static_cast<size_t>(weight), kernel_size, dilation));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_conv1d_k3(cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, size_t stride, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_conv1d_k3");
     try {
@@ -1678,6 +1690,18 @@ CACTUS_FFI_EXPORT int cactus_graph_projection_pair_tq_fused(cactus_graph_t graph
     try {
         *out = static_cast<cactus_node_t>(as_graph(graph)->graph.projection_pair_tq_fused(
             static_cast<size_t>(hidden), static_cast<size_t>(first_weight), static_cast<size_t>(second_weight)));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+CACTUS_FFI_EXPORT int cactus_graph_logits_tq_softcap(cactus_graph_t graph, cactus_node_t hidden, cactus_node_t weight, float cap, float projection_scale, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_logits_tq_softcap");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.logits_tq_softcap(
+            static_cast<size_t>(hidden), static_cast<size_t>(weight), cap, projection_scale));
         return 0;
     } catch (const std::exception& e) {
         last_error_message = e.what();
