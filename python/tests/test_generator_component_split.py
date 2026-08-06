@@ -7,6 +7,78 @@ from cactus.transpiler.IR import models as IRModels
 
 
 class TestGeneratorComponentSplit(unittest.TestCase):
+    def test_chunk_retarget_preserves_expand_broadcast_factor(self) -> None:
+        input_ids = IRModels.Node(
+            index=0,
+            name="input_ids",
+            node_type="placeholder",
+            target="input_ids",
+            args=[],
+            kwargs={},
+            users=(),
+            tensor_output_meta={"shape": [1, 4], "dtype": "torch.int64"},
+            module_stack=None,
+            value_kind=FModels.ValueKind.USER_INPUT,
+            ir_metadata={"logical_input": "input_ids"},
+        )
+        sliced_key = IRModels.Node(
+            index=1,
+            name="sliced_key",
+            node_type="call_function",
+            target="cactus.slice",
+            args=[{"node": "input_ids"}],
+            kwargs={},
+            users=(),
+            tensor_output_meta={"shape": [1, 8, 1, 4, 64], "dtype": "torch.float16"},
+            module_stack=None,
+            value_kind=FModels.ValueKind.ACTIVATION,
+        )
+        expand = IRModels.Node(
+            index=2,
+            name="expand",
+            node_type="call_function",
+            target="cactus.expand",
+            args=[{"node": "sliced_key"}],
+            kwargs={"shape": [1, 8, 4, 4, 64]},
+            users=(),
+            tensor_output_meta={"shape": [1, 8, 4, 4, 64], "dtype": "torch.float16"},
+            module_stack=None,
+            value_kind=FModels.ValueKind.ACTIVATION,
+            attrs={"shape": [1, 8, 4, 4, 64]},
+        )
+        view = IRModels.Node(
+            index=3,
+            name="view",
+            node_type="call_function",
+            target="cactus.view",
+            args=[{"node": "expand"}],
+            kwargs={"shape": [1, 32, 4, 64]},
+            users=(),
+            tensor_output_meta={"shape": [1, 32, 4, 64], "dtype": "torch.float16"},
+            module_stack=None,
+            value_kind=FModels.ValueKind.ACTIVATION,
+            attrs={"shape": [1, 32, 4, 64]},
+        )
+        output = IRModels.Node(
+            index=4,
+            name="output",
+            node_type="output",
+            target="output",
+            args=[[{"node": "view"}]],
+            kwargs={},
+            users=(),
+            tensor_output_meta=None,
+            module_stack=None,
+            value_kind=FModels.ValueKind.OUTPUT,
+        )
+        graph = IRModels.rebuild_graph((input_ids, sliced_key, expand, view, output), empty_graph())
+
+        retargeted = component_split.retarget_chunk_graph_sequence_length(graph, 128)
+
+        self.assertEqual(retargeted.nodes_map["expand"].kwargs["shape"], [1, 8, 4, 128, 64])
+        self.assertEqual(retargeted.nodes_map["expand"].tensor_output_meta["shape"], [1, 8, 4, 128, 64])
+        self.assertEqual(retargeted.nodes_map["view"].kwargs["shape"], [1, 32, 128, 64])
+
     def test_shape_attr_recovers_inherited_dimension_after_chunk_retarget(self) -> None:
         node = IRModels.Node(
             index=0,

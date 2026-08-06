@@ -201,7 +201,7 @@ def retarget_chunk_node(
         metadata.setdefault("prefill_cache_capacity", cache_capacity)
     if node.is_placeholder and metadata.get("logical_input") in {"input_ids", "attention_mask", "position_ids", "inputs_embeds", "per_layer_inputs"}:
         metadata.setdefault("prefill_chunk_tokens", chunk_tokens)
-    return IRModels.Node(
+    retargeted = IRModels.Node(
         index=node.index,
         name=node.name,
         node_type=node.node_type,
@@ -215,6 +215,57 @@ def retarget_chunk_node(
         attrs=retarget_attr_values(node.attrs, source_lengths, chunk_tokens),
         ir_metadata=metadata,
         cache=node.cache,
+    )
+    return preserve_expand_broadcast_dimensions(node, retargeted)
+
+
+def preserve_expand_broadcast_dimensions(original: IRModels.Node, retargeted: IRModels.Node) -> IRModels.Node:
+    """Do not mistake an expand repeat factor for the captured sequence length.
+
+    Small export examples can use the same integer for both values (for
+    example, sequence length 4 and four GQA query groups).  Chunk retargeting
+    changes the sequence axis, but an axis expanded from 1 is a broadcast
+    factor and must remain unchanged.
+    """
+    if original.target not in {"cactus.expand", "aten.expand.default"} or not original.parents:
+        return retargeted
+    input_shape = tensor_shape(original.parents[0])
+    output_shape = tensor_shape(original)
+    if not input_shape or len(input_shape) > len(output_shape):
+        return retargeted
+    offset = len(output_shape) - len(input_shape)
+    protected_axes = {
+        axis
+        for axis, output_dim in enumerate(output_shape)
+        if axis >= offset and input_shape[axis - offset] == 1 and output_dim != 1
+    }
+    if not protected_axes:
+        return retargeted
+
+    def restore_shape(value: Any, original_value: Any) -> Any:
+        if not isinstance(value, (list, tuple)) or not isinstance(original_value, (list, tuple)):
+            return value
+        if len(value) != len(output_shape) or len(original_value) != len(output_shape):
+            return value
+        restored = list(value)
+        for axis in protected_axes:
+            restored[axis] = original_value[axis]
+        return type(value)(restored) if isinstance(value, tuple) else restored
+
+    def restore_mapping(value: Any, original_value: Any) -> Any:
+        if not isinstance(value, dict) or not isinstance(original_value, dict):
+            return value
+        restored = dict(value)
+        for key in ("shape", "new_shape", "sizes"):
+            if key in restored and key in original_value:
+                restored[key] = restore_shape(restored[key], original_value[key])
+        return restored
+
+    return replace(
+        retargeted,
+        kwargs=restore_mapping(retargeted.kwargs, original.kwargs),
+        tensor_output_meta=restore_mapping(retargeted.tensor_output_meta, original.tensor_output_meta),
+        attrs=restore_mapping(retargeted.attrs, original.attrs),
     )
 
 def retarget_sequence_value(value: Any, source_lengths: frozenset[int], chunk_tokens: int) -> Any:
