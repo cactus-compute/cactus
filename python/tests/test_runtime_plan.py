@@ -57,7 +57,7 @@ class TestRuntimePlan(unittest.TestCase):
                         "logical_inputs": ["input_ids", "position_ids"],
                         "output_node_ids": [3],
                         "logical_outputs": ["logits"],
-                        "weight_bindings": [
+                        "bound_constant_bindings": [
                             {
                                 "node_id": 4,
                                 "path": "weights/model.layers.0.self_attn.q_proj.weight.bin",

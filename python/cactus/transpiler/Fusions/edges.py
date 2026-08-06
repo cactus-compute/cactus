@@ -7,19 +7,15 @@ def _edge(
     dest: str,
     dest_input_index: int | None = 0,
     *,
-    source_output_index: int | None = None,
     repeated: bool = False,
     repeated_group: str | None = None,
-    metadata: dict | None = None,
 ) -> M.FusionEdge:
     return M.FusionEdge(
         source=source,
         dest=dest,
         dest_input_index=dest_input_index,
-        source_output_index=source_output_index,
         repeated=repeated,
         repeated_group=repeated_group,
-        metadata=metadata or {},
     )
 
 def _expert_edge(

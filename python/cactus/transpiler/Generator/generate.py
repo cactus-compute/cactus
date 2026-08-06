@@ -40,7 +40,6 @@ def generate(
 ) -> models.GenerationResult:
     if config is None and output_dir is None:
         raise ValueError("generate requires output_dir unless a GeneratorConfig is provided")
-
     generator_config = config or models.GeneratorConfig(
         output_dir=Path(output_dir),
         weights_dir=Path(weights_dir) if weights_dir is not None else None,
@@ -56,10 +55,8 @@ def generate(
     components = component_graphs_from_input(ir_output, generator_config, component_name, model_profile)
     lowering_rules = lowering_engine.build_lowering_rules(lowerings)
     fp16_cache_components = fp16_kv_cache_components(model_profile)
-
     for component in components:
         lower_component_with_cache_contract(component, generator_config, lowering_rules, fp16_cache_components)
-
     return models.GenerationResult.from_components(components)
 
 def generate_bundle(
@@ -108,13 +105,11 @@ def lower_component_with_cache_contract(
     fp16_cache_components: frozenset[str],
 ) -> None:
     previous = os.environ.get("CACTUS_KV_CACHE_FP16")
-
     if component.name in fp16_cache_components:
         os.environ["CACTUS_KV_CACHE_FP16"] = "1"
         component.metadata["kv_cache_precision"] = "fp16"
     else:
         os.environ.pop("CACTUS_KV_CACHE_FP16", None)
-
     try:
         lowering_engine.lower_component(component, config, lowering_rules)
     finally:
@@ -125,92 +120,67 @@ def lower_component_with_cache_contract(
 
 def materialize_runtime_bundle_files(bundle_dir: Path, weights_dir: Path | None, model_profile: Any | None = None) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=True)
-
     if weights_dir is not None and weights_dir.exists():
         for source in weights_dir.iterdir():
             if source.is_file() and source.name not in constants.GENERATED_BUNDLE_METADATA_FILES:
                 materialize_bundle_file(source, bundle_dir / source.name)
-
     materialize_lfm2_vl_position_grid(bundle_dir, model_profile)
-
     for source in model_profile_metadata_files(model_profile):
         materialize_bundle_file(source, bundle_dir / source.name, overwrite=False)
-
     ensure_tokenizer_sidecars(bundle_dir)
 
 def materialize_lfm2_vl_position_grid(bundle_dir: Path, model_profile: Any | None) -> None:
     profile_name = str(getattr(model_profile, "model_profiles", "") or "").lower()
-
     if profile_name not in {"lfm_vlm", "lfm2_vl", "lfm-vlm"} and "lfm_vlm" not in profile_name and "lfm2_vl" not in profile_name:
         return
-
     source = bundle_dir / "vision_position_embedding.weights"
     target = bundle_dir / "lfm2_vl_position_embedding_grid.f32"
-
     if target.is_file():
         return
-
     tensor = read_fp16_cactus_tensor(source)
-
     if tensor is None or tensor.ndim != 2:
         return
-
     rows, hidden = tensor.shape
     grid = int(math.isqrt(int(rows)))
-
     if grid * grid != int(rows):
         return
-
     target.write_bytes(tensor.astype(np.float32, copy=False).reshape(grid, grid, hidden).tobytes())
 
 def read_fp16_cactus_tensor(path: Path) -> np.ndarray | None:
     if not path.is_file():
         return None
-
     with path.open("rb") as file:
         header = file.read(84)
-
         if len(header) != 84 or header[:4] != b"CACT":
             return None
-
         _, alignment, ndim, d0, d1, d2, d3, precision, data_bytes, scales_bytes, _, _, _ = struct.unpack(
             "<IIIQQQQIQQIIQ",
             header[4:84],
         )
-
         if precision != 1:
             return None
-
         dims = [int(dim) for dim in (d0, d1, d2, d3)[:ndim]]
         element_count = math.prod(dims) if dims else 1
-
         if data_bytes < element_count * 2:
             return None
-
         scales_offset = aligned_offset(84, int(alignment))
         data_offset = aligned_offset(scales_offset + int(scales_bytes), int(alignment))
         file.seek(data_offset)
         raw = file.read(element_count * 2)
-
     if len(raw) != element_count * 2:
         return None
-
     return np.frombuffer(raw, dtype=np.float16).reshape(dims)
 
 def model_profile_metadata_files(model_profile: Any | None) -> tuple[Path, ...]:
     if model_profile is None:
         return ()
-
     try:
         from ..Converter import constants as converter_constants
     except Exception:
         return ()
-
     profile_name = getattr(model_profile, "model_profiles", None)
-
     if not profile_name:
         return ()
-
     metadata_dir = converter_constants.CONVERTER_JSON_DIR / str(profile_name)
     filenames = runtime_metadata_filenames(model_profile)
     return tuple(metadata_dir / filename for filename in filenames if (metadata_dir / filename).is_file())
@@ -231,19 +201,15 @@ def runtime_metadata_filenames(model_profile: Any | None) -> tuple[str, ...]:
 def materialize_bundle_file(source: Path, target: Path, *, overwrite: bool = True) -> None:
     if not source.is_file():
         return
-
     if target.exists() or target.is_symlink():
         try:
             if target.samefile(source):
                 return
         except OSError:
             pass
-
         if not overwrite:
             return
-
         target.unlink()
-
     try:
         target.symlink_to(source.resolve())
     except OSError:
@@ -251,33 +217,25 @@ def materialize_bundle_file(source: Path, target: Path, *, overwrite: bool = Tru
 
 def ensure_tokenizer_sidecars(bundle_dir: Path) -> None:
     ensure_tokenizer_runtime_model_type(bundle_dir)
-
     if (bundle_dir / "vocab.txt").is_file():
         return
-
     if not (bundle_dir / "tokenizer.json").is_file():
         return
-
     try:
         from transformers import AutoTokenizer
         from cactus.convert.cactus_adapters import tokenizer as tokenizer_utils
     except Exception:
         return
-
     try:
         with tempfile.TemporaryDirectory(prefix="cactus_tokenizer_") as temp_dir_name:
             temp_dir = Path(temp_dir_name)
-
             for filename in tokenizer_source_filenames():
                 source = bundle_dir / filename
-
                 if source.is_file():
                     shutil.copy2(source, temp_dir / filename)
-
             tokenizer = AutoTokenizer.from_pretrained(str(temp_dir), local_files_only=True, trust_remote_code=True)
             original_hf_download = tokenizer_utils.hf_hub_download
             tokenizer_utils.hf_hub_download = None
-
             try:
                 tokenizer_utils.convert_hf_tokenizer(
                     tokenizer,
@@ -287,33 +245,24 @@ def ensure_tokenizer_sidecars(bundle_dir: Path) -> None:
                 )
             finally:
                 tokenizer_utils.hf_hub_download = original_hf_download
-
             for filename in tokenizer_sidecar_filenames():
                 source = temp_dir / filename
-
                 if source.is_file():
                     shutil.copy2(source, bundle_dir / filename)
-
             ensure_tokenizer_runtime_model_type(bundle_dir)
     except Exception:
         return
 
 def ensure_tokenizer_runtime_model_type(bundle_dir: Path) -> None:
     model_type = bundle_model_type(bundle_dir)
-
     if not model_type:
         return
-
     config_path = bundle_dir / "tokenizer_config.txt"
-
     if not config_path.is_file():
         return
-
     lines = config_path.read_text(encoding="utf-8").splitlines()
-
     if any(line.split("=", 1)[0].strip() == "model_type" for line in lines if "=" in line):
         return
-
     lines.append(f"model_type={model_type}")
     config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -340,26 +289,20 @@ def tokenizer_sidecar_filenames() -> tuple[str, ...]:
 def bundle_model_type(bundle_dir: Path) -> str | None:
     for filename in ("config.json", "hf_config.json"):
         config_path = bundle_dir / filename
-
         if not config_path.is_file():
             continue
-
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             continue
-
         model_type = config.get("model_type")
-
         if model_type is not None:
             return str(model_type)
-
     return None
 
 def prepare_generation_output_dir(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     constants_dir = output_dir / "constants"
-
     if constants_dir.exists():
         shutil.rmtree(constants_dir)
 
@@ -372,18 +315,15 @@ def component_graphs_from_input(
     if isinstance(ir_output, Mapping):
         graphs = {name: graph_from_input(component_input) for name, component_input in ir_output.items()}
         split_graphs = component_split.split_component_graphs(graphs, model_profile)
-
         if split_graphs is not None:
             return tuple(
                 models.ComponentGraph.from_ir(name, graph, config)
                 for name, graph in split_graphs.items()
             )
-
         return tuple(
             models.ComponentGraph.from_ir(name, graph, config)
             for name, graph in graphs.items()
         )
-
     graph = graph_from_input(ir_output)
     name = component_name or default_component_name(graph, model_profile)
     return (models.ComponentGraph.from_ir(name, graph, config),)
@@ -391,18 +331,14 @@ def component_graphs_from_input(
 def graph_from_input(ir_output: GraphInput) -> IRModels.Graph:
     if isinstance(ir_output, IRModels.Graph):
         return ir_output
-
     if isinstance(ir_output, CModels.LayerMap):
         return IRModels.Graph.from_map(ir_output)
-
     raise TypeError(f"Unsupported generator input: {type(ir_output).__name__}")
 
 def default_component_name(graph: IRModels.Graph, model_profile: Any | None) -> str:
     profile_name = getattr(model_profile, "model_profiles", None)
     model_name = profile_name or graph.model_name or constants.DEFAULT_COMPONENT_NAME
     task = graph.task
-
     if task:
         return f"{model_name}_{task}"
-
     return model_name

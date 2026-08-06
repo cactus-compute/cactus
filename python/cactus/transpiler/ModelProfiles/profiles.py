@@ -578,18 +578,15 @@ MODEL_ID_MAP = {
 
 def profile_for_model_id(model_id: str) -> ModelProfile | None:
     """Return only explicitly registered optimized profiles.
-
     Unknown models intentionally return None. Their contract must be built by
     generic_profile_for_contract rather than inferred from repository names.
     """
     if model_id in MODEL_ID_MAP:
         return MODEL_ID_MAP[model_id]
-
     normalized = model_id.lower()
     for candidate_id, profile in MODEL_ID_MAP.items():
         if candidate_id.lower() == normalized:
             return profile
-
     return None
 
 def generic_profile_for_contract(contract: GenericTranspileContract) -> ModelProfile:
@@ -599,10 +596,8 @@ def generic_profile_for_contract(contract: GenericTranspileContract) -> ModelPro
         raise ValueError("generic transpilation requires at least one modality")
     if unknown_modalities:
         raise ValueError(f"unsupported generic modalities: {', '.join(sorted(unknown_modalities))}")
-
     task = str(contract.task).strip().lower()
     cache_style = str(contract.cache_style).strip().lower()
-
     if task == GENERIC_TASK_SPEECH_SEQ2SEQ:
         if "audio" not in modalities or "vision" in modalities:
             raise ValueError("speech-seq2seq generic models require audio and do not support vision")
@@ -619,13 +614,11 @@ def generic_profile_for_contract(contract: GenericTranspileContract) -> ModelPro
         base = GENERIC_VISION_LANGUAGE_PROFILE if "vision" in modalities else GENERIC_TEXT_PROFILE
     else:
         raise ValueError(f"unsupported generic task: {contract.task}")
-
     supported = set(base.supported_modalties)
     if not set(modalities).issubset(supported):
         raise ValueError(
             f"generic {task} does not support modalities: {', '.join(modalities)}"
         )
-
     if cache_style == GENERIC_CACHE_NONE:
         base = replace(
             base,
@@ -634,14 +627,12 @@ def generic_profile_for_contract(contract: GenericTranspileContract) -> ModelPro
             cache_contract=CacheContract(),
             runtime_contract=GENERIC_NO_CACHE_RUNTIME_CONTRACT,
         )
-
     default_groups = tuple(base.fusion_fields)
     fusion_groups = tuple(dict.fromkeys(contract.fusion_groups or default_groups))
     if cache_style == GENERIC_CACHE_DYNAMIC_KV and "generic_cached_attention" not in fusion_groups:
         fusion_groups = (*fusion_groups, "generic_cached_attention")
     elif cache_style != GENERIC_CACHE_DYNAMIC_KV:
         fusion_groups = tuple(group for group in fusion_groups if group != "generic_cached_attention")
-
     return replace(
         base,
         fusion_fields=fusion_groups,

@@ -8,7 +8,6 @@ GENERIC_CACHE_NONE = "none"
 @dataclass(slots=True, frozen=True)
 class GenericTranspileContract:
     """User-declared execution contract for an unregistered model."""
-
     task: str = GENERIC_TASK_CAUSAL_LM
     modalities: tuple[str, ...] = ("text",)
     cache_style: str = GENERIC_CACHE_NONE

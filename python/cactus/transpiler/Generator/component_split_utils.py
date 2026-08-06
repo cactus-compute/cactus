@@ -6,13 +6,10 @@ from ..IR import models as IRModels
 
 def element_count(shape: list[Any]) -> int | None:
     product = 1
-
     for dim in shape:
         if not isinstance(dim, int):
             return None
-
         product *= dim
-
     return product
 
 def tensor_shape(node: IRModels.Node) -> list[Any]:

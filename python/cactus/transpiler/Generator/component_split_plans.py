@@ -14,22 +14,16 @@ def split_component_graphs(
 ) -> dict[str, IRModels.Graph] | None:
     prefill = find_graph_by_task(graphs, PREFILL_WITH_CACHE_TASK)
     decode = find_graph_by_task(graphs, DECODE_WITH_CACHE_TASK)
-
     if prefill is None or decode is None:
         return None
-
     if is_gemma4_profile(model_profile):
         return split_gemma4_components(prefill, decode)
-
     if is_whisper_profile(model_profile):
         return split_whisper_components(prefill, decode)
-
     if is_lfm_vlm_profile(model_profile):
         return split_lfm_vlm_components(prefill, decode)
-
     if is_causal_lm_profile(model_profile):
         return split_causal_lm_components(prefill, decode, model_profile)
-
     return None
 
 def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> dict[str, IRModels.Graph]:
@@ -42,7 +36,6 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
     per_layer_chunk = PlaceholderSpec("per_layer_inputs", "per_layer_inputs", source_node=boundaries.prefill_per_layer_inputs)
     prefill_rope_position_aliases = gemma4_rope_position_aliases(prefill, position_chunk.name)
     decode_rope_position_aliases = gemma4_rope_position_aliases(decode, position_step.name)
-
     step_specs = (
         ComponentSplitSpec(
             name="vision_encoder",
@@ -149,21 +142,16 @@ def split_gemma4_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> 
             ref_aliases=decode_rope_position_aliases,
         ),
     )
-
     return {spec.name: extract_component_graph(spec) for spec in step_specs}
 
 def gemma4_rope_position_aliases(graph: IRModels.Graph, placeholder_name: str) -> dict[str, str]:
     aliases: dict[str, str] = {}
-
     for node in graph.nodes:
         if node.target != "cactus.gemma4_rope_table_lookup":
             continue
-
         if not node.parents:
             continue
-
         aliases[node.parents[0].name] = placeholder_name
-
     return aliases
 
 def is_gemma4_profile(model_profile: Any | None) -> bool:
@@ -189,7 +177,6 @@ def split_causal_lm_components(
     step_position = PlaceholderSpec("position_ids", "position_ids", tensor_node="input_ids", force=True)
     chunk_position = PlaceholderSpec("position_ids", "position_ids", tensor_node="input_ids", force=True)
     chunk_tokens = causal_lm_prefill_chunk_tokens(model_profile)
-
     step_specs = (
         ComponentSplitSpec(
             name="lm_encoder_step",
@@ -230,18 +217,14 @@ def split_causal_lm_components(
             chunk_tokens=chunk_tokens,
         ),
     )
-
     cache_policy = tuple(getattr(model_profile, "cache_policy", ()) or ())
     specs = step_specs if "scalar_prefill" in cache_policy else (*step_specs, *prefill_specs)
-
     return {spec.name: extract_component_graph(spec) for spec in specs}
 
 def causal_lm_prefill_chunk_tokens(model_profile: Any | None) -> int:
     profile_name = str(getattr(model_profile, "model_profiles", "") or "").lower()
-
     if "lfm" in profile_name:
         return LFM_MOE_PREFILL_CHUNK_TOKENS
-
     return GENERIC_CAUSAL_PREFILL_CHUNK_TOKENS
 
 def split_lfm_vlm_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> dict[str, IRModels.Graph]:
@@ -261,7 +244,6 @@ def split_lfm_vlm_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
         "vision_features",
         source_node=boundaries.vision_projector_input,
     )
-
     specs = (
         ComponentSplitSpec(
             name="vision_encoder",
@@ -270,7 +252,7 @@ def split_lfm_vlm_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
             placeholders=(positional_embeddings,),
             metadata={
                 "position_embedding_grid_path": "lfm2_vl_position_embedding_grid.f32",
-                "position_embedding_grid_shape": "16,16,1152",
+                "position_embedding_grid_shape": f"16,16,{tensor_last_dim(prefill.nodes_map[boundaries.vision_position_embeddings])}",
             },
         ),
         ComponentSplitSpec(
@@ -334,7 +316,6 @@ def split_lfm_vlm_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
             ref_aliases={boundaries.decode_text_inputs_embeds: inputs_embeds_step.name},
         ),
     )
-
     return {spec.name: extract_component_graph(spec) for spec in specs}
 
 def split_whisper_components(prefill: IRModels.Graph, decode: IRModels.Graph) -> dict[str, IRModels.Graph]:
@@ -352,7 +333,6 @@ def split_whisper_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
     )
     route_metadata = {"runtime_route": "encoder_cross_kv_decoder_step"}
     decoder_input_aliases = whisper_decoder_cross_input_aliases(decode, len(boundaries.cross_key_values))
-
     specs = (
         ComponentSplitSpec(
             name="audio_encoder",
@@ -389,7 +369,6 @@ def split_whisper_components(prefill: IRModels.Graph, decode: IRModels.Graph) ->
             metadata={**route_metadata, "runtime_role": "decoder_step"},
         ),
     )
-
     components = {spec.name: extract_component_graph(spec) for spec in specs}
     components["decoder_step"] = retarget_whisper_decoder_cross_kv_layout(components["decoder_step"])
     return components

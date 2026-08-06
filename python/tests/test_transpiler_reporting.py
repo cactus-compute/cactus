@@ -91,6 +91,33 @@ class TestTranspilerReporting(unittest.TestCase):
         self.assertFalse(lowering_basic_ops.is_decoder_prefill_logits_matmul(decode, projection))
         self.assertFalse(lowering_basic_ops.is_decoder_prefill_logits_matmul(prefill, projection))
 
+    def test_tied_embedding_ancestor_does_not_make_projection_lm_head(self):
+        tied_weight = mock.Mock(
+            name="p_model_lm_head_weight", target="p_model_lm_head_weight",
+            parents=[], module_stack=None,
+        )
+        embedding = mock.Mock(
+            name="embedding", target="cactus.embedding_from_tensor",
+            parents=[tied_weight], module_stack=None,
+        )
+        activation = mock.Mock(
+            name="hidden", target="cactus.rms_norm", parents=[embedding],
+            tensor_output_meta={"shape": [128, 2048]}, module_stack=None,
+        )
+        conv_weight = mock.Mock(
+            name="conv_in_proj_weight", target="conv_in_proj_weight",
+            parents=[], module_stack=None,
+        )
+        projection = mock.Mock(
+            name="conv_in_proj", target="cactus.linear",
+            parents=[activation, conv_weight],
+            tensor_output_meta={"shape": [128, 6144]},
+            module_stack=[{"module_path": "model.layers.0.conv.in_proj"}],
+        )
+        context = mock.Mock(component=mock.Mock(name="decoder_prefill_chunk"))
+
+        self.assertFalse(lowering_basic_ops.is_decoder_prefill_logits_matmul(context, projection))
+
     def test_generic_text_profile_uses_processor_input(self):
         self.assertEqual(GENERIC_TEXT_PROFILE.input_strategy, "processor")
 

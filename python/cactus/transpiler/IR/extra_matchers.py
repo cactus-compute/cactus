@@ -37,29 +37,22 @@ def match_extra_constraints(source: models.Node, graph: models.Graph, fusion: FM
     """Dispatches every structured FusionGraph constraint to its registered matcher."""
     for constraint_name, raw_spec in fusion.constraints.items():
         matcher = EXTRA_MATCHERS.get(constraint_name)
-
         if matcher is None:
             return False
-
         specs = normalize_constraint_specs(raw_spec)
-
         if specs is None:
             return False
-
         for spec in specs:
             if not matcher(source, graph, fusion, bindings, spec):
                 return False
-
     return True
 
 def normalize_constraint_specs(raw_spec: Any) -> tuple[dict[str, Any], ...] | None:
     """Normalizes one constraint value into a tuple of spec dictionaries."""
     if isinstance(raw_spec, dict):
         return (raw_spec,)
-
     if isinstance(raw_spec, (list, tuple)) and all(isinstance(spec, dict) for spec in raw_spec):
         return tuple(raw_spec)
-
     return None
 
 EXTRA_MATCHERS: dict[str, ExtraMatcher] = {

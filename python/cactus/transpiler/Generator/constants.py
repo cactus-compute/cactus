@@ -120,6 +120,7 @@ SCALAR_TARGETS: dict[str, tuple[str, str]] = {
     "aten.mul.Scalar": ("scalar_multiply", "other"),
     "aten.div.Scalar": ("scalar_divide", "other"),
     "aten.floor_divide.default": ("scalar_floor_divide", "other"),
+    "aten.div.Tensor_mode": ("scalar_floor_divide", "arg_1"),
     "aten.ne.Scalar": ("scalar_not_equal", "other"),
     "aten.eq.Scalar": ("scalar_equal", "other"),
     "aten.lt.Scalar": ("scalar_less", "other"),
@@ -190,6 +191,8 @@ REDUCE_TARGETS: dict[str, str] = {
     "aten.var.correction": "variance",
     "aten.amax.default": "max",
     "aten.amin.default": "min",
+    "aten.max.dim": "max",
+    "aten.min.dim": "min",
     "aten.any.dim": "max",
 }
 

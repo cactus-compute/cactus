@@ -18,7 +18,7 @@ MOE_GATED_GRAPH = _graph(
     "moe_combine",
     ("moe_combine",),
     inputs=(_variadic_input("expert_outputs", "moe_combine", 0),),
-    repeated_subgraphs=(M.RepeatedSubgraph("experts", EXPERT_BRANCH_GRAPH, min_count=1),),
+    repeated_subgraphs=(M.RepeatedSubgraph("experts", EXPERT_BRANCH_GRAPH),),
     attr_captures=(M.AttrCapture("num_experts", default=None, required=False), M.AttrCapture("num_experts_per_tok", "topk", "k", required=False), M.AttrCapture("normalize_routing", default=True, required=False), M.AttrCapture("epsilon", default=1e-6, required=False), M.AttrCapture("routed_scaling_factor", default=1.0, required=False)),
     constraints={
         "moe_expert_branch_routing": {"repeated_subgraph": "experts", "combine_node": "moe_combine", "routing_weight_role": "routing_weight", "max_depth": 64},

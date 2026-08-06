@@ -27,7 +27,6 @@ def convert(
     layer_map = export_layer_map(model_id=model_id, input_modalities=input_modalities, custom_profile=profile, inference_mode=inference_mode)
     raw_json = layer_map.model_dump_json(indent=4)
     Path(output_path).write_text(raw_json, encoding="utf-8")
-
     if simplified_output_path is not None:
         simplify_ir.write_simplified_json(
             models.LayerMap.model_validate_json(raw_json),
@@ -37,7 +36,6 @@ def convert(
             disabled_fusion_fields=profile.disabled_fusion_fields,
             disabled_fusions=profile.disabled_fusions,
         )
-
     return layer_map
 
 if __name__ == "__main__":
