@@ -326,8 +326,8 @@ static void cactus_quant_parallel_ranges(size_t total_work, size_t work_per_thre
 static size_t cactus_quant_gemv_sb_per_thread() {
     static const size_t v = [] {
         const char* e = getenv("CACTUS_GEMV_SB_PER_THREAD");
-        const int i = e ? atoi(e) : 8;
-        return static_cast<size_t>(i > 0 ? i : 8);
+        const int i = e ? atoi(e) : 4;
+        return static_cast<size_t>(i > 0 ? i : 4);
     }();
     return v;
 }

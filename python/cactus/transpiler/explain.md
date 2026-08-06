@@ -1476,3 +1476,31 @@ benefits less because the decoder runs once per emitted token.
 33 ms to 24 matmuls, 18 ms to four attention operations, 4–6 ms to the two
 convolutions and 0.34–0.46 ms to padding. This breakdown makes the next useful
 work a matrix/attention kernel change, not another padding specialization.
+
+## 21. Decode-sized CQ GEMV worker scheduling
+
+`cactus-kernels/src/matmul.cpp:cactus_quant_gemv_sb_per_thread` now targets
+four 64-row superblocks per worker instead of eight for interleaved quantized
+matrix-vector multiplication. The existing two-phase algorithm is unchanged:
+workers first transform and quantize the shared activation groups, synchronize,
+and then claim output superblocks through the dynamic work queue. Only the
+amount of output work required before another worker participates changed.
+
+This matters specifically for decode, where `M = 1`. Medium projections did
+not expose enough parallelism with the old threshold. Prefill GEMM paths,
+quantized values, accumulation order within each output row, graph structure,
+and model files are unchanged. `CACTUS_GEMV_SB_PER_THREAD` remains available
+as an explicit runtime override.
+
+**Example.** A CQ4 projection with 1,536 output rows contains 384 interleaved
+four-row blocks, represented as 24 scheduler superblocks. The old target used
+`ceil(24 / 8) = 3` workers. The new target uses `ceil(24 / 4) = 6`, allowing
+the projection to occupy more performance cores. A 256-row projection still
+has only four superblocks and remains single-worker, avoiding thread-pool
+overhead for very small matrices.
+
+**Example.** In isolated-process A/B runs, Gemma decode improved from
+approximately 18.6 to 19.6 tokens/s (about 5%) and prefill improved about
+1.5%. LFM-VLM and LFM-MoE were neutral to slightly faster across repeated
+runs, while Whisper-tiny improved about 1%. Active RAM was unchanged because
+the scheduler uses the existing activation and output buffers.
