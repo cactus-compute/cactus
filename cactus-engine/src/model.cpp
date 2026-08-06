@@ -1135,9 +1135,9 @@ bool Model::load_component_graph(Component& comp) {
             if (weight_path.is_absolute()) {
                 fs::path local = fs::path(bundle_dir_) / weight_path.filename();
                 if (fs::exists(local)) weight_path = local;
-            } else {
+            } else
                 weight_path = fs::path(bundle_dir_) / weight_path;
-            }
+
             comp.graph->bind_mmap_weights(static_cast<size_t>(b.node_id), weight_path.string());
         } catch (const std::exception& e) {
             CACTUS_LOG_ERROR("model", "bind " << b.path << ": " << e.what());
@@ -1149,8 +1149,7 @@ bool Model::load_component_graph(Component& comp) {
     bind_runtime_state_inputs(comp);
     comp.resident_weight_bytes = component_weight_bytes(comp);
     runtime_profile_.resident_weight_bytes += comp.resident_weight_bytes;
-    runtime_profile_.peak_resident_weight_bytes = std::max(
-        runtime_profile_.peak_resident_weight_bytes, runtime_profile_.resident_weight_bytes);
+    runtime_profile_.peak_resident_weight_bytes = std::max(runtime_profile_.peak_resident_weight_bytes, runtime_profile_.resident_weight_bytes);
     ++runtime_profile_.component_loads;
     return true;
 }
