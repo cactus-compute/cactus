@@ -728,6 +728,35 @@ void compute_pad_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNo
         throw std::runtime_error("pad input/output buffer is not available");
     }
 
+    // Padding the contiguous last axis is common before speech convolutions.
+    // Copy complete rows instead of recomputing coordinates and issuing a
+    // one-element memcpy for every sample.
+    bool only_last_axis = pads.size() >= 2;
+    for (size_t pair = 2; pair < pads.size(); ++pair) {
+        if (pads[pair] != 0) {
+            only_last_axis = false;
+            break;
+        }
+    }
+    if (only_last_axis) {
+        const size_t input_row_elements = input_shape.back();
+        const size_t output_row_elements = output_shape.back();
+        const size_t rows = input_buffer.total_size / input_row_elements;
+        const size_t input_row_bytes = PrecisionTraits::packed_size_of(
+            input_buffer.precision, input_row_elements);
+        const size_t output_row_bytes = PrecisionTraits::packed_size_of(
+            node.output_buffer.precision, output_row_elements);
+        const size_t left_bytes = PrecisionTraits::packed_size_of(
+            input_buffer.precision, pads[0]);
+        for (size_t row = 0; row < rows; ++row) {
+            std::memcpy(
+                output_data + row * output_row_bytes + left_bytes,
+                input_data + row * input_row_bytes,
+                input_row_bytes);
+        }
+        return;
+    }
+
     for (size_t input_linear = 0; input_linear < input_buffer.total_size; ++input_linear) {
         size_t tmp = input_linear;
         size_t output_linear = 0;
