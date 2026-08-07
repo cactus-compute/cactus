@@ -78,6 +78,8 @@ def _load_hf(model_id_or_path: str, device: str, *, skip_model_load: bool = Fals
     if skip_model_load:
         return cfg, processor, None
     model_cls = adapter.model_class(cfg)
+    if model_cls is None:
+        return cfg, processor, None
     model_type = str(cfg_get(cfg, "model_type", "") or "").lower()
     if isinstance(cfg, dict) and model_type == "parakeet_tdt":
         return cfg, processor, None
@@ -136,36 +138,53 @@ def _bits_for_component(component: str, args: argparse.Namespace) -> int:
     return int(args.bits)
 
 
+CHECKPOINT_STEMS = ("model", "diffusion_pytorch_model")
+
+
+def _download_checkpoint_state_dict(model_id_or_path: str, stem: str) -> dict[str, Any] | None:
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file
+
+    try:
+        return load_file(hf_hub_download(model_id_or_path, f"{stem}.safetensors", cache_dir=_hf_cache_dir()))
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
+    try:
+        index_file = hf_hub_download(model_id_or_path, f"{stem}.safetensors.index.json", cache_dir=_hf_cache_dir())
+    except Exception:
+        return None
+    index = json.loads(Path(index_file).read_text(encoding="utf-8"))
+    shard_names = sorted(set(index.get("weight_map", {}).values()))
+    if not shard_names:
+        return None
+    state: dict[str, Any] = {}
+    for shard in shard_names:
+        shard_path = hf_hub_download(model_id_or_path, shard, cache_dir=_hf_cache_dir())
+        for key, tensor in load_file(shard_path).items():
+            if key in state:
+                raise RuntimeError(f"duplicate tensor key {key!r} across checkpoint shards")
+            state[key] = tensor
+    return state
+
+
 def _load_checkpoint_state_dict(model_id_or_path: str) -> dict[str, Any] | None:
     nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path, cache_dir=_hf_cache_dir())
     if nemo_export is not None:
         model_id_or_path = nemo_export
     root = Path(model_id_or_path)
     if not root.exists() or not root.is_dir():
-        try:
-            from huggingface_hub import hf_hub_download
-            from safetensors.torch import load_file
+        for stem in CHECKPOINT_STEMS:
             try:
-                model_file = hf_hub_download(model_id_or_path, "model.safetensors", cache_dir=_hf_cache_dir())
-                return load_file(model_file)
+                state = _download_checkpoint_state_dict(model_id_or_path, stem)
+            except RuntimeError:
+                raise
             except Exception:
-                index_file = hf_hub_download(model_id_or_path, "model.safetensors.index.json", cache_dir=_hf_cache_dir())
-                index = json.loads(Path(index_file).read_text(encoding="utf-8"))
-                shard_names = sorted(set(index.get("weight_map", {}).values()))
-                if not shard_names:
-                    return None
-                state: dict[str, Any] = {}
-                for shard in shard_names:
-                    shard_path = hf_hub_download(model_id_or_path, shard, cache_dir=_hf_cache_dir())
-                    for key, tensor in load_file(shard_path).items():
-                        if key in state:
-                            raise RuntimeError(f"duplicate tensor key {key!r} across checkpoint shards")
-                        state[key] = tensor
+                return None
+            if state is not None:
                 return state
-        except RuntimeError:
-            raise
-        except Exception:
-            return None
+        return None
     safetensor_files = sorted(root.glob("*.safetensors"))
     if safetensor_files:
         try:
@@ -603,6 +622,19 @@ def convert(args: argparse.Namespace) -> None:
                 "qdq_restore": qdq_restore,
                 "hessian_missing_reason": hessian_missing_reason,
             })
+
+    written: dict[str, str] = {}
+    for row in rows:
+        output_file = str(row.get("output_file") or "")
+        if not output_file:
+            continue
+        previous = written.get(output_file)
+        if previous is not None:
+            raise RuntimeError(
+                f"tensors {previous!r} and {row['source_name']!r} both map to {output_file!r}; "
+                "the adapter for this family must give them distinct names"
+            )
+        written[output_file] = str(row["source_name"])
 
     summary = write_reports(out_dir, rows)
     print_summary(summary)

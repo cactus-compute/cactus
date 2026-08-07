@@ -502,6 +502,37 @@ class WhisperAdapter(FamilyAdapter):
             return None
 
 
+class TaesdAdapter(FamilyAdapter):
+    family = "taesd"
+
+    def runtime_config(self, cfg: Any) -> dict[str, Any]:
+        return {
+            "latent_channels": int(_cfg_get(cfg, "latent_channels", 4) or 4),
+            "latent_magnitude": float(_cfg_get(cfg, "latent_magnitude", 3) or 3),
+            "latent_shift": float(_cfg_get(cfg, "latent_shift", 0.5) or 0.5),
+            "upsampling_scaling_factor": int(_cfg_get(cfg, "upsampling_scaling_factor", 2) or 2),
+        }
+
+    def model_class(self, cfg: Any):
+        return None
+
+    def load_processor(self, model_id_or_path: str):
+        return None
+
+    def name_tensor(self, source_name: str, _tensor: Any, _num_layers: int | None) -> NameMatch:
+        component = "vision"
+        if not (source_name.endswith(".weight") or source_name.endswith(".bias")):
+            return NameMatch(source_name, None, component, False, hf_name=source_name, adapter_name=source_name)
+        generic = source_name.replace(".", "_")
+        output = generic[:-7] + ".weights" if generic.endswith("_weight") else generic[:-5] + ".bias"
+        return NameMatch(source_name, output, component, True, hf_name=source_name, adapter_name=source_name)
+
+    def policy(self, match: NameMatch, _shape: tuple[int, ...], _requested_bits: int) -> TensorPolicy:
+        if match.output_name is None:
+            return TensorPolicy("ignored", "none", None, match.component, False, "none", "no output filename")
+        return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "tiny autoencoder conv tensor")
+
+
 class ParakeetAdapter(FamilyAdapter):
     family = "parakeet"
 
@@ -884,6 +915,7 @@ ADAPTERS: dict[str, FamilyAdapter] = {
     "whisper": WhisperAdapter(),
     "parakeet": ParakeetAdapter(),
     "parakeet_tdt": ParakeetTDTAdapter(),
+    "taesd": TaesdAdapter(),
 }
 
 
