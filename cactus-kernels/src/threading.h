@@ -386,15 +386,25 @@ namespace CactusThreading {
     private:
         static constexpr size_t MAX_WORKERS = 16;
 
+        struct Batch {
+            std::mutex mutex;
+            std::condition_variable cv;
+            size_t remaining;
+            explicit Batch(size_t count) : remaining(count) {}
+        };
+
+        static std::shared_ptr<Batch>& current_batch() {
+            static thread_local std::shared_ptr<Batch> batch;
+            return batch;
+        }
+
         std::vector<std::thread> workers;
         std::deque<std::function<void()>> tasks;
 
         std::mutex mutex;
         std::condition_variable work_available;
-        std::condition_variable work_done;
 
         bool stop{false};
-        std::atomic<size_t> pending_tasks{0};
         size_t num_workers_;
 
         void worker_thread() {
@@ -415,17 +425,21 @@ namespace CactusThreading {
                 }
 
                 task();
-
-                if (pending_tasks.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    std::lock_guard<std::mutex> lock(mutex);
-                    work_done.notify_one();
-                }
             }
+        }
+
+        static void finish_batch(const std::shared_ptr<Batch>& batch) {
+            size_t left;
+            {
+                std::lock_guard<std::mutex> lock(batch->mutex);
+                left = --batch->remaining;
+            }
+            if (left == 0) batch->cv.notify_all();
         }
 
     public:
         explicit ThreadPool(size_t num_threads = std::thread::hardware_concurrency())
-            : stop(false), pending_tasks(0) {
+            : stop(false) {
             num_workers_ = std::min(num_threads, MAX_WORKERS);
             if (num_workers_ == 0) num_workers_ = 1;
 
@@ -477,7 +491,6 @@ namespace CactusThreading {
 
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                pending_tasks.fetch_add(1, std::memory_order_relaxed);
                 tasks.emplace_back([task](){ (*task)(); });
             }
             work_available.notify_one();
@@ -487,35 +500,37 @@ namespace CactusThreading {
 
         template<typename F>
         void enqueue_batch(size_t total_work, F task_func) {
-            if (total_work == 0) return;
+            if (total_work == 0) { current_batch().reset(); return; }
 
             const size_t num_tasks = std::min(num_workers_, total_work);
             const size_t per_worker = total_work / num_tasks;
             const size_t remainder = total_work % num_tasks;
 
+            auto batch = std::make_shared<Batch>(num_tasks);
+            current_batch() = batch;
+
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                pending_tasks.fetch_add(num_tasks, std::memory_order_relaxed);
-
                 for (size_t w = 0; w < num_tasks; ++w) {
                     size_t start = w * per_worker + std::min(w, remainder);
                     size_t end = start + per_worker + (w < remainder ? 1 : 0);
-                    tasks.emplace_back([=]() { task_func(start, end); });
+                    tasks.emplace_back([=]() { task_func(start, end); finish_batch(batch); });
                 }
             }
             work_available.notify_all();
         }
 
         void wait_all() {
-            std::unique_lock<std::mutex> lock(mutex);
-            work_done.wait(lock, [this] {
-                return pending_tasks.load(std::memory_order_acquire) == 0;
-            });
+            auto batch = current_batch();
+            if (!batch) return;
+            current_batch().reset();
+            std::unique_lock<std::mutex> lock(batch->mutex);
+            batch->cv.wait(lock, [&] { return batch->remaining == 0; });
         }
 
         template<typename F>
         void enqueue_n_threads(size_t total_work, size_t num_threads, F task_func) {
-            if (total_work == 0 || num_threads == 0) return;
+            if (total_work == 0 || num_threads == 0) { current_batch().reset(); return; }
 
             num_threads = std::min(num_threads, std::min(num_workers_, total_work));
             size_t num_tasks = num_threads;
@@ -527,14 +542,15 @@ namespace CactusThreading {
             const size_t per_task = total_work / num_tasks;
             const size_t remainder = total_work % num_tasks;
 
+            auto batch = std::make_shared<Batch>(num_tasks);
+            current_batch() = batch;
+
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                pending_tasks.fetch_add(num_tasks, std::memory_order_relaxed);
-
                 for (size_t t = 0; t < num_tasks; ++t) {
                     size_t start = t * per_task + std::min(t, remainder);
                     size_t end = start + per_task + (t < remainder ? 1 : 0);
-                    tasks.emplace_back([=]() { task_func(start, end); });
+                    tasks.emplace_back([=]() { task_func(start, end); finish_batch(batch); });
                 }
             }
             work_available.notify_all();
