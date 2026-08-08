@@ -474,6 +474,7 @@ def convert(args: argparse.Namespace) -> None:
         "embedding": args.max_embedding_examples,
     }
     rows: list[dict[str, Any]] = []
+    written: dict[str, str] = {}
     pending: list[tuple[str, Any, Any, Any]] = []
     num_layers = max(
         int(model_config.get("num_layers", 0) or 0),
@@ -540,6 +541,14 @@ def convert(args: argparse.Namespace) -> None:
         for emission in emissions:
             qdq_restore = getattr(emission, "qdq_restore", None) or (provenance.qdq_restore if provenance else "hf_key")
             out_path = out_dir / emission.output_name if emission.output_name else None
+            if out_path is not None:
+                claimed_by = written.get(out_path.name)
+                if claimed_by is not None:
+                    raise RuntimeError(
+                        f"tensors {claimed_by!r} and {name!r} both map to {out_path.name!r}; "
+                        "the adapter for this family must give them distinct names"
+                    )
+                written[out_path.name] = name
             emit_tensor = emission.tensor
             emit_match = replace(match, output_name=emission.output_name)
             requested_bits = _bits_for_component(emit_match.component, args)
@@ -620,19 +629,6 @@ def convert(args: argparse.Namespace) -> None:
                 "qdq_restore": qdq_restore,
                 "hessian_missing_reason": hessian_missing_reason,
             })
-
-    written: dict[str, str] = {}
-    for row in rows:
-        output_file = str(row.get("output_file") or "")
-        if not output_file:
-            continue
-        previous = written.get(output_file)
-        if previous is not None:
-            raise RuntimeError(
-                f"tensors {previous!r} and {row['source_name']!r} both map to {output_file!r}; "
-                "the adapter for this family must give them distinct names"
-            )
-        written[output_file] = str(row["source_name"])
 
     summary = write_reports(out_dir, rows)
     print_summary(summary)
