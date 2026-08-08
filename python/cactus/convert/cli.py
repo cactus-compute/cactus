@@ -147,8 +147,6 @@ def _download_checkpoint_state_dict(model_id_or_path: str, stem: str) -> dict[st
 
     try:
         return load_file(hf_hub_download(model_id_or_path, f"{stem}.safetensors", cache_dir=_hf_cache_dir()))
-    except RuntimeError:
-        raise
     except Exception:
         pass
     try:
@@ -181,7 +179,7 @@ def _load_checkpoint_state_dict(model_id_or_path: str) -> dict[str, Any] | None:
             except RuntimeError:
                 raise
             except Exception:
-                return None
+                continue
             if state is not None:
                 return state
         return None
