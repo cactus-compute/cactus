@@ -1783,6 +1783,37 @@ def import_batch_norm(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tupl
     register_node(ir, ir_node, shape=shape, dtype=dtype)
 
 
+def import_upsample_nearest2d(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int, ...] | None, dtype: str | None, torch_op: str) -> None:
+    scale_factors = extract_literals(node.args[2]) if len(node.args) > 2 else None
+    output_size = extract_literals(node.args[1]) if len(node.args) > 1 else None
+
+    scale = None
+    if isinstance(scale_factors, (list, tuple)) and len(scale_factors) == 2:
+        if float(scale_factors[0]) == float(scale_factors[1]) and float(scale_factors[0]).is_integer():
+            scale = int(scale_factors[0])
+    elif isinstance(output_size, (list, tuple)) and len(output_size) == 2:
+        source = _extract_fx_tensor_shape(node.args[0])
+        if source is not None and len(source) == 4:
+            height, width = int(source[2]), int(source[3])
+            height_scale = int(output_size[0]) // height if height else 0
+            width_scale = int(output_size[1]) // width if width else 0
+            if height_scale == width_scale and height_scale * height == int(output_size[0]) and width_scale * width == int(output_size[1]):
+                scale = height_scale
+
+    if scale is None or scale < 1:
+        ctx.fail(f"unsupported upsample_nearest2d for {torch_op}: output_size={output_size!r} scale_factors={scale_factors!r}")
+
+    ir_node = IRNode(
+        id=node_id(node),
+        op="upsample_nearest2d",
+        inputs=[value_id(node.args[0], ctx)],
+        outputs=[value_id(node, ctx)],
+        attrs={"scale_factor": scale},
+        meta=_base_meta(shape, dtype, torch_op, node),
+    )
+    register_node(ir, ir_node, shape=shape, dtype=dtype)
+
+
 def import_contiguous(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int, ...] | None, dtype: str | None, torch_op: str) -> None:
     ir_node = IRNode(
         id=node_id(node),
@@ -1948,6 +1979,7 @@ OP_IMPORTERS = {
     "embedding": import_embedding,
     "conv1d": import_conv1d,
     "conv2d": import_conv2d,
+    "upsample_nearest2d": import_upsample_nearest2d,
     "layer_norm": import_layer_norm,
     "rms_norm": import_rms_norm,
     "group_norm": import_group_norm,

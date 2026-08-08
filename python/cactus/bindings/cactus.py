@@ -661,6 +661,11 @@ _bind_optional(
     ctypes.c_int,
 )
 _bind_optional(
+    "cactus_graph_upsample_nearest2d",
+    [cactus_graph_t, cactus_node_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
+_bind_optional(
     "cactus_graph_conv2d",
     [
         cactus_graph_t,
@@ -2134,6 +2139,16 @@ class Graph:
         rc = _lib.cactus_graph_bind_mmap_weights(self.h, cactus_node_t(tensor.id), str(filename).encode())
         if rc != 0:
             raise RuntimeError(_err("graph_bind_mmap_weights failed"))
+
+    def upsample_nearest2d(self, x, scale_factor, backend=None):
+        x = self._ensure_tensor(x)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_upsample_nearest2d(
+            self.h, cactus_node_t(x.id), ctypes.c_size_t(int(scale_factor)), ctypes.byref(out)
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_upsample_nearest2d failed"))
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def bilinear_interpolation(self, pos_embeds, dst_height, dst_width, backend=None):
         pos_embeds = self._ensure_tensor(pos_embeds)

@@ -1239,6 +1239,10 @@ CACTUS_FFI_EXPORT int cactus_graph_conv2d_depthwise_k3s2p1(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_conv2d_pointwise_1x1(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv2d_k3s1p1(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_upsample_nearest2d(
+    cactus_graph_t graph, cactus_node_t input, size_t scale_factor, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_lstm_cell(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t h_prev, cactus_node_t c_prev, cactus_node_t weight_ih, cactus_node_t weight_hh, cactus_node_t bias_ih, cactus_node_t bias_hh, cactus_node_t* out);
