@@ -146,10 +146,10 @@ bool roundtrip(const std::string& dir, const std::string& image_path, const char
 }
 
 bool test_taesd_roundtrip() {
-    const char* bundle = std::getenv("CACTUS_TAESD_DIR");
-    if (!bundle) {
-        std::cout << "  skipped: convert a bundle first, then set CACTUS_TAESD_DIR\n"
-                  << "           cactus convert madebyollin/taesd <dir> --weights-only" << std::endl;
+    const char* bundle = std::getenv("CACTUS_TEST_VAE_MODEL");
+    if (!bundle || !*bundle) {
+        std::cout << "  skipped: no VAE weights. Run graph tests via 'cactus test', which prepares them."
+                  << std::endl;
         return true;
     }
     const char* assets = std::getenv("CACTUS_TEST_ASSETS");
