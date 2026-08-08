@@ -119,6 +119,34 @@ bool test_maxpool1d() {
     return true;
 }
 
+bool test_upsample_nearest2d() {
+    const size_t planes = 6, height = 7, width = 5;
+    std::vector<__fp16> input(planes * height * width);
+    fill_random_fp16(input, -5.0f, 5.0f);
+
+    for (size_t scale = 1; scale <= 3; scale++) {
+        const size_t out_h = height * scale, out_w = width * scale;
+        std::vector<__fp16> output(planes * out_h * out_w, static_cast<__fp16>(0));
+
+        cactus_upsample_nearest2d_f16(input.data(), output.data(), planes, height, width, scale);
+
+        for (size_t p = 0; p < planes; p++) {
+            for (size_t y = 0; y < out_h; y++) {
+                for (size_t x = 0; x < out_w; x++) {
+                    float expected = static_cast<float>(input[p * height * width + (y / scale) * width + x / scale]);
+                    float actual = static_cast<float>(output[p * out_h * out_w + y * out_w + x]);
+                    if (actual != expected) {
+                        std::cerr << "  upsample_nearest2d mismatch [scale=" << scale << ",p=" << p
+                                  << ",y=" << y << ",x=" << x << "]: " << actual << " vs " << expected << "\n";
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
 bool run_benchmarks() {
     {
         const size_t N = 1, L = 3000, C_in = 80, C_out = 512, stride = 1;
@@ -179,6 +207,7 @@ int main() {
     runner.run_test("conv1d_causal_depthwise_channel_first", test_conv1d_causal_depthwise_channel_first());
     runner.run_test("stft_complex", test_stft_complex());
     runner.run_test("maxpool1d", test_maxpool1d());
+    runner.run_test("upsample_nearest2d", test_upsample_nearest2d());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();
