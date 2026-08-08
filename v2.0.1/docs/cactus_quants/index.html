@@ -374,25 +374,6 @@
   
   
   
-    <li class="md-tabs__item">
-      <a href="../cactus_transpiler/" class="md-tabs__link">
-        
-  
-  
-    
-  
-  Transpiler
-
-      </a>
-    </li>
-  
-
-      
-        
-  
-  
-  
-  
     
     
       <li class="md-tabs__item">
@@ -1230,33 +1211,6 @@
   
   
   
-    <li class="md-nav__item">
-      <a href="../cactus_transpiler/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Transpiler
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
     
     
     
@@ -1273,10 +1227,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
             
   
   
@@ -1294,8 +1248,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1417,10 +1371,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_11" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
             
   
   
@@ -1438,8 +1392,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_11">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2209,17 +2163,15 @@ of Unsloth UD-Q4_K_XL while matching it on most metrics.</p>
 </li>
 </ol>
 <h2 id="using-cq-weights">Using CQ Weights<a class="headerlink" href="#using-cq-weights" title="Permanent link">&para;</a></h2>
-<p><code>cactus convert</code> quantizes the weights to CQ and builds the runtime bundle
-(graph + manifest) in one step. Run via <code>cactus run</code>:
-<code>cactus convert &lt;model&gt;</code> builds a runnable bundle locally; <code>cactus run</code> runs a
-bundle path or a model id.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>./gemma4-bundle
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>cactus<span class="w"> </span>convert<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>./gemma4-bundle<span class="w"> </span>--bits<span class="w"> </span><span class="m">2</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>cactus<span class="w"> </span>run<span class="w"> </span>./gemma4-bundle
+<p><code>cactus convert</code> quantizes HuggingFace weights to Cactus CQ format. Runtime bundle
+generation is unavailable while the graph builder is being rewritten, so <code>cactus run</code>
+expects either a local runnable bundle or a prebuilt bundle from Cactus-Compute.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cactus<span class="w"> </span>convert<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>./gemma4-weights
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>cactus<span class="w"> </span>convert<span class="w"> </span>google/gemma-4-E2B-it<span class="w"> </span>./gemma4-weights<span class="w"> </span>--bits<span class="w"> </span><span class="m">2</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>cactus<span class="w"> </span>run<span class="w"> </span>google/gemma-4-E2B-it
 </code></pre></div>
 <p>For models on huggingface.co/Cactus-Compute, <code>cactus run &lt;model-id&gt;</code> (or <code>cactus
-download &lt;model-id&gt;</code>) fetches the pre-built bundle, building locally if none is
-published.</p>
+download &lt;model-id&gt;</code>) fetches the pre-built bundle.</p>
 <p>The CQ matmul kernels live in <code>cactus-kernels/src/matmul.cpp</code>. At inference,
 the kernel applies a Walsh-Hadamard transform to the FP16 activation (not the weight),
 then performs a fused codebook-lookup + norm-scale + matmul in a single NEON pass.</p>

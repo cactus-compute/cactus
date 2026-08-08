@@ -370,25 +370,6 @@
   
   
   
-    <li class="md-tabs__item">
-      <a href="../../docs/cactus_transpiler/" class="md-tabs__link">
-        
-  
-  
-    
-  
-  Transpiler
-
-      </a>
-    </li>
-  
-
-      
-        
-  
-  
-  
-  
     
     
       <li class="md-tabs__item">
@@ -1032,33 +1013,6 @@
   
   
   
-    <li class="md-nav__item">
-      <a href="../../docs/cactus_transpiler/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Transpiler
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
     
     
     
@@ -1075,10 +1029,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
             
   
   
@@ -1096,8 +1050,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1222,10 +1176,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_11" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" checked>
         
           
-          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -1243,8 +1197,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_11">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1928,7 +1882,7 @@ For single-token decode, the GPU's compute units sit mostly idle while waiting f
 That's two separate shader codepaths to maintain, with different memory models, different synchronization primitives, and different performance characteristics per vendor. 
 And GPU inference holds a persistent GPU context, which competes with the UI rendering pipeline and drains battery even when the inference workload is light.
 GPUs are also energy-inefficient. On Macs and PCs this barely matters since they're plugged into a power source most of the time, and GPU inference works well there. But mobile devices run on battery, and every watt spent on GPU inference cuts directly into the user's runtime. The GPU path that works fine on a MacBook becomes a battery killer on a phone.</p>
-<p>Dedicated AI accelerators are a more interesting target. Apple's Neural Engine and Qualcomm's Hexagon DSP both offer high-throughput inference at good power efficiency. 
+<p>Dedicated AI accelerators are a more interesting target. Apple's Neural Engine and Qualcomm's Hexagon DSP both offer high-throughput inference at good power efficiency.
 The problem is access. Apple's Neural Engine requires conversion into a proprietary model format, which imposes its own quantization and graph constraints.
 You don't control the execution schedule, the memory layout, or the precision semantics. 
 The quantisation techniques available through that toolchain severely lag the state-of-the-art methods used by GGML and Cactus.

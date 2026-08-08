@@ -15,10 +15,6 @@
         <link rel="canonical" href="https://docs.cactuscompute.com/v2.0.1/docs/cactus_transpiler/">
       
       
-        <link rel="prev" href="../cactus_hybrid/">
-      
-      
-        <link rel="next" href="../finetuning/">
       
       
         
@@ -361,27 +357,6 @@
     
   
   Hybrid Inference
-
-      </a>
-    </li>
-  
-
-      
-        
-  
-  
-  
-    
-  
-  
-    <li class="md-tabs__item md-tabs__item--active">
-      <a href="./" class="md-tabs__link">
-        
-  
-  
-    
-  
-  Transpiler
 
       </a>
     </li>
@@ -1032,374 +1007,6 @@
       
   
   
-    
-  
-  
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Transpiler
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Transpiler
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#from-pytorch-to-on-device-in-2-steps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        From PyTorch to On-Device in 2 Steps
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="From PyTorch to On-Device in 2 Steps">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#step-1-write-a-pytorch-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Step 1: Write a PyTorch Model
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#step-2-convert-and-run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Step 2: Convert and Run
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#how-it-works" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How It Works
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="How It Works">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#stage-1-canonicalize-the-model" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Stage 1: Canonicalize the Model
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#stage-2-capture-with-torchexport" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Stage 2: Capture with torch.export
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#stage-3-import-to-ir" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Stage 3: Import to IR
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#stage-4-canonicalize-the-ir" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Stage 4: Canonicalize the IR
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#stage-5-fuse-patterns" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Stage 5: Fuse Patterns
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#stage-6-lower-to-cactusgraph" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Stage 6: Lower to CactusGraph
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#converting-huggingface-models" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Converting HuggingFace Models
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Converting HuggingFace Models">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#text-models" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Text Models
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multimodal-models-gemma4" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Multimodal Models (Gemma4)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#speech-models-parakeet-tdt" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Speech Models (Parakeet TDT)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#running-saved-bundles" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Running Saved Bundles
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#using-the-python-api-directly" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Using the Python API Directly
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Using the Python API Directly">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#generic-jax-user-graphs" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Generic JAX User Graphs
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#artifact-layout" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Artifact Layout
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cli-reference" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        CLI Reference
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="CLI Reference">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#cactus-convert" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cactus convert
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#cactus-run" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cactus run
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#supported-model-families" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Supported Model Families
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#design-decisions" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Design Decisions
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#see-also" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        See Also
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
   
   
     
@@ -1418,10 +1025,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
             
   
   
@@ -1439,8 +1046,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1562,10 +1169,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_11" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
             
   
   
@@ -1583,8 +1190,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_11">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2797,44 +2404,6 @@ runtime can re-lower from saved IR instead of requiring a full re-transpile.</p>
       
         <footer class="md-footer">
   
-    
-      
-      <nav class="md-footer__inner md-grid" aria-label="Footer" >
-        
-          
-          <a href="../cactus_hybrid/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Hybrid Inference">
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
-            </div>
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Previous
-              </span>
-              <div class="md-ellipsis">
-                Hybrid Inference
-              </div>
-            </div>
-          </a>
-        
-        
-          
-          <a href="../finetuning/" class="md-footer__link md-footer__link--next" aria-label="Next: Fine-tuning &amp; Deployment">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                Fine-tuning & Deployment
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
-        
-      </nav>
     
   
   <div class="md-footer-meta md-typeset">

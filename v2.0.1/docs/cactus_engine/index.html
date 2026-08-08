@@ -374,25 +374,6 @@
   
   
   
-    <li class="md-tabs__item">
-      <a href="../cactus_transpiler/" class="md-tabs__link">
-        
-  
-  
-    
-  
-  Transpiler
-
-      </a>
-    </li>
-  
-
-      
-        
-  
-  
-  
-  
     
     
       <li class="md-tabs__item">
@@ -1748,33 +1729,6 @@
   
   
   
-    <li class="md-nav__item">
-      <a href="../cactus_transpiler/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Transpiler
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
     
     
     
@@ -1791,10 +1745,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
             
   
   
@@ -1812,8 +1766,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1935,10 +1889,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_11" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
             
   
   
@@ -1956,8 +1910,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_11">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2897,8 +2851,9 @@ graph + manifest) from
 <a href="https://huggingface.co/Cactus-Compute">huggingface.co/Cactus-Compute</a> into
 <code>weights/&lt;model&gt;-cq&lt;bits&gt;/</code>. The result can be loaded directly via
 <code>cactus_init()</code>.</p>
-<p>For models not on Cactus-Compute, build a bundle from source with
-<code>cactus convert &lt;model&gt;</code> (quantizes the weights and builds the runtime graph).</p>
+<p>For models not on Cactus-Compute, <code>cactus convert &lt;model&gt;</code> can still quantize
+weights to Cactus CQ format, but local runtime bundle generation is unavailable
+while the graph builder is being rewritten.</p>
 <h2 id="types">Types<a class="headerlink" href="#types" title="Permanent link">&para;</a></h2>
 <h3 id="cactus_model_t"><code>cactus_model_t</code><a class="headerlink" href="#cactus_model_t" title="Permanent link">&para;</a></h3>
 <p>An opaque pointer type representing a loaded model instance. This handle is used throughout the API to reference a specific model.</p>
