@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .common import GREEN, YELLOW, print_color
+from .common import GREEN, YELLOW, CYAN, print_color
 from .runtime import ensure_python_runtime_library
 
 
@@ -109,11 +109,10 @@ def build_transpiled_bundle(
     graph_paths: dict[str, tuple[Path, Path]] = {}
     simplified_maps: dict[str, LayerMap] = {}
 
-    print_color(YELLOW, f"Running converter (Crassus v{converter_version})")
+    print_color(CYAN, f"\nRunning converter (Crassus v{converter_version})")
     for mode in resolved.inference_modes:
         raw_path = ir_dir / f"output_{mode}.json"
         simplified_path = ir_dir / f"output_{mode}_simplified.json"
-        print_color(YELLOW, f"Exporting {mode} graph...")
         export_layer_map(
             model_id=model_id,
             input_modalities=modalities,
@@ -125,7 +124,7 @@ def build_transpiled_bundle(
         component_key = "decoder_full_context" if mode == "prefill_no_cache" else mode_name(mode)
         graph_paths[component_key] = (raw_path, simplified_path)
 
-    print_color(YELLOW, f"Running IR simplifier (Pompey v{ir_version})")
+    print_color(CYAN, f"\nRunning IR simplifier (Pompey v{ir_version})")
     for component_key, (raw_path, simplified_path) in graph_paths.items():
         simplify_ir.write_simplified_json(
             LayerMap.model_validate_json(raw_path.read_text(encoding="utf-8")),
@@ -139,7 +138,7 @@ def build_transpiled_bundle(
             simplified_path.read_text(encoding="utf-8")
         )
 
-    print_color(YELLOW, f"Running Generator (Caesar v{generator_version})")
+    print_color(CYAN, f"\nRunning Generator (Caesar v{generator_version})")
     result = generate_bundle(
         simplified_maps,
         bundle_path,
@@ -162,7 +161,7 @@ def build_transpiled_bundle(
         warnings = "\n".join(f"- {warning}" for warning in result.warnings)
         raise RuntimeError(f"Transpilation produced unsupported nodes:\n{warnings}")
 
-    print_color(GREEN, f"Runnable bundle ready at {bundle_path}")
+    print_color(GREEN, f"\nRunnable bundle ready at {bundle_path}")
     return bundle_path
 
 
