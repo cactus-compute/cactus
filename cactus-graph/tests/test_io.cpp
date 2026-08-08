@@ -202,6 +202,58 @@ bool test_graph_save_load_roundtrip_execution() {
     }
 }
 
+bool test_save_load_preserves_upsample_scale_factor() {
+    try {
+        const std::string filename = "test_upsample_scale_roundtrip.cg";
+        constexpr size_t scale = 3;
+
+        CactusGraph original;
+        size_t input_id = original.input({1, 1, 2, 2}, Precision::FP16);
+        size_t upsampled = original.upsample_nearest2d(input_id, scale);
+        std::vector<__fp16> data = {1, 2, 3, 4};
+        original.set_input(input_id, data.data(), Precision::FP16);
+        original.execute();
+        original.save(filename);
+
+        CactusGraph loaded = CactusGraph::load(filename);
+        GraphFile::SerializedGraph loaded_graph = GraphFile::load_graph(filename);
+        const size_t loaded_input = runtime_id_from_serialized_index(loaded_graph.graph_inputs[0]);
+        const size_t loaded_output = runtime_id_from_serialized_index(loaded_graph.graph_outputs[0]);
+
+        loaded.set_input(loaded_input, data.data(), Precision::FP16);
+        loaded.execute();
+
+        const auto& shape = loaded.get_output_buffer(loaded_output).shape;
+        if (shape.size() != 4 || shape[2] != 2 * scale || shape[3] != 2 * scale) {
+            std::cout << "[upsample_scale_roundtrip] scale factor lost: output is [";
+            for (size_t dim : shape) std::cout << dim << ",";
+            std::cout << "] not [1,1,6,6]" << std::endl;
+            std::remove(filename.c_str());
+            return false;
+        }
+
+        const __fp16* out = static_cast<const __fp16*>(loaded.get_output(loaded_output));
+        for (size_t y = 0; y < 2 * scale; ++y) {
+            for (size_t x = 0; x < 2 * scale; ++x) {
+                float expected = static_cast<float>(data[(y / scale) * 2 + x / scale]);
+                float got = static_cast<float>(out[y * 2 * scale + x]);
+                if (got != expected) {
+                    std::cout << "[upsample_scale_roundtrip] mismatch at (" << y << "," << x
+                              << "): got=" << got << " expected=" << expected << std::endl;
+                    std::remove(filename.c_str());
+                    return false;
+                }
+            }
+        }
+
+        std::remove(filename.c_str());
+        return true;
+    } catch (const std::exception& e) {
+        std::cout << "[upsample_scale_roundtrip] exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 bool test_graph_save_load_supported_ops_roundtrip() {
     try {
         const std::string filename = "test_graph_supported_roundtrip.cg";
@@ -512,6 +564,7 @@ int main() {
     runner.run_test("Graph Save/Load", test_graph_save_load());
     runner.run_test("Graph Save/Load Roundtrip Execution", test_graph_save_load_roundtrip_execution());
     runner.run_test("Graph Save/Load Supported Ops Roundtrip", test_graph_save_load_supported_ops_roundtrip());
+    runner.run_test("Save/Load Preserves Upsample Scale", test_save_load_preserves_upsample_scale_factor());
     runner.run_test("Graph Save For Inspection", test_graph_save_for_inspection());
     runner.run_test("Save/Load Preserves Recurrent Cache Persistence",
                     test_save_load_preserves_recurrent_cache_persistence());

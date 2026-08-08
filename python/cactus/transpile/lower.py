@@ -2086,10 +2086,6 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             return [g.cat(outputs, axis=1)]
         return [g.conv1d(x, weight, bias=bias, stride=stride)]
 
-    if op == "upsample_nearest2d":
-        x = _tensor(env, node.inputs[0])
-        return [g.upsample_nearest2d(x, int(node.attrs["scale_factor"]))]
-
     if op == "conv2d":
         x = _tensor(env, node.inputs[0])
         weight = _tensor(env, node.inputs[1])
@@ -2156,6 +2152,10 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             return [g.conv2d_k3s1p1(x, weight, bias=bias)]
 
         return [g.conv2d(x, weight, bias=bias, stride=stride, padding=padding, dilation=dilation, groups=groups)]
+
+    if op == "upsample_nearest2d":
+        x = _tensor(env, node.inputs[0])
+        return [g.upsample_nearest2d(x, int(node.attrs["scale_factor"]))]
 
     if op == "layer_norm":
         x = _tensor(env, node.inputs[0])
