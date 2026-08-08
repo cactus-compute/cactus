@@ -141,48 +141,42 @@ def _bits_for_component(component: str, args: argparse.Namespace) -> int:
 CHECKPOINT_STEMS = ("model", "diffusion_pytorch_model")
 
 
-def _download_checkpoint_state_dict(model_id_or_path: str, stem: str) -> dict[str, Any] | None:
-    from huggingface_hub import hf_hub_download
-    from safetensors.torch import load_file
-
-    try:
-        return load_file(hf_hub_download(model_id_or_path, f"{stem}.safetensors", cache_dir=_hf_cache_dir()))
-    except Exception:
-        pass
-    try:
-        index_file = hf_hub_download(model_id_or_path, f"{stem}.safetensors.index.json", cache_dir=_hf_cache_dir())
-    except Exception:
-        return None
-    index = json.loads(Path(index_file).read_text(encoding="utf-8"))
-    shard_names = sorted(set(index.get("weight_map", {}).values()))
-    if not shard_names:
-        return None
-    state: dict[str, Any] = {}
-    for shard in shard_names:
-        shard_path = hf_hub_download(model_id_or_path, shard, cache_dir=_hf_cache_dir())
-        for key, tensor in load_file(shard_path).items():
-            if key in state:
-                raise RuntimeError(f"duplicate tensor key {key!r} across checkpoint shards")
-            state[key] = tensor
-    return state
-
-
 def _load_checkpoint_state_dict(model_id_or_path: str) -> dict[str, Any] | None:
     nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path, cache_dir=_hf_cache_dir())
     if nemo_export is not None:
         model_id_or_path = nemo_export
     root = Path(model_id_or_path)
     if not root.exists() or not root.is_dir():
-        for stem in CHECKPOINT_STEMS:
-            try:
-                state = _download_checkpoint_state_dict(model_id_or_path, stem)
-            except RuntimeError:
-                raise
-            except Exception:
-                continue
-            if state is not None:
+        try:
+            from huggingface_hub import hf_hub_download
+            from safetensors.torch import load_file
+            for stem in CHECKPOINT_STEMS:
+                try:
+                    model_file = hf_hub_download(model_id_or_path, f"{stem}.safetensors", cache_dir=_hf_cache_dir())
+                    return load_file(model_file)
+                except Exception:
+                    pass
+                try:
+                    index_file = hf_hub_download(model_id_or_path, f"{stem}.safetensors.index.json", cache_dir=_hf_cache_dir())
+                except Exception:
+                    continue
+                index = json.loads(Path(index_file).read_text(encoding="utf-8"))
+                shard_names = sorted(set(index.get("weight_map", {}).values()))
+                if not shard_names:
+                    return None
+                state: dict[str, Any] = {}
+                for shard in shard_names:
+                    shard_path = hf_hub_download(model_id_or_path, shard, cache_dir=_hf_cache_dir())
+                    for key, tensor in load_file(shard_path).items():
+                        if key in state:
+                            raise RuntimeError(f"duplicate tensor key {key!r} across checkpoint shards")
+                        state[key] = tensor
                 return state
-        return None
+            return None
+        except RuntimeError:
+            raise
+        except Exception:
+            return None
     safetensor_files = sorted(root.glob("*.safetensors"))
     if safetensor_files:
         try:
