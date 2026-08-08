@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import copy
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from dataclasses import field
 import re
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -29,6 +30,10 @@ class ComponentModuleSpec:
     graph_meta: dict[str, object] = field(default_factory=dict)
     metadata: dict[str, object] = field(default_factory=dict)
     dynamic_batch_axis: int | None = None
+    npu_module: torch.nn.Module | None = None
+    npu_runtime_input_count: int = 1
+    npu_reparam: Callable[[torch.nn.Module], AbstractContextManager] | None = None
+    npu_example_inputs: tuple[torch.Tensor, ...] | None = None
 
 
 @dataclass
@@ -98,6 +103,10 @@ def capture_component_spec(
     raw_ir_graph = copy.deepcopy(captured.ir_graph)
     optimized_ir_graph = copy.deepcopy(captured.ir_graph)
     canonicalize_exported_graph(optimized_ir_graph)
+    optimize_graph(optimized_ir_graph, config=fusion_config, precompute_rope=False)
+    # Re-run the complete pipeline over its own output.  Individual passes are
+    # convergent, but a later cleanup/fusion family can expose a pattern owned
+    # by an earlier family in the next complete invocation.
     optimize_graph(optimized_ir_graph, config=fusion_config, precompute_rope=False)
     # Bake rope tables only into the lowered graph.cactus; the saved optimized IR stays un-baked.
     lowered_ir = copy.deepcopy(optimized_ir_graph)

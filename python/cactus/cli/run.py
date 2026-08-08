@@ -79,12 +79,9 @@ def cmd_run(args) -> int:
             print_color(RED, f"Invalid --tools: {exc}")
             return 1
 
-    from .model import TranspileOptions, prepare_bundle
+    from .model import prepare_bundle
 
-    bundle_dir = prepare_bundle(args, transpile=TranspileOptions(
-        image_files=[args.image] if args.image else None,
-        audio_file=args.audio,
-    ))
+    bundle_dir = prepare_bundle(args)
     if bundle_dir is None:
         return 1
 

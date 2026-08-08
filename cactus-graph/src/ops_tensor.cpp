@@ -6,23 +6,119 @@
 #include <vector>
 #include <unordered_map>
 
+static std::vector<size_t> contiguous_strides(const std::vector<size_t>& shape);
+
+template <typename T>
+static void transpose_generic(
+    const T* input,
+    T* output,
+    const std::vector<size_t>& input_shape,
+    const std::vector<size_t>& output_shape,
+    const std::vector<size_t>& permutation) {
+    std::vector<size_t> input_strides = contiguous_strides(input_shape);
+
+    size_t total = 1;
+    for (size_t dim : output_shape) total *= dim;
+
+    for (size_t output_linear = 0; output_linear < total; ++output_linear) {
+        size_t tmp = output_linear;
+        size_t input_linear = 0;
+
+        for (int dim = static_cast<int>(output_shape.size()) - 1; dim >= 0; --dim) {
+            size_t dim_index = static_cast<size_t>(dim);
+            size_t coord = tmp % output_shape[dim_index];
+            tmp /= output_shape[dim_index];
+            input_linear += coord * input_strides[permutation[dim_index]];
+        }
+
+        output[output_linear] = input[input_linear];
+    }
+}
+
 void compute_transpose_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
-
-    if (input_buffer.precision != Precision::FP16) {
-        throw std::runtime_error("Transpose only supports FP16 precision");
-    }
-
     const auto& permutation = node.params.permutation;
 
-    const __fp16* input = input_buffer.data_as<__fp16>();
-    __fp16* output = node.output_buffer.data_as<__fp16>();
-    cactus_transpose_f16(input, output, input_buffer.shape.data(), permutation.data(), permutation.size(), 0, input_buffer.total_size);
+    if (input_buffer.precision == Precision::FP16) {
+        const __fp16* input = input_buffer.data_as<__fp16>();
+        __fp16* output = node.output_buffer.data_as<__fp16>();
+        cactus_transpose_f16(input, output, input_buffer.shape.data(), permutation.data(), permutation.size(), 0, input_buffer.total_size);
+        return;
+    }
+
+    if (input_buffer.precision == Precision::FP32) {
+        transpose_generic(
+            input_buffer.data_as<float>(),
+            node.output_buffer.data_as<float>(),
+            input_buffer.shape,
+            node.output_buffer.shape,
+            permutation);
+        return;
+    }
+
+    if (input_buffer.precision == Precision::INT8) {
+        transpose_generic(
+            input_buffer.data_as<int8_t>(),
+            node.output_buffer.data_as<int8_t>(),
+            input_buffer.shape,
+            node.output_buffer.shape,
+            permutation);
+        return;
+    }
+
+    throw std::runtime_error("Transpose only supports FP32/FP16/INT8 precision");
 }
 
 void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& tensor_buffer = get_input(node, 0, nodes, node_index_map);
     const auto& indices_buffer = get_input(node, 1, nodes, node_index_map);
+
+    if (tensor_buffer.shape.size() == indices_buffer.shape.size()) {
+        int axis_value = node.params.axis;
+        if (axis_value < 0) axis_value += static_cast<int>(tensor_buffer.shape.size());
+        if (axis_value < 0 || static_cast<size_t>(axis_value) >= tensor_buffer.shape.size()) {
+            throw std::runtime_error("Gather axis out of range");
+        }
+
+        const size_t axis = static_cast<size_t>(axis_value);
+        std::vector<size_t> tensor_strides = contiguous_strides(tensor_buffer.shape);
+        std::vector<size_t> output_strides = contiguous_strides(node.output_buffer.shape);
+        const size_t elem_bytes = PrecisionTraits::packed_size_of(tensor_buffer.precision, 1);
+        const char* tensor_data = static_cast<const char*>(tensor_buffer.get_data());
+        char* output_data = static_cast<char*>(node.output_buffer.get_data());
+
+        auto read_index = [&](size_t i) -> size_t {
+            if (indices_buffer.precision == Precision::INT8) {
+                return static_cast<size_t>(indices_buffer.data_as<int8_t>()[i]);
+            }
+            if (indices_buffer.precision == Precision::FP16) {
+                return static_cast<size_t>(indices_buffer.data_as<__fp16>()[i]);
+            }
+            return static_cast<size_t>(indices_buffer.data_as<float>()[i]);
+        };
+
+        for (size_t output_linear = 0; output_linear < node.output_buffer.total_size; ++output_linear) {
+            size_t tmp = output_linear;
+            size_t input_linear = 0;
+            size_t gathered_index = read_index(output_linear);
+
+            if (gathered_index >= tensor_buffer.shape[axis]) {
+                throw std::runtime_error("Gather index out of bounds");
+            }
+
+            for (size_t dim = 0; dim < node.output_buffer.shape.size(); ++dim) {
+                size_t coord = tmp / output_strides[dim];
+                tmp %= output_strides[dim];
+                input_linear += (dim == axis ? gathered_index : coord) * tensor_strides[dim];
+            }
+
+            std::memcpy(
+                output_data + PrecisionTraits::byte_offset_of(node.output_buffer.precision, output_linear),
+                tensor_data + PrecisionTraits::byte_offset_of(tensor_buffer.precision, input_linear),
+                elem_bytes);
+        }
+        return;
+    }
 
     size_t first_dim = tensor_buffer.shape[0];
     size_t element_size = 1;
@@ -55,6 +151,53 @@ void compute_gather_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
             const float* indices = indices_buffer.data_as<float>();
             gather_loop([&](size_t i) { return static_cast<size_t>(indices[i]); });
         }
+    }
+}
+
+void compute_masked_select_prefix_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& mask_buffer = get_input(node, 1, nodes, node_index_map);
+
+    if (input_buffer.shape.size() != 2 && input_buffer.shape.size() != 3) {
+        throw std::runtime_error("masked_select_prefix input must be [T,D] or [1,T,D]");
+    }
+    if (mask_buffer.shape.size() != 1 && mask_buffer.shape.size() != 2) {
+        throw std::runtime_error("masked_select_prefix mask must be [T] or [1,T]");
+    }
+
+    const size_t time = input_buffer.shape.size() == 3 ? input_buffer.shape[1] : input_buffer.shape[0];
+    const size_t hidden = input_buffer.shape.back();
+    if (mask_buffer.shape.back() != time) {
+        throw std::runtime_error("masked_select_prefix input/mask time dimension mismatch");
+    }
+
+    const size_t row_bytes = PrecisionTraits::packed_size_of(input_buffer.precision, hidden);
+    const char* input = static_cast<const char*>(input_buffer.get_data());
+    char* output = static_cast<char*>(node.output_buffer.get_data());
+    std::memset(output, 0, node.output_buffer.byte_size);
+
+    auto mask_true = [&](size_t i) -> bool {
+        switch (mask_buffer.precision) {
+            case Precision::FP32:
+                return mask_buffer.data_as<float>()[i] != 0.0f;
+            case Precision::FP16:
+                return static_cast<float>(mask_buffer.data_as<__fp16>()[i]) != 0.0f;
+            case Precision::INT8:
+                return mask_buffer.data_as<int8_t>()[i] != 0;
+            default:
+                throw std::runtime_error("masked_select_prefix mask must be FP32/FP16/INT8");
+        }
+    };
+
+    size_t out_row = 0;
+    for (size_t i = 0; i < time; ++i) {
+        if (!mask_true(i)) continue;
+        if (out_row >= time) break;
+        std::memcpy(
+            output + PrecisionTraits::byte_offset_of(node.output_buffer.precision, out_row * hidden),
+            input + PrecisionTraits::byte_offset_of(input_buffer.precision, i * hidden),
+            row_bytes);
+        ++out_row;
     }
 }
 
@@ -115,6 +258,55 @@ void compute_slice_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
         const char* src = input_ptr + outer * axis_stride_bytes + PrecisionTraits::byte_offset_of(input_buffer.precision, slice_start * dims.inner);
         char* dst = output_ptr + outer * copy_block_bytes;
         std::memcpy(dst, src, copy_block_bytes);
+    }
+}
+
+void compute_strided_slice_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& input_shape = input_buffer.shape;
+    const auto& output_shape = node.output_buffer.shape;
+
+    int axis_value = node.params.axis;
+    if (axis_value < 0) axis_value += static_cast<int>(input_shape.size());
+    if (axis_value < 0 || static_cast<size_t>(axis_value) >= input_shape.size()) {
+        throw std::runtime_error("strided_slice axis out of range");
+    }
+    if (node.params.stride == 0) {
+        throw std::runtime_error("strided_slice step must be greater than zero");
+    }
+
+    const size_t axis = static_cast<size_t>(axis_value);
+    const size_t start = node.params.slice_start;
+    const size_t step = node.params.stride;
+    const size_t length = node.params.slice_length;
+
+    if (output_shape.size() != input_shape.size() || output_shape[axis] != length) {
+        throw std::runtime_error("strided_slice shape mismatch");
+    }
+
+    const char* input_data = static_cast<const char*>(input_buffer.get_data());
+    char* output_data = static_cast<char*>(node.output_buffer.get_data());
+    if (!input_data || !output_data) {
+        throw std::runtime_error("strided_slice input/output buffer is not available");
+    }
+
+    auto dims = AxisDims::from_shape(input_shape, axis);
+    const size_t elem_bytes = PrecisionTraits::packed_size_of(input_buffer.precision, dims.inner);
+
+    for (size_t outer = 0; outer < dims.outer; ++outer) {
+        for (size_t axis_index = 0; axis_index < length; ++axis_index) {
+            size_t input_axis = start + axis_index * step;
+            if (input_axis >= dims.axis_size) {
+                throw std::runtime_error("strided_slice index out of bounds");
+            }
+
+            const size_t input_offset = (outer * dims.axis_size + input_axis) * dims.inner;
+            const size_t output_offset = (outer * length + axis_index) * dims.inner;
+            std::memcpy(
+                output_data + PrecisionTraits::byte_offset_of(input_buffer.precision, output_offset),
+                input_data + PrecisionTraits::byte_offset_of(input_buffer.precision, input_offset),
+                elem_bytes);
+        }
     }
 }
 
@@ -314,6 +506,271 @@ void compute_index_node(GraphNode& node, const std::vector<std::unique_ptr<Graph
         std::memcpy(output_offset_bytes, input_offset_bytes, length);
 
         output_idx += slice_size;
+    }
+}
+
+void compute_unfold_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& input_shape = input_buffer.shape;
+    const auto& output_shape = node.output_buffer.shape;
+
+    if (input_shape.empty() || output_shape.size() != input_shape.size() + 1) {
+        throw std::runtime_error("unfold shape mismatch");
+    }
+
+    int axis_value = node.params.axis;
+    if (axis_value < 0) axis_value += static_cast<int>(input_shape.size());
+    if (axis_value < 0 || static_cast<size_t>(axis_value) >= input_shape.size()) {
+        throw std::runtime_error("unfold dimension out of range");
+    }
+
+    const size_t axis = static_cast<size_t>(axis_value);
+    const size_t window_size = node.params.kernel_size;
+    const size_t step = node.params.stride;
+    if (window_size == 0 || step == 0) {
+        throw std::runtime_error("unfold window size and step must be greater than zero");
+    }
+
+    std::vector<size_t> input_strides(input_shape.size(), 1);
+    for (int i = static_cast<int>(input_shape.size()) - 2; i >= 0; --i) {
+        input_strides[static_cast<size_t>(i)] =
+            input_strides[static_cast<size_t>(i + 1)] * input_shape[static_cast<size_t>(i + 1)];
+    }
+
+    const size_t elem_bytes = PrecisionTraits::packed_size_of(input_buffer.precision, 1);
+    const char* input_data = static_cast<const char*>(input_buffer.get_data());
+    char* output_data = static_cast<char*>(node.output_buffer.get_data());
+
+    if (!input_data || !output_data) {
+        throw std::runtime_error("unfold input/output buffer is not available");
+    }
+
+    // Unfold is a strided copy from [outer, axis, inner] to
+    // [outer, window, inner, kernel]. Avoid rebuilding coordinate vectors and
+    // dividing for every scalar; local media attention uses this path heavily.
+    if (input_buffer.precision == node.output_buffer.precision
+        && (input_buffer.precision == Precision::FP16
+            || input_buffer.precision == Precision::FP32
+            || input_buffer.precision == Precision::INT8)) {
+        const size_t input_axis_size = input_shape[axis];
+        const size_t output_windows = output_shape[axis];
+        const size_t inner_size = input_strides[axis];
+        const size_t outer_size = input_buffer.total_size / (input_axis_size * inner_size);
+        auto copy_typed = [&](auto* input, auto* output) {
+            CactusThreading::parallel_for(
+                outer_size * output_windows, CactusThreading::Thresholds::ELEMENT_WISE,
+                [=](size_t begin, size_t end) {
+                    for (size_t work = begin; work < end; ++work) {
+                        const size_t outer = work / output_windows;
+                        const size_t window = work % output_windows;
+                        const size_t input_base = (outer * input_axis_size + window * step) * inner_size;
+                        const size_t output_base = (outer * output_windows + window) * inner_size * window_size;
+                        for (size_t inner = 0; inner < inner_size; ++inner) {
+                            for (size_t kernel = 0; kernel < window_size; ++kernel) {
+                                output[output_base + inner * window_size + kernel] =
+                                    input[input_base + kernel * inner_size + inner];
+                            }
+                        }
+                    }
+                });
+        };
+        switch (input_buffer.precision) {
+            case Precision::FP16:
+                copy_typed(reinterpret_cast<const __fp16*>(input_data), reinterpret_cast<__fp16*>(output_data));
+                return;
+            case Precision::FP32:
+                copy_typed(reinterpret_cast<const float*>(input_data), reinterpret_cast<float*>(output_data));
+                return;
+            case Precision::INT8:
+                copy_typed(reinterpret_cast<const int8_t*>(input_data), reinterpret_cast<int8_t*>(output_data));
+                return;
+            default:
+                break;
+        }
+    }
+
+    for (size_t out_linear = 0; out_linear < node.output_buffer.total_size; ++out_linear) {
+        size_t tmp = out_linear;
+        std::vector<size_t> coords(output_shape.size(), 0);
+        for (int dim = static_cast<int>(output_shape.size()) - 1; dim >= 0; --dim) {
+            coords[static_cast<size_t>(dim)] = tmp % output_shape[static_cast<size_t>(dim)];
+            tmp /= output_shape[static_cast<size_t>(dim)];
+        }
+
+        size_t input_linear = 0;
+        for (size_t dim = 0; dim < input_shape.size(); ++dim) {
+            size_t input_coord = coords[dim];
+            if (dim == axis) {
+                input_coord = coords[dim] * step + coords.back();
+            }
+            input_linear += input_coord * input_strides[dim];
+        }
+
+        std::memcpy(
+            output_data + PrecisionTraits::byte_offset_of(node.output_buffer.precision, out_linear),
+            input_data + PrecisionTraits::byte_offset_of(input_buffer.precision, input_linear),
+            elem_bytes);
+    }
+}
+
+static std::vector<size_t> contiguous_strides(const std::vector<size_t>& shape) {
+    std::vector<size_t> strides(shape.size(), 1);
+    for (int i = static_cast<int>(shape.size()) - 2; i >= 0; --i) {
+        strides[static_cast<size_t>(i)] = strides[static_cast<size_t>(i + 1)] * shape[static_cast<size_t>(i + 1)];
+    }
+    return strides;
+}
+
+void compute_expand_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& input_shape = input_buffer.shape;
+    const auto& output_shape = node.output_buffer.shape;
+
+    if (output_shape.size() < input_shape.size()) {
+        throw std::runtime_error("expand output rank is smaller than input rank");
+    }
+
+    const char* input_data = static_cast<const char*>(input_buffer.get_data());
+    char* output_data = static_cast<char*>(node.output_buffer.get_data());
+    if (!input_data || !output_data) {
+        throw std::runtime_error("expand input/output buffer is not available");
+    }
+
+    std::vector<size_t> input_strides = contiguous_strides(input_shape);
+    const size_t rank_offset = output_shape.size() - input_shape.size();
+    const size_t elem_bytes = PrecisionTraits::packed_size_of(input_buffer.precision, 1);
+
+    for (size_t output_linear = 0; output_linear < node.output_buffer.total_size; ++output_linear) {
+        size_t tmp = output_linear;
+        size_t input_linear = 0;
+
+        for (int dim = static_cast<int>(output_shape.size()) - 1; dim >= 0; --dim) {
+            size_t dim_index = static_cast<size_t>(dim);
+            size_t coord = tmp % output_shape[dim_index];
+            tmp /= output_shape[dim_index];
+
+            if (dim_index < rank_offset) {
+                continue;
+            }
+
+            size_t input_dim_index = dim_index - rank_offset;
+            size_t input_coord = input_shape[input_dim_index] == 1 ? 0 : coord;
+            input_linear += input_coord * input_strides[input_dim_index];
+        }
+
+        std::memcpy(
+            output_data + PrecisionTraits::byte_offset_of(node.output_buffer.precision, output_linear),
+            input_data + PrecisionTraits::byte_offset_of(input_buffer.precision, input_linear),
+            elem_bytes);
+    }
+}
+
+static void fill_buffer(BufferDesc& buffer, float value) {
+    if (value == 0.0f) {
+        std::memset(buffer.get_data(), 0, buffer.byte_size);
+        return;
+    }
+
+    if (buffer.precision == Precision::FP32) {
+        float* data = buffer.data_as<float>();
+        for (size_t i = 0; i < buffer.total_size; ++i) data[i] = value;
+        return;
+    }
+
+    if (buffer.precision == Precision::FP16) {
+        __fp16* data = buffer.data_as<__fp16>();
+        for (size_t i = 0; i < buffer.total_size; ++i) data[i] = static_cast<__fp16>(value);
+        return;
+    }
+
+    if (buffer.precision == Precision::INT8) {
+        int8_t* data = buffer.data_as<int8_t>();
+        for (size_t i = 0; i < buffer.total_size; ++i) data[i] = static_cast<int8_t>(value);
+        return;
+    }
+
+    throw std::runtime_error("pad only supports FP32/FP16/INT8 precision");
+}
+
+void compute_pad_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& input_shape = input_buffer.shape;
+    const auto& output_shape = node.output_buffer.shape;
+    const auto& pads = node.params.new_shape;
+
+    if (input_shape.empty() || output_shape.size() != input_shape.size()) {
+        throw std::runtime_error("pad shape mismatch");
+    }
+    if (pads.size() % 2 != 0 || (pads.size() / 2) > input_shape.size()) {
+        throw std::runtime_error("pad requires left/right pad pairs within input rank");
+    }
+    if (input_buffer.precision != Precision::FP32 &&
+        input_buffer.precision != Precision::FP16 &&
+        input_buffer.precision != Precision::INT8) {
+        throw std::runtime_error("pad only supports FP32/FP16/INT8 precision");
+    }
+
+    fill_buffer(node.output_buffer, node.params.scalar);
+
+    std::vector<size_t> left_offsets(input_shape.size(), 0);
+    for (size_t pair = 0; pair < pads.size(); pair += 2) {
+        size_t axis = input_shape.size() - 1 - (pair / 2);
+        left_offsets[axis] = pads[pair];
+    }
+
+    std::vector<size_t> input_strides = contiguous_strides(input_shape);
+    std::vector<size_t> output_strides = contiguous_strides(output_shape);
+    const char* input_data = static_cast<const char*>(input_buffer.get_data());
+    char* output_data = static_cast<char*>(node.output_buffer.get_data());
+    const size_t elem_bytes = PrecisionTraits::packed_size_of(input_buffer.precision, 1);
+
+    if (!input_data || !output_data) {
+        throw std::runtime_error("pad input/output buffer is not available");
+    }
+
+    // Padding the contiguous last axis is common before speech convolutions.
+    // Copy complete rows instead of recomputing coordinates and issuing a
+    // one-element memcpy for every sample.
+    bool only_last_axis = pads.size() >= 2;
+    for (size_t pair = 2; pair < pads.size(); ++pair) {
+        if (pads[pair] != 0) {
+            only_last_axis = false;
+            break;
+        }
+    }
+    if (only_last_axis) {
+        const size_t input_row_elements = input_shape.back();
+        const size_t output_row_elements = output_shape.back();
+        const size_t rows = input_buffer.total_size / input_row_elements;
+        const size_t input_row_bytes = PrecisionTraits::packed_size_of(
+            input_buffer.precision, input_row_elements);
+        const size_t output_row_bytes = PrecisionTraits::packed_size_of(
+            node.output_buffer.precision, output_row_elements);
+        const size_t left_bytes = PrecisionTraits::packed_size_of(
+            input_buffer.precision, pads[0]);
+        for (size_t row = 0; row < rows; ++row) {
+            std::memcpy(
+                output_data + row * output_row_bytes + left_bytes,
+                input_data + row * input_row_bytes,
+                input_row_bytes);
+        }
+        return;
+    }
+
+    for (size_t input_linear = 0; input_linear < input_buffer.total_size; ++input_linear) {
+        size_t tmp = input_linear;
+        size_t output_linear = 0;
+
+        for (size_t dim = 0; dim < input_shape.size(); ++dim) {
+            size_t coord = tmp / input_strides[dim];
+            tmp %= input_strides[dim];
+            output_linear += (coord + left_offsets[dim]) * output_strides[dim];
+        }
+
+        std::memcpy(
+            output_data + PrecisionTraits::byte_offset_of(node.output_buffer.precision, output_linear),
+            input_data + PrecisionTraits::byte_offset_of(input_buffer.precision, input_linear),
+            elem_bytes);
     }
 }
 

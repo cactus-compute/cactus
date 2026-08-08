@@ -86,6 +86,7 @@ namespace {
     thread_local std::vector<size_t> moe_expert_offsets_buf;
     thread_local std::vector<size_t> moe_expert_tokens_buf;
     thread_local std::vector<float> moe_routing_denom_buf;
+    constexpr float MOE_FP16_MAX = 65504.0f;
 
     void ensure_moe_buffers(size_t max_tokens, size_t hidden_dim, size_t intermediate_dim,
                             size_t num_experts, size_t top_k) {
@@ -123,6 +124,30 @@ namespace {
 
         throw std::runtime_error("moe_layer only supports FP16 or TQ expert weights");
     }
+
+    inline __fp16 moe_finite_f16(float value) {
+        if (!std::isfinite(value)) {
+            value = std::copysign(MOE_FP16_MAX, value);
+        }
+        value = std::clamp(value, -MOE_FP16_MAX, MOE_FP16_MAX);
+        return static_cast<__fp16>(value);
+    }
+
+    void sanitize_moe_fp16(__fp16* data, size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            float value = static_cast<float>(data[i]);
+            if (!std::isfinite(value) || std::abs(value) > MOE_FP16_MAX) {
+                data[i] = moe_finite_f16(value);
+            }
+        }
+    }
+
+    void multiply_moe_fp16_sanitized(__fp16* lhs, const __fp16* rhs, size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            float value = static_cast<float>(lhs[i]) * static_cast<float>(rhs[i]);
+            lhs[i] = moe_finite_f16(value);
+        }
+    }
 }
 
 void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -146,6 +171,9 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     if (hidden_buffer.precision != Precision::FP16 || node.output_buffer.precision != Precision::FP16) {
         throw std::runtime_error("moe_layer expects FP16 hidden/output");
     }
+    if (routing_buffer.precision != Precision::FP16 && routing_buffer.precision != Precision::FP32) {
+        throw std::runtime_error("moe_layer expects FP16 or FP32 routing probabilities");
+    }
     if (topk_idx_buffer.precision != Precision::FP32) {
         throw std::runtime_error("moe_layer expects FP32 topk indices");
     }
@@ -162,9 +190,18 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
     const size_t token_count = hidden_buffer.shape[0];
     const size_t hidden_dim = hidden_buffer.shape[1];
     const size_t total_num_experts = routing_buffer.shape[1];
+    if (total_num_experts < num_experts) {
+        throw std::runtime_error("moe_layer routing_probs expert dimension is smaller than num_experts");
+    }
+    if (topk_idx_buffer.shape[1] != top_k) {
+        throw std::runtime_error("moe_layer topk_indices second dimension does not match top_k");
+    }
 
     const auto& w1_0_buffer = get_input(node, 3, nodes, node_index_map);
     const size_t expert_intermediate_dim = w1_0_buffer.shape[0];
+    if (w1_0_buffer.shape.size() != 2 || w1_0_buffer.shape[1] != hidden_dim) {
+        throw std::runtime_error("moe_layer first expert w1 shape does not match hidden dim");
+    }
 
     const auto* hidden = hidden_buffer.data_as<__fp16>();
     auto* output = node.output_buffer.data_as<__fp16>();
@@ -196,6 +233,10 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
     std::memset(expert_offsets, 0, (num_experts + 1) * sizeof(size_t));
     for (size_t tok = 0; tok < token_count; ++tok) {
+        thread_local std::vector<uint8_t> seen_experts;
+        if (seen_experts.size() < num_experts) seen_experts.resize(num_experts);
+        std::fill(seen_experts.begin(), seen_experts.begin() + num_experts, 0);
+
         for (size_t k = 0; k < top_k; ++k) {
             expert_offsets[expert_index(topk_idx[tok * top_k + k]) + 1]++;
         }
@@ -236,12 +277,21 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         if (start == end) continue;
 
         const size_t selected_count = end - start;
+        if (selected_count > token_count) {
+            throw std::runtime_error("moe_layer selected more rows for an expert than there are tokens");
+        }
         const size_t* selected_tokens = expert_tokens_flat + start;
 
         const auto& w1_buffer = get_input(node, 3 + expert_idx, nodes, node_index_map);
         const auto& w2_buffer = gated
             ? get_input(node, 3 + 2 * num_experts + expert_idx, nodes, node_index_map)
             : get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map);
+        if (w1_buffer.shape.size() != 2 || w1_buffer.shape[0] != expert_intermediate_dim || w1_buffer.shape[1] != hidden_dim) {
+            throw std::runtime_error("moe_layer w1 expert shape mismatch");
+        }
+        if (w2_buffer.shape.size() != 2 || w2_buffer.shape[0] != hidden_dim || w2_buffer.shape[1] != expert_intermediate_dim) {
+            throw std::runtime_error("moe_layer w2 expert shape mismatch");
+        }
 
         __fp16* compact_hidden = moe_compact_hidden_buf.data();
         for (size_t i = 0; i < selected_count; ++i) {
@@ -254,7 +304,32 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         __fp16* up = moe_up_buf.data();
         __fp16* expert_out = moe_expert_out_buf.data();
 
-        moe_matmul(compact_hidden, selected_count, hidden_dim, w1_buffer, gate, expert_intermediate_dim);
+        const BufferDesc* w3_buffer = nullptr;
+        bool shared_gate_up_transform = false;
+        if (gated) {
+            w3_buffer = &get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map);
+            if (w3_buffer->shape.size() != 2 || w3_buffer->shape[0] != expert_intermediate_dim || w3_buffer->shape[1] != hidden_dim) {
+                throw std::runtime_error("moe_layer w3 expert shape mismatch");
+            }
+            shared_gate_up_transform = selected_count == 1 &&
+                PrecisionTraits::is_cq(w1_buffer.precision) && w1_buffer.group_size > 0 &&
+                PrecisionTraits::is_cq(w3_buffer->precision) && w3_buffer->group_size > 0 &&
+                (w1_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) == 0 &&
+                (w3_buffer->cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) == 0;
+        }
+
+        if (shared_gate_up_transform) {
+            CactusQuantMatrix w1 = w1_buffer.to_cq_matrix();
+            CactusQuantMatrix w3 = w3_buffer->to_cq_matrix();
+            cactus_quant_matmul_pair(&w1, &w3, compact_hidden, 1, gate, up);
+        } else {
+            moe_matmul(compact_hidden, selected_count, hidden_dim, w1_buffer, gate, expert_intermediate_dim);
+            if (gated) {
+                moe_matmul(compact_hidden, selected_count, hidden_dim, *w3_buffer, up, expert_intermediate_dim);
+            }
+        }
+        sanitize_moe_fp16(gate, selected_count * expert_intermediate_dim);
+        if (gated) sanitize_moe_fp16(up, selected_count * expert_intermediate_dim);
 
         switch (activation) {
             case Activation::GELU:
@@ -279,9 +354,7 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
         }
 
         if (gated) {
-            const auto& w3_buffer = get_input(node, 3 + num_experts + expert_idx, nodes, node_index_map);
-            moe_matmul(compact_hidden, selected_count, hidden_dim, w3_buffer, up, expert_intermediate_dim);
-            cactus_multiply_f16(gate, up, gate, selected_count * expert_intermediate_dim);
+            multiply_moe_fp16_sanitized(gate, up, selected_count * expert_intermediate_dim);
         }
 
         const size_t w2_k = w2_buffer.shape.size() == 2 ? w2_buffer.shape[1] : 0;
@@ -306,6 +379,9 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
             const size_t tok = selected_tokens[i];
             float expert_prob = routing_prob(tok, expert_idx);
             if (expert_prob <= 0.0f) continue;
+            if (!std::isfinite(expert_prob)) {
+                throw std::runtime_error("moe_layer got non-finite routing probability");
+            }
 
             float route_weight = expert_prob;
             if (normalize_routing) {
@@ -318,7 +394,10 @@ void compute_moe_layer_node(GraphNode& node, const std::vector<std::unique_ptr<G
 
             auto* out_row = output + tok * hidden_dim;
             const auto* expert_row = expert_out + i * hidden_dim;
-            cactus_add_scaled_f16(out_row, expert_row, out_row, hidden_dim, route_weight);
+            for (size_t d = 0; d < hidden_dim; ++d) {
+                float value = static_cast<float>(out_row[d]) + static_cast<float>(expert_row[d]) * route_weight;
+                out_row[d] = moe_finite_f16(value);
+            }
         }
     }
 }
@@ -353,70 +432,130 @@ void compute_dense_mlp_tq_fused_node(GraphNode& node, const std::vector<std::uni
 
     thread_local std::vector<__fp16> gate_buf;
     thread_local std::vector<__fp16> up_buf;
-    thread_local std::vector<__fp16> prod_buf;
     const size_t inter_size = M * d_ffn;
     if (gate_buf.size() < inter_size) gate_buf.resize(inter_size);
     if (up_buf.size() < inter_size) up_buf.resize(inter_size);
-    if (prod_buf.size() < inter_size) prod_buf.resize(inter_size);
 
     const __fp16* hidden = hidden_buffer.data_as<__fp16>();
     __fp16* gate = gate_buf.data();
     __fp16* up = up_buf.data();
-    __fp16* prod = prod_buf.data();
     __fp16* output = node.output_buffer.data_as<__fp16>();
 
     CactusQuantMatrix gate_mat = gate_buffer.to_cq_matrix();
     CactusQuantMatrix up_mat = up_buffer.to_cq_matrix();
     CactusQuantMatrix down_mat = down_buffer.to_cq_matrix();
-    const bool use_safe_product_scale = node.params.scalar != 0.0f && node.params.scalar != 1.0f;
+    // Gemma's observed media activations remain finite with ample FP16 headroom.
+    // Keep the conservative global-bound rescale available for diagnostics, but
+    // do not scan multi-megabyte intermediates on every fused MLP by default.
+    const bool apply_product_scale = node.params.scalar != 0.0f && node.params.scalar != 1.0f;
+    const bool use_safe_product_scale = apply_product_scale
+        && std::getenv("CACTUS_ENABLE_DENSE_MLP_SAFETY") != nullptr;
     const bool trace_dense_mlp = std::getenv("CACTUS_TRACE_DENSE_MLP") != nullptr;
+    auto quant_matmul = [M](const BufferDesc& weights,
+                            CactusQuantMatrix& matrix,
+                            const __fp16* input,
+                            __fp16* result) {
+        if (weights.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) {
+            cactus_quant_orthogonal_matmul(&matrix, input, static_cast<uint32_t>(M), result);
+        } else {
+            cactus_quant_matmul(&matrix, input, static_cast<uint32_t>(M), result);
+        }
+    };
 
-    cactus_quant_matmul(&gate_mat, hidden, static_cast<uint32_t>(M), gate);
+    const float gate_input_scale = node.params.scale == 0.0f ? 1.0f : node.params.scale;
+    const bool gate_up_use_standard_cq =
+        (gate_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) == 0 &&
+        (up_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) == 0;
+    if (gate_up_use_standard_cq) {
+        cactus_quant_matmul_pair(
+            &gate_mat, &up_mat, hidden, static_cast<uint32_t>(M), gate, up);
+    } else {
+        quant_matmul(gate_buffer, gate_mat, hidden, gate);
+        quant_matmul(up_buffer, up_mat, hidden, up);
+    }
+    if (!use_safe_product_scale && !trace_dense_mlp) {
+        cactus_gelu_scaled_multiply_f16(
+            gate, up, gate, inter_size,
+            1.0f / gate_input_scale, apply_product_scale ? node.params.scalar : 1.0f);
+        quant_matmul(down_buffer, down_mat, gate, output);
+        return;
+    }
+    if (gate_input_scale != 1.0f) {
+        cactus_scalar_op_f16(
+            gate, gate, inter_size, 1.0f / gate_input_scale, ScalarOpType::MULTIPLY);
+    }
     cactus_gelu_f16(gate, gate, inter_size);
     float max_gate_abs = 0.0f;
     size_t gate_nonfinite = 0;
-    if (use_safe_product_scale) {
-        const __fp16 scale = static_cast<__fp16>(node.params.scalar);
-        for (size_t i = 0; i < inter_size; ++i) {
-            float value = static_cast<float>(gate[i]);
-            if (!std::isfinite(value)) {
-                gate_nonfinite += 1;
-                value = std::copysign(65504.0f, value);
-            }
-            value *= static_cast<float>(scale);
-            max_gate_abs = std::max(max_gate_abs, std::abs(value));
-            gate[i] = static_cast<__fp16>(value);
-        }
+    if (apply_product_scale) {
+        cactus_scalar_op_f16(
+            gate, gate, inter_size, node.params.scalar, ScalarOpType::MULTIPLY);
     }
-    cactus_quant_matmul(&up_mat, hidden, static_cast<uint32_t>(M), up);
     float max_up_abs = 0.0f;
     size_t up_nonfinite = 0;
-    if (use_safe_product_scale) {
-        for (size_t i = 0; i < inter_size; ++i) {
-            float value = static_cast<float>(up[i]);
-            if (!std::isfinite(value)) {
-                up_nonfinite += 1;
-                value = std::copysign(65504.0f, value);
+    if (use_safe_product_scale || trace_dense_mlp) {
+        struct ActivationPairStats {
+            float gate_max_abs = 0.0f;
+            float up_max_abs = 0.0f;
+            size_t gate_nonfinite = 0;
+            size_t up_nonfinite = 0;
+        };
+        const ActivationPairStats stats = CactusThreading::parallel_reduce(
+            inter_size,
+            CactusThreading::Thresholds::ELEMENT_WISE,
+            [gate, up](size_t begin, size_t end) {
+                ActivationPairStats local;
+                for (size_t i = begin; i < end; ++i) {
+                    float gate_value = static_cast<float>(gate[i]);
+                    if (!std::isfinite(gate_value)) {
+                        ++local.gate_nonfinite;
+                        gate_value = std::copysign(65504.0f, gate_value);
+                        gate[i] = static_cast<__fp16>(gate_value);
+                    }
+                    local.gate_max_abs = std::max(local.gate_max_abs, std::abs(gate_value));
+
+                    float up_value = static_cast<float>(up[i]);
+                    if (!std::isfinite(up_value)) {
+                        ++local.up_nonfinite;
+                        up_value = std::copysign(65504.0f, up_value);
+                        up[i] = static_cast<__fp16>(up_value);
+                    }
+                    local.up_max_abs = std::max(local.up_max_abs, std::abs(up_value));
+                }
+                return local;
+            },
+            ActivationPairStats{},
+            [](ActivationPairStats lhs, const ActivationPairStats& rhs) {
+                lhs.gate_max_abs = std::max(lhs.gate_max_abs, rhs.gate_max_abs);
+                lhs.up_max_abs = std::max(lhs.up_max_abs, rhs.up_max_abs);
+                lhs.gate_nonfinite += rhs.gate_nonfinite;
+                lhs.up_nonfinite += rhs.up_nonfinite;
+                return lhs;
+            });
+        max_gate_abs = stats.gate_max_abs;
+        gate_nonfinite = stats.gate_nonfinite;
+        max_up_abs = stats.up_max_abs;
+        up_nonfinite = stats.up_nonfinite;
+
+        if (use_safe_product_scale) {
+            const float product_bound = max_gate_abs * max_up_abs;
+            constexpr float kSafeHadamardProductBound = 1024.0f;
+            if (std::isfinite(product_bound) && product_bound > kSafeHadamardProductBound) {
+                const float extra_scale = kSafeHadamardProductBound / product_bound;
+                cactus_scalar_op_f16(
+                    gate, gate, inter_size, extra_scale, ScalarOpType::MULTIPLY);
+                max_gate_abs *= extra_scale;
             }
-            max_up_abs = std::max(max_up_abs, std::abs(value));
-            up[i] = static_cast<__fp16>(value);
-        }
-        const float product_bound = max_gate_abs * max_up_abs;
-        constexpr float kSafeHadamardProductBound = 1024.0f;
-        if (std::isfinite(product_bound) && product_bound > kSafeHadamardProductBound) {
-            const __fp16 extra_scale = static_cast<__fp16>(kSafeHadamardProductBound / product_bound);
-            for (size_t i = 0; i < inter_size; ++i) {
-                gate[i] = static_cast<__fp16>(gate[i] * extra_scale);
-            }
-            max_gate_abs *= static_cast<float>(extra_scale);
         }
     }
-    cactus_multiply_f16(gate, up, prod, inter_size);
+    // The activated gate is dead after the Hadamard product.  Reuse it for the
+    // product instead of maintaining and writing a third intermediate buffer.
+    cactus_multiply_f16(gate, up, gate, inter_size);
     if (trace_dense_mlp) {
         size_t prod_nonfinite = 0;
         float max_prod_abs = 0.0f;
         for (size_t i = 0; i < inter_size; ++i) {
-            float value = static_cast<float>(prod[i]);
+            float value = static_cast<float>(gate[i]);
             if (!std::isfinite(value)) {
                 prod_nonfinite += 1;
                 continue;
@@ -438,7 +577,7 @@ void compute_dense_mlp_tq_fused_node(GraphNode& node, const std::vector<std::uni
         }
         std::cerr << "]" << std::endl;
     }
-    cactus_quant_matmul(&down_mat, prod, static_cast<uint32_t>(M), output);
+    quant_matmul(down_buffer, down_mat, gate, output);
     if (trace_dense_mlp) {
         size_t output_nonfinite = 0;
         float max_output_abs = 0.0f;
@@ -456,6 +595,102 @@ void compute_dense_mlp_tq_fused_node(GraphNode& node, const std::vector<std::uni
                   << " max_output=" << max_output_abs
                   << std::endl;
     }
+}
+
+void compute_logits_tq_softcap_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& hidden_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& weight_buffer = get_input(node, 1, nodes, node_index_map);
+    if (hidden_buffer.precision != Precision::FP16 || node.output_buffer.precision != Precision::FP16 ||
+        !PrecisionTraits::is_cq(weight_buffer.precision) || weight_buffer.shape.size() != 2 ||
+        weight_buffer.group_size == 0 || !(node.params.scalar > 0.0f)) {
+        throw std::runtime_error("logits_tq_softcap received incompatible buffers or cap");
+    }
+    size_t rows = 1;
+    for (size_t i = 0; i + 1 < hidden_buffer.shape.size(); ++i) rows *= hidden_buffer.shape[i];
+    CactusQuantMatrix matrix = weight_buffer.to_cq_matrix();
+    auto* output = node.output_buffer.data_as<__fp16>();
+    if (weight_buffer.cq_flags & CACTUS_QUANT_FLAG_ORTHOGONAL) {
+        cactus_quant_orthogonal_matmul(
+            &matrix, hidden_buffer.data_as<__fp16>(), static_cast<uint32_t>(rows), output);
+    } else {
+        cactus_quant_matmul(
+            &matrix, hidden_buffer.data_as<__fp16>(), static_cast<uint32_t>(rows), output);
+    }
+    cactus_softcap_f16(output, output, node.output_buffer.total_size, node.params.scalar, node.params.scale);
+}
+
+void compute_qkv_tq_fused_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& hidden_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& query_buffer = get_input(node, 1, nodes, node_index_map);
+    const auto& key_buffer = get_input(node, 2, nodes, node_index_map);
+    const auto& value_buffer = get_input(node, 3, nodes, node_index_map);
+    if (hidden_buffer.precision != Precision::FP16 || node.output_buffer.precision != Precision::FP16) {
+        throw std::runtime_error("qkv_tq_fused expects FP16 hidden/output");
+    }
+    size_t M = 1;
+    for (size_t i = 0; i + 1 < hidden_buffer.shape.size(); ++i) M *= hidden_buffer.shape[i];
+    if (M != 1) {
+        throw std::runtime_error("qkv_tq_fused is a single-token decode operation");
+    }
+    const size_t q_size = query_buffer.shape[0];
+    const size_t k_size = key_buffer.shape[0];
+    const size_t v_size = value_buffer.shape[0];
+    if (node.output_buffer.total_size != q_size + k_size + v_size) {
+        throw std::runtime_error("qkv_tq_fused output size mismatch");
+    }
+    __fp16* output = node.output_buffer.data_as<__fp16>();
+    const bool all_cq = PrecisionTraits::is_cq(query_buffer.precision) &&
+        PrecisionTraits::is_cq(key_buffer.precision) && PrecisionTraits::is_cq(value_buffer.precision);
+    const bool all_fp16 = query_buffer.precision == Precision::FP16 &&
+        key_buffer.precision == Precision::FP16 && value_buffer.precision == Precision::FP16;
+    if (all_cq) {
+        CactusQuantMatrix query = query_buffer.to_cq_matrix();
+        CactusQuantMatrix key = key_buffer.to_cq_matrix();
+        CactusQuantMatrix value = value_buffer.to_cq_matrix();
+        cactus_quant_matmul_triple(
+            &query, &key, &value, hidden_buffer.data_as<__fp16>(), 1,
+            output, output + q_size, output + q_size + k_size);
+        return;
+    }
+    if (!all_fp16) {
+        throw std::runtime_error("qkv_tq_fused requires all-CQ or all-FP16 projection weights");
+    }
+    const BufferDesc* weights[3] = {&query_buffer, &key_buffer, &value_buffer};
+    __fp16* outputs[3] = {output, output + q_size, output + q_size + k_size};
+    static constexpr CactusThreading::ParallelConfig QKV_PROJECTIONS{1, 1};
+    CactusThreading::parallel_for(3, QKV_PROJECTIONS, [&](size_t begin, size_t end) {
+        for (size_t index = begin; index < end; ++index) {
+            cactus_matmul_f16(
+                hidden_buffer.data_as<__fp16>(), weights[index]->data_as<__fp16>(), outputs[index],
+                1, hidden_buffer.shape.back(), weights[index]->shape[0]);
+        }
+    });
+}
+
+void compute_projection_pair_tq_fused_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& hidden_buffer = get_input(node, 0, nodes, node_index_map);
+    const auto& first_buffer = get_input(node, 1, nodes, node_index_map);
+    const auto& second_buffer = get_input(node, 2, nodes, node_index_map);
+    if (hidden_buffer.precision != Precision::FP16 || node.output_buffer.precision != Precision::FP16 ||
+        !PrecisionTraits::is_cq(first_buffer.precision) || !PrecisionTraits::is_cq(second_buffer.precision)) {
+        throw std::runtime_error("projection_pair_tq_fused expects FP16 hidden/output and CQ weights");
+    }
+    size_t M = 1;
+    for (size_t i = 0; i + 1 < hidden_buffer.shape.size(); ++i) M *= hidden_buffer.shape[i];
+    if (M != 1) {
+        throw std::runtime_error("projection_pair_tq_fused is a single-token decode operation");
+    }
+    const size_t first_size = first_buffer.shape[0];
+    const size_t second_size = second_buffer.shape[0];
+    if (node.output_buffer.total_size != first_size + second_size) {
+        throw std::runtime_error("projection_pair_tq_fused output size mismatch");
+    }
+    __fp16* output = node.output_buffer.data_as<__fp16>();
+    CactusQuantMatrix first = first_buffer.to_cq_matrix();
+    CactusQuantMatrix second = second_buffer.to_cq_matrix();
+    cactus_quant_matmul_pair(
+        &first, &second, hidden_buffer.data_as<__fp16>(), 1,
+        output, output + first_size);
 }
 
 void compute_rms_norm_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
@@ -650,12 +885,12 @@ void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<G
             mask_per_head = false;
         } else if (mask_buffer->shape.size() == 4) {
             if (mask_buffer->shape[0] != batch_size ||
-                mask_buffer->shape[1] != num_q_heads ||
+                (mask_buffer->shape[1] != num_q_heads && mask_buffer->shape[1] != 1) ||
                 mask_buffer->shape[2] != seq_len ||
                 mask_buffer->shape[3] != kv_seq_len) {
-                throw std::runtime_error("Attention mask [B, H, T, S] shape mismatch");
+                throw std::runtime_error("Attention mask [B, H|1, T, S] shape mismatch");
             }
-            mask_per_head = true;
+            mask_per_head = mask_buffer->shape[1] != 1;
         } else {
             throw std::runtime_error("Attention mask must be rank 3 or 4");
         }

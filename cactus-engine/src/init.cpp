@@ -1,6 +1,7 @@
 #include "../cactus_engine.h"
 #include "utils.h"
 #include "telemetry.h"
+#include "../../cactus-kernels/src/threading.h"
 #include <string>
 #include <cstring>
 #include <algorithm>
@@ -19,7 +20,8 @@ static constexpr size_t RAG_MIN_CHUNK_TOKENS = 24;
 static constexpr size_t RAG_CHUNK_OVERLAP = 32;
 
 static void apply_no_cloud_telemetry_env() {
-    if (cactus::ffi::env_flag_enabled("CACTUS_NO_CLOUD_TELE")) {
+    if (cactus::ffi::env_flag_enabled("CACTUS_NO_CLOUD_TELE") ||
+        cactus::ffi::env_flag_enabled("CACTUS_DISABLE_CLOUD_HANDOFF")) {
         cactus::telemetry::setCloudDisabled(true);
     }
 }
@@ -352,10 +354,9 @@ extern "C" {
 int cactus_set_backend(const char* backend) { return cactus_backend_select(backend); }
 
 cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool cache_index) {
-    constexpr size_t DEFAULT_CONTEXT_SIZE = 512;  // matches default sliding window size
+    constexpr size_t DEFAULT_CONTEXT_SIZE = 512;
 
     std::string model_path_str = model_path ? std::string(model_path) : "unknown";
-
     std::string model_name = model_path_str;
     size_t last_slash = model_path_str.find_last_of("/\\");
     if (last_slash != std::string::npos) {
@@ -439,7 +440,10 @@ cactus_model_t cactus_init(const char* model_path, const char* corpus_dir, bool 
 }
 
 void cactus_destroy(cactus_model_t model) {
-    if (model) delete static_cast<CactusModelHandle*>(model);
+    if (!model) return;
+    CactusThreading::get_thread_pool().wait_all();
+    delete static_cast<CactusModelHandle*>(model);
+    CactusThreading::get_thread_pool().wait_all();
 }
 
 void cactus_reset(cactus_model_t model) {

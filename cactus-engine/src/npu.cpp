@@ -1,0 +1,15 @@
+#include "engine.h"
+
+namespace cactus {
+namespace npu {
+
+std::unique_ptr<NPUEncoder> create_encoder() {
+    return nullptr;
+}
+
+bool is_npu_available() {
+    return false;
+}
+
+} // namespace npu
+} // namespace cactus

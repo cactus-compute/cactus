@@ -97,6 +97,7 @@ def build_binary(
             "-o", name,
             *curl_link,
             "-framework", "Accelerate",
+            "-framework", "CoreML",
             "-framework", "Foundation",
             "-framework", "Metal",
             "-framework", "MetalPerformanceShaders",

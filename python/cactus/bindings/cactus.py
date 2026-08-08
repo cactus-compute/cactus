@@ -1,6 +1,7 @@
 """Cactus Python FFI bindings."""
 import ctypes
 import json
+import os
 import platform
 from pathlib import Path
 
@@ -12,6 +13,13 @@ _LIB_NAME = "libcactus_engine.dylib" if platform.system() == "Darwin" else "libc
 
 
 def _find_library():
+    override = os.environ.get("CACTUS_LIB_PATH")
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_file():
+            raise RuntimeError(f"CACTUS_LIB_PATH does not point to a runtime library: {path}")
+        return path
+
     bundled = Path(__file__).parent / "lib" / _LIB_NAME
     if bundled.exists():
         return bundled
@@ -143,6 +151,25 @@ _bind_optional(
     [cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)],
     ctypes.c_int,
 )
+for _binary_name in (
+    "cactus_graph_equal",
+    "cactus_graph_less",
+    "cactus_graph_less_equal",
+    "cactus_graph_greater",
+    "cactus_graph_greater_equal",
+    "cactus_graph_bitwise_and",
+    "cactus_graph_bitwise_or",
+):
+    _bind_optional(
+        _binary_name,
+        [cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)],
+        ctypes.c_int,
+    )
+_bind_optional(
+    "cactus_graph_where",
+    [cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
 
 _lib.cactus_graph_precision_cast.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
@@ -180,6 +207,27 @@ _bind_optional(
     [cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)],
     ctypes.c_int,
 )
+for _scalar_name in (
+    "cactus_graph_scalar_equal",
+    "cactus_graph_scalar_less",
+    "cactus_graph_scalar_less_equal",
+    "cactus_graph_scalar_greater",
+    "cactus_graph_scalar_greater_equal",
+):
+    _bind_optional(
+        _scalar_name,
+        [cactus_graph_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)],
+        ctypes.c_int,
+    )
+for _unary_bool_name in (
+    "cactus_graph_logical_not",
+    "cactus_graph_bitwise_not",
+):
+    _bind_optional(
+        _unary_bool_name,
+        [cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)],
+        ctypes.c_int,
+    )
 _lib.cactus_graph_scalar_exp.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
 ]
@@ -252,10 +300,25 @@ _lib.cactus_graph_slice.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_slice.restype = ctypes.c_int
+_bind_optional(
+    "cactus_graph_strided_slice",
+    [cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
 _lib.cactus_graph_index.argtypes = [
     cactus_graph_t, cactus_node_t, ctypes.c_size_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_index.restype = ctypes.c_int
+_bind_optional(
+    "cactus_graph_unfold",
+    [cactus_graph_t, cactus_node_t, ctypes.c_int32, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
+_bind_optional(
+    "cactus_graph_pad",
+    [cactus_graph_t, cactus_node_t, ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
 
 _lib.cactus_graph_concat.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)
@@ -275,6 +338,11 @@ _lib.cactus_graph_gather.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_gather.restype = ctypes.c_int
+_bind_optional(
+    "cactus_graph_gather_dim",
+    [cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_int32, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
 _lib.cactus_graph_embedding_from_tensor.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.POINTER(cactus_node_t)
 ]
@@ -443,6 +511,23 @@ _lib.cactus_graph_attention_cached.argtypes = [
     ctypes.POINTER(cactus_node_t),
 ]
 _lib.cactus_graph_attention_cached.restype = ctypes.c_int
+_lib.cactus_graph_attention_cached_masked.argtypes = [
+    cactus_graph_t,
+    cactus_node_t,
+    cactus_node_t,
+    cactus_node_t,
+    cactus_node_t,
+    cactus_node_t,
+    ctypes.c_float,
+    ctypes.c_size_t,
+    ctypes.c_size_t,
+    ctypes.c_size_t,
+    ctypes.c_bool,
+    cactus_node_t,
+    ctypes.c_bool,
+    ctypes.POINTER(cactus_node_t),
+]
+_lib.cactus_graph_attention_cached_masked.restype = ctypes.c_int
 _lib.cactus_graph_conv_cache_state.argtypes = [
     cactus_graph_t,
     ctypes.c_size_t,
@@ -524,6 +609,10 @@ _lib.cactus_graph_conv1d_causal.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_conv1d_causal.restype = ctypes.c_int
+_lib.cactus_graph_conv1d_causal_channel_first.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_conv1d_causal_channel_first.restype = ctypes.c_int
 _lib.cactus_graph_conv1d_k3.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
@@ -536,6 +625,11 @@ _lib.cactus_graph_conv1d.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_bool, cactus_node_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_conv1d.restype = ctypes.c_int
+_bind_optional(
+    "cactus_graph_conv1d_depthwise",
+    [cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_bool, cactus_node_t, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)],
+    ctypes.c_int,
+)
 _lib.cactus_graph_conv1d_same_depthwise_k9.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_bool, cactus_node_t, ctypes.POINTER(cactus_node_t)
 ]
@@ -620,8 +714,29 @@ _bind_optional(
     "cactus_graph_dense_mlp_tq_fused",
     [
         cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, cactus_node_t,
-        ctypes.c_float, ctypes.POINTER(cactus_node_t)
+        ctypes.c_float, ctypes.c_float, ctypes.POINTER(cactus_node_t)
     ],
+    ctypes.c_int,
+)
+_bind_optional(
+    "cactus_graph_qkv_tq_fused",
+    [
+        cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, cactus_node_t,
+        ctypes.POINTER(cactus_node_t),
+    ],
+    ctypes.c_int,
+)
+_bind_optional(
+    "cactus_graph_projection_pair_tq_fused",
+    [
+        cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t,
+        ctypes.POINTER(cactus_node_t),
+    ],
+    ctypes.c_int,
+)
+_bind_optional(
+    "cactus_graph_logits_tq_softcap",
+    [cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_float, ctypes.c_float, ctypes.POINTER(cactus_node_t)],
     ctypes.c_int,
 )
 _lib.cactus_graph_moe_layer_ungated.argtypes = [
@@ -651,6 +766,24 @@ _lib.cactus_graph_invalidate_persistent.restype = ctypes.c_int
 
 _lib.cactus_graph_execute.argtypes = [cactus_graph_t]
 _lib.cactus_graph_execute.restype = ctypes.c_int
+
+_lib.cactus_graph_retain_outputs.argtypes = [
+    cactus_graph_t, ctypes.POINTER(cactus_node_t), ctypes.c_size_t
+]
+_lib.cactus_graph_retain_outputs.restype = ctypes.c_int
+
+_lib.cactus_graph_get_node_op_type.argtypes = [
+    cactus_graph_t, cactus_node_t, ctypes.POINTER(ctypes.c_int32)
+]
+_lib.cactus_graph_get_node_op_type.restype = ctypes.c_int
+
+_lib.cactus_graph_get_node_inputs.argtypes = [
+    cactus_graph_t,
+    cactus_node_t,
+    ctypes.POINTER(cactus_node_t),
+    ctypes.POINTER(ctypes.c_size_t),
+]
+_lib.cactus_graph_get_node_inputs.restype = ctypes.c_int
 
 _lib.cactus_graph_get_output_ptr.argtypes = [cactus_graph_t, cactus_node_t,
   ctypes.POINTER(ctypes.c_void_p)]
@@ -1562,6 +1695,31 @@ class Graph:
         if rc != 0:
             raise RuntimeError(_err("graph_execute failed"))
 
+    def retain_outputs(self, node_ids):
+        node_ids = tuple(int(node_id) for node_id in node_ids)
+        arr = (cactus_node_t * len(node_ids))(*node_ids)
+        rc = _lib.cactus_graph_retain_outputs(self.h, arr, len(node_ids))
+        if rc != 0:
+            raise RuntimeError(_err("graph_retain_outputs failed"))
+
+    def node_op_type(self, node_id):
+        out = ctypes.c_int32()
+        rc = _lib.cactus_graph_get_node_op_type(self.h, cactus_node_t(int(node_id)), ctypes.byref(out))
+        if rc != 0:
+            raise RuntimeError(_err("graph_get_node_op_type failed"))
+        return int(out.value)
+
+    def node_inputs(self, node_id):
+        count = ctypes.c_size_t()
+        rc = _lib.cactus_graph_get_node_inputs(self.h, cactus_node_t(int(node_id)), None, ctypes.byref(count))
+        if rc != 0:
+            raise RuntimeError(_err("graph_get_node_inputs failed"))
+        arr = (cactus_node_t * int(count.value))()
+        rc = _lib.cactus_graph_get_node_inputs(self.h, cactus_node_t(int(node_id)), arr, ctypes.byref(count))
+        if rc != 0:
+            raise RuntimeError(_err("graph_get_node_inputs failed"))
+        return tuple(int(arr[i]) for i in range(int(count.value)))
+
     def add(self, a, b, backend=None):
         return self._binary("cactus_graph_add", a, b, backend=backend)
 
@@ -1579,6 +1737,43 @@ class Graph:
 
     def not_equal(self, a, b, backend=None):
         return self._binary("cactus_graph_not_equal", a, b, backend=backend)
+
+    def equal(self, a, b, backend=None):
+        return self._binary("cactus_graph_equal", a, b, backend=backend)
+
+    def less(self, a, b, backend=None):
+        return self._binary("cactus_graph_less", a, b, backend=backend)
+
+    def less_equal(self, a, b, backend=None):
+        return self._binary("cactus_graph_less_equal", a, b, backend=backend)
+
+    def greater(self, a, b, backend=None):
+        return self._binary("cactus_graph_greater", a, b, backend=backend)
+
+    def greater_equal(self, a, b, backend=None):
+        return self._binary("cactus_graph_greater_equal", a, b, backend=backend)
+
+    def bitwise_and(self, a, b, backend=None):
+        return self._binary("cactus_graph_bitwise_and", a, b, backend=backend)
+
+    def bitwise_or(self, a, b, backend=None):
+        return self._binary("cactus_graph_bitwise_or", a, b, backend=backend)
+
+    def where(self, condition, true_value, false_value, backend=None):
+        condition = self._ensure_tensor(condition)
+        true_value = self._ensure_tensor(true_value)
+        false_value = self._ensure_tensor(false_value)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_where(
+            self.h,
+            cactus_node_t(condition.id),
+            cactus_node_t(true_value.id),
+            cactus_node_t(false_value.id),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_where failed"))
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def abs(self, x, backend=None):
         x = self._ensure_tensor(x)
@@ -1641,6 +1836,27 @@ class Graph:
 
     def scalar_not_equal(self, x, value, backend=None):
         return self._scalar("cactus_graph_scalar_not_equal", x, value, backend=backend)
+
+    def scalar_equal(self, x, value, backend=None):
+        return self._scalar("cactus_graph_scalar_equal", x, value, backend=backend)
+
+    def scalar_less(self, x, value, backend=None):
+        return self._scalar("cactus_graph_scalar_less", x, value, backend=backend)
+
+    def scalar_less_equal(self, x, value, backend=None):
+        return self._scalar("cactus_graph_scalar_less_equal", x, value, backend=backend)
+
+    def scalar_greater(self, x, value, backend=None):
+        return self._scalar("cactus_graph_scalar_greater", x, value, backend=backend)
+
+    def scalar_greater_equal(self, x, value, backend=None):
+        return self._scalar("cactus_graph_scalar_greater_equal", x, value, backend=backend)
+
+    def logical_not(self, x, backend=None):
+        return self._scalar("cactus_graph_logical_not", x, backend=backend)
+
+    def bitwise_not(self, x, backend=None):
+        return self._scalar("cactus_graph_bitwise_not", x, backend=backend)
 
     def scalar_exp(self, x, backend=None):
         return self._scalar("cactus_graph_scalar_exp", x, backend=backend)
@@ -1749,6 +1965,22 @@ class Graph:
             raise RuntimeError(_err("graph_slice failed"))
         return self._apply_backend(self._tensor_from_node(out.value), backend)
 
+    def strided_slice(self, x, axis, start, length, step, backend=None):
+        x = self._ensure_tensor(x)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_strided_slice(
+            self.h,
+            cactus_node_t(x.id),
+            ctypes.c_int32(int(axis)),
+            ctypes.c_size_t(int(start)),
+            ctypes.c_size_t(int(length)),
+            ctypes.c_size_t(int(step)),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_strided_slice failed"))
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
+
     def index(self, x, index_value, axis=0, backend=None):
         x = self._ensure_tensor(x)
         out = cactus_node_t()
@@ -1761,6 +1993,38 @@ class Graph:
         )
         if rc != 0:
             raise RuntimeError(_err("graph_index failed"))
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
+
+    def unfold(self, x, dimension, size, step, backend=None):
+        x = self._ensure_tensor(x)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_unfold(
+            self.h,
+            cactus_node_t(x.id),
+            ctypes.c_int32(int(dimension)),
+            ctypes.c_size_t(int(size)),
+            ctypes.c_size_t(int(step)),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_unfold failed"))
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
+
+    def pad(self, x, pads, value=0.0, backend=None):
+        x = self._ensure_tensor(x)
+        pads = tuple(int(pad) for pad in pads)
+        arr = (ctypes.c_size_t * len(pads))(*pads)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_pad(
+            self.h,
+            cactus_node_t(x.id),
+            arr,
+            ctypes.c_size_t(len(pads)),
+            ctypes.c_float(float(value)),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_pad failed"))
         return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def transpose(self, x, backend=None):
@@ -1809,16 +2073,25 @@ class Graph:
             result = self.precision_cast(result, int(output_dtype))
         return result
 
-    def gather(self, tensor, indices, backend=None):
+    def gather(self, tensor, indices, axis=0, backend=None):
         tensor = self._ensure_tensor(tensor)
         indices = self._ensure_tensor(indices)
         out = cactus_node_t()
-        rc = _lib.cactus_graph_gather(
-            self.h,
-            cactus_node_t(tensor.id),
-            cactus_node_t(indices.id),
-            ctypes.byref(out),
-        )
+        if hasattr(_lib, "cactus_graph_gather_dim"):
+            rc = _lib.cactus_graph_gather_dim(
+                self.h,
+                cactus_node_t(tensor.id),
+                cactus_node_t(indices.id),
+                ctypes.c_int32(int(axis)),
+                ctypes.byref(out),
+            )
+        else:
+            rc = _lib.cactus_graph_gather(
+                self.h,
+                cactus_node_t(tensor.id),
+                cactus_node_t(indices.id),
+                ctypes.byref(out),
+            )
         if rc != 0:
             raise RuntimeError(_err("graph_gather failed"))
         return self._apply_backend(self._tensor_from_node(out.value), backend)
@@ -2167,6 +2440,9 @@ class Graph:
         position_offset=0,
         window_size=0,
         v_head_dim=0,
+        is_causal=True,
+        mask=None,
+        additive_mask=False,
         backend=None,
     ):
         query = self._ensure_tensor(query)
@@ -2175,19 +2451,41 @@ class Graph:
         k_cache_state = self._ensure_tensor(k_cache_state)
         v_cache_state = self._ensure_tensor(v_cache_state)
         out = cactus_node_t()
-        rc = _lib.cactus_graph_attention_cached(
-            self.h,
-            cactus_node_t(query.id),
-            cactus_node_t(key_new.id),
-            cactus_node_t(value_new.id),
-            cactus_node_t(k_cache_state.id),
-            cactus_node_t(v_cache_state.id),
-            ctypes.c_float(float(scale)),
-            ctypes.c_size_t(int(position_offset)),
-            ctypes.c_size_t(int(window_size)),
-            ctypes.c_size_t(int(v_head_dim)),
-            ctypes.byref(out),
-        )
+        if mask is not None:
+            mask_tensor = self._ensure_tensor(mask)
+            rc = _lib.cactus_graph_attention_cached_masked(
+                self.h,
+                cactus_node_t(query.id),
+                cactus_node_t(key_new.id),
+                cactus_node_t(value_new.id),
+                cactus_node_t(k_cache_state.id),
+                cactus_node_t(v_cache_state.id),
+                ctypes.c_float(float(scale)),
+                ctypes.c_size_t(int(position_offset)),
+                ctypes.c_size_t(int(window_size)),
+                ctypes.c_size_t(int(v_head_dim)),
+                ctypes.c_bool(bool(is_causal)),
+                cactus_node_t(mask_tensor.id),
+                ctypes.c_bool(bool(additive_mask)),
+                ctypes.byref(out),
+            )
+        else:
+            if not bool(is_causal) or bool(additive_mask):
+                raise RuntimeError("graph_attention_cached requires a mask for non-causal or additive-mask cached attention")
+
+            rc = _lib.cactus_graph_attention_cached(
+                self.h,
+                cactus_node_t(query.id),
+                cactus_node_t(key_new.id),
+                cactus_node_t(value_new.id),
+                cactus_node_t(k_cache_state.id),
+                cactus_node_t(v_cache_state.id),
+                ctypes.c_float(float(scale)),
+                ctypes.c_size_t(int(position_offset)),
+                ctypes.c_size_t(int(window_size)),
+                ctypes.c_size_t(int(v_head_dim)),
+                ctypes.byref(out),
+            )
         if rc != 0:
             raise RuntimeError(_err("graph_attention_cached failed"))
         return self._apply_backend(self._tensor_from_node(out.value), backend)
@@ -2372,6 +2670,18 @@ class Graph:
             raise RuntimeError("graph_conv1d_causal failed")
         return self._apply_backend(self._tensor_from_node(out.value), backend)
 
+    def conv1d_causal_channel_first(self, x, weight, kernel_size, dilation, backend=None):
+        x = self._ensure_tensor(x)
+        weight = self._ensure_tensor(weight)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_conv1d_causal_channel_first(
+            self.h, cactus_node_t(x.id), cactus_node_t(weight.id),
+            ctypes.c_size_t(int(kernel_size)), ctypes.c_size_t(int(dilation)), ctypes.byref(out)
+        )
+        if rc != 0:
+            raise RuntimeError("graph_conv1d_causal_channel_first failed")
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
+
     def conv1d_k3(self, x, weight, stride=1, backend=None):
         x = self._ensure_tensor(x)
         weight = self._ensure_tensor(weight)
@@ -2397,6 +2707,9 @@ class Graph:
 
     def conv1d(self, x, weight, bias=None, stride=1, backend=None):
         return self._conv_with_optional_bias("cactus_graph_conv1d", x, weight, bias, ctypes.c_size_t(int(stride)), backend=backend)
+
+    def conv1d_depthwise(self, x, weight, bias=None, stride=1, backend=None):
+        return self._conv_with_optional_bias("cactus_graph_conv1d_depthwise", x, weight, bias, ctypes.c_size_t(int(stride)), backend=backend)
 
     def conv1d_same_depthwise_k9(self, x, weight, bias=None, backend=None):
         return self._conv_with_optional_bias("cactus_graph_conv1d_same_depthwise_k9", x, weight, bias, backend=backend)
@@ -2514,7 +2827,8 @@ class Graph:
         return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def moe_layer_gated(self, hidden, routing_probs, topk_indices, w1_weights, w3_weights, w2_weights,
-                        num_experts, num_experts_per_tok, normalize_routing=True, epsilon=1e-6, routed_scaling_factor=1.0, activation=0, backend=None):
+                        num_experts, num_experts_per_tok, normalize_routing=True, epsilon=1e-6,
+                        routed_scaling_factor=1.0, activation=ACT_SILU, backend=None):
         hidden = self._ensure_tensor(hidden)
         routing_probs = self._ensure_tensor(routing_probs)
         topk_indices = self._ensure_tensor(topk_indices)
@@ -2532,7 +2846,8 @@ class Graph:
             raise RuntimeError(_err("graph_moe_layer_gated failed"))
         return self._apply_backend(self._tensor_from_node(out.value), backend)
 
-    def dense_mlp_tq_fused(self, hidden, gate_weight, up_weight, down_weight, product_scale=1.0, backend=None):
+    def dense_mlp_tq_fused(self, hidden, gate_weight, up_weight, down_weight, product_scale=1.0,
+                           gate_input_scale=1.0, backend=None):
         hidden = self._ensure_tensor(hidden)
         gate_weight = self._ensure_tensor(gate_weight)
         up_weight = self._ensure_tensor(up_weight)
@@ -2545,11 +2860,51 @@ class Graph:
             cactus_node_t(up_weight.id),
             cactus_node_t(down_weight.id),
             ctypes.c_float(float(product_scale)),
+            ctypes.c_float(float(gate_input_scale)),
             ctypes.byref(out),
         )
         if rc != 0:
             raise RuntimeError(_err("graph_dense_mlp_tq_fused failed"))
         return self._apply_backend(self._tensor_from_node(out.value), backend)
+
+    def qkv_tq_fused(self, hidden, query_weight, key_weight, value_weight):
+        hidden = self._ensure_tensor(hidden)
+        query_weight = self._ensure_tensor(query_weight)
+        key_weight = self._ensure_tensor(key_weight)
+        value_weight = self._ensure_tensor(value_weight)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_qkv_tq_fused(
+            self.h, cactus_node_t(hidden.id), cactus_node_t(query_weight.id),
+            cactus_node_t(key_weight.id), cactus_node_t(value_weight.id), ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_qkv_tq_fused failed"))
+        return self._tensor_from_node(out.value)
+
+    def projection_pair_tq_fused(self, hidden, first_weight, second_weight):
+        hidden = self._ensure_tensor(hidden)
+        first_weight = self._ensure_tensor(first_weight)
+        second_weight = self._ensure_tensor(second_weight)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_projection_pair_tq_fused(
+            self.h, cactus_node_t(hidden.id), cactus_node_t(first_weight.id),
+            cactus_node_t(second_weight.id), ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_projection_pair_tq_fused failed"))
+        return self._tensor_from_node(out.value)
+
+    def logits_tq_softcap(self, hidden, weight, cap, projection_scale=1.0):
+        hidden = self._ensure_tensor(hidden)
+        weight = self._ensure_tensor(weight)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_logits_tq_softcap(
+            self.h, cactus_node_t(hidden.id), cactus_node_t(weight.id),
+            ctypes.c_float(float(cap)), ctypes.c_float(float(projection_scale)), ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_logits_tq_softcap failed"))
+        return self._tensor_from_node(out.value)
 
     def moe_layer_ungated(self, hidden, routing_probs, topk_indices, w1_weights, w2_weights,
                           num_experts, num_experts_per_tok, normalize_routing=True, epsilon=1e-6,

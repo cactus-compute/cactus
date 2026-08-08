@@ -92,7 +92,7 @@ static std::string whisper_prompt(const std::string& model_path, const std::stri
     std::string p = model_path;
     std::transform(p.begin(), p.end(), p.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     if (p.find("whisper") != std::string::npos)
-        return "<|startoftranscript|><|" + language + "|><|transcribe|>";
+        return "<|startoftranscript|><|" + language + "|><|transcribe|><|notimestamps|>";
     return "";
 }
 

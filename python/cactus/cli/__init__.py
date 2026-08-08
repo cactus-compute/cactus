@@ -1,5 +1,6 @@
 import sys
 import argparse
+from pathlib import Path
 
 from .. import __version__
 from .common import (
@@ -35,8 +36,7 @@ def _telemetry_parent():
 
 
 def _build_parent(mixed: bool = True):
-    """Bundle-build flags shared by model-preparing commands
-    (mixed=False limits --bits to uniform 1-4 for build-only commands)."""
+    """Bundle-fetch flags shared by every command that prepares a model."""
     p = argparse.ArgumentParser(add_help=False)
     if mixed:
         p.add_argument("--bits", type=bits_arg, default=4, metavar=_BITS_METAVAR,
@@ -46,7 +46,7 @@ def _build_parent(mixed: bool = True):
                        help="CQ quantization (default: 4)")
     p.add_argument("--token", help="HuggingFace token")
     p.add_argument("--reconvert", action="store_true",
-                   help="Force local rebuild from source")
+                   help="Refresh the cached bundle or weights")
     return p
 
 
@@ -75,6 +75,12 @@ def _positive_int(value):
     return n
 
 
+class _ConvertTaskAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "generic_task", values if values in {"causal-lm", "speech-seq2seq"} else None)
+
+
 def _non_negative_int(value):
     n = int(value)
     if n < 0:
@@ -98,6 +104,9 @@ def _unit_float(value):
 
 def _hf_id_or_path(value):
     v = (value or "").strip()
+    if Path(v).expanduser().exists():
+        return v
+
     if "/" not in v:
         raise argparse.ArgumentTypeError(
             f"invalid model {value!r}. Use a HuggingFace id like 'openai/whisper-base' "
@@ -132,32 +141,33 @@ def create_parser():
     --prompt <text>                    send prompt immediately
     --thinking                         enable thinking/reasoning mode
     --token <token>                    HuggingFace token (gated models)
-    --reconvert                        force local convert fallback
+    --reconvert                        refresh cached bundle
 
   cactus transcribe [model]            live microphone transcription with a model
     --file <audio.wav>                 audio file to transcribe (WAV)
     --language <code>                  language code (default: en)
     --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
-    --reconvert                        force local rebuild from source
+    --reconvert                        refresh cached bundle
 
-  cactus download [model]              fetch a prebuilt bundle, else build locally (default: {DEFAULT_MODEL_ID})
-    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
-    --token <token>                    HuggingFace token (gated models)
-    --reconvert                        force local rebuild from source
-
-  cactus convert <model> [dir]         build a runnable bundle locally (skips prebuilt fetch)
+  cactus download [model]              fetch a prebuilt bundle (default: {DEFAULT_MODEL_ID})
     --bits 1|2|3|4                     CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
-    --reconvert                        force local rebuild from source
+    --reconvert                        refresh cached bundle
+
+  cactus convert <model> [dir]         convert HuggingFace model to runnable Cactus bundle
+    --bits 1|2|3|4                     CQ quantization (default: 4)
+    --token <token>                    HuggingFace token (gated models)
+    --reconvert                        force weight conversion from source
     --lora <path>                      merge a LoRA adapter before converting
+    --weights-only                     stop after CQ weights, skipping transpilation
 
   cactus serve [model]                 OpenAI-compatible local HTTP server
     --host <addr>                      bind address (default: 127.0.0.1)
     --port <port>                      port (default: 8080)
     --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
-    --reconvert                        force local rebuild from source
+    --reconvert                        refresh cached bundle
     --no-cloud-handoff                 disable automatic cloud handoff
     --confidence-threshold <0..1>      handoff to cloud below this confidence
     --cloud-timeout-ms <n>             max wait for cloud handoff before local fallback
@@ -176,7 +186,7 @@ def create_parser():
     --transcription-model <hf-id>      default: {DEFAULT_TEST_TRANSCRIPTION_MODEL_ID}
     --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
-    --reconvert                        force local rebuild of test models
+    --reconvert                        refresh cached test bundles
     --suite <name>                     run a single test suite from any
                                        component (kernels, graph, or engine)
     --list                             list components and suites
@@ -198,44 +208,14 @@ def create_parser():
 
   -----------------------------------------------------------------
 
-  Advanced / build pipeline — convert runs automatically inside run,
-  serve, transcribe and download; reach for it only to control the
-  build (custom flags, LoRA, debugging):
+  Advanced:
 
-  cactus convert <model> [dir]         HuggingFace -> runnable cactus bundle
-                                       (quantizes weights to CQ, then builds
-                                       the runtime graph)
+  cactus convert <model> [dir]         HuggingFace -> Cactus CQ weights + components
     --bits 1|2|3|4                     CQ quantization (default: 4)
     --token <token>                    HuggingFace token (defaults to $HF_TOKEN)
     --reconvert                        force weight conversion from source
     --lora <path>                      merge a LoRA adapter before converting
-    --weights-only                     stop after CQ weights (skip the graph)
-    --weights-dir <path>              path to CQ weights (default: weights/<model>)
-    --task <auto|...>                  task (default: auto, inferred from config)
-    --artifact-dir <path>              write bundle here (default: weights/<model>)
-    --prompt <text>                    representative prompt for shape capture
-    --system-prompt <text>             system prompt for multimodal chat
-    --enable-thinking                  enable thinking markers when supported
-    --input-ids <a,b,...>              token ids for causal-LM shape capture
-    --image-file <path>                representative image (repeatable)
-    --audio-file <path>                representative audio file (WAV)
-    --max-new-tokens <n>               preallocate decode context for causal LM
-    --component-pipeline auto|on|off   force component-pipeline graph build
-    --components <a,b,...>             subset of components to build
-    --torch-dtype <dtype>              float16 | float32 | bfloat16
-    --trust-remote-code                allow HF remote code during the build
-    --local-files-only                 require model/processor to be local
-    --low-memory-load                  graph capture with meta tensors
-    --allow-unconverted-weights        debug-only: skip the CQ-weights check
-    --execute-after-transpile          run a reference execution after building
-    --graph-filename <name>            override saved graph filename
-    --skip-reference-compare           skip PyTorch comparison (with --execute-…)
-    --no-fuse-rms-norm                 disable RMSNorm fusion
-    --no-fuse-rope                     disable RoPE fusion
-    --no-fuse-attention                disable attention fusion
-    --no-fuse-attention-block          disable attention-block fusion
-    --no-fuse-add-clipped              disable add-clipped fusion
-    --no-fuse-gated-deltanet           disable gated DeltaNet fusion
+    --weights-only                     stop after CQ weights, skipping transpilation
 
   -----------------------------------------------------------------
 """
@@ -396,63 +376,47 @@ def create_parser():
     convert_parser.add_argument("--low-memory-load", action="store_true",
                                 help="Avoid loading checkpoint tensors during graph capture")
     convert_parser.add_argument("--weights-only", action="store_true",
-                                help="Only quantize weights; skip building the runtime graph bundle")
+                                help="Only convert CQ weights; skip graph transpilation")
     convert_parser.add_argument("--weights-dir",
-                                help="CQ weights directory (default: weights/<model>)")
-    convert_parser.add_argument("--task", default="auto",
-                                choices=["auto", "causal_lm_logits", "multimodal_causal_lm_logits",
-                                         "ctc_logits", "encoder_hidden_states",
-                                         "seq2seq_transcription", "tdt_transcription"],
-                                help="Graph task (default: auto, from model config)")
-    convert_parser.add_argument("--prompt",
-                                help="Prompt for causal/multimodal shape capture")
-    convert_parser.add_argument("--system-prompt", default=None,
-                                help="System prompt for multimodal chat formats")
-    convert_parser.add_argument("--enable-thinking", action="store_true",
-                                help="Enable thinking markers when the prompt supports them")
-    convert_parser.add_argument("--input-ids", default=None,
-                                help="Comma-separated token ids for causal-LM shape capture")
-    convert_parser.add_argument("--image-file", action="append", default=[],
-                                help="Image for multimodal shape capture (repeatable)")
-    convert_parser.add_argument("--audio-file",
-                                help="Audio file (WAV) for audio/multimodal shape capture")
-    convert_parser.add_argument("--max-new-tokens", type=_positive_int, default=None,
-                                help="Decode context to preallocate for causal LM (default: 32)")
-    convert_parser.add_argument("--component-pipeline", default="auto", choices=["auto", "on", "off"],
-                                help="Split-component graph when supported (default: auto)")
-    convert_parser.add_argument("--components",
-                                help="Comma-separated component subset (e.g. vision_encoder,decoder)")
-    convert_parser.add_argument("--torch-dtype", default=None,
-                                choices=["float16", "float32", "bfloat16"],
-                                help="Torch dtype for HF loading (default: float16)")
-    convert_parser.add_argument("--trust-remote-code", action="store_true",
-                                help="Pass trust_remote_code=True to HF loaders")
-    convert_parser.add_argument("--local-files-only", action="store_true",
-                                help="Require model/processor to already be local")
-    convert_parser.add_argument("--allow-unconverted-weights", action="store_true",
-                                help="Debug: build the graph without CQ weights")
-    convert_parser.add_argument("--execute-after-transpile", action="store_true",
-                                help="Run a reference execution after building the graph")
+                                help="Legacy graph builder: CQ weights directory")
     convert_parser.add_argument("--artifact-dir",
-                                help="Graph bundle output directory (default: weights/<model>)")
-    convert_parser.add_argument("--graph-filename", default=None,
-                                help="Saved graph filename (default: graph.cactus)")
-    convert_parser.add_argument("--skip-reference-compare", action="store_true",
-                                help="Skip PyTorch comparison (requires --execute-after-transpile)")
-    convert_parser.add_argument("--no-fuse-rms-norm", action="store_true",
-                                help="Disable RMSNorm fusion")
-    convert_parser.add_argument("--no-fuse-rope", action="store_true",
-                                help="Disable RoPE fusion")
-    convert_parser.add_argument("--no-fuse-attention", action="store_true",
-                                help="Disable attention fusion")
-    convert_parser.add_argument("--no-fuse-attention-block", action="store_true",
-                                help="Disable attention-block fusion")
-    convert_parser.add_argument("--no-fuse-add-clipped", action="store_true",
-                                help="Disable add-clipped fusion")
-    convert_parser.add_argument("--no-fuse-gated-deltanet", action="store_true",
-                                help="Disable gated DeltaNet fusion")
-    convert_parser.add_argument("--cache-context-length", default=None,
-                                help="KV cache context length for cached decode graphs (default: model config)")
+                                help="Legacy graph builder: graph bundle output directory")
+    convert_parser.add_argument("--modalities", "--input-modalities", dest="input_modalities", default=None,
+                                help="Generic models only: comma-separated modalities (text, vision, audio)")
+    convert_parser.set_defaults(generic_task=None)
+    convert_parser.add_argument("--task", default=None, action=_ConvertTaskAction,
+                                choices=("causal-lm", "speech-seq2seq", "auto", "causal_lm_logits",
+                                         "multimodal_causal_lm_logits", "ctc_logits", "encoder_hidden_states",
+                                         "seq2seq_transcription", "tdt_transcription"),
+                                help="Generic task, or an explicit legacy graph-capture task")
+    convert_parser.add_argument("--cache-style", "--cache", dest="cache_style", default=None,
+                                choices=("dynamic-kv", "encoder-decoder-kv", "none"),
+                                help="Generic models only: exported cache contract")
+    convert_parser.add_argument("--fusion-groups", default=None,
+                                help="Generic models only: comma-separated fusion groups")
+    convert_parser.add_argument("--prompt", help="Legacy graph builder: shape-capture prompt")
+    convert_parser.add_argument("--system-prompt", default=None)
+    convert_parser.add_argument("--enable-thinking", action="store_true")
+    convert_parser.add_argument("--input-ids", default=None)
+    convert_parser.add_argument("--image-file", action="append", default=[])
+    convert_parser.add_argument("--audio-file")
+    convert_parser.add_argument("--max-new-tokens", type=_positive_int, default=None)
+    convert_parser.add_argument("--component-pipeline", default="auto", choices=["auto", "on", "off"])
+    convert_parser.add_argument("--components")
+    convert_parser.add_argument("--torch-dtype", choices=["float16", "float32", "bfloat16"])
+    convert_parser.add_argument("--trust-remote-code", action="store_true")
+    convert_parser.add_argument("--local-files-only", action="store_true")
+    convert_parser.add_argument("--allow-unconverted-weights", action="store_true")
+    convert_parser.add_argument("--execute-after-transpile", action="store_true")
+    convert_parser.add_argument("--graph-filename")
+    convert_parser.add_argument("--skip-reference-compare", action="store_true")
+    convert_parser.add_argument("--no-fuse-rms-norm", action="store_true")
+    convert_parser.add_argument("--no-fuse-rope", action="store_true")
+    convert_parser.add_argument("--no-fuse-attention", action="store_true")
+    convert_parser.add_argument("--no-fuse-attention-block", action="store_true")
+    convert_parser.add_argument("--no-fuse-add-clipped", action="store_true")
+    convert_parser.add_argument("--no-fuse-gated-deltanet", action="store_true")
+    convert_parser.add_argument("--cache-context-length", default=None)
 
     upload_parser = subparsers.add_parser("upload",
                                           parents=[_build_parent(mixed=False)],

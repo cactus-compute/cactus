@@ -113,6 +113,65 @@ void compute_conv1d_causal_node(GraphNode& node, const std::vector<std::unique_p
     }
 }
 
+void compute_conv1d_causal_channel_first_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& X = get_input(node, 0, nodes, node_index_map);
+    const auto& W = get_input(node, 1, nodes, node_index_map);
+    auto& Y = node.output_buffer;
+
+    if (X.shape.size() != 3) {
+        throw std::runtime_error("Channel-first causal conv requires 3D input [batch, channels, seq_len]");
+    }
+    if (W.shape.size() != 3) {
+        throw std::runtime_error("Weight must be 3D");
+    }
+
+    const size_t N = X.shape[0];
+    const size_t C = X.shape[1];
+    const size_t L = X.shape[2];
+    const size_t W0 = W.shape[0];
+    const size_t W1 = W.shape[1];
+    const size_t W2 = W.shape[2];
+    const size_t dilation = node.params.dilation;
+    if (dilation < 1) throw std::runtime_error("dilation must be >= 1");
+
+    const bool standard_layout = W1 == 1;
+    const bool transposed_layout = W2 == 1;
+    if ((!standard_layout && !transposed_layout) || W0 != C) {
+        throw std::runtime_error("Only multiplier-1 depthwise channel-first causal convolution is supported");
+    }
+    const size_t K = standard_layout ? W2 : W1;
+    Y.shape = {N, C, L};
+    Y.precision = X.precision;
+
+    auto transpose_weights = [&](const __fp16* source) {
+        std::vector<__fp16> transposed(C * K);
+        for (size_t channel = 0; channel < C; ++channel) {
+            for (size_t k = 0; k < K; ++k) {
+                transposed[channel * K + k] = source[(channel * W1 + k) * W2];
+            }
+        }
+        return transposed;
+    };
+
+    if (W.precision == Precision::INT8) {
+        auto weights = dequantize_int8_weights_to_fp16(W, C, K, "conv1d_causal_channel_first");
+        if (transposed_layout && !standard_layout) weights = transpose_weights(weights.data());
+        cactus_conv1d_causal_depthwise_channel_first_f16(
+            X.data_as<__fp16>(), weights.data(), Y.data_as<__fp16>(), N, C, L, K, dilation);
+    } else if (W.precision == Precision::FP16) {
+        if (transposed_layout && !standard_layout) {
+            auto weights = transpose_weights(W.data_as<__fp16>());
+            cactus_conv1d_causal_depthwise_channel_first_f16(
+                X.data_as<__fp16>(), weights.data(), Y.data_as<__fp16>(), N, C, L, K, dilation);
+        } else {
+            cactus_conv1d_causal_depthwise_channel_first_f16(
+                X.data_as<__fp16>(), W.data_as<__fp16>(), Y.data_as<__fp16>(), N, C, L, K, dilation);
+        }
+    } else {
+        throw std::runtime_error("Channel-first causal conv requires FP16 or INT8 weights");
+    }
+}
+
 void compute_conv1d_k3_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& X = get_input(node, 0, nodes, node_index_map);
     const auto& W = get_input(node, 1, nodes, node_index_map);
@@ -187,8 +246,9 @@ void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     const size_t C_out = W.shape[0];
     const size_t K = W.shape[2];
     const size_t stride = node.params.stride;
+    const bool is_depthwise = node.params.num_groups == C_in && C_out == C_in && W.shape[1] == 1;
 
-    if (W.shape[1] != C_in) {
+    if (!is_depthwise && W.shape[1] != C_in) {
         throw std::runtime_error("conv1d weight C_in mismatch");
     }
 
@@ -218,10 +278,33 @@ void compute_conv1d_node(GraphNode& node, const std::vector<std::unique_ptr<Grap
     if (W.precision == Precision::FP16) {
         W_ptr = W.data_as<__fp16>();
     } else if (W.precision == Precision::INT8) {
-        W_fp16 = dequantize_int8_weights_to_fp16(W, C_out, C_in * K, "conv1d");
+        W_fp16 = dequantize_int8_weights_to_fp16(W, C_out, (is_depthwise ? 1 : C_in) * K, "conv1d");
         W_ptr = W_fp16.data();
     } else {
         throw std::runtime_error("Conv1d only supports FP16/INT8 weights");
+    }
+
+    if (is_depthwise) {
+        __fp16* output = Y.data_as<__fp16>();
+        const __fp16* input = X.data_as<__fp16>();
+        const size_t L_out = Y.shape[2];
+
+        for (size_t n = 0; n < N; ++n) {
+            for (size_t c = 0; c < C_in; ++c) {
+                for (size_t t = 0; t < L_out; ++t) {
+                    float acc = bias_ptr ? static_cast<float>(bias_ptr[c]) : 0.0f;
+
+                    for (size_t k = 0; k < K; ++k) {
+                        size_t input_idx = (n * C_in + c) * L + t * stride + k;
+                        size_t weight_idx = c * K + k;
+                        acc += static_cast<float>(input[input_idx]) * static_cast<float>(W_ptr[weight_idx]);
+                    }
+
+                    output[(n * C_out + c) * L_out + t] = static_cast<__fp16>(acc);
+                }
+            }
+        }
+        return;
     }
 
     cactus_conv1d_f16(X.data_as<__fp16>(), W_ptr, bias_ptr,

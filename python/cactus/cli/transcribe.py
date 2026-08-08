@@ -4,7 +4,7 @@ from .common import apply_runtime_env, launch_binary, print_color, RED, GREEN
 
 
 def cmd_transcribe(args):
-    from .model import prepare_bundle, TranspileOptions
+    from .model import prepare_bundle
 
     if args.audio_file:
         audio_path = Path(args.audio_file).expanduser()
@@ -15,7 +15,7 @@ def cmd_transcribe(args):
 
     apply_runtime_env(args)
 
-    bundle_dir = prepare_bundle(args, transpile=TranspileOptions(audio_file=args.audio_file))
+    bundle_dir = prepare_bundle(args)
     if bundle_dir is None:
         return 1
 

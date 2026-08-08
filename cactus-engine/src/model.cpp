@@ -21,6 +21,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <cstring>
+#include <tuple>
 #include <utility>
 
 namespace cactus {
@@ -42,6 +43,167 @@ std::vector<uint32_t> parse_config_uint_list(const std::string& value) {
         pos = end;
     }
     return numbers;
+}
+
+std::vector<std::string> parse_csv_strings(const std::string& value) {
+    std::vector<std::string> items;
+    std::stringstream ss(value);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        size_t begin = 0;
+        while (begin < item.size() && std::isspace(static_cast<unsigned char>(item[begin]))) ++begin;
+        size_t end = item.size();
+        while (end > begin && std::isspace(static_cast<unsigned char>(item[end - 1]))) --end;
+        if (end > begin) items.push_back(item.substr(begin, end - begin));
+    }
+    return items;
+}
+
+bool debug_media_features_enabled() {
+    return std::getenv("CACTUS_DEBUG_MEDIA_FEATURES") != nullptr;
+}
+
+uint64_t byte_checksum(const std::vector<uint8_t>& bytes) {
+    uint64_t sum = 0;
+    for (uint8_t value : bytes) sum += value;
+    return sum;
+}
+
+void debug_media_feature(const std::string& stage, const std::string& name,
+                         const std::vector<uint8_t>& bytes,
+                         const std::vector<size_t>& shape,
+                         Precision precision) {
+    if (!debug_media_features_enabled()) return;
+    std::cerr << "[media-debug] " << stage << " " << name
+              << " bytes=" << bytes.size()
+              << " checksum=" << byte_checksum(bytes)
+              << " precision=" << static_cast<int>(precision)
+              << " shape=";
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (i) std::cerr << "x";
+        std::cerr << shape[i];
+    }
+    std::cerr << std::endl;
+
+    const char* dump_dir = std::getenv("CACTUS_DEBUG_MEDIA_FEATURES_DIR");
+    if (!dump_dir || bytes.empty()) return;
+    std::filesystem::path path = std::filesystem::path(dump_dir) / (stage + "_" + name + ".bin");
+    std::ofstream out(path, std::ios::binary);
+    if (out.is_open()) {
+        out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    std::filesystem::path meta_path = std::filesystem::path(dump_dir) / (stage + "_" + name + ".txt");
+    std::ofstream meta(meta_path);
+    if (meta.is_open()) {
+        meta << "precision=" << static_cast<int>(precision) << "\nshape=";
+        for (size_t i = 0; i < shape.size(); ++i) {
+            if (i) meta << ",";
+            meta << shape[i];
+        }
+        meta << "\nbytes=" << bytes.size() << "\n";
+    }
+}
+
+template <typename T>
+void debug_media_vector(const std::string& stage, const std::string& name,
+                        const std::vector<T>& values,
+                        const std::vector<size_t>& shape,
+                        Precision precision) {
+    if (!debug_media_features_enabled()) return;
+    std::vector<uint8_t> bytes(values.size() * sizeof(T));
+    if (!values.empty()) {
+        std::memcpy(bytes.data(), values.data(), bytes.size());
+    }
+    debug_media_feature(stage, name, bytes, shape, precision);
+}
+
+std::unordered_set<uint32_t> parse_csv_uint_set(const std::string& value) {
+    std::unordered_set<uint32_t> ids;
+    for (const auto& item : parse_csv_strings(value)) {
+        try {
+            ids.insert(static_cast<uint32_t>(std::stoul(item)));
+        } catch (...) {
+        }
+    }
+    return ids;
+}
+
+std::map<std::string, std::string> parse_csv_string_map(const std::string& value) {
+    std::map<std::string, std::string> items;
+    for (const auto& item : parse_csv_strings(value)) {
+        size_t separator = item.find(':');
+        if (separator == std::string::npos || separator == 0 || separator + 1 >= item.size()) {
+            continue;
+        }
+
+        items[item.substr(0, separator)] = item.substr(separator + 1);
+    }
+    return items;
+}
+
+std::string json_string_or_empty(const picojson::object& obj, const std::string& key) {
+    auto it = obj.find(key);
+    if (it == obj.end() || !it->second.is<std::string>()) return "";
+    return it->second.get<std::string>();
+}
+
+bool json_bool_or(const picojson::object& obj, const std::string& key, bool fallback) {
+    auto it = obj.find(key);
+    if (it == obj.end() || !it->second.is<bool>()) return fallback;
+    return it->second.get<bool>();
+}
+
+std::vector<std::string> json_string_array(const picojson::object& obj, const std::string& key) {
+    std::vector<std::string> out;
+    auto it = obj.find(key);
+    if (it == obj.end() || !it->second.is<picojson::array>()) return out;
+    for (const auto& value : it->second.get<picojson::array>()) {
+        if (value.is<std::string>()) out.push_back(value.get<std::string>());
+    }
+    return out;
+}
+
+std::map<std::string, std::string> json_string_map(const picojson::object& obj, const std::string& key) {
+    std::map<std::string, std::string> out;
+    auto it = obj.find(key);
+    if (it == obj.end() || !it->second.is<picojson::object>()) return out;
+    for (const auto& kv : it->second.get<picojson::object>()) {
+        if (kv.second.is<std::string>()) out[kv.first] = kv.second.get<std::string>();
+    }
+    return out;
+}
+
+namespace {
+void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
+                        const void* src_data, size_t src_bytes, Precision src_prec);
+}  // namespace
+
+size_t parse_ceil_divisor(const std::string& value) {
+    const std::string prefix = "ceil_div:";
+    if (value.rfind(prefix, 0) != 0) return 0;
+    try {
+        return static_cast<size_t>(std::stoul(value.substr(prefix.size())));
+    } catch (...) {
+        return 0;
+    }
+}
+
+uint32_t parse_uint32_or_zero(const std::string& value) {
+    if (value.empty()) return 0;
+    try {
+        return static_cast<uint32_t>(std::stoul(value));
+    } catch (...) {
+        return 0;
+    }
+}
+
+size_t parse_size_or_zero(const std::string& value) {
+    if (value.empty()) return 0;
+    try {
+        return static_cast<size_t>(std::stoull(value));
+    } catch (...) {
+        return 0;
+    }
 }
 
 float read_scalar_value(Precision precision, const uint8_t* data, size_t index) {
@@ -101,6 +263,77 @@ bool copy_component_tensor(CactusGraph& source_graph,
             read_scalar_value(src_desc.precision, src_ptr, i));
     }
     return true;
+}
+
+struct MediaFeatureInfo {
+    std::string name;
+    const uint8_t* data = nullptr;
+    size_t byte_size = 0;
+    size_t rows = 0;
+    size_t row_bytes = 0;
+    Precision precision = Precision::FP16;
+
+    bool present() const {
+        return data != nullptr && byte_size > 0 && row_bytes > 0;
+    }
+
+    const uint8_t* row(size_t index) const {
+        return data + index * row_bytes;
+    }
+};
+
+MediaFeatureInfo find_media_feature(
+    const std::map<std::string, std::vector<uint8_t>>& features,
+    const std::map<std::string, std::shared_ptr<TensorStorage>>& storages,
+    const std::map<std::string, std::vector<size_t>>& shapes,
+    const std::map<std::string, Precision>& precisions,
+    const std::vector<std::string>& preferred_names,
+    const std::vector<std::string>& fallback_names,
+    const std::string& excluded_name = "") {
+    auto load = [&](const std::string& name) -> MediaFeatureInfo {
+        if (name.empty() || name == excluded_name) return {};
+        auto bytes_it = features.find(name);
+        auto storage_it = storages.find(name);
+        const bool have_bytes = bytes_it != features.end() && !bytes_it->second.empty();
+        const bool have_storage = storage_it != storages.end() && storage_it->second && storage_it->second->valid();
+        if (!have_bytes && !have_storage) return {};
+
+        MediaFeatureInfo info;
+        info.name = name;
+        info.data = have_storage
+            ? static_cast<const uint8_t*>(storage_it->second->get_data())
+            : bytes_it->second.data();
+        info.byte_size = have_storage ? storage_it->second->byte_size : bytes_it->second.size();
+        auto prec_it = precisions.find(name);
+        if (prec_it != precisions.end()) info.precision = prec_it->second;
+
+        auto shape_it = shapes.find(name);
+        if (shape_it != shapes.end()) {
+            const auto& shape = shape_it->second;
+            if (shape.size() >= 2) {
+                info.rows = shape.size() >= 3 ? shape[shape.size() - 2] : shape[0];
+            } else if (!shape.empty()) {
+                info.rows = shape[0];
+            }
+        }
+        info.row_bytes = info.rows > 0 ? info.byte_size / info.rows : info.byte_size;
+        return info;
+    };
+
+    const auto& candidates = preferred_names.empty() ? fallback_names : preferred_names;
+    for (const auto& name : candidates) {
+        auto info = load(name);
+        if (info.present()) return info;
+    }
+
+    if (preferred_names.empty() && fallback_names.empty()) {
+        for (const auto& kv : features) {
+            auto info = load(kv.first);
+            if (info.present()) return info;
+        }
+    }
+
+    return {};
 }
 
 struct CrossKVCacheMetadata {
@@ -263,7 +496,9 @@ Model::Model() : config_() {}
 
 Model::Model(const Config& config) : config_(config) {}
 
-Model::~Model() = default;
+Model::~Model() {
+    write_runtime_profile();
+}
 
 namespace {
 
@@ -451,6 +686,39 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         CACTUS_LOG_ERROR("model", "Tokenizer init failed for bundle: " << bundle_dir);
         return false;
     }
+    if (tokenizer_) {
+        tokenizer_->set_media_tokens(
+            media_image_token_,
+            media_image_begin_token_,
+            media_image_end_token_,
+            media_audio_token_,
+            media_audio_begin_token_,
+            media_audio_end_token_);
+    }
+    if (tokenizer_ && prompt_media_style_ == "raw_processor") {
+        tokenizer_->set_gemma4_raw_media_prompt(true);
+    }
+    if (tokenizer_) {
+        tokenizer_->set_text_prompt_style(prompt_text_style_);
+        tokenizer_->set_media_prompt_style(prompt_media_style_);
+        tokenizer_->set_gemma4_turn_tokens(prompt_turn_start_token_, prompt_turn_end_token_);
+        tokenizer_->set_media_prompt_positions(media_image_prompt_position_, media_audio_prompt_position_);
+        tokenizer_->set_media_prompt_order(media_prompt_order_);
+        tokenizer_->set_media_focus_policy(
+            media_focus_policy_,
+            media_image_focus_keywords_,
+            media_audio_focus_keywords_);
+
+        media_min_stop_token_ids_.clear();
+        media_min_stop_token_ids_.insert(tokenizer_->get_eos_token());
+        const std::string media_stop = prompt_turn_end_token_.empty()
+            ? tokenizer_->get_default_stop_sequence()
+            : prompt_turn_end_token_;
+        const std::vector<uint32_t> media_stop_tokens = tokenizer_->encode(media_stop);
+        if (media_stop_tokens.size() == 1) {
+            media_min_stop_token_ids_.insert(media_stop_tokens.front());
+        }
+    }
     const bool is_text_embedding =
         components_.count("text_embedding")
         && !components_.count("decoder")
@@ -497,7 +765,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         && components_.count("decoder_prefill_chunk");
     if (has_metadata_encoder_cross_kv_route) {
         decode_route_ = DecodeRoute::ENCODER_CROSS_KV_STEP;
-        required_components = {source_encoder_name, decoder_cross_kv_name, decoder_name};
+        required_components = {decoder_name};
     } else if (has_chunked_prefill) {
         encoder_name = "lm_encoder_step";
         decoder_name = "decoder_media_step";
@@ -505,8 +773,6 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         required_components = {
             encoder_name,
             decoder_name,
-            "lm_encoder_text_chunk",
-            "decoder_prefill_chunk",
         };
     } else if (components_.count("decoder_step")
         && input_index(components_.at("decoder_step"), "input_ids") >= 0
@@ -519,12 +785,10 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         decoder_name = "decoder_step";
         decode_route_ = DecodeRoute::CACHED_STEP;
         required_components = {encoder_name, decoder_name};
-        if (components_.count("decoder_prefill_chunk")) {
-            required_components.insert("decoder_prefill_chunk");
-        }
-        if (components_.count("lm_encoder_text_chunk")) {
-            required_components.insert("lm_encoder_text_chunk");
-        }
+    } else if (components_.count("decoder_full_context")) {
+        decoder_name = "decoder_full_context";
+        decode_route_ = DecodeRoute::FULL_CONTEXT_TEXT;
+        required_components = {decoder_name};
     } else if (components_.count("text_lm_encoder") && components_.count("decoder")) {
         encoder_name = "text_lm_encoder";
         decoder_name = "decoder";
@@ -534,41 +798,35 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
                (components_.count("decoder") || components_.count("decoder_joint"))) {
         decoder_name = components_.count("decoder") ? "decoder" : "decoder_joint";
         decode_route_ = DecodeRoute::DIRECT_DECODER_STEP;
-        required_components = {"audio_encoder", decoder_name};
+        required_components = {decoder_name};
     } else {
-        CACTUS_LOG_ERROR("model", "Bundle missing required components: need lm_encoder_step+decoder_step (LM), text_lm_encoder+decoder, audio_encoder+decoder (transcription), or source/audio_encoder+decoder_cross_kv+decoder_step");
+        CACTUS_LOG_ERROR("model", "Bundle missing required components: need lm_encoder_step+decoder_step (LM), decoder_full_context, text_lm_encoder+decoder, audio_encoder+decoder (transcription), or source/audio_encoder+decoder_cross_kv+decoder_step");
         return false;
-    }
-    for (const auto& optional : {
-             "vision_encoder",
-             "audio_encoder",
-             "lm_encoder_media_step",
-             "decoder_prefill_chunk",
-             "decoder_embed_chunk",
-             "lm_encoder",
-         }) {
-        if (components_.count(optional)) {
-            required_components.insert(optional);
-        }
     }
     if (!load_components(required_components)) return false;
     if (!encoder_name.empty()) encoder_ = &components_.at(encoder_name);
     if (!decoder_name.empty()) decoder_ = &components_.at(decoder_name);
     if (!source_encoder_name.empty()) source_encoder_ = &components_.at(source_encoder_name);
     if (!decoder_cross_kv_name.empty()) decoder_cross_kv_ = &components_.at(decoder_cross_kv_name);
-    if (components_.count("decoder_prefill_chunk") && components_.at("decoder_prefill_chunk").graph) {
-        decoder_prefill_ = &components_.at("decoder_prefill_chunk");
-        decoder_prefill_chunk_ = decoder_prefill_;
-    } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP && !components_.count("audio_encoder")) {
+    if (components_.count("decoder_prefill_chunk")) {
+        decoder_prefill_chunk_ = &components_.at("decoder_prefill_chunk");
+        decoder_prefill_ = components_.count("decoder_prefill_text_chunk")
+            ? &components_.at("decoder_prefill_text_chunk")
+            : decoder_prefill_chunk_;
+    } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP
+            && decode_route_ != DecodeRoute::FULL_CONTEXT_TEXT
+            && !components_.count("audio_encoder")) {
         CACTUS_LOG_WARN("model", "Bundle has no decoder_prefill_chunk component; prompts will prefill token-by-token (prefill speed ~= decode speed).");
     }
     if (decoder_ && decoder_->graph) decoder_->graph->prewarm_metal_quant_weights();
     if (decoder_prefill_ && decoder_prefill_->graph) decoder_prefill_->graph->prewarm_metal_quant_weights();
-    if (components_.count("decoder_embed_chunk") && components_.at("decoder_embed_chunk").graph) {
+    if (components_.count("decoder_embed_chunk")) {
         decoder_embed_ = &components_.at("decoder_embed_chunk");
     }
-    if (components_.count("lm_encoder_text_chunk") && components_.at("lm_encoder_text_chunk").graph) {
-        prefill_encoder_ = &components_.at("lm_encoder_text_chunk");
+    if (components_.count("lm_encoder_text_chunk") || components_.count("lm_encoder_text_prefill_chunk")) {
+        prefill_encoder_ = components_.count("lm_encoder_text_prefill_chunk")
+            ? &components_.at("lm_encoder_text_prefill_chunk")
+            : &components_.at("lm_encoder_text_chunk");
     }
     if (const char* env = std::getenv("CACTUS_DISABLE_PREFILL_TAIL_PAD")) {
         prefill_tail_pad_disabled_ = std::atoi(env) != 0;
@@ -587,6 +845,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         decoder_,
         decoder_cross_kv_,
         decoder_prefill_,
+        decoder_prefill_chunk_,
         vision_encoder_,
         vision_projector_,
         audio_encoder_,
@@ -617,16 +876,18 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         }
     }
 
-    if (vision_encoder_ && tokenizer_ && !vision_encoder_->output_node_ids.empty()) {
+    if (vision_encoder_ && tokenizer_ && !vision_encoder_->output_node_ids.empty()
+        && load_component_graph(*vision_encoder_)) {
         size_t out_node = static_cast<size_t>(vision_encoder_->output_node_ids[0]);
         const auto& desc = vision_encoder_->graph->get_output_buffer(out_node);
         size_t n = 0;
         if (desc.shape.size() >= 3) n = desc.shape[desc.shape.size() - 2];
         else if (desc.shape.size() >= 2) n = desc.shape[0];
         if (n > 0) tokenizer_->set_image_soft_token_count(n);
+        unload_component_graph(*vision_encoder_);
     }
 
-    if (family_ == "lfm2_vl" && tokenizer_) {
+    if (image_preprocess_strategy() == "lfm2_vl" && tokenizer_) {
         tokenizer_->set_lfm2_vision_config(config_);
     }
 
@@ -659,6 +920,117 @@ bool Model::load_manifest() {
     const auto& obj = root.get<picojson::object>();
     if (obj.count("family") && obj.at("family").is<std::string>()) {
         family_ = obj.at("family").get<std::string>();
+    }
+    auto read_string_key = [&](const char* key) -> std::string {
+        if (obj.count(key) && obj.at(key).is<std::string>()) {
+            return obj.at(key).get<std::string>();
+        }
+        return "";
+    };
+    image_preprocess_strategy_ = read_string_key("media_image_preprocess_strategy");
+    audio_preprocess_strategy_ = read_string_key("media_audio_preprocess_strategy");
+    media_injection_strategy_ = read_string_key("media_injection_strategy");
+    media_prefill_fallback_ = read_string_key("media_prefill_fallback");
+    media_min_new_tokens_ = parse_size_or_zero(read_string_key("media_min_new_tokens"));
+    prompt_text_style_ = read_string_key("prompt_text_style");
+    prompt_media_style_ = read_string_key("prompt_media_style");
+    media_image_token_ = read_string_key("media_image_token");
+    media_audio_token_ = read_string_key("media_audio_token");
+    media_image_begin_token_ = read_string_key("media_image_begin_token");
+    media_image_end_token_ = read_string_key("media_image_end_token");
+    media_audio_begin_token_ = read_string_key("media_audio_begin_token");
+    media_audio_end_token_ = read_string_key("media_audio_end_token");
+    media_image_prompt_position_ = read_string_key("media_image_prompt_position");
+    media_audio_prompt_position_ = read_string_key("media_audio_prompt_position");
+    prompt_turn_start_token_ = read_string_key("prompt_turn_start_token");
+    prompt_turn_end_token_ = read_string_key("prompt_turn_end_token");
+    media_prompt_order_ = parse_csv_strings(read_string_key("media_order"));
+    media_focus_policy_ = read_string_key("media_focus_policy");
+    media_image_focus_keywords_ = parse_csv_strings(read_string_key("media_image_focus_keywords"));
+    media_audio_focus_keywords_ = parse_csv_strings(read_string_key("media_audio_focus_keywords"));
+    runtime_plan_name_ = read_string_key("runtime_plan_name");
+    runtime_execution_strategy_ = read_string_key("runtime_execution_strategy");
+    runtime_state_owner_ = read_string_key("runtime_state_owner");
+    runtime_cache_persistence_ = read_string_key("runtime_cache_persistence");
+    runtime_output_alias_policy_ = read_string_key("runtime_output_alias_policy");
+    runtime_cache_transfer_policy_ = read_string_key("runtime_cache_transfer_policy");
+
+    runtime_states_.clear();
+    if (obj.count("states") && obj.at("states").is<picojson::array>()) {
+        for (const auto& value : obj.at("states").get<picojson::array>()) {
+            if (!value.is<picojson::object>()) continue;
+            const auto& state_obj = value.get<picojson::object>();
+            RuntimeStateSpec state;
+            state.name = json_string_or_empty(state_obj, "name");
+            state.kind = json_string_or_empty(state_obj, "kind");
+            state.producer = json_string_or_empty(state_obj, "producer");
+            state.consumers = json_string_array(state_obj, "consumers");
+            state.release_after_consumers = json_string_array(state_obj, "release_after_consumers");
+            state.lifetime = json_string_or_empty(state_obj, "lifetime");
+            state.transfer = json_string_or_empty(state_obj, "transfer");
+            state.persist_after_component_unload = json_bool_or(state_obj, "persist_after_component_unload", true);
+            state.required = json_bool_or(state_obj, "required", true);
+            state.metadata = json_string_map(state_obj, "metadata");
+            if (!state.name.empty()) runtime_states_.push_back(std::move(state));
+        }
+    }
+
+    runtime_aliases_.clear();
+    if (obj.count("aliases") && obj.at("aliases").is<picojson::array>()) {
+        for (const auto& value : obj.at("aliases").get<picojson::array>()) {
+            if (!value.is<picojson::object>()) continue;
+            const auto& alias_obj = value.get<picojson::object>();
+            RuntimeAliasSpec alias;
+            alias.source_component = json_string_or_empty(alias_obj, "source_component");
+            alias.source_output = json_string_or_empty(alias_obj, "source_output");
+            alias.target_component = json_string_or_empty(alias_obj, "target_component");
+            alias.target_input = json_string_or_empty(alias_obj, "target_input");
+            alias.policy = json_string_or_empty(alias_obj, "policy");
+            alias.lifetime = json_string_or_empty(alias_obj, "lifetime");
+            alias.fallback = json_string_or_empty(alias_obj, "fallback");
+            alias.required = json_bool_or(alias_obj, "required", false);
+            if (alias_obj.count("source_node_id") && alias_obj.at("source_node_id").is<double>())
+                alias.source_node_id = static_cast<int>(alias_obj.at("source_node_id").get<double>());
+            if (alias_obj.count("target_node_id") && alias_obj.at("target_node_id").is<double>())
+                alias.target_node_id = static_cast<int>(alias_obj.at("target_node_id").get<double>());
+            alias.storage_stable = json_bool_or(alias_obj, "storage_stable", false);
+            alias.metadata = json_string_map(alias_obj, "metadata");
+            if (!alias.source_component.empty() && !alias.source_output.empty()
+                && !alias.target_component.empty() && !alias.target_input.empty()) {
+                runtime_aliases_.push_back(std::move(alias));
+            }
+        }
+    }
+
+    std::string suppress_ids = read_string_key("suppress_generation_token_ids");
+    generation_suppressed_token_ids_ = parse_csv_uint_set(suppress_ids);
+    repetition_penalty_scope_ = read_string_key("repetition_penalty_scope");
+
+    media_placeholder_token_id_ = parse_uint32_or_zero(read_string_key("media_placeholder_token_id"));
+
+    uint32_t image_token = parse_uint32_or_zero(read_string_key("media_image_token_id"));
+    if (image_token != 0) config_.image_token_id = image_token;
+
+    uint32_t audio_token = parse_uint32_or_zero(read_string_key("media_audio_token_id"));
+    if (audio_token != 0) config_.audio_token_id = audio_token;
+
+    audio_rows_frame_divisor_ = parse_ceil_divisor(read_string_key("media_audio_rows_per_frames"));
+    media_chunk_prefill_modalities_ = parse_csv_strings(read_string_key("media_chunk_prefill_modalities"));
+    media_chunk_output_sources_ = parse_csv_string_map(read_string_key("media_chunk_output_sources"));
+    image_feature_candidates_ = parse_csv_strings(read_string_key("media_image_feature_names"));
+    audio_feature_candidates_ = parse_csv_strings(read_string_key("media_audio_feature_names"));
+
+    if (obj.count("npu_audio_encoder") && obj.at("npu_audio_encoder").is<std::string>()) {
+        npu_audio_encoder_mlpackage_ = obj.at("npu_audio_encoder").get<std::string>();
+    }
+    if (obj.count("npu_audio_compute_units") && obj.at("npu_audio_compute_units").is<std::string>()) {
+        npu_audio_compute_units_ = obj.at("npu_audio_compute_units").get<std::string>();
+    }
+    if (obj.count("npu_vision_encoder") && obj.at("npu_vision_encoder").is<std::string>()) {
+        npu_vision_encoder_mlpackage_ = obj.at("npu_vision_encoder").get<std::string>();
+    }
+    if (obj.count("npu_source_encoder") && obj.at("npu_source_encoder").is<std::string>()) {
+        npu_source_encoder_mlpackage_ = obj.at("npu_source_encoder").get<std::string>();
     }
     if (!obj.count("components")) return false;
     for (const auto& cv : obj.at("components").get<picojson::array>()) {
@@ -741,11 +1113,16 @@ bool Model::load_components(const std::unordered_set<std::string>& required_comp
 }
 
 bool Model::load_component_graph(Component& comp) {
-    if (comp.graph) return true;
+    if (comp.graph) {
+        bind_component_cache_states(comp);
+        bind_runtime_state_inputs(comp);
+        return true;
+    }
     if (comp.graph_path.empty()) return true;
     fs::path full = fs::path(bundle_dir_) / comp.graph_path;
     try {
         comp.graph = std::make_unique<CactusGraph>(CactusGraph::load(full.string()));
+        comp.graph->set_profile_label(comp.name);
         comp.graph->retain_outputs(comp.output_node_ids);
     } catch (const std::exception& e) {
         CACTUS_LOG_ERROR("model", "load " << comp.graph_path << ": " << e.what());
@@ -758,26 +1135,176 @@ bool Model::load_component_graph(Component& comp) {
             if (weight_path.is_absolute()) {
                 fs::path local = fs::path(bundle_dir_) / weight_path.filename();
                 if (fs::exists(local)) weight_path = local;
-            } else {
+            } else
                 weight_path = fs::path(bundle_dir_) / weight_path;
-            }
+
             comp.graph->bind_mmap_weights(static_cast<size_t>(b.node_id), weight_path.string());
         } catch (const std::exception& e) {
             CACTUS_LOG_ERROR("model", "bind " << b.path << ": " << e.what());
             return false;
         }
     }
-    return bind_runtime_buffers(comp);
+    if (!bind_runtime_buffers(comp)) return false;
+    bind_component_cache_states(comp);
+    bind_runtime_state_inputs(comp);
+    comp.resident_weight_bytes = component_weight_bytes(comp);
+    runtime_profile_.resident_weight_bytes += comp.resident_weight_bytes;
+    runtime_profile_.peak_resident_weight_bytes = std::max(runtime_profile_.peak_resident_weight_bytes, runtime_profile_.resident_weight_bytes);
+    ++runtime_profile_.component_loads;
+    return true;
 }
 
 void Model::unload_component_graph(Component& comp) {
     if (cactus_default_backend() == ComputeBackend::METAL) return;
+    const bool was_loaded = static_cast<bool>(comp.graph);
     if (comp.graph) {
+        persist_component_outputs(comp);
         comp.graph->release_runtime_buffers();
-        comp.graph->release_all_weight_pages();
     }
     comp.input_buffers.clear();
     comp.graph.reset();
+    release_runtime_states_after_consumer(comp);
+    runtime_profile_.resident_weight_bytes = comp.resident_weight_bytes > runtime_profile_.resident_weight_bytes
+        ? 0 : runtime_profile_.resident_weight_bytes - comp.resident_weight_bytes;
+    comp.resident_weight_bytes = 0;
+    if (was_loaded) ++runtime_profile_.component_unloads;
+}
+
+size_t Model::component_weight_bytes(const Component& comp) const {
+    size_t total = 0;
+    std::unordered_set<std::string> seen;
+    for (const auto& binding : comp.bindings) {
+        fs::path path(binding.path);
+        if (!path.is_absolute()) path = fs::path(bundle_dir_) / path;
+        std::error_code ec;
+        const std::string key = path.lexically_normal().string();
+        if (seen.insert(key).second && fs::is_regular_file(path, ec)) {
+            total += static_cast<size_t>(fs::file_size(path, ec));
+        }
+    }
+    return total;
+}
+
+void Model::observe_state_arena_bytes() {
+    runtime_profile_.peak_state_bytes = std::max<uint64_t>(
+        runtime_profile_.peak_state_bytes, state_arena_.byte_size());
+    runtime_profile_.peak_runtime_store_bytes = std::max<uint64_t>(
+        runtime_profile_.peak_runtime_store_bytes, runtime_state_store_byte_size());
+}
+
+size_t Model::runtime_state_store_byte_size() const {
+    size_t total = 0;
+    std::unordered_set<const TensorStorage*> seen;
+    for (const auto& [_, tensor] : runtime_state_store_) {
+        if (tensor.storage) {
+            if (seen.insert(tensor.storage.get()).second) total += tensor.storage->byte_size;
+        } else {
+            total += tensor.bytes.size();
+        }
+    }
+    return total;
+}
+
+void Model::write_runtime_profile() const {
+    const char* destination = std::getenv("CACTUS_RUNTIME_PROFILE");
+    if (!destination || !*destination) return;
+    std::ostringstream line;
+    line << "{\"copied_bytes\":" << runtime_profile_.copied_bytes
+         << ",\"aliased_bytes\":" << runtime_profile_.aliased_bytes
+         << ",\"media_copied_bytes\":" << runtime_profile_.media_copied_bytes
+         << ",\"media_aliased_bytes\":" << runtime_profile_.media_aliased_bytes
+         << ",\"component_loads\":" << runtime_profile_.component_loads
+         << ",\"component_unloads\":" << runtime_profile_.component_unloads
+         << ",\"resident_weight_bytes\":" << runtime_profile_.resident_weight_bytes
+         << ",\"peak_resident_weight_bytes\":" << runtime_profile_.peak_resident_weight_bytes
+         << ",\"state_bytes\":" << state_arena_.byte_size()
+         << ",\"peak_state_bytes\":" << runtime_profile_.peak_state_bytes
+         << ",\"runtime_store_bytes\":" << runtime_state_store_byte_size()
+         << ",\"peak_runtime_store_bytes\":" << runtime_profile_.peak_runtime_store_bytes
+         << ",\"released_runtime_store_bytes\":" << runtime_profile_.released_runtime_store_bytes << "}";
+    if (std::string(destination) == "stdout" || std::string(destination) == "-") {
+        std::cout << "CACTUS_RUNTIME_PROFILE=" << line.str() << std::endl;
+        return;
+    }
+    std::ofstream out(destination, std::ios::app);
+    if (out.is_open()) out << line.str() << "\n";
+}
+
+const uint8_t* Model::media_feature_data(const std::string& name) const {
+    auto storage = media_feature_storages_.find(name);
+    if (storage != media_feature_storages_.end() && storage->second && storage->second->valid()) {
+        return static_cast<const uint8_t*>(storage->second->get_data());
+    }
+    auto bytes = media_features_.find(name);
+    return bytes == media_features_.end() || bytes->second.empty() ? nullptr : bytes->second.data();
+}
+
+size_t Model::media_feature_byte_size(const std::string& name) const {
+    auto storage = media_feature_storages_.find(name);
+    if (storage != media_feature_storages_.end() && storage->second && storage->second->valid()) {
+        return storage->second->byte_size;
+    }
+    auto bytes = media_features_.find(name);
+    return bytes == media_features_.end() ? 0 : bytes->second.size();
+}
+
+void Model::clear_media_feature(const std::string& name) {
+    media_features_.erase(name);
+    media_feature_storages_.erase(name);
+    media_feature_shapes_.erase(name);
+    media_feature_precisions_.erase(name);
+    runtime_state_store_.erase(name);
+    state_arena_.erase("media:" + name);
+}
+
+void Model::publish_media_feature_storage(const std::string& name,
+                                          std::shared_ptr<TensorStorage> storage,
+                                          const std::vector<size_t>& shape,
+                                          Precision precision) {
+    if (!storage || !storage->valid()) return;
+    clear_media_feature(name);
+    media_features_[name] = {};
+    media_feature_storages_[name] = storage;
+    media_feature_shapes_[name] = shape;
+    media_feature_precisions_[name] = precision;
+    state_arena_.publish("media:" + name, std::move(storage));
+    runtime_profile_.media_aliased_bytes += media_feature_byte_size(name);
+    runtime_profile_.aliased_bytes += media_feature_byte_size(name);
+    observe_state_arena_bytes();
+}
+
+void Model::append_media_feature(const std::string& name, const void* data, size_t byte_size,
+                                 const std::vector<size_t>& shape, Precision precision,
+                                 size_t rows_to_append) {
+    auto& bytes = media_features_[name];
+    auto storage = media_feature_storages_.find(name);
+    if (storage != media_feature_storages_.end() && storage->second && storage->second->valid()) {
+        const auto* previous = static_cast<const uint8_t*>(storage->second->get_data());
+        bytes.assign(previous, previous + storage->second->byte_size);
+        runtime_profile_.media_copied_bytes += storage->second->byte_size;
+        runtime_profile_.copied_bytes += storage->second->byte_size;
+        media_feature_storages_.erase(storage);
+        state_arena_.erase("media:" + name);
+    }
+    const size_t previous_bytes = bytes.size();
+    bytes.resize(previous_bytes + byte_size);
+    if (byte_size > 0) std::memcpy(bytes.data() + previous_bytes, data, byte_size);
+    runtime_profile_.media_copied_bytes += byte_size;
+    runtime_profile_.copied_bytes += byte_size;
+    auto shape_it = media_feature_shapes_.find(name);
+    if (shape_it == media_feature_shapes_.end() || shape_it->second.empty()) {
+        media_feature_shapes_[name] = shape;
+        if (rows_to_append > 0 && !media_feature_shapes_[name].empty()) {
+            auto& stored_shape = media_feature_shapes_[name];
+            if (stored_shape.size() >= 2) stored_shape[stored_shape.size() - 2] = rows_to_append;
+            else stored_shape[0] = rows_to_append;
+        }
+    } else if (rows_to_append > 0) {
+        auto& stored_shape = shape_it->second;
+        if (stored_shape.size() >= 2) stored_shape[stored_shape.size() - 2] += rows_to_append;
+        else if (!stored_shape.empty()) stored_shape[0] += rows_to_append;
+    }
+    media_feature_precisions_[name] = precision;
 }
 
 bool Model::bind_runtime_buffers(Component& comp) {
@@ -827,6 +1354,26 @@ void Model::write_int_input_at(Component& comp, const std::string& name, size_t 
     }
 }
 
+void Model::fill_int_input(Component& comp, const std::string& name, int64_t value, size_t count) {
+    int idx = input_index(comp, name);
+    if (idx < 0) return;
+
+    size_t node_id = static_cast<size_t>(comp.runtime_input_node_ids[idx]);
+    const auto& desc = comp.graph->get_output_buffer(node_id);
+    auto& buf = comp.input_buffers[idx];
+    size_t n = std::min(count, desc.total_size);
+
+    for (size_t i = 0; i < n; ++i) {
+        size_t offset = PrecisionTraits::byte_offset_of(desc.precision, i);
+        write_scalar_value(desc.precision, buf.data() + offset, 0, static_cast<float>(value));
+    }
+
+    size_t elem_size = PrecisionTraits::size_of(desc.precision);
+    if (elem_size > 0 && n < desc.total_size) {
+        std::memset(buf.data() + n * elem_size, 0, (desc.total_size - n) * elem_size);
+    }
+}
+
 void Model::write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size) {
     int idx = input_index(comp, name);
     if (idx < 0) return;
@@ -845,24 +1392,11 @@ int Model::output_index(const Component& comp, const std::string& name) const {
     return -1;
 }
 
-void Model::copy_encoder_outputs_to_decoder(const Component& enc) {
-    for (size_t i = 0; i < enc.output_node_ids.size() && i < enc.logical_outputs.size(); ++i) {
-        const std::string& out_name = enc.logical_outputs[i];
-        int dst_idx = input_index(*decoder_, out_name);
-        if (dst_idx < 0) continue;
-        size_t src_node = static_cast<size_t>(enc.output_node_ids[i]);
-        const auto& src_desc = enc.graph->get_output_buffer(src_node);
-        void* src_ptr = enc.graph->get_output(src_node);
-        auto& dst_buf = decoder_->input_buffers[dst_idx];
-        size_t to_copy = std::min(src_desc.byte_size, dst_buf.size());
-        std::memcpy(dst_buf.data(), src_ptr, to_copy);
-    }
-}
-
 void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/, bool use_fused) {
     if (decode_route_ == DecodeRoute::DIRECT_DECODER_STEP) {
         write_int_input(*decoder_, "input_ids", static_cast<int64_t>(token_id));
         write_int_input(*decoder_, "position_ids", static_cast<int64_t>(position));
+        fill_int_input(*decoder_, "attention_mask", 1, position + 1);
         if (!use_fused || cactus_default_backend() != ComputeBackend::METAL) cactus_graph_set_prefill_consistent(true);
         decoder_->graph->execute();
         cactus_graph_set_prefill_consistent(false);
@@ -887,6 +1421,7 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/, b
     }
     run_encoder_step(token_id, position);
     copy_component_outputs_to_inputs(*encoder_, *decoder_);
+    fill_int_input(*decoder_, "attention_mask", 1, position + 1);
     decoder_->graph->execute();
     cactus_graph_set_prefill_consistent(false);
     maybe_capture_handoff_probe_hidden(*decoder_);
@@ -895,6 +1430,7 @@ void Model::run_step(uint32_t token_id, size_t position, bool /*read_logits*/, b
 void Model::run_encoder_step(uint32_t token_id, size_t position) {
     write_int_input(*encoder_, "input_ids", static_cast<int64_t>(token_id));
     write_int_input(*encoder_, "position_ids", static_cast<int64_t>(position));
+    fill_int_input(*encoder_, "attention_mask", 1, position + 1);
     encoder_->graph->execute();
 }
 
@@ -937,9 +1473,11 @@ void Model::run_step_batch(const std::vector<uint32_t>& token_ids, const std::ve
     for (size_t b = 0; b < token_ids.size(); ++b) {
         write_int_input_at(*encoder_, "input_ids", b, static_cast<int64_t>(token_ids[b]));
         write_int_input_at(*encoder_, "position_ids", b, static_cast<int64_t>(positions[b]));
+        write_int_input_at(*encoder_, "attention_mask", b, 1);
     }
     encoder_->graph->execute();
     copy_component_outputs_to_inputs(*encoder_, *decoder_);
+    fill_int_input(*decoder_, "attention_mask", 1, positions.empty() ? 1 : (*std::max_element(positions.begin(), positions.end()) + 1));
     decoder_->graph->execute();
     maybe_capture_handoff_probe_hidden(*decoder_);
 }
@@ -1078,16 +1616,246 @@ void Model::set_decode_slots(size_t num_slots) {
         body \
     }
 
-void Model::copy_component_outputs_to_inputs(const Component& source, Component& target) {
+bool Model::runtime_state_producer_matches(const RuntimeStateSpec& state, const Component& source) const {
+    if (state.producer.empty()) return false;
+    for (const auto& producer : parse_csv_strings(state.producer)) {
+        if (producer == source.name) return true;
+    }
+    return false;
+}
+
+bool Model::runtime_state_consumer_matches(const RuntimeStateSpec& state, const Component& target) const {
+    if (state.consumers.empty()) return false;
+    return std::find(state.consumers.begin(), state.consumers.end(), target.name) != state.consumers.end();
+}
+
+bool Model::output_should_persist_to_runtime_state(const Component& source, const std::string& output_name) const {
+    for (const auto& alias : runtime_aliases_) {
+        if (alias.source_component == source.name && alias.source_output == output_name) {
+            return true;
+        }
+    }
+    for (const auto& state : runtime_states_) {
+        if (!state.persist_after_component_unload || !runtime_state_producer_matches(state, source)) continue;
+        if (state.name == output_name) return true;
+        auto outputs = state.metadata.find("outputs");
+        if (outputs != state.metadata.end()) {
+            const auto names = parse_csv_strings(outputs->second);
+            if (std::find(names.begin(), names.end(), output_name) != names.end()) return true;
+            continue;
+        }
+        // Older manifests described activation state only by producer. Keep
+        // their broad behavior, while new profiles can avoid retaining every
+        // producer output by supplying metadata.outputs.
+        if (state.kind == "activation") return true;
+    }
+    return false;
+}
+
+void Model::persist_component_outputs(Component& source) {
+    if (!source.graph) return;
+    for (size_t i = 0; i < source.output_node_ids.size() && i < source.logical_outputs.size(); ++i) {
+        const std::string& output_name = source.logical_outputs[i];
+        if (!output_should_persist_to_runtime_state(source, output_name)) continue;
+        const size_t node_id = static_cast<size_t>(source.output_node_ids[i]);
+        const auto& desc = source.graph->get_output_buffer(node_id);
+        const void* ptr = desc.get_data();
+        if (!ptr || desc.byte_size == 0) continue;
+
+        RuntimeStoredTensor tensor;
+        tensor.storage = source.graph->export_tensor_storage(node_id);
+        if (!tensor.storage) {
+            tensor.bytes.assign(static_cast<const uint8_t*>(ptr), static_cast<const uint8_t*>(ptr) + desc.byte_size);
+        }
+        tensor.shape = desc.shape;
+        tensor.precision = desc.precision;
+        tensor.producer_component = source.name;
+        tensor.producer_output = output_name;
+        tensor.kind = "activation";
+        tensor.lifetime = "request";
+        for (const auto& state : runtime_states_) {
+            if (!runtime_state_producer_matches(state, source)) continue;
+            bool state_output_matches = state.name == output_name;
+            auto outputs = state.metadata.find("outputs");
+            if (!state_output_matches && outputs != state.metadata.end()) {
+                const auto names = parse_csv_strings(outputs->second);
+                state_output_matches = std::find(names.begin(), names.end(), output_name) != names.end();
+            } else if (!state_output_matches && outputs == state.metadata.end()) {
+                state_output_matches = state.kind == "activation";
+            }
+            if (state_output_matches) {
+                tensor.kind = state.kind;
+                tensor.lifetime = state.lifetime.empty() ? tensor.lifetime : state.lifetime;
+                break;
+            }
+        }
+        runtime_state_store_[output_name] = std::move(tensor);
+        observe_state_arena_bytes();
+    }
+}
+
+const Model::RuntimeStoredTensor* Model::find_runtime_state_for_input(
+    const Component& target,
+    const std::string& input_name) const {
+    for (const auto& alias : runtime_aliases_) {
+        if (alias.target_component != target.name || alias.target_input != input_name) continue;
+        auto it = runtime_state_store_.find(alias.source_output);
+        if (it != runtime_state_store_.end()) return &it->second;
+    }
+
+    for (const auto& state : runtime_states_) {
+        if (state.name != input_name || !runtime_state_consumer_matches(state, target)) continue;
+        auto it = runtime_state_store_.find(state.name);
+        if (it != runtime_state_store_.end()) return &it->second;
+    }
+    return nullptr;
+}
+
+void Model::bind_runtime_state_inputs(Component& target) {
+    if (!target.graph) return;
+    for (size_t i = 0; i < target.runtime_input_node_ids.size() && i < target.logical_inputs.size(); ++i) {
+        const RuntimeStoredTensor* tensor = find_runtime_state_for_input(target, target.logical_inputs[i]);
+        if (!tensor || (!tensor->storage && tensor->bytes.empty())) continue;
+        size_t node_id = static_cast<size_t>(target.runtime_input_node_ids[i]);
+        if (tensor->storage && target.graph->bind_tensor_storage(node_id, tensor->storage)) {
+            runtime_profile_.aliased_bytes += tensor->storage->byte_size;
+            continue;
+        }
+        const auto& desc = target.graph->get_output_buffer(node_id);
+        const void* source = tensor->storage ? tensor->storage->get_data() : tensor->bytes.data();
+        const size_t source_bytes = tensor->storage ? tensor->storage->byte_size : tensor->bytes.size();
+        write_typed_buffer(target.input_buffers[i], desc.precision,
+                           source, source_bytes, tensor->precision);
+        runtime_profile_.copied_bytes += std::min(desc.byte_size, source_bytes);
+        target.graph->set_external_input(node_id, target.input_buffers[i].data(), desc.precision);
+    }
+}
+
+std::string Model::cache_state_id(const CacheStateBinding& binding, bool key) {
+    return binding.layer_key + (key ? ":key" : ":value");
+}
+
+void Model::bind_component_cache_states(Component& target) {
+    if (std::getenv("CACTUS_DISABLE_SHARED_STATE") != nullptr) return;
+    if (!target.graph) return;
+    for (const auto& binding : target.cache_states) {
+        int previous = -1;
+        for (auto [node_id, key] : {std::pair<int, bool>{binding.key_node_id, true},
+                                   std::pair<int, bool>{binding.value_node_id, false}}) {
+            if (node_id < 0 || node_id == previous) continue;
+            previous = node_id;
+            auto storage = state_arena_.find(cache_state_id(binding, key));
+            if (storage) target.graph->bind_tensor_storage(static_cast<size_t>(node_id), storage);
+        }
+    }
+}
+
+void Model::publish_component_cache_states(Component& source) {
+    if (!source.graph || std::getenv("CACTUS_DISABLE_SHARED_STATE") != nullptr) return;
+    for (const auto& binding : source.cache_states) {
+        int previous = -1;
+        for (auto [node_id, key] : {std::pair<int, bool>{binding.key_node_id, true},
+                                   std::pair<int, bool>{binding.value_node_id, false}}) {
+            if (node_id < 0 || node_id == previous) continue;
+            previous = node_id;
+            auto storage = source.graph->export_tensor_storage(static_cast<size_t>(node_id));
+            if (storage) {
+                state_arena_.publish(cache_state_id(binding, key), std::move(storage));
+                observe_state_arena_bytes();
+            }
+        }
+    }
+}
+
+void Model::clear_runtime_states_with_lifetime(const std::string& lifetime) {
+    for (auto it = runtime_state_store_.begin(); it != runtime_state_store_.end();) {
+        if (it->second.lifetime == lifetime) it = runtime_state_store_.erase(it);
+        else ++it;
+    }
+    observe_state_arena_bytes();
+}
+
+void Model::release_runtime_states_after_consumer(const Component& consumer) {
+    const size_t store_bytes_before = runtime_state_store_byte_size();
+    for (const auto& state : runtime_states_) {
+        if (std::find(state.release_after_consumers.begin(), state.release_after_consumers.end(), consumer.name)
+            == state.release_after_consumers.end()) {
+            continue;
+        }
+
+        std::vector<std::string> outputs;
+        auto output_metadata = state.metadata.find("outputs");
+        if (output_metadata != state.metadata.end()) {
+            outputs = parse_csv_strings(output_metadata->second);
+        }
+        if (outputs.empty() && !state.name.empty()) outputs.push_back(state.name);
+
+        for (const auto& output : outputs) {
+            runtime_state_store_.erase(output);
+            if (media_features_.count(output) || media_feature_storages_.count(output)) {
+                clear_media_feature(output);
+            } else {
+                state_arena_.erase("media:" + output);
+            }
+        }
+    }
+    const size_t store_bytes_after = runtime_state_store_byte_size();
+    if (store_bytes_before > store_bytes_after) {
+        runtime_profile_.released_runtime_store_bytes += store_bytes_before - store_bytes_after;
+    }
+    observe_state_arena_bytes();
+}
+
+void Model::copy_component_outputs_to_inputs(Component& source, Component& target) {
+    persist_component_outputs(source);
     FOR_EACH_MATCHED_OUTPUT(source, target, {
+        bool alias_candidate = false;
+        for (const auto& alias : runtime_aliases_) {
+            if (alias.source_component != source.name || alias.source_output != out_name
+                || alias.target_component != target.name || alias.target_input != out_name) continue;
+            const bool nodes_match = (alias.source_node_id < 0 || alias.source_node_id == static_cast<int>(src_node))
+                && (alias.target_node_id < 0 || alias.target_node_id == static_cast<int>(dst_node));
+            const bool policy_allows = alias.policy.empty() || alias.policy == "alias_if_compatible"
+                || alias.policy == "alias" || alias.policy == "move";
+            if (nodes_match && policy_allows
+                && (alias.storage_stable || alias.source_node_id < 0)) alias_candidate = true;
+        }
+        // Generic component splits can use the historical "inputs_embeds"
+        // logical name for an integer token-id passthrough.  Such input-backed
+        // storage is rewritten on every scalar-prefill step and is not a
+        // stable embedding tensor to retain in the decoder.  Keep the implicit
+        // zero-copy fast path for actual floating-point feature tensors; an
+        // explicit runtime-plan alias may still opt another representation in.
+        const bool input_backed_output = std::find(
+            source.runtime_input_node_ids.begin(),
+            source.runtime_input_node_ids.end(),
+            static_cast<int>(src_node)) != source.runtime_input_node_ids.end();
+        const bool floating_feature = !input_backed_output && (
+            src_desc.precision == Precision::FP16
+            || src_desc.precision == Precision::FP32);
+        alias_candidate = alias_candidate || (floating_feature && (
+            out_name == "inputs_embeds"
+            || out_name == "encoder_hidden_states"
+            || out_name == "image_features"
+            || out_name == "vision_features"));
+        if (alias_candidate && std::getenv("CACTUS_DISABLE_OUTPUT_ALIAS") == nullptr) {
+            auto storage = source.graph->export_tensor_storage(src_node);
+            if (storage && target.graph->bind_tensor_storage(dst_node, storage)) {
+                runtime_profile_.aliased_bytes += storage->byte_size;
+                continue;
+            }
+        }
         std::fill(dst_buf.begin(), dst_buf.end(), 0);
         size_t elements = std::min(src_desc.total_size, dst_desc.total_size);
         if (!copy_component_tensor(*source.graph, src_desc, src_node, dst_desc, dst_buf, 0, elements, out_name))
             throw std::runtime_error("component output/input precision mismatch for " + out_name);
+        runtime_profile_.copied_bytes += std::min(src_desc.byte_size, dst_desc.byte_size);
     })
+    bind_runtime_state_inputs(target);
 }
 
-bool Model::copy_cross_kv_outputs_to_decoder_cache_inputs(const Component& source, Component& target, size_t source_len) {
+bool Model::copy_cross_kv_outputs_to_decoder_cache_inputs(Component& source, Component& target, size_t source_len) {
+    persist_component_outputs(source);
     bool copied_any = false;
     for (size_t i = 0; i < source.output_node_ids.size() && i < source.logical_outputs.size(); ++i) {
         const std::string& out_name = source.logical_outputs[i];
@@ -1106,28 +1874,21 @@ bool Model::copy_cross_kv_outputs_to_decoder_cache_inputs(const Component& sourc
         }
         copied_any = true;
     }
+    bind_runtime_state_inputs(target);
     return copied_any;
 }
 
-void Model::copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index) {
-    FOR_EACH_MATCHED_OUTPUT(source, target, {
-        size_t chunk_tokens = component_chunk_tokens(target, out_name);
-        if (chunk_tokens <= token_index || chunk_tokens == 0)
-            throw std::runtime_error("chunk prefill token index exceeds input capacity for " + out_name);
-        if (dst_desc.total_size % chunk_tokens != 0)
-            throw std::runtime_error("chunk prefill input shape is not token-aligned for " + out_name);
-        size_t elements_per_token = dst_desc.total_size / chunk_tokens;
-        if (src_desc.total_size != elements_per_token)
-            throw std::runtime_error("component output/input token shape mismatch for " + out_name);
-        if (!copy_component_tensor(*source.graph, src_desc, src_node, dst_desc,
-                dst_buf, token_index * elements_per_token, src_desc.total_size, out_name))
-            throw std::runtime_error("component output/input precision mismatch for " + out_name);
-    })
+void Model::copy_component_outputs_to_chunk_inputs(Component& source, Component& target, size_t token_index) {
+    copy_component_outputs_to_chunk_inputs_range(source, target, token_index, 1);
 }
 
-void Model::copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target, size_t token_offset) {
+void Model::copy_component_outputs_to_chunk_inputs_range(
+    Component& source,
+    Component& target,
+    size_t token_offset,
+    size_t source_tokens_override) {
     FOR_EACH_MATCHED_OUTPUT(source, target, {
-        size_t src_tokens = component_output_tokens(source, out_name);
+        size_t src_tokens = source_tokens_override ? source_tokens_override : component_output_tokens(source, out_name);
         size_t dst_tokens = component_chunk_tokens(target, out_name);
         if (src_tokens == 0 || dst_tokens == 0 || token_offset + src_tokens > dst_tokens)
             throw std::runtime_error("chunk prefill output range exceeds input capacity for " + out_name);
@@ -1137,9 +1898,19 @@ void Model::copy_component_outputs_to_chunk_inputs_range(const Component& source
         size_t dst_elements_per_token = dst_desc.total_size / dst_tokens;
         if (src_elements_per_token != dst_elements_per_token)
             throw std::runtime_error("component output/input token shape mismatch for " + out_name);
+        if (out_name == "inputs_embeds"
+            && std::getenv("CACTUS_DISABLE_OUTPUT_ALIAS") == nullptr
+            && token_offset == 0 && src_tokens == dst_tokens) {
+            auto storage = source.graph->export_tensor_storage(src_node);
+            if (storage && target.graph->bind_tensor_storage(dst_node, storage)) {
+                runtime_profile_.aliased_bytes += storage->byte_size;
+                continue;
+            }
+        }
         if (!copy_component_tensor(*source.graph, src_desc, src_node, dst_desc,
                 dst_buf, token_offset * dst_elements_per_token, src_desc.total_size, out_name))
             throw std::runtime_error("component output/input precision mismatch for " + out_name);
+        runtime_profile_.copied_bytes += src_desc.byte_size;
     })
 }
 
@@ -1147,33 +1918,50 @@ void Model::copy_component_outputs_to_chunk_inputs_range(const Component& source
 
 bool Model::cache_states_compatible(const Component& source, const Component& target) const {
     if (source.cache_states.empty() || source.cache_states.size() != target.cache_states.size()) return false;
+    if (!source.graph || !target.graph) return false;
     for (size_t i = 0; i < source.cache_states.size(); ++i) {
         const auto& src = source.cache_states[i];
         const auto& dst = target.cache_states[i];
         if (src.layer_key != dst.layer_key) return false;
         if (src.key_node_id < 0 || src.value_node_id < 0 || dst.key_node_id < 0 || dst.value_node_id < 0) return false;
+        for (auto [src_node, dst_node] : {std::pair<int, int>{src.key_node_id, dst.key_node_id}, std::pair<int, int>{src.value_node_id, dst.value_node_id}}) {
+            const size_t src_id = static_cast<size_t>(src_node);
+            const size_t dst_id = static_cast<size_t>(dst_node);
+            if (source.graph->get_node_op_type(src_id) != target.graph->get_node_op_type(dst_id)) return false;
+        }
     }
     return true;
 }
 
 void Model::move_cache_states(Component& source, Component& target, size_t logical_current) {
-    if (source.cache_states.empty() || source.cache_states.size() != target.cache_states.size()) {
+    if (!cache_states_compatible(source, target)) {
         throw std::runtime_error("prefill and step cache states are not compatible");
     }
     for (size_t i = 0; i < source.cache_states.size(); ++i) {
         const auto& src = source.cache_states[i];
         const auto& dst = target.cache_states[i];
-        if (src.layer_key != dst.layer_key) {
-            throw std::runtime_error("prefill and step cache layer mismatch: " + src.layer_key + " != " + dst.layer_key);
-        }
         int moved_src = -1, moved_dst = -1;
-        for (auto [src_node, dst_node] : {std::pair<int, int>{src.key_node_id, dst.key_node_id}, std::pair<int, int>{src.value_node_id, dst.value_node_id}}) {
+        for (auto [src_node, dst_node, key] : {
+                 std::tuple<int, int, bool>{src.key_node_id, dst.key_node_id, true},
+                 std::tuple<int, int, bool>{src.value_node_id, dst.value_node_id, false}}) {
             if (src_node < 0 || dst_node < 0) continue;
             // Conv/recurrent caches share one node for key and value; move it only once.
             if (src_node == moved_src && dst_node == moved_dst) continue;
             moved_src = src_node;
             moved_dst = dst_node;
-            target.graph->steal_cache_buffer(static_cast<size_t>(dst_node), *source.graph, static_cast<size_t>(src_node));
+            auto storage = std::getenv("CACTUS_DISABLE_SHARED_STATE") == nullptr
+                ? source.graph->export_tensor_storage(static_cast<size_t>(src_node))
+                : nullptr;
+            const bool attached = storage
+                && target.graph->bind_tensor_storage(static_cast<size_t>(dst_node), storage);
+            if (attached) {
+                state_arena_.publish(cache_state_id(src, key), storage);
+                runtime_profile_.aliased_bytes += storage->byte_size;
+                observe_state_arena_bytes();
+            } else {
+                target.graph->steal_cache_buffer(static_cast<size_t>(dst_node), *source.graph,
+                                                  static_cast<size_t>(src_node));
+            }
             if (target.graph->get_node_op_type(static_cast<size_t>(dst_node)) == OpType::KV_CACHE_STATE &&
                 logical_current != std::numeric_limits<size_t>::max()) {
                 auto* meta = static_cast<uint64_t*>(target.graph->get_output(static_cast<size_t>(dst_node)));
@@ -1252,6 +2040,77 @@ size_t Model::component_output_tokens(const Component& comp, const std::string& 
     return 0;
 }
 
+size_t Model::audio_soft_token_count_for_frames(size_t frame_count) {
+    if (!audio_encoder_) return 0;
+    if (!load_component_graph(*audio_encoder_)) return 0;
+
+    int feature_idx = -1;
+    for (const auto& name : {"input_features", "audio_features"}) {
+        int idx = input_index(*audio_encoder_, name);
+        if (idx >= 0) {
+            feature_idx = idx;
+            break;
+        }
+    }
+    if (feature_idx < 0 || audio_encoder_->output_node_ids.empty()) return 0;
+
+    const auto& input_desc = audio_encoder_->graph->get_output_buffer(
+        static_cast<size_t>(audio_encoder_->runtime_input_node_ids[feature_idx]));
+    const auto& output_desc = audio_encoder_->graph->get_output_buffer(
+        static_cast<size_t>(audio_encoder_->output_node_ids.front()));
+
+    const size_t frames_per_chunk = input_desc.shape.size() >= 2 ? input_desc.shape[1] : 0;
+    size_t rows_per_chunk = 0;
+    if (output_desc.shape.size() >= 2) {
+        rows_per_chunk = output_desc.shape[output_desc.shape.size() - 2];
+    } else if (!output_desc.shape.empty()) {
+        rows_per_chunk = output_desc.shape[0];
+    }
+    if (frames_per_chunk == 0 || rows_per_chunk == 0) return 0;
+
+    const size_t chunks = frame_count == 0
+        ? 1
+        : (frame_count + frames_per_chunk - 1) / frames_per_chunk;
+    return chunks * rows_per_chunk;
+}
+
+size_t Model::media_rows_to_copy(size_t output_rows, size_t frames_in_chunk) const {
+    if (output_rows == 0) return 0;
+    if (audio_rows_frame_divisor_ == 0) return output_rows;
+    size_t expected_rows = (frames_in_chunk + audio_rows_frame_divisor_ - 1) / audio_rows_frame_divisor_;
+    return std::min(output_rows, expected_rows);
+}
+
+size_t sequence_length_from_shape(const std::vector<size_t>& shape) {
+    if (shape.empty()) return 0;
+    if (shape.size() >= 2 && shape[0] == 1) return shape[1];
+    if (shape.size() >= 2) return shape[shape.size() - 2];
+    return shape[0];
+}
+
+void set_sequence_length_in_shape(std::vector<size_t>& shape, size_t sequence_length) {
+    if (shape.empty()) return;
+    if (shape.size() >= 2 && shape[0] == 1 && shape[1] == 1) {
+        shape[1] = sequence_length;
+        return;
+    }
+    if (shape.size() >= 2 && shape[shape.size() - 2] == 1) {
+        shape[shape.size() - 2] = sequence_length;
+        return;
+    }
+    if (shape.size() == 1 && shape[0] == 1) {
+        shape[0] = sequence_length;
+    }
+}
+
+std::string Model::image_preprocess_strategy() const {
+    return image_preprocess_strategy_;
+}
+
+std::string Model::audio_preprocess_strategy() const {
+    return audio_preprocess_strategy_;
+}
+
 void Model::execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, size_t encoder_chunk,
                                   size_t chunk_tokens, const std::vector<uint32_t>& tokens,
                                   size_t processed, size_t start_position) {
@@ -1280,6 +2139,10 @@ void Model::execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, si
             copy_component_outputs_to_chunk_inputs(*encoder_, chunk_comp, i);
         }
     }
+    const size_t real_chunk_tokens = tokens.size() > processed ? std::min(chunk_tokens, tokens.size() - processed) : 0;
+    for (size_t i = 0; i < real_chunk_tokens; ++i) {
+        write_int_input_at(chunk_comp, "attention_mask", i, 1);
+    }
     chunk_comp.graph->execute();
 }
 
@@ -1295,18 +2158,53 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     ChunkedPrefillResult result;
     reset_prefill_stats();
     if (decode_route_ != DecodeRoute::CACHED_STEP || !encoder_ || !decoder_ || !decoder_prefill_) return result;
-    if (start_position != 0) return result;
-    if (!load_component_graph(*decoder_prefill_)) return result;
-    if (prefill_encoder_ && !load_component_graph(*prefill_encoder_)) return result;
-    if (!cache_states_compatible(*decoder_prefill_, *decoder_)) return result;
-    size_t component_tokens = component_chunk_tokens(*decoder_prefill_, "inputs_embeds");
+    Component* prefill_component = decoder_prefill_;
+    Component* encoder_component = prefill_encoder_;
+    auto declared_prefill_tokens = [](const Component* component) -> size_t {
+        if (!component) return 0;
+        auto it = component->metadata.find("prefill_chunk_tokens");
+        if (it == component->metadata.end()) return 0;
+        try {
+            return static_cast<size_t>(std::stoull(it->second));
+        } catch (...) {
+            return 0;
+        }
+    };
+    const size_t selected_tokens = declared_prefill_tokens(prefill_component);
+    const size_t shared_tokens = declared_prefill_tokens(decoder_prefill_chunk_);
+    const bool selected_fits = selected_tokens > 1 && selected_tokens <= tokens.size();
+    const bool shared_fits = shared_tokens > 1 && shared_tokens <= tokens.size();
+    const bool use_shared_component = decoder_prefill_chunk_
+        && decoder_prefill_chunk_ != prefill_component
+        && ((shared_fits && (!selected_fits || shared_tokens > selected_tokens))
+            || (!selected_fits && !shared_fits && shared_tokens > 1
+                && (selected_tokens <= 1 || shared_tokens < selected_tokens)));
+    if (use_shared_component) {
+        prefill_component = decoder_prefill_chunk_;
+        for (Component* candidate : {lm_encoder_text_chunk_, lm_encoder_, prefill_encoder_}) {
+            if (candidate && declared_prefill_tokens(candidate) == shared_tokens) {
+                encoder_component = candidate;
+                break;
+            }
+        }
+    }
+    result.component = prefill_component;
+    result.encoder_component = encoder_component;
+    if (start_position != 0) {
+        if (std::getenv("CACTUS_DISABLE_SHARED_STATE") != nullptr || !decoder_->graph) return result;
+        publish_component_cache_states(*decoder_);
+    }
+    if (!load_component_graph(*prefill_component)) return result;
+    if (encoder_component && !load_component_graph(*encoder_component)) return result;
+    if (!cache_states_compatible(*prefill_component, *decoder_)) return result;
+    size_t component_tokens = component_chunk_tokens(*prefill_component, "inputs_embeds");
     if (component_tokens <= 1) return result;
     size_t effective_chunk = chunk_size > 0 ? std::min(chunk_size, component_tokens) : component_tokens;
     if (effective_chunk != component_tokens) effective_chunk = component_tokens;
     size_t whole_chunks_end = (tokens.size() / effective_chunk) * effective_chunk;
     auto any_cache_node = [&](auto predicate) {
-        if (!decoder_prefill_->graph) return false;
-        for (const auto& state : decoder_prefill_->cache_states) {
+        if (!prefill_component->graph) return false;
+        for (const auto& state : prefill_component->cache_states) {
             for (int node_id : {state.key_node_id, state.value_node_id}) {
                 if (node_id < 0) continue;
                 if (predicate(static_cast<size_t>(node_id))) return true;
@@ -1315,28 +2213,28 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
         return false;
     };
     const bool has_recurrent_state = any_cache_node([&](size_t id) {
-        return decoder_prefill_->graph->get_node_op_type(id) == OpType::RECURRENT_CACHE_STATE;
+        return prefill_component->graph->get_node_op_type(id) == OpType::RECURRENT_CACHE_STATE;
     });
     if (has_recurrent_state && whole_chunks_end > effective_chunk) {
         whole_chunks_end = effective_chunk;
     }
     const bool has_sliding_window_cache = any_cache_node([&](size_t id) {
-        return decoder_prefill_->graph->get_node_op_type(id) == OpType::KV_CACHE_STATE
-            && decoder_prefill_->graph->get_node_window_size(id) > 0;
+        return prefill_component->graph->get_node_op_type(id) == OpType::KV_CACHE_STATE
+            && prefill_component->graph->get_node_window_size(id) > 0;
+    });
+    const bool has_conv_state = any_cache_node([&](size_t id) {
+        return prefill_component->graph->get_node_op_type(id) == OpType::CONV_CACHE_STATE;
     });
     const size_t tail_tokens = tokens.size() - whole_chunks_end;
     const size_t padding_cutoff = std::max<size_t>(1, effective_chunk / 16);
-    const bool has_conv_state = any_cache_node([&](size_t id) {
-        return decoder_prefill_->graph->get_node_op_type(id) == OpType::CONV_CACHE_STATE;
-    });
     const bool pad_tail = !has_conv_state
         && !has_recurrent_state
         && !has_sliding_window_cache
         && tail_tokens >= padding_cutoff;
     const bool padded_window_too_small = any_cache_node([&](size_t id) {
-        if (decoder_prefill_->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) return false;
-        size_t window = decoder_prefill_->graph->get_node_window_size(id);
-        size_t sink = decoder_prefill_->graph->get_node_sink_size(id);
+        if (prefill_component->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) return false;
+        size_t window = prefill_component->graph->get_node_window_size(id);
+        size_t sink = prefill_component->graph->get_node_sink_size(id);
         return window > 0 && (window < effective_chunk * 4 || window <= effective_chunk + sink);
     });
     const bool use_padded_tail = !pad_tail && !prefill_tail_pad_disabled_
@@ -1350,8 +2248,8 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
     }
 
     size_t encoder_chunk = 0;
-    if (prefill_encoder_ && input_index(*prefill_encoder_, "input_ids") >= 0 && input_index(*prefill_encoder_, "position_ids") >= 0) {
-        encoder_chunk = component_chunk_tokens(*prefill_encoder_, "input_ids");
+    if (encoder_component && input_index(*encoder_component, "input_ids") >= 0 && input_index(*encoder_component, "position_ids") >= 0) {
+        encoder_chunk = component_chunk_tokens(*encoder_component, "input_ids");
         if (encoder_chunk == 0 || effective_chunk % encoder_chunk != 0) {
             encoder_chunk = 0;
         }
@@ -1359,7 +2257,7 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
 
     size_t processed = 0;
     while (processed + effective_chunk <= executable_tokens) {
-        execute_prefill_chunk(*decoder_prefill_, prefill_encoder_, encoder_chunk,
+        execute_prefill_chunk(*prefill_component, encoder_component, encoder_chunk,
                               effective_chunk, tokens, processed, start_position);
         processed += effective_chunk;
     }
@@ -1370,18 +2268,18 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
         const size_t pads = effective_chunk - tail_tokens;
         const size_t kept_real = tail_tokens - 1;
         std::vector<std::pair<size_t, std::vector<uint8_t>>> backups;
-        for (const auto& state : decoder_prefill_->cache_states) {
+        for (const auto& state : prefill_component->cache_states) {
             for (int node_id : {state.key_node_id, state.value_node_id}) {
                 if (node_id < 0) continue;
                 size_t id = static_cast<size_t>(node_id);
-                if (decoder_prefill_->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) continue;
-                backups.emplace_back(id, decoder_prefill_->graph->snapshot_cache_padded_append(id, kept_real, pads + 1));
+                if (prefill_component->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) continue;
+                backups.emplace_back(id, prefill_component->graph->snapshot_cache_padded_append(id, kept_real, pads + 1));
             }
         }
-        execute_prefill_chunk(*decoder_prefill_, prefill_encoder_, encoder_chunk,
+        execute_prefill_chunk(*prefill_component, encoder_component, encoder_chunk,
                               effective_chunk, tokens, processed, start_position);
         for (auto& [id, backup] : backups) {
-            decoder_prefill_->graph->rollback_cache_padded_append(id, kept_real, pads + 1, backup);
+            prefill_component->graph->rollback_cache_padded_append(id, kept_real, pads + 1, backup);
         }
         processed += kept_real;
         tail_executed = kept_real;
@@ -1405,7 +2303,7 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
             std::fill(decoder_->input_buffers[i].begin(), decoder_->input_buffers[i].end(), 0);
         }
         auto copy_start = std::chrono::high_resolution_clock::now();
-        move_cache_states(*decoder_prefill_, *decoder_, start_position + result.logical_tokens);
+        move_cache_states(*prefill_component, *decoder_, start_position + result.logical_tokens);
         auto copy_end = std::chrono::high_resolution_clock::now();
         last_prefill_cache_copy_ms_ = std::chrono::duration_cast<std::chrono::microseconds>(copy_end - copy_start).count() / 1000.0;
     }
@@ -1413,54 +2311,67 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
 }
 
 void Model::run_full_context_text() {
-    if (!encoder_ || !decoder_ || context_tokens_.empty()) return;
-    int input_ids_idx = input_index(*encoder_, "input_ids");
-    int attention_mask_idx = input_index(*encoder_, "attention_mask");
+    if (!decoder_ || context_tokens_.empty()) return;
+    Component* input_component = encoder_ ? encoder_ : decoder_;
+    int input_ids_idx = input_index(*input_component, "input_ids");
+    if (input_ids_idx < 0) {
+        input_ids_idx = input_index(*input_component, "decoder_input_ids");
+    }
+    int attention_mask_idx = input_index(*input_component, "attention_mask");
     if (input_ids_idx < 0 || attention_mask_idx < 0) {
-        throw std::runtime_error("text_lm_encoder requires input_ids and attention_mask inputs");
+        throw std::runtime_error("full-context text component requires input_ids and attention_mask inputs");
     }
-    size_t input_node = static_cast<size_t>(encoder_->runtime_input_node_ids[input_ids_idx]);
-    const auto& input_desc = encoder_->graph->get_output_buffer(input_node);
+    size_t input_node = static_cast<size_t>(input_component->runtime_input_node_ids[input_ids_idx]);
+    const auto& input_desc = input_component->graph->get_output_buffer(input_node);
     if (context_tokens_.size() > input_desc.total_size) {
-        throw std::runtime_error("context exceeds transpiled text_lm_encoder capacity");
+        throw std::runtime_error("context exceeds graph-bundle full-context capacity");
     }
-    std::fill(encoder_->input_buffers[input_ids_idx].begin(), encoder_->input_buffers[input_ids_idx].end(), 0);
-    std::fill(encoder_->input_buffers[attention_mask_idx].begin(), encoder_->input_buffers[attention_mask_idx].end(), 0);
+    std::fill(input_component->input_buffers[input_ids_idx].begin(), input_component->input_buffers[input_ids_idx].end(), 0);
+    std::fill(input_component->input_buffers[attention_mask_idx].begin(), input_component->input_buffers[attention_mask_idx].end(), 0);
     for (size_t i = 0; i < context_tokens_.size(); ++i) {
-        write_int_input_at(*encoder_, "input_ids", i, static_cast<int64_t>(context_tokens_[i]));
-        write_int_input_at(*encoder_, "attention_mask", i, 1);
+        const char* token_input_name = input_index(*input_component, "input_ids") >= 0
+            ? "input_ids"
+            : "decoder_input_ids";
+        write_int_input_at(*input_component, token_input_name, i, static_cast<int64_t>(context_tokens_[i]));
+        write_int_input_at(*input_component, "attention_mask", i, 1);
     }
-    encoder_->graph->execute();
-    for (size_t i = 0; i < encoder_->output_node_ids.size() && i < encoder_->logical_outputs.size(); ++i) {
-        const std::string& out_name = encoder_->logical_outputs[i];
-        int dst_idx = input_index(*decoder_, out_name);
-        if (dst_idx < 0) continue;
-        size_t src_node = static_cast<size_t>(encoder_->output_node_ids[i]);
-        const auto& src_desc = encoder_->graph->get_output_buffer(src_node);
-        void* src_ptr = encoder_->graph->get_output(src_node);
-        std::memcpy(decoder_->input_buffers[dst_idx].data(), src_ptr, src_desc.byte_size);
+    input_component->graph->execute();
+    if (encoder_) {
+        for (size_t i = 0; i < encoder_->output_node_ids.size() && i < encoder_->logical_outputs.size(); ++i) {
+            const std::string& out_name = encoder_->logical_outputs[i];
+            int dst_idx = input_index(*decoder_, out_name);
+            if (dst_idx < 0) continue;
+            size_t src_node = static_cast<size_t>(encoder_->output_node_ids[i]);
+            const auto& src_desc = encoder_->graph->get_output_buffer(src_node);
+            void* src_ptr = encoder_->graph->get_output(src_node);
+            std::memcpy(decoder_->input_buffers[dst_idx].data(), src_ptr, src_desc.byte_size);
+        }
+        decoder_->graph->execute();
     }
     last_logit_position_ = context_tokens_.empty() ? 0 : context_tokens_.size() - 1;
-    decoder_->graph->execute();
 }
 
 void Model::write_media_embeds_row(Component& comp, int embeds_idx, const uint8_t* feature_row,
                                    size_t feature_row_bytes, Precision feature_precision) {
-    auto& embeds_buf = comp.input_buffers[embeds_idx];
     size_t node_id = static_cast<size_t>(comp.runtime_input_node_ids[embeds_idx]);
     const auto& desc = comp.graph->get_output_buffer(node_id);
+    auto* embeds_data = static_cast<uint8_t*>(comp.graph->get_output(node_id));
+    if (!embeds_data) {
+        throw std::runtime_error("media inputs_embeds storage is unavailable");
+    }
     if (desc.precision == feature_precision) {
-        size_t to_copy = std::min(feature_row_bytes, embeds_buf.size());
-        std::memcpy(embeds_buf.data(), feature_row, to_copy);
-        if (to_copy < embeds_buf.size()) {
-            std::memset(embeds_buf.data() + to_copy, 0, embeds_buf.size() - to_copy);
+        size_t to_copy = std::min(feature_row_bytes, desc.byte_size);
+        std::memcpy(embeds_data, feature_row, to_copy);
+        if (to_copy < desc.byte_size) {
+            std::memset(embeds_data + to_copy, 0, desc.byte_size - to_copy);
         }
         return;
     }
+
     size_t src_elem = PrecisionTraits::size_of(feature_precision);
     size_t dst_elem = PrecisionTraits::size_of(desc.precision);
     size_t src_count = src_elem ? feature_row_bytes / src_elem : 0;
-    size_t dst_count = dst_elem ? embeds_buf.size() / dst_elem : 0;
+    size_t dst_count = dst_elem ? desc.byte_size / dst_elem : 0;
     size_t n = std::min(src_count, dst_count);
     auto load_float = [&](size_t i) -> float {
         if (feature_precision == Precision::FP16) return static_cast<float>(reinterpret_cast<const __fp16*>(feature_row)[i]);
@@ -1469,12 +2380,12 @@ void Model::write_media_embeds_row(Component& comp, int embeds_idx, const uint8_
     };
     for (size_t i = 0; i < n; ++i) {
         float v = load_float(i);
-        if (desc.precision == Precision::FP16) reinterpret_cast<__fp16*>(embeds_buf.data())[i] = static_cast<__fp16>(v);
-        else if (desc.precision == Precision::FP32) reinterpret_cast<float*>(embeds_buf.data())[i] = v;
-        else reinterpret_cast<int8_t*>(embeds_buf.data())[i] = static_cast<int8_t>(v);
+        if (desc.precision == Precision::FP16) reinterpret_cast<__fp16*>(embeds_data)[i] = static_cast<__fp16>(v);
+        else if (desc.precision == Precision::FP32) reinterpret_cast<float*>(embeds_data)[i] = v;
+        else reinterpret_cast<int8_t*>(embeds_data)[i] = static_cast<int8_t>(v);
     }
     if (n < dst_count) {
-        std::memset(embeds_buf.data() + n * dst_elem, 0, (dst_count - n) * dst_elem);
+        std::memset(embeds_data + n * dst_elem, 0, (dst_count - n) * dst_elem);
     }
 }
 
@@ -1483,11 +2394,35 @@ void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t f
     if (lm_encoder_media_step_) {
         int embeds_idx = input_index(*lm_encoder_media_step_, "inputs_embeds");
         if (embeds_idx >= 0) {
+            if (encoder_ != nullptr) {
+                run_encoder_step(static_cast<uint32_t>(media_placeholder_token_id_), position);
+                copy_component_outputs_to_inputs(*encoder_, *decoder_);
+            }
             write_media_embeds_row(*lm_encoder_media_step_, embeds_idx, feature_row, feature_row_bytes, feature_precision);
-            write_int_input(*lm_encoder_media_step_, "input_ids", 0);
+            write_int_input(*lm_encoder_media_step_, "input_ids", static_cast<int64_t>(media_placeholder_token_id_));
             write_int_input(*lm_encoder_media_step_, "position_ids", static_cast<int64_t>(position));
             lm_encoder_media_step_->graph->execute();
-            copy_encoder_outputs_to_decoder(*lm_encoder_media_step_);
+            persist_component_outputs(*lm_encoder_media_step_);
+            for (size_t i = 0; i < lm_encoder_media_step_->output_node_ids.size() && i < lm_encoder_media_step_->logical_outputs.size(); ++i) {
+                const std::string& out_name = lm_encoder_media_step_->logical_outputs[i];
+                auto source_it = media_chunk_output_sources_.find(out_name);
+                if (source_it != media_chunk_output_sources_.end() && source_it->second == "text_chunk") {
+                    continue;
+                }
+                int dst_idx = input_index(*decoder_, out_name);
+                if (dst_idx < 0) continue;
+                size_t src_node = static_cast<size_t>(lm_encoder_media_step_->output_node_ids[i]);
+                const auto& src_desc = lm_encoder_media_step_->graph->get_output_buffer(src_node);
+                size_t dst_node = static_cast<size_t>(decoder_->runtime_input_node_ids[dst_idx]);
+                const auto& dst_desc = decoder_->graph->get_output_buffer(dst_node);
+                auto& dst_buf = decoder_->input_buffers[dst_idx];
+                std::fill(dst_buf.begin(), dst_buf.end(), 0);
+                size_t elements = std::min(src_desc.total_size, dst_desc.total_size);
+                if (!copy_component_tensor(*lm_encoder_media_step_->graph, src_desc, src_node, dst_desc, dst_buf, 0, elements, out_name)) {
+                    throw std::runtime_error("component output/input precision mismatch for " + out_name);
+                }
+            }
+            bind_runtime_state_inputs(*decoder_);
             decoder_->graph->execute();
             return;
         }
@@ -1501,6 +2436,7 @@ void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t f
             return;
         }
     }
+
     run_step(static_cast<uint32_t>(config_.pad_token_id), position, false);
 }
 
@@ -1511,7 +2447,8 @@ void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
 
 void Model::run_vision_encoder(const std::string& image_path) {
     if (!vision_encoder_) return;
-    if (family_ == "lfm2_vl") {
+    const std::string strategy = image_preprocess_strategy();
+    if (strategy == "lfm2_vl") {
         run_vision_encoder_lfm2_vl(image_path);
         return;
     }
@@ -1541,7 +2478,7 @@ void Model::run_vision_encoder(const std::string& image_path) {
         if (n < cap) std::memset(buf.data() + n * elem, 0, (cap - n) * elem);
     };
 
-    if (family_ == "qwen3_5" || family_ == "qwen3_vl" || config_.model_type == Config::ModelType::QWEN) {
+    if (strategy == "qwen3_vl") {
         Qwen3VlImagePreprocessed prep = preprocess_qwen3_vl_image(image_path, config_);
         int pv_idx = input_index(*vision_encoder_, "pixel_values");
         if (pv_idx < 0) {
@@ -1555,7 +2492,19 @@ void Model::run_vision_encoder(const std::string& image_path) {
                            prep.pixel_values.size() * sizeof(float),
                            Precision::FP32);
     } else {
+        if (!strategy.empty() && strategy != "gemma4") {
+            throw std::runtime_error("Unsupported image preprocess strategy: " + strategy);
+        }
         Gemma4ImagePreprocessed prep = preprocess_gemma4_image(image_path, config_);
+        debug_media_vector("vision_preprocess", "pixel_values",
+                           prep.pixel_values, {prep.max_patches, prep.patch_dim},
+                           Precision::FP32);
+        debug_media_vector("vision_preprocess", "pixel_position_ids",
+                           prep.pixel_position_ids, {prep.max_patches, 2},
+                           Precision::INT8);
+        if (has_npu_vision_encoder() && vision_encode_via_npu(prep.pixel_values, &prep.pixel_position_ids)) {
+            return;
+        }
         int pv_idx = input_index(*vision_encoder_, "pixel_values");
         if (pv_idx >= 0) {
             auto& pv_buf = vision_encoder_->input_buffers[pv_idx];
@@ -1578,12 +2527,13 @@ void Model::run_vision_encoder(const std::string& image_path) {
         const std::string& name = vision_encoder_->logical_outputs[i];
         size_t node_id = static_cast<size_t>(vision_encoder_->output_node_ids[i]);
         const auto& desc = vision_encoder_->graph->get_output_buffer(node_id);
-        void* ptr = vision_encoder_->graph->get_output(node_id);
-        auto& slot = media_features_[name];
-        slot.assign(desc.byte_size, 0);
-        std::memcpy(slot.data(), ptr, desc.byte_size);
-        media_feature_shapes_[name] = desc.shape;
-        media_feature_precisions_[name] = desc.precision;
+        auto storage = vision_encoder_->graph->export_tensor_storage(node_id);
+        publish_media_feature_storage(name, storage, desc.shape, desc.precision);
+        if (debug_media_features_enabled()) {
+            std::vector<uint8_t> debug_bytes(desc.byte_size);
+            std::memcpy(debug_bytes.data(), media_feature_data(name), desc.byte_size);
+            debug_media_feature("vision_encoder", name, debug_bytes, desc.shape, desc.precision);
+        }
     }
     if (cactus_default_backend() != ComputeBackend::METAL) {
         vision_encoder_->graph->release_runtime_buffers();
@@ -1644,9 +2594,7 @@ void Model::run_vision_encoder_lfm2_vl(const std::string& image_path) {
     if (!load_component_graph(*vision_encoder_)) throw std::runtime_error("failed to load vision_encoder");
     if (!load_component_graph(*vision_projector_)) throw std::runtime_error("failed to load vision_projector");
 
-    media_features_.erase("image_features");
-    media_feature_shapes_.erase("image_features");
-    media_feature_precisions_.erase("image_features");
+    clear_media_feature("image_features");
 
     encode_lfm2_vl_image_into_features(image_path);
 
@@ -1717,9 +2665,6 @@ void Model::encode_lfm2_vl_image_into_features(const std::string& image_path) {
         write_typed_buffer(buf, d.precision, src, count * sizeof(float), Precision::FP32);
     };
 
-    std::vector<uint8_t> image_features;
-    size_t total_tokens = 0;
-
     std::vector<float> pos_buf(max_patches * static_cast<size_t>(dim));
     std::vector<float> enc_out_f(max_patches * static_cast<size_t>(dim));
     std::vector<float> unshuf;
@@ -1760,20 +2705,10 @@ void Model::encode_lfm2_vl_image_into_features(const std::string& image_path) {
         const void* proj_ptr = vision_projector_->graph->get_output(proj_out_node);
         const size_t row_bytes = text_hidden * proj_elem;
         const size_t append_bytes = static_cast<size_t>(num_tokens) * row_bytes;
-        const size_t base = image_features.size();
-        image_features.resize(base + append_bytes);
-        std::memcpy(image_features.data() + base, proj_ptr, append_bytes);
-        total_tokens += static_cast<size_t>(num_tokens);
+        append_media_feature("image_features", proj_ptr, append_bytes,
+                             {static_cast<size_t>(num_tokens), text_hidden},
+                             proj_prec, static_cast<size_t>(num_tokens));
     }
-
-    auto& slot = media_features_["image_features"];
-    const size_t prev_bytes = slot.size();
-    slot.resize(prev_bytes + image_features.size());
-    std::memcpy(slot.data() + prev_bytes, image_features.data(), image_features.size());
-    auto& shape = media_feature_shapes_["image_features"];
-    if (shape.size() != 2) shape = { total_tokens, text_hidden };
-    else shape[0] += total_tokens;
-    media_feature_precisions_["image_features"] = proj_prec;
 }
 
 void Model::run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message) {
@@ -1783,9 +2718,7 @@ void Model::run_audio_encoder_messages(const std::vector<std::vector<float>>& au
         throw std::runtime_error("failed to load audio_encoder");
     }
     for (const std::string& logical : audio_encoder_->logical_outputs) {
-        media_features_.erase(logical);
-        media_feature_shapes_.erase(logical);
-        media_feature_precisions_.erase(logical);
+        clear_media_feature(logical);
     }
     for (const auto& mel : audio_features_per_message) {
         if (mel.empty()) continue;
@@ -1880,17 +2813,26 @@ void Model::run_audio_encoder(const std::vector<float>& audio_features) {
             const size_t node_id = static_cast<size_t>(audio_encoder_->output_node_ids[i]);
             const auto& desc = audio_encoder_->graph->get_output_buffer(node_id);
             void* ptr = audio_encoder_->graph->get_output(node_id);
-            auto& slot = media_features_[name];
-            const size_t prev_bytes = slot.size();
-            slot.resize(prev_bytes + desc.byte_size);
-            std::memcpy(slot.data() + prev_bytes, ptr, desc.byte_size);
-            auto shape_it = media_feature_shapes_.find(name);
-            if (shape_it == media_feature_shapes_.end() || shape_it->second.empty()) {
-                media_feature_shapes_[name] = desc.shape;
-            } else if (desc.shape.size() >= 2 && shape_it->second.size() == desc.shape.size()) {
-                shape_it->second[shape_it->second.size() - 2] += desc.shape[desc.shape.size() - 2];
+            const size_t output_rows = desc.shape.size() >= 2
+                ? desc.shape[desc.shape.size() - 2]
+                : desc.shape.empty() ? 0 : desc.shape[0];
+            size_t rows_to_copy = media_rows_to_copy(output_rows, frames_in_chunk);
+            if (rows_to_copy == 0) continue;
+            const size_t row_bytes = output_rows > 0 ? desc.byte_size / output_rows : desc.byte_size;
+            const size_t append_bytes = rows_to_copy * row_bytes;
+            if (num_chunks == 1 && rows_to_copy == output_rows) {
+                publish_media_feature_storage(
+                    name, audio_encoder_->graph->export_tensor_storage(node_id),
+                    desc.shape, desc.precision);
+            } else {
+                append_media_feature(name, ptr, append_bytes, desc.shape, desc.precision, rows_to_copy);
             }
-            media_feature_precisions_[name] = desc.precision;
+            if (debug_media_features_enabled()) {
+                std::vector<uint8_t> debug_bytes(media_feature_byte_size(name));
+                std::memcpy(debug_bytes.data(), media_feature_data(name), debug_bytes.size());
+                debug_media_feature("audio_encoder", name, debug_bytes,
+                                    media_feature_shapes_[name], desc.precision);
+            }
         }
     }
 }
@@ -1904,9 +2846,10 @@ static float uncertainty_from_margin(float best, float second) {
     return std::max(0.0f, std::min(1.0f, 1.0f - confidence));
 }
 
-uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty) {
+uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty,
+                                 float repetition_penalty) {
     size_t vocab = desc.shape.empty() ? 0 : desc.shape.back();
-    uint32_t best = 0;
+    uint32_t best = std::numeric_limits<uint32_t>::max();
     float best_v = -std::numeric_limits<float>::infinity();
     float second_v = -std::numeric_limits<float>::infinity();
     const auto& tool_bias = tool_constrainer_.get_bias();
@@ -1914,6 +2857,8 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
     {
         uint32_t gidx; float gbest, gsecond;
         if (!tool_dense && tool_bias.empty() && vocab_bias_.empty() && suppressed_token_id_ < 0 &&
+            generation_suppressed_token_ids_.empty() && media_min_new_tokens_remaining_ == 0 &&
+            repetition_penalty == 1.0f &&
             cactus_graph_metal_argmax(&gidx, &gbest, &gsecond)) {
             if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(gbest, gsecond);
             return gidx;
@@ -1925,10 +2870,15 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
         if (tool_it != tool_bias.end()) value += tool_it->second;
         auto vocab_it = vocab_bias_.find(static_cast<uint32_t>(token_id));
         if (vocab_it != vocab_bias_.end()) value += vocab_it->second;
+        const bool in_history = token_history_set_.count(static_cast<uint32_t>(token_id)) != 0;
+        if (repetition_penalty > 1.0f && in_history) {
+            value = value >= 0.0f ? value / repetition_penalty : value * repetition_penalty;
+        }
         return value;
     };
     auto observe_logit = [&](size_t i, float v) {
         if (static_cast<int64_t>(i) == suppressed_token_id_) return;
+        if (is_generation_suppressed_token(static_cast<uint32_t>(i))) return;
         v = score_with_bias(i, v);
         if (v > best_v) {
             second_v = best_v;
@@ -1949,10 +2899,65 @@ uint32_t Model::argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_o
         for (size_t i = 0; i < vocab; ++i) observe_logit(i, static_cast<float>(p[i]));
     }
     if (out_uncertainty) *out_uncertainty = uncertainty_from_margin(best_v, second_v);
+    if (best == std::numeric_limits<uint32_t>::max()) {
+        best = 0;
+    }
+    if (std::getenv("CACTUS_DEBUG_TOPK") != nullptr) {
+        std::vector<std::pair<float, uint32_t>> topk;
+        auto collect_logit = [&](size_t i, float v) {
+            if (static_cast<int64_t>(i) == suppressed_token_id_) return;
+            if (is_generation_suppressed_token(static_cast<uint32_t>(i))) return;
+            v = score_with_bias(i, v);
+            topk.emplace_back(v, static_cast<uint32_t>(i));
+        };
+        if (desc.precision == Precision::FP32) {
+            float* p = static_cast<float*>(ptr) + row_off;
+            for (size_t i = 0; i < vocab; ++i) collect_logit(i, p[i]);
+        } else if (desc.precision == Precision::FP16) {
+            __fp16* p = static_cast<__fp16*>(ptr) + row_off;
+            for (size_t i = 0; i < vocab; ++i) collect_logit(i, static_cast<float>(p[i]));
+        } else {
+            int8_t* p = static_cast<int8_t*>(ptr) + row_off;
+            for (size_t i = 0; i < vocab; ++i) collect_logit(i, static_cast<float>(p[i]));
+        }
+        const size_t limit = std::min<size_t>(10, topk.size());
+        std::partial_sort(topk.begin(), topk.begin() + limit, topk.end(), std::greater<>());
+        std::cerr << "[topk-debug] row_off=" << row_off << " best=" << best << " logits=";
+        for (size_t i = 0; i < limit; ++i) {
+            const uint32_t token = topk[i].second;
+            std::cerr << (i == 0 ? "" : " | ") << token << ":" << topk[i].first;
+            if (tokenizer_) {
+                std::cerr << ":" << std::quoted(tokenizer_->decode({token}));
+            }
+        }
+        std::cerr << std::endl;
+    }
+    if (debug_media_features_enabled() && media_min_new_tokens_remaining_ > 0) {
+        std::cerr << "[media-debug] selected token while media_min_new_tokens_remaining="
+                  << media_min_new_tokens_remaining_ << " token=" << best
+                  << " best=" << best_v << " second=" << second_v << std::endl;
+    }
     return best;
 }
 
-uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float* out_uncertainty) {
+bool Model::is_generation_suppressed_token(uint32_t token_id) const {
+    if (media_min_new_tokens_remaining_ > 0 && media_min_stop_token_ids_.count(token_id)) {
+        if (debug_media_features_enabled()) {
+            std::cerr << "[media-debug] suppress media stop token=" << token_id
+                      << " for media_min_new_tokens_remaining="
+                      << media_min_new_tokens_remaining_ << std::endl;
+        }
+        return true;
+    }
+    if (generation_suppressed_token_ids_.count(token_id)) return true;
+    if (!generation_suppressed_token_ids_.empty()) return false;
+    if (config_.image_token_id != 0 && token_id == config_.image_token_id) return true;
+    if (config_.audio_token_id != 0 && token_id == config_.audio_token_id) return true;
+    return false;
+}
+
+uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float* out_uncertainty,
+                                        float repetition_penalty) {
     size_t out_node = static_cast<size_t>(comp.output_node_ids.empty() ? 0 : comp.output_node_ids[0]);
     const auto& desc = comp.graph->get_output_buffer(out_node);
     void* ptr = comp.graph->get_output(out_node);
@@ -1964,7 +2969,7 @@ uint32_t Model::argmax_component_logits(Component& comp, size_t logit_row, float
     } else if (decode_route_ == DecodeRoute::FULL_CONTEXT_TEXT) {
         row = std::min(last_logit_position_, seq > 0 ? seq - 1 : 0);
     }
-    return argmax_logits_at(desc, ptr, row * vocab, out_uncertainty);
+    return argmax_logits_at(desc, ptr, row * vocab, out_uncertainty, repetition_penalty);
 }
 
 std::vector<uint32_t> Model::argmax_component_logits_batch(Component& comp, size_t batch) {
@@ -1984,8 +2989,8 @@ std::vector<uint32_t> Model::argmax_component_logits_batch(Component& comp, size
     return out;
 }
 
-uint32_t Model::argmax_last_logits(float* out_uncertainty) {
-    return argmax_component_logits(*decoder_, std::numeric_limits<size_t>::max(), out_uncertainty);
+uint32_t Model::argmax_last_logits(float* out_uncertainty, float repetition_penalty) {
+    return argmax_component_logits(*decoder_, std::numeric_limits<size_t>::max(), out_uncertainty, repetition_penalty);
 }
 
 void Model::prepare_sampling_context(float repetition_penalty) {
@@ -2195,12 +3200,14 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     if (decoder_prefill_) {
         chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), true);
         if (chunked.logical_tokens == tokens.size() && chunked.padding_tokens > 0 && tokens.size() > 0) {
-            // Cache already moved into the step component; drop the padded last row and re-run it for logits.
+            // Cache already moved into the step component; drop the last row and re-run it for step-decoder logits.
             set_cache_current_len(*decoder_, tokens.size() - 1);
             cache_total_seq_len_ = tokens.size() - 1;
             run_step(tokens.back(), cache_total_seq_len_, true, /*use_fused=*/false);
             ++cache_total_seq_len_;
             out_token = argmax_last_logits(out_uncertainty);
+            if (chunked.component) unload_component_graph(*chunked.component);
+            if (chunked.encoder_component) unload_component_graph(*chunked.encoder_component);
             record_sampled_token(out_token);
             last_prefill_scalar_tail_tokens_ = 1;
             maybe_roll_compact();
@@ -2208,13 +3215,19 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
         }
         cache_total_seq_len_ += chunked.logical_tokens;
     }
+    if (chunked.logical_tokens < tokens.size() && chunked.logical_tokens > 0) {
+        if (chunked.component) unload_component_graph(*chunked.component);
+        if (chunked.encoder_component) unload_component_graph(*chunked.encoder_component);
+    }
     for (size_t i = chunked.logical_tokens; i < tokens.size(); ++i) {
         run_step(tokens[i], cache_total_seq_len_, i + 1 == tokens.size(), /*use_fused=*/false);
         ++cache_total_seq_len_;
     }
     last_prefill_scalar_tail_tokens_ = tokens.size() - chunked.logical_tokens;
-    if (chunked.logical_tokens == tokens.size() && chunked.logical_tokens > 0 && decoder_prefill_) {
-        out_token = argmax_component_logits(*decoder_prefill_, chunked.last_logit_row, out_uncertainty);
+    if (chunked.logical_tokens == tokens.size() && chunked.logical_tokens > 0 && chunked.component) {
+        out_token = argmax_component_logits(*chunked.component, chunked.last_logit_row, out_uncertainty);
+        unload_component_graph(*chunked.component);
+        if (chunked.encoder_component) unload_component_graph(*chunked.encoder_component);
     } else {
         out_token = argmax_last_logits(out_uncertainty);
     }
@@ -2239,6 +3252,10 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
     }
     ChunkedPrefillResult chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), prepare_decode);
     cache_total_seq_len_ += chunked.logical_tokens;
+    if (prepare_decode && chunked.logical_tokens > 0) {
+        if (chunked.component) unload_component_graph(*chunked.component);
+        if (chunked.encoder_component) unload_component_graph(*chunked.encoder_component);
+    }
     for (size_t i = chunked.logical_tokens; i < tokens.size(); ++i) {
         run_step(tokens[i], cache_total_seq_len_, /*read_logits=*/false, /*use_fused=*/false);
         ++cache_total_seq_len_;
@@ -2413,8 +3430,18 @@ void Model::reset_encoder_cross_kv_route_state() {
     reset_component_cache_states(*decoder_);
     cache_total_seq_len_ = 0;
     token_history_.clear();
+    token_history_set_.clear();
     encoder_cross_kv_ready_ = false;
     encoder_cross_kv_source_len_ = 0;
+}
+
+void Model::release_encoder_cross_kv_prepare_graphs() {
+    if (source_encoder_ && source_encoder_ != decoder_) {
+        unload_component_graph(*source_encoder_);
+    }
+    if (decoder_cross_kv_ && decoder_cross_kv_ != decoder_) {
+        unload_component_graph(*decoder_cross_kv_);
+    }
 }
 
 bool Model::finish_encoder_cross_kv_prepare() {
@@ -2427,12 +3454,25 @@ bool Model::finish_encoder_cross_kv_prepare() {
         copy_component_outputs_to_inputs(*decoder_cross_kv_, *decoder_);
     }
     encoder_cross_kv_ready_ = true;
+    release_encoder_cross_kv_prepare_graphs();
+    return true;
+}
+
+bool Model::finish_encoder_cross_kv_prepare_after_source() {
+    if (!decoder_cross_kv_ || !decoder_) return false;
+    decoder_cross_kv_->graph->execute();
+    if (!copy_cross_kv_outputs_to_decoder_cache_inputs(*decoder_cross_kv_, *decoder_, encoder_cross_kv_source_len_)) {
+        copy_component_outputs_to_inputs(*decoder_cross_kv_, *decoder_);
+    }
+    encoder_cross_kv_ready_ = true;
+    release_encoder_cross_kv_prepare_graphs();
     return true;
 }
 
 bool Model::prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& tokens) {
     if (!source_encoder_ || !decoder_cross_kv_ || !decoder_ || tokens.empty()) return false;
     if (encoder_cross_kv_source_kind_ != "text_tokens") return false;
+    if (!load_component_graph(*source_encoder_) || !load_component_graph(*decoder_cross_kv_)) return false;
 
     reset_encoder_cross_kv_route_state();
     for (auto& buf : source_encoder_->input_buffers) {
@@ -2469,6 +3509,7 @@ bool Model::prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& toke
 
 bool Model::prepare_encoder_cross_kv_from_audio(const std::vector<float>& audio_features) {
     if (!source_encoder_ || !decoder_cross_kv_ || !decoder_) return false;
+    if (!load_component_graph(*source_encoder_) || !load_component_graph(*decoder_cross_kv_)) return false;
     int feature_idx = input_index(*source_encoder_, "input_features");
     if (feature_idx < 0) {
         feature_idx = input_index(*source_encoder_, "audio_features");
@@ -2547,7 +3588,7 @@ std::vector<uint32_t> Model::run_encoder_cross_kv_decode_loop(
     return emitted;
 }
 
-bool Model::build_lm_encoder_outputs_dynamic_gemma4(
+bool Model::build_lm_encoder_outputs_dynamic_media(
     const std::vector<uint32_t>& tokens,
     std::map<std::string, std::vector<uint8_t>>& store_bytes,
     std::map<std::string, Precision>& store_prec,
@@ -2556,35 +3597,48 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
 
     const uint32_t image_tok = config_.image_token_id;
     const uint32_t audio_tok = config_.audio_token_id;
-
-    auto audio_it = media_features_.find("audio_features");
-    const bool have_audio_features = audio_it != media_features_.end() && !audio_it->second.empty();
-    size_t audio_rows = 0;
-    size_t audio_row_bytes = 0;
-    Precision audio_prec = Precision::FP16;
-    if (have_audio_features) {
-        const auto& shape = media_feature_shapes_["audio_features"];
-        audio_rows = shape.size() >= 2 ? shape[shape.size() - 2] : 0;
-        audio_prec = media_feature_precisions_["audio_features"];
-        audio_row_bytes = audio_rows > 0 ? audio_it->second.size() / audio_rows : audio_it->second.size();
+    size_t image_token_count = 0;
+    size_t audio_token_count = 0;
+    for (uint32_t token : tokens) {
+        if (image_tok != 0 && token == image_tok) ++image_token_count;
+        if (audio_tok != 0 && token == audio_tok) ++audio_token_count;
     }
 
-    auto image_it = media_features_.find("image_features");
-    const bool have_image_features = image_it != media_features_.end() && !image_it->second.empty();
-    size_t image_rows = 0;
-    size_t image_row_bytes = 0;
-    Precision image_prec = Precision::FP16;
-    if (have_image_features) {
-        const auto& shape = media_feature_shapes_["image_features"];
-        image_rows = shape.size() >= 2 ? shape[shape.size() - 2] : 0;
-        image_prec = media_feature_precisions_["image_features"];
-        image_row_bytes = image_rows > 0 ? image_it->second.size() / image_rows : image_it->second.size();
+    const std::vector<std::string> image_fallback = {"image_features", "image_embeddings", "vision_features", "inputs_embeds"};
+    const std::vector<std::string> audio_fallback = {"audio_features", "audio_embeddings", "encoder_hidden_states", "inputs_embeds"};
+    const auto image_feature = image_token_count > 0
+        ? find_media_feature(media_features_, media_feature_storages_, media_feature_shapes_, media_feature_precisions_,
+                             image_feature_candidates_, image_fallback)
+        : MediaFeatureInfo{};
+    const auto audio_feature = audio_token_count > 0
+        ? find_media_feature(media_features_, media_feature_storages_, media_feature_shapes_, media_feature_precisions_,
+                             audio_feature_candidates_, audio_fallback, image_feature.name)
+        : MediaFeatureInfo{};
+    const bool have_image_features = image_feature.present();
+    const bool have_audio_features = audio_feature.present();
+    if (debug_media_features_enabled()) {
+        std::cerr << "[media-debug] inject"
+                  << " image_tokens=" << image_token_count
+                  << " image_feature=" << image_feature.name
+                  << " image_rows=" << image_feature.rows
+                  << " audio_tokens=" << audio_token_count
+                  << " audio_feature=" << audio_feature.name
+                  << " audio_rows=" << audio_feature.rows
+                  << std::endl;
+    }
+    if (image_token_count > 0 && (!have_image_features || image_feature.rows < image_token_count)) {
+        throw std::runtime_error("Prompt image token count exceeds available image feature rows");
+    }
+    if (audio_token_count > 0 && (!have_audio_features || audio_feature.rows < audio_token_count)) {
+        throw std::runtime_error("Prompt audio token count exceeds available audio feature rows");
     }
 
     struct OutputInfo {
         std::string name;
         int text_idx = -1;
+        int text_chunk_idx = -1;
         int media_idx = -1;
+        int media_chunk_idx = -1;
         size_t per_token_bytes = 0;
         Precision precision = Precision::FP16;
         std::vector<size_t> shape_template;
@@ -2613,12 +3667,200 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
         store_bytes[info.name].assign(token_count * info.per_token_bytes, 0);
         store_prec[info.name] = info.precision;
         std::vector<size_t> shape = info.shape_template;
-        if (shape.size() >= 2 && shape[shape.size() - 2] == 1) {
-            shape[shape.size() - 2] = token_count;
-        } else if (shape.size() == 1) {
-            shape[0] = token_count;
-        }
+        set_sequence_length_in_shape(shape, token_count);
         store_shape[info.name] = std::move(shape);
+    }
+    auto debug_lm_store = [&]() {
+        for (const auto& kv : store_bytes) {
+            auto shape_it = store_shape.find(kv.first);
+            auto prec_it = store_prec.find(kv.first);
+            debug_media_feature(
+                "lm_encoder_store",
+                kv.first,
+                kv.second,
+                shape_it == store_shape.end() ? std::vector<size_t>{} : shape_it->second,
+                prec_it == store_prec.end() ? Precision::FP16 : prec_it->second);
+        }
+    };
+
+    if (std::getenv("CACTUS_DISABLE_MEDIA_LM_ENCODER_CHUNK") == nullptr
+        && lm_encoder_text_chunk_ && lm_encoder_media_chunk_
+        && load_component_graph(*lm_encoder_text_chunk_)
+        && load_component_graph(*lm_encoder_media_chunk_)) {
+        const size_t text_chunk_tokens = component_chunk_tokens(*lm_encoder_text_chunk_, "input_ids");
+        const size_t media_chunk_tokens = component_chunk_tokens(*lm_encoder_media_chunk_, "input_ids");
+        const int media_embeds_idx = input_index(*lm_encoder_media_chunk_, "inputs_embeds");
+        bool can_chunk = text_chunk_tokens > 0
+            && text_chunk_tokens == media_chunk_tokens
+            && media_embeds_idx >= 0
+            && input_index(*lm_encoder_text_chunk_, "input_ids") >= 0
+            && input_index(*lm_encoder_text_chunk_, "position_ids") >= 0
+            && input_index(*lm_encoder_media_chunk_, "input_ids") >= 0
+            && input_index(*lm_encoder_media_chunk_, "position_ids") >= 0;
+
+        for (auto& info : outputs) {
+            info.text_chunk_idx = output_index(*lm_encoder_text_chunk_, info.name);
+            info.media_chunk_idx = output_index(*lm_encoder_media_chunk_, info.name);
+            if (info.text_chunk_idx < 0 || info.media_chunk_idx < 0) {
+                can_chunk = false;
+                break;
+            }
+            for (Component* chunk_comp : {lm_encoder_text_chunk_, lm_encoder_media_chunk_}) {
+                int output_idx = chunk_comp == lm_encoder_text_chunk_ ? info.text_chunk_idx : info.media_chunk_idx;
+                size_t node_id = static_cast<size_t>(chunk_comp->output_node_ids[output_idx]);
+                const auto& desc = chunk_comp->graph->get_output_buffer(node_id);
+                if (desc.precision != info.precision || desc.total_size % media_chunk_tokens != 0) {
+                    can_chunk = false;
+                    break;
+                }
+                size_t per_token_elements = desc.total_size / media_chunk_tokens;
+                size_t per_token_bytes = PrecisionTraits::packed_size_of(desc.precision, per_token_elements);
+                if (per_token_bytes != info.per_token_bytes) {
+                    can_chunk = false;
+                    break;
+                }
+            }
+            if (!can_chunk) break;
+        }
+
+        auto write_media_row_at = [&](size_t row, const uint8_t* feature_row,
+                                      size_t feature_row_bytes, Precision feature_precision) {
+            size_t node_id = static_cast<size_t>(lm_encoder_media_chunk_->runtime_input_node_ids[media_embeds_idx]);
+            const auto& desc = lm_encoder_media_chunk_->graph->get_output_buffer(node_id);
+            auto* embeds_data = static_cast<uint8_t*>(lm_encoder_media_chunk_->graph->get_output(node_id));
+            if (!embeds_data) {
+                throw std::runtime_error("lm_encoder_media_chunk inputs_embeds storage is unavailable");
+            }
+            if (media_chunk_tokens == 0 || desc.total_size % media_chunk_tokens != 0) {
+                throw std::runtime_error("lm_encoder_media_chunk inputs_embeds is not token-aligned");
+            }
+            const size_t row_elements = desc.total_size / media_chunk_tokens;
+            const size_t dst_offset = PrecisionTraits::byte_offset_of(desc.precision, row * row_elements);
+            const size_t dst_bytes = PrecisionTraits::packed_size_of(desc.precision, row_elements);
+            if (dst_offset + dst_bytes > desc.byte_size) {
+                throw std::runtime_error("lm_encoder_media_chunk media row exceeds inputs_embeds buffer");
+            }
+            if (desc.precision == feature_precision) {
+                size_t to_copy = std::min(feature_row_bytes, dst_bytes);
+                std::memcpy(embeds_data + dst_offset, feature_row, to_copy);
+                if (to_copy < dst_bytes) {
+                    std::memset(embeds_data + dst_offset + to_copy, 0, dst_bytes - to_copy);
+                }
+                return;
+            }
+            std::vector<uint8_t> row_buf(dst_bytes, 0);
+            write_typed_buffer(row_buf, desc.precision, feature_row, feature_row_bytes, feature_precision);
+            std::memcpy(embeds_data + dst_offset, row_buf.data(), dst_bytes);
+        };
+
+        if (can_chunk) {
+            size_t audio_idx = 0;
+            size_t image_idx = 0;
+            for (size_t chunk_start = 0; chunk_start < token_count; chunk_start += media_chunk_tokens) {
+                const size_t real_tokens = std::min(media_chunk_tokens, token_count - chunk_start);
+                bool chunk_has_media = false;
+                for (size_t i = 0; i < real_tokens; ++i) {
+                    uint32_t token = tokens[chunk_start + i];
+                    bool is_audio = audio_tok != 0 && token == audio_tok && have_audio_features;
+                    bool is_image = image_tok != 0 && token == image_tok && have_image_features;
+                    if (is_audio || is_image) {
+                        chunk_has_media = true;
+                    }
+                }
+
+                for (auto& buf : lm_encoder_text_chunk_->input_buffers) {
+                    std::fill(buf.begin(), buf.end(), 0);
+                }
+                for (auto& buf : lm_encoder_media_chunk_->input_buffers) {
+                    std::fill(buf.begin(), buf.end(), 0);
+                }
+
+                for (size_t i = 0; i < media_chunk_tokens; ++i) {
+                    size_t pos = chunk_start + i;
+                    uint32_t token = pos < token_count ? tokens[pos] : static_cast<uint32_t>(config_.pad_token_id);
+                    bool is_audio = pos < token_count && audio_tok != 0 && token == audio_tok && have_audio_features;
+                    bool is_image = pos < token_count && image_tok != 0 && token == image_tok && have_image_features;
+                    uint32_t encoder_token = (is_audio || is_image) ? media_placeholder_token_id_ : token;
+                    write_int_input_at(*lm_encoder_text_chunk_, "input_ids", i, static_cast<int64_t>(encoder_token));
+                    write_int_input_at(*lm_encoder_text_chunk_, "position_ids", i, static_cast<int64_t>(pos));
+                }
+
+                lm_encoder_text_chunk_->graph->execute();
+
+                if (chunk_has_media) {
+                    copy_component_outputs_to_inputs(*lm_encoder_text_chunk_, *lm_encoder_media_chunk_);
+                }
+
+                for (size_t i = 0; i < media_chunk_tokens; ++i) {
+                    size_t pos = chunk_start + i;
+                    uint32_t token = pos < token_count ? tokens[pos] : static_cast<uint32_t>(config_.pad_token_id);
+                    uint32_t media_token = token;
+
+                    if (pos < token_count && audio_tok != 0 && token == audio_tok && have_audio_features) {
+                        if (audio_idx >= audio_feature.rows) {
+                            throw std::runtime_error("Prompt contains more audio tokens than audio feature rows");
+                        }
+                        write_media_row_at(i, audio_feature.row(audio_idx), audio_feature.row_bytes, audio_feature.precision);
+                        media_token = media_placeholder_token_id_;
+                        ++audio_idx;
+                    } else if (pos < token_count && image_tok != 0 && token == image_tok && have_image_features) {
+                        if (image_idx >= image_feature.rows) {
+                            throw std::runtime_error("Prompt contains more image tokens than image feature rows");
+                        }
+                        write_media_row_at(i, image_feature.row(image_idx), image_feature.row_bytes, image_feature.precision);
+                        media_token = media_placeholder_token_id_;
+                        ++image_idx;
+                    }
+
+                    write_int_input_at(*lm_encoder_media_chunk_, "input_ids", i, static_cast<int64_t>(media_token));
+                    write_int_input_at(*lm_encoder_media_chunk_, "position_ids", i, static_cast<int64_t>(pos));
+                }
+
+                Component* output_chunk = lm_encoder_text_chunk_;
+                if (chunk_has_media) {
+                    lm_encoder_media_chunk_->graph->execute();
+                    output_chunk = lm_encoder_media_chunk_;
+                }
+
+                for (const auto& info : outputs) {
+                    Component* selected_chunk = output_chunk;
+                    auto source_it = media_chunk_output_sources_.find(info.name);
+                    const std::string source_policy =
+                        source_it == media_chunk_output_sources_.end() ? "" : source_it->second;
+                    if (chunk_has_media && source_it != media_chunk_output_sources_.end()) {
+                        if (source_policy == "text_chunk") {
+                            selected_chunk = lm_encoder_text_chunk_;
+                        } else if (source_policy == "media_chunk") {
+                            selected_chunk = lm_encoder_media_chunk_;
+                        }
+                    }
+
+                    auto copy_row_from = [&](Component* source_chunk, int output_idx, size_t row, size_t dst_pos) {
+                        size_t node_id = static_cast<size_t>(source_chunk->output_node_ids[output_idx]);
+                        const auto& desc = source_chunk->graph->get_output_buffer(node_id);
+                        const auto* ptr = static_cast<const uint8_t*>(source_chunk->graph->get_output(node_id));
+                        size_t per_token_elements = desc.total_size / media_chunk_tokens;
+                        size_t per_token_bytes = PrecisionTraits::packed_size_of(desc.precision, per_token_elements);
+                        size_t src_offset = PrecisionTraits::byte_offset_of(desc.precision, row * per_token_elements);
+                        std::memcpy(
+                            store_bytes[info.name].data() + dst_pos * info.per_token_bytes,
+                            ptr + src_offset,
+                            per_token_bytes);
+                    };
+
+                    int output_idx = selected_chunk == lm_encoder_text_chunk_ ? info.text_chunk_idx : info.media_chunk_idx;
+                    for (size_t i = 0; i < real_tokens; ++i) {
+                        copy_row_from(selected_chunk, output_idx, i, chunk_start + i);
+                    }
+                }
+                lm_encoder_text_chunk_->graph->release_runtime_buffers();
+                lm_encoder_media_chunk_->graph->release_runtime_buffers();
+            }
+            lm_encoder_text_chunk_->graph->release_all_weight_pages();
+            lm_encoder_media_chunk_->graph->release_all_weight_pages();
+            debug_lm_store();
+            return true;
+        }
     }
 
     size_t audio_idx = 0;
@@ -2631,22 +3873,22 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
         Precision media_prec = Precision::FP16;
 
         if (audio_tok != 0 && token == audio_tok && have_audio_features) {
-            if (audio_idx >= audio_rows) {
-                throw std::runtime_error("Gemma4 prompt contains more audio tokens than audio feature rows");
+            if (audio_idx >= audio_feature.rows) {
+                throw std::runtime_error("Prompt contains more audio tokens than audio feature rows");
             }
             component = lm_encoder_media_step_;
-            media_row = audio_it->second.data() + audio_idx * audio_row_bytes;
-            media_row_bytes = audio_row_bytes;
-            media_prec = audio_prec;
+            media_row = audio_feature.row(audio_idx);
+            media_row_bytes = audio_feature.row_bytes;
+            media_prec = audio_feature.precision;
             ++audio_idx;
         } else if (image_tok != 0 && token == image_tok && have_image_features) {
-            if (image_idx >= image_rows) {
-                throw std::runtime_error("Gemma4 prompt contains more image tokens than image feature rows");
+            if (image_idx >= image_feature.rows) {
+                throw std::runtime_error("Prompt contains more image tokens than image feature rows");
             }
             component = lm_encoder_media_step_;
-            media_row = image_it->second.data() + image_idx * image_row_bytes;
-            media_row_bytes = image_row_bytes;
-            media_prec = image_prec;
+            media_row = image_feature.row(image_idx);
+            media_row_bytes = image_feature.row_bytes;
+            media_prec = image_feature.precision;
             ++image_idx;
         }
 
@@ -2659,7 +3901,7 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
             size_t node_id = static_cast<size_t>(component->runtime_input_node_ids[embeds_idx]);
             const auto& desc = component->graph->get_output_buffer(node_id);
             write_typed_buffer(buf, desc.precision, media_row, media_row_bytes, media_prec);
-            write_int_input(*component, "input_ids", 0);
+            write_int_input(*component, "input_ids", static_cast<int64_t>(media_placeholder_token_id_));
             write_int_input(*component, "position_ids", static_cast<int64_t>(pos));
         } else {
             write_int_input(*component, "input_ids", static_cast<int64_t>(token));
@@ -2672,7 +3914,7 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
             size_t node_id = static_cast<size_t>(component->output_node_ids[out_idx]);
             const auto& desc = component->graph->get_output_buffer(node_id);
             if (desc.byte_size != info.per_token_bytes || desc.precision != info.precision) {
-                throw std::runtime_error("Gemma4 dynamic output shape mismatch for " + info.name);
+                throw std::runtime_error("Dynamic media output shape mismatch for " + info.name);
             }
             const void* ptr = component->graph->get_output(node_id);
             std::memcpy(store_bytes[info.name].data() + pos * info.per_token_bytes, ptr, info.per_token_bytes);
@@ -2681,18 +3923,27 @@ bool Model::build_lm_encoder_outputs_dynamic_gemma4(
     }
     encoder_->graph->release_all_weight_pages();
     lm_encoder_media_step_->graph->release_all_weight_pages();
+    debug_lm_store();
     return true;
 }
-
 
 bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                    const std::vector<std::string>& image_paths,
                                    const std::vector<std::vector<float>>& audio_features_per_message) {
-    if (cache_total_seq_len_ > 0) return false;
+    const size_t start_position = cache_total_seq_len_;
     const bool have_images = !image_paths.empty() && vision_encoder_ != nullptr;
     bool any_audio = false;
     for (const auto& mel : audio_features_per_message) { if (!mel.empty()) { any_audio = true; break; } }
     const bool have_audio = any_audio && audio_encoder_ != nullptr;
+    auto media_chunk_modality_allowed = [&](const std::string& modality) -> bool {
+        if (media_chunk_prefill_modalities_.empty()) return true;
+        return std::find(media_chunk_prefill_modalities_.begin(), media_chunk_prefill_modalities_.end(), modality)
+            != media_chunk_prefill_modalities_.end();
+    };
+    if ((have_images && !media_chunk_modality_allowed("vision") && !media_chunk_modality_allowed("image"))
+        || (have_audio && !media_chunk_modality_allowed("audio"))) {
+        return false;
+    }
     std::vector<Qwen3VlImagePreprocessed> qwen_images;
 
     if (have_images) {
@@ -2700,26 +3951,23 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             throw std::runtime_error("failed to load vision_encoder");
         }
         for (const std::string& logical : vision_encoder_->logical_outputs) {
-            media_features_.erase(logical);
-            media_feature_shapes_.erase(logical);
-            media_feature_precisions_.erase(logical);
+            clear_media_feature(logical);
         }
-        const bool lfm2_vision = family_ == "lfm2_vl";
+        const std::string strategy = image_preprocess_strategy();
+        const bool lfm2_vision = strategy == "lfm2_vl";
         if (lfm2_vision) {
             if (!vision_projector_) throw std::runtime_error("lfm2_vl requires a vision_projector component");
             if (!load_lfm2_vl_position_grid()) {
                 throw std::runtime_error("lfm2_vl vision position-embedding grid is missing from the bundle");
             }
             if (!load_component_graph(*vision_projector_)) throw std::runtime_error("failed to load vision_projector");
-            media_features_.erase("image_features");
-            media_feature_shapes_.erase("image_features");
-            media_feature_precisions_.erase("image_features");
+            clear_media_feature("image_features");
         }
         for (const auto& path : image_paths) {
-            if (family_ == "lfm2_vl") {
+            if (strategy == "lfm2_vl") {
                 encode_lfm2_vl_image_into_features(path);
                 continue;
-            } else if (family_ == "qwen3_5" || family_ == "qwen3_vl" || config_.model_type == Config::ModelType::QWEN) {
+            } else if (strategy == "qwen3_vl") {
                 Qwen3VlImagePreprocessed prep = preprocess_qwen3_vl_image(path, config_);
                 int pv_idx = input_index(*vision_encoder_, "pixel_values");
                 if (pv_idx < 0) {
@@ -2734,7 +3982,19 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                    Precision::FP32);
                 qwen_images.push_back(std::move(prep));
             } else {
+                if (!strategy.empty() && strategy != "gemma4") {
+                    throw std::runtime_error("Unsupported image preprocess strategy: " + strategy);
+                }
                 Gemma4ImagePreprocessed prep = preprocess_gemma4_image(path, config_);
+                debug_media_vector("vision_preprocess", "pixel_values",
+                                   prep.pixel_values, {prep.max_patches, prep.patch_dim},
+                                   Precision::FP32);
+                debug_media_vector("vision_preprocess", "pixel_position_ids",
+                                   prep.pixel_position_ids, {prep.max_patches, 2},
+                                   Precision::INT8);
+                if (has_npu_vision_encoder() && vision_encode_via_npu(prep.pixel_values, &prep.pixel_position_ids)) {
+                    continue;
+                }
                 int pv_idx = input_index(*vision_encoder_, "pixel_values");
                 if (pv_idx >= 0) {
                     auto& pv_buf = vision_encoder_->input_buffers[pv_idx];
@@ -2774,28 +4034,30 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                 const std::string& name = vision_encoder_->logical_outputs[i];
                 size_t node_id = static_cast<size_t>(vision_encoder_->output_node_ids[i]);
                 const auto& desc = vision_encoder_->graph->get_output_buffer(node_id);
-                void* ptr = vision_encoder_->graph->get_output(node_id);
-                auto& slot = media_features_[name];
-                const size_t prev_bytes = slot.size();
-                slot.resize(prev_bytes + desc.byte_size);
-                std::memcpy(slot.data() + prev_bytes, ptr, desc.byte_size);
-                auto shape_it = media_feature_shapes_.find(name);
-                if (shape_it == media_feature_shapes_.end() || shape_it->second.empty()) {
-                    media_feature_shapes_[name] = desc.shape;
-                } else if (desc.shape.size() >= 2 && shape_it->second.size() == desc.shape.size()) {
-                    shape_it->second[shape_it->second.size() - 2] += desc.shape[desc.shape.size() - 2];
+                if (image_paths.size() == 1) {
+                    publish_media_feature_storage(
+                        name, vision_encoder_->graph->export_tensor_storage(node_id),
+                        desc.shape, desc.precision);
+                } else {
+                    const size_t rows = desc.shape.size() >= 2
+                        ? desc.shape[desc.shape.size() - 2]
+                        : desc.shape.empty() ? 0 : desc.shape[0];
+                    append_media_feature(name, vision_encoder_->graph->get_output(node_id),
+                                         desc.byte_size, desc.shape, desc.precision, rows);
                 }
-                media_feature_precisions_[name] = desc.precision;
+                if (debug_media_features_enabled()) {
+                    std::vector<uint8_t> debug_bytes(desc.byte_size);
+                    std::memcpy(debug_bytes.data(), media_feature_data(name), desc.byte_size);
+                    debug_media_feature("vision_encoder", name, debug_bytes, desc.shape, desc.precision);
+                }
             }
             vision_encoder_->graph->release_runtime_buffers();
-            vision_encoder_->graph->release_all_weight_pages();
         }
         if (lfm2_vision) {
             unload_component_graph(*vision_projector_);
         }
         unload_component_graph(*vision_encoder_);
     }
-
     if (have_audio) {
         run_audio_encoder_messages(audio_features_per_message);
     }
@@ -2803,86 +4065,147 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
     std::map<std::string, std::vector<uint8_t>> store_bytes;
     std::map<std::string, Precision> store_prec;
     std::map<std::string, std::vector<size_t>> store_shape;
-    const bool needs_dynamic_walk = family_ == "gemma4" && (have_images || have_audio) && lm_encoder_media_step_ != nullptr;
+    const bool needs_dynamic_walk =
+        media_injection_strategy_ == "token_row_replacement"
+        && (have_images || have_audio)
+        && lm_encoder_media_step_ != nullptr;
 
     if (needs_dynamic_walk) {
-        if (!build_lm_encoder_outputs_dynamic_gemma4(tokens, store_bytes, store_prec, store_shape)) {
+        if (!build_lm_encoder_outputs_dynamic_media(tokens, store_bytes, store_prec, store_shape)) {
             return false;
         }
     } else {
         if (!load_component_graph(*lm_encoder_)) {
             throw std::runtime_error("failed to load lm_encoder");
         }
-        int ids_idx = input_index(*lm_encoder_, "input_ids");
-        if (ids_idx >= 0) {
-            auto& ids_buf = lm_encoder_->input_buffers[ids_idx];
-            size_t ids_node = static_cast<size_t>(lm_encoder_->runtime_input_node_ids[ids_idx]);
-            const auto& ids_desc = lm_encoder_->graph->get_output_buffer(ids_node);
-            write_tokens_buffer(ids_buf, ids_desc.precision, tokens, 0);
-        }
 
-        int mask_idx = input_index(*lm_encoder_, "attention_mask");
-        if (mask_idx >= 0) {
-            auto& mb = lm_encoder_->input_buffers[mask_idx];
-            size_t mnode = static_cast<size_t>(lm_encoder_->runtime_input_node_ids[mask_idx]);
-            const auto& mdesc = lm_encoder_->graph->get_output_buffer(mnode);
-            fill_int_buffer(mb, mdesc.precision, 1, tokens.size());
-        }
+        const size_t lm_chunk_tokens = component_chunk_tokens(*lm_encoder_, "input_ids");
+        const size_t encoder_tokens = lm_chunk_tokens > 0 ? lm_chunk_tokens : tokens.size();
+        if (encoder_tokens == 0) return false;
 
-        int pos_idx = input_index(*lm_encoder_, "position_ids");
-        if (pos_idx >= 0) {
-            auto& pos_buf = lm_encoder_->input_buffers[pos_idx];
-            size_t pos_node = static_cast<size_t>(lm_encoder_->runtime_input_node_ids[pos_idx]);
-            const auto& pos_desc = lm_encoder_->graph->get_output_buffer(pos_node);
-            if (pos_desc.shape.size() >= 3 && pos_desc.shape[0] == 3 && !qwen_images.empty()) {
-                size_t capacity = pos_desc.shape[pos_desc.shape.size() - 1];
-                auto positions = qwen3_vl_position_ids(tokens, capacity, qwen_images, config_.image_token_id);
-                write_int_vector_buffer(pos_buf, pos_desc.precision, positions);
-            }
-        }
+        struct EncoderOutputInfo {
+            std::string name;
+            int output_idx = -1;
+            size_t per_token_elements = 0;
+            size_t per_token_bytes = 0;
+            Precision precision = Precision::FP16;
+            std::vector<size_t> shape;
+        };
 
-        for (const auto& kv : media_features_) {
-            const std::string& name = kv.first;
-            int idx = input_index(*lm_encoder_, name);
-            if (idx < 0) continue;
-            auto& dst_buf = lm_encoder_->input_buffers[idx];
-            size_t node_id = static_cast<size_t>(lm_encoder_->runtime_input_node_ids[idx]);
-            const auto& desc = lm_encoder_->graph->get_output_buffer(node_id);
-            Precision src_prec = media_feature_precisions_[name];
-            write_typed_buffer(dst_buf, desc.precision,
-                               kv.second.data(), kv.second.size(), src_prec);
-        }
-        lm_encoder_->graph->execute();
-
+        std::vector<EncoderOutputInfo> encoder_outputs;
         for (size_t i = 0; i < lm_encoder_->output_node_ids.size()
                           && i < lm_encoder_->logical_outputs.size(); ++i) {
-            const std::string& name = lm_encoder_->logical_outputs[i];
-            size_t node_id = static_cast<size_t>(lm_encoder_->output_node_ids[i]);
+            const size_t node_id = static_cast<size_t>(lm_encoder_->output_node_ids[i]);
             const auto& desc = lm_encoder_->graph->get_output_buffer(node_id);
-            void* ptr = lm_encoder_->graph->get_output(node_id);
-            auto& slot = store_bytes[name];
-            slot.assign(desc.byte_size, 0);
-            std::memcpy(slot.data(), ptr, desc.byte_size);
-            store_prec[name] = desc.precision;
-            store_shape[name] = desc.shape;
+            if (desc.total_size == 0 || desc.total_size % encoder_tokens != 0) {
+                continue;
+            }
+            EncoderOutputInfo info;
+            info.name = lm_encoder_->logical_outputs[i];
+            info.output_idx = static_cast<int>(i);
+            info.per_token_elements = desc.total_size / encoder_tokens;
+            info.per_token_bytes = PrecisionTraits::packed_size_of(desc.precision, info.per_token_elements);
+            info.precision = desc.precision;
+            info.shape = desc.shape;
+            set_sequence_length_in_shape(info.shape, tokens.size());
+            if (info.per_token_bytes == 0) {
+                continue;
+            }
+            store_bytes[info.name].assign(tokens.size() * info.per_token_bytes, 0);
+            store_prec[info.name] = info.precision;
+            store_shape[info.name] = info.shape;
+            encoder_outputs.push_back(std::move(info));
+        }
+        if (encoder_outputs.empty()) return false;
+
+        for (size_t chunk_start = 0; chunk_start < tokens.size(); chunk_start += encoder_tokens) {
+            const size_t real_tokens = std::min(encoder_tokens, tokens.size() - chunk_start);
+            for (auto& input_buffer : lm_encoder_->input_buffers) {
+                std::fill(input_buffer.begin(), input_buffer.end(), 0);
+            }
+
+            int ids_idx = input_index(*lm_encoder_, "input_ids");
+            if (ids_idx >= 0) {
+                for (size_t i = 0; i < encoder_tokens; ++i) {
+                    const size_t pos = chunk_start + i;
+                    const uint32_t token = pos < tokens.size()
+                        ? tokens[pos]
+                        : static_cast<uint32_t>(config_.pad_token_id);
+                    write_int_input_at(*lm_encoder_, "input_ids", i, static_cast<int64_t>(token));
+                }
+            }
+
+            int mask_idx = input_index(*lm_encoder_, "attention_mask");
+            if (mask_idx >= 0) {
+                for (size_t i = 0; i < real_tokens; ++i) {
+                    write_int_input_at(*lm_encoder_, "attention_mask", i, 1);
+                }
+            }
+
+            int pos_idx = input_index(*lm_encoder_, "position_ids");
+            if (pos_idx >= 0) {
+                auto& pos_buf = lm_encoder_->input_buffers[pos_idx];
+                size_t pos_node = static_cast<size_t>(lm_encoder_->runtime_input_node_ids[pos_idx]);
+                const auto& pos_desc = lm_encoder_->graph->get_output_buffer(pos_node);
+                if (pos_desc.shape.size() >= 3 && pos_desc.shape[0] == 3 && !qwen_images.empty()) {
+                    size_t capacity = pos_desc.shape[pos_desc.shape.size() - 1];
+                    auto positions = qwen3_vl_position_ids(tokens, capacity, qwen_images, config_.image_token_id);
+                    write_int_vector_buffer(pos_buf, pos_desc.precision, positions);
+                } else {
+                    for (size_t i = 0; i < encoder_tokens; ++i) {
+                    write_int_input_at(*lm_encoder_, "position_ids", i, static_cast<int64_t>(start_position + chunk_start + i));
+                    }
+                }
+            }
+
+            for (const auto& kv : media_features_) {
+                const std::string& name = kv.first;
+                int idx = input_index(*lm_encoder_, name);
+                if (idx < 0) continue;
+                const uint8_t* src_data = media_feature_data(name);
+                const size_t src_bytes = media_feature_byte_size(name);
+                if (!src_data || src_bytes == 0) continue;
+                auto& dst_buf = lm_encoder_->input_buffers[idx];
+                size_t node_id = static_cast<size_t>(lm_encoder_->runtime_input_node_ids[idx]);
+                const auto& desc = lm_encoder_->graph->get_output_buffer(node_id);
+                Precision src_prec = media_feature_precisions_[name];
+                write_typed_buffer(dst_buf, desc.precision,
+                                   src_data, src_bytes, src_prec);
+                runtime_profile_.media_copied_bytes += std::min(dst_buf.size(), src_bytes);
+                runtime_profile_.copied_bytes += std::min(dst_buf.size(), src_bytes);
+            }
+
+            lm_encoder_->graph->execute();
+
+            for (const auto& info : encoder_outputs) {
+                size_t node_id = static_cast<size_t>(lm_encoder_->output_node_ids[info.output_idx]);
+                const auto& desc = lm_encoder_->graph->get_output_buffer(node_id);
+                const auto* ptr = static_cast<const uint8_t*>(lm_encoder_->graph->get_output(node_id));
+                for (size_t i = 0; i < real_tokens; ++i) {
+                    const size_t src_offset = PrecisionTraits::byte_offset_of(desc.precision, i * info.per_token_elements);
+                    const size_t dst_offset = (chunk_start + i) * info.per_token_bytes;
+                    std::memcpy(store_bytes[info.name].data() + dst_offset, ptr + src_offset, info.per_token_bytes);
+                }
+            }
+            lm_encoder_->graph->release_runtime_buffers();
         }
 
-        if (have_images && family_ == "lfm2_vl") {
-            auto feat_it = media_features_.find("image_features");
+        if (have_images && image_preprocess_strategy() == "lfm2_vl") {
             auto emb_it = store_bytes.find("inputs_embeds");
-            if (feat_it != media_features_.end() && emb_it != store_bytes.end() && tokenizer_) {
+            if (media_feature_data("image_features") && emb_it != store_bytes.end() && tokenizer_) {
                 const auto& emb_shape = store_shape["inputs_embeds"];
                 const auto& feat_shape = media_feature_shapes_["image_features"];
                 const size_t hidden = emb_shape.empty() ? 0 : emb_shape.back();
                 const size_t emb_seq = emb_shape.size() >= 2 ? emb_shape[emb_shape.size() - 2] : 0;
-                const size_t feat_rows = feat_shape.empty() ? 0 : feat_shape[0];
+                const size_t feat_rows = feat_shape.size() >= 2 ? feat_shape[feat_shape.size() - 2]
+                                       : feat_shape.empty() ? 0 : feat_shape[0];
                 const Precision emb_prec = store_prec["inputs_embeds"];
                 const Precision feat_prec = media_feature_precisions_["image_features"];
                 const size_t emb_elem = PrecisionTraits::size_of(emb_prec);
                 const size_t feat_elem = PrecisionTraits::size_of(feat_prec);
                 const uint32_t image_tok = tokenizer_->get_image_token_id();
                 uint8_t* emb_data = emb_it->second.data();
-                const uint8_t* feat_data = feat_it->second.data();
+                const uint8_t* feat_data = media_feature_data("image_features");
                 std::vector<float> frow(hidden);
                 size_t fcur = 0;
                 const size_t limit = std::min(emb_seq, tokens.size());
@@ -2906,7 +4229,12 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         lm_encoder_->graph->release_all_weight_pages();
         unload_component_graph(*lm_encoder_);
     }
-
+    {
+        std::vector<std::string> consumed_media;
+        consumed_media.reserve(media_features_.size());
+        for (const auto& [name, _] : media_features_) consumed_media.push_back(name);
+        for (const auto& name : consumed_media) clear_media_feature(name);
+    }
     auto embeds_shape_it = store_shape.find("inputs_embeds");
     if (embeds_shape_it == store_shape.end()) {
         return false;
@@ -2914,8 +4242,7 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
     size_t full_seq = 0;
     {
         const auto& sh = embeds_shape_it->second;
-        if (sh.size() >= 3) full_seq = sh[sh.size() - 2];
-        else if (!sh.empty()) full_seq = sh[0];
+        full_seq = sequence_length_from_shape(sh);
     }
     if (full_seq == 0) return false;
 
@@ -2967,7 +4294,13 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         if (count > 0) valid_seq = count;
     }
     valid_seq = std::min(valid_seq, full_seq);
-    const size_t whole_chunks_end = (valid_seq / chunk_seq) * chunk_seq;
+    // Media prefill graphs initialize convolution state, so they are only
+    // valid at the beginning of a sequence. Prefix extensions keep the
+    // decoder-owned cache and execute the delta through decoder_step below.
+    size_t whole_chunks_end = start_position == 0 ? (valid_seq / chunk_seq) * chunk_seq : 0;
+    if (whole_chunks_end > 0 && decoder_ != nullptr && !cache_states_compatible(*decoder_prefill_chunk_, *decoder_)) {
+        whole_chunks_end = 0;
+    }
     for (size_t chunk_start = 0; chunk_start < whole_chunks_end; chunk_start += chunk_seq) {
         for (const auto& kv : store_bytes) {
             const std::string& name = kv.first;
@@ -2981,6 +4314,16 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             const uint8_t* src_ptr = kv.second.data() + chunk_start * src_per_pos;
             size_t src_slice_bytes = chunk_seq * src_per_pos;
             write_typed_buffer(dst_buf, desc.precision, src_ptr, src_slice_bytes, src_prec);
+            // Runtime-state aliases may have rebound this input to preserved
+            // producer storage. This path is explicitly materializing a new
+            // media chunk, so make the freshly written mutable buffer
+            // authoritative for the next execution.
+            decoder_prefill_chunk_->graph->set_external_input(
+                node_id, dst_buf.data(), desc.precision);
+        }
+        const size_t real_chunk_tokens = std::min(chunk_seq, valid_seq - chunk_start);
+        for (size_t i = 0; i < real_chunk_tokens; ++i) {
+            write_int_input_at(*decoder_prefill_chunk_, "attention_mask", i, 1);
         }
         decoder_prefill_chunk_->graph->execute();
     }
@@ -2988,6 +4331,9 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
         move_cache_states(*decoder_prefill_chunk_, *decoder_);
         decoder_prefill_chunk_->graph->release_runtime_buffers();
         unload_component_graph(*decoder_prefill_chunk_);
+    }
+    if (whole_chunks_end < valid_seq && (decoder_ == nullptr || !load_component_graph(*decoder_))) {
+        return false;
     }
     for (size_t pos = whole_chunks_end; pos < valid_seq; ++pos) {
         for (const auto& kv : store_bytes) {
@@ -3001,6 +4347,9 @@ bool Model::run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
             size_t src_per_pos = per_pos_bytes[name];
             const uint8_t* src_ptr = kv.second.data() + pos * src_per_pos;
             write_typed_buffer(dst_buf, desc.precision, src_ptr, src_per_pos, src_prec);
+        }
+        if (input_index(*decoder_, "position_ids") >= 0) {
+            write_int_input(*decoder_, "position_ids", static_cast<int64_t>(start_position + pos));
         }
         decoder_->graph->execute();
     }
@@ -3027,113 +4376,150 @@ void Model::prefill_with_media(const std::vector<uint32_t>& tokens,
         prefill(tokens, get_prefill_chunk_size(), profile_file);
         return;
     }
+    clear_runtime_states_with_lifetime("request");
 
+    const std::string fallback = media_prefill_fallback_.empty() ? "error" : media_prefill_fallback_;
+    const bool prefer_warm_media_step =
+        fallback == "warm_media_step" || fallback == "warm_media" || fallback == "media_step";
+    const bool can_chunk_lm_encoder =
+        lm_encoder_ != nullptr
+        || (media_injection_strategy_ == "token_row_replacement"
+            && lm_encoder_text_chunk_ != nullptr
+            && lm_encoder_media_chunk_ != nullptr);
+    auto media_chunk_modality_allowed = [&](const std::string& modality) -> bool {
+        if (media_chunk_prefill_modalities_.empty()) return true;
+        return std::find(media_chunk_prefill_modalities_.begin(), media_chunk_prefill_modalities_.end(), modality)
+            != media_chunk_prefill_modalities_.end();
+    };
+    const bool media_chunk_modalities_allowed =
+        (!have_images || media_chunk_modality_allowed("vision") || media_chunk_modality_allowed("image")) &&
+        (!have_audio || media_chunk_modality_allowed("audio"));
     const bool can_chunk_prefill =
-        lm_encoder_ != nullptr && decoder_prefill_chunk_ != nullptr &&
+        std::getenv("CACTUS_DISABLE_MEDIA_CHUNK_PREFILL") == nullptr &&
+        !prefer_warm_media_step &&
+        media_chunk_modalities_allowed &&
+        can_chunk_lm_encoder && decoder_prefill_chunk_ != nullptr &&
         (vision_encoder_ != nullptr || audio_encoder_ != nullptr);
     if (can_chunk_prefill) {
         if (run_chunk_prefill_path(tokens, image_paths, audio_features_per_message)) {
+            media_min_new_tokens_remaining_ = media_min_new_tokens_;
+            if (debug_media_features_enabled()) {
+                std::cerr << "[media-debug] media_min_new_tokens_remaining="
+                          << media_min_new_tokens_remaining_ << std::endl;
+            }
             (void)profile_file;
             return;
         }
     }
-    if (!supports_warm_media_injection()) {
-        CACTUS_LOG_WARN("model", "Bundle supports neither chunk-prefill nor warm media injection; falling back to text-only prefill");
-        prefill(tokens, get_prefill_chunk_size(), profile_file);
+
+    if (prefer_warm_media_step) {
+        if (!supports_warm_media_injection()) {
+            throw std::runtime_error("Warm media-step prefill requested, but bundle has no compatible media step");
+        }
+
+        if (have_images) {
+            for (const auto& path : image_paths) {
+                run_vision_encoder(path);
+            }
+        }
+        if (have_audio) {
+            run_audio_encoder_messages(audio_features_per_message);
+        }
+
+        std::string image_feature_name;
+        Precision image_feature_prec = Precision::FP16;
+        size_t image_row_bytes = 0;
+        if (have_images) {
+            const std::vector<std::string> candidates = {"image_features", "image_embeddings", "vision_features", "inputs_embeds"};
+            for (const auto& name : candidates) {
+                if (media_features_.count(name)) { image_feature_name = name; break; }
+            }
+            if (image_feature_name.empty() && !media_features_.empty()) {
+                image_feature_name = media_features_.begin()->first;
+            }
+            if (!image_feature_name.empty()) {
+                const auto& shape = media_feature_shapes_[image_feature_name];
+                image_feature_prec = media_feature_precisions_[image_feature_name];
+                if (shape.size() >= 2) {
+                    size_t rows = (shape.size() >= 3) ? shape[shape.size() - 2] : shape[0];
+                    size_t total = media_feature_byte_size(image_feature_name);
+                    image_row_bytes = rows > 0 ? total / rows : total;
+                } else {
+                    image_row_bytes = media_feature_byte_size(image_feature_name);
+                }
+            }
+        }
+
+        std::string audio_feature_name;
+        Precision audio_feature_prec = Precision::FP16;
+        size_t audio_row_bytes = 0;
+        if (have_audio) {
+            const std::vector<std::string> candidates = {"audio_features", "audio_embeddings", "encoder_hidden_states", "inputs_embeds"};
+            for (const auto& name : candidates) {
+                if (media_features_.count(name) && name != image_feature_name) { audio_feature_name = name; break; }
+            }
+            if (audio_feature_name.empty()) {
+                for (const auto& kv : media_features_) {
+                    if (kv.first != image_feature_name) { audio_feature_name = kv.first; break; }
+                }
+            }
+            if (!audio_feature_name.empty()) {
+                const auto& shape = media_feature_shapes_[audio_feature_name];
+                audio_feature_prec = media_feature_precisions_[audio_feature_name];
+                if (shape.size() >= 2) {
+                    size_t rows = (shape.size() >= 3) ? shape[shape.size() - 2] : shape[0];
+                    size_t total = media_feature_byte_size(audio_feature_name);
+                    audio_row_bytes = rows > 0 ? total / rows : total;
+                } else {
+                    audio_row_bytes = media_feature_byte_size(audio_feature_name);
+                }
+            }
+        }
+
+        size_t image_consumed = 0;
+        size_t audio_consumed = 0;
+        const uint32_t image_tok = config_.image_token_id;
+        const uint32_t audio_tok = config_.audio_token_id;
+
+        for (size_t i = 0; i < tokens.size(); ++i) {
+            uint32_t t = tokens[i];
+            size_t pos = cache_total_seq_len_ + i;
+            if (image_tok != 0 && t == image_tok && !image_feature_name.empty()) {
+                const uint8_t* feature_data = media_feature_data(image_feature_name);
+                const uint8_t* row = feature_data + image_consumed * image_row_bytes;
+                if (image_consumed * image_row_bytes + image_row_bytes <= media_feature_byte_size(image_feature_name)) {
+                    run_media_step(pos, row, image_row_bytes, image_feature_prec);
+                    ++image_consumed;
+                    continue;
+                }
+            }
+            if (audio_tok != 0 && t == audio_tok && !audio_feature_name.empty()) {
+                const uint8_t* feature_data = media_feature_data(audio_feature_name);
+                const uint8_t* row = feature_data + audio_consumed * audio_row_bytes;
+                if (audio_consumed * audio_row_bytes + audio_row_bytes <= media_feature_byte_size(audio_feature_name)) {
+                    run_media_step(pos, row, audio_row_bytes, audio_feature_prec);
+                    ++audio_consumed;
+                    continue;
+                }
+            }
+            run_step(t, pos, false);
+        }
+        cache_total_seq_len_ += tokens.size();
+        cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
+        media_min_new_tokens_remaining_ = media_min_new_tokens_;
+        if (debug_media_features_enabled()) {
+            std::cerr << "[media-debug] media_min_new_tokens_remaining="
+                      << media_min_new_tokens_remaining_ << std::endl;
+        }
         return;
     }
 
-    if (have_images) {
-        for (const auto& path : image_paths) {
-            run_vision_encoder(path);
-        }
+    if (fallback == "text_only") {
+        CACTUS_LOG_WARN("model", "Chunked media prefill unavailable; falling back to text-only prefill by profile policy");
+        prefill(tokens, get_prefill_chunk_size(), profile_file);
+        return;
     }
-    if (have_audio) {
-        run_audio_encoder_messages(audio_features_per_message);
-    }
-
-    std::string image_feature_name;
-    Precision image_feature_prec = Precision::FP16;
-    size_t image_row_bytes = 0;
-    if (have_images) {
-        const std::vector<std::string> candidates = {"image_features", "image_embeddings", "vision_features", "inputs_embeds"};
-        for (const auto& name : candidates) {
-            if (media_features_.count(name)) { image_feature_name = name; break; }
-        }
-        if (image_feature_name.empty() && !media_features_.empty()) {
-            image_feature_name = media_features_.begin()->first;
-        }
-        if (!image_feature_name.empty()) {
-            const auto& shape = media_feature_shapes_[image_feature_name];
-            image_feature_prec = media_feature_precisions_[image_feature_name];
-            if (shape.size() >= 2) {
-                size_t rows = (shape.size() >= 3) ? shape[shape.size() - 2] : shape[0];
-                size_t total = media_features_[image_feature_name].size();
-                image_row_bytes = rows > 0 ? total / rows : total;
-            } else {
-                image_row_bytes = media_features_[image_feature_name].size();
-            }
-        }
-    }
-
-    std::string audio_feature_name;
-    Precision audio_feature_prec = Precision::FP16;
-    size_t audio_row_bytes = 0;
-    if (have_audio) {
-        const std::vector<std::string> candidates = {"audio_features", "audio_embeddings", "encoder_hidden_states", "inputs_embeds"};
-        for (const auto& name : candidates) {
-            if (media_features_.count(name) && name != image_feature_name) { audio_feature_name = name; break; }
-        }
-        if (audio_feature_name.empty()) {
-            for (const auto& kv : media_features_) {
-                if (kv.first != image_feature_name) { audio_feature_name = kv.first; break; }
-            }
-        }
-        if (!audio_feature_name.empty()) {
-            const auto& shape = media_feature_shapes_[audio_feature_name];
-            audio_feature_prec = media_feature_precisions_[audio_feature_name];
-            if (shape.size() >= 2) {
-                size_t rows = (shape.size() >= 3) ? shape[shape.size() - 2] : shape[0];
-                size_t total = media_features_[audio_feature_name].size();
-                audio_row_bytes = rows > 0 ? total / rows : total;
-            } else {
-                audio_row_bytes = media_features_[audio_feature_name].size();
-            }
-        }
-    }
-
-    size_t image_consumed = 0;
-    size_t audio_consumed = 0;
-    const uint32_t image_tok = config_.image_token_id;
-    const uint32_t audio_tok = config_.audio_token_id;
-    const bool warm_media = supports_warm_media_injection();
-
-    for (size_t i = 0; i < tokens.size(); ++i) {
-        uint32_t t = tokens[i];
-        size_t pos = cache_total_seq_len_ + i;
-        if (image_tok != 0 && t == image_tok && !image_feature_name.empty() && warm_media) {
-            const auto& feat = media_features_[image_feature_name];
-            const uint8_t* row = feat.data() + image_consumed * image_row_bytes;
-            if (image_consumed * image_row_bytes + image_row_bytes <= feat.size()) {
-                run_media_step(pos, row, image_row_bytes, image_feature_prec);
-                ++image_consumed;
-                continue;
-            }
-        }
-        if (audio_tok != 0 && t == audio_tok && !audio_feature_name.empty() && warm_media) {
-            const auto& feat = media_features_[audio_feature_name];
-            const uint8_t* row = feat.data() + audio_consumed * audio_row_bytes;
-            if (audio_consumed * audio_row_bytes + audio_row_bytes <= feat.size()) {
-                run_media_step(pos, row, audio_row_bytes, audio_feature_prec);
-                ++audio_consumed;
-                continue;
-            }
-        }
-        run_step(t, pos, false);
-    }
-    cache_total_seq_len_ += tokens.size();
-    cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
-    (void)profile_file;
+    throw std::runtime_error("Chunked media prefill failed or is unavailable for this profile");
 }
 
 uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, float top_p,
@@ -3171,7 +4557,8 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
         }
         cache_total_seq_len_ += tokens.size();
         if (out_entropy) *out_entropy = 0.0f;
-        uint32_t result = argmax_last_logits();
+        uint32_t result = argmax_last_logits(nullptr, repetition_penalty);
+        if (media_min_new_tokens_remaining_ > 0) --media_min_new_tokens_remaining_;
         record_sampled_token(result);
         return result;
     }
@@ -3181,8 +4568,9 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
         cache_total_seq_len_ = context_tokens_.size();
         cache_token_ids_ = context_tokens_;
         uint32_t result = (greedy && !samp_ctx_active_)
-            ? argmax_last_logits(out_entropy)
+            ? argmax_last_logits(out_entropy, repetition_penalty)
             : sample_component_logits(*decoder_, temp, tp, tk, min_p, greedy, out_entropy);
+        if (media_min_new_tokens_remaining_ > 0) --media_min_new_tokens_remaining_;
         record_sampled_token(result);
         return result;
     }
@@ -3194,8 +4582,9 @@ uint32_t Model::decode(const std::vector<uint32_t>& tokens, float temperature, f
     cache_token_ids_.insert(cache_token_ids_.end(), tokens.begin(), tokens.end());
     maybe_roll_compact();
     uint32_t result = (greedy && !samp_ctx_active_)
-        ? argmax_last_logits(out_entropy)
+        ? argmax_last_logits(out_entropy, repetition_penalty)
         : sample_component_logits(*decoder_, temp, tp, tk, min_p, greedy, out_entropy);
+    if (media_min_new_tokens_remaining_ > 0) --media_min_new_tokens_remaining_;
     record_sampled_token(result);
     return result;
 }
@@ -3245,6 +4634,7 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         CACTUS_LOG_ERROR("model", "Parakeet TDT bundle missing audio_encoder or decoder component");
         return emitted;
     }
+    if (!load_component_graph(*audio_enc) || !load_component_graph(*dec)) return emitted;
     if (!bind_runtime_buffers(*audio_enc)) return emitted;
     if (!bind_runtime_buffers(*dec)) return emitted;
 
@@ -3507,16 +4897,17 @@ uint32_t Model::decode_with_images(const std::vector<uint32_t>& tokens, const st
 namespace {
 
 std::vector<float> pool_and_normalize_media_feature(
-    const std::vector<uint8_t>& bytes,
+    const uint8_t* bytes,
+    size_t byte_size,
     const std::vector<size_t>& shape,
     Precision precision,
     const std::string& source
 ) {
     const size_t elem_size = PrecisionTraits::size_of(precision);
-    if (elem_size == 0 || bytes.empty() || shape.empty()) {
+    if (elem_size == 0 || bytes == nullptr || byte_size == 0 || shape.empty()) {
         throw std::runtime_error(source + " produced empty feature output");
     }
-    const size_t total_elems = bytes.size() / elem_size;
+    const size_t total_elems = byte_size / elem_size;
     const size_t hidden_dim = shape.back();
     if (hidden_dim == 0 || total_elems == 0 || total_elems % hidden_dim != 0) {
         throw std::runtime_error(source + " feature shape inconsistent with hidden_dim");
@@ -3525,13 +4916,13 @@ std::vector<float> pool_and_normalize_media_feature(
     std::vector<float> fp32(total_elems);
     switch (precision) {
         case Precision::FP32:
-            std::memcpy(fp32.data(), bytes.data(), total_elems * sizeof(float));
+            std::memcpy(fp32.data(), bytes, total_elems * sizeof(float));
             break;
         case Precision::FP16:
-            Quantization::fp16_to_fp32(reinterpret_cast<const __fp16*>(bytes.data()), fp32.data(), total_elems);
+            Quantization::fp16_to_fp32(reinterpret_cast<const __fp16*>(bytes), fp32.data(), total_elems);
             break;
         case Precision::INT8:
-            Quantization::int8_to_fp32(reinterpret_cast<const int8_t*>(bytes.data()), fp32.data(), total_elems, 1.0f);
+            Quantization::int8_to_fp32(reinterpret_cast<const int8_t*>(bytes), fp32.data(), total_elems, 1.0f);
             break;
         default:
             throw std::runtime_error(source + " feature precision not supported for embeddings");
@@ -3573,21 +4964,19 @@ std::vector<float> Model::get_image_embeddings(const std::string& image_path) {
             if (media_features_.count(name)) { output_name = name; break; }
         }
     }
-    auto bytes_it = media_features_.find(output_name);
     auto shape_it = media_feature_shapes_.find(output_name);
     auto prec_it = media_feature_precisions_.find(output_name);
-    if (bytes_it == media_features_.end() || shape_it == media_feature_shapes_.end()
+    if (!media_feature_data(output_name) || shape_it == media_feature_shapes_.end()
         || prec_it == media_feature_precisions_.end()) {
         throw std::runtime_error("vision_encoder produced no output for '" + output_name + "'");
     }
 
     std::vector<float> embedding = pool_and_normalize_media_feature(
-        bytes_it->second, shape_it->second, prec_it->second, "vision_encoder");
+        media_feature_data(output_name), media_feature_byte_size(output_name),
+        shape_it->second, prec_it->second, "vision_encoder");
 
     for (const std::string& name : vision_encoder_->logical_outputs) {
-        media_features_.erase(name);
-        media_feature_shapes_.erase(name);
-        media_feature_precisions_.erase(name);
+        clear_media_feature(name);
     }
     media_features_.erase(output_name);
     media_feature_shapes_.erase(output_name);
@@ -3612,21 +5001,19 @@ std::vector<float> Model::get_audio_embeddings(const std::vector<float>& mel_bin
 
     run_audio_encoder_messages({mel_bins});
 
-    auto bytes_it = media_features_.find(output_name);
     auto shape_it = media_feature_shapes_.find(output_name);
     auto prec_it = media_feature_precisions_.find(output_name);
-    if (bytes_it == media_features_.end() || shape_it == media_feature_shapes_.end()
+    if (!media_feature_data(output_name) || shape_it == media_feature_shapes_.end()
         || prec_it == media_feature_precisions_.end()) {
         throw std::runtime_error("audio_encoder produced no output for '" + output_name + "'");
     }
 
     std::vector<float> embedding = pool_and_normalize_media_feature(
-        bytes_it->second, shape_it->second, prec_it->second, "audio_encoder");
+        media_feature_data(output_name), media_feature_byte_size(output_name),
+        shape_it->second, prec_it->second, "audio_encoder");
 
     for (const std::string& name : audio_encoder_->logical_outputs) {
-        media_features_.erase(name);
-        media_feature_shapes_.erase(name);
-        media_feature_precisions_.erase(name);
+        clear_media_feature(name);
     }
     load_component_graph(*audio_encoder_);
     return embedding;
@@ -3635,19 +5022,32 @@ std::vector<float> Model::get_audio_embeddings(const std::vector<float>& mel_bin
 void Model::reset_cache() {
     cache_total_seq_len_ = 0;
     last_logit_position_ = 0;
+    media_min_new_tokens_remaining_ = 0;
     encoder_cross_kv_ready_ = false;
     context_tokens_.clear();
     cache_token_ids_.clear();
     special_rows_.clear();
     token_history_.clear();
+    token_history_set_.clear();
     media_features_.clear();
+    media_feature_storages_.clear();
     media_feature_shapes_.clear();
     media_feature_precisions_.clear();
+    runtime_state_store_.clear();
     for (auto& kv : components_) {
         Component& comp = kv.second;
         if (!comp.graph) continue;
         reset_component_cache_states(comp);
     }
+    state_arena_.clear();
+}
+
+void Model::seed_token_history_from_context(const std::vector<uint32_t>& tokens) {
+    token_history_.clear();
+    token_history_set_.clear();
+    const size_t start = tokens.size() > MAX_TOKEN_HISTORY ? tokens.size() - MAX_TOKEN_HISTORY : 0;
+    token_history_.insert(token_history_.end(), tokens.begin() + start, tokens.end());
+    token_history_set_.insert(tokens.begin(), tokens.end());
 }
 
 void Model::set_cache_window(size_t /*window_size*/, size_t /*sink_size*/) {}
@@ -4127,6 +5527,10 @@ bool Config::from_json(const std::string& config_path) {
         else if (key == "tile_size") tile_size = static_cast<uint32_t>(std::stoul(value));
         else if (key == "max_pixels_tolerance") max_pixels_tolerance = std::stof(value);
         else if (key == "do_image_splitting") do_image_splitting = (value == "true" || value == "1");
+        else if (key == "do_resize") do_resize = (value == "true" || value == "1");
+        else if (key == "do_rescale") do_rescale = (value == "true" || value == "1");
+        else if (key == "do_normalize") do_normalize = (value == "true" || value == "1");
+        else if (key == "do_convert_rgb") do_convert_rgb = (value == "true" || value == "1");
         else if (key == "precision") {
             if (value == "INT8") precision = Precision::INT8;
             else if (value == "FP16") precision = Precision::FP16;
@@ -4145,6 +5549,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (mt == "youtu") model_type = ModelType::YOUTU;
             else if (mt == "needle") model_type = ModelType::NEEDLE;
             else if (mt == "bert" || mt == "nomic") model_type = ModelType::NOMIC;
+            else if (mt == "generic") model_type = ModelType::GENERIC;
             else model_type = ModelType::GEMMA4;
         }
         else if (key == "model_variant") {
@@ -4376,18 +5781,12 @@ std::unique_ptr<Model> create_model(const std::string& bundle_dir) {
     fs::path manifest = fs::path(bundle_dir) / "components" / "manifest.json";
     if (!fs::exists(manifest)) {
         CACTUS_LOG_ERROR("model",
-            "Not a transpiled bundle (no components/manifest.json at " << bundle_dir << "). "
-            "Run `cactus convert <hf_model>` to produce one.");
+            "Not a runnable Cactus bundle (no components/manifest.json at " << bundle_dir << "). "
+            "Run `cactus download <hf_model>` to fetch one.");
         return nullptr;
     }
     return std::make_unique<Model>();
 }
-
-const std::vector<Model::DebugNode>& Model::get_debug_nodes() const {
-    debug_nodes_.clear();
-    return debug_nodes_;
-}
-
 
 double Model::score_tokens_window_logprob(const std::vector<uint32_t>& /*tokens*/, size_t /*start*/,
                                             size_t /*end*/, size_t /*context*/, size_t* tokens_scored) {

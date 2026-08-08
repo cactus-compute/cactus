@@ -39,6 +39,39 @@ bool test_conv1d_causal_depthwise() {
     return true;
 }
 
+bool test_conv1d_causal_depthwise_channel_first() {
+    const size_t N = 2, L = 16, C = 7, K = 3;
+    std::vector<__fp16> channel_last(N * L * C), channel_first(N * C * L);
+    std::vector<__fp16> weight(C * K), expected(N * L * C), actual(N * C * L);
+    fill_random_fp16(channel_last, -0.5f, 0.5f);
+    fill_random_fp16(weight, -0.5f, 0.5f);
+
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t t = 0; t < L; ++t) {
+            for (size_t c = 0; c < C; ++c) {
+                channel_first[(n * C + c) * L + t] = channel_last[(n * L + t) * C + c];
+            }
+        }
+    }
+
+    cactus_conv1d_causal_depthwise_f16(channel_last.data(), weight.data(), expected.data(), N, L, C, K, 1);
+    cactus_conv1d_causal_depthwise_channel_first_f16(channel_first.data(), weight.data(), actual.data(), N, C, L, K, 1);
+
+    for (size_t n = 0; n < N; ++n) {
+        for (size_t t = 0; t < L; ++t) {
+            for (size_t c = 0; c < C; ++c) {
+                const float lhs = static_cast<float>(actual[(n * C + c) * L + t]);
+                const float rhs = static_cast<float>(expected[(n * L + t) * C + c]);
+                if (std::abs(lhs - rhs) > 1e-3f) {
+                    std::cerr << "  channel-first causal conv mismatch at " << n << "," << c << "," << t << "\n";
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 bool test_stft_complex() {
     const size_t N = 1, L = 128, C_in = 1, K = 64, stride = 32;
     const size_t num_fft_bins = K / 2;
@@ -143,6 +176,7 @@ int main() {
     TestRunner runner("Convolution & Pooling");
     runner.run_test("conv1d_k3", test_conv1d_k3());
     runner.run_test("conv1d_causal_depthwise", test_conv1d_causal_depthwise());
+    runner.run_test("conv1d_causal_depthwise_channel_first", test_conv1d_causal_depthwise_channel_first());
     runner.run_test("stft_complex", test_stft_complex());
     runner.run_test("maxpool1d", test_maxpool1d());
     runner.print_benchmarks_header();

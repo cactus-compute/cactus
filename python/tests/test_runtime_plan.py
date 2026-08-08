@@ -1,0 +1,177 @@
+import json
+import sys
+import tempfile
+import unittest
+from dataclasses import replace
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from cactus.transpiler.ModelProfiles.profiles import (
+    GEMMA4_E2B_PROFILE,
+    LFM_VLM_PROFILE,
+    PARAKEET_PROFILE,
+    WHISPER_PROFILE,
+    profile_for_model_id,
+)
+from cactus.transpiler.Generator import models as GModels
+from cactus.transpiler.RuntimePlan import models as RPModels
+
+
+class FakeTensor:
+
+    def __init__(self, node_id):
+        self.id = node_id
+
+
+class TestRuntimePlan(unittest.TestCase):
+
+    def test_generator_component_manifest_keeps_logical_names(self):
+        component = GModels.ComponentGraph(
+            name="decoder_step",
+            ir_graph=None,
+            output_path=Path("decoder_step.cactus"),
+            manifest_path=Path("decoder_step.graph_manifest.json"),
+        )
+
+        component.add_runtime_input(FakeTensor(1), "input_ids")
+        component.add_runtime_input(FakeTensor(2), "position_ids")
+        component.add_output(FakeTensor(3), "logits")
+
+        manifest = GModels.ComponentGraphManifest.from_component(component).to_dict()
+
+        self.assertEqual(manifest["logical_inputs"], ["input_ids", "position_ids"])
+        self.assertEqual(manifest["logical_outputs"], ["logits"])
+        self.assertEqual(manifest["graph"], "decoder_step.cactus")
+
+    def test_writes_engine_manifest_from_generator_manifest(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_dir = Path(tmpdir)
+            generator_manifest = bundle_dir / "decoder_step.graph_manifest.json"
+            generator_manifest.write_text(
+                json.dumps(
+                    {
+                        "component": "decoder_step",
+                        "graph_path": "decoder_step.cactus",
+                        "runtime_input_node_ids": [1, 2],
+                        "logical_inputs": ["input_ids", "position_ids"],
+                        "output_node_ids": [3],
+                        "logical_outputs": ["logits"],
+                        "bound_constant_bindings": [
+                            {
+                                "node_id": 4,
+                                "path": "weights/model.layers.0.self_attn.q_proj.weight.bin",
+                            }
+                        ],
+                        "cache_state_node_ids": [
+                            {
+                                "layer_key": "kv:0",
+                                "key": 5,
+                                "value": 6,
+                                "cache_kind": "kv",
+                                "tensor_indices": [0, 1],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            plan = RPModels.runtime_plan_from_generator_manifests(
+                {"decoder_step": generator_manifest},
+                bundle_dir=bundle_dir,
+                model_profile=GEMMA4_E2B_PROFILE,
+            )
+            engine_manifest_path, runtime_plan_path = plan.write(bundle_dir)
+
+            engine_manifest = json.loads(engine_manifest_path.read_text(encoding="utf-8"))
+            runtime_plan = json.loads(runtime_plan_path.read_text(encoding="utf-8"))
+            component = engine_manifest["components"][0]
+
+            self.assertEqual(engine_manifest["family"], "gemma4")
+            self.assertEqual(component["component"], "decoder_step")
+            self.assertEqual(component["graph"], "decoder_step.cactus")
+            self.assertEqual(component["logical_inputs"], ["input_ids", "position_ids"])
+            self.assertEqual(component["logical_outputs"], ["logits"])
+            self.assertEqual(component["bound_constant_bindings"][0]["node_id"], 4)
+            self.assertEqual(component["cache_state_node_ids"][0]["layer_key"], "kv:0")
+            self.assertTrue(runtime_plan["routes"])
+            self.assertEqual(runtime_plan["routes"][0]["edges"][0]["inputs"], ["text_embed"])
+            self.assertEqual(engine_manifest["runtime_plan_name"], "gemma4_multimodal")
+            self.assertEqual(engine_manifest["prompt_media_style"], "gemma4_turns")
+            self.assertEqual(engine_manifest["media_order"], "image,audio")
+            self.assertEqual(engine_manifest.get("media_focus_policy", ""), "")
+            self.assertEqual(engine_manifest["media_chunk_prefill_modalities"], "vision,image,audio")
+            self.assertEqual(engine_manifest["media_prefill_fallback"], "error")
+            self.assertNotIn("media_chunk_output_sources", engine_manifest)
+            self.assertIn("pictured", engine_manifest["media_image_focus_keywords"])
+            self.assertIn("audio", engine_manifest["media_audio_focus_keywords"])
+            self.assertTrue(engine_manifest["states"])
+            media_state = next(state for state in engine_manifest["states"] if state["name"] == "media_features")
+            self.assertEqual(media_state["metadata"]["outputs"], "image_features,audio_features")
+            self.assertEqual(
+                media_state["release_after_consumers"],
+                ["lm_encoder_media_chunk", "lm_encoder_media_step"],
+            )
+            self.assertTrue(engine_manifest["aliases"])
+
+    def test_aliases_require_explicit_storage_ownership_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle_dir = Path(tmpdir)
+            manifests = {}
+            for component, inputs, input_ids, outputs, output_ids in (
+                ("lm_encoder_text_chunk", ["input_ids"], [1], ["inputs_embeds"], [7]),
+                ("decoder_prefill_chunk", ["inputs_embeds"], [11], ["logits"], [12]),
+            ):
+                path = bundle_dir / f"{component}.graph_manifest.json"
+                path.write_text(json.dumps({
+                    "component": component,
+                    "graph_path": f"{component}.cactus",
+                    "runtime_input_node_ids": input_ids,
+                    "logical_inputs": inputs,
+                    "output_node_ids": output_ids,
+                    "logical_outputs": outputs,
+                }), encoding="utf-8")
+                manifests[component] = path
+
+            plan = RPModels.runtime_plan_from_generator_manifests(
+                manifests, bundle_dir=bundle_dir, model_profile=GEMMA4_E2B_PROFILE
+            )
+            alias = next(
+                value for value in plan.aliases
+                if value.source_component == "lm_encoder_text_chunk"
+            )
+
+            self.assertEqual(alias.source_node_id, -1)
+            self.assertEqual(alias.target_node_id, -1)
+            self.assertFalse(alias.storage_stable)
+            encoded = RPModels.runtime_alias_to_dict(alias)
+            self.assertNotIn("source_node_id", encoded)
+            self.assertNotIn("target_node_id", encoded)
+
+    def test_profile_runtime_metadata_includes_fusion_safety_contracts(self):
+        profile = replace(GEMMA4_E2B_PROFILE, disabled_fusions=("experimental_fusion",))
+        metadata = RPModels.runtime_plan_metadata_from_model_profile(profile)
+
+        self.assertEqual(metadata["disabled_fusions"], "experimental_fusion")
+
+    def test_terminal_activation_states_declare_last_consumers(self):
+        expected = (
+            (WHISPER_PROFILE, "encoder_hidden_states", ["decoder_cross_kv"]),
+            (PARAKEET_PROFILE, "encoder_hidden_states", ["asr_decoder"]),
+            (LFM_VLM_PROFILE, "vision_features", ["vision_projector"]),
+        )
+        for profile, state_name, consumers in expected:
+            with self.subTest(profile=profile.model_profiles):
+                state = next(value for value in profile.runtime_contract.states if value.name == state_name)
+                encoded = RPModels.runtime_state_to_dict(RPModels.runtime_state_from_contract(state))
+                self.assertEqual(encoded["release_after_consumers"], consumers)
+
+    def test_unknown_model_is_not_silently_mapped_to_generic_profile(self):
+        profile = profile_for_model_id("example/unknown-causal-lm")
+
+        self.assertIsNone(profile)
+
+
+if __name__ == "__main__":
+    unittest.main()

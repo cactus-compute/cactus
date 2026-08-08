@@ -335,10 +335,10 @@ def test_nomic_norm2_weight_uses_runtime_name():
 
 
 def test_nomic_keeps_qkv_and_moe_experts_fused():
-    # The v2 transpile path binds graph weights by their HF parameter name, so the
+    # Runtime graph bundles bind these weights by their HF parameter name, so the
     # converter emits one fused tensor per HF parameter (no q/k/v or per-expert split).
     # w2 is stored transposed so the second expert matmul can consume it as a direct
-    # linear weight in the transpiled graph.
+    # linear weight in the graph bundle.
     adapter = adapter_for_family("nomic")
     adapter.num_experts = 8
 

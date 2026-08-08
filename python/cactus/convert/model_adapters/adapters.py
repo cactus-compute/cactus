@@ -758,6 +758,13 @@ class Lfm2Adapter(FamilyAdapter):
         return Lfm2VlProcessor(image_processor=image_processor, tokenizer=tokenizer)
 
     def policy(self, match: NameMatch, shape: tuple[int, ...], requested_bits: int) -> TensorPolicy:
+        if (
+            match.source_name.startswith("model.vision_tower.")
+            or match.source_name.startswith("model.multi_modal_projector.")
+        ):
+            return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "lfm2-vl vision path accuracy")
+        if match.source_name.endswith("feed_forward.gate.weight"):
+            return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "moe router precision-sensitive")
         if match.output_name and (
             "moe_router" in match.output_name
             or "moe_expert_bias" in match.output_name

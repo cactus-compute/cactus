@@ -67,13 +67,10 @@ cactus convert Qwen/Qwen3-0.6B ./my-qwen3-0.6b --lora username/my-lora-adapter
 
 ### 4. Run
 
-Build the native library, then run (the convert above already produced the runtime
-bundle alongside the CQ weights):
-
-```bash
-cactus build
-cactus run ./my-qwen3-0.6b
-```
+The commands above currently produce CQ weights only. Local runtime bundle
+generation is unavailable while the graph builder is being rewritten, so deploy the
+fine-tuned model after the replacement graph builder lands, or run a prebuilt
+Cactus-Compute bundle with `cactus run <model>`.
 
 `cactus run` accepts the bundle path directly, or auto-builds from a HF model id
 when no bundle exists locally.

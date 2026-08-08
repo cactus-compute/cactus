@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,30 @@ from pathlib import Path
 from .common import GREEN, PROJECT_ROOT, RED, YELLOW, print_color
 
 
+def _default_multimodal_assets():
+    """Return bundled representative media used for multimodal graph capture."""
+    candidates = (
+        Path(__file__).resolve().parent.parent / "assets",
+        PROJECT_ROOT / "cactus-engine" / "tests" / "assets",
+    )
+
+    def find(name):
+        return next((directory / name for directory in candidates if (directory / name).exists()), None)
+
+    image = find("test_monkey.png")
+    audio = find("test.wav")
+    return ([str(image)] if image else []), (str(audio) if audio else None)
+
+
+def package_handoff_probe(output_dir, model_id):
+    """Bundle the cloud-handoff probe for models that provide one."""
+    try:
+        from cactus.convert.handoff_probe import export_handoff_probe
+
+        if export_handoff_probe(output_dir, model_id):
+            print_color(GREEN, f"Cloud handoff probe packaged into {output_dir}")
+    except Exception as exc:
+        print_color(YELLOW, f"Warning: failed to package cloud handoff probe: {exc}")
 
 
 def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=False):
@@ -67,152 +92,79 @@ def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=
     )
 
 
-
-_DEFAULT_MULTIMODAL_PROMPT = (
-    "Respond with 2 lines. The first should be a description of the image, "
-    "and the second should be a transcription of the audio"
-)
-_DEFAULT_TEXT_PROMPT = "Hello"
-
-
 @dataclass(frozen=True)
-class _TranspileSpec:
-    task: str
-    components: tuple[str, ...] = ()
-    default_max_new_tokens: int | None = None
-    needs_image: bool = False
-    needs_audio: bool = False
-    force_component_pipeline: bool = False
+class TranspileOptions:
+    input_modalities: tuple[str, ...] | None = None
+    generic_task: str | None = None
+    cache_style: str | None = None
+    fusion_groups: tuple[str, ...] | None = None
+    allow_unsupported_ops: bool = False
 
 
-def _spec_from_plan(plan):
-    return _TranspileSpec(
-        task=plan.task,
-        components=tuple(plan.components or ()),
-        default_max_new_tokens=plan.default_max_new_tokens,
-        needs_image=bool(plan.needs_image),
-        needs_audio=bool(plan.needs_audio),
-        force_component_pipeline=bool(plan.force_component_pipeline),
-    )
-
-
-def _infer_transpile_spec(*, task, plan):
-    if task != "auto":
-        if plan is not None and task == plan.task:
-            return _spec_from_plan(plan)
-        return _TranspileSpec(
-            task=task,
-            needs_image=task == "multimodal_causal_lm_logits",
-            needs_audio=task in {
-                "tdt_transcription", "seq2seq_transcription",
-                "ctc_logits", "encoder_hidden_states",
-                "multimodal_causal_lm_logits",
-            },
-            force_component_pipeline=task in {
-                "tdt_transcription", "seq2seq_transcription",
-                "multimodal_causal_lm_logits",
-            },
-        )
-
-    if plan is None:
-        return _TranspileSpec(task="causal_lm_logits")
-
-    return _spec_from_plan(plan)
-
-
-def _default_max_new_tokens(spec):
-    if spec.default_max_new_tokens is not None:
-        return int(spec.default_max_new_tokens)
-    return {
-        "seq2seq_transcription": 128,
-        "multimodal_causal_lm_logits": 512,
-        "causal_lm_logits": 128,
-    }.get(spec.task, 32)
-
-
-def _default_multimodal_assets():
-    """Return bundled test image/audio paths for multimodal shape capture."""
-    candidates = (
-        Path(__file__).resolve().parent.parent / "assets",
-        PROJECT_ROOT / "cactus-engine" / "tests" / "assets",
-    )
-    def _find(name):
-        return next((d / name for d in candidates if (d / name).exists()), None)
-    image = _find("test_monkey.png")
-    audio = _find("test.wav")
-    return ([str(image)] if image else []), (str(audio) if audio else None)
-
-
-def _default_audio_asset():
-    _, audio = _default_multimodal_assets()
-    return audio
-
-
-def _remove_stale_transpile_artifacts(output_dir):
-    for relative in (
-        "components",
-        "transpile_entrypoints.json",
-        "raw_ir.json",
-        "optimized_ir.json",
-        "graph.cactus",
-        "graph_bindings.json",
-        "result.json",
-    ):
-        path = output_dir / relative
-        if path.is_dir():
-            shutil.rmtree(path)
-        elif path.exists():
-            path.unlink()
-    for pattern in ("raw_ir_*.json", "optimized_ir_*.json"):
-        for path in output_dir.glob(pattern):
-            if path.is_file():
-                path.unlink()
-
-
-def _has_transpiled_bundle(path):
-    return (path / "components" / "manifest.json").exists()
-
-
-_AUDIO_TASKS = frozenset({
-    "tdt_transcription", "seq2seq_transcription",
-    "ctc_logits", "encoder_hidden_states",
-})
-
-
+def _has_runnable_bundle(path):
+    path = Path(path)
+    return (path / "components" / "manifest.json").exists() or (path / "runtime_plan.json").exists()
 
 
 def resolve_bundle_dir(model_id):
     path = Path(model_id).expanduser()
-    if path.is_dir() and _has_transpiled_bundle(path):
+    if path.is_file() and path.name == "runtime_plan.json":
+        path = path.parent
+
+    if path.is_dir() and _has_runnable_bundle(path):
+        materialize_engine_manifest_from_runtime_plan(path)
         return path
     return None
 
 
-@dataclass(frozen=True)
-class TranspileOptions:
-    task: str = "auto"
-    prompt: str | None = None
-    image_files: list[str] | None = None
-    audio_file: str | None = None
-    max_new_tokens: int | None = None
-    component_pipeline: str = "auto"
-    components: str | None = None
-    system_prompt: str | None = None
-    trust_remote_code: bool = False
-    local_files_only: bool = False
-    cache_context_length: str | int | None = None
+def materialize_engine_manifest_from_runtime_plan(bundle_dir):
+    bundle_path = Path(bundle_dir)
+    runtime_plan_path = bundle_path / "runtime_plan.json"
+    engine_manifest_path = bundle_path / "components" / "manifest.json"
+
+    if not runtime_plan_path.exists():
+        return engine_manifest_path if engine_manifest_path.exists() else None
+
+    if engine_manifest_path.exists() and engine_manifest_path.stat().st_mtime >= runtime_plan_path.stat().st_mtime:
+        return engine_manifest_path
+
+    plan = json.loads(runtime_plan_path.read_text(encoding="utf-8"))
+    manifest = engine_manifest_from_runtime_plan(plan)
+    engine_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    engine_manifest_path.write_text(json.dumps(manifest, indent=4), encoding="utf-8")
+    return engine_manifest_path
+
+
+def engine_manifest_from_runtime_plan(plan):
+    components = plan.get("components")
+
+    if not isinstance(components, list):
+        raise ValueError("runtime_plan.json must contain a components list")
+
+    manifest = {"components": components}
+    family = plan.get("family")
+
+    if family:
+        manifest["family"] = str(family)
+
+    metadata = plan.get("metadata")
+
+    if isinstance(metadata, dict):
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            manifest[str(key)] = str(value)
+
+    return manifest
 
 
 def ensure_runnable_bundle(model_id, *, bits=4, token=None,
                            reconvert=False, prebuilt=True, output_dir=None,
-                           transpile=None):
-    """Resolve a runnable bundle via the full fallback ladder, building if needed.
+                           transpile: TranspileOptions | None = None):
+    """Resolve a runnable bundle from a local path, cache, or prebuilt download.
 
-    Rungs, in order: (1) a local bundle path, (2) a cached prior build,
-    (3) a prebuilt bundle on HuggingFace, (4) local convert + transpile.
-    With prebuilt=False, rung (3) is skipped and the bundle is always built
-    locally when not already present.
-    Raises RuntimeError if every rung fails.
+    Resolution order is local bundle path, cached bundle, prebuilt download,
+    then local CQ conversion plus transpilation.
     """
     from .download import download_bundle, get_bundle_dir
 
@@ -224,26 +176,46 @@ def ensure_runnable_bundle(model_id, *, bits=4, token=None,
         raise RuntimeError(f"path not found: {model_id}")
 
     cached = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits)
-    if _has_transpiled_bundle(cached) and not reconvert:
+    if reconvert and cached.exists():
+        print_color(YELLOW, "Removing cached bundle before refresh...")
+        shutil.rmtree(cached)
+    elif _has_runnable_bundle(cached):
+        materialize_engine_manifest_from_runtime_plan(cached)
         return cached
 
-    if prebuilt and not reconvert:
+    if not prebuilt:
+        return ensure_bundle(
+            model_id,
+            bits=bits,
+            token=token,
+            reconvert=reconvert,
+            output_dir=cached,
+            transpile=transpile,
+        )
+
+    try:
+        return download_bundle(model_id, bits=bits, token=token, output_dir=cached)
+    except (RuntimeError, OSError) as exc:
+        print_color(YELLOW, f"No prebuilt bundle found for {model_id}; building locally...")
         try:
-            return download_bundle(model_id, bits=bits,
-                                   token=token, output_dir=cached)
-        except (RuntimeError, OSError) as exc:
-            print_color(YELLOW, f"No prebuilt bundle ({exc}); building locally")
+            return ensure_bundle(
+                model_id,
+                bits=bits,
+                token=token,
+                reconvert=reconvert,
+                output_dir=cached,
+                transpile=transpile,
+            )
+        except Exception as build_exc:
+            raise RuntimeError(f"Could not prepare runnable bundle for {model_id!r}") from build_exc
 
-    opts = transpile or TranspileOptions()
-    return ensure_bundle(model_id, bits=bits, token=token,
-                         reconvert=reconvert, output_dir=cached, transpile=opts)
 
-
-def prepare_bundle(args, *, model_id=None, transpile=None, prebuilt=True,
-                   output_dir=None, fail_prefix="Model setup failed"):
-    """Return a runnable bundle, with uniform error handling shared by every
-    model command. Returns the bundle Path, or None (after printing the error)
-    on failure."""
+def prepare_bundle(args, *, model_id=None, prebuilt=True,
+                   output_dir=None, fail_prefix="Model setup failed",
+                   transpile: TranspileOptions | None = None):
+    """Resolve and return a runnable bundle, with uniform
+    error handling shared by every model command. Returns the bundle Path, or
+    None (after printing the error) on failure."""
     try:
         return ensure_runnable_bundle(
             args.model_id if model_id is None else model_id,
@@ -259,133 +231,45 @@ def prepare_bundle(args, *, model_id=None, transpile=None, prebuilt=True,
         return None
 
 
-def package_handoff_probe(output_dir, model_id):
-    """Bundle the cloud-handoff probe for models that ship one (gemma-4-e2b-it)."""
-    try:
-        from cactus.convert.handoff_probe import export_handoff_probe
-
-        if export_handoff_probe(output_dir, model_id):
-            print_color(GREEN, f"Cloud handoff probe packaged into {output_dir}")
-    except Exception as e:
-        print_color(YELLOW, f"Warning: failed to package cloud handoff probe: {e}")
-
-
 def ensure_bundle(model_id, *, bits=4, token=None,
-                  reconvert=False, output_dir=None, transpile=None,
-                  skip_model_load=False):
-    from .common import convert_toolchain_error
-    err = convert_toolchain_error()
-    if err:
-        raise RuntimeError(err)
-    from .download import get_bundle_dir
-    from .transpile import run_transpile
-    from cactus.transpile.component_plan import infer_component_plan_from_output
+                  reconvert=False, output_dir=None,
+                  transpile: TranspileOptions | None = None):
+    from .transpiler import build_transpiled_bundle
 
-    opts = transpile or TranspileOptions()
-
-    if output_dir is not None:
-        output_dir = Path(output_dir).expanduser().resolve()
-    else:
-        output_dir = get_bundle_dir(model_id, bits=bits)
-
-    ensure_weights(
-        model_id, bits=bits, token=token,
-        reconvert=reconvert, output_dir=output_dir,
-        skip_model_load=skip_model_load,
+    weights_dir = ensure_weights(
+        model_id,
+        bits=bits,
+        token=token,
+        reconvert=reconvert,
+        output_dir=output_dir,
     )
 
-    if _has_transpiled_bundle(output_dir):
-        return output_dir
+    # Embedding models currently use main's mature graph-capture adapter.  The
+    # replacement transpiler intentionally handles generation/transcription
+    # contracts; treating an embedding encoder as a generic causal LM is wrong.
+    from cactus.transpile.component_plan import infer_component_plan_from_output
+    plan = infer_component_plan_from_output(str(weights_dir), model_id=model_id)
+    if plan is not None and plan.task == "text_embedding":
+        from .transpile import run_transpile
 
-    plan = infer_component_plan_from_output(str(output_dir), model_id=model_id)
-    spec = _infer_transpile_spec(task=opts.task, plan=plan)
-    _remove_stale_transpile_artifacts(output_dir)
+        rc = run_transpile(model_id, extra_args=[
+            "--weights-dir", str(weights_dir),
+            "--artifact-dir", str(weights_dir),
+        ])
+        if rc != 0:
+            raise RuntimeError(f"Build failed for {model_id}")
+        package_handoff_probe(weights_dir, model_id)
+        return weights_dir
 
-    spec_prompt = opts.prompt
-    spec_image_files = list(opts.image_files or [])
-    spec_audio_file = opts.audio_file
-
-    if spec_prompt is None and spec.task == "multimodal_causal_lm_logits":
-        spec_prompt = _DEFAULT_MULTIMODAL_PROMPT
-    elif spec_prompt is None and spec.task == "causal_lm_logits":
-        spec_prompt = _DEFAULT_TEXT_PROMPT
-
-    effective_component_pipeline = opts.component_pipeline
-    effective_components = opts.components
-
-    if spec.task == "multimodal_causal_lm_logits":
-        needs_image = spec.needs_image
-        needs_audio = spec.needs_audio
-        if not needs_image and not needs_audio:
-            needs_image = bool(spec_image_files)
-            needs_audio = bool(spec_audio_file)
-        if (needs_image and not spec_image_files) or (needs_audio and not spec_audio_file):
-            default_images, default_audio = _default_multimodal_assets()
-            if needs_image and not spec_image_files:
-                spec_image_files = default_images
-            if needs_audio and not spec_audio_file:
-                spec_audio_file = default_audio
-            print_color(
-                YELLOW,
-                "Multimodal transpile needs representative media shapes; "
-                "using bundled tiny test assets.",
-            )
-        if needs_image and not spec_image_files:
-            raise RuntimeError("Building this multimodal model requires --image-file.")
-        if needs_audio and not spec_audio_file:
-            raise RuntimeError("Building this multimodal model requires --audio-file.")
-
-    if effective_component_pipeline == "auto" and spec.force_component_pipeline:
-        effective_component_pipeline = "on"
-    if effective_components is None and spec.components:
-        effective_components = ",".join(spec.components)
-
-    used_default_audio = False
-    if spec.task in _AUDIO_TASKS and not spec_audio_file:
-        spec_audio_file = _default_audio_asset()
-        used_default_audio = spec_audio_file is not None
-    if spec.task in _AUDIO_TASKS and used_default_audio:
-        print_color(
-            YELLOW,
-            f"{spec.task} transpile needs a representative audio shape; "
-            "using bundled tiny test audio asset.",
-        )
-    elif spec.task in _AUDIO_TASKS and not spec_audio_file:
-        raise RuntimeError(f"Building a {spec.task} model requires --audio-file.")
-
-    effective_max_new_tokens = opts.max_new_tokens or _default_max_new_tokens(spec)
-
-    extra_args = [
-        "--weights-dir", str(output_dir),
-        "--artifact-dir", str(output_dir),
-        "--task", spec.task,
-        "--max-new-tokens", str(effective_max_new_tokens),
-        "--component-pipeline", effective_component_pipeline,
-    ]
-    if spec_prompt is not None:
-        extra_args.extend(["--prompt", spec_prompt])
-    if effective_components:
-        extra_args.extend(["--components", str(effective_components)])
-    for img in spec_image_files:
-        extra_args.extend(["--image-file", img])
-    if spec_audio_file:
-        extra_args.extend(["--audio-file", str(spec_audio_file)])
-    if opts.system_prompt:
-        extra_args.extend(["--system-prompt", str(opts.system_prompt)])
-    if token:
-        extra_args.extend(["--token", token])
-    if opts.trust_remote_code or spec.task == "multimodal_causal_lm_logits":
-        extra_args.append("--trust-remote-code")
-    if opts.local_files_only:
-        extra_args.append("--local-files-only")
-    if opts.cache_context_length is not None:
-        extra_args.extend(["--cache-context-length", str(opts.cache_context_length)])
-
-    rc = run_transpile(model_id, extra_args=extra_args)
-    if rc != 0:
-        raise RuntimeError(f"Build failed for {model_id}")
-
-    package_handoff_probe(output_dir, model_id)
-
-    print_color(GREEN, f"Model built at {output_dir}")
-    return output_dir
+    opts = transpile or TranspileOptions()
+    return build_transpiled_bundle(
+        model_id,
+        weights_dir=weights_dir,
+        output_dir=weights_dir,
+        token=token,
+        input_modalities=opts.input_modalities,
+        generic_task=opts.generic_task,
+        cache_style=opts.cache_style,
+        fusion_groups=opts.fusion_groups,
+        allow_unsupported_ops=opts.allow_unsupported_ops,
+    )

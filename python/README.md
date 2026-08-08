@@ -376,8 +376,8 @@ python python/test.py        # compact output
 python python/test.py -v     # verbose
 ```
 
-Tests are in `python/tests/` — bindings, CLI, server, graph, model, transpile,
-and component-partition coverage. Add a new `test_*.py` to extend.
+Tests are in `python/tests/` — bindings, CLI, server, graph, and model coverage.
+Add a new `test_*.py` to extend.
 
 ## See Also
 

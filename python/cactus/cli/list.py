@@ -2,7 +2,7 @@ import itertools
 import stat as _stat
 import struct
 
-from .common import CYAN, print_color, transpiled_root, weights_root
+from .common import BLUE, CYAN, print_color, weights_root
 
 _PREC_TO_BITS = {3: 1, 4: 2, 5: 3, 6: 4}
 
@@ -88,16 +88,34 @@ def _collect(roots):
     return models
 
 
-def cmd_list(_args):
-    models = _collect((weights_root(), transpiled_root()))
-    print_color(CYAN, "Available models")
+def _is_runnable_bundle(path):
+    return (path / "components" / "manifest.json").is_file()
+
+
+def _categorize(roots):
+    converted = []
+    runnable = []
+    for item in _collect(roots):
+        path = item[0]
+        if _is_runnable_bundle(path):
+            runnable.append(item)
+        else:
+            converted.append(item)
+    return converted, runnable
+
+
+def _print_section(title, color, models):
+    print_color(color, title)
     if not models:
         print("  (none)")
-        return 0
-    name_w = max(len(p.name) for p, _, _, _ in models)
-    type_w = max(len("type"), max(len(t) for _, t, _, _ in models))
-    quant_w = max(len("quant"), max(len(q) for _, _, q, _ in models))
-    print(f"  {'name':<{name_w}}  {'type':<{type_w}}  {'quant':<{quant_w}}  {'size':>10}  location")
-    for p, model_type, quant, size in models:
-        print(f"  {p.name:<{name_w}}  {model_type:<{type_w}}  {quant:<{quant_w}}  {_human_size(size):>10}  {p.parent}")
+        return
+    for path, model_type, quant, size in models:
+        print(f"  {path.name:<32} {model_type:<18} {quant:<4} {_human_size(size):>9}  {path}")
+
+
+def cmd_list(_args):
+    converted, runnable = _categorize((weights_root(),))
+    _print_section("Converted weights (cactus convert)", BLUE, converted)
+    print()
+    _print_section("Runnable bundles (cactus download)", CYAN, runnable)
     return 0

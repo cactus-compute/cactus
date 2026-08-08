@@ -17,7 +17,7 @@ A hybrid edge-cloud AI engine for mobile devices & wearables.
 └─────────────────┘     
          │
 ┌─────────────────┐
-│  Cactus Graph   │ ←── Zero-copy computation graph 
+│  Cactus Graph   │ ←── Zero-copy computation graph
 └─────────────────┘     
          │
 ┌─────────────────┐
@@ -25,12 +25,8 @@ A hybrid edge-cloud AI engine for mobile devices & wearables.
 └─────────────────┘     
          │
 ┌─────────────────┐
-│ Cactus Quants   │ ←── Custom rotation-based quantization technique 
+│ Cactus Quants   │ ←── Custom rotation-based quantization technique
 └─────────────────┘  
-         │
-┌─────────────────┐
-│Cactus Transpiler│ ←── Transpiles custom PyTorch model to Cactus.
-└─────────────────┘
 ```
 
 ## Quick Demo (Mac)
@@ -126,7 +122,7 @@ graph.hard_reset();
 - VLM: Gemma-4-E2B-CQ4 (256px image encode time / decode)
 - Transcribe: Parakeet-TDT-0.6B-CQ4 (20s audio end-to-end transcribe time)
 - 1k-Context RAM: peak MB during the LLM benchmark
-- No speculative decode or MTP, pure decode 
+- No speculative decode or MTP, pure decode
 
 Command: `cactus benchmark` [optional `--ios` or `--android`]
 
@@ -141,14 +137,14 @@ Command: `cactus benchmark` [optional `--ios` or `--android`]
 
 N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 - `LFM2.5-VL-1.6B` = 289toks/sec
-- `Qwen3-1.7B` = 155toks/sec 
+- `Qwen3-1.7B` = 155toks/sec
 - `LFM2.5-VL-450m` = 472toks/sec, image encodes in 43ms
 - `LFM22.5-VL-230m` = 555toks/sec
 
-## Output Quality 
+## Output Quality
 
-- Gemma-4-E2B-it accuracy across bit widths, averaged over 3 seeds. 
-- CQ3.26 and CQ2.54 are mixed-precision, CQ2/CQ3/CQ4 are uniformly quantized. 
+- Gemma-4-E2B-it accuracy across bit widths, averaged over 3 seeds.
+- CQ3.26 and CQ2.54 are mixed-precision, CQ2/CQ3/CQ4 are uniformly quantized.
 - Full results in [docs/cactus_quants.md](/docs/cactus_quants.md):
 
 | Task | F16 (Original) | CQ4 | CQ3.26 | CQ2.54 | CQ2 |
@@ -168,10 +164,10 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 
 ## Supported Models
 
-- Any HuggingFace model can be converted using `cactus convert [HF-Name]`, though experimental. 
-- Liquid, Gemma. whisper. parakeet and Qwen model families are especially tested. 
+- Any HuggingFace model can be converted using `cactus convert [HF-Name]`, though experimental.
+- Liquid, Gemma. whisper. parakeet and Qwen model families are especially tested.
 - Some models have been pre-uploaded [here](https://huggingface.co/Cactus-Compute), just run `cactus download [HF-Name]`.
-- `cactus run [HF-Name]` albeit first downloads or convert the model if not found. 
+- `cactus run [HF-Name]` albeit first downloads or convert the model if not found.
 
 ## Needle
 
@@ -190,7 +186,6 @@ cactus run Cactus-Compute/needle [--tools my_tools.json]  # OpenAI function-call
 | [Cactus Kernels](/docs/cactus_kernels.md) | C++ | ARM NEON SIMD kernels for matmul, attention, convolution, quantization, DSP, image processing |
 | [Cactus Quants](/docs/cactus_quants.md) | C++ | Rotation-and-codebook quantization from 4-bit to 1-bit for all weight tensors |
 | [Cactus Hybrid](/docs/cactus_hybrid.md) | C/Python | Route hard queries to the cloud automatically based on local model confidence |
-| [Cactus Transpiler](/docs/cactus_transpiler.md) | Python | Convert any PyTorch model to a Cactus runtime graph for on-device inference |
 | [Python Package](/python/) | Python | Python package and CLI |
 
 ## Bindings
@@ -244,13 +239,12 @@ cactus run Cactus-Compute/needle [--tools my_tools.json]  # OpenAI function-call
 │  cactus download [model]             get a bundle (prebuilt, else build)       │
 │    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --token <token>                   HuggingFace token (gated models)          │
-│    --reconvert                       force local rebuild from source           │
+│    --reconvert                       refresh cached bundle                     │
 │                                                                                │
-│  cactus convert <model> [dir]        HuggingFace -> runnable cactus bundle     │
-│                                      (CQ weights + runtime graph)              │
+│  cactus convert <model> [dir]        HuggingFace -> Cactus CQ weights          │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --token <token>                   HuggingFace token (gated models)          │
-│    --reconvert                       force local rebuild from source           │
+│    --reconvert                       force weight conversion from source       │
 │    --lora <path>                     merge a LoRA adapter before converting    │
 │    --weights-only                    stop after CQ weights (skip the graph)    │
 │    --artifact-dir <path>             bundle output (default: weights/<model>)  │
