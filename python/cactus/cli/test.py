@@ -29,8 +29,6 @@ def _component_args(component, args):
     cmd = [str(PROJECT_ROOT / f"cactus-{component}" / "test.sh")]
     if args.suite:
         cmd.extend(["--suite", args.suite])
-    if component == "graph" and getattr(args, "vae_model_id", None):
-        cmd.extend(["--vae-model", args.vae_model_id])
     if component == "engine":
         cmd.extend(["--model", args.model_id])
         cmd.extend(["--transcription-model", args.transcription_model_id])
@@ -111,6 +109,8 @@ def cmd_test(args):
         env.pop("CACTUS_NO_CLOUD_TELE", None)
     else:
         env["CACTUS_NO_CLOUD_TELE"] = "1"
+    if getattr(args, "vae_model_id", None):
+        env["CACTUS_TEST_VAE_MODEL"] = args.vae_model_id
 
     for c in targets:
         cmd = _component_args(c, args)

@@ -7,13 +7,9 @@ SUITE=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --suite) SUITE="${2:?--suite needs an argument}"; shift 2 ;;
-        --vae-model) CACTUS_TEST_VAE_MODEL="${2:?--vae-model needs an argument}"; shift 2 ;;
         *) echo "Unknown arg: $1" >&2; exit 2 ;;
     esac
 done
-
-export CACTUS_TEST_VAE_MODEL="${CACTUS_TEST_VAE_MODEL:-}"
-export CACTUS_TEST_ASSETS="$(pwd)/../cactus-engine/tests/assets"
 
 echo "Building and testing cactus-graph..."
 
