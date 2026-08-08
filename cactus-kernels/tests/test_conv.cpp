@@ -149,6 +149,35 @@ bool test_upsample_nearest2d() {
 
 bool run_benchmarks() {
     {
+        const size_t N = 1, C_in = 64, C_out = 64, H = 512, W = 512;
+        std::vector<__fp16> input(N * C_in * H * W), weight(C_out * C_in * 9), output(N * C_out * H * W);
+        fill_random_fp16(input, -0.5f, 0.5f);
+        fill_random_fp16(weight, -0.5f, 0.5f);
+        cactus_conv2d_f16_k3s1p1_nchw(input.data(), weight.data(), nullptr, output.data(), N, C_in, H, W, C_out);
+        Timer t;
+        for (int i = 0; i < 10; i++)
+            cactus_conv2d_f16_k3s1p1_nchw(input.data(), weight.data(), nullptr, output.data(), N, C_in, H, W, C_out);
+        double ms = t.elapsed_ms() / 10.0;
+        double gflops = (2.0 * N * C_out * H * W * 9 * C_in) / (ms * 1e6);
+        std::cout << "  ⚡ " << std::left << std::setw(28) << "conv2d_k3s1p1 64x512x512"
+                  << std::fixed << std::setprecision(3) << ms << "ms  "
+                  << std::setprecision(1) << gflops << " GFLOPS\n";
+    }
+    {
+        const size_t planes = 64, H = 256, W = 256, scale = 2;
+        std::vector<__fp16> input(planes * H * W), output(planes * H * scale * W * scale);
+        fill_random_fp16(input, -0.5f, 0.5f);
+        cactus_upsample_nearest2d_f16(input.data(), output.data(), planes, H, W, scale);
+        Timer t;
+        for (int i = 0; i < 50; i++)
+            cactus_upsample_nearest2d_f16(input.data(), output.data(), planes, H, W, scale);
+        double ms = t.elapsed_ms() / 50.0;
+        double gbs = (output.size() * sizeof(__fp16)) / (ms * 1e6);
+        std::cout << "  ⚡ " << std::left << std::setw(28) << "upsample_nearest2d 64x256^2"
+                  << std::fixed << std::setprecision(3) << ms << "ms  "
+                  << std::setprecision(1) << gbs << " GB/s\n";
+    }
+    {
         const size_t N = 1, L = 3000, C_in = 80, C_out = 512, stride = 1;
         const size_t L_out = ((L - 1) / stride) + 1;
         std::vector<__fp16> input(N * L * C_in), weight(C_out * 3 * C_in), output(N * L_out * C_out);

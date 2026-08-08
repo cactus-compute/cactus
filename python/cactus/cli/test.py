@@ -3,8 +3,7 @@ import subprocess
 
 from .common import (
     BLUE, DEFAULT_TEST_MODEL_ID, DEFAULT_TEST_TRANSCRIPTION_MODEL_ID,
-    DEFAULT_TEST_VAE_MODEL_ID, PROJECT_ROOT, RED, YELLOW,
-    apply_cloud_api_key_env, print_color,
+    PROJECT_ROOT, RED, YELLOW, apply_cloud_api_key_env, print_color,
 )
 
 COMPONENTS = ("kernels", "graph", "engine", "all")
@@ -75,21 +74,6 @@ def cmd_test(args):
     else:
         targets = ("kernels", "graph", "engine") if args.component == "all" else (args.component,)
 
-    if "graph" in targets:
-        from .model import ensure_weights
-
-        try:
-            args.vae_model_id = str(ensure_weights(
-                getattr(args, "vae_model_id", None) or DEFAULT_TEST_VAE_MODEL_ID,
-                bits=getattr(args, "bits", 4),
-                token=getattr(args, "token", None),
-                reconvert=getattr(args, "reconvert", False),
-                skip_model_load=True,
-            ))
-        except (RuntimeError, OSError, ValueError) as exc:
-            print_color(YELLOW, f"VAE weights unavailable ({exc}); the vae suite will be skipped")
-            args.vae_model_id = None
-
     if "engine" in targets:
         from .model import prepare_bundle
         model_dir = prepare_bundle(args, model_id=args.model_id or DEFAULT_TEST_MODEL_ID,
@@ -109,8 +93,6 @@ def cmd_test(args):
         env.pop("CACTUS_NO_CLOUD_TELE", None)
     else:
         env["CACTUS_NO_CLOUD_TELE"] = "1"
-    if getattr(args, "vae_model_id", None):
-        env["CACTUS_TEST_VAE_MODEL"] = args.vae_model_id
 
     for c in targets:
         cmd = _component_args(c, args)
