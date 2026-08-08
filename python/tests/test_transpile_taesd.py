@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-diffusers = pytest.importorskip("diffusers")
+pytest.importorskip("diffusers")
 
 try:
     from cactus.transpile.capture_pytorch import capture_model
