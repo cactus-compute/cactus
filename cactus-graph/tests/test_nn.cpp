@@ -705,6 +705,29 @@ bool run_benchmarks() {
         g.set_input(ii, in.data(), Precision::FP16);
         bench("softmax 1024x1024", []{}, [&]{ g.execute(); });
     }
+    {
+        const size_t channels = 64, height = 512, width = 512;
+        std::vector<__fp16> in(channels * height * width), w(channels * channels * 9);
+        TestUtils::fill_random_fp16(in);
+        TestUtils::fill_random_fp16(w);
+        CactusGraph g;
+        size_t ii = g.input({1, channels, height, width}, Precision::FP16);
+        size_t iw = g.input({channels, channels, 3, 3}, Precision::FP16);
+        g.conv2d_k3s1p1(ii, iw);
+        g.set_input(ii, in.data(), Precision::FP16);
+        g.set_input(iw, w.data(), Precision::FP16);
+        bench("conv2d_k3s1p1 64x512x512", []{}, [&]{ g.execute(); });
+    }
+    {
+        const size_t channels = 64, height = 256, width = 256;
+        std::vector<__fp16> in(channels * height * width);
+        TestUtils::fill_random_fp16(in);
+        CactusGraph g;
+        size_t ii = g.input({1, channels, height, width}, Precision::FP16);
+        g.upsample_nearest2d(ii, 2);
+        g.set_input(ii, in.data(), Precision::FP16);
+        bench("upsample_nearest2d 64x256^2", []{}, [&]{ g.execute(); });
+    }
     return true;
 }
 
