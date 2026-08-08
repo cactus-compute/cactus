@@ -5,11 +5,11 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from . import constants
-from . import models
-from .errors import UnsupportedLoweringError
+from .. import constants
+from .. import models
+from ..errors import UnsupportedLoweringError
 from .lowering_utils import *
-from ..IR import models as IRModels
+from ...IR import models as IRModels
 
 LFM_GROUPED_MOE_TARGET_RE = re.compile(r"^layers\.(\d+)\.feed_forward\.experts\.(gate_up_proj|down_proj)$")
 

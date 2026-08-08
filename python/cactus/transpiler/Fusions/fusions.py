@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from . import models as M
-from .fusion_attention import *
+from .fusion_defs.fusion_attention import *
 from .fusion_builders import (
     _definition,
     _index_by_root_op,
     _required_attrs,
 )
 from .fusion_cache_conv import *
-from .fusion_direct import *
-from .fusion_moe import *
-from .fusion_neural import *
-from .fusion_special import *
+from .fusion_defs.fusion_direct import *
+from .fusion_defs.fusion_moe import *
+from .fusion_defs.fusion_neural import *
+from .fusion_defs.fusion_special import *
 
 DIRECT_CACTUS_OPS: dict[str, str] = {
     "sqrt": "scalar_sqrt",

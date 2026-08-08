@@ -1,10 +1,8 @@
-from __future__ import annotations
-
 from typing import Any
 
-from . import models, match_utils
-from .extra_matcher_common import *
-from ..Fusions import models as FModels
+from .. import models, match_utils
+from ...Fusions import models as FModels
+from . import extra_matcher_common as em
 
 def classify_linear_rhs(node: models.Node) -> tuple[str, models.Node] | None:
     """Classifies the right-hand side of a linear/matmul as direct or transposed."""
@@ -15,11 +13,11 @@ def classify_linear_rhs_(node: models.Node, seen: set[int]) -> tuple[str, models
     if id(node) in seen:
         return None
     seen.add(id(node))
-    if node.target in COPY_TARGETS and len(node.parents) == 1:
+    if node.target in em.COPY_TARGETS and len(node.parents) == 1:
         return classify_linear_rhs_(node.parents[0], seen)
-    if node.value_kind in WEIGHT_VALUE_KINDS:
+    if node.value_kind in em.WEIGHT_VALUE_KINDS:
         return ("direct", node)
-    if node.target in TRANSPOSE_TARGETS and len(node.parents) == 1 and node.parents[0].value_kind in WEIGHT_VALUE_KINDS:
+    if node.target in em.TRANSPOSE_TARGETS and len(node.parents) == 1 and node.parents[0].value_kind in em.WEIGHT_VALUE_KINDS:
         if linear_transpose_is_valid(node, node.parents[0]):
             return ("transposed", node.parents[0])
     return None
@@ -34,7 +32,7 @@ def linear_transpose_is_valid(node: models.Node, source_weight: models.Node) -> 
     if node.target == "aten.transpose.int":
         dim0 = node.attrs.get("dim0", match_utils.MISSING)
         dim1 = node.attrs.get("dim1", match_utils.MISSING)
-        return {normalize_dim(dim0, 2), normalize_dim(dim1, 2)} == {0, 1}
+        return {em.normalize_dim(dim0, 2), em.normalize_dim(dim1, 2)} == {0, 1}
     permutation = node.attrs.get("permutation", match_utils.MISSING)
     return match_utils.values_equal(permutation, [1, 0])
 
@@ -67,24 +65,24 @@ def compatible_shapes(left_shape: list[Any], right_shape: list[Any], spec: dict[
         return bool(spec.get("allow_missing", False))
     return (
         match_utils.values_equal(left_shape, right_shape)
-        or shapes_are_broadcastable(left_shape, right_shape)
-        or shapes_are_broadcastable(right_shape, left_shape)
+        or em.shapes_are_broadcastable(left_shape, right_shape)
+        or em.shapes_are_broadcastable(right_shape, left_shape)
     )
 
 def compatible_dtypes(left_node: models.Node, right_node: models.Node, spec: dict[str, Any]) -> bool:
     """Checks whether two nodes have matching output dtypes when required."""
     if not spec.get("require_same_dtype", True):
         return True
-    left_dtype = get_node_dtype(left_node)
-    right_dtype = get_node_dtype(right_node)
+    left_dtype = em.get_node_dtype(left_node)
+    right_dtype = em.get_node_dtype(right_node)
     if left_dtype is match_utils.MISSING or right_dtype is match_utils.MISSING:
         return bool(spec.get("allow_missing", False))
     return match_utils.values_equal(left_dtype, right_dtype)
 
 def compatible_trig_sources(cos_node: models.Node, sin_node: models.Node, spec: dict[str, Any]) -> bool:
     """Checks whether RoPE cos and sin tables appear to come from the same angles."""
-    cos_sources = collect_trig_angle_sources(cos_node, COS_TARGETS, int(spec.get("max_trig_depth", 8)))
-    sin_sources = collect_trig_angle_sources(sin_node, SIN_TARGETS, int(spec.get("max_trig_depth", 8)))
+    cos_sources = collect_trig_angle_sources(cos_node, em.COS_TARGETS, int(spec.get("max_trig_depth", 8)))
+    sin_sources = collect_trig_angle_sources(sin_node, em.SIN_TARGETS, int(spec.get("max_trig_depth", 8)))
     if cos_sources or sin_sources:
         return cos_sources == sin_sources
     return not spec.get("require_trig_sources", False)
@@ -117,7 +115,7 @@ def rope_table_shape_matches_x(table_shape: list[Any], x_shape: list[Any]) -> bo
     """Checks one RoPE table shape against the activation being rotated."""
     if not table_shape:
         return False
-    if shapes_are_broadcastable(table_shape, x_shape):
+    if em.shapes_are_broadcastable(table_shape, x_shape):
         return True
     table_last = table_shape[-1]
     x_last = x_shape[-1]
@@ -137,8 +135,8 @@ def gate_shape_matches(gate_node: models.Node, gate_count: int, spec: dict[str, 
 
 def has_explicit_gate_split(gate_node: models.Node, gate_count: int, max_depth: int) -> bool:
     """Looks for a visible split/chunk/unbind that separates combined LSTM gates."""
-    for node in walk_children(gate_node, max_depth):
-        if node.target not in SPLIT_TARGETS:
+    for node in em.walk_children(gate_node, max_depth):
+        if node.target not in em.SPLIT_TARGETS:
             continue
         if split_node_has_gate_count(node, gate_count):
             return True

@@ -7,10 +7,10 @@ from typing import Any
 
 import numpy as np
 
-from . import constants
-from . import models
-from .errors import UnsupportedLoweringError
-from ..IR import models as IRModels
+from .. import constants
+from .. import models
+from ..errors import UnsupportedLoweringError
+from ...IR import models as IRModels
 
 SIZE_T_MAX = (1 << 64) - 1
 

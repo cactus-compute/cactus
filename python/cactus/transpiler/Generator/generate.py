@@ -13,11 +13,11 @@ from typing import Any
 
 import numpy as np
 
-from . import component_split
 from . import constants
 from . import models
 from . import lowerings as lowering_engine
-from .lowering_utils import aligned_offset
+from .component_splits import component_split
+from .lowerings.lowering_utils import aligned_offset
 from ..Converter import models as CModels
 from ..IR import models as IRModels
 from ..RuntimePlan import models as RPModels

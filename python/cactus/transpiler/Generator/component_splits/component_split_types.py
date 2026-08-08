@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from ..Fusions import models as FModels
-from ..IR import models as IRModels
+from ...Fusions import models as FModels
+from ...IR import models as IRModels
 
 PREFILL_WITH_CACHE_TASK = "prefill_with_cache"
 DECODE_WITH_CACHE_TASK = "decode_with_cache"

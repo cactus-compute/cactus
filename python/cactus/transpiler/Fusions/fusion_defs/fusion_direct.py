@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import models as M
-from .fusion_builders import _graph, _single_node_graph, _variadic_input
+from .. import models as M
+from ..fusion_builders import _graph, _single_node_graph, _variadic_input
 
 def _capture(name: str, node: str, source_attr: str, *, default: Any = None, required: bool = False) -> M.AttrCapture:
     return M.AttrCapture(name, node, source_attr, default=default, required=required)

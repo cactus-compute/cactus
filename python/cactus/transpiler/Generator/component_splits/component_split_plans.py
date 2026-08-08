@@ -6,7 +6,7 @@ from typing import Any
 from .component_split_boundaries import *
 from .component_split_builder import extract_component_graph, retarget_whisper_decoder_cross_kv_layout
 from .component_split_types import *
-from ..IR import models as IRModels
+from ...IR import models as IRModels
 
 def split_component_graphs(
     graphs: Mapping[str, IRModels.Graph],

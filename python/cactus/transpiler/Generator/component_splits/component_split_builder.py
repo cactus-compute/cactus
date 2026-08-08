@@ -6,8 +6,8 @@ from typing import Any
 
 from .component_split_types import ComponentSplitSpec, PlaceholderSpec
 from .component_split_utils import element_count, tensor_shape
-from ..Fusions import models as FModels
-from ..IR import models as IRModels
+from ...Fusions import models as FModels
+from ...IR import models as IRModels
 
 def extract_component_graph(spec: ComponentSplitSpec) -> IRModels.Graph:
     placeholder_specs = {placeholder.name: placeholder for placeholder in spec.placeholders}

@@ -67,7 +67,11 @@ def build_transpiled_bundle(
     from cactus.transpiler.Converter import constants as converter_constants
     from cactus.transpiler.Converter.convert import convert as export_layer_map
     from cactus.transpiler.Converter.models import LayerMap
+    from cactus.transpiler.Converter.version import VERSION as converter_version
     from cactus.transpiler.Generator.generate import generate_bundle
+    from cactus.transpiler.Generator.version import VERSION as generator_version
+    from cactus.transpiler.IR import simplify_ir
+    from cactus.transpiler.IR.version import VERSION as ir_version
 
     profile_id = profile_model_id or model_id
     resolved = resolve_transpile_config(
@@ -102,8 +106,10 @@ def build_transpiled_bundle(
         f"Transpiling {model_id} with {profile_source} contract "
         f"'{profile.model_profiles}' and modalities: {', '.join(modalities)}",
     )
+    graph_paths: dict[str, tuple[Path, Path]] = {}
     simplified_maps: dict[str, LayerMap] = {}
 
+    print_color(YELLOW, f"Running converter (Crassus v{converter_version})")
     for mode in resolved.inference_modes:
         raw_path = ir_dir / f"output_{mode}.json"
         simplified_path = ir_dir / f"output_{mode}_simplified.json"
@@ -114,13 +120,26 @@ def build_transpiled_bundle(
             output_path=str(raw_path),
             custom_profile=profile,
             inference_mode=mode,
-            simplified_output_path=str(simplified_path),
+            simplified_output_path=None,
         )
         component_key = "decoder_full_context" if mode == "prefill_no_cache" else mode_name(mode)
+        graph_paths[component_key] = (raw_path, simplified_path)
+
+    print_color(YELLOW, f"Running IR simplifier (Pompey v{ir_version})")
+    for component_key, (raw_path, simplified_path) in graph_paths.items():
+        simplify_ir.write_simplified_json(
+            LayerMap.model_validate_json(raw_path.read_text(encoding="utf-8")),
+            simplified_path,
+            input_modalities=modalities,
+            fusion_fields=profile.fusion_fields,
+            disabled_fusion_fields=profile.disabled_fusion_fields,
+            disabled_fusions=profile.disabled_fusions,
+        )
         simplified_maps[component_key] = LayerMap.model_validate_json(
             simplified_path.read_text(encoding="utf-8")
         )
 
+    print_color(YELLOW, f"Running Generator (Caesar v{generator_version})")
     result = generate_bundle(
         simplified_maps,
         bundle_path,

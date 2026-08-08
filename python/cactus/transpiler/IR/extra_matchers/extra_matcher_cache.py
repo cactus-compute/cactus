@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import models, match_utils
+from .. import models, match_utils
 from .extra_matcher_common import *
-from ..Fusions import models as FModels
+from ...Fusions import models as FModels
 
 def match_cache_roll_append_structure(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node], spec: dict[str, Any]) -> bool:
     cache_node = match_utils.get_first_input_by_role(fusion, bindings, spec["cache_role"])

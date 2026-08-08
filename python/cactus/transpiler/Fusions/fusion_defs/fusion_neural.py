@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from . import edges as E
-from . import models as M
-from .fusion_builders import _graph, _input, _shared_input
+from .. import edges as E
+from .. import models as M
+from ..fusion_builders import _graph, _input, _shared_input
 
 LINEAR_GRAPH = _graph(
     "linear",

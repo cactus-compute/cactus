@@ -1,9 +1,7 @@
-from __future__ import annotations
-
 from typing import Any, Callable
 
-from . import models, match_utils
-from ..Fusions import models as FModels
+from .. import models, match_utils
+from ...Fusions import models as FModels
 
 ExtraMatcher = Callable[[models.Node, models.Graph, FModels.FusionGraph, dict[str, models.Node], dict[str, Any]], bool]
 

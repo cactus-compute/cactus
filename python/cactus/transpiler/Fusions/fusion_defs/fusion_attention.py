@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from . import edges as E
-from . import models as M
-from .fusion_builders import _graph, _input, _shared_input, _single_node_graph
+from .. import edges as E
+from .. import models as M
+from ..fusion_builders import _graph, _input, _shared_input, _single_node_graph
 
 ATTENTION_DIRECT_GRAPH = _graph(
     "scaled_dot_product_attention",

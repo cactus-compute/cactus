@@ -3,12 +3,12 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from . import models
-from .errors import UnsupportedLoweringError
+from .. import models
+from ..errors import UnsupportedLoweringError
 from .lowering_utils import *
-from ..Fusions import models as FModels
-from ..IR import models as IRModels
-from ..RuntimePlan import models as RPModels
+from ...Fusions import models as FModels
+from ...IR import models as IRModels
+from ...RuntimePlan import models as RPModels
 
 def cache_attention_generation_plan(graph: IRModels.Graph, model_profile: Any | None = None) -> tuple[frozenset[str], frozenset[str], dict[str, IRModels.CacheAnnotation]]:
     skip_names: set[str] = set()

@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from . import constants
-from . import models
-from .errors import UnsupportedLoweringError
+from .. import constants
+from .. import models
+from ..errors import UnsupportedLoweringError
 from .lowering_basic_ops import *
 from .lowering_cache import cache_attention_generation_plan, lower_cache, lower_cache_placeholder, should_lower_cache_placeholder_as_state, lower_attention
 from .lowering_constant_ops import *
@@ -13,7 +13,7 @@ from .lowering_nn_ops import lower_conv, lower_norm
 from .lowering_special_ops import lower_moe, lower_special_cactus, lower_unsupported_semantic
 from .lowering_utils import *
 from .lowering_weights import bind_weight_placeholder, lower_lfm_grouped_moe_placeholder, should_dequantize_int8_weight_placeholder
-from ..IR import models as IRModels
+from ...IR import models as IRModels
 
 def create_cactus_graph() -> Any:
     try:

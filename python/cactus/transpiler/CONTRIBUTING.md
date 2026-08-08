@@ -2,14 +2,14 @@
 
 The transpiler turns an exported PyTorch graph into a Cactus runtime bundle in four stages:
 
-1. `Converter/` exports a model and serializes the graph as a `LayerMap`.
-2. `IR/` normalizes the exported graph and applies safe graph fusions.
-3. `Generator/` splits the graph into components and lowers each operation to Cactus calls.
+1. `Converter/` exports a model and serializes the graph as a `LayerMap`, this can be visualized through JSON and serves as the intermediary representation of the model.
+2. `IR/` normalizes the exported graph and applies safe graph fusions for cactus-native operations.
+3. `Generator/` splits the graph into ModelProfile specified components, and lowers each fused operation to Cactus calls.
 4. `RuntimePlan/` and `ModelProfiles/` describe component routes, persistent state, cache bindings, and metadata files.
 
-Keep model-specific behavior in `ModelProfiles/` or a narrowly scoped matcher. Shared lowering and graph code must remain independent of Hugging Face model names.
+Keep model-specific behavior in `ModelProfiles/` or a narrowly scoped matcher. Shared lowering and graph code must remain independent of Hugging Face model names!!!
 
-## Registered and generic models
+## Updating Converter Logic (Crassus)
 
 `ModelProfiles/profiles.py::MODEL_ID_MAP` is the boundary between optimized and
 generic conversion. An exact, case-insensitive registered model ID always uses

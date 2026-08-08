@@ -370,9 +370,6 @@ std::shared_ptr<TensorStorage> CactusGraph::export_tensor_storage(size_t node_id
     auto& buffer = nodes_[it->second]->output_buffer;
     if (!buffer.get_data() || buffer.byte_size == 0) return {};
 
-    // Retained outputs and cache states allocate stable owned buffers.  Keep a
-    // copy fallback for older/imported graphs whose selected output was pooled
-    // or externally backed.
     if (!buffer.shared_data) {
         if (buffer.data) {
             buffer.shared_data = std::shared_ptr<char[]>(std::move(buffer.data));
@@ -396,9 +393,7 @@ std::shared_ptr<TensorStorage> CactusGraph::export_tensor_storage(size_t node_id
     return storage;
 }
 
-bool CactusGraph::bind_tensor_storage(size_t node_id,
-                                      const std::shared_ptr<TensorStorage>& storage,
-                                      bool require_exact_shape) {
+bool CactusGraph::bind_tensor_storage(size_t node_id, const std::shared_ptr<TensorStorage>& storage, bool require_exact_shape) {
     auto it = node_index_map_.find(node_id);
     if (it == node_index_map_.end() || !storage || !storage->valid()) return false;
 

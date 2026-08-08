@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 from typing import Any
 
-from . import models
+from .. import models
 from .extra_matcher_cache import (
     match_cache_output_consumers,
     match_cache_roll_append_structure,
@@ -31,10 +29,15 @@ from .extra_matcher_moe import (
     match_moe_expert_branch_routing,
     match_moe_routing_weights_combine,
 )
-from ..Fusions import models as FModels
+from ...Fusions import models as FModels
 
-def match_extra_constraints(source: models.Node, graph: models.Graph, fusion: FModels.FusionGraph, bindings: dict[str, models.Node]) -> bool:
-    """Dispatches every structured FusionGraph constraint to its registered matcher."""
+
+def match_extra_constraints(
+    source: models.Node,
+    graph: models.Graph,
+    fusion: FModels.FusionGraph,
+    bindings: dict[str, models.Node],
+) -> bool:
     for constraint_name, raw_spec in fusion.constraints.items():
         matcher = EXTRA_MATCHERS.get(constraint_name)
         if matcher is None:
@@ -47,6 +50,7 @@ def match_extra_constraints(source: models.Node, graph: models.Graph, fusion: FM
                 return False
     return True
 
+
 def normalize_constraint_specs(raw_spec: Any) -> tuple[dict[str, Any], ...] | None:
     """Normalizes one constraint value into a tuple of spec dictionaries."""
     if isinstance(raw_spec, dict):
@@ -54,6 +58,7 @@ def normalize_constraint_specs(raw_spec: Any) -> tuple[dict[str, Any], ...] | No
     if isinstance(raw_spec, (list, tuple)) and all(isinstance(spec, dict) for spec in raw_spec):
         return tuple(raw_spec)
     return None
+
 
 EXTRA_MATCHERS: dict[str, ExtraMatcher] = {
     "linear_weight_layout": match_linear_weight_layout,

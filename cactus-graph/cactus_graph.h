@@ -343,10 +343,7 @@ struct BufferDesc {
     void resize_from_pool(BufferPool& pool);
 };
 
-// Graph-independent ownership for tensors that must outlive the graph which
-// produced them.  A storage object is deliberately only an allocation plus a
-// physical layout: semantic identity and lifetime belong to the engine's
-// session state arena.
+
 struct TensorStorage {
     std::shared_ptr<char[]> data;
     std::vector<size_t> shape;

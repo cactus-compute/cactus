@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..IR import models as IRModels
+from ...IR import models as IRModels
 
 def element_count(shape: list[Any]) -> int | None:
     product = 1

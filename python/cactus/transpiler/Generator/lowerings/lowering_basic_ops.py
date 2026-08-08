@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import constants
-from . import models
-from .errors import UnsupportedLoweringError
+from .. import constants
+from .. import models
+from ..errors import UnsupportedLoweringError
 from .lowering_cache import lower_decode_cache_cat, lower_prefill_cache_cat
 from .lowering_utils import *
-from ..IR import models as IRModels
+from ...IR import models as IRModels
 
 def lower_binary(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = context.inputs_for(node)

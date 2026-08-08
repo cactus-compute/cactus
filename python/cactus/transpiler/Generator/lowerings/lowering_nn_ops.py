@@ -4,11 +4,11 @@ from typing import Any
 
 import numpy as np
 
-from . import constants
-from . import models
-from .errors import UnsupportedLoweringError
+from .. import constants
+from .. import models
+from ..errors import UnsupportedLoweringError
 from .lowering_utils import *
-from ..IR import models as IRModels
+from ...IR import models as IRModels
 
 def lower_norm(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = context.inputs_for(node)

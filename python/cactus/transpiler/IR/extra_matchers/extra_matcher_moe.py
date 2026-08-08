@@ -1,10 +1,8 @@
-from __future__ import annotations
-
 from typing import Any
 
-from . import models, match_utils
-from .extra_matcher_common import *
-from ..Fusions import models as FModels
+from .. import models, match_utils
+from ...Fusions import models as FModels
+from . import extra_matcher_common as em
 
 def get_repeated_subgraph(fusion: FModels.FusionGraph, name: str) -> FModels.RepeatedSubgraph | None:
     """Fetches a named repeated subgraph declaration from a fusion graph."""
@@ -15,7 +13,7 @@ def get_repeated_subgraph(fusion: FModels.FusionGraph, name: str) -> FModels.Rep
 
 def collect_repeated_subgraph_bindings(graph: models.Graph, subgraph: FModels.RepeatedSubgraph) -> tuple[dict[str, models.Node], ...]:
     """Finds every real subgraph binding that matches a repeated pattern."""
-    from . import match
+    from .. import match
     matches: list[dict[str, models.Node]] = []
     for candidate in graph.nodes:
         candidate_bindings = match_utils.bind_fusion_graph(candidate, subgraph.graph, match.match_nodes)
@@ -69,7 +67,7 @@ def get_num_experts_from_inputs(fusion: FModels.FusionGraph, bindings: dict[str,
         shape = match_utils.get_tensor_shape(input_node)
         if not shape:
             continue
-        dim = get_known_int(shape[0])
+        dim = em.get_known_int(shape[0])
         if dim is not None:
             candidates.append(dim)
     if not candidates:
@@ -80,28 +78,28 @@ def get_num_experts_from_inputs(fusion: FModels.FusionGraph, bindings: dict[str,
 
 def split_sizes_are_valid(split_node: models.Node, gate_up_node: models.Node, down_weight: models.Node | None, spec: dict[str, Any]) -> bool:
     """Checks the grouped gate/up projection split."""
-    split_sizes = get_attr(split_node, "split_sizes", "arg_1")
+    split_sizes = em.get_attr(split_node, "split_sizes", "arg_1")
     if not isinstance(split_sizes, (list, tuple)) or len(split_sizes) != 2:
         return bool(spec.get("allow_missing", False))
-    left_size = get_known_int(split_sizes[0])
-    right_size = get_known_int(split_sizes[1])
+    left_size = em.get_known_int(split_sizes[0])
+    right_size = em.get_known_int(split_sizes[1])
     if left_size is None or right_size is None:
         return bool(spec.get("allow_symbolic", True))
     if left_size != right_size:
         return False
-    gate_up_output_dim = get_shape_dim(gate_up_node, -1)
+    gate_up_output_dim = em.get_shape_dim(gate_up_node, -1)
     if gate_up_output_dim is not None and gate_up_output_dim != left_size + right_size:
         return False
-    down_input_dim = get_shape_dim(down_weight, -1)
+    down_input_dim = em.get_shape_dim(down_weight, -1)
     if down_input_dim is not None and down_input_dim != right_size:
         return False
     return True
 
 def grouped_moe_rows_match_topk(hidden_node: models.Node | None, gate_up_node: models.Node, topk_node: models.Node, spec: dict[str, Any]) -> bool:
     """Checks that routed grouped-mm rows equal token count times top-k."""
-    token_count = get_shape_dim(hidden_node, 0)
-    grouped_rows = get_shape_dim(gate_up_node, 0)
-    topk = get_known_int(get_attr(topk_node, "k", "arg_1"))
+    token_count = em.get_shape_dim(hidden_node, 0)
+    grouped_rows = em.get_shape_dim(gate_up_node, 0)
+    topk = em.get_known_int(em.get_attr(topk_node, "k", "arg_1"))
     if token_count is None or grouped_rows is None or topk is None:
         return bool(spec.get("allow_missing", False))
     return grouped_rows == token_count * topk
@@ -110,7 +108,7 @@ def grouped_moe_weight_permute_is_valid(node: models.Node | None) -> bool:
     """Checks the expert weight permutation used before grouped_mm."""
     if node is None:
         return False
-    return match_utils.values_equal(get_attr(node, "permutation", "arg_1"), [0, 2, 1])
+    return match_utils.values_equal(em.get_attr(node, "permutation", "arg_1"), [0, 2, 1])
 
 def find_reachable_topk_nodes(graph: models.Graph, combine_node: models.Node | None, spec: dict[str, Any]) -> tuple[models.Node, ...]:
     """Finds top-k router nodes that can flow into the MoE combine output."""
@@ -205,9 +203,9 @@ def match_grouped_moe_structure(source: models.Node, graph: models.Graph, fusion
     down_weight = match_utils.get_first_input_by_role(fusion, bindings, spec["down_weight_role"])
     if any(node is None for node in (topk_node, topk_indices_node, gate_up_grouped_node, down_grouped_node, split_node, offsets_node, combine_node)):
         return bool(spec.get("allow_missing", False))
-    if get_known_int(get_attr(topk_node, "k", "arg_1")) is None:
+    if em.get_known_int(em.get_attr(topk_node, "k", "arg_1")) is None:
         return False
-    if not match_utils.values_equal(get_attr(topk_indices_node, "index", "arg_1"), 1):
+    if not match_utils.values_equal(em.get_attr(topk_indices_node, "index", "arg_1"), 1):
         return False
     if not grouped_moe_weight_permute_is_valid(gate_up_weight_transpose):
         return False
@@ -217,17 +215,17 @@ def match_grouped_moe_structure(source: models.Node, graph: models.Graph, fusion
     down_offsets = match_utils.get_parent(down_grouped_node, 2)
     if gate_up_offsets is not offsets_node or down_offsets is not offsets_node:
         return False
-    if not match_utils.values_equal(get_attr(offsets_node, "dim", "axis", "arg_1"), 0):
+    if not match_utils.values_equal(em.get_attr(offsets_node, "dim", "axis", "arg_1"), 0):
         return False
     if not split_sizes_are_valid(split_node, gate_up_grouped_node, down_weight, spec):
         return False
     num_experts = get_num_experts_from_inputs(fusion, bindings, spec)
     histc_node = bindings.get("moe_histc")
-    histc_bins = get_known_int(get_attr(histc_node, "bins", "arg_1")) if histc_node is not None else None
+    histc_bins = em.get_known_int(em.get_attr(histc_node, "bins", "arg_1")) if histc_node is not None else None
     if num_experts is not None and histc_bins is not None and num_experts != histc_bins:
         return False
     if not grouped_moe_rows_match_topk(hidden_node, gate_up_grouped_node, topk_node, spec):
         return False
-    if not match_utils.values_equal(get_attr(combine_node, "dim", "axis", "arg_1"), 1):
+    if not match_utils.values_equal(em.get_attr(combine_node, "dim", "axis", "arg_1"), 1):
         return False
     return True

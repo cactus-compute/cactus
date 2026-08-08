@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import models
-from .errors import UnsupportedLoweringError
+from .. import models
+from ..errors import UnsupportedLoweringError
 from .lowering_utils import *
-from ..IR import models as IRModels
+from ...IR import models as IRModels
 
 def lower_constant_pad_nd(context: models.GenerationContext, node: IRModels.Node) -> Any:
     inputs = require_input_count(context, node, 1)

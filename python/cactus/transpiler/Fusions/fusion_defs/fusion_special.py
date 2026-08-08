@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from . import edges as E
-from . import models as M
-from .fusion_builders import _cache_input, _graph, _input, _single_node_graph, _variadic_input
+from .. import edges as E
+from .. import models as M
+from ..fusion_builders import _cache_input, _graph, _input, _single_node_graph, _variadic_input
 
 LSTM_CELL_GRAPH = _graph(
     "lstm_cell",

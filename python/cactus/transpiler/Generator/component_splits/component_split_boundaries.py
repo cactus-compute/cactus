@@ -4,8 +4,8 @@ from collections.abc import Mapping
 
 from .component_split_types import Gemma4Boundaries, LfmVlmBoundaries, OutputSpec, WhisperBoundaries
 from .component_split_utils import tensor_last_dim, tensor_rank, tensor_shape
-from ..Fusions import models as FModels
-from ..IR import models as IRModels
+from ...Fusions import models as FModels
+from ...IR import models as IRModels
 
 def find_graph_by_task(graphs: Mapping[str, IRModels.Graph], task: str) -> IRModels.Graph | None:
     for graph in graphs.values():
