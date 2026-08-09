@@ -79,6 +79,8 @@ POSITIONAL_ATTRS_MAP: dict[str, dict[int, str]] = {
     },
     "aten.conv1d.default": {3: "stride", 4: "padding", 5: "dilation", 6: "groups"},
     "aten.conv2d.default": {3: "stride", 4: "padding", 5: "dilation", 6: "groups"},
+    "aten.upsample_nearest2d.default": {1: "output_size", 2: "scales_h", 3: "scales_w"},
+    "aten.upsample_nearest2d.vec": {1: "output_size", 2: "scale_factors"},
     "aten.native_group_norm.default": {3: "batch_size", 4: "channels", 5: "height_width", 6: "num_groups", 7: "eps"},
     "aten.group_norm.default": {1: "num_groups", 4: "eps"},
     "aten.native_batch_norm.default": {5: "training", 6: "momentum", 7: "eps"},

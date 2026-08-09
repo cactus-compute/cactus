@@ -9,7 +9,7 @@ from ..errors import UnsupportedLoweringError
 from .lowering_basic_ops import *
 from .lowering_cache import cache_attention_generation_plan, lower_cache, lower_cache_placeholder, should_lower_cache_placeholder_as_state, lower_attention
 from .lowering_constant_ops import *
-from .lowering_nn_ops import lower_conv, lower_norm
+from .lowering_nn_ops import lower_conv, lower_norm, lower_upsample
 from .lowering_special_ops import lower_moe, lower_special_cactus, lower_unsupported_semantic
 from .lowering_utils import *
 from .lowering_weights import bind_weight_placeholder, lower_lfm_grouped_moe_placeholder, should_dequantize_int8_weight_placeholder
@@ -79,6 +79,7 @@ def build_lowering_rules(
     add_rules(rules, constants.CLAMP_TARGETS, lower_clamp)
     add_rules(rules, constants.NORM_TARGETS, lower_norm)
     add_rules(rules, constants.CONV_TARGETS, lower_conv)
+    add_rules(rules, constants.UPSAMPLE_TARGETS, lower_upsample)
     add_rules(rules, constants.ATTENTION_TARGETS, lower_attention)
     add_rules(rules, constants.CACHE_TARGETS, lower_cache)
     add_rules(rules, constants.MOE_TARGETS, lower_moe)

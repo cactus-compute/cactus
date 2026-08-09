@@ -179,6 +179,32 @@ def lower_specialized_conv2d(context: models.GenerationContext, node: IRModels.N
         return context.graph.conv2d_pointwise_1x1(inputs[0], inputs[1], bias=bias)
     return None
 
+def lower_upsample(context: models.GenerationContext, node: IRModels.Node) -> Any:
+    inputs = context.inputs_for(node)
+    require_len(node, inputs, 1)
+    return context.graph.upsample_nearest2d(inputs[0], upsample_scale(node))
+
+def upsample_scale(node: IRModels.Node) -> int:
+    scale_factors = node.attrs.get("scale_factors")
+    if scale_factors is None and node.attrs.get("scale_factor") is not None:
+        scale_factors = (node.attrs["scale_factor"], node.attrs["scale_factor"])
+    if scale_factors is None and node.attrs.get("scales_h") is not None and node.attrs.get("scales_w") is not None:
+        scale_factors = (node.attrs["scales_h"], node.attrs["scales_w"])
+    if scale_factors is None:
+        output_size = node.attrs.get("output_size")
+        input_shape = meta_shape(node.parents[0]) if node.parents else ()
+        if isinstance(output_size, (list, tuple)) and len(output_size) == 2 and len(input_shape) == 4:
+            height, width = int(input_shape[2]), int(input_shape[3])
+            if height > 0 and width > 0 and int(output_size[0]) % height == 0 and int(output_size[1]) % width == 0:
+                scale_factors = (int(output_size[0]) // height, int(output_size[1]) // width)
+    if isinstance(scale_factors, (list, tuple)) and len(scale_factors) == 2:
+        first, second = float(scale_factors[0]), float(scale_factors[1])
+        if first == second and first.is_integer() and first >= 1:
+            return int(first)
+    raise UnsupportedLoweringError(
+        f"{node.name}: upsample_nearest2d requires one integer scale for both axes; attrs={node.attrs}"
+    )
+
 def require_plain_conv1d_attrs(node: IRModels.Node, method: str) -> None:
     padding = first_int(node.attrs.get("padding"), 0)
     dilation = first_int(node.attrs.get("dilation"), 1)
