@@ -140,6 +140,18 @@ CACTUS_FFI_EXPORT int cactus_stream_transcribe_stop(
     size_t buffer_size
 );
 
+CACTUS_FFI_EXPORT int cactus_generate_image(
+    cactus_model_t model,
+    const char* prompt,
+    uint8_t* rgb_buffer,
+    size_t buffer_size,
+    unsigned int* image_width,
+    unsigned int* image_height,
+    int steps,
+    float guidance_scale,
+    unsigned long long seed
+);
+
 CACTUS_FFI_EXPORT int cactus_embed(
     cactus_model_t model,
     const char* text,

@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <iostream>
 #include <cmath>
+#include <random>
 #include <chrono>
 #include <cstdlib>
 #include <dirent.h>
@@ -766,6 +767,9 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (has_metadata_encoder_cross_kv_route) {
         decode_route_ = DecodeRoute::ENCODER_CROSS_KV_STEP;
         required_components = {decoder_name};
+    } else if (components_.count("text_encoder") && components_.count("unet") && components_.count("vae_decoder")) {
+        decode_route_ = DecodeRoute::ITERATIVE_DENOISE;
+        required_components = {"text_encoder", "unet", "vae_decoder"};
     } else if (has_chunked_prefill) {
         encoder_name = "lm_encoder_step";
         decoder_name = "decoder_media_step";
@@ -815,6 +819,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
             : decoder_prefill_chunk_;
     } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP
             && decode_route_ != DecodeRoute::FULL_CONTEXT_TEXT
+            && decode_route_ != DecodeRoute::ITERATIVE_DENOISE
             && !components_.count("audio_encoder")) {
         CACTUS_LOG_WARN("model", "Bundle has no decoder_prefill_chunk component; prompts will prefill token-by-token (prefill speed ~= decode speed).");
     }
@@ -1019,6 +1024,21 @@ bool Model::load_manifest() {
     media_chunk_output_sources_ = parse_csv_string_map(read_string_key("media_chunk_output_sources"));
     image_feature_candidates_ = parse_csv_strings(read_string_key("media_image_feature_names"));
     audio_feature_candidates_ = parse_csv_strings(read_string_key("media_audio_feature_names"));
+
+    const std::string beta_start = read_string_key("diffusion_beta_start");
+    if (!beta_start.empty()) diffusion_.beta_start = std::stof(beta_start);
+    const std::string beta_end = read_string_key("diffusion_beta_end");
+    if (!beta_end.empty()) diffusion_.beta_end = std::stof(beta_end);
+    const std::string beta_schedule = read_string_key("diffusion_beta_schedule");
+    if (!beta_schedule.empty()) diffusion_.beta_schedule = beta_schedule;
+    diffusion_.num_train_timesteps = parse_uint32_or_zero(read_string_key("diffusion_num_train_timesteps"));
+    if (diffusion_.num_train_timesteps == 0) diffusion_.num_train_timesteps = 1000;
+    diffusion_.original_inference_steps = parse_uint32_or_zero(read_string_key("diffusion_original_inference_steps"));
+    if (diffusion_.original_inference_steps == 0) diffusion_.original_inference_steps = 50;
+    const std::string timestep_scaling = read_string_key("diffusion_timestep_scaling");
+    if (!timestep_scaling.empty()) diffusion_.timestep_scaling = std::stof(timestep_scaling);
+    const std::string prediction_type = read_string_key("diffusion_prediction_type");
+    if (!prediction_type.empty()) diffusion_.prediction_type = prediction_type;
 
     if (obj.count("npu_audio_encoder") && obj.at("npu_audio_encoder").is<std::string>()) {
         npu_audio_encoder_mlpackage_ = obj.at("npu_audio_encoder").get<std::string>();
@@ -5449,6 +5469,201 @@ std::vector<float> Model::get_embeddings(const std::vector<uint32_t>& tokens, bo
     return result;
 }
 
+namespace {
+
+std::vector<float> diffusion_alphas_cumprod(float beta_start, float beta_end, uint32_t num_train_timesteps) {
+    std::vector<float> alphas_cumprod(num_train_timesteps);
+    const double sqrt_start = std::sqrt(static_cast<double>(beta_start));
+    const double sqrt_end = std::sqrt(static_cast<double>(beta_end));
+    double cumprod = 1.0;
+    for (uint32_t i = 0; i < num_train_timesteps; ++i) {
+        const double frac = num_train_timesteps > 1 ? static_cast<double>(i) / (num_train_timesteps - 1) : 0.0;
+        const double sqrt_beta = sqrt_start + (sqrt_end - sqrt_start) * frac;
+        cumprod *= 1.0 - sqrt_beta * sqrt_beta;
+        alphas_cumprod[i] = static_cast<float>(cumprod);
+    }
+    return alphas_cumprod;
+}
+
+std::vector<uint32_t> diffusion_lcm_timesteps(uint32_t num_train_timesteps, uint32_t original_steps, uint32_t steps) {
+    const uint32_t k = num_train_timesteps / original_steps;
+    std::vector<uint32_t> timesteps(steps);
+    for (uint32_t s = 0; s < steps; ++s) {
+        const uint32_t index = static_cast<uint32_t>(
+            std::floor(static_cast<double>(s) * original_steps / steps));
+        timesteps[s] = (original_steps - index) * k - 1;
+    }
+    return timesteps;
+}
+
+std::vector<float> diffusion_guidance_embedding(float w, size_t dim) {
+    const size_t half = dim / 2;
+    std::vector<float> embedding(dim, 0.0f);
+    const double scaled = static_cast<double>(w) * 1000.0;
+    for (size_t i = 0; i < half; ++i) {
+        const double freq = std::exp(-std::log(10000.0) * static_cast<double>(i) / (half - 1));
+        embedding[i] = static_cast<float>(std::sin(scaled * freq));
+        embedding[half + i] = static_cast<float>(std::cos(scaled * freq));
+    }
+    return embedding;
+}
+
+}  // namespace
+
+int Model::generate_image(const std::string& prompt, uint8_t* out_rgb, size_t out_capacity,
+                          uint32_t* out_width, uint32_t* out_height,
+                          int steps, float guidance_scale, uint64_t seed) {
+    if (decode_route_ != DecodeRoute::ITERATIVE_DENOISE) {
+        CACTUS_LOG_ERROR("model", "generate_image requires a text-to-image bundle");
+        return -1;
+    }
+    if (steps < 1 || steps > static_cast<int>(diffusion_.original_inference_steps)) {
+        CACTUS_LOG_ERROR("model", "generate_image steps must be in [1, " << diffusion_.original_inference_steps << "]");
+        return -1;
+    }
+    Component& text_encoder = components_.at("text_encoder");
+    Component& unet = components_.at("unet");
+    Component& vae_decoder = components_.at("vae_decoder");
+    if (!text_encoder.graph || !unet.graph || !vae_decoder.graph || !tokenizer_) return -1;
+
+    const int ids_idx = input_index(text_encoder, "input_ids");
+    const int sample_idx = input_index(unet, "sample");
+    const int timestep_idx = input_index(unet, "timestep");
+    const int hidden_idx = input_index(unet, "encoder_hidden_states");
+    const int cond_idx = input_index(unet, "timestep_cond");
+    const int latent_idx = input_index(vae_decoder, "x");
+    if (ids_idx < 0 || sample_idx < 0 || timestep_idx < 0 || hidden_idx < 0 || cond_idx < 0 || latent_idx < 0) {
+        CACTUS_LOG_ERROR("model", "text-to-image bundle is missing expected component inputs");
+        return -1;
+    }
+
+    const auto& ids_desc = text_encoder.graph->get_output_buffer(
+        static_cast<size_t>(text_encoder.runtime_input_node_ids[ids_idx]));
+    const size_t max_tokens = ids_desc.total_size;
+    const uint32_t bos = tokenizer_->get_bos_token();
+    const uint32_t eos = tokenizer_->get_eos_token();
+    auto tokens = tokenizer_->encode(prompt);
+    if (tokens.size() > max_tokens - 2) tokens.resize(max_tokens - 2);
+    write_int_input_at(text_encoder, "input_ids", 0, static_cast<int64_t>(bos));
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        write_int_input_at(text_encoder, "input_ids", i + 1, static_cast<int64_t>(tokens[i]));
+    }
+    for (size_t i = tokens.size() + 1; i < max_tokens; ++i) {
+        write_int_input_at(text_encoder, "input_ids", i, static_cast<int64_t>(eos));
+    }
+    text_encoder.graph->execute();
+
+    const size_t hidden_node = static_cast<size_t>(text_encoder.output_node_ids[0]);
+    const auto& hidden_desc = text_encoder.graph->get_output_buffer(hidden_node);
+    write_typed_buffer(
+        unet.input_buffers[hidden_idx],
+        unet.graph->get_output_buffer(static_cast<size_t>(unet.runtime_input_node_ids[hidden_idx])).precision,
+        text_encoder.graph->get_output(hidden_node),
+        hidden_desc.byte_size,
+        hidden_desc.precision);
+
+    const auto& cond_desc = unet.graph->get_output_buffer(
+        static_cast<size_t>(unet.runtime_input_node_ids[cond_idx]));
+    const std::vector<float> guidance = diffusion_guidance_embedding(guidance_scale - 1.0f, cond_desc.total_size);
+    write_typed_buffer(unet.input_buffers[cond_idx], cond_desc.precision,
+                       guidance.data(), guidance.size() * sizeof(float), Precision::FP32);
+
+    const auto& sample_desc = unet.graph->get_output_buffer(
+        static_cast<size_t>(unet.runtime_input_node_ids[sample_idx]));
+    const size_t latent_count = sample_desc.total_size;
+    std::mt19937_64 rng(seed);
+    std::normal_distribution<float> normal(0.0f, 1.0f);
+    std::vector<float> latents(latent_count);
+    for (float& value : latents) value = normal(rng);
+
+    const std::vector<float> alphas_cumprod =
+        diffusion_alphas_cumprod(diffusion_.beta_start, diffusion_.beta_end, diffusion_.num_train_timesteps);
+    const std::vector<uint32_t> timesteps = diffusion_lcm_timesteps(
+        diffusion_.num_train_timesteps, diffusion_.original_inference_steps, static_cast<uint32_t>(steps));
+
+    const auto& timestep_desc = unet.graph->get_output_buffer(
+        static_cast<size_t>(unet.runtime_input_node_ids[timestep_idx]));
+    std::vector<float> eps(latent_count);
+    for (int s = 0; s < steps; ++s) {
+        const uint32_t t = timesteps[s];
+        write_typed_buffer(unet.input_buffers[sample_idx], sample_desc.precision,
+                           latents.data(), latents.size() * sizeof(float), Precision::FP32);
+        const float timestep_value = static_cast<float>(t);
+        write_typed_buffer(unet.input_buffers[timestep_idx], timestep_desc.precision,
+                           &timestep_value, sizeof(float), Precision::FP32);
+        unet.graph->execute();
+
+        const size_t eps_node = static_cast<size_t>(unet.output_node_ids[0]);
+        const auto& eps_desc = unet.graph->get_output_buffer(eps_node);
+        if (eps_desc.precision == Precision::FP16) {
+            const __fp16* data = static_cast<const __fp16*>(unet.graph->get_output(eps_node));
+            for (size_t i = 0; i < latent_count; ++i) eps[i] = static_cast<float>(data[i]);
+        } else {
+            std::memcpy(eps.data(), unet.graph->get_output(eps_node), latent_count * sizeof(float));
+        }
+
+        const float acp_t = alphas_cumprod[t];
+        const float sqrt_acp = std::sqrt(acp_t);
+        const float sqrt_one_minus = std::sqrt(1.0f - acp_t);
+        const float scaled_t = static_cast<float>(t) * diffusion_.timestep_scaling;
+        const float c_skip = 0.25f / (scaled_t * scaled_t + 0.25f);
+        const float c_out = scaled_t / std::sqrt(scaled_t * scaled_t + 0.25f);
+        const bool final_step = s == steps - 1;
+        const float acp_prev = final_step ? 1.0f : alphas_cumprod[timesteps[s + 1]];
+        const float sqrt_acp_prev = std::sqrt(acp_prev);
+        const float sqrt_one_minus_prev = std::sqrt(1.0f - acp_prev);
+        for (size_t i = 0; i < latent_count; ++i) {
+            const float x0 = (latents[i] - sqrt_one_minus * eps[i]) / sqrt_acp;
+            const float denoised = c_out * x0 + c_skip * latents[i];
+            latents[i] = final_step ? denoised
+                                    : sqrt_acp_prev * denoised + sqrt_one_minus_prev * normal(rng);
+        }
+    }
+
+    const auto& latent_desc = vae_decoder.graph->get_output_buffer(
+        static_cast<size_t>(vae_decoder.runtime_input_node_ids[latent_idx]));
+    write_typed_buffer(vae_decoder.input_buffers[latent_idx], latent_desc.precision,
+                       latents.data(), latents.size() * sizeof(float), Precision::FP32);
+    vae_decoder.graph->execute();
+
+    const size_t image_node = static_cast<size_t>(vae_decoder.output_node_ids[0]);
+    const auto& image_desc = vae_decoder.graph->get_output_buffer(image_node);
+    if (image_desc.shape.size() != 4 || image_desc.shape[1] != 3) {
+        CACTUS_LOG_ERROR("model", "vae_decoder output is not an NCHW RGB image");
+        return -1;
+    }
+    const size_t height = image_desc.shape[2];
+    const size_t width = image_desc.shape[3];
+    const size_t out_bytes = height * width * 3;
+    if (out_capacity < out_bytes) {
+        CACTUS_LOG_ERROR("model", "generate_image buffer too small: need " << out_bytes << " bytes");
+        return -2;
+    }
+
+    const size_t plane = height * width;
+    auto write_pixels = [&](auto value_at) {
+        for (size_t y = 0; y < height; ++y) {
+            for (size_t x = 0; x < width; ++x) {
+                const size_t pixel = y * width + x;
+                for (size_t c = 0; c < 3; ++c) {
+                    const float value = std::min(1.0f, std::max(0.0f, value_at(c * plane + pixel)));
+                    out_rgb[pixel * 3 + c] = static_cast<uint8_t>(std::lround(value * 255.0f));
+                }
+            }
+        }
+    };
+    if (image_desc.precision == Precision::FP16) {
+        const __fp16* data = static_cast<const __fp16*>(vae_decoder.graph->get_output(image_node));
+        write_pixels([data](size_t i) { return static_cast<float>(data[i]); });
+    } else {
+        const float* data = static_cast<const float*>(vae_decoder.graph->get_output(image_node));
+        write_pixels([data](size_t i) { return data[i]; });
+    }
+    if (out_width) *out_width = static_cast<uint32_t>(width);
+    if (out_height) *out_height = static_cast<uint32_t>(height);
+    return static_cast<int>(out_bytes);
+}
+
 bool Config::from_json(const std::string& config_path) {
     std::ifstream file(config_path);
     if (!file) {
@@ -5550,6 +5765,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (mt == "needle") model_type = ModelType::NEEDLE;
             else if (mt == "bert" || mt == "nomic") model_type = ModelType::NOMIC;
             else if (mt == "generic") model_type = ModelType::GENERIC;
+            else if (mt == "sd15") model_type = ModelType::SD15;
             else model_type = ModelType::GEMMA4;
         }
         else if (key == "model_variant") {
