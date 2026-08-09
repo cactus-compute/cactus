@@ -1751,7 +1751,8 @@ def import_rms_norm(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[
 
 def import_group_norm(ir: IRGraph, node: Any, ctx: ImportContext, *, shape: tuple[int, ...] | None, dtype: str | None, torch_op: str) -> None:
     inputs = [value_id(node.args[0], ctx), value_id(node.args[2], ctx), value_id(node.args[3], ctx)]
-    attrs = {"num_groups": int(node.args[1]), "eps": float(node.args[4])}
+    eps = node.args[4] if len(node.args) > 4 else node.kwargs.get("eps", 1e-5)
+    attrs = {"num_groups": int(node.args[1]), "eps": float(eps)}
     ir_node = IRNode(
         id=node_id(node),
         op="group_norm",
