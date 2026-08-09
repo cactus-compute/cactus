@@ -47,6 +47,13 @@ def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=
     err = convert_toolchain_error()
     if err:
         raise RuntimeError(err)
+    from .transpiler import profile_for_model_id
+
+    component_sources = tuple(getattr(profile_for_model_id(model_id), "component_sources", ()) or ())
+    if component_sources:
+        return _convert_component_sources(
+            model_id, component_sources, bits=bits, token=token, weights_dir=weights_dir
+        )
     print_color(YELLOW, f"Converting {model_id} from HuggingFace source...")
     from ..convert.cli import main as cq_main
 
@@ -62,6 +69,54 @@ def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=
         os.environ["HUGGING_FACE_HUB_TOKEN"] = token
     cq_main(cq_args)
 
+    print_color(GREEN, f"Model converted and ready at {weights_dir}")
+    return weights_dir
+
+
+def _convert_component_sources(model_id, component_sources, *, bits, token, weights_dir):
+    """Convert a multi-repo pipeline (diffusion) component by component into one
+    weights dir, merging each run's weights manifest."""
+    import json
+    import tempfile
+
+    from huggingface_hub import snapshot_download
+
+    from ..convert.cli import main as cq_main
+
+    weights_dir = Path(weights_dir)
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    merged_records = []
+    converted = []
+    for mode, spec in component_sources:
+        _kind, _, source = spec.partition(":")
+        if "/" in source:
+            component_src = source
+        else:
+            snapshot = snapshot_download(model_id, allow_patterns=[f"{source}/*"], token=token)
+            component_src = str(Path(snapshot) / source)
+        print_color(YELLOW, f"Converting {mode} component from {component_src}...")
+        with tempfile.TemporaryDirectory() as tmp:
+            component_out = Path(tmp) / "out"
+            cq_main(["convert", "--model", component_src, "--out", str(component_out), "--bits", str(bits)])
+            manifest_path = component_out / "weights_manifest.json"
+            if manifest_path.exists():
+                merged_records.extend(json.loads(manifest_path.read_text(encoding="utf-8")).get("weights", []))
+            for tensor_file in sorted(component_out.iterdir()):
+                if tensor_file.suffix not in {".weights", ".bias"}:
+                    continue
+                destination = weights_dir / tensor_file.name
+                if destination.exists():
+                    raise RuntimeError(
+                        f"components {converted} and {mode!r} both produce tensor file {tensor_file.name!r}"
+                    )
+                shutil.move(str(tensor_file), destination)
+        converted.append(mode)
+    (weights_dir / "weights_manifest.json").write_text(
+        json.dumps({"weights": merged_records}, indent=2), encoding="utf-8"
+    )
+    (weights_dir / "config.txt").write_text(
+        "\n".join(f"component={mode}" for mode in converted) + "\n", encoding="utf-8"
+    )
     print_color(GREEN, f"Model converted and ready at {weights_dir}")
     return weights_dir
 

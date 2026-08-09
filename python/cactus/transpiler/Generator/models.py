@@ -438,6 +438,14 @@ def resolve_source_weight_record(resolver: WeightResolver, source_target: str) -
         record = resolver.records_by_name.get(variant)
         if record is not None:
             return record
+    # Export wrappers add one module attribute in front of the checkpoint key
+    # (e.g. unet.down_blocks...). Only consulted when every exact variant missed.
+    head, sep, rest = source_target.partition(".")
+    if sep and rest:
+        for variant in weight_name_variants(rest):
+            record = resolver.records_by_name.get(variant)
+            if record is not None:
+                return record
     return None
 
 def weight_name_variants(name: str) -> tuple[str, ...]:

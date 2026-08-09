@@ -17,6 +17,7 @@ from . import constants
 
 token = constants.token
 EXPORT_PATCHES = {
+    "clip_position_ids": OV.patch_clip_position_ids_for_export,
     "gemma4_audio_mask": OV.patch_gemma4_audio_mask_for_export,
     "transformers_moe_grouped_mm_fallback": OV.patch_transformers_moe_grouped_mm_for_export,
     "lfm2_vl_image_features": OV.patch_lfm2_vl_image_features_for_export,
@@ -380,7 +381,10 @@ def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None) -> torch
     raise RuntimeError(f"Unable to load model {model_id}") from last_error
 
 def create_model(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], model_id: str, inference_mode: str = "prefill_no_cache") -> Model:
-    
+    if mp.input_strategy == constants.DIFFUSION_INPUT_STRATEGY:
+        from .diffusion import create_diffusion_model
+
+        return create_diffusion_model(mp=mp, model_id=model_id, inference_mode=inference_mode, input_cls=Input, model_cls=Model)
     input_ = build_input(mp, input_modalities, Input, model_id, inference_mode)
     if input_ is None:
         raise ValueError(f"Could not build input for modalities {input_modalities}")

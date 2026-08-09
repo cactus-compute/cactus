@@ -127,6 +127,8 @@ class ModelProfile:
     input_strategy: str #Specifies what functions/procedures to use when generating sample input for torch.export
     export_patches: tuple[str, ...] #Specifies what patches/masks to apply to sample inputs
     load_strategy: str #Specifies which Hugging Face AutoModel class/loading path to prefer
+    export_modes: tuple[str, ...] = () #Per-component export modes when the family is not prefill/decode shaped; empty means the default modes
+    component_sources: tuple[tuple[str, str], ...] = () #Mode -> "kind:source" specs for families whose components load separately (diffusion pipelines)
     disabled_fusion_fields: tuple[str, ...] = () #Fusion groups to skip for this profile when a family is known unsafe
     disabled_fusions: tuple[str, ...] = () #Individual fusion names or cactus ops to skip for this profile
     prompt_contract: PromptContract = field(default_factory=PromptContract)

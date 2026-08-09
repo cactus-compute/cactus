@@ -45,3 +45,12 @@ QWEN2_5_INFERENCE_PATTERNS = {
     TEXT_PREFILL.name: TEXT_PREFILL,
     TEXT_DECODE.name: TEXT_DECODE,
 }
+
+# The denoise loop is decode-shaped: the unet edge runs once per scheduler
+# step with the latent as persistent state; encode and decode run once.
+T2I_GENERATE_ROUTE = (combinations.TEXT_ENCODER_TO_UNET, combinations.UNET_TO_VAE_DECODER)
+T2I_GENERATE = InferencePattern(name="t2i_generate", route=T2I_GENERATE_ROUTE)
+
+SD15_T2I_INFERENCE_PATTERNS = {
+    T2I_GENERATE.name: T2I_GENERATE,
+}

@@ -36,6 +36,16 @@ VISION_LANGUAGE_COMPONENTS = {
     TOKEN_MERGE.name: TOKEN_MERGE,
 }
 
+TEXT_ENCODER = Components(name="text_encoder", patterns=("text_encoder", "text_model"))
+UNET = Components(name="unet", patterns=("unet",))
+VAE_DECODER = Components(name="vae_decoder", patterns=("vae", "decoder"))
+
+T2I_COMPONENTS = {
+    TEXT_ENCODER.name: TEXT_ENCODER,
+    UNET.name: UNET,
+    VAE_DECODER.name: VAE_DECODER,
+}
+
 MULTIMODAL_COMPONENTS = {
     **TEXT_COMPONENTS,
     VISION_ENCODER.name: VISION_ENCODER,

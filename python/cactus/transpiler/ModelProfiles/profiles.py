@@ -4,6 +4,7 @@ from .components import (
     MULTIMODAL_COMPONENTS,
     SPEECH_SEQ2SEQ_COMPONENTS,
     SPEECH_TRANSCRIBER_COMPONENTS,
+    T2I_COMPONENTS,
     TEXT_COMPONENTS,
     VISION_LANGUAGE_COMPONENTS,
 )
@@ -27,6 +28,7 @@ from .routes import (
     LFM_VLM_INFERENCE_PATTERNS,
     PARAKEET_INFERENCE_PATTERNS,
     QWEN2_5_INFERENCE_PATTERNS,
+    SD15_T2I_INFERENCE_PATTERNS,
     WHISPER_INFERENCE_PATTERNS,
 )
 
@@ -566,6 +568,56 @@ GENERIC_SPEECH_SEQ2SEQ_PROFILE = ModelProfile(
     runtime_contract=WHISPER_RUNTIME_CONTRACT,
 )
 
+SD15_T2I_RUNTIME_CONTRACT = RuntimeContract(
+    plan_name="sd15_text_to_image",
+    execution_strategy="iterative_denoise",
+    state_owner="request",
+    cache_persistence="none",
+    cache_transfer_policy="none",
+    states=(
+        StateContract(
+            name="text_embeddings", kind="activation", producer="text_encoder",
+            consumers=("unet",), lifetime="request", transfer="copy_or_alias",
+            metadata=(("outputs", "text_embeddings"),),
+        ),
+        StateContract(
+            name="latents", kind="activation", producer="unet",
+            consumers=("unet", "vae_decoder"), lifetime="request", transfer="move",
+            metadata=(("outputs", "latents"),),
+        ),
+    ),
+)
+
+LCM_DREAMSHAPER_V7_PROFILE = ModelProfile(
+    model_profiles="sd15_t2i",
+    components=T2I_COMPONENTS,
+    inference_type=SD15_T2I_INFERENCE_PATTERNS,
+    cache_type=(),
+    cache_policy=(),
+    files=(
+        "model_index.json",
+        "text_encoder/config.json",
+        "unet/config.json",
+        "scheduler/scheduler_config.json",
+        "tokenizer/tokenizer_config.json",
+        "tokenizer/vocab.json",
+        "tokenizer/merges.txt",
+    ),
+    fusion_fields=("generic", "conv", "vision", "normalization", "attention", "linear", "embedding"),
+    supported_modalties=("text",),
+    input_strategy="diffusion_components",
+    export_patches=("clip_position_ids",),
+    load_strategy="diffusion_components",
+    export_modes=("text_encoder", "unet", "vae_decoder"),
+    component_sources=(
+        ("text_encoder", "clip_text:text_encoder"),
+        ("unet", "sd_unet:unet"),
+        ("vae_decoder", "taesd_decoder:madebyollin/taesd"),
+    ),
+    prompt_contract=PromptContract(style="raw", template_source="none"),
+    runtime_contract=SD15_T2I_RUNTIME_CONTRACT,
+)
+
 MODEL_ID_MAP = {
     "google/gemma-4-E2B": GEMMA4_E2B_PROFILE,
     "google/gemma-4-E2B-it": GEMMA4_E2B_IT_PROFILE,
@@ -576,6 +628,7 @@ MODEL_ID_MAP = {
     "LiquidAI/LFM2-VL-3B": LFM_VLM_PROFILE,
     "Qwen/Qwen2.5-0.5B": QWEN2_5_0_5B_PROFILE,
     "LiquidAI/LFM2.5-8B-A1B": LFM_MOE_PROFILE,
+    "SimianLuo/LCM_Dreamshaper_v7": LCM_DREAMSHAPER_V7_PROFILE,
 }
 
 def profile_for_model_id(model_id: str) -> ModelProfile | None:

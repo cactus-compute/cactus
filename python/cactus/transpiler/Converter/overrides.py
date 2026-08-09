@@ -20,6 +20,19 @@ def patch_gemma4_audio_mask_for_export() -> None:
         return mask.expand(batch_size, 1, seq_len, seq_len)
     gemma4_modeling.create_bidirectional_mask = exportable_bidirectional_mask
 
+def patch_clip_position_ids_for_export() -> None:
+    import transformers.models.clip.modeling_clip as clip_modeling
+    #CLIP registers position_ids as a non-persistent buffer, which torch.export lifts
+    #into a weight placeholder no checkpoint can bind; recompute it in the graph instead.
+    original_forward = clip_modeling.CLIPTextEmbeddings.forward
+    def forward_with_computed_position_ids(self, input_ids=None, position_ids=None, inputs_embeds=None):
+        if position_ids is None:
+            length = input_ids.shape[-1] if input_ids is not None else inputs_embeds.shape[-2]
+            device = input_ids.device if input_ids is not None else inputs_embeds.device
+            position_ids = torch.arange(length, device=device).unsqueeze(0)
+        return original_forward(self, input_ids=input_ids, position_ids=position_ids, inputs_embeds=inputs_embeds)
+    clip_modeling.CLIPTextEmbeddings.forward = forward_with_computed_position_ids
+
 def patch_transformers_moe_grouped_mm_for_export() -> None:
     import transformers.integrations.moe as moe
     moe._can_use_grouped_mm = lambda input, weight, offs: False

@@ -200,6 +200,7 @@ def resolve_transpile_config(
             profile=profile,
             modalities=default_modalities(profile),
             profile_source="registered",
+            inference_modes=tuple(getattr(profile, "export_modes", ()) or DEFAULT_TRANSPILER_MODES),
         )
 
     resolved_task = generic_task or "causal-lm"
