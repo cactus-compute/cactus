@@ -206,6 +206,26 @@ LFM_MOE_RUNTIME_CONTRACT = RuntimeContract(
     ),
 )
 
+SD15_T2I_RUNTIME_CONTRACT = RuntimeContract(
+    plan_name="sd15_text_to_image",
+    execution_strategy="iterative_denoise",
+    state_owner="request",
+    cache_persistence="none",
+    cache_transfer_policy="none",
+    states=(
+        StateContract(
+            name="text_embeddings", kind="activation", producer="text_encoder",
+            consumers=("unet",), lifetime="request", transfer="copy_or_alias",
+            metadata=(("outputs", "text_embeddings"),),
+        ),
+        StateContract(
+            name="latents", kind="activation", producer="unet",
+            consumers=("unet", "vae_decoder"), lifetime="request", transfer="move",
+            metadata=(("outputs", "latents"),),
+        ),
+    ),
+)
+
 WHISPER_SUPPRESS_TOKEN_IDS = (
     1, 2, 7, 8, 9, 10, 14, 25, 26, 27, 28, 29, 31, 58, 59, 60, 61, 62, 63,
     90, 91, 92, 93, 359, 503, 522, 542, 873, 893, 902, 918, 922, 931, 1350,
@@ -566,26 +586,6 @@ GENERIC_SPEECH_SEQ2SEQ_PROFILE = ModelProfile(
         fp16_kv_cache_components=("decoder_step",),
     ),
     runtime_contract=WHISPER_RUNTIME_CONTRACT,
-)
-
-SD15_T2I_RUNTIME_CONTRACT = RuntimeContract(
-    plan_name="sd15_text_to_image",
-    execution_strategy="iterative_denoise",
-    state_owner="request",
-    cache_persistence="none",
-    cache_transfer_policy="none",
-    states=(
-        StateContract(
-            name="text_embeddings", kind="activation", producer="text_encoder",
-            consumers=("unet",), lifetime="request", transfer="copy_or_alias",
-            metadata=(("outputs", "text_embeddings"),),
-        ),
-        StateContract(
-            name="latents", kind="activation", producer="unet",
-            consumers=("unet", "vae_decoder"), lifetime="request", transfer="move",
-            metadata=(("outputs", "latents"),),
-        ),
-    ),
 )
 
 LCM_DREAMSHAPER_V7_PROFILE = ModelProfile(

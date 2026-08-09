@@ -368,8 +368,6 @@ def infer_conv_attrs(fusion: FModels.FusionGraph, bindings: dict[str, models.Nod
     if len(weight_shape) >= 3:
         kernel_shape = weight_shape[2:]
         attrs["kernel_size"] = kernel_shape[0] if all(values_equal(dim, kernel_shape[0]) for dim in kernel_shape) else kernel_shape
-        # A square kernel collapses to one scalar, so conv1d and conv2d
-        # definitions need the rank to stay distinguishable.
         attrs["spatial_dims"] = len(kernel_shape)
 
     if len(weight_shape) >= 2:

@@ -1,10 +1,3 @@
-"""Diffusion pipeline components: one torch.export per component.
-
-A diffusion family declares `export_modes` and `component_sources` on its
-profile; every mode loads its own module and synthesizes tensor inputs, so
-nothing here goes through an HF processor. Model-specific facts (repo ids,
-subfolders) stay in the profile -- this module only knows component kinds.
-"""
 from __future__ import annotations
 
 from typing import Any
@@ -16,9 +9,7 @@ from ..ModelProfiles import models as MP_Models
 
 
 class TextEncoderLastHiddenState(torch.nn.Module):
-    """Wraps the inner CLIPTextTransformer so exported parameter targets match
-    the checkpoint keys (text_model.*) instead of doubling the prefix."""
-
+    #Wraps the inner transformer so exported parameter targets match the checkpoint's text_model.* keys
     def __init__(self, clip_text_model: torch.nn.Module):
         super().__init__()
         self.text_model = clip_text_model.text_model
@@ -28,9 +19,7 @@ class TextEncoderLastHiddenState(torch.nn.Module):
 
 
 class TaesdDecode(torch.nn.Module):
-    """The attribute name keeps exported parameter targets on the checkpoint's
-    decoder.* keys."""
-
+    #The attribute name keeps exported parameter targets on the checkpoint's decoder.* keys
     def __init__(self, decoder: torch.nn.Module):
         super().__init__()
         self.decoder = decoder
@@ -123,8 +112,7 @@ def component_export_inputs(kind: str, configs: dict[str, dict[str, Any]]) -> di
     text_config = configs.get("text_encoder/config.json", {})
     tokens = int(text_config.get("max_position_embeddings", 77))
     latent_channels = int(unet_config.get("in_channels", 4))
-    # Graphs are shape-specialized; export at 64x64 latents (512x512 images)
-    # rather than the config's training sample_size.
+    #Graphs are shape-specialized; export 64x64 latents (512x512 images) rather than the config's training sample_size
     latent_size = 64
     if kind == "clip_text":
         return {"input_ids": torch.zeros((1, tokens), dtype=torch.int64)}

@@ -169,7 +169,6 @@ def build_transpiled_bundle(
 
 
 def diffusion_scheduler_metadata(weights_dir: Path) -> dict[str, str]:
-    """Flatten the diffusers scheduler config into engine-manifest metadata keys."""
     scheduler_path = weights_dir / "scheduler_config.json"
     if not scheduler_path.exists():
         return {}

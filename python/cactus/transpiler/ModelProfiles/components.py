@@ -10,6 +10,9 @@ ASR_HEAD = Components(name="asr_head", patterns=("joint", "tdt_head", "rnnt_head
 TOKEN_MERGE = Components(name="token_merge", patterns=("multi_modal", "multimodal", "projector", "merge"))
 TEXT_DECODER = Components(name="text_decoder", patterns=("language_model", "text", "decoder", "model.layers"))
 LM_HEAD = Components(name="lm_head", patterns=("lm_head", "logits"),)
+TEXT_ENCODER = Components(name="text_encoder", patterns=("text_encoder", "text_model"))
+UNET = Components(name="unet", patterns=("unet",))
+VAE_DECODER = Components(name="vae_decoder", patterns=("vae", "decoder"))
 
 TEXT_COMPONENTS = {
     TEXT_EMBED.name: TEXT_EMBED,
@@ -36,19 +39,15 @@ VISION_LANGUAGE_COMPONENTS = {
     TOKEN_MERGE.name: TOKEN_MERGE,
 }
 
-TEXT_ENCODER = Components(name="text_encoder", patterns=("text_encoder", "text_model"))
-UNET = Components(name="unet", patterns=("unet",))
-VAE_DECODER = Components(name="vae_decoder", patterns=("vae", "decoder"))
-
-T2I_COMPONENTS = {
-    TEXT_ENCODER.name: TEXT_ENCODER,
-    UNET.name: UNET,
-    VAE_DECODER.name: VAE_DECODER,
-}
-
 MULTIMODAL_COMPONENTS = {
     **TEXT_COMPONENTS,
     VISION_ENCODER.name: VISION_ENCODER,
     AUDIO_ENCODER.name: AUDIO_ENCODER,
     TOKEN_MERGE.name: TOKEN_MERGE,
+}
+
+T2I_COMPONENTS = {
+    TEXT_ENCODER.name: TEXT_ENCODER,
+    UNET.name: UNET,
+    VAE_DECODER.name: VAE_DECODER,
 }
