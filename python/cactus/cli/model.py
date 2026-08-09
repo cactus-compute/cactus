@@ -114,11 +114,56 @@ def _convert_component_sources(model_id, component_sources, *, bits, token, weig
     (weights_dir / "weights_manifest.json").write_text(
         json.dumps({"weights": merged_records}, indent=2), encoding="utf-8"
     )
+    _materialize_diffusion_assets(model_id, weights_dir, token=token)
     (weights_dir / "config.txt").write_text(
-        "\n".join(f"component={mode}" for mode in converted) + "\n", encoding="utf-8"
+        "model_type=sd15\n" + "\n".join(f"component={mode}" for mode in converted) + "\n", encoding="utf-8"
     )
     print_color(GREEN, f"Model converted and ready at {weights_dir}")
     return weights_dir
+
+
+def _materialize_diffusion_assets(model_id, weights_dir, *, token=None):
+    """Emit the engine-format tokenizer sidecars and the scheduler config the
+    diffusion runtime needs alongside the converted weights."""
+    import json
+
+    from huggingface_hub import snapshot_download
+
+    snapshot = Path(snapshot_download(model_id, allow_patterns=["tokenizer/*", "scheduler/*"], token=token))
+    vocab = json.loads((snapshot / "tokenizer" / "vocab.json").read_text(encoding="utf-8"))
+    with open(weights_dir / "vocab.txt", "w", encoding="utf-8") as f:
+        for token_str, token_id in sorted(vocab.items(), key=lambda kv: kv[1]):
+            f.write(f"{token_id}\t{token_str}\n")
+    shutil.copy2(snapshot / "tokenizer" / "merges.txt", weights_dir / "merges.txt")
+    (weights_dir / "tokenizer_config.txt").write_text(
+        "vocab_size=49408\n"
+        "bos_token_id=49406\n"
+        "eos_token_id=49407\n"
+        "pad_token_id=49407\n"
+        "model_max_length=77\n"
+        "tokenizer_type=bpe\n"
+        "vocab_format=id_tab_token\n"
+        "normalizer=clip\n"
+        "decoder=clip\n"
+        "byte_fallback=false\n"
+        "has_chat_template=false\n",
+        encoding="utf-8",
+    )
+    (weights_dir / "special_tokens.json").write_text(
+        json.dumps(
+            {
+                "bos_token_id": 49406,
+                "eos_token_id": 49407,
+                "pad_token_id": 49407,
+                "vocab_size": 49408,
+                "model_max_length": 77,
+                "special_tokens": {"49406": "<|startoftext|>", "49407": "<|endoftext|>"},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    shutil.copy2(snapshot / "scheduler" / "scheduler_config.json", weights_dir / "scheduler_config.json")
 
 
 def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=None, skip_model_load=False):
