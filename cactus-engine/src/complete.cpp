@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <sstream>
