@@ -59,7 +59,7 @@ def test_clip_text_encoder_transpiles_to_the_expected_ops():
     assert counts["layer_norm"] == 25
     assert counts["attention"] == 12
     assert counts["embedding"] == 2
-    assert counts["sigmoid"] == 12  # quick_gelu lowers as x * sigmoid(1.702 x)
+    assert counts["sigmoid"] == 12
 
 
 def test_clip_text_encode_matches_torch_and_reports_latency():

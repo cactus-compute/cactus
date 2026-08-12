@@ -60,8 +60,6 @@ def test_sd_unet_denoise_matches_torch_and_reports_latency():
     inputs = _example_inputs()
     half = tuple(a.to(torch.float16) for a in inputs)
 
-    # One capture only -- exporting the 860M UNet takes minutes, so the op
-    # histogram is asserted on the same capture the numerics run on.
     captured = capture_model(_denoiser(torch.float16), half)
     nodes = captured.ir_graph.nodes
     nodes = list(nodes.values()) if isinstance(nodes, dict) else list(nodes)
@@ -69,7 +67,7 @@ def test_sd_unet_denoise_matches_torch_and_reports_latency():
     for node in nodes:
         counts[node.op] = counts.get(node.op, 0) + 1
     assert counts["conv2d"] == 98
-    assert counts["attention"] == 32  # 16 self + 16 cross
+    assert counts["attention"] == 32
     assert counts["group_norm"] == 61
     assert counts["upsample_nearest2d"] == 3
     assert counts["silu"] == 68

@@ -457,7 +457,6 @@ std::vector<std::string> BPETokenizer::apply_bpe(const std::vector<std::string>&
 }
 
 std::vector<std::string> BPETokenizer::clip_word_split(const std::string& text) const {
-    // ASCII matches CLIP's regex exactly; non-ASCII UTF-8 is treated as letters.
     static const char* kContractions[] = {"'s", "'t", "'re", "'ve", "'m", "'ll", "'d"};
     auto is_letter = [](unsigned char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80; };
     auto is_digit = [](unsigned char c) { return c >= '0' && c <= '9'; };

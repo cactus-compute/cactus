@@ -77,8 +77,7 @@ def _convert_whole_model(model_id, *, bits, weights_dir, skip_model_load):
 
 
 def _convert_component_sources(model_id, profile, *, bits, token, weights_dir):
-    """Convert a pipeline model component by component into one weights dir,
-    merging each run's weights manifest."""
+    """Convert a pipeline model one component at a time into a single weights dir."""
     import json
     import tempfile
 
@@ -130,8 +129,7 @@ def _component_source_path(source, model_id, *, token=None):
 
 
 def _materialize_pipeline_assets(model_id, profile, weights_dir, *, token=None):
-    """Emit the tokenizer sidecars and scheduler config the runtime reads from a
-    pipeline bundle, alongside the converted weights."""
+    """Emit the tokenizer sidecars and scheduler config a pipeline bundle needs at runtime."""
     from huggingface_hub import snapshot_download
 
     from ..convert.cactus_adapters.tokenizer import convert_clip_tokenizer

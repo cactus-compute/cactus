@@ -63,7 +63,6 @@ def taesd_class() -> Any:
     return AutoencoderTiny
 
 
-#diffusers is an optional dependency, so the classes resolve on use rather than joining LOAD_STRATEGIES
 COMPONENT_LOADERS = {
     "clip_text": (clip_text_class, TextEncoderLastHiddenState),
     "sd_unet": (sd_unet_class, UnetEpsilon),

@@ -93,7 +93,6 @@ def parakeet_processor(model_id: str, configs: dict[str, dict[str, Any]], model_
 
 def _latent_shape(configs: dict[str, dict[str, Any]]) -> tuple[int, int, int, int]:
     unet_config = configs.get("unet/config.json", {})
-    #Graphs are shape-specialized; export 64x64 latents (512x512 images) rather than the config's training sample_size
     return (1, int(unet_config.get("in_channels", 4)), 64, 64)
 
 def _prompt_token_count(configs: dict[str, dict[str, Any]]) -> int:

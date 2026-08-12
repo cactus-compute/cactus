@@ -22,8 +22,7 @@ def patch_gemma4_audio_mask_for_export() -> None:
 
 def patch_clip_position_ids_for_export() -> None:
     import transformers.models.clip.modeling_clip as clip_modeling
-    #CLIP registers position_ids as a non-persistent buffer, which torch.export lifts
-    #into a weight placeholder no checkpoint can bind; recompute it in the graph instead.
+    #CLIP registers position_ids as a non-persistent buffer that no checkpoint can bind; recompute it in the graph
     original_forward = clip_modeling.CLIPTextEmbeddings.forward
     def forward_with_computed_position_ids(self, input_ids=None, position_ids=None, inputs_embeds=None):
         if position_ids is None:

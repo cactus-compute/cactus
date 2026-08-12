@@ -1,9 +1,3 @@
-"""End-to-end text-to-image through transpiled graphs only.
-
-CLIP text encoder, LCM UNet, and TAESD decoder each go through
-capture_model -> transpile_ir; the LCM scheduler step stays host-side numpy.
-The reference is the identical loop run in torch fp32.
-"""
 from __future__ import annotations
 
 import time
@@ -124,7 +118,6 @@ def test_t2i_pipeline_matches_torch():
     noises = [torch.randn(1, 4, 64, 64, generator=generator) for _ in range(STEPS - 1)]
     w_emb = _guidance_embedding(GUIDANCE - 1.0)
 
-    # --- transpiled pipeline ---
     text_graph = transpile_ir(
         capture_model(_LastHiddenState(_load("CLIPTextModel", SD_MODEL_ID, "text_encoder", torch.float16)), (ids,)).ir_graph
     )
@@ -161,7 +154,6 @@ def test_t2i_pipeline_matches_torch():
     image = np.asarray(decoder_graph.execute()[0].numpy(), dtype=np.float32).clip(0.0, 1.0)
     decode_ms = (time.perf_counter() - start) * 1000.0
 
-    # --- torch fp32 reference, same math ---
     ref_text = _LastHiddenState(_load("CLIPTextModel", SD_MODEL_ID, "text_encoder", torch.float32))
     ref_unet = _Denoiser(_load("UNet2DConditionModel", SD_MODEL_ID, "unet", torch.float32))
     with torch.no_grad():
