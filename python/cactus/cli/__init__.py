@@ -5,12 +5,14 @@ from pathlib import Path
 from .. import __version__
 from .common import (
     DEFAULT_MODEL_ID,
+    DEFAULT_IMAGE_MODEL_ID,
     DEFAULT_TRANSCRIPTION_MODEL_ID,
     DEFAULT_TEST_MODEL_ID,
     DEFAULT_TEST_TRANSCRIPTION_MODEL_ID,
 )
 from .download import cmd_download
 from .compile import cmd_build
+from .generate_image import cmd_generate_image
 from .serve import cmd_serve
 from .transcribe import cmd_transcribe
 from .test import cmd_test, cmd_benchmark, COMPONENTS
@@ -146,6 +148,16 @@ def create_parser():
   cactus transcribe [model]            live microphone transcription with a model
     --file <audio.wav>                 audio file to transcribe (WAV)
     --language <code>                  language code (default: en)
+    --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
+    --token <token>                    HuggingFace token (gated models)
+    --reconvert                        refresh cached bundle
+
+  cactus generate-image [model]        generate an image (default: {DEFAULT_IMAGE_MODEL_ID})
+    --prompt <text>                    text prompt to render
+    --out <image.png>                  output PNG path (default: image.png)
+    --steps <n>                        denoising steps (default: 4)
+    --guidance-scale <float>           guidance scale (default: 8.5)
+    --seed <n>                         seed for the initial latents (default: 0)
     --bits 1|2|3|4|2.54|3.26           CQ quantization (default: 4)
     --token <token>                    HuggingFace token (gated models)
     --reconvert                        refresh cached bundle
@@ -294,6 +306,22 @@ def create_parser():
     transcribe_parser.add_argument("--language", default="en",
                                    help="Language code (default: en)")
 
+    generate_image_parser = subparsers.add_parser("generate-image", help="Generate an image from a text prompt",
+                                                  parents=[_telemetry_parent(), _build_parent()])
+    generate_image_parser.add_argument("model_id", nargs="?", default=DEFAULT_IMAGE_MODEL_ID,
+                                       type=_hf_id_or_path,
+                                       help=f"HuggingFace model id (default: {DEFAULT_IMAGE_MODEL_ID})")
+    generate_image_parser.add_argument("--prompt", required=True,
+                                       help="Text prompt to render")
+    generate_image_parser.add_argument("--out", dest="output", default="image.png",
+                                       help="Output PNG path (default: image.png)")
+    generate_image_parser.add_argument("--steps", type=int, default=4,
+                                       help="Denoising steps (default: 4)")
+    generate_image_parser.add_argument("--guidance-scale", type=float, default=8.5,
+                                       help="Guidance scale (default: 8.5)")
+    generate_image_parser.add_argument("--seed", type=int, default=0,
+                                       help="Seed for the initial latents (default: 0)")
+
     serve_parser = subparsers.add_parser("serve", help="OpenAI-compatible local HTTP server",
                                          parents=[_telemetry_parent(), _build_parent()])
     serve_parser.add_argument("model_id", nargs="?", default=None,
@@ -434,6 +462,7 @@ _COMMANDS = {
     "run":        cmd_run,
     "serve":      cmd_serve,
     "transcribe": cmd_transcribe,
+    "generate-image": cmd_generate_image,
     "test":       cmd_test,
     "benchmark":  cmd_benchmark,
     "list":       cmd_list,

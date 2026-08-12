@@ -844,6 +844,13 @@ _lib.cactus_image_embed.argtypes = [
 ]
 _lib.cactus_image_embed.restype = ctypes.c_int
 
+_lib.cactus_generate_image.argtypes = [
+    ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint8),
+    ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint),
+    ctypes.c_int, ctypes.c_float, ctypes.c_ulonglong
+]
+_lib.cactus_generate_image.restype = ctypes.c_int
+
 _lib.cactus_audio_embed.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_float),
     ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)
@@ -1307,6 +1314,33 @@ def cactus_image_embed(model, image_path):
     if rc < 0:
         raise RuntimeError(_err("Image embedding failed"))
     return list(buf[:dim.value])
+
+
+def cactus_generate_image(model, prompt, steps=4, guidance_scale=8.5, seed=0, max_side=1024):
+    """Generate an image from a text prompt with a text-to-image model.
+
+    Args:
+        model:          Model handle from cactus_init().
+        prompt:         The text prompt.
+        steps:          Denoising steps (default 4, an LCM model's sweet spot).
+        guidance_scale: Classifier-free guidance embedding scale (default 8.5).
+        seed:           Seed for the initial latents.
+        max_side:       Largest image side the result buffer must hold.
+
+    Returns:
+        (pixels, width, height) where pixels is packed 8-bit RGB, row-major.
+    """
+    buf = (ctypes.c_uint8 * (max_side * max_side * 3))()
+    width = ctypes.c_uint()
+    height = ctypes.c_uint()
+    rc = _lib.cactus_generate_image(
+        model, _enc(prompt), buf, ctypes.sizeof(buf), ctypes.byref(width), ctypes.byref(height),
+        int(steps), float(guidance_scale), int(seed))
+    if rc == -2:
+        raise RuntimeError(f"Image is larger than max_side={max_side}; raise it and retry")
+    if rc < 0:
+        raise RuntimeError(_err("Image generation failed"))
+    return bytes(buf[:rc]), width.value, height.value
 
 
 def cactus_audio_embed(model, audio_path):
