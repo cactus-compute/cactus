@@ -611,7 +611,8 @@ LCM_DREAMSHAPER_V7_PROFILE = ModelProfile(
     load_strategy="auto",
     component_sources=(
         ComponentSource(mode="text_encoder", load_strategy="clip_text", source="text_encoder"),
-        ComponentSource(mode="unet", load_strategy="sd_unet", source="unet"),
+        ComponentSource(mode="unet", load_strategy="sd_unet", source="unet",
+                        preserved_ops=("scaled_dot_product_attention",)),
         ComponentSource(mode="vae_decoder", load_strategy="taesd_decoder", source="madebyollin/taesd"),
     ),
     prompt_contract=PromptContract(style="raw", template_source="none"),

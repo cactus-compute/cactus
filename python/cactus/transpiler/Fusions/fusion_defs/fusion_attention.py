@@ -9,7 +9,12 @@ ATTENTION_DIRECT_GRAPH = _graph(
     "attn_sdp",
     ("attn_sdp",),
     inputs=(_input("query", "attn_sdp", 0), _input("key", "attn_sdp", 1), _input("value", "attn_sdp", 2), _input("mask", "attn_sdp", 3, optional=True)),
-    attr_captures=(M.AttrCapture("scale", "attn_sdp", "scale", required=False), M.AttrCapture("is_causal", "attn_sdp", "is_causal", default=True, required=False)),
+    attr_captures=(
+        M.AttrCapture("scale", "attn_sdp", "scale", required=False),
+        M.AttrCapture("is_causal", "attn_sdp", "is_causal", default=False, required=False),
+        M.AttrCapture("input_layout", default="bhqd_bhsd_bhsd", required=False),
+        M.AttrCapture("output_layout", default="bhqd", required=False),
+    ),
 )
 
 ATTENTION_CORE_GRAPH = _graph(

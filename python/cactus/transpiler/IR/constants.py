@@ -110,3 +110,7 @@ POSITIONAL_ATTRS_MAP: dict[str, dict[int, str]] = {
     "aten.fft_rfft.default": {1: "n", 2: "dim", 3: "norm"},
     "aten.fft_irfft.default": {1: "n", 2: "dim", 3: "norm"},
 }
+
+OMITTED_ATTR_DEFAULTS: dict[str, dict[str, object]] = {
+    "aten.scaled_dot_product_attention.default": {"is_causal": False},
+}

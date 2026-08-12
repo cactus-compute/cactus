@@ -33,6 +33,7 @@ class ComponentSource:
     mode:str #Export mode this component is captured under
     load_strategy:str #Key into Converter LOAD_STRATEGIES/SYNTHETIC_INPUT_BUILDERS for this component
     source:str = "" #Repository subfolder, or a full repository id when the component ships separately
+    preserved_ops:tuple[str, ...] = () #Aten ops this component keeps whole through run_decompositions
 
 @dataclass(slots=True, frozen=True)
 class PromptContract:
@@ -133,7 +134,9 @@ class ModelProfile:
     input_strategy: str #Specifies what functions/procedures to use when generating sample input for torch.export
     export_patches: tuple[str, ...] #Specifies what patches/masks to apply to sample inputs
     load_strategy: str #Specifies which Hugging Face AutoModel class/loading path to prefer
+    preserved_ops: tuple[str, ...] = () #Aten ops kept whole through run_decompositions so a fusion can match them directly
     export_modes: tuple[str, ...] = () #Per-component export modes when the family is not prefill/decode shaped; empty means the default modes
+
     component_sources: tuple[ComponentSource, ...] = () #Components of a pipeline model that load and export separately
     disabled_fusion_fields: tuple[str, ...] = () #Fusion groups to skip for this profile when a family is known unsafe
     disabled_fusions: tuple[str, ...] = () #Individual fusion names or cactus ops to skip for this profile

@@ -463,6 +463,20 @@ def pad_no_cache_full_context_input(input_: Input, input_cls: Any, capacity: int
         inference_mode=input_.inference_mode,
     )
 
+def preserved_decomposition_table(mp: MP_Models.ModelProfile, inference_mode: str) -> dict[Any, Any] | None:
+    preserved = tuple(mp.preserved_ops)
+    for source in mp.component_sources:
+        if source.mode == inference_mode:
+            preserved += tuple(source.preserved_ops)
+    if not preserved:
+        return None
+    table = torch.export.default_decompositions()
+    for name in preserved:
+        overload_packet = getattr(torch.ops.aten, name, None)
+        if overload_packet is not None:
+            table.pop(overload_packet.default, None)
+    return table
+
 def export_(model: Model, input: Input) -> LayerMap:
     should_use_cache = input.inference_mode in constants.CACHE_INFERENCE_MODES
     CU.configure_model_for_export(model.model, should_use_cache=should_use_cache)
@@ -481,8 +495,10 @@ def export_(model: Model, input: Input) -> LayerMap:
     OV.prepare_model_input_hints_for_export(model.model, export_kwargs)
     export_kwargs["use_cache"] = should_use_cache
     export_kwargs = CU.filter_forward_kwargs(export_model, export_kwargs)
+    decomposition_table = preserved_decomposition_table(model.model_profile, input.inference_mode)
     with torch.no_grad():
-        exported = torch.export.export(export_model, args=input.args, kwargs=export_kwargs, strict=False).run_decompositions()
+        exported = torch.export.export(export_model, args=input.args, kwargs=export_kwargs, strict=False)
+        exported = exported.run_decompositions() if decomposition_table is None else exported.run_decompositions(decomposition_table)
     graph = exported.graph_module.graph if hasattr(exported, "graph_module") else exported.graph
     records = [LayerRecord.from_node(i, node) for i, node in enumerate(graph.nodes)]
     return LayerMap.from_data(x=exported, name=model.name, model_task=input.inference_mode, nodes_list=records)
