@@ -180,7 +180,7 @@ def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> A
         query = cast_to_precision(context, query, context.graph.FP16)
         key = cast_to_precision(context, key, context.graph.FP16)
         value = cast_to_precision(context, value, context.graph.FP16)
-        mask = cast_to_precision(context, mask, context.graph.FP16) if mask is not None else None
+        mask = attention_mask_for_kernel(context, mask, query) if mask is not None else None
         output = context.graph.attention(
             query,
             key,
@@ -379,6 +379,19 @@ def attention_inputs_for_layout(context: models.GenerationContext, node: IRModel
             mask,
         )
     return inputs[0], inputs[1], inputs[2], mask
+
+def attention_mask_for_kernel(context: models.GenerationContext, mask: Any, query: Any) -> Any:
+    mask = cast_to_precision(context, mask, context.graph.FP16)
+    mask_shape = tuple(int(dim) for dim in getattr(mask, "shape", ()))
+    query_shape = tuple(int(dim) for dim in getattr(query, "shape", ()))
+    if len(query_shape) != 4:
+        return mask
+    batch_size, seq_len = query_shape[0], query_shape[1]
+    if len(mask_shape) == 2 and batch_size == 1 and mask_shape[0] == seq_len:
+        return context.graph.reshape(mask, (1, mask_shape[0], mask_shape[1]))
+    if len(mask_shape) == 4 and mask_shape[0] == batch_size and mask_shape[1] == 1 and mask_shape[2] == seq_len:
+        return context.graph.reshape(mask, (mask_shape[0], mask_shape[2], mask_shape[3]))
+    return mask
 
 def attention_output_for_layout(context: models.GenerationContext, node: IRModels.Node, output: Any) -> Any:
     output_layout = node.attrs.get("output_layout")

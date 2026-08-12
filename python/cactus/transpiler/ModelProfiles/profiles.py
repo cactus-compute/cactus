@@ -610,7 +610,8 @@ LCM_DREAMSHAPER_V7_PROFILE = ModelProfile(
     export_patches=("clip_position_ids",),
     load_strategy="auto",
     component_sources=(
-        ComponentSource(mode="text_encoder", load_strategy="clip_text", source="text_encoder"),
+        ComponentSource(mode="text_encoder", load_strategy="clip_text", source="text_encoder",
+                        preserved_ops=("scaled_dot_product_attention",)),
         ComponentSource(mode="unet", load_strategy="sd_unet", source="unet",
                         preserved_ops=("scaled_dot_product_attention",)),
         ComponentSource(mode="vae_decoder", load_strategy="taesd_decoder", source="madebyollin/taesd"),
