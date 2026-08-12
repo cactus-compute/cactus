@@ -1,4 +1,5 @@
 #include "test_utils.h"
+#include "metal_backend.h"
 #include <vector>
 #include <cmath>
 #include <cstring>
@@ -601,6 +602,80 @@ static bool test_cq4_shared_transform_multi_projection() {
     return q_ref == q_out && k_ref == k_out && v_ref == v_out;
 }
 
+static bool test_cq4_metal_transform_batch_distinct_recip() {
+#if !CACTUS_HAS_METAL
+    return true;
+#else
+    if (!cactus_metal_available()) return true;
+
+    constexpr uint32_t K = 256;
+
+    SyntheticCQ q(4, K, 128, 128, 1001);
+    SyntheticCQ k(4, K, 64, 128, 1002);
+    SyntheticCQ v(4, K, 64, 128, 1003);
+
+    for (uint32_t i = 0; i < K; ++i) {
+    q.input_scale[i] = static_cast<__fp16>(1.0f);
+    q.input_scale_recip[i] = static_cast<__fp16>(1.0f);
+
+    k.input_scale[i] = static_cast<__fp16>(2.0f);
+    k.input_scale_recip[i] = static_cast<__fp16>(0.5f);
+
+    v.input_scale[i] = static_cast<__fp16>(0.5f);
+    v.input_scale_recip[i] = static_cast<__fp16>(2.0f);
+    }
+
+    for (SyntheticCQ* matrix : {&k, &v}) {
+        matrix->left_signs = q.left_signs;
+        matrix->right_signs = q.right_signs;
+        matrix->permutation = q.permutation;
+    }
+
+    CactusQuantMatrix qm = q.matrix_interleaved();
+    CactusQuantMatrix km = k.matrix_interleaved();
+    CactusQuantMatrix vm = v.matrix_interleaved();
+
+    std::vector<__fp16> x(K);
+    for (size_t i = 0; i < K; ++i)
+        x[i] = static_cast<__fp16>(std::sin(static_cast<float>(i) * 0.031f));
+
+    std::vector<__fp16> q_ref(q.N), k_ref(k.N), v_ref(v.N);
+    std::vector<__fp16> q_out(q.N), k_out(k.N), v_out(v.N);
+    std::vector<__fp16> q_code(K), k_code(K), v_code(K);
+
+    cactus_metal_session_begin();
+
+    bool ok =
+        cactus_metal_encode_quant_matmul(q_ref.data(), x.data(), &qm) &&
+        cactus_metal_encode_quant_matmul(k_ref.data(), x.data(), &km) &&
+        cactus_metal_encode_quant_matmul(v_ref.data(), x.data(), &vm);
+
+    cactus_metal_session_sync();
+
+    const CactusQuantMatrix* weights[3] = {&qm, &km, &vm};
+    void* codes[3] = {q_code.data(), k_code.data(), v_code.data()};
+
+    ok = ok && cactus_metal_encode_transform_batch(x.data(), weights, 3, codes);
+
+    ok = ok &&
+        cactus_metal_encode_gemv_precoded(q_out.data(), q_code.data(), &qm) &&
+        cactus_metal_encode_gemv_precoded(k_out.data(), k_code.data(), &km) &&
+        cactus_metal_encode_gemv_precoded(v_out.data(), v_code.data(), &vm);
+
+    cactus_metal_session_sync();
+    cactus_metal_session_end();
+
+    bool match =
+        q_ref == q_out &&
+        k_ref == k_out &&
+        v_ref == v_out;
+
+    cactus_metal_invalidate_host_wraps();
+
+    return ok && match;
+#endif
+}
+
 int main() {
     TestRunner runner("Matrix Multiplication");
     runner.run_test("matmul_f16", test_matmul_f16());
@@ -615,6 +690,7 @@ int main() {
         double m_mt = 0;
         runner.run_test("matmul_cq4_il_mt", test_cq4_interleaved(m_mt, 1024, 4164, 128));
         runner.run_test("matmul_cq4_shared_transform", test_cq4_shared_transform_multi_projection());
+        runner.run_test("matmul_cq4_metal_distinct_recip", test_cq4_metal_transform_batch_distinct_recip());
     }
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());

@@ -806,15 +806,15 @@ bool cactus_metal_encode_transform_batch(const void* x, const CactusQuantMatrix*
     ensureEncoder();
     [g_enc setComputePipelineState:ctx().psoTbatch];
     setBufAt(x, (size_t)K*2, 0);
-    [g_enc setBuffer:r0.recip offset:r0.rc_off atIndex:1];
     for (int b=0;b<3;b++) {
         ResW* R = rw[b<B?b:0];
-        [g_enc setBuffer:R->lsign offset:R->ls_off atIndex:2+b];
-        [g_enc setBuffer:R->rsign offset:R->rs_off atIndex:5+b];
-        [g_enc setBuffer:R->perm  offset:R->pm_off atIndex:8+b];
-        setBufAt(codes[b<B?b:0], (size_t)K*2, 11+b);
+        [g_enc setBuffer:R->recip offset:R->rc_off atIndex:1+b];
+        [g_enc setBuffer:R->lsign offset:R->ls_off atIndex:4+b];
+        [g_enc setBuffer:R->rsign offset:R->rs_off atIndex:7+b];
+        [g_enc setBuffer:R->perm  offset:R->pm_off atIndex:10+b];
+        setBufAt(codes[b<B?b:0], (size_t)K*2, 13+b);
     }
-    [g_enc setBytes:&ng length:4 atIndex:14];
+    [g_enc setBytes:&ng length:4 atIndex:16];
     [g_enc setThreadgroupMemoryLength:gs*sizeof(float) atIndex:0];
     [g_enc dispatchThreadgroups:MTLSizeMake((size_t)ng*B,1,1) threadsPerThreadgroup:MTLSizeMake(32,1,1)];
     return true;
