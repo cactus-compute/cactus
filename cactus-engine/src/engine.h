@@ -298,6 +298,22 @@ struct TokenizerRuntimeConfig {
     bool has_chat_template = false;
 };
 
+struct DiffusionParams {
+    float beta_start = 0.00085f;
+    float beta_end = 0.012f;
+    std::string beta_schedule = "scaled_linear";
+    uint32_t num_train_timesteps = 1000;
+    uint32_t original_inference_steps = 50;
+    float timestep_scaling = 10.0f;
+    std::string prediction_type = "epsilon";
+};
+
+std::vector<float> diffusion_alphas_cumprod(const DiffusionParams& params);
+std::vector<uint32_t> diffusion_lcm_timesteps(const DiffusionParams& params, uint32_t steps);
+std::vector<float> diffusion_guidance_embedding(float guidance_embedding_scale, size_t dim);
+void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
+                        const void* src_data, size_t src_bytes, Precision src_prec);
+
 TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_file);
 void load_special_tokens_map(const std::string& config_file, std::unordered_map<std::string, uint32_t>& special_tokens);
 std::vector<std::string> split_with_special_tokens(const std::string& text, const std::unordered_map<std::string, uint32_t>& special_tokens);
@@ -1045,15 +1061,6 @@ private:
     Component* prefill_encoder_ = nullptr;
     enum class DecodeRoute { CACHED_STEP, DIRECT_DECODER_STEP, FULL_CONTEXT_TEXT, ENCODER_CROSS_KV_STEP, ITERATIVE_DENOISE };
     DecodeRoute decode_route_ = DecodeRoute::CACHED_STEP;
-    struct DiffusionParams {
-        float beta_start = 0.00085f;
-        float beta_end = 0.012f;
-        std::string beta_schedule = "scaled_linear";
-        uint32_t num_train_timesteps = 1000;
-        uint32_t original_inference_steps = 50;
-        float timestep_scaling = 10.0f;
-        std::string prediction_type = "epsilon";
-    };
     DiffusionParams diffusion_;
     Component* source_encoder_ = nullptr;
     Component* decoder_cross_kv_ = nullptr;

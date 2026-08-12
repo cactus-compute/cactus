@@ -1,4 +1,5 @@
 #include "test_utils.h"
+#include "../src/engine.h"
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
@@ -61,6 +62,54 @@ static bool test_generate(cactus_model_t model) {
     return true;
 }
 
+static bool test_lcm_scheduler() {
+    cactus::engine::DiffusionParams params;
+    const std::vector<uint32_t> expected_four = {999, 759, 499, 259};
+    if (cactus::engine::diffusion_lcm_timesteps(params, 4) != expected_four) {
+        std::cerr << "[✗] 4-step LCM schedule does not match diffusers\n";
+        return false;
+    }
+    const std::vector<uint32_t> expected_two = {999, 499};
+    if (cactus::engine::diffusion_lcm_timesteps(params, 2) != expected_two) {
+        std::cerr << "[✗] 2-step LCM schedule does not match diffusers\n";
+        return false;
+    }
+    if (!cactus::engine::diffusion_lcm_timesteps(params, 0).empty()) {
+        std::cerr << "[✗] zero-step schedule should be empty\n";
+        return false;
+    }
+
+    const std::vector<float> alphas = cactus::engine::diffusion_alphas_cumprod(params);
+    if (alphas.size() != params.num_train_timesteps) {
+        std::cerr << "[✗] alphas_cumprod has the wrong length\n";
+        return false;
+    }
+    if (!(alphas.front() < 1.0f && alphas.back() > 0.0f && alphas.back() < alphas.front())) {
+        std::cerr << "[✗] alphas_cumprod is not a decreasing schedule inside (0, 1)\n";
+        return false;
+    }
+    if (std::abs(alphas[999] - 0.00466f) > 1e-4f) {
+        std::cerr << "[✗] alphas_cumprod[999]=" << alphas[999] << " expected ~0.00466\n";
+        return false;
+    }
+
+    for (size_t dim : {2u, 256u}) {
+        const std::vector<float> embedding = cactus::engine::diffusion_guidance_embedding(7.5f, dim);
+        if (embedding.size() != dim) {
+            std::cerr << "[✗] guidance embedding has the wrong length for dim=" << dim << "\n";
+            return false;
+        }
+        for (float value : embedding) {
+            if (!std::isfinite(value)) {
+                std::cerr << "[✗] guidance embedding is not finite for dim=" << dim << "\n";
+                return false;
+            }
+        }
+    }
+    std::cout << "├─ LCM scheduler: ok\n";
+    return true;
+}
+
 static bool test_diffusion() {
     cactus_model_t model = cactus_init(g_bundle_path, nullptr, false);
     if (!model) {
@@ -75,12 +124,13 @@ static bool test_diffusion() {
 }
 
 int main() {
-    if (!g_bundle_path || !*g_bundle_path) {
-        std::cout << "CACTUS_SD_BUNDLE not set; skipping diffusion tests\n";
-        return 0;
-    }
     TestUtils::TestRunner runner("Diffusion Tests");
-    runner.run_test("text_to_image", test_diffusion());
+    runner.run_test("lcm_scheduler", test_lcm_scheduler());
+    if (g_bundle_path && *g_bundle_path) {
+        runner.run_test("text_to_image", test_diffusion());
+    } else {
+        std::cout << "CACTUS_SD_BUNDLE not set; skipping text-to-image generation\n";
+    }
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
