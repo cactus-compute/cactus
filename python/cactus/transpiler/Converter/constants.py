@@ -18,7 +18,6 @@ DYNAMIC_CACHE_POLICY = "dynamic_cache"
 DROP_MULTIMODAL_ON_DECODE_POLICY = "drop_multimodal_on_decode"
 
 SYNTHETIC_INPUT_STRATEGY = "synthetic"
-DIFFUSION_INPUT_STRATEGY = "diffusion_components"
 DECODE_WITH_CACHE_MODE = "decode_with_cache"
 
 CONVERTER_JSON_DIR = Path(__file__).resolve().parent / "jsons"

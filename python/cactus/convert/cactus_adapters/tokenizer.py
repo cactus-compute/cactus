@@ -599,3 +599,60 @@ def convert_sentencepiece_tokenizer(tokenizer_path, output_dir, model_max_length
     pieces = parse_sentencepiece_pieces(tokenizer_path)
     meta = _build_sentencepiece_metadata(pieces, model_max_length)
     _write_sentencepiece_files(output_dir, pieces, meta)
+
+
+def _clip_special_token(tokenizer_config, special_tokens_map, name, default):
+    value = special_tokens_map.get(name, tokenizer_config.get(name, default))
+    if isinstance(value, dict):
+        return value.get("content", default)
+    return value
+
+
+def convert_clip_tokenizer(tokenizer_dir, output_dir):
+    tokenizer_dir, output_dir = Path(tokenizer_dir), Path(output_dir)
+    import shutil
+
+    vocab = json.loads((tokenizer_dir / "vocab.json").read_text(encoding="utf-8"))
+    tokenizer_config = json.loads((tokenizer_dir / "tokenizer_config.json").read_text(encoding="utf-8"))
+    special_tokens_map = json.loads((tokenizer_dir / "special_tokens_map.json").read_text(encoding="utf-8"))
+
+    id_to_token = [""] * (max(vocab.values()) + 1)
+    for token_str, token_id in vocab.items():
+        id_to_token[token_id] = token_str
+    with open(output_dir / "vocab.txt", "w", encoding="utf-8") as f:
+        for token_id, token_str in enumerate(id_to_token):
+            f.write(f"{token_id}\t{token_str}\n")
+    shutil.copy2(tokenizer_dir / "merges.txt", output_dir / "merges.txt")
+
+    bos_token = _clip_special_token(tokenizer_config, special_tokens_map, "bos_token", "<|startoftext|>")
+    eos_token = _clip_special_token(tokenizer_config, special_tokens_map, "eos_token", "<|endoftext|>")
+    pad_token = _clip_special_token(tokenizer_config, special_tokens_map, "pad_token", eos_token)
+    unk_token = _clip_special_token(tokenizer_config, special_tokens_map, "unk_token", eos_token)
+    special_token_ids = {
+        'bos_token_id': int(vocab[bos_token]),
+        'eos_token_id': int(vocab[eos_token]),
+        'pad_token_id': int(vocab[pad_token]),
+        'unk_token_id': int(vocab[unk_token]),
+    }
+    model_max_length = int(tokenizer_config.get("model_max_length", 77))
+
+    with open(output_dir / "special_tokens.json", 'w', encoding='utf-8') as f:
+        json.dump({
+            **special_token_ids,
+            "vocab_size": len(id_to_token),
+            "model_max_length": model_max_length,
+            "special_tokens": {str(vocab[bos_token]): bos_token, str(vocab[eos_token]): eos_token},
+            "additional_special_tokens": [],
+        }, f, indent=2, ensure_ascii=False)
+
+    with open(output_dir / "tokenizer_config.txt", 'w') as f:
+        f.write(f"vocab_size={len(id_to_token)}\n")
+        for key, value in special_token_ids.items():
+            f.write(f"{key}={value}\n")
+        f.write(f"model_max_length={model_max_length}\n")
+        f.write("tokenizer_type=bpe\n")
+        f.write("vocab_format=id_tab_token\n")
+        f.write("normalizer=clip\n")
+        f.write("decoder=clip\n")
+        f.write("byte_fallback=false\n")
+        f.write("has_chat_template=false\n")

@@ -503,7 +503,6 @@ class WhisperAdapter(FamilyAdapter):
 
 
 def _verbatim_name_tensor(source_name: str, component: str) -> NameMatch:
-    """Keep the full dotted checkpoint name, so parallel stacks never collide."""
     if not (source_name.endswith(".weight") or source_name.endswith(".bias")):
         return NameMatch(source_name, None, component, False, hf_name=source_name, adapter_name=source_name)
     generic = source_name.replace(".", "_")

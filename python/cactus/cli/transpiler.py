@@ -190,6 +190,12 @@ def profile_for_model_id(model_id: str):
     return profiles.profile_for_model_id(model_id)
 
 
+def export_modes(profile) -> tuple[str, ...]:
+    from cactus.transpiler.ModelProfiles import profiles
+
+    return profiles.export_modes_for_profile(profile) or DEFAULT_TRANSPILER_MODES
+
+
 def resolve_transpile_config(
     model_id: str,
     *,
@@ -219,7 +225,7 @@ def resolve_transpile_config(
             profile=profile,
             modalities=default_modalities(profile),
             profile_source="registered",
-            inference_modes=tuple(getattr(profile, "export_modes", ()) or DEFAULT_TRANSPILER_MODES),
+            inference_modes=export_modes(profile),
         )
 
     resolved_task = generic_task or "causal-lm"

@@ -5765,7 +5765,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (mt == "needle") model_type = ModelType::NEEDLE;
             else if (mt == "bert" || mt == "nomic") model_type = ModelType::NOMIC;
             else if (mt == "generic") model_type = ModelType::GENERIC;
-            else if (mt == "sd15") model_type = ModelType::SD15;
+            else if (mt == "sd15_t2i") model_type = ModelType::SD15;
             else model_type = ModelType::GEMMA4;
         }
         else if (key == "model_variant") {

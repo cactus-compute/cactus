@@ -11,6 +11,7 @@ from .components import (
 from .models import (
     AliasContract,
     CacheContract,
+    ComponentSource,
     MediaContract,
     ModelProfile,
     PromptContract,
@@ -605,14 +606,13 @@ LCM_DREAMSHAPER_V7_PROFILE = ModelProfile(
     ),
     fusion_fields=("generic", "conv", "vision", "normalization", "attention", "linear", "embedding"),
     supported_modalties=("text",),
-    input_strategy="diffusion_components",
+    input_strategy="synthetic",
     export_patches=("clip_position_ids",),
-    load_strategy="diffusion_components",
-    export_modes=("text_encoder", "unet", "vae_decoder"),
+    load_strategy="auto",
     component_sources=(
-        ("text_encoder", "clip_text:text_encoder"),
-        ("unet", "sd_unet:unet"),
-        ("vae_decoder", "taesd_decoder:madebyollin/taesd"),
+        ComponentSource(mode="text_encoder", load_strategy="clip_text", source="text_encoder"),
+        ComponentSource(mode="unet", load_strategy="sd_unet", source="unet"),
+        ComponentSource(mode="vae_decoder", load_strategy="taesd_decoder", source="madebyollin/taesd"),
     ),
     prompt_contract=PromptContract(style="raw", template_source="none"),
     runtime_contract=SD15_T2I_RUNTIME_CONTRACT,
@@ -630,6 +630,22 @@ MODEL_ID_MAP = {
     "LiquidAI/LFM2.5-8B-A1B": LFM_MOE_PROFILE,
     "SimianLuo/LCM_Dreamshaper_v7": LCM_DREAMSHAPER_V7_PROFILE,
 }
+
+def export_modes_for_profile(profile: ModelProfile) -> tuple[str, ...]:
+    if profile.export_modes:
+        return profile.export_modes
+    return tuple(source.mode for source in profile.component_sources)
+
+def component_source_for_mode(profile: ModelProfile, mode: str) -> ComponentSource:
+    for source in profile.component_sources:
+        if source.mode == mode:
+            return source
+    raise ValueError(f"profile {profile.model_profiles!r} declares no component source for mode {mode!r}")
+
+def component_repo_and_subfolder(source: ComponentSource, model_id: str) -> tuple[str, str]:
+    if "/" in source.source:
+        return source.source, ""
+    return model_id, source.source
 
 def profile_for_model_id(model_id: str) -> ModelProfile | None:
     """Return only explicitly registered optimized profiles.
