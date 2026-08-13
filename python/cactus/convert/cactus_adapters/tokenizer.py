@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 try:
@@ -610,8 +611,6 @@ def _clip_special_token(tokenizer_config, special_tokens_map, name, default):
 
 def convert_clip_tokenizer(tokenizer_dir, output_dir):
     tokenizer_dir, output_dir = Path(tokenizer_dir), Path(output_dir)
-    import shutil
-
     vocab = json.loads((tokenizer_dir / "vocab.json").read_text(encoding="utf-8"))
     tokenizer_config = json.loads((tokenizer_dir / "tokenizer_config.json").read_text(encoding="utf-8"))
     special_tokens_map = json.loads((tokenizer_dir / "special_tokens_map.json").read_text(encoding="utf-8"))

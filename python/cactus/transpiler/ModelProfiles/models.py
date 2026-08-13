@@ -134,7 +134,6 @@ class ModelProfile:
     input_strategy: str #Specifies what functions/procedures to use when generating sample input for torch.export
     export_patches: tuple[str, ...] #Specifies what patches/masks to apply to sample inputs
     load_strategy: str #Specifies which Hugging Face AutoModel class/loading path to prefer
-    preserved_ops: tuple[str, ...] = () #Aten ops kept whole through run_decompositions so a fusion can match them directly
     export_modes: tuple[str, ...] = () #Per-component export modes when the family is not prefill/decode shaped; empty means the default modes
 
     component_sources: tuple[ComponentSource, ...] = () #Components of a pipeline model that load and export separately

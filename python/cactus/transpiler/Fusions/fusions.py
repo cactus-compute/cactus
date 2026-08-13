@@ -100,7 +100,7 @@ FUSIONS: dict[str, M.FusionDefinition] = {
     "lfm_short_conv_decode": _definition("lfm_short_conv_decode", "lfm_short_conv_decode", LFM_SHORT_CONV_DECODE_GRAPH, fusion_fields=("generic", "conv", "cache", "lfm_moe"), supported_inference_modes=("decode_with_cache",)),
     "conv1d_k3": _definition("conv1d_k3", "conv1d_k3", CONV_GRAPH, fusion_fields=("generic", "conv", "audio"), metadata=_required_attrs(kernel_size=3, stride=1, padding=0, dilation=1, groups=1, spatial_dims=1)),
     "conv1d_k7s3": _definition("conv1d_k7s3", "conv1d_k7s3", CONV_BIAS_GRAPH, fusion_fields=("generic", "conv", "audio"), metadata=_required_attrs(kernel_size=7, stride=3, spatial_dims=1)),
-    "conv1d_causal": _definition("conv1d_causal", "conv1d_causal", CONV_GRAPH, fusion_fields=("generic", "conv", "cache"), metadata=_required_attrs(causal=True)),
+    "conv1d_causal": _definition("conv1d_causal", "conv1d_causal", CONV_GRAPH, fusion_fields=("generic", "conv", "cache"), metadata=_required_attrs(causal=True, spatial_dims=1)),
     "conv1d_pointwise": _definition("conv1d_pointwise", "conv1d_pointwise", CONV_GRAPH, fusion_fields=("generic", "conv", "audio"), metadata=_required_attrs(kernel_size=1, spatial_dims=1)),
     "conv1d_same_depthwise_k9": _definition("conv1d_same_depthwise_k9", "conv1d_same_depthwise_k9", CONV_GRAPH, fusion_fields=("generic", "conv", "audio"), metadata=_required_attrs(kernel_size=9, depthwise=True, spatial_dims=1)),
     "conv2d_k3s2p1": _definition("conv2d_k3s2p1", "conv2d_k3s2p1", CONV_GRAPH, fusion_fields=("generic", "conv", "vision"), metadata=_required_attrs(kernel_size=3, stride=2, padding=1, spatial_dims=2)),

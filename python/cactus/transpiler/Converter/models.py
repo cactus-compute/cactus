@@ -381,13 +381,13 @@ def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None, model_cl
             {**base_kwargs, "torch_dtype": "auto", "low_cpu_mem_usage": True},
             base_kwargs,
         )
-    for model_class in candidate_classes:
-        if model_class in seen_classes:
+    for candidate_class in candidate_classes:
+        if candidate_class in seen_classes:
             continue
-        seen_classes.add(model_class)
-        for load_kwargs in load_attempts:
+        seen_classes.add(candidate_class)
+        for attempt_kwargs in load_attempts:
             try:
-                model = model_class.from_pretrained(model_id, **load_kwargs)
+                model = candidate_class.from_pretrained(model_id, **attempt_kwargs)
                 model.eval()
                 for patch in export_patches:
                     patch_fn = EXPORT_PATCHES[patch]
@@ -464,7 +464,7 @@ def pad_no_cache_full_context_input(input_: Input, input_cls: Any, capacity: int
     )
 
 def preserved_decomposition_table(mp: MP_Models.ModelProfile, inference_mode: str) -> dict[Any, Any] | None:
-    preserved = tuple(mp.preserved_ops)
+    preserved: tuple[str, ...] = ()
     for source in mp.component_sources:
         if source.mode == inference_mode:
             preserved += tuple(source.preserved_ops)
