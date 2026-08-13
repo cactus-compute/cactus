@@ -138,16 +138,19 @@ kernel void cq4_transform_simd(
 
 kernel void cq4_transform_batch(
     device const half*  x       [[buffer(0)]],
-    device const half*  recip   [[buffer(1)]],
-    device const char*  lsign0  [[buffer(2)]], device const char* lsign1 [[buffer(3)]], device const char* lsign2 [[buffer(4)]],
-    device const char*  rsign0  [[buffer(5)]], device const char* rsign1 [[buffer(6)]], device const char* rsign2 [[buffer(7)]],
-    device const uint*  perm0   [[buffer(8)]], device const uint* perm1  [[buffer(9)]], device const uint* perm2  [[buffer(10)]],
-    device       half*  code0   [[buffer(11)]], device half* code1 [[buffer(12)]], device half* code2 [[buffer(13)]],
-    constant uint& ng           [[buffer(14)]],
+    device const half*  recip0  [[buffer(1)]],
+    device const half*  recip1  [[buffer(2)]],
+    device const half*  recip2  [[buffer(3)]],
+    device const char*  lsign0  [[buffer(4)]], device const char* lsign1 [[buffer(5)]], device const char* lsign2 [[buffer(6)]],
+    device const char*  rsign0  [[buffer(7)]], device const char* rsign1 [[buffer(8)]], device const char* rsign2 [[buffer(9)]],
+    device const uint*  perm0   [[buffer(10)]], device const uint* perm1 [[buffer(11)]], device const uint* perm2 [[buffer(12)]],
+    device       half*  code0   [[buffer(13)]], device half* code1 [[buffer(14)]], device half* code2 [[buffer(15)]],
+    constant uint& ng           [[buffer(16)]],
     uint tgpos [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
     threadgroup float* zmem     [[threadgroup(0)]])
 {
     uint g = tgpos % ng, b = tgpos / ng;
+    device const half* recip = (b==0u)?recip0:((b==1u)?recip1:recip2);
     device const char* lsign = (b==0u)?lsign0:((b==1u)?lsign1:lsign2);
     device const char* rsign = (b==0u)?rsign0:((b==1u)?rsign1:rsign2);
     device const uint* perm  = (b==0u)?perm0 :((b==1u)?perm1 :perm2 );
