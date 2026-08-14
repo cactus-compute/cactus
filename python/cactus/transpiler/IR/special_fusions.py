@@ -149,19 +149,31 @@ def match_generic_cached_attention(
     input_modalities: tuple[str, ...],
     fusion_fields: tuple[str, ...],
 ) -> models.FusionResult | None:
-    """Fuse exported causal attention by its typed cache/dataflow contract."""
-    if inference_mode != "decode_with_cache":
+    """Fuse exported causal GQA/MQA by its typed cache/dataflow contract."""
+    if inference_mode == "prefill_with_cache":
+        if fusion.target != "cactus.attention":
+            return None
+        return match_generic_prefill_gqa(source, fusion)
+    if inference_mode != "decode_with_cache" or fusion.target != "cactus.attention_cached":
         return None
-    # Anchor on the first rank-4 layout restoration after the value BMM.  This
-    # avoids absorbing projection/output-layout operations that follow it.
-    if source.target not in {"cactus.view", "aten.view.default", "aten.reshape.default"}:
+    # Anchor on an output-layout wrapper after the value BMM.  Generic exports
+    # may restore [B,H,T,D], [B,T,H*D], or flattened [T,H*D] before the output
+    # projection; stopping at wrappers prevents absorbing that projection.
+    if source.target not in ATTENTION_WRAPPER_TARGETS:
         return None
-    if len(source.parents) != 1 or source.parents[0].target != "aten.bmm.default":
+    value_bmm, _ = value_bmm_from_unary_path(source, max_depth=10)
+    if value_bmm is None:
         return None
-    value_bmm = source.parents[0]
-    if len(value_bmm.parents) < 2 or not has_softmax_ancestor(value_bmm.parents[0]):
+    if len(value_bmm.parents) < 2:
         return None
-    qk_bmm = first_bmm_ancestor(value_bmm.parents[0], value_bmm)
+    softmax = first_target_ancestor(
+        value_bmm.parents[0],
+        {"cactus.softmax", "aten.softmax.int", "aten._softmax.default"},
+        max_depth=32,
+    )
+    if softmax is None or not softmax.parents:
+        return None
+    qk_bmm = first_bmm_ancestor(softmax.parents[0], value_bmm)
     if qk_bmm is None or len(qk_bmm.parents) < 2:
         return None
     key_match: models.CacheConcatMatch | None = None
@@ -219,20 +231,119 @@ def match_generic_cached_attention(
             "position_offset": HISTORY_POSITION_OFFSET,
             "window_size": int(key_cache.window_size or 0),
             "input_layout": "bhqd_bhsd_bhsd",
-            "output_layout": "bhqd",
+            "output_layout": "bthd_flat" if node_rank(source) in {2, 3} else "bhqd",
             "v_head_dim": last_int_dim(value_match.new_value),
+            "additive_mask": False,
             "dropped_mask_builder": True,
+            "preserved_prefill_mask": False,
             "dropped_gqa_repeat": True,
             "cache_contract": "typed_kv_concat",
         },
     )
 
-def has_softmax_ancestor(node: models.Node, max_depth: int = 32) -> bool:
-    return first_target_ancestor(
-        node,
+def match_generic_prefill_gqa(
+    source: models.Node,
+    fusion: FModels.FusionDefinition,
+) -> models.FusionResult | None:
+    """Fuse initial-cache prefill GQA while retaining cache concatenations."""
+    if source.target not in ATTENTION_WRAPPER_TARGETS:
+        return None
+    value_bmm, _ = value_bmm_from_unary_path(source, max_depth=10)
+    if value_bmm is None or len(value_bmm.parents) < 2:
+        return None
+    softmax = first_target_ancestor(
+        value_bmm.parents[0],
         {"cactus.softmax", "aten.softmax.int", "aten._softmax.default"},
-        max_depth=max_depth,
-    ) is not None
+        max_depth=32,
+    )
+    if softmax is None or not softmax.parents:
+        return None
+    qk_bmm, mask = generic_prefill_qk_and_mask(softmax, value_bmm)
+    if qk_bmm is None or len(qk_bmm.parents) < 2:
+        return None
+    key_cat: models.Node | None = None
+    query_path: models.Node | None = None
+    for parent_index, parent in enumerate(qk_bmm.parents[:2]):
+        candidate = prefill_cache_cat_ancestor(parent, max_depth=40)
+        if candidate is None:
+            continue
+        key_cat = candidate
+        query_path = qk_bmm.parents[1 - parent_index]
+        break
+    value_cat = prefill_cache_cat_ancestor(value_bmm.parents[1], max_depth=40)
+    if key_cat is None or value_cat is None or query_path is None:
+        return None
+    key_new = prefill_cache_new_value(key_cat)
+    value_new = prefill_cache_new_value(value_cat)
+    query = generic_unscaled_bqhd_attention_input(query_path, max_depth=24)
+    if key_new is None or value_new is None or query is None:
+        return None
+    if not generic_cached_attention_shapes_match(query, key_new, value_new):
+        return None
+    external_inputs = (query, key_cat, value_cat)
+    if mask is not None:
+        external_inputs = (*external_inputs, mask)
+    matched_nodes = attention_internal_nodes(source, external_inputs)
+    matched_names = {node.name for node in matched_nodes}
+    if qk_bmm.name not in matched_names or value_bmm.name not in matched_names:
+        return None
+    return models.FusionResult.from_match(
+        fusion=fusion,
+        source=source,
+        matched_nodes=matched_nodes,
+        external_inputs=external_inputs,
+        attrs={
+            "scale": decomposed_attention_scale(qk_bmm),
+            "is_causal": True,
+            "position_offset": HISTORY_POSITION_OFFSET,
+            "window_size": int(key_cat.cache.window_size or 0) if key_cat.cache is not None else 0,
+            "input_layout": "bhqd_bhsd_bhsd",
+            "output_layout": "bthd_flat" if node_rank(source) in {2, 3} else "bhqd",
+            "v_head_dim": last_int_dim(value_new),
+            "additive_mask": mask is not None,
+            "dropped_mask_builder": mask is None,
+            "preserved_prefill_mask": mask is not None,
+            "dropped_gqa_repeat": True,
+            "cache_contract": "initial_kv_concat",
+        },
+    )
+
+def prefill_cache_new_value(cache_cat: models.Node) -> models.Node | None:
+    nonempty = [
+        parent for parent in cache_cat.parents[:2]
+        if element_count(models.tensor_shape(parent)) != 0
+    ]
+    return nonempty[0] if len(nonempty) == 1 else None
+
+def generic_prefill_qk_and_mask(
+    softmax: models.Node,
+    value_bmm: models.Node,
+) -> tuple[models.Node | None, models.Node | None]:
+    """Return QK and an optional safe, native-compatible prefill mask.
+
+    Decode can discard the exported causal mask because the cache position
+    defines the only visible prefix.  Prefill may contain padded rows, so only
+    fuse a direct QK path or an additive QK + rank-3/4 mask and preserve that
+    mask as the sixth native attention input.
+    """
+    logits = softmax.parents[0]
+    if logits.target not in {"cactus.add", "aten.add.Tensor"}:
+        return first_bmm_ancestor(logits, value_bmm), None
+    if len(logits.parents) != 2:
+        return None, None
+    qk: models.Node | None = None
+    mask: models.Node | None = None
+    for parent in logits.parents:
+        candidate = first_bmm_ancestor(parent, value_bmm)
+        if candidate is not None:
+            if qk is not None:
+                return None, None
+            qk = candidate
+        else:
+            if mask is not None or node_rank(parent) not in {3, 4}:
+                return None, None
+            mask = parent
+    return (qk, mask) if qk is not None else (None, None)
 
 def generic_cached_attention_shapes_match(
     query: models.Node,
@@ -250,7 +361,11 @@ def generic_cached_attention_shapes_match(
         return False
     if query_shape[2] != key_shape[2]:
         return False
-    return all(isinstance(dim, int) and dim > 0 for dim in (*query_shape, *key_shape))
+    if not all(isinstance(dim, int) and dim > 0 for dim in (*query_shape, *key_shape, value_shape[-1])):
+        return False
+    query_heads = int(query_shape[1])
+    kv_heads = int(key_shape[1])
+    return query_heads >= kv_heads and query_heads % kv_heads == 0
 
 def lfm_attention_matched_nodes(
     bindings: dict[str, models.Node],

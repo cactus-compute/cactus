@@ -631,10 +631,11 @@ def generic_profile_for_contract(contract: GenericTranspileContract) -> ModelPro
         )
     default_groups = tuple(base.fusion_fields)
     fusion_groups = tuple(dict.fromkeys(contract.fusion_groups or default_groups))
-    if cache_style == GENERIC_CACHE_DYNAMIC_KV and "generic_cached_attention" not in fusion_groups:
-        fusion_groups = (*fusion_groups, "generic_cached_attention")
+    generic_cache_fusions = ("generic_cached_attention", "generic_gqa_attention")
+    if cache_style == GENERIC_CACHE_DYNAMIC_KV:
+        fusion_groups = tuple(dict.fromkeys((*fusion_groups, *generic_cache_fusions)))
     elif cache_style != GENERIC_CACHE_DYNAMIC_KV:
-        fusion_groups = tuple(group for group in fusion_groups if group != "generic_cached_attention")
+        fusion_groups = tuple(group for group in fusion_groups if group not in generic_cache_fusions)
     return replace(
         base,
         fusion_fields=fusion_groups,

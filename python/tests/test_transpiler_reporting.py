@@ -160,7 +160,7 @@ class TestTranspilerReporting(unittest.TestCase):
         self.assertEqual(resolved.profile.load_strategy, "image_text_to_text")
         self.assertEqual(
             resolved.profile.fusion_fields,
-            ("generic", "linear", "attention", "generic_cached_attention"),
+            ("generic", "linear", "attention", "generic_cached_attention", "generic_gqa_attention"),
         )
 
     def test_unknown_model_defaults_to_generic_text_no_cache(self):
@@ -462,6 +462,62 @@ class TestTranspilerReporting(unittest.TestCase):
             ["query", "key_new", "value_new", "past_key_values_0", "past_key_values_1"],
         )
         self.assertEqual(cached[0].kwargs["scale"], 0.5)
+
+    def test_generic_prefill_gqa_preserves_additive_mask(self):
+        def record(index, name, target, args, shape, kwargs=None):
+            return CModels.LayerRecord(
+                index=index, name=name,
+                node_type="placeholder" if not args else "call_function",
+                target=target, args=args, kwargs=kwargs or {}, users=[],
+                tensor_output_meta={"shape": shape, "dtype": "torch.float16"},
+                module_stack=None,
+            )
+
+        q = [1, 4, 4, 8]
+        kv = [1, 2, 4, 8]
+        layer_map = CModels.LayerMap(
+            model_name="unknown-prefill-gqa", task="prefill_with_cache",
+            graph_signature="", range_constants="", nodes=[
+                record(0, "query", "query", [], q),
+                record(1, "past_key_values_0", "past_key_values_0", [], [0]),
+                record(2, "past_key_values_1", "past_key_values_1", [], [0]),
+                record(3, "key_new", "key_new", [], kv),
+                record(4, "value_new", "value_new", [], kv),
+                record(5, "key_cat", "cactus.cat", [{"node": "past_key_values_0"}, {"node": "key_new"}], kv),
+                record(6, "value_cat", "cactus.cat", [{"node": "past_key_values_1"}, {"node": "value_new"}], kv),
+                record(7, "key_expand", "cactus.expand", [{"node": "key_cat"}], [1, 4, 4, 8]),
+                record(8, "qk", "aten.bmm.default", [{"node": "query"}, {"node": "key_expand"}], [4, 4, 4]),
+                record(9, "mask", "mask", [], [1, 1, 4, 4]),
+                record(10, "masked_qk", "cactus.add", [{"node": "qk"}, {"node": "mask"}], [1, 4, 4, 4]),
+                record(11, "softmax", "cactus.softmax", [{"node": "masked_qk"}], [1, 4, 4, 4], {"axis": -1}),
+                record(12, "value_expand", "cactus.expand", [{"node": "value_cat"}], [1, 4, 4, 8]),
+                record(13, "value_bmm", "aten.bmm.default", [{"node": "softmax"}, {"node": "value_expand"}], [4, 4, 8]),
+                record(14, "attention_out", "cactus.view", [{"node": "value_bmm"}], q),
+                CModels.LayerRecord(
+                    index=15, name="output", node_type="output", target="output",
+                    args=[[{"node": "attention_out"}, {"node": "key_cat"}, {"node": "value_cat"}]],
+                    kwargs={}, users=[], tensor_output_meta=None, module_stack=None,
+                ),
+            ],
+        )
+
+        simplified = simplify_ir.simplify(
+            layer_map,
+            fusion_fields=("generic", "attention", "cache", "generic_gqa_attention"),
+        )
+        cached = [node for node in simplified.nodes if node.target == "cactus.attention"]
+
+        self.assertEqual(len(cached), 1)
+        self.assertEqual([item["node"] for item in cached[0].args][-1], "mask")
+        self.assertTrue(cached[0].kwargs["additive_mask"])
+        self.assertTrue(cached[0].kwargs["preserved_prefill_mask"])
+
+    def test_generic_gqa_rejects_nonintegral_query_groups(self):
+        query = mock.Mock(tensor_output_meta={"shape": [1, 6, 4, 8]})
+        key = mock.Mock(tensor_output_meta={"shape": [1, 4, 4, 8]})
+        value = mock.Mock(tensor_output_meta={"shape": [1, 4, 4, 8]})
+
+        self.assertFalse(special_fusions.generic_cached_attention_shapes_match(query, key, value))
 
     def test_noop_cleanup_exposes_fusion_in_same_simplify_call(self):
         tensor_meta = {"shape": [1, 8], "dtype": "torch.float16"}
