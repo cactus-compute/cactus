@@ -13,6 +13,8 @@
 
 apple/build-*/
 apple/*.xcframework
+**/jniLibs.zip
+**/*.xcframework.zip
 
 .claude
 .vscode
