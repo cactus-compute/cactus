@@ -4619,6 +4619,31 @@ std::vector<uint32_t> Model::transcribe_whisper_seq2seq(
         should_stop);
 }
 
+size_t select_bucket(const std::vector<size_t>& capacities, size_t required_frames) {
+    size_t best = capacities.size();
+    for (size_t i = 0; i < capacities.size(); ++i) {
+        const size_t capacity = capacities[i];
+        if (capacity == 0 || capacity < required_frames) continue;
+        if (best == capacities.size() || capacity < capacities[best]) best = i;
+    }
+    return best;
+}
+
+Model::Component* Model::select_audio_encoder(size_t required_frames) {
+    std::vector<Component*> candidates;
+    std::vector<size_t> capacities;
+    for (auto& [name, comp] : components_) {
+        if (name.rfind("audio_encoder", 0) != 0) continue;
+        auto it = comp.metadata.find("audio_frames");
+        if (it == comp.metadata.end()) continue;
+        candidates.push_back(&comp);
+        capacities.push_back(parse_size_or_zero(it->second));
+    }
+    const size_t index = select_bucket(capacities, required_frames);
+    if (index < candidates.size()) return candidates[index];
+    return components_.count("audio_encoder") ? &components_.at("audio_encoder") : nullptr;
+}
+
 std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& audio_features,
                                                      ParakeetTdtStreamState* stream, bool is_final,
                                                      size_t end_frame,
@@ -4628,7 +4653,11 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
 
     reset_handoff_probe_rollout();
 
-    Component* audio_enc = components_.count("audio_encoder") ? &components_.at("audio_encoder") : nullptr;
+    const size_t config_mels = static_cast<size_t>(config_.num_mel_bins);
+    const size_t required_frames = config_mels > 0
+        ? audio_features.size() / config_mels
+        : std::numeric_limits<size_t>::max();
+    Component* audio_enc = select_audio_encoder(required_frames);
     Component* dec = components_.count("decoder") ? &components_.at("decoder") : nullptr;
     if (!audio_enc || !dec) {
         CACTUS_LOG_ERROR("model", "Parakeet TDT bundle missing audio_encoder or decoder component");
