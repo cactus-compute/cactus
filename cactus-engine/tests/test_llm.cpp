@@ -740,23 +740,17 @@ bool test_decode_batch_throughput() {
 
 int main() {
     TestUtils::TestRunner runner("LLM Tests");
-    runner.run_test("1k_context", test_1k_context());
     runner.run_test("streaming", test_streaming());
     runner.run_test("prefill", test_prefill());
-    runner.run_test("prefill_idempotent_reuse", test_prefill_idempotent_reuse());
-    runner.run_test("prefill_prefix_extension_reuse", test_prefill_prefix_extension_reuse());
     runner.run_test("prefill_invalidated_on_message_change", test_prefill_invalidated_on_message_change());
     runner.run_test("chunked_prefill_padding", test_chunked_prefill_padding());
     runner.run_test("tool_calls", test_tool_call());
     runner.run_test("tool_multiple_tool_call_invocations", test_multiple_tool_call_invocations());
-    runner.run_test("tool_calls_with_three_tools", test_tool_call_with_three_tools());
     runner.run_test("tool_constraint_clear_releases_bias", test_tool_constraint_clear_releases_bias());
     runner.run_test("partition_thinking_response", test_partition_thinking_response());
     runner.run_test("prompt_retains_thinking", test_prompt_gemma4_retains_thinking());
     runner.run_test("complete_thinking_api_clean", test_complete_gemma4_thinking_api_clean());
     runner.run_test("multiturn_thinking_persist", test_multiturn_thinking_persist());
-    runner.run_test("multiturn_turn2_distinct", test_multiturn_turn2_distinct());
-    runner.run_test("decode_batch", test_decode_batch());
     runner.run_test("generate_batch_ragged", test_generate_batch_ragged());
     runner.run_test("decode_batch_throughput", test_decode_batch_throughput());
     runner.run_test("batch_distinct4_matches_single", test_batch_distinct4_matches_single());

@@ -73,7 +73,7 @@ exclude = ["cactus.code*"]
 
 [tool.setuptools.package-data]
 "cactus.bindings" = ["lib/*.dylib", "lib/*.so"]
-"cactus" = ["bin/run", "bin/transcribe", "assets/*", "code/**/*"]
+"cactus" = ["bin/run", "bin/transcribe", "assets/*", "code/**/*", "py.typed"]
 "cactus.convert" = ["assets/*/*"]
 
 [tool.pytest.ini_options]

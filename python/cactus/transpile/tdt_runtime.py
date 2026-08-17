@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from cactus.transpile.component_pipeline import ComponentModuleSpec
+from cactus.transpile.audio_preprocess import audio_bucket_frames
 from cactus.transpile.audio_preprocess import prepare_native_parakeet_audio_features
 from cactus.transpile.model_profiles import add_tensor_aliases
 from cactus.transpile.model_profiles import PARAKEET_TDT_PROFILE
@@ -871,16 +872,28 @@ def build_parakeet_tdt_component_specs(
         "adapter_family": "parakeet_tdt",
     }
 
+    full_frames = int(input_features.shape[1])
+    encoder_specs: list[ComponentModuleSpec] = []
+    for frames in audio_bucket_frames(full_frames):
+        component = "audio_encoder" if frames == full_frames else f"audio_encoder_{frames}"
+        encoder_specs.append(
+            ComponentModuleSpec(
+                component=component,
+                module=model.encoder,
+                example_inputs=(input_features[:, :frames, :].contiguous(),),
+                input_keys=("input_features",),
+                output_keys=("encoder_hidden_states",),
+                graph_meta={**common_graph_meta, "component": component},
+                metadata={
+                    "family": "parakeet_tdt",
+                    "task": "tdt_transcription",
+                    "audio_frames": str(frames),
+                },
+            )
+        )
+
     return [
-        ComponentModuleSpec(
-            component="audio_encoder",
-            module=model.encoder,
-            example_inputs=(input_features,),
-            input_keys=("input_features",),
-            output_keys=("encoder_hidden_states",),
-            graph_meta={**common_graph_meta, "component": "audio_encoder"},
-            metadata={"family": "parakeet_tdt", "task": "tdt_transcription"},
-        ),
+        *encoder_specs,
         ComponentModuleSpec(
             component="decoder",
             module=model.decoder_step,
