@@ -669,6 +669,8 @@ private:
     void feed_gemma_char(char ch);
 };
 
+size_t select_bucket(const std::vector<size_t>& capacities, size_t required_frames);
+
 class Model {
 public:
     Model();
@@ -1008,6 +1010,7 @@ private:
     int output_index(const Component& comp, const std::string& name) const;
     uint32_t argmax_last_logits(float* out_uncertainty = nullptr, float repetition_penalty = 1.0f);
     bool load_handoff_probe();
+    Component* select_audio_encoder(size_t required_frames);
     void maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name = "probe_hidden");
     void run_vision_encoder(const std::string& image_path);
     void run_vision_encoder_lfm2_vl(const std::string& image_path);

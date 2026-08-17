@@ -21,6 +21,7 @@ _PARAKEET_HOP_LENGTH = 160
 _PARAKEET_PREEMPHASIS = 0.97
 _PARAKEET_LOG_FLOOR = np.float32(2**-24)
 _DEFAULT_MAX_AUDIO_SECONDS = 30.0
+_DEFAULT_AUDIO_BUCKET_SECONDS = (1, 2, 3, 5, 8, 13)
 
 
 def audio_duration_limit_seconds() -> float:
@@ -30,6 +31,33 @@ def audio_duration_limit_seconds() -> float:
     except (TypeError, ValueError):
         return _DEFAULT_MAX_AUDIO_SECONDS
     return max(0.0, value)
+
+
+def audio_bucket_seconds() -> tuple[int, ...]:
+    raw = os.environ.get("CACTUS_TRANSPILER_AUDIO_BUCKETS")
+    if not raw:
+        return _DEFAULT_AUDIO_BUCKET_SECONDS
+    try:
+        values = sorted({int(part) for part in raw.split(",")})
+    except (TypeError, ValueError):
+        return _DEFAULT_AUDIO_BUCKET_SECONDS
+    positive = tuple(value for value in values if value > 0)
+    if not positive:
+        return _DEFAULT_AUDIO_BUCKET_SECONDS
+    return positive
+
+
+def audio_bucket_frames(max_frames: int) -> list[int]:
+    if max_frames <= 0:
+        return []
+    frames_per_second = _PARAKEET_SAMPLE_RATE // _PARAKEET_HOP_LENGTH
+    buckets = []
+    for seconds in audio_bucket_seconds():
+        frames = seconds * frames_per_second
+        if frames < max_frames:
+            buckets.append(frames)
+    buckets.append(max_frames)
+    return buckets
 
 
 def normalize_audio_samples(samples: np.ndarray) -> np.ndarray:
