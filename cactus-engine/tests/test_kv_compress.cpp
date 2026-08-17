@@ -994,6 +994,283 @@ bool test_shrink_cache_buffer_preserves_rows() {
     return ok;
 }
 
+bool test_global_shrink_then_sliding_int8_rerope_cycles() {
+    CactusGraph gb;
+
+    const size_t kv_heads = 2;
+    const size_t head_dim = 128;
+    const size_t chunk = 300;
+    const size_t ceiling = 100000;
+    const size_t sliding_window = 512;
+    const size_t sink = 4;
+    const double theta = 1000000.0;
+
+    const size_t groups =
+        (head_dim + kGroupSize - 1) / kGroupSize;
+
+    const size_t int8_stride =
+        kv_heads * head_dim;
+
+    const size_t scale_stride =
+        kv_heads * groups;
+
+    size_t new_kv =
+        gb.input(
+            {chunk, kv_heads, head_dim},
+            Precision::FP16);
+
+    size_t global_state =
+        gb.kv_cache_state(
+            ceiling,
+            kv_heads,
+            head_dim,
+            /*window=*/0,
+            sink);
+
+    size_t global_append =
+        gb.kv_cache_append(
+            new_kv,
+            global_state,
+            /*window=*/0,
+            sink);
+
+    size_t sliding_state =
+        gb.kv_cache_state(
+            ceiling,
+            kv_heads,
+            head_dim,
+            sliding_window,
+            sink);
+
+    size_t sliding_append =
+        gb.kv_cache_append(
+            new_kv,
+            sliding_state,
+            sliding_window,
+            sink);
+
+    gb.retain_outputs({
+        static_cast<int>(global_state),
+        static_cast<int>(global_append),
+        static_cast<int>(sliding_state),
+        static_cast<int>(sliding_append)
+    });
+
+    std::vector<uint16_t> input(
+        chunk * int8_stride);
+
+    for (size_t r = 0; r < chunk; ++r) {
+        for (size_t c = 0; c < int8_stride; ++c) {
+            float v =
+                std::sin(
+                    0.013f * static_cast<float>(r) +
+                    0.007f * static_cast<float>(c));
+
+            input[r * int8_stride + c] =
+                f32_to_f16(v);
+        }
+    }
+
+    gb.set_input(
+        new_kv,
+        input.data(),
+        Precision::FP16);
+
+    auto reset_len = [&](size_t state) {
+        auto* hdr =
+            reinterpret_cast<Header*>(
+                gb.get_output(state));
+
+        hdr->current_seq_len = 0;
+    };
+
+    auto compact_global = [&]() -> size_t {
+        auto* raw =
+            static_cast<char*>(
+                gb.get_output(global_state));
+
+        auto* hdr =
+            reinterpret_cast<Header*>(raw);
+
+        const size_t n =
+            hdr->current_seq_len;
+
+        int8_t* i8 =
+            reinterpret_cast<int8_t*>(
+                raw + kHeaderBytes);
+
+        float* scales =
+            reinterpret_cast<float*>(
+                raw +
+                kHeaderBytes +
+                hdr->max_seq_len * int8_stride);
+
+        Params p;
+        p.sink = sink;
+        p.recent_frac = 0.30f;
+        p.abs_budget = 256;
+
+        auto unrope =
+            unrope_table(
+                n,
+                head_dim,
+                theta);
+
+        auto kept =
+            keepsets_from_int8(
+                i8,
+                scales,
+                n,
+                kv_heads,
+                head_dim,
+                kGroupSize,
+                unrope,
+                p);
+
+        const size_t new_len =
+            kept.empty()
+                ? 0
+                : kept[0].size();
+
+        compact_int8(
+            i8,
+            scales,
+            kv_heads,
+            head_dim,
+            kGroupSize,
+            kept,
+            unrope,
+            /*renumber=*/true);
+
+        hdr->current_seq_len = new_len;
+
+        return new_len;
+    };
+
+    for (int turn = 0; turn < 3; ++turn) {
+        if (turn > 0) {
+            reset_len(global_state);
+            reset_len(sliding_state);
+        }
+
+        gb.execute();
+        gb.execute();
+
+        auto* global_hdr =
+            reinterpret_cast<Header*>(
+                gb.get_output(global_state));
+
+        auto* sliding_hdr =
+            reinterpret_cast<Header*>(
+                gb.get_output(sliding_state));
+
+        if (global_hdr->current_seq_len != 600)
+            return false;
+
+        // Metal sliding caches keep current_seq_len as a logical cursor.
+        if (sliding_hdr->current_seq_len != 600)
+            return false;
+
+        if (sliding_hdr->max_seq_len !=
+            sliding_window + sink + 1)
+            return false;
+
+        const size_t hi =
+            cactus::kvcompress::rerope_physical_end(
+                *sliding_hdr,
+                true);
+
+        // The logical cursor is 600, but only 512 physical ring rows
+        // may be accessed by re-RoPE.
+        if (hi != sliding_window)
+            return false;
+
+        const size_t old_total =
+            global_hdr->current_seq_len;
+
+        const size_t new_total =
+            compact_global();
+
+        if (new_total != 256)
+            return false;
+
+        gb.shrink_cache_buffer(
+            global_state,
+            /*new_capacity=*/512);
+
+        global_hdr =
+            reinterpret_cast<Header*>(
+                gb.get_output(global_state));
+
+        if (global_hdr->current_seq_len != 256 ||
+            global_hdr->max_seq_len != 512)
+            return false;
+
+        const size_t delta =
+            old_total - new_total;
+
+        auto* sliding_raw =
+            static_cast<char*>(
+                gb.get_output(sliding_state));
+
+        sliding_hdr =
+            reinterpret_cast<Header*>(
+                sliding_raw);
+
+        const size_t physical_hi =
+            cactus::kvcompress::rerope_physical_end(
+                *sliding_hdr,
+                true);
+
+        const size_t lo =
+            std::min<size_t>(
+                sliding_hdr->sink_size,
+                physical_hi);
+
+        int8_t* sliding_i8 =
+            reinterpret_cast<int8_t*>(
+                sliding_raw + kHeaderBytes);
+
+        float* sliding_scales =
+            reinterpret_cast<float*>(
+                sliding_raw +
+                kHeaderBytes +
+                sliding_hdr->max_seq_len *
+                    int8_stride);
+
+        kv_set_simd(true);
+
+        rerope_recent_int8(
+            sliding_i8,
+            sliding_scales,
+            kv_heads,
+            head_dim,
+            kGroupSize,
+            lo,
+            physical_hi,
+            theta,
+            -static_cast<double>(delta));
+
+        for (size_t t = 0; t < physical_hi; ++t) {
+            for (size_t h = 0; h < kv_heads; ++h) {
+                const float* sc =
+                    sliding_scales +
+                    t * scale_stride +
+                    h * groups;
+
+                for (size_t g = 0; g < groups; ++g) {
+                    if (!std::isfinite(sc[g]) ||
+                        sc[g] <= 0.0f)
+                        return false;
+                }
+            }
+        }
+    }
+
+    kv_set_simd(true);
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("KV Compress Free-Function Tests");
     runner.run_test("cache_starts_small_and_grows", test_cache_starts_small_and_grows());
@@ -1025,6 +1302,7 @@ int main() {
     runner.run_test("empty_protect_per_head_uses_params_fallback", test_empty_protect_per_head_uses_params_fallback());
     runner.run_test("all_heads_keep_special_across_cycles", test_all_heads_keep_special_across_cycles());
     runner.run_test("shrink_cache_buffer_preserves_rows", test_shrink_cache_buffer_preserves_rows());
+    runner.run_test("global_shrink_then_sliding_int8_rerope_cycles", test_global_shrink_then_sliding_int8_rerope_cycles());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }

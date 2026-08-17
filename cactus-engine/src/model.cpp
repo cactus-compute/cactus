@@ -5222,10 +5222,10 @@ void Model::compress_kv_cache_keydiff(const cactus::kvcompress::Params& params) 
             auto* khdr = static_cast<CacheHeader*>(kraw);
             size_t kv_heads = khdr->num_kv_heads, head_dim = khdr->head_dim;
             if (kv_heads == 0 || head_dim == 0) continue;
-            size_t hi = khdr->current_seq_len;
+            const bool sliding = cactus::kvcompress::is_sliding_layer(config_.layer_types, li);
+            size_t hi = cactus::kvcompress::rerope_physical_end(*khdr, sliding);
             size_t lo = std::min<size_t>(khdr->sink_size, hi);
-            const double layer_theta = cactus::kvcompress::is_sliding_layer(config_.layer_types, li)
-                ? rope_local_theta : rope_theta;
+            const double layer_theta = sliding ? rope_local_theta : rope_theta;
             if (kdesc.precision == Precision::FP16) {
                 auto* kbase = reinterpret_cast<uint16_t*>(static_cast<char*>(kraw) + kHeaderBytes);
                 cactus::kvcompress::rerope_recent_fp16(kbase, kv_heads, head_dim, lo, hi,
