@@ -437,7 +437,7 @@ CactusGraph CactusGraph::load(const std::string& path) {
 
 size_t CactusGraph::mmap_embeddings(const std::string& filename) {
     const std::string resolved_filename = resolve_quantized_weight_file(filename);
-    auto mapped_file = std::make_unique<GraphFile::MappedFile>(resolved_filename);
+    auto mapped_file = GraphFile::MappedFileRegistry::get_or_load(resolved_filename);
 
     const auto& shape = mapped_file->shape();
     if (shape.size() != 2) {
@@ -492,9 +492,9 @@ size_t CactusGraph::mmap_embeddings(const std::string& filename) {
     }
 
     size_t file_idx = mapped_files_.size();
-    mapped_files_.push_back(std::move(mapped_file));
+    mapped_files_.push_back(mapped_file);
     node_to_mapped_file_[node_id] = file_idx;
-    weight_cache_[filename] = node_id;
+    weight_cache_[resolved_filename] = node_id;
     return node_id;
 }
 
@@ -505,7 +505,7 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
         return it->second;
     }
 
-    auto mapped_file = std::make_unique<GraphFile::MappedFile>(resolved_filename);
+    auto mapped_file = GraphFile::MappedFileRegistry::get_or_load(resolved_filename);
 
     const auto& shape = mapped_file->shape();
     Precision precision = mapped_file->precision();
@@ -553,7 +553,7 @@ size_t CactusGraph::mmap_weights(const std::string& filename) {
     }
 
     size_t file_idx = mapped_files_.size();
-    mapped_files_.push_back(std::move(mapped_file));
+    mapped_files_.push_back(mapped_file);
     node_to_mapped_file_[node_id] = file_idx;
     weight_cache_[resolved_filename] = node_id;
     return node_id;
@@ -571,7 +571,7 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
         throw std::invalid_argument("Can only bind mmap weights to input nodes");
     }
 
-    auto mapped_file = std::make_unique<GraphFile::MappedFile>(resolved_filename);
+    auto mapped_file = GraphFile::MappedFileRegistry::get_or_load(resolved_filename);
     const auto& shape = mapped_file->shape();
     Precision precision = mapped_file->precision();
     auto& buffer = node.output_buffer;
@@ -640,7 +640,7 @@ void CactusGraph::bind_mmap_weights(size_t node_id, const std::string& filename)
     }
 
     size_t file_idx = mapped_files_.size();
-    mapped_files_.push_back(std::move(mapped_file));
+    mapped_files_.push_back(mapped_file);
     node_to_mapped_file_[node_id] = file_idx;
     weight_cache_[resolved_filename] = node_id;
 }
@@ -666,7 +666,7 @@ void CactusGraph::release_all_weight_pages() {
 }
 
 size_t CactusGraph::embedding(const std::string& filename, size_t indices, ComputeBackend backend) {
-    auto mapped_file = std::make_unique<GraphFile::MappedFile>(filename);
+    auto mapped_file = GraphFile::MappedFileRegistry::get_or_load(filename);
 
     const auto& shape = mapped_file->shape();
     if (shape.size() != 2) {
@@ -677,7 +677,7 @@ size_t CactusGraph::embedding(const std::string& filename, size_t indices, Compu
     size_t embeddings_node = input(shape, precision);
     set_external_input(embeddings_node, const_cast<void*>(mapped_file->data()), precision);
 
-    mapped_files_.push_back(std::move(mapped_file));
+    mapped_files_.push_back(mapped_file);
 
     const auto& idx_shape = get_output_buffer(indices).shape;
     std::vector<size_t> output_shape = idx_shape;
@@ -893,6 +893,45 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
         throw std::runtime_error("Error writing node data to file: " + filename);
     }
 }
+
+// MappedFileRegistry implementation
+
+namespace GraphFile {
+
+std::mutex MappedFileRegistry::mutex_;
+std::unordered_map<std::string, std::weak_ptr<MappedFile>> MappedFileRegistry::cache_;
+
+static std::string canonical_file_key(const std::string& filename) {
+    std::error_code ec;
+    auto abs_path = std::filesystem::absolute(filename, ec);
+    if (!ec) {
+        auto can_path = std::filesystem::canonical(abs_path, ec);
+        if (!ec) return can_path.string();
+        return abs_path.lexically_normal().string();
+    }
+    return filename;
+}
+
+std::shared_ptr<MappedFile> MappedFileRegistry::get_or_load(const std::string& filename) {
+    std::string key = canonical_file_key(filename);
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = cache_.find(key);
+    if (it != cache_.end()) {
+        if (auto sp = it->second.lock()) {
+            return sp;
+        }
+    }
+    auto sp = std::make_shared<MappedFile>(filename);
+    cache_[key] = sp;
+    return sp;
+}
+
+void MappedFileRegistry::clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    cache_.clear();
+}
+
+} // namespace GraphFile
 
 // MappedFile implementation
 
