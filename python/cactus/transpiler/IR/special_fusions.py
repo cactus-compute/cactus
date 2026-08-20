@@ -151,7 +151,7 @@ def match_generic_cached_attention(
 ) -> models.FusionResult | None:
     """Fuse exported causal GQA/MQA by its typed cache/dataflow contract."""
     if inference_mode == "prefill_with_cache":
-        if fusion.target != "cactus.attention":
+        if fusion.target != "cactus.attention_cached":
             return None
         return match_generic_prefill_gqa(source, fusion)
     if inference_mode != "decode_with_cache" or fusion.target != "cactus.attention_cached":
@@ -245,7 +245,7 @@ def match_generic_prefill_gqa(
     source: models.Node,
     fusion: FModels.FusionDefinition,
 ) -> models.FusionResult | None:
-    """Fuse initial-cache prefill GQA while retaining cache concatenations."""
+    """Fuse initial-cache prefill GQA into native cache-backed attention."""
     if source.target not in ATTENTION_WRAPPER_TARGETS:
         return None
     value_bmm, _ = value_bmm_from_unary_path(source, max_depth=10)
@@ -280,9 +280,11 @@ def match_generic_prefill_gqa(
         return None
     if not generic_cached_attention_shapes_match(query, key_new, value_new):
         return None
-    external_inputs = (query, key_cat, value_cat)
-    if mask is not None:
-        external_inputs = (*external_inputs, mask)
+    # The cache concatenations lower to graph-independent KV state plus the
+    # native append. Passing the unappended K/V rows separately lets the
+    # cached-attention kernel use FP16 for the current chunk while reading the
+    # quantized/retained history directly from that state.
+    external_inputs = (query, key_new, value_new, key_cat, value_cat)
     matched_nodes = attention_internal_nodes(source, external_inputs)
     matched_names = {node.name for node in matched_nodes}
     if qk_bmm.name not in matched_names or value_bmm.name not in matched_names:
@@ -300,11 +302,16 @@ def match_generic_prefill_gqa(
             "input_layout": "bhqd_bhsd_bhsd",
             "output_layout": "bthd_flat" if node_rank(source) in {2, 3} else "bhqd",
             "v_head_dim": last_int_dim(value_new),
-            "additive_mask": mask is not None,
-            "dropped_mask_builder": mask is None,
-            "preserved_prefill_mask": mask is not None,
+            # The exported mask has the captured T×T shape and cannot express
+            # later chunk history. Native cached causal attention derives the
+            # growing prefix from cache length. Runtime padding is right-sided,
+            # so padded queries cannot affect earlier real-token outputs and
+            # their appended cache rows are rolled back after the chunk.
+            "additive_mask": False,
+            "dropped_mask_builder": True,
+            "preserved_prefill_mask": False,
             "dropped_gqa_repeat": True,
-            "cache_contract": "initial_kv_concat",
+            "cache_contract": "native_prefill_kv",
         },
     )
 

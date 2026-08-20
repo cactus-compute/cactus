@@ -198,12 +198,14 @@ def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> A
         require_len(node, inputs, 5)
         query, key_new, value_new = cached_attention_inputs_for_layout(context, node, inputs)
         mask = cached_attention_mask(context, node, inputs)
+        key_cache = cached_attention_state_input(context, node, inputs, 3)
+        value_cache = cached_attention_state_input(context, node, inputs, 4)
         output = context.graph.attention_cached(
             query,
             key_new,
             value_new,
-            inputs[3],
-            inputs[4],
+            key_cache,
+            value_cache,
             scale=attention_scale(node),
             position_offset=cached_attention_position_offset(context, node),
             window_size=int(node.attrs.get("window_size", 0)),
@@ -214,6 +216,26 @@ def lower_attention(context: models.GenerationContext, node: IRModels.Node) -> A
         )
         return attention_output_for_layout(context, node, output)
     raise UnsupportedLoweringError(f"{node.name}: unsupported attention target {node.target}")
+
+def cached_attention_state_input(
+    context: models.GenerationContext,
+    node: IRModels.Node,
+    inputs: tuple[Any, ...],
+    parent_index: int,
+) -> Any:
+    """Resolve prefill cache concatenations to their persistent native state.
+
+    A prefill concatenation deliberately lowers to its activation passthrough
+    for ordinary tensor consumers while recording the newly created cache
+    state out of band. A structurally fused ``attention_cached`` consumes the
+    state itself, so recover it from that table instead of forwarding the
+    activation value as if it contained cache metadata.
+    """
+    if parent_index < len(node.parents):
+        state = context.prefill_cache_cat_states.get(node.parents[parent_index].name)
+        if state is not None:
+            return state
+    return inputs[parent_index]
 
 def cached_attention_inputs_for_layout(context: models.GenerationContext, node: IRModels.Node, inputs: tuple[Any, ...]) -> tuple[Any, Any, Any]:
     if node.attrs.get("input_layout") == "bhqd_bhsd_bhsd":

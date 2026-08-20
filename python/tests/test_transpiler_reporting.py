@@ -14,6 +14,7 @@ from cactus.transpiler.IR import models as IRModels
 from cactus.transpiler.IR import simplify_ir, special_fusions
 from cactus.transpiler.Generator import lowering_utils
 from cactus.transpiler.Generator import lowering_basic_ops
+from cactus.transpiler.Generator.lowerings import lowering_cache
 from cactus.transpiler.ModelProfiles.profiles import GENERIC_TEXT_PROFILE
 from cactus.cli import transpiler as cli_transpiler
 from cactus.cli import convert as cli_convert
@@ -21,6 +22,17 @@ from cactus.cli import create_parser
 
 
 class TestTranspilerReporting(unittest.TestCase):
+
+    def test_prefill_cached_attention_resolves_persistent_cat_state(self):
+        state = object()
+        context = mock.Mock(prefill_cache_cat_states={"key_cat": state})
+        parents = [mock.Mock() for _ in range(4)]
+        for parent, name in zip(parents, ("q", "k", "v", "key_cat"), strict=True):
+            parent.name = name
+        node = mock.Mock(parents=parents)
+        inputs = (object(), object(), object(), object())
+
+        self.assertIs(lowering_cache.cached_attention_state_input(context, node, inputs, 3), state)
 
     def test_nonfinite_attention_mask_constants_survive_ir_json_roundtrip(self):
         record = CModels.LayerRecord(
@@ -463,7 +475,7 @@ class TestTranspilerReporting(unittest.TestCase):
         )
         self.assertEqual(cached[0].kwargs["scale"], 0.5)
 
-    def test_generic_prefill_gqa_preserves_additive_mask(self):
+    def test_generic_prefill_gqa_uses_cache_derived_causal_mask(self):
         def record(index, name, target, args, shape, kwargs=None):
             return CModels.LayerRecord(
                 index=index, name=name,
@@ -505,12 +517,32 @@ class TestTranspilerReporting(unittest.TestCase):
             layer_map,
             fusion_fields=("generic", "attention", "cache", "generic_gqa_attention"),
         )
-        cached = [node for node in simplified.nodes if node.target == "cactus.attention"]
+        cached = [node for node in simplified.nodes if node.target == "cactus.attention_cached"]
 
         self.assertEqual(len(cached), 1)
-        self.assertEqual([item["node"] for item in cached[0].args][-1], "mask")
-        self.assertTrue(cached[0].kwargs["additive_mask"])
-        self.assertTrue(cached[0].kwargs["preserved_prefill_mask"])
+        self.assertEqual(
+            [item["node"] for item in cached[0].args[:5]],
+            ["query", "key_new", "value_new", "key_cat", "value_cat"],
+        )
+        self.assertEqual(len(cached[0].args), 5)
+        self.assertFalse(cached[0].kwargs["additive_mask"])
+        self.assertTrue(cached[0].kwargs["dropped_mask_builder"])
+        self.assertFalse(cached[0].kwargs["preserved_prefill_mask"])
+
+    def test_generic_dynamic_kv_enables_chunk_prefill(self):
+        resolved = cli_transpiler.resolve_transpile_config(
+            "example/generic-causal-lm",
+            input_modalities="text",
+            generic_task="causal-lm",
+            cache_style="dynamic-kv",
+        )
+
+        self.assertNotIn("scalar_prefill", resolved.profile.cache_policy)
+        self.assertIn("generic_gqa_attention", resolved.profile.fusion_fields)
+        self.assertIn(
+            "decoder_prefill_cache_chunk",
+            resolved.profile.cache_contract.fp16_kv_cache_components,
+        )
 
     def test_generic_gqa_rejects_nonintegral_query_groups(self):
         query = mock.Mock(tensor_output_meta={"shape": [1, 6, 4, 8]})

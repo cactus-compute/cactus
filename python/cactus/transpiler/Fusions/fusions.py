@@ -81,7 +81,7 @@ FUSIONS: dict[str, M.FusionDefinition] = {
     ),
     "generic_gqa_attention": _definition(
         "generic_gqa_attention",
-        "attention",
+        "attention_cached",
         GENERIC_CACHED_ATTENTION_GRAPH,
         fusion_fields=("generic_gqa_attention",),
         supported_inference_modes=("prefill_with_cache",),

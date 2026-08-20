@@ -988,7 +988,7 @@ private:
     size_t component_chunk_tokens(const Component& comp, const std::string& input_name) const;
     size_t component_output_tokens(const Component& comp, const std::string& output_name) const;
     ChunkedPrefillResult run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position,
-                                             size_t chunk_size, bool prepare_decode);
+                                             size_t chunk_size, bool prepare_decode, bool produce_logits);
     void execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, size_t encoder_chunk,
                                size_t chunk_tokens, const std::vector<uint32_t>& tokens,
                                size_t processed, size_t start_position);
@@ -1049,6 +1049,8 @@ private:
     Component* audio_encoder_ = nullptr;
     Component* lm_encoder_media_step_ = nullptr;
     Component* decoder_prefill_chunk_ = nullptr;
+    Component* decoder_prefill_cache_chunk_ = nullptr;
+    Component* decoder_prefill_logits_head_ = nullptr;
     Component* lm_encoder_ = nullptr;
     Component* lm_encoder_text_chunk_ = nullptr;
     Component* lm_encoder_media_chunk_ = nullptr;
