@@ -7,6 +7,87 @@ from cactus.transpiler.IR import models as IRModels
 
 
 class TestGeneratorComponentSplit(unittest.TestCase):
+    def test_cache_only_component_keeps_cached_attention_and_prunes_logits(self) -> None:
+        def node(index, name, target, parents=(), shape=(1, 4, 8), kind=FModels.ValueKind.ACTIVATION):
+            return IRModels.Node(
+                index=index, name=name,
+                node_type="placeholder" if not parents else "call_function",
+                target=target, args=[{"node": parent} for parent in parents], kwargs={}, users=(),
+                tensor_output_meta={"shape": list(shape), "dtype": "torch.float16"},
+                module_stack=None, value_kind=kind,
+            )
+
+        nodes = (
+            node(0, "query", "query"),
+            node(1, "key", "key"),
+            node(2, "value", "value"),
+            node(3, "key_cache", "key_cache"),
+            node(4, "value_cache", "value_cache"),
+            node(5, "attention", "cactus.attention_cached", ("query", "key", "value", "key_cache", "value_cache")),
+            node(6, "lm_head_weight", "lm_head_weight", shape=(32, 8), kind=FModels.ValueKind.PARAMETER),
+            node(7, "logits", "cactus.linear", ("attention", "lm_head_weight"), shape=(1, 4, 32)),
+            IRModels.Node(
+                index=8, name="output", node_type="output", target="output",
+                args=[[{"node": "logits"}]], kwargs={}, users=(), tensor_output_meta=None,
+                module_stack=None, value_kind=FModels.ValueKind.OUTPUT,
+            ),
+        )
+        graph = IRModels.rebuild_graph(nodes, empty_graph())
+        spec = component_split.ComponentSplitSpec(
+            name="decoder_prefill_cache_chunk",
+            graph=graph,
+            outputs=(),
+            side_effects=("attention",),
+        )
+
+        component = component_split.extract_component_graph(spec)
+
+        self.assertIn("attention", component.nodes_map)
+        self.assertNotIn("logits", component.nodes_map)
+        self.assertNotIn("lm_head_weight", component.nodes_map)
+        self.assertEqual(component.outputs[0].args, [[]])
+
+    def test_cache_component_feeds_one_token_logits_head(self) -> None:
+        def node(index, name, target, parents=(), shape=(1, 4, 8), kind=FModels.ValueKind.ACTIVATION):
+            return IRModels.Node(
+                index=index, name=name,
+                node_type="placeholder" if not parents else "call_function",
+                target=target, args=[{"node": parent} for parent in parents], kwargs={}, users=(),
+                tensor_output_meta={"shape": list(shape), "dtype": "torch.float16"},
+                module_stack=None, value_kind=kind,
+            )
+
+        nodes = (
+            node(0, "hidden", "hidden"),
+            node(1, "lm_head_weight", "lm_head_weight", shape=(32, 8), kind=FModels.ValueKind.PARAMETER),
+            node(2, "logits", "cactus.linear", ("hidden", "lm_head_weight"), shape=(1, 4, 32)),
+            IRModels.Node(
+                index=3, name="output", node_type="output", target="output",
+                args=[[{"node": "logits"}]], kwargs={}, users=(), tensor_output_meta=None,
+                module_stack=None, value_kind=FModels.ValueKind.OUTPUT,
+            ),
+        )
+        graph = IRModels.rebuild_graph(nodes, empty_graph())
+        cache = component_split.extract_component_graph(component_split.ComponentSplitSpec(
+            name="decoder_prefill_cache_chunk",
+            graph=graph,
+            outputs=(component_split.OutputSpec("hidden", "last_hidden_state", tail_rows=1),),
+        ))
+        head = component_split.extract_component_graph(component_split.ComponentSplitSpec(
+            name="decoder_prefill_logits_head",
+            graph=graph,
+            outputs=(component_split.OutputSpec("logits", "logits"),),
+            placeholders=(component_split.PlaceholderSpec(
+                "last_hidden_state", "last_hidden_state", source_node="hidden", sequence_tokens=1),),
+        ))
+
+        cache_output = cache.nodes_map[cache.outputs[0].args[0][0]["node"]]
+        self.assertEqual(component_split.tensor_shape(cache_output), [1, 1, 8])
+        self.assertNotIn("lm_head_weight", cache.nodes_map)
+        self.assertEqual(component_split.tensor_shape(head.nodes_map["last_hidden_state"]), [1, 1, 8])
+        self.assertIn("lm_head_weight", head.nodes_map)
+        self.assertNotIn("hidden", head.nodes_map)
+
     def test_chunk_retarget_preserves_expand_broadcast_factor(self) -> None:
         input_ids = IRModels.Node(
             index=0,

@@ -14,6 +14,7 @@ from cactus.transpiler.IR import models as IRModels
 from cactus.transpiler.IR import simplify_ir, special_fusions
 from cactus.transpiler.Generator import lowering_utils
 from cactus.transpiler.Generator import lowering_basic_ops
+from cactus.transpiler.Generator.lowerings import lowering_cache
 from cactus.transpiler.ModelProfiles.profiles import GENERIC_TEXT_PROFILE
 from cactus.cli import transpiler as cli_transpiler
 from cactus.cli import convert as cli_convert
@@ -21,6 +22,17 @@ from cactus.cli import create_parser
 
 
 class TestTranspilerReporting(unittest.TestCase):
+
+    def test_prefill_cached_attention_resolves_persistent_cat_state(self):
+        state = object()
+        context = mock.Mock(prefill_cache_cat_states={"key_cat": state})
+        parents = [mock.Mock() for _ in range(4)]
+        for parent, name in zip(parents, ("q", "k", "v", "key_cat"), strict=True):
+            parent.name = name
+        node = mock.Mock(parents=parents)
+        inputs = (object(), object(), object(), object())
+
+        self.assertIs(lowering_cache.cached_attention_state_input(context, node, inputs, 3), state)
 
     def test_nonfinite_attention_mask_constants_survive_ir_json_roundtrip(self):
         record = CModels.LayerRecord(
@@ -160,7 +172,7 @@ class TestTranspilerReporting(unittest.TestCase):
         self.assertEqual(resolved.profile.load_strategy, "image_text_to_text")
         self.assertEqual(
             resolved.profile.fusion_fields,
-            ("generic", "linear", "attention", "generic_cached_attention"),
+            ("generic", "linear", "attention", "generic_cached_attention", "generic_gqa_attention"),
         )
 
     def test_unknown_model_defaults_to_generic_text_no_cache(self):
@@ -462,6 +474,82 @@ class TestTranspilerReporting(unittest.TestCase):
             ["query", "key_new", "value_new", "past_key_values_0", "past_key_values_1"],
         )
         self.assertEqual(cached[0].kwargs["scale"], 0.5)
+
+    def test_generic_prefill_gqa_uses_cache_derived_causal_mask(self):
+        def record(index, name, target, args, shape, kwargs=None):
+            return CModels.LayerRecord(
+                index=index, name=name,
+                node_type="placeholder" if not args else "call_function",
+                target=target, args=args, kwargs=kwargs or {}, users=[],
+                tensor_output_meta={"shape": shape, "dtype": "torch.float16"},
+                module_stack=None,
+            )
+
+        q = [1, 4, 4, 8]
+        kv = [1, 2, 4, 8]
+        layer_map = CModels.LayerMap(
+            model_name="unknown-prefill-gqa", task="prefill_with_cache",
+            graph_signature="", range_constants="", nodes=[
+                record(0, "query", "query", [], q),
+                record(1, "past_key_values_0", "past_key_values_0", [], [0]),
+                record(2, "past_key_values_1", "past_key_values_1", [], [0]),
+                record(3, "key_new", "key_new", [], kv),
+                record(4, "value_new", "value_new", [], kv),
+                record(5, "key_cat", "cactus.cat", [{"node": "past_key_values_0"}, {"node": "key_new"}], kv),
+                record(6, "value_cat", "cactus.cat", [{"node": "past_key_values_1"}, {"node": "value_new"}], kv),
+                record(7, "key_expand", "cactus.expand", [{"node": "key_cat"}], [1, 4, 4, 8]),
+                record(8, "qk", "aten.bmm.default", [{"node": "query"}, {"node": "key_expand"}], [4, 4, 4]),
+                record(9, "mask", "mask", [], [1, 1, 4, 4]),
+                record(10, "masked_qk", "cactus.add", [{"node": "qk"}, {"node": "mask"}], [1, 4, 4, 4]),
+                record(11, "softmax", "cactus.softmax", [{"node": "masked_qk"}], [1, 4, 4, 4], {"axis": -1}),
+                record(12, "value_expand", "cactus.expand", [{"node": "value_cat"}], [1, 4, 4, 8]),
+                record(13, "value_bmm", "aten.bmm.default", [{"node": "softmax"}, {"node": "value_expand"}], [4, 4, 8]),
+                record(14, "attention_out", "cactus.view", [{"node": "value_bmm"}], q),
+                CModels.LayerRecord(
+                    index=15, name="output", node_type="output", target="output",
+                    args=[[{"node": "attention_out"}, {"node": "key_cat"}, {"node": "value_cat"}]],
+                    kwargs={}, users=[], tensor_output_meta=None, module_stack=None,
+                ),
+            ],
+        )
+
+        simplified = simplify_ir.simplify(
+            layer_map,
+            fusion_fields=("generic", "attention", "cache", "generic_gqa_attention"),
+        )
+        cached = [node for node in simplified.nodes if node.target == "cactus.attention_cached"]
+
+        self.assertEqual(len(cached), 1)
+        self.assertEqual(
+            [item["node"] for item in cached[0].args[:5]],
+            ["query", "key_new", "value_new", "key_cat", "value_cat"],
+        )
+        self.assertEqual(len(cached[0].args), 5)
+        self.assertFalse(cached[0].kwargs["additive_mask"])
+        self.assertTrue(cached[0].kwargs["dropped_mask_builder"])
+        self.assertFalse(cached[0].kwargs["preserved_prefill_mask"])
+
+    def test_generic_dynamic_kv_enables_chunk_prefill(self):
+        resolved = cli_transpiler.resolve_transpile_config(
+            "example/generic-causal-lm",
+            input_modalities="text",
+            generic_task="causal-lm",
+            cache_style="dynamic-kv",
+        )
+
+        self.assertNotIn("scalar_prefill", resolved.profile.cache_policy)
+        self.assertIn("generic_gqa_attention", resolved.profile.fusion_fields)
+        self.assertIn(
+            "decoder_prefill_cache_chunk",
+            resolved.profile.cache_contract.fp16_kv_cache_components,
+        )
+
+    def test_generic_gqa_rejects_nonintegral_query_groups(self):
+        query = mock.Mock(tensor_output_meta={"shape": [1, 6, 4, 8]})
+        key = mock.Mock(tensor_output_meta={"shape": [1, 4, 4, 8]})
+        value = mock.Mock(tensor_output_meta={"shape": [1, 4, 4, 8]})
+
+        self.assertFalse(special_fusions.generic_cached_attention_shapes_match(query, key, value))
 
     def test_noop_cleanup_exposes_fusion_in_same_simplify_call(self):
         tensor_meta = {"shape": [1, 8], "dtype": "torch.float16"}

@@ -810,6 +810,12 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (!decoder_cross_kv_name.empty()) decoder_cross_kv_ = &components_.at(decoder_cross_kv_name);
     if (components_.count("decoder_prefill_chunk")) {
         decoder_prefill_chunk_ = &components_.at("decoder_prefill_chunk");
+        decoder_prefill_cache_chunk_ = components_.count("decoder_prefill_cache_chunk")
+            ? &components_.at("decoder_prefill_cache_chunk")
+            : nullptr;
+        decoder_prefill_logits_head_ = components_.count("decoder_prefill_logits_head")
+            ? &components_.at("decoder_prefill_logits_head")
+            : nullptr;
         decoder_prefill_ = components_.count("decoder_prefill_text_chunk")
             ? &components_.at("decoder_prefill_text_chunk")
             : decoder_prefill_chunk_;
@@ -846,6 +852,8 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
         decoder_cross_kv_,
         decoder_prefill_,
         decoder_prefill_chunk_,
+        decoder_prefill_cache_chunk_,
+        decoder_prefill_logits_head_,
         vision_encoder_,
         vision_projector_,
         audio_encoder_,
@@ -2154,7 +2162,7 @@ void Model::reset_prefill_stats() {
     last_prefill_tail_padding_tokens_ = 0;
 }
 
-Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position, size_t chunk_size, bool prepare_decode) {
+Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position, size_t chunk_size, bool prepare_decode, bool produce_logits) {
     ChunkedPrefillResult result;
     reset_prefill_stats();
     if (decode_route_ != DecodeRoute::CACHED_STEP || !encoder_ || !decoder_ || !decoder_prefill_) return result;
@@ -2188,23 +2196,41 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
             }
         }
     }
-    result.component = prefill_component;
+    Component* logits_component = prefill_component;
+    Component* cache_component = decoder_prefill_cache_chunk_;
+    Component* logits_head = decoder_prefill_logits_head_;
+    if (cache_component && declared_prefill_tokens(cache_component) != declared_prefill_tokens(logits_component)) {
+        cache_component = nullptr;
+        logits_head = nullptr;
+    }
     result.encoder_component = encoder_component;
     if (start_position != 0) {
         if (std::getenv("CACTUS_DISABLE_SHARED_STATE") != nullptr || !decoder_->graph) return result;
         publish_component_cache_states(*decoder_);
     }
-    if (!load_component_graph(*prefill_component)) return result;
+    // Start with the cache-only graph whenever at least one chunk does not
+    // need logits. The final chunk switches to the logits graph only when its
+    // last row will be sampled directly.
+    const size_t declared_tokens = declared_prefill_tokens(logits_component);
+    const bool exact_chunk_tail = declared_tokens > 1 && !tokens.empty() && tokens.size() % declared_tokens == 0;
+    const bool needs_only_logits_chunk = !logits_head
+        && produce_logits && exact_chunk_tail && tokens.size() <= declared_tokens;
+    Component* active_component = cache_component && !needs_only_logits_chunk
+        ? cache_component
+        : logits_component;
+    prefill_component = active_component;
+    result.component = active_component;
+    if (!load_component_graph(*active_component)) return result;
     if (encoder_component && !load_component_graph(*encoder_component)) return result;
-    if (!cache_states_compatible(*prefill_component, *decoder_)) return result;
-    size_t component_tokens = component_chunk_tokens(*prefill_component, "inputs_embeds");
+    if (!cache_states_compatible(*active_component, *decoder_)) return result;
+    size_t component_tokens = component_chunk_tokens(*active_component, "inputs_embeds");
     if (component_tokens <= 1) return result;
     size_t effective_chunk = chunk_size > 0 ? std::min(chunk_size, component_tokens) : component_tokens;
     if (effective_chunk != component_tokens) effective_chunk = component_tokens;
     size_t whole_chunks_end = (tokens.size() / effective_chunk) * effective_chunk;
     auto any_cache_node = [&](auto predicate) {
-        if (!prefill_component->graph) return false;
-        for (const auto& state : prefill_component->cache_states) {
+        if (!active_component->graph) return false;
+        for (const auto& state : active_component->cache_states) {
             for (int node_id : {state.key_node_id, state.value_node_id}) {
                 if (node_id < 0) continue;
                 if (predicate(static_cast<size_t>(node_id))) return true;
@@ -2213,17 +2239,17 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
         return false;
     };
     const bool has_recurrent_state = any_cache_node([&](size_t id) {
-        return prefill_component->graph->get_node_op_type(id) == OpType::RECURRENT_CACHE_STATE;
+        return active_component->graph->get_node_op_type(id) == OpType::RECURRENT_CACHE_STATE;
     });
     if (has_recurrent_state && whole_chunks_end > effective_chunk) {
         whole_chunks_end = effective_chunk;
     }
     const bool has_sliding_window_cache = any_cache_node([&](size_t id) {
-        return prefill_component->graph->get_node_op_type(id) == OpType::KV_CACHE_STATE
-            && prefill_component->graph->get_node_window_size(id) > 0;
+        return active_component->graph->get_node_op_type(id) == OpType::KV_CACHE_STATE
+            && active_component->graph->get_node_window_size(id) > 0;
     });
     const bool has_conv_state = any_cache_node([&](size_t id) {
-        return prefill_component->graph->get_node_op_type(id) == OpType::CONV_CACHE_STATE;
+        return active_component->graph->get_node_op_type(id) == OpType::CONV_CACHE_STATE;
     });
     const size_t tail_tokens = tokens.size() - whole_chunks_end;
     const size_t padding_cutoff = std::max<size_t>(1, effective_chunk / 16);
@@ -2232,9 +2258,9 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
         && !has_sliding_window_cache
         && tail_tokens >= padding_cutoff;
     const bool padded_window_too_small = any_cache_node([&](size_t id) {
-        if (prefill_component->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) return false;
-        size_t window = prefill_component->graph->get_node_window_size(id);
-        size_t sink = prefill_component->graph->get_node_sink_size(id);
+        if (active_component->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) return false;
+        size_t window = active_component->graph->get_node_window_size(id);
+        size_t sink = active_component->graph->get_node_sink_size(id);
         return window > 0 && (window < effective_chunk * 4 || window <= effective_chunk + sink);
     });
     const bool use_padded_tail = !pad_tail && !prefill_tail_pad_disabled_
@@ -2255,9 +2281,29 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
         }
     }
 
+    auto activate_component = [&](Component* target, size_t logical_current) -> bool {
+        if (!target || target == active_component) return target != nullptr;
+        if (!load_component_graph(*target)) return false;
+        if (!cache_states_compatible(*active_component, *target)) return false;
+        move_cache_states(*active_component, *target, logical_current);
+        active_component->graph->release_runtime_buffers();
+        unload_component_graph(*active_component);
+        active_component = target;
+        prefill_component = target;
+        result.component = target;
+        return true;
+    };
+
     size_t processed = 0;
     while (processed + effective_chunk <= executable_tokens) {
-        execute_prefill_chunk(*prefill_component, encoder_component, encoder_chunk,
+        const bool final_exact_chunk = produce_logits
+            && tail_tokens == 0
+            && processed + effective_chunk == executable_tokens;
+        Component* target = final_exact_chunk && !logits_head
+            ? logits_component
+            : (cache_component ? cache_component : logits_component);
+        if (!activate_component(target, start_position + processed)) return ChunkedPrefillResult{};
+        execute_prefill_chunk(*active_component, encoder_component, encoder_chunk,
                               effective_chunk, tokens, processed, start_position);
         processed += effective_chunk;
     }
@@ -2268,18 +2314,21 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
         const size_t pads = effective_chunk - tail_tokens;
         const size_t kept_real = tail_tokens - 1;
         std::vector<std::pair<size_t, std::vector<uint8_t>>> backups;
-        for (const auto& state : prefill_component->cache_states) {
+        if (!activate_component(cache_component ? cache_component : logits_component, start_position + processed)) {
+            return ChunkedPrefillResult{};
+        }
+        for (const auto& state : active_component->cache_states) {
             for (int node_id : {state.key_node_id, state.value_node_id}) {
                 if (node_id < 0) continue;
                 size_t id = static_cast<size_t>(node_id);
-                if (prefill_component->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) continue;
-                backups.emplace_back(id, prefill_component->graph->snapshot_cache_padded_append(id, kept_real, pads + 1));
+                if (active_component->graph->get_node_op_type(id) != OpType::KV_CACHE_STATE) continue;
+                backups.emplace_back(id, active_component->graph->snapshot_cache_padded_append(id, kept_real, pads + 1));
             }
         }
-        execute_prefill_chunk(*prefill_component, encoder_component, encoder_chunk,
+        execute_prefill_chunk(*active_component, encoder_component, encoder_chunk,
                               effective_chunk, tokens, processed, start_position);
         for (auto& [id, backup] : backups) {
-            prefill_component->graph->rollback_cache_padded_append(id, kept_real, pads + 1, backup);
+            active_component->graph->rollback_cache_padded_append(id, kept_real, pads + 1, backup);
         }
         processed += kept_real;
         tail_executed = kept_real;
@@ -2288,10 +2337,22 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
 
     result.executed_tokens = processed;
     result.logical_tokens = std::min(tokens.size(), processed);
-    if (result.logical_tokens > 0) {
-        result.last_logit_row = (result.logical_tokens - 1) % effective_chunk;
-    }
     result.padding_tokens = processed > tokens.size() ? processed - tokens.size() : 0;
+    if (produce_logits && logits_head && cache_component
+        && result.logical_tokens == tokens.size() && result.padding_tokens == 0) {
+        if (!load_component_graph(*logits_head)) return ChunkedPrefillResult{};
+        copy_component_outputs_to_inputs(*active_component, *logits_head);
+        logits_head->graph->execute();
+        result.component = logits_head;
+    }
+    if (result.logical_tokens > 0) {
+        const size_t logits_rows = result.component
+            ? component_output_tokens(*result.component, "logits")
+            : 0;
+        result.last_logit_row = logits_rows == 1
+            ? 0
+            : (result.logical_tokens - 1) % effective_chunk;
+    }
     result.scalar_tail_tokens = tokens.size() - result.logical_tokens;
     last_prefill_padding_tokens_ = result.padding_tokens;
     last_prefill_scalar_tail_tokens_ = result.scalar_tail_tokens;
@@ -2303,9 +2364,13 @@ Model::ChunkedPrefillResult Model::run_chunked_prefill(const std::vector<uint32_
             std::fill(decoder_->input_buffers[i].begin(), decoder_->input_buffers[i].end(), 0);
         }
         auto copy_start = std::chrono::high_resolution_clock::now();
-        move_cache_states(*prefill_component, *decoder_, start_position + result.logical_tokens);
+        move_cache_states(*active_component, *decoder_, start_position + result.logical_tokens);
         auto copy_end = std::chrono::high_resolution_clock::now();
         last_prefill_cache_copy_ms_ = std::chrono::duration_cast<std::chrono::microseconds>(copy_end - copy_start).count() / 1000.0;
+    }
+    if (result.component == logits_head && active_component != logits_head) {
+        active_component->graph->release_runtime_buffers();
+        unload_component_graph(*active_component);
     }
     return result;
 }
@@ -3198,7 +3263,7 @@ bool Model::prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, 
     }
     ChunkedPrefillResult chunked;
     if (decoder_prefill_) {
-        chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), true);
+        chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), true, true);
         if (chunked.logical_tokens == tokens.size() && chunked.padding_tokens > 0 && tokens.size() > 0) {
             // Cache already moved into the step component; drop the last row and re-run it for step-decoder logits.
             set_cache_current_len(*decoder_, tokens.size() - 1);
@@ -3250,7 +3315,7 @@ void Model::prefill(const std::vector<uint32_t>& tokens, size_t /*chunk_size*/, 
         cache_token_ids_ = context_tokens_;
         return;
     }
-    ChunkedPrefillResult chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), prepare_decode);
+    ChunkedPrefillResult chunked = run_chunked_prefill(tokens, cache_total_seq_len_, get_prefill_chunk_size(), prepare_decode, false);
     cache_total_seq_len_ += chunked.logical_tokens;
     if (prepare_decode && chunked.logical_tokens > 0) {
         if (chunked.component) unload_component_graph(*chunked.component);

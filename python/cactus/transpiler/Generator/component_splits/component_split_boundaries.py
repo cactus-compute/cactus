@@ -4,6 +4,7 @@ from collections.abc import Mapping
 
 from .component_split_types import Gemma4Boundaries, LfmVlmBoundaries, OutputSpec, WhisperBoundaries
 from .component_split_utils import tensor_last_dim, tensor_rank, tensor_shape
+from .. import constants
 from ...Fusions import models as FModels
 from ...IR import models as IRModels
 
@@ -293,6 +294,26 @@ def find_logits_output(graph: IRModels.Graph) -> str:
         if tensor_rank(node) == 3 and tensor_last_dim(node) == 262144:
             return node.name
     raise ValueError("Gemma4 component split could not find logits output")
+
+def find_logits_projection_input(graph: IRModels.Graph) -> str:
+    """Return the final hidden activation consumed by the vocabulary head."""
+    logits = graph.nodes_map[find_logits_output(graph)]
+    vocabulary_width = tensor_last_dim(logits)
+    queue = [logits]
+    visited: set[str] = set()
+    while queue:
+        node = queue.pop(0)
+        if node.name in visited:
+            continue
+        visited.add(node.name)
+        if (
+            node.target in constants.MATMUL_TARGETS | constants.LINEAR_TARGETS
+            and len(node.parents) >= 2
+            and tensor_last_dim(node) == vocabulary_width
+        ):
+            return node.parents[0].name
+        queue.extend(node.parents)
+    raise ValueError("Causal LM component split could not find the logits projection input")
 
 def graph_output_specs(graph: IRModels.Graph, publish_only_logits: bool = False) -> tuple[OutputSpec, ...]:
     refs = graph_output_refs(graph)

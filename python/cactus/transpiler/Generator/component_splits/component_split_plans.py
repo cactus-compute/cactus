@@ -177,6 +177,9 @@ def split_causal_lm_components(
     step_position = PlaceholderSpec("position_ids", "position_ids", tensor_node="input_ids", force=True)
     chunk_position = PlaceholderSpec("position_ids", "position_ids", tensor_node="input_ids", force=True)
     chunk_tokens = causal_lm_prefill_chunk_tokens(model_profile)
+    use_generic_chunk_attention = "generic_gqa_attention" in tuple(
+        getattr(model_profile, "fusion_fields", ()) or ())
+    logits_hidden = find_logits_projection_input(prefill) if use_generic_chunk_attention else None
     step_specs = (
         ComponentSplitSpec(
             name="lm_encoder_step",
@@ -196,6 +199,30 @@ def split_causal_lm_components(
             input_aliases={"input_ids": "inputs_embeds"},
         ),
     )
+    cache_only_specs = (
+        ComponentSplitSpec(
+            name="decoder_prefill_cache_chunk",
+            graph=prefill,
+            outputs=(OutputSpec(logits_hidden, "last_hidden_state", tail_rows=1),),
+            side_effects=cache_side_effect_node_names(prefill),
+            placeholders=(chunk_position,),
+            input_aliases={"input_ids": "inputs_embeds"},
+            metadata={"prefill_role": "cache_only"},
+            chunk_tokens=chunk_tokens,
+        ),
+        ComponentSplitSpec(
+            name="decoder_prefill_logits_head",
+            graph=prefill,
+            outputs=(OutputSpec(find_logits_output(prefill), "logits"),),
+            placeholders=(PlaceholderSpec(
+                "last_hidden_state",
+                "last_hidden_state",
+                source_node=logits_hidden,
+                sequence_tokens=1,
+            ),),
+            metadata={"prefill_role": "logits_head"},
+        ),
+    ) if use_generic_chunk_attention else ()
     prefill_specs = (
         ComponentSplitSpec(
             name="lm_encoder_text_prefill_chunk",
@@ -207,6 +234,7 @@ def split_causal_lm_components(
             placeholders=(chunk_position,),
             chunk_tokens=chunk_tokens,
         ),
+        *cache_only_specs,
         ComponentSplitSpec(
             name="decoder_prefill_chunk",
             graph=prefill,
@@ -387,5 +415,9 @@ def cache_side_effect_node_names(graph: IRModels.Graph) -> tuple[str, ...]:
             "cactus.conv_cache_append",
             "cactus.conv_cache_initialize",
             "cactus.recurrent_cache_write",
+            # Native cached attention owns the append when structural cache
+            # concatenation has been fused. It must remain in cache-only
+            # components even when no activation output is published.
+            "cactus.attention_cached",
         }
     )

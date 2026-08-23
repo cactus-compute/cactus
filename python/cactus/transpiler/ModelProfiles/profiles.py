@@ -39,7 +39,7 @@ def decoder_kv_state(producer: str = "decoder_prefill_chunk") -> StateContract:
 TEXT_RUNTIME_CONTRACT = RuntimeContract(
     plan_name="generic_text",
     states=(
-        decoder_kv_state(),
+        decoder_kv_state("decoder_prefill_cache_chunk,decoder_prefill_chunk"),
     ),
     aliases=(
         AliasContract(
@@ -47,6 +47,20 @@ TEXT_RUNTIME_CONTRACT = RuntimeContract(
             source_output="inputs_embeds",
             target_component="decoder_prefill_chunk",
             target_input="inputs_embeds",
+            required=False,
+        ),
+        AliasContract(
+            source_component="text_embedding",
+            source_output="inputs_embeds",
+            target_component="decoder_prefill_cache_chunk",
+            target_input="inputs_embeds",
+            required=False,
+        ),
+        AliasContract(
+            source_component="decoder_prefill_cache_chunk",
+            source_output="last_hidden_state",
+            target_component="decoder_prefill_logits_head",
+            target_input="last_hidden_state",
             required=False,
         ),
     ),
@@ -631,10 +645,24 @@ def generic_profile_for_contract(contract: GenericTranspileContract) -> ModelPro
         )
     default_groups = tuple(base.fusion_fields)
     fusion_groups = tuple(dict.fromkeys(contract.fusion_groups or default_groups))
-    if cache_style == GENERIC_CACHE_DYNAMIC_KV and "generic_cached_attention" not in fusion_groups:
-        fusion_groups = (*fusion_groups, "generic_cached_attention")
+    generic_cache_fusions = ("generic_cached_attention", "generic_gqa_attention")
+    if cache_style == GENERIC_CACHE_DYNAMIC_KV:
+        base = replace(
+            base,
+            cache_policy=tuple(
+                policy for policy in base.cache_policy if policy != "scalar_prefill"
+            ),
+            cache_contract=replace(
+                base.cache_contract,
+                fp16_kv_cache_components=tuple(dict.fromkeys((
+                    *base.cache_contract.fp16_kv_cache_components,
+                    "decoder_prefill_cache_chunk",
+                ))),
+            ),
+        )
+        fusion_groups = tuple(dict.fromkeys((*fusion_groups, *generic_cache_fusions)))
     elif cache_style != GENERIC_CACHE_DYNAMIC_KV:
-        fusion_groups = tuple(group for group in fusion_groups if group != "generic_cached_attention")
+        fusion_groups = tuple(group for group in fusion_groups if group not in generic_cache_fusions)
     return replace(
         base,
         fusion_fields=fusion_groups,

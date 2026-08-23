@@ -10,13 +10,10 @@ PREFILL_WITH_CACHE_TASK = "prefill_with_cache"
 DECODE_WITH_CACHE_TASK = "decode_with_cache"
 GEMMA4_TEXT_PREFILL_CHUNK_TOKENS = 32
 GEMMA4_MEDIA_PREFILL_CHUNK_TOKENS = 128
-# LFM-VLM has convolutional cache state, so a partial fixed-size chunk cannot
-# be tail-padded and rolled back like a pure KV model. Keep a small media graph
-# for typical image prompts, alongside a wide graph for long text prefill.
 LFM_VLM_MEDIA_PREFILL_CHUNK_TOKENS = 16
 LFM_VLM_TEXT_PREFILL_CHUNK_TOKENS = 128
 LFM_MOE_PREFILL_CHUNK_TOKENS = 128
-GENERIC_CAUSAL_PREFILL_CHUNK_TOKENS = 4
+GENERIC_CAUSAL_PREFILL_CHUNK_TOKENS = 64
 
 @dataclass(slots=True, frozen=True)
 class PlaceholderSpec:
@@ -27,12 +24,14 @@ class PlaceholderSpec:
     target: str | None = None
     value_kind: str = FModels.ValueKind.USER_INPUT
     force: bool = False
+    sequence_tokens: int | None = None
 
 @dataclass(slots=True, frozen=True)
 class OutputSpec:
     node: str
     logical_name: str
     row_limit: int | None = None
+    tail_rows: int | None = None
     permutation: tuple[int, ...] | None = None
     publish: bool = True
 

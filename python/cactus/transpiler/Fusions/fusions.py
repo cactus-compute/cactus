@@ -79,6 +79,14 @@ FUSIONS: dict[str, M.FusionDefinition] = {
         supported_inference_modes=("decode_with_cache",),
         metadata={"special_matcher": "generic_cached_attention"},
     ),
+    "generic_gqa_attention": _definition(
+        "generic_gqa_attention",
+        "attention_cached",
+        GENERIC_CACHED_ATTENTION_GRAPH,
+        fusion_fields=("generic_gqa_attention",),
+        supported_inference_modes=("prefill_with_cache",),
+        metadata={"special_matcher": "generic_cached_attention"},
+    ),
     "gemma4_bmm_masked_attention": _definition(
         "gemma4_bmm_masked_attention",
         "attention",

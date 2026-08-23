@@ -47,6 +47,9 @@ def extract_component_graph(spec: ComponentSplitSpec) -> IRModels.Graph:
             final_output_name = add_permuted_output_node(nodes, final_output_name, output.logical_name, output.permutation, used_names)
         if output.row_limit is not None:
             final_output_name = add_row_limited_output_node(nodes, output_name, output.logical_name, output.row_limit, used_names)
+        if output.tail_rows is not None:
+            final_output_name = add_tail_rows_output_node(
+                nodes, final_output_name, output.logical_name, output.tail_rows, used_names)
         output_logical_names[final_output_name] = output.logical_name
         final_output_names.append(final_output_name)
     nodes.append(create_output_node(spec.name, tuple(final_output_names), nodes))
@@ -128,6 +131,51 @@ def add_row_limited_output_node(
         )
     )
     return name
+
+def add_tail_rows_output_node(
+    nodes: list[IRModels.Node],
+    source_name: str,
+    logical_name: str,
+    row_count: int,
+    used_names: set[str],
+) -> str:
+    source = next((node for node in nodes if node.name == source_name), None)
+    if source is None:
+        raise ValueError(f"Component split cannot add tail output for missing node {source_name}")
+    source_shape = tensor_shape(source)
+    axis = sequence_axis(source_shape)
+    if axis is None or not isinstance(source_shape[axis], int) or source_shape[axis] < row_count:
+        raise ValueError(f"{source_name}: tail output requires a known sequence shape, got {source_shape}")
+    output_shape = list(source_shape)
+    start = int(output_shape[axis]) - row_count
+    output_shape[axis] = row_count
+    name = unique_component_node_name(f"{source_name}_last_{row_count}", used_names)
+    source_meta = source.tensor_output_meta if isinstance(source.tensor_output_meta, dict) else {}
+    nodes.append(
+        IRModels.Node(
+            index=max((node.index for node in nodes), default=-1) + 1,
+            name=name,
+            node_type="call_function",
+            target="cactus.slice",
+            args=[{"node": source_name}],
+            kwargs={},
+            users=(),
+            tensor_output_meta={**source_meta, "shape": output_shape},
+            module_stack=source.module_stack,
+            value_kind=FModels.ValueKind.ACTIVATION,
+            attrs={"axis": axis, "start": start, "length": row_count, "step": 1},
+            ir_metadata={"logical_output": logical_name},
+            cache=None,
+        )
+    )
+    return name
+
+def sequence_axis(shape: list[Any]) -> int | None:
+    if len(shape) >= 3 and shape[0] == 1:
+        return 1
+    if len(shape) >= 2:
+        return 0
+    return None
 
 def retarget_chunk_graph_sequence_length(graph: IRModels.Graph, chunk_tokens: int) -> IRModels.Graph:
     source_lengths = chunk_source_lengths(graph)
@@ -379,6 +427,13 @@ def create_placeholder_node(
     metadata["logical_input"] = placeholder.logical_name
     if placeholder.name in output_logical_names:
         metadata["logical_output"] = output_logical_names[placeholder.name]
+    tensor_output_meta = template.tensor_output_meta if template is not None else None
+    if placeholder.sequence_tokens is not None and isinstance(tensor_output_meta, dict):
+        shape = list(tensor_output_meta.get("shape") or ())
+        axis = sequence_axis(shape)
+        if axis is not None:
+            shape[axis] = placeholder.sequence_tokens
+            tensor_output_meta = {**tensor_output_meta, "shape": shape}
     return IRModels.Node(
         index=template.index if template is not None else -1,
         name=name,
@@ -387,7 +442,7 @@ def create_placeholder_node(
         args=[],
         kwargs={},
         users=(),
-        tensor_output_meta=template.tensor_output_meta if template is not None else None,
+        tensor_output_meta=tensor_output_meta,
         module_stack=template.module_stack if template is not None else None,
         value_kind=placeholder.value_kind,
         attrs={},
