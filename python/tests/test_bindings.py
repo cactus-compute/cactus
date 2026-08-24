@@ -30,7 +30,7 @@ class TestPackageStructure:
         assert callable(create_parser)
 
     def test_model_module_importable(self):
-        from cactus.cli.model import ensure_weights, ensure_bundle, TranspileOptions
+        from cactus.cli.model import ensure_weights, ensure_bundle
         assert callable(ensure_weights)
         assert callable(ensure_bundle)
 
@@ -202,49 +202,6 @@ class TestEnc:
 # ── Model ID resolution tests ──────────────────────────────────────
 
 
-# ── TranspileOptions tests ──────────────────────────────────────────
-
-
-class TestTranspileOptions:
-    """Test the TranspileOptions dataclass."""
-
-    def test_defaults(self):
-        from cactus.cli.model import TranspileOptions
-        opts = TranspileOptions()
-        assert opts.task == "auto"
-        assert opts.prompt is None
-        assert opts.image_files is None
-        assert opts.audio_file is None
-        assert opts.max_new_tokens is None
-        assert opts.component_pipeline == "auto"
-        assert opts.components is None
-        assert opts.system_prompt is None
-        assert opts.trust_remote_code is False
-        assert opts.local_files_only is False
-        assert opts.cache_context_length is None
-
-    def test_custom_values(self):
-        from cactus.cli.model import TranspileOptions
-        opts = TranspileOptions(
-            task="causal_lm_logits",
-            prompt="Hello",
-            max_new_tokens=256,
-            trust_remote_code=True,
-            cache_context_length="131072",
-        )
-        assert opts.task == "causal_lm_logits"
-        assert opts.prompt == "Hello"
-        assert opts.max_new_tokens == 256
-        assert opts.trust_remote_code is True
-        assert opts.cache_context_length == "131072"
-
-    def test_frozen(self):
-        from cactus.cli.model import TranspileOptions
-        opts = TranspileOptions()
-        with pytest.raises(AttributeError):
-            opts.task = "something"
-
-
 # ── CLI parser tests ────────────────────────────────────────────────
 
 
@@ -330,6 +287,15 @@ class TestCliParser:
     def test_no_command_prints_help(self):
         args = self.parser.parse_args([])
         assert args.command is None
+
+    def test_convert_preserves_explicit_legacy_graph_flags(self):
+        import pytest
+        args = self.parser.parse_args(["convert", "google/gemma-4-E2B-it", "--task", "causal_lm_logits"])
+        assert args.task == "causal_lm_logits"
+        with pytest.raises(SystemExit):
+            self.parser.parse_args(["convert", "google/gemma-4-E2B-it", "--dynamic-batch"])
+        with pytest.raises(SystemExit):
+            self.parser.parse_args(["transpile", "google/gemma-4-E2B-it"])
 
     def test_run_rejects_bare_name(self):
         import pytest

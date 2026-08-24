@@ -2,6 +2,7 @@
 #include <sstream>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 
 namespace TestUtils {
 

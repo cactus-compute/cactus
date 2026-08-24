@@ -13,6 +13,25 @@ bool use_fp16_kv_cache_for_builder() {
     return value != nullptr && std::strcmp(value, "1") == 0;
 }
 
+bool op_honors_explicit_output_precision(OpType op_type) {
+    switch (op_type) {
+        case OpType::PRECISION_CAST:
+        case OpType::EMBEDDING:
+        case OpType::TOPK:
+        case OpType::SCATTER_TOPK:
+        case OpType::SAMPLE:
+        case OpType::KV_CACHE_APPEND:
+        case OpType::CONV_CACHE_STATE:
+        case OpType::RECURRENT_CACHE_STATE:
+        case OpType::IMAGE_PREPROCESS:
+        case OpType::MEL_FILTER_BANK:
+        case OpType::SPECTROGRAM:
+            return true;
+        default:
+            return false;
+    }
+}
+
 } // namespace
 
 size_t CactusGraph::attach_conv_bias(size_t node, size_t bias, size_t expected_size, const char* op_name) {
@@ -343,7 +362,9 @@ size_t CactusGraph::moe_layer(size_t hidden,
     return tag_backend(add_node(OpType::MOE_LAYER, input_ids, hidden_buffer.shape, params), backend);
 }
 
-size_t CactusGraph::dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight, size_t down_weight, float product_scale, ComputeBackend backend) {
+size_t CactusGraph::dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t up_weight,
+                                       size_t down_weight, float product_scale,
+                                       float gate_input_scale, ComputeBackend backend) {
     const auto& hidden_buffer = get_output_buffer(hidden);
     const auto& down_buffer = get_output_buffer(down_weight);
     if (hidden_buffer.shape.empty()) {
@@ -359,9 +380,73 @@ size_t CactusGraph::dense_mlp_tq_fused(size_t hidden, size_t gate_weight, size_t
     OpParams params;
     params.output_precision = Precision::FP16;
     params.scalar = product_scale;
+    params.scale = gate_input_scale;
     return tag_backend(add_node(OpType::DENSE_MLP_TQ_FUSED,
                                 {hidden, gate_weight, up_weight, down_weight},
                                 output_shape, params), backend);
+}
+
+size_t CactusGraph::qkv_tq_fused(size_t hidden, size_t query_weight, size_t key_weight,
+                                 size_t value_weight, ComputeBackend backend) {
+    const auto& hidden_buffer = get_output_buffer(hidden);
+    const auto& query_buffer = get_output_buffer(query_weight);
+    const auto& key_buffer = get_output_buffer(key_weight);
+    const auto& value_buffer = get_output_buffer(value_weight);
+    if (hidden_buffer.shape.empty() || query_buffer.shape.size() != 2 ||
+        key_buffer.shape.size() != 2 || value_buffer.shape.size() != 2) {
+        throw std::runtime_error("qkv_tq_fused expects non-scalar hidden and rank-2 weights");
+    }
+    const size_t hidden_dim = hidden_buffer.shape.back();
+    if (query_buffer.shape[1] != hidden_dim || key_buffer.shape[1] != hidden_dim ||
+        value_buffer.shape[1] != hidden_dim) {
+        throw std::runtime_error("qkv_tq_fused weight dimensions do not match hidden");
+    }
+    std::vector<size_t> output_shape = hidden_buffer.shape;
+    output_shape.back() = query_buffer.shape[0] + key_buffer.shape[0] + value_buffer.shape[0];
+    OpParams params;
+    params.output_precision = Precision::FP16;
+    return tag_backend(add_node(OpType::QKV_TQ_FUSED,
+                    {hidden, query_weight, key_weight, value_weight}, output_shape, params), backend);
+}
+
+size_t CactusGraph::projection_pair_tq_fused(size_t hidden, size_t first_weight,
+                                             size_t second_weight, ComputeBackend backend) {
+    const auto& hidden_buffer = get_output_buffer(hidden);
+    const auto& first_buffer = get_output_buffer(first_weight);
+    const auto& second_buffer = get_output_buffer(second_weight);
+    if (hidden_buffer.shape.empty() || first_buffer.shape.size() != 2 || second_buffer.shape.size() != 2) {
+        throw std::runtime_error("projection_pair_tq_fused expects non-scalar hidden and rank-2 weights");
+    }
+    const size_t hidden_dim = hidden_buffer.shape.back();
+    if (first_buffer.shape[1] != hidden_dim || second_buffer.shape[1] != hidden_dim) {
+        throw std::runtime_error("projection_pair_tq_fused weight dimensions do not match hidden");
+    }
+    std::vector<size_t> output_shape = hidden_buffer.shape;
+    output_shape.back() = first_buffer.shape[0] + second_buffer.shape[0];
+    OpParams params;
+    params.output_precision = Precision::FP16;
+    return tag_backend(add_node(OpType::PROJECTION_PAIR_TQ_FUSED,
+                    {hidden, first_weight, second_weight}, output_shape, params), backend);
+}
+
+size_t CactusGraph::logits_tq_softcap(size_t hidden, size_t weight, float cap,
+                                      float projection_scale, ComputeBackend backend) {
+    const auto& hidden_buffer = get_output_buffer(hidden);
+    const auto& weight_buffer = get_output_buffer(weight);
+    if (hidden_buffer.shape.empty() || weight_buffer.shape.size() != 2 ||
+        !PrecisionTraits::is_cq(weight_buffer.precision) || !(cap > 0.0f)) {
+        throw std::runtime_error("logits_tq_softcap expects hidden, rank-2 CQ weight, and positive cap");
+    }
+    if (weight_buffer.shape[1] != hidden_buffer.shape.back()) {
+        throw std::runtime_error("logits_tq_softcap weight dimensions do not match hidden");
+    }
+    std::vector<size_t> output_shape = hidden_buffer.shape;
+    output_shape.back() = weight_buffer.shape[0];
+    OpParams params;
+    params.output_precision = Precision::FP16;
+    params.scalar = cap;
+    params.scale = projection_scale;
+    return tag_backend(add_node(OpType::LOGITS_TQ_SOFTCAP, {hidden, weight}, output_shape, params), backend);
 }
 
 size_t CactusGraph::moe_layer(size_t hidden,
@@ -1138,7 +1223,7 @@ size_t CactusGraph::rope_gptj(size_t input, float theta, size_t position_offset,
     return add_node(OpType::ROPE_GPTJ, {input}, {}, params);
 }
 
-size_t CactusGraph::gather(size_t tensor, size_t indices, ComputeBackend backend) {
+size_t CactusGraph::gather(size_t tensor, size_t indices, int axis, ComputeBackend backend) {
     const auto& tensor_buffer = get_output_buffer(tensor);
     const auto& idx_shape = get_output_buffer(indices).shape;
 
@@ -1146,12 +1231,25 @@ size_t CactusGraph::gather(size_t tensor, size_t indices, ComputeBackend backend
         throw std::runtime_error("Cannot gather from scalar tensor");
     }
 
-    std::vector<size_t> output_shape = idx_shape;
-    for (size_t i = 1; i < tensor_buffer.shape.size(); i++) {
-        output_shape.push_back(tensor_buffer.shape[i]);
+    int actual_axis = axis;
+    if (actual_axis < 0) actual_axis += static_cast<int>(tensor_buffer.shape.size());
+    if (actual_axis < 0 || static_cast<size_t>(actual_axis) >= tensor_buffer.shape.size()) {
+        throw std::runtime_error("gather axis out of range");
+    }
+
+    std::vector<size_t> output_shape;
+
+    if (idx_shape.size() == tensor_buffer.shape.size()) {
+        output_shape = idx_shape;
+    } else {
+        output_shape = idx_shape;
+        for (size_t i = 1; i < tensor_buffer.shape.size(); i++) {
+            output_shape.push_back(tensor_buffer.shape[i]);
+        }
     }
 
     OpParams params;
+    params.axis = actual_axis;
     params.output_precision = tensor_buffer.precision;
 
     return tag_backend(add_node(OpType::GATHER, {tensor, indices}, output_shape, params), backend);
@@ -1259,6 +1357,10 @@ const BufferDesc& CactusGraph::get_output_buffer(size_t node_id) const {
 
 OpType CactusGraph::get_node_op_type(size_t node_id) const {
     return nodes_[node_index_map_.at(node_id)]->op_type;
+}
+
+const std::vector<size_t>& CactusGraph::get_node_inputs(size_t node_id) const {
+    return nodes_[node_index_map_.at(node_id)]->input_ids;
 }
 
 size_t CactusGraph::get_node_window_size(size_t node_id) const {
@@ -1656,6 +1758,7 @@ size_t CactusGraph::attention_cached(size_t query, size_t key_new, size_t value_
                                       size_t k_cache_state, size_t v_cache_state,
                                       float scale, size_t position_offset,
                                       size_t window_size, size_t v_head_dim, size_t cache_slot,
+                                      size_t mask, bool additive_mask, bool is_causal,
                                       ComputeBackend backend) {
     const auto& q_shape = get_output_buffer(query).shape;
     size_t batch = q_shape[0];
@@ -1670,8 +1773,152 @@ size_t CactusGraph::attention_cached(size_t query, size_t key_new, size_t value_
     params.window_size = window_size;
     params.v_head_dim = v_head_dim;
     params.cache_slot = cache_slot;
+    params.is_causal = is_causal;
+    params.attention_mask_is_additive = additive_mask;
     params.output_precision = Precision::FP16;
+    std::vector<size_t> inputs = {query, key_new, value_new, k_cache_state, v_cache_state};
+    if (mask != static_cast<size_t>(-1)) inputs.push_back(mask);
     return tag_backend(add_node(OpType::ATTENTION_CACHED,
-                                {query, key_new, value_new, k_cache_state, v_cache_state},
+                                inputs,
                                 {batch, seq_len, num_q_heads, out_v_dim}, params), backend);
+}
+
+size_t CactusGraph::equal(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::EQUAL, a, b), backend); }
+size_t CactusGraph::less(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::LESS, a, b), backend); }
+size_t CactusGraph::less_equal(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::LESS_EQUAL, a, b), backend); }
+size_t CactusGraph::greater(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::GREATER, a, b), backend); }
+size_t CactusGraph::greater_equal(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::GREATER_EQUAL, a, b), backend); }
+size_t CactusGraph::bitwise_and(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::BITWISE_AND, a, b), backend); }
+size_t CactusGraph::bitwise_or(size_t a, size_t b, ComputeBackend backend) { return tag_backend(binary_broadcast_op(OpType::BITWISE_OR, a, b), backend); }
+
+size_t CactusGraph::where(size_t condition, size_t true_value, size_t false_value, ComputeBackend backend) {
+    BroadcastInfo cond_true = BroadcastInfo::compute(get_output_buffer(condition).shape,
+                                                      get_output_buffer(true_value).shape);
+    BroadcastInfo all_inputs = BroadcastInfo::compute(cond_true.output_shape,
+                                                       get_output_buffer(false_value).shape);
+    OpParams params;
+    params.output_precision = get_output_buffer(true_value).precision;
+    return tag_backend(add_node(OpType::WHERE, {condition, true_value, false_value},
+                                all_inputs.output_shape, params), backend);
+}
+
+size_t CactusGraph::masked_select_prefix(size_t input, size_t mask, ComputeBackend backend) {
+    const auto& in = get_output_buffer(input);
+    const auto& m = get_output_buffer(mask);
+    if ((in.shape.size() != 2 && in.shape.size() != 3) ||
+        (m.shape.size() != 1 && m.shape.size() != 2))
+        throw std::runtime_error("masked_select_prefix expects [T,D]/[1,T,D] and [T]/[1,T]");
+    const size_t time = in.shape.size() == 3 ? in.shape[1] : in.shape[0];
+    if (m.shape.back() != time) throw std::runtime_error("masked_select_prefix time mismatch");
+    OpParams params{.output_precision = in.precision};
+    return tag_backend(add_node(OpType::MASKED_SELECT_PREFIX, {input, mask},
+                                {time, in.shape.back()}, params), backend);
+}
+
+size_t CactusGraph::expand(size_t input, const std::vector<size_t>& new_shape, ComputeBackend backend) {
+    const auto& in = get_output_buffer(input);
+    if (new_shape.size() < in.shape.size()) throw std::runtime_error("expand target rank must be >= input rank");
+    const size_t offset = new_shape.size() - in.shape.size();
+    for (size_t i = 0; i < new_shape.size(); ++i) {
+        const size_t source = i < offset ? 1 : in.shape[i - offset];
+        if (source != new_shape[i] && source != 1)
+            throw std::runtime_error("expand target shape is not broadcast-compatible");
+    }
+    OpParams params{.new_shape = new_shape, .output_precision = in.precision};
+    return tag_backend(add_node(OpType::EXPAND, {input}, new_shape, params), backend);
+}
+
+size_t CactusGraph::scalar_floor_divide(size_t input, float value, ComputeBackend backend) { return tag_backend(scalar_val_op(*this, OpType::SCALAR_FLOOR_DIVIDE, input, value), backend); }
+size_t CactusGraph::scalar_equal(size_t input, float value, ComputeBackend backend) { return tag_backend(scalar_val_op(*this, OpType::SCALAR_EQUAL, input, value), backend); }
+size_t CactusGraph::scalar_less(size_t input, float value, ComputeBackend backend) { return tag_backend(scalar_val_op(*this, OpType::SCALAR_LESS, input, value), backend); }
+size_t CactusGraph::scalar_less_equal(size_t input, float value, ComputeBackend backend) { return tag_backend(scalar_val_op(*this, OpType::SCALAR_LESS_EQUAL, input, value), backend); }
+size_t CactusGraph::scalar_greater(size_t input, float value, ComputeBackend backend) { return tag_backend(scalar_val_op(*this, OpType::SCALAR_GREATER, input, value), backend); }
+size_t CactusGraph::scalar_greater_equal(size_t input, float value, ComputeBackend backend) { return tag_backend(scalar_val_op(*this, OpType::SCALAR_GREATER_EQUAL, input, value), backend); }
+
+size_t CactusGraph::logical_not(size_t input, ComputeBackend backend) {
+    const auto& in = get_output_buffer(input);
+    return tag_backend(add_node(OpType::LOGICAL_NOT, {input}, in.shape,
+                                {.output_precision = in.precision}), backend);
+}
+
+size_t CactusGraph::bitwise_not(size_t input, ComputeBackend backend) {
+    const auto& in = get_output_buffer(input);
+    return tag_backend(add_node(OpType::BITWISE_NOT, {input}, in.shape,
+                                {.output_precision = in.precision}), backend);
+}
+
+size_t CactusGraph::unfold(size_t input, int dimension, size_t size, size_t step, ComputeBackend backend) {
+    const auto& in = get_output_buffer(input);
+    if (in.shape.empty() || step == 0) throw std::runtime_error("invalid unfold input or step");
+    int dim = dimension < 0 ? dimension + static_cast<int>(in.shape.size()) : dimension;
+    if (dim < 0 || static_cast<size_t>(dim) >= in.shape.size() || size == 0 || size > in.shape[dim])
+        throw std::runtime_error("unfold dimension or size out of range");
+    std::vector<size_t> out = in.shape;
+    out[dim] = ((in.shape[dim] - size) / step) + 1;
+    out.push_back(size);
+    OpParams params;
+    params.axis = dim; params.kernel_size = size; params.stride = step;
+    params.output_precision = in.precision;
+    return tag_backend(add_node(OpType::UNFOLD, {input}, out, params), backend);
+}
+
+size_t CactusGraph::pad(size_t input, const std::vector<size_t>& pads, float value, ComputeBackend backend) {
+    const auto& in = get_output_buffer(input);
+    if (in.shape.empty() || pads.size() % 2 || pads.size() / 2 > in.shape.size())
+        throw std::runtime_error("invalid pad specification");
+    std::vector<size_t> out = in.shape;
+    for (size_t pair = 0; pair < pads.size(); pair += 2)
+        out[in.shape.size() - 1 - pair / 2] += pads[pair] + pads[pair + 1];
+    OpParams params;
+    params.new_shape = pads; params.scalar = value; params.output_precision = in.precision;
+    return tag_backend(add_node(OpType::PAD, {input}, out, params), backend);
+}
+
+size_t CactusGraph::strided_slice(size_t input, int axis, size_t start, size_t length,
+                                  size_t step, ComputeBackend backend) {
+    const auto& in = get_output_buffer(input);
+    if (in.shape.empty() || step == 0) throw std::runtime_error("invalid strided_slice input or step");
+    int actual = axis < 0 ? axis + static_cast<int>(in.shape.size()) : axis;
+    if (actual < 0 || static_cast<size_t>(actual) >= in.shape.size())
+        throw std::runtime_error("strided_slice axis out of range");
+    const size_t extent = in.shape[actual];
+    if (length == 0) length = start >= extent ? 0 : (extent - start + step - 1) / step;
+    if (length && start + (length - 1) * step >= extent)
+        throw std::runtime_error("strided_slice range out of bounds");
+    std::vector<size_t> out = in.shape;
+    out[actual] = length;
+    OpParams params;
+    params.axis = actual; params.slice_start = start; params.slice_length = length;
+    params.stride = step; params.output_precision = in.precision;
+    return tag_backend(add_node(OpType::STRIDED_SLICE, {input}, out, params), backend);
+}
+
+size_t CactusGraph::conv1d_causal_channel_first(size_t input, size_t weight, size_t,
+                                                 size_t dilation, ComputeBackend backend) {
+    return tag_backend(add_node(OpType::CONV1D_CAUSAL_CHANNEL_FIRST, {input, weight}, {},
+                                {.dilation = dilation}), backend);
+}
+
+size_t CactusGraph::conv1d_depthwise(size_t input, size_t weight, size_t stride, ComputeBackend backend) {
+    const auto& in = get_output_buffer(input); const auto& w = get_output_buffer(weight);
+    if (in.shape.size() != 3 || w.shape.size() != 3 || w.shape[1] != 1 || w.shape[0] != in.shape[1])
+        throw std::runtime_error("conv1d_depthwise shape mismatch");
+    const size_t length = (in.shape[2] - w.shape[2]) / stride + 1;
+    OpParams params{.output_precision = in.precision, .stride = stride};
+    params.num_groups = in.shape[1];
+    return tag_backend(add_node(OpType::CONV1D, {input, weight}, {in.shape[0], w.shape[0], length}, params), backend);
+}
+
+size_t CactusGraph::conv1d_depthwise(size_t input, size_t weight, size_t bias,
+                                     size_t stride, ComputeBackend backend) {
+    const auto& in = get_output_buffer(input); const auto& w = get_output_buffer(weight);
+    const auto& b = get_output_buffer(bias);
+    if (in.shape.size() != 3 || w.shape.size() != 3 || w.shape[1] != 1 ||
+        w.shape[0] != in.shape[1] || b.total_size != w.shape[0])
+        throw std::runtime_error("conv1d_depthwise shape or bias mismatch");
+    const size_t length = (in.shape[2] - w.shape[2]) / stride + 1;
+    OpParams params{.output_precision = in.precision, .stride = stride};
+    params.num_groups = in.shape[1];
+    return tag_backend(add_node(OpType::CONV1D, {input, weight, bias},
+                                {in.shape[0], w.shape[0], length}, params), backend);
 }

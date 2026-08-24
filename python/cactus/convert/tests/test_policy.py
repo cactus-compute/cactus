@@ -18,6 +18,14 @@ def test_policy_embedding_lm_head_interleaved_cq4(source_name):
     assert p.layout == "interleaved_4row"
 
 
+def test_policy_unaligned_hadamard_matrix_falls_back_to_fp16():
+    match = cactus_name_for_tensor("model.layers.0.self_attn.q_proj.weight", "generic", 1)
+    p = policy_for_tensor(match, (576, 576), 4, "generic")
+    assert p.action == "fallback"
+    assert p.precision == "FP16"
+    assert "group size 128" in (p.fallback_reason or "")
+
+
 def test_policy_lfm_qwen_tied_embeddings_interleaved_cq4():
     for family in ("lfm2", "qwen"):
         embed = cactus_name_for_tensor("model.language_model.embed_tokens.weight", family, 1)
@@ -110,6 +118,35 @@ def test_policy_lfm_depthwise_conv_int8():
     p = policy_for_tensor(match, (1024, 1, 3), 4, "lfm2")
     assert p.precision == "INT8"
     assert p.fallback_reason == "depthwise conv tensor"
+
+
+def test_lfm_moe_router_stays_fp16():
+    adapter = adapter_for_family("lfm2")
+    match = cactus_name_for_tensor("model.layers.0.feed_forward.gate.weight", "lfm2", 16)
+    p = adapter.policy(match, (32, 2048), 4)
+    assert p.precision == "FP16"
+    assert p.bits is None
+
+
+def test_lfm_attention_projections_use_requested_quantization():
+    adapter = adapter_for_family("lfm2")
+    for projection in ("q_proj", "k_proj", "v_proj", "out_proj"):
+        match = cactus_name_for_tensor(f"model.layers.2.self_attn.{projection}.weight", "lfm2", 16)
+        p = adapter.policy(match, (2048, 2048), 4)
+        assert p.precision == "CQ4"
+        assert p.bits == 4
+
+
+def test_lfm_vl_vision_path_stays_fp16():
+    adapter = adapter_for_family("lfm2")
+    for name in (
+        "model.vision_tower.vision_model.encoder.layers.0.self_attn.q_proj.weight",
+        "model.multi_modal_projector.linear_1.weight",
+    ):
+        match = cactus_name_for_tensor(name, "lfm2", 30)
+        p = adapter.policy(match, (2048, 2048), 4)
+        assert p.precision == "FP16"
+        assert p.bits is None
 
 
 def test_cli_component_bit_overrides():

@@ -8,6 +8,7 @@
 #include <ctime>
 #include <random>
 #include <sstream>
+#include <iomanip>
 #include <string>
 #include <vector>
 #include <deque>
@@ -1298,6 +1299,11 @@ void init(const char* project_id_param, const char* project_scope_param, const c
 
     bool cloud_disabled_from_env = false;
     if (const char* env = std::getenv("CACTUS_NO_CLOUD_TELE")) {
+        if (env[0] != '\0' && !(env[0] == '0' && env[1] == '\0')) {
+            cloud_disabled_from_env = true;
+        }
+    }
+    if (const char* env = std::getenv("CACTUS_DISABLE_CLOUD_HANDOFF")) {
         if (env[0] != '\0' && !(env[0] == '0' && env[1] == '\0')) {
             cloud_disabled_from_env = true;
         }

@@ -432,15 +432,7 @@ inline AudioPreprocessResult preprocess_audio_for_gemma4(
     result.num_frames = mel.size() / mel_bins;
     result.features = transpose_mel_to_frame_major(mel, mel_bins, result.num_frames);
 
-    size_t max_soft = model_config.audio_soft_tokens;
-    size_t max_frames_per_chunk = max_soft > 0 ? (max_soft * 2 - 1) * 2 - 1 : 0;
-    if (max_soft > 0 && result.num_frames > max_frames_per_chunk) {
-        size_t num_chunks = (result.num_frames + max_frames_per_chunk - 1) / max_frames_per_chunk;
-        result.num_soft_tokens = num_chunks * max_soft;
-    } else {
-        size_t after_stage1 = (result.num_frames + 1) / 2;
-        result.num_soft_tokens = (after_stage1 + 1) / 2;
-    }
+    result.num_soft_tokens = (result.num_frames + 3) / 4;
 
     return result;
 }

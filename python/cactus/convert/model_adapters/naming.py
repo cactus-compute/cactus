@@ -26,6 +26,13 @@ GEMMA4_DIV_BASENAMES = {
     "embed_vision_proj",
     "embed_audio_proj",
 }
+GEMMA4_RUNTIME_BUFFER_SUFFIXES = (
+    "embed_scale",
+    "inv_freq",
+    "original_inv_freq",
+    "inv_timescales",
+    "softcap",
+)
 
 
 def remap_gemma4_audio_key(key: str) -> str:
@@ -328,6 +335,10 @@ def _global_match(name: str, family: str) -> str | None:
             found = _candidate_table_match(name, table)
             if found:
                 return found
+    elif family == "needle":
+        found = _candidate_table_match(name, wp.NEEDLE_GLOBAL_WEIGHTS)
+        if found:
+            return found
     if name in {"wte.weight", "word_embeddings.weight"}:
         return "token_embeddings.weights"
     if name in {"wpe.weight", "position_embeddings.weight"}:
@@ -391,6 +402,9 @@ def cactus_name_for_tensor(name: str, family: str, num_layers: int | None = None
     adapter_name = adapter_key_for_family(name, family)
     if family in {"parakeet", "parakeet_tdt"} and adapter_name.endswith(".conv.norm.num_batches_tracked"):
         return NameMatch(name, None, "transcription", True, hf_name=hf_name, adapter_name=adapter_name)
+    if family == "gemma4" and adapter_name.endswith(GEMMA4_RUNTIME_BUFFER_SUFFIXES):
+        out = adapter_name.replace(".", "_") + ".weights"
+        return NameMatch(name, out, component_for_name(hf_name, out), True, hf_name=hf_name, adapter_name=adapter_name)
     global_name = _global_match(adapter_name, family)
     if global_name:
         return NameMatch(name, global_name, _component_for_family(hf_name, global_name, family), True, hf_name=hf_name, adapter_name=adapter_name)

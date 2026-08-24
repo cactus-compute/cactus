@@ -449,7 +449,7 @@ huggingface.co/Cactus-Compute) or a local path to a bundle directory.
 
 | Option | Description |
 |--------|-------------|
-| `--bits 1\|2\|3\|4` | CQ quantization bits when downloading (default: 4) |
+| `--bits 1\|2\|3\|4\|2.54\|3.26` | CQ quantization bits when downloading (default: 4) |
 | `--token <token>` | HuggingFace token (gated models) |
 | `--prompt <text>` | Input prompt |
 | `--input-ids <ids>` | Comma-separated token IDs |

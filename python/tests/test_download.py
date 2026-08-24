@@ -178,6 +178,15 @@ class TestCqSafeExtraction(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "missing tokenizer sidecar"):
             validate_extracted_bundle(package)
 
+    def test_validate_extracted_bundle_accepts_sentencepiece_without_tokenizer_json(self):
+        package = self.root / "pkg"
+        self._write_minimal_package(package)
+        (package / "tokenizer.json").unlink()
+        (package / "tokenizer_config.txt").write_text(
+            "tokenizer_type=sentencepiece\nsp_model_type=bpe\n", encoding="utf-8"
+        )
+        validate_extracted_bundle(package)
+
     def test_validate_extracted_bundle_accepts_seq2seq_embeddings(self):
         package = self.root / "pkg"
         self._write_minimal_package(package)

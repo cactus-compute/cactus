@@ -376,6 +376,7 @@ def _write_component_bundle(
     component_io_signatures: dict[str, dict[str, tuple[str, ...]]] | None = None,
     component_metadata: dict[str, dict[str, object]] | None = None,
     graph_filename: str = "graph.cactus",
+    npu_encoder_mlpackages: dict[str, str] | None = None,
 ) -> Path:
     bundle_dir = artifact_dir / "components"
     component_order = [
@@ -501,6 +502,11 @@ def _write_component_bundle(
         "inputs": _serialize_json_compatible(inputs_metadata),
         "components": manifest_components,
     }
+    for manifest_key, mlpackage_path in (npu_encoder_mlpackages or {}).items():
+        if mlpackage_path:
+            manifest_payload[manifest_key] = mlpackage_path
+    if family in ("parakeet_tdt", "gemma4") and "npu_audio_encoder" in manifest_payload:
+        manifest_payload["npu_audio_compute_units"] = "CPU_AND_NE"
     _write_json(manifest_path, manifest_payload)
     return manifest_path
 
@@ -626,6 +632,18 @@ def _run_component_pipeline_transpile(
         print(f"input_{name}_shape={list(tensor.shape)}")
     if weights_dir:
         print(f"weights_dir={weights_dir}")
+
+    npu_encoder_mlpackages: dict[str, str] = {}
+    if bool(getattr(args, "npu", False)) and artifact_dir is not None:
+        from .npu import run_encoder_pipeline
+        npu_encoder_mlpackages = run_encoder_pipeline(
+            component_specs,
+            artifact_dir,
+            enabled=True,
+            quantize_bits=getattr(args, "npu_quantize", None),
+            audio_quantize_bits=getattr(args, "npu_audio_quantize", None),
+            vision_quantize_bits=getattr(args, "npu_vision_quantize", None),
+        )
 
     print("capture_begin=true", flush=True)
     captured_components = {}
@@ -783,6 +801,7 @@ def _run_component_pipeline_transpile(
             component_io_signatures=component_io_signatures,
             component_metadata=component_metadata,
             graph_filename=args.graph_filename,
+            npu_encoder_mlpackages=npu_encoder_mlpackages,
         )
         print(f"saved_component_bundle_manifest={component_manifest_path}")
         for component in transpiled_component_graphs:
@@ -2791,6 +2810,9 @@ def _lower_preoptimized_ir(ir: IRGraph) -> TranspiledGraph:
 
 
 def main() -> int:
+    from cactus.models.needle import register_with_transformers
+
+    register_with_transformers()
     parser = argparse.ArgumentParser(
         description=(
             "Load a Hugging Face model, canonicalize it into a generic transpile task, "
@@ -2926,6 +2948,10 @@ def main() -> int:
             "(for example: vision_encoder,audio_encoder,lm_encoder,decoder)."
         ),
     )
+    parser.add_argument("--npu", action="store_true", help="Also emit CoreML packages for supported encoders.")
+    parser.add_argument("--npu-quantize", type=int, choices=(0, 4, 8), default=None)
+    parser.add_argument("--npu-audio-quantize", type=int, choices=(0, 4, 8), default=None)
+    parser.add_argument("--npu-vision-quantize", type=int, choices=(0, 4, 8), default=None)
     parser.add_argument("--no-fuse-gated-deltanet", action="store_true")
     parser.add_argument("--no-fuse-rms-norm", action="store_true")
     parser.add_argument("--no-fuse-rope", action="store_true")
@@ -2957,6 +2983,8 @@ def main() -> int:
     if args.low_memory_load:
         if validated_weights_dir is None:
             raise RuntimeError("--low-memory-load requires --weights-dir with converted Cactus CQ weights")
+        if args.npu:
+            raise RuntimeError("--low-memory-load cannot emit NPU packages because CoreML export needs real weights")
         if not args.skip_execute:
             print("note=low_memory_load_forces_skip_execute=true")
             args.skip_execute = True

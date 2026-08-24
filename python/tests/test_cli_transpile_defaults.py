@@ -84,24 +84,22 @@ def test_cmd_convert_builds_graph_after_weights(monkeypatch, tmp_path: Path) -> 
 
     transpile_calls: list[dict] = []
 
-    def _fake_run_transpile(model_id, **kw):
+    def _fake_build_transpiled_bundle(model_id, **kw):
         transpile_calls.append(kw)
-        return 0
+        return Path(kw["output_dir"])
 
     import cactus.cli.model as model_mod
-    import cactus.cli.transpile as transpile_mod
     monkeypatch.setattr(model_mod, "ensure_weights", _fake_ensure_weights)
-    monkeypatch.setattr(model_mod, "_default_multimodal_assets", lambda: ([], None))
-    monkeypatch.setattr(transpile_mod, "run_transpile", _fake_run_transpile)
+    monkeypatch.setattr("cactus.cli.transpiler.build_transpiled_bundle", _fake_build_transpiled_bundle)
+    monkeypatch.setattr(model_mod, "package_handoff_probe", lambda *args: None)
 
     rc = convert_cli.cmd_convert(args)
 
     assert rc == 0
     assert len(weight_calls) == 1
     assert len(transpile_calls) == 1
-    extra_args = transpile_calls[0]["extra_args"]
-    assert "--weights-dir" in extra_args
-    assert str(out) in extra_args
+    assert Path(transpile_calls[0]["weights_dir"]) == out
+    assert Path(transpile_calls[0]["output_dir"]) == out
 
 
 def test_cmd_convert_weights_only_skips_graph(monkeypatch, tmp_path: Path) -> None:

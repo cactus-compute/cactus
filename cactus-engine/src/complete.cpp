@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <future>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -372,6 +373,13 @@ std::vector<std::vector<uint32_t>> build_stop_sequences(
         stop_token_sequences.push_back(tokenizer->encode(stop_seq));
     }
 
+    if (!tokenizer->has_chat_template()) {
+        stop_token_sequences.push_back(tokenizer->encode("\nUser:"));
+        stop_token_sequences.push_back(tokenizer->encode("\nAssistant:"));
+        stop_token_sequences.push_back(tokenizer->encode("\nUser"));
+        stop_token_sequences.push_back(tokenizer->encode("\nAssistant"));
+    }
+
     if (model_type == Config::ModelType::GEMMA4) {
         stop_token_sequences.push_back(tokenizer->encode("<turn|>"));
         if (has_tools) {
@@ -435,6 +443,7 @@ struct PreparedPrompt {
     std::vector<uint32_t> tokens;
     size_t context_token_count = 0;
     std::vector<std::vector<CactusModelHandle::ProcessedImage>> images;
+    bool force_session_reset = false;
 
     std::vector<std::vector<float>> audio_features;
     size_t audio_num_frames = 0;
@@ -575,7 +584,7 @@ PreparedPrompt prepare_prompt(
         }
     }
 
-    if (prompt.model_type == Config::ModelType::GEMMA4) {
+    if (handle->model->audio_preprocess_strategy() == "gemma4") {
         std::vector<size_t> user_indices;
         for (size_t i = 0; i < prompt.messages.size(); i++) {
             if (prompt.messages[i].role == "user") user_indices.push_back(i);
@@ -627,6 +636,23 @@ PreparedPrompt prepare_prompt(
 
     if (apply_tool_constraints) {
         setup_tool_constraints(handle, prompt.tools, prompt.options.force_tools, prompt.options.temperature);
+    }
+
+    if (tokenizer->uses_default_chat_style(prompt.messages, formatted_tools, prompt.options.enable_thinking_if_supported)) {
+        auto last_user = std::find_if(prompt.messages.rbegin(), prompt.messages.rend(), [](const ChatMessage& msg) {
+            return msg.role == "user";
+        });
+        if (last_user != prompt.messages.rend()) {
+            std::vector<ChatMessage> latest_turn;
+            for (const auto& msg : prompt.messages) {
+                if (msg.role == "system" || msg.role == "developer") {
+                    latest_turn.push_back(msg);
+                }
+            }
+            latest_turn.push_back(*last_user);
+            prompt.messages = std::move(latest_turn);
+            prompt.force_session_reset = true;
+        }
     }
 
     prompt.rendered = tokenizer->format_chat_prompt(
@@ -827,6 +853,15 @@ int cactus_complete(
             handle_error_response(err, response_buffer, buffer_size);
             return -1;
         }
+        const auto runtime_model_type = handle->model->get_config().model_type;
+        if (runtime_model_type == Config::ModelType::WHISPER ||
+            runtime_model_type == Config::ModelType::PARAKEET ||
+            runtime_model_type == Config::ModelType::PARAKEET_TDT) {
+            const std::string err = "Model is speech-to-text; use `cactus transcribe` instead of `cactus run`";
+            CACTUS_LOG_ERROR("complete", err);
+            handle_error_response(err, response_buffer, buffer_size);
+            return -1;
+        }
         auto* tokenizer = handle->model->get_tokenizer();
         auto prompt = prepare_prompt(handle, messages_json, options_json, tools_json, true, true, pcm_buffer, pcm_buffer_size);
         if (prompt.options.sample_seed != 0) {
@@ -956,6 +991,10 @@ int cactus_complete(
         uint32_t next_token;
         size_t prompt_tokens;
 
+        if (prompt.force_session_reset && !handle->processed_tokens.empty()) {
+            reset_cache(handle);
+        }
+
         if (has_audio && !handle->processed_tokens.empty()) {
             auto& cache = handle->processed_tokens;
             size_t common = 0;
@@ -979,6 +1018,9 @@ int cactus_complete(
         if (!first_token_from_prefill) {
             auto prefill_result = do_prefill(handle, prompt, prompt.tokens);
             prompt_tokens = prefill_result.prefilled_count + prefill_result.remaining_tokens.size();
+            if (handle->model->repetition_penalty_uses_context()) {
+                handle->model->seed_token_history_from_context(prompt.tokens);
+            }
             next_token = generate_first_token(handle, prefill_result, prompt, &first_token_entropy);
         }
 
@@ -1160,7 +1202,8 @@ int cactus_complete(
                 : "kept local";
         }
 
-        if (prompt.options.force_tools && !prompt.tools.empty() && primary_function_calls.empty()) {
+        if (prompt.options.force_tools && !prompt.tools.empty() && primary_function_calls.empty() &&
+            !parsed_empty_needle_tool_call) {
             CACTUS_LOG_WARN("force_tools", "force_tools was set but no tool call was parsed from the constrained output");
         }
 

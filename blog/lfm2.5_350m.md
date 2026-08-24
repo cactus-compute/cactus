@@ -55,7 +55,7 @@ That's two separate shader codepaths to maintain, with different memory models, 
 And GPU inference holds a persistent GPU context, which competes with the UI rendering pipeline and drains battery even when the inference workload is light.
 GPUs are also energy-inefficient. On Macs and PCs this barely matters since they're plugged into a power source most of the time, and GPU inference works well there. But mobile devices run on battery, and every watt spent on GPU inference cuts directly into the user's runtime. The GPU path that works fine on a MacBook becomes a battery killer on a phone.
 
-Dedicated AI accelerators are a more interesting target. Apple's Neural Engine and Qualcomm's Hexagon DSP both offer high-throughput inference at good power efficiency. 
+Dedicated AI accelerators are a more interesting target. Apple's Neural Engine and Qualcomm's Hexagon DSP both offer high-throughput inference at good power efficiency.
 The problem is access. Apple's Neural Engine requires conversion into a proprietary model format, which imposes its own quantization and graph constraints.
 You don't control the execution schedule, the memory layout, or the precision semantics. 
 The quantisation techniques available through that toolchain severely lag the state-of-the-art methods used by GGML and Cactus.

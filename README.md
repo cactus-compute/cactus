@@ -17,7 +17,7 @@ A hybrid edge-cloud AI engine for mobile devices & wearables.
 └─────────────────┘     
          │
 ┌─────────────────┐
-│  Cactus Graph   │ ←── Zero-copy computation graph 
+│  Cactus Graph   │ ←── Zero-copy computation graph
 └─────────────────┘     
          │
 ┌─────────────────┐
@@ -25,12 +25,8 @@ A hybrid edge-cloud AI engine for mobile devices & wearables.
 └─────────────────┘     
          │
 ┌─────────────────┐
-│ Cactus Quants   │ ←── Custom rotation-based quantization technique 
+│ Cactus Quants   │ ←── Custom rotation-based quantization technique
 └─────────────────┘  
-         │
-┌─────────────────┐
-│Cactus Transpiler│ ←── Transpiles custom PyTorch model to Cactus.
-└─────────────────┘
 ```
 
 ## Quick Demo (Mac)
@@ -126,29 +122,29 @@ graph.hard_reset();
 - VLM: Gemma-4-E2B-CQ4 (256px image encode time / decode)
 - Transcribe: Parakeet-TDT-0.6B-CQ4 (20s audio end-to-end transcribe time)
 - 1k-Context RAM: peak MB during the LLM benchmark
-- No speculative decode or MTP, pure decode 
+- No speculative decode or MTP, pure decode
 
 Command: `cactus benchmark` [optional `--ios` or `--android`]
 
 | Device | LLM | VLM | Transcribe | RAM |
 |--------|-----|-----|------------|---------------|
 | Mac M5 Max | 2964tps / 154tps | 0.09s / 168tps | 0.15s | 1348MB |
-| Mac M4 Pro | 1947tps / 97tps | 0.25s / 108tps | 0.28s | 1225MB |
+| Mac M4 Pro | 1963tps / 101tps | 0.25s / 112tps | 0.21s | 1225MB |
 | Mac M3 Pro | 1294tps / 64tps | 0.40s / 72tps | 0.37s | 735MB |
 | iPad/Vision Pro M5 | 1336tps / 71tps | 0.25s / 80tps | 0.27s | 703MB |
 | iPhone 17 Pro | 729tps / 37tps | 0.5s / 39tps | 0.51s | 644MB |
-| iPhone 15 Pro | 511tps / 25tps | 1.16s / 27tps | 1.40s | 635MB |
+| iPhone 15 Pro | 517tps / 26tps | 1.15s / 27tps | 0.82s | 633MB |
 
 N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 - `LFM2.5-VL-1.6B` = 289toks/sec
-- `Qwen3-1.7B` = 155toks/sec 
+- `Qwen3-1.7B` = 155toks/sec
 - `LFM2.5-VL-450m` = 472toks/sec, image encodes in 43ms
 - `LFM22.5-VL-230m` = 555toks/sec
 
-## Output Quality 
+## Output Quality
 
-- Gemma-4-E2B-it accuracy across bit widths, averaged over 3 seeds. 
-- CQ3.26 and CQ2.54 are mixed-precision, CQ2/CQ3/CQ4 are uniformly quantized. 
+- Gemma-4-E2B-it accuracy across bit widths, averaged over 3 seeds.
+- CQ3.26 and CQ2.54 are mixed-precision, CQ2/CQ3/CQ4 are uniformly quantized.
 - Full results in [docs/cactus_quants.md](/docs/cactus_quants.md):
 
 | Task | F16 (Original) | CQ4 | CQ3.26 | CQ2.54 | CQ2 |
@@ -168,10 +164,18 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 
 ## Supported Models
 
-- Any HuggingFace model can be converted using `cactus convert [HF-Name]`, though experimental. 
-- Liquid, Gemma. whisper. parakeet and Qwen model families are especially tested. 
+- Any HuggingFace model can be converted using `cactus convert [HF-Name]`, though experimental.
+- Liquid, Gemma. whisper. parakeet and Qwen model families are especially tested.
 - Some models have been pre-uploaded [here](https://huggingface.co/Cactus-Compute), just run `cactus download [HF-Name]`.
-- `cactus run [HF-Name]` albeit first downloads or convert the model if not found. 
+- `cactus run [HF-Name]` albeit first downloads or convert the model if not found.
+
+## Needle
+
+[Needle](https://github.com/cactus-compute/needle) is a 26m parameter model for on-device tool calling:
+
+```bash
+cactus run Cactus-Compute/needle [--tools my_tools.json]  # OpenAI function-calling format; demo toolset by default
+```
 
 ## Learn More
 
@@ -182,7 +186,6 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 | [Cactus Kernels](/docs/cactus_kernels.md) | C++ | ARM NEON SIMD kernels for matmul, attention, convolution, quantization, DSP, image processing |
 | [Cactus Quants](/docs/cactus_quants.md) | C++ | Rotation-and-codebook quantization from 4-bit to 1-bit for all weight tensors |
 | [Cactus Hybrid](/docs/cactus_hybrid.md) | C/Python | Route hard queries to the cloud automatically based on local model confidence |
-| [Cactus Transpiler](/docs/cactus_transpiler.md) | Python | Convert any PyTorch model to a Cactus runtime graph for on-device inference |
 | [Python Package](/python/) | Python | Python package and CLI |
 
 ## Bindings
@@ -215,12 +218,13 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │    --clear                           remove saved key                          │
 │                                                                                │
 │  cactus run [model|path]             run a model (downloads if needed)         │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --backend cpu|metal               inference backend (default: auto)         │
 │    --image <path>                    image file for VLM inference              │
 │    --audio <path>                    audio file for audio chat                 │
 │    --system <prompt>                 system prompt                             │
 │    --prompt <text>                   send prompt immediately                   │
+│    --tools <json|file>               tool definitions for tool calling         │
 │    --thinking                        enable thinking/reasoning mode            │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
@@ -228,20 +232,19 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │  cactus transcribe [model]           live microphone transcription with a model│
 │    --file <audio.wav>                audio file to transcribe (WAV)            │
 │    --language <code>                 language code (default: en)               │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
 │                                                                                │
 │  cactus download [model]             get a bundle (prebuilt, else build)       │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --token <token>                   HuggingFace token (gated models)          │
-│    --reconvert                       force local rebuild from source           │
+│    --reconvert                       refresh cached bundle                     │
 │                                                                                │
-│  cactus convert <model> [dir]        HuggingFace -> runnable cactus bundle     │
-│                                      (CQ weights + runtime graph)              │
+│  cactus convert <model> [dir]        HuggingFace -> Cactus CQ weights          │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
 │    --token <token>                   HuggingFace token (gated models)          │
-│    --reconvert                       force local rebuild from source           │
+│    --reconvert                       force weight conversion from source       │
 │    --lora <path>                     merge a LoRA adapter before converting    │
 │    --weights-only                    stop after CQ weights (skip the graph)    │
 │    --artifact-dir <path>             bundle output (default: weights/<model>)  │
@@ -249,7 +252,7 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │  cactus serve [model]                OpenAI-compatible local HTTP server       │
 │    --host <addr>                     bind address (default: 127.0.0.1)         │
 │    --port <port>                     port (default: 8080)                      │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --backend cpu|metal               inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
@@ -259,7 +262,7 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │                                                                                │
 │  cactus code                         run the AI coding agent (TUI / print)     │
 │    --serve-model <id>                auto-start a server with this model       │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --backend cpu|metal               inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild from source           │
@@ -283,7 +286,7 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │                                      (default: all)                            │
 │    --model <hf-id>                   default: google/gemma-4-E2B-it            │
 │    --transcription-model <hf-id>     default: nvidia/parakeet-tdt-0.6b-v3      │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --backend cpu|metal               inference backend (default: auto)         │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force local rebuild of test models        │
@@ -298,7 +301,7 @@ N/B: With 1k-context prefill and decode for 100 runs on M5 Max
 │  cactus benchmark                    run the engine benchmark suite            │
 │    --model <hf-id>                   default: google/gemma-4-E2B-it            │
 │    --transcription-model <hf-id>     default: nvidia/parakeet-tdt-0.6b-v3      │
-│    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --bits 1|2|3|4|2.54|3.26          CQ quantization (default: 4)              │
 │    --backend cpu|metal               inference backend (default: auto)         │
 │    --ios                             run on connected iPhone                   │
 │    --android                         run on connected Android                  │

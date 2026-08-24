@@ -3,6 +3,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <random>
 
@@ -182,6 +183,9 @@ bool test_matmul_cq() {
             float actual = static_cast<float>(graph_out[i]);
             float expected = static_cast<float>(direct[i]);
             if (!std::isfinite(actual) || std::abs(actual - expected) > 1e-3f) {
+                std::cerr << "CQ matmul mismatch bits=" << bits << " index=" << i
+                          << " actual=" << actual << " expected=" << expected
+                          << " graph_flags=" << g.get_output_buffer(iw).cq_flags << std::endl;
                 ok = false;
                 break;
             }

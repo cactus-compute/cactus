@@ -19,7 +19,6 @@ def cmd_clean(args):
 
     destructive_targets = [
         PROJECT_ROOT / "weights",
-        PROJECT_ROOT / "transpiled",
         PROJECT_ROOT / "venv",
     ]
     present = [t for t in destructive_targets if t.exists()]
@@ -35,12 +34,29 @@ def cmd_clean(args):
             print_color(YELLOW, "Aborted.")
             return 0
 
-    print("Stopping any running Cactus server...")
-    try:
-        stopped = subprocess.run(["pkill", "-f", "cactus serve"], capture_output=True)
-        print("Stopped running Cactus server(s)." if stopped.returncode == 0 else "No running Cactus server found.")
-    except FileNotFoundError:
-        print_color(YELLOW, "Could not stop the server automatically; stop it manually if one is running.")
+    def remove_if_exists(path):
+        if path.is_dir():
+            print(f"Removing: {path}")
+            shutil.rmtree(path)
+        else:
+            print(f"Not found: {path}")
+
+    remove_if_exists(PROJECT_ROOT / "android" / "build")
+
+    for apple_build in sorted((PROJECT_ROOT / "apple").glob("build*")):
+        remove_if_exists(apple_build)
+
+    remove_if_exists(PROJECT_ROOT / "cactus-engine" / "build")
+    remove_if_exists(PROJECT_ROOT / "cactus-engine" / "tests" / "build")
+    remove_if_exists(PROJECT_ROOT / "cactus-graph" / "build")
+    remove_if_exists(PROJECT_ROOT / "cactus-kernels" / "build")
+
+    remove_if_exists(PROJECT_ROOT / "python" / "cactus" / "bin")
+
+    remove_if_exists(PROJECT_ROOT / "venv")
+
+    remove_if_exists(PROJECT_ROOT / "weights")
+
     print()
 
     preserve_roots = [

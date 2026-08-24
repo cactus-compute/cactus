@@ -104,6 +104,34 @@ bool test_flatten() {
     return fixture.verify_output(flatten_result, expected);
 }
 
+bool test_unfold_non_last_axis() {
+    TestUtils::FP16TestFixture fixture("Unfold Non-Last Axis");
+
+    size_t input = fixture.create_input({1, 2, 5, 3});
+    size_t unfold_result = fixture.graph().unfold(input, 2, 3, 2);
+
+    std::vector<__fp16> data(30);
+    for (size_t i = 0; i < data.size(); ++i) {
+        data[i] = static_cast<__fp16>(i);
+    }
+
+    std::vector<__fp16> expected;
+    expected.reserve(36);
+    for (size_t outer = 0; outer < 2; ++outer) {
+        for (size_t window = 0; window < 2; ++window) {
+            for (size_t inner = 0; inner < 3; ++inner) {
+                for (size_t kernel = 0; kernel < 3; ++kernel) {
+                    expected.push_back(data[(outer * 5 + window * 2 + kernel) * 3 + inner]);
+                }
+            }
+        }
+    }
+
+    fixture.set_input_data(input, data);
+    fixture.execute();
+    return fixture.verify_output(unfold_result, expected);
+}
+
 bool test_basic_operations() {
     TestUtils::FP16TestFixture fixture("Basic Operations");
 
@@ -265,12 +293,10 @@ bool test_gather_operation() {
     graph.execute();
 
     __fp16* output = static_cast<__fp16*>(graph.get_output(gathered));
-    std::vector<__fp16> expected = {
-        1, 2, 3,
-        7, 8, 9,
-        13, 14, 15,
-        4, 5, 6
-    };
+    // Equal-rank indices use torch.gather semantics along the selected axis.
+    // Each output element keeps its column coordinate and selects the row from
+    // the corresponding index element.
+    std::vector<__fp16> expected = {1, 8, 13, 5};
 
     for (size_t i = 0; i < expected.size(); ++i) {
         if (std::abs(static_cast<float>(output[i]) - static_cast<float>(expected[i])) > 1e-3f) {
@@ -733,6 +759,7 @@ int main() {
     runner.run_test("Cat Operation", test_cat());
     runner.run_test("View Operation", test_view());
     runner.run_test("Flatten Operation", test_flatten());
+    runner.run_test("Unfold Non-Last Axis", test_unfold_non_last_axis());
     runner.run_test("Basic Operations", test_basic_operations());
     runner.run_test("Basic Addition", test_basic_addition());
     runner.run_test("Basic Subtraction", test_basic_subtraction());

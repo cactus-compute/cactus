@@ -1,6 +1,7 @@
 #include "test_utils.h"
 #include <vector>
 #include <cmath>
+#include <iomanip>
 
 using namespace TestUtils;
 
@@ -109,6 +110,41 @@ bool test_fast_tanh_f32x4() {
     return true;
 }
 
+bool test_softcap_f16() {
+    constexpr size_t n = 1025;
+    constexpr float cap = 30.0f;
+    constexpr float input_scale = 16.0f;
+    std::vector<__fp16> input(n), output(n), scaled(n), divided(n), activated(n), expected(n);
+    fill_random_fp16(input, -100.0f, 100.0f);
+    cactus_scalar_op_f16(input.data(), scaled.data(), n, input_scale, ScalarOpType::MULTIPLY);
+    cactus_scalar_op_f16(scaled.data(), divided.data(), n, cap, ScalarOpType::DIVIDE);
+    cactus_tanh_f16(divided.data(), activated.data(), n);
+    cactus_scalar_op_f16(activated.data(), expected.data(), n, cap, ScalarOpType::MULTIPLY);
+    cactus_softcap_f16(input.data(), output.data(), n, cap, input_scale);
+    for (size_t i = 0; i < n; ++i) {
+        if (output[i] != expected[i]) return false;
+    }
+    return true;
+}
+
+bool test_gelu_scaled_multiply_f16() {
+    constexpr size_t n = 8961;
+    constexpr float gate_scale = 1.0f / 16.0f;
+    constexpr float product_scale = 1.0f / 16.0f;
+    std::vector<__fp16> gate(n), up(n), output(n), expected(n);
+    fill_random_fp16(gate, -8.0f, 8.0f);
+    fill_random_fp16(up, -8.0f, 8.0f);
+    cactus_scalar_op_f16(gate.data(), expected.data(), n, gate_scale, ScalarOpType::MULTIPLY);
+    cactus_gelu_f16(expected.data(), expected.data(), n);
+    cactus_scalar_op_f16(expected.data(), expected.data(), n, product_scale, ScalarOpType::MULTIPLY);
+    cactus_multiply_f16(expected.data(), up.data(), expected.data(), n);
+    cactus_gelu_scaled_multiply_f16(gate.data(), up.data(), output.data(), n, gate_scale, product_scale);
+    for (size_t i = 0; i < n; ++i) {
+        if (output[i] != expected[i]) return false;
+    }
+    return true;
+}
+
 bool run_benchmarks() {
     auto bench_binary = [](const char* label, void(*fn)(const __fp16*, const __fp16*, __fp16*, size_t)) {
         const size_t n = 1024 * 1024;
@@ -184,6 +220,8 @@ int main() {
     runner.run_test("scalar_ops_f16", test_scalar_ops_f16());
     runner.run_test("transpose_2d_f16", test_transpose_2d_f16());
     runner.run_test("fast_tanh_f32x4", test_fast_tanh_f32x4());
+    runner.run_test("softcap_f16", test_softcap_f16());
+    runner.run_test("gelu_scaled_multiply_f16", test_gelu_scaled_multiply_f16());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

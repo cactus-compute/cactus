@@ -311,7 +311,7 @@ def save_tensor_with_header(tensor, output_path, precision='INT8', transpose=Fal
         model_type == 'gemma4'
         and len(shape) == 3
         and 'vision' not in output_path.name
-        and not output_path.name.startswith('audio_')
+        and not output_path.name.startswith(('audio_', 'model_audio_'))
     ):
         data = data.transpose(0, 2, 1)
         shape = [shape[0], shape[2], shape[1]]

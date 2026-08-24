@@ -113,6 +113,48 @@ void cactus_gelu_f16(const __fp16* input, __fp16* output, size_t num_elements) {
         });
 }
 
+void cactus_gelu_scaled_multiply_f16(
+    const __fp16* gate, const __fp16* up, __fp16* output, size_t num_elements,
+    float gate_scale, float product_scale) {
+    const __fp16 gate_scale_f16 = static_cast<__fp16>(gate_scale);
+    const __fp16 product_scale_f16 = static_cast<__fp16>(product_scale);
+    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t start_idx, size_t end_idx) {
+            constexpr float sqrt_2_over_pi = 0.7978845608028654f;
+            constexpr float coeff = 0.044715f;
+            constexpr size_t width = 8;
+            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / width) * width;
+            const float16x8_t gate_scale_v = vdupq_n_f16(gate_scale_f16);
+            const float16x8_t product_scale_v = vdupq_n_f16(product_scale_f16);
+            const float32x4_t half = vdupq_n_f32(0.5f);
+            const float32x4_t one = vdupq_n_f32(1.0f);
+            const float32x4_t sqrt_v = vdupq_n_f32(sqrt_2_over_pi);
+            const float32x4_t coeff_v = vdupq_n_f32(coeff);
+            for (size_t i = start_idx; i < vectorized_end; i += width) {
+                const float16x8_t scaled_gate = vmulq_f16(vld1q_f16(gate + i), gate_scale_v);
+                const float32x4_t lo = vcvt_f32_f16(vget_low_f16(scaled_gate));
+                const float32x4_t hi = vcvt_f32_f16(vget_high_f16(scaled_gate));
+                float32x4_t inner_lo = vfmaq_f32(lo, coeff_v, vmulq_f32(vmulq_f32(lo, lo), lo));
+                float32x4_t inner_hi = vfmaq_f32(hi, coeff_v, vmulq_f32(vmulq_f32(hi, hi), hi));
+                inner_lo = vmulq_f32(sqrt_v, inner_lo);
+                inner_hi = vmulq_f32(sqrt_v, inner_hi);
+                const float32x4_t gelu_lo = vmulq_f32(vmulq_f32(half, lo), vaddq_f32(one, fast_tanh_f32x4(inner_lo)));
+                const float32x4_t gelu_hi = vmulq_f32(vmulq_f32(half, hi), vaddq_f32(one, fast_tanh_f32x4(inner_hi)));
+                const float16x8_t activated = vcombine_f16(vcvt_f16_f32(gelu_lo), vcvt_f16_f32(gelu_hi));
+                const float16x8_t scaled_product = vmulq_f16(activated, product_scale_v);
+                vst1q_f16(output + i, vmulq_f16(scaled_product, vld1q_f16(up + i)));
+            }
+            for (size_t i = vectorized_end; i < end_idx; ++i) {
+                const __fp16 scaled_gate = static_cast<__fp16>(gate[i] * gate_scale_f16);
+                const float x = static_cast<float>(scaled_gate);
+                const float inner = sqrt_2_over_pi * (x + coeff * x * x * x);
+                const __fp16 activated = static_cast<__fp16>(0.5f * x * (1.0f + tanhf(inner)));
+                const __fp16 scaled_product = static_cast<__fp16>(activated * product_scale_f16);
+                output[i] = static_cast<__fp16>(scaled_product * up[i]);
+            }
+        });
+}
+
 void cactus_gelu_f16_erf(const __fp16* input, __fp16* output, size_t num_elements)
 {
     const float inv_sqrt2 = 0.70710678118654752440f;
@@ -214,6 +256,33 @@ void cactus_tanh_f16(const __fp16* input, __fp16* output, size_t num_elements) {
             for (size_t i = vectorized_end; i < end_idx; ++i) {
                 float x = static_cast<float>(input[i]);
                 output[i] = static_cast<__fp16>(std::tanh(x));
+            }
+        });
+}
+
+void cactus_softcap_f16(const __fp16* input, __fp16* output, size_t num_elements, float cap, float input_scale) {
+    if (!(cap > 0.0f)) return;
+    const __fp16 cap_f16 = static_cast<__fp16>(cap);
+    const __fp16 input_scale_f16 = static_cast<__fp16>(input_scale);
+    CactusThreading::parallel_for(num_elements, CactusThreading::Thresholds::SCALAR_EXPENSIVE,
+        [&](size_t start_idx, size_t end_idx) {
+            constexpr size_t SIMD_WIDTH = 8;
+            const size_t vectorized_end = start_idx + ((end_idx - start_idx) / SIMD_WIDTH) * SIMD_WIDTH;
+            const float16x8_t scale = vdupq_n_f16(cap_f16);
+            const float16x8_t projection_scale = vdupq_n_f16(input_scale_f16);
+            for (size_t i = start_idx; i < vectorized_end; i += SIMD_WIDTH) {
+                const float16x8_t x = vld1q_f16(input + i);
+                const float16x8_t divided = vdivq_f16(vmulq_f16(x, projection_scale), scale);
+                const float16x8_t activated = vcombine_f16(
+                    vcvt_f16_f32(fast_tanh_f32x4(vcvt_f32_f16(vget_low_f16(divided)))),
+                    vcvt_f16_f32(fast_tanh_f32x4(vcvt_f32_f16(vget_high_f16(divided)))));
+                vst1q_f16(output + i, vmulq_f16(activated, scale));
+            }
+            for (size_t i = vectorized_end; i < end_idx; ++i) {
+                const __fp16 scaled = static_cast<__fp16>(input[i] * input_scale_f16);
+                const __fp16 divided = static_cast<__fp16>(scaled / cap_f16);
+                const __fp16 activated = static_cast<__fp16>(std::tanh(static_cast<float>(divided)));
+                output[i] = static_cast<__fp16>(activated * cap_f16);
             }
         });
 }
@@ -437,6 +506,11 @@ void kernel_softmax_f16_single(const __fp16* input, __fp16* output, size_t vocab
     float max_val = vmaxvq_f32(final_max);
     for (size_t i = vocab_vectorized; i < vocab_size; ++i) {
         max_val = std::max(max_val, static_cast<float>(input[i]));
+    }
+
+    if (max_val == -std::numeric_limits<float>::infinity()) {
+        std::fill(output, output + vocab_size, static_cast<__fp16>(0.0f));
+        return;
     }
 
     const float32x4_t max_broadcast = vdupq_n_f32(max_val);

@@ -21,6 +21,21 @@ def test_gemma4_audio_aux_roundtrip_name():
     assert "q_proj_proj" not in restore_hf_key_for_family(match.adapter_name, "gemma4")
 
 
+def test_needle_encoder_layers_beyond_decoder_depth_are_recognized():
+    match = cactus_name_for_tensor("model.encoder.layers.11.self_attn.k_proj.weight", "needle", 12)
+    assert match.recognized
+    assert match.output_name == "encoder_layer_11_attn_k.weights"
+
+
+def test_needle_global_norms_map_to_bundle_names():
+    encoder_norm = cactus_name_for_tensor("model.encoder.final_norm.weight", "needle")
+    assert encoder_norm.recognized
+    assert encoder_norm.output_name == "encoder_layer_norm_weight.weights"
+    decoder_norm = cactus_name_for_tensor("model.decoder.norm.weight", "needle")
+    assert decoder_norm.recognized
+    assert decoder_norm.output_name == "output_norm.weights"
+
+
 def test_manifest_qdq_restores_aux_stats_without_suffix(tmp_path):
     cactus = tmp_path / "cactus"
     out = tmp_path / "qdq"
@@ -320,10 +335,10 @@ def test_nomic_norm2_weight_uses_runtime_name():
 
 
 def test_nomic_keeps_qkv_and_moe_experts_fused():
-    # The v2 transpile path binds graph weights by their HF parameter name, so the
+    # Runtime graph bundles bind these weights by their HF parameter name, so the
     # converter emits one fused tensor per HF parameter (no q/k/v or per-expert split).
     # w2 is stored transposed so the second expert matmul can consume it as a direct
-    # linear weight in the transpiled graph.
+    # linear weight in the graph bundle.
     adapter = adapter_for_family("nomic")
     adapter.num_experts = 8
 

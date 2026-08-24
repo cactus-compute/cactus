@@ -25,7 +25,7 @@ from .cactus_adapters.tensor_io import (
     save_pointwise_conv1d_int8_with_header,
     save_tensor_with_header,
 )
-from .export.files import copy_runtime_files, write_config_txt
+from .export.files import copy_runtime_files, runtime_sidecar_config, write_config_txt
 from .export.qdq import convert_qdq
 from .export.reports import print_summary, write_reports
 from .export.validate import validate_qdq
@@ -50,6 +50,9 @@ def _load_hf(model_id_or_path: str, device: str, *, skip_model_load: bool = Fals
     warnings.filterwarnings("ignore", message=".*You are using a model of type.*")
     for note in patch_transformers_import_compat():
         print(f"note={note}")
+    from ..models.needle import register_with_transformers
+
+    register_with_transformers()
     nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path, cache_dir=_hf_cache_dir())
     if nemo_export is not None:
         model_id_or_path = nemo_export
@@ -197,7 +200,27 @@ def _augment_state_dict_for_family(state_dict: dict[str, Any], family: str) -> d
     return adapter_for_family(family).normalize_state_dict(state_dict).state_dict
 
 
+def _augment_state_dict_with_model_buffers(state_dict: Mapping[str, Any], model: Any) -> dict[str, Any]:
+    augmented = dict(state_dict)
+    if model is None or not hasattr(model, "named_buffers"):
+        return augmented
+
+    for name, tensor in model.named_buffers():
+        if name in augmented or not hasattr(tensor, "numel"):
+            continue
+        if int(tensor.numel()) > 1_000_000:
+            continue
+        augmented[name] = tensor.detach().cpu() if hasattr(tensor, "detach") else tensor
+
+    return augmented
+
+
 def _save_fallback_tensor(tensor, out_path: Path, precision: str, family: str) -> None:
+    if len(_tensor_shape(tensor)) == 0:
+        if torch is not None and isinstance(tensor, torch.Tensor):
+            tensor = tensor.reshape(1)
+        else:
+            tensor = np.asarray(tensor).reshape(1)
     if len(_tensor_shape(tensor)) > 4:
         if torch is not None and isinstance(tensor, torch.Tensor):
             tensor = tensor.reshape(tensor.shape[0], -1)
@@ -408,12 +431,13 @@ def convert(args: argparse.Namespace) -> None:
         if model is None:
             raise RuntimeError(f"could not load model object or checkpoint tensors from {args.model}")
         checkpoint_state = model.state_dict()
+    checkpoint_state = _augment_state_dict_with_model_buffers(checkpoint_state, model)
     normalized_state = adapter.normalize_state_dict(checkpoint_state)
     state_dict = normalized_state.state_dict
     model_config = adapter.runtime_config(cfg)
     model_config["model_type"] = adapter.runtime_model_type()
-    write_config_txt({**_config_dict(cfg), **model_config}, out_dir)
     copy_runtime_files(runtime_source, out_dir, token=getattr(args, "token", None), cache_dir=_hf_cache_dir())
+    write_config_txt({**_config_dict(cfg), **model_config, **runtime_sidecar_config(out_dir)}, out_dir)
     try:
         from .cactus_adapters.tokenizer import convert_hf_tokenizer
 
@@ -434,7 +458,11 @@ def convert(args: argparse.Namespace) -> None:
     }
     rows: list[dict[str, Any]] = []
     pending: list[tuple[str, Any, Any, Any]] = []
-    num_layers = int(model_config.get("num_layers", 0) or 0) or None
+    num_layers = max(
+        int(model_config.get("num_layers", 0) or 0),
+        int(cfg_get(cfg, "num_encoder_layers", 0) or 0),
+        int(cfg_get(cfg, "num_decoder_layers", 0) or 0),
+    ) or None
     target_modules: set[str] = set()
     for name, tensor in state_dict.items():
         match = adapter.name_tensor(name, tensor, num_layers)

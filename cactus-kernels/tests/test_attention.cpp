@@ -1,6 +1,7 @@
 #include "test_utils.h"
 #include <vector>
 #include <cmath>
+#include <iomanip>
 
 using namespace TestUtils;
 
@@ -76,6 +77,107 @@ bool test_attention_f16() {
     return true;
 }
 
+bool test_attention_f16_long_decode() {
+    const size_t batch = 1, seq = 1, kv_seq = 257, heads = 4, kv_heads = 2, dim = 64;
+    std::vector<__fp16> q(batch * seq * heads * dim), k(batch * kv_seq * kv_heads * dim);
+    std::vector<__fp16> v(batch * kv_seq * kv_heads * dim), out(batch * seq * heads * dim);
+    fill_random_fp16(q, -0.25f, 0.25f);
+    fill_random_fp16(k, -0.25f, 0.25f);
+    fill_random_fp16(v, -0.25f, 0.25f);
+    const float scale = 1.0f / std::sqrt(static_cast<float>(dim));
+    cactus_attention_f16(q.data(), k.data(), v.data(), out.data(), batch, seq, kv_seq,
+                         heads, kv_heads, dim, scale, nullptr, kv_seq - 1, 0,
+                         true, false, false, 0, 0.0f);
+
+    const size_t group = heads / kv_heads;
+    for (size_t h = 0; h < heads; ++h) {
+        const size_t kh = h / group;
+        std::vector<float> scores(kv_seq);
+        float max_score = -INFINITY;
+        for (size_t token = 0; token < kv_seq; ++token) {
+            float score = 0.0f;
+            for (size_t d = 0; d < dim; ++d) {
+                score += static_cast<float>(q[h * dim + d])
+                    * static_cast<float>(k[(token * kv_heads + kh) * dim + d]);
+            }
+            scores[token] = score * scale;
+            max_score = std::max(max_score, scores[token]);
+        }
+        float sum = 0.0f;
+        for (float& score : scores) {
+            score = std::exp(score - max_score);
+            sum += score;
+        }
+        for (size_t d = 0; d < dim; ++d) {
+            float expected = 0.0f;
+            for (size_t token = 0; token < kv_seq; ++token) {
+                expected += scores[token] / sum
+                    * static_cast<float>(v[(token * kv_heads + kh) * dim + d]);
+            }
+            if (std::abs(static_cast<float>(out[h * dim + d]) - expected) > 0.003f) return false;
+        }
+    }
+    return true;
+}
+
+bool test_attention_f16_streaming_additive_mask() {
+    const size_t batch = 1, seq = 64, heads = 2, dim = 16;
+    std::vector<__fp16> q(batch * seq * heads * dim), k(batch * seq * heads * dim);
+    std::vector<__fp16> v(batch * seq * heads * dim), out(batch * seq * heads * dim);
+    std::vector<__fp16> mask(batch * seq * seq, static_cast<__fp16>(0.0f));
+    fill_random_fp16(q, -0.5f, 0.5f);
+    fill_random_fp16(k, -0.5f, 0.5f);
+    fill_random_fp16(v, -0.5f, 0.5f);
+
+    for (size_t row = 0; row < seq; ++row) {
+        for (size_t col = 48; col < seq; ++col) {
+            mask[row * seq + col] = static_cast<__fp16>(-INFINITY);
+        }
+    }
+    for (size_t col = 0; col < seq; ++col) {
+        mask[(seq - 1) * seq + col] = static_cast<__fp16>(-INFINITY);
+    }
+
+    const float scale = 1.0f / std::sqrt(static_cast<float>(dim));
+    cactus_attention_f16(
+        q.data(), k.data(), v.data(), out.data(), batch, seq, seq,
+        heads, heads, dim, scale, mask.data(), 0, 0, false, true, false, 0, 0.0f);
+
+    for (size_t head = 0; head < heads; ++head) {
+        for (size_t row : {size_t{0}, size_t{31}}) {
+            std::vector<float> scores(48);
+            float max_score = -INFINITY;
+            for (size_t col = 0; col < 48; ++col) {
+                float score = 0.0f;
+                for (size_t d = 0; d < dim; ++d) {
+                    score += static_cast<float>(q[(row * heads + head) * dim + d])
+                        * static_cast<float>(k[(col * heads + head) * dim + d]);
+                }
+                scores[col] = score * scale;
+                max_score = std::max(max_score, scores[col]);
+            }
+            float sum = 0.0f;
+            for (float& score : scores) {
+                score = std::exp(score - max_score);
+                sum += score;
+            }
+            for (size_t d = 0; d < dim; ++d) {
+                float expected = 0.0f;
+                for (size_t col = 0; col < 48; ++col) {
+                    expected += scores[col] / sum
+                        * static_cast<float>(v[(col * heads + head) * dim + d]);
+                }
+                const float actual = static_cast<float>(out[(row * heads + head) * dim + d]);
+                if (std::abs(actual - expected) > 0.02f) return false;
+            }
+        }
+        for (size_t d = 0; d < dim; ++d) {
+            if (static_cast<float>(out[((seq - 1) * heads + head) * dim + d]) != 0.0f) return false;
+        }
+    }
+    return true;
+}
+
 bool run_benchmarks() {
     auto bench = [](const char* label, auto fn) {
         fn();
@@ -131,6 +233,8 @@ int main() {
     runner.run_test("softmax", test_softmax());
     runner.run_test("rope", test_rope());
     runner.run_test("attention_f16", test_attention_f16());
+    runner.run_test("attention_f16_long_decode", test_attention_f16_long_decode());
+    runner.run_test("attention_f16_streaming_additive_mask", test_attention_f16_streaming_additive_mask());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

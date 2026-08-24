@@ -366,6 +366,25 @@ bool test_config_parse_rolling_fields() {
     return cfg.kv_compress && cfg.kv_compress_trigger_len == 4096 && cfg.kv_compress_target_len == 2048;
 }
 
+bool test_generic_config_skips_family_specific_validation() {
+    char tmpl[] = "/tmp/cactus_genericcfg_XXXXXX";
+    int fd = mkstemp(tmpl);
+    if (fd < 0) return false;
+    ::close(fd);
+    {
+        std::ofstream f(tmpl);
+        f << "model_type=generic\n"
+          << "hidden_dim=2048\n"
+          << "num_layers=16\n"
+          << "attention_heads=32\n"
+          << "attention_kv_heads=8\n";
+    }
+    cactus::engine::Config cfg;
+    bool parsed = cfg.from_json(tmpl);
+    std::remove(tmpl);
+    return parsed && cfg.model_type == cactus::engine::Config::ModelType::GENERIC;
+}
+
 bool test_trigger_zero_gates_rolling() {
     // The maybe_roll_compact gate fires iff kv_compress && trigger_len > 0 && seq_len >= trigger_len.
     const size_t n = 5000, kv_heads = 2, head_dim = 16, max_seq = 5008;
@@ -993,6 +1012,7 @@ int main() {
     runner.run_test("rerope_zero_delta_noop", test_rerope_zero_delta_noop());
     runner.run_test("rolling_bounded_compaction", test_rolling_bounded_compaction());
     runner.run_test("config_parse_rolling_fields", test_config_parse_rolling_fields());
+    runner.run_test("generic_config_skips_family_specific_validation", test_generic_config_skips_family_specific_validation());
     runner.run_test("trigger_zero_gates_rolling", test_trigger_zero_gates_rolling());
     runner.run_test("degenerate_rolling_config_disabled", test_degenerate_rolling_config_disabled());
     runner.run_test("env_override_parse", test_env_override_parse());

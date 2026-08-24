@@ -176,6 +176,31 @@ void cactus_conv1d_causal_depthwise_f16(
     });
 }
 
+void cactus_conv1d_causal_depthwise_channel_first_f16(
+    const __fp16* input,
+    const __fp16* weight,
+    __fp16* output,
+    size_t N, size_t C, size_t L, size_t K, size_t dilation)
+{
+    const size_t batch_stride = C * L;
+    CactusThreading::parallel_for_2d(N, C, CactusThreading::Thresholds::ATTENTION, [&](size_t n, size_t c) {
+        const __fp16* x = input + n * batch_stride + c * L;
+        const __fp16* w = weight + c * K;
+        __fp16* y = output + n * batch_stride + c * L;
+
+        for (size_t t = 0; t < L; ++t) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < K; ++k) {
+                const ptrdiff_t source = static_cast<ptrdiff_t>(t) - static_cast<ptrdiff_t>(k * dilation);
+                if (source >= 0) {
+                    sum += static_cast<float>(x[static_cast<size_t>(source)]) * static_cast<float>(w[K - 1 - k]);
+                }
+            }
+            y[t] = static_cast<__fp16>(sum);
+        }
+    });
+}
+
 void cactus_conv1d_f16_k3(
     const __fp16* input,
     const __fp16* weight,
@@ -960,5 +985,4 @@ void cactus_conv1d_same_depthwise_f16_k9(
         }
     });
 }
-
 

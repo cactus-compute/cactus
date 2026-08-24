@@ -34,6 +34,9 @@ dependencies = [
     "uvicorn>=0.20.0",
     "python-multipart>=0.0.5",
     "Pillow>=11.0.0,<12",
+    "torchvision>=0.23.0,<1",
+    "sentencepiece>=0.2.0",
+    "protobuf>=4.25.0,<7",
 ]
 
 [project.optional-dependencies]
@@ -70,7 +73,7 @@ exclude = ["cactus.code*"]
 
 [tool.setuptools.package-data]
 "cactus.bindings" = ["lib/*.dylib", "lib/*.so"]
-"cactus" = ["bin/run", "bin/transcribe", "assets/*", "code/**/*"]
+"cactus" = ["bin/run", "bin/transcribe", "assets/*", "code/**/*", "py.typed"]
 "cactus.convert" = ["assets/*/*"]
 
 [tool.pytest.ini_options]

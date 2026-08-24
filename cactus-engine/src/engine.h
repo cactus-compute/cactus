@@ -17,6 +17,43 @@
 class CactusGraph;
 
 namespace cactus {
+namespace npu {
+
+struct NPUNamedInput {
+    std::string name;
+    enum class DataType { FP16, INT32 };
+    const void* data;
+    DataType data_type = DataType::FP16;
+    std::vector<int> shape;
+};
+
+class NPUEncoder {
+public:
+    virtual ~NPUEncoder() = default;
+    virtual bool load(const std::string& model_path, const std::string& compute_units = "") = 0;
+    virtual bool preallocate(const std::vector<int>& input_shape,
+                             const std::string& input_name = "x",
+                             const std::string& output_name = "") = 0;
+    virtual size_t encode(const __fp16* input, __fp16* output,
+                          const std::vector<int>& shape,
+                          const std::string& input_name = "x",
+                          const std::string& output_name = "") = 0;
+    virtual bool is_available() const = 0;
+    virtual std::vector<int> get_input_shape() const = 0;
+    virtual std::vector<int> get_output_shape() const = 0;
+    virtual bool has_input(const std::string&) const { return false; }
+    virtual std::vector<int> get_input_shape_for(const std::string&) const { return {}; }
+    virtual __fp16* get_output_buffer() = 0;
+    virtual size_t get_output_buffer_size() const = 0;
+    virtual size_t encode_multimodal_input(const std::vector<NPUNamedInput>& inputs,
+                                            __fp16* output,
+                                            const std::string& output_name = "") = 0;
+};
+
+std::unique_ptr<NPUEncoder> create_encoder();
+bool is_npu_available();
+
+} // namespace npu
 namespace engine {
 
 struct Config {
@@ -76,6 +113,10 @@ struct Config {
     uint32_t tile_size = 512;
     float max_pixels_tolerance = 2.0f;
     bool do_image_splitting = true;
+    bool do_resize = true;
+    bool do_rescale = true;
+    bool do_normalize = true;
+    bool do_convert_rgb = true;
     bool encoder_act_gelu = false;
     bool decoder_act_gelu = false;
     uint32_t num_encoder_layers = 0;
@@ -108,7 +149,7 @@ struct Config {
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, NEEDLE = 18};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, NEEDLE = 18, GENERIC = 19};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
@@ -290,6 +331,7 @@ public:
 
     virtual std::vector<uint32_t> apply_chat_template(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true) const;
     virtual std::string format_chat_prompt(const std::vector<ChatMessage>& messages, bool add_generation_prompt = true, const std::string& tools_json = "", bool enable_thinking_if_supported = false) const;
+    virtual bool uses_default_chat_style(const std::vector<ChatMessage>& messages, const std::string& tools_json = "", bool enable_thinking_if_supported = false) const;
 
     virtual uint32_t get_vocab_size() const = 0;
     virtual uint32_t get_unk_token() const = 0;
@@ -312,9 +354,45 @@ public:
     size_t get_image_soft_token_count() const { return image_soft_token_count_; }
 
     void set_lfm2_vision_config(const Config& cfg) { lfm2_vision_config_ = cfg; has_lfm2_vision_config_ = true; }
+    void set_gemma4_raw_media_prompt(bool enabled) { gemma4_raw_media_prompt_ = enabled; }
+    void set_text_prompt_style(const std::string& style) { text_prompt_style_ = style; }
+    void set_media_prompt_style(const std::string& style) { media_prompt_style_ = style; }
+    void set_gemma4_turn_tokens(const std::string& turn_start_token,
+                                const std::string& turn_end_token) {
+        if (!turn_start_token.empty()) gemma4_turn_start_token_ = turn_start_token;
+        if (!turn_end_token.empty()) gemma4_turn_end_token_ = turn_end_token;
+    }
+    void set_media_prompt_positions(const std::string& image_position,
+                                    const std::string& audio_position) {
+        if (!image_position.empty()) media_image_prompt_position_ = image_position;
+        if (!audio_position.empty()) media_audio_prompt_position_ = audio_position;
+    }
+    void set_media_prompt_order(const std::vector<std::string>& order) {
+        if (!order.empty()) media_prompt_order_ = order;
+    }
+    void set_media_focus_policy(const std::string& policy,
+                                const std::vector<std::string>& image_keywords,
+                                const std::vector<std::string>& audio_keywords) {
+        media_focus_policy_ = policy;
+        if (!image_keywords.empty()) media_image_focus_keywords_ = image_keywords;
+        if (!audio_keywords.empty()) media_audio_focus_keywords_ = audio_keywords;
+    }
+    void set_media_tokens(const std::string& image_token,
+                          const std::string& image_begin_token,
+                          const std::string& image_end_token,
+                          const std::string& audio_token,
+                          const std::string& audio_begin_token,
+                          const std::string& audio_end_token) {
+        if (!image_token.empty()) media_image_token_ = image_token;
+        if (!image_begin_token.empty()) media_image_begin_token_ = image_begin_token;
+        if (!image_end_token.empty()) media_image_end_token_ = image_end_token;
+        if (!audio_token.empty()) media_audio_token_ = audio_token;
+        if (!audio_begin_token.empty()) media_audio_begin_token_ = audio_begin_token;
+        if (!audio_end_token.empty()) media_audio_end_token_ = audio_end_token;
+    }
 
 protected:
-    enum class ModelType { UNKNOWN, GEMMA4, GEMMA, QWEN, LFM2, NEEDLE };
+    enum class ModelType { UNKNOWN, GEMMA4, GEMMA, QWEN, LFM2, NEEDLE, WHISPER, PARAKEET_TDT };
     ModelType model_type_ = ModelType::UNKNOWN;
     enum class ModelVariant { DEFAULT, VLM, EXTRACT, RAG};
     ModelVariant model_variant_ = ModelVariant::DEFAULT;
@@ -331,12 +409,30 @@ protected:
     uint32_t vision_default_output_length_ = 280;
     uint32_t vision_image_size_ = 768;
     size_t image_soft_token_count_ = 0;
+    bool gemma4_raw_media_prompt_ = false;
+    std::string gemma4_turn_start_token_ = "<|turn>";
+    std::string gemma4_turn_end_token_ = "<turn|>";
+    std::string text_prompt_style_;
+    std::string media_prompt_style_;
+    std::string media_image_token_ = "<|image|>";
+    std::string media_image_begin_token_ = "<|image>";
+    std::string media_image_end_token_ = "<image|>";
+    std::string media_audio_token_ = "<|audio|>";
+    std::string media_audio_begin_token_ = "<|audio>";
+    std::string media_audio_end_token_ = "<audio|>";
+    std::string media_image_prompt_position_ = "before_text";
+    std::string media_audio_prompt_position_ = "before_text";
+    std::vector<std::string> media_prompt_order_ = {"image", "audio"};
+    std::string media_focus_policy_;
+    std::vector<std::string> media_image_focus_keywords_;
+    std::vector<std::string> media_audio_focus_keywords_;
     Config lfm2_vision_config_{};
     bool has_lfm2_vision_config_ = false;
     TokenizerRuntimeConfig runtime_config_;
 
     void detect_model_type(const std::string& config_path);
     void load_chat_template(const std::string& template_file);
+    std::string format_default_chat_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt) const;
     std::string format_gemma4_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_qwen_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
     std::string format_lfm2_style(const std::vector<ChatMessage>& messages, bool add_generation_prompt, const std::string& tools_json, bool enable_thinking_if_supported = false) const;
@@ -573,21 +669,18 @@ private:
     void feed_gemma_char(char ch);
 };
 
+size_t select_bucket(const std::vector<size_t>& capacities, size_t required_frames);
+
 class Model {
 public:
-    struct DebugNode {
-        uint32_t layer_idx;
-        std::string name;
-        size_t node_id;
-    };
-
     Model();
     explicit Model(const Config& config);
     ~Model();
 
     const Config& get_config() const { return config_; }
+    size_t audio_soft_token_count_for_frames(size_t frame_count);
+    std::string audio_preprocess_strategy() const;
     Tokenizer* get_tokenizer() const { return tokenizer_.get(); }
-    const std::vector<DebugNode>& get_debug_nodes() const;
 
     bool init(const std::string& bundle_dir, size_t context_size,
               const std::string& system_prompt = "", bool do_warmup = true);
@@ -681,7 +774,10 @@ public:
             token_history_.erase(token_history_.begin(), token_history_.begin() + (MAX_TOKEN_HISTORY / 2));
         }
         token_history_.push_back(token);
+        token_history_set_.insert(token);
     }
+    void seed_token_history_from_context(const std::vector<uint32_t>& tokens);
+    bool repetition_penalty_uses_context() const { return repetition_penalty_scope_ == "context"; }
 
     double score_tokens_window_logprob(const std::vector<uint32_t>& tokens, size_t start, size_t end,
                                         size_t context, size_t* tokens_scored);
@@ -696,6 +792,12 @@ public:
     size_t last_prefill_scalar_tail_tokens() const { return last_prefill_scalar_tail_tokens_; }
     size_t last_prefill_tail_chunk_tokens() const { return last_prefill_tail_chunk_tokens_; }
     size_t last_prefill_tail_padding_tokens() const { return last_prefill_tail_padding_tokens_; }
+
+    bool load_npu_audio_encoder(const std::string& model_path, const std::string& compute_units = "");
+    bool has_npu_audio_encoder() const { return npu_audio_encoder_ != nullptr; }
+    bool load_npu_vision_encoder(const std::string& model_path);
+    bool has_npu_vision_encoder() const { return npu_vision_encoder_ != nullptr; }
+    bool load_npu_source_encoder(const std::string& model_path);
 
     void remove_thinking_tokens(const std::vector<std::pair<size_t, size_t>>& ranges);
     void compact_kv_cache() {}
@@ -731,6 +833,81 @@ private:
         int value_node_id = -1;
     };
 
+    struct RuntimeStateSpec {
+        std::string name;
+        std::string kind;
+        std::string producer;
+        std::vector<std::string> consumers;
+        std::vector<std::string> release_after_consumers;
+        std::string lifetime;
+        std::string transfer;
+        bool persist_after_component_unload = true;
+        bool required = true;
+        std::map<std::string, std::string> metadata;
+    };
+
+    struct RuntimeAliasSpec {
+        std::string source_component;
+        std::string source_output;
+        std::string target_component;
+        std::string target_input;
+        std::string policy;
+        std::string lifetime;
+        std::string fallback;
+        bool required = false;
+        int source_node_id = -1;
+        int target_node_id = -1;
+        bool storage_stable = false;
+        std::map<std::string, std::string> metadata;
+    };
+
+    struct RuntimeStoredTensor {
+        std::vector<uint8_t> bytes;
+        std::shared_ptr<TensorStorage> storage;
+        std::vector<size_t> shape;
+        Precision precision = Precision::FP16;
+        std::string producer_component;
+        std::string producer_output;
+        std::string kind;
+        std::string lifetime;
+    };
+
+    struct StateArena {
+        std::map<std::string, std::shared_ptr<TensorStorage>> tensors;
+
+        void publish(const std::string& id, std::shared_ptr<TensorStorage> storage) {
+            if (!id.empty() && storage && storage->valid()) tensors[id] = std::move(storage);
+        }
+        std::shared_ptr<TensorStorage> find(const std::string& id) const {
+            auto it = tensors.find(id);
+            return it == tensors.end() ? nullptr : it->second;
+        }
+        size_t byte_size() const {
+            size_t total = 0;
+            std::unordered_set<const TensorStorage*> seen;
+            for (const auto& [_, storage] : tensors) {
+                if (storage && seen.insert(storage.get()).second) total += storage->byte_size;
+            }
+            return total;
+        }
+        void erase(const std::string& id) { tensors.erase(id); }
+        void clear() { tensors.clear(); }
+    };
+
+    struct RuntimeProfileCounters {
+        uint64_t copied_bytes = 0;
+        uint64_t aliased_bytes = 0;
+        uint64_t media_copied_bytes = 0;
+        uint64_t media_aliased_bytes = 0;
+        uint64_t component_loads = 0;
+        uint64_t component_unloads = 0;
+        uint64_t resident_weight_bytes = 0;
+        uint64_t peak_resident_weight_bytes = 0;
+        uint64_t peak_state_bytes = 0;
+        uint64_t peak_runtime_store_bytes = 0;
+        uint64_t released_runtime_store_bytes = 0;
+    };
+
     struct Component {
         std::string name;
         std::string graph_path;
@@ -743,11 +920,12 @@ private:
         std::map<std::string, std::string> metadata;
         std::unique_ptr<CactusGraph> graph;
         std::vector<std::vector<uint8_t>> input_buffers;
+        size_t resident_weight_bytes = 0;
     };
 
-    void copy_cache_state(const Component& src, Component& dst);
-
     struct ChunkedPrefillResult {
+        Component* component = nullptr;
+        Component* encoder_component = nullptr;
         size_t logical_tokens = 0;
         size_t executed_tokens = 0;
         size_t padding_tokens = 0;
@@ -760,6 +938,10 @@ private:
     bool load_components(const std::unordered_set<std::string>& required_components);
     bool load_component_graph(Component& comp);
     void unload_component_graph(Component& comp);
+    size_t component_weight_bytes(const Component& comp) const;
+    void observe_state_arena_bytes();
+    size_t runtime_state_store_byte_size() const;
+    void write_runtime_profile() const;
     bool bind_runtime_buffers(Component& comp);
     void run_step(uint32_t token_id, size_t position, bool read_logits, bool use_fused = true);
     void run_step_batch(const std::vector<uint32_t>& token_ids, const std::vector<size_t>& positions);
@@ -771,7 +953,9 @@ private:
     void write_media_embeds_row(Component& comp, int embeds_idx, const uint8_t* feature_row,
                                 size_t feature_row_bytes, Precision feature_precision);
     void reset_encoder_cross_kv_route_state();
+    void release_encoder_cross_kv_prepare_graphs();
     bool finish_encoder_cross_kv_prepare();
+    bool finish_encoder_cross_kv_prepare_after_source();
     bool prepare_encoder_cross_kv_from_text(const std::vector<uint32_t>& tokens);
     bool prepare_encoder_cross_kv_from_audio(const std::vector<float>& audio_features);
     bool run_encoder_cross_kv_decoder_step(uint32_t token_id, size_t position);
@@ -780,11 +964,22 @@ private:
         size_t max_tokens,
         const std::vector<std::vector<uint32_t>>& stop_token_sequences,
         const std::atomic<bool>* should_stop);
-    void copy_component_outputs_to_inputs(const Component& source, Component& target);
-    bool copy_cross_kv_outputs_to_decoder_cache_inputs(const Component& source, Component& target, size_t source_len);
-    void copy_encoder_outputs_to_decoder(const Component& enc);
-    void copy_component_outputs_to_chunk_inputs(const Component& source, Component& target, size_t token_index);
-    void copy_component_outputs_to_chunk_inputs_range(const Component& source, Component& target, size_t token_offset);
+    void copy_component_outputs_to_inputs(Component& source, Component& target);
+    bool copy_cross_kv_outputs_to_decoder_cache_inputs(Component& source, Component& target, size_t source_len);
+    void copy_component_outputs_to_chunk_inputs(Component& source, Component& target, size_t token_index);
+    void copy_component_outputs_to_chunk_inputs_range(Component& source, Component& target,
+                                                      size_t token_offset, size_t source_tokens = 0);
+    void persist_component_outputs(Component& source);
+    void bind_runtime_state_inputs(Component& target);
+    void bind_component_cache_states(Component& target);
+    void publish_component_cache_states(Component& source);
+    static std::string cache_state_id(const CacheStateBinding& binding, bool key);
+    bool runtime_state_producer_matches(const RuntimeStateSpec& state, const Component& source) const;
+    bool runtime_state_consumer_matches(const RuntimeStateSpec& state, const Component& target) const;
+    bool output_should_persist_to_runtime_state(const Component& source, const std::string& output_name) const;
+    const RuntimeStoredTensor* find_runtime_state_for_input(const Component& target, const std::string& input_name) const;
+    void clear_runtime_states_with_lifetime(const std::string& lifetime);
+    void release_runtime_states_after_consumer(const Component& consumer);
     bool cache_states_compatible(const Component& source, const Component& target) const;
     void move_cache_states(Component& source, Component& target, size_t logical_current = std::numeric_limits<size_t>::max());
     void set_cache_current_len(Component& comp, size_t len);
@@ -793,7 +988,7 @@ private:
     size_t component_chunk_tokens(const Component& comp, const std::string& input_name) const;
     size_t component_output_tokens(const Component& comp, const std::string& output_name) const;
     ChunkedPrefillResult run_chunked_prefill(const std::vector<uint32_t>& tokens, size_t start_position,
-                                             size_t chunk_size, bool prepare_decode);
+                                             size_t chunk_size, bool prepare_decode, bool produce_logits);
     void execute_prefill_chunk(Component& chunk_comp, Component* enc_comp, size_t encoder_chunk,
                                size_t chunk_tokens, const std::vector<uint32_t>& tokens,
                                size_t processed, size_t start_position);
@@ -802,27 +997,37 @@ private:
     uint32_t sample_component_logits(Component& comp, float temperature, float top_p, size_t top_k,
                                      float min_p, bool greedy, float* out_uncertainty);
     uint32_t argmax_component_logits(Component& comp, size_t logit_row = std::numeric_limits<size_t>::max(),
-                                     float* out_uncertainty = nullptr);
-    uint32_t argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty);
+                                     float* out_uncertainty = nullptr, float repetition_penalty = 1.0f);
+    uint32_t argmax_logits_at(const BufferDesc& desc, void* ptr, size_t row_off, float* out_uncertainty,
+                              float repetition_penalty = 1.0f);
+    bool is_generation_suppressed_token(uint32_t token_id) const;
     std::vector<uint32_t> argmax_component_logits_batch(Component& comp, size_t batch);
     void write_int_input(Component& comp, const std::string& name, int64_t value);
     void write_int_input_at(Component& comp, const std::string& name, size_t index, int64_t value);
+    void fill_int_input(Component& comp, const std::string& name, int64_t value, size_t count);
     void write_bytes_input(Component& comp, const std::string& name, const void* data, size_t byte_size);
     int input_index(const Component& comp, const std::string& name) const;
     int output_index(const Component& comp, const std::string& name) const;
-    uint32_t argmax_last_logits(float* out_uncertainty = nullptr);
+    uint32_t argmax_last_logits(float* out_uncertainty = nullptr, float repetition_penalty = 1.0f);
     bool load_handoff_probe();
+    Component* select_audio_encoder(size_t required_frames);
     void maybe_capture_handoff_probe_hidden(const Component& comp, const std::string& output_name = "probe_hidden");
     void run_vision_encoder(const std::string& image_path);
     void run_vision_encoder_lfm2_vl(const std::string& image_path);
     void encode_lfm2_vl_image_into_features(const std::string& image_path);
     bool load_lfm2_vl_position_grid();
+    bool lfm2_vl_use_npu_vision() const;
+    bool lfm2_vl_encode_tile_npu(const float* pixel_values, const int64_t* mask,
+                                 const float* pos_embeds, size_t max_patches, int dim,
+                                 size_t patch_dim, std::vector<float>& enc_out);
     void run_audio_encoder(const std::vector<float>& audio_features);
     void run_audio_encoder_messages(const std::vector<std::vector<float>>& audio_features_per_message);
     bool run_chunk_prefill_path(const std::vector<uint32_t>& tokens,
                                 const std::vector<std::string>& image_paths,
                                 const std::vector<std::vector<float>>& audio_features_per_message);
-    bool build_lm_encoder_outputs_dynamic_gemma4(
+    size_t media_rows_to_copy(size_t output_rows, size_t frames_in_chunk) const;
+    std::string image_preprocess_strategy() const;
+    bool build_lm_encoder_outputs_dynamic_media(
         const std::vector<uint32_t>& tokens,
         std::map<std::string, std::vector<uint8_t>>& store_bytes,
         std::map<std::string, Precision>& store_prec,
@@ -844,6 +1049,8 @@ private:
     Component* audio_encoder_ = nullptr;
     Component* lm_encoder_media_step_ = nullptr;
     Component* decoder_prefill_chunk_ = nullptr;
+    Component* decoder_prefill_cache_chunk_ = nullptr;
+    Component* decoder_prefill_logits_head_ = nullptr;
     Component* lm_encoder_ = nullptr;
     Component* lm_encoder_text_chunk_ = nullptr;
     Component* lm_encoder_media_chunk_ = nullptr;
@@ -853,10 +1060,76 @@ private:
     bool prefill_tail_pad_disabled_ = false;
 
     std::string family_;
+    std::string runtime_plan_name_;
+    std::string runtime_execution_strategy_;
+    std::string runtime_state_owner_;
+    std::string runtime_cache_persistence_;
+    std::string runtime_output_alias_policy_;
+    std::string runtime_cache_transfer_policy_;
+    std::vector<RuntimeStateSpec> runtime_states_;
+    std::vector<RuntimeAliasSpec> runtime_aliases_;
+    std::map<std::string, RuntimeStoredTensor> runtime_state_store_;
+    StateArena state_arena_;
+    std::string image_preprocess_strategy_;
+    std::string audio_preprocess_strategy_;
+    std::string media_injection_strategy_;
+    std::string media_prefill_fallback_;
+    size_t media_min_new_tokens_ = 0;
+    size_t media_min_new_tokens_remaining_ = 0;
+    std::unordered_set<uint32_t> media_min_stop_token_ids_;
+    std::string prompt_text_style_;
+    std::string prompt_media_style_;
+    std::string media_image_token_;
+    std::string media_audio_token_;
+    std::string media_image_begin_token_;
+    std::string media_image_end_token_;
+    std::string media_audio_begin_token_;
+    std::string media_audio_end_token_;
+    std::string media_image_prompt_position_;
+    std::string media_audio_prompt_position_;
+    std::string prompt_turn_start_token_;
+    std::string prompt_turn_end_token_;
+    std::vector<std::string> media_prompt_order_;
+    std::string media_focus_policy_;
+    std::vector<std::string> media_image_focus_keywords_;
+    std::vector<std::string> media_audio_focus_keywords_;
+    uint32_t media_placeholder_token_id_ = 0;
+    size_t audio_rows_frame_divisor_ = 0;
+    std::unordered_set<uint32_t> generation_suppressed_token_ids_;
+    std::string repetition_penalty_scope_;
+    std::vector<std::string> media_chunk_prefill_modalities_;
+    std::map<std::string, std::string> media_chunk_output_sources_;
+    std::vector<std::string> image_feature_candidates_;
+    std::vector<std::string> audio_feature_candidates_;
+    std::string npu_audio_encoder_mlpackage_;
+    std::string npu_audio_compute_units_;
+    std::string npu_vision_encoder_mlpackage_;
+    std::string npu_source_encoder_mlpackage_;
+
+    std::unique_ptr<npu::NPUEncoder> npu_audio_encoder_;
+    std::unique_ptr<npu::NPUEncoder> npu_vision_encoder_;
+    std::unique_ptr<npu::NPUEncoder> npu_source_encoder_;
+
+    bool audio_encode_via_npu(const std::vector<float>& audio_features);
+    bool vision_encode_via_npu(const std::vector<float>& pixel_values,
+                               const std::vector<int64_t>* pixel_position_ids = nullptr);
+    bool source_encode_via_npu(const std::vector<uint32_t>& tokens);
 
     std::map<std::string, std::vector<uint8_t>> media_features_;
+    std::map<std::string, std::shared_ptr<TensorStorage>> media_feature_storages_;
     std::map<std::string, std::vector<size_t>> media_feature_shapes_;
     std::map<std::string, Precision> media_feature_precisions_;
+    const uint8_t* media_feature_data(const std::string& name) const;
+    size_t media_feature_byte_size(const std::string& name) const;
+    void clear_media_feature(const std::string& name);
+    void publish_media_feature_storage(const std::string& name,
+                                       std::shared_ptr<TensorStorage> storage,
+                                       const std::vector<size_t>& shape,
+                                       Precision precision);
+    void append_media_feature(const std::string& name, const void* data, size_t byte_size,
+                              const std::vector<size_t>& shape, Precision precision,
+                              size_t rows_to_append = 0);
+    RuntimeProfileCounters runtime_profile_;
 
     std::vector<float> lfm2_pos_grid_;
     int lfm2_pos_grid_h_ = 0;
@@ -882,6 +1155,7 @@ private:
 
     static constexpr size_t MAX_TOKEN_HISTORY = 128;
     std::vector<uint32_t> token_history_;
+    std::unordered_set<uint32_t> token_history_set_;
     std::vector<uint32_t> samp_recent_;
     std::vector<float> samp_bias_dense_;
     bool samp_has_bias_ = false;
@@ -913,7 +1187,6 @@ private:
     std::vector<float> handoff_probe_head4_bias_;
     std::vector<float> handoff_probe_hidden_;
 
-    mutable std::vector<DebugNode> debug_nodes_;
 };
 
 class ConvCache {

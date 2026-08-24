@@ -15,7 +15,7 @@ def get_weights_dir(model_id: str) -> Path:
     return weights_root() / get_model_dir_name(model_id)
 
 
-def get_bundle_dir(model_id: str, *, bits: int = 4) -> Path:
+def get_bundle_dir(model_id: str, *, bits: int | float = 4) -> Path:
     from .utils import variant_suffix
     return weights_root() / f"{get_model_dir_name(model_id)}-{variant_suffix(bits)}"
 
@@ -24,7 +24,7 @@ def ensure_model(model_id: str) -> Path:
     return download_bundle(model_id)
 
 
-def download_bundle(model_id: str, *, bits: int = 4,
+def download_bundle(model_id: str, *, bits: int | float = 4,
                     token: str | None = None, output_dir: Path | None = None) -> Path:
     from .utils import (
         download_cq_archive,

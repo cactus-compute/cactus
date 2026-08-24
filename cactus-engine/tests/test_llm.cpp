@@ -3,6 +3,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <cstdio>
+#include <iomanip>
 #include <iostream>
 
 #if __has_include(<curl/curl.h>)
@@ -659,6 +660,84 @@ bool test_batch_distinct4_matches_single() {
     return ok;
 }
 
+bool test_generate_batch_ragged() {
+    cactus_model_t model = load_gemma4_or_skip();
+    if (!model) return true;
+
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    auto* tok = handle->model->get_tokenizer();
+    std::vector<uint32_t> a = tok->encode("The capital of France is");
+    std::vector<uint32_t> b = tok->encode("Hello");
+    if (a.empty() || b.empty() || a.size() == b.size()) {
+        std::cerr << "  could not build two ragged prompts\n"; cactus_destroy(model); return false;
+    }
+    const size_t M = 16;
+
+    auto batched = handle->model->generate_batch({a, b}, M);
+    if (batched.empty()) {
+        std::cout << "  [WARN] bundle not dynamic-batch capable; skipping\n";
+        cactus_destroy(model);
+        return true;
+    }
+
+    auto ref_a = handle->model->generate_batch({a}, M);
+    auto ref_b = handle->model->generate_batch({b}, M);
+    cactus_destroy(model);
+
+    bool ok = true;
+    if (batched.size() != 2 || ref_a.empty() || ref_b.empty()) { std::cerr << "  unexpected stream counts\n"; return false; }
+    if (batched[0].size() != M || batched[1].size() != M) { std::cerr << "  wrong generated length\n"; ok = false; }
+    if (batched[0] != ref_a[0]) { std::cerr << "  ragged row 0 (len " << a.size() << ") diverged from single-stream\n"; ok = false; }
+    if (batched[1] != ref_b[0]) { std::cerr << "  ragged row 1 (len " << b.size() << ") diverged from single-stream\n"; ok = false; }
+    return ok;
+}
+
+bool test_decode_batch_throughput() {
+    cactus_model_t model = load_gemma4_or_skip();
+    if (!model) return true;
+
+    auto* handle = static_cast<CactusModelHandle*>(model);
+    auto* tok = handle->model->get_tokenizer();
+    std::vector<uint32_t> ids = tok->encode("The");
+    if (ids.empty()) { std::cerr << "  empty seed\n"; cactus_destroy(model); return false; }
+    uint32_t seed = ids.back();
+    const size_t M = 64;
+
+    auto probe = handle->model->decode_batch(std::vector<uint32_t>(2, seed), 2);
+    if (probe.empty()) {
+        std::cout << "  [WARN] bundle not dynamic-batch capable; skipping\n";
+        cactus_destroy(model);
+        return true;
+    }
+
+    std::cout << "  batched decode throughput (" << M << " tokens/stream):\n";
+    std::cout << "    N     agg tok/s   per-stream tok/s   speedup\n";
+    double base_agg = 0.0, best_agg = 0.0;
+    for (size_t N : {(size_t)1, (size_t)2, (size_t)4, (size_t)8, (size_t)16, (size_t)32, (size_t)64}) {
+        std::vector<uint32_t> seeds(N, seed);
+        auto t0 = std::chrono::high_resolution_clock::now();
+        auto streams = handle->model->decode_batch(seeds, M);
+        auto t1 = std::chrono::high_resolution_clock::now();
+        if (streams.size() != N) break;  
+        double secs = std::chrono::duration<double>(t1 - t0).count();
+        if (secs <= 0.0) continue;
+        double agg = double(N * M) / secs;
+        double per = double(M) / secs;
+        if (N == 1) base_agg = agg;
+        if (agg > best_agg) best_agg = agg;
+        std::printf("    %-4zu  %9.1f   %14.1f   %6.2fx\n",
+                    N, agg, per, base_agg > 0.0 ? agg / base_agg : 1.0);
+    }
+    cactus_destroy(model);
+
+    if (base_agg <= 0.0) { std::cerr << "  no N=1 baseline measured\n"; return false; }
+    if (best_agg <= base_agg) {
+        std::cerr << "  batching did not improve aggregate throughput\n";
+        return false;
+    }
+    return true;
+}
+
 int main() {
     TestUtils::TestRunner runner("LLM Tests");
     runner.run_test("streaming", test_streaming());
@@ -672,6 +751,8 @@ int main() {
     runner.run_test("prompt_retains_thinking", test_prompt_gemma4_retains_thinking());
     runner.run_test("complete_thinking_api_clean", test_complete_gemma4_thinking_api_clean());
     runner.run_test("multiturn_thinking_persist", test_multiturn_thinking_persist());
+    runner.run_test("generate_batch_ragged", test_generate_batch_ragged());
+    runner.run_test("decode_batch_throughput", test_decode_batch_throughput());
     runner.run_test("batch_distinct4_matches_single", test_batch_distinct4_matches_single());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

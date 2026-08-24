@@ -40,6 +40,7 @@ using ComputeFn = void(*)(GraphNode&, const nodes_vector&, const node_index_map_
 
 DECLARE_COMPUTE(compute_binary_op_node);
 DECLARE_COMPUTE(compute_unary_op_node);
+DECLARE_COMPUTE(compute_where_node);
 DECLARE_COMPUTE(compute_activation_node);
 DECLARE_COMPUTE(compute_reduce_node);
 DECLARE_COMPUTE(compute_reshape_node);
@@ -79,17 +80,22 @@ DECLARE_COMPUTE(compute_stats_pool_node);
 DECLARE_COMPUTE(compute_weighted_stats_pool_node);
 DECLARE_COMPUTE(compute_transpose_node);
 DECLARE_COMPUTE(compute_gather_node);
+DECLARE_COMPUTE(compute_masked_select_prefix_node);
 DECLARE_COMPUTE(compute_slice_node);
 DECLARE_COMPUTE(compute_embedding_node);
 DECLARE_COMPUTE(compute_concat_node);
 DECLARE_COMPUTE(compute_cat_node);
 DECLARE_COMPUTE(compute_index_node);
+DECLARE_COMPUTE(compute_unfold_node);
 DECLARE_COMPUTE(compute_bilinear_interpolation_node);
 DECLARE_COMPUTE(compute_sample_node);
 DECLARE_COMPUTE(compute_topk_node);
 DECLARE_COMPUTE(compute_scatter_topk_node);
 DECLARE_COMPUTE(compute_moe_layer_node);
 DECLARE_COMPUTE(compute_dense_mlp_tq_fused_node);
+DECLARE_COMPUTE(compute_qkv_tq_fused_node);
+DECLARE_COMPUTE(compute_projection_pair_tq_fused_node);
+DECLARE_COMPUTE(compute_logits_tq_softcap_node);
 DECLARE_COMPUTE(compute_persistent_node);
 DECLARE_COMPUTE(compute_kv_cache_state_node);
 DECLARE_COMPUTE(compute_kv_cache_append_node);
@@ -104,10 +110,14 @@ DECLARE_COMPUTE(compute_rfft_node);
 DECLARE_COMPUTE(compute_irfft_node);
 DECLARE_COMPUTE(compute_mel_filter_bank_node);
 DECLARE_COMPUTE(compute_spectrogram_node);
+DECLARE_COMPUTE(compute_pad_node);
+DECLARE_COMPUTE(compute_strided_slice_node);
+DECLARE_COMPUTE(compute_expand_node);
+DECLARE_COMPUTE(compute_conv1d_causal_channel_first_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::CONV_CACHE_INITIALIZE) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::LOGITS_TQ_SOFTCAP) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -118,11 +128,27 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::MULTIPLY)] = compute_binary_op_node;
     dispatch_flat[static_cast<int>(OpType::DIVIDE)] = compute_binary_op_node;
     dispatch_flat[static_cast<int>(OpType::NOT_EQUAL)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::EQUAL)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::LESS)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::LESS_EQUAL)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::GREATER)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::GREATER_EQUAL)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::BITWISE_AND)] = compute_binary_op_node;
+    dispatch_flat[static_cast<int>(OpType::BITWISE_OR)] = compute_binary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_ADD)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_SUBTRACT)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_MULTIPLY)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_DIVIDE)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_FLOOR_DIVIDE)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_NOT_EQUAL)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_EQUAL)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_LESS)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_LESS_EQUAL)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_GREATER)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::SCALAR_GREATER_EQUAL)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::LOGICAL_NOT)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::BITWISE_NOT)] = compute_unary_op_node;
+    dispatch_flat[static_cast<int>(OpType::WHERE)] = compute_where_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_EXP)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_SQRT)] = compute_unary_op_node;
     dispatch_flat[static_cast<int>(OpType::SCALAR_COS)] = compute_unary_op_node;
@@ -147,6 +173,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::FLATTEN)] = compute_reshape_node;
     dispatch_flat[static_cast<int>(OpType::VIEW)] = compute_reshape_node;
     dispatch_flat[static_cast<int>(OpType::RESHAPE)] = compute_reshape_node;
+    dispatch_flat[static_cast<int>(OpType::EXPAND)] = compute_expand_node;
     dispatch_flat[static_cast<int>(OpType::PRECISION_CAST)] = compute_precision_cast_node;
     dispatch_flat[static_cast<int>(OpType::MATMUL)] = compute_matmul_node;
     dispatch_flat[static_cast<int>(OpType::RMS_NORM)] = compute_rms_norm_node;
@@ -160,6 +187,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::ATTENTION_INT8_HYBRID)] = compute_attention_int8_hybrid_node;
     dispatch_flat[static_cast<int>(OpType::REL_POS_BIAS)] = compute_rel_pos_bias_node;
     dispatch_flat[static_cast<int>(OpType::CONV1D_CAUSAL)] = compute_conv1d_causal_node;
+    dispatch_flat[static_cast<int>(OpType::CONV1D_CAUSAL_CHANNEL_FIRST)] = compute_conv1d_causal_channel_first_node;
     dispatch_flat[static_cast<int>(OpType::CONV1D_K3)] = compute_conv1d_k3_node;
     dispatch_flat[static_cast<int>(OpType::CONV1D_K7S3)] = compute_conv1d_k7s3_node;
     dispatch_flat[static_cast<int>(OpType::CONV1D)] = compute_conv1d_node;
@@ -172,17 +200,24 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::GLU)] = compute_glu_node;
     dispatch_flat[static_cast<int>(OpType::TRANSPOSE)] = compute_transpose_node;
     dispatch_flat[static_cast<int>(OpType::GATHER)] = compute_gather_node;
+    dispatch_flat[static_cast<int>(OpType::MASKED_SELECT_PREFIX)] = compute_masked_select_prefix_node;
     dispatch_flat[static_cast<int>(OpType::SLICE)] = compute_slice_node;
+    dispatch_flat[static_cast<int>(OpType::STRIDED_SLICE)] = compute_strided_slice_node;
     dispatch_flat[static_cast<int>(OpType::EMBEDDING)] = compute_embedding_node;
     dispatch_flat[static_cast<int>(OpType::CONCAT)] = compute_concat_node;
     dispatch_flat[static_cast<int>(OpType::CAT)] = compute_cat_node;
     dispatch_flat[static_cast<int>(OpType::INDEX)] = compute_index_node;
+    dispatch_flat[static_cast<int>(OpType::UNFOLD)] = compute_unfold_node;
+    dispatch_flat[static_cast<int>(OpType::PAD)] = compute_pad_node;
     dispatch_flat[static_cast<int>(OpType::BILINEAR_INTERPOLATION)] = compute_bilinear_interpolation_node;
     dispatch_flat[static_cast<int>(OpType::SAMPLE)] = compute_sample_node;
     dispatch_flat[static_cast<int>(OpType::TOPK)] = compute_topk_node;
     dispatch_flat[static_cast<int>(OpType::SCATTER_TOPK)] = compute_scatter_topk_node;
     dispatch_flat[static_cast<int>(OpType::MOE_LAYER)] = compute_moe_layer_node;
     dispatch_flat[static_cast<int>(OpType::DENSE_MLP_TQ_FUSED)] = compute_dense_mlp_tq_fused_node;
+    dispatch_flat[static_cast<int>(OpType::QKV_TQ_FUSED)] = compute_qkv_tq_fused_node;
+    dispatch_flat[static_cast<int>(OpType::PROJECTION_PAIR_TQ_FUSED)] = compute_projection_pair_tq_fused_node;
+    dispatch_flat[static_cast<int>(OpType::LOGITS_TQ_SOFTCAP)] = compute_logits_tq_softcap_node;
     dispatch_flat[static_cast<int>(OpType::PERSISTENT)] = compute_persistent_node;
     dispatch_flat[static_cast<int>(OpType::LSTM_CELL)] = compute_lstm_cell_node;
     dispatch_flat[static_cast<int>(OpType::GATED_DELTANET_DECODE)] = compute_gated_deltanet_decode_node;
@@ -253,7 +288,30 @@ static const char* op_type_names[] = {
     "NOT_EQUAL", "SCALAR_NOT_EQUAL",
     "RECURRENT_CACHE_STATE",
     "RECURRENT_CACHE_WRITE",
-    "CONV_CACHE_INITIALIZE"
+    "CONV_CACHE_INITIALIZE",
+    "EQUAL",
+    "LESS",
+    "LESS_EQUAL",
+    "GREATER",
+    "GREATER_EQUAL",
+    "SCALAR_EQUAL",
+    "SCALAR_LESS",
+    "SCALAR_LESS_EQUAL",
+    "SCALAR_GREATER",
+    "SCALAR_GREATER_EQUAL",
+    "LOGICAL_NOT",
+    "BITWISE_AND",
+    "BITWISE_OR",
+    "BITWISE_NOT",
+    "WHERE",
+    "UNFOLD",
+    "PAD",
+    "SCALAR_FLOOR_DIVIDE",
+    "STRIDED_SLICE",
+    "EXPAND",
+    "MASKED_SELECT_PREFIX",
+    "QKV_TQ_FUSED", "PROJECTION_PAIR_TQ_FUSED", "CONV1D_CAUSAL_CHANNEL_FIRST",
+    "LOGITS_TQ_SOFTCAP"
 };
 
 static const char* get_op_name(OpType op) {
@@ -303,6 +361,61 @@ void CactusGraph::set_external_input(size_t node_id, void* data, Precision) {
     embedded_input_node_ids_.erase(node_id);
 }
 
+std::shared_ptr<TensorStorage> CactusGraph::export_tensor_storage(size_t node_id) {
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end()) {
+        throw std::out_of_range("Unknown node id: " + std::to_string(node_id));
+    }
+
+    auto& buffer = nodes_[it->second]->output_buffer;
+    if (!buffer.get_data() || buffer.byte_size == 0) return {};
+
+    if (!buffer.shared_data) {
+        if (buffer.data) {
+            buffer.shared_data = std::shared_ptr<char[]>(std::move(buffer.data));
+        } else {
+            auto owned = std::shared_ptr<char[]>(new char[buffer.byte_size], std::default_delete<char[]>());
+            std::memcpy(owned.get(), buffer.get_data(), buffer.byte_size);
+            buffer.shared_data = std::move(owned);
+            buffer.external_data = nullptr;
+            if (buffer.pooled_data) {
+                buffer.release_to_pool(buffer_pool_);
+            }
+        }
+    }
+
+    auto storage = std::make_shared<TensorStorage>();
+    storage->data = buffer.shared_data;
+    storage->shape = buffer.shape;
+    storage->total_size = buffer.total_size;
+    storage->byte_size = buffer.byte_size;
+    storage->precision = buffer.precision;
+    return storage;
+}
+
+bool CactusGraph::bind_tensor_storage(size_t node_id, const std::shared_ptr<TensorStorage>& storage, bool require_exact_shape) {
+    auto it = node_index_map_.find(node_id);
+    if (it == node_index_map_.end() || !storage || !storage->valid()) return false;
+
+    auto& node = *nodes_[it->second];
+    auto& buffer = node.output_buffer;
+    const bool is_state = node.op_type == OpType::KV_CACHE_STATE
+        || node.op_type == OpType::CONV_CACHE_STATE
+        || node.op_type == OpType::RECURRENT_CACHE_STATE;
+    if (buffer.precision != storage->precision && !is_state) return false;
+    if (require_exact_shape && buffer.shape != storage->shape && !is_state) return false;
+    if (!is_state && buffer.byte_size != storage->byte_size) return false;
+
+    buffer.release_memory(buffer_pool_);
+    buffer.shape = storage->shape;
+    buffer.total_size = storage->total_size;
+    buffer.byte_size = storage->byte_size;
+    buffer.precision = storage->precision;
+    buffer.shared_data = storage->data;
+    if (node.op_type == OpType::INPUT) embedded_input_node_ids_.erase(node_id);
+    return true;
+}
+
 void* CactusGraph::get_output(size_t node_id) {
     auto it = node_index_map_.find(node_id);
     if (it == node_index_map_.end()) {
@@ -340,7 +453,40 @@ std::vector<size_t> infer_output_shape(const GraphNode& node, const nodes_vector
         }
         case OpType::ADD: case OpType::ADD_CLIPPED: case OpType::SUBTRACT:
         case OpType::MULTIPLY: case OpType::DIVIDE: case OpType::NOT_EQUAL:
+        case OpType::EQUAL: case OpType::LESS: case OpType::LESS_EQUAL:
+        case OpType::GREATER: case OpType::GREATER_EQUAL:
+        case OpType::BITWISE_AND: case OpType::BITWISE_OR:
             return BroadcastInfo::compute(in(0), in(1)).output_shape;
+        case OpType::WHERE: {
+            auto first = BroadcastInfo::compute(in(0), in(1)).output_shape;
+            return BroadcastInfo::compute(first, in(2)).output_shape;
+        }
+        case OpType::EXPAND:
+            return node.params.new_shape;
+        case OpType::UNFOLD: {
+            std::vector<size_t> out = in(0);
+            size_t axis = node.params.axis < 0 ? out.size() + static_cast<size_t>(node.params.axis)
+                                               : static_cast<size_t>(node.params.axis);
+            out[axis] = ((out[axis] - node.params.kernel_size) / node.params.stride) + 1;
+            out.push_back(node.params.kernel_size);
+            return out;
+        }
+        case OpType::STRIDED_SLICE: {
+            std::vector<size_t> out = in(0);
+            size_t axis = node.params.axis < 0 ? out.size() + static_cast<size_t>(node.params.axis)
+                                               : static_cast<size_t>(node.params.axis);
+            out[axis] = node.params.slice_length;
+            return out;
+        }
+        case OpType::PAD: {
+            std::vector<size_t> out = in(0);
+            const auto& pads = node.params.new_shape;
+            for (size_t pair = 0; pair + 1 < pads.size(); pair += 2) {
+                size_t axis = out.size() - 1 - (pair / 2);
+                out[axis] += pads[pair] + pads[pair + 1];
+            }
+            return out;
+        }
         case OpType::ATTENTION: case OpType::ATTENTION_CACHED: case OpType::ATTENTION_INT8_HYBRID: {
             std::vector<size_t> out = in(0);
             if (node.params.v_head_dim > 0) out.back() = node.params.v_head_dim;
@@ -437,6 +583,9 @@ void CactusGraph::infer_shapes() {
         switch (node.op_type) {
             case OpType::ADD: case OpType::ADD_CLIPPED: case OpType::SUBTRACT:
             case OpType::MULTIPLY: case OpType::DIVIDE: case OpType::NOT_EQUAL:
+            case OpType::EQUAL: case OpType::LESS: case OpType::LESS_EQUAL:
+            case OpType::GREATER: case OpType::GREATER_EQUAL:
+            case OpType::BITWISE_AND: case OpType::BITWISE_OR:
                 node.params.broadcast_info = BroadcastInfo::compute(
                     get_input(node, 0, nodes_, node_index_map_).shape,
                     get_input(node, 1, nodes_, node_index_map_).shape);
@@ -1760,7 +1909,8 @@ void CactusGraph::execute(const std::string& profile_file) {
                 continue;
             }
             if (preallocates_output(*node)) {
-                node->output_buffer.resize_from_pool(pool);
+                if (retained_output_node_ids_.count(node->id)) node->output_buffer.allocate();
+                else node->output_buffer.resize_from_pool(pool);
             }
             run(*node);
             trace_nonfinite(i, *node);
@@ -1818,11 +1968,14 @@ void CactusGraph::execute(const std::string& profile_file) {
 
     if (enable_profiling) {
         *out << "=== Graph Execution Profile ===" << std::endl;
-        *out << std::left << std::setw(24) << "Operation"
+        if (!profile_label_.empty()) *out << "Component: " << profile_label_ << std::endl;
+        *out << std::left << std::setw(32) << "Operation"
+             << std::setw(10) << "Node"
              << std::setw(12) << "Time (ms)"
+             << std::setw(14) << "Bytes"
              << std::setw(20) << "Output Shape"
              << "Backend" << std::endl;
-        *out << std::string(72, '-') << std::endl;
+        *out << std::string(96, '-') << std::endl;
     }
 
     for (size_t node_idx = 0; node_idx < n; ++node_idx) {
@@ -1878,8 +2031,10 @@ void CactusGraph::execute(const std::string& profile_file) {
             }
             shape_str += "]";
 
-            *out << std::left << std::setw(24) << get_op_name(node->op_type)
+            *out << std::left << std::setw(32) << get_op_name(node->op_type)
+                 << std::setw(10) << node->id
                  << std::setw(12) << std::fixed << std::setprecision(3) << ms
+                 << std::setw(14) << node->output_buffer.byte_size
                  << std::setw(20) << shape_str << std::endl;
         } else {
             dispatch_node(*node, nodes_, node_index_map_);
@@ -2139,7 +2294,7 @@ void CactusGraph::execute(const std::string& profile_file) {
         auto total_duration = std::chrono::duration_cast<std::chrono::microseconds>(total_end - total_start);
         double total_ms = total_duration.count() / 1000.0;
 
-        *out << std::string(72, '-') << std::endl;
+        *out << std::string(96, '-') << std::endl;
         *out << "Total execution time: " << std::fixed << std::setprecision(3) << total_ms << " ms" << std::endl;
         *out << "================================" << std::endl;
 

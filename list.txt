@@ -1,0 +1,152 @@
+Current transpiler feature inventory
+
+- End-to-end PyTorch-to-Cactus pipeline:
+  canonicalize a model interface, capture with torch.export, import exported FX
+  graphs into IRGraph, canonicalize/optimize the IR, fuse recognized patterns,
+  lower to a Cactus Graph, and save runnable artifacts.
+
+- HuggingFace model loading:
+  task inference from config/model id, tokenizer/processor loading, optional
+  trust_remote_code/local-files-only handling, dtype selection, HF token support,
+  converted weight directory validation, and model-family aliases.
+
+- Supported task shapes:
+  causal_lm_logits, multimodal_causal_lm_logits, encoder_hidden_states,
+  ctc_logits, seq2seq_transcription, tdt_transcription, and text_embedding.
+
+- Tested/profiled model families:
+  Gemma 3/4, Qwen 3/3.5 including vision variants, LFM2/LFM2-VL/LFM2.5,
+  Whisper, Parakeet CTC, Parakeet TDT, Nomic text embedding, and Needle-style
+  encoder/decoder generation graphs.
+
+- Model interface adapters:
+  causal LM wrappers, multimodal causal LM wrappers, audio encoder wrappers,
+  CTC wrappers, seq2seq transcription wrappers, TDT transcription wrappers,
+  text embedding wrappers, cache-aware decoder wrappers, and family-specific
+  prompt/input normalization.
+
+- Representative input preparation:
+  prompt/input-id shaping, max-new-token context preallocation, audio WAV loading
+  and log-mel/native feature extraction, image resizing/limits, multimodal prompt
+  construction, system prompt support, thinking marker support, and default tiny
+  test media for shape capture.
+
+- Component pipeline support:
+  monolithic graph capture plus split component capture for models that need it,
+  including vision_encoder, audio_encoder, lm_encoder, decoder, decoder_step,
+  lm_encoder_step, decoder_prefill_chunk, decoder_embed_chunk,
+  decoder_media_step, source_encoder, decoder_cross_kv, text_embedding, and
+  model-specific component subsets.
+
+- Dynamic/cache behavior:
+  cached decoder-step graphs, internal KV cache metadata, shared KV cache routes,
+  cross-attention KV routes, configurable cache context length, dynamic-batch
+  Gemma4 decoder graph emission, max-slots slot pool sizing, FP16 cache component
+  hints, and reset support between generations.
+
+- JAX and Flax user graph support:
+  capture_jax_function, capture_jax_function_with_params, JaxGraphSpec,
+  build_jax_user_graph_bundle, build_jax_generation_graph_bundle, saved component
+  manifests/graphs/weights, loading saved JAX bundles, external weights dirs,
+  decoder-step attention rewrites, and encoder-decoder graph boundaries.
+
+- IR features:
+  IRValue, IRNode, IRGraph, graph metadata, lifted constants, graph verification,
+  shape/dtype metadata, constant tables, imported component annotations, opaque
+  node preservation for unknown ops, saved raw_ir.json and optimized_ir.json, and
+  re-lowering from saved IR.
+
+- Weight binding:
+  explicit weights_manifest.json resolution, source-name aliases, mmap-backed
+  constants, graph_bindings.json, per-component bound constant metadata,
+  materialized constant tensors, scalar constants, embedding binding reuse,
+  compatibility companion generation for INT8/CQ embeddings and legacy packed
+  INT4/CQ4 files, and debug logging for mmap decisions.
+
+- Canonicalization and cleanup:
+  target/op spelling normalization, dtype normalization, transpose/movedim to
+  permute rewrites, shape-only op cleanup, constant folding, materialization of
+  ones/zeros/arange, no-op cast/view/slice removal, precision legalization casts,
+  graph rebuild, dead-code elimination, unsupported-op counts, and repeated
+  cleanup passes.
+
+- Import-time semantic rewrites:
+  scaled_dot_product_attention to semantic attention, explicit linear tagging,
+  early RoPE recognition, import hints, nested exported subgraph inlining, and
+  ATen/op-based behavior instead of HuggingFace layer-name dispatch.
+
+- Imported ATen/export operations:
+  arange, identity/clone/alias/detach/dropout, add/subtract/multiply/divide,
+  floor_divide, comparisons, logical ops, where, masked_fill, masked_scatter,
+  abs, clamp, neg, exp, sqrt, reciprocal, log, rsqrt, cos, sin, reshape/view,
+  flatten, squeeze/unsqueeze, expand, repeat, one_hot, tril, unfold, transpose,
+  numpy_T, permute, movedim, matmul/mm/bmm, linear, addmm, relu, silu, gelu,
+  gelu_erf, sigmoid, glu, softplus, tanh, softmax, scaled dot-product attention,
+  sum, mean, variance, min/max/amin/amax, cat, split_with_sizes, chunk, unbind,
+  ones, pad, pow, diff, slice, select/index, gather, embedding, conv1d, conv2d,
+  layer_norm, rms_norm, group_norm, batch_norm, contiguous, and getitem.
+
+- Lowered Cactus graph operations:
+  elementwise math, scalar math, comparisons, logical ops, where, precision casts,
+  layout/view/reshape/flatten/squeeze/unsqueeze/expand/repeat/permute/transpose,
+  one_hot, tril, unfold, pad, matmul/linear/addmm, dense_mlp_tq_fused, reductions,
+  activations, softmax, LSTM cell, attention, scaled_dot_product_attention,
+  attention_block, self_attention_block, cumsum, cat/split/chunk, slice, index,
+  gather, embedding_from_tensor, conv_module, conv1d, conv2d, layer_norm,
+  rms_norm, rope, rel_pos_bias, group_norm, batch_norm, advanced_index,
+  masked_fill, and getitem.
+
+- Fusion/optimization passes:
+  RMSNorm, RMSNorm scale multiply, RoPE, attention, attention_block,
+  self_attention_block, dense MLP/gated MLP, conv module, LSTM cell,
+  relative-position bias, add_clipped, gated DeltaNet prefill/decode, linear
+  projection matching, gold-pattern annotation, unused-input pruning, and Gemma4
+  decoder attention semantic normalization.
+
+- Special model-family behavior:
+  Gemma4 multimodal component splitting, Gemma4 checkpoint key repair, Gemma4
+  prompt/token drift normalization, Gemma4 sliding-window/window-size attention
+  handling, Gemma4 decoder attention lowering fallback, Qwen/LFM multimodal
+  preprocessing, Parakeet TDT local runtime reconstruction and greedy decode,
+  Whisper prompt token handling, Nomic embedding component planning, and Needle
+  encoder/cross-KV/decoder-step planning.
+
+- Optional execution and validation:
+  skip-execute mode, execute-after-transpile mode, PyTorch reference comparison,
+  skip-reference-compare, next-token reporting for text/multimodal LMs, transcript
+  reporting for Parakeet TDT/CTC paths, generic audio output-shape reporting, and
+  result.json writing.
+
+- Saved artifact layout:
+  graph.cactus, graph_bindings.json, raw_ir.json, optimized_ir.json, result.json,
+  components/manifest.json, per-component graph.cactus files, per-component
+  bound_constants directories, logical input/output metadata, runtime node ids,
+  cache state node ids, and weight binding metadata.
+
+- CLI/API surface:
+  internal cactus.cli.transpile.run_transpile, python -m cactus.transpile.hf_model,
+  cactus convert graph-build forwarding, --task, --prompt, --system-prompt,
+  --enable-thinking, --input-ids, --image-file, --audio-file, --max-new-tokens,
+  --weights-dir, --artifact-dir, --graph-filename, --component-pipeline,
+  --components, --torch-dtype, --trust-remote-code, --local-files-only,
+  --allow-unconverted-weights, --dynamic-batch, --max-slots, --cache-context-length,
+  --skip-execute, --skip-reference-compare, --execute-after-transpile, and fusion
+  disable flags.
+
+- Apple NPU/CoreML emission:
+  --npu, --npu-quantize, --npu-audio-quantize, --npu-vision-quantize, audio encoder
+  mlpackage export, vision encoder mlpackage export, source encoder export,
+  CoreMLTools compatibility patches, per-component quantization defaults, and
+  integration into component bundle manifests.
+
+- Runtime compatibility helpers:
+  Python Graph wrapper monkey patches for missing current-runtime symbols, generic
+  matmul fallback, gather(axis=0), limited conv2d, not_equal, scalar math
+  legalization, Transformers/Gemma4 import support, torchvision/_lzma/nms import
+  patches, and flex_attention AuxRequest compatibility.
+
+- Runtime bundle execution support:
+  saved-bundle execution for causal_lm_logits, multimodal_causal_lm_logits,
+  encoder_hidden_states, and tdt_transcription; ctc_logits transpilation without a
+  saved-bundle executor; native run-binary handoff through components/manifest.json;
+  local bundle detection; and Cactus-Compute download fallback integration.
