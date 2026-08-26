@@ -1,8 +1,6 @@
 #ifndef CACTUS_FFI_H
 #define CACTUS_FFI_H
 
-#include "cactus_graph.h"
-
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
