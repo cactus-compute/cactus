@@ -4,6 +4,15 @@ project(CactusKernels LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(NOT APPLE AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    message(FATAL_ERROR
+        "Cactus targets ARM64 (AArch64) with an ARMv8.2-A baseline (+fp16+simd+dotprod+i8mm): "
+        "Apple Silicon, an ARMv8.2+ Android/Linux device, or a 64-bit Raspberry Pi 5.\n"
+        "Detected CMAKE_SYSTEM_PROCESSOR='${CMAKE_SYSTEM_PROCESSOR}', which is unsupported. "
+        "x86/x86_64 (including WSL2) has no ARM NEON path, and ARMv8.0 CPUs such as the "
+        "Raspberry Pi 4 lack the required instructions. See docs/compatibility.md.")
+endif()
+
 add_library(cactus_kernels STATIC
     src/attention.cpp
     src/attention_hybrid.cpp
