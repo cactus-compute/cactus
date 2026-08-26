@@ -170,6 +170,7 @@ def cmd_convert(args):
             reconvert=args.reconvert,
             output_dir=output_dir,
             skip_model_load=bool(getattr(args, "skip_model_load", False)),
+            calibration_manifest=getattr(args, "calibration_manifest", None),
         )
         if getattr(args, "weights_only", False):
             return 0
