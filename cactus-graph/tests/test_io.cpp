@@ -453,6 +453,46 @@ bool test_save_load_preserves_kv_cache_num_slots() {
     }
 }
 
+bool test_shared_mmap_weights_dedup() {
+    try {
+        std::string filename = "test_shared_mmap_dedup.bin";
+        {
+            CactusGraph graph;
+            size_t in_node = graph.input({2, 4}, Precision::FP16);
+            std::vector<__fp16> data = {1, 2, 3, 4, 5, 6, 7, 8};
+            graph.set_input(in_node, data.data(), Precision::FP16);
+            graph.execute();
+            GraphFile::save_node(graph, in_node, filename);
+        }
+
+        void* ptr1 = nullptr;
+        void* ptr2 = nullptr;
+
+        {
+            CactusGraph graph1;
+            size_t id1 = graph1.mmap_weights(filename);
+            graph1.execute();
+            ptr1 = graph1.get_output(id1);
+
+            CactusGraph graph2;
+            size_t id2 = graph2.mmap_weights(filename);
+            graph2.execute();
+            ptr2 = graph2.get_output(id2);
+
+            if (ptr1 == nullptr || ptr2 == nullptr || ptr1 != ptr2) {
+                std::remove(filename.c_str());
+                return false;
+            }
+        }
+
+        std::remove(filename.c_str());
+        return true;
+    } catch (const std::exception& e) {
+        std::cout << "[shared_mmap_weights_dedup] exception: " << e.what() << std::endl;
+        return false;
+    }
+}
+
 bool run_benchmarks() {
     const int ITERS = 100;
     const std::string temp_file = "bench_io_50nodes.cg";
@@ -517,6 +557,7 @@ int main() {
                     test_save_load_preserves_recurrent_cache_persistence());
     runner.run_test("Save/Load Preserves KV Cache Num Slots",
                     test_save_load_preserves_kv_cache_num_slots());
+    runner.run_test("Shared Mmap Weights Deduplication", test_shared_mmap_weights_dedup());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

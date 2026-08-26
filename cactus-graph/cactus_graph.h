@@ -864,7 +864,7 @@ private:
     size_t attach_conv_bias(size_t node, size_t bias, size_t expected_size, const char* op_name);
     static CactusGraph from_serialized(const GraphFile::SerializedGraph& serialized);
     size_t next_node_id_;
-    std::vector<std::unique_ptr<GraphFile::MappedFile>> mapped_files_;
+    std::vector<std::shared_ptr<GraphFile::MappedFile>> mapped_files_;
     std::unordered_map<std::string, size_t> weight_cache_;
     std::unordered_map<size_t, size_t> node_to_mapped_file_;
     std::vector<DebugNodeEntry> debug_nodes_;
@@ -918,6 +918,17 @@ namespace GraphFile {
     SerializedGraph load_graph(const std::string& filename);
     void save_graph(const CactusGraph& graph, const std::string& filename);
     void save_node(CactusGraph& graph, size_t node_id, const std::string& filename);
+
+    class MappedFile;
+
+    class MappedFileRegistry {
+    public:
+        static std::shared_ptr<MappedFile> get_or_load(const std::string& filename);
+        static void clear();
+    private:
+        static std::mutex mutex_;
+        static std::unordered_map<std::string, std::weak_ptr<MappedFile>> cache_;
+    };
 
     class MappedFile {
     public:
