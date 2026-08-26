@@ -102,6 +102,7 @@ OPS: tuple[OpSchema, ...] = (
     OpSchema("batch_norm", num_inputs=5, attrs=("axis", "eps"), backend_op="batch_norm"),
     OpSchema("conv1d", num_inputs=2, attrs=("stride", "padding", "dilation", "groups"), backend_op="conv1d"),
     OpSchema("conv2d", num_inputs=2, attrs=("stride", "padding", "dilation", "groups"), backend_op="conv2d"),
+    OpSchema("upsample_nearest2d", num_inputs=1, attrs=("scale_factor",), backend_op="upsample_nearest2d"),
     OpSchema("pad", num_inputs=1, attrs=("pads", "value", "mode")),
     OpSchema("lstm_cell", num_inputs=7, backend_op="lstm_cell"),
 

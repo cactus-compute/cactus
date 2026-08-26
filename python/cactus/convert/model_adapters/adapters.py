@@ -502,6 +502,93 @@ class WhisperAdapter(FamilyAdapter):
             return None
 
 
+def _verbatim_name_tensor(source_name: str, component: str) -> NameMatch:
+    if not (source_name.endswith(".weight") or source_name.endswith(".bias")):
+        return NameMatch(source_name, None, component, False, hf_name=source_name, adapter_name=source_name)
+    generic = source_name.replace(".", "_")
+    output = generic[:-7] + ".weights" if generic.endswith("_weight") else generic[:-5] + ".bias"
+    return NameMatch(source_name, output, component, True, hf_name=source_name, adapter_name=source_name)
+
+
+class TaesdAdapter(FamilyAdapter):
+    family = "taesd"
+
+    def runtime_config(self, cfg: Any) -> dict[str, Any]:
+        return {
+            "latent_channels": int(_cfg_get(cfg, "latent_channels", 4) or 4),
+            "latent_magnitude": float(_cfg_get(cfg, "latent_magnitude", 3) or 3),
+            "latent_shift": float(_cfg_get(cfg, "latent_shift", 0.5) or 0.5),
+            "upsampling_scaling_factor": int(_cfg_get(cfg, "upsampling_scaling_factor", 2) or 2),
+        }
+
+    def model_class(self, cfg: Any):
+        return None
+
+    def load_processor(self, model_id_or_path: str):
+        return None
+
+    def name_tensor(self, source_name: str, _tensor: Any, _num_layers: int | None) -> NameMatch:
+        return _verbatim_name_tensor(source_name, "vision")
+
+    def policy(self, match: NameMatch, _shape: tuple[int, ...], _requested_bits: int) -> TensorPolicy:
+        if match.output_name is None:
+            return TensorPolicy("ignored", "none", None, match.component, False, "none", "no output filename")
+        return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "tiny autoencoder conv tensor")
+
+
+class SdUnetAdapter(FamilyAdapter):
+    family = "sd_unet"
+
+    def runtime_config(self, cfg: Any) -> dict[str, Any]:
+        return {
+            "in_channels": int(_cfg_get(cfg, "in_channels", 4) or 4),
+            "sample_size": int(_cfg_get(cfg, "sample_size", 64) or 64),
+            "cross_attention_dim": int(_cfg_get(cfg, "cross_attention_dim", 768) or 768),
+            "block_out_channels": [int(c) for c in _cfg_get(cfg, "block_out_channels", [320, 640, 1280, 1280])],
+            "time_cond_proj_dim": int(_cfg_get(cfg, "time_cond_proj_dim", 0) or 0),
+        }
+
+    def model_class(self, cfg: Any):
+        return None
+
+    def load_processor(self, model_id_or_path: str):
+        return None
+
+    def name_tensor(self, source_name: str, _tensor: Any, _num_layers: int | None) -> NameMatch:
+        return _verbatim_name_tensor(source_name, "vision")
+
+    def policy(self, match: NameMatch, _shape: tuple[int, ...], _requested_bits: int) -> TensorPolicy:
+        if match.output_name is None:
+            return TensorPolicy("ignored", "none", None, match.component, False, "none", "no output filename")
+        return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "diffusion unet tensor")
+
+
+class ClipTextAdapter(FamilyAdapter):
+    family = "clip_text"
+
+    def runtime_config(self, cfg: Any) -> dict[str, Any]:
+        return {
+            "hidden_size": int(_cfg_get(cfg, "hidden_size", 768) or 768),
+            "num_hidden_layers": int(_cfg_get(cfg, "num_hidden_layers", 12) or 12),
+            "max_position_embeddings": int(_cfg_get(cfg, "max_position_embeddings", 77) or 77),
+            "vocab_size": int(_cfg_get(cfg, "vocab_size", 49408) or 49408),
+        }
+
+    def model_class(self, cfg: Any):
+        return None
+
+    def load_processor(self, model_id_or_path: str):
+        return None
+
+    def name_tensor(self, source_name: str, _tensor: Any, _num_layers: int | None) -> NameMatch:
+        return _verbatim_name_tensor(source_name, "language")
+
+    def policy(self, match: NameMatch, _shape: tuple[int, ...], _requested_bits: int) -> TensorPolicy:
+        if match.output_name is None:
+            return TensorPolicy("ignored", "none", None, match.component, False, "none", "no output filename")
+        return TensorPolicy("fallback", "FP16", None, match.component, False, "none", "clip text encoder tensor")
+
+
 class ParakeetAdapter(FamilyAdapter):
     family = "parakeet"
 
@@ -884,6 +971,9 @@ ADAPTERS: dict[str, FamilyAdapter] = {
     "whisper": WhisperAdapter(),
     "parakeet": ParakeetAdapter(),
     "parakeet_tdt": ParakeetTDTAdapter(),
+    "taesd": TaesdAdapter(),
+    "sd_unet": SdUnetAdapter(),
+    "clip_text": ClipTextAdapter(),
 }
 
 

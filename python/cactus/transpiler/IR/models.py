@@ -229,6 +229,8 @@ def extract_attrs(record: CModels.LayerRecord) -> dict[str, Any]:
         if extract_node_refs(value):
             continue
         attrs.setdefault(f"arg_{index}", value)
+    for attr_name, value in constants.OMITTED_ATTR_DEFAULTS.get(record.target, {}).items():
+        attrs.setdefault(attr_name, value)
     return attrs
 
 def generate_node(record: CModels.LayerRecord) -> Node:

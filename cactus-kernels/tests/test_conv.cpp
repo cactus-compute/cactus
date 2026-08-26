@@ -120,6 +120,34 @@ bool test_maxpool1d() {
     return true;
 }
 
+bool test_upsample_nearest2d() {
+    const size_t planes = 6, height = 7, width = 5;
+    std::vector<__fp16> input(planes * height * width);
+    fill_random_fp16(input, -5.0f, 5.0f);
+
+    for (size_t scale = 1; scale <= 3; scale++) {
+        const size_t out_h = height * scale, out_w = width * scale;
+        std::vector<__fp16> output(planes * out_h * out_w, static_cast<__fp16>(0));
+
+        cactus_upsample_nearest2d_f16(input.data(), output.data(), planes, height, width, scale);
+
+        for (size_t p = 0; p < planes; p++) {
+            for (size_t y = 0; y < out_h; y++) {
+                for (size_t x = 0; x < out_w; x++) {
+                    float expected = static_cast<float>(input[p * height * width + (y / scale) * width + x / scale]);
+                    float actual = static_cast<float>(output[p * out_h * out_w + y * out_w + x]);
+                    if (actual != expected) {
+                        std::cerr << "  upsample_nearest2d mismatch [scale=" << scale << ",p=" << p
+                                  << ",y=" << y << ",x=" << x << "]: " << actual << " vs " << expected << "\n";
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
 bool run_benchmarks() {
     {
         const size_t N = 1, L = 3000, C_in = 80, C_out = 512, stride = 1;
@@ -170,6 +198,35 @@ bool run_benchmarks() {
                   << std::fixed << std::setprecision(3) << ms << "ms  "
                   << std::setprecision(1) << ms << " ms\n";
     }
+    {
+        const size_t N = 1, C_in = 64, C_out = 64, H = 512, W = 512;
+        std::vector<__fp16> input(N * C_in * H * W), weight(C_out * C_in * 9), output(N * C_out * H * W);
+        fill_random_fp16(input, -0.5f, 0.5f);
+        fill_random_fp16(weight, -0.5f, 0.5f);
+        cactus_conv2d_f16_k3s1p1_nchw(input.data(), weight.data(), nullptr, output.data(), N, C_in, H, W, C_out);
+        Timer t;
+        for (int i = 0; i < 10; i++)
+            cactus_conv2d_f16_k3s1p1_nchw(input.data(), weight.data(), nullptr, output.data(), N, C_in, H, W, C_out);
+        double ms = t.elapsed_ms() / 10.0;
+        double gflops = (2.0 * N * C_out * H * W * 9 * C_in) / (ms * 1e6);
+        std::cout << "  ⚡ " << std::left << std::setw(28) << "conv2d_k3s1p1 64x512x512"
+                  << std::fixed << std::setprecision(3) << ms << "ms  "
+                  << std::setprecision(1) << gflops << " GFLOPS\n";
+    }
+    {
+        const size_t planes = 64, H = 256, W = 256, scale = 2;
+        std::vector<__fp16> input(planes * H * W), output(planes * H * scale * W * scale);
+        fill_random_fp16(input, -0.5f, 0.5f);
+        cactus_upsample_nearest2d_f16(input.data(), output.data(), planes, H, W, scale);
+        Timer t;
+        for (int i = 0; i < 50; i++)
+            cactus_upsample_nearest2d_f16(input.data(), output.data(), planes, H, W, scale);
+        double ms = t.elapsed_ms() / 50.0;
+        double gbs = (output.size() * sizeof(__fp16)) / (ms * 1e6);
+        std::cout << "  ⚡ " << std::left << std::setw(28) << "upsample_nearest2d 64x256^2"
+                  << std::fixed << std::setprecision(3) << ms << "ms  "
+                  << std::setprecision(1) << gbs << " GB/s\n";
+    }
     return true;
 }
 
@@ -180,6 +237,7 @@ int main() {
     runner.run_test("conv1d_causal_depthwise_channel_first", test_conv1d_causal_depthwise_channel_first());
     runner.run_test("stft_complex", test_stft_complex());
     runner.run_test("maxpool1d", test_maxpool1d());
+    runner.run_test("upsample_nearest2d", test_upsample_nearest2d());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

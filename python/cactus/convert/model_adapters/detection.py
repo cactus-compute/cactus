@@ -3,12 +3,18 @@ from __future__ import annotations
 from ..cactus_adapters.config_utils import cfg_get, detect_model_type
 
 
-SUPPORTED_FAMILIES = {"auto", "gemma3", "gemma4", "qwen", "lfm2", "whisper", "parakeet", "parakeet_tdt", "moonshine", "nomic", "needle", "generic"}
+SUPPORTED_FAMILIES = {"auto", "gemma3", "gemma4", "qwen", "lfm2", "whisper", "parakeet", "parakeet_tdt", "moonshine", "nomic", "needle", "taesd", "sd_unet", "clip_text", "generic"}
 
 
 def detect_family(config, requested: str = "auto") -> str:
     if requested != "auto":
         return requested
+    if cfg_get(config, "_class_name", "") == "AutoencoderTiny":
+        return "taesd"
+    if cfg_get(config, "_class_name", "") == "UNet2DConditionModel":
+        return "sd_unet"
+    if str(cfg_get(config, "model_type", "") or "").lower() == "clip_text_model":
+        return "clip_text"
     text_config = cfg_get(config, "text_config", None)
     base = text_config if text_config is not None else config
     detected = detect_model_type(base, config)

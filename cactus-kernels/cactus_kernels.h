@@ -659,6 +659,14 @@ void cactus_maxpool1d_f16(
     size_t kernel_size,
     size_t stride);
 
+void cactus_upsample_nearest2d_f16(
+    const __fp16* input,
+    __fp16* output,
+    size_t num_planes,
+    size_t height,
+    size_t width,
+    size_t scale);
+
 void cactus_lstm_cell_f16(
     const __fp16* x_input,
     const __fp16* h_prev,

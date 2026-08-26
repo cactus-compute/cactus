@@ -9,6 +9,7 @@ TEXT_DECODE_ROUTE = (combinations.TEXT_EMBED_TO_DECODER, combinations.DECODER_TO
 SPEECH_SEQ2SEQ_PREFILL_ROUTE = (combinations.AUDIO_TEXT_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
 SPEECH_SEQ2SEQ_DECODE_ROUTE = (combinations.AUDIO_TEXT_TO_DECODER, combinations.DECODER_TO_LM_HEAD)
 SPEECH_TRANSCRIBE_ROUTE = (combinations.AUDIO_ENCODER_TO_ASR_DECODER, combinations.AUDIO_ASR_DECODER_TO_ASR_HEAD)
+T2I_GENERATE_ROUTE = (combinations.TEXT_ENCODER_TO_UNET, combinations.UNET_TO_VAE_DECODER)
 TEXT_PREFILL = InferencePattern(name="text_prefill", route=TEXT_PREFILL_ROUTE,)
 TEXT_VISION_PREFILL = InferencePattern(name="text_vision_prefill", route=TEXT_VISION_PREFILL_ROUTE)
 TEXT_AUDIO_PREFILL = InferencePattern(name="text_audio_prefill", route=TEXT_AUDIO_PREFILL_ROUTE)
@@ -17,6 +18,7 @@ TEXT_DECODE = InferencePattern(name="text_decode", route=TEXT_DECODE_ROUTE,)
 SPEECH_SEQ2SEQ_PREFILL = InferencePattern(name="speech_seq2seq_prefill", route=SPEECH_SEQ2SEQ_PREFILL_ROUTE,)
 SPEECH_SEQ2SEQ_DECODE = InferencePattern(name="speech_seq2seq_decode", route=SPEECH_SEQ2SEQ_DECODE_ROUTE)
 SPEECH_TRANSCRIBE = InferencePattern(name="speech_transcribe", route=SPEECH_TRANSCRIBE_ROUTE)
+T2I_GENERATE = InferencePattern(name="t2i_generate", route=T2I_GENERATE_ROUTE)
 
 GEMMA4_INFERENCE_PATTERNS = {
     TEXT_PREFILL.name: TEXT_PREFILL,
@@ -44,4 +46,8 @@ LFM_VLM_INFERENCE_PATTERNS = {
 QWEN2_5_INFERENCE_PATTERNS = {
     TEXT_PREFILL.name: TEXT_PREFILL,
     TEXT_DECODE.name: TEXT_DECODE,
+}
+
+SD15_T2I_INFERENCE_PATTERNS = {
+    T2I_GENERATE.name: T2I_GENERATE,
 }

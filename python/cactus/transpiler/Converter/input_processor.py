@@ -91,6 +91,31 @@ class ParakeetAudioProcessor:
 def parakeet_processor(model_id: str, configs: dict[str, dict[str, Any]], model_profile: str):
     return ParakeetAudioProcessor(configs)
 
+def _latent_shape(configs: dict[str, dict[str, Any]]) -> tuple[int, int, int, int]:
+    unet_config = configs.get("unet/config.json", {})
+    return (1, int(unet_config.get("in_channels", 4)), 64, 64)
+
+def _prompt_token_count(configs: dict[str, dict[str, Any]]) -> int:
+    return int(configs.get("text_encoder/config.json", {}).get("max_position_embeddings", 77))
+
+def clip_text_inputs(configs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    import torch
+    return {"input_ids": torch.zeros((1, _prompt_token_count(configs)), dtype=torch.int64)}
+
+def sd_unet_inputs(configs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    import torch
+    unet_config = configs.get("unet/config.json", {})
+    return {
+        "sample": torch.zeros(_latent_shape(configs), dtype=torch.float16),
+        "timestep": torch.full((1,), float(int(configs.get("scheduler/scheduler_config.json", {}).get("num_train_timesteps", 1000)) - 1), dtype=torch.float16),
+        "encoder_hidden_states": torch.zeros((1, _prompt_token_count(configs), int(unet_config.get("cross_attention_dim", 768))), dtype=torch.float16),
+        "timestep_cond": torch.zeros((1, int(unet_config.get("time_cond_proj_dim", 256))), dtype=torch.float16),
+    }
+
+def taesd_decoder_inputs(configs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    import torch
+    return {"x": torch.zeros(_latent_shape(configs), dtype=torch.float16)}
+
 PROCESSOR_MAP = {
     "google/gemma-4-E2B": gemma4_processor,
     "openai/whisper-tiny": default_processor,
@@ -98,4 +123,10 @@ PROCESSOR_MAP = {
     "LiquidAI/LFM2-VL-3B": default_processor,
     "Qwen/Qwen2.5-0.5B": default_processor,
     "LiquidAI/LFM2.5-8B-A1B": text_tokenizer_processor,
+}
+
+SYNTHETIC_INPUT_BUILDERS = {
+    "clip_text": clip_text_inputs,
+    "sd_unet": sd_unet_inputs,
+    "taesd_decoder": taesd_decoder_inputs,
 }

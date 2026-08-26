@@ -139,20 +139,23 @@ def build_transpiled_bundle(
         )
 
     print_color(CYAN, f"\nRunning Generator (Caesar v{generator_version})")
+    bundle_metadata = {
+        "model_id": str(profile_model_id or model_id),
+        "source_model_id": str(model_id),
+        "input_modalities": ",".join(modalities),
+        "profile_source": profile_source,
+        "generic_task": resolved.generic_task,
+        "cache_style": resolved.cache_style,
+        "fusion_groups": ",".join(profile.fusion_fields),
+    }
+    bundle_metadata.update(diffusion_scheduler_metadata(weights_path))
+
     result = generate_bundle(
         simplified_maps,
         bundle_path,
         model_profile=profile,
         weights_dir=weights_path,
-        metadata={
-            "model_id": str(profile_model_id or model_id),
-            "source_model_id": str(model_id),
-            "input_modalities": ",".join(modalities),
-            "profile_source": profile_source,
-            "generic_task": resolved.generic_task,
-            "cache_style": resolved.cache_style,
-            "fusion_groups": ",".join(profile.fusion_fields),
-        },
+        metadata=bundle_metadata,
         strict=strict,
         allow_unsupported_ops=allow_unsupported_ops,
     )
@@ -165,10 +168,32 @@ def build_transpiled_bundle(
     return bundle_path
 
 
+def diffusion_scheduler_metadata(weights_dir: Path) -> dict[str, str]:
+    scheduler_path = weights_dir / "scheduler_config.json"
+    if not scheduler_path.exists():
+        return {}
+    scheduler = json.loads(scheduler_path.read_text(encoding="utf-8"))
+    return {
+        "diffusion_beta_start": str(scheduler.get("beta_start", 0.00085)),
+        "diffusion_beta_end": str(scheduler.get("beta_end", 0.012)),
+        "diffusion_beta_schedule": str(scheduler.get("beta_schedule", "scaled_linear")),
+        "diffusion_num_train_timesteps": str(scheduler.get("num_train_timesteps", 1000)),
+        "diffusion_original_inference_steps": str(scheduler.get("original_inference_steps", 50)),
+        "diffusion_timestep_scaling": str(scheduler.get("timestep_scaling", 10.0)),
+        "diffusion_prediction_type": str(scheduler.get("prediction_type", "epsilon")),
+    }
+
+
 def profile_for_model_id(model_id: str):
     from cactus.transpiler.ModelProfiles import profiles
 
     return profiles.profile_for_model_id(model_id)
+
+
+def export_modes(profile) -> tuple[str, ...]:
+    from cactus.transpiler.ModelProfiles import profiles
+
+    return profiles.export_modes_for_profile(profile) or DEFAULT_TRANSPILER_MODES
 
 
 def resolve_transpile_config(
@@ -200,6 +225,7 @@ def resolve_transpile_config(
             profile=profile,
             modalities=default_modalities(profile),
             profile_source="registered",
+            inference_modes=export_modes(profile),
         )
 
     resolved_task = generic_task or "causal-lm"

@@ -173,11 +173,6 @@ std::map<std::string, std::string> json_string_map(const picojson::object& obj, 
     return out;
 }
 
-namespace {
-void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
-                        const void* src_data, size_t src_bytes, Precision src_prec);
-}  // namespace
-
 size_t parse_ceil_divisor(const std::string& value) {
     const std::string prefix = "ceil_div:";
     if (value.rfind(prefix, 0) != 0) return 0;
@@ -766,6 +761,15 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
     if (has_metadata_encoder_cross_kv_route) {
         decode_route_ = DecodeRoute::ENCODER_CROSS_KV_STEP;
         required_components = {decoder_name};
+    } else if (runtime_execution_strategy_ == "iterative_denoise") {
+        decode_route_ = DecodeRoute::ITERATIVE_DENOISE;
+        required_components = {"text_encoder", "unet", "vae_decoder"};
+        for (const std::string& name : required_components) {
+            if (!components_.count(name)) {
+                CACTUS_LOG_ERROR("model", "iterative_denoise bundle is missing the " << name << " component");
+                return false;
+            }
+        }
     } else if (has_chunked_prefill) {
         encoder_name = "lm_encoder_step";
         decoder_name = "decoder_media_step";
@@ -821,6 +825,7 @@ bool Model::init(const std::string& bundle_dir, size_t context_size,
             : decoder_prefill_chunk_;
     } else if (decode_route_ != DecodeRoute::ENCODER_CROSS_KV_STEP
             && decode_route_ != DecodeRoute::FULL_CONTEXT_TEXT
+            && decode_route_ != DecodeRoute::ITERATIVE_DENOISE
             && !components_.count("audio_encoder")) {
         CACTUS_LOG_WARN("model", "Bundle has no decoder_prefill_chunk component; prompts will prefill token-by-token (prefill speed ~= decode speed).");
     }
@@ -1027,6 +1032,21 @@ bool Model::load_manifest() {
     media_chunk_output_sources_ = parse_csv_string_map(read_string_key("media_chunk_output_sources"));
     image_feature_candidates_ = parse_csv_strings(read_string_key("media_image_feature_names"));
     audio_feature_candidates_ = parse_csv_strings(read_string_key("media_audio_feature_names"));
+
+    const std::string beta_start = read_string_key("diffusion_beta_start");
+    if (!beta_start.empty()) diffusion_.beta_start = std::stof(beta_start);
+    const std::string beta_end = read_string_key("diffusion_beta_end");
+    if (!beta_end.empty()) diffusion_.beta_end = std::stof(beta_end);
+    const std::string beta_schedule = read_string_key("diffusion_beta_schedule");
+    if (!beta_schedule.empty()) diffusion_.beta_schedule = beta_schedule;
+    diffusion_.num_train_timesteps = parse_uint32_or_zero(read_string_key("diffusion_num_train_timesteps"));
+    if (diffusion_.num_train_timesteps == 0) diffusion_.num_train_timesteps = 1000;
+    diffusion_.original_inference_steps = parse_uint32_or_zero(read_string_key("diffusion_original_inference_steps"));
+    if (diffusion_.original_inference_steps == 0) diffusion_.original_inference_steps = 50;
+    const std::string timestep_scaling = read_string_key("diffusion_timestep_scaling");
+    if (!timestep_scaling.empty()) diffusion_.timestep_scaling = std::stof(timestep_scaling);
+    const std::string prediction_type = read_string_key("diffusion_prediction_type");
+    if (!prediction_type.empty()) diffusion_.prediction_type = prediction_type;
 
     if (obj.count("npu_audio_encoder") && obj.at("npu_audio_encoder").is<std::string>()) {
         npu_audio_encoder_mlpackage_ = obj.at("npu_audio_encoder").get<std::string>();
@@ -2505,11 +2525,6 @@ void Model::run_media_step(size_t position, const uint8_t* feature_row, size_t f
     run_step(static_cast<uint32_t>(config_.pad_token_id), position, false);
 }
 
-namespace {
-void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
-                        const void* src_data, size_t src_bytes, Precision src_prec);
-}  // namespace
-
 void Model::run_vision_encoder(const std::string& image_path) {
     if (!vision_encoder_) return;
     const std::string strategy = image_preprocess_strategy();
@@ -3346,8 +3361,6 @@ void Model::prefill_with_audio(const std::vector<uint32_t>& tokens,
     prefill_with_media(tokens, {}, audio_features_per_message, profile_file);
 }
 
-namespace {
-
 void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
                         const void* src_data, size_t src_bytes, Precision src_prec) {
     if (dst_prec == src_prec) {
@@ -3376,6 +3389,8 @@ void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
         std::memset(buf.data() + n * dst_elem, 0, (dst_count - n) * dst_elem);
     }
 }
+
+namespace {
 
 static inline void write_int_element(uint8_t* buf, Precision prec, size_t index, int64_t v) {
     switch (prec) {
@@ -5644,6 +5659,7 @@ bool Config::from_json(const std::string& config_path) {
             else if (mt == "needle") model_type = ModelType::NEEDLE;
             else if (mt == "bert" || mt == "nomic") model_type = ModelType::NOMIC;
             else if (mt == "generic") model_type = ModelType::GENERIC;
+            else if (mt == "sd15_t2i") model_type = ModelType::SD15;
             else model_type = ModelType::GEMMA4;
         }
         else if (key == "model_variant") {

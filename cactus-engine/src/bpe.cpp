@@ -3,6 +3,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -455,6 +456,72 @@ std::vector<std::string> BPETokenizer::apply_bpe(const std::vector<std::string>&
     return current_tokens;
 }
 
+std::vector<std::string> BPETokenizer::clip_word_split(const std::string& text) const {
+    static const char* kContractions[] = {"'s", "'t", "'re", "'ve", "'m", "'ll", "'d"};
+    auto is_letter = [](unsigned char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80; };
+    auto is_digit = [](unsigned char c) { return c >= '0' && c <= '9'; };
+    auto is_space = [](unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; };
+
+    std::vector<std::string> words;
+    size_t i = 0;
+    while (i < text.size()) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        if (is_space(c)) {
+            ++i;
+            continue;
+        }
+        if (c == '\'') {
+            bool matched = false;
+            for (const char* contraction : kContractions) {
+                const size_t len = std::strlen(contraction);
+                if (text.compare(i, len, contraction) == 0) {
+                    words.emplace_back(text.substr(i, len));
+                    i += len;
+                    matched = true;
+                    break;
+                }
+            }
+            if (matched) continue;
+        }
+        if (is_letter(c)) {
+            size_t start = i;
+            while (i < text.size() && is_letter(static_cast<unsigned char>(text[i]))) ++i;
+            words.emplace_back(text.substr(start, i - start));
+            continue;
+        }
+        if (is_digit(c)) {
+            words.emplace_back(text.substr(i, 1));
+            ++i;
+            continue;
+        }
+        size_t start = i;
+        while (i < text.size()) {
+            const unsigned char p = static_cast<unsigned char>(text[i]);
+            if (is_space(p) || is_letter(p) || is_digit(p) || p == '\'') break;
+            ++i;
+        }
+        if (i == start) ++i;
+        else words.emplace_back(text.substr(start, i - start));
+    }
+    return words;
+}
+
+void BPETokenizer::encode_clip_segment(const std::string& segment, std::vector<uint32_t>& token_ids) const {
+    std::string lowered = segment;
+    for (char& c : lowered) {
+        if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    }
+    for (const auto& word : clip_word_split(lowered)) {
+        std::vector<std::string> chars = utf8_split(bytes_to_unicode(word));
+        if (chars.empty()) continue;
+        chars.back() += "</w>";
+        for (const auto& token : apply_bpe(chars)) {
+            auto it = token_to_id_.find(token);
+            token_ids.push_back(it != token_to_id_.end() ? it->second : unk_token_id_);
+        }
+    }
+}
+
 std::vector<uint32_t> BPETokenizer::encode(const std::string& text) const {
     if (text.empty()) return {};
 
@@ -468,6 +535,8 @@ std::vector<uint32_t> BPETokenizer::encode(const std::string& text) const {
         auto special_it = special_tokens_.find(segment);
         if (special_it != special_tokens_.end()) {
             token_ids.push_back(special_it->second);
+        } else if (runtime_config_.normalizer == TokenizerRuntimeConfig::Normalizer::CLIP) {
+            encode_clip_segment(segment, token_ids);
         } else {
             std::string normalized_segment = segment;
             std::vector<std::string> chars;
@@ -520,6 +589,20 @@ std::vector<uint32_t> BPETokenizer::encode(const std::string& text) const {
 }
 
 std::string BPETokenizer::decode(const std::vector<uint32_t>& tokens) const {
+    if (runtime_config_.decoder == TokenizerRuntimeConfig::Decoder::CLIP) {
+        std::string unicode_result;
+        unicode_result.reserve(tokens.size() * 6);
+        for (uint32_t token_id : tokens) {
+            if (token_id >= id_to_token_.size()) continue;
+            std::string tok = id_to_token_[token_id];
+            size_t pos = tok.find("</w>");
+            if (pos != std::string::npos) tok = tok.substr(0, pos) + " ";
+            unicode_result += tok;
+        }
+        std::string result = unicode_to_bytes(unicode_result);
+        while (!result.empty() && result.back() == ' ') result.pop_back();
+        return result;
+    }
     if (runtime_config_.decoder == TokenizerRuntimeConfig::Decoder::REPLACE_METASPACE) {
         std::string result;
         result.reserve(tokens.size() * 4);
