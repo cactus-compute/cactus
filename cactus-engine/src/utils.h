@@ -1018,7 +1018,7 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
         size_t role_end = json.find('"', role_start);
         msg.role = json.substr(role_start, role_end - role_start);
         
-        size_t content_pos = json.find("\"content\"", role_end);
+        size_t content_pos = json.find("\"content\"", obj_start);
         if (content_pos != std::string::npos && content_pos < obj_end) {
             size_t content_start = json.find('"', content_pos + 9) + 1;
             size_t content_end = content_start;
