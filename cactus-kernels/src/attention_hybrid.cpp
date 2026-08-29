@@ -1,5 +1,6 @@
 #include "../cactus_kernels.h"
 #include "threading.h"
+#include "neon_dotprod.h"
 #include <arm_neon.h>
 #include <cmath>
 #include <algorithm>
@@ -145,14 +146,14 @@ static void cactus_attention_hybrid_int8_fp16_decode_dot(
                             int32x4_t d3 = vdupq_n_s32(0);
                             int32x4_t d4 = vdupq_n_s32(0);
 
-                            d1 = vdotq_s32(d1, q_lo, vld1q_s8(k1 + qg * QGROUP));
-                            d2 = vdotq_s32(d2, q_lo, vld1q_s8(k2 + qg * QGROUP));
-                            d3 = vdotq_s32(d3, q_lo, vld1q_s8(k3 + qg * QGROUP));
-                            d4 = vdotq_s32(d4, q_lo, vld1q_s8(k4 + qg * QGROUP));
-                            d1 = vdotq_s32(d1, q_hi, vld1q_s8(k1 + qg * QGROUP + 16));
-                            d2 = vdotq_s32(d2, q_hi, vld1q_s8(k2 + qg * QGROUP + 16));
-                            d3 = vdotq_s32(d3, q_hi, vld1q_s8(k3 + qg * QGROUP + 16));
-                            d4 = vdotq_s32(d4, q_hi, vld1q_s8(k4 + qg * QGROUP + 16));
+                            d1 = CACTUS_DOTQ(d1, q_lo, vld1q_s8(k1 + qg * QGROUP));
+                            d2 = CACTUS_DOTQ(d2, q_lo, vld1q_s8(k2 + qg * QGROUP));
+                            d3 = CACTUS_DOTQ(d3, q_lo, vld1q_s8(k3 + qg * QGROUP));
+                            d4 = CACTUS_DOTQ(d4, q_lo, vld1q_s8(k4 + qg * QGROUP));
+                            d1 = CACTUS_DOTQ(d1, q_hi, vld1q_s8(k1 + qg * QGROUP + 16));
+                            d2 = CACTUS_DOTQ(d2, q_hi, vld1q_s8(k2 + qg * QGROUP + 16));
+                            d3 = CACTUS_DOTQ(d3, q_hi, vld1q_s8(k3 + qg * QGROUP + 16));
+                            d4 = CACTUS_DOTQ(d4, q_hi, vld1q_s8(k4 + qg * QGROUP + 16));
 
                             float qg_q = q_scales[qg];
                             sumv1 = vmlaq_n_f32(sumv1, vcvtq_f32_s32(d1), qg_q * ks1[qg]);
@@ -182,8 +183,8 @@ static void cactus_attention_hybrid_int8_fp16_decode_dot(
                             int8x16_t k_lo = vld1q_s8(k_vec + qg * QGROUP);
                             int8x16_t k_hi = vld1q_s8(k_vec + qg * QGROUP + 16);
                             int32x4_t dot_acc = vdupq_n_s32(0);
-                            dot_acc = vdotq_s32(dot_acc, q_lo, k_lo);
-                            dot_acc = vdotq_s32(dot_acc, q_hi, k_hi);
+                            dot_acc = CACTUS_DOTQ(dot_acc, q_lo, k_lo);
+                            dot_acc = CACTUS_DOTQ(dot_acc, q_hi, k_hi);
                             sumv = vmlaq_n_f32(sumv, vcvtq_f32_s32(dot_acc), q_scales[qg] * k_scale_base[qg]);
                         }
                         float score = vaddvq_f32(sumv) * scale;
