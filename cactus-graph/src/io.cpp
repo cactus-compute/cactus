@@ -319,7 +319,7 @@ namespace {
         }
         return node;
     }
-    
+
 
 } // namespace
 
@@ -896,8 +896,6 @@ void save_node(CactusGraph& graph, size_t node_id, const std::string& filename) 
 
 // MappedFileRegistry implementation
 
-namespace GraphFile {
-
 std::mutex MappedFileRegistry::mutex_;
 std::unordered_map<std::string, std::weak_ptr<MappedFile>> MappedFileRegistry::cache_;
 
@@ -930,8 +928,6 @@ void MappedFileRegistry::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     cache_.clear();
 }
-
-} // namespace GraphFile
 
 // MappedFile implementation
 
