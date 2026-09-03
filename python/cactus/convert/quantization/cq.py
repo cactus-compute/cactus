@@ -230,29 +230,26 @@ def _prepare_input_scale(input_scale: np.ndarray | None, k: int) -> np.ndarray:
     return np.clip(scale, 1e-8, 65504.0).astype(np.float32, copy=False)
 
 
-def _gptq_correct_group(work: np.ndarray, recon: np.ndarray, h_inv_chol: np.ndarray | None, start: int, stop: int) -> None:
-    # GPTQ block update using the upper Cholesky factor U of H^-1 (H^-1 == U.T @ U).
-    #
-    # OBS says that after quantizing block B the remaining columns should be corrected with
-    #   W[:, rest] -= (W_B - Q_B) @ inv(Hinv[B, B]) @ Hinv[B, rest]
-    # where Hinv is the inverse Hessian of the *not yet quantized* columns. That inverse changes
-    # after every block (it becomes the Schur complement Hinv[rest,rest] - Hinv[rest,B] inv(Hinv[B,B]) Hinv[B,rest]),
-    # so reusing the single global inverse for every block is wrong for all but the first block.
-    # Writing Hinv = U.T @ U with U upper triangular and processing columns left to right, the
-    # updated inverse for the remaining columns is exactly U[rest, rest].T @ U[rest, rest], i.e. the
-    # trailing block of the global factor. Hence inv(Hinv[B,B]) @ Hinv[B,rest] == inv(U[B,B]) @ U[B,rest]
-    # holds at every step with no refactorisation.
-    if h_inv_chol is None or stop >= work.shape[1]:
+def _upper_cholesky_of_inverse(h: np.ndarray) -> np.ndarray | None:
+    h_inv = np.linalg.inv(h.astype(np.float64))
+    upper = np.linalg.cholesky(h_inv).T.astype(np.float32)
+    if not np.all(np.isfinite(upper)):
+        return None
+    return upper
+
+
+def _gptq_correct_group(work: np.ndarray, recon: np.ndarray, h_inv_upper: np.ndarray | None, start: int, stop: int) -> None:
+    if h_inv_upper is None or stop >= work.shape[1]:
         return
     try:
-        u_bb = h_inv_chol[start:stop, start:stop].astype(np.float32, copy=False)
-        u_bs = h_inv_chol[start:stop, stop:].astype(np.float32, copy=False)
+        block = h_inv_upper[start:stop, start:stop]
+        block_to_rest = h_inv_upper[start:stop, stop:]
         try:
             from scipy.linalg import solve_triangular
 
-            update = solve_triangular(u_bb, u_bs, lower=False)
+            update = solve_triangular(block, block_to_rest, lower=False)
         except ImportError:
-            update = np.linalg.solve(u_bb, u_bs)
+            update = np.linalg.solve(block, block_to_rest)
         work[:, stop:] -= (work[:, start:stop] - recon) @ update
     except Exception:
         return
@@ -282,7 +279,7 @@ def quantize_hadamard(
     groups = k // GROUP_SIZE
     indices = np.zeros((n, k), dtype=np.uint8)
     norms = np.zeros((n, groups), dtype=np.float16)
-    h_inv_chol = None
+    h_inv_upper = None
     if use_gptq and hessian is not None:
         try:
             h = np.asarray(hessian, dtype=np.float32)
@@ -293,16 +290,9 @@ def quantize_hadamard(
                 s = np.clip(input_scale.astype(np.float32), 1e-6, None)
                 h = h / (s[:, None] * s[None, :])
                 h = h + np.eye(h.shape[0], dtype=np.float32) * (0.01 * np.mean(np.diag(h)) + 1e-6)
-                # Invert and factor in float64: a float32 inverse of an ill-conditioned Hessian can
-                # lose positive-definiteness and make the Cholesky fail (silently disabling GPTQ).
-                h_inv = np.linalg.inv(h.astype(np.float64))
-                # Upper Cholesky factor: h_inv == h_inv_chol.T @ h_inv_chol. See _gptq_correct_group.
-                h_inv_chol = np.linalg.cholesky(h_inv).T.astype(np.float32)
-                # LAPACK can return a NaN/inf factor without raising (e.g. NaN Hessian); reject it.
-                if not np.all(np.isfinite(h_inv_chol)):
-                    h_inv_chol = None
+                h_inv_upper = _upper_cholesky_of_inverse(h)
         except Exception:
-            h_inv_chol = None
+            h_inv_upper = None
     for g in range(groups):
         start, stop = g * GROUP_SIZE, (g + 1) * GROUP_SIZE
         group = work[:, start:stop]
@@ -312,8 +302,8 @@ def quantize_hadamard(
         recon = (codebook[idx] @ rot.T) * row_norms[:, None]
         indices[:, start:stop] = idx
         norms[:, g] = row_norms.astype(np.float16)
-        _gptq_correct_group(work, recon, h_inv_chol, start, stop)
-    return CQTensor(indices=indices, norms=norms, input_scale=input_scale.astype(np.float16), bits=bits, gptq_used=bool(use_gptq and h_inv_chol is not None))
+        _gptq_correct_group(work, recon, h_inv_upper, start, stop)
+    return CQTensor(indices=indices, norms=norms, input_scale=input_scale.astype(np.float16), bits=bits, gptq_used=bool(use_gptq and h_inv_upper is not None))
 
 
 def quantize_orthogonal(weight, bits: int = 4, seed: int = 1234, input_scale: np.ndarray | None = None) -> CQTensor:
