@@ -298,6 +298,9 @@ def quantize_hadamard(
                 h_inv = np.linalg.inv(h.astype(np.float64))
                 # Upper Cholesky factor: h_inv == h_inv_chol.T @ h_inv_chol. See _gptq_correct_group.
                 h_inv_chol = np.linalg.cholesky(h_inv).T.astype(np.float32)
+                # LAPACK can return a NaN/inf factor without raising (e.g. NaN Hessian); reject it.
+                if not np.all(np.isfinite(h_inv_chol)):
+                    h_inv_chol = None
         except Exception:
             h_inv_chol = None
     for g in range(groups):
