@@ -155,3 +155,89 @@ def test_pointwise_conv1d_int8_preserves_rank3_shape(tmp_path):
     assert scales_bytes == 3 * 2 * 2
     assert group_size == GROUP_SIZE
     assert num_groups == 2
+
+
+def _correlated_inputs(rng: np.random.Generator, samples: int, k: int, rank: int = 32) -> np.ndarray:
+    latent = rng.standard_normal((samples, rank), dtype=np.float32)
+    mixing = rng.standard_normal((rank, k), dtype=np.float32)
+    noise = 0.1 * rng.standard_normal((samples, k), dtype=np.float32)
+    return (latent @ mixing + noise).astype(np.float32)
+
+
+def _damp_like_cq(h: np.ndarray) -> np.ndarray:
+    return h + np.eye(h.shape[0], dtype=np.float32) * (0.01 * np.mean(np.diag(h)) + 1e-6)
+
+
+def test_gptq_cholesky_block_update_matches_explicit_obs():
+    from cactus.convert.quantization import cq as cq_mod
+
+    rng = np.random.default_rng(10)
+    k = 3 * cq_mod.GROUP_SIZE
+    x = _correlated_inputs(rng, 2000, k)
+    h = _damp_like_cq((x.T @ x / x.shape[0]).astype(np.float32))
+    h64 = h.astype(np.float64)
+
+    build_factor = getattr(cq_mod, "_gptq_cholesky_factor", None)
+    factor = build_factor(h) if build_factor is not None else np.linalg.cholesky(np.linalg.inv(h64)).T.astype(np.float32)
+
+    work = rng.standard_normal((8, k), dtype=np.float32)
+    work_ref = work.astype(np.float64)
+    for g in range(k // cq_mod.GROUP_SIZE):
+        start, stop = g * cq_mod.GROUP_SIZE, (g + 1) * cq_mod.GROUP_SIZE
+        recon = np.round(work[:, start:stop], 1).astype(np.float32)
+        cq_mod._gptq_correct_group(work, recon, factor, start, stop)
+        if stop < k:
+            # Reference: the inverse Hessian restricted to the still-unquantized columns,
+            # recomputed from scratch each step (equal to the Schur-updated OBS inverse).
+            hinv_cur = np.linalg.inv(h64[start:, start:])
+            gsz = stop - start
+            update_ref = np.linalg.solve(hinv_cur[:gsz, :gsz], hinv_cur[:gsz, gsz:])
+            err = work_ref[:, start:stop] - recon.astype(np.float64)
+            work_ref[:, stop:] -= err @ update_ref
+        np.testing.assert_allclose(work[:, stop:], work_ref[:, stop:], rtol=1e-4, atol=1e-4)
+        work_ref[:, start:stop] = work[:, start:stop]
+
+
+def test_gptq_reduces_calibrated_error(tmp_path):
+    rng = np.random.default_rng(11)
+    n, k = 16, 384
+    w = rng.standard_normal((n, k), dtype=np.float32)
+    x = _correlated_inputs(rng, 4096, k)
+    h = (x.T @ x / x.shape[0]).astype(np.float32)
+
+    plain = quantize_hadamard(w, bits=4)
+    gptq = quantize_hadamard(w, bits=4, hessian=h, use_gptq=True)
+    assert not plain.gptq_used
+    assert gptq.gptq_used
+
+    def reconstruct(cq, name):
+        path = tmp_path / name
+        write_cq_tensor(path, cq)
+        return dequantize_cq_file(path, read_header(path), torch.float32, 4).numpy()
+
+    w_plain = reconstruct(plain, "plain.weights")
+    w_gptq = reconstruct(gptq, "gptq.weights")
+    err_plain = np.linalg.norm(x @ (w - w_plain).T)
+    err_gptq = np.linalg.norm(x @ (w - w_gptq).T)
+    assert np.isfinite(err_gptq)
+    assert err_gptq < err_plain, (err_gptq, err_plain)
+
+
+def test_gptq_disabled_on_bad_hessian():
+    rng = np.random.default_rng(12)
+    w = rng.standard_normal((4, 256), dtype=np.float32)
+    baseline = quantize_hadamard(w, bits=4)
+
+    negative = quantize_hadamard(w, bits=4, hessian=-np.eye(256, dtype=np.float32) * 1e6, use_gptq=True)
+    assert not negative.gptq_used
+    np.testing.assert_array_equal(negative.indices, baseline.indices)
+
+
+def test_gptq_disabled_on_nan_hessian():
+    rng = np.random.default_rng(12)
+    w = rng.standard_normal((4, 256), dtype=np.float32)
+    baseline = quantize_hadamard(w, bits=4)
+    nan_h = np.full((256, 256), np.nan, dtype=np.float32)
+    broken = quantize_hadamard(w, bits=4, hessian=nan_h, use_gptq=True)
+    np.testing.assert_array_equal(broken.indices, baseline.indices)
+    assert not broken.gptq_used
