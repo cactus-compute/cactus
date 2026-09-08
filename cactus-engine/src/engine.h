@@ -149,7 +149,7 @@ struct Config {
     float rope_scaling_factor = 1.0f;
     float rope_mscale_all_dim = 0.0f;
 
-    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, NEEDLE = 18, GENERIC = 19};
+    enum class ModelType {QWEN = 0, GEMMA = 1, NOMIC = 3, LFM2 = 5, SIGLIP2 = 6, WHISPER = 7, MOONSHINE = 8, PARAKEET = 10, QWEN3P5 = 11, PARAKEET_TDT = 12, GEMMA3N = 13, YOUTU = 14, GEMMA4 = 15, NEEDLE = 18, GENERIC = 19, SD15 = 20};
     uint32_t predictor_hidden_dim = 0;
     uint32_t predictor_num_layers = 0;
     uint32_t tdt_joint_dim = 0;
@@ -287,8 +287,8 @@ struct ToolConstraintSpec {
 struct TokenizerRuntimeConfig {
     enum class TokenizerType { UNKNOWN, BPE, SENTENCEPIECE };
     enum class VocabFormat { UNKNOWN, ID_TAB_TOKEN, LINE_TOKEN };
-    enum class Normalizer { NONE, METASPACE, BYTE_LEVEL };
-    enum class Decoder { NONE, REPLACE_METASPACE, BYTE_LEVEL };
+    enum class Normalizer { NONE, METASPACE, BYTE_LEVEL, CLIP };
+    enum class Decoder { NONE, REPLACE_METASPACE, BYTE_LEVEL, CLIP };
 
     TokenizerType tokenizer_type = TokenizerType::UNKNOWN;
     VocabFormat vocab_format = VocabFormat::UNKNOWN;
@@ -297,6 +297,22 @@ struct TokenizerRuntimeConfig {
     bool byte_fallback = false;
     bool has_chat_template = false;
 };
+
+struct DiffusionParams {
+    float beta_start = 0.00085f;
+    float beta_end = 0.012f;
+    std::string beta_schedule = "scaled_linear";
+    uint32_t num_train_timesteps = 1000;
+    uint32_t original_inference_steps = 50;
+    float timestep_scaling = 10.0f;
+    std::string prediction_type = "epsilon";
+};
+
+std::vector<float> diffusion_alphas_cumprod(const DiffusionParams& params);
+std::vector<uint32_t> diffusion_lcm_timesteps(const DiffusionParams& params, uint32_t steps);
+std::vector<float> diffusion_guidance_embedding(float guidance_embedding_scale, size_t dim);
+void write_typed_buffer(std::vector<uint8_t>& buf, Precision dst_prec,
+                        const void* src_data, size_t src_bytes, Precision src_prec);
 
 TokenizerRuntimeConfig load_tokenizer_runtime_config(const std::string& config_file);
 void load_special_tokens_map(const std::string& config_file, std::unordered_map<std::string, uint32_t>& special_tokens);
@@ -485,6 +501,8 @@ private:
     std::string unicode_to_bytes(const std::string& text) const;
     std::vector<std::string> byte_level_split(const std::string& text) const;
     std::vector<std::string> utf8_split(const std::string& text) const;
+    std::vector<std::string> clip_word_split(const std::string& text) const;
+    void encode_clip_segment(const std::string& segment, std::vector<uint32_t>& token_ids) const;
 
     void cleanup_mmap();
     
@@ -688,6 +706,10 @@ public:
     uint32_t decode(const std::vector<uint32_t>& tokens, float temperature = -1.0f, float top_p = -1.0f,
                     size_t top_k = 0, const std::string& profile_file = "", float* out_entropy = nullptr,
                     float min_p = 0.15f, float repetition_penalty = 1.1f);
+
+    int generate_image(const std::string& prompt, uint8_t* out_rgb, size_t out_capacity,
+                       uint32_t* out_width, uint32_t* out_height,
+                       int steps, float guidance_scale, uint64_t seed);
     void set_sample_seed(uint64_t seed) { sample_rng_.seed(static_cast<std::mt19937::result_type>(seed)); }
     bool prefill_and_sample_first_token(const std::vector<uint32_t>& tokens, uint32_t& out_token,
                                         float* out_uncertainty = nullptr);
@@ -1040,8 +1062,9 @@ private:
     Component* decoder_prefill_ = nullptr;
     Component* decoder_embed_ = nullptr;
     Component* prefill_encoder_ = nullptr;
-    enum class DecodeRoute { CACHED_STEP, DIRECT_DECODER_STEP, FULL_CONTEXT_TEXT, ENCODER_CROSS_KV_STEP };
+    enum class DecodeRoute { CACHED_STEP, DIRECT_DECODER_STEP, FULL_CONTEXT_TEXT, ENCODER_CROSS_KV_STEP, ITERATIVE_DENOISE };
     DecodeRoute decode_route_ = DecodeRoute::CACHED_STEP;
+    DiffusionParams diffusion_;
     Component* source_encoder_ = nullptr;
     Component* decoder_cross_kv_ = nullptr;
     Component* vision_encoder_ = nullptr;

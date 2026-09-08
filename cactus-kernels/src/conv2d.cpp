@@ -617,3 +617,43 @@ void cactus_maxpool1d_f16(
             }
         });
 }
+
+void cactus_upsample_nearest2d_f16(
+    const __fp16* input,
+    __fp16* output,
+    size_t num_planes,
+    size_t height,
+    size_t width,
+    size_t scale
+) {
+    if (scale == 1) {
+        std::memcpy(output, input, num_planes * height * width * sizeof(__fp16));
+        return;
+    }
+
+    const size_t out_width = width * scale;
+    const size_t out_plane = height * scale * out_width;
+
+    CactusThreading::parallel_for(num_planes, CactusThreading::Thresholds::ELEMENT_WISE,
+        [&](size_t start, size_t end) {
+            for (size_t p = start; p < end; ++p) {
+                const __fp16* src_plane = input + p * height * width;
+                __fp16* dst_plane = output + p * out_plane;
+
+                for (size_t y = 0; y < height; ++y) {
+                    const __fp16* src_row = src_plane + y * width;
+                    __fp16* dst_row = dst_plane + y * scale * out_width;
+
+                    for (size_t x = 0; x < width; ++x) {
+                        const __fp16 val = src_row[x];
+                        for (size_t k = 0; k < scale; ++k) {
+                            dst_row[x * scale + k] = val;
+                        }
+                    }
+                    for (size_t k = 1; k < scale; ++k) {
+                        std::memcpy(dst_row + k * out_width, dst_row, out_width * sizeof(__fp16));
+                    }
+                }
+            }
+        });
+}

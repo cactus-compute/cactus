@@ -10,3 +10,5 @@ TOKEN_MERGE_TO_DECODER = Combinations(input=("token_merge",), output="text_decod
 AUDIO_TEXT_TO_DECODER = Combinations(input=("audio_encoder", "text_embed"), output="text_decoder")
 AUDIO_ENCODER_TO_ASR_DECODER = Combinations(input=("audio_encoder",), output="asr_decoder")
 AUDIO_ASR_DECODER_TO_ASR_HEAD = Combinations(input=("audio_encoder", "asr_decoder"), output="asr_head")
+TEXT_ENCODER_TO_UNET = Combinations(input=("text_encoder",), output="unet")
+UNET_TO_VAE_DECODER = Combinations(input=("unet",), output="vae_decoder")

@@ -210,6 +210,13 @@ bool parity_maxpool1d() {
     return c.check();
 }
 
+bool parity_upsample_nearest2d() {
+    ParityCase c;
+    c.add_input({2, 3, 7, 5});
+    c.build = [](CactusGraph& g, const std::vector<size_t>& in) { return g.upsample_nearest2d(in[0], 2); };
+    return c.check();
+}
+
 bool parity_bilinear() {
     ParityCase c;
     c.add_input({64, 12});
@@ -544,6 +551,7 @@ int main() {
     runner.run_test("rope", parity_rope(false));
     runner.run_test("rope_gptj", parity_rope(true));
     runner.run_test("maxpool1d", parity_maxpool1d());
+    runner.run_test("upsample_nearest2d", parity_upsample_nearest2d());
     runner.run_test("bilinear_interpolation", parity_bilinear());
     runner.run_test("conv1d", parity_conv1d());
     runner.run_test("conv1d_k7s3", parity_conv1d_k7s3());

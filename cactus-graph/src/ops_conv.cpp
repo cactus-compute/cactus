@@ -910,6 +910,25 @@ void compute_maxpool1d_node(GraphNode& node, const std::vector<std::unique_ptr<G
         kernel_size, stride);
 }
 
+void compute_upsample_nearest2d_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                     const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& input = get_input(node, 0, nodes, node_index_map);
+
+    if (input.shape.size() != 4) {
+        throw std::runtime_error("upsample_nearest2d expects input [N, C, H, W]");
+    }
+    if (input.precision != Precision::FP16) {
+        throw std::runtime_error("upsample_nearest2d only supports FP16");
+    }
+
+    cactus_upsample_nearest2d_f16(
+        input.data_as<__fp16>(),
+        node.output_buffer.data_as<__fp16>(),
+        input.shape[0] * input.shape[1],
+        input.shape[2], input.shape[3],
+        node.params.stride);
+}
+
 void compute_conv2d_k3s1p1_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
                                  const std::unordered_map<size_t, size_t>& node_index_map) {
     const auto& X = get_input(node, 0, nodes, node_index_map);

@@ -152,6 +152,7 @@ _PREFIX_RULES: tuple[AtenOpRule, ...] = (
     AtenOpRule("aten.embedding", "embedding"),
     AtenOpRule("aten.conv1d", "conv1d"),
     AtenOpRule("aten.conv2d", "conv2d"),
+    AtenOpRule("aten.upsample_nearest2d", "upsample_nearest2d"),
     AtenOpRule("aten.pow", "pow"),
     AtenOpRule("aten.layer_norm", "layer_norm"),
     AtenOpRule("aten.native_layer_norm", "layer_norm"),

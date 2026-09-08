@@ -92,12 +92,14 @@ TokenizerRuntimeConfig::VocabFormat parse_vocab_format(const std::string& value)
 TokenizerRuntimeConfig::Normalizer parse_normalizer(const std::string& value) {
     if (value == "metaspace") return TokenizerRuntimeConfig::Normalizer::METASPACE;
     if (value == "byte_level") return TokenizerRuntimeConfig::Normalizer::BYTE_LEVEL;
+    if (value == "clip") return TokenizerRuntimeConfig::Normalizer::CLIP;
     return TokenizerRuntimeConfig::Normalizer::NONE;
 }
 
 TokenizerRuntimeConfig::Decoder parse_decoder(const std::string& value) {
     if (value == "replace_metaspace") return TokenizerRuntimeConfig::Decoder::REPLACE_METASPACE;
     if (value == "byte_level") return TokenizerRuntimeConfig::Decoder::BYTE_LEVEL;
+    if (value == "clip") return TokenizerRuntimeConfig::Decoder::CLIP;
     return TokenizerRuntimeConfig::Decoder::NONE;
 }
 

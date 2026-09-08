@@ -147,7 +147,8 @@ enum class OpType {
     QKV_TQ_FUSED,
     PROJECTION_PAIR_TQ_FUSED,
     CONV1D_CAUSAL_CHANNEL_FIRST,
-    LOGITS_TQ_SOFTCAP
+    LOGITS_TQ_SOFTCAP,
+    UPSAMPLE_NEAREST2D
 };
 
 struct PrecisionTraits {
@@ -746,6 +747,7 @@ public:
 
     size_t bilinear_interpolation(size_t pos_embeds, size_t dst_height, size_t dst_width, bool align_corners = true, ComputeBackend backend = cactus_default_backend());
     size_t maxpool1d(size_t input, size_t kernel_size, size_t stride, ComputeBackend backend = cactus_default_backend());
+    size_t upsample_nearest2d(size_t input, size_t scale_factor, ComputeBackend backend = cactus_default_backend());
 
     size_t lstm_cell(
         size_t input, size_t h_prev, size_t c_prev,
@@ -1248,6 +1250,10 @@ CACTUS_FFI_EXPORT int cactus_graph_conv2d_depthwise_k3s2p1(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_conv2d_pointwise_1x1(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_conv2d_k3s1p1(
+    cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_upsample_nearest2d(
+    cactus_graph_t graph, cactus_node_t input, size_t scale_factor, cactus_node_t* out);
 
 CACTUS_FFI_EXPORT int cactus_graph_lstm_cell(
     cactus_graph_t graph, cactus_node_t input, cactus_node_t h_prev, cactus_node_t c_prev, cactus_node_t weight_ih, cactus_node_t weight_hh, cactus_node_t bias_ih, cactus_node_t bias_hh, cactus_node_t* out);

@@ -306,6 +306,12 @@ size_t correction = graph.altup_correct(coefs, innovation, predictions, num_pred
 size_t interpolated = graph.bilinear_interpolation(pos_embeds, dst_height, dst_width);
 ```
 
+#### Nearest-Neighbor Upsampling
+```cpp
+// Input [N, C, H, W] -> output [N, C, H*scale, W*scale]
+size_t upsampled = graph.upsample_nearest2d(input, /*scale_factor=*/2);
+```
+
 #### Sampling
 ```cpp
 // Defaults: temperature=0.6, top_p=0.95, top_k=20

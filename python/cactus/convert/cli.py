@@ -78,6 +78,8 @@ def _load_hf(model_id_or_path: str, device: str, *, skip_model_load: bool = Fals
     if skip_model_load:
         return cfg, processor, None
     model_cls = adapter.model_class(cfg)
+    if model_cls is None:
+        return cfg, processor, None
     model_type = str(cfg_get(cfg, "model_type", "") or "").lower()
     if isinstance(cfg, dict) and model_type == "parakeet_tdt":
         return cfg, processor, None
@@ -136,6 +138,9 @@ def _bits_for_component(component: str, args: argparse.Namespace) -> int:
     return int(args.bits)
 
 
+CHECKPOINT_STEMS = ("model", "diffusion_pytorch_model")
+
+
 def _load_checkpoint_state_dict(model_id_or_path: str) -> dict[str, Any] | None:
     nemo_export = ensure_parakeet_tdt_nemo_source(model_id_or_path, cache_dir=_hf_cache_dir())
     if nemo_export is not None:
@@ -145,11 +150,16 @@ def _load_checkpoint_state_dict(model_id_or_path: str) -> dict[str, Any] | None:
         try:
             from huggingface_hub import hf_hub_download
             from safetensors.torch import load_file
-            try:
-                model_file = hf_hub_download(model_id_or_path, "model.safetensors", cache_dir=_hf_cache_dir())
-                return load_file(model_file)
-            except Exception:
-                index_file = hf_hub_download(model_id_or_path, "model.safetensors.index.json", cache_dir=_hf_cache_dir())
+            for stem in CHECKPOINT_STEMS:
+                try:
+                    model_file = hf_hub_download(model_id_or_path, f"{stem}.safetensors", cache_dir=_hf_cache_dir())
+                    return load_file(model_file)
+                except Exception:
+                    pass
+                try:
+                    index_file = hf_hub_download(model_id_or_path, f"{stem}.safetensors.index.json", cache_dir=_hf_cache_dir())
+                except Exception:
+                    continue
                 index = json.loads(Path(index_file).read_text(encoding="utf-8"))
                 shard_names = sorted(set(index.get("weight_map", {}).values()))
                 if not shard_names:
@@ -162,6 +172,7 @@ def _load_checkpoint_state_dict(model_id_or_path: str) -> dict[str, Any] | None:
                             raise RuntimeError(f"duplicate tensor key {key!r} across checkpoint shards")
                         state[key] = tensor
                 return state
+            return None
         except RuntimeError:
             raise
         except Exception:
@@ -457,6 +468,7 @@ def convert(args: argparse.Namespace) -> None:
         "embedding": args.max_embedding_examples,
     }
     rows: list[dict[str, Any]] = []
+    written: dict[str, str] = {}
     pending: list[tuple[str, Any, Any, Any]] = []
     num_layers = max(
         int(model_config.get("num_layers", 0) or 0),
@@ -523,6 +535,14 @@ def convert(args: argparse.Namespace) -> None:
         for emission in emissions:
             qdq_restore = getattr(emission, "qdq_restore", None) or (provenance.qdq_restore if provenance else "hf_key")
             out_path = out_dir / emission.output_name if emission.output_name else None
+            if out_path is not None:
+                claimed_by = written.get(out_path.name)
+                if claimed_by is not None:
+                    raise RuntimeError(
+                        f"tensors {claimed_by!r} and {name!r} both map to {out_path.name!r}; "
+                        "the adapter for this family must give them distinct names"
+                    )
+                written[out_path.name] = name
             emit_tensor = emission.tensor
             emit_match = replace(match, output_name=emission.output_name)
             requested_bits = _bits_for_component(emit_match.component, args)

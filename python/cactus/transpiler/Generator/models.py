@@ -434,11 +434,30 @@ def resolve_weight_record(resolver: WeightResolver, placeholder_name: str) -> We
     return resolve_source_weight_record(resolver, source_target)
 
 def resolve_source_weight_record(resolver: WeightResolver, source_target: str) -> WeightRecord | None:
+    candidates = list(exact_weight_name_variants(source_target))
+    head, sep, rest = source_target.partition(".")
+    if sep and rest:
+        candidates.extend(exact_weight_name_variants(rest))
+    for variant in candidates:
+        record = resolver.records_by_name.get(variant)
+        if record is not None:
+            return record
     for variant in weight_name_variants(source_target):
         record = resolver.records_by_name.get(variant)
         if record is not None:
             return record
     return None
+
+
+def exact_weight_name_variants(name: str) -> tuple[str, ...]:
+    variants = [name]
+    current = name
+    while current.startswith("model."):
+        current = current[len("model."):]
+        variants.append(current)
+    if name.startswith("_orig_mod."):
+        variants.append(name[len("_orig_mod."):])
+    return tuple(unique_strings(variants))
 
 def weight_name_variants(name: str) -> tuple[str, ...]:
     variants = [name]
