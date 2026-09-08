@@ -1,0 +1,50 @@
+@font-face {
+  font-family: 'Geist';
+  src: url('https://cdn.jsdelivr.net/npm/geist@1.3.0/dist/fonts/geist-sans/Geist-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist';
+  src: url('https://cdn.jsdelivr.net/npm/geist@1.3.0/dist/fonts/geist-sans/Geist-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist';
+  src: url('https://cdn.jsdelivr.net/npm/geist@1.3.0/dist/fonts/geist-sans/Geist-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('https://cdn.jsdelivr.net/npm/geist@1.3.0/dist/fonts/geist-mono/GeistMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+
+:root {
+  --md-text-font: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+  --md-code-font: 'Geist Mono', 'SFMono-Regular', 'Menlo', monospace;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #000000;
+  --md-footer-bg-color: #000000;
+  --md-footer-bg-color--dark: #000000;
+}
+
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs,
+[data-md-color-scheme="slate"] .md-sidebar {
+  background-color: #000000;
+}
+
+.md-banner--warning {
+  background-color: #d4a017;
+  color: #000000;
+}
+
+.md-banner--warning a {
+  color: #000000;
+}
