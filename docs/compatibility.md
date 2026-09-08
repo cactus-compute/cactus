@@ -31,6 +31,19 @@ Runtime v1.15 -> new tag v1.15 (changed!) - must update
 3. Find the latest tag that is ≤ your runtime version
 4. If your local weights use an older tag, re-download them
 
+## Platform Support
+
+Cactus kernels are ARM64-only and are compiled for the **ARMv8.2-A** baseline (`-march=armv8.2-a+fp16+simd+dotprod+i8mm`). The build stops early on unsupported targets instead of failing later with a cryptic `bad value '...' for '-march='` compiler error.
+
+| Platform | Supported | Notes |
+|----------|-----------|-------|
+| Apple Silicon (M-series / A-series) | Yes | Primary target; Metal GPU backend available |
+| ARMv8.2+ Android / Linux (`arm64-v8a`) | Yes | Modern phones, Raspberry Pi 5, NVIDIA Jetson |
+| Raspberry Pi 4 and other ARMv8.0 CPUs | No | Lack FP16 / dotprod / i8mm; binaries hit `Illegal instruction` at runtime |
+| x86 / x86_64 (incl. WSL2, Intel/AMD servers) | No | No ARM NEON kernels |
+
+On an unsupported CPU the CMake configure step aborts with a message pointing here.
+
 ## See Also
 
 - [Cactus Engine API](/docs/cactus_engine.md) — Full inference API reference
