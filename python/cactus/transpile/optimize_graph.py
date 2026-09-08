@@ -1206,6 +1206,8 @@ def fuse_conv_modules(graph: IRGraph) -> bool:
         )
         if match.pointwise2_bias_value_id is not None:
             inputs.append(match.pointwise2_bias_value_id)
+        if match.mask_value_id is not None:
+            inputs.append(match.mask_value_id)
 
         node.op = "conv_module"
         node.inputs = inputs
@@ -1214,6 +1216,7 @@ def fuse_conv_modules(graph: IRGraph) -> bool:
             "has_pointwise1_bias": bool(match.pointwise1_bias_value_id is not None),
             "has_depthwise_bias": bool(match.depthwise_bias_value_id is not None),
             "has_pointwise2_bias": bool(match.pointwise2_bias_value_id is not None),
+            "has_mask": bool(match.mask_value_id is not None),
             "depthwise_kernel_size": int(match.depthwise_kernel_size),
             "depthwise_padding": int(match.depthwise_padding),
         }

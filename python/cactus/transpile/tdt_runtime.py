@@ -457,7 +457,7 @@ class ParakeetTDTSelfAttention(nn.Module):
         self.pos_bias_v = nn.Parameter(state_dict[f"{prefix}.pos_bias_v"].clone())
         self.config = config
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
         batch, seq_len, _ = x.shape
         num_heads = self.config.attention_heads
         head_dim = self.config.attention_head_dim
@@ -488,6 +488,7 @@ class ParakeetTDTSelfAttention(nn.Module):
             rel_k_heads,
             scale=self.config.attention_scale,
         )
+        rel_bias = rel_bias + attn_mask
         attn = F.scaled_dot_product_attention(
             q_u_heads,
             k_heads,
@@ -551,12 +552,11 @@ class ParakeetTDTConformerConv(nn.Module):
         )
         self.config = config
 
-    def forward(self, x: torch.Tensor, pad_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
         x = x.transpose(1, 2)
         x = self.pointwise_conv1(x)
         x = F.glu(x, dim=1)
-        if pad_mask is not None:
-            x = x * pad_mask
+        x = x * pad_mask
         x = self.depthwise_conv(x)
         x = self.batch_norm(x)
         x = _apply_activation(x, self.config.encoder_hidden_act)
@@ -583,10 +583,10 @@ class ParakeetTDTEncoderLayer(nn.Module):
             module.bias.data.copy_(state_dict[f"{prefix}.{name}.bias"].to(dtype=module.bias.dtype))
         self.config = config
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, conv_mask: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
         x = x + 0.5 * self.feed_forward1(self.norm_feed_forward1(x), activation=self.config.encoder_hidden_act)
-        x = x + self.self_attn(self.norm_self_att(x))
-        x = x + self.conv(self.norm_conv(x))
+        x = x + self.self_attn(self.norm_self_att(x), attn_mask)
+        x = x + self.conv(self.norm_conv(x), conv_mask)
         x = x + 0.5 * self.feed_forward2(self.norm_feed_forward2(x), activation=self.config.encoder_hidden_act)
         return self.norm_out(x)
 
@@ -639,11 +639,15 @@ class ParakeetTDTEncoder(nn.Module):
         self.layers = nn.ModuleList(
             [ParakeetTDTEncoderLayer(config, index, state_dict) for index in range(config.num_layers)]
         )
+        self.config = config
 
-    def forward(self, input_features: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_features: torch.Tensor, input_features_mask: torch.Tensor) -> torch.Tensor:
         x = self.pre_encode(input_features)
+        pad_mask = input_features_mask[:, :: self.config.subsampling_factor]
+        conv_mask = pad_mask.unsqueeze(1)
+        attn_mask = ((pad_mask - 1.0) * 10000.0).unsqueeze(1).unsqueeze(1)
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, conv_mask, attn_mask)
         return x
 
 
@@ -766,7 +770,7 @@ class ParakeetTDTLocalModel(nn.Module):
         self.decoder_step = ParakeetTDTDecoderStep(config, state_dict)
 
     def forward(self, input_features: torch.Tensor) -> torch.Tensor:
-        return self.encoder(input_features)
+        return self.encoder(input_features, torch.ones_like(input_features[:, :, 0]))
 
     def initial_decoder_state(self, *, batch_size: int, device: torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, ...]:
         state: list[torch.Tensor] = []
@@ -777,7 +781,7 @@ class ParakeetTDTLocalModel(nn.Module):
 
     def greedy_decode_token_ids(self, input_features: torch.Tensor) -> list[int]:
         with torch.no_grad():
-            encoder_hidden = self.encoder(input_features)
+            encoder_hidden = self.encoder(input_features, torch.ones_like(input_features[:, :, 0]))
             batch = int(encoder_hidden.shape[0])
             if batch != 1:
                 raise ValueError("Parakeet TDT local greedy decode currently expects batch size 1")
@@ -844,8 +848,13 @@ def build_parakeet_tdt_component_specs(
     named_tensors: dict[str, torch.Tensor],
     weights_dir: str | None = None,
 ) -> list[ComponentModuleSpec]:
-    input_features = named_tensors["input_features"]
-    example_hidden = model.encoder(input_features)
+    features = named_tensors["input_features"]
+    input_features = torch.randn(
+        (int(features.shape[0]), 3000, int(features.shape[2])),
+        device=features.device,
+        dtype=features.dtype,
+    )
+    example_hidden = model.encoder(input_features, torch.ones_like(input_features[:, :, 0]))
     batch_size = int(example_hidden.shape[0])
     initial_states = model.initial_decoder_state(
         batch_size=batch_size,
@@ -876,12 +885,13 @@ def build_parakeet_tdt_component_specs(
     encoder_specs: list[ComponentModuleSpec] = []
     for frames in audio_bucket_frames(full_frames):
         component = "audio_encoder" if frames == full_frames else f"audio_encoder_{frames}"
+        bucket_features = input_features[:, :frames, :].contiguous()
         encoder_specs.append(
             ComponentModuleSpec(
                 component=component,
                 module=model.encoder,
-                example_inputs=(input_features[:, :frames, :].contiguous(),),
-                input_keys=("input_features",),
+                example_inputs=(bucket_features, torch.ones_like(bucket_features[:, :, 0])),
+                input_keys=("input_features", "input_features_mask"),
                 output_keys=("encoder_hidden_states",),
                 graph_meta={**common_graph_meta, "component": component},
                 metadata={

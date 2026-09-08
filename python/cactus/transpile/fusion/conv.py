@@ -22,6 +22,7 @@ class ConvModuleMatch:
     batch_norm_running_var_value_id: str
     pointwise2_weight_value_id: str
     pointwise2_bias_value_id: str | None
+    mask_value_id: str | None
     eps: float
     depthwise_kernel_size: int
     depthwise_padding: int
@@ -51,6 +52,21 @@ def match_conv_module(graph: IRGraph, node: IRNode) -> ConvModuleMatch | None:
         return None
 
     glu = producer(graph, strip_passthrough(graph, depthwise.inputs[0]))
+    mask_multiply: IRNode | None = None
+    mask_value_id: str | None = None
+    if glu is not None and glu.op == "multiply" and len(glu.inputs) == 2:
+        for index, operand in enumerate(glu.inputs):
+            operand_node = producer(graph, strip_passthrough(graph, operand))
+            if operand_node is not None and operand_node.op == "glu":
+                mask_multiply = glu
+                mask_value_id = glu.inputs[1 - index]
+                mask_value = graph.values.get(mask_value_id)
+                if mask_value is None or mask_value.shape is None:
+                    return None
+                if len(mask_value.shape) != 3 or mask_value.shape[1] != 1:
+                    return None
+                glu = operand_node
+                break
     if glu is None or glu.op != "glu" or len(glu.inputs) != 1:
         return None
     if int(glu.attrs.get("axis", -1)) not in {1, -2}:
@@ -83,6 +99,7 @@ def match_conv_module(graph: IRGraph, node: IRNode) -> ConvModuleMatch | None:
         batch_norm_running_var_value_id=batch_norm.inputs[4],
         pointwise2_weight_value_id=pointwise2.inputs[1],
         pointwise2_bias_value_id=pointwise2.inputs[2] if len(pointwise2.inputs) > 2 else None,
+        mask_value_id=mask_value_id,
         eps=float(batch_norm.attrs.get("eps", 1e-5)),
         depthwise_kernel_size=depthwise_kernel_size,
         depthwise_padding=int(depthwise.attrs.get("padding", 0)),
@@ -92,6 +109,7 @@ def match_conv_module(graph: IRGraph, node: IRNode) -> ConvModuleMatch | None:
             silu,
             batch_norm,
             depthwise,
+            mask_multiply,
             glu,
             pointwise1,
             input_permute,

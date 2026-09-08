@@ -215,6 +215,7 @@ OPS: tuple[OpSchema, ...] = (
             "has_pointwise1_bias",
             "has_depthwise_bias",
             "has_pointwise2_bias",
+            "has_mask",
             "depthwise_kernel_size",
             "depthwise_padding",
         ),

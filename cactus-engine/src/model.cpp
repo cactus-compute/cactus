@@ -4757,6 +4757,21 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     write_typed_buffer(feat_buf, feat_desc.precision, transposed.data(),
                        transposed.size() * sizeof(float), Precision::FP32);
 
+    const size_t subsampling = std::max<uint32_t>(1, config_.subsampling_factor);
+    const size_t valid_encoder_frames = (copy_frames + subsampling - 1) / subsampling;
+    int mask_idx = input_index(*audio_enc, "input_features_mask");
+    if (mask_idx < 0) {
+        CACTUS_LOG_ERROR("model", "audio_encoder has no input_features_mask input");
+        return emitted;
+    }
+    auto& mask_buf = audio_enc->input_buffers[mask_idx];
+    const auto& mask_desc = audio_enc->graph->get_output_buffer(
+        static_cast<size_t>(audio_enc->runtime_input_node_ids[mask_idx]));
+    std::vector<float> mask(mask_desc.total_size, 0.0f);
+    std::fill(mask.begin(), mask.begin() + std::min(copy_frames, mask.size()), 1.0f);
+    write_typed_buffer(mask_buf, mask_desc.precision, mask.data(),
+                       mask.size() * sizeof(float), Precision::FP32);
+
     if (should_stop && should_stop->load()) return emitted;
     audio_enc->graph->execute();
     maybe_capture_handoff_probe_hidden(*audio_enc, "encoder_hidden_states");
@@ -4851,13 +4866,8 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
         };
     }
 
-    size_t commit_to = T;
-    if (stream) {
-        size_t valid_hidden = T;
-        if (expected_frames > 0)
-            valid_hidden = std::min<size_t>(T, (copy_frames * T) / expected_frames);
-        commit_to = (end_frame > 0) ? std::min(end_frame, valid_hidden) : valid_hidden;
-    }
+    size_t commit_to = std::min(T, valid_encoder_frames);
+    if (stream && end_frame > 0) commit_to = std::min(end_frame, commit_to);
     Tokenizer* stream_tok = stream ? get_tokenizer() : nullptr;
     const auto& tdt_vocab_bias = get_vocab_bias();
     const float frame_sec = (160.0f / 16000.0f) *
