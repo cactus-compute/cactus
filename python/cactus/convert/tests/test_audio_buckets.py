@@ -4,6 +4,7 @@ from cactus.transpile.audio_preprocess import audio_bucket_seconds
 
 def test_fibonacci_ladder_capped_at_model_window():
     assert audio_bucket_frames(2003) == [100, 200, 300, 500, 800, 1300, 2003]
+    assert audio_bucket_frames(3000) == [100, 200, 300, 500, 800, 1300, 2100, 3000]
 
 
 def test_window_below_ladder_yields_single_bucket():
@@ -26,7 +27,7 @@ def test_buckets_are_sorted_and_unique():
 
 
 def test_default_ladder_is_fibonacci_seconds():
-    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13)
+    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13, 21)
 
 
 def test_env_override_replaces_ladder(monkeypatch):
@@ -42,9 +43,9 @@ def test_env_override_is_sorted_and_deduplicated(monkeypatch):
 
 def test_malformed_env_override_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("CACTUS_TRANSPILER_AUDIO_BUCKETS", "not-a-number")
-    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13)
+    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13, 21)
 
 
 def test_empty_env_override_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("CACTUS_TRANSPILER_AUDIO_BUCKETS", "0,-3")
-    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13)
+    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13, 21)

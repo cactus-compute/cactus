@@ -1908,6 +1908,11 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
         pointwise2_bias = None
         if bool(node.attrs.get("has_pointwise2_bias", False)):
             pointwise2_bias = _tensor(env, node.inputs[input_index])
+            input_index += 1
+        mask_ncl = None
+        if bool(node.attrs.get("has_mask", False)):
+            mask_ncl = _tensor(env, node.inputs[input_index])
+            input_index += 1
 
         if len(x_nlc.shape) != 3:
             raise NotImplementedError(f"conv_module expects rank-3 NLC input, got {x_nlc.shape}")
@@ -1921,6 +1926,9 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
 
         current = g.conv1d_pointwise(x_nlc, pointwise1_weight, bias=pointwise1_bias)
         current = g.glu(current, axis=-1)
+        if mask_ncl is not None:
+            mask_nlc = g.reshape(mask_ncl, (int(mask_ncl.shape[0]), int(mask_ncl.shape[2]), 1))
+            current = _lower_binary_op(g, current, mask_nlc, "multiply")
         current = g.conv1d_same_depthwise_k9(current, depthwise_weight, bias=depthwise_bias)
         current = g.batch_norm(
             current,

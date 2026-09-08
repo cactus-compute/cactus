@@ -555,11 +555,29 @@ def _run_parakeet_tdt_component_decode(
     model,
     prepared: PreparedInputs,
 ) -> dict[str, object]:
-    store, _ = execute_component_pipeline(
-        [component_graphs["audio_encoder"]],
-        initial_store=_named_tensor_store(prepared),
+    input_features = _named_tensor_store(prepared)["input_features"]
+    active_frames = int(input_features.shape[1])
+    encoders = [
+        component for name, component in component_graphs.items()
+        if name.startswith("audio_encoder")
+        and int(component.metadata["audio_frames"]) >= active_frames
+    ]
+    if not encoders:
+        raise ValueError("Parakeet validation audio exceeds the 30-second capture window")
+    encoder = min(encoders, key=lambda component: int(component.metadata["audio_frames"]))
+    capacity_frames = int(encoder.metadata["audio_frames"])
+    padded_features = input_features.new_zeros(
+        (int(input_features.shape[0]), capacity_frames, int(input_features.shape[2]))
     )
-    encoder_hidden_states = np.asarray(store["encoder_hidden_states"])
+    padded_features[:, :active_frames, :] = input_features
+    mask = input_features.new_zeros((int(input_features.shape[0]), capacity_frames))
+    mask[:, :active_frames] = 1
+    store, _ = execute_component_pipeline(
+        [encoder],
+        initial_store={"input_features": padded_features, "input_features_mask": mask},
+    )
+    valid_frames = (active_frames + model.config.subsampling_factor - 1) // model.config.subsampling_factor
+    encoder_hidden_states = np.asarray(store["encoder_hidden_states"])[:, :valid_frames, :]
     batch_size = int(encoder_hidden_states.shape[0])
     if batch_size != 1:
         raise ValueError("Parakeet TDT component decode currently expects batch size 1")

@@ -125,7 +125,7 @@ std::vector<float> window_features(std::vector<float> window, size_t mel_bins) {
     const size_t waveform_samples = window.size();
     cactus::audio::apply_preemphasis(window, 0.97f);
     std::vector<float> features = cactus::audio::compute_spectrogram_graph(
-        window, cfg, mel_bins, 0.0f, 8000.0f, cactus::audio::WHISPER_SAMPLE_RATE, 0, 0);
+        window, cfg, mel_bins, 0.0f, 8000.0f, cactus::audio::WHISPER_SAMPLE_RATE, 1, 2);
     cactus::audio::normalize_parakeet_log_mel(features, mel_bins);
     size_t valid_frames = waveform_samples / cfg.hop_length;
     if (valid_frames == 0) valid_frames = 1;
