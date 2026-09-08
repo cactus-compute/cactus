@@ -23,6 +23,28 @@ bool g_use_simd = true;
 
 void kv_set_simd(bool on) { g_use_simd = on; }
 
+size_t rerope_physical_end(const CacheHeader& header, bool sliding) {
+
+    const size_t current =
+        static_cast<size_t>(header.current_seq_len);
+
+    if (!sliding)
+        return current;
+
+    const size_t max_seq =
+        static_cast<size_t>(header.max_seq_len);
+
+    const size_t sink =
+        static_cast<size_t>(header.sink_size);
+
+    if (max_seq <= sink + 1)
+        return std::min(current, max_seq);
+
+    return std::min(
+        current,
+        max_seq - sink - 1);
+}
+
 namespace {
 
 // Round half-to-even like numpy. recent_frac widens from float to a slightly-off double, so snap
