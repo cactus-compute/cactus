@@ -992,7 +992,7 @@ def _to_json(obj):
     if obj is None:
         return None
     if isinstance(obj, (dict, list)):
-        return json.dumps(obj).encode()
+        return json.dumps(obj, ensure_ascii=False).encode()
     if isinstance(obj, str):
         return obj.encode()
     return obj
