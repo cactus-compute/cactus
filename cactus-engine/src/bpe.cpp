@@ -267,6 +267,7 @@ void BPETokenizer::init_byte_mappings() const {
 
 
     for (int i = 161; i <= 255; ++i) {
+        if (i == 173) continue;   // U+00AD is not an identity byte in GPT-2 byte-level BPE
         bytes.push_back(i);
     }
 
@@ -274,6 +275,7 @@ void BPETokenizer::init_byte_mappings() const {
     for (int i = 0; i <= 32; ++i) remaining_bytes.push_back(i);
     remaining_bytes.push_back(127);
     for (int i = 128; i <= 160; ++i) remaining_bytes.push_back(i);
+    remaining_bytes.push_back(173);   // -> U+0143, matching GPT-2 bytes_to_unicode()
 
     int unicode_start = 256;
     for (int byte : remaining_bytes) {
@@ -287,7 +289,7 @@ void BPETokenizer::init_byte_mappings() const {
             std::string unicode_char(1, static_cast<char>(byte));
             byte_to_unicode_[byte] = unicode_char;
             unicode_to_byte_[unicode_char] = byte;
-        } else if (byte >= 161 && byte <= 255) {
+        } else if (byte >= 161 && byte <= 255 && byte != 173) {   // 173 -> remaining branch
             std::string unicode_char;
             unicode_char += static_cast<char>(0xC0 | (byte >> 6));
             unicode_char += static_cast<char>(0x80 | (byte & 0x3F));
