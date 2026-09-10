@@ -419,6 +419,7 @@ slot, so single-stream decode stays lean while fixed-batch decode (`decode_batch
 | Option | Description |
 |--------|-------------|
 | `--bits 1\|2\|3\|4` | CQ quantization bits (default: 4) |
+| `--calibration-manifest <path>` | Representative calibration data for GPTQ-aware CQ conversion |
 | `--weights-only` | Stop after CQ quantization; skip the runtime graph |
 | `--weights-dir <path>` | Path to converted CQ weights (default: `weights/<model_name>`) |
 | `--task <name>` | Force task type (default: `auto` — inferred from model config). Choices: `causal_lm_logits`, `multimodal_causal_lm_logits`, `ctc_logits`, `encoder_hidden_states`, `seq2seq_transcription`, `tdt_transcription` |

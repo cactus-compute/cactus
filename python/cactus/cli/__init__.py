@@ -366,6 +366,10 @@ def create_parser():
                                 help="Output directory (default: weights/<model>)")
     convert_parser.add_argument("--bits", type=int, choices=[1, 2, 3, 4], default=4,
                                 help="CQ quantization bits (default: 4)")
+    convert_parser.add_argument(
+        "--calibration-manifest",
+        help="JSON manifest of representative calibration data for GPTQ-aware CQ conversion",
+    )
     convert_parser.add_argument("--token", help="HuggingFace token")
     convert_parser.add_argument("--lora",
                                 help="Path or HF id of a LoRA adapter to merge before converting (requires `peft`)")

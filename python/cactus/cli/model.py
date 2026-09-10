@@ -36,7 +36,15 @@ def package_handoff_probe(output_dir, model_id):
         print_color(YELLOW, f"Warning: failed to package cloud handoff probe: {exc}")
 
 
-def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=False):
+def _convert_from_source(
+    model_id,
+    *,
+    bits,
+    token,
+    weights_dir,
+    skip_model_load=False,
+    calibration_manifest=None,
+):
     """Download from HuggingFace and run CQ conversion."""
     if bits not in (1, 2, 3, 4):
         raise SystemExit(
@@ -57,6 +65,8 @@ def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=
     ]
     if skip_model_load:
         cq_args.append("--skip-model-load")
+    if calibration_manifest:
+        cq_args.extend(["--calibration-manifest", str(calibration_manifest)])
     if token:
         os.environ["HF_TOKEN"] = token
         os.environ["HUGGING_FACE_HUB_TOKEN"] = token
@@ -66,7 +76,16 @@ def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=
     return weights_dir
 
 
-def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=None, skip_model_load=False):
+def ensure_weights(
+    model_id,
+    *,
+    bits=4,
+    token=None,
+    reconvert=False,
+    output_dir=None,
+    skip_model_load=False,
+    calibration_manifest=None,
+):
     from .download import get_bundle_dir
 
     weights_dir = Path(output_dir) if output_dir else get_bundle_dir(model_id, bits=bits)
@@ -76,6 +95,12 @@ def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=
         shutil.rmtree(weights_dir)
 
     if weights_dir.exists() and (weights_dir / "config.txt").exists():
+        if calibration_manifest is not None:
+            raise RuntimeError(
+                "A calibration manifest is only applied while converting weights, but a cached "
+                f"bundle already exists at {weights_dir}. Pass --reconvert to rebuild it with "
+                "calibration, or choose a different output directory."
+            )
         print_color(GREEN, f"Model weights found at {weights_dir}")
         return weights_dir
 
@@ -89,6 +114,7 @@ def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=
         token=token,
         weights_dir=weights_dir,
         skip_model_load=skip_model_load,
+        calibration_manifest=calibration_manifest,
     )
 
 
