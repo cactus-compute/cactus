@@ -177,7 +177,16 @@ inline std::string py_literal_to_json(const std::string& s, size_t& p) {
         char q = c; ++p;
         std::string out = "\"";
         while (p < s.size() && s[p] != q) {
-            if (s[p] == '\\' && p + 1 < s.size()) { out += s[p]; out += s[p + 1]; p += 2; continue; }
+            if (s[p] == '\\' && p + 1 < s.size()) {
+                if (s[p + 1] == '\'') {
+                    out += '\'';
+                } else {
+                    out += s[p];
+                    out += s[p + 1];
+                }
+                p += 2;
+                continue;
+            }
             if (s[p] == '"') out += '\\';
             out += s[p++];
         }
