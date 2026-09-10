@@ -1,0 +1,29 @@
+{
+  "name": "cactus-agent-builder",
+  "version": "0.1.0",
+  "description": "Build and verify Cactus mobile or wearable AI workflows.",
+  "author": {
+    "name": "Cactus contributors"
+  },
+  "skills": "./skills/",
+  "repository": "https://github.com/cactus-compute/cactus",
+  "keywords": [
+    "agent-plugin",
+    "evals",
+    "cactus"
+  ],
+  "interface": {
+    "displayName": "Cactus Agent Builder",
+    "shortDescription": "Build and verify Cactus mobile or wearable AI workflows.",
+    "longDescription": "Guide agents through Cactus runtime setup, model selection, mobile integration, voice-agent examples, and latency-sensitive verification.",
+    "developerName": "Cactus contributors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "runtime setup",
+      "mobile integration",
+      "voice-agent prototyping",
+      "latency verification"
+    ],
+    "defaultPrompt": "Use the Cactus plugin to plan the workflow, identify verification checks, and produce plugin eval metadata."
+  }
+}
