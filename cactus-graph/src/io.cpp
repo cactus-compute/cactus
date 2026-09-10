@@ -319,7 +319,7 @@ namespace {
         }
         return node;
     }
-    
+
 
 } // namespace
 
