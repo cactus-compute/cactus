@@ -2098,17 +2098,9 @@ size_t sequence_length_from_shape(const std::vector<size_t>& shape) {
 
 void set_sequence_length_in_shape(std::vector<size_t>& shape, size_t sequence_length) {
     if (shape.empty()) return;
-    if (shape.size() >= 2 && shape[0] == 1 && shape[1] == 1) {
-        shape[1] = sequence_length;
-        return;
-    }
-    if (shape.size() >= 2 && shape[shape.size() - 2] == 1) {
-        shape[shape.size() - 2] = sequence_length;
-        return;
-    }
-    if (shape.size() == 1 && shape[0] == 1) {
-        shape[0] = sequence_length;
-    }
+    if (shape.size() >= 2 && shape[0] == 1) shape[1] = sequence_length;
+    else if (shape.size() >= 2) shape[shape.size() - 2] = sequence_length;
+    else shape[0] = sequence_length;
 }
 
 std::string Model::image_preprocess_strategy() const {
