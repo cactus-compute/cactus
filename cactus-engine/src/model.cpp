@@ -936,6 +936,7 @@ bool Model::load_manifest() {
         return "";
     };
     image_preprocess_strategy_ = read_string_key("media_image_preprocess_strategy");
+    if (image_preprocess_strategy_.empty() && family_ == "lfm2_vl") image_preprocess_strategy_ = "lfm2_vl";
     audio_preprocess_strategy_ = read_string_key("media_audio_preprocess_strategy");
     media_injection_strategy_ = read_string_key("media_injection_strategy");
     media_prefill_fallback_ = read_string_key("media_prefill_fallback");
