@@ -1,0 +1,12 @@
+# Runtime dependencies for the Cactus Android benchmarking harness.
+# Install with: pip install -r requirements.txt
+
+# YAML parsing for scenarios.yaml and devices.yaml
+pyyaml>=6.0.1
+
+# Rich terminal output: progress bars, live tables, spinners
+rich>=13.7.0
+
+# adb-shell: pure-Python ADB client for environments where the `adb` binary
+# may not be on PATH (optional — the harness falls back to subprocess adb)
+# adb-shell>=0.4.4
