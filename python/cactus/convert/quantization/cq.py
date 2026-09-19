@@ -12,6 +12,8 @@ try:
 except Exception:  # pragma: no cover
     torch = None
 
+from scipy.linalg import solve_triangular
+
 from ..cactus_adapters.tensor_io import (
     CACTUS_ALIGNMENT,
     CACTUS_MAGIC,
@@ -230,13 +232,13 @@ def _prepare_input_scale(input_scale: np.ndarray | None, k: int) -> np.ndarray:
     return np.clip(scale, 1e-8, 65504.0).astype(np.float32, copy=False)
 
 
-def _gptq_correct_group(work: np.ndarray, recon: np.ndarray, h_inv: np.ndarray | None, start: int, stop: int) -> None:
-    if h_inv is None or stop >= work.shape[1]:
+def _gptq_correct_group(work: np.ndarray, recon: np.ndarray, u_factor: np.ndarray | None, start: int, stop: int) -> None:
+    if u_factor is None or stop >= work.shape[1]:
         return
     try:
-        m_bb = h_inv[start:stop, start:stop].astype(np.float32, copy=False)
-        m_bs = h_inv[start:stop, stop:].astype(np.float32, copy=False)
-        update = np.linalg.solve(m_bb + np.eye(m_bb.shape[0], dtype=np.float32) * 1e-6, m_bs)
+        u_bb = u_factor[start:stop, start:stop].astype(np.float32, copy=False)
+        u_bs = u_factor[start:stop, stop:].astype(np.float32, copy=False)
+        update = solve_triangular(u_bb, u_bs, lower=False)
         work[:, stop:] -= (work[:, start:stop] - recon) @ update
     except Exception:
         return
@@ -266,7 +268,7 @@ def quantize_hadamard(
     groups = k // GROUP_SIZE
     indices = np.zeros((n, k), dtype=np.uint8)
     norms = np.zeros((n, groups), dtype=np.float16)
-    h_inv = None
+    u_factor = None
     if use_gptq and hessian is not None:
         try:
             h = np.asarray(hessian, dtype=np.float32)
@@ -277,9 +279,9 @@ def quantize_hadamard(
                 s = np.clip(input_scale.astype(np.float32), 1e-6, None)
                 h = h / (s[:, None] * s[None, :])
                 h = h + np.eye(h.shape[0], dtype=np.float32) * (0.01 * np.mean(np.diag(h)) + 1e-6)
-                h_inv = np.linalg.inv(h)
+                u_factor = np.linalg.cholesky(np.linalg.inv(h)).T
         except Exception:
-            h_inv = None
+            u_factor = None
     for g in range(groups):
         start, stop = g * GROUP_SIZE, (g + 1) * GROUP_SIZE
         group = work[:, start:stop]
@@ -289,8 +291,8 @@ def quantize_hadamard(
         recon = (codebook[idx] @ rot.T) * row_norms[:, None]
         indices[:, start:stop] = idx
         norms[:, g] = row_norms.astype(np.float16)
-        _gptq_correct_group(work, recon, h_inv, start, stop)
-    return CQTensor(indices=indices, norms=norms, input_scale=input_scale.astype(np.float16), bits=bits, gptq_used=bool(use_gptq and h_inv is not None))
+        _gptq_correct_group(work, recon, u_factor, start, stop)
+    return CQTensor(indices=indices, norms=norms, input_scale=input_scale.astype(np.float16), bits=bits, gptq_used=bool(use_gptq and u_factor is not None))
 
 
 def quantize_orthogonal(weight, bits: int = 4, seed: int = 1234, input_scale: np.ndarray | None = None) -> CQTensor:
