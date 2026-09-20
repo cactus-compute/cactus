@@ -12,8 +12,6 @@ try:
 except Exception:  # pragma: no cover
     torch = None
 
-from scipy.linalg import solve_triangular
-
 from ..cactus_adapters.tensor_io import (
     CACTUS_ALIGNMENT,
     CACTUS_MAGIC,
@@ -236,6 +234,8 @@ def _gptq_correct_group(work: np.ndarray, recon: np.ndarray, u_factor: np.ndarra
     if u_factor is None or stop >= work.shape[1]:
         return
     try:
+        from scipy.linalg import solve_triangular
+
         u_bb = u_factor[start:stop, start:stop].astype(np.float32, copy=False)
         u_bs = u_factor[start:stop, stop:].astype(np.float32, copy=False)
         update = solve_triangular(u_bb, u_bs, lower=False)
