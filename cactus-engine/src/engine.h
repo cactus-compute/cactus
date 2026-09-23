@@ -730,6 +730,7 @@ public:
 
     struct ParakeetTdtStreamState {
         bool initialized = false;
+        bool internal = false;
         uint32_t last_token = 0;
         size_t time_index = 0;
         std::vector<std::vector<uint8_t>> dec_state;
@@ -744,6 +745,10 @@ public:
                                                   bool is_final = true,
                                                   size_t end_frame = 0,
                                                   const std::atomic<bool>* should_stop = nullptr);
+    std::vector<uint32_t> transcribe_parakeet_tdt_longform(const std::vector<float>& audio_features,
+                                                           size_t window_frames, size_t mels,
+                                                           size_t source_frames,
+                                                           const std::atomic<bool>* should_stop);
     std::vector<uint32_t> transcribe_whisper_seq2seq(const std::vector<float>& audio_features,
                                                      const std::vector<uint32_t>& decoder_prompt_tokens,
                                                      size_t max_tokens,

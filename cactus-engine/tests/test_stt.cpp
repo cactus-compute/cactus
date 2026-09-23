@@ -64,9 +64,47 @@ bool test_transcription() {
     return passed;
 }
 
+bool test_transcription_long_form() {
+    std::cout << "\n╔══════════════════════════════════════════╗\n"
+              << "║        LONG-FORM TRANSCRIPTION TEST       ║\n"
+              << "╚══════════════════════════════════════════╝\n";
+
+    cactus_model_t model = cactus_init(g_transcription_model_path, nullptr, false);
+    if (!model) {
+        std::cerr << "[✗] Failed to initialize model\n";
+        return false;
+    }
+
+    // test_long.wav is 75.7 s — far beyond one encoder window (~20 s). A truncated
+    // decode yields well under 100 words; a full decode yields several hundred.
+    std::string audio_path = std::string(g_assets_path) + "/test_long.wav";
+    std::vector<char> response(1 << 17, 0);
+
+    int rc = cactus_transcribe(model, audio_path.c_str(), nullptr,
+                               response.data(), response.size(), g_options,
+                               nullptr, nullptr, nullptr, 0);
+    std::string transcript = json_string(std::string(response.data()), "response");
+    size_t words = 0;
+    bool in_word = false;
+    for (char c : transcript) {
+        bool space = (c == ' ' || c == '\n' || c == '\t');
+        if (!space && !in_word) ++words;
+        in_word = !space;
+    }
+    std::cout << "├─ Words: " << words << "\n";
+    std::cout << "├─ Transcript: " << transcript.substr(0, 120) << "...\n";
+    cactus_destroy(model);
+
+    bool passed = rc > 0 && words > 120;
+    if (!passed) std::cerr << "[✗] Long-form transcription truncated or failed (words=" << words << ")\n";
+    std::cout << "└─ Status: " << (passed ? "PASSED ✓" : "FAILED ✗") << "\n";
+    return passed;
+}
+
 int main() {
     TestUtils::TestRunner runner("STT Tests");
     runner.run_test("transcription", test_transcription());
+    runner.run_test("transcription_long_form", test_transcription_long_form());
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;
 }
