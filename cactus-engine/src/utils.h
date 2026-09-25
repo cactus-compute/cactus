@@ -1003,13 +1003,7 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
         cactus::engine::ChatMessage msg;
         
         size_t obj_start = pos;
-        int brace_count = 1;
-        size_t obj_end = obj_start + 1;
-        while (obj_end < json.length() && brace_count > 0) {
-            if (json[obj_end] == '{') brace_count++;
-            else if (json[obj_end] == '}') brace_count--;
-            obj_end++;
-        }
+        size_t obj_end = find_matching_delimiter(json, obj_start, '{', '}');
 
         size_t role_pos = json.find("\"role\"", pos);
         if (role_pos == std::string::npos || role_pos >= obj_end) break;
