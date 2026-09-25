@@ -1,5 +1,6 @@
 from cactus.transpile.audio_preprocess import audio_bucket_frames
 from cactus.transpile.audio_preprocess import audio_bucket_seconds
+from cactus.transpile.audio_preprocess import audio_capture_frames
 
 
 def test_fibonacci_ladder_capped_at_model_window():
@@ -26,8 +27,18 @@ def test_buckets_are_sorted_and_unique():
     assert len(buckets) == len(set(buckets))
 
 
-def test_default_ladder_is_fibonacci_seconds():
-    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13, 21)
+def test_default_ladder_seconds():
+    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 300, 377)
+
+
+def test_capture_window_is_420_seconds():
+    assert audio_capture_frames() == 42000
+
+
+def test_env_override_keeps_capture_window(monkeypatch):
+    monkeypatch.setenv("CACTUS_TRANSPILER_AUDIO_BUCKETS", "30,60")
+    assert audio_capture_frames() == 42000
+    assert audio_bucket_frames(audio_capture_frames()) == [3000, 6000, 42000]
 
 
 def test_env_override_replaces_ladder(monkeypatch):
@@ -43,9 +54,9 @@ def test_env_override_is_sorted_and_deduplicated(monkeypatch):
 
 def test_malformed_env_override_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("CACTUS_TRANSPILER_AUDIO_BUCKETS", "not-a-number")
-    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13, 21)
+    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 300, 377)
 
 
 def test_empty_env_override_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("CACTUS_TRANSPILER_AUDIO_BUCKETS", "0,-3")
-    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13, 21)
+    assert audio_bucket_seconds() == (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 300, 377)

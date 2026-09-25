@@ -19,9 +19,11 @@ def test_capture_window_is_independent_of_validation_audio():
     with patch.dict("os.environ", {"CACTUS_TRANSPILER_AUDIO_BUCKETS": ""}):
         specs = build_parakeet_tdt_component_specs(model, named_tensors={"input_features": features})
     encoders = specs[:-1]
-    assert [int(spec.metadata["audio_frames"]) for spec in encoders] == [100, 200, 300, 500, 800, 1300, 2100, 3000]
+    assert [int(spec.metadata["audio_frames"]) for spec in encoders] == [
+        100, 200, 300, 500, 800, 1300, 2100, 3400, 5500, 8900, 14400, 23300, 30000, 37700, 42000,
+    ]
     assert encoders[-1].component == "audio_encoder"
-    assert tuple(encoders[-1].example_inputs[0].shape) == (1, 3000, 128)
+    assert tuple(encoders[-1].example_inputs[0].shape) == (1, 42000, 128)
     assert torch.all(features == 2.0)
     assert not torch.all(encoders[-1].example_inputs[0] == 2.0)
 

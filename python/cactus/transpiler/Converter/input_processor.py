@@ -95,6 +95,7 @@ PROCESSOR_MAP = {
     "google/gemma-4-E2B": gemma4_processor,
     "openai/whisper-tiny": default_processor,
     "nvidia/parakeet-tdt-0.6b-v3": parakeet_processor,
+    "nvidia/parakeet-tdt-0.6b-v2": parakeet_processor,
     "LiquidAI/LFM2-VL-3B": default_processor,
     "Qwen/Qwen2.5-0.5B": default_processor,
     "LiquidAI/LFM2.5-8B-A1B": text_tokenizer_processor,

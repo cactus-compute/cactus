@@ -14,6 +14,7 @@ import torch.nn.functional as F
 
 from cactus.transpile.component_pipeline import ComponentModuleSpec
 from cactus.transpile.audio_preprocess import audio_bucket_frames
+from cactus.transpile.audio_preprocess import audio_capture_frames
 from cactus.transpile.audio_preprocess import prepare_native_parakeet_audio_features
 from cactus.transpile.model_profiles import add_tensor_aliases
 from cactus.transpile.model_profiles import PARAKEET_TDT_PROFILE
@@ -850,11 +851,12 @@ def build_parakeet_tdt_component_specs(
 ) -> list[ComponentModuleSpec]:
     features = named_tensors["input_features"]
     input_features = torch.randn(
-        (int(features.shape[0]), 3000, int(features.shape[2])),
+        (int(features.shape[0]), audio_capture_frames(), int(features.shape[2])),
         device=features.device,
         dtype=features.dtype,
     )
-    example_hidden = model.encoder(input_features, torch.ones_like(input_features[:, :, 0]))
+    example_features = input_features[:, : audio_bucket_frames(int(input_features.shape[1]))[0], :]
+    example_hidden = model.encoder(example_features, torch.ones_like(example_features[:, :, 0]))
     batch_size = int(example_hidden.shape[0])
     initial_states = model.initial_decoder_state(
         batch_size=batch_size,
