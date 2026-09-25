@@ -4747,6 +4747,10 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     const size_t expected_frames = feat_desc.shape[1];
     const size_t expected_mels = feat_desc.shape[2];
     const size_t source_frames = expected_mels > 0 ? audio_features.size() / expected_mels : 0;
+    if (stream == nullptr && source_frames > expected_frames) {
+        return transcribe_parakeet_tdt_longform(audio_features, expected_frames, expected_mels,
+                                                source_frames, should_stop);
+    }
     const size_t copy_frames = std::min(source_frames, expected_frames);
     std::vector<float> transposed(expected_frames * expected_mels, 0.0f);
     for (size_t t = 0; t < copy_frames; ++t) {
@@ -4919,7 +4923,7 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
             float best_token_score = -std::numeric_limits<float>::infinity();
             for (size_t i = 0; i < token_class_count; ++i) {
                 float v = get_logit(i);
-                if (stream && !tdt_vocab_bias.empty()) {
+                if (stream && !stream->internal && !tdt_vocab_bias.empty()) {
                     auto it = tdt_vocab_bias.find(static_cast<uint32_t>(i));
                     if (it != tdt_vocab_bias.end()) v += it->second;
                 }
@@ -4990,6 +4994,58 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
     }
 
     return emitted;
+}
+
+std::vector<uint32_t> Model::transcribe_parakeet_tdt_longform(const std::vector<float>& audio_features,
+                                                              size_t window_frames, size_t mels,
+                                                              size_t source_frames,
+                                                              const std::atomic<bool>* should_stop) {
+    // Audio longer than the encoder window: slice the precomputed mel features into
+    // overlapping windows and carry decoder state across them, reusing the streaming
+    // path's left-context / word-boundary-confirm / rollback scheme (see stream.cpp).
+    const size_t sub = std::max<uint32_t>(1, config_.subsampling_factor);
+    // Left context must stay a multiple of the subsampling factor so the decode
+    // cursor lands exactly on an encoder frame.
+    const size_t left_ctx = (std::min(window_frames / 2, static_cast<size_t>(100 * sub)) / sub) * sub;
+    const size_t right_ctx = 100;  // 1 s look-ahead encoded but not committed on non-final windows
+    CACTUS_LOG_INFO("model", "Parakeet long-form: " << source_frames << " mel frames exceed encoder window "
+                    << window_frames << "; decoding in overlapping windows");
+
+    std::vector<uint32_t> all_tokens;
+    ParakeetTdtStreamState st;
+    st.internal = true;
+    std::vector<float> window;
+    size_t mel_cursor = 0;
+    while (mel_cursor < source_frames) {
+        if (should_stop && should_stop->load()) break;
+        const size_t win_start = mel_cursor > left_ctx ? mel_cursor - left_ctx : 0;
+        const size_t win_end = std::min(win_start + window_frames, source_frames);
+        const bool is_last = win_end == source_frames;
+        const size_t frames = win_end - win_start;
+        const size_t end_frame = (is_last || frames <= right_ctx) ? 0 : (frames - right_ctx) / sub;
+        window.assign(frames * mels, 0.0f);
+        for (size_t m = 0; m < mels; ++m) {
+            const float* src = audio_features.data() + m * source_frames + win_start;
+            std::copy(src, src + frames, window.data() + m * frames);
+        }
+        st.time_index = (mel_cursor - win_start) / sub;
+        std::vector<uint32_t> tokens =
+            transcribe_parakeet_tdt(window, &st, is_last, end_frame, should_stop);
+        all_tokens.insert(all_tokens.end(), tokens.begin(), tokens.end());
+        if (is_last || (should_stop && should_stop->load())) break;
+        size_t next_cursor = win_start + st.time_index * sub;
+        if (next_cursor <= mel_cursor) {
+            // Nothing was confirmed (silence, or no word boundary in the window):
+            // finalize this window so the cursor can advance.
+            st.time_index = (mel_cursor - win_start) / sub;
+            tokens = transcribe_parakeet_tdt(window, &st, true, 0, should_stop);
+            all_tokens.insert(all_tokens.end(), tokens.begin(), tokens.end());
+            next_cursor = win_start + st.time_index * sub;
+            if (next_cursor <= mel_cursor) break;
+        }
+        mel_cursor = std::min(next_cursor, win_end);
+    }
+    return all_tokens;
 }
 
 uint32_t Model::decode_with_images(const std::vector<uint32_t>& tokens, const std::vector<std::string>& /*image_paths*/,
