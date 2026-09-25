@@ -1996,6 +1996,17 @@ kernel void maxpool1d_f16(device const half* x [[buffer(0)]], device half* y [[b
     y[(size_t)nc * Lout + lo] = (half)r;
 }
 
+kernel void upsample_nearest2d_f16(device const half* x [[buffer(0)]], device half* y [[buffer(1)]],
+                                   constant uint& H [[buffer(2)]], constant uint& W [[buffer(3)]],
+                                   constant uint& scale [[buffer(4)]],
+                                   uint2 gid [[thread_position_in_grid]]) {
+    uint pix = gid.x, nc = gid.y;
+    uint Wo = W * scale, Ho = H * scale;
+    if (pix >= Ho * Wo) return;
+    uint oy = pix / Wo, ox = pix % Wo;
+    y[(size_t)nc * Ho * Wo + pix] = x[(size_t)nc * H * W + (size_t)(oy / scale) * W + ox / scale];
+}
+
 kernel void bilinear_f16(device const half* in [[buffer(0)]], device half* y [[buffer(1)]],
                          constant uint& sh [[buffer(2)]], constant uint& sw [[buffer(3)]],
                          constant uint& dh [[buffer(4)]], constant uint& dw [[buffer(5)]],
@@ -2059,6 +2070,67 @@ kernel void conv1d_nlc_dw_f16(device const half* x [[buffer(0)]], device const h
             acc = fma((float)x[((size_t)n*L + p)*C + c], (float)w[(size_t)c*K + k], acc);
     }
     y[((size_t)n*L + l)*C + c] = (half)acc;
+}
+
+kernel void conv2d_k3s1p1_mma_f16(device const half* x [[buffer(0)]], device const half* w [[buffer(1)]],
+                                  device const half* bias [[buffer(2)]], device half* y [[buffer(3)]],
+                                  constant uint& Cin [[buffer(4)]], constant uint& H [[buffer(5)]],
+                                  constant uint& W [[buffer(6)]], constant uint& Cout [[buffer(7)]],
+                                  constant uint& has_bias [[buffer(8)]],
+                                  uint3 tg [[threadgroup_position_in_grid]],
+                                  uint tl [[thread_index_in_threadgroup]],
+                                  uint sg [[simdgroup_index_in_threadgroup]]) {
+    threadgroup half sa[32*8];
+    threadgroup half sb[8*64];
+    threadgroup float Cs[32*64];
+    const uint P = H * W, Kt = Cin * 9u;
+    const uint p0 = tg.x * 64u, c0 = tg.y * 32u, n = tg.z;
+    device const half* xin = x + (size_t)n * Cin * P;
+
+    simdgroup_matrix<half,8,8> ma;
+    simdgroup_matrix<half,8,8> mb;
+    simdgroup_matrix<float,8,8> mc[8];
+    for (uint i = 0; i < 8u; ++i) mc[i] = make_filled_simdgroup_matrix<float,8,8>(0.f);
+
+    for (uint k0 = 0; k0 < Kt; k0 += 8u) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint idx = tl; idx < 32u*8u; idx += 128u) {
+            uint m = idx / 8u, kk = idx % 8u;
+            sa[idx] = (c0 + m < Cout && k0 + kk < Kt) ? w[(size_t)(c0 + m) * Kt + k0 + kk] : (half)0;
+        }
+        for (uint idx = tl; idx < 8u*64u; idx += 128u) {
+            uint kk = idx / 64u, nn = idx % 64u;
+            uint k = k0 + kk, p = p0 + nn;
+            half v = (half)0;
+            if (k < Kt && p < P) {
+                uint ci = k / 9u, r = k % 9u;
+                int iy = (int)(p / W) + (int)(r / 3u) - 1;
+                int ix = (int)(p % W) + (int)(r % 3u) - 1;
+                if (iy >= 0 && iy < (int)H && ix >= 0 && ix < (int)W)
+                    v = xin[(size_t)ci * P + (size_t)iy * W + ix];
+            }
+            sb[idx] = v;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        simdgroup_load(ma, sa + sg * 8u * 8u, 8u);
+        for (uint c = 0; c < 8u; ++c) {
+            simdgroup_load(mb, sb + c * 8u, 64u);
+            simdgroup_multiply_accumulate(mc[c], ma, mb, mc[c]);
+        }
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint c = 0; c < 8u; ++c)
+        simdgroup_store(mc[c], &Cs[(sg * 8u) * 64u + c * 8u], 64u);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    device half* yout = y + (size_t)n * Cout * P;
+    for (uint idx = tl; idx < 32u*64u; idx += 128u) {
+        uint m = idx / 64u, nn = idx % 64u;
+        if (c0 + m < Cout && p0 + nn < P) {
+            float v = Cs[idx] + (has_bias ? (float)bias[c0 + m] : 0.f);
+            yout[(size_t)(c0 + m) * P + p0 + nn] = (half)v;
+        }
+    }
 }
 
 kernel void conv2d_f16(device const half* x [[buffer(0)]], device const half* w [[buffer(1)]],

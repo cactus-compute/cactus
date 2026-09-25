@@ -359,6 +359,12 @@ CONV_TARGETS = {
     "aten.conv2d.default",
 }
 
+UPSAMPLE_TARGETS = {
+    "cactus.upsample_nearest2d",
+    "aten.upsample_nearest2d.default",
+    "aten.upsample_nearest2d.vec",
+}
+
 ATTENTION_TARGETS = {
     "cactus.attention",
     "cactus.attention_cached",

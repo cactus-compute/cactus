@@ -13,10 +13,12 @@ from . import cache_utils as CU
 from . import input_processor as IP
 from . import overrides as OV
 from ..ModelProfiles import models as MP_Models
+from ..ModelProfiles import profiles as MP_Profiles
 from . import constants
 
 token = constants.token
 EXPORT_PATCHES = {
+    "clip_position_ids": OV.patch_clip_position_ids_for_export,
     "gemma4_audio_mask": OV.patch_gemma4_audio_mask_for_export,
     "transformers_moe_grouped_mm_fallback": OV.patch_transformers_moe_grouped_mm_for_export,
     "lfm2_vl_image_features": OV.patch_lfm2_vl_image_features_for_export,
@@ -185,18 +187,27 @@ def load_configs(mp: MP_Models.ModelProfile, model_id: str | None) -> dict[str, 
             configs[filename] = json.load(f)
     return configs
 
-def build_input(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], input_cls: Any, model_id: str | None = None, inference_mode: str = "prefill_no_cache") -> Any | None:
+def build_input(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], input_cls: Any, model_id: str | None = None, inference_mode: str = "prefill_no_cache", component_source: MP_Models.ComponentSource | None = None) -> Any | None:
     if not all(modality in mp.supported_modalties for modality in input_modalities):
         return None
     configs = load_configs(mp, model_id)
     if mp.input_strategy == constants.SYNTHETIC_INPUT_STRATEGY:
-        raise ValueError("Synthetic input creation is currently disabled")
+        kwargs = build_synthetic_kwargs(mp, component_source, configs)
+    else:
+        kwargs = build_processor_kwargs(model_id, input_modalities, configs, mp.model_profiles)
     return input_cls(
         args=(),
-        kwargs=build_processor_kwargs(model_id, input_modalities, configs, mp.model_profiles),
+        kwargs=kwargs,
         modalities=input_modalities,
         inference_mode=inference_mode,
     )
+
+def build_synthetic_kwargs(mp: MP_Models.ModelProfile, component_source: MP_Models.ComponentSource | None, configs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    strategy = component_source.load_strategy if component_source is not None else mp.load_strategy
+    builder = IP.SYNTHETIC_INPUT_BUILDERS.get(strategy)
+    if builder is None:
+        raise ValueError(f"No synthetic input builder registered for load strategy {strategy!r}")
+    return builder(configs)
 
 def build_decode_with_cache_input(
     model: torch.nn.Module,
@@ -343,33 +354,40 @@ def pad_tensor_dim(tensor: torch.Tensor, dim: int, target: int, value: int | flo
     padding = torch.full(shape, value, dtype=tensor.dtype, device=tensor.device)
     return torch.cat((tensor, padding), dim=dim)
 
-def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None) -> torch.nn.Module:
-    if mp is None:
+def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None, model_class: Any | None = None, load_kwargs: dict[str, Any] | None = None) -> torch.nn.Module:
+    export_patches = mp.export_patches if mp is not None else ()
+    if model_class is not None:
+        candidate_classes = (model_class,)
+    elif mp is None:
         candidate_classes = (AutoModel,)
-        export_patches = ()
     else:
         candidate_classes = constants.LOAD_STRATEGIES.get(mp.load_strategy, (AutoModel,))
-        export_patches = mp.export_patches
     seen_classes: set[Any] = set()
     base_kwargs: dict[str, Any] = {"trust_remote_code": True}
     last_error: Exception | None = None
     if constants.token is not None:
         base_kwargs["token"] = constants.token
-    load_attempts = (
-        {**base_kwargs, "dtype": "auto", "low_cpu_mem_usage": True, "local_files_only": True},
-        {**base_kwargs, "torch_dtype": "auto", "low_cpu_mem_usage": True, "local_files_only": True},
-        {**base_kwargs, "local_files_only": True},
-        {**base_kwargs, "dtype": "auto", "low_cpu_mem_usage": True},
-        {**base_kwargs, "torch_dtype": "auto", "low_cpu_mem_usage": True},
-        base_kwargs,
-    )
-    for model_class in candidate_classes:
-        if model_class in seen_classes:
+    if load_kwargs:
+        load_attempts = (
+            {**base_kwargs, **load_kwargs, "local_files_only": True},
+            {**base_kwargs, **load_kwargs},
+        )
+    else:
+        load_attempts = (
+            {**base_kwargs, "dtype": "auto", "low_cpu_mem_usage": True, "local_files_only": True},
+            {**base_kwargs, "torch_dtype": "auto", "low_cpu_mem_usage": True, "local_files_only": True},
+            {**base_kwargs, "local_files_only": True},
+            {**base_kwargs, "dtype": "auto", "low_cpu_mem_usage": True},
+            {**base_kwargs, "torch_dtype": "auto", "low_cpu_mem_usage": True},
+            base_kwargs,
+        )
+    for candidate_class in candidate_classes:
+        if candidate_class in seen_classes:
             continue
-        seen_classes.add(model_class)
-        for load_kwargs in load_attempts:
+        seen_classes.add(candidate_class)
+        for attempt_kwargs in load_attempts:
             try:
-                model = model_class.from_pretrained(model_id, **load_kwargs)
+                model = candidate_class.from_pretrained(model_id, **attempt_kwargs)
                 model.eval()
                 for patch in export_patches:
                     patch_fn = EXPORT_PATCHES[patch]
@@ -380,7 +398,28 @@ def load_model(model_id: str, mp: MP_Models.ModelProfile | None = None) -> torch
     raise RuntimeError(f"Unable to load model {model_id}") from last_error
 
 def create_model(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], model_id: str, inference_mode: str = "prefill_no_cache") -> Model:
-    
+    if mp.component_sources:
+        return create_component_model(mp, input_modalities, model_id, inference_mode)
+    return create_whole_model(mp, input_modalities, model_id, inference_mode)
+
+def create_component_model(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], model_id: str, inference_mode: str) -> Model:
+    from .diffusion import COMPONENT_LOADERS
+
+    source = MP_Profiles.component_source_for_mode(mp, inference_mode)
+    if source.load_strategy not in COMPONENT_LOADERS:
+        raise ValueError(f"No component loader registered for load strategy {source.load_strategy!r}")
+    resolve_class, wrap_for_export = COMPONENT_LOADERS[source.load_strategy]
+    repo_id, subfolder = MP_Profiles.component_repo_and_subfolder(source, model_id)
+    load_kwargs: dict[str, Any] = {"torch_dtype": torch.float16}
+    if subfolder:
+        load_kwargs["subfolder"] = subfolder
+    loaded_model = wrap_for_export(load_model(repo_id, mp, model_class=resolve_class(), load_kwargs=load_kwargs))
+    input_ = build_input(mp, input_modalities, Input, model_id, inference_mode, component_source=source)
+    if input_ is None:
+        raise ValueError(f"Could not build input for modalities {input_modalities}")
+    return Model(name=model_id, model_profile=mp, input=input_, model=loaded_model)
+
+def create_whole_model(mp: MP_Models.ModelProfile, input_modalities: tuple[str, ...], model_id: str, inference_mode: str) -> Model:
     input_ = build_input(mp, input_modalities, Input, model_id, inference_mode)
     if input_ is None:
         raise ValueError(f"Could not build input for modalities {input_modalities}")
@@ -424,6 +463,20 @@ def pad_no_cache_full_context_input(input_: Input, input_cls: Any, capacity: int
         inference_mode=input_.inference_mode,
     )
 
+def preserved_decomposition_table(mp: MP_Models.ModelProfile, inference_mode: str) -> dict[Any, Any] | None:
+    preserved: tuple[str, ...] = ()
+    for source in mp.component_sources:
+        if source.mode == inference_mode:
+            preserved += tuple(source.preserved_ops)
+    if not preserved:
+        return None
+    table = torch.export.default_decompositions()
+    for name in preserved:
+        overload_packet = getattr(torch.ops.aten, name, None)
+        if overload_packet is not None:
+            table.pop(overload_packet.default, None)
+    return table
+
 def export_(model: Model, input: Input) -> LayerMap:
     should_use_cache = input.inference_mode in constants.CACHE_INFERENCE_MODES
     CU.configure_model_for_export(model.model, should_use_cache=should_use_cache)
@@ -442,8 +495,10 @@ def export_(model: Model, input: Input) -> LayerMap:
     OV.prepare_model_input_hints_for_export(model.model, export_kwargs)
     export_kwargs["use_cache"] = should_use_cache
     export_kwargs = CU.filter_forward_kwargs(export_model, export_kwargs)
+    decomposition_table = preserved_decomposition_table(model.model_profile, input.inference_mode)
     with torch.no_grad():
-        exported = torch.export.export(export_model, args=input.args, kwargs=export_kwargs, strict=False).run_decompositions()
+        exported = torch.export.export(export_model, args=input.args, kwargs=export_kwargs, strict=False)
+        exported = exported.run_decompositions() if decomposition_table is None else exported.run_decompositions(decomposition_table)
     graph = exported.graph_module.graph if hasattr(exported, "graph_module") else exported.graph
     records = [LayerRecord.from_node(i, node) for i, node in enumerate(graph.nodes)]
     return LayerMap.from_data(x=exported, name=model.name, model_task=input.inference_mode, nodes_list=records)

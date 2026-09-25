@@ -27,6 +27,7 @@ set(ENGINE_SOURCES
     src/cloud.cpp
     src/init.cpp
     src/embed.cpp
+    src/generate_image.cpp
     src/complete.cpp
     src/transcribe.cpp
     src/stream.cpp

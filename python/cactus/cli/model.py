@@ -47,9 +47,22 @@ def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=
     err = convert_toolchain_error()
     if err:
         raise RuntimeError(err)
-    print_color(YELLOW, f"Converting {model_id} from HuggingFace source...")
+    if token:
+        os.environ["HF_TOKEN"] = token
+        os.environ["HUGGING_FACE_HUB_TOKEN"] = token
+    from .transpiler import profile_for_model_id
+
+    profile = profile_for_model_id(model_id)
+    if profile is not None and profile.component_sources:
+        return _convert_component_sources(model_id, profile, bits=bits, token=token, weights_dir=weights_dir)
+    return _convert_whole_model(model_id, bits=bits, weights_dir=weights_dir, skip_model_load=skip_model_load)
+
+
+def _convert_whole_model(model_id, *, bits, weights_dir, skip_model_load):
+    """Convert a model that ships as a single checkpoint."""
     from ..convert.cli import main as cq_main
 
+    print_color(YELLOW, f"Converting {model_id} from HuggingFace source...")
     cq_args = [
         "convert", "--model", model_id,
         "--out", str(weights_dir),
@@ -57,13 +70,77 @@ def _convert_from_source(model_id, *, bits, token, weights_dir, skip_model_load=
     ]
     if skip_model_load:
         cq_args.append("--skip-model-load")
-    if token:
-        os.environ["HF_TOKEN"] = token
-        os.environ["HUGGING_FACE_HUB_TOKEN"] = token
     cq_main(cq_args)
 
     print_color(GREEN, f"Model converted and ready at {weights_dir}")
     return weights_dir
+
+
+def _convert_component_sources(model_id, profile, *, bits, token, weights_dir):
+    """Convert a pipeline model one component at a time into a single weights dir."""
+    import json
+    import tempfile
+
+    from ..convert.cli import main as cq_main
+    from ..convert.export.files import write_config_txt
+
+    weights_dir = Path(weights_dir)
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    merged_records = []
+    converted = []
+    for source in profile.component_sources:
+        component_src = _component_source_path(source, model_id, token=token)
+        print_color(YELLOW, f"Converting {source.mode} component from {component_src}...")
+        with tempfile.TemporaryDirectory() as tmp:
+            component_out = Path(tmp) / "out"
+            cq_main(["convert", "--model", component_src, "--out", str(component_out), "--bits", str(bits)])
+            manifest_path = component_out / "weights_manifest.json"
+            if manifest_path.exists():
+                merged_records.extend(json.loads(manifest_path.read_text(encoding="utf-8")).get("weights", []))
+            for tensor_file in sorted(component_out.iterdir()):
+                if tensor_file.suffix not in {".weights", ".bias"}:
+                    continue
+                destination = weights_dir / tensor_file.name
+                if destination.exists():
+                    raise RuntimeError(
+                        f"components {converted} and {source.mode!r} both produce tensor file {tensor_file.name!r}"
+                    )
+                shutil.move(str(tensor_file), destination)
+        converted.append(source.mode)
+    (weights_dir / "weights_manifest.json").write_text(
+        json.dumps({"weights": merged_records}, indent=2), encoding="utf-8"
+    )
+    _materialize_pipeline_assets(model_id, profile, weights_dir, token=token)
+    write_config_txt({"model_type": profile.model_profiles, "components": converted}, weights_dir)
+    print_color(GREEN, f"Model converted and ready at {weights_dir}")
+    return weights_dir
+
+
+def _component_source_path(source, model_id, *, token=None):
+    from huggingface_hub import snapshot_download
+
+    from cactus.transpiler.ModelProfiles.profiles import component_repo_and_subfolder
+
+    repo_id, subfolder = component_repo_and_subfolder(source, model_id)
+    if not subfolder:
+        return repo_id
+    snapshot = snapshot_download(repo_id, allow_patterns=[f"{subfolder}/*"], token=token)
+    return str(Path(snapshot) / subfolder)
+
+
+def _materialize_pipeline_assets(model_id, profile, weights_dir, *, token=None):
+    """Emit the tokenizer sidecars and scheduler config a pipeline bundle needs at runtime."""
+    from huggingface_hub import snapshot_download
+
+    from ..convert.cactus_adapters.tokenizer import convert_clip_tokenizer
+
+    strategies = {source.load_strategy for source in profile.component_sources}
+    snapshot = Path(snapshot_download(model_id, allow_patterns=["tokenizer/*", "scheduler/*"], token=token))
+    if "clip_text" in strategies:
+        convert_clip_tokenizer(snapshot / "tokenizer", weights_dir)
+    scheduler_config = snapshot / "scheduler" / "scheduler_config.json"
+    if scheduler_config.exists():
+        shutil.copy2(scheduler_config, weights_dir / "scheduler_config.json")
 
 
 def ensure_weights(model_id, *, bits=4, token=None, reconvert=False, output_dir=None, skip_model_load=False):

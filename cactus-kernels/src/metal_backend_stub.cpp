@@ -79,6 +79,7 @@ bool cactus_metal_encode_concat2(void*, const void*, const void*, uint32_t, uint
 bool cactus_metal_encode_gather_f32idx(void*, const void*, const void*, uint32_t, uint32_t, size_t) { return false; }
 bool cactus_metal_encode_rope_full(void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float, int) { return false; }
 bool cactus_metal_encode_maxpool1d(void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
+bool cactus_metal_encode_upsample_nearest2d(void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
 bool cactus_metal_encode_bilinear(void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, int) { return false; }
 bool cactus_metal_encode_conv1d_gen(void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, int) { return false; }
 bool cactus_metal_encode_conv1d_nlc_dw(void*, const void*, const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }

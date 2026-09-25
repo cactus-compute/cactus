@@ -156,6 +156,8 @@ bool cactus_metal_encode_rope_full(void* out, const void* in, uint32_t tokens, u
                                    float theta, int gptj);
 bool cactus_metal_encode_maxpool1d(void* out, const void* in, uint32_t NC, uint32_t L,
                                    uint32_t Lout, uint32_t K, uint32_t stride);
+bool cactus_metal_encode_upsample_nearest2d(void* out, const void* in, uint32_t NC,
+                                            uint32_t H, uint32_t W, uint32_t scale);
 bool cactus_metal_encode_bilinear(void* out, const void* in, uint32_t sh, uint32_t sw,
                                   uint32_t dh, uint32_t dw, uint32_t E, int align);
 bool cactus_metal_encode_conv1d_gen(void* out, const void* x, const void* w, const void* bias,

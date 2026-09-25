@@ -1574,6 +1574,32 @@ int cactus_graph_conv2d_pointwise_1x1(cactus_graph_t graph, cactus_node_t input,
     }
 }
 
+int cactus_graph_conv2d_k3s1p1(cactus_graph_t graph, cactus_node_t input, cactus_node_t weight, bool has_bias, cactus_node_t bias, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_conv2d_k3s1p1");
+    try {
+        if (has_bias) {
+            *out = static_cast<cactus_node_t>(as_graph(graph)->graph.conv2d_k3s1p1(static_cast<size_t>(input), static_cast<size_t>(weight), static_cast<size_t>(bias)));
+        } else {
+            *out = static_cast<cactus_node_t>(as_graph(graph)->graph.conv2d_k3s1p1(static_cast<size_t>(input), static_cast<size_t>(weight)));
+        }
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
+int cactus_graph_upsample_nearest2d(cactus_graph_t graph, cactus_node_t input, size_t scale_factor, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_upsample_nearest2d");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.upsample_nearest2d(static_cast<size_t>(input), scale_factor));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_lstm_cell(cactus_graph_t graph, cactus_node_t input, cactus_node_t h_prev, cactus_node_t c_prev, cactus_node_t weight_ih, cactus_node_t weight_hh, cactus_node_t bias_ih, cactus_node_t bias_hh, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_lstm_cell");
     try {
