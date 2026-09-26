@@ -1699,23 +1699,7 @@ inline InferenceOptions parse_inference_options_json(const std::string& json) {
         options.enable_thinking_if_supported = (json.substr(pos, 4) == "true");
     }
 
-    pos = json.find("\"stop_sequences\"");
-    if (pos != std::string::npos) {
-        pos = json.find('[', pos);
-        if (pos != std::string::npos) {
-            size_t end_pos = json.find(']', pos);
-            size_t seq_pos = json.find('"', pos);
-
-            while (seq_pos != std::string::npos && seq_pos < end_pos) {
-                size_t seq_start = seq_pos + 1;
-                size_t seq_end = json.find('"', seq_start);
-                if (seq_end != std::string::npos) {
-                    options.stop_sequences.push_back(json.substr(seq_start, seq_end - seq_start));
-                }
-                seq_pos = json.find('"', seq_end + 1);
-            }
-        }
-    }
+    options.stop_sequences = parse_json_string_array_field(json, "stop_sequences");
 
     return options;
 }
