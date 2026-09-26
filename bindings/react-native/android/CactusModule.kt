@@ -344,11 +344,26 @@ class CactusModule(reactContext: ReactApplicationContext) : ReactContextBaseJava
         promise: Promise,
     ) {
         val nativeHandle = parseHandle(handle, promise) ?: return
+        if (documents.size() != ids.size() || embeddings.size() != ids.size() ||
+            (metadatas != null && metadatas.size() != ids.size())
+        ) {
+            promise.reject("CACTUS_ERROR", "ids, documents, embeddings and metadatas must have equal length")
+            return
+        }
         val idsArray = readableArrayToIntArray(ids)
         val docsArray = readableArrayToStringArray(documents)
-        val embArray = readableNestedFloatArrays(embeddings)
+        val embArray = try {
+            readableNestedFloatArrays(embeddings)
+        } catch (error: IllegalArgumentException) {
+            promise.reject("CACTUS_ERROR", error.message ?: "Invalid embeddings")
+            return
+        }
         val metaArray = metadatas?.let { readableArrayToStringArray(it) }
         val embeddingDim = if (embArray.isNotEmpty()) embArray[0].size.toLong() else 0L
+        if (embArray.any { it.size.toLong() != embeddingDim }) {
+            promise.reject("CACTUS_ERROR", "Embedding rows must all have the same length")
+            return
+        }
         val rc = CactusJNI.nativeIndexAdd(nativeHandle, idsArray, docsArray, metaArray, embArray, embeddingDim)
         if (rc < 0) {
             fail(promise, "Failed to add to index")
