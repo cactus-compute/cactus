@@ -221,6 +221,10 @@ bool cactus_metal_encode_conv_cache_append(void* out, const void* src, void* rin
 bool cactus_metal_encode_rel_pos_bias(void* y, const void* q, const void* r,
     uint32_t B, uint32_t T, uint32_t H, uint32_t D, uint32_t R, int r_batched, float scale);
 
+bool cactus_metal_encode_rel_pos_attention_f16(void* out, const void* q, const void* k, const void* v,
+    const void* qv, const void* r, const void* mask, uint32_t B, uint32_t T, uint32_t H, uint32_t D,
+    uint32_t R, uint32_t window, float scale);
+
 bool cactus_metal_encode_gemv_bias(void* out, const void* x, const void* w, const void* bias,
     uint32_t K, uint32_t N, int pretransposed);
 

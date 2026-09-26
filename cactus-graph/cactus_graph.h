@@ -147,7 +147,8 @@ enum class OpType {
     QKV_TQ_FUSED,
     PROJECTION_PAIR_TQ_FUSED,
     CONV1D_CAUSAL_CHANNEL_FIRST,
-    LOGITS_TQ_SOFTCAP
+    LOGITS_TQ_SOFTCAP,
+    REL_POS_ATTENTION
 };
 
 struct PrecisionTraits {
@@ -652,6 +653,9 @@ public:
         bool additive_mask = false, size_t position_offset = 0, size_t window_size = 0,
         float logit_cap = 0.0f);
     size_t rel_pos_bias(size_t query, size_t relative_key, float scale, ComputeBackend backend = cactus_default_backend());
+    size_t rel_pos_attention(size_t query, size_t key, size_t value, size_t rel_query, size_t relative_key,
+                             size_t key_mask, float scale, size_t window_size,
+                             ComputeBackend backend = cactus_default_backend());
     size_t attention_int8_hybrid(
         size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
         const int8_t* cached_keys, const int8_t* cached_values,
@@ -1174,6 +1178,10 @@ CACTUS_FFI_EXPORT int cactus_graph_attention(
     cactus_graph_t graph, cactus_node_t query, cactus_node_t key, cactus_node_t value, float scale, bool is_causal, size_t position_offset, size_t window_size, bool use_mask, cactus_node_t mask, bool additive_mask, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_rel_pos_bias(
     cactus_graph_t graph, cactus_node_t query, cactus_node_t relative_key, float scale, cactus_node_t* out);
+CACTUS_FFI_EXPORT int cactus_graph_rel_pos_attention(
+    cactus_graph_t graph, cactus_node_t query, cactus_node_t key, cactus_node_t value,
+    cactus_node_t rel_query, cactus_node_t relative_key, bool use_key_mask, cactus_node_t key_mask,
+    float scale, size_t window_size, cactus_node_t* out);
 CACTUS_FFI_EXPORT int cactus_graph_attention_int8_hybrid(
     cactus_graph_t graph, cactus_node_t query, cactus_node_t key_new, cactus_node_t value_new, float scale, size_t position_offset,
     const int8_t* cached_keys, const int8_t* cached_values, const float* k_scales, const float* v_scales,

@@ -836,6 +836,19 @@ void compute_rel_pos_bias_node(GraphNode& node, const std::vector<std::unique_pt
         });
 }
 
+void compute_rel_pos_attention_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes,
+                                    const std::unordered_map<size_t, size_t>& node_index_map) {
+    const auto& q = get_input(node, 0, nodes, node_index_map);
+    const auto& r = get_input(node, 4, nodes, node_index_map);
+    const BufferDesc* mask = node.input_ids.size() == 6 ? &get_input(node, 5, nodes, node_index_map) : nullptr;
+    cactus_rel_pos_attention_f16(
+        q.data_as<__fp16>(), get_input(node, 1, nodes, node_index_map).data_as<__fp16>(),
+        get_input(node, 2, nodes, node_index_map).data_as<__fp16>(),
+        get_input(node, 3, nodes, node_index_map).data_as<__fp16>(), r.data_as<__fp16>(),
+        mask ? mask->data_as<__fp16>() : nullptr, node.output_buffer.data_as<__fp16>(),
+        q.shape[0], q.shape[1], q.shape[2], q.shape[3], r.shape[1], node.params.scale, node.params.window_size);
+}
+
 void compute_attention_node(GraphNode& node, const std::vector<std::unique_ptr<GraphNode>>& nodes, const std::unordered_map<size_t, size_t>& node_index_map) {
     if (node.input_ids.size() < 3 || node.input_ids.size() > 4) {
         throw std::runtime_error("Attention operation requires 3 or 4 inputs (query, key, value[, mask]), got " +

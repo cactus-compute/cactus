@@ -4968,6 +4968,7 @@ std::vector<uint32_t> Model::transcribe_parakeet_tdt(const std::vector<float>& a
 
         if (!advanced) time_index += 1;
     }
+    audio_enc->graph->release_runtime_buffers();
 
     if (stream) {
         stream->initialized = true;

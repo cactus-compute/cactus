@@ -381,6 +381,25 @@ bool parity_flash_attention() {
     return true;
 }
 
+bool parity_rel_pos_attention() {
+    for (auto [T, window] : {std::pair<size_t, size_t>{150, 20}, {70, 0}, {37, 50}}) {
+        ParityCase c;
+        const size_t H = 2, D = 128;
+        const size_t R = window > 0 ? 2 * window + 1 : 2 * T - 1;
+        for (int i = 0; i < 4; ++i) c.add_input({1, T, H, D});
+        c.add_input({1, R, H, D});
+        std::vector<__fp16> mask(T, static_cast<__fp16>(0.0f));
+        for (size_t j = T - 4; j < T; ++j) mask[j] = static_cast<__fp16>(-10000.0f);
+        c.add_input_data({1, T}, mask);
+        c.tolerance = 2e-2f;
+        c.build = [D, window](CactusGraph& g, const std::vector<size_t>& in) {
+            return g.rel_pos_attention(in[0], in[1], in[2], in[3], in[4], in[5], 1.0f / std::sqrt((float)D), window);
+        };
+        if (!c.check()) return false;
+    }
+    return true;
+}
+
 bool parity_attention_causal() {
     ParityCase c;
     const size_t T = 37, H = 4, HKV = 2, D = 32;
@@ -562,6 +581,7 @@ int main() {
     runner.run_test("elemwise_chain (fused)", parity_elemwise_chain());
     runner.run_test("flash_attention (T%64!=0)", parity_flash_attention());
     runner.run_test("attention_causal", parity_attention_causal());
+    runner.run_test("rel_pos_attention", parity_rel_pos_attention());
     runner.run_test("equality_exact", parity_equality_exact());
     runner.run_test("sliding_window_cache (ring wrap)", parity_sliding_window_cache());
     runner.run_test("cache_growth", parity_cache_growth());

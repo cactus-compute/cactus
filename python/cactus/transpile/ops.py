@@ -147,6 +147,7 @@ OPS: tuple[OpSchema, ...] = (
     OpSchema("rms_norm", num_inputs=2, attrs=("eps",), backend_op="rms_norm"),
     OpSchema("rope", num_inputs=1, attrs=("theta", "position_offset"), backend_op="rope"),
     OpSchema("rel_pos_bias", num_inputs=2, attrs=("scale",), backend_op="rel_pos_bias"),
+    OpSchema("rel_pos_attention", num_inputs=6, attrs=("scale", "window_size"), backend_op="rel_pos_attention"),
     OpSchema(
         "attention",
         num_inputs=3,

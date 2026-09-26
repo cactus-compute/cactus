@@ -20,6 +20,57 @@ from cactus.transpile.model_profiles import add_tensor_aliases
 from cactus.transpile.model_profiles import PARAKEET_TDT_PROFILE
 
 
+_FULL_ATTENTION_MAX_ENCODER_FRAMES = 688
+_LOCAL_ATTENTION_WINDOW = 256
+_REL_POS_ATTENTION_QUERY_BLOCK = 256
+_PRE_ENCODE_CHUNK_FRAMES = 3000
+_PRE_ENCODE_HALO_FRAMES = 16
+
+
+@torch.library.custom_op("cactus_transpile::rel_pos_attention", mutates_args=())
+def rel_pos_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    rel_query: torch.Tensor,
+    relative_key: torch.Tensor,
+    key_mask: torch.Tensor,
+    scale: float,
+    window: int,
+) -> torch.Tensor:
+    seq_len = int(query.shape[1])
+    rel_len = int(relative_key.shape[1])
+    center = (rel_len - 1) // 2
+    reach = seq_len - 1 if window <= 0 or window >= seq_len else window
+    q = query.permute(0, 2, 1, 3).float()
+    k = key.permute(0, 2, 1, 3).float()
+    v = value.permute(0, 2, 1, 3).float()
+    q_rel = rel_query.permute(0, 2, 1, 3).float()
+    r = relative_key.permute(0, 2, 1, 3).float()
+    mask = key_mask.float()
+    out = torch.empty_like(q)
+    for t0 in range(0, seq_len, _REL_POS_ATTENTION_QUERY_BLOCK):
+        t1 = min(seq_len, t0 + _REL_POS_ATTENTION_QUERY_BLOCK)
+        k0 = max(0, t0 - reach)
+        k1 = min(seq_len, t1 + reach)
+        offset = (
+            torch.arange(k0, k1, device=query.device).view(1, -1)
+            - torch.arange(t0, t1, device=query.device).view(-1, 1)
+        )
+        rel_index = (center + offset).clamp(0, rel_len - 1).expand(q.shape[0], q.shape[1], -1, -1)
+        content = q[:, :, t0:t1] @ k[:, :, k0:k1].transpose(-1, -2)
+        position = (q_rel[:, :, t0:t1] @ r.transpose(-1, -2)).gather(-1, rel_index)
+        scores = (content + position) * scale + mask[:, None, None, k0:k1]
+        scores = scores.masked_fill(offset.abs() > reach, float("-inf"))
+        out[:, :, t0:t1] = scores.softmax(dim=-1) @ v[:, :, k0:k1]
+    return out.permute(0, 2, 1, 3).to(query.dtype).contiguous()
+
+
+@rel_pos_attention.register_fake
+def _rel_pos_attention_fake(query, key, value, rel_query, relative_key, key_mask, scale, window):
+    return torch.empty_like(query)
+
+
 def _cfg_get(config: dict[str, Any], key: str, default: Any = None) -> Any:
     value = config.get(key, default)
     return default if value is None else value
@@ -404,19 +455,6 @@ def _relative_position_embeddings(*, seq_len: int, hidden_dim: int, device: torc
     return embeddings.to(dtype=dtype)
 
 
-def _relative_position_bias(query: torch.Tensor, relative_key: torch.Tensor, *, scale: float) -> torch.Tensor:
-    batch, heads, seq_len, _ = query.shape
-    scores = torch.matmul(query, relative_key.transpose(-1, -2))
-    rel_index = (
-        torch.arange(seq_len, device=query.device).view(seq_len, 1)
-        - torch.arange(seq_len, device=query.device).view(1, seq_len)
-        + (seq_len - 1)
-    )
-    rel_index = rel_index.view(1, 1, seq_len, seq_len).expand(batch, heads, seq_len, seq_len)
-    gathered = scores.gather(-1, rel_index)
-    return gathered * float(scale)
-
-
 class ParakeetTDTFeedForward(nn.Module):
     def __init__(self, config: ParakeetTDTConfig, prefix: str, state_dict: dict[str, torch.Tensor]):
         super().__init__()
@@ -458,7 +496,7 @@ class ParakeetTDTSelfAttention(nn.Module):
         self.pos_bias_v = nn.Parameter(state_dict[f"{prefix}.pos_bias_v"].clone())
         self.config = config
 
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor, window: int = 0) -> torch.Tensor:
         batch, seq_len, _ = x.shape
         num_heads = self.config.attention_heads
         head_dim = self.config.attention_head_dim
@@ -467,39 +505,29 @@ class ParakeetTDTSelfAttention(nn.Module):
         k = self.linear_k(x).view(batch, seq_len, num_heads, head_dim)
         v = self.linear_v(x).view(batch, seq_len, num_heads, head_dim)
 
+        reach = window if window > 0 else seq_len - 1
         rel_pos = _relative_position_embeddings(
-            seq_len=seq_len,
+            seq_len=reach + 1,
             hidden_dim=self.config.hidden_dim,
             device=x.device,
             dtype=x.dtype,
         )
-        rel_k = self.linear_pos(rel_pos).view(1, 2 * seq_len - 1, num_heads, head_dim)
+        rel_k = self.linear_pos(rel_pos).view(1, 2 * reach + 1, num_heads, head_dim)
 
         q_u = q + self.pos_bias_u.view(1, 1, num_heads, head_dim).to(dtype=x.dtype, device=x.device)
         q_v = q + self.pos_bias_v.view(1, 1, num_heads, head_dim).to(dtype=x.dtype, device=x.device)
 
-        q_u_heads = q_u.permute(0, 2, 1, 3)
-        q_v_heads = q_v.permute(0, 2, 1, 3)
-        k_heads = k.permute(0, 2, 1, 3)
-        v_heads = v.permute(0, 2, 1, 3)
-        rel_k_heads = rel_k.permute(0, 2, 1, 3)
-
-        rel_bias = _relative_position_bias(
-            q_v_heads,
-            rel_k_heads,
-            scale=self.config.attention_scale,
+        attn = rel_pos_attention(
+            q_u,
+            k,
+            v,
+            q_v,
+            rel_k,
+            attn_mask.reshape(batch, seq_len),
+            self.config.attention_scale,
+            window,
         )
-        rel_bias = rel_bias + attn_mask
-        attn = F.scaled_dot_product_attention(
-            q_u_heads,
-            k_heads,
-            v_heads,
-            attn_mask=rel_bias,
-            dropout_p=0.0,
-            is_causal=False,
-        )
-        attn = attn.permute(0, 2, 1, 3).reshape(batch, seq_len, self.config.hidden_dim)
-        return self.linear_out(attn)
+        return self.linear_out(attn.reshape(batch, seq_len, self.config.hidden_dim))
 
 
 class ParakeetTDTConformerConv(nn.Module):
@@ -584,9 +612,9 @@ class ParakeetTDTEncoderLayer(nn.Module):
             module.bias.data.copy_(state_dict[f"{prefix}.{name}.bias"].to(dtype=module.bias.dtype))
         self.config = config
 
-    def forward(self, x: torch.Tensor, conv_mask: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, conv_mask: torch.Tensor, attn_mask: torch.Tensor, window: int = 0) -> torch.Tensor:
         x = x + 0.5 * self.feed_forward1(self.norm_feed_forward1(x), activation=self.config.encoder_hidden_act)
-        x = x + self.self_attn(self.norm_self_att(x), attn_mask)
+        x = x + self.self_attn(self.norm_self_att(x), attn_mask, window)
         x = x + self.conv(self.norm_conv(x), conv_mask)
         x = x + 0.5 * self.feed_forward2(self.norm_feed_forward2(x), activation=self.config.encoder_hidden_act)
         return self.norm_out(x)
@@ -625,6 +653,19 @@ class ParakeetTDTPreEncode(nn.Module):
     def forward(self, input_features: torch.Tensor) -> torch.Tensor:
         if input_features.ndim != 3:
             raise ValueError(f"expected input_features [batch, frames, mels], got {tuple(input_features.shape)}")
+        frames = int(input_features.shape[1])
+        if frames <= _PRE_ENCODE_CHUNK_FRAMES:
+            return self._subsample(input_features)
+        chunks = []
+        for start in range(0, frames, _PRE_ENCODE_CHUNK_FRAMES):
+            end = min(frames, start + _PRE_ENCODE_CHUNK_FRAMES)
+            low = max(0, start - _PRE_ENCODE_HALO_FRAMES)
+            out = self._subsample(input_features[:, low : min(frames, end + _PRE_ENCODE_HALO_FRAMES)])
+            first = (start - low) // 8
+            chunks.append(out[:, first : first + (end - start + 7) // 8])
+        return torch.cat(chunks, dim=1)
+
+    def _subsample(self, input_features: torch.Tensor) -> torch.Tensor:
         x = input_features.unsqueeze(1)
         x = F.relu(self.conv[0](x))
         x = F.relu(self.conv[3](self.conv[2](x)))
@@ -647,8 +688,9 @@ class ParakeetTDTEncoder(nn.Module):
         pad_mask = input_features_mask[:, :: self.config.subsampling_factor]
         conv_mask = pad_mask.unsqueeze(1)
         attn_mask = ((pad_mask - 1.0) * 10000.0).unsqueeze(1).unsqueeze(1)
+        window = 0 if int(x.shape[1]) <= _FULL_ATTENTION_MAX_ENCODER_FRAMES else _LOCAL_ATTENTION_WINDOW
         for layer in self.layers:
-            x = layer(x, conv_mask, attn_mask)
+            x = layer(x, conv_mask, attn_mask, window)
         return x
 
 
