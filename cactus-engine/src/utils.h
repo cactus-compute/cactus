@@ -568,21 +568,10 @@ inline std::string env_or_default(const char* key, const char* fallback) {
     return std::string(fallback);
 }
 
-inline std::string json_string_field(const std::string& json, const std::string& key) {
-    std::string pattern = "\"" + key + "\":";
-    size_t pos = json.find(pattern);
-    if (pos == std::string::npos) return {};
-
-    size_t i = pos + pattern.size();
-    while (i < json.size() && std::isspace(static_cast<unsigned char>(json[i]))) i++;
-    if (i >= json.size() || json[i] != '"') return {};
-    ++i;
-
-    std::string out;
-    out.reserve(128);
+inline bool read_json_string(const std::string& json, size_t& i, std::string& out) {
     while (i < json.size()) {
         char c = json[i++];
-        if (c == '"') return out;
+        if (c == '"') return true;
         if (c == '\\' && i < json.size()) {
             char e = json[i++];
             switch (e) {
@@ -628,7 +617,21 @@ inline std::string json_string_field(const std::string& json, const std::string&
         }
         out.push_back(c);
     }
-    return {};
+    return false;
+}
+
+inline std::string json_string_field(const std::string& json, const std::string& key) {
+    std::string pattern = "\"" + key + "\":";
+    size_t pos = json.find(pattern);
+    if (pos == std::string::npos) return {};
+
+    size_t i = pos + pattern.size();
+    while (i < json.size() && std::isspace(static_cast<unsigned char>(json[i]))) i++;
+    if (i >= json.size() || json[i] != '"') return {};
+    ++i;
+
+    std::string out;
+    return read_json_string(json, i, out) ? out : std::string();
 }
 
 inline std::string json_array_field(const std::string& json, const std::string& key) {
@@ -1021,27 +1024,7 @@ inline std::vector<cactus::engine::ChatMessage> parse_messages_json(const std::s
         size_t content_pos = json.find("\"content\"", role_end);
         if (content_pos != std::string::npos && content_pos < obj_end) {
             size_t content_start = json.find('"', content_pos + 9) + 1;
-            size_t content_end = content_start;
-            
-            while (content_end < json.length()) {
-                content_end = json.find('"', content_end);
-                if (content_end == std::string::npos) break;
-                if (json[content_end - 1] != '\\') break;
-                content_end++;
-            }
-            
-            msg.content = json.substr(content_start, content_end - content_start);
-            
-            size_t escape_pos = 0;
-            while ((escape_pos = msg.content.find("\\n", escape_pos)) != std::string::npos) {
-                msg.content.replace(escape_pos, 2, "\n");
-                escape_pos += 1;
-            }
-            escape_pos = 0;
-            while ((escape_pos = msg.content.find("\\\"", escape_pos)) != std::string::npos) {
-                msg.content.replace(escape_pos, 2, "\"");
-                escape_pos += 1;
-            }
+            read_json_string(json, content_start, msg.content);
         }
         
         auto parse_path_array = [&](const char* key, std::vector<std::string>& dest,
