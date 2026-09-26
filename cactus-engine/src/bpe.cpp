@@ -526,7 +526,14 @@ std::string BPETokenizer::decode(const std::vector<uint32_t>& tokens) const {
 
         for (uint32_t token_id : tokens) {
             if (token_id >= id_to_token_.size()) continue;
-            result += id_to_token_[token_id];
+            const std::string& piece = id_to_token_[token_id];
+            unsigned int byte_val;
+            if (runtime_config_.byte_fallback && piece.size() == 6 &&
+                std::sscanf(piece.c_str(), "<0x%02X>", &byte_val) == 1) {
+                result.push_back(static_cast<char>(byte_val));
+            } else {
+                result += piece;
+            }
         }
 
         size_t pos = 0;
