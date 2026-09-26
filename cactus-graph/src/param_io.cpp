@@ -204,6 +204,7 @@ const Schema& op_schema(OpType op_type) {
         {OpType::TOPK, {{ParamField::TopK, FieldPersistence::Persistent}}},
         {OpType::ATTENTION, {{ParamField::Scale, FieldPersistence::Persistent}, {ParamField::PositionOffset, FieldPersistence::Persistent}, {ParamField::WindowSize, FieldPersistence::Persistent}, {ParamField::IsCausal, FieldPersistence::Persistent}, {ParamField::AttentionMaskIsAdditive, FieldPersistence::Persistent}, {ParamField::LogitCap, FieldPersistence::Persistent}, {ParamField::Backend, FieldPersistence::Persistent}}},
         {OpType::REL_POS_BIAS, {{ParamField::Scale, FieldPersistence::Persistent}}},
+        {OpType::REL_POS_ATTENTION, {{ParamField::Scale, FieldPersistence::Persistent}, {ParamField::WindowSize, FieldPersistence::Persistent}}},
         {OpType::ATTENTION_INT8_HYBRID, {
             {ParamField::Scale, FieldPersistence::Persistent},
             {ParamField::PositionOffset, FieldPersistence::Persistent},

@@ -612,6 +612,24 @@ size_t CactusGraph::rel_pos_bias(size_t query, size_t relative_key, float scale,
     return tag_backend(add_node(OpType::REL_POS_BIAS, {query, relative_key}, {B, H, T, T}, params), backend);
 }
 
+size_t CactusGraph::rel_pos_attention(size_t query, size_t key, size_t value, size_t rel_query, size_t relative_key,
+                                      size_t key_mask, float scale, size_t window_size, ComputeBackend backend) {
+    const auto& q = get_output_buffer(query);
+    const auto& r = get_output_buffer(relative_key);
+    if (q.shape.size() != 4 || q.shape[3] % 16 != 0 || r.shape.size() != 4 || r.shape[0] != 1
+        || r.shape[2] != q.shape[2] || r.shape[3] != q.shape[3]) {
+        throw std::runtime_error("rel_pos_attention expects query [B, T, H, D % 16 == 0] and relative_key [1, R, H, D]");
+    }
+    const size_t reach = (window_size == 0 || window_size >= q.shape[1]) ? q.shape[1] - 1 : window_size;
+    if (r.shape[1] % 2 == 0 || (r.shape[1] - 1) / 2 < reach) {
+        throw std::runtime_error("rel_pos_attention relative_key must hold an odd number of offsets covering the window");
+    }
+    std::vector<size_t> inputs = {query, key, value, rel_query, relative_key};
+    if (key_mask != static_cast<size_t>(-1)) inputs.push_back(key_mask);
+    OpParams params{.scale = scale, .window_size = window_size, .output_precision = q.precision};
+    return tag_backend(add_node(OpType::REL_POS_ATTENTION, inputs, q.shape, params), backend);
+}
+
 size_t CactusGraph::attention_int8_hybrid(size_t query, size_t key_new, size_t value_new, float scale, size_t position_offset,
                                           const int8_t* cached_keys, const int8_t* cached_values,
                                           const float* k_scales, const float* v_scales,

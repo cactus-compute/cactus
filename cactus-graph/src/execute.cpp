@@ -52,6 +52,7 @@ DECLARE_COMPUTE(compute_softmax_node);
 DECLARE_COMPUTE(compute_attention_node);
 DECLARE_COMPUTE(compute_attention_int8_hybrid_node);
 DECLARE_COMPUTE(compute_rel_pos_bias_node);
+DECLARE_COMPUTE(compute_rel_pos_attention_node);
 DECLARE_COMPUTE(compute_layernorm_node);
 DECLARE_COMPUTE(compute_conv1d_causal_node);
 DECLARE_COMPUTE(compute_conv1d_k3_node);
@@ -117,7 +118,7 @@ DECLARE_COMPUTE(compute_conv1d_causal_channel_first_node);
 extern void shrink_thread_local_buffers();
 #undef DECLARE_COMPUTE
 
-static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::LOGITS_TQ_SOFTCAP) + 1;
+static constexpr int OP_TYPE_COUNT = static_cast<int>(OpType::REL_POS_ATTENTION) + 1;
 static_assert(OP_TYPE_COUNT <= 256, "OpType dispatch table overflow");
 static ComputeFn dispatch_flat[OP_TYPE_COUNT] = {};
 
@@ -186,6 +187,7 @@ static bool init_dispatch() {
     dispatch_flat[static_cast<int>(OpType::ATTENTION)] = compute_attention_node;
     dispatch_flat[static_cast<int>(OpType::ATTENTION_INT8_HYBRID)] = compute_attention_int8_hybrid_node;
     dispatch_flat[static_cast<int>(OpType::REL_POS_BIAS)] = compute_rel_pos_bias_node;
+    dispatch_flat[static_cast<int>(OpType::REL_POS_ATTENTION)] = compute_rel_pos_attention_node;
     dispatch_flat[static_cast<int>(OpType::CONV1D_CAUSAL)] = compute_conv1d_causal_node;
     dispatch_flat[static_cast<int>(OpType::CONV1D_CAUSAL_CHANNEL_FIRST)] = compute_conv1d_causal_channel_first_node;
     dispatch_flat[static_cast<int>(OpType::CONV1D_K3)] = compute_conv1d_k3_node;
@@ -311,7 +313,8 @@ static const char* op_type_names[] = {
     "EXPAND",
     "MASKED_SELECT_PREFIX",
     "QKV_TQ_FUSED", "PROJECTION_PAIR_TQ_FUSED", "CONV1D_CAUSAL_CHANNEL_FIRST",
-    "LOGITS_TQ_SOFTCAP"
+    "LOGITS_TQ_SOFTCAP",
+    "REL_POS_ATTENTION"
 };
 
 static const char* get_op_name(OpType op) {
@@ -487,6 +490,8 @@ std::vector<size_t> infer_output_shape(const GraphNode& node, const nodes_vector
             }
             return out;
         }
+        case OpType::REL_POS_ATTENTION:
+            return in(0);
         case OpType::ATTENTION: case OpType::ATTENTION_CACHED: case OpType::ATTENTION_INT8_HYBRID: {
             std::vector<size_t> out = in(0);
             if (node.params.v_head_dim > 0) out.back() = node.params.v_head_dim;
@@ -968,6 +973,22 @@ static bool try_encode_metal(GraphNode& node, const nodes_vector& nodes, const n
             return cactus_metal_encode_rel_pos_bias(out.get_data(), q.get_data(), r.get_data(),
                 (uint32_t)B, (uint32_t)T, (uint32_t)H, (uint32_t)D, (uint32_t)R,
                 Rb == 1 ? 0 : 1, node.params.scale);
+        }
+        case OpType::REL_POS_ATTENTION: {
+            if (node.input_ids.size() < 5) return false;
+            const auto& q = get_input(node, 0, nodes, map);
+            const auto& k = get_input(node, 1, nodes, map);
+            const auto& v = get_input(node, 2, nodes, map);
+            const auto& qv = get_input(node, 3, nodes, map);
+            const auto& r = get_input(node, 4, nodes, map);
+            const BufferDesc* mk = node.input_ids.size() > 5 ? &get_input(node, 5, nodes, map) : nullptr;
+            if (!fp16(q) || !fp16(k) || !fp16(v) || !fp16(qv) || !fp16(r) || !fp16(out)) return false;
+            if (mk && !fp16(*mk)) return false;
+            size_t B = q.shape[0], T = q.shape[1], H = q.shape[2], D = q.shape[3];
+            return cactus_metal_encode_rel_pos_attention_f16(out.get_data(), q.get_data(), k.get_data(),
+                v.get_data(), qv.get_data(), r.get_data(), mk ? mk->get_data() : nullptr,
+                (uint32_t)B, (uint32_t)T, (uint32_t)H, (uint32_t)D, (uint32_t)r.shape[1],
+                (uint32_t)node.params.window_size, node.params.scale);
         }
         case OpType::BATCHNORM: {
             if (node.input_ids.size() != 5) return false;

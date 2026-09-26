@@ -568,6 +568,11 @@ _lib.cactus_graph_rel_pos_bias.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, ctypes.c_float, ctypes.POINTER(cactus_node_t)
 ]
 _lib.cactus_graph_rel_pos_bias.restype = ctypes.c_int
+_lib.cactus_graph_rel_pos_attention.argtypes = [
+    cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, cactus_node_t, cactus_node_t,
+    ctypes.c_bool, cactus_node_t, ctypes.c_float, ctypes.c_size_t, ctypes.POINTER(cactus_node_t)
+]
+_lib.cactus_graph_rel_pos_attention.restype = ctypes.c_int
 _lib.cactus_graph_attention_int8_hybrid.argtypes = [
     cactus_graph_t, cactus_node_t, cactus_node_t, cactus_node_t, ctypes.c_float, ctypes.c_size_t,
     ctypes.POINTER(ctypes.c_int8), ctypes.POINTER(ctypes.c_int8),
@@ -2568,6 +2573,31 @@ class Graph:
         )
         if rc != 0:
             raise RuntimeError(_err("graph_rel_pos_bias failed"))
+        return self._apply_backend(self._tensor_from_node(out.value), backend)
+
+    def rel_pos_attention(self, query, key, value, rel_query, relative_key, key_mask, scale, window_size=0, backend=None):
+        query = self._ensure_tensor(query)
+        key = self._ensure_tensor(key)
+        value = self._ensure_tensor(value)
+        rel_query = self._ensure_tensor(rel_query)
+        relative_key = self._ensure_tensor(relative_key)
+        key_mask = None if key_mask is None else self._ensure_tensor(key_mask)
+        out = cactus_node_t()
+        rc = _lib.cactus_graph_rel_pos_attention(
+            self.h,
+            cactus_node_t(query.id),
+            cactus_node_t(key.id),
+            cactus_node_t(value.id),
+            cactus_node_t(rel_query.id),
+            cactus_node_t(relative_key.id),
+            ctypes.c_bool(key_mask is not None),
+            cactus_node_t(0 if key_mask is None else key_mask.id),
+            ctypes.c_float(float(scale)),
+            ctypes.c_size_t(int(window_size)),
+            ctypes.byref(out),
+        )
+        if rc != 0:
+            raise RuntimeError(_err("graph_rel_pos_attention failed"))
         return self._apply_backend(self._tensor_from_node(out.value), backend)
 
     def attention_int8_hybrid(self, query, key_new, value_new, scale, position_offset,

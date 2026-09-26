@@ -490,6 +490,22 @@ void cactus_attention_f16(
     size_t v_head_dim = 0,
     float logit_cap = 0.0f);
 
+void cactus_rel_pos_attention_f16(
+    const __fp16* query,
+    const __fp16* key,
+    const __fp16* value,
+    const __fp16* rel_query,
+    const __fp16* rel_key,
+    const __fp16* key_mask,
+    __fp16* output,
+    size_t batch_size,
+    size_t seq_len,
+    size_t num_heads,
+    size_t head_dim,
+    size_t rel_len,
+    float scale,
+    size_t window_size);
+
 void cactus_attention_hybrid_int8_fp16(
     const __fp16* queries,
     const int8_t* keys_cached,
