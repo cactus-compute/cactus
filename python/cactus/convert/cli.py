@@ -531,6 +531,7 @@ def convert(args: argparse.Namespace) -> None:
             emit_source_names = emission.source_names or source_names
             status = emit_policy.action
             precision = emit_policy.precision
+            gptq_expected = bool(emit_policy.action == "convert" and emit_policy.use_gptq)
             gptq_used = False
             hessian_missing_reason = None
             module_name = adapter.module_target_name(name, model) or _module_name(name)
@@ -560,6 +561,11 @@ def convert(args: argparse.Namespace) -> None:
                             input_scale=input_scale,
                         )
                     cq = _scale_cq_norms(cq, adapter.scale_factor(out_path.name))
+                    if gptq_expected and not cq.gptq_used:
+                        if hessian_missing_reason is None:
+                            hessian_missing_reason = "collected GPTQ Hessian could not be applied"
+                        if args.strict:
+                            raise RuntimeError(f"{name}: {hessian_missing_reason} ({module_name})")
                     if getattr(emit_policy, "layout", "row_major") == "interleaved_4row":
                         cq = replace(cq, interleaved_4row=True)
                     write_cq_tensor(out_path, cq)
@@ -593,6 +599,7 @@ def convert(args: argparse.Namespace) -> None:
                 "required": bool(emit_policy.action != "ignored"),
                 "fallback_reason": emit_policy.fallback_reason,
                 "hessian_samples": int(hessian_samples.get(module_name, 0)),
+                "gptq_expected": gptq_expected,
                 "gptq_used": bool(gptq_used),
                 "bytes": _tensor_bytes(out_path),
                 "scale_factor": float(adapter.scale_factor(out_path.name)) if out_path else 1.0,

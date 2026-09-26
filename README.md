@@ -243,6 +243,7 @@ cactus run Cactus-Compute/needle [--tools my_tools.json]  # OpenAI function-call
 │                                                                                │
 │  cactus convert <model> [dir]        HuggingFace -> Cactus CQ weights          │
 │    --bits 1|2|3|4                    CQ quantization (default: 4)              │
+│    --calibration-manifest <path>      representative data for GPTQ calibration │
 │    --token <token>                   HuggingFace token (gated models)          │
 │    --reconvert                       force weight conversion from source       │
 │    --lora <path>                     merge a LoRA adapter before converting    │

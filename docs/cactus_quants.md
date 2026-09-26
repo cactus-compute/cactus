@@ -193,6 +193,28 @@ cactus convert google/gemma-4-E2B-it ./gemma4-weights --bits 2
 cactus run google/gemma-4-E2B-it
 ```
 
+For a finetuned checkpoint, provide representative data so GPTQ-aware CQ tensors
+are calibrated against the checkpoint's activation distribution:
+
+```json
+{
+  "language": {"path": "calibration.jsonl"}
+}
+```
+
+```bash
+cactus convert ./finetuned-model ./finetuned-cq4 --bits 4 \
+  --calibration-manifest calibration-manifest.json
+```
+
+Language calibration JSONL rows may contain `messages`, `prompt_text` plus
+`completion_text`, or `prompt` plus `completion`. Without representative samples,
+GPTQ-eligible tensors use calibration-free RTN when samples are missing or the
+collected Hessian cannot be applied. The converter reports both fallback cases in the
+terminal and records their extent in `conversion_summary.json`; affected tensors and
+their reasons are identified in `conversion_manifest.json`. Supplying a manifest when
+the output bundle already exists is an error unless `--reconvert` is also passed.
+
 For models on huggingface.co/Cactus-Compute, `cactus run <model-id>` (or `cactus
 download <model-id>`) fetches the pre-built bundle.
 
