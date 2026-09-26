@@ -27,7 +27,7 @@ struct CacheHeader {
     uint64_t reserved[3];
 };
 static_assert(sizeof(CacheHeader) == 64, "CacheHeader must be 64 bytes");
-
+size_t rerope_physical_end(const CacheHeader& header, bool sliding);
 void kv_set_simd(bool on);
 
 // score s_i = -cos(k_i, mean(k)); keys pre-RoPE.
