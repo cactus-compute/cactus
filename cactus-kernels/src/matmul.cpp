@@ -1,5 +1,6 @@
 #include "../cactus_kernels.h"
 #include "threading.h"
+#include "neon_dotprod.h"
 #include <arm_neon.h>
 #include <atomic>
 #include <cstdlib>
@@ -19,56 +20,6 @@ constexpr size_t ACCELERATE_M_THRESHOLD = 4;
 constexpr size_t ACCELERATE_K_THRESHOLD = 256;
 #endif
 
-// Do NOT Remove: Uncomment for testing on various paths
-// -----
-// TEMPORARY: Force fallback path for testing on DOTPROD devices
-// #undef __ARM_FEATURE_DOTPROD
-
-#if defined(__ARM_FEATURE_DOTPROD)
-    #define CACTUS_DOTQ_LANE(acc, b, a, lane) vdotq_laneq_s32(acc, b, a, lane)
-#else
-    static inline int32x4_t cactus_dotq_with_pattern(int32x4_t acc, int8x16_t b, int8x8_t a_pattern) {
-        int8x8_t b_lo = vget_low_s8(b);
-        int8x8_t b_hi = vget_high_s8(b);
-
-        int16x8_t prod_lo = vmull_s8(b_lo, a_pattern);
-        int16x8_t prod_hi = vmull_s8(b_hi, a_pattern);
-
-        int32x4_t sum_lo = vpaddlq_s16(prod_lo);
-        int32x4_t sum_hi = vpaddlq_s16(prod_hi);
-
-        int32x2_t final_lo = vpadd_s32(vget_low_s32(sum_lo), vget_high_s32(sum_lo));
-        int32x2_t final_hi = vpadd_s32(vget_low_s32(sum_hi), vget_high_s32(sum_hi));
-
-        return vaddq_s32(acc, vcombine_s32(final_lo, final_hi));
-    }
-
-    static inline int32x4_t cactus_dotq_lane0(int32x4_t acc, int8x16_t b, int8x16_t a) {
-        int8x8_t a_lo = vget_low_s8(a);
-        int8x8_t a_pattern = vreinterpret_s8_s32(vdup_lane_s32(vreinterpret_s32_s8(a_lo), 0));
-        return cactus_dotq_with_pattern(acc, b, a_pattern);
-    }
-
-    static inline int32x4_t cactus_dotq_lane1(int32x4_t acc, int8x16_t b, int8x16_t a) {
-        int8x8_t a_lo = vget_low_s8(a);
-        int8x8_t a_pattern = vreinterpret_s8_s32(vdup_lane_s32(vreinterpret_s32_s8(a_lo), 1));
-        return cactus_dotq_with_pattern(acc, b, a_pattern);
-    }
-
-    static inline int32x4_t cactus_dotq_lane2(int32x4_t acc, int8x16_t b, int8x16_t a) {
-        int8x8_t a_hi = vget_high_s8(a);
-        int8x8_t a_pattern = vreinterpret_s8_s32(vdup_lane_s32(vreinterpret_s32_s8(a_hi), 0));
-        return cactus_dotq_with_pattern(acc, b, a_pattern);
-    }
-
-    static inline int32x4_t cactus_dotq_lane3(int32x4_t acc, int8x16_t b, int8x16_t a) {
-        int8x8_t a_hi = vget_high_s8(a);
-        int8x8_t a_pattern = vreinterpret_s8_s32(vdup_lane_s32(vreinterpret_s32_s8(a_hi), 1));
-        return cactus_dotq_with_pattern(acc, b, a_pattern);
-    }
-
-    #define CACTUS_DOTQ_LANE(acc, b, a, lane) cactus_dotq_lane##lane(acc, b, a)
-#endif
 
 static inline __fp16 hsum_f16x8(float16x8_t v) {
     float16x4_t lo = vget_low_f16(v);
@@ -2322,13 +2273,13 @@ static void cactus_quant_interleaved4_gemv_blocks(
                     uint8x16_t b0 = vld1q_u8(c0); \
                     int8x16_t wl0 = vqtbl1q_s8(cb_lut, vandq_u8(b0, lo_mask)); \
                     int8x16_t wh0 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b0, 4)); \
-                    DA = vdotq_laneq_s32(DA, wl0, a_v, 0); \
-                    DB = vdotq_laneq_s32(DB, wh0, a_v, 1); \
+                    DA = CACTUS_DOTQ_LANE(DA, wl0, a_v, 0); \
+                    DB = CACTUS_DOTQ_LANE(DB, wh0, a_v, 1); \
                     uint8x16_t b1 = vld1q_u8(c1); \
                     int8x16_t wl1 = vqtbl1q_s8(cb_lut, vandq_u8(b1, lo_mask)); \
                     int8x16_t wh1 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b1, 4)); \
-                    DA = vdotq_laneq_s32(DA, wl1, a_v, 2); \
-                    DB = vdotq_laneq_s32(DB, wh1, a_v, 3); \
+                    DA = CACTUS_DOTQ_LANE(DA, wl1, a_v, 2); \
+                    DB = CACTUS_DOTQ_LANE(DB, wh1, a_v, 3); \
                 } while (0)
 
                 PROC_PANEL(p0, d0a, d0b);
@@ -2365,13 +2316,13 @@ static void cactus_quant_interleaved4_gemv_blocks(
                 uint8x16_t b0 = vld1q_u8(p_base + (kb / 8 + 0) * 16);
                 int8x16_t wl0 = vqtbl1q_s8(cb_lut, vandq_u8(b0, lo_mask));
                 int8x16_t wh0 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b0, 4));
-                dot_a = vdotq_laneq_s32(dot_a, wl0, a_v, 0);
-                dot_b = vdotq_laneq_s32(dot_b, wh0, a_v, 1);
+                dot_a = CACTUS_DOTQ_LANE(dot_a, wl0, a_v, 0);
+                dot_b = CACTUS_DOTQ_LANE(dot_b, wh0, a_v, 1);
                 uint8x16_t b1 = vld1q_u8(p_base + (kb / 8 + 1) * 16);
                 int8x16_t wl1 = vqtbl1q_s8(cb_lut, vandq_u8(b1, lo_mask));
                 int8x16_t wh1 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b1, 4));
-                dot_a = vdotq_laneq_s32(dot_a, wl1, a_v, 2);
-                dot_b = vdotq_laneq_s32(dot_b, wh1, a_v, 3);
+                dot_a = CACTUS_DOTQ_LANE(dot_a, wl1, a_v, 2);
+                dot_b = CACTUS_DOTQ_LANE(dot_b, wh1, a_v, 3);
             }
 
             int32x4_t dot = vaddq_s32(dot_a, dot_b);
@@ -2421,10 +2372,10 @@ static void cactus_quant_interleaved4_gemm_blocks(
                     const int8x16_t wh1 = vqtbl1q_s8(cb_lut, vshrq_n_u8(b1, 4));
                     for (uint32_t mi = 0; mi < tile; ++mi) {
                         const int8x16_t a_v = vld1q_s8(act_i8 + static_cast<size_t>(m0 + mi) * K + g * gs + kb);
-                        dot_a[mi] = vdotq_laneq_s32(dot_a[mi], wl0, a_v, 0);
-                        dot_b[mi] = vdotq_laneq_s32(dot_b[mi], wh0, a_v, 1);
-                        dot_a[mi] = vdotq_laneq_s32(dot_a[mi], wl1, a_v, 2);
-                        dot_b[mi] = vdotq_laneq_s32(dot_b[mi], wh1, a_v, 3);
+                        dot_a[mi] = CACTUS_DOTQ_LANE(dot_a[mi], wl0, a_v, 0);
+                        dot_b[mi] = CACTUS_DOTQ_LANE(dot_b[mi], wh0, a_v, 1);
+                        dot_a[mi] = CACTUS_DOTQ_LANE(dot_a[mi], wl1, a_v, 2);
+                        dot_b[mi] = CACTUS_DOTQ_LANE(dot_b[mi], wh1, a_v, 3);
                     }
                 }
                 for (uint32_t mi = 0; mi < tile; ++mi) {
@@ -2809,10 +2760,10 @@ void cactus_quant_3bit_gemv_interleaved(
                     int8x16_t w1 = tq_expand_i8_16(band_base + 6,  3, cb_lut);
                     int8x16_t w2 = tq_expand_i8_16(band_base + 12, 3, cb_lut);
                     int8x16_t w3 = tq_expand_i8_16(band_base + 18, 3, cb_lut);
-                    dot_a = vdotq_laneq_s32(dot_a, w0, a_v, 0);
-                    dot_b = vdotq_laneq_s32(dot_b, w1, a_v, 1);
-                    dot_a = vdotq_laneq_s32(dot_a, w2, a_v, 2);
-                    dot_b = vdotq_laneq_s32(dot_b, w3, a_v, 3);
+                    dot_a = CACTUS_DOTQ_LANE(dot_a, w0, a_v, 0);
+                    dot_b = CACTUS_DOTQ_LANE(dot_b, w1, a_v, 1);
+                    dot_a = CACTUS_DOTQ_LANE(dot_a, w2, a_v, 2);
+                    dot_b = CACTUS_DOTQ_LANE(dot_b, w3, a_v, 3);
                 }
                 int32x4_t dot = vaddq_s32(dot_a, dot_b);
                 float32x4_t norm = vcvt_f32_f16(vld1_f16(norms_interleaved + (nb * num_groups + g) * 4));
@@ -2903,10 +2854,10 @@ void cactus_quant_2bit_gemv_interleaved(
                     int8x16_t w1 = unpack_set(lookup_s1);
                     int8x16_t w2 = unpack_set(lookup_s2);
                     int8x16_t w3 = unpack_set(lookup_s3);
-                    dot_a = vdotq_laneq_s32(dot_a, w0, a_v, 0);
-                    dot_b = vdotq_laneq_s32(dot_b, w1, a_v, 1);
-                    dot_a = vdotq_laneq_s32(dot_a, w2, a_v, 2);
-                    dot_b = vdotq_laneq_s32(dot_b, w3, a_v, 3);
+                    dot_a = CACTUS_DOTQ_LANE(dot_a, w0, a_v, 0);
+                    dot_b = CACTUS_DOTQ_LANE(dot_b, w1, a_v, 1);
+                    dot_a = CACTUS_DOTQ_LANE(dot_a, w2, a_v, 2);
+                    dot_b = CACTUS_DOTQ_LANE(dot_b, w3, a_v, 3);
                 }
                 int32x4_t dot = vaddq_s32(dot_a, dot_b);
                 float32x4_t norm = vcvt_f32_f16(vld1_f16(norms_interleaved + (nb * num_groups + g) * 4));
@@ -3010,14 +2961,14 @@ void cactus_quant_1bit_gemv_interleaved(
                     int8x16_t w3_lo = unpack_kq(lookup_s3, shifts_lo);
                     int8x16_t w3_hi = unpack_kq(lookup_s3, shifts_hi);
 
-                    dot_a = vdotq_laneq_s32(dot_a, w0_lo, a_lo, 0);
-                    dot_b = vdotq_laneq_s32(dot_b, w0_hi, a_lo, 1);
-                    dot_a = vdotq_laneq_s32(dot_a, w1_lo, a_lo, 2);
-                    dot_b = vdotq_laneq_s32(dot_b, w1_hi, a_lo, 3);
-                    dot_a = vdotq_laneq_s32(dot_a, w2_lo, a_hi, 0);
-                    dot_b = vdotq_laneq_s32(dot_b, w2_hi, a_hi, 1);
-                    dot_a = vdotq_laneq_s32(dot_a, w3_lo, a_hi, 2);
-                    dot_b = vdotq_laneq_s32(dot_b, w3_hi, a_hi, 3);
+                    dot_a = CACTUS_DOTQ_LANE(dot_a, w0_lo, a_lo, 0);
+                    dot_b = CACTUS_DOTQ_LANE(dot_b, w0_hi, a_lo, 1);
+                    dot_a = CACTUS_DOTQ_LANE(dot_a, w1_lo, a_lo, 2);
+                    dot_b = CACTUS_DOTQ_LANE(dot_b, w1_hi, a_lo, 3);
+                    dot_a = CACTUS_DOTQ_LANE(dot_a, w2_lo, a_hi, 0);
+                    dot_b = CACTUS_DOTQ_LANE(dot_b, w2_hi, a_hi, 1);
+                    dot_a = CACTUS_DOTQ_LANE(dot_a, w3_lo, a_hi, 2);
+                    dot_b = CACTUS_DOTQ_LANE(dot_b, w3_hi, a_hi, 3);
                 }
 
                 int32x4_t dot = vaddq_s32(dot_a, dot_b);
