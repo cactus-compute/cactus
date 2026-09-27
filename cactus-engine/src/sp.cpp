@@ -53,9 +53,11 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
     vocab_stream.seekg(0);  
 
     bool is_id_token_format = false;
+    bool has_scores = false;
     if (!first_line.empty()) {
         is_id_token_format = (std::isdigit(first_line[0]) &&
                               first_line.find('\t') != std::string::npos);
+        has_scores = first_line.find('\t') != first_line.rfind('\t');
     }
 
     if (is_id_token_format) {
@@ -87,11 +89,10 @@ bool SPTokenizer::load_vocabulary_with_config(const std::string& vocab_file, con
             
             if (!token.empty() && id != UINT32_MAX) {
                 float score = -static_cast<float>(id);
-                size_t tab_in_token = token.find('\t');
-                if (tab_in_token != std::string::npos) {
-                    std::string score_str = token.substr(tab_in_token + 1);
-                    if (!score_str.empty()) score = std::stof(score_str);
-                    token = token.substr(0, tab_in_token);
+                size_t score_tab = has_scores ? token.rfind('\t') : std::string::npos;
+                if (score_tab != std::string::npos) {
+                    score = std::stof(token.substr(score_tab + 1));
+                    token.resize(score_tab);
                 }
                 token_to_id_[token] = id;
                 if (id >= id_to_token_.size()) {
