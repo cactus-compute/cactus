@@ -936,6 +936,7 @@ bool Model::load_manifest() {
         return "";
     };
     image_preprocess_strategy_ = read_string_key("media_image_preprocess_strategy");
+    if (image_preprocess_strategy_.empty() && family_ == "lfm2_vl") image_preprocess_strategy_ = "lfm2_vl";
     audio_preprocess_strategy_ = read_string_key("media_audio_preprocess_strategy");
     media_injection_strategy_ = read_string_key("media_injection_strategy");
     media_prefill_fallback_ = read_string_key("media_prefill_fallback");
@@ -2098,17 +2099,9 @@ size_t sequence_length_from_shape(const std::vector<size_t>& shape) {
 
 void set_sequence_length_in_shape(std::vector<size_t>& shape, size_t sequence_length) {
     if (shape.empty()) return;
-    if (shape.size() >= 2 && shape[0] == 1 && shape[1] == 1) {
-        shape[1] = sequence_length;
-        return;
-    }
-    if (shape.size() >= 2 && shape[shape.size() - 2] == 1) {
-        shape[shape.size() - 2] = sequence_length;
-        return;
-    }
-    if (shape.size() == 1 && shape[0] == 1) {
-        shape[0] = sequence_length;
-    }
+    if (shape.size() >= 2 && shape[0] == 1) shape[1] = sequence_length;
+    else if (shape.size() >= 2) shape[shape.size() - 2] = sequence_length;
+    else shape[0] = sequence_length;
 }
 
 std::string Model::image_preprocess_strategy() const {
