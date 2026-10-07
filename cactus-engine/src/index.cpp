@@ -146,8 +146,14 @@ namespace index {
         if (mapped_index_ == MAP_FAILED || mapped_data_ == MAP_FAILED) throw std::runtime_error("Index is in a failed memory-mapped state");
         validate_documents(documents);
 
+        std::vector<std::vector<__fp16>> normalized_embeddings;
+        normalized_embeddings.reserve(documents.size());
         size_t added_data_size = 0;
         for (const auto& doc : documents) {
+            std::vector<__fp16> normalized_embedding(embedding_dim_);
+            cactus_fp32_to_fp16(doc.embedding.data(), normalized_embedding.data(), embedding_dim_);
+            normalize(normalized_embedding.data(), embedding_dim_);
+            normalized_embeddings.emplace_back(std::move(normalized_embedding));
             added_data_size += sizeof(DataEntry) + doc.content.size() + doc.metadata.size();
         }
 
@@ -211,12 +217,8 @@ namespace index {
             memcpy(index_write_pos, &index_entry, sizeof(IndexEntry));
             index_write_pos += sizeof(IndexEntry);
 
-            std::vector<__fp16> normalized_embedding(embedding_dim_);
-            cactus_fp32_to_fp16(doc.embedding.data(), normalized_embedding.data(), embedding_dim_);
-            normalize(normalized_embedding.data(), embedding_dim_);
-
             size_t embedding_bytes = embedding_dim_ * sizeof(__fp16);
-            memcpy(index_write_pos, normalized_embedding.data(), embedding_bytes);
+            memcpy(index_write_pos, normalized_embeddings[i].data(), embedding_bytes);
             index_write_pos += embedding_bytes;
 
             doc_id_map_[doc.id] = num_documents_ + static_cast<uint32_t>(i);
