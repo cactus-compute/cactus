@@ -81,6 +81,19 @@ public:
         return {r, content};
     }
 
+    bool matches(int id, const char* content, const std::vector<float>& embedding) {
+        char doc[64], meta[16];
+        char* doc_ptr = doc;
+        char* meta_ptr = meta;
+        std::vector<float> actual_embedding(dim_);
+        float* emb_ptr = actual_embedding.data();
+        size_t doc_size = sizeof(doc), meta_size = sizeof(meta), emb_size = dim_;
+        int r = cactus_index_get(idx_, &id, 1, &doc_ptr, &doc_size, &meta_ptr, &meta_size,
+                                 &emb_ptr, &emb_size);
+        return r == 0 && std::strcmp(doc, content) == 0 && std::strcmp(meta, "meta") == 0 &&
+               emb_size == embedding.size() && actual_embedding == embedding;
+    }
+
     int del(int id) { return cactus_index_delete(idx_, &id, 1); }
     int del(const std::vector<int>& ids) { return cactus_index_delete(idx_, ids.data(), ids.size()); }
     int compact() { return cactus_index_compact(idx_); }
@@ -148,6 +161,53 @@ bool test_batch() {
     if (f.get(51).first != 0) return false;  
 
     return true;
+}
+
+bool test_rejected_batch(bool zero_first) {
+    IndexFixture f(zero_first ? "test_batch_zero_first" : "test_batch_valid_first", 4);
+    if (!f.init()) return false;
+
+    const std::vector<float> existing = {1, 0, 0, 0};
+    const std::vector<float> valid = {0, 1, 0, 0};
+    const std::vector<float> zero(4, 0.0f);
+    const std::vector<float> later = {0, 0, 1, 0};
+    if (f.add(1, "existing", existing) != 0) return false;
+
+    auto read_file = [](const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
+        std::ostringstream contents;
+        contents << file.rdbuf();
+        return contents.str();
+    };
+    const std::string index_before = read_file(f.path() + "/index.bin");
+    const std::string data_before = read_file(f.path() + "/data.bin");
+    if (index_before.empty() || data_before.empty()) return false;
+
+    int ids[] = {2, 3};
+    const char* docs[] = {"rejected-first", "rejected-second"};
+    const char* metas[] = {"meta", "meta"};
+    const float* embeddings[] = {zero_first ? zero.data() : valid.data(),
+                                zero_first ? valid.data() : zero.data()};
+    if (cactus_index_add(f.get_idx(), ids, docs, metas, embeddings, 2, 4) != -1) return false;
+    if (std::string(cactus_get_last_error()) != "Cannot normalize zero vector") return false;
+
+    if (read_file(f.path() + "/index.bin") != index_before ||
+        read_file(f.path() + "/data.bin") != data_before) return false;
+    if (!f.matches(1, "existing", existing)) return false;
+    if (f.get(2).first == 0 || f.get(3).first == 0) return false;
+    if (f.query(existing, 10) != std::vector<int>{1}) return false;
+
+    if (f.add(4, "later-valid", later) != 0) return false;
+    auto check_documents = [&]() {
+        return f.matches(1, "existing", existing) && f.matches(4, "later-valid", later) &&
+               f.get(2).first != 0 && f.get(3).first != 0 &&
+               f.query(existing, 1) == std::vector<int>{1} &&
+               f.query(later, 1) == std::vector<int>{4} &&
+               f.query(existing, 10).size() == 2;
+    };
+    if (!check_documents()) return false;
+    if (!f.reopen()) return false;
+    return check_documents();
 }
 
 bool test_query() {
@@ -270,6 +330,8 @@ int main() {
 
     runner.run_test("crud", test_crud());
     runner.run_test("batch", test_batch());
+    runner.run_test("batch_reject_valid_first", test_rejected_batch(false));
+    runner.run_test("batch_reject_zero_first", test_rejected_batch(true));
     runner.run_test("query", test_query());
     runner.run_test("compact", test_compact());
     runner.run_test("persistence", test_persistence());
