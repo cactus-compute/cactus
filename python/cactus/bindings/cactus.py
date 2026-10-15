@@ -1,4 +1,3 @@
-
 """Cactus Python FFI bindings."""
 import ctypes
 import json
@@ -58,8 +57,9 @@ def _bind_optional(name, argtypes, restype):
     return fn
 
 
-def _call_optional(fn, name):
+def _call_optional(name):
     """Return a bound C function, or raise if this build does not export it."""
+    fn = getattr(_lib, name, None)
     if fn is None:
         raise RuntimeError(f"{name} is unavailable in this build; rebuild with `cactus build --python`")
     return fn
@@ -1025,42 +1025,15 @@ def _from_json(buf):
         ) from exc
 
 
-_RESPONSE_BUFFERS = {}
-
-
-def _buffer(size):
-    """Return a reusable response buffer. The C engine always NUL-terminates."""
-    buf = _RESPONSE_BUFFERS.get(size)
-    if buf is None:
-        buf = ctypes.create_string_buffer(size)
-        _RESPONSE_BUFFERS[size] = buf
-    return buf
-
-
-_CALLBACK_REFS = {}
-
-
-def _keep_alive(key, value):
-    """Hold a reference so a callback trampoline cannot be collected mid-call."""
-    _CALLBACK_REFS[key] = value
-    return value
-
-
 def _prepare_pcm(pcm_data):
-    """Marshal pcm_data to (ctypes_ptr, size, hold) for C. Returns (None, 0, None) if None.
-
-    ``hold`` must stay referenced by the caller for the duration of the C call.
-    """
+    """Marshal pcm_data to (ctypes_ptr, size) for C. Returns (None, 0) if None."""
     if pcm_data is None:
-        return None, 0, None
-    size = len(pcm_data)
+        return None, 0
     if isinstance(pcm_data, bytes):
-        arr = (ctypes.c_uint8 * size).from_buffer_copy(pcm_data)
-        address = ctypes.addressof(arr)
-    else:
-        arr = np.ascontiguousarray(pcm_data, dtype=np.uint8)
-        address = arr.ctypes.data
-    return ctypes.cast(address, ctypes.POINTER(ctypes.c_uint8)), size, arr
+        arr = (ctypes.c_uint8 * len(pcm_data)).from_buffer_copy(pcm_data)
+        return ctypes.cast(arr, ctypes.POINTER(ctypes.c_uint8)), len(pcm_data)
+    arr = np.ascontiguousarray(pcm_data, dtype=np.uint8)
+    return arr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)), int(arr.size)
 
 
 def _make_token_callback(callback):
@@ -1071,7 +1044,7 @@ def _make_token_callback(callback):
     def _bridge(token_bytes, token_id, _):
         callback(token_bytes.decode("utf-8", errors="ignore") if token_bytes else "", token_id)
 
-    return _keep_alive(("token", callback), TokenCallback(_bridge))
+    return TokenCallback(_bridge)
 
 
 def cactus_get_last_error():
@@ -1175,9 +1148,9 @@ def cactus_complete(model, messages, options=None, tools=None, callback=None, pc
     Returns:
         A dict with the completion response and metrics.
     """
-    buf = _buffer(1 << 20)
+    buf = ctypes.create_string_buffer(1 << 20)
     cb = _make_token_callback(callback)
-    pcm_ptr, pcm_size, _ = _prepare_pcm(pcm_data)
+    pcm_ptr, pcm_size = _prepare_pcm(pcm_data)
     rc = _lib.cactus_complete(
         model, _to_json(messages), buf, len(buf),
         _to_json(options), _to_json(tools), cb, None, pcm_ptr, pcm_size,
@@ -1193,8 +1166,8 @@ def cactus_prefill(model, messages, options=None, tools=None, pcm_data=None):
     Returns:
         A dict with prefill stats (tokens processed, latency, etc.).
     """
-    buf = _buffer(1 << 20)
-    pcm_ptr, pcm_size, _ = _prepare_pcm(pcm_data)
+    buf = ctypes.create_string_buffer(1 << 20)
+    pcm_ptr, pcm_size = _prepare_pcm(pcm_data)
     rc = _lib.cactus_prefill(
         model, _to_json(messages), buf, len(buf),
         _to_json(options), _to_json(tools), pcm_ptr, pcm_size,
@@ -1224,9 +1197,9 @@ def cactus_transcribe(model, audio_path, prompt=None, options=None, callback=Non
         ``{start, end, text}`` objects, populated only for Whisper when ``timestamps`` is set
         (empty otherwise, including all Parakeet transcription).
     """
-    buf = _buffer(1 << 20)
+    buf = ctypes.create_string_buffer(1 << 20)
     cb = _make_token_callback(callback)
-    pcm_ptr, pcm_size, _ = _prepare_pcm(pcm_data)
+    pcm_ptr, pcm_size = _prepare_pcm(pcm_data)
     rc = _lib.cactus_transcribe(
         model, _enc(audio_path), _enc(prompt), buf, len(buf),
         _to_json(options), cb, None, pcm_ptr, pcm_size,
@@ -1267,8 +1240,8 @@ def cactus_stream_transcribe_process(stream, pcm_data):
         replace it each call), and per-call stats ("decode_tps",
         "total_time_ms", "time_to_first_token_ms", "decode_tokens").
     """
-    buf = _buffer(1 << 16)
-    pcm_ptr, pcm_size, _ = _prepare_pcm(pcm_data)
+    buf = ctypes.create_string_buffer(1 << 16)
+    pcm_ptr, pcm_size = _prepare_pcm(pcm_data)
     rc = _lib.cactus_stream_transcribe_process(stream, pcm_ptr, pcm_size, buf, len(buf))
     if rc < 0:
         raise RuntimeError(_err("Stream transcription failed"))
@@ -1285,7 +1258,7 @@ def cactus_stream_transcribe_stop(stream):
         A dict {"success": True, "confirmed": <remaining finalized text>, "pending": ""}. The handle is invalid
         after this call.
     """
-    buf = _buffer(1 << 16)
+    buf = ctypes.create_string_buffer(1 << 16)
     rc = _lib.cactus_stream_transcribe_stop(stream, buf, len(buf))
     if rc < 0:
         raise RuntimeError(_err("Stream transcription stop failed"))
@@ -1298,10 +1271,7 @@ def cactus_preprocess_audio_features(audio_path, model_type, mel_bins, capacity)
     Returns:
         A tuple (values, mel_bins, frames) where values is a list of floats.
     """
-    fn = _call_optional(
-        getattr(_lib, "cactus_preprocess_audio_features", None),
-        "cactus_preprocess_audio_features",
-    )
+    fn = _call_optional("cactus_preprocess_audio_features")
     capacity = max(int(capacity), 1)
     while True:
         buf = (ctypes.c_float * capacity)()
@@ -1401,8 +1371,8 @@ def cactus_tokenize(model, text):
 
 def cactus_render_prompt(model, messages, options=None, tools=None):
     """Render the chat-template prompt string for messages without generating."""
-    fn = _call_optional(getattr(_lib, "cactus_render_prompt", None), "cactus_render_prompt")
-    buf = _buffer(1 << 20)
+    fn = _call_optional("cactus_render_prompt")
+    buf = ctypes.create_string_buffer(1 << 20)
     rc = fn(
         model, _to_json(messages), _to_json(options), _to_json(tools), buf, len(buf),
     )
@@ -1417,7 +1387,7 @@ def cactus_score_window(model, tokens, start, end, context):
     Returns:
         A dict with token-level log-probability scores.
     """
-    buf = _buffer(65536)
+    buf = ctypes.create_string_buffer(65536)
     arr = (ctypes.c_uint32 * len(tokens))(*tokens)
     rc = _lib.cactus_score_window(model, arr, len(tokens), start, end, context, buf, len(buf))
     if rc < 0:
@@ -1434,7 +1404,7 @@ def cactus_rag_query(model, query, top_k=5):
     Returns:
         A dict with ranked results.
     """
-    buf = _buffer(65536)
+    buf = ctypes.create_string_buffer(65536)
     rc = _lib.cactus_rag_query(model, _enc(query), buf, len(buf), top_k)
     if rc < 0:
         raise RuntimeError(_err("RAG query failed"))
@@ -1691,9 +1661,7 @@ class Graph:
                     f"dynamic_dims length ({len(dynamic_dims)}) must match tensor rank ({len(shape)})"
                 )
             mask = (ctypes.c_uint8 * len(dynamic_dims))(*[1 if int(d) else 0 for d in dynamic_dims])
-            fn = _call_optional(
-                _lib.cactus_graph_set_input_dynamic_dims, "cactus_graph_set_input_dynamic_dims",
-            )
+            fn = _call_optional("cactus_graph_set_input_dynamic_dims")
             rc = fn(self.h, cactus_node_t(tensor.id), mask, len(dynamic_dims))
             if rc != 0:
                 raise RuntimeError(_err("graph_set_input_dynamic_dims failed"))
@@ -1882,7 +1850,7 @@ class Graph:
     def quantize_activations(self, x, backend=None):
         x = self._ensure_tensor(x)
         out = cactus_node_t()
-        fn = _call_optional(_lib.cactus_graph_quantize_activations, "cactus_graph_quantize_activations")
+        fn = _call_optional("cactus_graph_quantize_activations")
         rc = fn(self.h, cactus_node_t(x.id), ctypes.byref(out))
         if rc != 0:
             raise RuntimeError(_err("graph_quantize_activations failed"))
@@ -1891,7 +1859,7 @@ class Graph:
     def _scalar(self, fn_name, x, value=None, backend=None):
         x = self._ensure_tensor(x)
         out = cactus_node_t()
-        fn = _call_optional(getattr(_lib, fn_name, None), fn_name)
+        fn = _call_optional(fn_name)
         if value is None:
             rc = fn(self.h, cactus_node_t(x.id), ctypes.byref(out))
         else:
@@ -1976,7 +1944,7 @@ class Graph:
         mask = self._ensure_tensor(mask)
         source = self._ensure_tensor(source)
         out = cactus_node_t()
-        fn = _call_optional(_lib.cactus_graph_masked_scatter, "cactus_graph_masked_scatter")
+        fn = _call_optional("cactus_graph_masked_scatter")
         rc = fn(
             self.h,
             cactus_node_t(x.id),
@@ -2013,7 +1981,7 @@ class Graph:
         shape = tuple(int(v) for v in shape)
         arr = (ctypes.c_size_t * len(shape))(*shape)
         out = cactus_node_t()
-        fn = _call_optional(_lib.cactus_graph_expand, "cactus_graph_expand")
+        fn = _call_optional("cactus_graph_expand")
         rc = fn(self.h, cactus_node_t(x.id), arr, len(shape), ctypes.byref(out))
         if rc != 0:
             raise RuntimeError(_err("graph_expand failed"))
@@ -2051,7 +2019,7 @@ class Graph:
     def strided_slice(self, x, axis, start, length, step, backend=None):
         x = self._ensure_tensor(x)
         out = cactus_node_t()
-        fn = _call_optional(_lib.cactus_graph_strided_slice, "cactus_graph_strided_slice")
+        fn = _call_optional("cactus_graph_strided_slice")
         rc = fn(
             self.h,
             cactus_node_t(x.id),
@@ -2082,7 +2050,7 @@ class Graph:
     def unfold(self, x, dimension, size, step, backend=None):
         x = self._ensure_tensor(x)
         out = cactus_node_t()
-        fn = _call_optional(_lib.cactus_graph_unfold, "cactus_graph_unfold")
+        fn = _call_optional("cactus_graph_unfold")
         rc = fn(
             self.h,
             cactus_node_t(x.id),
@@ -2100,7 +2068,7 @@ class Graph:
         pads = tuple(int(pad) for pad in pads)
         arr = (ctypes.c_size_t * len(pads))(*pads)
         out = cactus_node_t()
-        fn = _call_optional(_lib.cactus_graph_pad, "cactus_graph_pad")
+        fn = _call_optional("cactus_graph_pad")
         rc = fn(
             self.h,
             cactus_node_t(x.id),
@@ -2163,7 +2131,7 @@ class Graph:
         tensor = self._ensure_tensor(tensor)
         indices = self._ensure_tensor(indices)
         out = cactus_node_t()
-        fn = _lib.cactus_graph_gather_dim
+        fn = getattr(_lib, "cactus_graph_gather_dim", None)
         if fn is not None:
             rc = fn(
                 self.h,
@@ -2218,7 +2186,7 @@ class Graph:
 
     def bind_mmap_weights(self, tensor, filename):
         tensor = self._ensure_tensor(tensor)
-        fn = _call_optional(_lib.cactus_graph_bind_mmap_weights, "cactus_graph_bind_mmap_weights")
+        fn = _call_optional("cactus_graph_bind_mmap_weights")
         rc = fn(self.h, cactus_node_t(tensor.id), str(filename).encode())
         if rc != 0:
             raise RuntimeError(_err("graph_bind_mmap_weights failed"))
@@ -2235,7 +2203,7 @@ class Graph:
 
     def set_grouped_scales(self, tensor, group_size, num_groups, scales):
         tensor = self._ensure_tensor(tensor)
-        fn = _call_optional(_lib.cactus_graph_set_grouped_scales, "cactus_graph_set_grouped_scales")
+        fn = _call_optional("cactus_graph_set_grouped_scales")
         arr = np.ascontiguousarray(scales, dtype=np.float16)
         rc = fn(
             self.h,
@@ -2249,7 +2217,7 @@ class Graph:
 
     def set_interleaved(self, tensor, interleaved=True, original_n=0):
         tensor = self._ensure_tensor(tensor)
-        fn = _call_optional(_lib.cactus_graph_set_interleaved, "cactus_graph_set_interleaved")
+        fn = _call_optional("cactus_graph_set_interleaved")
         rc = fn(
             self.h, cactus_node_t(tensor.id), ctypes.c_bool(bool(interleaved)), ctypes.c_size_t(int(original_n))
         )
@@ -2423,7 +2391,7 @@ class Graph:
     def _reduce(self, fn_name, x, axis, backend=None):
         x = self._ensure_tensor(x)
         out = cactus_node_t()
-        fn = _call_optional(getattr(_lib, fn_name, None), fn_name)
+        fn = _call_optional(fn_name)
         rc = fn(self.h, cactus_node_t(x.id), ctypes.c_int32(int(axis)), ctypes.byref(out))
         if rc != 0:
             raise RuntimeError(f"{fn_name} failed")
@@ -2864,7 +2832,7 @@ class Graph:
         has_bias = bias is not None
         bias_node = cactus_node_t(0 if bias is None else self._ensure_tensor(bias).id)
         out = cactus_node_t()
-        fn = _call_optional(getattr(_lib, fn_name, None), fn_name)
+        fn = _call_optional(fn_name)
         rc = fn(
             self.h, cactus_node_t(x.id), cactus_node_t(weight.id), ctypes.c_bool(has_bias), bias_node, *extra, ctypes.byref(out)
         )
@@ -3204,7 +3172,7 @@ class Graph:
         a = self._ensure_tensor(a)
         b = self._ensure_tensor(b)
         out = cactus_node_t()
-        fn = _call_optional(getattr(_lib, fn_name, None), fn_name)
+        fn = _call_optional(fn_name)
         rc = fn(self.h, cactus_node_t(a.id), cactus_node_t(b.id), ctypes.byref(out))
         if rc != 0:
             raise RuntimeError(f"{fn_name} failed")
