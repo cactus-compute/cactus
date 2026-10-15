@@ -1860,6 +1860,23 @@ def import_gemma4_moe_layer_gated(ir, node, ctx, *, shape, dtype, torch_op):
                             op="gemma4_moe_layer_gated", has_expert_bias=False, activation="gelu")
 
 
+def import_rel_pos_attention(ir, node, ctx, *, shape, dtype, torch_op):
+    if len(node.args) != 8:
+        ctx.fail(f"rel_pos_attention expected 8 args, got {len(node.args)}")
+    ir_node = IRNode(
+        id=node_id(node),
+        op="rel_pos_attention",
+        inputs=[value_id(node.args[i], ctx) for i in range(6)],
+        outputs=[value_id(node, ctx)],
+        attrs={
+            "scale": float(extract_literals(node.args[6])),
+            "window_size": int(extract_literals(node.args[7])),
+        },
+        meta=_base_meta(shape, dtype, torch_op, node),
+    )
+    register_node(ir, ir_node, shape=shape, dtype=dtype)
+
+
 OP_IMPORTERS = {
     "arange": import_arange,
     "identity": import_identity,
@@ -1957,4 +1974,5 @@ OP_IMPORTERS = {
     "lfm2_moe_layer_gated": import_lfm2_moe_layer_gated,
     "qwen2_moe_layer_gated": import_qwen2_moe_layer_gated,
     "gemma4_moe_layer_gated": import_gemma4_moe_layer_gated,
+    "rel_pos_attention": import_rel_pos_attention,
 }

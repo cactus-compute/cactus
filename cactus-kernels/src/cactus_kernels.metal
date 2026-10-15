@@ -3229,6 +3229,140 @@ kernel void rel_pos_bias_f16(device const half* q [[buffer(0)]], device const ha
     for (uint d = 0; d < D; ++d) acc = fma((float)qv[d], (float)rv[d], acc);
     y[((size_t)b * H + h) * T * T + (size_t)t * T + j] = (half)(acc * scale);
 }
+struct RelPosAttnU { uint T, H, D, R, window, has_mask; float scale; };
+
+kernel void rel_pos_attn_f16(device const half* q [[buffer(0)]], device const half* k [[buffer(1)]],
+                             device const half* v [[buffer(2)]], device const half* qv [[buffer(3)]],
+                             device const half* r [[buffer(4)]], device const half* mask [[buffer(5)]],
+                             device half* o [[buffer(6)]], constant RelPosAttnU& U [[buffer(7)]],
+                             uint3 tg [[threadgroup_position_in_grid]], uint tl [[thread_index_in_threadgroup]]) {
+    const uint D = 128u, D4 = 32u, QB = 8u, NSG = 4u, QT = QB * NSG, BK = 32u, RB = 64u, LDS = 72u, NT = NSG * 32u;
+    threadgroup half4 kv_s[BK * D4];
+    threadgroup half4 r_s[RB * D4];
+    threadgroup half4 qv_s[QT * D4];
+    const uint sg = tl >> 5, lane = tl & 31u;
+    const uint T = U.T;
+    const size_t stride4 = (size_t)U.H * D4;
+    const uint t_tg = tg.x * QT, t0 = t_tg + sg * QB;
+    const size_t head4 = (size_t)tg.z * T * stride4 + (size_t)tg.y * D4;
+    device const half4* q4 = (device const half4*)q + head4;
+    device const half4* qv4 = (device const half4*)qv + head4;
+    device const half4* k4 = (device const half4*)k + head4;
+    device const half4* v4 = (device const half4*)v + head4;
+    device const half4* r4 = (device const half4*)r + (size_t)tg.y * D4;
+    const uint W = (U.window == 0u || U.window >= T) ? T : U.window;
+    const int center = (int)(U.R - 1u) / 2;
+    threadgroup float* s_sg = (threadgroup float*)r_s + sg * QB * LDS;
+    threadgroup half* p_sg = (threadgroup half*)((threadgroup float*)r_s + NSG * QB * LDS) + sg * QB * BK;
+    threadgroup const half* kv_h = (threadgroup const half*)kv_s;
+    threadgroup const half* r_h = (threadgroup const half*)r_s;
+    threadgroup const half* qv_h = (threadgroup const half*)qv_s + sg * QB * D;
+
+    for (uint i = tl; i < QT * D4; i += NT) {
+        const uint t = t_tg + i / D4;
+        r_s[i] = t < T ? q4[(size_t)t * stride4 + i % D4] : half4(0.0h);
+        qv_s[i] = t < T ? qv4[(size_t)t * stride4 + i % D4] : half4(0.0h);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    simdgroup_matrix<half,8,8> qm[16];
+    simdgroup_matrix<float,8,8> acc[16];
+    for (uint c = 0; c < 16u; ++c) {
+        simdgroup_load(qm[c], r_h + sg * QB * D + c * 8u, D);
+        acc[c] = make_filled_simdgroup_matrix<float,8,8>(0.0f);
+    }
+    float m_row = -INFINITY, l_row = 0.0f, corr_row = 1.0f;
+
+    const uint band = QB * (NSG - 1u - sg);
+    const uint kstart = t_tg > W ? t_tg - W : 0u;
+    const uint kend = min(T, t_tg + QT + W);
+    for (uint j0 = kstart; j0 < kend; j0 += BK) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        const int g0 = center + (int)j0 - (int)(t_tg + QT - 1u);
+        for (uint i = tl; i < BK * D4; i += NT) {
+            const uint j = j0 + i / D4;
+            kv_s[i] = j < T ? k4[(size_t)j * stride4 + i % D4] : half4(0.0h);
+        }
+        for (uint i = tl; i < RB * D4; i += NT) {
+            const int g = g0 + (int)(i / D4);
+            r_s[i] = (g >= 0 && g < (int)U.R) ? r4[(size_t)g * stride4 + i % D4] : half4(0.0h);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simdgroup_matrix<float,8,8> sm[4], gm[5];
+        for (uint n = 0; n < 4u; ++n) sm[n] = make_filled_simdgroup_matrix<float,8,8>(0.0f);
+        for (uint n = 0; n < 5u; ++n) gm[n] = make_filled_simdgroup_matrix<float,8,8>(0.0f);
+        for (uint c = 0; c < 16u; ++c) {
+            simdgroup_matrix<half,8,8> bm, qvm;
+            simdgroup_load(qvm, qv_h + c * 8u, D);
+            for (uint n = 0; n < 4u; ++n) {
+                simdgroup_load(bm, kv_h + n * 8u * D + c * 8u, D, ulong2(0, 0), true);
+                simdgroup_multiply_accumulate(sm[n], qm[c], bm, sm[n]);
+            }
+            for (uint n = 0; n < 5u; ++n) {
+                simdgroup_load(bm, r_h + (band + n * 8u) * D + c * 8u, D, ulong2(0, 0), true);
+                simdgroup_multiply_accumulate(gm[n], qvm, bm, gm[n]);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint n = 0; n < 4u; ++n) simdgroup_store(sm[n], s_sg + n * 8u, LDS);
+        for (uint n = 0; n < 5u; ++n) simdgroup_store(gm[n], s_sg + BK + n * 8u, LDS);
+        for (uint i = tl; i < BK * D4; i += NT) {
+            const uint j = j0 + i / D4;
+            kv_s[i] = j < T ? v4[(size_t)j * stride4 + i % D4] : half4(0.0h);
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+
+        const uint j = j0 + lane;
+        const float mv = (U.has_mask && j < T) ? (float)mask[(size_t)tg.z * T + j] : 0.0f;
+        bool rescale = false;
+        for (uint i = 0; i < QB; ++i) {
+            const uint t = t0 + i;
+            const bool inside = j < T && t < T && j + W >= t && j <= t + W;
+            const float sv = inside ? (s_sg[i * LDS + lane] + s_sg[i * LDS + BK + lane + 7u - i]) * U.scale + mv : -INFINITY;
+            const float mi = simd_shuffle(m_row, (ushort)i);
+            const float mnew = max(mi, simd_max(sv));
+            const float corr = mnew == -INFINITY ? 1.0f : exp(mi - mnew);
+            const float pv = sv == -INFINITY ? 0.0f : exp(sv - mnew);
+            const float psum = simd_sum(pv);
+            if ((lane & 7u) == i) { m_row = mnew; l_row = l_row * corr + psum; corr_row = corr; }
+            p_sg[i * BK + lane] = (half)pv;
+            rescale = rescale || corr != 1.0f;
+        }
+        if (rescale) {
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            for (uint e = lane; e < 64u; e += 32u) {
+                const float c = simd_shuffle(corr_row, (ushort)(e / 8u));
+                s_sg[e] = (e / 8u == e % 8u) ? c : 0.0f;
+            }
+            simdgroup_barrier(mem_flags::mem_threadgroup);
+            simdgroup_matrix<float,8,8> dm;
+            simdgroup_load(dm, s_sg, 8u);
+            for (uint c = 0; c < 16u; ++c) simdgroup_multiply(acc[c], dm, acc[c]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint kk = 0; kk < BK; kk += 8u) {
+            simdgroup_matrix<half,8,8> pm, vm;
+            simdgroup_load(pm, p_sg + kk, BK);
+            for (uint c = 0; c < 16u; ++c) {
+                simdgroup_load(vm, kv_h + kk * D + c * 8u, D);
+                simdgroup_multiply_accumulate(acc[c], pm, vm, acc[c]);
+            }
+        }
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint c = 0; c < 16u; ++c) {
+        simdgroup_store(acc[c], s_sg, 8u);
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint e = lane; e < 64u; e += 32u) {
+            const uint i = e / 8u, t = t0 + i;
+            const float li = simd_shuffle(l_row, (ushort)i);
+            if (t < T) o[(head4 + (size_t)t * stride4) * 4u + c * 8u + e % 8u] = (half)(li > 0.0f ? s_sg[e] / li : 0.0f);
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+    }
+}
+
 kernel void conv_cache_append_f16(device const uchar* src [[buffer(0)]],
     device half* ring [[buffer(1)]], device half* out [[buffer(2)]],
     constant uint& hd [[buffer(3)]], constant uint& ws [[buffer(4)]],

@@ -111,6 +111,8 @@ bool cactus_metal_encode_conv_cache_append(void*, const void*, void*, uint32_t, 
     uint32_t, uint32_t, uint32_t, int) { return false; }
 bool cactus_metal_encode_rel_pos_bias(void*, const void*, const void*, uint32_t, uint32_t, uint32_t,
     uint32_t, uint32_t, int, float) { return false; }
+bool cactus_metal_encode_rel_pos_attention_f16(void*, const void*, const void*, const void*, const void*,
+    const void*, const void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, float) { return false; }
 bool cactus_metal_encode_gemv_bias(void*, const void*, const void*, const void*,
     uint32_t, uint32_t, int) { return false; }
 bool cactus_metal_encode_rope_pair(void*, const void*, const void*, const void*,

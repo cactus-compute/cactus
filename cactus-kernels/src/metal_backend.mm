@@ -64,7 +64,7 @@ struct MetalCtx {
     id<MTLComputePipelineState> psoBatchnorm=nil, psoGroupnorm=nil, psoBiasAddRows=nil, psoEwChain=nil;
     id<MTLComputePipelineState> psoAttnFlash=nil, psoRmsSimd=nil, psoScatterRows=nil;
     id<MTLComputePipelineState> psoTranspose2d=nil, psoBcastRows=nil, psoRmsAddSimd=nil;
-    id<MTLComputePipelineState> psoConvCacheAppend=nil, psoRelPosBias=nil, psoGemvBias=nil;
+    id<MTLComputePipelineState> psoConvCacheAppend=nil, psoRelPosBias=nil, psoRelPosAttn=nil, psoGemvBias=nil;
     id<MTLComputePipelineState> psoTopkRows=nil, psoMoeT=nil, psoMoeUp=nil;
     id<MTLComputePipelineState> psoMoeT2=nil, psoMoeDownAcc=nil, psoRopePair=nil;
     id<MTLComputePipelineState> psoRmsScale=nil, psoSoftmaxTopk=nil, psoRopePairRms=nil;
@@ -129,7 +129,7 @@ struct MetalCtx {
         psoAttnFlash=pso("attn_flash_f16"); psoRmsSimd=pso("rms_norm_simd_f16");
         psoScatterRows=pso("strided_scatter_rows_f16"); psoTranspose2d=pso("transpose2d_f16");
         psoBcastRows=pso("bcast_binary_rows_f16"); psoRmsAddSimd=pso("rms_norm_add_simd_f16");
-        psoConvCacheAppend=pso("conv_cache_append_f16"); psoRelPosBias=pso("rel_pos_bias_f16");
+        psoConvCacheAppend=pso("conv_cache_append_f16"); psoRelPosBias=pso("rel_pos_bias_f16"); psoRelPosAttn=pso("rel_pos_attn_f16");
         psoGemvBias=pso("gemv_bias_f16");
         psoTopkRows=pso("topk_rows_f16"); psoMoeT=pso("cq4_moe_transform");
         psoMoeUp=pso("cq4_moe_gemv_up"); psoMoeT2=pso("cq4_moe_transform2");
@@ -2377,6 +2377,24 @@ bool cactus_metal_encode_rel_pos_bias(void* y, const void* q, const void* r,
     [g_enc setBytes:&scale length:4 atIndex:7];
     [g_enc dispatchThreads:MTLSizeMake((size_t)T*T, H, B)
         threadsPerThreadgroup:MTLSizeMake(64, H < 4 ? H : 4, 1)];
+    return true;
+}
+
+bool cactus_metal_encode_rel_pos_attention_f16(void* out, const void* q, const void* k, const void* v,
+    const void* qv, const void* r, const void* mask, uint32_t B, uint32_t T, uint32_t H, uint32_t D,
+    uint32_t R, uint32_t window, float scale) {
+    if (!ctx().ok || !ctx().psoRelPosAttn || D != 128) return false;
+    ensureEncoder();
+    struct { uint32_t T, H, D, R, window, has_mask; float scale; } U = { T, H, D, R, window, mask ? 1u : 0u, scale };
+    const size_t bytes = (size_t)B*T*H*D*2;
+    [g_enc setComputePipelineState:ctx().psoRelPosAttn];
+    setBufAt(q, bytes, 0); setBufAt(k, bytes, 1); setBufAt(v, bytes, 2); setBufAt(qv, bytes, 3);
+    setBufAt(r, (size_t)R*H*D*2, 4);
+    if (mask) setBufAt(mask, (size_t)B*T*2, 5);
+    else [g_enc setBuffer:ctx().dummy offset:0 atIndex:5];
+    setBufAt(out, bytes, 6);
+    [g_enc setBytes:&U length:sizeof(U) atIndex:7];
+    [g_enc dispatchThreadgroups:MTLSizeMake((T+31)/32, H, B) threadsPerThreadgroup:MTLSizeMake(128,1,1)];
     return true;
 }
 

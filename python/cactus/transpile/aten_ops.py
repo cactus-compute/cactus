@@ -54,6 +54,7 @@ _EXACT_RULES: dict[str, str] = {
     "qwen2_moe_layer_gated.default": "qwen2_moe_layer_gated",
     "cactus_transpile.gemma4_moe_layer_gated.default": "gemma4_moe_layer_gated",
     "gemma4_moe_layer_gated.default": "gemma4_moe_layer_gated",
+    "rel_pos_attention.default": "rel_pos_attention",
     # Keep the legacy importer key until the importer itself is renamed.
     "aten.diff.default": "aten.diff.default",
 }

@@ -586,6 +586,7 @@ MODEL_ID_MAP = {
     "openai/whisper-tiny": WHISPER_PROFILE,
     "openai/whisper-small": WHISPER_PROFILE,
     "nvidia/parakeet-tdt-0.6b-v3": PARAKEET_PROFILE,
+    "nvidia/parakeet-tdt-0.6b-v2": PARAKEET_PROFILE,
     "LiquidAI/LFM2-VL-450M": LFM_VLM_PROFILE,
     "LiquidAI/LFM2-VL-3B": LFM_VLM_PROFILE,
     "Qwen/Qwen2.5-0.5B": QWEN2_5_0_5B_PROFILE,

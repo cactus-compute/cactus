@@ -320,6 +320,76 @@ bool test_attention() {
     return true;
 }
 
+static std::vector<float> run_rel_pos_graph(bool fused, size_t T, size_t window) {
+    const size_t B = 1, H = 2, D = 32;
+    const size_t full_rel = 2 * T - 1;
+    const size_t rel_rows = (fused && window > 0) ? 2 * window + 1 : full_rel;
+    std::mt19937 gen(7);
+    std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
+    auto random = [&](size_t n) {
+        std::vector<__fp16> v(n);
+        for (auto& x : v) x = static_cast<__fp16>(dis(gen));
+        return v;
+    };
+    std::vector<__fp16> q = random(B * T * H * D), k = random(B * T * H * D), v = random(B * T * H * D);
+    std::vector<__fp16> qv = random(B * T * H * D), rel_full = random(full_rel * H * D);
+    std::vector<__fp16> key_mask(B * T, static_cast<__fp16>(0.0f));
+    for (size_t j = T - 5; j < T; ++j) key_mask[j] = static_cast<__fp16>(-10000.0f);
+    const float scale = 1.0f / std::sqrt(static_cast<float>(D));
+
+    CactusGraph g;
+    size_t iq = g.input({B, T, H, D}, Precision::FP16);
+    size_t ik = g.input({B, T, H, D}, Precision::FP16);
+    size_t iv = g.input({B, T, H, D}, Precision::FP16);
+    size_t iqv = g.input({B, T, H, D}, Precision::FP16);
+    size_t irel = g.input({1, rel_rows, H, D}, Precision::FP16);
+    size_t out;
+    std::vector<__fp16> band;
+    size_t iband = 0, imask;
+    if (fused) {
+        imask = g.input({B, T}, Precision::FP16);
+        out = g.rel_pos_attention(iq, ik, iv, iqv, irel, imask, scale, window);
+    } else {
+        imask = g.input({B, 1, 1, T}, Precision::FP16);
+        size_t mask = g.add(g.rel_pos_bias(iqv, irel, scale), imask);
+        if (window > 0) {
+            band.assign(T * T, static_cast<__fp16>(0.0f));
+            for (size_t t = 0; t < T; ++t)
+                for (size_t j = 0; j < T; ++j)
+                    if ((t > j ? t - j : j - t) > window) band[t * T + j] = static_cast<__fp16>(-INFINITY);
+            iband = g.input({1, 1, T, T}, Precision::FP16);
+            mask = g.add(mask, iband);
+        }
+        out = g.attention_masked(iq, ik, iv, mask, scale, false, cactus_default_backend(), true);
+    }
+    std::vector<__fp16> rel(rel_rows * H * D);
+    const size_t offset = (full_rel - rel_rows) / 2;
+    std::copy(rel_full.begin() + offset * H * D, rel_full.begin() + (offset + rel_rows) * H * D, rel.begin());
+    g.set_input(iq, q.data(), Precision::FP16);
+    g.set_input(ik, k.data(), Precision::FP16);
+    g.set_input(iv, v.data(), Precision::FP16);
+    g.set_input(iqv, qv.data(), Precision::FP16);
+    g.set_input(irel, rel.data(), Precision::FP16);
+    g.set_input(imask, key_mask.data(), Precision::FP16);
+    if (!band.empty()) g.set_input(iband, band.data(), Precision::FP16);
+    g.execute();
+    const __fp16* p = static_cast<const __fp16*>(g.get_output(out));
+    std::vector<float> result(B * T * H * D);
+    for (size_t i = 0; i < result.size(); ++i) result[i] = static_cast<float>(p[i]);
+    return result;
+}
+
+bool test_rel_pos_attention_matches_unfused() {
+    for (auto [T, window] : {std::pair<size_t, size_t>{70, 0}, {90, 25}, {40, 50}}) {
+        std::vector<float> expected = run_rel_pos_graph(false, T, window);
+        std::vector<float> actual = run_rel_pos_graph(true, T, window);
+        for (size_t i = 0; i < expected.size(); ++i) {
+            if (std::abs(expected[i] - actual[i]) > 5e-3f) return false;
+        }
+    }
+    return true;
+}
+
 bool test_reduction_operations() {
     TestUtils::FP16TestFixture fixture("Reduction Operations");
 
@@ -719,6 +789,7 @@ int main() {
     runner.run_test("Softmax", test_softmax());
     runner.run_test("Attention", test_attention());
     runner.run_test("Attention INT8 Hybrid", test_attention_int8_hybrid());
+    runner.run_test("Rel Pos Attention", test_rel_pos_attention_matches_unfused());
     runner.run_test("Reduction Operations", test_reduction_operations());
     runner.run_test("Mean Operations", test_mean_operations());
     runner.run_test("Variance Operations", test_variance_operations());

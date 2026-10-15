@@ -2218,6 +2218,26 @@ def _lower_ir_node(g: Graph, node: IRNode, env: dict[str, Any], ir: IRGraph) -> 
             )
         return [g.rel_pos_bias(query, relative_key, float(node.attrs.get("scale", 1.0)))]
 
+    if op == "rel_pos_attention":
+        query, key, value, rel_query, relative_key, key_mask = (
+            _ensure_fp16_tensor(g, _tensor(env, input_id)) for input_id in node.inputs
+        )
+        mask_shape = (int(query.shape[0]), int(query.shape[1]))
+        if tuple(int(dim) for dim in key_mask.shape) != mask_shape:
+            key_mask = g.reshape(key_mask, mask_shape)
+        return [
+            g.rel_pos_attention(
+                query,
+                key,
+                value,
+                rel_query,
+                relative_key,
+                key_mask,
+                float(node.attrs["scale"]),
+                int(node.attrs.get("window_size", 0)),
+            )
+        ]
+
     if op in {"gated_deltanet_prefill", "gated_deltanet_decode"}:
         x = _tensor(env, node.inputs[0])
         qkv_weight = _tensor(env, node.inputs[1])

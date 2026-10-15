@@ -132,6 +132,7 @@ FP16_ONLY_OUTPUT_OPS = {
     "lfm2_moe_layer_gated",
     "qwen2_moe_layer_gated",
     "gemma4_moe_layer_gated",
+    "rel_pos_attention",
     "rope",
 }
 

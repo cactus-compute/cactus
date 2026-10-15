@@ -1203,6 +1203,22 @@ int cactus_graph_attention(cactus_graph_t graph, cactus_node_t query, cactus_nod
     }
 }
 
+int cactus_graph_rel_pos_attention(cactus_graph_t graph, cactus_node_t query, cactus_node_t key, cactus_node_t value,
+                                   cactus_node_t rel_query, cactus_node_t relative_key, bool use_key_mask,
+                                   cactus_node_t key_mask, float scale, size_t window_size, cactus_node_t* out) {
+    if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_rel_pos_attention");
+    try {
+        *out = static_cast<cactus_node_t>(as_graph(graph)->graph.rel_pos_attention(
+            static_cast<size_t>(query), static_cast<size_t>(key), static_cast<size_t>(value),
+            static_cast<size_t>(rel_query), static_cast<size_t>(relative_key),
+            use_key_mask ? static_cast<size_t>(key_mask) : static_cast<size_t>(-1), scale, window_size));
+        return 0;
+    } catch (const std::exception& e) {
+        last_error_message = e.what();
+        return -1;
+    }
+}
+
 int cactus_graph_rel_pos_bias(cactus_graph_t graph, cactus_node_t query, cactus_node_t relative_key, float scale, cactus_node_t* out) {
     if (!graph || !out) return fail_invalid("Invalid args to cactus_graph_rel_pos_bias");
     try {

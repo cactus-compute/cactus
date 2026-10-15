@@ -120,6 +120,48 @@ bool test_attention_f16_long_decode() {
     return true;
 }
 
+static bool check_rel_pos_attention(size_t seq, size_t window, size_t rel_len, size_t padded_keys) {
+    const size_t heads = 2, dim = 16, stride = heads * dim, n = seq * stride;
+    std::vector<__fp16> q(n), k(n), v(n), qv(n), out(n), rel(rel_len * stride);
+    std::vector<__fp16> mask(seq, static_cast<__fp16>(0.0f));
+    for (auto* t : {&q, &k, &v, &qv, &rel}) fill_random_fp16(*t, -1.0f, 1.0f);
+    for (size_t j = seq - padded_keys; j < seq; ++j) mask[j] = static_cast<__fp16>(-10000.0f);
+    const float scale = 0.25f;
+    cactus_rel_pos_attention_f16(q.data(), k.data(), v.data(), qv.data(), rel.data(), mask.data(), out.data(),
+                                 1, seq, heads, dim, rel_len, scale, window);
+
+    const size_t center = (rel_len - 1) / 2;
+    for (size_t h = 0; h < heads; ++h) {
+        for (size_t t = 0; t < seq; ++t) {
+            const size_t j_lo = (window > 0 && t > window) ? t - window : 0;
+            const size_t j_hi = window > 0 ? std::min(seq, t + window + 1) : seq;
+            std::vector<double> p(j_hi - j_lo);
+            double max_score = -INFINITY, sum = 0.0;
+            for (size_t j = j_lo; j < j_hi; ++j) {
+                double score = 0.0;
+                for (size_t d = 0; d < dim; ++d) {
+                    score += static_cast<double>(q[t * stride + h * dim + d]) * static_cast<double>(k[j * stride + h * dim + d])
+                           + static_cast<double>(qv[t * stride + h * dim + d])
+                           * static_cast<double>(rel[(center + j - t) * stride + h * dim + d]);
+                }
+                p[j - j_lo] = score * scale + static_cast<double>(mask[j]);
+                max_score = std::max(max_score, p[j - j_lo]);
+            }
+            for (double& x : p) { x = std::exp(x - max_score); sum += x; }
+            for (size_t d = 0; d < dim; ++d) {
+                double expected = 0.0;
+                for (size_t j = j_lo; j < j_hi; ++j) expected += p[j - j_lo] / sum * static_cast<double>(v[j * stride + h * dim + d]);
+                if (std::abs(static_cast<double>(out[t * stride + h * dim + d]) - expected) > 2e-3) return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool test_rel_pos_attention() {
+    return check_rel_pos_attention(150, 20, 41, 7) && check_rel_pos_attention(70, 0, 139, 3);
+}
+
 bool test_attention_f16_streaming_additive_mask() {
     const size_t batch = 1, seq = 64, heads = 2, dim = 16;
     std::vector<__fp16> q(batch * seq * heads * dim), k(batch * seq * heads * dim);
@@ -235,6 +277,7 @@ int main() {
     runner.run_test("attention_f16", test_attention_f16());
     runner.run_test("attention_f16_long_decode", test_attention_f16_long_decode());
     runner.run_test("attention_f16_streaming_additive_mask", test_attention_f16_streaming_additive_mask());
+    runner.run_test("rel_pos_attention", test_rel_pos_attention());
     runner.print_benchmarks_header();
     runner.run_bench("benchmarks", run_benchmarks());
     runner.print_summary();

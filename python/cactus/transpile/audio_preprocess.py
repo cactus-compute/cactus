@@ -21,7 +21,8 @@ _PARAKEET_HOP_LENGTH = 160
 _PARAKEET_PREEMPHASIS = 0.97
 _PARAKEET_LOG_FLOOR = np.float32(2**-24)
 _DEFAULT_MAX_AUDIO_SECONDS = 30.0
-_DEFAULT_AUDIO_BUCKET_SECONDS = (1, 2, 3, 5, 8, 13, 21)
+_DEFAULT_AUDIO_BUCKET_SECONDS = (1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 300, 377)
+_AUDIO_CAPTURE_SECONDS = 420
 
 
 def audio_duration_limit_seconds() -> float:
@@ -45,6 +46,10 @@ def audio_bucket_seconds() -> tuple[int, ...]:
     if not positive:
         return _DEFAULT_AUDIO_BUCKET_SECONDS
     return positive
+
+
+def audio_capture_frames() -> int:
+    return _AUDIO_CAPTURE_SECONDS * (_PARAKEET_SAMPLE_RATE // _PARAKEET_HOP_LENGTH)
 
 
 def audio_bucket_frames(max_frames: int) -> list[int]:
