@@ -190,7 +190,11 @@ inline std::string py_literal_to_json(const std::string& s, size_t& p) {
         ++p; bool first = true;
         while (true) {
             skip_ws(s, p);
-            if (p >= s.size() || s[p] == close) { if (p < s.size()) ++p; break; }
+            // A mismatched closing bracket must not leave the parser stuck.
+            if (p >= s.size() || s[p] == close || s[p] == ')' || s[p] == ']' || s[p] == '}') {
+                if (p < s.size() && s[p] == close) ++p;
+                break;
+            }
             if (s[p] == ',') { ++p; continue; }
             if (!first) out += ", ";
             first = false;
@@ -210,7 +214,8 @@ inline std::string py_literal_to_json(const std::string& s, size_t& p) {
     if (s.compare(p, 4, "None") == 0) { p += 4; return "null"; }
     size_t start = p;
     while (p < s.size() && s[p] != ',' && s[p] != ')' && s[p] != ']' && s[p] != '}') ++p;
-    return trim(s.substr(start, p - start));
+    std::string v = trim(s.substr(start, p - start));
+    return v.empty() ? "null" : v;
 }
 
 inline void extract_lfm2_tool_calls(std::string& text, std::vector<std::string>& calls) {
@@ -239,13 +244,15 @@ inline void extract_lfm2_tool_calls(std::string& text, std::vector<std::string>&
             while (true) {
                 skip_ws(inner, p);
                 if (p >= inner.size() || inner[p] == ')') { if (p < inner.size()) ++p; break; }
-                if (inner[p] == ',') { ++p; continue; }
+                // Skip unexpected closing brackets between arguments.
+                if (inner[p] == ',' || inner[p] == '}' || inner[p] == ']') { ++p; continue; }
                 size_t ks = p;
                 while (p < inner.size() && (std::isalnum(static_cast<unsigned char>(inner[p])) || inner[p] == '_')) ++p;
                 std::string key = inner.substr(ks, p - ks);
                 skip_ws(inner, p);
                 if (p < inner.size() && inner[p] == '=') ++p;
                 std::string val = py_literal_to_json(inner, p);
+                if (p == ks) { ++p; continue; } // Always advance on malformed input.
                 if (!first) args += ", ";
                 first = false;
                 args += "\"" + key + "\": " + val;
