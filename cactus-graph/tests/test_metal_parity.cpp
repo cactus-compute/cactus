@@ -125,6 +125,37 @@ bool parity_per_op_pins() {
     return true;
 }
 
+bool parity_cpu_reader_after_fused_norm() {
+
+    for (size_t D : {256u, 1024u}) {
+        ParityCase c;
+        size_t x = c.add_input({1, D});
+        size_t w1 = c.add_input({D});
+        size_t r = c.add_input({1, D});
+        size_t w2 = c.add_input({D});
+        size_t W = c.add_input({D, 64});
+        c.build = [D](CactusGraph& g, const std::vector<size_t>& in) {
+            size_t n1 = g.rms_norm(in[0], in[1]);
+            size_t a = g.add_clipped(in[2], n1);
+            size_t v = g.view(a, {1, D});
+            size_t n2 = g.rms_norm(v, in[3]);
+            size_t nr = g.reshape(n2, {1, D});
+            size_t nv = g.view(nr, {1, D});
+            return g.matmul(nv, in[4], false, ComputeBackend::CPU);
+        };
+        std::vector<float> cpu = c.run("cpu");
+        std::vector<float> metal = c.run("metal");
+        if (cpu.empty() || cpu.size() != metal.size())
+            return false;
+        for (size_t i = 0; i < cpu.size(); i++) {
+            float scale = std::max(1.0f, std::fabs(cpu[i]));
+            if (!(std::fabs(cpu[i] - metal[i]) <= 5e-2f * scale)) return false;
+        }
+    }
+
+    return true;
+}
+
 bool parity_unary(size_t (CactusGraph::*fn)(size_t, ComputeBackend), float lo = -1.0f, float hi = 1.0f) {
     ParityCase c;
     c.add_input({4, 33}, lo, hi);
@@ -586,6 +617,7 @@ int main() {
     runner.run_test("sliding_window_cache (ring wrap)", parity_sliding_window_cache());
     runner.run_test("cache_growth", parity_cache_growth());
     runner.run_test("per_op_backend_pins", parity_per_op_pins());
+    runner.run_test("cpu_reader_after_fused_norm", parity_cpu_reader_after_fused_norm());
 
     runner.print_summary();
     return runner.all_passed() ? 0 : 1;

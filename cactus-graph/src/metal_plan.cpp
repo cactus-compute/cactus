@@ -813,7 +813,7 @@ MetalFusePlan* cactus_metal_plan_build(
                             collect_chain((size_t)ch, (long)h_node, cover);
                         }
                     }
-                    add_cluster(c, h_node, cover);
+                    if (add_cluster(c, h_node, cover) && c.u0 == 1u) plan->action[c.a5] = -3;
                     continue;
                 }
             }
