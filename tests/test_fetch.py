@@ -317,6 +317,7 @@ def test_android_is_refused_instead_of_being_handed_a_glibc_wheel(monkeypatch):
 def test_android_is_detected_from_the_api_level_or_the_runtime_env(monkeypatch):
     from needle.agent import fetch
 
+    monkeypatch.setattr(fetch, "_loaded_libc", lambda: None)
     monkeypatch.delenv("ANDROID_ROOT", raising=False)
     monkeypatch.delenv("ANDROID_DATA", raising=False)
     monkeypatch.delattr(sys, "getandroidapilevel", raising=False)
@@ -331,6 +332,25 @@ def test_android_is_detected_from_the_api_level_or_the_runtime_env(monkeypatch):
     monkeypatch.delenv("ANDROID_DATA")
     monkeypatch.setattr(sys, "getandroidapilevel", lambda: 34, raising=False)
     assert fetch._is_android() is True
+
+
+def test_android_markers_inside_a_glibc_or_musl_userspace_are_linux(monkeypatch, tmp_path):
+    from needle.agent import fetch
+
+    monkeypatch.delattr(sys, "getandroidapilevel", raising=False)
+    monkeypatch.setenv("ANDROID_ROOT", "/system")
+    monkeypatch.setenv("ANDROID_DATA", "/data")
+    maps = tmp_path / "maps"
+    real_open = open
+    monkeypatch.setattr("builtins.open",
+                        lambda p, *a, **k: real_open(maps, *a, **k) if p == "/proc/self/maps"
+                        else real_open(p, *a, **k))
+    rootfs = b"/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs"
+    for loaded, android in ((rootfs + b"/debian/usr/lib/aarch64-linux-gnu/libc.so.6", False),
+                            (rootfs + b"/alpine/lib/ld-musl-aarch64.so.1", False),
+                            (b"/apex/com.android.runtime/lib64/bionic/libc.so", True)):
+        maps.write_bytes(b"7f0000000000-7f0000001000 r-xp 00000000 fd:00 1 " + loaded + b"\n")
+        assert fetch._is_android() is android, loaded
 
 
 def test_building_the_published_archive_needs_no_training_stack(tmp_path, monkeypatch):
