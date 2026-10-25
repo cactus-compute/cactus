@@ -73,6 +73,19 @@ def lib_path_env(generation=2):
     return LIB_PATH_ENVS.get(generation) or f"NEEDLE{generation}_LIB_PATH"
 
 
+def _loaded_libc():
+    try:
+        with open("/proc/self/maps", "rb") as maps:
+            blob = maps.read()
+    except OSError:
+        return None
+    if b"musl" in blob:
+        return "musl"
+    if b"/libc.so.6" in blob or b"/ld-linux" in blob:
+        return "glibc"
+    return None
+
+
 def _is_musl():
     """True on a musl system (Alpine and friends).
 
@@ -81,15 +94,9 @@ def _is_musl():
     """
     if sys.platform != "linux":
         return False
-    try:
-        with open("/proc/self/maps", "rb") as maps:
-            blob = maps.read()
-        if b"musl" in blob:
-            return True
-        if b"/libc.so.6" in blob or b"/ld-linux" in blob:
-            return False
-    except OSError:
-        pass
+    libc = _loaded_libc()
+    if libc:
+        return libc == "musl"
     import glob
     if glob.glob("/lib/ld-musl-*.so.1"):
         return True
@@ -113,6 +120,8 @@ def _is_android():
     """
     if hasattr(sys, "getandroidapilevel"):
         return True
+    if _loaded_libc():
+        return False
     return bool(os.environ.get("ANDROID_ROOT") and os.environ.get("ANDROID_DATA"))
 
 
