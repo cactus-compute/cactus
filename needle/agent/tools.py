@@ -58,12 +58,12 @@ def _is_optional(annotation):
             and type(None) in typing.get_args(annotation))
 
 
-def _json_type(annotation):
+def _json_type(annotation, defs):
     if annotation is inspect.Parameter.empty or annotation is None:
         return {"type": "string"}
     origin = typing.get_origin(annotation)
     if origin is typing.Annotated:
-        return _json_type(typing.get_args(annotation)[0])
+        return _json_type(typing.get_args(annotation)[0], defs)
     if origin is None:
         if annotation in _JSON_TYPES:
             return {"type": _JSON_TYPES[annotation]}
@@ -72,7 +72,11 @@ def _json_type(annotation):
             val_type = _JSON_TYPES.get(type(values[0]), "string") if values else "string"
             return {"type": val_type, "enum": values}
         if _is_pydantic_model(annotation):
-            return pydantic_schema(annotation)["parameters"]
+            schema = pydantic_schema(annotation)["parameters"]
+            for key in ("$defs", "definitions"):
+                if key in schema:
+                    defs.setdefault(key, {}).update(schema.pop(key))
+            return schema
         return {"type": "string"}
     if origin is typing.Literal:
         args = list(typing.get_args(annotation))
@@ -80,13 +84,13 @@ def _json_type(annotation):
         return {"type": val_type, "enum": args}
     if origin in (list, typing.List):
         args = typing.get_args(annotation)
-        return {"type": "array", "items": _json_type(args[0]) if args else {"type": "string"}}
+        return {"type": "array", "items": _json_type(args[0], defs) if args else {"type": "string"}}
     if origin in (dict, typing.Dict):
         return {"type": "object"}
     if origin in _UNION_ORIGINS:
         rest = [a for a in typing.get_args(annotation) if a is not type(None)]
         if rest:
-            return _json_type(rest[0])
+            return _json_type(rest[0], defs)
     return {"type": "string"}
 
 
@@ -144,12 +148,12 @@ def build_schema(fn: Callable) -> dict:
     except Exception:
         hints = {}
     description, arg_docs = _parse_doc(fn.__doc__)
-    properties, required = {}, []
+    properties, required, defs = {}, [], {}
     for name, param in signature.parameters.items():
         if name in ("self", "cls") or param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
             continue
         annotation = hints.get(name, param.annotation)
-        schema = _json_type(annotation)
+        schema = _json_type(annotation, defs)
         if name in arg_docs and "description" not in schema:
             schema["description"] = arg_docs[name]
         field = _field_of(annotation, param.default)
@@ -164,6 +168,7 @@ def build_schema(fn: Callable) -> dict:
     parameters = {"type": "object", "properties": properties}
     if required:
         parameters["required"] = required
+    parameters.update(defs)
     out = {"name": fn.__name__}
     if description:
         out["description"] = description
