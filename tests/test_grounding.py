@@ -432,3 +432,24 @@ def test_extract_accepts_dates_written_with_abbreviated_months_and_periods(stub)
     invoice = needle.extract("Invoice from Acme, issued Jun 5, 2025 and due Dec. 25, 2026", Invoice)
 
     assert invoice.due_date == datetime.date(2026, 12, 25)
+
+
+class Shipment(pydantic.BaseModel):
+    invoice: Invoice
+
+
+def ship(shipment: Shipment):
+    "Ship an order with its invoice."
+
+
+def test_complete_checks_dates_inside_a_nested_model_argument(stub):
+    import needle
+
+    stub.envelopes = [{"type": "call", "confidence": 0.9, "function_calls": [{
+        "name": "ship",
+        "arguments": {"shipment": {"invoice": {"vendor": "Acme", "due_date": "2026-09-05"}}},
+    }]}]
+    agent = needle.Needle(tools=[ship])
+    response = agent.complete("Ship the Acme order, invoice due on 5th September 2031")
+
+    assert response["validation"]["ungrounded"] == ["ship.shipment.invoice.due_date"]
