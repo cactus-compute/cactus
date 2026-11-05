@@ -1,7 +1,7 @@
 [project]
-name = "cactus-needle"
-version = "3.2.1"
-description = "A 14MB foundation tool-calling model for tiny devices: inference, LoRA finetuning, and build."
+name = "cactus-compute"
+version = "3.3.0"
+description = "On-device models for tool calling, speech, structured extraction, and embeddings."
 requires-python = ">=3.9"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -32,6 +32,11 @@ compare = ["openai-whisper", "moonshine-voice"]
 test = ["pytest", "pydantic"]
 # mlx-cpu (the CPU backend Linux needs) is gated to Linux by mlx itself; macOS gets mlx + Metal.
 mlx = ["mlx[cpu]"]
+
+[project.urls]
+Homepage = "https://cactuscompute.com"
+Repository = "https://github.com/cactus-compute/cactus"
+"Bug Tracker" = "https://github.com/cactus-compute/cactus/issues"
 
 [project.scripts]
 needle = "needle.cli:main"

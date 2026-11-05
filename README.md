@@ -1,5 +1,13 @@
 ![Needle](assets/banner.svg)
 
+The Python package is now `cactus-compute`. It provides Needle and Whistle through
+`import needle` and the `needle` command. Existing `cactus-needle` releases remain
+available. The general inference engine previously published as `cactus-compute`
+is now [cactus-engine](https://pypi.org/project/cactus-engine/).
+
+To migrate an existing Needle environment, run `pip uninstall cactus-needle`
+followed by `pip install cactus-compute`.
+
 A foundation model for mobiles, wearables, robots, smart home, automotive and microcontrollers. The whole model is a single 8-29 MB binary built on our Simple Attention Network, and we trade general chat capacity to beat models 10x its size on mobile tool calls and match 2-3x bigger models on extraction.
 
 - **Tool calls**: given the functions your app exposes, Needle picks the right ones and fills every argument from what the user said. Ask for two things and you get two calls in order; ask for something no tool covers and you get an empty list, not a guess.
@@ -22,7 +30,7 @@ The interactive frontier plot, the architecture and the fine-tuning results are 
 ## Get started
 
 ```sh
-pip install cactus-needle
+pip install cactus-compute
 ```
 
 Try it in the browser at [cactuscompute.com/needle](https://cactuscompute.com/needle); the weights and every platform engine are on [Hugging Face](https://huggingface.co/Cactus-Compute/needle3).
@@ -86,7 +94,7 @@ The benchmarks against Whisper and Moonshine, the architecture and the interacti
 Whistle fine-tunes locally: LoRA adapters on the attention projections, base frozen, merged at export, 4-bit. It takes training, validation and test JSONL files, each line `{"audio": "clip.wav", "text": "...", "language": "pt"}`; a language code outside the seven adds that language, and `--tokens` takes a file of words or characters to add to the vocabulary, one per line.
 
 ```sh
-pip install "cactus-needle[train]"
+pip install "cactus-compute[train]"
 needle whistle finetune train.jsonl validation.jsonl test.jsonl --tokens tokens.txt --out adapter.safetensors
 needle whistle build --lora adapter.safetensors --out tuned.cact
 ```
@@ -128,7 +136,7 @@ Two ways to fine-tune, from the same package:
 Local:
 
 ```sh
-pip install "cactus-needle[train]"
+pip install "cactus-compute[train]"
 needle finetune data.jsonl --epochs 10 --out adapter.safetensors
 needle build --lora adapter.safetensors --layers 8 --out tuned.cact
 ```
@@ -178,6 +186,6 @@ Needle is built by the Cactus Compute team. If you use it in your work, please c
                   Kumar, Satyajit and Sandhu, Parkirat and Shemet, Roman and Lee, Justin H.},
   year         = {2026},
   organization = {Cactus Compute, Inc.},
-  howpublished = {\url{https://github.com/cactus-compute/needle}}
+  howpublished = {\url{https://github.com/cactus-compute/cactus}}
 }
 ```

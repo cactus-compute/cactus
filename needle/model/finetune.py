@@ -66,7 +66,7 @@ def _openrouter(messages, model, api_key, temperature=0.9):
     request = urllib.request.Request(OPENROUTER_URL, data=payload, headers={
         "Authorization": "Bearer " + api_key,
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/cactus-compute/needle",
+        "HTTP-Referer": "https://github.com/cactus-compute/cactus",
         "X-Title": "needle",
     })
     with urllib.request.urlopen(request, timeout=180) as response:

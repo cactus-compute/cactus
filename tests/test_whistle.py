@@ -331,7 +331,7 @@ def test_record_says_what_is_missing(monkeypatch):
     from needle.agent.whistle import record
 
     monkeypatch.setitem(sys.modules, "sounddevice", None)
-    with pytest.raises(RuntimeError, match=r"cactus-needle\[mic\]"):
+    with pytest.raises(RuntimeError, match=r"cactus-compute\[mic\]"):
         record()
 
 
@@ -612,7 +612,7 @@ def test_compare_needs_its_extra(monkeypatch):
     from needle.agent import whistle
 
     monkeypatch.setitem(sys.modules, "whisper", None)
-    with pytest.raises(SystemExit, match=r"cactus-needle\[mic,compare\]"):
+    with pytest.raises(SystemExit, match=r"cactus-compute\[mic,compare\]"):
         whistle.compare(type("Args", (), {"audio": None, "weights": None})())
 
 

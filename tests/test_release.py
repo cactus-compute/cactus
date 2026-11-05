@@ -42,7 +42,7 @@ def version_output(repo, published="0.0.0"):
     fake_bin = repo / "fake-bin"
     fake_bin.mkdir(exist_ok=True)
     curl = fake_bin / "curl"
-    curl.write_text("#!/bin/sh\nprintf '%s' '{\"info\": {\"version\": \"" + published + "\"}}'\n")
+    curl.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > pypi-request\nprintf '%s' '{\"info\": {\"version\": \"" + published + "\"}}'\n")
     curl.chmod(0o755)
     run_block(repo, block, GITHUB_OUTPUT=str(output),
               PATH=f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
@@ -118,3 +118,16 @@ def test_declared_version_above_everything_published_is_released_as_is(repo):
 
     run_block(repo, tag_block("3.0.0"))
     assert version_output(repo, published="3.0.0") == "skip=true"
+
+
+def test_package_handover_follows_needle_history_and_queries_cactus_compute(repo):
+    git(repo, "tag", "v3.2.10")
+    (repo / "pyproject.toml").write_text('name = "cactus-compute"\nversion = "3.3.0"\n')
+    (repo / "needle/__init__.py").write_text('__version__ = "3.3.0"\n')
+    git(repo, "commit", "-am", "Publish Needle as Cactus")
+
+    assert version_output(repo, published="2.2.2") == "next=3.3.0"
+    assert (repo / "pypi-request").read_text().splitlines()[-1] == "https://pypi.org/pypi/cactus-compute/json"
+
+    run_block(repo, tag_block("3.3.0"))
+    assert version_output(repo, published="3.3.0") == "skip=true"

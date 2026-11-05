@@ -1,14 +1,14 @@
-# Needle 3 (cactus-needle)
+# Needle 3 (cactus-compute)
 
-> Needle 3 is a 29-121M parameter on-device model for tool calling, device control, and structured extraction. This Python package (`cactus-needle`) is inference + LoRA fine-tuning + export. Text goes in, a JSON tool call comes back; a byte-level grammar compiled from your schemas constrains every token, so the call is always well-formed. A sub-1 MB engine and the 35 MB `needle3.cact` weights are fetched once from Hugging Face and cached; nothing is compiled locally.
+> Needle 3 is a 29-121M parameter on-device model for tool calling, device control, and structured extraction. This Python package (`cactus-compute`) is inference + LoRA fine-tuning + export. Text goes in, a JSON tool call comes back; a byte-level grammar compiled from your schemas constrains every token, so the call is always well-formed. A sub-1 MB engine and the 35 MB `needle3.cact` weights are fetched once from Hugging Face and cached; nothing is compiled locally.
 
 This file is written for AI coding assistants. It is enough to write correct Needle code without reading the source. Copy the patterns; do not invent API that is not listed here. The human guides are at https://cactuscompute.com/blog/needle-python-docs, https://cactuscompute.com/blog/designing-tools-for-needle, https://cactuscompute.com/blog/needle-confidence, https://cactuscompute.com/blog/structured-extraction-with-needle, https://cactuscompute.com/blog/finetuning-needle, https://cactuscompute.com/blog/needle-supported-devices, https://cactuscompute.com/blog/cact-format and https://cactuscompute.com/blog/porting-needle.
 
 ## Install
 
 ```sh
-pip install cactus-needle                # runtime (inference only)
-pip install "cactus-needle[train]"       # adds JAX + training deps for finetune/build
+pip install cactus-compute                # runtime (inference only)
+pip install "cactus-compute[train]"       # adds JAX + training deps for finetune/build
 ```
 
 `import needle` is lightweight (no JAX). JAX is imported lazily and only by fine-tuning/export/build, and the training dependencies live behind the `[train]` extra - a runtime-only install cannot run `needle finetune`/`build`. For GPU training use `[train,gpu]` (CUDA) or `[train,metal]` (Apple Silicon). The engine binary auto-downloads from Hugging Face on first `Needle(...)` use.
@@ -176,7 +176,7 @@ LoRA on the frozen base, merged at export. Data is JSONL, one example per line; 
 ```
 
 ```sh
-pip install "cactus-needle[train]"                                                 # training deps (JAX, flax, optax)
+pip install "cactus-compute[train]"                                                 # training deps (JAX, flax, optax)
 export OPENROUTER_API_KEY=sk-or-...
 needle generate-data --tools my_tools.json --num-samples 500 --output data.jsonl   # optional
 needle finetune data.jsonl --epochs 3 --generate 300                                # LoRA; auto-downloads base
