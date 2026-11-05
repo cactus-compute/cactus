@@ -11,7 +11,7 @@ pip install cactus-compute                # runtime (inference only)
 pip install "cactus-compute[train]"       # adds JAX + training deps for finetune/build
 ```
 
-`import cactus` is lightweight (no JAX). JAX is imported lazily and only by fine-tuning/export/build, and the training dependencies live behind the `[train]` extra - a runtime-only install cannot run `cactus finetune`/`build`. For GPU training use `[train,gpu]` (CUDA) or `[train,metal]` (Apple Silicon). The engine binary auto-downloads from Hugging Face on first `Needle(...)` use.
+`import cactus` is lightweight (no JAX). JAX is imported lazily and only by fine-tuning/export/build, and the training dependencies live behind the `[train]` extra - a runtime-only install cannot run `cactus finetune`/`build`. For GPU training use `[train,gpu]` (CUDA) or `[train,metal]` (Apple Silicon). The engine binary auto-downloads from Hugging Face on first `Cactus(...)` use.
 
 ## Runtime and models
 
@@ -129,7 +129,7 @@ Every turn returns one dict:
 - `reasoning` is a short unconstrained derivation of each argument from its source span.
 - `confidence` is a calibrated score in [0,1] (see Confidence gating).
 - `suppressed_calls` holds a call the engine withheld (confidence below 0.1 or a grounding gate fired); `function_calls` is then empty. Show it to the user to confirm, or treat the turn as a refusal.
-- `Needle(system=...)` prefixes the local `date:` fact automatically unless the text already carries a date; pass `auto_date=False` to opt out.
+- `Cactus(system=...)` prefixes the local `date:` fact automatically unless the text already carries a date; pass `auto_date=False` to opt out.
 - `validation.ungrounded`, when present, lists `tool.field` names whose value is not grounded in the input, including date arguments whose year matches nothing in the conversation or the `system` facts. A number the engine flags is exempt when its value occurs in the source text, thousands separators aside - a source's `1,234` grounds an argument's `1234` - so only genuinely unsourced numbers are rejected. `run()` refuses those calls with `{"error": "ungrounded field"}` unless `strict=False`.
 - `extract()` declares the record as the only tool and takes the record from `function_calls` or, when the engine withheld it, from `suppressed_calls`; `strict` handles grounding.
 - Arguments arrive after the engine's deterministic repair step, which grounds them in the request text: a full name in one of a first/last pair is split, a truncated phone number is completed, quoted titles are restored verbatim, place queries recover dropped words and a following street address, weekday and `March 4th` style dates resolve against the `date:` fact, polar enums and booleans follow the request verb (turn on, unlock, louder, turn down), an enum moves to the one option the request names, pickup and destination are read from `from X to Y` wording, a paired tool follows the request's polarity (`lock_door` to `unlock_door`), `by N` fills a tool's only number argument, an invented required slot is refilled from the request or its schema default, a required number with a default takes the default when no quantity is named, optional strings and numbers the conversation never states are dropped, empty optional strings and duplicate calls are dropped, and so is a call for something the request excludes or negates in its own clause.
@@ -139,7 +139,7 @@ Every turn returns one dict:
 - Off-topic / unsupported request -> empty `function_calls` (a refusal). There is no free-text fallback. Always handle the empty case.
 - Arguments contain only values evidenced in the input. Optional fields with no evidence are omitted, not guessed. Do not assume a key exists.
 - Multi-turn: repeated `complete(...)` on the same agent continue one conversation; later arguments can depend on earlier tool results. Feed each result back as the next `complete(json.dumps(result))`.
-- One toolset per session. To change tools, make a new `Needle(...)`. `reset()` clears history but keeps the tools.
+- One toolset per session. To change tools, make a new `Cactus(...)`. `reset()` clears history but keeps the tools.
 
 Driving the loop manually:
 
@@ -183,11 +183,7 @@ Relative language ("tomorrow at 7") resolves only when a `date:` fact licenses i
 
 Needle 3 has no tool retrieval head. It reads the whole toolset as part of the prompt, so the order and naming of tools can change which one it picks. Keep a toolset small, with plain names and no shared prefixes such as `media_player__`.
 
-Needle 2 (`generation=2`) has a retrieval head that renders only the top 5 tools per turn when more than 5 are declared, and `tool_index_path` keeps its embeddings between runs.
-
-```python
-agent = cactus.Cactus(tools=big_catalogue, generation=2, tool_index_path="tools.idx")
-```
+Needle 2 and its retrieval head are documented on the `legacy` branch and require `cactus-compute<4`.
 
 ## Fine-tuning (CLI)
 
@@ -294,7 +290,7 @@ Adapt by swapping the Literal values for your own and keeping the shapes: closed
 - Do not read `arguments` keys that were not evidenced in the input; optional fields may be absent.
 - Do not create one `Needle` per turn for a conversation; reuse the instance so context carries. New tools = new instance.
 - `import cactus` does not import JAX; only `cactus finetune`/`build` do.
-- `weights=` expects a `.cact` (from `cactus build`), not a `.safetensors` checkpoint. `Needle(tools=...)` runs the base Needle 3 archive (fetched once, cached next to the engine).
+- `weights=` expects a `.cact` (from `cactus build`), not a `.safetensors` checkpoint. `Cactus(tools=...)` runs the base Needle 3 archive (fetched once into its own model cache).
 - Checkpoints and adapters must be `.safetensors`; pickle (`.pkl`) is not supported and will raise a `ValueError`. The base is `checkpoints/needle3.safetensors` (20 layers); `cactus build --layers N` exports any rung from 2 to 20 of it.
 
 ## Telemetry
