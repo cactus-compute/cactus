@@ -18,9 +18,9 @@ MODEL_REPOS = {3: "Cactus-Compute/needle3", WHISTLE: "Cactus-Compute/whistle", M
 MODEL_REVISIONS = {
     3: "d6c7d6a2e9655505e0f8e23339356dd1705900eb",
     WHISTLE: "741118687e1f008f06d1351a402a731274789790",
-    MIRAGE: "8cc62ef4521c3508f8c2e35284c9742b43ee606b",
+    MIRAGE: "76c1e9e53381aca8fc3843c636216c96ff220122",
 }
-MODEL_SHA256 = {3: 'c9d915eca282ed42d1a09b143b592adb4cc6744ffe2d294adf5cfc5548170c38', 'whistle': 'b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb', 'mirage': 'd423d400d31edc63eb932ab58adc03ae536cd244b0c43ed9fd3745f91297185f'}
+MODEL_SHA256 = {3: 'c9d915eca282ed42d1a09b143b592adb4cc6744ffe2d294adf5cfc5548170c38', 'whistle': 'b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb', 'mirage': '4249a0f7515272ff76b9414bec17d7e7daf84b15b66c7fb4f17fce1e66f9f237'}
 BASE_WEIGHTS = {3: "needle3.cact", WHISTLE: "whistle.cact", MIRAGE: "mirage.cact"}
 CHECKPOINT_PREFIX = "checkpoints"
 WHEEL_TAGS = ("macosx_11_0_arm64", "macosx_11_0_x86_64", "manylinux2014_aarch64", "manylinux2014_x86_64",
@@ -253,11 +253,10 @@ def unpublished_engine_wheels():
 
 
 def _register_download(generation=3):
-
     from huggingface_hub import hf_hub_download
     key = _engine(generation)
     try:
-        hf_hub_download(repo_id=MODEL_REPOS[key], filename="config.json", revision=MODEL_REVISIONS[key])
+        hf_hub_download(repo_id=MODEL_REPOS[key], filename="config.json", revision=MODEL_REVISIONS[key], force_download=True)
     except Exception:
         pass
 

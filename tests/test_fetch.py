@@ -75,6 +75,38 @@ def test_fetch_checkpoint_prefers_the_checkpoints_folder(tmp_path, monkeypatch):
     assert out.endswith("checkpoints/needle3.safetensors") and open(out, "rb").read() == b"ckpt"
 
 
+@pytest.mark.parametrize("model", [3, "whistle", "mirage"])
+def test_cached_model_load_refreshes_only_its_config(tmp_path, monkeypatch, model):
+    import hashlib
+    from cactus.agent import fetch
+
+    monkeypatch.delenv("CACTUS_" + ("NEEDLE" if model == 3 else model.upper()) + "_WEIGHTS", raising=False)
+    weights = tmp_path / fetch.BASE_WEIGHTS[model]
+    weights.write_bytes(b"cached model")
+    monkeypatch.setitem(fetch.MODEL_SHA256, model, hashlib.sha256(weights.read_bytes()).hexdigest())
+    requests = []
+
+    def download(**kwargs):
+        requests.append(kwargs)
+        return str(tmp_path / "config.json")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", download)
+    for _ in range(2):
+        assert fetch.fetch_weights(model, tmp_path) == str(weights)
+    assert requests == [{
+        "repo_id": fetch.MODEL_REPOS[model],
+        "filename": "config.json",
+        "revision": fetch.MODEL_REVISIONS[model],
+        "force_download": True,
+    }] * 2
+
+    def offline(**kwargs):
+        raise OSError("offline")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", offline)
+    assert fetch.fetch_weights(model, tmp_path) == str(weights)
+
+
 def test_weights_spec_parsing():
     from cactus.cli.download import _weights_spec
 

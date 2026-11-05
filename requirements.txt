@@ -1,2 +1,3 @@
 # Runtime dependencies
 huggingface_hub
+Pillow>=10

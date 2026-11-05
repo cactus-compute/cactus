@@ -2,6 +2,10 @@ import array
 import json
 import math
 import sys
+import tempfile
+from pathlib import Path
+
+from PIL import Image
 
 from cactus import Cactus, Mirage, Whistle, tool
 from cactus.agent import fetch, runtime
@@ -34,6 +38,11 @@ vision = Mirage()
 pixels = bytes([90, 100, 110]) * (32 * 32)
 result = vision.describe(pixels, width=32, height=32, sections=["objects"], max_tokens=8)
 assert isinstance(result["objects"], list), result
+with tempfile.TemporaryDirectory() as directory:
+    image = Path(directory) / "image.png"
+    Image.frombytes("RGB", (32, 32), pixels).save(image)
+    decoded = vision.describe(image, sections=["objects"], max_tokens=8)
+    assert decoded == result, decoded
 check_text(agent)
 agent.reset()
 assert "audio_text" in agent.complete(audio=silence, language="en", max_new_tokens=16)

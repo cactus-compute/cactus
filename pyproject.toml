@@ -7,10 +7,11 @@ readme = "README.md"
 license = { text = "Apache-2.0" }
 dependencies = [
     "huggingface_hub",
+    "Pillow>=10",
 ]
 
 [project.optional-dependencies]
-vision = ["Pillow>=10"]
+vision = []
 train = [
   "numpy",
   "jax",

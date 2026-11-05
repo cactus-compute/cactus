@@ -83,7 +83,7 @@ def test_a_cached_model_still_counts_as_a_download(tmp_path, monkeypatch):
                         lambda **kwargs: asked.append((kwargs["repo_id"], kwargs["filename"],
                                                        kwargs.get("force_download"))) or str(cache / "whistle.cact"))
     assert whistle._weights_path() == str(cache / "whistle.cact")
-    assert asked == [("Cactus-Compute/whistle", "config.json", None)]
+    assert asked == [("Cactus-Compute/whistle", "config.json", True)]
 
     whistle._weights_path()
     assert len(asked) == 2, "every load counts, not just the first"
