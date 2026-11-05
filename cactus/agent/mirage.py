@@ -33,7 +33,7 @@ def _image(image, width=None, height=None):
     try:
         from PIL import Image, ImageOps
     except ImportError as exc:
-        raise ImportError('image files require Pillow: pip install "cactus-compute[vision]"') from exc
+        raise ImportError('image files require Pillow: pip install -U cactus-compute') from exc
     if isinstance(image, Image.Image):
         rgb = ImageOps.exif_transpose(image).convert("RGB")
     else:

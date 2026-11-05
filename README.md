@@ -42,7 +42,7 @@ Use a 16 kHz WAV file. Install `cactus-compute[mic]` for other sample rates or m
 
 ## Vision
 
-[Mirage](https://huggingface.co/Cactus-Compute/mirage) describes images and extracts structured data. Install `cactus-compute[vision]` for image files.
+[Mirage](https://huggingface.co/Cactus-Compute/mirage) describes images and extracts structured data.
 
 ```python
 import cactus

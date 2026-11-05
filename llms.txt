@@ -38,7 +38,7 @@ Engine binaries come from `Cactus-Compute/cactus`. Needle, Whistle and Mirage we
 
 ## Vision
 
-`cactus.Mirage(weights=None)` loads Mirage. `model.describe(image, *, options=None, language=None, keywords=None, **settings)` returns structured JSON. Images can be paths, encoded image bytes, Pillow images or RGB uint8 arrays. Packed RGB bytes require `width` and `height`. File input needs `pip install "cactus-compute[vision]"`.
+`cactus.Mirage(weights=None)` loads Mirage. `model.describe(image, *, options=None, language=None, keywords=None, **settings)` returns structured JSON. Images can be paths, encoded image bytes, Pillow images or RGB uint8 arrays. Packed RGB bytes require `width` and `height`.
 
 Settings include `sections`, `fields`, `conf`, `text_conf`, `max_objects`, `max_text_lines`, `max_tokens`, `mask_format`, `nms` and `form`. `model.extract(image, form, **settings)` fills an ordered form whose fields use `enum`, bounded `integer`, `string` or `x-source` box references. `cactus.describe(image, **settings)` reuses a default Mirage instance.
 
