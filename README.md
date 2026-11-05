@@ -1,12 +1,6 @@
-# Cactus
+![Cactus Compute - Sub-50mb Super Intelligence For Consumer Devices](assets/banner.svg)
 
 Run text, speech and vision models locally with one Python package. Cactus provides tool calling, structured extraction, transcription, image understanding and model fine-tuning.
-
-| Model | Use | Details |
-| --- | --- | --- |
-| Needle 3 | Tool calling, structured extraction and text embeddings | [Model and demo](https://cactuscompute.com/needle) |
-| Whistle | Transcription, word timestamps and speech embeddings | [Model and demo](https://cactuscompute.com/blog/whistle) |
-| Mirage | Image descriptions and structured extraction | [Model weights](https://huggingface.co/Cactus-Compute/mirage) |
 
 ## Install
 
@@ -16,7 +10,9 @@ pip install -U cactus-compute
 
 Python 3.9 or later. The package downloads and caches the engine and requested model weights on first use. Inference runs locally and does not require JAX.
 
-## Tool calling
+## Agents
+
+[Needle 3](https://cactuscompute.com/needle) calls tools, extracts structured data and embeds text.
 
 ```python
 import cactus
@@ -32,7 +28,9 @@ with cactus.Cactus(tools=[get_weather]) as agent:
 
 `run()` executes your functions and returns their results. Use `complete()` when you want to inspect the proposed calls before executing them.
 
-## Speech and vision
+## Voice
+
+[Whistle](https://cactuscompute.com/blog/whistle) transcribes speech in seven languages, with word timestamps and speech embeddings.
 
 ```python
 import cactus
@@ -42,7 +40,9 @@ print(cactus.transcribe("clip.wav")["text"])
 
 Use a 16 kHz WAV file. Install `cactus-compute[mic]` for other sample rates or microphone capture.
 
-For image files, install `cactus-compute[vision]`.
+## Vision
+
+[Mirage](https://huggingface.co/Cactus-Compute/mirage) describes images and extracts structured data. Install `cactus-compute[vision]` for image files.
 
 ```python
 import cactus
