@@ -12,8 +12,8 @@ def _build_args(checkpoint, out, lora=None, layers=None, platform=None):
 
 
 def test_build_exports_loadable_cact(tiny_checkpoint, tmp_path, published_base):
-    from needle.model.build import build_main
-    from needle.model.export import read_export
+    from cactus.model.build import build_main
+    from cactus.model.export import read_export
 
     out = str(tmp_path / "tiny.cact")
     build_main(_build_args(tiny_checkpoint, out))
@@ -29,8 +29,8 @@ def test_build_exports_loadable_cact(tiny_checkpoint, tmp_path, published_base):
 
 def test_load_checkpoint_drops_the_mtp_block(tiny_checkpoint, tmp_path):
     import numpy as np
-    from needle.model.run import load_checkpoint
-    from needle.model.checkpoints import read_checkpoint, write_checkpoint
+    from cactus.model.run import load_checkpoint
+    from cactus.model.checkpoints import read_checkpoint, write_checkpoint
 
     checkpoint = read_checkpoint(tiny_checkpoint)
     checkpoint["params"]["mtp_combine"] = {"kernel": np.ones((4, 4), np.float32)}
@@ -42,10 +42,10 @@ def test_load_checkpoint_drops_the_mtp_block(tiny_checkpoint, tmp_path):
 
 def test_export_round_trips_a_projection(tiny_checkpoint, tmp_path):
     import numpy as np
-    from needle.model.export import write_export, read_export
-    from needle.model.architecture import TransformerConfig, effective_kv_window
-    from needle.model.tokenizer import get_tokenizer
-    from needle.model.checkpoints import read_checkpoint
+    from cactus.model.export import write_export, read_export
+    from cactus.model.architecture import TransformerConfig, effective_kv_window
+    from cactus.model.tokenizer import get_tokenizer
+    from cactus.model.checkpoints import read_checkpoint
 
     ckpt = read_checkpoint(tiny_checkpoint)
     params, config = ckpt["params"], TransformerConfig(**ckpt["config"])
@@ -63,9 +63,9 @@ def test_export_round_trips_a_projection(tiny_checkpoint, tmp_path):
 
 
 def test_build_from_safetensors_checkpoint(tiny_checkpoint, tiny_checkpoint_safetensors, tmp_path, published_base):
-    from needle.model.build import build_main
-    from needle.model.export import read_export
-    from needle.model.run import load_checkpoint
+    from cactus.model.build import build_main
+    from cactus.model.export import read_export
+    from cactus.model.run import load_checkpoint
     import numpy as np
     import jax
 
@@ -81,8 +81,8 @@ def test_build_from_safetensors_checkpoint(tiny_checkpoint, tiny_checkpoint_safe
 
 
 def test_build_layers_exports_the_rung(tiny_checkpoint, tmp_path, published_base):
-    from needle.model.build import build_main
-    from needle.model.export import read_export
+    from cactus.model.build import build_main
+    from cactus.model.export import read_export
 
     out = str(tmp_path / "rung.cact")
     args = _build_args(tiny_checkpoint, out)
@@ -93,13 +93,13 @@ def test_build_layers_exports_the_rung(tiny_checkpoint, tmp_path, published_base
 
 
 def test_build_platform_places_the_engine_and_the_archive_together(tiny_checkpoint, tmp_path, published_base, monkeypatch):
-    from needle.agent import fetch
-    from needle.model.build import build_main
-    from needle.model.export import read_layers
+    from cactus.agent import fetch
+    from cactus.model.build import build_main
+    from cactus.model.export import read_layers
 
     def fake_platform(name, out_dir, generation=3, dest=None):
         os.makedirs(dest, exist_ok=True)
-        runner = os.path.join(dest, "needle")
+        runner = os.path.join(dest, "cactus")
         with open(runner, "wb") as handle:
             handle.write(b"engine")
         return [runner]
@@ -107,7 +107,7 @@ def test_build_platform_places_the_engine_and_the_archive_together(tiny_checkpoi
     monkeypatch.setattr(fetch, "download_platform", fake_platform)
     folder = str(tmp_path / "pi")
     build_main(_build_args(None, folder, platform="linux-arm64"))
-    assert os.path.exists(os.path.join(folder, "needle"))
+    assert os.path.exists(os.path.join(folder, "cactus"))
     archive = os.path.join(folder, "needle3.cact")
     assert read_layers(archive) == read_layers(fetch.fetch_weights(3))
     build_main(_build_args(tiny_checkpoint, folder, platform="linux-arm64", layers=3))

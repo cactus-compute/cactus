@@ -1,7 +1,7 @@
 [project]
 name = "cactus-compute"
-version = "3.3.0"
-description = "On-device models for tool calling, speech, structured extraction, and embeddings."
+version = "4.0.0"
+description = "30mb voice, vision and agentic AI for consumer devices."
 requires-python = ">=3.9"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -10,6 +10,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+vision = ["Pillow>=10"]
 train = [
   "numpy",
   "jax",
@@ -39,14 +40,14 @@ Repository = "https://github.com/cactus-compute/cactus"
 "Bug Tracker" = "https://github.com/cactus-compute/cactus/issues"
 
 [project.scripts]
-needle = "needle.cli:main"
+cactus = "cactus.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["needle*"]
+include = ["cactus*"]
 
 [tool.setuptools.package-data]
-"needle.model" = ["*.model", "*.vocab"]
-"needle.playground" = ["index.html", "app.js", "style.css"]
+"cactus.model" = ["*.model", "*.vocab"]
+"cactus.playground" = ["index.html", "app.js", "style.css"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

@@ -24,9 +24,9 @@ def repo(tmp_path):
     git(tmp_path, "init", "-b", "main")
     git(tmp_path, "config", "user.name", "Release test")
     git(tmp_path, "config", "user.email", "release@example.invalid")
-    (tmp_path / "needle").mkdir()
+    (tmp_path / "cactus").mkdir()
     (tmp_path / "pyproject.toml").write_text('version = "2.0.8"\n')
-    (tmp_path / "needle/__init__.py").write_text('__version__ = "2.0.8"\n')
+    (tmp_path / "cactus/__init__.py").write_text('__version__ = "2.0.8"\n')
     git(tmp_path, "add", ".")
     git(tmp_path, "commit", "-m", "Initial source")
     return tmp_path
@@ -64,11 +64,11 @@ def test_existing_release_tag_skips_unchanged_source(repo):
 def test_release_tag_contains_versioned_source_and_skips_unchanged_main(repo):
     original = git(repo, "rev-parse", "HEAD")
     (repo / "pyproject.toml").write_text('version = "2.0.12"\n')
-    (repo / "needle/__init__.py").write_text('__version__ = "2.0.12"\n')
+    (repo / "cactus/__init__.py").write_text('__version__ = "2.0.12"\n')
     # The test uses a local tag and never pushes to a remote.
     run_block(repo, tag_block("2.0.12"))
     assert git(repo, "show", "v2.0.12:pyproject.toml") == 'version = "2.0.12"'
-    assert git(repo, "show", "v2.0.12:needle/__init__.py") == '__version__ = "2.0.12"'
+    assert git(repo, "show", "v2.0.12:cactus/__init__.py") == '__version__ = "2.0.12"'
     assert git(repo, "rev-parse", "v2.0.12^") == original
     assert version_output(repo) == "skip=true"
     git(repo, "checkout", "--detach", original)
@@ -83,14 +83,14 @@ def test_release_tag_contains_versioned_source_and_skips_unchanged_main(repo):
 def test_manual_bump_on_main_follows_the_published_version(repo):
     git(repo, "tag", "v2.0.11")
     (repo / "pyproject.toml").write_text('version = "2.0.12"\n')
-    (repo / "needle/__init__.py").write_text('__version__ = "2.0.12"\n')
+    (repo / "cactus/__init__.py").write_text('__version__ = "2.0.12"\n')
     git(repo, "commit", "-am", "Bump version on main")
     bumped = git(repo, "rev-parse", "HEAD")
 
     assert version_output(repo, published="2.0.12") == "next=2.0.13"
 
     (repo / "pyproject.toml").write_text('version = "2.0.13"\n')
-    (repo / "needle/__init__.py").write_text('__version__ = "2.0.13"\n')
+    (repo / "cactus/__init__.py").write_text('__version__ = "2.0.13"\n')
     run_block(repo, tag_block("2.0.13"))
     assert git(repo, "show", "v2.0.13:pyproject.toml") == 'version = "2.0.13"'
     assert git(repo, "rev-parse", "v2.0.13^") == bumped
@@ -99,7 +99,7 @@ def test_manual_bump_on_main_follows_the_published_version(repo):
 
 def test_tag_step_tolerates_already_versioned_files(repo):
     (repo / "pyproject.toml").write_text('version = "2.0.13"\n')
-    (repo / "needle/__init__.py").write_text('__version__ = "2.0.13"\n')
+    (repo / "cactus/__init__.py").write_text('__version__ = "2.0.13"\n')
     git(repo, "commit", "-am", "Bump version on main")
     head = git(repo, "rev-parse", "HEAD")
 
@@ -111,7 +111,7 @@ def test_tag_step_tolerates_already_versioned_files(repo):
 def test_declared_version_above_everything_published_is_released_as_is(repo):
     git(repo, "tag", "v2.0.15")
     (repo / "pyproject.toml").write_text('version = "3.0.0"\n')
-    (repo / "needle/__init__.py").write_text('__version__ = "3.0.0"\n')
+    (repo / "cactus/__init__.py").write_text('__version__ = "3.0.0"\n')
     git(repo, "commit", "-am", "Needle 3")
 
     assert version_output(repo, published="2.0.15") == "next=3.0.0"
@@ -123,7 +123,7 @@ def test_declared_version_above_everything_published_is_released_as_is(repo):
 def test_package_handover_follows_needle_history_and_queries_cactus_compute(repo):
     git(repo, "tag", "v3.2.10")
     (repo / "pyproject.toml").write_text('name = "cactus-compute"\nversion = "3.3.0"\n')
-    (repo / "needle/__init__.py").write_text('__version__ = "3.3.0"\n')
+    (repo / "cactus/__init__.py").write_text('__version__ = "3.3.0"\n')
     git(repo, "commit", "-am", "Publish Needle as Cactus")
 
     assert version_output(repo, published="2.2.2") == "next=3.3.0"

@@ -3,7 +3,7 @@ import numpy as np
 
 def test_lora_target_paths_selects_projection_kernels():
     import jax.numpy as jnp
-    from needle.model.finetune import lora_target_paths
+    from cactus.model.finetune import lora_target_paths
 
     params = {
         "stack": {"layers": {"block": {"self_attn": {
@@ -20,7 +20,7 @@ def test_lora_target_paths_selects_projection_kernels():
 def test_init_lora_shapes_and_zero_b():
     import jax
     import jax.numpy as jnp
-    from needle.model.finetune import init_lora
+    from cactus.model.finetune import init_lora
 
     params = {"self_attn": {"v_proj": {"kernel": jnp.ones((5, 6, 7))}}}
     paths = [("self_attn", "v_proj", "kernel")]
@@ -34,7 +34,7 @@ def test_init_lora_shapes_and_zero_b():
 def test_merge_lora_is_identity_when_b_zero():
     import jax
     import jax.numpy as jnp
-    from needle.model.finetune import init_lora, lora_target_paths, merge_lora
+    from cactus.model.finetune import init_lora, lora_target_paths, merge_lora
 
     params = {"self_attn": {"q_proj": {"kernel": jnp.arange(16.0).reshape(1, 4, 4)}}}
     paths = lora_target_paths(params)
@@ -47,7 +47,7 @@ def test_merge_lora_is_identity_when_b_zero():
 
 def test_merge_lora_adds_scaled_delta():
     import jax.numpy as jnp
-    from needle.model.finetune import merge_lora
+    from cactus.model.finetune import merge_lora
 
     params = {"w": {"kernel": jnp.zeros((3, 4))}}
     lora = {("w", "kernel"): {"A": jnp.ones((3, 2)), "B": jnp.ones((2, 4))}}

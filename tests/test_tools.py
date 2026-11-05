@@ -4,8 +4,8 @@ import typing
 
 import pytest
 
-from needle import tool, Field
-from needle.agent.tools import build_schema, pydantic_schema, _is_pydantic_model
+from cactus import tool, Field
+from cactus.agent.tools import build_schema, pydantic_schema, _is_pydantic_model
 
 pep604 = pytest.mark.skipif(sys.version_info < (3, 10),
                             reason="PEP 604 unions need Python 3.10+")
@@ -17,7 +17,7 @@ def test_basic_schema_types_and_required():
         "Add two numbers."
         return a + b
 
-    schema = add._needle_tool
+    schema = add._cactus_tool
     assert schema["name"] == "add"
     assert schema["description"] == "Add two numbers."
     assert schema["parameters"]["properties"]["a"] == {"type": "integer"}
@@ -197,7 +197,7 @@ def test_tool_decorator_preserves_callable():
         return "hi " + name
 
     assert greet("bob") == "hi bob"
-    assert greet._needle_tool["name"] == "greet"
+    assert greet._cactus_tool["name"] == "greet"
 
 
 def test_numeric_literal_and_int_enum_schema():
