@@ -19,7 +19,7 @@ ENDPOINT = os.environ.get(
     "https://vlqqczxwyaodtcdmdmlw.supabase.co/functions/v1/telemetry",
 )
 
-_NOTICE = ("cactus-needle collects anonymous usage counts (function name, "
+_NOTICE = ("cactus-compute collects anonymous usage counts (function name, "
            "version, OS) to guide development; no prompts or outputs. "
            "Disable with NEEDLE_TELEMETRY=0.")
 

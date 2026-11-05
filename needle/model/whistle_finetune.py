@@ -101,7 +101,7 @@ def read_audio(path):
             import soxr
         except ImportError:
             raise RuntimeError(f"{path} is {rate} Hz; resampling it to {SAMPLE_RATE} Hz needs soxr: "
-                               'pip install "cactus-needle[train]"') from None
+                               'pip install "cactus-compute[train]"') from None
         samples = soxr.resample(samples, rate, SAMPLE_RATE, quality="HQ")
     return samples.astype(np.float32)
 

@@ -103,7 +103,7 @@ def _read_wav(path):
         import numpy
         import soxr
     except ImportError:
-        raise RuntimeError(f'resampling {rate} Hz audio to {SAMPLE_RATE} Hz needs soxr: pip install "cactus-needle[mic]"') from None
+        raise RuntimeError(f'resampling {rate} Hz audio to {SAMPLE_RATE} Hz needs soxr: pip install "cactus-compute[mic]"') from None
     return soxr.resample(numpy.asarray(mono, numpy.float32), rate, SAMPLE_RATE, quality="HQ")
 
 
@@ -280,7 +280,7 @@ PLAYGROUND_HELP = """  Enter          speak, Enter again to stop
 COMPARE_HELP = """  Enter          speak, Enter again to stop
   /file clip.wav run a file through every model
   /quit          leave"""
-COMPARE_INSTALL = 'pip install "cactus-needle[mic,compare]"'
+COMPARE_INSTALL = 'pip install "cactus-compute[mic,compare]"'
 CLEAR_ABOVE = "\x1b[1A\x1b[2K"
 DIM = "\x1b[90m"
 PLAIN = "\x1b[0m"
@@ -307,7 +307,7 @@ def record():
         import sounddevice
         import soxr
     except ImportError as error:
-        raise RuntimeError(f'{error.name} is not installed: pip install "cactus-needle[mic]"') from None
+        raise RuntimeError(f'{error.name} is not installed: pip install "cactus-compute[mic]"') from None
     chunks = []
     try:
         rate = int(sounddevice.query_devices(kind="input")["default_samplerate"])
@@ -330,7 +330,7 @@ def listen(whistle, state):
         import sounddevice
         import soxr
     except ImportError as error:
-        raise RuntimeError(f'{error.name} is not installed: pip install "cactus-needle[mic]"') from None
+        raise RuntimeError(f'{error.name} is not installed: pip install "cactus-compute[mic]"') from None
     heard, steps, failed = queue.Queue(), [], []
 
     def chunks():
