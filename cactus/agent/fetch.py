@@ -253,11 +253,10 @@ def unpublished_engine_wheels():
 
 
 def _register_download(generation=3):
-
     from huggingface_hub import hf_hub_download
     key = _engine(generation)
     try:
-        hf_hub_download(repo_id=MODEL_REPOS[key], filename="config.json", revision=MODEL_REVISIONS[key])
+        hf_hub_download(repo_id=MODEL_REPOS[key], filename="config.json", revision=MODEL_REVISIONS[key], force_download=True)
     except Exception:
         pass
 
