@@ -38,4 +38,4 @@ if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
     $UV_INSTALL -e ".[gpu]" -q
 fi
 
-needle --help
+cactus --help

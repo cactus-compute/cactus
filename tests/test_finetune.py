@@ -31,7 +31,7 @@ def _finetune_args(data, checkpoint, out, ckpt_dir):
 
 
 def test_finetune_writes_adapter(tiny_checkpoint, tmp_path):
-    from needle.model.finetune import finetune_local
+    from cactus.model.finetune import finetune_local
 
     data = tmp_path / "data.jsonl"
     _write_data(data)
@@ -43,7 +43,7 @@ def test_finetune_writes_adapter(tiny_checkpoint, tmp_path):
     assert any("loss" in m for m in progress)
     assert any("CQ W4 STE + A8" in m for m in progress)
     assert out.exists()
-    from needle.model.checkpoints import read_adapter
+    from cactus.model.checkpoints import read_adapter
     adapter = read_adapter(str(out))
     assert adapter["rank"] == 4
     assert abs(adapter["scale"] - 2.0) < 1e-6
@@ -55,9 +55,9 @@ def test_finetune_writes_adapter(tiny_checkpoint, tmp_path):
 
 
 def test_finetune_then_build_merges(tiny_checkpoint, tmp_path, published_base):
-    from needle.model.build import build_main
-    from needle.model.finetune import finetune_local
-    from needle.model.export import read_export
+    from cactus.model.build import build_main
+    from cactus.model.finetune import finetune_local
+    from cactus.model.export import read_export
 
     data = tmp_path / "data.jsonl"
     _write_data(data)
@@ -73,9 +73,9 @@ def test_finetune_then_build_merges(tiny_checkpoint, tmp_path, published_base):
 
 
 def test_build_without_a_checkpoint_uses_the_adapter_base(tiny_checkpoint, tmp_path, published_base):
-    from needle.model.build import build_main
-    from needle.model.finetune import finetune_local
-    from needle.model.export import read_export
+    from cactus.model.build import build_main
+    from cactus.model.finetune import finetune_local
+    from cactus.model.export import read_export
 
     data = tmp_path / "data.jsonl"
     _write_data(data)
@@ -89,7 +89,7 @@ def test_build_without_a_checkpoint_uses_the_adapter_base(tiny_checkpoint, tmp_p
 
 
 def test_finetune_rng_is_controlled_by_seed():
-    from needle.model.finetune import _training_rng
+    from cactus.model.finetune import _training_rng
 
     a = _training_rng(17)
     b = _training_rng(17)
@@ -102,7 +102,7 @@ def test_finetune_rng_is_controlled_by_seed():
 
 
 def test_finetune_adapter_records_realized_seed(tiny_checkpoint, tmp_path):
-    from needle.model.finetune import finetune_local
+    from cactus.model.finetune import finetune_local
 
     data = tmp_path / "data.jsonl"
     rows = []
@@ -122,16 +122,16 @@ def test_finetune_adapter_records_realized_seed(tiny_checkpoint, tmp_path):
     args.val_split = 0.0
     finetune_local(args)
 
-    from needle.model.checkpoints import read_adapter
+    from cactus.model.checkpoints import read_adapter
     adapter = read_adapter(str(out))
     assert adapter["seed"] == 17
 
 
 def test_finetune_adapter_defaults_to_safetensors_and_builds(tiny_checkpoint_safetensors, tmp_path, published_base):
-    from needle.model.build import build_main
-    from needle.model.finetune import finetune_local
-    from needle.model.checkpoints import read_adapter
-    from needle.model.export import read_export
+    from cactus.model.build import build_main
+    from cactus.model.finetune import finetune_local
+    from cactus.model.checkpoints import read_adapter
+    from cactus.model.export import read_export
 
     data = tmp_path / "data.jsonl"
     _write_data(data)

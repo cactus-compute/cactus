@@ -1,8 +1,8 @@
-# Needle 3 (cactus-compute)
+# Cactus API (cactus-compute)
 
 > Needle 3 is a 29-121M parameter on-device model for tool calling, device control, and structured extraction. This Python package (`cactus-compute`) is inference + LoRA fine-tuning + export. Text goes in, a JSON tool call comes back; a byte-level grammar compiled from your schemas constrains every token, so the call is always well-formed. A sub-1 MB engine and the 35 MB `needle3.cact` weights are fetched once from Hugging Face and cached; nothing is compiled locally.
 
-This file is written for AI coding assistants. It is enough to write correct Needle code without reading the source. Copy the patterns; do not invent API that is not listed here. The human guides are at https://cactuscompute.com/blog/needle-python-docs, https://cactuscompute.com/blog/designing-tools-for-needle, https://cactuscompute.com/blog/needle-confidence, https://cactuscompute.com/blog/structured-extraction-with-needle, https://cactuscompute.com/blog/finetuning-needle, https://cactuscompute.com/blog/needle-supported-devices, https://cactuscompute.com/blog/cact-format and https://cactuscompute.com/blog/porting-needle.
+This file is written for AI coding assistants. It is enough to write correct Needle code without reading the source. Copy the patterns; do not invent API that is not listed here. The human guides are at https://cactuscompute.com/blog/needle-python-docs, https://cactuscompute.com/blog/designing-tools-for-needle, https://cactuscompute.com/blog/needle-confidence, https://cactuscompute.com/blog/structured-extraction-with-needle, https://cactuscompute.com/blog/finetuning-needle, https://cactuscompute.com/blog/needle-supported-devices, https://cactuscompute.com/blog/cact-format and https://cactuscompute.com/blog/porting-cactus.
 
 ## Install
 
@@ -11,34 +11,56 @@ pip install cactus-compute                # runtime (inference only)
 pip install "cactus-compute[train]"       # adds JAX + training deps for finetune/build
 ```
 
-`import needle` is lightweight (no JAX). JAX is imported lazily and only by fine-tuning/export/build, and the training dependencies live behind the `[train]` extra - a runtime-only install cannot run `needle finetune`/`build`. For GPU training use `[train,gpu]` (CUDA) or `[train,metal]` (Apple Silicon). The engine binary auto-downloads from Hugging Face on first `Needle(...)` use.
+`import cactus` is lightweight (no JAX). JAX is imported lazily and only by fine-tuning/export/build, and the training dependencies live behind the `[train]` extra - a runtime-only install cannot run `cactus finetune`/`build`. For GPU training use `[train,gpu]` (CUDA) or `[train,metal]` (Apple Silicon). The engine binary auto-downloads from Hugging Face on first `Cactus(...)` use.
+
+## Runtime and models
+
+Cactus 4 imports as `cactus` and uses the `cactus` CLI. `cactus.Cactus` is the text agent and `cactus.Needle` is its alias. Needle 2 remains available through `cactus-compute<4` and the repository's `legacy` branch.
+
+Engine binaries come from `Cactus-Compute/cactus`. Needle, Whistle and Mirage weights come from their separate model repositories. Every engine and base model download uses a pinned commit and a SHA-256 checksum. A platform download contains binaries only. Add `--model needle3`, `--model whistle` or `--model mirage` to include weights.
 
 ## Core API
 
-- `needle.Needle(tools=None, system=None, weights=None, tool_index_path=None, buffer_size=65536)` - create an agent bound to one toolset.
+- `cactus.Cactus(tools=None, system=None, weights=None, tool_index_path=None, buffer_size=65536)` - create an agent bound to one toolset.
   - `tools`: list of decorated functions, Pydantic models, raw JSON-schema dicts, or a JSON string.
   - `system`: optional environment-facts string (see System facts).
   - `weights`: path to a tuned `.cact` to load instead of the baked base model.
-  - `tool_index_path`: Needle 2 only (`generation=2`), where it keeps the tool embeddings its retrieval head uses.
+  - `tool_index_path`: reserved for engine tool-index archives.
 - `agent.run(query, max_steps=8, max_new_tokens=512) -> dict` - full agentic loop: model picks calls, Needle executes your Python functions, feeds results back, returns the final response with the executed tool results attached as `results`.
-- `agent.complete(text, max_new_tokens=512) -> dict` - one turn; you execute the call and feed the result back yourself via the next `complete(...)`.
+- `agent.complete(text="", max_new_tokens=512, *, audio=None, language=None, keywords=None, word_timestamps=False) -> dict` - one turn; you execute the call and feed the result back yourself via the next `complete(...)`.
 - `agent.reset()` - rewind the conversation, keep the tools loaded.
-- `needle.tool` - decorator that turns a function into a tool schema (attached as `fn._needle_tool`); `@needle.tool(triggers=[r"\b(turn|switch)\b.*\b(on|off)\b"])` adds case-insensitive regexes that route a matching request to this tool and require a call; a triggered call ships even below the confidence floor (raw schemas take the same `"triggers"` list beside `description`).
-- `needle.Field(default=..., *, description, enum, const, ge, le, gt, lt, multiple_of, min_length, max_length, pattern, format, min_items, max_items, unique_items)` - per-argument constraints; attach inline with `typing.Annotated`.
-- `needle.extract(text, schema, system=None, max_new_tokens=512, weights=None, strict=True, generation=None)` - one-shot extraction; returns a Pydantic instance if `schema` is a model, else a dict (or `None` if nothing matched). `weights` loads a tuned `.cact`; without it the base Needle 3 model runs (`generation=2` for Needle 2). `strict=True` raises `needle.ExtractionValidationError` instead of returning a date whose year contradicts the text or a value the engine flags as invented or negated.
-- `needle.transcribe(audio, language=None, keywords=None, word_timestamps=False, weights=None) -> dict` - speech to text in English, German, French, Spanish, Italian, Dutch and Polish, on the same engine and the same install as Needle. `audio` is a WAV path or 16 kHz mono float samples in [-1, 1] of any length, one pass up to 30 s and windowed beyond it. Returns `{"text", "language", "ttft_ms", "decode_tps"}`, plus `"words"` with `start`, `end` and `probability` when `word_timestamps` is set. `language` is one of `en de fr es it nl pl`, or `None` to detect it; `keywords` is a list or a newline-separated string of words and phrases to favour. Silence and steady noise return an empty text and language; other sounds, music especially, can still come out as text, so put a voice activity detector or a wake word in front of an always-on microphone. 16 kHz WAV files and raw samples need nothing extra; other sample rates need the `[mic]` extra for soxr. `whistle.cact` is fetched from `Cactus-Compute/whistle` on first use.
-- `needle.stream(chunks, language=None, keywords=None, weights=None)` - live transcription with no limit on length. `chunks` is an iterable of 16 kHz mono float sample buffers, about a second each; the generator yields one dict per chunk with the `"text"` and `"words"` committed by it (times from the start of the stream), the unconfirmed `"pending"` tail, the `"language"`, the seconds `"received"` and `"pass_ms"`, then one more for the tail when the chunks end. Join the texts with a space. Every chunk re-transcribes the last seconds and commits what two passes agree on.
-- `needle.Whistle(weights=None, buffer_size=262144)` - the same model as an object, for `whistle.transcribe(...)`, `whistle.stream(...)`, `whistle.embed(audio)` (the encoder output, one row of floats per 80 ms frame, flattened) or to hold one tuned `.cact`. One model per process, not thread-safe.
+- `cactus.tool` - decorator that turns a function into a tool schema (attached as `fn._cactus_tool`); `@cactus.tool(triggers=[r"\b(turn|switch)\b.*\b(on|off)\b"])` adds case-insensitive regexes that route a matching request to this tool and require a call; a triggered call ships even below the confidence floor (raw schemas take the same `"triggers"` list beside `description`).
+- `cactus.Field(default=..., *, description, enum, const, ge, le, gt, lt, multiple_of, min_length, max_length, pattern, format, min_items, max_items, unique_items)` - per-argument constraints; attach inline with `typing.Annotated`.
+- `cactus.extract(text, schema, system=None, max_new_tokens=512, weights=None, strict=True, generation=None)` - one-shot extraction; returns a Pydantic instance if `schema` is a model, else a dict (or `None` if nothing matched). `weights` loads a tuned `.cact`; without it the base Needle 3 model runs. `strict=True` raises `cactus.ExtractionValidationError` instead of returning a date whose year contradicts the text or a value the engine flags as invented or negated.
+- `cactus.transcribe(audio, language=None, keywords=None, word_timestamps=False, weights=None) -> dict` - speech to text in English, German, French, Spanish, Italian, Dutch and Polish, on the same engine and the same install as Needle. `audio` is a WAV path or 16 kHz mono float samples in [-1, 1] of any length, one pass up to 30 s and windowed beyond it. Returns `{"text", "language", "ttft_ms", "decode_tps"}`, plus `"words"` with `start`, `end` and `probability` when `word_timestamps` is set. `language` is one of `en de fr es it nl pl`, or `None` to detect it; `keywords` is a list or a newline-separated string of words and phrases to favour. Silence and steady noise return an empty text and language; other sounds, music especially, can still come out as text, so put a voice activity detector or a wake word in front of an always-on microphone. 16 kHz WAV files and raw samples need nothing extra; other sample rates need the `[mic]` extra for soxr. `whistle.cact` is fetched from `Cactus-Compute/whistle` on first use.
+- `cactus.stream(chunks, language=None, keywords=None, weights=None)` - live transcription with no limit on length. `chunks` is an iterable of 16 kHz mono float sample buffers, about a second each; the generator yields one dict per chunk with the `"text"` and `"words"` committed by it (times from the start of the stream), the unconfirmed `"pending"` tail, the `"language"`, the seconds `"received"` and `"pass_ms"`, then one more for the tail when the chunks end. Join the texts with a space. Every chunk re-transcribes the last seconds and commits what two passes agree on.
+- `cactus.Whistle(weights=None, buffer_size=262144)` - the same model as an object, for `whistle.transcribe(...)`, `whistle.stream(...)`, `whistle.embed(audio)` (the encoder output, one row of floats per 80 ms frame, flattened) or to hold one tuned `.cact`. Calls are serialized through the shared runtime.
+
+## Vision
+
+`cactus.Mirage(weights=None)` loads Mirage. `model.describe(image, *, options=None, language=None, keywords=None, **settings)` returns structured JSON. Images can be paths, encoded image bytes, Pillow images or RGB uint8 arrays. Packed RGB bytes require `width` and `height`. File input needs `pip install "cactus-compute[vision]"`.
+
+Settings include `sections`, `fields`, `conf`, `text_conf`, `max_objects`, `max_text_lines`, `max_tokens`, `mask_format`, `nms` and `form`. `model.extract(image, form, **settings)` fills an ordered form whose fields use `enum`, bounded `integer`, `string` or `x-source` box references. `cactus.describe(image, **settings)` reuses a default Mirage instance.
+
+```python
+from cactus import Mirage
+
+vision = Mirage()
+result = vision.describe("photo.png", sections=["objects", "text"], fields=["bbox", "mask"])
+result = vision.extract("photo.png", {"animal": {"enum": ["dog", "cat"]}})
+```
+
+For audio tool calls, pass a WAV path or 16 kHz mono float samples to `agent.complete(audio=clip, language="en")`. Text and audio are mutually exclusive. The result includes `audio_text` and the tool-call envelope.
 
 ## Defining tools (three equivalent ways)
 
 Decorator - signature gives types, docstring is the description, Google-style `Args:` gives per-argument docs, a default makes an argument optional, `Literal[...]` becomes a fixed choice set:
 
 ```python
-import needle
+import cactus
 from typing import Literal, Annotated
 
-@needle.tool
+@cactus.tool
 def set_thermostat(temperature: int, mode: Literal["heat", "cool", "auto"] = "auto"):
     """Set the thermostat.
 
@@ -47,12 +69,12 @@ def set_thermostat(temperature: int, mode: Literal["heat", "cool", "auto"] = "au
     """
     return {"temperature": temperature, "mode": mode}
 
-@needle.tool
-def send_money(amount: Annotated[float, needle.Field(gt=0, le=10000)], to: str):
+@cactus.tool
+def send_money(amount: Annotated[float, cactus.Field(gt=0, le=10000)], to: str):
     "Send money to a handle."
     return {"sent": amount, "to": to}
 
-agent = needle.Needle(tools=[set_thermostat, send_money])
+agent = cactus.Cactus(tools=[set_thermostat, send_money])
 ```
 
 Raw JSON schema (what the engine actually consumes):
@@ -71,7 +93,7 @@ tools = [{
         "required": ["room", "on"],
     },
 }]
-agent = needle.Needle(tools=tools)
+agent = cactus.Cactus(tools=tools)
 ```
 
 Pydantic model (mainly for extraction):
@@ -81,7 +103,7 @@ from pydantic import BaseModel
 class Invoice(BaseModel):
     vendor: str
     total: float
-invoice = needle.extract("Invoice from Acme Corp, $1,200.00", Invoice)  # -> Invoice(...)
+invoice = cactus.extract("Invoice from Acme Corp, $1,200.00", Invoice)  # -> Invoice(...)
 ```
 
 ## Response shape
@@ -107,7 +129,7 @@ Every turn returns one dict:
 - `reasoning` is a short unconstrained derivation of each argument from its source span.
 - `confidence` is a calibrated score in [0,1] (see Confidence gating).
 - `suppressed_calls` holds a call the engine withheld (confidence below 0.1 or a grounding gate fired); `function_calls` is then empty. Show it to the user to confirm, or treat the turn as a refusal.
-- `Needle(system=...)` prefixes the local `date:` fact automatically unless the text already carries a date; pass `auto_date=False` to opt out.
+- `Cactus(system=...)` prefixes the local `date:` fact automatically unless the text already carries a date; pass `auto_date=False` to opt out.
 - `validation.ungrounded`, when present, lists `tool.field` names whose value is not grounded in the input, including date arguments whose year matches nothing in the conversation or the `system` facts. A number the engine flags is exempt when its value occurs in the source text, thousands separators aside - a source's `1,234` grounds an argument's `1234` - so only genuinely unsourced numbers are rejected. `run()` refuses those calls with `{"error": "ungrounded field"}` unless `strict=False`.
 - `extract()` declares the record as the only tool and takes the record from `function_calls` or, when the engine withheld it, from `suppressed_calls`; `strict` handles grounding.
 - Arguments arrive after the engine's deterministic repair step, which grounds them in the request text: a full name in one of a first/last pair is split, a truncated phone number is completed, quoted titles are restored verbatim, place queries recover dropped words and a following street address, weekday and `March 4th` style dates resolve against the `date:` fact, polar enums and booleans follow the request verb (turn on, unlock, louder, turn down), an enum moves to the one option the request names, pickup and destination are read from `from X to Y` wording, a paired tool follows the request's polarity (`lock_door` to `unlock_door`), `by N` fills a tool's only number argument, an invented required slot is refilled from the request or its schema default, a required number with a default takes the default when no quantity is named, optional strings and numbers the conversation never states are dropped, empty optional strings and duplicate calls are dropped, and so is a call for something the request excludes or negates in its own clause.
@@ -117,7 +139,7 @@ Every turn returns one dict:
 - Off-topic / unsupported request -> empty `function_calls` (a refusal). There is no free-text fallback. Always handle the empty case.
 - Arguments contain only values evidenced in the input. Optional fields with no evidence are omitted, not guessed. Do not assume a key exists.
 - Multi-turn: repeated `complete(...)` on the same agent continue one conversation; later arguments can depend on earlier tool results. Feed each result back as the next `complete(json.dumps(result))`.
-- One toolset per session. To change tools, make a new `Needle(...)`. `reset()` clears history but keeps the tools.
+- One toolset per session. To change tools, make a new `Cactus(...)`. `reset()` clears history but keeps the tools.
 
 Driving the loop manually:
 
@@ -131,7 +153,7 @@ if r["type"] == "call":
 
 ## Confidence gating
 
-`confidence` is the min of a post-hoc calibration head and the decode probability of the call. The head ships inside the archive when it was trained for those weights: the base model and platform fine-tunes have it, so they report a calibrated score; local `needle finetune` does not train it, `needle build --lora` leaves it out, and an agent constructed with such weights reports `confidence` as None. Pick a threshold per product; act at/above it, escalate below it:
+`confidence` is the min of a post-hoc calibration head and the decode probability of the call. The head ships inside the archive when it was trained for those weights: the base model and platform fine-tunes have it, so they report a calibrated score; local `cactus finetune` does not train it, `cactus build --lora` leaves it out, and an agent constructed with such weights reports `confidence` as None. Pick a threshold per product; act at/above it, escalate below it:
 
 ```python
 r = agent.complete(user_text)
@@ -152,7 +174,7 @@ The engine already withholds calls below 0.1 into `suppressed_calls`; a tool wit
 Pass environment state as facts, never instructions. Recognized keys: `date`, `locale`, `device`, `battery`, `network`, `location`, `user`, `assistant`.
 
 ```python
-agent = needle.Needle(tools=tools, system="date: 2026-07-21 Tue 14:30; locale: en-US; device: phone")
+agent = cactus.Cactus(tools=tools, system="date: 2026-07-21 Tue 14:30; locale: en-US; device: phone")
 ```
 
 Relative language ("tomorrow at 7") resolves only when a `date:` fact licenses it. Omitting the system turn is safe.
@@ -161,11 +183,7 @@ Relative language ("tomorrow at 7") resolves only when a `date:` fact licenses i
 
 Needle 3 has no tool retrieval head. It reads the whole toolset as part of the prompt, so the order and naming of tools can change which one it picks. Keep a toolset small, with plain names and no shared prefixes such as `media_player__`.
 
-Needle 2 (`generation=2`) has a retrieval head that renders only the top 5 tools per turn when more than 5 are declared, and `tool_index_path` keeps its embeddings between runs.
-
-```python
-agent = needle.Needle(tools=big_catalogue, generation=2, tool_index_path="tools.idx")
-```
+Needle 2 and its retrieval head are documented on the `legacy` branch and require `cactus-compute<4`.
 
 ## Fine-tuning (CLI)
 
@@ -178,15 +196,15 @@ LoRA on the frozen base, merged at export. Data is JSONL, one example per line; 
 ```sh
 pip install "cactus-compute[train]"                                                 # training deps (JAX, flax, optax)
 export OPENROUTER_API_KEY=sk-or-...
-needle generate-data --tools my_tools.json --num-samples 500 --output data.jsonl   # optional
-needle finetune data.jsonl --epochs 3 --generate 300                                # LoRA; auto-downloads base
-needle build checkpoints/needle3.safetensors --lora checkpoints/needle_lora.safetensors --out my.cact
+cactus generate-data --tools my_tools.json --num-samples 500 --output data.jsonl   # optional
+cactus finetune data.jsonl --epochs 3 --generate 300                                # LoRA; auto-downloads base
+cactus build checkpoints/needle3.safetensors --lora checkpoints/needle_lora.safetensors --out my.cact
 ```
 
 Run a tuned model - the engine is weights-agnostic:
 
 ```python
-agent = needle.Needle(weights="my.cact", tools=[...])
+agent = cactus.Cactus(weights="my.cact", tools=[...])
 agent.run("...")
 ```
 
@@ -199,32 +217,32 @@ Whistle fine-tunes the same way: LoRA on the frozen base, merged at export, 4-bi
 ```
 
 ```sh
-needle whistle finetune train.jsonl validation.jsonl test.jsonl --tokens tokens.txt  # LoRA; auto-downloads base
-needle whistle build checkpoints/whistle.safetensors --lora checkpoints/whistle_lora.safetensors --out my.cact
+cactus whistle finetune train.jsonl validation.jsonl test.jsonl --tokens tokens.txt  # LoRA; auto-downloads base
+cactus whistle build checkpoints/whistle.safetensors --lora checkpoints/whistle_lora.safetensors --out my.cact
 ```
 
 Run a tuned model:
 
 ```python
-needle.transcribe("clip.wav", weights="my.cact")
+cactus.transcribe("clip.wav", weights="my.cact")
 ```
 
 Options: `whistle finetune --language <code> --tokens <file> --epochs 3 --lora-rank 16 --lora-alpha 32 --lr 1e-4 --batch-size 16 --checkpoint <base.safetensors> --checkpoint-dir <dir> --out <adapter.safetensors>`; `--language` fills lines without one, `--tokens` is a file of words or characters to add to the vocabulary, one per line, and `--checkpoint-dir` defaults to `checkpoints`. Clips over 30 s and empty transcripts are skipped. The run prints the validation loss after every epoch and ends with the test set's word error rate (character error rate for Chinese, Japanese, Korean and Thai), a quick greedy decode on the 4-bit weights; for real-world numbers, build the `.cact` and transcribe the test set with it. `whistle build --layers N --upload` (with `NEEDLE_HF_REPO=<you>/<model>`).
 
 ## Platform (hosted fine-tuning)
 
-The hosted platform at https://cactuscompute.com/v1 trains every size from 2 layers up on GPUs, scores each on your test file, and serves the `.cact` files; the API reference is https://cactuscompute.com/llms/api. The package drives it with a key from https://cactuscompute.com/dashboard/api-keys in `NEEDLE_API_KEY` (never print it). Files are chat-format JSONL: `messages` (OpenAI chat turns, tool calls on the assistant turn as `tool_calls` with `arguments` as a JSON string) and OpenAI-form `tools`.
+The hosted platform at https://cactuscompute.com/v1 trains every size from 2 layers up on GPUs, scores each on your test file, and serves the `.cact` files; the API reference is https://cactuscompute.com/llms/api. The package drives it with a key from https://cactuscompute.com/dashboard/api-keys in `CACTUS_API_KEY` (never print it). Files are chat-format JSONL: `messages` (OpenAI chat turns, tool calls on the assistant turn as `tool_calls` with `arguments` as a JSON string) and OpenAI-form `tools`.
 
 ```sh
-needle platform finetune train.jsonl validation.jsonl test.jsonl [--max-depth N] [--suffix name] [--out dir] [--depth N] [--no-wait]
-needle platform generate --tools tools.json --examples 1000 [--description "..."] [--message "..."] [--suffix name] [--out dir]
-needle platform jobs [ftjob-id [--wait] [--out dir] [--depth N]] | models [model-id] | files | billing
-needle download model-<id> [--depth N] [--out dir]
+cactus platform finetune train.jsonl validation.jsonl test.jsonl [--max-depth N] [--suffix name] [--out dir] [--depth N] [--no-wait]
+cactus platform generate --tools tools.json --examples 1000 [--description "..."] [--message "..."] [--suffix name] [--out dir]
+cactus platform jobs [ftjob-id [--wait] [--out dir] [--depth N]] | models [model-id] | files | billing
+cactus download model-<id> [--depth N] [--out dir]
 ```
 
 ```python
-from needle.platform import Platform, PlatformError
-client = Platform()                                   # key from NEEDLE_API_KEY, or Platform(api_key=...)
+from cactus.platform import Platform, PlatformError
+client = Platform()                                   # key from CACTUS_API_KEY, or Platform(api_key=...)
 client.billing()                                      # plan, limits, usage; a fine-tune spends one job at submission
 job = client.finetune(["train.jsonl"], ["validation.jsonl"], ["test.jsonl"], max_depth=20, suffix="smart-home")
 job = client.wait(job, poll=10)                       # raises PlatformError(code) if the job fails
@@ -234,18 +252,18 @@ gen = client.wait(client.generate(tools, 1000, description="...", messages=["...
 client.download_file(gen["files"][0]["id"], "train.jsonl")
 ```
 
-Submission prints the job's dashboard page, https://cactuscompute.com/dashboard/jobs/<id>; Ctrl-C leaves the job running and `needle platform jobs <id> --wait --out dir` resumes the wait and the download. `PlatformError.code` is the API's stable code (`unauthorized`, `subscription_required`, `quota_exceeded`, `job_active`, `rate_limited`, `invalid_request`, ...), with `.param` and `.url` when the API sends them; `rate_limited` is retried after `Retry-After` automatically. Ask before every `finetune` or `generate`: both spend allowance at submission. Platform files also train locally: `needle finetune train.jsonl` reads single-turn chat-format lines as well as the `query`/`answers` form.
+Submission prints the job's dashboard page, https://cactuscompute.com/dashboard/jobs/<id>; Ctrl-C leaves the job running and `cactus platform jobs <id> --wait --out dir` resumes the wait and the download. `PlatformError.code` is the API's stable code (`unauthorized`, `subscription_required`, `quota_exceeded`, `job_active`, `rate_limited`, `invalid_request`, ...), with `.param` and `.url` when the API sends them; `rate_limited` is retried after `Retry-After` automatically. Ask before every `finetune` or `generate`: both spend allowance at submission. Platform files also train locally: `cactus finetune train.jsonl` reads single-turn chat-format lines as well as the `query`/`answers` form.
 
 ## Playground (browser)
 
-Hosted at https://cactuscompute.com/needle: preset demos, editable tools/prompt, multi-turn follow-ups, and a "Finetune on these tools" button that runs the pipeline above and returns a downloadable `.cact`. `needle playground [--weights my.cact]` serves the same UI locally at http://127.0.0.1:7860. Local fine-tuning is 4-bit; the 2-bit post-training and quantisation behind the shipped model, enriched with Cactus proprietary datasets, run on the Cactus Platform at https://cactuscompute.com/dashboard.
+Hosted at https://cactuscompute.com/needle: preset demos, editable tools/prompt, multi-turn follow-ups, and a "Finetune on these tools" button that runs the pipeline above and returns a downloadable `.cact`. `cactus playground [--weights my.cact]` serves the same UI locally at http://127.0.0.1:7860. Local fine-tuning is 4-bit; the 2-bit post-training and quantisation behind the shipped model, enriched with Cactus proprietary datasets, run on the Cactus Platform at https://cactuscompute.com/dashboard.
 
 ## Environments (ready-made tool surfaces)
 
-`needle.environments` ships six: `smart_home`, `media_player`, `productivity`, `wearable`, `kitchen_appliance`, `data_capture`. Each module has `TOOLS`, `SYSTEM`, a lazily constructed `agent`, `TEST_CASES`, and `run_tests(min_confidence=0.0)`; `python -m needle.environments.smart_home` runs its frozen acceptance suite.
+`cactus.environments` ships six: `smart_home`, `media_player`, `productivity`, `wearable`, `kitchen_appliance`, `data_capture`. Each module has `TOOLS`, `SYSTEM`, a lazily constructed `agent`, `TEST_CASES`, and `run_tests(min_confidence=0.0)`; `python -m cactus.environments.smart_home` runs its frozen acceptance suite.
 
 ```python
-from needle.environments import smart_home
+from cactus.environments import smart_home
 smart_home.agent.complete("dim the study lights to 30 percent")
 ```
 
@@ -255,25 +273,25 @@ Adapt by swapping the Literal values for your own and keeping the shapes: closed
 
 ## CLI summary
 
-- `needle run --checkpoint <base.safetensors> --query "..." --tools tools.json [--temperature <t>]` - JAX reference inference from a checkpoint (dev path; normal inference is the Python `Needle` API above); `--temperature` defaults to 0 (greedy).
-- `needle generate-data` / `needle finetune` / `needle build [checkpoint] [--lora adapter] [--layers N] [--platform <folder>] [--out <path>]` - the fine-tuning pipeline; fine-tuning runs at the full 20 layers, `build` merges the adapter, slices the `--layers` rung (default 20), exports at 4 bits, and fetches the published `needle3.cact` on every run (without an adapter at full depth it ships that published 2-bit archive as is). `--platform` also downloads that platform's engine and header and makes `--out` a folder holding them plus `needle3.cact`.
-- `needle playground` - the browser UI locally (hosted at https://cactuscompute.com/needle).
-- `needle whistle playground [clip.wav] [--language en] [--keywords "Siobhan, Krzysztof"] [--word-timestamps] [--weights whistle.cact]` - Whistle speech to text in the terminal: press Enter to speak, Enter again to stop, or pass a WAV file; `/language`, `/keywords`, `/timestamps` and `/file` change the settings between recordings, and `/stream` switches to live transcription, the words printing as they are committed. Recording from the microphone needs the `[mic]` extra. `whistle.cact` is fetched from `Cactus-Compute/whistle` on first use and runs on the same engine as Needle; `NEEDLE_WHISTLE_WEIGHTS` points at a local copy and `NEEDLE3_LIB_PATH` at a local engine.
-- `needle whistle compare [clip.wav] [--weights whistle.cact]` - the same English speech through Whistle, Whisper tiny and base (openai-whisper) and Moonshine tiny v2 (moonshine-voice), one line per model with its weight size, time to first token, decode tokens per second, total time and transcript; `/file` runs a WAV between recordings. Whistle's timing comes from the engine's own JSON. Needs the `[mic,compare]` extras.
-- `needle whistle finetune` / `needle whistle build [checkpoint] [--lora adapter] [--layers N] [--platform <folder>] [--out <path>]` - the Whistle fine-tuning pipeline (section above); `build` merges the adapter, slices the `--layers` rung (default 8), exports at 4 bits, and fetches the published `whistle.cact` on every run (without an adapter at full depth it ships that published archive as is). `--platform` also downloads that platform's engine and header and makes `--out` a folder holding them plus `whistle.cact`.
-- `needle download whistle [--out <dir>]` - pre-download the `whistle.cact` speech weights. There is one engine for both models, so `needle fetch` and `needle download <platform>` cover the library and the platform folders.
-- `needle fetch [--platform-tag <tag>] [--out <dir>] [--generation 2|3]` - pre-download the inference engine for this machine (or another platform) into the cache; prints the path. `--generation 2` fetches the Needle 2 engine. For air-gapped devices, also see `NEEDLE3_LIB_PATH` (`NEEDLE2_LIB_PATH` for Needle 2) and `HF_HUB_OFFLINE` at https://cactuscompute.com/blog/needle-python-docs.
-- `needle platform finetune | generate | jobs | models | files | billing` - the hosted platform from the CLI (section above).
-- `needle download needle3 | needle3.safetensors | model-<id> | <org>/<repo>[/<file>.cact] | <platform> [--out <dir>] [--generation 2|3]` - pull the base Needle 3 archive, a checkpoint to fine-tune, a platform-trained model by id (`--depth N` for one size), a published `.cact` (single-archive repos need only `<org>/<repo>`), or pass a platform folder name (`macos-arm64`, `linux-x86_64`, `wasm`, `wasm-component`, ...) to fetch that platform's engine files into `<out>/<platform>/` (`--generation 2` for the Needle 2 engine). Native runners are marked executable; `wasm-component` contains the WASI Preview 2 component and WIT contract.
+- `cactus run --checkpoint <base.safetensors> --query "..." --tools tools.json [--temperature <t>]` - JAX reference inference from a checkpoint (dev path; normal inference is the Python `Needle` API above); `--temperature` defaults to 0 (greedy).
+- `cactus generate-data` / `cactus finetune` / `cactus build [checkpoint] [--lora adapter] [--layers N] [--platform <folder>] [--out <path>]` - the fine-tuning pipeline; fine-tuning runs at the full 20 layers, `build` merges the adapter, slices the `--layers` rung (default 20), exports at 4 bits, and fetches the published `needle3.cact` on every run (without an adapter at full depth it ships that published 2-bit archive as is). `--platform` also downloads that platform's engine and header and makes `--out` a folder holding them plus `needle3.cact`.
+- `cactus playground` - the browser UI locally (hosted at https://cactuscompute.com/needle).
+- `cactus whistle playground [clip.wav] [--language en] [--keywords "Siobhan, Krzysztof"] [--word-timestamps] [--weights whistle.cact]` - Whistle speech to text in the terminal: press Enter to speak, Enter again to stop, or pass a WAV file; `/language`, `/keywords`, `/timestamps` and `/file` change the settings between recordings, and `/stream` switches to live transcription, the words printing as they are committed. Recording from the microphone needs the `[mic]` extra. `whistle.cact` is fetched from `Cactus-Compute/whistle` on first use and runs on the same engine as Needle; `CACTUS_WHISTLE_WEIGHTS` points at a local copy and `CACTUS_LIB_PATH` at a local engine.
+- `cactus whistle compare [clip.wav] [--weights whistle.cact]` - the same English speech through Whistle, Whisper tiny and base (openai-whisper) and Moonshine tiny v2 (moonshine-voice), one line per model with its weight size, time to first token, decode tokens per second, total time and transcript; `/file` runs a WAV between recordings. Whistle's timing comes from the engine's own JSON. Needs the `[mic,compare]` extras.
+- `cactus whistle finetune` / `cactus whistle build [checkpoint] [--lora adapter] [--layers N] [--platform <folder>] [--out <path>]` - the Whistle fine-tuning pipeline (section above); `build` merges the adapter, slices the `--layers` rung (default 8), exports at 4 bits, and fetches the published `whistle.cact` on every run (without an adapter at full depth it ships that published archive as is). `--platform` also downloads that platform's engine and header and makes `--out` a folder holding them plus `whistle.cact`.
+- `cactus download whistle [--out <dir>]` - pre-download the `whistle.cact` speech weights. There is one engine for both models, so `cactus fetch` and `cactus download <platform>` cover the library and the platform folders.
+- `cactus fetch [--platform-tag <tag>] [--out <dir>]` - pre-download the inference engine for this machine (or another platform) into the cache; prints the path. For air-gapped devices, also see `CACTUS_LIB_PATH` and `HF_HUB_OFFLINE` at https://cactuscompute.com/blog/needle-python-docs.
+- `cactus platform finetune | generate | jobs | models | files | billing` - the hosted platform from the CLI (section above).
+- `cactus download needle3 | needle3.safetensors | model-<id> | <org>/<repo>[/<file>.cact] | <platform> [--out <dir>]` - pull the base Needle 3 archive, a checkpoint to fine-tune, a platform-trained model by id (`--depth N` for one size), a published `.cact` (single-archive repos need only `<org>/<repo>`), or pass a platform folder name (`macos-arm64`, `linux-x86_64`, `wasm`, `wasm-component`, ...) to fetch that platform's engine files into `<out>/<platform>/`. Native runners are marked executable; `wasm-component` contains the WASI Preview 2 component and WIT contract.
 
 ## Common mistakes to avoid
 
 - Do not expect free-text answers to arbitrary questions; unsupported input returns an empty call. Handle it.
 - Do not read `arguments` keys that were not evidenced in the input; optional fields may be absent.
 - Do not create one `Needle` per turn for a conversation; reuse the instance so context carries. New tools = new instance.
-- `import needle` does not import JAX; only `needle finetune`/`build` do.
-- `weights=` expects a `.cact` (from `needle build`), not a `.safetensors` checkpoint. `Needle(tools=...)` runs the base Needle 3 archive (fetched once, cached next to the engine); pass `generation=2` for the embedded Needle 2 engine.
-- Checkpoints and adapters must be `.safetensors`; pickle (`.pkl`) is not supported and will raise a `ValueError`. The base is `checkpoints/needle3.safetensors` (20 layers); `needle build --layers N` exports any rung from 2 to 20 of it.
+- `import cactus` does not import JAX; only `cactus finetune`/`build` do.
+- `weights=` expects a `.cact` (from `cactus build`), not a `.safetensors` checkpoint. `Cactus(tools=...)` runs the base Needle 3 archive (fetched once into its own model cache).
+- Checkpoints and adapters must be `.safetensors`; pickle (`.pkl`) is not supported and will raise a `ValueError`. The base is `checkpoints/needle3.safetensors` (20 layers); `cactus build --layers N` exports any rung from 2 to 20 of it.
 
 ## Telemetry
 

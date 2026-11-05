@@ -5,7 +5,7 @@ import pytest
 
 
 def test_parse_array_variants():
-    from needle.model.finetune import _parse_array
+    from cactus.model.finetune import _parse_array
 
     assert len(_parse_array('[{"query":"q","answers":[]}]')) == 1
     assert len(_parse_array('Sure!\n[{"query":"q","answers":[]}]\nDone.')) == 1
@@ -17,7 +17,7 @@ def test_parse_array_variants():
 
 
 def test_collect_tools_dedups_by_name():
-    from needle.model.finetune import _collect_tools
+    from cactus.model.finetune import _collect_tools
 
     examples = [{"tools": [{"name": "a"}, {"name": "b"}]},
                 {"tools": [{"name": "a"}, {"name": "c"}]}]
@@ -25,7 +25,7 @@ def test_collect_tools_dedups_by_name():
 
 
 def test_generate_examples_attaches_tools(monkeypatch):
-    from needle.model import finetune
+    from cactus.model import finetune
 
     tools = [{"name": "f", "parameters": {"type": "object", "properties": {}}}]
     monkeypatch.setattr(finetune, "_openrouter",
@@ -37,7 +37,7 @@ def test_generate_examples_attaches_tools(monkeypatch):
 
 
 def test_generate_examples_requires_api_key(monkeypatch):
-    from needle.model import finetune
+    from cactus.model import finetune
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(RuntimeError):
@@ -46,7 +46,7 @@ def test_generate_examples_requires_api_key(monkeypatch):
 
 def test_openrouter_url_can_be_overridden_from_environment(monkeypatch):
     monkeypatch.setenv("OPENROUTER_URL", "https://gateway.example.test/v1/chat")
-    from needle.model import finetune
+    from cactus.model import finetune
     importlib.reload(finetune)
 
     try:
@@ -69,7 +69,7 @@ def _unique_generator():
 
 
 def test_generate_dataset_hits_target_concurrently(monkeypatch):
-    from needle.model import finetune
+    from cactus.model import finetune
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr(finetune, "generate_examples", _unique_generator())
@@ -79,7 +79,7 @@ def test_generate_dataset_hits_target_concurrently(monkeypatch):
 
 
 def test_generate_dataset_dedups_and_terminates(monkeypatch):
-    from needle.model import finetune
+    from cactus.model import finetune
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr(finetune, "generate_examples",
@@ -89,7 +89,7 @@ def test_generate_dataset_dedups_and_terminates(monkeypatch):
 
 
 def test_augment_jsonl_appends_generated(monkeypatch, tmp_path):
-    from needle.model import finetune
+    from cactus.model import finetune
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     tools = [{"name": "f", "parameters": {"type": "object", "properties": {}}}]

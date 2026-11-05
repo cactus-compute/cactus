@@ -1,0 +1,62 @@
+name: verify
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e '.[test,train]'
+      - run: pytest -q
+        env:
+          CACTUS_TELEMETRY: '0'
+  runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install build
+      - run: python -m build
+      - run: python -c "import glob,subprocess,sys; subprocess.check_call([sys.executable,'-m','pip','install',*glob.glob('dist/*.whl')])"
+      - run: python scripts/smoke.py
+        env:
+          CACTUS_TELEMETRY: '0'
+  musl:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker run --rm -v "$PWD:/src" -w /src -e CACTUS_TELEMETRY=0 python:3.12-alpine sh -ec 'pip install . && python scripts/smoke.py'
+  mlx:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e '.[test,train,mlx]'
+      - run: pytest -q tests/test_mlx.py tests/test_quantize_mlx.py
+        env:
+          CACTUS_REQUIRE_MLX: '1'
+          CACTUS_TELEMETRY: '0'

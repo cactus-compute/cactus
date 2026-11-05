@@ -9,16 +9,16 @@ pytestmark = [pytest.mark.slow, pytest.mark.usefixtures("mlx_cpu")]
 
 
 def _jax_logits(model, params, tokens):
-    from needle.model.quantize import WEIGHT_BITS, cq_ste_params
+    from cactus.model.quantize import WEIGHT_BITS, cq_ste_params
 
     return model.apply({"params": cq_ste_params(params, WEIGHT_BITS)},
                        jax.numpy.asarray(tokens), quant=True)
 
 
 def _mlx_logits(config, params, tokens):
-    from needle.model.architecture_mlx import forward, to_mlx
-    from needle.model.quantize import WEIGHT_BITS
-    from needle.model.quantize_mlx import cq_ste_params
+    from cactus.model.architecture_mlx import forward, to_mlx
+    from cactus.model.quantize import WEIGHT_BITS
+    from cactus.model.quantize_mlx import cq_ste_params
 
     return forward(cq_ste_params(to_mlx(params), WEIGHT_BITS), config, mx.array(tokens),
                    quant=True)
@@ -26,7 +26,7 @@ def _mlx_logits(config, params, tokens):
 
 @pytest.mark.parametrize("bits", [2, 4])
 def test_cq_quantize_matches_jax(bits):
-    from needle.model import quantize, quantize_mlx
+    from cactus.model import quantize, quantize_mlx
 
     w = np.random.default_rng(bits).standard_normal((3, 200, 96)).astype(np.float32)
     ref = np.asarray(quantize.cq_quantize(jax.numpy.asarray(w), bits))
@@ -53,8 +53,8 @@ def test_published_checkpoint_quantized_loss_matches_jax(needle3_checkpoint, dep
     """Under QAT the published model flips on ulp-level differences (JAX against itself
     with 1e-7 weight noise agrees on ~96% of argmaxes), so it is compared by loss."""
     import optax
-    from needle.model.architecture import SimpleAttentionNetwork
-    from needle.model.run import load_checkpoint
+    from cactus.model.architecture import SimpleAttentionNetwork
+    from cactus.model.run import load_checkpoint
 
     params, config = load_checkpoint(needle3_checkpoint)
     config.dtype = "float32"
@@ -73,7 +73,7 @@ def test_published_checkpoint_quantized_loss_matches_jax(needle3_checkpoint, dep
 
 
 def test_ab_scales_checkpoints_are_rejected():
-    from needle.model.quantize_mlx import cq_ste_params
+    from cactus.model.quantize_mlx import cq_ste_params
 
     with pytest.raises(NotImplementedError):
         cq_ste_params({"ab_scales/stack/a": mx.zeros((2, 2))}, 4)

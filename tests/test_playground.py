@@ -1,3 +1,4 @@
+from cactus.agent import runtime
 import pytest
 
 
@@ -21,7 +22,7 @@ class _Agent:
 @pytest.fixture
 def agents(monkeypatch):
     """Stand in for Needle, and fail the test if the global engine is touched."""
-    import needle
+    import cactus
 
     made = []
 
@@ -33,13 +34,13 @@ def agents(monkeypatch):
     def refuse(*_args, **_kwargs):
         raise AssertionError("the playground reached the process-global engine")
 
-    monkeypatch.setattr(needle, "Needle", build)
-    monkeypatch.setattr(needle, "_lib", refuse)
+    monkeypatch.setattr(cactus, "Needle", build)
+    monkeypatch.setattr(runtime, "_lib", refuse)
     return made
 
 
 def test_a_second_query_on_the_same_tools_rewinds_that_agent(agents):
-    from needle.playground.server import Engine
+    from cactus.playground.server import Engine
 
     engine = Engine()
     engine.complete("[]", "one")
@@ -50,7 +51,7 @@ def test_a_second_query_on_the_same_tools_rewinds_that_agent(agents):
 
 
 def test_new_tools_build_a_fresh_agent_without_rewinding(agents):
-    from needle.playground.server import Engine
+    from cactus.playground.server import Engine
 
     engine = Engine()
     engine.complete("[]", "one")
@@ -62,7 +63,7 @@ def test_new_tools_build_a_fresh_agent_without_rewinding(agents):
 
 
 def test_reset_closes_the_agent_it_drops(agents):
-    from needle.playground.server import Engine
+    from cactus.playground.server import Engine
 
     engine = Engine()
     engine.complete("[]", "one")
@@ -74,7 +75,7 @@ def test_reset_closes_the_agent_it_drops(agents):
 
 
 def test_a_tuned_agent_is_rewound_through_itself(agents):
-    from needle.playground.server import Engine
+    from cactus.playground.server import Engine
 
     engine = Engine(weights="tuned.cact")
     engine.complete("[]", "one")

@@ -1,43 +1,33 @@
+from cactus.agent import runtime
 import sys
 
 import pytest
 
 def test_lib_path_env_override(tmp_path, monkeypatch):
-    import needle
+    import cactus
 
-    fake = tmp_path / "libneedle.dylib"
+    fake = tmp_path / "libcactus.dylib"
     fake.write_bytes(b"x")
-    monkeypatch.setenv("NEEDLE_LIB_PATH", str(fake))
-    assert needle._library_path() == str(fake)
+    monkeypatch.setenv("CACTUS_LIB_PATH", str(fake))
+    assert runtime._library_path() == str(fake)
 
 
-def test_legacy_lib_override_cannot_capture_v3(tmp_path, monkeypatch):
-    import needle
-    from needle.agent import fetch
-
-    v2 = tmp_path / "libneedle-v2.dylib"
-    v3 = tmp_path / "libneedle-v3.dylib"
-    v2.write_bytes(b"v2")
-    v3.write_bytes(b"v3")
-    monkeypatch.setenv("NEEDLE_LIB_PATH", str(v2))
-    monkeypatch.setenv("NEEDLE3_LIB_PATH", str(v3))
-    assert needle._library_path(2) == str(v2)
-    assert needle._library_path(3) == str(v3)
-
-    monkeypatch.delenv("NEEDLE3_LIB_PATH")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.setattr(fetch, "fetch_library", lambda *args, **kwargs: str(v3))
-    assert needle._library_path(3) == str(v3)
+def test_legacy_generation_is_rejected_before_loading(monkeypatch):
+    import cactus
+    monkeypatch.setenv("CACTUS_LIB_PATH", "/tmp/legacy.so")
+    with pytest.raises(ValueError, match="legacy branch"):
+        runtime._library_path(2)
 
 
 def test_download_target_kinds():
     import pytest
-    from needle.cli import _download_target
+    from cactus.cli.download import _download_target
 
     assert _download_target("macos-arm64") == ("platform", "macos-arm64")
     assert _download_target("needle3") == ("base", 3)
-    assert _download_target("needle2.cact") == ("base", 2)
+    assert _download_target("mirage") == ("base", "mirage")
+    with pytest.raises(SystemExit):
+        _download_target("needle2.cact")
     assert _download_target("needle3.safetensors") == ("checkpoint", "needle3.safetensors")
     assert _download_target("acme/tuned/model.cact") == ("hub", "acme/tuned/model.cact")
     with pytest.raises(SystemExit, match="unknown download"):
@@ -45,10 +35,13 @@ def test_download_target_kinds():
 
 
 def test_fetch_weights_copies_the_base_archive_and_reuses_it(tmp_path, monkeypatch):
-    from needle.agent import fetch
+    monkeypatch.delenv("CACTUS_NEEDLE_WEIGHTS", raising=False)
+    from cactus.agent import fetch
 
     archive = tmp_path / "needle3.cact"
     archive.write_bytes(b"weights")
+    import hashlib
+    monkeypatch.setitem(fetch.MODEL_SHA256, 3, hashlib.sha256(b"weights").hexdigest())
     calls = []
 
     def fake_download(**kwargs):
@@ -66,7 +59,7 @@ def test_fetch_weights_copies_the_base_archive_and_reuses_it(tmp_path, monkeypat
 
 def test_fetch_checkpoint_prefers_the_checkpoints_folder(tmp_path, monkeypatch):
     from huggingface_hub.errors import EntryNotFoundError
-    from needle.agent import fetch
+    from cactus.agent import fetch
 
     source = tmp_path / "needle3.safetensors"
     source.write_bytes(b"ckpt")
@@ -83,7 +76,7 @@ def test_fetch_checkpoint_prefers_the_checkpoints_folder(tmp_path, monkeypatch):
 
 
 def test_weights_spec_parsing():
-    from needle.cli import _weights_spec
+    from cactus.cli.download import _weights_spec
 
     assert _weights_spec("acme/tuned/model.cact") == ("acme/tuned", "model.cact")
     assert _weights_spec("acme/tuned") == ("acme/tuned", None)
@@ -91,53 +84,43 @@ def test_weights_spec_parsing():
 
 
 def test_lib_name_for_tags():
-    from needle.agent.fetch import _lib_name_for
+    from cactus.agent.fetch import _lib_name_for
 
-    assert _lib_name_for("macosx_11_0_arm64") == "libneedle.dylib"
-    assert _lib_name_for("win_amd64") == "libneedle.dll"
-    assert _lib_name_for("manylinux2014_aarch64") == "libneedle.so"
-    assert _lib_name_for("musllinux_1_2_x86_64") == "libneedle.so"
+    assert _lib_name_for("macosx_11_0_arm64") == "libcactus.dylib"
+    assert _lib_name_for("win_amd64") == "libcactus.dll"
+    assert _lib_name_for("manylinux2014_aarch64") == "libcactus.so"
+    assert _lib_name_for("musllinux_1_2_x86_64") == "libcactus.so"
 
 
 def test_component_platform_is_downloadable():
-    from needle.agent.fetch import PLATFORMS
+    from cactus.agent.fetch import PLATFORMS
 
     assert "wasm-component" in PLATFORMS
 
 
-def test_unpublished_engine_wheels_lists_every_missing_tag(monkeypatch):
-    from needle.agent import fetch
-
-    published = {}
-    for generation, version in fetch.ENGINE_VERSIONS.items():
-        if generation in fetch.WEIGHTS_ONLY:
-            continue
-        published.setdefault(fetch.ENGINE_REPOS[generation], set()).update(
-            fetch.engine_wheel(version, tag, generation) for tag in fetch.WHEEL_TAGS)
-    monkeypatch.setattr("huggingface_hub.list_repo_files",
-                        lambda repo: sorted(published[repo]) + ["needle3.cact"])
+def test_release_gate_checks_pinned_revision_and_all_wheel_hashes(monkeypatch):
+    from types import SimpleNamespace
+    from cactus.agent import fetch
+    paths = [fetch.engine_wheel(fetch.ENGINE_VERSION, tag) for tag in fetch.WHEEL_TAGS]
+    files = {path[len(fetch.repo_prefix()):]: {"size": 5, "sha256": "a" * 64} for path in paths}
+    monkeypatch.setattr(fetch, "_manifest", lambda: {"files": files})
+    entries = {path: SimpleNamespace(path=path, size=5, lfs=SimpleNamespace(sha256="a" * 64)) for path in paths}
+    def get_paths(self, repo, wanted, revision):
+        assert repo == fetch.ENGINE_REPO and revision == fetch.ENGINE_REVISION
+        assert wanted == paths
+        return list(entries.values())
+    monkeypatch.setattr("huggingface_hub.HfApi.get_paths_info", get_paths)
     assert fetch.unpublished_engine_wheels() == []
-
-    repo3 = fetch.ENGINE_REPOS[3]
-    dropped = fetch.engine_wheel(fetch.ENGINE_VERSIONS[3], "win_arm64")
-    published[repo3].remove(dropped)
-    assert fetch.unpublished_engine_wheels() == [repo3 + "/" + dropped]
-
-    assert fetch.WHISTLE in fetch.WEIGHTS_ONLY
-    assert not any(fetch.ENGINE_REPOS[fetch.WHISTLE] in path for path in fetch.unpublished_engine_wheels())
+    del entries[paths[-1]]
+    entries[paths[0]].lfs.sha256 = "b" * 64
+    assert fetch.unpublished_engine_wheels() == [fetch.ENGINE_REPO + "/" + paths[0], fetch.ENGINE_REPO + "/" + paths[-1]]
 
 
-def test_a_repo_that_cannot_be_listed_holds_none_of_its_wheels(monkeypatch):
-    """The whistle repo is private until release; the gate must report, not raise."""
-    from needle.agent import fetch
-
-    def refuse(repo):
-        raise OSError("401 private repo")
-
-    monkeypatch.setattr("huggingface_hub.list_repo_files", refuse)
-    missing = fetch.unpublished_engine_wheels()
-    engines = len(fetch.ENGINE_VERSIONS) - len(fetch.WEIGHTS_ONLY)
-    assert len(missing) == engines * len(fetch.WHEEL_TAGS)
+def test_unpublished_manifest_blocks_a_release(monkeypatch):
+    from cactus.agent import fetch
+    monkeypatch.setattr(fetch, "ENGINE_REVISION", "UNPUBLISHED")
+    with pytest.raises(RuntimeError, match="no verified engine release pin"):
+        fetch.unpublished_engine_wheels()
 
 
 def test_release_gate_runs_before_the_publish_step():
@@ -150,36 +133,36 @@ def test_release_gate_runs_before_the_publish_step():
 
 def test_fetch_library_creates_destination(tmp_path, monkeypatch):
     import zipfile
-    from needle.agent import fetch
+    from cactus.agent import fetch
 
     wheel = tmp_path / "engine.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("needle/libneedle.so", b"engine")
+        archive.writestr("cactus/libcactus.so", b"engine")
     monkeypatch.setattr(fetch, "_register_download", lambda generation: None)
-    monkeypatch.setattr("huggingface_hub.hf_hub_download",
-                        lambda **kwargs: str(wheel))
-    out = fetch.fetch_library("2.0.4", tmp_path / "new", tag="manylinux2014_x86_64")
+    monkeypatch.setattr(fetch, "_artifact", lambda filename: str(wheel))
+    out = fetch.fetch_library(fetch.ENGINE_VERSION, tmp_path / "new", tag="manylinux2014_x86_64")
 
-    assert (tmp_path / "new" / "libneedle.so").read_bytes() == b"engine"
-    assert out == str(tmp_path / "new" / "libneedle.so")
+    assert (tmp_path / "new" / "libcactus.so").read_bytes() == b"engine"
+    assert out == str(tmp_path / "new" / "libcactus.so")
 
 
 def test_engine_gate_finds_the_cache_the_runtime_loads_from(tmp_path, monkeypatch):
-    import needle
-    from needle.agent import fetch
+    import cactus
+    from cactus.agent import fetch
     from conftest import _engine_available
 
     package = tmp_path / "pkg"
     package.mkdir()
-    monkeypatch.setattr(needle, "__file__", str(package / "__init__.py"))
+    monkeypatch.setattr(cactus, "__file__", str(package / "__init__.py"))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    monkeypatch.delenv("NEEDLE_LIB_PATH", raising=False)
-    monkeypatch.delenv("NEEDLE3_LIB_PATH", raising=False)
+    monkeypatch.delenv("CACTUS_LIB_PATH", raising=False)
+    monkeypatch.delenv("CACTUS_LIB_PATH", raising=False)
 
     assert not _engine_available()
 
-    cache = tmp_path / ".cache" / "cactus-needle" / "v3" / fetch.engine_version(3)
+    from pathlib import Path
+    cache = Path(fetch.engine_cache_dir())
     cache.mkdir(parents=True)
     (cache / fetch._lib_name()).write_bytes(b"")
 
@@ -187,28 +170,28 @@ def test_engine_gate_finds_the_cache_the_runtime_loads_from(tmp_path, monkeypatc
 
 
 def test_engine_gate_honours_the_library_override(tmp_path, monkeypatch):
-    import needle
-    from needle.agent import fetch
+    import cactus
+    from cactus.agent import fetch
     from conftest import _engine_available
 
     package = tmp_path / "pkg"
     package.mkdir()
-    monkeypatch.setattr(needle, "__file__", str(package / "__init__.py"))
+    monkeypatch.setattr(cactus, "__file__", str(package / "__init__.py"))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
     engine = tmp_path / fetch._lib_name()
     engine.write_bytes(b"")
-    monkeypatch.setenv("NEEDLE3_LIB_PATH", str(engine))
+    monkeypatch.setenv("CACTUS_LIB_PATH", str(engine))
     assert _engine_available()
 
-    monkeypatch.setenv("NEEDLE3_LIB_PATH", str(tmp_path / "gone"))
+    monkeypatch.setenv("CACTUS_LIB_PATH", str(tmp_path / "gone"))
     assert not _engine_available()
 
 
 def test_musl_detected_when_libc_ver_claims_glibc(monkeypatch, tmp_path):
     import platform
-    from needle.agent import fetch
+    from cactus.agent import fetch
 
     monkeypatch.setattr(platform, "libc_ver", lambda *a, **k: ("glibc", "2.9"))
     monkeypatch.setattr(sys, "platform", "linux")
@@ -223,7 +206,7 @@ def test_musl_detected_when_libc_ver_claims_glibc(monkeypatch, tmp_path):
 
 def test_glibc_detected_from_maps(monkeypatch, tmp_path):
     import platform
-    from needle.agent import fetch
+    from cactus.agent import fetch
 
     monkeypatch.setattr(platform, "libc_ver", lambda *a, **k: ("", ""))
     monkeypatch.setattr(sys, "platform", "linux")
@@ -238,7 +221,7 @@ def test_glibc_detected_from_maps(monkeypatch, tmp_path):
 
 def test_platform_tag_names_only_the_architectures_the_engine_is_built_for(monkeypatch):
     import platform
-    from needle.agent import fetch
+    from cactus.agent import fetch
 
     monkeypatch.setattr(fetch, "_is_musl", lambda: False)
     monkeypatch.setattr(fetch, "_is_android", lambda: False)
@@ -256,12 +239,12 @@ def test_platform_tag_names_only_the_architectures_the_engine_is_built_for(monke
                             ("win32", "x86")):
         monkeypatch.setattr(sys, "platform", system)
         monkeypatch.setattr(platform, "machine", lambda machine=machine: machine)
-        with pytest.raises(RuntimeError, match=f"on {machine};.*NEEDLE3_LIB_PATH"):
+        with pytest.raises(RuntimeError, match=f"on {machine};.*CACTUS_LIB_PATH"):
             fetch._platform_tag()
 
 
 def test_other_libc_tag_swaps_families(monkeypatch):
-    from needle.agent import fetch
+    from cactus.agent import fetch
 
     monkeypatch.setattr(fetch, "_platform_tag", lambda: "manylinux2014_aarch64")
     assert fetch.other_libc_tag() == "musllinux_1_2_aarch64"
@@ -273,34 +256,34 @@ def test_other_libc_tag_swaps_families(monkeypatch):
 
 def test_engine_load_falls_back_to_the_other_libc(monkeypatch, tmp_path):
     import ctypes
-    import needle
-    from needle.agent import fetch
+    import cactus
+    from cactus.agent import fetch
 
-    good = tmp_path / "musl" / "libneedle.so"
+    good = tmp_path / "musl" / "libcactus.so"
     good.parent.mkdir()
     good.write_bytes(b"x")
-    monkeypatch.setattr(needle, "_library_path", lambda generation=2: str(tmp_path / "libneedle.so"))
+    monkeypatch.setattr(runtime, "_library_path", lambda generation=2: str(tmp_path / "libcactus.so"))
     monkeypatch.setattr(fetch, "other_libc_tag", lambda: "musllinux_1_2_x86_64")
     monkeypatch.setattr(fetch, "fetch_library",
                         lambda version=None, dest_dir=None, tag=None, generation=2: str(good))
     loaded = {}
 
     def fake_cdll(path):
-        if path.endswith("musl/libneedle.so"):
+        if path.endswith("musl/libcactus.so"):
             loaded["path"] = path
             return "handle"
-        raise OSError("Error relocating libneedle.so: strtoll_l: symbol not found")
+        raise OSError("Error relocating libcactus.so: strtoll_l: symbol not found")
 
     monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
     with pytest.warns(UserWarning, match="using the musllinux"):
-        assert needle._load_cdll(3) == "handle"
-    assert loaded["path"].endswith("musl/libneedle.so")
+        assert runtime._load_cdll(3) == "handle"
+    assert loaded["path"].endswith("musl/libcactus.so")
 
 
 def test_android_is_refused_instead_of_being_handed_a_glibc_wheel(monkeypatch):
     """Termux reports Linux/aarch64, so it used to download a wheel Bionic cannot load."""
     import platform
-    from needle.agent import fetch
+    from cactus.agent import fetch
 
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(platform, "machine", lambda: "aarch64")
@@ -310,12 +293,12 @@ def test_android_is_refused_instead_of_being_handed_a_glibc_wheel(monkeypatch):
     assert fetch._platform_tag() == "manylinux2014_aarch64"
 
     monkeypatch.setattr(fetch, "_is_android", lambda: True)
-    with pytest.raises(RuntimeError, match="Android .Bionic.*libm.so.6.*NEEDLE3_LIB_PATH"):
+    with pytest.raises(RuntimeError, match="Android .Bionic.*libm.so.6.*CACTUS_LIB_PATH"):
         fetch._platform_tag()
 
 
 def test_android_is_detected_from_the_api_level_or_the_runtime_env(monkeypatch):
-    from needle.agent import fetch
+    from cactus.agent import fetch
 
     monkeypatch.setattr(fetch, "_loaded_libc", lambda: None)
     monkeypatch.delenv("ANDROID_ROOT", raising=False)
@@ -335,7 +318,7 @@ def test_android_is_detected_from_the_api_level_or_the_runtime_env(monkeypatch):
 
 
 def test_android_markers_inside_a_glibc_or_musl_userspace_are_linux(monkeypatch, tmp_path):
-    from needle.agent import fetch
+    from cactus.agent import fetch
 
     monkeypatch.delattr(sys, "getandroidapilevel", raising=False)
     monkeypatch.setenv("ANDROID_ROOT", "/system")
@@ -354,23 +337,69 @@ def test_android_markers_inside_a_glibc_or_musl_userspace_are_linux(monkeypatch,
 
 
 def test_building_the_published_archive_needs_no_training_stack(tmp_path, monkeypatch):
-    import needle._telemetry
-    from needle.agent import fetch
-    from needle.cli import main
+    import cactus._telemetry
+    from cactus.agent import fetch
+    from cactus.cli import main
 
     base = tmp_path / "needle3.cact"
     base.write_bytes(b"archive")
 
     def fake_platform(name, out_dir, generation=3, dest=None):
         (tmp_path / "pi").mkdir()
-        (tmp_path / "pi" / "needle").write_bytes(b"engine")
-        return [str(tmp_path / "pi" / "needle")]
+        (tmp_path / "pi" / "cactus").write_bytes(b"engine")
+        return [str(tmp_path / "pi" / "cactus")]
 
-    monkeypatch.setattr(needle._telemetry, "track", lambda *a, **k: None)
+    monkeypatch.setattr(cactus._telemetry, "track", lambda *a, **k: None)
     monkeypatch.setattr(fetch, "fetch_weights", lambda generation=2, dest_dir=None, force=False: str(base))
     monkeypatch.setattr(fetch, "download_platform", fake_platform)
     for name in ("numpy", "jax"):
         monkeypatch.setitem(sys.modules, name, None)
-    monkeypatch.setattr(sys, "argv", ["needle", "build", "--platform", "linux-arm64", "--out", str(tmp_path / "pi")])
+    monkeypatch.setattr(sys, "argv", ["cactus", "build", "--platform", "linux-arm64", "--out", str(tmp_path / "pi")])
     main()
     assert (tmp_path / "pi" / "needle3.cact").read_bytes() == b"archive"
+
+
+def test_tampered_manifest_is_rejected(tmp_path, monkeypatch):
+    from cactus.agent import fetch
+    path = tmp_path / 'manifest.json'
+    path.write_text('{"api":"cactus","version":"4.0.0"}')
+    monkeypatch.setattr(fetch, 'ENGINE_REVISION', 'a' * 40)
+    monkeypatch.setattr(fetch, 'MANIFEST_SHA256', '0' * 64)
+    monkeypatch.setattr('huggingface_hub.hf_hub_download', lambda **kwargs: str(path))
+    with pytest.raises(RuntimeError, match='manifest checksum mismatch'):
+        fetch._manifest()
+
+
+def test_corrupt_artifact_cannot_replace_existing_library(tmp_path, monkeypatch):
+    import hashlib
+    from cactus.agent import fetch
+    path = tmp_path / 'download.whl'
+    path.write_bytes(b'changed')
+    target = tmp_path / 'installed' / 'libcactus.so'
+    target.parent.mkdir()
+    target.write_bytes(b'working engine')
+    filename = 'python/cactus_runtime-4.0.0-py3-none-manylinux2014_x86_64.whl'
+    monkeypatch.setattr(fetch, '_manifest', lambda: {'files': {filename: {'size': 7, 'sha256': hashlib.sha256(b'correct').hexdigest()}}})
+    monkeypatch.setattr('huggingface_hub.hf_hub_download', lambda **kwargs: str(path))
+    with pytest.raises(RuntimeError, match='artifact checksum mismatch'):
+        fetch.fetch_library(dest_dir=target.parent, tag='manylinux2014_x86_64')
+    assert target.read_bytes() == b'working engine'
+
+
+def test_corrupt_cached_model_is_repaired_from_the_pinned_revision(tmp_path, monkeypatch):
+    import hashlib
+    from cactus.agent import fetch
+    monkeypatch.delenv('CACTUS_NEEDLE_WEIGHTS', raising=False)
+    source = tmp_path / 'source.cact'
+    source.write_bytes(b'correct weights')
+    target = tmp_path / 'cache' / 'needle3.cact'
+    target.parent.mkdir()
+    target.write_bytes(b'corrupt weights')
+    monkeypatch.setitem(fetch.MODEL_SHA256, 3, hashlib.sha256(source.read_bytes()).hexdigest())
+    monkeypatch.setattr(fetch, '_register_download', lambda generation: None)
+    def download(**kwargs):
+        assert kwargs['revision'] == fetch.MODEL_REVISIONS[3]
+        return str(source)
+    monkeypatch.setattr('huggingface_hub.hf_hub_download', download)
+    fetch.fetch_weights(dest_dir=target.parent)
+    assert target.read_bytes() == source.read_bytes()

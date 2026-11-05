@@ -1,3 +1,5 @@
+from cactus import _worker as worker
+from cactus.agent import grounding, runtime, text
 import json
 import os
 import warnings
@@ -13,21 +15,21 @@ class _Stub:
     def __init__(self, calls):
         self.calls = calls
 
-    def needle_init(self, system, tools, index):
+    def cactus_init(self, system, tools, index):
         self.calls.append("init")
         return 0
 
-    def needle_load(self, blob, size):
+    def cactus_load(self, blob, size):
         self.calls.append("load")
         return 0
 
-    def needle_complete(self, text, *args):
+    def cactus_complete(self, text, *args):
         self.calls.append("complete")
         buffer = args[-2]
         buffer.value = ENVELOPE
         return 0
 
-    def needle_reset(self):
+    def cactus_reset(self):
         self.calls.append("reset")
 
 
@@ -35,7 +37,7 @@ class _WorkerStub:
     next_pid = 1000
 
     def __init__(self, calls, library, weights, system, tools, tool_index,
-                 buffer_size, generation=2):
+                 buffer_size, generation=3):
         self.calls = calls
         self.pid = type(self).next_pid
         type(self).next_pid += 1
@@ -58,31 +60,31 @@ class _WorkerStub:
 
 @pytest.fixture
 def engine(monkeypatch, tmp_path):
-    import needle
+    import cactus
 
     calls = []
     stubs = {2: _Stub(calls), 3: _Stub(calls)}
-    monkeypatch.setattr(needle, "_lib", lambda generation=2: stubs[generation])
-    monkeypatch.setattr(needle, "_library_path",
-                        lambda generation=2: f"/tmp/libneedle{generation}")
+    monkeypatch.setattr(runtime, "_lib", lambda generation=3: stubs[generation])
+    monkeypatch.setattr(runtime, "_library_path",
+                        lambda generation=3: f"/tmp/libneedle{generation}")
     monkeypatch.setattr(
-        needle, "FineTuneWorker",
+        worker, "FineTuneWorker",
         lambda library, weights, system, tools, tool_index, buffer_size,
-               generation=2:
+               generation=3:
             _WorkerStub(calls, library, weights, system, tools, tool_index,
                         buffer_size, generation))
-    monkeypatch.setattr(needle, "_active", {})
-    monkeypatch.setattr(needle, "_loaded_base", {})
+    monkeypatch.setattr(runtime, "_active", {})
+    monkeypatch.setattr(runtime, "_loaded_base", {})
     base = tmp_path / "needle3.cact"
     base.write_bytes((0x05E12A84).to_bytes(4, "little") + b"base weights")
-    monkeypatch.setattr(needle, "_base_weights_path", lambda generation: str(base))
+    monkeypatch.setattr(runtime, "_base_weights_path", lambda generation: str(base))
     return calls
 
 
 @pytest.fixture
 def tuned(tmp_path):
     path = tmp_path / "tuned.cact"
-    path.write_bytes((0x05E12A83).to_bytes(4, "little") + b"tuned weights")
+    path.write_bytes((0x05E12A84).to_bytes(4, "little") + b"tuned weights")
     return str(path)
 
 
@@ -94,52 +96,50 @@ def tuned_v3(tmp_path):
 
 
 def _tuned_agent(path):
-    import needle
+    import cactus
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return needle.Needle(tools="[]", weights=path)
+        return cactus.Needle(tools="[]", weights=path)
 
 
 def test_generation_3_without_weights_loads_the_base_archive_in_process(engine):
-    import needle
+    import cactus
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        agent = needle.Needle(tools="[]", generation=3)
+        agent = cactus.Needle(tools="[]", generation=3)
     assert agent._generation == 3 and agent._tuned is False and agent._weights is None
     response = agent.complete("hello")
     assert response.get("confidence", "kept") is not None
     assert engine.count("load") == 1 and "complete" in engine
     assert not any(call[0] == "worker_start" for call in engine if isinstance(call, tuple))
-    needle.Needle(tools="[]", generation=3).complete("again")
+    cactus.Needle(tools="[]", generation=3).complete("again")
     assert engine.count("load") == 1
     assert agent._track_props()["tuned"] is False
 
 
 def test_default_agent_is_needle_3(engine):
-    import needle
+    import cactus
 
-    agent = needle.Needle(tools="[]")
+    agent = cactus.Needle(tools="[]")
     assert agent._generation == 3 and agent._weights is None and agent._tuned is False
     agent.complete("hello")
     assert engine.count("load") == 1 and "complete" in engine
 
 
-def test_generation_2_runs_its_embedded_engine(engine):
-    import needle
-
-    agent = needle.Needle(tools="[]", generation=2)
-    assert agent._generation == 2 and agent._weights is None
-    agent.complete("hello")
-    assert engine.count("load") == 0 and "complete" in engine
+def test_generation_2_requires_the_legacy_package(engine):
+    import cactus
+    with pytest.raises(ValueError, match="legacy branch"):
+        cactus.Needle(tools="[]", generation=2)
+    assert not engine
 
 
 def test_base_agent_and_tuned_worker_coexist(engine, tuned):
-    import needle
+    import cactus
 
     tuned_agent = _tuned_agent(tuned)
-    base = needle.Needle(tools="[]", generation=2)
+    base = cactus.Needle(tools="[]", generation=3)
     tuned_agent.complete("tuned")
     base.complete("base")
     assert any(call[0] == "worker_complete" for call in engine if isinstance(call, tuple))
@@ -147,14 +147,14 @@ def test_base_agent_and_tuned_worker_coexist(engine, tuned):
 
 
 def test_tuned_worker_does_not_rebind_existing_base_agent(engine, tuned):
-    import needle
+    import cactus
 
-    base = needle.Needle(tools="[]", generation=2)
+    base = cactus.Needle(tools="[]", generation=3)
     base.complete("hello")
     tuned_agent = _tuned_agent(tuned)
     tuned_agent.complete("hello")
     base.complete("again")
-    assert engine.count("load") == 0
+    assert engine.count("load") == 1
     assert engine.count("complete") == 2
 
 
@@ -170,32 +170,24 @@ def test_tuned_agent_loads_one_worker_and_reuses_it(engine, tuned):
 
 
 def test_extract_uses_an_explicit_tuned_worker(engine, tuned):
-    import needle
+    import cactus
 
     schema = {"name": "City", "parameters": {"type": "object",
                                              "properties": {"city": {"type": "string"}}}}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        assert needle.extract("the weather in Paris", schema, weights=tuned) == {
+        assert cactus.extract("the weather in Paris", schema, weights=tuned) == {
             "city": "Paris"}
     assert any(call[0] == "worker_start" and call[3] == tuned
                for call in engine if isinstance(call, tuple))
 
 
-def test_v2_and_v3_weights_route_to_independent_engines(engine, tuned, tuned_v3,
-                                                        monkeypatch):
-    import needle
-
-    routed = []
-    monkeypatch.setattr(needle, "_library_path",
-                        lambda generation=2: routed.append(generation) or
-                        f"/tmp/libneedle{generation}")
-
-    v2 = _tuned_agent(tuned)
-    v3 = _tuned_agent(tuned_v3)
-    assert v2._generation == 2
-    assert v3._generation == 3
-    assert routed == [2, 3]
+def test_legacy_archive_cannot_be_routed_to_the_new_runtime(engine, tmp_path):
+    path = tmp_path / "v2.cact"
+    path.write_bytes((0x05E12A83).to_bytes(4, "little") + b"legacy weights")
+    with pytest.raises(ValueError, match="legacy branch"):
+        _tuned_agent(str(path))
+    assert not engine
 
 
 def test_v3_routes_embeddings_to_its_worker(engine, tuned_v3):
@@ -213,7 +205,7 @@ def test_unknown_archive_tag_is_rejected_before_loading(engine, tmp_path):
 
 def test_two_finetunes_use_independent_workers(engine, tuned, tmp_path):
     other = tmp_path / "other.cact"
-    other.write_bytes((0x05E12A83).to_bytes(4, "little") + b"other weights")
+    other.write_bytes((0x05E12A84).to_bytes(4, "little") + b"other weights")
 
     first = _tuned_agent(tuned)
     second = _tuned_agent(str(other))
@@ -228,7 +220,7 @@ def test_two_finetunes_use_independent_workers(engine, tuned, tmp_path):
 
 def test_extraction_rejects_fabricated_temporal_year():
     import datetime
-    import needle
+    import cactus
     import pydantic
 
     class Invoice(pydantic.BaseModel):
@@ -236,42 +228,42 @@ def test_extraction_rejects_fabricated_temporal_year():
 
     response = {"validation": {"ungrounded": ["Invoice.due_date"]}}
     correct = {"due_date": "2034-09-05T00:00:00Z"}
-    needle._validate_extraction("due on 5th September 2034", Invoice,
+    grounding._validate_extraction("due on 5th September 2034", Invoice,
                                 correct, response)
 
     fabricated = {"due_date": "2024-09-05T00:00:00Z"}
-    with pytest.raises(needle.ExtractionValidationError, match="due_date"):
-        needle._validate_extraction("due on 5th September 2034", Invoice,
+    with pytest.raises(grounding.ExtractionValidationError, match="due_date"):
+        grounding._validate_extraction("due on 5th September 2034", Invoice,
                                     fabricated, response)
 
-    with pytest.raises(needle.ExtractionValidationError, match="due_date"):
-        needle._validate_extraction(
+    with pytest.raises(grounding.ExtractionValidationError, match="due_date"):
+        grounding._validate_extraction(
             "due on 5th September 42", Invoice,
             {"due_date": "2026-09-05T00:00:00Z"}, response)
 
-    assert needle._source_years("due September 5, 2034") == {2034}
-    assert needle._source_years("due September 5") == set()
-    assert needle._source_years("due 5th September 42") == {42}
-    assert needle._source_years("Invoice 42 is due tomorrow at 5") == set()
+    assert grounding._source_years("due September 5, 2034") == {2034}
+    assert grounding._source_years("due September 5") == set()
+    assert grounding._source_years("due 5th September 42") == {42}
+    assert grounding._source_years("Invoice 42 is due tomorrow at 5") == set()
 
 
 def test_tool_index_path_takes_a_path_object(engine, tmp_path):
-    import needle
+    import cactus
 
     index = tmp_path / "tools.idx"
-    agent = needle.Needle(tools="[]", tool_index_path=index)
+    agent = cactus.Needle(tools="[]", tool_index_path=index)
 
     assert agent._tool_index_path == os.fspath(index).encode("utf-8")
 
 
 def test_tool_index_path_agrees_between_the_base_and_tuned_paths(engine, tuned, tmp_path):
-    import needle
+    import cactus
 
     index = tmp_path / "tools.idx"
-    base = needle.Needle(tools="[]", tool_index_path=index)
+    base = cactus.Needle(tools="[]", tool_index_path=index)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        needle.Needle(tools="[]", weights=tuned, tool_index_path=index)
+        cactus.Needle(tools="[]", weights=tuned, tool_index_path=index)
 
     started = [call for call in engine
                if isinstance(call, tuple) and call[0] == "worker_start"]
@@ -280,23 +272,23 @@ def test_tool_index_path_agrees_between_the_base_and_tuned_paths(engine, tuned, 
 
 
 def test_platform_tuned_archive_keeps_confidence(engine, tmp_path, fake_cact):
-    import needle
+    import cactus
 
     fake_cact(tmp_path / "platform.cact", [1, 2])
     fake_cact(tmp_path / "local.cact", [1])
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        calibrated = needle.Needle(tools="[]", weights=str(tmp_path / "platform.cact"))
+        calibrated = cactus.Needle(tools="[]", weights=str(tmp_path / "platform.cact"))
     assert calibrated.complete("hello").get("confidence") is not None
     with pytest.warns(UserWarning, match="confidence as None"):
-        uncalibrated = needle.Needle(tools="[]", weights=str(tmp_path / "local.cact"))
+        uncalibrated = cactus.Needle(tools="[]", weights=str(tmp_path / "local.cact"))
     assert uncalibrated.complete("hello").get("confidence", "kept") is None
 
 
 def test_stateless_agent_resets_before_every_query(engine):
-    import needle
+    import cactus
 
-    agent = needle.Needle(tools="[]", generation=3, stateless=True)
+    agent = cactus.Needle(tools="[]", generation=3, stateless=True)
     agent.complete("one")
     agent.complete("two")
     resets = [c for c in engine if c == "reset"]
@@ -304,12 +296,12 @@ def test_stateless_agent_resets_before_every_query(engine):
 
 
 def test_unreset_queries_warn_once(engine):
-    import needle
+    import cactus
 
-    agent = needle.Needle(tools="[]", generation=3)
+    agent = cactus.Needle(tools="[]", generation=3)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        for _ in range(needle.UNRESET_TURNS):
+        for _ in range(text.UNRESET_TURNS):
             agent.complete("q")
     with pytest.warns(UserWarning, match="without reset"):
         agent.complete("q")
@@ -317,30 +309,30 @@ def test_unreset_queries_warn_once(engine):
         warnings.simplefilter("error")
         agent.complete("q")
         agent.reset()
-        for _ in range(needle.UNRESET_TURNS):
+        for _ in range(text.UNRESET_TURNS):
             agent.complete("q")
 
 
 def test_tool_result_turns_do_not_count_as_queries(engine):
-    import needle
+    import cactus
 
     calls = []
 
-    @needle.tool
+    @cactus.tool
     def ping(x: str):
         "Ping."
         calls.append(x)
         return {"ok": True}
 
-    agent = needle.Needle(tools=[ping], generation=3)
+    agent = cactus.Needle(tools=[ping], generation=3)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        for _ in range(needle.UNRESET_TURNS):
+        for _ in range(text.UNRESET_TURNS):
             agent.run("go")
 
 
 def test_agent_extract_carries_its_own_system_facts(engine, monkeypatch):
-    import needle
+    import cactus
 
     seen = {}
 
@@ -348,9 +340,9 @@ def test_agent_extract_carries_its_own_system_facts(engine, monkeypatch):
         seen.update(text=text, system=system, weights=weights, strict=strict, generation=generation)
         return None
 
-    monkeypatch.setattr(needle, "extract", spy)
+    monkeypatch.setattr(text, "extract", spy)
     facts = "date: 2026-07-21 Tue 14:30; locale: en-US"
-    agent = needle.Needle(tools="[]", system=facts)
+    agent = cactus.Needle(tools="[]", system=facts)
 
     assert agent.extract("dinner tomorrow at 7", {"type": "object"}) is None
     assert seen["system"] == facts
@@ -358,41 +350,41 @@ def test_agent_extract_carries_its_own_system_facts(engine, monkeypatch):
 
 
 def test_agent_extract_without_system_facts_sends_none_when_autodate_disabled(engine, monkeypatch):
-    import needle
+    import cactus
 
     seen = {}
     monkeypatch.setattr(
-        needle, "extract",
+        text, "extract",
         lambda text, schema, system=None, **kwargs: seen.update(system=system))
-    needle.Needle(tools="[]", auto_date=False).extract("anything", {"type": "object"})
+    cactus.Needle(tools="[]", auto_date=False).extract("anything", {"type": "object"})
 
     assert seen["system"] is None
 
 
 def test_agent_extract_without_system_facts_carries_date_line(engine, monkeypatch):
-    import needle
+    import cactus
 
     seen = {}
     monkeypatch.setattr(
-        needle, "extract",
+        text, "extract",
         lambda text, schema, system=None, **kwargs: seen.update(system=system))
-    needle.Needle(tools="[]").extract("anything", {"type": "object"})
+    cactus.Needle(tools="[]").extract("anything", {"type": "object"})
 
     assert seen["system"] is not None
     assert seen["system"].startswith("date: ")
 
 
 def test_agent_extract_still_carries_weights_strict_and_generation(engine, tuned, monkeypatch):
-    import needle
+    import cactus
 
     seen = {}
     monkeypatch.setattr(
-        needle, "extract",
+        text, "extract",
         lambda text, schema, system=None, max_new_tokens=512, weights=None, strict=True, generation=None:
             seen.update(system=system, weights=weights, strict=strict, generation=generation))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        agent = needle.Needle(tools="[]", weights=tuned, system="device: phone", generation=3)
+        agent = cactus.Needle(tools="[]", weights=tuned, system="device: phone", generation=3)
     agent.extract("anything", {"type": "object"}, strict=False)
 
     assert seen["weights"] == tuned

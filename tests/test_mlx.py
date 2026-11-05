@@ -13,7 +13,7 @@ def _jax_logits(model, params, tokens, **kw):
 
 
 def _mlx_logits(config, params, tokens, **kw):
-    from needle.model.architecture_mlx import forward, to_mlx
+    from cactus.model.architecture_mlx import forward, to_mlx
 
     return forward(to_mlx(params), config, mx.array(tokens), **kw)
 
@@ -55,7 +55,7 @@ def test_exit_depth_matches_jax(perturbed_model):
 
 
 def test_padding_mask_matches_jax(perturbed_model):
-    from needle.model.architecture import make_causal_mask, make_padding_mask
+    from cactus.model.architecture import make_causal_mask, make_padding_mask
 
     model, config, params, tokens = perturbed_model()
     tokens[:, -5:] = config.pad_token_id
@@ -66,8 +66,8 @@ def test_padding_mask_matches_jax(perturbed_model):
 
 
 def test_published_checkpoint_matches_jax(needle3_checkpoint):
-    from needle.model.architecture import SimpleAttentionNetwork
-    from needle.model.run import load_checkpoint
+    from cactus.model.architecture import SimpleAttentionNetwork
+    from cactus.model.run import load_checkpoint
 
     params, config = load_checkpoint(needle3_checkpoint)
     config.dtype = "float32"

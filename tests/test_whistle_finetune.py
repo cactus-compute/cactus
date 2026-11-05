@@ -1,3 +1,4 @@
+from cactus.cli import speech
 import json
 import types
 import wave
@@ -14,8 +15,8 @@ TINY = dict(dim=64, kv_heads=2, qk_dim=16, v_dim=16, enc_layers=2, dec_layers=3,
 def tiny_whistle(tmp_path_factory):
     import numpy as np
     import jax
-    from needle.model.checkpoints import write_checkpoint
-    from needle.model.whistle import Whistle, WhistleConfig
+    from cactus.model.checkpoints import write_checkpoint
+    from cactus.model.whistle import Whistle, WhistleConfig
 
     cfg = WhistleConfig(**TINY, flash=False)
     params = jax.tree.map(np.asarray, Whistle(cfg).init(
@@ -27,8 +28,8 @@ def tiny_whistle(tmp_path_factory):
 
 @pytest.fixture
 def published_whistle(tiny_whistle, tmp_path, monkeypatch):
-    from needle.agent import fetch
-    from needle.model.whistle_finetune import WhistleTokenizer, build, load_base
+    from cactus.agent import fetch
+    from cactus.model.whistle_finetune import WhistleTokenizer, build, load_base
 
     archive = str(tmp_path / "whistle.cact")
     params, cfg = load_base(tiny_whistle)
@@ -57,8 +58,8 @@ def _clips(folder, lines):
 
 
 def test_declared_tokens_become_one_piece_anywhere_and_match_the_engine_encoder(tmp_path):
-    from needle.model.export import RefTokenizer, parse_tokenizer_blob
-    from needle.model.whistle_finetune import WhistleTokenizer, read_tokens, token_pieces
+    from cactus.model.export import RefTokenizer, parse_tokenizer_blob
+    from cactus.model.whistle_finetune import WhistleTokenizer, read_tokens, token_pieces
 
     listed = tmp_path / "tokens.txt"
     listed.write_text("ação\nSão Paulo, SP\n🙂\n\nПривет\nASP.NET\n你好\n", encoding="utf-8")
@@ -78,8 +79,8 @@ def test_declared_tokens_become_one_piece_anywhere_and_match_the_engine_encoder(
 
 
 def test_extended_tokenizer_appends_pieces_and_tags():
-    from needle.model.export import parse_tokenizer_blob
-    from needle.model.whistle_finetune import WhistleTokenizer
+    from cactus.model.export import parse_tokenizer_blob
+    from cactus.model.whistle_finetune import WhistleTokenizer
 
     plain = WhistleTokenizer((), ("en",))
     tokenizer = WhistleTokenizer(("ã", "ão"), ("en", "pt"))
@@ -92,9 +93,9 @@ def test_extended_tokenizer_appends_pieces_and_tags():
 
 @pytest.mark.slow
 def test_finetune_adds_a_language_and_builds_an_archive_with_it(tiny_whistle, published_whistle, tmp_path, capsys):
-    from needle.model.checkpoints import read_adapter
-    from needle.model.export import parse_tokenizer_blob, read_export
-    from needle.model.whistle_finetune import WhistleTokenizer, build_main, finetune_main, token_pieces
+    from cactus.model.checkpoints import read_adapter
+    from cactus.model.export import parse_tokenizer_blob, read_export
+    from cactus.model.whistle_finetune import WhistleTokenizer, build_main, finetune_main, token_pieces
 
     files = {}
     for name, lines in (("train", ["não é coração", "ação não", "não não", "coração"] * 2),
@@ -124,13 +125,13 @@ def test_finetune_adds_a_language_and_builds_an_archive_with_it(tiny_whistle, pu
     assert tokenizer["pieces"][-1] == "<|pt|>" and tokenizer["pieces"][8192:text] == saved["pieces"]
     manifest = next(t for t in tensors if getattr(t, "shape", None) == (13,) and t[0] == 3246)
     assert manifest[2] == text
-    from needle.agent.whistle import LANGUAGES, languages
+    from cactus.agent.whistle import LANGUAGES, languages
     assert languages(out) == LANGUAGES + ("pt",)
 
 
 @pytest.mark.slow
 def test_build_without_an_adapter_copies_the_published_archive(published_whistle, tmp_path):
-    from needle.model.whistle_finetune import build_main
+    from cactus.model.whistle_finetune import build_main
 
     archive, calls = published_whistle
     out = tmp_path / "copy.cact"
@@ -142,8 +143,8 @@ def test_build_without_an_adapter_copies_the_published_archive(published_whistle
 
 @pytest.mark.slow
 def test_build_layers_exports_a_decoder_rung(tiny_whistle, published_whistle, tmp_path):
-    from needle.model.export import read_export
-    from needle.model.whistle_finetune import build_main
+    from cactus.model.export import read_export
+    from cactus.model.whistle_finetune import build_main
 
     out = str(tmp_path / "rung.cact")
     build_main(_build_args(checkpoint=tiny_whistle, layers=2, out=out))
@@ -154,7 +155,7 @@ def test_build_layers_exports_a_decoder_rung(tiny_whistle, published_whistle, tm
 
 
 def test_lines_need_a_language(tmp_path):
-    from needle.model.whistle_finetune import read_clips
+    from cactus.model.whistle_finetune import read_clips
 
     data = _clips(tmp_path, ["hello"])
     with pytest.raises(SystemExit, match="language"):
@@ -164,7 +165,7 @@ def test_lines_need_a_language(tmp_path):
 
 
 def test_errors_use_the_whisper_normalizers_and_characters_for_unspaced_scripts():
-    from needle.model.whistle_finetune import errors
+    from cactus.model.whistle_finetune import errors
 
     assert errors("Olá, mundo!", "olá mundo", "pt") == (0, 2)
     assert errors("a b c", "a x c d", "pt") == (2, 3)
@@ -175,7 +176,7 @@ def test_errors_use_the_whisper_normalizers_and_characters_for_unspaced_scripts(
 
 
 def test_bad_lines_name_the_line(tmp_path):
-    from needle.model.whistle_finetune import read_clips
+    from cactus.model.whistle_finetune import read_clips
 
     data = _clips(tmp_path, ["olá"])
     for line, message in ([("not json", "2: not JSON"), ('{"text": "a"}', "2: no \"audio\""),
@@ -190,7 +191,7 @@ def test_bad_lines_name_the_line(tmp_path):
 
 
 def test_tokens_come_from_a_file(tmp_path):
-    from needle.model.whistle_finetune import read_tokens
+    from cactus.model.whistle_finetune import read_tokens
 
     with pytest.raises(SystemExit, match="one token per line"):
         read_tokens("ação,coração")
@@ -204,13 +205,13 @@ def test_tokens_come_from_a_file(tmp_path):
 
 @pytest.mark.slow
 def test_wrong_kinds_of_files_are_refused(tiny_whistle, tiny_checkpoint, published_whistle, tmp_path):
-    from needle.model.checkpoints import write_adapter
-    from needle.model.build import build_main as needle_build
-    from needle.model.whistle_finetune import build_main, load_base
+    from cactus.model.checkpoints import write_adapter
+    from cactus.model.build import build_main as needle_build
+    from cactus.model.whistle_finetune import build_main, load_base
 
     with pytest.raises(SystemExit, match="not a Whistle checkpoint"):
         load_base(tiny_checkpoint)
-    needle_adapter = str(tmp_path / "needle.safetensors")
+    needle_adapter = str(tmp_path / "cactus.safetensors")
     write_adapter(needle_adapter, {"lora": {}, "scale": 2.0, "base": tiny_checkpoint, "rank": 4, "seed": 0})
     with pytest.raises(SystemExit, match="Needle adapter"):
         build_main(_build_args(lora=needle_adapter, out=str(tmp_path / "x.cact")))
@@ -223,7 +224,7 @@ def test_wrong_kinds_of_files_are_refused(tiny_whistle, tiny_checkpoint, publish
 
 
 def test_finetune_needs_an_epoch_and_a_batch():
-    from needle.model.whistle_finetune import finetune_main
+    from cactus.model.whistle_finetune import finetune_main
 
     for epochs, batch in ((0, 8), (1, 0)):
         with pytest.raises(SystemExit, match="at least 1"):
@@ -239,7 +240,7 @@ def _splits(tmp_path, **lines):
 
 
 def _finetune(tiny_whistle, tmp_path, files, **kw):
-    from needle.model.whistle_finetune import finetune_main
+    from cactus.model.whistle_finetune import finetune_main
 
     finetune_main(types.SimpleNamespace(**{
         **files, "language": "pt", "tokens": None, "checkpoint": tiny_whistle, "epochs": 1, "batch_size": 2,
@@ -277,21 +278,21 @@ def test_the_adapter_path_is_checked_before_training(tiny_whistle, tmp_path, cap
 
 def test_cli_routes_finetune_and_build_and_takes_a_tuned_language(monkeypatch):
     import sys
-    import needle._telemetry
-    import needle.agent.whistle
-    import needle.cli
-    import needle.model.whistle_finetune as tune
+    import cactus._telemetry
+    import cactus.agent.whistle
+    import cactus.cli
+    import cactus.model.whistle_finetune as tune
 
     seen = []
-    monkeypatch.setattr(needle._telemetry, "track", lambda *a, **k: None)
+    monkeypatch.setattr(cactus._telemetry, "track", lambda *a, **k: None)
     monkeypatch.setattr(tune, "finetune_main", lambda args: seen.append(("finetune", args)))
     monkeypatch.setattr(tune, "build_main", lambda args: seen.append(("build", args)))
-    monkeypatch.setattr(needle.agent.whistle, "playground", lambda args: seen.append(("playground", args)))
+    monkeypatch.setattr(speech, "playground", lambda args: seen.append(("playground", args)))
     for argv in (["finetune", "train.jsonl", "dev.jsonl", "test.jsonl", "--language", "pt", "--tokens", "tokens.txt"],
                  ["build", "--lora", "a.safetensors", "--layers", "4", "--out", "t.cact"],
                  ["playground", "--language", "pt", "--weights", "t.cact"]):
-        monkeypatch.setattr(sys, "argv", ["needle", "whistle", *argv])
-        needle.cli.main()
+        monkeypatch.setattr(sys, "argv", ["cactus", "whistle", *argv])
+        cactus.cli.main()
     (_, tuned), (_, built), (_, played) = seen
     assert (tuned.train, tuned.validation, tuned.test, tuned.language, tuned.tokens, tuned.batch_size, tuned.lr) == (
         "train.jsonl", "dev.jsonl", "test.jsonl", "pt", "tokens.txt", 16, 1e-4)
@@ -303,10 +304,10 @@ def test_cli_routes_finetune_and_build_and_takes_a_tuned_language(monkeypatch):
 @pytest.mark.skipif(not _engine_available(3), reason="Whistle engine not installed")
 def test_the_python_encoder_matches_the_engine_embedding(tiny_whistle, published_whistle):
     import numpy as np
-    from needle.agent.whistle import Whistle as Engine
-    from needle.model.quantize import WEIGHT_BITS, cq_ste_params
-    from needle.model.whistle import Whistle
-    from needle.model.whistle_finetune import load_base
+    from cactus.agent.whistle import Whistle as Engine
+    from cactus.model.quantize import WEIGHT_BITS, cq_ste_params
+    from cactus.model.whistle import Whistle
+    from cactus.model.whistle_finetune import load_base
 
     params, cfg = load_base(tiny_whistle)
     quantised = cq_ste_params(params, WEIGHT_BITS)

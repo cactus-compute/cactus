@@ -1,3 +1,4 @@
+from cactus.agent import runtime
 import io
 import json
 import shutil
@@ -7,7 +8,7 @@ import warnings
 
 import pytest
 
-from needle._worker import FineTuneWorker, _read_message, _write_message
+from cactus._worker import FineTuneWorker, _read_message, _write_message
 
 
 def test_worker_protocol_round_trip():
@@ -32,20 +33,20 @@ def stub_engine(tmp_path):
 static int model_id;
 static int resets;
 
-int needle_load(const unsigned char* data, unsigned long long size) {
+int cactus_load(const unsigned char* data, unsigned long long size) {
     if (!data || size < 6 || data[4] == 0) return -1;
     model_id = data[4];
     return 0;
 }
 
-int needle_init(const char* system, const char* tools, const char* index) {
+int cactus_init(const char* system, const char* tools, const char* index) {
     (void)system;
     (void)tools;
     (void)index;
     return 7;
 }
 
-int needle_complete(const char* input, const float* pcm, int samples,
+int cactus_complete(const char* input, const float* pcm, int samples,
                     int max_new_tokens, char* output, int capacity) {
     (void)pcm;
     (void)samples;
@@ -56,11 +57,11 @@ int needle_complete(const char* input, const float* pcm, int samples,
     return 1;
 }
 
-void needle_reset(void) {
+void cactus_reset(void) {
     resets++;
 }
 
-int needle_embed(const char* input, const float* pcm, int samples,
+int cactus_embed(const char* input, const float* pcm, int samples,
                  float* output, int capacity) {
     (void)input;
     (void)pcm;
@@ -68,6 +69,14 @@ int needle_embed(const char* input, const float* pcm, int samples,
     for (int i = 0; output && i < capacity; i++) output[i] = (float)(model_id + i);
     return 3;
 }
+
+int cactus_models(void) { return 1; }
+const char* cactus_last_error(void) { return "stub engine error"; }
+void cactus_set_audio(const char* language, const char* keywords, int timestamps) {}
+int cactus_transcribe(void) { return -1; }
+int cactus_stream_transcribe_process(void) { return -1; }
+int cactus_stream_transcribe_stop(void) { return -1; }
+int cactus_describe(void) { return -1; }
 ''')
     if sys.platform == "darwin":
         library = tmp_path / "libstub.dylib"
@@ -88,8 +97,8 @@ def _weights(path, model_id):
 def test_finetunes_run_in_independent_processes(stub_engine, tmp_path):
     first_path = _weights(tmp_path / "first.cact", 11)
     second_path = _weights(tmp_path / "second.cact", 29)
-    first = FineTuneWorker(stub_engine, first_path, "", "[]", None, 4096, generation=3)
-    second = FineTuneWorker(stub_engine, second_path, "", "[]", None, 4096, generation=3)
+    first = FineTuneWorker(stub_engine, first_path, "", "[]", None, 4096)
+    second = FineTuneWorker(stub_engine, second_path, "", "[]", None, 4096)
     try:
         assert first.pid != second.pid
         assert json.loads(first.complete("first", 8))["model"] == 11
@@ -106,16 +115,16 @@ def test_finetunes_run_in_independent_processes(stub_engine, tmp_path):
 
 def test_tuned_agents_use_independent_workers(stub_engine, tmp_path,
                                                monkeypatch):
-    import needle
+    import cactus
 
-    monkeypatch.setattr(needle, "_library_path",
+    monkeypatch.setattr(runtime, "_library_path",
                         lambda generation=2: str(stub_engine))
     first_path = _weights(tmp_path / "agent-first.cact", 7)
     second_path = _weights(tmp_path / "agent-second.cact", 13)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        first = needle.Needle(tools="[]", weights=first_path)
-        second = needle.Needle(tools="[]", weights=second_path)
+        first = cactus.Needle(tools="[]", weights=first_path)
+        second = cactus.Needle(tools="[]", weights=second_path)
     try:
         assert first._worker.pid != second._worker.pid
         assert first.complete("first")["model"] == 7
@@ -130,33 +139,20 @@ def test_tuned_agents_use_independent_workers(stub_engine, tmp_path,
 
 def test_worker_propagates_native_load_failure(stub_engine, tmp_path):
     bad = _weights(tmp_path / "bad.cact", 0)
-    with pytest.raises(RuntimeError, match="needle_load failed"):
-        FineTuneWorker(stub_engine, bad, "", "[]", None, 4096, generation=3)
+    with pytest.raises(RuntimeError, match="cactus_load failed"):
+        FineTuneWorker(stub_engine, bad, "", "[]", None, 4096)
 
 
 def test_tuned_embeddings_go_through_the_worker(stub_engine, tmp_path):
-    worker = FineTuneWorker(stub_engine, _weights(tmp_path / "tuned.cact", 5), "", "[]", None, 4096,
-                            generation=3)
+    worker = FineTuneWorker(stub_engine, _weights(tmp_path / "tuned.cact", 5), "", "[]", None, 4096)
     try:
         assert worker.embed("hello") == [5.0, 6.0, 7.0]
     finally:
         worker.close()
 
 
-def test_needle_2_takes_the_text_alone(monkeypatch):
-    import needle
-
-    class Engine:
-        def needle_init(self, system, tools, index):
-            return 0
-
-        def needle_complete(self, text, max_new_tokens, output, capacity):
-            output.value = b'{"type":"call","function_calls":[]}'
-            return 0
-
-        def needle_reset(self):
-            pass
-
-    monkeypatch.setattr(needle, "_lib", lambda generation=2: Engine())
-    monkeypatch.setattr(needle, "_active", {})
-    assert needle.Needle(tools="[]", generation=2).complete("hello")["function_calls"] == []
+def test_legacy_abi_cannot_be_used_as_the_new_runtime(monkeypatch):
+    class Legacy:
+        pass
+    with pytest.raises(RuntimeError, match=r"cactus_\* ABI"):
+        runtime.bind(Legacy())

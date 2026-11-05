@@ -1,46 +1,38 @@
+from cactus.agent import runtime
 import os
 
 import pytest
 
 
 def _engine_available(generation=3):
-    """Whether ``needle._library_path`` would find an engine without downloading.
+    """Whether ``runtime._library_path`` would find an engine without downloading.
 
     Every location this looks in has to be one that function looks in, or the
     gate skips tests an installed engine could have run.
     """
     try:
-        import needle
-        from needle.agent import fetch
+        import cactus
+        from cactus.agent import fetch
 
-        override = os.environ.get(fetch.lib_path_env(generation))
-        if generation == 2 and not override:
-            override = os.environ.get("NEEDLE_LIB_PATH")
+        override = os.environ.get("CACTUS_LIB_PATH")
         if override:
             return os.path.exists(override)
-
-        here = os.path.dirname(needle.__file__)
-        name = fetch.lib_name(generation)
-        stem, suffix = os.path.splitext(name)
-        local_names = [name if generation == fetch.WHISTLE else f"{stem}{generation}{suffix}"]
-        if generation == 2:
-            local_names.append(name)
-        if any(os.path.exists(os.path.join(here, local)) for local in local_names):
-            return True
-
-        return os.path.exists(os.path.join(fetch.cache_dir(generation), name))
+        here = os.path.dirname(cactus.__file__)
+        name = fetch.lib_name()
+        return (os.path.isfile(os.path.join(here, name))
+                or os.path.isfile(os.path.join(fetch.engine_cache_dir(), name)))
     except Exception:
         return False
 
 
 requires_engine = pytest.mark.skipif(
     not _engine_available(),
-    reason="needle C++ engine not installed (auto-fetched from HF on first real use)")
+    reason="cactus C++ engine not installed (auto-fetched from HF on first real use)")
 
 
 def import_mlx():
-    """``mlx.core``, or skip the module; NEEDLE_REQUIRE_MLX=1 (CI) turns a missing mlx into an error."""
-    if os.environ.get("NEEDLE_REQUIRE_MLX") == "1":
+    """``mlx.core``, or skip the module; CACTUS_REQUIRE_MLX=1 (CI) turns a missing mlx into an error."""
+    if os.environ.get("CACTUS_REQUIRE_MLX") == "1":
         import mlx.core
 
         return mlx.core
@@ -52,8 +44,8 @@ def tiny_checkpoint(tmp_path_factory):
     import numpy as np
     import jax
     import jax.numpy as jnp
-    from needle.model.architecture import SimpleAttentionNetwork, TransformerConfig
-    from needle.model.checkpoints import write_checkpoint
+    from cactus.model.architecture import SimpleAttentionNetwork, TransformerConfig
+    from cactus.model.checkpoints import write_checkpoint
 
     config = TransformerConfig(
         vocab_size=8192, out_vocab=8192, d_model=64, num_heads=4, num_kv_heads=2,
@@ -77,9 +69,9 @@ def tiny_checkpoint_safetensors(tiny_checkpoint):
 
 @pytest.fixture(scope="session")
 def tiny_base_archive(tiny_checkpoint, tmp_path_factory):
-    from needle.model.export import write_export
-    from needle.model.run import load_checkpoint
-    from needle.model.tokenizer import get_tokenizer
+    from cactus.model.export import write_export
+    from cactus.model.run import load_checkpoint
+    from cactus.model.tokenizer import get_tokenizer
 
     params, config = load_checkpoint(tiny_checkpoint)
     path = tmp_path_factory.mktemp("base") / "needle3.cact"
@@ -89,7 +81,7 @@ def tiny_base_archive(tiny_checkpoint, tmp_path_factory):
 
 @pytest.fixture
 def published_base(tiny_base_archive, monkeypatch):
-    from needle.agent import fetch
+    from cactus.agent import fetch
 
     calls = []
 
@@ -137,9 +129,9 @@ def _fake_cact(path, heads):
 
 @pytest.fixture(scope="session")
 def needle3_checkpoint():
-    path = os.environ.get("NEEDLE_MLX_PARITY_CHECKPOINT", "checkpoints/needle3.safetensors")
+    path = os.environ.get("CACTUS_MLX_PARITY_CHECKPOINT", "checkpoints/needle3.safetensors")
     if not os.path.exists(path):
-        pytest.skip(f"no Needle 3 checkpoint at {path} (set NEEDLE_MLX_PARITY_CHECKPOINT)")
+        pytest.skip(f"no Needle 3 checkpoint at {path} (set CACTUS_MLX_PARITY_CHECKPOINT)")
     return path
 
 
@@ -163,8 +155,8 @@ def _perturbed_model(**overrides):
     import numpy as np
     import jax
     import jax.numpy as jnp
-    from needle.model.architecture import SimpleAttentionNetwork, TransformerConfig
-    from needle.model.checkpoints import flatten, unflatten
+    from cactus.model.architecture import SimpleAttentionNetwork, TransformerConfig
+    from cactus.model.checkpoints import flatten, unflatten
 
     fields = dict(
         vocab_size=512, out_vocab=500, d_model=48, num_heads=4, num_kv_heads=2,
@@ -184,7 +176,7 @@ def _perturbed_model(**overrides):
 
 @pytest.fixture
 def deploy_numerics():
-    from needle.model import quantize
+    from cactus.model import quantize
 
     saved = quantize.ACT_BITS, quantize.KV_BITS, quantize._KV_GROUP
 

@@ -6,13 +6,13 @@ import pytest
 
 @pytest.fixture(scope="module")
 def tok():
-    from needle.model.tokenizer import get_tokenizer
+    from cactus.model.tokenizer import get_tokenizer
     return get_tokenizer(8192)
 
 
 def test_render_example_markers():
-    from needle.model.finetune import render_example
-    from needle.model.tokenizer import IM_START, TOOLS_START, TOOL_CALL_START, THINK_START
+    from cactus.model.finetune import render_example
+    from cactus.model.tokenizer import IM_START, TOOLS_START, TOOL_CALL_START, THINK_START
 
     example = {"tools": [{"name": "f", "parameters": {"type": "object", "properties": {}}}],
                "query": "do the thing", "reasoning": "because reasons",
@@ -28,8 +28,8 @@ def test_render_example_markers():
 
 
 def test_render_example_matches_training_template():
-    from needle.model.finetune import render_example
-    from needle.model.tokenizer import (IM_END, THINK_START, THINK_END,
+    from cactus.model.finetune import render_example
+    from cactus.model.tokenizer import (IM_END, THINK_START, THINK_END,
                                         TOOL_CALL_START, TOOL_CALL_END)
 
     example = {"tools": [], "query": "q", "reasoning": "'q' -> f",
@@ -41,8 +41,8 @@ def test_render_example_matches_training_template():
 
 
 def test_render_example_empty_reasoning_omits_think():
-    from needle.model.finetune import render_example
-    from needle.model.tokenizer import THINK_START, TOOL_CALL_START
+    from cactus.model.finetune import render_example
+    from cactus.model.tokenizer import THINK_START, TOOL_CALL_START
 
     for example in ({"tools": [], "query": "q", "answers": []},
                     {"tools": [], "query": "q", "reasoning": "", "answers": []},
@@ -54,7 +54,7 @@ def test_render_example_empty_reasoning_omits_think():
 
 
 def test_render_example_keeps_unicode():
-    from needle.model.finetune import render_example
+    from cactus.model.finetune import render_example
 
     example = {"tools": [{"name": "f", "parameters": {"type": "object", "properties": {
                    "name": {"type": "string", "description": "café"}}}}],
@@ -66,7 +66,7 @@ def test_render_example_keeps_unicode():
 
 
 def test_render_example_accepts_function_calls_alias():
-    from needle.model.finetune import render_example
+    from cactus.model.finetune import render_example
     example = {"tools": [], "query": "hi",
                "function_calls": [{"name": "g", "arguments": {"x": 1}}]}
     _, target = render_example(example)
@@ -74,8 +74,8 @@ def test_render_example_accepts_function_calls_alias():
 
 
 def test_encode_loss_mask_targets_only(tok):
-    from needle.model.finetune import _encode, render_example
-    from needle.model.tokenizer import BOS_ID
+    from cactus.model.finetune import _encode, render_example
+    from cactus.model.tokenizer import BOS_ID
 
     example = {"tools": [{"name": "f", "parameters": {"type": "object", "properties": {}}}],
                "query": "hello", "answers": [{"name": "f", "arguments": {}}]}
@@ -91,7 +91,7 @@ def test_encode_loss_mask_targets_only(tok):
 
 
 def test_fit_max_len_buckets(tok, tmp_path):
-    from needle.model.finetune import fit_max_len
+    from cactus.model.finetune import fit_max_len
 
     path = tmp_path / "data.jsonl"
     with open(path, "w") as handle:
@@ -102,7 +102,7 @@ def test_fit_max_len_buckets(tok, tmp_path):
 
 
 def test_load_jsonl_shapes_and_skips_invalid(tok, tmp_path):
-    from needle.model.finetune import load_jsonl
+    from cactus.model.finetune import load_jsonl
 
     path = tmp_path / "data.jsonl"
     rows = [

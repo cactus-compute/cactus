@@ -4,7 +4,7 @@ pytestmark = requires_engine
 
 
 def test_tool_call():
-    from needle import Needle, tool
+    from cactus import Needle, tool
 
     @tool
     def send_email(to: str, subject: str, body: str):
@@ -20,7 +20,7 @@ def test_tool_call():
 
 def test_structured_extraction():
     import pydantic
-    from needle import extract
+    from cactus import extract
 
     class Contact(pydantic.BaseModel):
         name: str
@@ -31,7 +31,7 @@ def test_structured_extraction():
 
 
 def test_run_agentic_loop():
-    from needle import Needle, tool
+    from cactus import Needle, tool
 
     @tool
     def get_weather(city: str):
@@ -45,7 +45,7 @@ def test_run_agentic_loop():
 
 
 def test_two_agents():
-    from needle import Needle, tool
+    from cactus import Needle, tool
 
     @tool
     def set_thermostat(temperature: int):
@@ -71,7 +71,7 @@ def test_two_agents():
 
 def test_extract_keeps_agent_tools():
     import pydantic
-    from needle import Needle, extract, tool
+    from cactus import Needle, extract, tool
 
     @tool
     def set_thermostat(temperature: int):

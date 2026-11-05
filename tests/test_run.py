@@ -38,7 +38,7 @@ def test_read_checkpoint_rejects_pkl_without_executing(tmp_path):
     if it were, _SideEffect would propagate before any ValueError could be
     raised, and the test would fail on that exception instead.
     """
-    from needle.model.checkpoints import read_checkpoint
+    from cactus.model.checkpoints import read_checkpoint
 
     path = tmp_path / "evil.pkl"
     _write_malicious_pickle(path)
@@ -54,7 +54,7 @@ def test_read_adapter_rejects_pkl_without_executing(tmp_path):
     if it were, _SideEffect would propagate before any ValueError could be
     raised, and the test would fail on that exception instead.
     """
-    from needle.model.checkpoints import read_adapter
+    from cactus.model.checkpoints import read_adapter
 
     path = tmp_path / "evil_adapter.pkl"
     _write_malicious_pickle(path)
@@ -77,7 +77,7 @@ def test_read_checkpoint_rejects_pickle_disguised_as_safetensors(tmp_path):
     the test would fail with an RCE marker rather than a false pass.
     """
     from safetensors import SafetensorError
-    from needle.model.checkpoints import read_checkpoint
+    from cactus.model.checkpoints import read_checkpoint
 
     path = tmp_path / "disguised.safetensors"
     _write_malicious_pickle(path)
@@ -98,7 +98,7 @@ def test_read_adapter_rejects_pickle_disguised_as_safetensors(tmp_path):
     variant above; see that test's docstring for the full explanation.
     """
     from safetensors import SafetensorError
-    from needle.model.checkpoints import read_adapter
+    from cactus.model.checkpoints import read_adapter
 
     path = tmp_path / "disguised_adapter.safetensors"
     _write_malicious_pickle(path)
@@ -108,7 +108,7 @@ def test_read_adapter_rejects_pickle_disguised_as_safetensors(tmp_path):
 
 
 def test_build_prompt_passthrough_without_tools():
-    from needle.model.run import build_prompt
+    from cactus.model.run import build_prompt
 
     assert build_prompt("hello world") == "hello world"
     assert build_prompt("hello world", tools=[]) == "hello world"
@@ -116,9 +116,9 @@ def test_build_prompt_passthrough_without_tools():
 
 
 def test_build_prompt_matches_training_template():
-    from needle.model.finetune import render_example
-    from needle.model.run import build_prompt
-    from needle.model.tokenizer import IM_START, TOOLS_START
+    from cactus.model.finetune import render_example
+    from cactus.model.run import build_prompt
+    from cactus.model.tokenizer import IM_START, TOOLS_START
 
     tools = [{"name": "f", "parameters": {"type": "object", "properties": {}}}]
     expected, _ = render_example({"query": "do the thing", "tools": tools})
@@ -132,18 +132,18 @@ def test_build_prompt_matches_training_template():
 
 def test_needle2_checkpoint_is_rejected_with_a_version_hint(tmp_path):
     import pytest
-    from needle.model.run import load_checkpoint
-    from needle.model.checkpoints import write_checkpoint
+    from cactus.model.run import load_checkpoint
+    from cactus.model.checkpoints import write_checkpoint
 
     path = tmp_path / "needle2.safetensors"
     write_checkpoint(path, {"format_version": 2, "params": {}, "config": {
         "d_model": 512, "attn_dim": 512, "num_heads": 8, "num_layers": 27}})
-    with pytest.raises(ValueError, match="Needle 2 checkpoint.*cactus-needle<3"):
+    with pytest.raises(ValueError, match="Needle 2 checkpoint.*cactus-compute<3"):
         load_checkpoint(str(path))
 
 
 def test_main_loads_tools_file_and_runs(tiny_checkpoint, tmp_path, capsys):
-    from needle.model.run import main
+    from cactus.model.run import main
 
     tools = [{"name": "f", "parameters": {"type": "object", "properties": {}}}]
     path = tmp_path / "tools.json"
@@ -161,8 +161,8 @@ def test_main_loads_tools_file_and_runs(tiny_checkpoint, tmp_path, capsys):
 def test_missing_checkpoint_is_looked_up_under_checkpoints_then_at_the_repo_root(monkeypatch, tmp_path):
     from huggingface_hub.errors import EntryNotFoundError
     import huggingface_hub
-    from needle.agent import fetch
-    from needle.model import run
+    from cactus.agent import fetch
+    from cactus.model import run
 
     attempted = []
     registered = []

@@ -21,4 +21,4 @@ call "%VENV_DIR%\Scripts\activate.bat"
 python -m pip install --upgrade pip -q
 python -m pip install -e ".[train,mic]" -q
 
-needle --help
+cactus --help

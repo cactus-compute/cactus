@@ -1,3 +1,4 @@
+from cactus.agent import runtime
 import json
 import re
 import types
@@ -5,8 +6,8 @@ import types
 import pytest
 
 from conftest import requires_engine
-from needle import environments, tool
-from needle.environments import _harness
+from cactus import environments, tool
+from cactus.environments import _harness
 
 CATEGORIES = {"positive", "missing", "irrelevant", "negation", "invalid", "parallel"}
 
@@ -17,12 +18,12 @@ def env(request):
 
 
 def _schemas(env):
-    return {fn._needle_tool["name"]: fn._needle_tool for fn in env.TOOLS}
+    return {fn._cactus_tool["name"]: fn._cactus_tool for fn in env.TOOLS}
 
 
 def test_registry_matches_modules():
     for name, module in environments.ENVIRONMENTS.items():
-        assert module.__name__ == f"needle.environments.{name}"
+        assert module.__name__ == f"cactus.environments.{name}"
         assert module.SYSTEM and module.TOOLS and module.TEST_CASES
 
 
@@ -60,7 +61,7 @@ def test_cases_match_declared_tools(env):
 
 
 def test_tools_execute(env):
-    schemas = {fn._needle_tool["name"]: fn for fn in env.TOOLS}
+    schemas = {fn._cactus_tool["name"]: fn for fn in env.TOOLS}
     for case in env.TEST_CASES:
         for call in case["calls"]:
             result = schemas[call["name"]](**call["arguments"])
@@ -69,7 +70,7 @@ def test_tools_execute(env):
 
 @requires_engine
 def test_smart_home_smoke():
-    from needle.environments import smart_home
+    from cactus.environments import smart_home
 
     response = smart_home.agent.complete("turn on the kitchen lights")
     assert response.get("type") in ("call", "text", "refuse")
@@ -96,15 +97,15 @@ class _Stub:
     """Engine stand-in whose reply is chosen from the query, so a suite's
     outcome is decided by its own cases rather than by a model."""
 
-    def needle_init(self, system, tools, index):
+    def cactus_init(self, system, tools, index):
         return 0
 
-    def needle_load(self, blob, size):
+    def cactus_load(self, blob, size):
         return 0
 
-    def needle_complete(self, text, *args):
+    def cactus_complete(self, text, *args):
         # The output buffer is the second-to-last argument in every
-        # needle_complete signature, for both engine generations.
+        # cactus_complete signature, for both engine generations.
         buffer = args[-2]
         prompt = text.decode("utf-8").strip()
         matched = not prompt.startswith(_FAIL)
@@ -116,21 +117,21 @@ class _Stub:
         }).encode("utf-8")
         return 0
 
-    def needle_reset(self):
+    def cactus_reset(self):
         pass
 
 
 @pytest.fixture
 def stub(monkeypatch):
-    import needle
+    import cactus
 
     engine = _Stub()
-    monkeypatch.setenv("NEEDLE_TELEMETRY", "0")
+    monkeypatch.setenv("CACTUS_TELEMETRY", "0")
     # agent_for sets this with setdefault, so claiming it here keeps the change
     # from leaking into the rest of the process.
-    monkeypatch.setenv("NEEDLE_STRICT_VALIDATE", "1")
-    monkeypatch.setattr(needle, "_lib", lambda generation=2: engine)
-    monkeypatch.setattr(needle, "_active", {})
+    monkeypatch.setenv("CACTUS_STRICT_VALIDATE", "1")
+    monkeypatch.setattr(runtime, "_lib", lambda generation=2: engine)
+    monkeypatch.setattr(runtime, "_active", {})
     monkeypatch.setattr(_harness, "_agents", {})
 
 

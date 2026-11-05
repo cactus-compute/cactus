@@ -1,16 +1,7 @@
 name: publish-component
 
-# Publishes the WebAssembly component of a Needle engine generation to GHCR as
-# an OCI artifact and signs it with Sigstore keyless signing, so consumers can
-# pull it with oras or wkg and verify the signature with cosign.
 on:
   workflow_dispatch:
-    inputs:
-      generation:
-        description: Needle engine generation
-        default: "2"
-        type: choice
-        options: ["2", "3"]
   push:
     tags: ["v*"]
 
@@ -32,12 +23,10 @@ jobs:
       - run: pip install -e .
       - id: component
         run: |
-          generation="${{ github.event.inputs.generation || '2' }}"
-          needle download wasm-component --generation "$generation" --out .
-          version=$(python3 -c "from needle.agent import fetch; print(fetch.engine_version($generation))")
-          echo "generation=$generation" >> "$GITHUB_OUTPUT"
+          cactus download wasm-component --out .
+          version=$(python3 -c "from cactus.agent.fetch import ENGINE_VERSION; print(ENGINE_VERSION)")
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "image=ghcr.io/${{ github.repository_owner }}/needle${generation}-component" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${{ github.repository_owner }}/cactus-runtime-component" >> "$GITHUB_OUTPUT"
       - uses: oras-project/setup-oras@v1
       - uses: sigstore/cosign-installer@v3
       - run: echo "${{ secrets.GITHUB_TOKEN }}" | oras login ghcr.io --username "${{ github.actor }}" --password-stdin
@@ -50,10 +39,10 @@ jobs:
             --artifact-type application/vnd.wasm.component.v1+wasm \
             --annotation "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --annotation "org.opencontainers.image.version=$version" \
-            --annotation "org.opencontainers.image.title=needle.component.wasm" \
+            --annotation "org.opencontainers.image.title=cactus.component.wasm" \
             --format go-template='{{.digest}}' \
-            needle.component.wasm:application/vnd.wasm.component.v1+wasm \
-            needle.wit:text/plain)
+            cactus.component.wasm:application/vnd.wasm.component.v1+wasm \
+            cactus.wit:text/plain)
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "published $image:$version@$digest"
       - run: cosign sign --yes "${{ steps.component.outputs.image }}@${{ steps.push.outputs.digest }}"

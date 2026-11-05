@@ -1,7 +1,5 @@
 name: release
 
-# Daily release train at 09:00 America/Los_Angeles. A day where nothing landed
-# on main is a no-op: the release job sees HEAD already tagged and skips.
 on:
   schedule:
     - cron: "0 16 * * *"
@@ -24,49 +22,24 @@ jobs:
       - id: check
         run: |
           if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"        # manual runs always proceed
+            echo "run=true" >> "$GITHUB_OUTPUT"
           elif [ "$(TZ=America/Los_Angeles date +%H)" = "09" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"        # 09:00 Pacific
+            echo "run=true" >> "$GITHUB_OUTPUT"
           else
-            echo "run=false" >> "$GITHUB_OUTPUT"       # the other DST candidate; skip
+            echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
   test:
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -e ".[test,train]"
-      - run: pytest -q -m "not slow"
-
-  # MLX parity against JAX (marked slow, run on the CPU device via mlx[cpu]).
-  # Kept out of `release`'s needs so a parity regression shows up nightly
-  # without blocking the publish.
-  test-mlx:
-    needs: gate
-    if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -e ".[test,train,mlx]"
-      # NEEDLE_REQUIRE_MLX turns a missing mlx into an error instead of a silent skip.
-      - run: pytest -q -m slow tests/test_mlx.py tests/test_quantize_mlx.py
-        env:
-          NEEDLE_REQUIRE_MLX: "1"
+    uses: ./.github/workflows/verify.yaml
 
   release:
     needs: [gate, test]
     if: needs.gate.outputs.run == 'true' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
-      contents: write        # pushes the vX.Y.Z release tag
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,8 +51,6 @@ jobs:
       - id: version
         run: |
           last=$(git tag --list 'v*' --sort=-v:refname | head -1)
-          # New release tags include a metadata-only child commit. Its parent
-          # is the main commit that was tested and published.
           source=""
           if [ -n "$last" ]; then
             source=$(git rev-parse "$last^{commit}")
@@ -91,12 +62,8 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # A manual bump on main or a publish whose tag step failed leaves
-          # PyPI ahead of the tags; the next version follows whichever is newer.
           published=$(curl -sf https://pypi.org/pypi/cactus-compute/json | python3 -c 'import json,sys; print(json.loads(sys.stdin.read(), strict=False)["info"]["version"])' || true)
           current=$(printf '%s\n%s\n' "${last#v}" "$published" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
-          # A version in pyproject.toml above everything published is a deliberate
-          # bump (a new major or minor): release exactly that, otherwise step the patch.
           declared=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
           if [ "$(printf '%s\n%s\n' "$current" "$declared" | sort -V | tail -1)" = "$declared" ] && [ "$declared" != "$current" ]; then
             echo "next=$declared" >> "$GITHUB_OUTPUT"
@@ -107,14 +74,12 @@ jobs:
         run: |
           next="${{ steps.version.outputs.next }}"
           sed -i "s/^version = \".*\"/version = \"$next\"/" pyproject.toml
-          sed -i "s/^__version__ = \".*\"/__version__ = \"$next\"/" needle/__init__.py
-      # The engine wheels live on the Hub and are uploaded separately. Publishing a
-      # pin whose wheels are not there yet makes every fresh install fail at first use.
+          sed -i "s/^__version__ = \".*\"/__version__ = \"$next\"/" cactus/__init__.py
       - if: steps.version.outputs.skip != 'true'
         run: |
           pip install huggingface_hub
           python - <<'PY'
-          from needle.agent import fetch
+          from cactus.agent import fetch
           missing = fetch.unpublished_engine_wheels()
           if missing:
               raise SystemExit("engine wheels missing from the Hub, refusing to publish:\n  "
@@ -133,11 +98,9 @@ jobs:
           skip-existing: true
       - if: steps.version.outputs.skip != 'true'
         run: |
-          # Preserve the exact versioned source used for the distribution.
-          # Keep the release-only commit on the tag, without writing to main.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml needle/__init__.py
+          git add pyproject.toml cactus/__init__.py
           git diff --cached --quiet || git commit -m "chore: release ${{ steps.version.outputs.next }}"
           git tag "v${{ steps.version.outputs.next }}"
           git push origin "v${{ steps.version.outputs.next }}"
