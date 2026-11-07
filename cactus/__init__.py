@@ -4,7 +4,7 @@ from .agent.mirage import Mirage, describe
 from .agent.tools import Field, tool
 from .agent.grounding import ExtractionValidationError
 
-__version__ = "4.0.0"
+__version__ = "4.0.2"
 Needle = Cactus
 
 __all__ = ["Cactus", "Needle", "Whistle", "Mirage", "Field", "tool", "extract",
