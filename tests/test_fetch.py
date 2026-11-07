@@ -410,7 +410,7 @@ def test_corrupt_artifact_cannot_replace_existing_library(tmp_path, monkeypatch)
     target = tmp_path / 'installed' / 'libcactus.so'
     target.parent.mkdir()
     target.write_bytes(b'working engine')
-    filename = 'python/cactus_runtime-4.0.0-py3-none-manylinux2014_x86_64.whl'
+    filename = f'python/cactus_runtime-{fetch.ENGINE_VERSION}-py3-none-manylinux2014_x86_64.whl'
     monkeypatch.setattr(fetch, '_manifest', lambda: {'files': {filename: {'size': 7, 'sha256': hashlib.sha256(b'correct').hexdigest()}}})
     monkeypatch.setattr('huggingface_hub.hf_hub_download', lambda **kwargs: str(path))
     with pytest.raises(RuntimeError, match='artifact checksum mismatch'):
