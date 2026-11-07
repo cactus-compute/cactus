@@ -62,6 +62,7 @@ def _child():
         if config is None:
             return 1
         lib = _load_library(config["library"])
+        lib.cactus_set_threads(int(config["threads"]))
         speech_weights = None
         with open(config["weights"], "rb") as handle:
             weights = handle.read()
@@ -163,6 +164,7 @@ def _child():
 class FineTuneWorker:
     def __init__(self, library, weights, system, tools, tool_index,
                  buffer_size, startup_timeout=300):
+        from .agent import runtime
         self._lock = threading.Lock()
         self._messages = queue.Queue()
         self._closed = False
@@ -175,6 +177,7 @@ class FineTuneWorker:
         try:
             self._send({
                 "library": os.fspath(library),
+                "threads": runtime._threads,
                 "weights": os.path.abspath(os.fspath(weights)),
                 "system": system,
                 "tools": tools,

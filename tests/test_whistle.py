@@ -28,6 +28,9 @@ class _Stub:
         argtypes = None
         restype = None
 
+        def __call__(self, *args):
+            return 0
+
     def __getattr__(self, name):
         return _Stub._Fn()
 

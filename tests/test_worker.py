@@ -32,6 +32,7 @@ def stub_engine(tmp_path):
 
 static int model_id;
 static int resets;
+static int threads;
 
 int cactus_load(const unsigned char* data, unsigned long long size) {
     if (!data || size < 6 || data[4] == 0) return -1;
@@ -52,8 +53,8 @@ int cactus_complete(const char* input, const float* pcm, int samples,
     (void)samples;
     (void)max_new_tokens;
     snprintf(output, (size_t)capacity,
-             "{\"type\":\"text\",\"model\":%d,\"resets\":%d,"
-             "\"input\":\"%s\"}", model_id, resets, input);
+             "{\"type\":\"text\",\"model\":%d,\"resets\":%d,\"threads\":%d,"
+             "\"input\":\"%s\"}", model_id, resets, threads, input);
     return 1;
 }
 
@@ -73,6 +74,7 @@ int cactus_embed(const char* input, const float* pcm, int samples,
 int cactus_models(void) { return 1; }
 const char* cactus_last_error(void) { return "stub engine error"; }
 void cactus_set_audio(const char* language, const char* keywords, int timestamps) {}
+void cactus_set_threads(int count) { threads = count; }
 int cactus_transcribe(void) { return -1; }
 int cactus_stream_transcribe_process(void) { return -1; }
 int cactus_stream_transcribe_stop(void) { return -1; }
@@ -113,6 +115,15 @@ def test_finetunes_run_in_independent_processes(stub_engine, tmp_path):
     assert second._process.poll() is not None
 
 
+def test_workers_use_the_thread_count(stub_engine, tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime, "_threads", 3)
+    worker = FineTuneWorker(stub_engine, _weights(tmp_path / "tuned.cact", 5), "", "[]", None, 4096)
+    try:
+        assert json.loads(worker.complete("hi", 8))["threads"] == 3
+    finally:
+        worker.close()
+
+
 def test_tuned_agents_use_independent_workers(stub_engine, tmp_path,
                                                monkeypatch):
     import cactus
@@ -149,6 +160,22 @@ def test_tuned_embeddings_go_through_the_worker(stub_engine, tmp_path):
         assert worker.embed("hello") == [5.0, 6.0, 7.0]
     finally:
         worker.close()
+
+
+def test_set_threads_reaches_the_engine(monkeypatch):
+    calls = []
+
+    class Lib:
+        def cactus_set_threads(self, threads):
+            calls.append(threads)
+    monkeypatch.setitem(runtime._lib_handles, 3, Lib())
+    monkeypatch.setattr(runtime, "_threads", 0)
+    runtime.set_threads(4)
+    assert calls == [4] and runtime._threads == 4
+    for bad in (-1, 2.5, True, "4"):
+        with pytest.raises(ValueError, match="whole number"):
+            runtime.set_threads(bad)
+    assert calls == [4]
 
 
 def test_legacy_abi_cannot_be_used_as_the_new_runtime(monkeypatch):

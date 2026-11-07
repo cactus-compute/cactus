@@ -26,6 +26,7 @@ def bind(lib):
         "init": ([text, text, text], integer),
         "complete": ([text, samples, integer, integer, text, integer], integer),
         "set_audio": ([text, text, integer], None),
+        "set_threads": ([integer], None),
         "reset": ([], None),
         "embed": ([text, samples, integer, samples, integer], integer),
         "transcribe": ([samples, integer, text, text, integer, text, integer], integer),
@@ -62,6 +63,17 @@ def _base_weights_path(generation=3):
 _lib_handles = {}
 _active = {}
 _loaded_base = {}
+_threads = 0
+
+
+@synchronized
+def set_threads(threads):
+    global _threads
+    if isinstance(threads, bool) or not isinstance(threads, int) or threads < 0:
+        raise ValueError("threads must be a whole number, or 0 for the automatic count")
+    _threads = threads
+    if 3 in _lib_handles:
+        _lib_handles[3].cactus_set_threads(threads)
 
 
 def _load_base(lib, generation):
@@ -107,4 +119,5 @@ def _lib(generation=3):
     fetch._engine(generation)
     if 3 not in _lib_handles:
         _lib_handles[3] = bind(_load_cdll(3))
+        _lib_handles[3].cactus_set_threads(_threads)
     return _lib_handles[3]

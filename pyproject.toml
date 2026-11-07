@@ -1,6 +1,6 @@
 [project]
 name = "cactus-compute"
-version = "4.0.0"
+version = "4.1.0"
 description = "30mb voice, vision and agentic AI for consumer devices."
 requires-python = ">=3.9"
 readme = "README.md"
