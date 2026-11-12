@@ -3,6 +3,16 @@ import os
 
 import pytest
 
+# CQ Metal inference has a newer platform requirement than the training backend.
+import importlib.util
+import platform
+import sys
+
+if not (sys.platform == "darwin" and platform.machine() == "arm64"
+        and int((platform.mac_ver()[0] or "0").split(".")[0]) >= 26
+        and importlib.util.find_spec("mlx_lm") is not None):
+    collect_ignore = ["mlx_inference"]
+
 
 def _engine_available(generation=3):
     """Whether ``runtime._library_path`` would find an engine without downloading.

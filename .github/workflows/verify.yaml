@@ -60,3 +60,19 @@ jobs:
         env:
           CACTUS_REQUIRE_MLX: '1'
           CACTUS_TELEMETRY: '0'
+  mlx-inference:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install build
+      - run: python -m build
+      - run: python -c "import glob,subprocess,sys; subprocess.check_call([sys.executable,'-m','pip','install',glob.glob('dist/*.whl')[0]+'[mlx,test]'])"
+      - run: cactus-mlx --help
+      - run: cactus-mlx generate --help
+      - run: cactus-mlx server --help
+      - run: pytest -q tests/test_mlx_entrypoint.py tests/mlx_inference
+        env:
+          CACTUS_TELEMETRY: '0'
