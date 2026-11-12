@@ -1,7 +1,7 @@
 [project]
 name = "cactus-compute"
-version = "4.1.0"
-description = "30mb voice, vision and agentic AI for consumer devices."
+version = "4.2.0"
+description = "Local voice, vision, agents and quantized language-model inference."
 requires-python = ">=3.9"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -33,7 +33,15 @@ mic = ["numpy", "soxr", "sounddevice"]
 compare = ["openai-whisper", "moonshine-voice"]
 test = ["pytest", "pydantic"]
 # mlx-cpu (the CPU backend Linux needs) is gated to Linux by mlx itself; macOS gets mlx + Metal.
-mlx = ["mlx[cpu]"]
+mlx = [
+    "mlx[cpu]",
+    "mlx==0.32.4; sys_platform == 'darwin' and platform_machine == 'arm64' and python_version >= '3.12'",
+    "mlx-lm==0.32.2; sys_platform == 'darwin' and platform_machine == 'arm64' and python_version >= '3.12'",
+    "transformers==5.22.2; sys_platform == 'darwin' and platform_machine == 'arm64' and python_version >= '3.12'",
+    "numpy==2.5.4; sys_platform == 'darwin' and platform_machine == 'arm64' and python_version >= '3.12'",
+    "huggingface-hub==2.4.0; sys_platform == 'darwin' and platform_machine == 'arm64' and python_version >= '3.12'",
+    "Pillow==13.0.0; sys_platform == 'darwin' and platform_machine == 'arm64' and python_version >= '3.12'",
+]
 
 [project.urls]
 Homepage = "https://cactuscompute.com"
@@ -42,6 +50,7 @@ Repository = "https://github.com/cactus-compute/cactus"
 
 [project.scripts]
 cactus = "cactus.cli:main"
+cactus-mlx = "cactus.mlx.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["cactus*"]
@@ -49,6 +58,7 @@ include = ["cactus*"]
 [tool.setuptools.package-data]
 "cactus.model" = ["*.model", "*.vocab"]
 "cactus.playground" = ["index.html", "app.js", "style.css"]
+"cactus.mlx" = ["kernels/*.metal", "NOTICE"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

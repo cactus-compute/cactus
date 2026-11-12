@@ -5,7 +5,7 @@ from .agent.tools import Field, tool
 from .agent.grounding import ExtractionValidationError
 from .agent.runtime import set_threads
 
-__version__ = "4.1.0"
+__version__ = "4.2.0"
 Needle = Cactus
 
 __all__ = ["Cactus", "Needle", "Whistle", "Mirage", "Field", "tool", "extract",

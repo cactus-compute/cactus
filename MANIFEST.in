@@ -1,3 +1,5 @@
 include README.md LICENSE llms.txt
 recursive-include cactus/model *.model *.vocab
 include cactus/playground/index.html cactus/playground/app.js cactus/playground/style.css
+recursive-include cactus/mlx/kernels *.metal
+include cactus/mlx/NOTICE

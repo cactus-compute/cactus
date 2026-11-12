@@ -1,0 +1,6 @@
+The image processor and C-RADIO implementation adapt NVIDIA's NemotronH
+Omni and RADIO definitions. Copyright (c) 2026 NVIDIA CORPORATION.
+All rights reserved. Licensed under Apache License 2.0.
+Source: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16
+Revision: fb0ee0bc6b3f70342afd8d84cb80dbadbaa8a1fe
+Modified by Cactus Compute for MLX and the consolidated CQ checkpoint.

@@ -50,6 +50,37 @@ import cactus
 print(cactus.Mirage().describe("photo.png"))
 ```
 
+## MLX language models on Mac
+
+Run CQ checkpoints with the `cactus-mlx` command, included in this package.
+Requires Apple silicon, macOS 26 or newer, and Python 3.12 or newer.
+
+```sh
+pip install -U 'cactus-compute[mlx]'
+cactus-mlx generate \
+  --model Cactus-Compute/nemotron-3.5-120b-cq \
+  --prompt 'Write a Python function is_prime(n).' \
+  --max-tokens 256
+```
+
+The selected model downloads and caches on first use. `--model` also accepts a
+local model directory. Use `--image photo.jpg` with a vision-capable checkpoint.
+Greedy generation uses verified MTP by default; `--no-mtp` disables it.
+
+For a local OpenAI-compatible API:
+
+```sh
+cactus-mlx server --model Cactus-Compute/nemotron-3.5-120b-cq --port 8080
+```
+
+Python applications can use `from cactus.mlx import load, generate, stream_generate`.
+The current adapter supports Nemotron-H CQ checkpoints. The existing `cactus`
+command and Needle, Whistle and Mirage APIs continue to use their native engine.
+The `[mlx]` extra also retains the existing MLX training backend.
+
+If you installed the earlier standalone `cactus-mlx` wheel, uninstall it before
+installing this release. Its Python imports move from `cactus_mlx` to `cactus.mlx`.
+
 ## Documentation
 
 - [Python API and CLI](https://cactuscompute.com/blog/needle-python-docs)
