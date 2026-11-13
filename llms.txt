@@ -296,5 +296,5 @@ Adapt by swapping the Literal values for your own and keeping the shapes: closed
 
 ## Telemetry
 
-Anonymous usage counts only (function name, package version, OS, random install id - never prompts, outputs, or data). Opt out with `NEEDLE_TELEMETRY=0` or `DO_NOT_TRACK=1`; `CI` environments are excluded automatically.
+Anonymous usage counts only (function name, package version, OS, random install id - never prompts, outputs, or data). Opt out with `CACTUS_TELEMETRY=0` or `DO_NOT_TRACK=1` (the older `NEEDLE_TELEMETRY=0` still works); `CI` environments are excluded automatically.
 ```

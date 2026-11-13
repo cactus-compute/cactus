@@ -26,6 +26,9 @@ _anon_id: str | None = None
 def _enabled() -> bool:
     if os.environ.get("CACTUS_TELEMETRY", "1") == "0":
         return False
+    # The opt-out documented before the rename to cactus-compute.
+    if os.environ.get("NEEDLE_TELEMETRY", "1") == "0":
+        return False
     if os.environ.get("DO_NOT_TRACK"):
         return False
     if os.environ.get("CI"):
