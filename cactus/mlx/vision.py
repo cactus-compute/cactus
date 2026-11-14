@@ -2,24 +2,32 @@
 
 Patch sizing follows NVIDIA's NemotronH Omni image processor (Apache-2.0).
 Copyright (c) 2026 NVIDIA CORPORATION. All rights reserved.
-Modified by Cactus Compute: NumPy resizing and MLX-LM processor interface.
+Modified by Cactus Compute: Metal resizing and MLX-LM processor interface.
 Licensed under the Apache License, Version 2.0; see LICENSE.
 """
 import base64
 import io
 import math
+from functools import cache, lru_cache
 from pathlib import Path
 from urllib.request import urlopen
 
+import mlx.core as mx
 import numpy as np
 from PIL import Image
 
+from .ops import KERNELS
+
+
+def _rgb_pixels(image):
+    return np.asarray(image if image.mode == 'RGB' else image.convert('RGB'))
+
 
 def load_image(source):
-    if isinstance(source, Image.Image):
-        return source.convert('RGB')
     if isinstance(source, np.ndarray):
-        return Image.fromarray(source).convert('RGB')
+        source = Image.fromarray(source)
+    if isinstance(source, Image.Image):
+        return _rgb_pixels(source)
     source = str(source)
     if source.startswith('data:'):
         source = io.BytesIO(base64.b64decode(source.partition(',')[2], validate=True))
@@ -29,39 +37,43 @@ def load_image(source):
     else:
         source = Path(source).expanduser()
     with Image.open(source) as image:
-        return image.convert('RGB')
+        return _rgb_pixels(image)
 
 
-def resize_bicubic(image, height, width):
-    """Float32 antialiased bicubic resize; retain overshoot as PyTorch does."""
-    image = np.asarray(image, dtype=np.float32)
+@lru_cache(maxsize=32)
+def _bicubic_taps(original, output):
+    scale = np.float32(original / output)
+    filter_scale = np.maximum(scale, np.float32(1))
+    support = np.float32(2) * filter_scale
+    center = scale * (np.arange(output, dtype=np.float32) + np.float32(0.5))
+    first = np.maximum(0, (center - support + np.float32(0.5)).astype(np.int64))
+    end = np.minimum(original, (center + support + np.float32(0.5)).astype(np.int64))
+    position = first[:, None] + np.arange((end - first).max())
+    x = np.abs((position.astype(np.float32) + np.float32(0.5) - center[:, None]) / filter_scale)
+    weights = np.where(x < 1, ((np.float32(1.5) * x - np.float32(2.5)) * x) * x + 1,
+                       ((np.float32(-0.5) * x + np.float32(2.5)) * x - 4) * x + 2)
+    weights[(x >= 2) | (position >= end[:, None])] = 0
+    weights /= weights.sum(axis=1, keepdims=True, dtype=np.float32)
+    return mx.array(weights), mx.array(np.minimum(position, original - 1).astype(np.uint32))
 
-    def axis_resize(data, output, axis):
-        original = data.shape[axis]
-        if original == output:
-            return data
-        scale = np.float32(original / output)
-        filter_scale = np.maximum(scale, np.float32(1))
-        support = np.float32(2) * filter_scale
-        shape = list(data.shape)
-        shape[axis] = output
-        result = np.empty(shape, dtype=np.float32)
-        for index in range(output):
-            center = scale * np.float32(index + 0.5)
-            first = max(0, int(center - support + np.float32(0.5)))
-            end = min(original, int(center + support + np.float32(0.5)))
-            x = np.abs((np.arange(first, end, dtype=np.float32) + np.float32(0.5) - center) / filter_scale)
-            coefficients = np.where(x < 1, ((np.float32(1.5) * x - np.float32(2.5)) * x) * x + 1,
-                                    ((np.float32(-0.5) * x + np.float32(2.5)) * x - 4) * x + 2)
-            coefficients[x >= 2] = 0
-            coefficients /= coefficients.sum(dtype=np.float32)
-            if axis == 1:
-                result[:, index] = np.einsum('hkc,k->hc', data[:, first:end], coefficients)
-            else:
-                result[index] = np.einsum('kwc,k->wc', data[first:end], coefficients)
-        return result
 
-    return axis_resize(axis_resize(image, width, 1), height, 0)
+@cache
+def _resize_kernel():
+    return mx.fast.metal_kernel(
+        name='bicubic_resize', output_names=['out'],
+        input_names=['pixels', 'column_weights', 'columns', 'row_weights', 'rows', 'mean', 'std'],
+        source=(KERNELS / 'bicubic_resize.metal').read_text(), compile_options={'math_mode': 'safe'})
+
+
+def resize_bicubic(image, height, width, mean, std):
+    """Antialiased bicubic resize to float32 (3, height, width) as (x / 255 - mean) / std, with PyTorch's overshoot."""
+    column_weights, columns = _bicubic_taps(image.shape[1], width)
+    row_weights, rows = _bicubic_taps(image.shape[0], height)
+    return _resize_kernel()(
+        inputs=[mx.array(image), column_weights, columns, row_weights, rows,
+                mx.array(mean, mx.float32), mx.array(std, mx.float32)],
+        grid=(width, height, 1), threadgroup=(16, 16, 1),
+        output_shapes=[(3, height, width)], output_dtypes=[mx.float32])[0]
 
 
 class ImageProcessor:
@@ -92,11 +104,9 @@ class ImageProcessor:
         return hp * self.patch_size, wp * self.patch_size
 
     def preprocess(self, source):
-        image = load_image(source)
-        height, width = self.target_size(*image.size)
-        pixels = resize_bicubic(np.asarray(image), height, width)
-        pixels = (pixels / np.float32(255) - self.mean) / self.std
-        return pixels.transpose(2, 0, 1).copy()
+        pixels = load_image(source)
+        height, width = self.target_size(pixels.shape[1], pixels.shape[0])
+        return resize_bicubic(pixels, height, width, self.mean, self.std)
 
     def __call__(self, text, *, images):
         parts = text.split(self.image_token)

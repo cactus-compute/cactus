@@ -31,13 +31,41 @@ def test_embedding_merge_preserves_text_and_replaces_only_image_rows():
         CQModel.embed_inputs(model, mx.array([1, 18, 2]), pixel_values=[np.zeros((3, 32, 64))])
 
 
+def bicubic_weight(x):
+    if x < 1:
+        return (1.5 * x - 2.5) * x * x + 1
+    if x < 2:
+        return ((-0.5 * x + 2.5) * x - 4) * x + 2
+    return 0
+
+
+def bicubic_matrix(original, output):
+    scale = np.float32(original / output)
+    stretch = max(scale, np.float32(1))
+    matrix = np.zeros((output, original))
+    for index in range(output):
+        center = scale * np.float32(index + 0.5)
+        for source in range(max(0, int(center - 2 * stretch + 0.5)), min(original, int(center + 2 * stretch + 0.5))):
+            matrix[index, source] = bicubic_weight(float(abs(np.float32(source + 0.5) - center) / stretch))
+    return matrix / matrix.sum(axis=1, keepdims=True)
+
+
 def test_resize_preserves_constant_and_float_overshoot():
+    unnormalized = (0, 0, 0), (1, 1, 1)
     constant = np.full((7, 11, 3), 123, np.uint8)
-    np.testing.assert_allclose(resize_bicubic(constant, 23, 17), 123, atol=5e-5)
+    np.testing.assert_allclose(resize_bicubic(constant, 23, 17, *unnormalized), 123 / 255, atol=1e-6)
     edge = np.zeros((4, 4, 3), np.uint8)
     edge[:, 2:] = 255
-    resized = resize_bicubic(edge, 16, 16)
-    assert resized.min() < 0 and resized.max() > 255
+    resized = resize_bicubic(edge, 16, 16, *unnormalized)
+    assert resized.min() < 0 and resized.max() > 1
+
+
+def test_resize_matches_pytorch_filter():
+    image = np.random.default_rng(0).integers(0, 256, (513, 1025, 3), dtype=np.uint8)
+    processor = ImageProcessor()
+    resized = np.einsum('yh,hwc,xw->cyx', bicubic_matrix(513, 224), image, bicubic_matrix(1025, 448), optimize=True)
+    expected = (resized / 255 - processor.mean[:, None, None]) / processor.std[:, None, None]
+    np.testing.assert_allclose(resize_bicubic(image, 224, 448, processor.mean, processor.std), expected, atol=5e-6)
 
 
 def test_patch_grids_support_rectangular_and_tiny_images():
