@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
+import pytest
 from mlx_lm.models.nemotron_h import NemotronHBlock
 from mlx_lm.models.cache import ArraysCache, KVCache
 from cactus.mlx.models.nemotron_verify import mamba_verify, attention_verify, VerifyGraph
@@ -216,3 +217,41 @@ def test_mtp_cache_projection_matches_full_attention_path():
                     np.testing.assert_array_equal(actual.astype(mx.float32), expected.astype(mx.float32))
                 else:
                     assert actual == expected
+
+
+def test_forward_hidden_falls_back_for_padded_cache():
+    from cactus.mlx.models.nemotron import CQModel
+    args = SimpleNamespace(model_type='nemotron_h', vocab_size=32, hidden_size=16,
+        hybrid_override_pattern=['M', '*'], mamba_num_heads=2, mamba_head_dim=4,
+        ssm_state_size=32, conv_kernel=4, n_groups=1, time_step_limit=(0., 100.),
+        use_conv_bias=True, mamba_proj_bias=False, layer_norm_epsilon=1e-5,
+        num_attention_heads=2, num_key_value_heads=1, head_dim=8, attention_bias=False)
+    model = CQModel(args)
+
+    def padded_cache():
+        cache = model.make_cache()
+        mixer = model.layers[0].mixer
+        cache[0][0] = mx.zeros((1, mixer.conv_kernel_size - 1, mixer.conv_dim))
+        cache[0].left_padding = mx.array([0])
+        return cache
+
+    tokens = mx.array([[3]])
+    expected_cache, actual_cache = padded_cache(), padded_cache()
+    expected_hidden = model.backbone(tokens, cache=expected_cache)
+    expected_logits = model.lm_head(expected_hidden)
+    actual_logits, actual_hidden = model.forward_hidden(tokens, actual_cache)
+    np.testing.assert_array_equal(actual_hidden, expected_hidden)
+    np.testing.assert_array_equal(actual_logits, expected_logits)
+
+
+def test_direct_cqmodel_initializes_optional_weight_attributes():
+    from cactus.mlx.models.nemotron import CQModel
+    args = SimpleNamespace(model_type='nemotron_h', vocab_size=8, hidden_size=4,
+        intermediate_size=8, mlp_bias=False, layer_norm_epsilon=1e-5,
+        hybrid_override_pattern=['-'])
+    model = CQModel(args)
+    assert model._model_file is model._mtp is model._vision is None
+    with pytest.raises(ValueError, match='loaded model file'):
+        model.load_mtp()
+    with pytest.raises(ValueError, match='loaded model file'):
+        model.embed_inputs(mx.array([1]), pixel_values=[np.zeros((3, 2, 2))])
