@@ -92,13 +92,15 @@ def test_position_interpolation_uses_top_left_crop():
 def test_mtp_prefill_uses_shifted_visual_embeddings():
     target_inputs, draft_inputs = [], []
     embeds = mx.arange(20).reshape(5, 4).astype(mx.float32)
-    def forward(tokens, cache, input_embeddings=None):
+    def forward(tokens, cache, input_embeddings=None, project_logits=True):
         target_inputs.append(input_embeddings)
-        return mx.zeros((1, tokens.shape[1], 8)), input_embeddings + 100
+        logits = mx.zeros((1, tokens.shape[1], 8)) if project_logits else None
+        return logits, input_embeddings + 100
     def head(embeddings, hidden, cache):
         draft_inputs.append((embeddings, hidden))
     decoder = MTPDecoder.__new__(MTPDecoder)
-    decoder.model = SimpleNamespace(args=SimpleNamespace(hidden_size=4), forward_hidden=forward)
+    decoder.model = SimpleNamespace(args=SimpleNamespace(hidden_size=4), forward_hidden=forward,
+                                    lm_head=lambda hidden: mx.zeros((*hidden.shape[:2], 8)))
     decoder.head, decoder.cache, decoder.draft_cache = SimpleNamespace(cache_inputs=head), [], SimpleNamespace(state=[])
     decoder.prefill([1, 18, 18, 18, 2], step=2, input_embeddings=embeds)
     np.testing.assert_array_equal(mx.concatenate(target_inputs, axis=1)[0], embeds)

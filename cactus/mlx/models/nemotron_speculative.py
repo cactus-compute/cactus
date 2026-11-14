@@ -33,26 +33,24 @@ class MTPDecoder:
             raise ValueError('Input embeddings must match prompt length and model width')
         for start in range(0, len(tokens), step):
             chunk = tokens[start:start + step]
-            embeds = None if input_embeddings is None else input_embeddings[start:start + step][None]
-            if embeds is None:
-                logits, hidden = self.model.forward_hidden(mx.array([chunk]), self.cache)
-            else:
-                logits, hidden = self.model.forward_hidden(mx.array([chunk]), self.cache, input_embeddings=embeds)
+            embeds = (self.model.backbone.embeddings(mx.array([chunk])) if input_embeddings is None
+                      else input_embeddings[start:start + step][None])
+            _, hidden = self.model.forward_hidden(mx.array([chunk]), self.cache,
+                                                   input_embeddings=embeds, project_logits=False)
             if previous is None:
                 shifted_tokens, shifted_hidden = chunk[1:], hidden[:, :-1]
             else:
                 shifted_tokens = chunk
                 shifted_hidden = mx.concatenate([previous, hidden[:, :-1]], axis=1)
             if shifted_tokens:
-                shifted_embeds = (self.model.backbone.embeddings(mx.array([shifted_tokens])) if embeds is None
-                                  else embeds[:, 1:] if previous is None else embeds)
+                shifted_embeds = embeds[:, 1:] if previous is None else embeds
                 self.head.cache_inputs(shifted_embeds, shifted_hidden, self.draft_cache)
-            mx.eval(logits, hidden, [c.state for c in self.cache], self.draft_cache.state)
+            mx.eval(hidden, [c.state for c in self.cache], self.draft_cache.state)
             previous = hidden[:, -1:]
             if progress:
                 progress(min(start + step, len(tokens)), len(tokens))
         self.hidden = previous
-        self.logits = logits[0, -1]
+        self.logits = self.model.lm_head(previous)[0, -1]
         self.seed = int(mx.argmax(self.logits).item())
         return self.seed, self.logits
 
