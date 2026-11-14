@@ -90,4 +90,8 @@ installing this release. Its Python imports move from `cactus_mlx` to `cactus.ml
 
 Migrating from `cactus-needle`? Use `import cactus` and the `cactus` command. Needle 2 remains on the [legacy branch](https://github.com/cactus-compute/cactus/tree/legacy) with `cactus-compute<4`. The earlier general inference SDK is now [cactus-engine](https://pypi.org/project/cactus-engine/).
 
-Anonymous Python usage counts can be disabled with `CACTUS_TELEMETRY=0`. See [LICENSE](LICENSE) for the Apache 2.0 license.
+Anonymous Python usage counts can be disabled with `CACTUS_TELEMETRY=0`.
+
+## License
+
+[Apache 2.0](LICENSE), including the prebuilt runtime binaries.
