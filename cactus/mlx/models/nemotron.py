@@ -42,19 +42,17 @@ class CQModel(Model):
                 index += 1
         return cache
 
-    def forward_hidden(self, tokens, cache, input_embeddings=None, project_logits=True):
+    def forward_hidden(self, tokens, cache, input_embeddings=None):
         if input_embeddings is not None:
             hidden = self._forward_embeddings(input_embeddings, cache)
-        elif project_logits and tokens.shape == (1, 1) and all(
-            c[0] is not None for c in cache if isinstance(c, ArraysCache)
-        ):
+            return self.lm_head(hidden), hidden
+        if tokens.shape == (1, 1) and all(c[0] is not None for c in cache if isinstance(c, ArraysCache)):
             if self._decode_graph is None:
                 from .nemotron_decode import DecodeGraph
                 self._decode_graph = DecodeGraph(self)
             return self._decode_graph(tokens, cache, return_hidden=True)
-        else:
-            hidden = self.backbone(tokens, cache=cache)
-        return self.lm_head(hidden) if project_logits else None, hidden
+        hidden = self.backbone(tokens, cache=cache)
+        return self.lm_head(hidden), hidden
 
     def _forward_embeddings(self, hidden, cache):
         if cache is None:

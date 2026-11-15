@@ -35,15 +35,12 @@ class MTPDecoder:
             chunk = tokens[start:start + step]
             embeds = (self.model.backbone.embeddings(mx.array([chunk])) if input_embeddings is None
                       else input_embeddings[start:start + step][None])
-            _, hidden = self.model.forward_hidden(mx.array([chunk]), self.cache,
-                                                   input_embeddings=embeds, project_logits=False)
+            _, hidden = self.model.forward_hidden(mx.array([chunk]), self.cache, input_embeddings=embeds)
             if previous is None:
-                shifted_tokens, shifted_hidden = chunk[1:], hidden[:, :-1]
+                shifted_embeds, shifted_hidden = embeds[:, 1:], hidden[:, :-1]
             else:
-                shifted_tokens = chunk
-                shifted_hidden = mx.concatenate([previous, hidden[:, :-1]], axis=1)
-            if shifted_tokens:
-                shifted_embeds = embeds[:, 1:] if previous is None else embeds
+                shifted_embeds, shifted_hidden = embeds, mx.concatenate([previous, hidden[:, :-1]], axis=1)
+            if shifted_embeds.shape[1]:
                 self.head.cache_inputs(shifted_embeds, shifted_hidden, self.draft_cache)
             mx.eval(hidden, [c.state for c in self.cache], self.draft_cache.state)
             previous = hidden[:, -1:]

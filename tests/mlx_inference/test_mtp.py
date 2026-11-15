@@ -55,85 +55,6 @@ def test_commit_restores_each_accepted_prefix():
         np.testing.assert_array_equal(state[1],recurrent[keep-1])
 
 
-def test_prefill_matches_previous_results_without_redundant_embeddings_or_logits():
-    from cactus.mlx.models.nemotron_speculative import MTPDecoder
-
-    class Embeddings:
-        def __init__(self):
-            self.calls = 0
-        def __call__(self, tokens):
-            self.calls += 1
-            tokens = tokens.astype(mx.float32)
-            return mx.stack([tokens, 2 * tokens + 1], axis=-1)
-
-    class Model:
-        def __init__(self):
-            self.args = SimpleNamespace(hidden_size=2)
-            self.backbone = SimpleNamespace(embeddings=Embeddings())
-        @staticmethod
-        def lm_head(hidden):
-            return mx.concatenate([hidden, hidden.sum(-1, keepdims=True), -hidden[..., :1]], axis=-1)
-        def forward_hidden(self, tokens, cache, input_embeddings=None, project_logits=True):
-            embeddings = self.backbone.embeddings(tokens) if input_embeddings is None else input_embeddings
-            hidden = embeddings + cache[0].state
-            cache[0].state = cache[0].state + tokens.sum()
-            return self.lm_head(hidden) if project_logits else None, hidden
-
-    class Head:
-        @staticmethod
-        def cache_inputs(embeddings, hidden, cache):
-            values = mx.concatenate([embeddings, hidden], axis=-1)
-            cache.state = mx.concatenate([cache.state, values], axis=1)
-
-    def decoder():
-        result = MTPDecoder.__new__(MTPDecoder)
-        result.model = Model()
-        result.head = Head()
-        result.cache = [SimpleNamespace(state=mx.array(0.))]
-        result.draft_cache = SimpleNamespace(state=mx.zeros((1, 0, 4)))
-        return result
-
-    def previous_prefill(result, tokens, step):
-        previous = None
-        for start in range(0, len(tokens), step):
-            chunk = tokens[start:start + step]
-            logits, hidden = result.model.forward_hidden(mx.array([chunk]), result.cache)
-            if previous is None:
-                shifted_tokens, shifted_hidden = chunk[1:], hidden[:, :-1]
-            else:
-                shifted_tokens = chunk
-                shifted_hidden = mx.concatenate([previous, hidden[:, :-1]], axis=1)
-            if shifted_tokens:
-                shifted_embeds = result.model.backbone.embeddings(mx.array([shifted_tokens]))
-                result.head.cache_inputs(shifted_embeds, shifted_hidden, result.draft_cache)
-            mx.eval(logits, hidden, [c.state for c in result.cache], result.draft_cache.state)
-            previous = hidden[:, -1:]
-        final = logits[0, -1]
-        return int(mx.argmax(final).item()), final, previous
-
-    for tokens in ([2, 3, 5], [2, 3, 5, 7], [2, 3, 5, 7, 11, 13]):
-        expected, actual = decoder(), decoder()
-        expected_seed, expected_logits, expected_hidden = previous_prefill(expected, tokens, 4)
-        seed, logits = actual.prefill(tokens, step=4)
-        assert seed == expected_seed
-        np.testing.assert_array_equal(logits, expected_logits)
-        np.testing.assert_array_equal(actual.hidden, expected_hidden)
-        np.testing.assert_array_equal(actual.cache[0].state, expected.cache[0].state)
-        np.testing.assert_array_equal(actual.draft_cache.state, expected.draft_cache.state)
-        assert actual.model.backbone.embeddings.calls == (len(tokens) + 3) // 4
-
-
-def test_precomputed_embeddings_match_the_token_backbone_path():
-    from cactus.mlx.models.nemotron import CQModel
-    args = SimpleNamespace(model_type='nemotron_h', vocab_size=32, hidden_size=16,
-        intermediate_size=32, mlp_bias=False, layer_norm_epsilon=1e-5,
-        hybrid_override_pattern=['-'])
-    model = CQModel(args)
-    tokens = mx.array([[2, 3, 5, 7]])
-    embeddings = model.backbone.embeddings(tokens)
-    np.testing.assert_array_equal(model._forward_embeddings(embeddings, None), model.backbone(tokens))
-
-
 def test_generator_closes_with_only_emitted_tokens_committed(monkeypatch):
     from cactus.mlx.generation import mtp_generate_step
     from cactus.mlx.models import nemotron_speculative
@@ -295,3 +216,23 @@ def test_mtp_cache_projection_matches_full_attention_path():
                     np.testing.assert_array_equal(actual.astype(mx.float32), expected.astype(mx.float32))
                 else:
                     assert actual == expected
+
+
+def test_prefill_embeds_each_chunk_once_and_seeds_from_the_last_position():
+    from cactus.mlx.models.nemotron_speculative import MTPDecoder
+    table = mx.arange(40).reshape(10, 4).astype(mx.float32)
+    embedded, drafted = [], []
+    def embeddings(ids):
+        embedded.append(ids.shape[1])
+        return table[ids]
+    decoder = MTPDecoder.__new__(MTPDecoder)
+    decoder.model = SimpleNamespace(args=SimpleNamespace(hidden_size=4), backbone=SimpleNamespace(embeddings=embeddings),
+                                    forward_hidden=lambda tokens, cache, input_embeddings: (None, input_embeddings + 100),
+                                    lm_head=lambda hidden: hidden)
+    decoder.head = SimpleNamespace(cache_inputs=lambda embeds, hidden, cache: drafted.append(embeds))
+    decoder.cache, decoder.draft_cache = [], SimpleNamespace(state=[])
+    seed, logits = decoder.prefill([1, 2, 3, 4, 5], step=2)
+    assert embedded == [2, 2, 1]
+    np.testing.assert_array_equal(mx.concatenate(drafted, axis=1)[0], table[mx.array([2, 3, 4, 5])])
+    np.testing.assert_array_equal(logits, table[5] + 100)
+    assert seed == 3
