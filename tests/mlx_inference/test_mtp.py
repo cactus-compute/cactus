@@ -216,3 +216,23 @@ def test_mtp_cache_projection_matches_full_attention_path():
                     np.testing.assert_array_equal(actual.astype(mx.float32), expected.astype(mx.float32))
                 else:
                     assert actual == expected
+
+
+def test_prefill_embeds_each_chunk_once_and_seeds_from_the_last_position():
+    from cactus.mlx.models.nemotron_speculative import MTPDecoder
+    table = mx.arange(40).reshape(10, 4).astype(mx.float32)
+    embedded, drafted = [], []
+    def embeddings(ids):
+        embedded.append(ids.shape[1])
+        return table[ids]
+    decoder = MTPDecoder.__new__(MTPDecoder)
+    decoder.model = SimpleNamespace(args=SimpleNamespace(hidden_size=4), backbone=SimpleNamespace(embeddings=embeddings),
+                                    forward_hidden=lambda tokens, cache, input_embeddings: (None, input_embeddings + 100),
+                                    lm_head=lambda hidden: hidden)
+    decoder.head = SimpleNamespace(cache_inputs=lambda embeds, hidden, cache: drafted.append(embeds))
+    decoder.cache, decoder.draft_cache = [], SimpleNamespace(state=[])
+    seed, logits = decoder.prefill([1, 2, 3, 4, 5], step=2)
+    assert embedded == [2, 2, 1]
+    np.testing.assert_array_equal(mx.concatenate(drafted, axis=1)[0], table[mx.array([2, 3, 4, 5])])
+    np.testing.assert_array_equal(logits, table[5] + 100)
+    assert seed == 3
