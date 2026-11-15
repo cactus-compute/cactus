@@ -17,16 +17,11 @@ class CQModel(Model):
     def __init__(self, args):
         super().__init__(args)
         self._decode_graph = None
-        self._model_file = None
-        self._mtp = None
-        self._vision = None
 
     @staticmethod
     def _can_decode(cache):
-        return bool(cache) and all(
-            c[0] is not None and c.lengths is None and c.left_padding is None
-            for c in cache if isinstance(c, ArraysCache)
-        )
+        return bool(cache) and all(c[0] is not None and c.lengths is None and c.left_padding is None
+                                   for c in cache if isinstance(c, ArraysCache))
 
     def __call__(self, inputs, cache=None, input_embeddings=None):
         if input_embeddings is not None:
@@ -80,8 +75,6 @@ class CQModel(Model):
         if not pixel_values:
             return embeddings
         if self._vision is None:
-            if self._model_file is None:
-                raise ValueError('Vision weights require a loaded model file')
             from .nemotron_vision import load_vision
             self._vision = load_vision(self._model_file)
         features = mx.concatenate([self._vision(mx.array(pixels)) for pixels in pixel_values])
@@ -93,8 +86,6 @@ class CQModel(Model):
 
     def load_mtp(self):
         if self._mtp is None:
-            if self._model_file is None:
-                raise ValueError('MTP weights require a loaded model file')
             from .nemotron_mtp import load_mtp
             self._mtp = load_mtp(self, self._model_file)
         return self._mtp
