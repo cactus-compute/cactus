@@ -18,13 +18,15 @@ class CQModel(Model):
         super().__init__(args)
         self._decode_graph = None
 
+    @staticmethod
+    def _can_decode(cache):
+        return bool(cache) and all(c[0] is not None and c.lengths is None and c.left_padding is None
+                                   for c in cache if isinstance(c, ArraysCache))
+
     def __call__(self, inputs, cache=None, input_embeddings=None):
         if input_embeddings is not None:
             return self.lm_head(self._forward_embeddings(input_embeddings, cache))
-        if inputs.shape == (1, 1) and cache and all(
-            c[0] is not None and c.lengths is None and c.left_padding is None
-            for c in cache if isinstance(c, ArraysCache)
-        ):
+        if inputs.shape == (1, 1) and self._can_decode(cache):
             if self._decode_graph is None:
                 from .nemotron_decode import DecodeGraph
                 self._decode_graph = DecodeGraph(self)
@@ -46,7 +48,7 @@ class CQModel(Model):
         if input_embeddings is not None:
             hidden = self._forward_embeddings(input_embeddings, cache)
             return self.lm_head(hidden), hidden
-        if tokens.shape == (1, 1) and all(c[0] is not None for c in cache if isinstance(c, ArraysCache)):
+        if tokens.shape == (1, 1) and self._can_decode(cache):
             if self._decode_graph is None:
                 from .nemotron_decode import DecodeGraph
                 self._decode_graph = DecodeGraph(self)

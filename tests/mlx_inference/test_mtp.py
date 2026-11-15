@@ -236,3 +236,22 @@ def test_prefill_embeds_each_chunk_once_and_seeds_from_the_last_position():
     np.testing.assert_array_equal(mx.concatenate(drafted, axis=1)[0], table[mx.array([2, 3, 4, 5])])
     np.testing.assert_array_equal(logits, table[5] + 100)
     assert seed == 3
+
+
+def test_forward_hidden_skips_the_decode_graph_for_a_padded_cache():
+    from cactus.mlx.models.nemotron import CQModel
+    model = CQModel(SimpleNamespace(model_type='nemotron_h', vocab_size=32, hidden_size=16,
+        hybrid_override_pattern=['M', '*'], mamba_num_heads=2, mamba_head_dim=4, ssm_state_size=32, conv_kernel=4,
+        n_groups=1, time_step_limit=(0., 100.), use_conv_bias=True, mamba_proj_bias=False, layer_norm_epsilon=1e-5,
+        num_attention_heads=2, num_key_value_heads=1, head_dim=8, attention_bias=False))
+    def padded_cache():
+        cache = model.make_cache()
+        mixer = model.layers[0].mixer
+        cache[0][0] = mx.zeros((1, mixer.conv_kernel_size - 1, mixer.conv_dim))
+        cache[0].left_padding = mx.array([0])
+        return cache
+    tokens = mx.array([[3]])
+    expected = model.backbone(tokens, cache=padded_cache())
+    logits, hidden = model.forward_hidden(tokens, padded_cache())
+    np.testing.assert_array_equal(hidden, expected)
+    np.testing.assert_array_equal(logits, model.lm_head(expected))
