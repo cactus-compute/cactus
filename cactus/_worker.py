@@ -272,7 +272,6 @@ class FineTuneWorker:
             if self._process.poll() is None:
                 try:
                     self._send({"operation": "close"})
-                    self._receive(2)
                 except BaseException:
                     pass
             if self._process.stdin is not None:

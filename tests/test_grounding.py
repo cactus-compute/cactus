@@ -42,6 +42,7 @@ def stub(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime, "_base_weights_path", lambda generation: str(base))
     monkeypatch.setattr(runtime, "_active", {})
     monkeypatch.setattr(runtime, "_loaded_base", {})
+    monkeypatch.setattr("cactus.agent.text._shared", {})
     return engine
 
 
@@ -142,6 +143,16 @@ def test_extract_accepts_a_date_written_with_slashes(stub):
     invoice = cactus.extract("Invoice from Acme Corp due 12/31/24", Invoice)
 
     assert invoice.due_date == datetime.date(2024, 12, 31)
+
+
+def test_extract_reuses_its_agent_across_calls(stub):
+    import cactus
+
+    stub.envelopes = [_call("2024-12-31")]
+    cactus.extract("Invoice from Acme Corp due 12/31/24", Invoice)
+    cactus.extract("Invoice from Acme Corp due 12/31/24", Invoice)
+
+    assert [call for call in stub.calls if call in ("init", "reset")] == ["init", "reset", "reset"]
 
 
 def test_extract_licenses_a_relative_date_against_its_date_fact(stub):
