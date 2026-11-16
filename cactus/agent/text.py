@@ -326,6 +326,10 @@ class Cactus:
             pass
 
 
+_shared = {}
+
+
+@synchronized
 def extract(text: str, schema: type | dict, system: str | None = None,
             max_new_tokens: int = 512, weights: str | None = None,
             strict: bool = True, generation: int | None = None) -> object:
@@ -339,14 +343,20 @@ def extract(text: str, schema: type | dict, system: str | None = None,
     generation = _weight_generation(selected) if selected else int(generation or 3)
     _track("extract", {"n_tools": 1, "tuned": bool(selected),
                        "generation": generation})
-    agent = Cactus(tools=[schema], system=system, weights=selected, generation=generation)
-
-
+    system = _with_date_fact(system or "")
+    schema_id = json.dumps(schema, sort_keys=True) if isinstance(schema, dict) else schema
+    key = (schema_id, system, selected, generation)
+    if key not in _shared:
+        for previous in _shared.values():
+            previous.close()
+        _shared.clear()
+        _shared[key] = Cactus(tools=[schema], system=system, weights=selected, generation=generation)
+    agent = _shared[key]
     facts = agent._system_text
     try:
         response = agent._complete(text, max_new_tokens)
     finally:
-        agent.close()
+        agent.reset()
     calls = response.get("function_calls") or response.get("suppressed_calls") or []
     if not calls:
         return None
