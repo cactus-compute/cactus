@@ -1,6 +1,6 @@
 [project]
 name = "cactus-compute"
-version = "4.2.0"
+version = "4.2.5"
 description = "Local voice, vision, agents and quantized language-model inference."
 requires-python = ">=3.9"
 readme = "README.md"
