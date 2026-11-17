@@ -43,6 +43,10 @@ Engine binaries come from `Cactus-Compute/cactus`. Needle, Whistle and Mirage we
 
 Settings include `sections`, `fields`, `conf`, `text_conf`, `max_objects`, `max_text_lines`, `max_tokens`, `mask_format`, `nms` and `form`. `model.extract(image, form, **settings)` fills an ordered form whose fields use `enum`, bounded `integer`, `string` or `x-source` box references. `cactus.describe(image, **settings)` reuses a default Mirage instance.
 
+An object's `id` names the entity it belongs to, so when one entity covers several instances, such as two trees, every box shares that `id`, and `relations` and `events` refer to the entity.
+
+The text reader reads Latin script only. Its 306 characters are printable ASCII, the letters of Latin-1 Supplement and Latin Extended-A, and 21 symbols such as € and £.
+
 ```python
 from cactus import Mirage
 
