@@ -45,7 +45,7 @@ Settings include `sections`, `fields`, `conf`, `text_conf`, `max_objects`, `max_
 
 An object's `id` names the entity it belongs to, so when one entity covers several instances, such as two trees, every box shares that `id`, and `relations` and `events` refer to the entity.
 
-The text reader reads Latin script only. Its 306 characters are printable ASCII, the letters of Latin-1 Supplement and Latin Extended-A, and 21 symbols such as € and £.
+The text reader reads Latin script only. Its 306 characters are the 95 printable ASCII characters including space, every character from À to ÿ except × and ÷, all 128 characters of Latin Extended-A from U+0100 to U+017F, and the 21 symbols `¡ £ ¥ § © « ® ° ¶ · » ¿ € • … – — ‘ ’ “ ”`.
 
 ```python
 from cactus import Mirage
