@@ -323,3 +323,74 @@ def test_the_python_encoder_matches_the_engine_embedding(tiny_whistle, published
         ours = np.asarray(ours[0, :int(frames[0])])
         assert ours.shape == theirs.shape
         assert np.linalg.norm(ours - theirs) < 0.05 * np.linalg.norm(theirs)
+
+
+def test_finetuning_starts_from_the_cq4_base_at_the_pinned_revision(tmp_path, monkeypatch):
+    import huggingface_hub
+    from cactus.agent import fetch
+    from cactus.model import whistle_finetune
+
+    assert whistle_finetune.DEFAULT_BASE == "checkpoints/whistle_cq4.safetensors"
+    asked = []
+
+    class Stop(Exception):
+        pass
+
+    def download(repo_id, filename, revision, force_download=False):
+        asked.append((repo_id, filename, revision))
+        raise Stop
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    monkeypatch.setattr(fetch, "_register_download", lambda key: None)
+    with pytest.raises(Stop):
+        whistle_finetune.load_base(str(tmp_path / "checkpoints" / "whistle_cq4.safetensors"))
+    assert asked == [("Cactus-Compute/whistle", "checkpoints/whistle_cq4.safetensors",
+                      fetch.MODEL_REVISIONS[fetch.WHISTLE])]
+
+
+@pytest.mark.slow
+def test_the_cq4_base_builds_close_to_the_published_archive(tmp_path):
+    import os
+    import numpy as np
+    from cactus.agent import fetch
+    from cactus.model.export import read_export
+    from cactus.model.whistle_finetune import DEFAULT_BASE, WhistleTokenizer, build, load_base
+
+    if not os.path.exists(DEFAULT_BASE):
+        pytest.skip(f"{DEFAULT_BASE} is not downloaded; cactus whistle finetune fetches it")
+    params, cfg = load_base(DEFAULT_BASE)
+    out = str(tmp_path / "cq4.cact")
+    build(params, cfg, WhistleTokenizer(languages=cfg.languages), out)
+    _, ours = read_export(out)
+    _, published = read_export(fetch.fetch_weights(fetch.WHISTLE))
+    assert len(ours) == len(published)
+    pairs = [(a, b) for a, b in zip(ours, published) if isinstance(a, np.ndarray) and a.ndim == 2 and a.size > 4096]
+    distance = np.sqrt(sum(float(((a - b) ** 2).sum()) for a, b in pairs) / sum(float((b ** 2).sum()) for _, b in pairs))
+    assert distance < 0.10
+
+
+@pytest.mark.parametrize("present", [True, False])
+def test_an_adapter_builds_onto_the_base_it_was_tuned_on(tmp_path, monkeypatch, present):
+    from cactus.agent import fetch
+    from cactus.model import whistle_finetune
+
+    class Stop(Exception):
+        pass
+
+    def load_base(path):
+        loaded.append(path)
+        raise Stop
+
+    recorded = tmp_path / "elsewhere" / "whistle.safetensors"
+    if present:
+        recorded.parent.mkdir()
+        recorded.write_bytes(b"")
+    loaded = []
+    (tmp_path / "whistle.cact").write_bytes(b"")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(fetch, "fetch_weights", lambda *args, **kwargs: str(tmp_path / "whistle.cact"))
+    monkeypatch.setattr(whistle_finetune, "read_adapter", lambda path: {"base": str(recorded), "languages": ["en"]})
+    monkeypatch.setattr(whistle_finetune, "load_base", load_base)
+    with pytest.raises(Stop):
+        whistle_finetune.build_main(_build_args(lora="adapter.safetensors", out="t.cact"))
+    assert loaded == [str(recorded) if present else "checkpoints/whistle.safetensors"]

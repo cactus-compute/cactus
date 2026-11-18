@@ -10,7 +10,7 @@ from .checkpoints import is_safetensors, read_adapter, write_adapter
 from .finetune import _training_rng, init_lora, lora_target_paths, merge_lora
 from .whistle import LANGUAGES, Whistle, load_whistle
 
-DEFAULT_BASE = "checkpoints/whistle.safetensors"
+DEFAULT_BASE = "checkpoints/whistle_cq4.safetensors"
 SAMPLE_RATE = 16000
 SECONDS = 30
 SPACE = "▁"
@@ -421,8 +421,9 @@ def build_main(args):
         if adapter and adapter.get("languages") is None:
             raise SystemExit(f"{args.lora} is a Needle adapter; build it with cactus build")
         checkpoint = args.checkpoint
-        if not checkpoint and adapter and adapter.get("base") and os.path.exists(adapter["base"]):
-            checkpoint = adapter["base"]
+        if not checkpoint and adapter and adapter.get("base"):
+            base = adapter["base"]
+            checkpoint = base if os.path.exists(base) else os.path.join(fetch.CHECKPOINT_PREFIX, os.path.basename(base))
         checkpoint = checkpoint or DEFAULT_BASE
         params, cfg = load_base(checkpoint)
         tokenizer = WhistleTokenizer(languages=cfg.languages)

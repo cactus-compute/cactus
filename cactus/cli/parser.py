@@ -169,7 +169,7 @@ def parser():
     v.add_argument("--tokens", type=str, default=None,
                    help="File of tokens to add to the vocabulary, one per line")
     v.add_argument("--checkpoint", type=str, default=None,
-                   help="Base checkpoint (default: checkpoints/whistle.safetensors, downloaded if missing)")
+                   help="Base checkpoint (default: checkpoints/whistle_cq4.safetensors, downloaded if missing)")
     v.add_argument("--epochs", type=int, default=3)
     v.add_argument("--batch-size", type=int, default=16)
     v.add_argument("--lr", type=float, default=1e-4)
