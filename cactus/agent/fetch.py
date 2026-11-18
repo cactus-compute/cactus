@@ -11,9 +11,9 @@ import zipfile
 WHISTLE = "whistle"
 MIRAGE = "mirage"
 ENGINE_REPO = "Cactus-Compute/cactus"
-ENGINE_VERSION = "4.1.2"
-ENGINE_REVISION = "569a10bb4f0e87331abcf874903c0e5139d38aae"
-MANIFEST_SHA256 = "7810f99aba876fea8f9a34e921397a9e782d113b25daab37ee6db7c9808ffe20"
+ENGINE_VERSION = "4.1.4"
+ENGINE_REVISION = "f4ab2741203a282c6e7b89983de2b5e5b2e805a8"
+MANIFEST_SHA256 = "ab948753f08e54d2b24dd04830dcb984885524ab3bd1e9da3bf207276ab62eb6"
 MODEL_REPOS = {3: "Cactus-Compute/needle3", WHISTLE: "Cactus-Compute/whistle", MIRAGE: "Cactus-Compute/mirage"}
 MODEL_REVISIONS = {
     3: "d6c7d6a2e9655505e0f8e23339356dd1705900eb",
