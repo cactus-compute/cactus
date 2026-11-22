@@ -261,3 +261,41 @@ def test_model_arguments_keep_their_defs_on_the_tool_parameters():
     assert "$defs" not in parameters["properties"]["backup"]["items"]
     assert parameters["$defs"]["Address"]["properties"]["city"]["type"] == "string"
     assert parameters["properties"]["definitions"] == {"type": "object"}
+
+
+def test_collection_container_types_schema():
+    import collections.abc
+
+    def f(
+        tags: set[str],
+        categories: typing.Set[int],
+        frozen: frozenset[str],
+        coords: tuple[float, ...],
+        items: collections.abc.Sequence[str],
+        bare_set: set,
+        bare_tuple: tuple,
+    ):
+        pass
+
+    props = build_schema(f)["parameters"]["properties"]
+    assert props["tags"] == {"type": "array", "items": {"type": "string"}, "uniqueItems": True}
+    assert props["categories"] == {"type": "array", "items": {"type": "integer"}, "uniqueItems": True}
+    assert props["frozen"] == {"type": "array", "items": {"type": "string"}, "uniqueItems": True}
+    assert props["coords"] == {"type": "array", "items": {"type": "number"}}
+    assert props["items"] == {"type": "array", "items": {"type": "string"}}
+    assert props["bare_set"] == {"type": "array", "uniqueItems": True}
+    assert props["bare_tuple"] == {"type": "array"}
+
+
+def test_set_output_serialization_in_jsonable():
+    import json
+    from cactus.agent.grounding import _jsonable
+
+    data = {"tags": {"apple", "banana"}, "frozen": frozenset([1, 2])}
+    serialized = json.dumps(data, default=_jsonable)
+    parsed = json.loads(serialized)
+
+    assert isinstance(parsed["tags"], list)
+    assert parsed["tags"] == ["apple", "banana"]
+    assert isinstance(parsed["frozen"], list)
+    assert parsed["frozen"] == [1, 2]

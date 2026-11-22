@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections.abc
 import enum
 import inspect
 import re
@@ -66,6 +67,10 @@ def _json_type(annotation, defs):
     if origin is None:
         if annotation in _JSON_TYPES:
             return {"type": _JSON_TYPES[annotation]}
+        if annotation in (set, frozenset):
+            return {"type": "array", "uniqueItems": True}
+        if annotation is tuple:
+            return {"type": "array"}
         if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
             values = [e.value for e in annotation]
             val_type = _JSON_TYPES.get(type(values[0]), "string") if values else "string"
@@ -81,7 +86,10 @@ def _json_type(annotation, defs):
         args = list(typing.get_args(annotation))
         val_type = _JSON_TYPES.get(type(args[0]), "string") if args else "string"
         return {"type": val_type, "enum": args}
-    if origin in (list, typing.List):
+    if origin in (set, typing.Set, frozenset, typing.FrozenSet, collections.abc.Set):
+        args = typing.get_args(annotation)
+        return {"type": "array", "items": _json_type(args[0], defs) if args else {"type": "string"}, "uniqueItems": True}
+    if origin in (list, typing.List, collections.abc.Sequence, tuple, typing.Tuple):
         args = typing.get_args(annotation)
         return {"type": "array", "items": _json_type(args[0], defs) if args else {"type": "string"}}
     if origin in (dict, typing.Dict):
