@@ -456,6 +456,72 @@ def test_stream_raises_the_engine_error(monkeypatch):
         list(whistle.Whistle(weights=__file__).stream([[0.0]]))
 
 
+@pytest.fixture
+def own_lock(monkeypatch):
+    """A runtime lock of the test's own, so one a test leaves held cannot hang the next."""
+    import threading
+    from cactus.agent import whistle
+
+    fresh = threading.RLock()
+    monkeypatch.setattr(runtime, "lock", fresh)
+    monkeypatch.setattr(whistle, "lock", fresh)
+
+
+def _engine_free():
+    if not runtime.lock.acquire(timeout=1):
+        return False
+    runtime.lock.release()
+    return True
+
+
+def test_a_stream_can_be_resumed_from_another_thread(monkeypatch, own_lock):
+    from concurrent.futures import ThreadPoolExecutor
+    from cactus.agent import whistle
+
+    engine = _StreamEngine()
+    monkeypatch.setattr(whistle, "_lib", lambda: engine)
+    monkeypatch.setattr(whistle, "_loaded", None)
+    live = whistle.Whistle(weights=__file__).stream([[0.0] * 3, [0.0] * 2])
+
+    with ThreadPoolExecutor(1) as first, ThreadPoolExecutor(1) as second, ThreadPoolExecutor(1) as other:
+        steps = [first.submit(next, live).result(timeout=10)]
+        steps += [second.submit(next, live, None).result(timeout=10) for _ in range(3)]
+        assert other.submit(_engine_free).result(timeout=10)
+    assert [step and step["text"] for step in steps] == ["3", "2", "tail", None]
+    assert engine.calls == [("feed", 3, None, None), ("feed", 2, None, None), ("finish",)]
+
+
+def test_a_live_stream_lets_other_threads_use_the_engine_between_chunks(monkeypatch, own_lock):
+    from concurrent.futures import ThreadPoolExecutor
+    from cactus.agent import whistle
+
+    monkeypatch.setattr(whistle, "_lib", lambda: _StreamEngine())
+    monkeypatch.setattr(whistle, "_loaded", None)
+    live = whistle.Whistle(weights=__file__).stream([[0.0] * 3, [0.0] * 2])
+    next(live)
+
+    with ThreadPoolExecutor(1) as other:
+        assert other.submit(_engine_free).result(timeout=10)
+    assert [step["text"] for step in live] == ["2", "tail"]
+
+
+def test_other_weights_cannot_load_over_a_live_stream(monkeypatch, tmp_path, own_lock):
+    from cactus.agent import whistle
+
+    engine = _StreamEngine()
+    monkeypatch.setattr(whistle, "_lib", lambda: engine)
+    monkeypatch.setattr(whistle, "_loaded", None)
+    other = tmp_path / "tuned.cact"
+    other.write_bytes(b"tuned")
+    live = whistle.Whistle(weights=__file__).stream([[0.0] * 3, [0.0] * 2])
+    next(live)
+
+    with pytest.raises(RuntimeError, match="stream"):
+        whistle.Whistle(weights=other)
+    assert [step["text"] for step in live] == ["2", "tail"]
+    assert whistle.Whistle(weights=other).weights == str(other)
+
+
 class _LiveWhistle:
     weights = __file__
 
