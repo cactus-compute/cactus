@@ -88,3 +88,32 @@ def test_extract_keeps_agent_tools():
     response = agent.complete("set it to 21 degrees")
     assert response["type"] == "call"
     assert response["function_calls"][0]["name"] == "set_thermostat"
+
+
+def test_conversation_survives_another_agent():
+    import json
+    import pydantic
+    from cactus import Needle, extract, tool
+
+    @tool
+    def send_money(amount: float, to: str):
+        "Send money to a contact."
+        return {"sent": amount, "to": to}
+
+    class Contact(pydantic.BaseModel):
+        name: str
+        email: str
+
+    def conversation(interrupt):
+        agent = Needle(tools=[send_money])
+        agent.complete("Send 50 dollars to Alice")
+        agent.complete(json.dumps([{"sent": 50, "to": "Alice"}]))
+        interrupt()
+        response = agent.complete("Now send the same amount to Bob")
+        agent.close()
+        return response["function_calls"], response.get("validation")
+
+    alone = conversation(lambda: None)
+    assert alone[0] == [{"name": "send_money", "arguments": {"amount": 50.0, "to": "Bob"}}]
+    assert conversation(lambda: extract("John Doe can be reached at john@doe.com", Contact)) == alone
+    assert conversation(lambda: Needle(tools=[send_money])) == alone
