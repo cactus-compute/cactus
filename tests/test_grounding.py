@@ -465,3 +465,34 @@ def test_complete_checks_dates_inside_a_nested_model_argument(stub):
     response = agent.complete("Ship the Acme order, invoice due on 5th September 2031")
 
     assert response["validation"]["ungrounded"] == ["ship.shipment.invoice.due_date"]
+
+
+def test_an_agent_keeps_its_conversation_after_another_agent_runs(stub):
+    import cactus
+
+    stub.envelopes = [_call("2031-09-05")]
+    agent = cactus.Needle(tools=[Invoice])
+    agent.complete("bill Acme on 5th September 2031")
+    agent.extract("Invoice from Acme Corp due 9/5/31", Invoice)
+    stub.calls.clear()
+
+    response = agent.complete("bill them again")
+
+    assert stub.calls == ["init", ("complete", "bill Acme on 5th September 2031"),
+                          ("complete", "bill them again")]
+    assert "validation" not in response
+
+
+def test_a_reset_agent_does_not_replay_its_old_conversation(stub):
+    import cactus
+
+    stub.envelopes = [_call("2031-09-05")]
+    agent = cactus.Needle(tools=[Invoice])
+    agent.complete("bill Acme on 5th September 2031")
+    cactus.Needle(tools=[Invoice], system="user: Sam")
+    agent.reset()
+    stub.calls.clear()
+
+    agent.complete("bill them again")
+
+    assert stub.calls == [("complete", "bill them again")]

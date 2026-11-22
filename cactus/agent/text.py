@@ -106,6 +106,7 @@ class Cactus:
         self._tool_schemas = [entry for entry in (parsed_tools or [])
                               if isinstance(entry, dict)]
         self._seen_years = set()
+        self._history = []
         self._tool_index_path = (os.fspath(tool_index_path).encode("utf-8")
                                  if tool_index_path else None)
         self._buffer = ctypes.create_string_buffer(buffer_size)
@@ -133,8 +134,19 @@ class Cactus:
         if lib.cactus_init(self._system, self._tools_json, self._tool_index_path) < 0:
             runtime._active.pop(generation, None)
             raise RuntimeError("cactus_init failed")
+        # cactus_init starts a new conversation, so replay this agent's turns
+        # since its last reset to restore what another agent's init replaced.
+        for turn in self._history:
+            if self._send(lib, *turn) < 0:
+                raise RuntimeError("cactus_complete failed while restoring the conversation")
         runtime._active[generation] = self
-        self._seen_years = set()
+
+    def _send(self, lib, text, samples, count, max_new_tokens, audio_options=None):
+        if audio_options is not None:
+            from .whistle import Whistle
+            Whistle()._bind()
+            lib.cactus_set_audio(*audio_options)
+        return lib.cactus_complete(text, samples, count, max_new_tokens, self._buffer, len(self._buffer))
 
     def _resolve(self, tools):
         schemas = []
@@ -186,19 +198,18 @@ class Cactus:
             raw = self._worker.complete(text, max_new_tokens)
         else:
             lib = runtime._lib(self._generation)
-            audio = (None, 0)
-            rc = lib.cactus_complete(
-                text.encode("utf-8"), *audio, int(max_new_tokens), self._buffer,
-                len(self._buffer))
+            turn = (text.encode("utf-8"), None, 0, int(max_new_tokens))
+            rc = self._send(lib, *turn)
             if rc < 0:
                 detail = self._buffer.value.decode("utf-8", "replace")
                 raise RuntimeError(detail or f"cactus_complete failed (code {rc})")
+            self._history.append(turn)
             raw = self._buffer.value.decode("utf-8")
         return self._response(raw, text, ground)
 
     def _complete_audio(self, audio, max_new_tokens, language, keywords, word_timestamps):
         from .audio import _samples, _options
-        from .whistle import Whistle, _weights_path
+        from .whistle import _weights_path
         self._bind()
         samples, count = _samples(audio)
         if keywords is not None and not isinstance(keywords, str):
@@ -207,13 +218,13 @@ class Cactus:
             packed = ctypes.string_at(samples, count * ctypes.sizeof(ctypes.c_float))
             raw = self._worker.complete_audio(packed, _weights_path(), language, keywords, word_timestamps, max_new_tokens)
         else:
-            speech = Whistle()
-            lib = speech._bind()
-            language, keywords = _options(language, keywords)
-            lib.cactus_set_audio(language, keywords, int(bool(word_timestamps)))
-            code = lib.cactus_complete(None, samples, count, int(max_new_tokens), self._buffer, len(self._buffer))
+            lib = runtime._lib(self._generation)
+            turn = (None, samples, count, int(max_new_tokens),
+                    (*_options(language, keywords), int(bool(word_timestamps))))
+            code = self._send(lib, *turn)
             if code < 0:
                 raise RuntimeError(lib.cactus_last_error().decode("utf-8", "replace"))
+            self._history.append(turn)
             raw = self._buffer.value.decode("utf-8")
         response = json.loads(raw)
         heard = response.get("audio_text", "")
@@ -296,6 +307,7 @@ class Cactus:
 
     @synchronized
     def reset(self):
+        self._history = []
         self._bind()
         self._turns = 0
         if self._worker is not None:
