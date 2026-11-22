@@ -4,6 +4,7 @@ import ctypes
 import json
 import os
 import struct
+import threading
 
 from .runtime import synchronized, lock
 
@@ -13,6 +14,10 @@ LANGUAGES = ("en", "de", "fr", "es", "it", "nl", "pl")
 OUTPUT_BYTES_PER_SECOND = 4096
 
 _loaded = None
+# One live stream at a time. A plain lock, not the runtime's thread-owned one, so
+# whichever thread resumes or closes the stream generator can release it.
+_stream = threading.Lock()
+_streaming = None
 
 
 def _weights_path():
@@ -70,6 +75,8 @@ class Whistle:
         lib = _lib()
         if _loaded == self.weights:
             return lib
+        if _streaming is not None:
+            raise RuntimeError("a Whistle stream is running on other weights; finish it before loading these")
         with open(self.weights, "rb") as handle:
             data = handle.read()
         if lib.cactus_load(data, len(data)) < 0:
@@ -107,22 +114,30 @@ class Whistle:
         "text" and "words" committed by that chunk, with times from the start of the stream, the unconfirmed "pending"
         tail, the "language", the seconds "received" and the "pass_ms" it took. Join the texts with a space.
         """
-        with lock:
-            lib = self._bind()
+        global _streaming
+        with _stream:
+            with lock:
+                lib = self._bind()
+                _streaming = self.weights
             language, keywords = _options(language, keywords)
             stopped = False
             try:
                 for chunk in chunks:
                     samples, count = _samples(chunk)
-                    self._reserve(count // SAMPLE_RATE * OUTPUT_BYTES_PER_SECOND)
-                    yield self._result(lib.cactus_stream_transcribe_process(samples, count, language, keywords, self._buffer,
-                                                                            len(self._buffer)))
-                result = self._result(lib.cactus_stream_transcribe_stop(self._buffer, len(self._buffer)))
+                    with lock:
+                        self._reserve(count // SAMPLE_RATE * OUTPUT_BYTES_PER_SECOND)
+                        result = self._result(lib.cactus_stream_transcribe_process(samples, count, language, keywords,
+                                                                                   self._buffer, len(self._buffer)))
+                    yield result
+                with lock:
+                    result = self._result(lib.cactus_stream_transcribe_stop(self._buffer, len(self._buffer)))
                 stopped = True
                 yield result
             finally:
-                if not stopped:
-                    lib.cactus_stream_transcribe_stop(self._buffer, len(self._buffer))
+                with lock:
+                    if not stopped:
+                        lib.cactus_stream_transcribe_stop(self._buffer, len(self._buffer))
+                    _streaming = None
 
     @synchronized
     def embed(self, audio) -> list[float]:
