@@ -142,11 +142,30 @@ def _indent(line):
 
 def build_schema(fn: Callable) -> dict:
     signature = inspect.signature(fn)
-    try:
-        hints = typing.get_type_hints(fn, include_extras=True)
-    except Exception:
-        hints = {}
-    description, arg_docs = _parse_doc(fn.__doc__)
+    hints = {}
+    for candidate in (fn, getattr(fn, "func", None), getattr(fn, "__call__", None)):
+        if candidate is not None:
+            try:
+                hints = typing.get_type_hints(candidate, include_extras=True)
+                if hints:
+                    break
+            except Exception:
+                pass
+
+    doc = fn.__doc__
+    if getattr(fn, "func", None) is not None:
+        doc = getattr(fn.func, "__doc__", None) or doc
+    elif not doc and hasattr(fn, "__call__"):
+        doc = getattr(fn.__call__, "__doc__", None) or getattr(type(fn), "__doc__", None)
+
+    description, arg_docs = _parse_doc(doc)
+    call_doc = getattr(getattr(fn, "__call__", None), "__doc__", None)
+    if call_doc and call_doc != doc:
+        call_desc, call_args = _parse_doc(call_doc)
+        if not description:
+            description = call_desc
+        for k, v in call_args.items():
+            arg_docs.setdefault(k, v)
     properties, required, defs = {}, [], {}
     for name, param in signature.parameters.items():
         if name in ("self", "cls") or param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
@@ -168,7 +187,12 @@ def build_schema(fn: Callable) -> dict:
     if required:
         parameters["required"] = required
     parameters.update(defs)
-    out = {"name": fn.__name__}
+    name = (
+        getattr(fn, "__name__", None)
+        or getattr(getattr(fn, "func", None), "__name__", None)
+        or type(fn).__name__
+    )
+    out = {"name": name}
     if description:
         out["description"] = description
     out["parameters"] = parameters

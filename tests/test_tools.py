@@ -261,3 +261,73 @@ def test_model_arguments_keep_their_defs_on_the_tool_parameters():
     assert "$defs" not in parameters["properties"]["backup"]["items"]
     assert parameters["$defs"]["Address"]["properties"]["city"]["type"] == "string"
     assert parameters["properties"]["definitions"] == {"type": "object"}
+
+
+def test_partial_tool_build_schema():
+    import functools
+
+    def search_records(query: str, limit: int = 10, db_host: str = "localhost"):
+        """Search records in database.
+
+        Args:
+            query: The search query text.
+            limit: Max number of items.
+        """
+        return []
+
+    partial_fn = functools.partial(search_records, db_host="remote.db")
+    schema = build_schema(partial_fn)
+
+    assert schema["name"] == "search_records"
+    assert schema["description"] == "Search records in database."
+    props = schema["parameters"]["properties"]
+    assert props["query"] == {"type": "string", "description": "The search query text."}
+    assert props["limit"] == {"type": "integer", "description": "Max number of items."}
+    assert props["db_host"] == {"type": "string"}
+    assert schema["parameters"]["required"] == ["query"]
+
+
+def test_callable_instance_build_schema():
+    class Evaluator:
+        """Stateful evaluator service."""
+
+        def __call__(self, expression: str, precision: int = 2) -> float:
+            """Evaluate math expression.
+
+            Args:
+                expression: The formula.
+            """
+            return 42.0
+
+    evaluator = Evaluator()
+    schema = build_schema(evaluator)
+
+    assert schema["name"] == "Evaluator"
+    assert schema["description"] == "Stateful evaluator service."
+    props = schema["parameters"]["properties"]
+    assert props["expression"] == {"type": "string", "description": "The formula."}
+    assert props["precision"] == {"type": "integer"}
+    assert schema["parameters"]["required"] == ["expression"]
+
+
+def test_tool_decorator_with_partial_and_callable_instance():
+    import functools
+
+    def greet(name: str, punctuation: str = "!"):
+        """Greet a user."""
+        return f"Hello, {name}{punctuation}"
+
+    tool_partial = tool(functools.partial(greet, punctuation="?"))
+    assert tool_partial._cactus_tool["name"] == "greet"
+    assert "name" in tool_partial._cactus_tool["parameters"]["required"]
+
+    class Ping:
+        """Ping utility."""
+
+        def __call__(self, host: str):
+            """Ping host."""
+            return True
+
+    tool_instance = tool(Ping())
+    assert tool_instance._cactus_tool["name"] == "Ping"
+    assert "host" in tool_instance._cactus_tool["parameters"]["required"]
