@@ -16,6 +16,11 @@ def _jsonable(value):
         return value.model_dump()
     if hasattr(value, "dict") and _is_pydantic_model(type(value)):
         return value.dict()
+    if isinstance(value, (set, frozenset)):
+        try:
+            return sorted(list(value))
+        except TypeError:
+            return list(value)
     return str(value)
 
 
