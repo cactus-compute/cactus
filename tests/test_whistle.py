@@ -650,3 +650,83 @@ def test_cli_routes_the_whistle_commands(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["cactus", "whistle"])
     with pytest.raises(SystemExit, match="cactus whistle playground \\| compare"):
         cactus.cli.main()
+
+
+class _AudioEngine:
+    def __init__(self):
+        self.loads = 0
+
+    def cactus_load(self, data, size):
+        self.loads += 1
+        return 0
+
+    def cactus_init(self, system, tools, index):
+        return 0
+
+    def cactus_set_audio(self, language, keywords, word_timestamps):
+        pass
+
+    def cactus_complete(self, text, samples, count, max_new_tokens, out, capacity):
+        out.value = json.dumps({"type": "call", "function_calls": [], "audio_text": "lights on"}).encode()
+        return 0
+
+
+def test_audio_turns_resolve_and_load_the_speech_model_once(tmp_path, monkeypatch):
+    """Resolving the published weights asks Hugging Face and hashes the file, so a
+    voice agent must not pay for it, or wait on the network, on every turn."""
+    import cactus
+    from cactus.agent import fetch, whistle
+
+    base, speech = tmp_path / "needle3.cact", tmp_path / "whistle.cact"
+    base.write_bytes((0x05E12A84).to_bytes(4, "little") + b"base weights")
+    speech.write_bytes(b"speech weights")
+    resolved = []
+    monkeypatch.setattr(runtime, "_base_weights_path",
+                        lambda generation: str(speech) if resolved.append(generation) or generation == fetch.WHISTLE else str(base))
+    engine = _AudioEngine()
+    monkeypatch.setattr(runtime, "_lib", lambda generation=3: engine)
+    monkeypatch.setattr(runtime, "_active", {})
+    monkeypatch.setattr(runtime, "_loaded_base", {})
+    monkeypatch.setattr(whistle, "_loaded", None)
+    monkeypatch.setattr(whistle, "_shared", {})
+    monkeypatch.delenv("CACTUS_WHISTLE_WEIGHTS", raising=False)
+    monkeypatch.setattr("cactus._telemetry.track", lambda *a, **k: None)
+
+    agent = cactus.Cactus()
+    for _ in range(3):
+        assert agent.complete(audio=[0.0] * 160)["audio_text"] == "lights on"
+    assert resolved.count(fetch.WHISTLE) == 1
+    assert engine.loads == 2
+
+
+def test_a_fine_tuned_agent_resolves_the_speech_model_once(tmp_path, monkeypatch):
+    import cactus
+    from cactus import _worker
+    from cactus.agent import fetch
+
+    tuned, speech = tmp_path / "tuned.cact", tmp_path / "whistle.cact"
+    tuned.write_bytes((0x05E12A84).to_bytes(4, "little") + b"tuned weights")
+    speech.write_bytes(b"speech weights")
+    resolved, sent = [], []
+    monkeypatch.setattr(runtime, "_base_weights_path", lambda generation: resolved.append(generation) or str(speech))
+    monkeypatch.setattr(runtime, "_library_path", lambda generation=3: "/tmp/libcactus")
+    monkeypatch.delenv("CACTUS_WHISTLE_WEIGHTS", raising=False)
+    monkeypatch.setattr("cactus._telemetry.track", lambda *a, **k: None)
+
+    class _Worker:
+        def __init__(self, *args):
+            pass
+
+        def complete_audio(self, audio, speech_weights, *args):
+            sent.append(speech_weights)
+            return json.dumps({"type": "call", "function_calls": [], "audio_text": "lights on"})
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_worker, "FineTuneWorker", _Worker)
+    with pytest.warns(UserWarning, match="confidence head"):
+        agent = cactus.Cactus(weights=str(tuned))
+    for _ in range(3):
+        assert agent.complete(audio=[0.0] * 160)["audio_text"] == "lights on"
+    assert resolved == [fetch.WHISTLE] and sent == [str(speech)] * 3
