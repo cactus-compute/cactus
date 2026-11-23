@@ -87,6 +87,7 @@ class Cactus:
         from . import fetch
         fetch._engine(self._generation)
         self._worker = None
+        self._speech_weights = None
         self._closed = False
         self._calibrated = (not self._tuned
                             or (self._generation >= 3 and _confidence_head_present(self._weights)))
@@ -198,17 +199,18 @@ class Cactus:
 
     def _complete_audio(self, audio, max_new_tokens, language, keywords, word_timestamps):
         from .audio import _samples, _options
-        from .whistle import Whistle, _weights_path
+        from .whistle import _shared_model, _weights_path
         self._bind()
         samples, count = _samples(audio)
         if keywords is not None and not isinstance(keywords, str):
             keywords = "\n".join(keywords)
         if self._worker is not None:
+            if self._speech_weights is None:
+                self._speech_weights = _weights_path()
             packed = ctypes.string_at(samples, count * ctypes.sizeof(ctypes.c_float))
-            raw = self._worker.complete_audio(packed, _weights_path(), language, keywords, word_timestamps, max_new_tokens)
+            raw = self._worker.complete_audio(packed, self._speech_weights, language, keywords, word_timestamps, max_new_tokens)
         else:
-            speech = Whistle()
-            lib = speech._bind()
+            lib = _shared_model(None)._bind()
             language, keywords = _options(language, keywords)
             lib.cactus_set_audio(language, keywords, int(bool(word_timestamps)))
             code = lib.cactus_complete(None, samples, count, int(max_new_tokens), self._buffer, len(self._buffer))
