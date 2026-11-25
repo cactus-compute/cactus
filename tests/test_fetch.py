@@ -275,6 +275,30 @@ def test_platform_tag_names_only_the_architectures_the_engine_is_built_for(monke
             fetch._platform_tag()
 
 
+def test_32_bit_python_on_a_64_bit_system_is_refused(monkeypatch):
+    """platform.machine() names the kernel or CPU, not the interpreter: Raspberry Pi OS
+    (32-bit) boots a 64-bit kernel, and 32-bit Python on Windows reports AMD64. Either way the
+    64-bit engine was downloaded and then failed with 'wrong ELF class' or WinError 193."""
+    import platform
+    import types
+    from cactus.agent import fetch
+
+    monkeypatch.setattr(fetch, "_is_musl", lambda: False)
+    monkeypatch.setattr(fetch, "_is_android", lambda: False)
+    monkeypatch.setattr(fetch, "struct", types.SimpleNamespace(calcsize=lambda fmt: 4))
+    for system, machine in (("linux", "aarch64"), ("linux", "x86_64"), ("win32", "AMD64"),
+                            ("win32", "ARM64")):
+        monkeypatch.setattr(sys, "platform", system)
+        monkeypatch.setattr(platform, "machine", lambda machine=machine: machine)
+        with pytest.raises(RuntimeError, match=f"32-bit Python on 64-bit .*{machine}.*CACTUS_LIB_PATH"):
+            fetch._platform_tag()
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(platform, "machine", lambda: "armv7l")
+    with pytest.raises(RuntimeError, match="on armv7l;.*CACTUS_LIB_PATH"):
+        fetch._platform_tag()
+
+
 def test_other_libc_tag_swaps_families(monkeypatch):
     from cactus.agent import fetch
 

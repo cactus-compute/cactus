@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import platform
+import struct
 import sysconfig
 import sys
 import tempfile
@@ -120,14 +121,18 @@ def _platform_tag():
             "not a shared library for ctypes; to use the Python API here, build a shared "
             "libcactus for Bionic and point CACTUS_LIB_PATH at it.")
     arch = _ENGINE_ARCHES.get(machine)
+    system = "Windows" if sys.platform == "win32" else "Linux"
     if arch is None:
-
-
-        system = "Windows" if sys.platform == "win32" else "Linux"
         raise RuntimeError(
             f"no Cactus engine is published for {system} on {platform.machine() or 'this machine'}; "
             "the engine builds are for x86_64 and arm64. Build libcactus for this machine "
             "and point CACTUS_LIB_PATH at it.")
+    if struct.calcsize("P") != 8:
+        pi_os = " (on Raspberry Pi OS, the 64-bit image)" if system == "Linux" and arch == "aarch64" else ""
+        raise RuntimeError(
+            f"this is a 32-bit Python on 64-bit {system} ({platform.machine()}), and the published "
+            f"Cactus engines are 64-bit builds it cannot load. Use a 64-bit Python{pi_os}, or build "
+            "a 32-bit libcactus and point CACTUS_LIB_PATH at it.")
     if sys.platform == "win32":
         return "win_arm64" if arch == "aarch64" else "win_amd64"
     family = "musllinux_1_2_" if _is_musl() else "manylinux2014_"
